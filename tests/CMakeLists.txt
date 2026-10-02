@@ -1,0 +1,4 @@
+add_executable(openrts_core_smoke core_smoke.cpp)
+openrts_configure_target(openrts_core_smoke)
+target_link_libraries(openrts_core_smoke PRIVATE openrts_core openrts_assets openrts_renderer)
+add_test(NAME openrts.core_smoke COMMAND openrts_core_smoke)

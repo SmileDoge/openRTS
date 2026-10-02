@@ -1,0 +1,3 @@
+add_library(openrts_compat STATIC src/compat.cpp)
+openrts_configure_target(openrts_compat)
+target_link_libraries(openrts_compat PUBLIC openrts_core)

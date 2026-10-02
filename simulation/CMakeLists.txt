@@ -1,0 +1,3 @@
+add_library(openrts_simulation STATIC src/simulation.cpp)
+openrts_configure_target(openrts_simulation)
+target_link_libraries(openrts_simulation PUBLIC openrts_core openrts_formats)

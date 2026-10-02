@@ -1,0 +1,3 @@
+add_executable(openrts_game src/main.cpp)
+openrts_configure_target(openrts_game)
+target_link_libraries(openrts_game PRIVATE openrts_assets openrts_renderer openrts_platform openrts_simulation)

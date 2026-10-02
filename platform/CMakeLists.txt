@@ -1,0 +1,3 @@
+add_library(openrts_platform STATIC src/platform.cpp)
+openrts_configure_target(openrts_platform)
+target_link_libraries(openrts_platform PUBLIC openrts_core)

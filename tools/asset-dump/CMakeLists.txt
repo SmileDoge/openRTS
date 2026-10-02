@@ -1,0 +1,3 @@
+add_executable(openrts_asset_dump src/main.cpp)
+openrts_configure_target(openrts_asset_dump)
+target_link_libraries(openrts_asset_dump PRIVATE openrts_assets openrts_formats)
