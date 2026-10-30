@@ -1,6 +1,20 @@
-add_library(openrts_renderer STATIC src/renderer.cpp)
+add_library(openrts_renderer STATIC
+    src/renderer.cpp
+    src/frustum.cpp
+    src/model_assets.cpp
+    src/model_library.cpp
+    src/model_lighting.cpp
+    src/model_renderer.cpp
+    src/rts_material.cpp
+    src/rts_sky.cpp
+    src/route_space.cpp
+    src/route_streamer.cpp
+    src/sky_renderer.cpp
+    src/terrain_renderer.cpp)
 openrts_configure_target(openrts_renderer)
-target_link_libraries(openrts_renderer PUBLIC openrts_core)
+# Public renderer headers expose formats types (ShapeModel, RoutePosition).
+target_link_libraries(openrts_renderer PUBLIC openrts_core openrts_formats glm::glm)
+target_link_libraries(openrts_renderer PUBLIC openrts_assets)
 
 if(OPENRTS_ENABLE_WGPU)
     if(NOT OPENRTS_WGPU_ROOT)
@@ -30,3 +44,13 @@ if(OPENRTS_ENABLE_WGPU)
     target_compile_definitions(openrts_renderer PUBLIC OPENRTS_HAS_WGPU=1)
     target_link_libraries(openrts_renderer PUBLIC openrts_wgpu_native)
 endif()
+
+# Places the wgpu-native runtime next to an executable so it starts without a
+# PATH setup; no-op unless the WebGPU backend is enabled on Windows.
+function(openrts_copy_wgpu_runtime target)
+    if(OPENRTS_ENABLE_WGPU AND WIN32)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:openrts_wgpu_native>" "$<TARGET_FILE_DIR:${target}>")
+    endif()
+endfunction()

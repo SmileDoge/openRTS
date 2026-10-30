@@ -7,6 +7,8 @@
 #include <string_view>
 #include <vector>
 
+#include <openrts/core/vfs.hpp>
+
 namespace openrts::formats {
 
 enum class AceRepresentation { invalid, uncompressed, compressed };
@@ -45,14 +47,15 @@ struct AceDecodeResult {
     [[nodiscard]] bool ok() const noexcept { return image.has_value(); }
 };
 
-// Inspects only the envelope and fixed uncompressed header. Compressed ACE
-// files are identified, but their payload is not decompressed or decoded.
+// Inspects the envelope and fixed uncompressed header. Compressed ACE files
+// are identified but their payload header is not inspected until decoding.
 [[nodiscard]] AceFileProbe probe_ace_file(std::string_view bytes);
 [[nodiscard]] AceFileProbe probe_ace_file_path(const std::filesystem::path& file);
 
-// Decodes mip level zero of an uncompressed, structured ACE into RGBA8.
-// Raw (DXT/packed) and compressed ACE files deliberately return unsupported.
+// Decodes mip level zero of a narrow compressed or uncompressed structured ACE
+// into RGBA8. Raw ACE files are decoded when they hold DXT1 blocks.
 [[nodiscard]] AceDecodeResult decode_structured_ace_rgba(std::string_view bytes);
 [[nodiscard]] AceDecodeResult decode_structured_ace_rgba_path(const std::filesystem::path& file);
+[[nodiscard]] AceDecodeResult decode_ace_rgba(const core::Vfs& vfs, const core::VirtualPath& file);
 
 } // namespace openrts::formats

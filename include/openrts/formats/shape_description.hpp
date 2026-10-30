@@ -5,6 +5,8 @@
 #include <string>
 #include <string_view>
 
+#include <openrts/core/vfs.hpp>
+
 namespace openrts::formats {
 
 struct ShapeDescription {
@@ -22,5 +24,6 @@ struct ShapeDescriptionResult {
 // text SD file. Other ESD_* nodes are deliberately not interpreted yet.
 [[nodiscard]] ShapeDescriptionResult parse_shape_description(std::string_view text);
 [[nodiscard]] ShapeDescriptionResult load_shape_description(const std::filesystem::path& file);
+[[nodiscard]] ShapeDescriptionResult load_shape_description(const core::Vfs& vfs, const core::VirtualPath& file);
 
 } // namespace openrts::formats

@@ -1,0 +1,4 @@
+add_executable(openrts_pack src/main.cpp)
+set_target_properties(openrts_pack PROPERTIES OUTPUT_NAME openrts-pack)
+openrts_configure_target(openrts_pack)
+target_link_libraries(openrts_pack PRIVATE openrts_core)

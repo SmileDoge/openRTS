@@ -132,4 +132,29 @@ ShapeInflateResult inflate_narrow_compressed_shape(const std::filesystem::path& 
     return inflate_narrow_compressed_shape(std::string_view(bytes));
 }
 
+ShapeInflateResult load_binary_shape_body(const std::filesystem::path& file) {
+    std::ifstream input(file, std::ios::binary);
+    if (!input) return {.error = "Cannot open shape file: " + file.string()};
+    const std::string bytes(std::istreambuf_iterator<char>(input), {});
+    return load_binary_shape_body(std::string_view(bytes));
+}
+
+ShapeInflateResult load_binary_shape_body(const std::string_view bytes) {
+    switch (probe_shape_file(bytes).representation) {
+    case ShapeRepresentation::binary:
+        return {.body = std::string(bytes.substr(16))};
+    case ShapeRepresentation::compressed_binary:
+        return inflate_narrow_compressed_shape(bytes);
+    default:
+        return {.error = "Unsupported shape representation; a narrow binary JINX0s1b shape is required."};
+    }
+}
+
+ShapeInflateResult load_binary_shape_body(const core::Vfs& vfs, const core::VirtualPath& file) {
+    std::string error;
+    const auto bytes = vfs.read(file, &error);
+    if (!bytes) return {.error = error};
+    return load_binary_shape_body(std::string_view(*bytes));
+}
+
 } // namespace openrts::formats

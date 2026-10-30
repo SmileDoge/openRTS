@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 
+#include <openrts/core/vfs.hpp>
+
 namespace openrts::formats {
 
 enum class ShapeRepresentation {
@@ -42,5 +44,11 @@ struct ShapeInflateResult {
 // output size. It does not interpret MSTS binary tokens.
 [[nodiscard]] ShapeInflateResult inflate_narrow_compressed_shape(std::string_view bytes);
 [[nodiscard]] ShapeInflateResult inflate_narrow_compressed_shape(const std::filesystem::path& file);
+
+// Reads a narrow binary shape and returns its token stream without the 16-byte
+// SIMIS header, inflating the compressed variant when necessary.
+[[nodiscard]] ShapeInflateResult load_binary_shape_body(const std::filesystem::path& file);
+[[nodiscard]] ShapeInflateResult load_binary_shape_body(std::string_view file_bytes);
+[[nodiscard]] ShapeInflateResult load_binary_shape_body(const core::Vfs& vfs, const core::VirtualPath& file);
 
 } // namespace openrts::formats

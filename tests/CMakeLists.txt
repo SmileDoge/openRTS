@@ -1,4 +1,38 @@
 add_executable(openrts_core_smoke core_smoke.cpp)
 openrts_configure_target(openrts_core_smoke)
+openrts_copy_wgpu_runtime(openrts_core_smoke)
 target_link_libraries(openrts_core_smoke PRIVATE openrts_core openrts_assets openrts_renderer)
 add_test(NAME openrts.core_smoke COMMAND openrts_core_smoke)
+
+add_executable(openrts_rts_material_test rts_material_test.cpp)
+openrts_configure_target(openrts_rts_material_test)
+openrts_copy_wgpu_runtime(openrts_rts_material_test)
+target_link_libraries(openrts_rts_material_test PRIVATE openrts_renderer)
+add_test(NAME openrts.rts_material COMMAND openrts_rts_material_test)
+
+add_executable(openrts_rts_sky_test rts_sky_test.cpp)
+openrts_configure_target(openrts_rts_sky_test)
+openrts_copy_wgpu_runtime(openrts_rts_sky_test)
+target_link_libraries(openrts_rts_sky_test PRIVATE openrts_renderer)
+add_test(NAME openrts.rts_sky COMMAND openrts_rts_sky_test)
+
+add_executable(openrts_terrain_test terrain_test.cpp)
+openrts_configure_target(openrts_terrain_test)
+openrts_copy_wgpu_runtime(openrts_terrain_test)
+target_link_libraries(openrts_terrain_test PRIVATE openrts_renderer)
+add_test(NAME openrts.terrain COMMAND openrts_terrain_test)
+
+add_executable(openrts_frustum_test frustum_test.cpp)
+openrts_configure_target(openrts_frustum_test)
+openrts_copy_wgpu_runtime(openrts_frustum_test)
+target_link_libraries(openrts_frustum_test PRIVATE openrts_renderer)
+add_test(NAME openrts.frustum COMMAND openrts_frustum_test)
+
+add_executable(openrts_vfs_test vfs_test.cpp)
+openrts_configure_target(openrts_vfs_test)
+target_link_libraries(openrts_vfs_test PRIVATE openrts_core)
+add_test(NAME openrts.vfs COMMAND openrts_vfs_test)
+
+add_executable(openrts_retire_queue_test retire_queue_test.cpp)
+openrts_configure_target(openrts_retire_queue_test)
+add_test(NAME openrts.retire_queue COMMAND openrts_retire_queue_test)

@@ -139,4 +139,14 @@ ShapeDescriptionResult load_shape_description(const std::filesystem::path& file)
     return parse_shape_description(*decoded);
 }
 
+ShapeDescriptionResult load_shape_description(const core::Vfs& vfs, const core::VirtualPath& file) {
+    std::string error;
+    const auto bytes = vfs.read(file, &error);
+    if (!bytes) return {.error = std::move(error)};
+    std::string decode_error;
+    const auto decoded = decode_file_text(*bytes, decode_error);
+    if (!decoded) return {.error = std::move(decode_error)};
+    return parse_shape_description(*decoded);
+}
+
 } // namespace openrts::formats

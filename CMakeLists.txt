@@ -15,6 +15,7 @@ option(OPENRTS_ENABLE_GLFW "Build the GLFW-based viewer window" ON)
 option(OPENRTS_ENABLE_WGPU "Enable the wgpu-native WebGPU backend" OFF)
 set(OPENRTS_WGPU_ROOT "" CACHE PATH "Root of an extracted wgpu-native SDK")
 option(OPENRTS_FETCH_ZLIB "Fetch zlib when a system package is unavailable" ON)
+option(OPENRTS_FETCH_ZSTD "Fetch Zstandard when a system package is unavailable" ON)
 
 find_package(ZLIB QUIET)
 if(NOT ZLIB_FOUND)
@@ -30,6 +31,39 @@ if(NOT ZLIB_FOUND)
     FetchContent_MakeAvailable(zlib)
     add_library(ZLIB::ZLIB ALIAS zlibstatic)
 endif()
+
+# Zstandard: ZIP method 93 in content packs (docs/vfs.md).
+find_package(zstd CONFIG QUIET)
+if(TARGET zstd::libzstd_static)
+    set(OPENRTS_ZSTD_TARGET zstd::libzstd_static)
+elseif(TARGET zstd::libzstd_shared)
+    set(OPENRTS_ZSTD_TARGET zstd::libzstd_shared)
+else()
+    if(NOT OPENRTS_FETCH_ZSTD)
+        message(FATAL_ERROR "Zstandard is required for content packs. Install it or enable OPENRTS_FETCH_ZSTD.")
+    endif()
+    FetchContent_Declare(zstd
+        GIT_REPOSITORY https://github.com/facebook/zstd.git
+        GIT_TAG v1.5.6
+        GIT_SHALLOW TRUE
+        SOURCE_SUBDIR build/cmake)
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+    set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(zstd)
+    set(OPENRTS_ZSTD_TARGET libzstd_static)
+    set(OPENRTS_ZSTD_INCLUDE_DIR "${zstd_SOURCE_DIR}/lib")
+endif()
+
+FetchContent_Declare(glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG 1.0.1
+    GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(glm)
 
 function(openrts_configure_target target)
     target_compile_features(${target} PUBLIC cxx_std_20)
@@ -61,6 +95,27 @@ if(OPENRTS_BUILD_VIEWER)
         set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Disable GLFW examples" FORCE)
         set(GLFW_INSTALL OFF CACHE BOOL "Disable GLFW install rules" FORCE)
         FetchContent_MakeAvailable(glfw)
+    endif()
+    if(OPENRTS_ENABLE_GLFW AND OPENRTS_ENABLE_WGPU)
+        FetchContent_Declare(imgui
+            GIT_REPOSITORY https://github.com/ocornut/imgui.git
+            GIT_TAG v1.91.9b
+            GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(imgui)
+        add_library(openrts_imgui STATIC
+            "${imgui_SOURCE_DIR}/imgui.cpp"
+            "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+            "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+            "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+            "${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp"
+            "${imgui_SOURCE_DIR}/backends/imgui_impl_wgpu.cpp")
+        target_compile_features(openrts_imgui PUBLIC cxx_std_20)
+        target_include_directories(openrts_imgui SYSTEM PUBLIC
+            "${imgui_SOURCE_DIR}"
+            "${imgui_SOURCE_DIR}/backends"
+            "${OPENRTS_WGPU_INCLUDE_DIR}")
+        target_compile_definitions(openrts_imgui PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_WGPU=1)
+        target_link_libraries(openrts_imgui PUBLIC glfw openrts_wgpu_native)
     endif()
     add_subdirectory(viewer)
 endif()
