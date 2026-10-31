@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cctype>
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace openrts::formats {
 namespace {
@@ -47,11 +49,24 @@ constexpr std::uint32_t token_shader_name = 73;
 constexpr std::uint32_t token_named_shader = 129;
 constexpr std::uint32_t token_texture_filter_names = 74;
 constexpr std::uint32_t token_named_filter_mode = 125;
+// Animations (docs/reverse/shape-animation.md).
+constexpr std::uint32_t token_linear_key = 19;
+constexpr std::uint32_t token_tcb_key = 20;
+constexpr std::uint32_t token_linear_pos = 21;
+constexpr std::uint32_t token_slerp_rot = 23;
+constexpr std::uint32_t token_tcb_rot = 24;
+constexpr std::uint32_t token_controllers = 25;
+constexpr std::uint32_t token_anim_node = 26;
+constexpr std::uint32_t token_anim_nodes = 27;
+constexpr std::uint32_t token_animation = 28;
+constexpr std::uint32_t token_animations = 29;
 
 struct Block {
     std::uint32_t token{};
     std::size_t payload{};
     std::size_t end{};
+    std::size_t label{};     // offset of the UTF-16 label
+    std::size_t label_units{};
 };
 
 [[nodiscard]] std::optional<std::uint32_t> read_u32(std::string_view bytes, std::size_t& offset, std::size_t limit) {
@@ -78,8 +93,20 @@ struct Block {
     if (payload_start >= end) return std::nullopt;
     const auto label_units = static_cast<unsigned char>(bytes[offset++]);
     if (label_units > (end - offset) / 2) return std::nullopt;
+    const auto label = offset;
     offset += static_cast<std::size_t>(label_units) * 2;
-    return Block{.token = *token, .payload = offset, .end = end};
+    return Block{.token = *token, .payload = offset, .end = end, .label = label, .label_units = label_units};
+}
+
+// The block's label (node and matrix names); non-ASCII units become '?'.
+[[nodiscard]] std::string block_label(std::string_view bytes, const Block& block) {
+    std::string name;
+    for (std::size_t i = 0; i < block.label_units; ++i) {
+        const auto unit = static_cast<unsigned char>(bytes[block.label + 2 * i])
+            | (static_cast<unsigned char>(bytes[block.label + 2 * i + 1]) << 8);
+        name.push_back(unit < 0x80 ? static_cast<char>(unit) : '?');
+    }
+    return name;
 }
 
 [[nodiscard]] std::optional<std::string> read_utf16le_string(std::string_view bytes, std::size_t& offset, std::size_t limit) {
@@ -103,6 +130,9 @@ struct Block {
 [[nodiscard]] bool is_binary_subheader(std::string_view body) {
     return body.size() >= 16 && body.substr(0, 8) == "JINX0s1b";
 }
+
+// Vertices of untextured primitives have no UV (`vertex_uvs ( 0 )`).
+constexpr std::uint32_t no_uv = 0xFFFFFFFFu;
 
 struct VertexReference {
     std::uint32_t point_index{};
@@ -204,7 +234,9 @@ using Normal = std::array<float, 3>;
         if (!vertex_uvs || vertex_uvs->token != token_vertex_uvs) return std::nullopt;
         std::size_t uv_offset = vertex_uvs->payload;
         const auto uv_count = read_u32(body, uv_offset, vertex_uvs->end);
-        const auto uv_index = uv_count && *uv_count > 0 ? read_u32(body, uv_offset, vertex_uvs->end) : std::nullopt;
+        const auto uv_index = !uv_count ? std::nullopt
+            : *uv_count > 0         ? read_u32(body, uv_offset, vertex_uvs->end)
+                                    : std::optional(no_uv);
         if (!uv_index) return std::nullopt;
         for (std::uint32_t uv = 1; uv < *uv_count; ++uv) {
             if (!read_u32(body, uv_offset, vertex_uvs->end)) return std::nullopt;
@@ -485,6 +517,7 @@ struct RawLodLevel {
             component = *parsed;
         }
         if (matrix_offset != matrix->end) return std::nullopt;
+        value.name = block_label(body, *matrix);
         result.push_back(value);
         offset = matrix->end;
     }
@@ -684,11 +717,15 @@ ShapeMesh extract_first_mesh_from_binary_shape(const std::string_view body) {
     ShapeMesh mesh;
     mesh.vertices.reserve(source_mesh->first.size());
     for (const auto& reference : source_mesh->first) {
-        if (reference.point_index >= points->size() || static_cast<std::size_t>(reference.uv_index) * 2 + 1 >= uv_points->size())
+        const bool has_uv = reference.uv_index != no_uv;
+        if (reference.point_index >= points->size()
+            || (has_uv && static_cast<std::size_t>(reference.uv_index) * 2 + 1 >= uv_points->size()))
             return {.error = "Binary shape vertex references an out-of-range point or UV."};
         auto vertex = (*points)[reference.point_index];
-        vertex.uv[0] = (*uv_points)[static_cast<std::size_t>(reference.uv_index) * 2];
-        vertex.uv[1] = (*uv_points)[static_cast<std::size_t>(reference.uv_index) * 2 + 1];
+        if (has_uv) {
+            vertex.uv[0] = (*uv_points)[static_cast<std::size_t>(reference.uv_index) * 2];
+            vertex.uv[1] = (*uv_points)[static_cast<std::size_t>(reference.uv_index) * 2 + 1];
+        }
         mesh.vertices.push_back(vertex);
     }
     mesh.indices = std::move(source_mesh->second);
@@ -697,6 +734,97 @@ ShapeMesh extract_first_mesh_from_binary_shape(const std::string_view body) {
     }
     return mesh;
 }
+
+namespace {
+
+[[nodiscard]] bool same_name(const std::string_view a, const std::string_view b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+           });
+}
+
+// Reads one controller's keys. Unknown key types make the controller empty.
+void read_controller(std::string_view body, const Block& controller, ShapeAnimationNode& node) {
+    std::size_t offset = controller.payload;
+    const auto count = read_u32(body, offset, controller.end);
+    if (!count) return;
+    for (std::uint32_t i = 0; i < *count && offset < controller.end; ++i) {
+        const auto key = read_block(body, offset, controller.end);
+        if (!key) return;
+        std::size_t at = key->payload;
+        const auto frame = read_u32(body, at, key->end);
+        if (!frame) return;
+        if (controller.token == token_linear_pos && key->token == token_linear_key) {
+            ShapePositionKey position{.frame = *frame};
+            for (auto& value : position.value) value = read_f32(body, at, key->end).value_or(0.0f);
+            node.positions.push_back(position);
+        } else if (controller.token == token_tcb_rot && (key->token == token_tcb_key || key->token == token_slerp_rot)) {
+            // tcb_key also carries tension, continuity, bias, in, out: all
+            // zero in installed content, so keys are interpolated with slerp.
+            ShapeRotationKey rotation{.frame = *frame};
+            for (auto& value : rotation.value) value = read_f32(body, at, key->end).value_or(0.0f);
+            node.rotations.push_back(rotation);
+        }
+        offset = key->end;
+    }
+}
+
+// Block 29. Nodes bind to matrices by name, ignoring case, as RTS does
+// (0x43A944). A malformed block yields no animations; the model still loads.
+[[nodiscard]] std::vector<ShapeAnimation> read_animations(std::string_view body, const Block& table,
+                                                          const std::vector<ShapeMatrix>& matrices) {
+    std::vector<ShapeAnimation> result;
+    std::size_t offset = table.payload;
+    const auto count = read_u32(body, offset, table.end);
+    if (!count) return {};
+    for (std::uint32_t a = 0; a < *count && offset < table.end; ++a) {
+        const auto block = read_block(body, offset, table.end);
+        if (!block || block->token != token_animation) return {};
+        offset = block->end;
+        std::size_t at = block->payload;
+        const auto frames = read_u32(body, at, block->end);
+        const auto rate = read_u32(body, at, block->end);
+        if (!frames || !rate) return {};
+        ShapeAnimation animation{.frame_count = *frames, .frame_rate = *rate};
+        const auto nodes = read_block(body, at, block->end);
+        if (!nodes || nodes->token != token_anim_nodes) return {};
+        std::size_t node_offset = nodes->payload;
+        const auto node_count = read_u32(body, node_offset, nodes->end);
+        if (!node_count) return {};
+        for (std::uint32_t n = 0; n < *node_count && node_offset < nodes->end; ++n) {
+            const auto node_block = read_block(body, node_offset, nodes->end);
+            if (!node_block || node_block->token != token_anim_node) return {};
+            node_offset = node_block->end;
+            ShapeAnimationNode node{.name = block_label(body, *node_block)};
+            for (std::size_t m = 0; m < matrices.size(); ++m) {
+                if (same_name(matrices[m].name, node.name)) {
+                    node.matrix_index = static_cast<std::int32_t>(m);
+                    break;
+                }
+            }
+            std::size_t inner = node_block->payload;
+            while (inner < node_block->end) {
+                const auto controllers = read_block(body, inner, node_block->end);
+                if (!controllers) break;
+                inner = controllers->end;
+                if (controllers->token != token_controllers) continue;
+                std::size_t c = controllers->payload;
+                const auto controller_count = read_u32(body, c, controllers->end);
+                for (std::uint32_t k = 0; controller_count && k < *controller_count && c < controllers->end; ++k) {
+                    const auto controller = read_block(body, c, controllers->end);
+                    if (!controller) break;
+                    c = controller->end;
+                    read_controller(body, *controller, node);
+                }
+            }
+            if (!node.positions.empty() || !node.rotations.empty()) animation.nodes.push_back(std::move(node));
+        }
+        result.push_back(std::move(animation));
+    }
+    return result;
+}
+
+} // namespace
 
 ShapeModel parse_binary_shape_model(const std::string_view body) {
     if (!is_binary_subheader(body)) return {.error = "Binary shape body has no JINX0s1b subheader."};
@@ -714,6 +842,7 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
     std::optional<std::vector<ShapeVertexState>> vertex_states;
     std::optional<std::vector<ShapePrimitiveState>> primitive_states;
     std::optional<RawLodLevel> level;
+    std::optional<Block> animations_block;
 
     offset = root->payload;
     while (offset < root->end) {
@@ -730,6 +859,7 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
         else if (child->token == token_vtx_states) vertex_states = read_vtx_states(body, *child);
         else if (child->token == token_prim_states) primitive_states = read_prim_states(body, *child);
         else if (child->token == token_lod_controls) level = read_first_lod_subobjects(body, *child);
+        else if (child->token == token_animations) animations_block = *child;
         if ((child->token == token_points && !points) || (child->token == token_uv_points && !uv_points)
             || (child->token == token_matrices && !matrices) || (child->token == token_textures && !textures)
             || (child->token == token_shader_names && !shader_names)
@@ -737,7 +867,7 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
             || (child->token == token_texture_filter_names && !filter_names)
             || (child->token == token_vtx_states && !vertex_states) || (child->token == token_prim_states && !primitive_states)
             || (child->token == token_lod_controls && !level)) {
-            return {.error = "Shape table uses an unsupported binary layout."};
+            return {.error = "Shape table " + std::to_string(child->token) + " uses an unsupported binary layout."};
         }
     }
     if (!points || !uv_points || !level) {
@@ -759,11 +889,14 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
         return {.error = "Distance-level hierarchy count does not match the matrix table."};
     }
     for (std::size_t index = 0; index < model.hierarchy.size(); ++index) {
+        // -2 marks a matrix this distance level does not use (A1t300r*dConcrete.s).
+        if (model.hierarchy[index] < -1) model.hierarchy[index] = -1;
         const auto parent = model.hierarchy[index];
-        if (parent < -1 || parent >= static_cast<std::int32_t>(model.matrices.size())) {
+        if (parent >= static_cast<std::int32_t>(model.matrices.size())) {
             return {.error = "Distance-level hierarchy has an out-of-range parent matrix."};
         }
     }
+    if (animations_block) model.animations = read_animations(body, *animations_block, model.matrices);
     if (textures) model.textures = *textures;
     if (shader_names) model.shader_names = *shader_names;
     if (filter_names) model.filter_names = *filter_names;
@@ -774,13 +907,16 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
     for (const auto& subobject : level->subobjects) {
         const auto base_vertex = static_cast<std::uint32_t>(model.vertices.size());
         for (const auto& reference : subobject.vertices) {
+            const bool has_uv = reference.uv_index != no_uv;
             if (reference.point_index >= points->size()
-                || static_cast<std::size_t>(reference.uv_index) * 2 + 1 >= uv_points->size()) {
+                || (has_uv && static_cast<std::size_t>(reference.uv_index) * 2 + 1 >= uv_points->size())) {
                 return {.error = "Binary shape vertex references an out-of-range point or UV."};
             }
             auto vertex = (*points)[reference.point_index];
-            vertex.uv[0] = (*uv_points)[static_cast<std::size_t>(reference.uv_index) * 2];
-            vertex.uv[1] = (*uv_points)[static_cast<std::size_t>(reference.uv_index) * 2 + 1];
+            if (has_uv) {
+                vertex.uv[0] = (*uv_points)[static_cast<std::size_t>(reference.uv_index) * 2];
+                vertex.uv[1] = (*uv_points)[static_cast<std::size_t>(reference.uv_index) * 2 + 1];
+            }
             if (normals && reference.normal_index < normals->size()) {
                 const auto& normal = (*normals)[reference.normal_index];
                 std::copy(normal.begin(), normal.end(), vertex.normal);

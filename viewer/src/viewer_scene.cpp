@@ -21,6 +21,9 @@
 #include <openrts/renderer/route_streamer.hpp>
 #include <openrts/renderer/sky_renderer.hpp>
 #include <openrts/renderer/terrain_renderer.hpp>
+#include <openrts/simulation/track_network.hpp>
+
+#include "track_view.hpp"
 
 #ifdef OPENRTS_HAS_IMGUI
 #include <imgui.h>
@@ -43,6 +46,7 @@ public:
     explicit ContentView(SceneContent content) : content_(std::move(content)) {}
 
     [[nodiscard]] const std::shared_ptr<core::Vfs>& vfs() const noexcept { return content_.vfs; }
+    [[nodiscard]] bool probe_at_start() const noexcept { return content_.probe_at_start; }
 
     // Hands this frame's VFS changes to the model library.
     void forward_changes(renderer::ModelLibrary& library) {
@@ -100,13 +104,21 @@ public:
 
     void detach() override { library_.reset(); }
 
-    void update(ModelRenderer&, const ViewerCamera&, const SceneClock&) override {
+    void update(ModelRenderer&, ViewerCamera&, const SceneClock& clock, const SceneInput& input) override {
         content_.forward_changes(*library_);
         library_->update();
+        // Up/Down step through the shape's animation (switch blades, doors).
+        if (auto* model = library_->find(path_); model && model->animation().frame_count > 0) {
+            const auto animation = model->animation();
+            const float rate = static_cast<float>((std::max)(animation.frame_rate, 1u)) * 0.1f;
+            if (input.forward) frame_ += clock.elapsed * rate;
+            if (input.backward) frame_ -= clock.elapsed * rate;
+            frame_ = std::clamp(frame_, 0.0f, static_cast<float>(animation.frame_count));
+        }
     }
 
     void submit(ModelRenderer& renderer, const FrameView&) override {
-        if (auto* model = library_->find(path_)) renderer.submit(*model);
+        if (auto* model = library_->find(path_)) renderer.submit(*model, renderer::ModelTransform{1.0f}, frame_);
     }
 
     void draw_overlay([[maybe_unused]] const ViewerCamera& camera) const override {
@@ -114,6 +126,9 @@ public:
         const auto eye = camera.eye();
         ImGui::Text("%s", path_.str().c_str());
         ImGui::Text("XYZ: %.1f, %.1f, %.1f", eye.x, eye.y, eye.z);
+        if (auto* model = const_cast<ShapeScene*>(this)->library_->find(path_); model && model->animation().frame_count > 0) {
+            ImGui::Text("Animation frame %.2f of %u (Up/Down)", frame_, model->animation().frame_count);
+        }
         content_.draw_overlay(library_.get());
 #endif
     }
@@ -139,6 +154,7 @@ private:
     std::optional<renderer::StreamedModelAsset> asset_;
     core::VirtualPath path_;
     std::unique_ptr<renderer::ModelLibrary> library_;
+    float frame_ = 0.0f;
 };
 
 // Streams the static objects of a route around the camera and draws those
@@ -148,11 +164,14 @@ public:
     RouteScene(SceneContent content,
                core::VirtualPath route,
                const formats::RoutePosition origin,
-               std::vector<formats::RouteEnvironment> environments)
+               std::vector<formats::RouteEnvironment> environments,
+               std::unique_ptr<simulation::TrackNetwork> network)
         : content_(std::move(content)),
           route_(std::move(route)),
           origin_(origin),
-          environments_(std::move(environments)) {}
+          environments_(std::move(environments)) {
+        if (network) track_.emplace(std::move(network), origin_);
+    }
 
     [[nodiscard]] std::string_view title() const override { return "Route props"; }
 
@@ -166,25 +185,29 @@ public:
         terrain_ = std::make_unique<renderer::TerrainRenderer>(gpu.device, gpu.target_format, content_.vfs(), route_,
                                                                origin_, terrain_radius);
         if (!terrain_->ready()) terrain_.reset();
+        if (track_) track_->attach(gpu.device, gpu.target_format);
 
         // Start at the route start, a little above the ground, looking along it.
         camera.distance = 1000.0f;
         camera.position = glm::vec3{0.0f, start_ground_height() + 30.0f, 0.0f};
         camera.pitch = 0.08f;
         camera.fly = true;
+        if (track_ && content_.probe_at_start()) track_->start_ride(camera.eye());
         std::cout << "route streaming: 3x3 tiles, async world/shape/ACE jobs\n";
         std::cout << "flycam: RMB look, WASD move, Q/E vertical, Shift boost, F toggle" << std::endl;
         return {};
     }
 
     void detach() override {
+        if (track_) track_->detach();
         terrain_.reset();
         sky_renderer_.reset();
         library_.reset();
         streamer_.reset();
     }
 
-    void update(ModelRenderer&, const ViewerCamera& camera, const SceneClock& clock) override {
+    void update(ModelRenderer&, ViewerCamera& camera, const SceneClock& clock, const SceneInput& input) override {
+        if (track_) track_->update(input, camera, clock.elapsed);
         const auto camera_position = renderer::route_position(camera.eye(), origin_);
         apply_conditions(clock.season, clock.weather);
         if (terrain_) terrain_->update(camera_position);
@@ -236,9 +259,20 @@ public:
             if (culling_ && beyond_draw_distance(center, bounds.radius, frame.eye)) continue;
             if (culling_ && !frustum.intersects_sphere(center, bounds.radius)) continue;
 
-            renderer.submit(*model, instance.transform);
+            // Switch shapes follow their junction; other shapes stay at rest.
+            if (const auto blade = track_ ? track_->switch_frame(instance) : std::nullopt) {
+                renderer.submit(*model, instance.transform, *blade);
+            } else {
+                renderer.submit(*model, instance.transform);
+            }
             ++drawn_instances_;
         }
+    }
+
+    [[nodiscard]] std::optional<formats::RoutePosition> origin() const override { return origin_; }
+
+    void draw_foreground(const WGPURenderPassEncoder pass, const FrameView& frame) override {
+        if (track_) track_->draw(pass, frame.projection * frame.view);
     }
 
     void draw_overlay([[maybe_unused]] const ViewerCamera& camera) const override {
@@ -265,6 +299,7 @@ public:
         ImGui::Text("Drawn: %zu within %.0f m", drawn_instances_, draw_distance);
         ImGui::Text("Models: %zu GPU, %zu CPU queued, %zu pending", models.models, models.queued_uploads,
                     stream.pending_model_assets);
+        if (track_) track_->draw_overlay();
         content_.draw_overlay(library_.get());
 #endif
     }
@@ -350,6 +385,7 @@ private:
     std::unique_ptr<renderer::SkyRenderer> sky_renderer_;
     std::unique_ptr<renderer::RouteStreamer> streamer_;
     std::unique_ptr<renderer::ModelLibrary> library_;
+    std::optional<TrackView> track_;
     std::size_t drawn_instances_ = 0;
 };
 
@@ -367,7 +403,11 @@ SceneLoadResult load_route_scene(SceneContent content, const core::VirtualPath& 
         return {.error = "Route load failed: "
                     + (definition.error.empty() ? std::string("RouteStart missing.") : definition.error)};
     }
-    return {.scene = std::make_unique<RouteScene>(std::move(content), route, *definition.start, definition.environments)};
+    std::string track_error;
+    auto network = simulation::TrackNetwork::load(*content.vfs, route, &track_error);
+    if (!network) std::cout << "track network not loaded: " << track_error << '\n';
+    return {.scene = std::make_unique<RouteScene>(std::move(content), route, *definition.start, definition.environments,
+                                                  std::move(network))};
 }
 
 } // namespace openrts::viewer

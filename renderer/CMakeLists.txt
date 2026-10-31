@@ -1,5 +1,6 @@
 add_library(openrts_renderer STATIC
     src/renderer.cpp
+    src/debug_lines.cpp
     src/frustum.cpp
     src/model_assets.cpp
     src/model_library.cpp

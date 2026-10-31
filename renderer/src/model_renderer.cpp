@@ -24,6 +24,7 @@
 #include <glm/vec4.hpp>
 
 #include <openrts/formats/ace_file.hpp>
+#include <openrts/formats/shape_animation.hpp>
 #include <openrts/renderer/gpu_retire_queue.hpp>
 #include <openrts/renderer/model_assets.hpp>
 #include <openrts/renderer/rts_material.hpp>
@@ -673,6 +674,9 @@ struct RenderModel::Impl {
 
     core::VirtualPath source;
     std::vector<std::string> dependencies;
+    // Matrices, hierarchy and animations, kept when the shape is animated so
+    // instances can be drawn at their own frame.
+    std::shared_ptr<const formats::ShapeModel> rig;
     std::shared_ptr<const GpuGeometry> geometry;
     std::vector<std::shared_ptr<const GpuTexture>> textures; // by shape image index
     std::vector<TextureAvailability> availability;
@@ -713,10 +717,19 @@ std::vector<std::string> RenderModel::dependency_keys() const {
     return impl_ ? impl_->dependencies : std::vector<std::string>{};
 }
 
+ModelAnimationInfo RenderModel::animation() const noexcept {
+    if (!impl_ || !impl_->rig || impl_->rig->animations.empty()) return {};
+    const auto& animation = impl_->rig->animations.front();
+    return {.frame_count = animation.frame_count, .frame_rate = animation.frame_rate};
+}
+
 struct ModelRenderer::Impl {
     struct QueuedModel {
         RenderModel::Impl* model = nullptr;
         ModelTransform transform{};
+        // First of this instance's animated world matrices in
+        // `frame_matrices`, or -1 for the model's rest pose.
+        std::ptrdiff_t matrices = -1;
     };
 
     WGPUDevice device = nullptr;
@@ -738,6 +751,7 @@ struct ModelRenderer::Impl {
     std::vector<QueuedModel> queue;
     // Generations drawn this frame stay alive until the next begin_frame().
     std::vector<std::shared_ptr<const RenderModel::Impl>> frame_models;
+    std::vector<glm::mat4> frame_matrices;
 
     // Uploaded textures by virtual path key; models hold the strong references.
     std::unordered_map<std::string, std::weak_ptr<const GpuTexture>> texture_cache;
@@ -975,6 +989,13 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     auto gpu = std::make_shared<RenderModel::Impl>();
     gpu->source = asset.source_path;
     gpu->dependencies = asset.dependency_keys();
+    if (!model.animations.empty()) {
+        auto rig = std::make_shared<formats::ShapeModel>();
+        rig->matrices = model.matrices;
+        rig->hierarchy = model.hierarchy;
+        rig->animations = model.animations;
+        gpu->rig = std::move(rig);
+    }
 
     std::vector<GpuVertex> vertices;
     vertices.reserve(model.vertices.size());
@@ -1072,12 +1093,37 @@ void ModelRenderer::begin_frame(const ModelFrameContext& frame) {
     impl_->frame = frame;
     impl_->queue.clear();
     impl_->frame_models.clear();
+    impl_->frame_matrices.clear();
 }
 
 void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) {
     if (!impl_ || !model.impl_) return;
     if (impl_->frame_models.empty() || impl_->frame_models.back() != model.impl_) impl_->frame_models.push_back(model.impl_);
     impl_->queue.push_back({.model = model.impl_.get(), .transform = transform});
+}
+
+void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform, const float frame) {
+    if (!impl_ || !model.impl_) return;
+    const auto& rig = model.impl_->rig;
+    if (!rig) {
+        submit(model, transform);
+        return;
+    }
+    // World matrices of every node at this frame, through the hierarchy.
+    const auto local = formats::animate_matrices(*rig, 0, frame);
+    const auto first = static_cast<std::ptrdiff_t>(impl_->frame_matrices.size());
+    for (std::size_t index = 0; index < local.size(); ++index) {
+        glm::mat4 world{1.0f};
+        auto current = static_cast<std::int32_t>(index);
+        for (std::size_t guard = 0; current >= 0 && static_cast<std::size_t>(current) < local.size() && guard <= local.size();
+             ++guard) {
+            world = shape_matrix(local[static_cast<std::size_t>(current)]) * world;
+            current = rig->hierarchy[static_cast<std::size_t>(current)];
+        }
+        impl_->frame_matrices.push_back(world);
+    }
+    submit(model, transform);
+    impl_->queue.back().matrices = first;
 }
 
 void ModelRenderer::submit(RenderModel& model) {
@@ -1099,7 +1145,10 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass) {
 
     const auto emit = [&](const Impl::QueuedModel& submitted, const RenderModel::Impl::Draw& draw,
                           const PipelineKey pipeline, const bool alpha_test) {
-        const auto model_matrix = submitted.transform * draw.world;
+        const auto& local = submitted.matrices >= 0 && draw.range.matrix_index >= 0
+            ? impl_->frame_matrices[static_cast<std::size_t>(submitted.matrices + draw.range.matrix_index)]
+            : draw.world;
+        const auto model_matrix = submitted.transform * local;
         emitted.push_back({
             .model = submitted.model,
             .draw = &draw,

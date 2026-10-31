@@ -40,6 +40,32 @@ struct ShapeMesh {
 struct ShapeMatrix {
     // MSTS affine matrix storage: three basis rows followed by translation.
     float values[12]{};
+    std::string name; // node name, e.g. POINT_LEFT, WHEELS1
+};
+
+// Rigid node animation (not skinning): keys replace the rotation and/or the
+// translation of one matrix. See docs/reverse/shape-animation.md.
+struct ShapePositionKey {
+    std::uint32_t frame{};
+    float value[3]{};
+};
+
+struct ShapeRotationKey {
+    std::uint32_t frame{};
+    float value[4]{}; // quaternion x y z w as stored
+};
+
+struct ShapeAnimationNode {
+    std::string name;
+    std::int32_t matrix_index{-1}; // matrix with the same name (case-insensitive); -1 if none
+    std::vector<ShapePositionKey> positions;
+    std::vector<ShapeRotationKey> rotations;
+};
+
+struct ShapeAnimation {
+    std::uint32_t frame_count{};
+    std::uint32_t frame_rate{};
+    std::vector<ShapeAnimationNode> nodes; // only nodes with keys
 };
 
 struct ShapeTextureState {
@@ -90,6 +116,7 @@ struct ShapeModel {
     std::vector<ShapePrimitiveState> primitive_states;
     std::vector<std::filesystem::path> images;
     std::vector<ShapeDrawRange> draws;
+    std::vector<ShapeAnimation> animations;
     std::string error;
 
     [[nodiscard]] bool ok() const noexcept {

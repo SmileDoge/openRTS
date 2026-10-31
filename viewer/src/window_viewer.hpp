@@ -2,7 +2,9 @@
 
 #ifdef OPENRTS_HAS_WGPU
 #include <cstdint>
+#include <optional>
 
+#include "debug_view.hpp"
 #include "viewer_scene.hpp"
 
 namespace openrts::viewer {
@@ -15,6 +17,10 @@ struct WindowOptions {
     float time_speed = 1.0f;
     renderer::rts::Season season = renderer::rts::Season::summer;
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
+    // What is open (root, mode, content), recorded in saved debug views.
+    DebugView identity;
+    // Camera to restore after the scene is attached (--view).
+    std::optional<DebugView> view;
 };
 
 [[nodiscard]] int run_window_viewer(ViewerScene& scene, const WindowOptions& options);

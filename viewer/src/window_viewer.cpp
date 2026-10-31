@@ -1,5 +1,11 @@
 #include "window_viewer.hpp"
 
+#include <openrts/renderer/route_space.hpp>
+
+#include <ctime>
+
+#include <chrono>
+
 #ifdef OPENRTS_HAS_WGPU
 #include <algorithm>
 #include <cmath>
@@ -215,7 +221,9 @@ public:
                const ViewerCamera& camera,
                renderer::ModelRenderer& renderer,
                ClockControls& clock,
-               const bool time_of_day_applies) const {
+               const bool time_of_day_applies,
+               bool& save_view,
+               const std::string& save_status) const {
         ImGui_ImplWGPU_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -240,11 +248,14 @@ public:
         ImGui::Text("GPU: %zu textures, %zu retired waiting, frame %llu done", gpu.cached_textures, gpu.retired_pending,
                     static_cast<unsigned long long>(gpu.completed_frame));
 
+        if (ImGui::Button("Save debug view (F6)")) save_view = true;
+        if (!save_status.empty()) ImGui::TextWrapped("%s", save_status.c_str());
         ImGui::Separator();
         draw_clock(clock, time_of_day_applies);
         ImGui::Separator();
         ImGui::TextUnformatted("RMB: look  WASD: move  Q/E: vertical");
         ImGui::TextUnformatted("Shift: boost  F: fly/orbit");
+        ImGui::TextUnformatted("T: track  P: probe  Up/Down: drive  J: switch  V: follow");
         ImGui::End();
 
         ImGui::Render();
@@ -296,6 +307,12 @@ struct CameraInput {
     bool fly_looking = false;
     bool toggle_key_down = false;
     bool shading_key_down = false;
+    // Scene keys, for press edges.
+    bool probe_key_down = false;
+    bool junction_key_down = false;
+    bool follow_key_down = false;
+    bool track_key_down = false;
+    bool save_key_down = false;
     double cursor_x = 0.0;
     double cursor_y = 0.0;
 };
@@ -401,6 +418,27 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         seconds);
 }
 
+// Probe and track keys: P place, Up/Down drive, J throw a junction, V follow,
+// T track overlay.
+[[nodiscard]] SceneInput scene_input(GLFWwindow* window, CameraInput& input) {
+    const auto down = [window](const int key) { return glfwGetKey(window, key) == GLFW_PRESS; };
+    const auto pressed = [&](const int key, bool& was_down) {
+        const bool now = down(key);
+        const bool edge = now && !was_down;
+        was_down = now;
+        return edge;
+    };
+    return {
+        .forward = down(GLFW_KEY_UP),
+        .backward = down(GLFW_KEY_DOWN),
+        .boost = down(GLFW_KEY_LEFT_SHIFT) || down(GLFW_KEY_RIGHT_SHIFT),
+        .place_probe = pressed(GLFW_KEY_P, input.probe_key_down),
+        .throw_junction = pressed(GLFW_KEY_J, input.junction_key_down),
+        .toggle_follow = pressed(GLFW_KEY_V, input.follow_key_down),
+        .toggle_track = pressed(GLFW_KEY_T, input.track_key_down),
+    };
+}
+
 void toggle_shading_from_keyboard(GLFWwindow* window, CameraInput& input, renderer::ModelRenderer& renderer) {
     const bool down = glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS;
     if (down && !input.shading_key_down) {
@@ -409,6 +447,70 @@ void toggle_shading_from_keyboard(GLFWwindow* window, CameraInput& input, render
                                       : renderer::ShadingPath::rts_compatible);
     }
     input.shading_key_down = down;
+}
+
+// Route coordinates <-> scene-local coordinates (identity for shape scenes).
+[[nodiscard]] glm::vec3 to_local(const std::optional<formats::RoutePosition>& origin, const std::int32_t tile_x,
+                                 const std::int32_t tile_z, const double x, const double y, const double z) {
+    if (!origin) return {static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+    constexpr double tile = formats::route_tile_size;
+    return {
+        static_cast<float>((tile_x - origin->tile_x) * tile + x - origin->x),
+        static_cast<float>(y - origin->y),
+        static_cast<float>((tile_z - origin->tile_z) * tile + z - origin->z),
+    };
+}
+
+void apply_view(const DebugView& view, const std::optional<formats::RoutePosition>& origin, ViewerCamera& camera) {
+    camera.fly = view.fly;
+    camera.yaw = view.yaw;
+    camera.pitch = view.pitch;
+    if (view.distance > 0.0f) camera.distance = view.distance;
+    camera.position = to_local(origin, view.tile_x, view.tile_z, view.x, view.y, view.z);
+    camera.target = to_local(origin, view.tile_x, view.tile_z, view.target_x, view.target_y, view.target_z);
+}
+
+// Writes debug_views/last.view and a timestamped copy; returns a status line.
+[[nodiscard]] std::string save_view(DebugView view, const std::optional<formats::RoutePosition>& origin,
+                                    const ViewerCamera& camera, const ClockControls& clock,
+                                    const renderer::ShadingPath shading) {
+    const auto absolute = [&](const glm::vec3& local) {
+        if (!origin) return formats::RoutePosition{.x = local.x, .y = local.y, .z = local.z};
+        return renderer::route_position(local, *origin);
+    };
+    const auto eye = absolute(camera.eye());
+    // The target is stored in the eye's tile frame.
+    const auto target_local = camera.fly ? camera.eye() + camera.forward() * camera.distance : camera.target;
+    const auto target = to_local(origin, eye.tile_x, eye.tile_z, 0.0, 0.0, 0.0);
+    view.tile_x = eye.tile_x;
+    view.tile_z = eye.tile_z;
+    view.x = eye.x;
+    view.y = eye.y;
+    view.z = eye.z;
+    view.target_x = target_local.x - target.x;
+    view.target_y = target_local.y - target.y;
+    view.target_z = target_local.z - target.z;
+    view.yaw = camera.yaw;
+    view.pitch = camera.pitch;
+    view.distance = camera.distance;
+    view.fly = camera.fly;
+    view.time_of_day = static_cast<std::int32_t>(clock.time_of_day);
+    view.season = clock.season;
+    view.weather = clock.weather;
+    view.experimental = shading == renderer::ShadingPath::experimental;
+
+    const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm local{};
+    localtime_s(&local, &now);
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &local);
+    auto name = view.content.substr(view.content.find_last_of('/') + 1);
+    std::string error;
+    const auto directory = debug_view_directory();
+    const auto copy = directory / (name + "_" + stamp + ".view");
+    if (!save_debug_view(directory / "last.view", view, error) || !save_debug_view(copy, view, error)) return error;
+    std::cout << "debug view saved: " << copy.string() << std::endl;
+    return "saved " + copy.filename().string() + " (and last.view)";
 }
 
 [[nodiscard]] glm::mat4 projection(const ViewerCamera& camera, const float aspect) {
@@ -508,12 +610,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         return exit_code::renderer_failed;
     }
 
+    if (options.view) apply_view(*options.view, scene.origin(), camera);
+
     ClockControls clock{
         .time_of_day = static_cast<double>(options.time_of_day),
         .speed = options.time_speed,
         .season = static_cast<int>(options.season),
         .weather = static_cast<int>(options.weather),
     };
+    std::string save_status;
     double last_time = glfwGetTime();
     while (!glfwWindowShouldClose(window.get())) {
         glfwPollEvents();
@@ -523,10 +628,13 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         last_time = now;
 
         toggle_shading_from_keyboard(window.get(), input, renderer);
-        scene.update(renderer, camera, clock.advance(elapsed));
+        scene.update(renderer, camera, clock.advance(elapsed), scene_input(window.get(), input));
         const auto environment = scene.environment();
 #ifdef OPENRTS_HAS_IMGUI
-        overlay.build(scene, camera, renderer, clock, environment.time_of_day_applies);
+        bool save_requested = glfwGetKey(window.get(), GLFW_KEY_F6) == GLFW_PRESS && !input.save_key_down;
+        input.save_key_down = glfwGetKey(window.get(), GLFW_KEY_F6) == GLFW_PRESS;
+        overlay.build(scene, camera, renderer, clock, environment.time_of_day_applies, save_requested, save_status);
+        if (save_requested) save_status = save_view(options.identity, scene.origin(), camera, clock, renderer.shading_path());
 #endif
 
         int width = 0;
@@ -558,6 +666,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         });
         scene.submit(renderer, frame);
         renderer.render(pass);
+        scene.draw_foreground(pass, frame);
 #ifdef OPENRTS_HAS_IMGUI
         overlay.render(pass);
 #endif

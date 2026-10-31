@@ -20,6 +20,7 @@
 #include <openrts/renderer/webgpu_context.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
 
+#include "debug_view.hpp"
 #include "viewer_scene.hpp"
 #include "window_viewer.hpp"
 #endif
@@ -103,17 +104,50 @@ struct ContentTarget {
 
 // `--window --shape <file.s>` or `--window --route <route folder | name>`,
 // followed by optional `--root <installation>`, `--mount <zip|folder>` (an
-// extra mod-layer source), `--no-hot-reload`, `--experimental`,
+// extra mod-layer source), `--no-hot-reload`, `--probe` (ride the track from
+// the route start), `--experimental`,
 // `--time HH:MM[:SS]`, `--speed <multiplier>`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
-int run_window(const std::string_view mode, const std::string_view path, const std::vector<std::string_view>& flags) {
+int run_window(std::string_view mode, std::string_view path, const std::vector<std::string_view>& flags) {
     openrts::viewer::WindowOptions options;
+    // --view first: it sets what to open and the conditions; later flags win.
+    std::string view_mode;
+    std::string view_content;
+    for (std::size_t i = 0; i + 1 < flags.size(); ++i) {
+        if (flags[i] != "--view") continue;
+        std::string error;
+        const auto file = openrts::viewer::resolve_debug_view(std::string(flags[i + 1]));
+        auto view = openrts::viewer::load_debug_view(file, error);
+        if (!view) {
+            std::cerr << "Debug view: " << error << '\n';
+            return exit_code::content_failed;
+        }
+        std::cout << "debug view: " << file.string() << '\n';
+        options.time_of_day = view->time_of_day;
+        options.time_speed = 0.0f;
+        options.season = static_cast<openrts::renderer::rts::Season>(view->season);
+        options.weather = static_cast<openrts::renderer::rts::Weather>(view->weather);
+        if (view->experimental) options.shading = openrts::renderer::ShadingPath::experimental;
+        if (mode == "--view") {
+            view_mode = "--" + view->mode;
+            view_content = view->content;
+        }
+        options.view = std::move(view);
+    }
+    if (mode == "--view") {
+        if (!options.view) return exit_code::content_failed;
+        mode = view_mode;
+        path = view_content;
+    }
     std::optional<fs::path> root;
     std::vector<fs::path> mounts;
     bool hot_reload = true;
+    bool probe = false;
     for (std::size_t i = 0; i < flags.size(); ++i) {
         const bool has_value = i + 1 < flags.size();
-        if (flags[i] == "--root" && has_value) {
+        if (flags[i] == "--view" && has_value) {
+            ++i;
+        } else if (flags[i] == "--root" && has_value) {
             const auto value = flags[++i];
             root = fs::path(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--mount" && has_value) {
@@ -121,6 +155,8 @@ int run_window(const std::string_view mode, const std::string_view path, const s
             mounts.emplace_back(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--no-hot-reload") {
             hot_reload = false;
+        } else if (flags[i] == "--probe") {
+            probe = true;
         } else if (flags[i] == "--experimental") {
             options.shading = openrts::renderer::ShadingPath::experimental;
         } else if (flags[i] == "--time" && has_value) {
@@ -152,6 +188,7 @@ int run_window(const std::string_view mode, const std::string_view path, const s
     }
 
     if (mode != "--shape" && mode != "--route") return exit_code::success;
+    if (!root && options.view && !options.view->root.empty()) root = fs::path(std::u8string(options.view->root.begin(), options.view->root.end()));
     const auto target = locate(path, root, mode == "--route" ? "ROUTES" : "GLOBAL/SHAPES");
     if (!target) {
         std::cerr << "Cannot locate " << path << " (give an existing path, or --root with a route name).\n";
@@ -190,10 +227,16 @@ int run_window(const std::string_view mode, const std::string_view path, const s
         vfs->start_watching({.reconcile_interval = std::chrono::seconds(config.reconcile_seconds)});
     }
 
-    const openrts::viewer::SceneContent content{.vfs = vfs, .watching = watching};
+    const openrts::viewer::SceneContent content{.vfs = vfs, .watching = watching, .probe_at_start = probe};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)
                                     : openrts::viewer::load_route_scene(content, target->path);
 
+    const auto root_text = target->root.u8string();
+    options.identity = {
+        .root = std::string(root_text.begin(), root_text.end()),
+        .mode = std::string(mode.substr(2)),
+        .content = target->path.str(),
+    };
     if (!loaded.scene) {
         std::cerr << loaded.error << '\n';
         return exit_code::content_failed;
@@ -210,6 +253,10 @@ int main(const int argc, char* argv[]) {
 #ifdef OPENRTS_HAS_WGPU
     const std::vector<std::string_view> args(argv + 1, argv + argc);
     if (args.size() == 2 && args[0] == "--ace") return run_ace_upload_check(args[1]);
+    // `--window --view <file|name|last>` reopens a saved debug view.
+    if (args.size() >= 3 && args[0] == "--window" && args[1] == "--view") {
+        return run_window("--view", {}, {args.begin() + 1, args.end()});
+    }
     if (args.size() >= 3 && args[0] == "--window") {
         return run_window(args[1], args[2], {args.begin() + 3, args.end()});
     }

@@ -178,3 +178,40 @@ The installed routes have 168–308 scripts each, about 2100 in total.
   occupancy (flag inside the train record).
 - `route_set()` returns non-zero once the walk reaches the next signal with
   all linked junctions aligned.
+
+## Look-ahead on closed loops
+
+### CONFIRMED (code reading, not run)
+
+- **`0x47F214` (find the next track item along the path)** loops over nodes
+  through `0x47ECD0`. It stops only when it finds a matching item or the
+  transition returns no node (end node). Its distance limit is compared only
+  when an item is found, and `0x508520` calls it with no limit (0.0).
+- **`0x48106C` (`block_state`)** loops until a signal of the mask or an end
+  node.
+- **Neither keeps visited nodes.**
+
+### PROBABLE
+
+On a closed loop with no matching signal in the search direction, both loop
+forever. The game hangs, which matches reports of MSTS/RTS "crashing" on
+looped track. Not reproduced at runtime.
+
+MSTS documentation agrees that this is old MSTS behaviour.
+"Step-by-Step Guide to Building Routes for Microsoft Train Simulator", §1.3
+"MSTS limitations" (p. 19):
+
+> you cannot make a closed circuit (like a model railroad that allows running
+> round and round forever): if you do, MSTS will freeze up. Loops and wyes can
+> create similar problems. What matters is the "organization" (or
+> "connectivity") of your route [...]: the order in which switches occur is the
+> only important consideration here.
+
+§3.4.4 (pp. 132–133) adds:
+- the guide's author knows no general rule for placing loops and wyes;
+- a mainline branching into a loop or wye "is usually fatal";
+- every way to "drive out of the curved exit of a switch and somehow come
+  back to the straight exit of that same switch" is a loop.
+
+A freeze that depends only on connectivity, not on geometry, fits an
+unbounded graph walk like the one above. RTS inherits it.

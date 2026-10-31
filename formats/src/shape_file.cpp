@@ -145,8 +145,10 @@ ShapeInflateResult load_binary_shape_body(const std::string_view bytes) {
         return {.body = std::string(bytes.substr(16))};
     case ShapeRepresentation::compressed_binary:
         return inflate_narrow_compressed_shape(bytes);
+    case ShapeRepresentation::text:
+        return transcode_text_shape(bytes);
     default:
-        return {.error = "Unsupported shape representation; a narrow binary JINX0s1b shape is required."};
+        return {.error = "Unsupported shape representation (" + std::string(to_string(probe_shape_file(bytes).representation)) + ")."};
     }
 }
 

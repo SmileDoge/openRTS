@@ -55,6 +55,11 @@ struct ModelBounds {
     float radius{};
 };
 
+struct ModelAnimationInfo {
+    std::uint32_t frame_count{}; // 0: not animated
+    std::uint32_t frame_rate{};
+};
+
 struct ModelRendererStats {
     std::size_t cached_textures{};
     std::size_t retired_pending{}; // generations waiting for the GPU
@@ -76,6 +81,8 @@ public:
     // Keys of the files this generation was built from (shape, .sd, texture
     // candidates), for hot reload.
     [[nodiscard]] std::vector<std::string> dependency_keys() const;
+    // The shape's first animation (switch blades, doors, ...).
+    [[nodiscard]] ModelAnimationInfo animation() const noexcept;
 
 private:
     struct Impl;
@@ -120,6 +127,9 @@ public:
     // sort translucent geometry). Submitted RenderModels must outlive render().
     void begin_frame(const ModelFrameContext& frame);
     void submit(RenderModel& model, const ModelTransform& transform);
+    // Draws an animated model at `frame` of its first animation (rest pose
+    // when the shape has none).
+    void submit(RenderModel& model, const ModelTransform& transform, float frame);
     void submit(RenderModel& model);
     void render(WGPURenderPassEncoder pass);
     void draw(WGPURenderPassEncoder pass, RenderModel& model, const ModelFrameContext& frame);

@@ -14,6 +14,12 @@ struct StreamedInstance {
     core::VirtualPath source_path;
     formats::RoutePosition position;
     ModelTransform transform{1.0f};
+    // World object identity (world file tile + UiD), e.g. to find the TDB
+    // junction a switch shape belongs to.
+    formats::WorldObjectKind kind = formats::WorldObjectKind::static_object;
+    std::int32_t world_tile_x{};
+    std::int32_t world_tile_z{};
+    std::uint32_t uid{};
 };
 
 struct RouteStreamerStats {

@@ -1,0 +1,4 @@
+add_executable(openrts_track_check src/main.cpp)
+set_target_properties(openrts_track_check PROPERTIES OUTPUT_NAME openrts-track-check)
+openrts_configure_target(openrts_track_check)
+target_link_libraries(openrts_track_check PRIVATE openrts_simulation openrts_formats openrts_core)

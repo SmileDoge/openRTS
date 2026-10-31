@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -13,6 +14,7 @@
 #include <webgpu/webgpu.h>
 
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/route_world.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/rts_sky.hpp>
 
@@ -43,6 +45,17 @@ struct SceneClock {
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
 };
 
+// Keys the scene reacts to this frame (edges are "pressed this frame").
+struct SceneInput {
+    bool forward = false;        // Up arrow held
+    bool backward = false;       // Down arrow held
+    bool boost = false;          // Shift held
+    bool place_probe = false;    // P
+    bool throw_junction = false; // J
+    bool toggle_follow = false;  // V
+    bool toggle_track = false;   // T
+};
+
 // Lighting and background colour the scene wants for the current frame.
 struct SceneEnvironment {
     renderer::ModelLighting lighting{
@@ -67,11 +80,17 @@ public:
     [[nodiscard]] virtual std::string attach(const SceneGpu& gpu, ViewerCamera& camera) = 0;
     // Releases GPU resources; called before the renderer and device go away.
     virtual void detach() = 0;
-    virtual void update(renderer::ModelRenderer& renderer, const ViewerCamera& camera, const SceneClock& clock) = 0;
+    virtual void update(renderer::ModelRenderer& renderer, ViewerCamera& camera, const SceneClock& clock,
+                        const SceneInput& input) = 0;
     [[nodiscard]] virtual SceneEnvironment environment() const { return {}; }
     // Draws behind everything else (sky); called before the models are rendered.
     virtual void draw_background(WGPURenderPassEncoder, const FrameView&) {}
     virtual void submit(renderer::ModelRenderer& renderer, const FrameView& frame) = 0;
+    // Draws after the models (debug overlays such as the track network).
+    virtual void draw_foreground(WGPURenderPassEncoder, const FrameView&) {}
+    // Route coordinates of the scene's local origin (route scenes only), for
+    // saving and restoring debug views in absolute coordinates.
+    [[nodiscard]] virtual std::optional<formats::RoutePosition> origin() const { return std::nullopt; }
     // Adds scene-specific lines to the debug overlay (ImGui builds only).
     virtual void draw_overlay(const ViewerCamera& camera) const = 0;
 };
@@ -86,6 +105,7 @@ struct SceneLoadResult {
 struct SceneContent {
     std::shared_ptr<core::Vfs> vfs;
     bool watching = false;
+    bool probe_at_start = false; // route scenes: put the track probe at the start, camera following
 };
 
 [[nodiscard]] SceneLoadResult load_shape_scene(SceneContent content, const core::VirtualPath& shape);

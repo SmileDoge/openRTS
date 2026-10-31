@@ -83,6 +83,10 @@ struct RouteStreamer::Impl {
                 .source_path = *resolved.resolved_path,
                 .position = object.position,
                 .transform = placement_transform(object, origin),
+                .kind = object.kind,
+                .world_tile_x = tile.tile_x,
+                .world_tile_z = tile.tile_z,
+                .uid = object.uid,
             });
         }
         return result;

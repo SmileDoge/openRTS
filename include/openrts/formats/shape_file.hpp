@@ -45,8 +45,13 @@ struct ShapeInflateResult {
 [[nodiscard]] ShapeInflateResult inflate_narrow_compressed_shape(std::string_view bytes);
 [[nodiscard]] ShapeInflateResult inflate_narrow_compressed_shape(const std::filesystem::path& file);
 
-// Reads a narrow binary shape and returns its token stream without the 16-byte
-// SIMIS header, inflating the compressed variant when necessary.
+// Converts a text shape (UTF-16LE or 8-bit, `JINX0s1t`) into the binary token
+// stream, starting with a `JINX0s1b` subheader. Blocks the binary reader does
+// not use are kept as empty placeholders.
+[[nodiscard]] ShapeInflateResult transcode_text_shape(std::string_view file_bytes);
+
+// Reads a shape and returns its binary token stream without the 16-byte SIMIS
+// header: binary as is, compressed binary inflated, text transcoded.
 [[nodiscard]] ShapeInflateResult load_binary_shape_body(const std::filesystem::path& file);
 [[nodiscard]] ShapeInflateResult load_binary_shape_body(std::string_view file_bytes);
 [[nodiscard]] ShapeInflateResult load_binary_shape_body(const core::Vfs& vfs, const core::VirtualPath& file);

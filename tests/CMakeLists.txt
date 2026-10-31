@@ -36,3 +36,13 @@ add_test(NAME openrts.vfs COMMAND openrts_vfs_test)
 add_executable(openrts_retire_queue_test retire_queue_test.cpp)
 openrts_configure_target(openrts_retire_queue_test)
 add_test(NAME openrts.retire_queue COMMAND openrts_retire_queue_test)
+
+add_executable(openrts_track_test track_test.cpp)
+openrts_configure_target(openrts_track_test)
+target_link_libraries(openrts_track_test PRIVATE openrts_simulation)
+add_test(NAME openrts.track COMMAND openrts_track_test)
+
+add_executable(openrts_shape_text_test shape_text_test.cpp)
+openrts_configure_target(openrts_shape_text_test)
+target_link_libraries(openrts_shape_text_test PRIVATE openrts_formats)
+add_test(NAME openrts.shape_text COMMAND openrts_shape_text_test)
