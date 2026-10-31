@@ -153,31 +153,97 @@ tension/compression (`+0x14/+0x18`, defaults `mass*100`, `mass*200`),
 - **Derailment** (unless disabled in config): when `mass * v² / R` exceeds
   `DerailRailForce`, `0x5059A8` derails the car.
 
+### Force bookkeeping before the solver (`0x424488`)
+
+#### CONFIRMED (decompiled)
+
+Per car, each frame:
+
+| Field | Meaning |
+|---|---|
+| `+0x54` | active force (traction, from the DLL) |
+| `+0x50` | grade force |
+| `+0x4C` | rolling and curve resistance |
+| `+0x2C` | brake force |
+
+Then:
+1. `active −= grade`: the grade joins the active force.
+2. `dissipative = brake + resistance`.
+3. **Pre-cancel.** If `|active| ≤ dissipative`, the dissipative force eats
+   the active force: `dissipative −= |active|`, `active = 0`. Otherwise
+   `active −= dissipative · sign(velocity)` (sign of the velocity, not of the
+   force) and `dissipative = 0`.
+   - A standing train therefore does not move until traction exceeds brakes
+     plus resistance.
+4. **Gaps.** For every coupler, the current gap is computed from the
+   offsets, half lengths and `r0` (doubled for rigid ends).
+5. **Sleep.** The solver runs only if some car has an active force, a
+   non-zero gap or a non-zero speed (values below 1e-6 are zeroed first).
+
 ### Coupler solver (`0x505414`)
 
-#### CONFIRMED
+#### CONFIRMED (decompiled)
 
-Called once per frame with `dt`.  Integrates in **fixed 0.05 s sub-steps**
-(last one shortened) with explicit Euler:
+Arguments are per-car arrays: dissipative force, active force, velocity,
+gap and coupler force, plus the frame `dt`.
 
-1. For each coupler between cars *j* and *j+1*: gap = difference of car
-   offsets − half lengths − coupler lengths (`r0`, doubled for rigid ends).
-   Force = gap × (tension stiffness sum if gap ≥ 0, else compression
-   stiffness sum).  Applied ±½ to both cars.  Cars flagged `0x40` in byte
-   `+0x20` are decoupled from this (independent movement).
-2. `v += F / m * h`.
-3. Dissipative forces (brakes, resistance) are applied as **static friction**:
-   they reduce |v| but never reverse it; if they would, `v = 0` and the
-   remainder is kept for the next sub-step.
-4. Neighbours with different velocities go through `0x504648` (PROBABLE:
-   coupler damping / slack impulse).
-5. Offsets advance by `v * h`.
+The frame `dt` is cut into 0.05 s sub-steps, the last one shortened. Each
+sub-step:
 
-After the loop it writes the average velocity and `a = Δv / dt` back to the
-cars.  `0x424488` then re-integrates `v += a * dt`, zeroes tiny values
-(|v| < 0.002·dt), and rebases offsets to the last car.  Coupler forces are
-compared against the break forces; breaking uncouples the train and posts
-"Train damaged" (unless `disablecouplingbreak`).
+1. **Restore forces.** The active and dissipative forces are restored from
+   the frame values.
+2. **Coupler springs:**
+   - `gap = (offset_j + moved_j) − (offset_{j+1} + moved_{j+1}) − (L_j + L_{j+1})/2 − (r0_a + r0_b)/2`,
+     minus `r0/2` again for a rigid end;
+   - `F = gap · (k_tension_a + k_tension_b)` when `gap ≥ 0`, else with the
+     compression stiffnesses. It is linear, with zero force at gap 0 (no
+     dead band);
+   - **half** of F goes to each car: `active_j −= F/2`,
+     `active_{j+1} += F/2`;
+   - decoupled cars (flag `0x40` in byte `+0x20`) get no force;
+   - the force of the first sub-step is stored for break checks.
+3. **Integration:** `v += active/m · h` (semi-implicit Euler: velocity
+   first, then position in step 5).
+4. **Static friction:** the dissipative force reduces |v| by `diss/m · h`.
+   If that would pass zero, `v = 0` and the unused part stays as
+   "remaining friction" for step 5 of this sub-step.
+5. **Velocity equalisation** (`0x504648`), for every pair of neighbours
+   whose velocities differ (and are coupled):
+   - the relative displacement `(v_j − v_{j+1}) · h` is resolved through the
+     coupler chain **towards the front** (car j, then j−1, … to 0);
+   - at each coupler, part of it is taken up by the coupler: the slack
+     `r0/2` of non-rigid ends, in proportion `k / (c · Δv/h)` capped at 1,
+     where k is the stiffness sum and c the damping sum for the direction;
+   - the rest is a **plastic momentum exchange** between car j and the
+     group behind it (mass-weighted);
+   - remaining static friction of braked cars absorbs part of it;
+   - **the damping is not an explicit `c·v` force:** it only sets how much
+     of a velocity difference becomes coupler movement versus immediate
+     momentum exchange.
+6. **Displacement:** `moved += v · h`.
+
+After the frame:
+- **Velocity and acceleration:**
+  - `v = moved / dt` (the average over the frame);
+  - `a = (v − v_old)/dt`;
+  - `0x424488` sets `v = v_old + a·dt` (the same average), zeroes
+    `|v| < 0.002·dt` and `|a| < 0.002`.
+- **Offsets:** `offset += v·dt`, rebased so the last car stays the
+  reference. A coupler gap below `0.001·dt` is snapped to exactly 0 by
+  shifting all cars ahead.
+- **Coupler break** (player train only, unless switched off in the config):
+  - the stored coupler force is compared with the weaker end's `Break`
+    value — tension or compression by the force sign, and tension for
+    rigid ends;
+  - breaking uncouples (`0x469858`) and shows "Train damaged";
+  - an activity counts it as failure 3.
+
+#### Consequences for openRTS
+
+- **The step size matters** in the springs (explicit), in the static
+  friction cut-off and in the equalisation, which works per sub-step.
+- **The frame-rate dependence** in RTS comes from the shortened last
+  sub-step and from frame-averaged velocities.
 
 ### Moving along the track (`0x4F5B34`)
 

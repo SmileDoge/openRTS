@@ -1,0 +1,4 @@
+add_executable(openrts_train_check src/main.cpp)
+set_target_properties(openrts_train_check PROPERTIES OUTPUT_NAME openrts-train-check)
+openrts_configure_target(openrts_train_check)
+target_link_libraries(openrts_train_check PRIVATE openrts_simulation openrts_formats openrts_core)

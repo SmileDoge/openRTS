@@ -91,7 +91,7 @@ std::size_t AudioEngine::active_voices() const noexcept {
     return impl_->voices.size();
 }
 
-VoiceId AudioEngine::play(std::shared_ptr<const AudioClip> clip, const VoicePlayback playback, const bool spatial) {
+VoiceId AudioEngine::play(std::shared_ptr<const AudioClip> clip, const VoicePlayback playback, const VoiceSpace space) {
     if (!ok() || !clip || clip->frames == 0 || impl_->voices.size() >= impl_->max_voices) return 0;
     auto voice = std::make_unique<Impl::Voice>();
     voice->clip = std::move(clip);
@@ -107,12 +107,18 @@ VoiceId AudioEngine::play(std::shared_ptr<const AudioClip> clip, const VoicePlay
         return 0;
     }
     ma_sound_set_looping(&voice->sound, playback != VoicePlayback::once);
-    ma_sound_set_spatialization_enabled(&voice->sound, spatial);
-    // A model with zero rolloff: no distance attenuation (the scripts' curves
-    // set the volume) but still panning. ma_attenuation_model_none would skip
-    // the spatializer altogether.
+    ma_sound_set_spatialization_enabled(&voice->sound, space != VoiceSpace::flat);
+    // Panned voices: a model with zero rolloff, no distance attenuation (the
+    // scripts' curves set the volume) but still panning;
+    // ma_attenuation_model_none would skip the spatializer altogether.
+    // Positional voices: inverse distance from positional_reference_distance.
     ma_sound_set_attenuation_model(&voice->sound, ma_attenuation_model_inverse);
-    ma_sound_set_rolloff(&voice->sound, 0.0f);
+    if (space == VoiceSpace::positional) {
+        ma_sound_set_rolloff(&voice->sound, 1.0f);
+        ma_sound_set_min_distance(&voice->sound, positional_reference_distance);
+    } else {
+        ma_sound_set_rolloff(&voice->sound, 0.0f);
+    }
     ma_sound_set_volume(&voice->sound, 0.0f);
     ma_sound_start(&voice->sound);
     const auto id = impl_->next_id++;

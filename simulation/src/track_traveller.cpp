@@ -115,10 +115,7 @@ bool TrackTraveller::leave(const bool forward, const JunctionMode mode, const st
                     // The tail keeps the junction for ClearanceDist more metres.
                     state->clearance[owner] = info && info->shape ? info->shape->clearance_distance : 0.0;
                 } else {
-                    state->occupied = false;
-                    state->clearance.erase(owner);
-                    std::erase_if(state->reservations, [&](const auto& r) { return r.first == owner; });
-                    state->selected = state->reservations.empty() ? state->main_route : state->reservations.front().second;
+                    network.release_junction(junction, owner);
                 }
                 break;
             case JunctionMode::probe:

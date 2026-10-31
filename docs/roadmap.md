@@ -99,6 +99,21 @@ See "Multiplayer: feasibility" below. The network carries train, switch and
 signal state, so it builds on steps 1–4. The chunk dumper for `multdata`
 and capture tooling do not depend on the simulation and can start earlier.
 
+**Server "Legacy" switch** (the user's decision):
+
+| | Legacy on | Legacy off |
+|---|---|---|
+| Clients | the original RTS client and openRTS | openRTS only |
+| Protocol | the RTS-compatible one | the openRTS one |
+| Simulation paths | RTS-compatible: 0.05 s step with one coupler sub-step, RTS physics and sound semantics, as the RTS clients have them | openRTS settings allowed (e.g. experimental coupler sub-steps) |
+
+- **Agreed settings:** the server fixes the simulation step and the
+  behaviour paths for everyone. Clients cannot pick their own.
+- **Requirements this puts on the earlier steps:**
+  - every behaviour openRTS changes for its own path keeps an RTS-compatible
+    path (physics step, sound, signals);
+  - the server can tell clients which path is in force.
+
 ### 7. Activities and full AI traffic (deferred)
 
 Deferred until single-player driving and multiplayer work.

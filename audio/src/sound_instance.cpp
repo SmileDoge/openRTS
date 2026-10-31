@@ -122,8 +122,11 @@ void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
 void SoundInstance::fire(Stream& stream, const std::size_t index, const float volume, const SoundInputs& inputs,
                          VoiceSink& sink) {
     const auto& trigger = stream.definition->triggers[index];
-    // Weather and environment sounds have no position.
-    const bool spatial = owner_ != formats::SoundOwner::environment;
+    // Weather and environment sounds have no position; rolling stock fades
+    // with distance.
+    const auto space = owner_ == formats::SoundOwner::environment ? VoiceSpace::flat
+        : owner_ == formats::SoundOwner::train || owner_ == formats::SoundOwner::player_train ? VoiceSpace::positional
+                                                                                             : VoiceSpace::panned;
     const auto start = [&](const formats::SoundAction& action, const VoicePlayback playback) -> Stream::Voice {
         if (action.files.empty()) return {};
         std::size_t choice = 0;
@@ -134,7 +137,7 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
         }
         auto clip = clips_(action.files[choice].name);
         if (!clip) return {};
-        const auto id = sink.play(clip, playback, spatial);
+        const auto id = sink.play(clip, playback, space);
         if (!id) return {};
         sink.set(id, 0.0f, 1.0f, inputs.position); // real values follow in this update
         return {.id = id, .volume = volume, .clip = std::move(clip), .fade_in = action.fade};

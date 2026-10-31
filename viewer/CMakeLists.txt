@@ -5,6 +5,7 @@ add_executable(openrts_viewer
     src/gpu_timer.cpp
     src/viewer_scene.cpp
     src/track_view.cpp
+    src/train_view.cpp
     src/window_viewer.cpp)
 openrts_configure_target(openrts_viewer)
 target_link_libraries(openrts_viewer PRIVATE openrts_assets openrts_formats openrts_renderer openrts_platform openrts_simulation openrts_audio)

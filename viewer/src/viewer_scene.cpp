@@ -25,6 +25,7 @@
 #include <openrts/simulation/track_network.hpp>
 
 #include "track_view.hpp"
+#include "train_view.hpp"
 
 #ifdef OPENRTS_HAS_IMGUI
 #include <imgui.h>
@@ -47,7 +48,8 @@ public:
     explicit ContentView(SceneContent content) : content_(std::move(content)) {}
 
     [[nodiscard]] const std::shared_ptr<core::Vfs>& vfs() const noexcept { return content_.vfs; }
-    [[nodiscard]] bool probe_at_start() const noexcept { return content_.probe_at_start; }
+    [[nodiscard]] const std::string& consist() const noexcept { return content_.consist; }
+    [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
 
     // Hands this frame's VFS changes to the model library.
     void forward_changes(renderer::ModelLibrary& library) {
@@ -112,8 +114,8 @@ public:
         if (auto* model = library_->find(path_); model && model->animation().frame_count > 0) {
             const auto animation = model->animation();
             const float rate = static_cast<float>((std::max)(animation.frame_rate, 1u)) * 0.1f;
-            if (input.forward) frame_ += clock.elapsed * rate;
-            if (input.backward) frame_ -= clock.elapsed * rate;
+            if (input.step_up) frame_ += clock.elapsed * rate;
+            if (input.step_down) frame_ -= clock.elapsed * rate;
             frame_ = std::clamp(frame_, 0.0f, static_cast<float>(animation.frame_count));
         }
     }
@@ -195,7 +197,18 @@ public:
         camera.position = glm::vec3{0.0f, start_ground_height() + 30.0f, 0.0f};
         camera.pitch = 0.08f;
         camera.fly = true;
-        if (track_ && content_.probe_at_start()) track_->start_ride(camera.eye());
+        if (track_) {
+            train_ = std::make_unique<TrainView>(content_.vfs(), route_, origin_, track_->network());
+            if (!content_.consist().empty()) {
+                if (const auto error = train_->load(content_.consist()); !error.empty()) {
+                    std::cout << "train: " << error << '\n';
+                } else if (const auto* path = train_->find_path(content_.path())) {
+                    train_->select_path(*path);
+                } else {
+                    std::cout << "train: no path '" << content_.path() << "' on the route\n";
+                }
+            }
+        }
         std::cout << "route streaming: 3x3 tiles, async world/shape/ACE jobs\n";
         std::cout << "flycam: RMB look, WASD move, Q/E vertical, Shift boost, F toggle" << std::endl;
         return {};
@@ -203,6 +216,8 @@ public:
 
     void detach() override {
         if (world_sounds_ && audio_) world_sounds_->stop(*audio_);
+        if (train_ && audio_) train_->stop_sound(*audio_);
+        train_.reset();
         world_sounds_.reset();
         audio_ = nullptr;
         if (track_) track_->detach();
@@ -213,7 +228,22 @@ public:
     }
 
     void update(ModelRenderer&, ViewerCamera& camera, const SceneClock& clock, const SceneInput& input) override {
-        if (track_) track_->update(input, camera, clock.elapsed);
+        if (track_) {
+            track_->update(input, clock.elapsed);
+            if (input.throw_junction) {
+                // The first facing junction ahead of the train, else the
+                // junction nearest to the camera.
+                if (const auto ahead = train_ ? train_->ahead() : std::nullopt) {
+                    track_->throw_junction_ahead(*ahead);
+                } else {
+                    track_->throw_nearest_junction(camera.eye());
+                }
+            }
+        }
+        if (train_) {
+            if (input.place_train && train_->loaded()) place_train(camera);
+            train_->update(input, camera, clock.elapsed, *library_, audio_);
+        }
         const auto camera_position = renderer::route_position(camera.eye(), origin_);
         apply_conditions(clock.season, clock.weather);
         if (terrain_) terrain_->update(camera_position);
@@ -278,12 +308,13 @@ public:
             }
             ++drawn_instances_;
         }
+        if (train_) train_->submit(renderer, *library_);
     }
 
     [[nodiscard]] std::optional<formats::RoutePosition> origin() const override { return origin_; }
 
     void draw_foreground(const WGPURenderPassEncoder pass, const FrameView& frame) override {
-        if (track_) track_->draw(pass, frame.projection * frame.view);
+        if (track_) track_->draw(pass, frame.projection * frame.view, train_ && train_->placed() ? train_->head_position() : frame.eye);
     }
 
     void draw_overlay([[maybe_unused]] const ViewerCamera& camera) const override {
@@ -316,12 +347,31 @@ public:
         ImGui::Text("Models: %zu GPU, %zu CPU queued, %zu pending", models.models, models.queued_uploads,
                     stream.pending_model_assets);
         if (track_) track_->draw_overlay();
+        if (train_) train_->draw_overlay();
         content_.draw_overlay(library_.get());
 #endif
     }
 
 private:
     static constexpr int tile_radius = 1;
+
+    // Front of the train on the track nearest to the camera; the other way
+    // if the track ends behind.
+    void place_train(ViewerCamera& camera) {
+        const auto spot = track_->nearest_track(camera.eye());
+        if (!spot) {
+            std::cout << "train: no track near the camera\n";
+            return;
+        }
+        auto error = train_->place(spot->node(), spot->offset(), spot->forward());
+        if (!error.empty()) error = train_->place(spot->node(), spot->offset(), !spot->forward());
+        if (!error.empty()) {
+            std::cout << "train: " << error << '\n';
+            return;
+        }
+        std::cout << "train " << train_->consist_name() << " placed on node " << spot->node() << '\n';
+    }
+
     static constexpr int terrain_radius = 2;
 
     // Terrain height at the route start (the scene origin), 0 without terrain.
@@ -404,6 +454,7 @@ private:
     std::unique_ptr<renderer::RouteStreamer> streamer_;
     std::unique_ptr<renderer::ModelLibrary> library_;
     std::optional<TrackView> track_;
+    std::unique_ptr<TrainView> train_;
     std::size_t drawn_instances_ = 0;
 };
 

@@ -104,7 +104,8 @@ struct ContentTarget {
 
 // `--window --shape <file.s>` or `--window --route <route folder | name>`,
 // followed by optional `--root <installation>`, `--mount <zip|folder>` (an
-// extra mod-layer source), `--no-hot-reload`, `--probe` (ride the track from
+// extra mod-layer source), `--no-hot-reload`, `--consist <name>` and `--path <name>` (a train to drive, on a
+// route path start; C puts it on the track nearest to the camera), (
 // the route start), `--experimental`, `--no-vsync`, `--no-batching`, `--no-sound`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
@@ -142,7 +143,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     std::optional<fs::path> root;
     std::vector<fs::path> mounts;
     bool hot_reload = true;
-    bool probe = false;
+    std::string consist;
+    std::string train_path;
     for (std::size_t i = 0; i < flags.size(); ++i) {
         const bool has_value = i + 1 < flags.size();
         if (flags[i] == "--view" && has_value) {
@@ -155,8 +157,10 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             mounts.emplace_back(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--no-hot-reload") {
             hot_reload = false;
-        } else if (flags[i] == "--probe") {
-            probe = true;
+        } else if (flags[i] == "--consist" && has_value) {
+            consist = flags[++i];
+        } else if (flags[i] == "--path" && has_value) {
+            train_path = flags[++i];
         } else if (flags[i] == "--no-sound") {
             options.sound = false;
         } else if (flags[i] == "--volume" && has_value) {
@@ -235,7 +239,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         vfs->start_watching({.reconcile_interval = std::chrono::seconds(config.reconcile_seconds)});
     }
 
-    const openrts::viewer::SceneContent content{.vfs = vfs, .watching = watching, .probe_at_start = probe};
+    const openrts::viewer::SceneContent content{.vfs = vfs, .watching = watching, .consist = consist, .path = train_path};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)
                                     : openrts::viewer::load_route_scene(content, target->path);
 

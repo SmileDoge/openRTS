@@ -42,6 +42,11 @@ openrts_configure_target(openrts_track_test)
 target_link_libraries(openrts_track_test PRIVATE openrts_simulation)
 add_test(NAME openrts.track COMMAND openrts_track_test)
 
+add_executable(openrts_train_test train_test.cpp)
+openrts_configure_target(openrts_train_test)
+target_link_libraries(openrts_train_test PRIVATE openrts_simulation openrts_formats)
+add_test(NAME openrts.train COMMAND openrts_train_test)
+
 add_executable(openrts_shape_text_test shape_text_test.cpp)
 openrts_configure_target(openrts_shape_text_test)
 target_link_libraries(openrts_shape_text_test PRIVATE openrts_formats)

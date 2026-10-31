@@ -24,13 +24,19 @@ enum class VoicePlayback : std::uint8_t {
     loop_region, // play into the clip's loop region and loop it (whole clip when it has none)
 };
 
+// How a voice is placed: flat (weather, environment), panned by direction
+// only (world sounds: their scripts carry distance curves), or positional
+// with distance rolloff (rolling stock: scripts rely on the engine's 3D
+// attenuation, as RTS with DirectSound 3D buffers).
+enum class VoiceSpace : std::uint8_t { flat, panned, positional };
+
 // Where sound scripts send their voices: the miniaudio engine, or a recorder
 // in tests. Positions are in scene coordinates.
 class VoiceSink {
 public:
     virtual ~VoiceSink() = default;
     // Returns 0 when the voice could not be started.
-    virtual VoiceId play(std::shared_ptr<const AudioClip> clip, VoicePlayback playback, bool spatial) = 0;
+    virtual VoiceId play(std::shared_ptr<const AudioClip> clip, VoicePlayback playback, VoiceSpace space) = 0;
     // Leaves the loop: the voice plays to the end of its clip and finishes.
     virtual void release(VoiceId voice) = 0;
     virtual void stop(VoiceId voice) = 0;

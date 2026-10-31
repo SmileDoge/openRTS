@@ -6,9 +6,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <ctime>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include <glm/ext/matrix_clip_space.hpp>
 
@@ -316,6 +318,7 @@ public:
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         ImGui::StyleColorsDark();
+        load_font();
         // Callbacks are forwarded by the viewer's own GLFW handlers.
         ImGui_ImplGlfw_InitForOther(window, false);
 
@@ -412,7 +415,7 @@ public:
         ImGui::Separator();
         ImGui::TextUnformatted("RMB: look  WASD: move  Q/E: vertical");
         ImGui::TextUnformatted("Shift: boost  F: fly/orbit");
-        ImGui::TextUnformatted("T: track  P: probe  Up/Down: drive  J: switch  V: follow");
+        ImGui::TextUnformatted("T: track  C: train here  J: switch ahead  V: follow");
         ImGui::End();
 
         ImGui::Render();
@@ -445,6 +448,30 @@ private:
         ImGui::Combo("Weather", &clock.weather, weathers, 3);
     }
 
+    // A system monospace font with Cyrillic (content names are often
+    // Russian); ImGui's built-in font, Latin only, when none is found.
+    static void load_font() {
+        auto& io = ImGui::GetIO();
+        static const ImWchar ranges[] = {
+            0x0020, 0x00FF, // Latin + Latin-1
+            0x0400, 0x052F, // Cyrillic + supplement
+            0x2010, 0x205E, // punctuation (dashes, quotes, ellipsis)
+            0x2116, 0x2116, // numero sign
+            0,
+        };
+        const std::vector<std::string> candidates{
+            "C:/Windows/Fonts/consola.ttf",
+            "C:/Windows/Fonts/lucon.ttf",
+            "C:/Windows/Fonts/cour.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        };
+        for (const auto& file : candidates) {
+            if (!std::filesystem::is_regular_file(file)) continue;
+            if (io.Fonts->AddFontFromFileTTF(file.c_str(), 15.0f, nullptr, ranges)) return;
+        }
+        io.Fonts->AddFontDefault();
+    }
+
     bool initialized_ = false;
 };
 #endif
@@ -465,11 +492,11 @@ struct CameraInput {
     bool toggle_key_down = false;
     bool shading_key_down = false;
     // Scene keys, for press edges.
-    bool probe_key_down = false;
     bool junction_key_down = false;
     bool follow_key_down = false;
     bool track_key_down = false;
     bool save_key_down = false;
+    std::array<bool, 9> train_keys_down{};
     double cursor_x = 0.0;
     double cursor_y = 0.0;
 };
@@ -586,13 +613,21 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         return edge;
     };
     return {
-        .forward = down(GLFW_KEY_UP),
-        .backward = down(GLFW_KEY_DOWN),
-        .boost = down(GLFW_KEY_LEFT_SHIFT) || down(GLFW_KEY_RIGHT_SHIFT),
-        .place_probe = pressed(GLFW_KEY_P, input.probe_key_down),
+        .step_up = down(GLFW_KEY_UP),
+        .step_down = down(GLFW_KEY_DOWN),
         .throw_junction = pressed(GLFW_KEY_J, input.junction_key_down),
         .toggle_follow = pressed(GLFW_KEY_V, input.follow_key_down),
         .toggle_track = pressed(GLFW_KEY_T, input.track_key_down),
+        .place_train = pressed(GLFW_KEY_C, input.train_keys_down[0]),
+        .throttle_up = pressed(GLFW_KEY_HOME, input.train_keys_down[1]),
+        .throttle_down = pressed(GLFW_KEY_END, input.train_keys_down[2]),
+        .reverser_forward = pressed(GLFW_KEY_PAGE_UP, input.train_keys_down[3]),
+        .reverser_back = pressed(GLFW_KEY_PAGE_DOWN, input.train_keys_down[4]),
+        .brake_more = pressed(GLFW_KEY_RIGHT_BRACKET, input.train_keys_down[5]),
+        .brake_less = pressed(GLFW_KEY_LEFT_BRACKET, input.train_keys_down[6]),
+        .brake_less_held = down(GLFW_KEY_LEFT_BRACKET),
+        .independent_more = pressed(GLFW_KEY_PERIOD, input.train_keys_down[7]),
+        .independent_less = pressed(GLFW_KEY_COMMA, input.train_keys_down[8]),
     };
 }
 

@@ -26,6 +26,11 @@ struct AudioEngineOptions {
     std::uint32_t sample_rate = 48000; // offline only
 };
 
+// Distance (m) up to which positional voices play at full volume; beyond it
+// they fall off as reference / distance. openRTS choice: RTS uses DirectSound
+// 3D buffers, its min distance and rolloff settings are UNKNOWN.
+inline constexpr float positional_reference_distance = 15.0f;
+
 class AudioEngine final : public VoiceSink {
 public:
     explicit AudioEngine(const AudioEngineOptions& options = {});
@@ -45,7 +50,7 @@ public:
     // Offline engines: mixes `frames` interleaved float frames into `out`.
     void render(float* out, std::uint64_t frames);
 
-    VoiceId play(std::shared_ptr<const AudioClip> clip, VoicePlayback playback, bool spatial) override;
+    VoiceId play(std::shared_ptr<const AudioClip> clip, VoicePlayback playback, VoiceSpace space) override;
     void release(VoiceId voice) override;
     void stop(VoiceId voice) override;
     void set(VoiceId voice, float volume, float pitch, const glm::vec3& position) override;

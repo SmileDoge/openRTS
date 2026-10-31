@@ -116,6 +116,15 @@ bool TrackNetwork::throw_junction(const std::uint32_t node, const std::uint32_t 
     return true;
 }
 
+void TrackNetwork::release_junction(const std::uint32_t node, const std::uint64_t owner) {
+    auto* state = junction(node);
+    if (!state) return;
+    state->occupied = false;
+    state->clearance.erase(owner);
+    std::erase_if(state->reservations, [&](const auto& r) { return r.first == owner; });
+    state->selected = state->reservations.empty() ? state->main_route : state->reservations.front().second;
+}
+
 std::optional<std::uint32_t> TrackNetwork::junction_for_object(const std::int32_t tile_x, const std::int32_t tile_z,
                                                                const std::uint32_t uid) const {
     const auto it = junction_objects_.find({tile_x, tile_z, uid});

@@ -35,7 +35,7 @@ public:
     struct Voice {
         std::shared_ptr<const audio::AudioClip> clip;
         audio::VoicePlayback playback{};
-        bool spatial = false;
+        audio::VoiceSpace space = audio::VoiceSpace::flat;
         bool released = false;
         bool stopped = false;
         float volume{};
@@ -43,8 +43,8 @@ public:
     };
 
     audio::VoiceId play(std::shared_ptr<const audio::AudioClip> clip, audio::VoicePlayback playback,
-                        bool spatial) override {
-        voices[next] = {std::move(clip), playback, spatial};
+                        audio::VoiceSpace space) override {
+        voices[next] = {std::move(clip), playback, space};
         return next++;
     }
     void release(audio::VoiceId voice) override { voices[voice].released = true; }
@@ -282,7 +282,7 @@ void test_ambient_runner() {
     for (int i = 0; i < 25; ++i) sound.update(0.1f, inputs, sink);
     check(sink.voices.size() == 2, "enabled random trigger fires every second");
     check(sink.voices[1].clip == clips["a.wav"] && sink.voices[2].clip == clips["b.wav"], "sequential selection");
-    check(!sink.voices[1].spatial && sink.voices[1].playback == audio::VoicePlayback::once,
+    check(sink.voices[1].space == audio::VoiceSpace::flat && sink.voices[1].playback == audio::VoicePlayback::once,
           "environment one-shot is not positioned");
     check(near(sink.voices[2].volume, 0.5), "Volume_Min_Max");
 
@@ -358,7 +358,7 @@ void test_engine() {
         clip->samples.push_back(0.5f * static_cast<float>(std::sin(2.0 * 3.14159265 * 440.0 * static_cast<double>(i) / 22050.0)));
     }
     engine.set_listener({0, 0, 0}, {0, 0, 1});
-    const auto voice = engine.play(clip, audio::VoicePlayback::loop, true);
+    const auto voice = engine.play(clip, audio::VoicePlayback::loop, audio::VoiceSpace::panned);
     check(voice != 0, "voice starts");
     engine.set(voice, 1.0f, 1.0f, {10, 0, 0});
     std::vector<float> mix(2 * 22050);

@@ -50,13 +50,22 @@ struct SceneClock {
 
 // Keys the scene reacts to this frame (edges are "pressed this frame").
 struct SceneInput {
-    bool forward = false;        // Up arrow held
-    bool backward = false;       // Down arrow held
-    bool boost = false;          // Shift held
-    bool place_probe = false;    // P
+    bool step_up = false;        // Up arrow held (shape scenes: animation frames)
+    bool step_down = false;      // Down arrow held
     bool throw_junction = false; // J
     bool toggle_follow = false;  // V
     bool toggle_track = false;   // T
+    // Train driving (edges).
+    bool place_train = false;      // C
+    bool throttle_up = false;      // Home
+    bool throttle_down = false;    // End
+    bool reverser_forward = false; // Page Up
+    bool reverser_back = false;    // Page Down
+    bool brake_more = false;       // ]
+    bool brake_less = false;       // [
+    bool brake_less_held = false;  // [ held (brake valve position I)
+    bool independent_more = false; // .
+    bool independent_less = false; // ,
 };
 
 // Lighting and background colour the scene wants for the current frame.
@@ -108,7 +117,8 @@ struct SceneLoadResult {
 struct SceneContent {
     std::shared_ptr<core::Vfs> vfs;
     bool watching = false;
-    bool probe_at_start = false; // route scenes: put the track probe at the start, camera following
+    std::string consist;         // route scenes: consist to load, put on a path start
+    std::string path;            // route scenes: the path for the consist (file name, id or name); the first by default
 };
 
 [[nodiscard]] SceneLoadResult load_shape_scene(SceneContent content, const core::VirtualPath& shape);

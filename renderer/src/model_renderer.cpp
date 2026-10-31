@@ -794,6 +794,10 @@ std::vector<std::string> RenderModel::dependency_keys() const {
     return impl_ ? impl_->dependencies : std::vector<std::string>{};
 }
 
+const formats::ShapeModel* RenderModel::rig() const noexcept {
+    return impl_ ? impl_->rig.get() : nullptr;
+}
+
 ModelAnimationInfo RenderModel::animation() const noexcept {
     if (!impl_ || !impl_->rig || impl_->rig->animations.empty()) return {};
     const auto& animation = impl_->rig->animations.front();
@@ -1135,7 +1139,9 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     auto gpu = std::make_shared<RenderModel::Impl>();
     gpu->source = asset.source_path;
     gpu->dependencies = asset.dependency_keys();
-    if (!model.animations.empty()) {
+    {
+        // Kept for every model: animations, and posing named nodes (bogies,
+        // wheels) of rolling stock.
         auto rig = std::make_shared<formats::ShapeModel>();
         rig->matrices = model.matrices;
         rig->hierarchy = model.hierarchy;
@@ -1254,7 +1260,7 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) 
 void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform, const float frame) {
     if (!impl_ || !model.impl_) return;
     const auto& rig = model.impl_->rig;
-    if (!rig) {
+    if (!rig || rig->animations.empty()) {
         submit(model, transform);
         return;
     }
@@ -1268,6 +1274,36 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform, 
              ++guard) {
             world = shape_matrix(local[static_cast<std::size_t>(current)]) * world;
             current = rig->hierarchy[static_cast<std::size_t>(current)];
+        }
+        impl_->frame_locals.push_back({.matrix = world, .normal = glm::transpose(glm::inverse(world))});
+    }
+    submit(model, transform);
+    impl_->queue.back().matrices = first;
+}
+
+void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform,
+                           const std::span<const NodeAdjustment> adjustments) {
+    if (!impl_ || !model.impl_) return;
+    const auto& rig = model.impl_->rig;
+    if (!rig || adjustments.empty()) {
+        submit(model, transform);
+        return;
+    }
+    const auto count = rig->matrices.size();
+    std::vector<glm::mat4> local(count);
+    for (std::size_t index = 0; index < count; ++index) local[index] = shape_matrix(rig->matrices[index]);
+    for (const auto& adjustment : adjustments) {
+        if (adjustment.matrix >= 0 && static_cast<std::size_t>(adjustment.matrix) < count) {
+            local[static_cast<std::size_t>(adjustment.matrix)] *= adjustment.local;
+        }
+    }
+    const auto first = static_cast<std::ptrdiff_t>(impl_->frame_locals.size());
+    for (std::size_t index = 0; index < count; ++index) {
+        glm::mat4 world{1.0f};
+        auto current = static_cast<std::int32_t>(index);
+        for (std::size_t guard = 0; current >= 0 && static_cast<std::size_t>(current) < count && guard <= count; ++guard) {
+            world = local[static_cast<std::size_t>(current)] * world;
+            current = static_cast<std::size_t>(current) < rig->hierarchy.size() ? rig->hierarchy[static_cast<std::size_t>(current)] : -1;
         }
         impl_->frame_locals.push_back({.matrix = world, .normal = glm::transpose(glm::inverse(world))});
     }

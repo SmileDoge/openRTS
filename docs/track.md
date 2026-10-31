@@ -7,13 +7,13 @@ look along it. Nothing here moves trains yet.
 ## Using it
 
 ```text
-openrts_viewer --window --route D:\Games\MDDRTS\ROUTES\Kuban_RTS [--probe]
+openrts_viewer --window --route D:\Games\MDDRTS\ROUTES\Kuban_RTS [--consist <name>] [--path <name>]
     T            track overlay on/off (yellow track, magenta junctions, red ends,
                  signals red, speed posts blue, platforms cyan; green = selected branch)
-    P            put the probe on the nearest track (300 m); --probe: at start, camera following
-    Up / Down    drive the probe (Shift: x5)
-    J            throw the junction nearest to the probe (or camera)
-    V            camera follows the probe
+    C            put the train on the track nearest to the camera
+    J            throw the first facing junction within 300 m ahead of the train
+                 (by its motion, else the reverser); without a train, the one nearest to the camera
+    V            camera follows the train
     F6 / button  save a debug view -> debug_views/last.view (+ timestamped copy)
 openrts_viewer --window --view last        reopen the saved view
 openrts-track-check D:\Games\MDDRTS [route...]   checks and measurements
@@ -187,15 +187,13 @@ types:
   (curves sampled), junctions and end nodes as markers, track items as small
   glyphs (signal, speed post, platform, level crossing). Each part can be
   toggled in the panel.
-- **Probe:** a key drops a traveller on the track nearest to the camera,
-  and keys move it forward and back at speed. The panel shows node, section,
-  offset, heading and pitch. The camera can follow the probe — the first
-  "ride" along the route.
-- **Switching:** a key throws the nearest junction. The probe then takes the
-  chosen branch, and a trailing move throws the switch itself, as in RTS.
+- **Probe** (removed once trains ran; the train does its job): a traveller
+  driven by keys along the track, the first "ride" along the route.
+- **Switching:** a key throws a junction. A train takes the chosen branch,
+  and a trailing move throws the switch itself, as in RTS.
 - **Check:**
   - the lines lie on the rails over a whole route (Kuban, TestRoute);
-  - the probe runs from end to end following topology;
+  - a traveller runs from end to end following topology;
   - the panel shows the worst geometry joints, so data gaps can be
     inspected on screen, as they are, not hidden.
 

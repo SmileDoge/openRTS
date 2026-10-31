@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -55,6 +56,13 @@ struct ModelBounds {
     float radius{};
 };
 
+// A pose change of one shape node: `local` is applied in the node's own frame
+// (after its matrix), e.g. a wheel turning about its axle.
+struct NodeAdjustment {
+    std::int32_t matrix{};
+    glm::mat4 local{1.0f};
+};
+
 struct ModelAnimationInfo {
     std::uint32_t frame_count{}; // 0: not animated
     std::uint32_t frame_rate{};
@@ -87,6 +95,8 @@ public:
     [[nodiscard]] std::vector<std::string> dependency_keys() const;
     // The shape's first animation (switch blades, doors, ...).
     [[nodiscard]] ModelAnimationInfo animation() const noexcept;
+    // Matrices (with names), hierarchy and animations of the shape.
+    [[nodiscard]] const formats::ShapeModel* rig() const noexcept;
 
 private:
     struct Impl;
@@ -139,6 +149,8 @@ public:
     // Draws an animated model at `frame` of its first animation (rest pose
     // when the shape has none).
     void submit(RenderModel& model, const ModelTransform& transform, float frame);
+    // Draws a model with some nodes posed (wheels, bogies).
+    void submit(RenderModel& model, const ModelTransform& transform, std::span<const NodeAdjustment> adjustments);
     void submit(RenderModel& model);
     void render(WGPURenderPassEncoder pass);
     void draw(WGPURenderPassEncoder pass, RenderModel& model, const ModelFrameContext& frame);

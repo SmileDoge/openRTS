@@ -101,6 +101,10 @@ public:
     [[nodiscard]] const JunctionState* junction(std::uint32_t node) const;
     // Manual switching; refused while the junction is occupied.
     bool throw_junction(std::uint32_t node, std::uint32_t branch);
+    // A train's tail has left the junction (RTS 0x48C85C): free it, drop the
+    // owner's reservation and clearance, and set the switch to the next
+    // reservation's branch or to MainRoute.
+    void release_junction(std::uint32_t node, std::uint64_t owner);
     // The junction whose switch shape is world object `uid` on tile (x, z).
     [[nodiscard]] std::optional<std::uint32_t> junction_for_object(std::int32_t tile_x, std::int32_t tile_z,
                                                                    std::uint32_t uid) const;

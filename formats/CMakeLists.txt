@@ -7,6 +7,8 @@ add_library(openrts_formats STATIC
     src/shape_text.cpp
     src/sound.cpp
     src/shape_description.cpp
+    src/rolling_stock.cpp
+    src/train_path.cpp
     src/route_world.cpp
     src/environment.cpp
     src/terrain.cpp
