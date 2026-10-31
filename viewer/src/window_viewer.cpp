@@ -17,6 +17,8 @@
 
 #include "gpu_timer.hpp"
 
+#include <webgpu/wgpu.h>
+
 #include "exit_codes.hpp"
 
 #if defined(OPENRTS_HAS_GLFW) && defined(_WIN32)
@@ -199,13 +201,18 @@ private:
 };
 
 // CPU stages of one frame, in loop order.
-enum class FrameStage { update, panel, wait, record, submit, count };
+enum class FrameStage { update, panel, wait, begin, background, cull, models, foreground, finish, submit, count };
 constexpr std::size_t frame_stage_count = static_cast<std::size_t>(FrameStage::count);
 constexpr std::array<const char*, frame_stage_count> frame_stage_names{
     "update",  // input, camera, scene update (streaming, track, later simulation)
     "panel",   // ImGui panel
     "wait",    // waiting for the swap chain image (vsync and GPU back-pressure)
-    "record",  // culling, draw submission and command recording
+    "begin",   // frame view, encoder and main pass
+    "backgr",  // sky and terrain
+    "cull",    // scene culling and model submission
+    "models",  // model batching and draw recording
+    "foregr",  // scene overlays (track lines) and the panel
+    "finish",  // end of pass and command buffer
     "submit",  // queue submit, present, retired resource collection
 };
 using StageTimes = std::array<double, frame_stage_count>;
@@ -383,6 +390,10 @@ public:
         const auto gpu = renderer.stats();
         ImGui::Text("GPU: %zu textures, %zu retired waiting, frame %llu done", gpu.cached_textures, gpu.retired_pending,
                     static_cast<unsigned long long>(gpu.completed_frame));
+        ImGui::Text("Models: %zu instances, %zu primitives, %zu draw calls", gpu.instances, gpu.primitives,
+                    gpu.draw_calls);
+        bool batching = renderer.batching();
+        if (ImGui::Checkbox("Merge identical primitives (instancing)", &batching)) renderer.set_batching(batching);
 
         if (ImGui::Button("Save debug view (F6)")) panel.save_view = true;
         if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
@@ -649,6 +660,29 @@ void apply_view(const DebugView& view, const std::optional<formats::RoutePositio
     return "saved " + copy.filename().string() + " (and last.view)";
 }
 
+// Prints the adapter and the optional features GPU-driven rendering would
+// use (compute culling with indirect draws).
+void report_adapter(const WGPUAdapter adapter) {
+    WGPUAdapterInfo info{};
+    wgpuAdapterGetInfo(adapter, &info);
+    const auto text = [](const WGPUStringView view) { return std::string(view.data ? view.data : "", view.data ? view.length : 0); };
+    const char* backend = info.backendType == WGPUBackendType_Vulkan ? "Vulkan"
+        : info.backendType == WGPUBackendType_D3D12                   ? "D3D12"
+        : info.backendType == WGPUBackendType_Metal                   ? "Metal"
+        : info.backendType == WGPUBackendType_OpenGL                  ? "OpenGL"
+                                                                      : "other";
+    std::cout << "GPU: " << text(info.device) << " (" << backend << ", " << text(info.description) << ")\n";
+    wgpuAdapterInfoFreeMembers(info);
+    const auto has = [&](const WGPUFeatureName feature) { return wgpuAdapterHasFeature(adapter, feature) ? "yes" : "no"; };
+    std::cout << "  compute shaders: " << (backend[0] == 'O' ? "GLES 3.1+ only" : "yes")
+              << ", indirect first instance: " << has(WGPUFeatureName_IndirectFirstInstance)
+              << ", multi-draw indirect count: " << has(static_cast<WGPUFeatureName>(WGPUNativeFeature_MultiDrawIndirectCount))
+              << ", texture binding arrays: " << has(static_cast<WGPUFeatureName>(WGPUNativeFeature_TextureBindingArray))
+              << ", non-uniform indexing: "
+              << has(static_cast<WGPUFeatureName>(WGPUNativeFeature_SampledTextureAndStorageBufferArrayNonUniformIndexing))
+              << ", timestamps: " << has(WGPUFeatureName_TimestampQuery) << std::endl;
+}
+
 [[nodiscard]] glm::mat4 projection(const ViewerCamera& camera, const float aspect) {
     const auto near_plane = (std::max)(camera.distance * 0.002f, 0.01f);
     return glm::perspectiveRH_ZO(vertical_fov, aspect, near_plane, camera.distance * 20.0f);
@@ -710,6 +744,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         return exit_code::device_failed;
     }
     const auto device = context.context.device();
+    report_adapter(context.context.adapter());
 
     const GlfwSession glfw;
     if (!glfw.ok()) {
@@ -732,6 +767,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         return exit_code::renderer_failed;
     }
     renderer.set_shading_path(options.shading);
+    renderer.set_batching(options.batching);
 
 #ifdef OPENRTS_HAS_IMGUI
     const DebugOverlay overlay(window.get(), device, surface.format());
@@ -816,23 +852,28 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             .vertical_fov = vertical_fov,
             .aspect = aspect,
         };
+        stage_clock.mark(FrameStage::begin, stages);
         scene.draw_background(pass, frame);
+        stage_clock.mark(FrameStage::background, stages);
         renderer.begin_frame({
             .view_projection = frame.projection * frame.view,
             .camera_position = frame.eye,
             .lighting = environment.lighting,
         });
         scene.submit(renderer, frame);
+        stage_clock.mark(FrameStage::cull, stages);
         renderer.render(pass);
+        stage_clock.mark(FrameStage::models, stages);
         scene.draw_foreground(pass, frame);
 #ifdef OPENRTS_HAS_IMGUI
         overlay.render(pass);
 #endif
+        stage_clock.mark(FrameStage::foreground, stages);
         wgpuRenderPassEncoderEnd(pass);
         gpu_timer.resolve(encoder);
 
         const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
-        stage_clock.mark(FrameStage::record, stages);
+        stage_clock.mark(FrameStage::finish, stages);
         const auto queue = wgpuDeviceGetQueue(device);
         wgpuQueueSubmit(queue, 1, &commands);
         gpu_timer.submitted();

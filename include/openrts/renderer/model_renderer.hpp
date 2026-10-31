@@ -64,6 +64,10 @@ struct ModelRendererStats {
     std::size_t cached_textures{};
     std::size_t retired_pending{}; // generations waiting for the GPU
     std::uint64_t completed_frame{};
+    // Last rendered frame.
+    std::size_t instances{};  // submitted model instances
+    std::size_t primitives{}; // instance primitives drawn
+    std::size_t draw_calls{};
 };
 
 #ifdef OPENRTS_HAS_WGPU
@@ -103,6 +107,11 @@ public:
     [[nodiscard]] bool ready() const noexcept;
     void set_shading_path(ShadingPath path) noexcept;
     [[nodiscard]] ShadingPath shading_path() const noexcept;
+    // Merging identical primitives into instanced draw calls (on by default).
+    // Off draws every instance primitive separately in submission order, for
+    // comparison.
+    void set_batching(bool enabled) noexcept;
+    [[nodiscard]] bool batching() const noexcept;
     // Uploads a model; textures already uploaded for the same virtual path are
     // shared.
     [[nodiscard]] RenderModel create_model(StreamedModelAsset&& asset);

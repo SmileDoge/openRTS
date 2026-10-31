@@ -52,6 +52,10 @@ struct RouteStreamer::Impl {
     std::set<std::string> requested_models;
     std::deque<core::VirtualPath> pending_models;
     std::vector<StreamedModelAsset> ready_models;
+    // visible_instances() cache and the tiles it was built from.
+    mutable std::vector<StreamedInstance> visible;
+    mutable std::vector<TileKey> visible_tiles;
+    mutable bool visible_stale = true;
 
     explicit Impl(std::shared_ptr<const core::Vfs> shared) : vfs(shared), resolver(std::move(shared)) {}
 
@@ -105,6 +109,7 @@ struct RouteStreamer::Impl {
             if (!result.error.empty()) continue;
 
             state.instances = result.instances;
+            visible_stale = true;
             for (const auto& instance : state.instances) request_model(instance.source_path);
         }
     }
@@ -194,12 +199,22 @@ std::vector<StreamedModelAsset> RouteStreamer::take_ready_models() {
     return std::exchange(impl_->ready_models, {});
 }
 
-std::vector<StreamedInstance> RouteStreamer::visible_instances() const {
-    std::vector<StreamedInstance> result;
-    for (const auto& [_, state] : impl_->tiles) {
-        if (state.desired && state.loaded) result.insert(result.end(), state.instances.begin(), state.instances.end());
+const std::vector<StreamedInstance>& RouteStreamer::visible_instances() const {
+    auto& impl = *impl_;
+    std::vector<TileKey> tiles;
+    for (const auto& [key, state] : impl.tiles) {
+        if (state.desired && state.loaded) tiles.push_back(key);
     }
-    return result;
+    if (impl.visible_stale || tiles != impl.visible_tiles) {
+        impl.visible.clear();
+        for (const auto& key : tiles) {
+            const auto& instances = impl.tiles.at(key).instances;
+            impl.visible.insert(impl.visible.end(), instances.begin(), instances.end());
+        }
+        impl.visible_tiles = std::move(tiles);
+        impl.visible_stale = false;
+    }
+    return impl.visible;
 }
 
 RouteStreamerStats RouteStreamer::stats() const {

@@ -48,7 +48,10 @@ public:
     // Collects completed worker jobs and schedules model/texture jobs.
     void poll();
     [[nodiscard]] std::vector<StreamedModelAsset> take_ready_models();
-    [[nodiscard]] std::vector<StreamedInstance> visible_instances() const;
+    // Instances of the loaded tiles around the camera. The list is rebuilt
+    // only when that set of tiles changes; the reference stays valid until
+    // the next update() or poll().
+    [[nodiscard]] const std::vector<StreamedInstance>& visible_instances() const;
     [[nodiscard]] RouteStreamerStats stats() const;
     // Folders searched first for model textures (the route's TEXTURES).
     [[nodiscard]] const std::vector<core::VirtualPath>& texture_directories() const noexcept;

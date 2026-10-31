@@ -18,6 +18,7 @@ struct WindowOptions {
     renderer::rts::Season season = renderer::rts::Season::summer;
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
     bool vsync = true;
+    bool batching = true;
     // What is open (root, mode, content), recorded in saved debug views.
     DebugView identity;
     // Camera to restore after the scene is attached (--view).
