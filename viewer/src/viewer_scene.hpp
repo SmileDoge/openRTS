@@ -66,6 +66,7 @@ struct SceneInput {
     bool brake_less_held = false;  // [ held (brake valve position I)
     bool independent_more = false; // .
     bool independent_less = false; // ,
+    bool toggle_ep = false;        // K: ЭПТ on/off
 };
 
 // Lighting and background colour the scene wants for the current frame.

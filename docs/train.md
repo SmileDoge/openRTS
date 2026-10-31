@@ -1,6 +1,7 @@
 # Train on the track (plan)
 
-Status: plan. Roadmap step 2: a real consist from the content stands on a
+Status: done (2026-10-31), except the items under "Not in this step".
+Roadmap step 2: a real consist from the content stands on a
 route and can be driven with the keyboard. It must pass junctions, sound
 like a train and behave like RTS where RTS defines the behaviour. Cab, DLLs,
 signals and AI trains come later. The interfaces are laid out so that they
@@ -167,8 +168,18 @@ same constants. It keeps the equalising reservoir in
 | II | | УР up to the charging pressure (5.0) at ≤0.25 atm/s. Stabiliser: УР −0.003 atm/s while above the pipe. While the locomotive is braked, УР +0.15 atm/s (the DLL's own overcharge to release through the RTS valve). Pipe follows the УР (venting ≤0.5 atm/s) |
 | III | | lap: vents down to the УР, else −0.005 atm/s (leaks) |
 | IV | | lap with feed: +0.05 when the УР is 0.1 above the pipe |
+| VЭ | | electro-pneumatic application (ЭПТ on); the pipe only vents down to the УР. Without ЭПТ it is a lap |
 | V | `]` | УР −0.2 atm/s, pipe −0.25 atm/s |
 | VI | `]` | emergency: pipe −1.2 atm/s |
+
+**ЭПТ** (key K; the ЭР9Т DLL's layer):
+- The demand (`DriverHandles::ep_target`, `Engine::EPTvalue`) rises at
+  0.5 atm/s in VЭ and V, holds in III/IV and falls at 0.8 (I) or 0.5 (II)
+  atm/s, at most 6.
+- VI is pneumatic.
+- As in RTS, the simulation spreads the demand from the engine to the
+  neighbouring cars with EP brakes, as far as the EP line runs. Those cars
+  follow it within their auxiliary reservoir and ignore the pipe.
 
 **As in RTS:**
 - RTS does not use `TrainPipeLeakRate` (no reader in `rts1.exe`). So the
@@ -468,6 +479,15 @@ The train emits events for sound and, later, signals:
 
 Milestone: steps 1–5 give a train that can be driven over a route; step 6
 makes it audible.
+
+**State:** all seven steps are done.
+- Reverse notes: `docs/reverse/rolling-stock.md` and `brakes.md`.
+- Formats: `formats/rolling_stock`, `train_path`.
+- Simulation: `simulation/train`, with the 395 valve and ЭПТ.
+- Viewer: `TrainView`, path and consist choice.
+- Rendering: posed bogies and wheels.
+- Sounds: positional.
+- Checks: `train-check --run` passes 2209 of 2209; `tests/train_test`.
 
 ## Not in this step
 

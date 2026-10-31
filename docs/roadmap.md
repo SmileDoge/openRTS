@@ -1,6 +1,6 @@
 # openRTS roadmap: train movement, signals, routes, multiplayer
 
-Snapshot as of 2026-10-30. "Exists" means it is in the code and tested or seen
+Snapshot as of 2026-10-31. "Exists" means it is in the code and tested or seen
 on screen. Reverse notes live in `docs/reverse/`.
 
 ## What exists
@@ -11,10 +11,18 @@ on screen. Reverse notes live in `docs/reverse/`.
 | `assets` | content resolver (route / global lookup) |
 | `renderer` | WebGPU shapes with RTS material/pass rules, sky + time of day, seasonal terrain, world streaming, frustum culling; RTS and experimental shading paths |
 | `viewer` | free camera over a route, time/season/weather controls |
-| `core`, `simulation`, `platform`, `compat`, `game` | empty stubs |
+| `simulation` | track network and travellers with the RTS junction modes (`track.md`); trains with RTS physics, couplers, RTS brakes, the 395 valve and ЭПТ (`train.md`) |
+| `formats` (trains) | `.con`, `.eng`/`.wag` with `.rtseng` merge, `.pat`, `.sms`/`.ws` |
+| `audio` | `.sms` runner, miniaudio output, world and train sounds (`sound.md`) |
+| `viewer` (trains) | drive a consist from a path start, follow camera, Train panel |
+| `core` | content VFS (`vfs.md`) |
+| `platform`, `compat`, `game` | empty stubs |
 | reverse notes | rendering, sky, terrain, train physics (forces, coupler solver, traveller), cab/DLL ABI, signals and sigscr VM |
 
-Nothing moves yet: there is no track database, no train and no game loop.
+Steps 1 and 2 are done: a consist from the content can be driven over a
+route with the keyboard. Not done from them: Dyntrack rendering, consist
+changes (coupling, uncoupling, coupler breaks and derailment have no
+consequences yet). Next: step 3, signals.
 
 ## What is needed
 

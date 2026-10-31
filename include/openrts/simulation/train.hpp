@@ -79,6 +79,7 @@ struct DriverHandles {
         running,   // II
         lap,       // III: lap without feed
         lap_feed,  // IV: lap with feed
+        ep_service, // VЭ: electro-pneumatic application only (as IV without ЭПТ)
         service,   // V
         emergency, // VI
     };
@@ -90,6 +91,8 @@ struct DriverHandles {
     float independent = 0.0f;     // independent brake target, atm (0..4)
     float charging_pressure = 5.0f; // the pressure II charges the equalising reservoir to, atm
     float equalising = 5.0f;      // equalising reservoir (УР, Engine::UR), kept by the master's valve, atm
+    bool ep_brake = false;        // ЭПТ switched on
+    float ep_target = 0.0f;       // ЭПТ cylinder demand (Engine::EPTvalue), kept by the master's valve, atm
 };
 
 // Built-in controller for driving without a cab. Its traction model is
@@ -97,6 +100,8 @@ struct DriverHandles {
 // The brake valve is the 395 of the ВЛ10к DLL (tsrLoco_VL10k-1461,
 // vl10k_main.cpp): written for the RTS triple valve, which it drives
 // through Engine::UR and TrainPipeRate (docs/reverse/air-brakes-real.md §8).
+// The ЭПТ layer is the ЭР9Т DLL's (tedStepanki_emu, er9t_main.cpp):
+// EPTvalue ramps up in VЭ and V, holds in III/IV, ramps down in I/II.
 class KeyboardController final : public LocomotiveController {
 public:
     using BrakeHandle = DriverHandles::BrakeHandle;

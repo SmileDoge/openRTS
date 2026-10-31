@@ -289,6 +289,11 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
         if (p > ur) rate = ur - p;
         rate = rate < -pipe_vent_max ? -pipe_vent_max : (std::min)(rate, lap_leak);
         break;
+    case BrakeHandle::ep_service:
+        // ЭР9Т: the pipe only vents down to the УР (no leak, no feed).
+        ur = (std::min)(ur, mr);
+        if (p > ur) rate = (std::max)(ur - p, -pipe_vent_max);
+        break;
     case BrakeHandle::lap_feed:
         ur = (std::min)(ur, mr);
         if (p > ur) {
@@ -308,6 +313,28 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
         break;
     }
     demands.train_pipe_rate = rate;
+    // ЭПТ (ЭР9Т rates): EPT_APPLY_RATE 0.5, EPT_RELEASE_RATE 0.5 (II) and
+    // EPT_RELEASE_RATE1 0.8 (I), at most 6 atm; none in VI (pneumatic).
+    auto& target = handles_->ep_target;
+    switch (brake) {
+    case BrakeHandle::charge:
+        target = (std::max)(target - 0.8f * time, 0.0f);
+        break;
+    case BrakeHandle::running:
+        target = (std::max)(target - 0.5f * time, 0.0f);
+        break;
+    case BrakeHandle::ep_service:
+    case BrakeHandle::service:
+        if (handles.ep_brake) target = (std::min)(target + 0.5f * time, 6.0f);
+        break;
+    default:
+        break;
+    }
+    if (handles.ep_brake && brake != BrakeHandle::emergency) {
+        demands.ep_value = target;
+        demands.systems = 1 | 2;
+        return;
+    }
     demands.systems = 1;
 }
 
@@ -485,6 +512,16 @@ void Train::step() {
         if (car.wheelslip) force *= 0.25f;
         car.force = force * direction;
         car.handbrake = (std::max)(car.handbrake, 0.01f * demands.handbrake);
+    }
+
+    // EPT: an engine's EPTvalue spreads to the neighbouring cars with EP
+    // brakes, as far as the EP line runs (RTS: every other car gets -1).
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& demands = impl.demands[i];
+        if (!(demands.systems & 2) || demands.ep_value < 0.0f || !(cars_[i].definition->brakes.system & 2)) continue;
+        cars_[i].ep = demands.ep_value;
+        for (std::size_t k = i + 1; k < n && (cars_[k].definition->brakes.system & 2); ++k) cars_[k].ep = demands.ep_value;
+        for (std::size_t k = i; k-- > 0 && (cars_[k].definition->brakes.system & 2);) cars_[k].ep = demands.ep_value;
     }
 
     // 2. Brake force from the cylinders (before this step's air update, as RTS).

@@ -415,7 +415,7 @@ public:
         ImGui::Separator();
         ImGui::TextUnformatted("RMB: look  WASD: move  Q/E: vertical");
         ImGui::TextUnformatted("Shift: boost  F: fly/orbit");
-        ImGui::TextUnformatted("T: track  C: train here  J: switch ahead  V: follow");
+        ImGui::TextUnformatted("T: track  C: train here  J: switch ahead  V: follow  K: EP brake");
         ImGui::End();
 
         ImGui::Render();
@@ -496,7 +496,7 @@ struct CameraInput {
     bool follow_key_down = false;
     bool track_key_down = false;
     bool save_key_down = false;
-    std::array<bool, 9> train_keys_down{};
+    std::array<bool, 10> train_keys_down{};
     double cursor_x = 0.0;
     double cursor_y = 0.0;
 };
@@ -628,6 +628,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .brake_less_held = down(GLFW_KEY_LEFT_BRACKET),
         .independent_more = pressed(GLFW_KEY_PERIOD, input.train_keys_down[7]),
         .independent_less = pressed(GLFW_KEY_COMMA, input.train_keys_down[8]),
+        .toggle_ep = pressed(GLFW_KEY_K, input.train_keys_down[9]),
     };
 }
 

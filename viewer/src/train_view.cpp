@@ -42,6 +42,8 @@ constexpr std::uint64_t placement_owner = 0;
         return "III lap";
     case simulation::DriverHandles::BrakeHandle::lap_feed:
         return "IV lap+feed";
+    case simulation::DriverHandles::BrakeHandle::ep_service:
+        return "VE EP service";
     case simulation::DriverHandles::BrakeHandle::service:
         return "V service";
     case simulation::DriverHandles::BrakeHandle::emergency:
@@ -62,7 +64,7 @@ constexpr std::uint64_t placement_owner = 0;
 
 [[nodiscard]] bool any_handle(const SceneInput& input) {
     return input.throttle_up || input.throttle_down || input.reverser_forward || input.reverser_back || input.brake_more
-        || input.brake_less || input.independent_more || input.independent_less;
+        || input.brake_less || input.independent_more || input.independent_less || input.toggle_ep;
 }
 
 } // namespace
@@ -318,6 +320,7 @@ void TrainView::apply_handles(const SceneInput& input) {
     if (input.brake_less && d.brake != Handle::charge) d.brake = static_cast<Handle>(static_cast<int>(d.brake) - 1);
     if (input.independent_more) d.independent = (std::min)(d.independent + 0.5f, 4.0f);
     if (input.independent_less) d.independent = (std::max)(d.independent - 0.5f, 0.0f);
+    if (input.toggle_ep) d.ep_brake = !d.ep_brake;
 }
 
 void TrainView::step_train() {
@@ -624,6 +627,11 @@ void TrainView::draw_overlay() {
                     driver_->reverser > 0 ? "forward" : driver_->reverser < 0 ? "back" : "neutral",
                     handle_name(driver_->brake), driver_->independent);
         ImGui::Text("Equalising reservoir %.2f atm (II keeps %.1f)", driver_->equalising, driver_->charging_pressure);
+        ImGui::Checkbox("EP brake (K)", &driver_->ep_brake);
+        if (driver_->ep_brake) {
+            ImGui::SameLine();
+            ImGui::Text("demand %.2f atm (VE/V apply, III/IV hold, I/II release)", driver_->ep_target);
+        }
     }
     ImGui::Text("Pipe %.2f  cylinder %.2f  aux %.2f  main reservoir %.2f atm", head.pipe, head.cylinder, head.auxiliary,
                 head.main_reservoir);

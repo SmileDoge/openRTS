@@ -60,9 +60,20 @@ void test_units() {
     check(near(formats::rts_quantity_value("2mw"), 2e6, 1e-3), "MW");
 }
 
+// The same stock with electro-pneumatic brakes.
+std::string with_ep(std::string text) {
+    const std::string from = R"(BrakeSystemType ( "Air_single_pipe" ))";
+    text.replace(text.find(from), from.size(), R"(BrakeSystemType ( "Air_single_pipe, Electro-pneumatic" ))");
+    return text;
+}
+
 struct Stock {
-    formats::WagonDefinition engine = formats::parse_wagon(engine_text);
-    formats::WagonDefinition wagon = formats::parse_wagon(wagon_text);
+    explicit Stock(const bool ep = false)
+        : engine(formats::parse_wagon(ep ? with_ep(engine_text) : engine_text)),
+          wagon(formats::parse_wagon(ep ? with_ep(wagon_text) : wagon_text)) {}
+
+    formats::WagonDefinition engine;
+    formats::WagonDefinition wagon;
 
     [[nodiscard]] std::vector<simulation::CarSetup> cars(std::size_t wagons) const {
         std::vector<simulation::CarSetup> result{{.definition = &engine}};
@@ -193,12 +204,43 @@ void test_buffer_stop(const Stock& stock) {
 
 } // namespace
 
+// ЭПТ: every car fills at once, the pipe stays charged, I/II release.
+void test_ept() {
+    using Handle = simulation::DriverHandles::BrakeHandle;
+    const Stock stock(true);
+    check((stock.wagon.brakes.system & 2) != 0, "EP brake system parses");
+    Run r(stock, {}, 1000.0);
+    r.run(60.0);
+    r.driver->ep_brake = true;
+    r.driver->brake = Handle::ep_service;
+    r.run(3.0);
+    r.driver->brake = Handle::lap_feed;
+    r.run(10.0);
+    float least = 99.0f;
+    float most = 0.0f;
+    for (const auto& car : r.train.cars()) {
+        least = (std::min)(least, car.cylinder);
+        most = (std::max)(most, car.cylinder);
+    }
+    check(least > 1.0f && most - least < 0.05f, "EP application fills every car to the same pressure");
+    // The reservoirs refill from the pipe and IV feeds it only weakly (the
+    // ВЛ10к valve), so it sags a little; a pneumatic application to the same
+    // cylinder pressure would need about 0.8 atm.
+    check(r.train.cars().back().pipe > r.driver->charging_pressure - 0.4f, "the pipe stays near charged under EP braking");
+    r.driver->brake = Handle::running;
+    r.run(30.0);
+    most = 0.0f;
+    for (const auto& car : r.train.cars()) most = (std::max)(most, car.cylinder);
+    check(most < 0.05f, "II releases the EP brake");
+}
+
 int main() {
     test_units();
     const Stock stock;
     test_parse(stock);
     test_brakes(stock);
     test_buffer_stop(stock);
+    test_ept();
     if (failures == 0) std::cout << "train tests passed\n";
     return failures == 0 ? 0 : 1;
 }
