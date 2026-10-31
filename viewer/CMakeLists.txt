@@ -2,6 +2,7 @@ add_executable(openrts_viewer
     src/main.cpp
     src/camera.cpp
     src/debug_view.cpp
+    src/gpu_timer.cpp
     src/viewer_scene.cpp
     src/track_view.cpp
     src/window_viewer.cpp)

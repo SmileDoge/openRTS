@@ -1,21 +1,21 @@
 #include "window_viewer.hpp"
 
-#include <openrts/renderer/route_space.hpp>
-
-#include <ctime>
-
-#include <chrono>
-
 #ifdef OPENRTS_HAS_WGPU
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <iostream>
 #include <string>
 
 #include <glm/ext/matrix_clip_space.hpp>
 
+#include <openrts/renderer/route_space.hpp>
 #include <openrts/renderer/webgpu_context.hpp>
+
+#include "gpu_timer.hpp"
 
 #include "exit_codes.hpp"
 
@@ -87,6 +87,13 @@ public:
 
         WGPUSurfaceCapabilities capabilities{};
         wgpuSurfaceGetCapabilities(surface_, context.adapter(), &capabilities);
+        // Fifo (vsync) is always available; without vsync prefer Immediate,
+        // then Mailbox (no tearing, still uncapped).
+        for (std::size_t i = 0; i < capabilities.presentModeCount; ++i) {
+            const auto mode = capabilities.presentModes[i];
+            if (mode == WGPUPresentMode_Immediate) uncapped_mode_ = mode;
+            if (mode == WGPUPresentMode_Mailbox && uncapped_mode_ != WGPUPresentMode_Immediate) uncapped_mode_ = mode;
+        }
         if (capabilities.formatCount > 0 && capabilities.alphaModeCount > 0) {
             config_ = {
                 .device = device_,
@@ -95,6 +102,7 @@ public:
                 .width = initial_width,
                 .height = initial_height,
                 .alphaMode = capabilities.alphaModes[0],
+                .presentMode = WGPUPresentMode_Fifo,
             };
             configured_ = true;
         }
@@ -118,6 +126,27 @@ public:
     [[nodiscard]] bool ok() const noexcept { return surface_ && configured_; }
     [[nodiscard]] WGPUTextureFormat format() const noexcept { return config_.format; }
     [[nodiscard]] WGPUTextureView depth_view() const noexcept { return depth_view_; }
+
+    // False when the surface only offers Fifo, so vsync cannot be turned off.
+    [[nodiscard]] bool vsync_optional() const noexcept { return uncapped_mode_ != WGPUPresentMode_Fifo; }
+    [[nodiscard]] bool vsync() const noexcept { return config_.presentMode == WGPUPresentMode_Fifo; }
+    [[nodiscard]] const char* present_mode_name() const noexcept {
+        switch (config_.presentMode) {
+        case WGPUPresentMode_Immediate:
+            return "Immediate";
+        case WGPUPresentMode_Mailbox:
+            return "Mailbox";
+        default:
+            return "Fifo";
+        }
+    }
+
+    void set_vsync(const bool enabled) {
+        const auto mode = enabled ? WGPUPresentMode_Fifo : uncapped_mode_;
+        if (!configured_ || config_.presentMode == mode) return;
+        config_.presentMode = mode;
+        wgpuSurfaceConfigure(surface_, &config_);
+    }
 
     void resize(const std::uint32_t width, const std::uint32_t height) {
         if (config_.width == width && config_.height == height) return;
@@ -164,8 +193,92 @@ private:
     WGPUSurface surface_ = nullptr;
     WGPUSurfaceConfiguration config_{};
     bool configured_ = false;
+    WGPUPresentMode uncapped_mode_ = WGPUPresentMode_Fifo;
     WGPUTexture depth_ = nullptr;
     WGPUTextureView depth_view_ = nullptr;
+};
+
+// CPU stages of one frame, in loop order.
+enum class FrameStage { update, panel, wait, record, submit, count };
+constexpr std::size_t frame_stage_count = static_cast<std::size_t>(FrameStage::count);
+constexpr std::array<const char*, frame_stage_count> frame_stage_names{
+    "update",  // input, camera, scene update (streaming, track, later simulation)
+    "panel",   // ImGui panel
+    "wait",    // waiting for the swap chain image (vsync and GPU back-pressure)
+    "record",  // culling, draw submission and command recording
+    "submit",  // queue submit, present, retired resource collection
+};
+using StageTimes = std::array<double, frame_stage_count>;
+
+// Splits the frame into stages on the CPU clock.
+class StageClock {
+public:
+    void start() { last_ = std::chrono::steady_clock::now(); }
+    void mark(const FrameStage stage, StageTimes& times) {
+        const auto now = std::chrono::steady_clock::now();
+        times[static_cast<std::size_t>(stage)] += std::chrono::duration<double>(now - last_).count();
+        last_ = now;
+    }
+
+private:
+    std::chrono::steady_clock::time_point last_;
+};
+
+// Frame rate over the last half second: average FPS and frame time, the
+// slowest frame (stutter shows there first), the average of each CPU stage
+// and the GPU time of the main pass.
+class FrameStats {
+public:
+    void add(const double seconds, const StageTimes& stages, const double gpu_sum_ms, const int gpu_count) {
+        window_ += seconds;
+        worst_ = (std::max)(worst_, seconds);
+        for (std::size_t i = 0; i < frame_stage_count; ++i) stage_sum_[i] += stages[i];
+        gpu_sum_ += gpu_sum_ms;
+        gpu_count_ += gpu_count;
+        ++frames_;
+        if (window_ < 0.5) return;
+        fps_ = frames_ / window_;
+        average_ms_ = window_ * 1000.0 / frames_;
+        worst_ms_ = worst_ * 1000.0;
+        for (std::size_t i = 0; i < frame_stage_count; ++i) stage_ms_[i] = stage_sum_[i] * 1000.0 / frames_;
+        if (gpu_count_ > 0) gpu_ms_ = gpu_sum_ / gpu_count_;
+        window_ = 0.0;
+        worst_ = 0.0;
+        stage_sum_ = {};
+        gpu_sum_ = 0.0;
+        gpu_count_ = 0;
+        frames_ = 0;
+    }
+
+    [[nodiscard]] double fps() const noexcept { return fps_; }
+    [[nodiscard]] double average_ms() const noexcept { return average_ms_; }
+    [[nodiscard]] double worst_ms() const noexcept { return worst_ms_; }
+    [[nodiscard]] const StageTimes& stage_ms() const noexcept { return stage_ms_; }
+    [[nodiscard]] double gpu_ms() const noexcept { return gpu_ms_; }
+
+private:
+    double window_{};
+    double worst_{};
+    int frames_{};
+    StageTimes stage_sum_{};
+    double gpu_sum_{};
+    int gpu_count_{};
+    double fps_{};
+    double average_ms_{};
+    double worst_ms_{};
+    StageTimes stage_ms_{};
+    double gpu_ms_{};
+};
+
+// Panel controls that the main loop acts on after the panel is built.
+struct PanelState {
+    FrameStats stats;
+    const char* present_mode = "Fifo";
+    bool vsync = true;
+    bool vsync_optional = false;
+    bool gpu_timing = false;
+    bool save_view = false;
+    std::string save_status;
 };
 
 // World clock: time of day advanced by real frame time times `speed`.
@@ -222,14 +335,37 @@ public:
                renderer::ModelRenderer& renderer,
                ClockControls& clock,
                const bool time_of_day_applies,
-               bool& save_view,
-               const std::string& save_status) const {
+               PanelState& panel) const {
         ImGui_ImplWGPU_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
         ImGui::Begin("openRTS viewer");
         ImGui::Text("%.*s", static_cast<int>(scene.title().size()), scene.title().data());
+        ImGui::Text("FPS %.0f  |  %.2f ms avg, %.2f ms worst", panel.stats.fps(), panel.stats.average_ms(),
+                    panel.stats.worst_ms());
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::TreeNode("Frame time")) {
+            const auto& stages = panel.stats.stage_ms();
+            double cpu = 0.0;
+            for (std::size_t i = 0; i < frame_stage_count; ++i) {
+                // "wait" is idle time, not work.
+                if (static_cast<FrameStage>(i) != FrameStage::wait) cpu += stages[i];
+                ImGui::Text("%-7s %6.2f ms", frame_stage_names[i], stages[i]);
+            }
+            ImGui::Text("CPU work %5.2f ms (without wait)", cpu);
+            if (panel.gpu_timing) {
+                ImGui::Text("GPU pass %5.2f ms", panel.stats.gpu_ms());
+            } else {
+                ImGui::TextDisabled("GPU pass: no timestamp queries on this device");
+            }
+            ImGui::TreePop();
+        }
+        ImGui::BeginDisabled(!panel.vsync_optional);
+        ImGui::Checkbox("VSync", &panel.vsync);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s)", panel.present_mode);
         ImGui::Text("Camera: %s", camera.fly ? "fly" : "orbit");
         scene.draw_overlay(camera);
         ImGui::Separator();
@@ -248,8 +384,8 @@ public:
         ImGui::Text("GPU: %zu textures, %zu retired waiting, frame %llu done", gpu.cached_textures, gpu.retired_pending,
                     static_cast<unsigned long long>(gpu.completed_frame));
 
-        if (ImGui::Button("Save debug view (F6)")) save_view = true;
-        if (!save_status.empty()) ImGui::TextWrapped("%s", save_status.c_str());
+        if (ImGui::Button("Save debug view (F6)")) panel.save_view = true;
+        if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
         ImGui::Separator();
         draw_clock(clock, time_of_day_applies);
         ImGui::Separator();
@@ -525,7 +661,8 @@ struct FrameTargets {
 
 [[nodiscard]] WGPURenderPassEncoder begin_main_pass(const WGPUCommandEncoder encoder,
                                                     const FrameTargets& targets,
-                                                    const glm::vec4& clear_colour) {
+                                                    const glm::vec4& clear_colour,
+                                                    const WGPURenderPassTimestampWrites* timestamps) {
     const WGPURenderPassColorAttachment color{
         .view = targets.color,
         .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
@@ -547,6 +684,7 @@ struct FrameTargets {
         .colorAttachmentCount = 1,
         .colorAttachments = &color,
         .depthStencilAttachment = &depth,
+        .timestampWrites = timestamps,
     };
     return wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
 }
@@ -618,11 +756,23 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         .season = static_cast<int>(options.season),
         .weather = static_cast<int>(options.weather),
     };
-    std::string save_status;
+    surface.set_vsync(options.vsync);
+    const auto timer_queue = wgpuDeviceGetQueue(device);
+    GpuFrameTimer gpu_timer(device, timer_queue);
+    wgpuQueueRelease(timer_queue);
+    PanelState panel{
+        .vsync = surface.vsync(), .vsync_optional = surface.vsync_optional(), .gpu_timing = gpu_timer.available()};
+    StageClock stage_clock;
+    StageTimes stages{};
     double last_time = glfwGetTime();
     while (!glfwWindowShouldClose(window.get())) {
+        stage_clock.start();
         glfwPollEvents();
         const double now = glfwGetTime();
+        int gpu_count = 0;
+        const double gpu_sum = gpu_timer.take_sum_ms(gpu_count);
+        panel.stats.add(now - last_time, stages, gpu_sum, gpu_count);
+        stages = {};
         const auto elapsed = static_cast<float>((std::min)(now - last_time, max_frame_seconds));
         update_camera_from_keyboard(window.get(), input, elapsed);
         last_time = now;
@@ -630,12 +780,18 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         toggle_shading_from_keyboard(window.get(), input, renderer);
         scene.update(renderer, camera, clock.advance(elapsed), scene_input(window.get(), input));
         const auto environment = scene.environment();
+        stage_clock.mark(FrameStage::update, stages);
 #ifdef OPENRTS_HAS_IMGUI
-        bool save_requested = glfwGetKey(window.get(), GLFW_KEY_F6) == GLFW_PRESS && !input.save_key_down;
+        panel.save_view = glfwGetKey(window.get(), GLFW_KEY_F6) == GLFW_PRESS && !input.save_key_down;
         input.save_key_down = glfwGetKey(window.get(), GLFW_KEY_F6) == GLFW_PRESS;
-        overlay.build(scene, camera, renderer, clock, environment.time_of_day_applies, save_requested, save_status);
-        if (save_requested) save_status = save_view(options.identity, scene.origin(), camera, clock, renderer.shading_path());
+        panel.present_mode = surface.present_mode_name();
+        overlay.build(scene, camera, renderer, clock, environment.time_of_day_applies, panel);
+        if (panel.save_view) {
+            panel.save_status = save_view(options.identity, scene.origin(), camera, clock, renderer.shading_path());
+        }
+        surface.set_vsync(panel.vsync);
 #endif
+        stage_clock.mark(FrameStage::panel, stages);
 
         int width = 0;
         int height = 0;
@@ -644,11 +800,13 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         surface.resize(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
 
         const auto frame_texture = surface.acquire();
+        stage_clock.mark(FrameStage::wait, stages);
         if (!frame_texture) continue;
         const auto frame_view = wgpuTextureCreateView(frame_texture, nullptr);
         const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
         const auto pass =
-            begin_main_pass(encoder, {.color = frame_view, .depth = surface.depth_view()}, environment.clear_colour);
+            begin_main_pass(encoder, {.color = frame_view, .depth = surface.depth_view()}, environment.clear_colour,
+                            gpu_timer.begin_frame());
 
         const auto aspect = static_cast<float>(width) / static_cast<float>(height);
         const FrameView frame{
@@ -671,10 +829,13 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         overlay.render(pass);
 #endif
         wgpuRenderPassEncoderEnd(pass);
+        gpu_timer.resolve(encoder);
 
         const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
+        stage_clock.mark(FrameStage::record, stages);
         const auto queue = wgpuDeviceGetQueue(device);
         wgpuQueueSubmit(queue, 1, &commands);
+        gpu_timer.submitted();
         renderer.frame_submitted(queue);
         wgpuQueueRelease(queue);
         wgpuCommandBufferRelease(commands);
@@ -684,6 +845,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         surface.present();
         wgpuTextureRelease(frame_texture);
         renderer.collect_retired();
+        stage_clock.mark(FrameStage::submit, stages);
     }
     return exit_code::success;
 }

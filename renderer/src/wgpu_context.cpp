@@ -110,7 +110,14 @@ WgpuDeviceContextResult create_headless_wgpu_device() {
         .userdata1 = &device_request,
         .userdata2 = nullptr,
     };
-    wgpuAdapterRequestDevice(context.adapter_, nullptr, device_callback);
+    // Timestamp queries are optional (GPU frame time in the viewer).
+    const WGPUFeatureName timestamps = WGPUFeatureName_TimestampQuery;
+    const bool has_timestamps = wgpuAdapterHasFeature(context.adapter_, timestamps);
+    const WGPUDeviceDescriptor device_descriptor{
+        .requiredFeatureCount = has_timestamps ? 1u : 0u,
+        .requiredFeatures = has_timestamps ? &timestamps : nullptr,
+    };
+    wgpuAdapterRequestDevice(context.adapter_, &device_descriptor, device_callback);
     if (!wait_for_request(context.instance_, device_request)
         || device_request.status != WGPURequestDeviceStatus_Success || !device_request.device)
         return {.error = "WebGPU device request failed or timed out."};

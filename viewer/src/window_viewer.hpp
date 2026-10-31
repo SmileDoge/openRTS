@@ -17,6 +17,7 @@ struct WindowOptions {
     float time_speed = 1.0f;
     renderer::rts::Season season = renderer::rts::Season::summer;
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
+    bool vsync = true;
     // What is open (root, mode, content), recorded in saved debug views.
     DebugView identity;
     // Camera to restore after the scene is attached (--view).
