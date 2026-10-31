@@ -13,6 +13,7 @@
 #include <glm/vec4.hpp>
 #include <webgpu/webgpu.h>
 
+#include <openrts/audio/audio_engine.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/renderer/model_renderer.hpp>
@@ -35,6 +36,8 @@ struct SceneGpu {
     WGPUDevice device = nullptr;
     WGPUTextureFormat target_format = WGPUTextureFormat_Undefined;
     renderer::ModelRenderer& models;
+    // Sound output, or nullptr when sound is off or no device is available.
+    audio::AudioEngine* audio = nullptr;
 };
 
 // World clock driven by the viewer.

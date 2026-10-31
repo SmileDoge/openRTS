@@ -65,6 +65,14 @@ FetchContent_Declare(glm
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(glm)
 
+# miniaudio (public domain / MIT-0): sound output and decoding. Only its
+# sources are used; SOURCE_SUBDIR keeps its own CMake project out.
+FetchContent_Declare(miniaudio
+    URL https://github.com/mackron/miniaudio/archive/refs/tags/0.11.22.tar.gz
+    URL_HASH SHA256=bcb07bfb27e6fa94d34da73ba2d5642d4940b208ec2a660dbf4e52e6b7cd492f
+    SOURCE_SUBDIR openrts-sources-only)
+FetchContent_MakeAvailable(miniaudio)
+
 function(openrts_configure_target target)
     target_compile_features(${target} PUBLIC cxx_std_20)
     target_include_directories(${target} PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -82,6 +90,7 @@ add_subdirectory(assets)
 add_subdirectory(renderer)
 add_subdirectory(platform)
 add_subdirectory(simulation)
+add_subdirectory(audio)
 add_subdirectory(compat)
 
 if(OPENRTS_BUILD_VIEWER)

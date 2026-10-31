@@ -46,3 +46,8 @@ add_executable(openrts_shape_text_test shape_text_test.cpp)
 openrts_configure_target(openrts_shape_text_test)
 target_link_libraries(openrts_shape_text_test PRIVATE openrts_formats)
 add_test(NAME openrts.shape_text COMMAND openrts_shape_text_test)
+
+add_executable(openrts_sound_test sound_test.cpp)
+openrts_configure_target(openrts_sound_test)
+target_link_libraries(openrts_sound_test PRIVATE openrts_audio openrts_formats)
+add_test(NAME openrts.sound COMMAND openrts_sound_test)

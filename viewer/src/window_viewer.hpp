@@ -19,6 +19,8 @@ struct WindowOptions {
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
     bool vsync = true;
     bool batching = true;
+    bool sound = true;
+    float sound_volume = 0.5f; // master volume, 0..1
     // What is open (root, mode, content), recorded in saved debug views.
     DebugView identity;
     // Camera to restore after the scene is attached (--view).

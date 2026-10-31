@@ -105,7 +105,7 @@ struct ContentTarget {
 // `--window --shape <file.s>` or `--window --route <route folder | name>`,
 // followed by optional `--root <installation>`, `--mount <zip|folder>` (an
 // extra mod-layer source), `--no-hot-reload`, `--probe` (ride the track from
-// the route start), `--experimental`, `--no-vsync`, `--no-batching`,
+// the route start), `--experimental`, `--no-vsync`, `--no-batching`, `--no-sound`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
 int run_window(std::string_view mode, std::string_view path, const std::vector<std::string_view>& flags) {
@@ -157,6 +157,10 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             hot_reload = false;
         } else if (flags[i] == "--probe") {
             probe = true;
+        } else if (flags[i] == "--no-sound") {
+            options.sound = false;
+        } else if (flags[i] == "--volume" && has_value) {
+            options.sound_volume = std::clamp(std::stof(std::string(flags[++i])), 0.0f, 1.0f);
         } else if (flags[i] == "--no-batching") {
             options.batching = false;
         } else if (flags[i] == "--no-vsync") {

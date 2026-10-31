@@ -284,6 +284,7 @@ struct PanelState {
     bool vsync = true;
     bool vsync_optional = false;
     bool gpu_timing = false;
+    audio::AudioEngine* sound = nullptr;
     bool save_view = false;
     std::string save_status;
 };
@@ -392,6 +393,15 @@ public:
                     static_cast<unsigned long long>(gpu.completed_frame));
         ImGui::Text("Models: %zu instances, %zu primitives, %zu draw calls", gpu.instances, gpu.primitives,
                     gpu.draw_calls);
+        if (panel.sound) {
+            float volume = panel.sound->volume();
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::SliderFloat("Sound volume", &volume, 0.0f, 1.0f, "%.2f")) panel.sound->set_volume(volume);
+            ImGui::SameLine();
+            ImGui::Text("%zu voices", panel.sound->active_voices());
+        } else {
+            ImGui::TextDisabled("Sound: off");
+        }
         bool batching = renderer.batching();
         if (ImGui::Checkbox("Merge identical primitives (instancing)", &batching)) renderer.set_batching(batching);
 
@@ -777,8 +787,21 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     }
 #endif
 
+    // Sound is optional: without a device the viewer runs silent.
+    std::unique_ptr<audio::AudioEngine> sound;
+    if (options.sound) {
+        sound = std::make_unique<audio::AudioEngine>();
+        if (!sound->ok()) {
+            std::cout << "sound: " << sound->error() << ", running silent\n";
+            sound.reset();
+        } else {
+            sound->set_volume(options.sound_volume);
+        }
+    }
+
     const SceneAttachment attachment(scene);
-    if (const auto error = scene.attach({.device = device, .target_format = surface.format(), .models = renderer}, camera);
+    if (const auto error = scene.attach(
+            {.device = device, .target_format = surface.format(), .models = renderer, .audio = sound.get()}, camera);
         !error.empty()) {
         std::cerr << error << '\n';
         return exit_code::renderer_failed;
@@ -815,12 +838,17 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
 
         toggle_shading_from_keyboard(window.get(), input, renderer);
         scene.update(renderer, camera, clock.advance(elapsed), scene_input(window.get(), input));
+        if (sound) {
+            sound->set_listener(camera.eye(), camera.forward());
+            sound->update();
+        }
         const auto environment = scene.environment();
         stage_clock.mark(FrameStage::update, stages);
 #ifdef OPENRTS_HAS_IMGUI
         panel.save_view = glfwGetKey(window.get(), GLFW_KEY_F6) == GLFW_PRESS && !input.save_key_down;
         input.save_key_down = glfwGetKey(window.get(), GLFW_KEY_F6) == GLFW_PRESS;
         panel.present_mode = surface.present_mode_name();
+        panel.sound = sound.get();
         overlay.build(scene, camera, renderer, clock, environment.time_of_day_applies, panel);
         if (panel.save_view) {
             panel.save_status = save_view(options.identity, scene.origin(), camera, clock, renderer.shading_path());

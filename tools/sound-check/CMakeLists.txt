@@ -1,0 +1,4 @@
+add_executable(openrts_sound_check src/main.cpp)
+set_target_properties(openrts_sound_check PROPERTIES OUTPUT_NAME openrts-sound-check)
+openrts_configure_target(openrts_sound_check)
+target_link_libraries(openrts_sound_check PRIVATE openrts_audio openrts_formats openrts_core)

@@ -14,6 +14,7 @@
 #include <openrts/formats/environment.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/terrain.hpp>
+#include <openrts/audio/world_sounds.hpp>
 #include <openrts/renderer/frustum.hpp>
 #include <openrts/renderer/model_assets.hpp>
 #include <openrts/renderer/model_library.hpp>
@@ -186,6 +187,8 @@ public:
                                                                origin_, terrain_radius);
         if (!terrain_->ready()) terrain_.reset();
         if (track_) track_->attach(gpu.device, gpu.target_format);
+        audio_ = gpu.audio;
+        if (audio_) world_sounds_ = std::make_unique<audio::WorldSounds>(content_.vfs(), route_, origin_);
 
         // Start at the route start, a little above the ground, looking along it.
         camera.distance = 1000.0f;
@@ -199,6 +202,9 @@ public:
     }
 
     void detach() override {
+        if (world_sounds_ && audio_) world_sounds_->stop(*audio_);
+        world_sounds_.reset();
+        audio_ = nullptr;
         if (track_) track_->detach();
         terrain_.reset();
         sky_renderer_.reset();
@@ -224,6 +230,11 @@ public:
         // published here as a whole.
         content_.forward_changes(*library_);
         library_->update();
+
+        // The free camera is an external camera for sound activation.
+        if (world_sounds_ && audio_) {
+            world_sounds_->update(clock.elapsed, camera.eye(), audio::SoundCamera::external, *audio_);
+        }
     }
 
     [[nodiscard]] SceneEnvironment environment() const override {
@@ -297,6 +308,11 @@ public:
         ImGui::Text("Tiles: %zu/%zu  |  Instances: %zu", stream.loaded_tiles, stream.requested_tiles,
                     stream.visible_instances);
         ImGui::Text("Drawn: %zu within %.0f m", drawn_instances_, draw_distance);
+        if (world_sounds_) {
+            const auto sounds = world_sounds_->stats();
+            ImGui::Text("World sounds: %zu sources (%zu active, %zu voices), %zu scripts, %zu clips", sounds.sources,
+                        sounds.active, sounds.voices, sounds.scripts, sounds.clips);
+        }
         ImGui::Text("Models: %zu GPU, %zu CPU queued, %zu pending", models.models, models.queued_uploads,
                     stream.pending_model_assets);
         if (track_) track_->draw_overlay();
@@ -378,6 +394,8 @@ private:
     const formats::EnvironmentDefinition* environment_ = nullptr;
     std::string environment_name_;
     std::unique_ptr<renderer::TerrainRenderer> terrain_;
+    audio::AudioEngine* audio_ = nullptr;
+    std::unique_ptr<audio::WorldSounds> world_sounds_;
     // Debug switch in the overlay; the overlay callback is const.
     mutable bool culling_ = true;
     std::optional<renderer::rts::SkySimulation> sky_simulation_;

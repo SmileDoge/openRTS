@@ -87,10 +87,11 @@ Result: signals react to the player's train and to switch positions.
 ### 5. Cab and on-board systems
 
 - Cab view (`.cvf`, 3-D cabs), controls, instruments.
-- Legacy locomotive DLLs through `compat` (ABI in `legacy-dll-abi.md`),
-  including `ALSN` (cab signalling) and `SpeedLimit` callbacks. This is where
-  most RTS rolling-stock logic lives.
-- Brakes in detail, sound (`.sms`).
+- Legacy locomotive DLLs through a 32-bit host process, and the openRTS train
+  plugin API (plan in `train-dll.md`), including `ALSN` (cab signalling) and
+  `SpeedLimit` callbacks. This is where most RTS rolling-stock logic lives.
+- Brakes in detail; cab and DLL-driven sound on top of the sound foundation
+  (`sound.md`: `.sms` runner, miniaudio output, world sounds).
 
 ### 6. Multiplayer
 
