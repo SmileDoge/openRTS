@@ -55,4 +55,6 @@ else
     echo "### Изменения / Changes"
 fi
 echo
-git log --no-merges "${limit[@]}" --format='#### %s%n%n%b' "$range" | grep -v '^Co-Authored-By:' | cat -s
+# Commit trailers are not for players: co-authors, session links, sign-offs.
+git log --no-merges "${limit[@]}" --format='#### %s%n%n%b' "$range" |
+    grep -viE '^(Co-Authored-By|Claude-Session|Signed-off-by):' | cat -s
