@@ -101,6 +101,9 @@ struct TrackItem {
     float x{}, y{}, z{};
     std::string name;    // platform / siding name, signal type
     std::string station; // platforms
+    // Platforms and sidings: the item at the other end (PlatformTrItemData /
+    // SidingTrItemData), 0xFFFFFFFF when none.
+    std::uint32_t linked = 0xFFFFFFFFu;
     // Signals.
     std::uint32_t signal_flags{};
     std::uint32_t signal_direction{};

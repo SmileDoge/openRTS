@@ -141,7 +141,8 @@ Track control, the route editor map and the console with the same code).
 
 ### 5. Cab and on-board systems
 
-- Cab view (`.cvf`, 3-D cabs), controls, instruments.
+- 3-D cabs only: controls, instruments. No 2-D cabs and no `.cvf` (the
+  user's decision, 2026-11-01).
 - Legacy locomotive DLLs through a 32-bit host process, and the openRTS train
   plugin API (plan in `train-dll.md`), including `ALSN` (cab signalling) and
   `SpeedLimit` callbacks. This is where most RTS rolling-stock logic lives.

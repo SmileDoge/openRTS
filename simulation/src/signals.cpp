@@ -35,7 +35,8 @@ struct ChainNode {
 };
 
 struct TrainState {
-    std::vector<ChainNode> chain;
+    std::vector<ChainNode> chain;       // ahead of the leading end
+    std::vector<ChainNode> other_chain; // ahead of the other end (the player's train)
     SignalAhead ahead;
     std::uint32_t nearest_object = no_index;
     double nearest_distance{};
@@ -87,6 +88,7 @@ struct SignalSystem::Impl {
     std::vector<std::vector<std::uint32_t>> dep_nodes, dep_junctions;
     std::vector<char> dirty, in_chain, was_in_chain, always, stale;
     std::function<std::optional<double>(const Train&)> authority;
+    std::function<bool(const Train&)> player;
     std::map<std::uint64_t, TrainState> trains;
     std::vector<SignalPass> passes;
     // The head being run, for dependency recording.
@@ -695,25 +697,22 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
     std::swap(impl.in_chain, impl.was_in_chain);
     std::fill(impl.in_chain.begin(), impl.in_chain.end(), char{0});
 
-    // 2. Train chains (0x508520).
-    std::set<std::uint64_t> alive;
-    for (const auto* train : trains) {
-        if (!train || !train->placed()) continue;
-        alive.insert(train->id());
-        auto& state = impl.trains[train->id()];
-        state.chain.clear();
-        const auto lead = train->leading_end();
-        if (!lead) continue;
-        // Collect objects ahead.
-        auto node = lead->node();
-        double offset = lead->offset();
-        bool forward = lead->forward();
+    // 2. Train chains (0x508520). One pass: collect the objects ahead of
+    // `from` and run them from the farthest to the nearest. `authority`: the
+    // reserved way ahead of `from`; `off_path`: every head runs with
+    // `enabled` 0 (the far end of a train that has a path).
+    const auto run_pass = [&](const TrackTraveller& from, std::vector<ChainNode>& chain, const std::optional<double> authority,
+                              const bool off_path, const double passing) {
+        chain.clear();
+        auto node = from.node();
+        double offset = from.offset();
+        bool forward = from.forward();
         double walked = 0.0;
         std::uint32_t normal_count = 0;
         std::uint32_t needed = 1; // train +164 (0 for player trains, PROBABLE) + 1
         std::set<std::pair<std::uint32_t, bool>> visited;
         bool done = false;
-        while (!done && state.chain.size() < chain_limit) {
+        while (!done && chain.size() < chain_limit) {
             const auto* info = network.node(node);
             if (!info || !visited.insert({node, forward}).second) break;
             std::vector<std::uint32_t> here;
@@ -729,21 +728,21 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
             for (const auto h : here) {
                 const auto& head = heads_[h];
                 const double distance = walked + std::abs(head.offset - offset);
-                if (!state.chain.empty() && state.chain.back().object == head.object) {
-                    state.chain.back().heads.push_back(h);
+                if (!chain.empty() && chain.back().object == head.object) {
+                    chain.back().heads.push_back(h);
                     continue;
                 }
-                if (state.chain.size() >= chain_limit || normal_count >= needed) {
+                if (chain.size() >= chain_limit || normal_count >= needed) {
                     done = true;
                     break;
                 }
-                state.chain.push_back({.object = head.object, .heads = {h}, .distance = distance});
+                chain.push_back({.object = head.object, .heads = {h}, .distance = distance});
             }
             // Recount NORMAL objects and the look-ahead length (heads of one
             // object can sit at the same item position in any order).
             normal_count = 0;
-            for (std::size_t k = 0; k < state.chain.size(); ++k) {
-                auto& chain_node = state.chain[k];
+            for (std::size_t k = 0; k < chain.size(); ++k) {
+                auto& chain_node = chain[k];
                 chain_node.min_function = 5;
                 bool normal = false;
                 for (const auto h : chain_node.heads) {
@@ -774,15 +773,13 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
             offset = forward ? 0.0 : (next ? next->length : 0.0);
         }
         // Objects whose first head is EXCL are left out (0x508520).
-        std::erase_if(state.chain, [&](const ChainNode& c) { return static_cast<int>(heads_[c.heads.front()].mode) == 3; });
+        std::erase_if(chain, [&](const ChainNode& c) { return static_cast<int>(heads_[c.heads.front()].mode) == 3; });
         const bool count_reached = normal_count >= needed;
 
         // Evaluate from the farthest to the nearest.
-        const double passing = std::abs(train->speed()) * dt * 1.5;
-        const auto authority = impl.authority ? impl.authority(*train) : std::nullopt;
         bool seen_normal = false;
-        for (std::size_t k = state.chain.size(); k-- > 0;) {
-            auto& chain_node = state.chain[k];
+        for (std::size_t k = chain.size(); k-- > 0;) {
+            auto& chain_node = chain[k];
             chain_node.aspect = 0.0f;
             chain_node.speed = -1.0f;
             float enabled = 2.0f;
@@ -790,11 +787,11 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
                 if (!seen_normal && count_reached) enabled = 0.0f;
                 seen_normal = true;
             }
-            if (authority && chain_node.distance > *authority + 1.0) enabled = 0.0f;
+            if (off_path || (authority && chain_node.distance > *authority + 1.0)) enabled = 0.0f;
             for (const auto h : chain_node.heads) {
                 auto& head = heads_[h];
                 head.enabled = enabled;
-                impl.stale[h] = run_head(impl, heads_, h, &state.chain, k, *config_, walker);
+                impl.stale[h] = run_head(impl, heads_, h, &chain, k, *config_, walker);
                 ++stats_.chain_runs;
                 head.enabled = chain_node.distance > passing ? 2.0f : 0.0f;
                 impl.in_chain[h] = 1;
@@ -804,6 +801,29 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
                     if (head.speed > chain_node.speed || head.speed < 0.0f) chain_node.speed = head.speed;
                 }
             }
+        }
+    };
+
+    std::set<std::uint64_t> alive;
+    for (const auto* train : trains) {
+        if (!train || !train->placed()) continue;
+        alive.insert(train->id());
+        auto& state = impl.trains[train->id()];
+        state.chain.clear();
+        state.other_chain.clear();
+        const auto lead = train->leading_end();
+        if (!lead) continue;
+        const double passing = std::abs(train->speed()) * dt * 1.5;
+        const auto authority = impl.authority ? impl.authority(*train) : std::nullopt;
+        run_pass(*lead, state.chain, authority, false, passing);
+        // The player's train: the other end too, also when it stands or
+        // backs off (0x508520 runs both passes for train types 1 and 4). A
+        // train with a path has nothing reserved that way. Other trains run
+        // the front pass when moving forward or flag +4 bit 0x80 is clear,
+        // the rear one when moving back or it is set; what the flag is is
+        // UNKNOWN, so they keep the end they last moved towards.
+        if (impl.player && impl.player(*train)) {
+            if (const auto other = train->trailing_end()) run_pass(*other, state.other_chain, std::nullopt, authority.has_value(), passing);
         }
         // What the train sees, and passes.
         state.ahead = {};
@@ -863,6 +883,10 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
 
 void SignalSystem::set_authority(std::function<std::optional<double>(const Train&)> authority) {
     impl_->authority = std::move(authority);
+}
+
+void SignalSystem::set_player(std::function<bool(const Train&)> is_player) {
+    impl_->player = std::move(is_player);
 }
 
 bool SignalSystem::reads_stale(const std::uint32_t head) const {

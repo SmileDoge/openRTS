@@ -43,6 +43,12 @@ public:
     // volume 0..; pitch 1 = the clip's own rate.
     virtual void set(VoiceId voice, float volume, float pitch, const glm::vec3& position) = 0;
     [[nodiscard]] virtual bool playing(VoiceId voice) const = 0;
+    // Moves a voice to `frame` of its clip (a looped voice starting
+    // elsewhere than at its beginning).
+    virtual void seek(VoiceId voice, std::uint64_t frame) {
+        (void)voice;
+        (void)frame;
+    }
 };
 
 enum class SoundCamera : std::uint8_t { external, cab, passenger };
@@ -77,6 +83,15 @@ public:
     void update(float dt, const SoundInputs& inputs, VoiceSink& sink);
     // Stops every voice (deactivation, unloading).
     void stop(VoiceSink& sink);
+    // Fetches every clip the group can play, so the first update does not
+    // decode files while voices already started elsewhere keep playing (one
+    // car of a train running ahead of the others).
+    void preload();
+    // StartLoop voices (whole-clip loops) begin at a random frame instead of
+    // the first: the same loop on many cars of a train does not add up in
+    // phase (one loud point, comb filtering). openRTS choice; RTS starts its
+    // buffers at 0 (PROBABLE, docs/sound.md).
+    void set_random_loop_phase(bool on) noexcept { random_loop_phase_ = on; }
 
     [[nodiscard]] bool active() const noexcept { return active_; }
     [[nodiscard]] std::size_t voices() const noexcept;
@@ -101,6 +116,7 @@ private:
     // SetVariableValue / IncreaseVariableValue: replace the input from then on.
     std::array<std::optional<float>, formats::sound_variable_count> overrides_{};
     bool active_ = false;
+    bool random_loop_phase_ = false;
 };
 
 // Value of a curve at `x`: linear between points, clamped at the ends.

@@ -11,6 +11,7 @@ add_library(openrts_formats STATIC
     src/signal_config.cpp
     src/signal_script.cpp
     src/train_path.cpp
+    src/route_database.cpp
     src/route_world.cpp
     src/environment.cpp
     src/terrain.cpp

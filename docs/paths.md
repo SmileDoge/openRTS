@@ -11,12 +11,50 @@ queues), `reverse/track.md` (junction release).
 
 ```text
 openrts_viewer --window --route D:\Games\MDDRTS\ROUTES\Kuban_RTS --consist <name> [--path <name>] [--track-control]
-    F7    the Track control window (also a checkbox in the debug panel)
+    Ctrl+Alt+F7   the Track control window (also a checkbox in the debug panel)
 openrts-path-check <installation root> <route> <consist> [path... | #N...] [--seconds N] [--together] [--following M]
 openrts-path-check <installation root> <route> x --replan        (each path planned from its ends, compared with the .pat)
 openrts-path-check <installation root> <route> x --junction N    (a junction, its tracks and their signals)
 openrts-track-check <installation root> [route...]    (now also: every .pat resolved, speed post directions)
 ```
+
+**Information keys** (as RTS's, `reverse/dispatcher.md`; for the followed
+train, else the driven one):
+- **F5** — a page of the train's cars: the overall line (speed,
+  acceleration, limit, next limit and its distance, kilometre) and per car
+  its mass, pipe / auxiliary / cylinder pressures, velocity, acceleration,
+  forces, handbrake, derailment; F5 again turns the page, past the last one
+  it hides; **Shift+F5** the train as a whole (mass, length, passenger /
+  freight cars, engines);
+- **Ctrl+F5** — the kilometre and picket (from the nearest kilometre post
+  behind, counting the way the posts ahead go), the limit now, the limits
+  ahead within 10 km with their distances, the next signal;
+- **F6** — the stations ahead with their distances (RTS shows the
+  activity's schedule there; openRTS has no activities yet): along the path,
+  or along the junctions as set within 40 km; a platform named after its
+  station shows only the rest ("о.п. ЗИП, п.I");
+- **the panels can be dragged** with the left mouse button; each keeps the
+  edge it is anchored to (F5 the left one, Ctrl+F5 and F6 the right one) and
+  its place is remembered in `viewer_state.ini`;
+- **Ctrl+F7** — signal names from the route database (`<route>/<RouteID>.rtsdb`)
+  within 150 m, 3 m above the signal, fading from 30 m on; Track control
+  shows them next to the signals when zoomed in. On the installed routes
+  75–97 % of the named units find their TDB signal item as RTS matches it
+  (x/y/z within 0.2 m); every other one stands 19–29 m from its signal (a
+  systematic shift, median about 20 m on every route; why is UNKNOWN), where
+  RTS draws its name. openRTS gives each such unit the nearest signal item
+  no other unit has, within 30 m, and puts the name over that signal's place
+  on the track;
+- **F7** — platform and siding names as RTS shows them: a thick line along
+  the track between the two ends of each (blue platforms, yellow sidings) and
+  the name on a post above its middle ("station (platform)");
+- with Ctrl+F7 and with the service labels (L), every signal gets a line
+  down to the place on the track its head stands for, with a short mark
+  along the track pointing the way the head protects — which track a signal
+  between two tracks governs;
+- **Ctrl+Alt+F7** (as RTS) — Track control (also a checkbox in the panel and
+  `--track-control`); **Ctrl+F6** saves a debug view (F6 alone is the
+  stations panel).
 
 **Track control** (RTS's in-game "RTS track control"):
 - the route's real track from above on a light green background, as RTS
@@ -27,7 +65,12 @@ openrts-track-check <installation root> [route...]    (now also: every .pat reso
   way green, the rest of the leg blue, later legs pale; W / R / E mark
   waiting, reverse and end points;
 - junctions: orange reserved, red occupied, the set branch green when zoomed
-  in; signals as squares in the colour of their aspect; platform names;
+  in; signals as squares in the colour of their aspect, each with a line to
+  the place on the track its heads stand for and a mark there pointing the
+  way the head protects (which track a signal between two tracks governs),
+  and its name from the route database when zoomed in; platforms as a thick
+  blue line along the track between their two ends, sidings yellow, their
+  names on a leader;
 - menus:
   - **train:** jump to it (the camera follows it), drive it with the
     keyboard / give it the test driver / let it stand, create or edit its
@@ -37,8 +80,25 @@ openrts-track-check <installation root> [route...]    (now also: every .pat reso
   - **signal:** its heads (aspect, draw state, block_state, route_set);
   - **track:** while editing, place the start, a point to pass, a waiting
     point (seconds), a reverse point, the end point; otherwise "path for the
-    selected train to here"; put a consist here (optionally facing the other
-    way, with or without a test driver);
+    selected train to here"; put a consist here — from the content's list or
+    with "Browse..." from any .con on disk (Windows' Open dialog; it starts
+    in the folder the last one came from, kept in `viewer_state.ini` in the
+    working directory; the cars still come from the content's TRAINSET);
+  - **placing a consist** (after choosing it) shows a preview first:
+    - every car at its true length, the front car orange with an arrow the
+      way the train will face, engines pale orange; the front of car 0 at
+      the clicked point, the cars behind it along the junctions as set (the
+      way that fits is chosen at first);
+    - drag a car with the left button to slide the consist along the track
+      (it follows the set junctions, as the train would roll); a click on
+      another track moves its front there, facing the same way on the screen
+      as far as the track allows; arrows nudge it 1 m (Shift: 10 m);
+    - Space turns it around on the same stretch (the front car goes to the
+      other end); Enter or "Put it here" places it (with or without a test
+      driver), Escape drops it; a right click on the preview offers the same;
+    - a red outline: not enough track (it cannot be placed), or it runs into
+      another train (within 1.6 m of one of its cars; it can still be
+      placed);
   - **path point:** change the start direction, change a waiting time,
     remove the point;
 - saved paths go to `user_paths/<route>/<name>.pat` in the working directory

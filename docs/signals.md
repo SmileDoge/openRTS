@@ -220,6 +220,12 @@ Each answer goes into `docs/reverse/signals.md` with its confidence.
     route. Continue until `SignalNumClearAhead` of the first NORMAL head + 2
     NORMAL signals. Evaluate from far to near with `enabled` set, as
     `0x508520`.
+  - **Which end:** the end the train last moved towards (it stays so while
+    the train stands). The player's train (`SignalSystem::set_player`, the
+    keyboard-driven one in the viewer) also runs the pass ahead of its other
+    end every step, as RTS does for train types 1 and 4; with a path, that
+    pass runs with `enabled` 0. What the train obeys and passes comes from
+    the end it moves towards.
   - **Free-running:** heads no train approaches run with no chain
     (`next_sig_*` gives STOP). They do not run every step: see
     "Update cost" below.
@@ -283,7 +289,7 @@ Each answer goes into `docs/reverse/signals.md` with its confidence.
 - **Signals panel:** counts by aspect, heads without a script, scripts
   with errors. A pick (nearest head to the camera) shows its type, script
   locals, `block_state` and `route_set`.
-- **`--signals off`** for comparisons. Debug views (F6) record the signal
+- **`--signals off`** for comparisons. Debug views (Ctrl+F6) record the signal
   states (optional).
 
 ## 6. Checks

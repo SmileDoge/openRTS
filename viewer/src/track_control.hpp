@@ -2,6 +2,7 @@
 
 #ifdef OPENRTS_HAS_WGPU
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -26,6 +27,8 @@ public:
     TrackControl(simulation::TrackNetwork& network, formats::RoutePosition origin);
 
     void toggle() noexcept { open_ = !open_; }
+    // Signal names (route database, Ctrl+F7) by signal object.
+    void set_signal_names(std::function<std::string(std::uint32_t)> names) { signal_names_ = std::move(names); }
     [[nodiscard]] bool is_open() const noexcept { return open_; }
     // Draws the window (ImGui builds) and acts on the trains and the network.
     void draw(TrainView& trains, simulation::SignalSystem* signals);
@@ -36,7 +39,7 @@ private:
         std::vector<double> x, z, offset; // samples along the node, route metres
         double min_x{}, max_x{}, min_z{}, max_z{};
     };
-    enum class PickKind : std::uint8_t { none, train, junction, signal, track, start_point, plan_point };
+    enum class PickKind : std::uint8_t { none, train, junction, signal, track, start_point, plan_point, placement };
     struct Pick {
         PickKind kind = PickKind::none;
         std::uint64_t train{};
@@ -51,6 +54,8 @@ private:
     [[nodiscard]] double world_x(const simulation::TrackPoint& point) const;
     [[nodiscard]] double world_z(const simulation::TrackPoint& point) const;
     [[nodiscard]] Pick pick(float mouse_x, float mouse_y, TrainView& trains, const simulation::SignalSystem* signals) const;
+    // The track point nearest to the cursor within `reach` pixels.
+    [[nodiscard]] std::optional<simulation::TrackLocation> nearest_track(float mouse_x, float mouse_y, double reach) const;
     void draw_map(TrainView& trains, const simulation::SignalSystem* signals);
     void draw_panel(TrainView& trains, simulation::SignalSystem* signals);
     void draw_menu(TrainView& trains, simulation::SignalSystem* signals);
@@ -76,12 +81,51 @@ private:
     float wait_seconds_ = 60.0f;
     char consist_filter_[64]{};
     int consist_choice_ = -1;
-    bool spawn_turned_ = false;
     bool spawn_ai_ = true;
+    bool focused_ = false; // the window has the keyboard focus
+
+    // Putting a consist down: first a preview on the map, with the front car
+    // and the way it faces marked; dragged along the track, turned, then
+    // placed or dropped.
+    struct Placement {
+        bool active = false;
+        std::string consist; // what TrainView::spawn takes
+        TrainView::ConsistLayout layout;
+        simulation::TrackLocation head; // the front of car 0, facing the way the train runs
+        int grabbed = -1;               // the car being dragged
+        // From the last layout: each car's front and rear where it fits.
+        std::vector<std::pair<simulation::TrackPoint, simulation::TrackPoint>> cars;
+        bool fits = false;
+        std::string overlaps; // a train the preview runs into
+    };
+    Placement placement_;
+    void start_placement(TrainView& trains, const std::string& consist, simulation::TrackLocation where);
+    void lay_placement(TrainView& trains);
+    // Moves the preview `metres` along the track (positive: the way it
+    // faces); refused when the cars would leave the track.
+    void slide_placement(TrainView& trains, double metres);
+    // Moves the front to `where`, keeping the way it faces on the screen.
+    void move_placement(TrainView& trains, simulation::TrackLocation where);
+    // The same stretch of track, the front car at the other end.
+    void turn_placement(TrainView& trains);
+    void finish_placement(TrainView& trains);
+    // The preview car under the cursor, -1 when none.
+    [[nodiscard]] int placement_car_at(float mouse_x, float mouse_y) const;
     bool show_signals_ = true;
     bool show_platforms_ = true;
     bool show_junction_ids_ = false;
     bool show_all_paths_ = false;
+    bool show_signal_names_ = true;
+    bool show_sidings_ = true;
+    // Platforms and sidings: the stretch of track between their two ends.
+    struct Place {
+        bool platform = true;
+        std::string name;
+        std::vector<double> x, z; // route metres along the track
+    };
+    std::vector<Place> places_;
+    void build_places();
+    std::function<std::string(std::uint32_t)> signal_names_;
 };
 
 } // namespace openrts::viewer

@@ -46,6 +46,7 @@ public:
     [[nodiscard]] float volume() const noexcept;
     // Releases finished voices; call once per frame.
     void update();
+    void seek(VoiceId voice, std::uint64_t frame) override;
     [[nodiscard]] std::size_t active_voices() const noexcept;
     // Offline engines: mixes `frames` interleaved float frames into `out`.
     void render(float* out, std::uint64_t frames);

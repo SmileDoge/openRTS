@@ -448,7 +448,7 @@ public:
         bool culling = renderer.face_culling();
         if (ImGui::Checkbox("Cull back faces (RTS)", &culling)) renderer.set_face_culling(culling);
 
-        if (ImGui::Button("Save debug view (F6)")) panel.save_view = true;
+        if (ImGui::Button("Save debug view (Ctrl+F6)")) panel.save_view = true;
         if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
         ImGui::Separator();
         draw_clock(clock, time_of_day_applies);
@@ -537,6 +537,8 @@ struct CameraInput {
     bool track_key_down = false;
     bool labels_key_down = false;
     bool track_control_key_down = false;
+    bool info_key_down = false;
+    bool stations_key_down = false;
     bool save_key_down = false;
     std::array<bool, 11> train_keys_down{};
     double cursor_x = 0.0;
@@ -654,6 +656,11 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         was_down = now;
         return edge;
     };
+    const bool ctrl = down(GLFW_KEY_LEFT_CONTROL) || down(GLFW_KEY_RIGHT_CONTROL);
+    const bool shift = down(GLFW_KEY_LEFT_SHIFT) || down(GLFW_KEY_RIGHT_SHIFT);
+    const bool alt = down(GLFW_KEY_LEFT_ALT) || down(GLFW_KEY_RIGHT_ALT);
+    const bool f5 = pressed(GLFW_KEY_F5, input.info_key_down);
+    const bool f7 = pressed(GLFW_KEY_F7, input.track_control_key_down);
     return {
         .step_up = down(GLFW_KEY_UP),
         .step_down = down(GLFW_KEY_DOWN),
@@ -673,7 +680,13 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .independent_less = pressed(GLFW_KEY_COMMA, input.train_keys_down[8]),
         .toggle_ep = pressed(GLFW_KEY_K, input.train_keys_down[9]),
         .turn_around = pressed(GLFW_KEY_X, input.train_keys_down[10]),
-        .toggle_track_control = pressed(GLFW_KEY_F7, input.track_control_key_down),
+        .toggle_track_control = f7 && ctrl && alt,
+        .place_names = f7 && !ctrl && !alt,
+        .car_info = f5 && !ctrl,
+        .car_info_shift = shift,
+        .limits_panel = f5 && ctrl,
+        .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+        .signal_names = f7 && ctrl && !alt,
     };
 }
 
@@ -931,8 +944,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const auto environment = scene.environment();
         stage_clock.mark(FrameStage::update, stages);
 #ifdef OPENRTS_HAS_IMGUI
-        panel.save_view = glfwGetKey(window.get(), GLFW_KEY_F6) == GLFW_PRESS && !input.save_key_down;
-        input.save_key_down = glfwGetKey(window.get(), GLFW_KEY_F6) == GLFW_PRESS;
+        // Ctrl+F6 (F6 alone is RTS's stations-ahead panel).
+        const bool save_keys = glfwGetKey(window.get(), GLFW_KEY_F6) == GLFW_PRESS
+            && (glfwGetKey(window.get(), GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window.get(), GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS);
+        panel.save_view = save_keys && !input.save_key_down;
+        input.save_key_down = save_keys;
         panel.present_mode = surface.present_mode_name();
         panel.sound = sound.get();
         overlay.build(scene, camera, renderer, clock, environment.time_of_day_applies, panel);

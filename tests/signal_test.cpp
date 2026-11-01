@@ -237,6 +237,23 @@ void test_system() {
     check(system.heads()[0].aspect() == SignalAspect::stop, "the first signal is at STOP behind the train");
     check(system.block_state(0) == 1, "its block is occupied");
     check(system.ahead(train).object == 1, "the next signal is the middle one");
+
+    // Backing off a little: the train last moved towards its rear. Another
+    // train then leaves the middle signal to the free run (next_sig_lr gives
+    // STOP: APPROACH_1); the player's train still runs the pass ahead of its
+    // front (0x508520), so the signal keeps its aspect for the train
+    // (CLEAR_2) - as RTS shows a shunting signal at ЗИП after backing off.
+    driver->throttle = 0;
+    driver->reverser = 0;
+    train.add_velocity(-static_cast<float>(train.speed()) - 0.5f);
+    for (int i = 0; i < 10; ++i) train.step();
+    train.add_velocity(-static_cast<float>(train.speed()));
+    system.update(trains, simulation::train_step);
+    check(system.heads()[1].aspect() == SignalAspect::approach_1, "not the player's: the middle signal runs free (APPROACH_1)");
+    system.set_player([&](const simulation::Train& t) { return t.id() == train.id(); });
+    system.update(trains, simulation::train_step);
+    check(system.heads()[1].aspect() == SignalAspect::clear_2, "the player's train keeps the signal ahead of its front (CLEAR_2)");
+    check(system.ahead(train).object != 1, "what the train obeys still comes from the end it moves towards");
 }
 
 } // namespace

@@ -208,11 +208,18 @@ public:
             train_ = std::make_unique<TrainView>(content_.vfs(), route_, origin_, track_->network());
             track_control_ = std::make_unique<TrackControl>(track_->network(), origin_);
             if (content_.track_control()) track_control_->toggle();
+            if (signals_) {
+                track_control_->set_signal_names([signals = signals_.get()](const std::uint32_t object) {
+                    return signals->object_name(object);
+                });
+            }
             // Signals beyond a routed train's reserved way stay at danger.
             if (signals_) {
                 signals_->set_authority([dispatcher = &train_->dispatcher()](const simulation::Train& train) {
                     return dispatcher->authority_ahead(train.id());
                 });
+                // The keyboard-driven train is the player's (RTS type 1).
+                signals_->set_player([trains = train_.get()](const simulation::Train& train) { return trains->is_player(train.id()); });
             }
             if (!content_.consist().empty()) {
                 if (const auto error = train_->load(content_.consist()); !error.empty()) {
@@ -233,7 +240,10 @@ public:
         if (world_sounds_ && audio_) world_sounds_->stop(*audio_);
         if (train_ && audio_) train_->stop_sound(*audio_);
         track_control_.reset();
-        if (signals_) signals_->set_authority({});
+        if (signals_) {
+            signals_->set_authority({});
+            signals_->set_player({});
+        }
         train_.reset();
         world_sounds_.reset();
         audio_ = nullptr;
@@ -261,6 +271,13 @@ public:
             }
         }
         if (input.toggle_track_control && track_control_) track_control_->toggle();
+        if (input.signal_names) signal_names_ = !signal_names_;
+        if (input.place_names) place_names_ = !place_names_;
+        if (train_) {
+            if (input.car_info) train_->car_info_key(input.car_info_shift);
+            if (input.limits_panel) train_->toggle_limits_panel();
+            if (input.stations_panel) train_->toggle_stations_panel();
+        }
         if (train_) {
             train_->set_signals(signals_ ? signals_->system() : nullptr);
             if (input.place_train && train_->loaded()) place_train(camera);
@@ -382,15 +399,20 @@ public:
         ImGui::Text("Models: %zu GPU, %zu CPU queued, %zu pending", models.models, models.queued_uploads,
                     stream.pending_model_assets);
         ImGui::Checkbox("Labels: junctions and signals (L)", &labels_);
-        if (labels_) draw_labels();
+        draw_scene_marks();
         if (track_control_) {
             bool open = track_control_->is_open();
-            if (ImGui::Checkbox("Track control (F7)", &open)) track_control_->toggle();
+            if (ImGui::Checkbox("Track control (Ctrl+Alt+F7)", &open)) track_control_->toggle();
+            ImGui::SameLine();
+            ImGui::Checkbox("Names (F7)", &place_names_);
+            ImGui::SameLine();
+            ImGui::Checkbox("Signal names (Ctrl+F7)", &signal_names_);
         }
         if (track_) track_->draw_overlay();
         if (train_) train_->draw_overlay();
         if (signals_) signals_->draw_overlay();
         if (track_control_ && train_) track_control_->draw(*train_, signals_ ? signals_->system() : nullptr);
+        if (train_) train_->draw_hud();
         content_.draw_overlay(library_.get());
 #endif
     }
@@ -518,12 +540,51 @@ private:
 
     // Service labels over the 3D view (behind the panels), from the last
     // submitted frame's camera.
-    void draw_labels() const {
-#ifdef OPENRTS_HAS_IMGUI
-        constexpr float range = 600.0f;
+    // Service labels (L), signal names (Ctrl+F7), platform and siding names
+    // (F7) and the lines tying signals and names to their track.
+    void draw_scene_marks() const {
         std::vector<WorldLabel> labels;
-        if (track_) track_->collect_labels(labels, last_eye_, range);
-        if (signals_) signals_->collect_labels(labels, last_eye_, range);
+        std::vector<WorldLine> lines;
+        if (labels_) {
+            constexpr float range = 600.0f;
+            if (track_) track_->collect_labels(labels, last_eye_, range);
+            if (signals_) signals_->collect_labels(labels, last_eye_, range);
+        }
+        if (signal_names_ && signals_) signals_->collect_names(labels, last_eye_);
+        if ((signal_names_ || labels_) && signals_) signals_->collect_links(lines, last_eye_, labels_ ? 600.0f : 150.0f);
+        if (place_names_ && track_) track_->collect_places(labels, lines, last_eye_, 2000.0f);
+        draw_world_lines(lines);
+        draw_world_labels(std::move(labels));
+    }
+
+    // Lines of the scene over the 3D view, clipped at the near plane.
+    void draw_world_lines(const std::vector<WorldLine>& lines) const {
+#ifdef OPENRTS_HAS_IMGUI
+        const auto size = ImGui::GetIO().DisplaySize;
+        auto* list = ImGui::GetBackgroundDrawList();
+        constexpr float near_w = 0.1f;
+        for (const auto& line : lines) {
+            auto a = last_view_projection_ * glm::vec4{line.a, 1.0f};
+            auto b = last_view_projection_ * glm::vec4{line.b, 1.0f};
+            if (a.w < near_w && b.w < near_w) continue;
+            if (a.w < near_w) a = a + (b - a) * ((near_w - a.w) / (b.w - a.w));
+            if (b.w < near_w) b = b + (a - b) * ((near_w - b.w) / (a.w - b.w));
+            const auto screen = [&](const glm::vec4& c) {
+                return ImVec2{(c.x / c.w * 0.5f + 0.5f) * size.x, (0.5f - c.y / c.w * 0.5f) * size.y};
+            };
+            const auto sa = screen(a), sb = screen(b);
+            if ((sa.x < 0 && sb.x < 0) || (sa.y < 0 && sb.y < 0) || (sa.x > size.x && sb.x > size.x) || (sa.y > size.y && sb.y > size.y)) continue;
+            list->AddLine(sa, sb, line.colour, line.thickness);
+        }
+#else
+        (void)lines;
+#endif
+    }
+
+    // Labels at points of the scene, the far ones first (near ones on top);
+    // the background follows the text's alpha.
+    void draw_world_labels(std::vector<WorldLabel> labels) const {
+#ifdef OPENRTS_HAS_IMGUI
         const auto size = ImGui::GetIO().DisplaySize;
         auto* list = ImGui::GetBackgroundDrawList();
         // Far labels first, so near ones are drawn on top.
@@ -538,8 +599,9 @@ private:
             const ImVec2 anchor{(ndc.x * 0.5f + 0.5f) * size.x, (0.5f - ndc.y * 0.5f) * size.y};
             const auto text_size = ImGui::CalcTextSize(label.text.c_str());
             const ImVec2 corner{anchor.x - text_size.x * 0.5f, anchor.y - text_size.y};
+            const auto alpha = static_cast<std::uint32_t>(((label.colour >> 24) & 0xffu) * 0xb0u / 0xffu);
             list->AddRectFilled({corner.x - 3.0f, corner.y - 2.0f}, {corner.x + text_size.x + 3.0f, corner.y + text_size.y + 2.0f},
-                                0xb0000000u, 3.0f);
+                                alpha << 24, 3.0f);
             list->AddText(corner, label.colour, label.text.c_str());
         }
 #endif
@@ -552,6 +614,8 @@ private:
     std::optional<TrackView> track_;
     std::unique_ptr<TrainView> train_;
     std::unique_ptr<TrackControl> track_control_;
+    mutable bool signal_names_ = false; // Ctrl+F7
+    mutable bool place_names_ = false;  // F7
     std::unique_ptr<SignalView> signals_;
     std::size_t drawn_instances_ = 0;
 };

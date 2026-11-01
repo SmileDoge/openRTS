@@ -57,6 +57,8 @@ public:
         const auto it = voices.find(voice);
         return it != voices.end() && !it->second.stopped && !finished.contains(voice);
     }
+    void seek(audio::VoiceId voice, std::uint64_t frame) override { seeks[voice] = frame; }
+    std::map<audio::VoiceId, std::uint64_t> seeks;
 
     [[nodiscard]] std::size_t live() const {
         std::size_t count = 0;
@@ -267,6 +269,60 @@ Tr_SMS ( ScalabiltyGroup ( 5 Activation ( ExternalCam ( ) ) Streams ( 1 Stream (
     check(!sound.active(), "deactivates beyond 550 m");
 }
 
+// A deactivation distance below the activation distance (mdd_ed4m-engMotor:
+// Activation 1000 m, Deactivation 300 m): between the two the group must
+// not start and stop on alternate updates; deactivation wins.
+void test_crossed_distances() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 5 Activation ( ExternalCam ( ) Distance ( 1000 ) ) Deactivation ( Distance ( 300 ) )
+    Streams ( 1 Stream ( Triggers ( 1 Initial_Trigger ( StartLoop ( 1 File ( "a.wav" -1 ) ) ) ) ) ) ) ))"));
+    const auto clip = test_clip();
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::train, [&](const std::string&) { return clip; }, 4);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::external;
+    inputs[SoundVariable::distance] = 500;
+    for (int i = 0; i < 10; ++i) sound.update(0.1f, inputs, sink);
+    check(!sound.active() && sink.voices.empty(), "between 300 and 1000 m: silent, no restarts");
+    inputs[SoundVariable::distance] = 250;
+    for (int i = 0; i < 10; ++i) sound.update(0.1f, inputs, sink);
+    check(sound.active() && sink.voices.size() == 1, "within 300 m: one loop, started once");
+    inputs[SoundVariable::distance] = 350;
+    sound.update(0.1f, inputs, sink);
+    check(!sound.active(), "beyond 300 m it stops");
+}
+
+// Random loop phase: whole-clip loops start at a random frame, other voices
+// at 0; preload fetches every clip before anything plays.
+void test_loop_phase() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) Distance ( 500 ) ) Streams ( 3
+    Stream ( Triggers ( 1 Initial_Trigger ( StartLoop ( 1 File ( "a.wav" -1 ) ) ) ) )
+    Stream ( Triggers ( 1 Initial_Trigger ( StartLoopRelease ( 1 File ( "b.wav" -1 ) ) ) ) )
+    Stream ( Triggers ( 1 Discrete_Trigger ( 5 PlayOneShot ( 1 File ( "c.wav" -1 ) ) ) ) ) ) ) ))"));
+    const auto clip = test_clip();
+    std::vector<std::string> looked_up;
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string& name) {
+                                   looked_up.push_back(name);
+                                   return clip;
+                               }, 9);
+    sound.preload();
+    check(looked_up.size() == 3, "preload fetches all three clips");
+    sound.set_random_loop_phase(true);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::external;
+    inputs[SoundVariable::distance] = 10;
+    sound.update(0.1f, inputs, sink);
+    check(sink.voices.size() == 2, "two loops started");
+    check(sink.seeks.size() == 1 && sink.seeks.begin()->second < clip->frames, "only the StartLoop voice is moved, inside the clip");
+    const std::uint32_t five = 5;
+    inputs.discrete = std::span(&five, 1);
+    sound.update(0.1f, inputs, sink);
+    check(sink.voices.size() == 3 && sink.seeks.size() == 1, "one-shots start at 0");
+}
+
 void test_ambient_runner() {
     auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(ambient_script));
     std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips{
@@ -385,6 +441,8 @@ int main() {
     test_station_runner();
     test_ambient_runner();
     test_default_distances();
+    test_crossed_distances();
+    test_loop_phase();
     test_decoding();
     test_engine();
     if (failures == 0) std::cout << "sound: all checks passed\n";

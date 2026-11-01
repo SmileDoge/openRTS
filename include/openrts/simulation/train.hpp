@@ -275,8 +275,14 @@ public:
     void set_bogies(std::size_t car, float ahead, float behind);
     [[nodiscard]] LocomotiveController* controller(std::size_t car);
 
-    // One step of train_step seconds.
+    // One step of train_step seconds; nothing while asleep.
     void step();
+    // A STATIC consist (RTS train type 0, 0x424488): not simulated at all;
+    // it keeps its place, its cars stand and their brakes stay as they
+    // were. It still occupies the track, couples and is hit like any train;
+    // the owner wakes it when something moves it (RTS: it becomes LOOSE).
+    void set_asleep(bool asleep) noexcept;
+    [[nodiscard]] bool asleep() const noexcept { return asleep_; }
 
     [[nodiscard]] const std::vector<CarState>& cars() const noexcept { return cars_; }
     [[nodiscard]] std::vector<CarPlacement> placements() const;
@@ -287,6 +293,8 @@ public:
     // The end that led the last movement (the front when standing still at
     // the start), facing the direction of travel.
     [[nodiscard]] std::optional<TrackTraveller> leading_end() const;
+    // The other end, facing away from the train.
+    [[nodiscard]] std::optional<TrackTraveller> trailing_end() const;
     [[nodiscard]] TrackNetwork* network() const noexcept { return network_; }
     [[nodiscard]] std::vector<TrainEvent> take_events();
     [[nodiscard]] double speed() const noexcept { return cars_.empty() ? 0.0 : cars_.front().velocity; }
@@ -311,6 +319,7 @@ private:
     TrainSettings settings_;
     TrackNetwork* network_ = nullptr;
     std::uint64_t id_;
+    bool asleep_ = false;
 };
 
 // What happened where two trains meet (RTS train update 0x424488).

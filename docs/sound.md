@@ -106,6 +106,24 @@ The action of a trigger is the first keyword found in this order:
 - **Selection:** `SelectionMethod ( RandomSelection )` selects randomly; any
   other value, or none, selects sequentially.
 
+### Stream `Sources` (PROBABLE, static: 0x4DD0EC and its exception table)
+
+- **`Sources ( n i … )`** points a stream at the group's `SoundSources`
+  entries (indices from 0).
+- **An index at or beyond the group's `SoundSources` count** throws inside
+  a try block of the loader. Its handler (0x4DDE32):
+  - logs message 0x39, "Error when loading sound sources in %s";
+  - leaves the stream without sources;
+  - goes on loading. The stream still plays, at the object.
+- **Installed content:** 232 such references in TRAINSET (45 scripts), e.g.
+  the ED4M, 2TE10, VL10K and TEM2 exterior scripts, which have no
+  `SoundSources` at all.
+- **A script that fails as a whole** (any other exception) is caught in
+  0x4A72D4: message 0x23, "Failed to load sms-file %s"; that object has no
+  sound.
+- **openRTS:** stream sources are not used yet (cab work); every stream plays
+  at the object, which is what RTS does for the bad references.
+
 ### Unknown to RTS
 
 RTS ignores these, and so does openRTS:
@@ -150,6 +168,31 @@ first match in file order, not by number:
   - `Initial_Trigger`s fire in order.
 - When it deactivates, all voices stop.
 - The free camera of the viewer counts as `ExternalCam`.
+- **Deactivation distance below the activation distance** (four installed
+  groups: the ED4M, ED9M and EP2D `engMotor` scripts, 1000 / 300 m):
+  deactivation wins. Between the two distances the group stays silent
+  instead of starting and stopping on alternate updates. RTS's runtime test
+  is not traced.
+
+### Rolling stock in the viewer
+
+- **Group by role:** the player's train (the driven one) plays group 7,
+  other trains (test driver, standing) the first group numbered 5 or 0, as
+  RTS chooses for kinds 5 and 7. A car whose script has no such group is
+  silent, e.g. the ED4M head cars on a train that is not the player's. A
+  train that changes role gets its sounds rebuilt.
+- **Clips are loaded before anything plays:** every car's script, group and
+  clips first, then the updates. Before, the first car of a kind decoded its
+  files while the cars before it already played; the same loops then ran a
+  fraction of a second apart and sounded like an echo.
+- **Random loop phase (openRTS choice, on by default, "Car loops start at
+  random points" in the train panel):** `StartLoop` voices begin at a random
+  frame. The same loop on twelve cars otherwise adds up in phase: one loud
+  point with comb filtering instead of a train-long sound.
+  - RTS (PROBABLE, 0x4A8C00): a voice starts at 0, or at a position kept in
+    the stream state (+64) when there is one; no random offset seen.
+  - `StartLoopRelease` voices and one-shots start at 0: their beginning
+    matters (a start-up sound, a knock).
 
 ### Triggers
 
@@ -204,7 +247,8 @@ first match in file order, not by number:
     is unknown to RTS).
 - **UNKNOWN:**
   - whether RTS adds DirectSound 3D rolloff on top of the curves;
-  - how RTS applies `Granularity`, `Priority` and the voice limits.
+  - how RTS applies `Granularity`, `Priority` and the voice limits;
+  - where RTS takes the resume position (+64 of a stream's state) from.
 - **CONFIRMED (test):** scene coordinates are MSTS and are mirrored in X for
   miniaudio. A source on the camera's right (+X while looking along +Z) is
   louder in the right channel.

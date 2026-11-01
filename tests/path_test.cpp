@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -275,6 +276,69 @@ void test_reservations() {
     check(!a.derailed() && !b.derailed(), "nobody derails");
 }
 
+// A STATIC consist (RTS train type 0) is not simulated: given a push it
+// stays where it is; a train running into it moves it (the owner then wakes
+// it: RTS turns it LOOSE).
+void test_static() {
+    auto net = station();
+    Stock stock;
+    simulation::Train standing(stock.cars());
+    simulation::Train moving(stock.cars());
+    std::string error;
+    check(standing.place(*net, 4, 600.0, true, &error), "standing placed");
+    check(moving.place(*net, 4, 520.0, true, &error), "moving placed behind it");
+    standing.set_asleep(true);
+    const auto before = standing.front_end()->offset();
+    standing.add_velocity(5.0f);
+    standing.set_asleep(true);
+    for (int i = 0; i < 100; ++i) standing.step();
+    check(std::abs(standing.front_end()->offset() - before) < 1e-6, "a STATIC train does not move by itself");
+    moving.add_velocity(3.0f);
+    std::vector<simulation::Train*> both{&moving, &standing};
+    std::optional<simulation::ContactOutcome> outcome;
+    for (int i = 0; i < 1200 && !outcome; ++i) {
+        for (const auto& result : simulation::resolve_contacts(both)) outcome = result.outcome;
+        moving.step();
+        standing.step();
+    }
+    // Couplers meeting gently couple (the moving train takes the cars);
+    // otherwise the push moves the static one.
+    check(outcome && (*outcome == simulation::ContactOutcome::coupled ? standing.cars().empty() : std::abs(standing.speed()) > 0.01),
+          "a train running into it couples it or moves it (to wake it by)");
+}
+
+// Track control's preview lays the cars back from the front of car 0 by the
+// train's own car offsets (TrainView::consist_layout); a train put there
+// must stand exactly on the preview.
+void test_layout_preview() {
+    auto net = station();
+    Stock stock;
+    auto short_car = stock.wagon;
+    short_car.length = 12.0f;
+    std::vector<simulation::CarSetup> setups{{.definition = &stock.engine}, {.definition = &short_car}, {.definition = &stock.wagon}};
+    simulation::Train train(setups);
+    std::string error;
+    check(train.place(*net, 4, 500.0, true, &error), "train placed for the preview check: " + error);
+    const auto& cars = train.cars();
+    const double head = cars.front().offset + cars.front().definition->length * 0.5;
+    const auto placed = train.placements();
+    double last_rear = 0.0;
+    for (std::size_t i = 0; i < cars.size(); ++i) {
+        const double length = cars[i].definition->length;
+        const double front = head - (cars[i].offset + length * 0.5);
+        simulation::TrackTraveller centre(*net, 4, 500.0, true);
+        check(centre.move(-(front + length * 0.5)).ok(), "preview car centre on the track");
+        const auto at = centre.pose();
+        const auto& car = placed[i];
+        const double x = (car.front.tile_x * 2048.0 + car.front.x + car.rear.tile_x * 2048.0 + car.rear.x) * 0.5;
+        const double z = (car.front.tile_z * 2048.0 + car.front.z + car.rear.tile_z * 2048.0 + car.rear.z) * 0.5;
+        check(std::hypot(at.tile_x * 2048.0 + at.x - x, at.tile_z * 2048.0 + at.z - z) < 0.05,
+              "preview car " + std::to_string(i) + " is where the train puts it");
+        last_rear = front + length;
+    }
+    check(std::abs(last_rear - train.length()) < 1e-6, "the preview is as long as the train");
+}
+
 void test_speed_limits() {
     auto net = station();
     simulation::SpeedLimits limits(*net, 25.0f);
@@ -294,6 +358,8 @@ int main() {
     test_routes(*net);
     test_reservations();
     test_speed_limits();
+    test_static();
+    test_layout_preview();
     if (failures == 0) std::cout << "path tests passed\n";
     return failures == 0 ? 0 : 1;
 }

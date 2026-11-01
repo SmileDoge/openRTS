@@ -22,6 +22,7 @@
 #include <openrts/core/installation.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/formats/route_database.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/signal_config.hpp>
 #include <openrts/formats/signal_script.hpp>
@@ -130,6 +131,36 @@ int main(int argc, char** argv) {
     simulation::SpeedLimits limits(*network, definition.ok() ? definition.speed_limit : 0.0f);
     std::printf("%s: %zu signal heads, %zu limit posts, route limit %.0f km/h\n", route_name.c_str(), signals.heads().size(),
                 limits.posts().size(), limits.route_limit() * 3.6f);
+    {
+        // Signal names of the route database against the TDB signal items,
+        // as RTS matches them (0x4903DC: same tile, x/y/z within 0.2 m).
+        const auto database = formats::load_route_database(vfs, route);
+        std::size_t named = 0, exact = 0;
+        for (const auto& unit : database.signal_units) named += unit.name.empty() ? 0 : 1;
+        const auto all = formats::match_signal_units(network->database(), database);
+        const auto strict = formats::match_signal_units(network->database(), database, 0.0);
+        exact = strict.size();
+        const std::size_t matched = all.size();
+        {
+            // How far the moved ones are from their unit.
+            std::vector<double> moved;
+            for (const auto& [item, u] : all) {
+                if (strict.contains(item)) continue;
+                const auto& at = network->database().items[item];
+                const auto& p = database.signal_units[u].position;
+                const double dx = (at.tile_x - p.tile_x) * 2048.0 + at.x - p.x, dz = (at.tile_z - p.tile_z) * 2048.0 + at.z - p.z;
+                moved.push_back(std::sqrt(dx * dx + dz * dz + (at.y - p.y) * (at.y - p.y)));
+            }
+            std::sort(moved.begin(), moved.end());
+            if (!moved.empty()) {
+                std::printf("  moved signals: %zu, distance median %.1f m, 90%% %.1f m, max %.1f m\n", moved.size(), moved[moved.size() / 2],
+                            moved[moved.size() * 9 / 10], moved.back());
+            }
+        }
+        std::printf("  route database: %zu signal units, %zu named, %zu at their TDB signal as RTS matches, %zu with the "
+                    "nearest within 30 m\n",
+                    database.signal_units.size(), named, exact, matched);
+    }
 
     for (int i = 4; i + 1 < argc; ++i) {
         if (std::string(argv[i]) != "--junction") continue;
@@ -347,6 +378,7 @@ int main(int argc, char** argv) {
                     where += ", waits at junction " + std::to_string(*progress->blocked_at);
                 }
             }
+            if (const auto km = limits.ordinate(*r->train)) std::printf("    at km %.3f\n", *km);
             std::printf("  %-14s %s; ran %.0f m, top %.0f km/h, worst over the limit %+.1f km/h, %zu stops, %zu signals passed at danger%s\n",
                         r->path_name.c_str(), where.c_str(), r->travelled, r->top_speed * 3.6, r->over_limit * 3.6, r->stops,
                         r->passed_at_danger, r->train->derailed() ? ", DERAILED" : "");

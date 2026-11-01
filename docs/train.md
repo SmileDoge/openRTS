@@ -435,7 +435,7 @@ The train emits events for sound and, later, signals:
   - follows the train (V);
   - free fly stays;
   - cab view is the cab step.
-- **Debug views:** saved views (F6) also record the train: consist, position
+- **Debug views:** saved views (Ctrl+F6) also record the train: consist, position
   and speed. A run can then be restarted exactly.
 
 ## 5. Rendering the train
@@ -516,7 +516,7 @@ makes it audible.
 
 ## Not in this step
 
-- **Cab view** and the locomotive DLLs (`docs/train-dll.md`).
+- **3-D cab** (no 2-D cabs, no `.cvf`) and the locomotive DLLs (`docs/train-dll.md`).
 - **Signals** (roadmap step 3): the train's events and look-ahead are ready
   for them.
 - **AI trains, activities, timetables.**
@@ -526,3 +526,19 @@ makes it audible.
 - **Coupling hoses:** RTS's hose handling when trains couple is not traced;
   openRTS connects the hoses and opens the cocks at the joint.
 - **Lights, pantographs, doors, multiple-unit control.**
+
+## STATIC consists (2026-11-01)
+
+RTS keeps a train type (`0x424488`): 0 STATIC, 1 player, 2 traffic, 3 LOOSE.
+A STATIC train is not updated; a LOOSE one standing below 0.3 m/s for 30 s
+gets its speed zeroed and turns STATIC; a static consist pushed without
+coupling turns LOOSE and moves with the speed it got (server notes) —
+CONFIRMED for the 30 s / 0.3 m/s rule, the rest from the code and notes.
+
+openRTS: `Train::set_asleep` — an asleep train is not stepped (positions,
+brakes and air stay as they are) but still occupies the track, meets
+trains, couples and takes hits. In the viewer a train with the standing
+role sleeps after 30 s below 0.3 m/s (a consist put down from Track control
+as standing sleeps at once, as RTS's static consists); a meeting that gives
+it speed, a role change or uncoupling wakes it. Track control lists such
+trains as STATIC.

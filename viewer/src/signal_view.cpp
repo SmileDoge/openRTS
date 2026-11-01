@@ -1,6 +1,8 @@
 #ifdef OPENRTS_HAS_WGPU
 #include "signal_view.hpp"
 
+#include <openrts/formats/route_database.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -27,6 +29,7 @@ namespace {
 } // namespace
 
 struct SignalView::Loaded {
+    formats::RouteDatabase database;
     std::shared_ptr<formats::SignalConfig> config;
     std::map<std::string, formats::AceRgbaImage> light_images; // LightTex name (lower case)
     std::shared_ptr<formats::SignalScriptFile> scripts;
@@ -39,6 +42,7 @@ SignalView::SignalView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath r
     : vfs_(std::move(vfs)), route_(std::move(route)), origin_(origin), network_(&network) {
     loading_ = std::async(std::launch::async, [vfs = vfs_, route = route_] {
         auto loaded = std::make_unique<Loaded>();
+        loaded->database = formats::load_route_database(*vfs, route);
         loaded->config = std::make_shared<formats::SignalConfig>(formats::load_signal_config(*vfs, route));
         if (!loaded->config->ok()) {
             loaded->error = loaded->config->error;
@@ -92,9 +96,58 @@ void SignalView::detach() {
     textures_uploaded_ = false;
 }
 
+void SignalView::collect_names(std::vector<WorldLabel>& labels, const glm::vec3& eye) const {
+    constexpr float range = 150.0f;
+    for (const auto& name : names_) {
+        const glm::vec3 at{static_cast<float>((name.position.tile_x - origin_.tile_x) * 2048.0 + name.position.x - origin_.x),
+                           static_cast<float>(name.position.y - origin_.y) + 3.0f,
+                           static_cast<float>((name.position.tile_z - origin_.tile_z) * 2048.0 + name.position.z - origin_.z)};
+        const float d = glm::distance(at, eye);
+        if (d > range) continue;
+        // Full up to 30 m, then fading out by 150 m; colour (1, 0.9, 0.25).
+        const float alpha = d <= 30.0f ? 1.0f : 1.0f - (d - 30.0f) / 120.0f;
+        const auto a = static_cast<std::uint32_t>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
+        labels.push_back({at, name.text, (a << 24) | (64u << 16) | (230u << 8) | 255u});
+    }
+}
+
+void SignalView::collect_links(std::vector<WorldLine>& lines, const glm::vec3& eye, const float range) const {
+    if (!system_) return;
+    const auto local = [&](const double tile_x, const double tile_z, const double x, const double y, const double z) {
+        return glm::vec3{static_cast<float>((tile_x - origin_.tile_x) * 2048.0 + x - origin_.x), static_cast<float>(y - origin_.y),
+                         static_cast<float>((tile_z - origin_.tile_z) * 2048.0 + z - origin_.z)};
+    };
+    const auto& objects = system_->objects();
+    for (const auto& head : system_->heads()) {
+        if (!head.placed || head.object >= objects.size()) continue;
+        const auto& p = objects[head.object].placement.position;
+        const auto mast = local(p.tile_x, p.tile_z, p.x, p.y, p.z) + glm::vec3{0.0f, 1.0f, 0.0f};
+        if (glm::distance(mast, eye) > range) continue;
+        const auto track = network_->point(head.node, head.offset);
+        if (!track) continue;
+        const auto on_track = local(track->tile_x, track->tile_z, track->x, track->y, track->z) + glm::vec3{0.0f, 0.4f, 0.0f};
+        lines.push_back({mast, on_track, 0xe0ffffffu, 2.0f});
+        // A short mark along the track at that place, pointing the way the
+        // head protects.
+        const float heading = track->heading + (head.forward ? 0.0f : 3.14159265f);
+        const glm::vec3 along{std::sin(heading), 0.0f, std::cos(heading)};
+        lines.push_back({on_track - along * 1.5f, on_track + along * 1.5f, 0xffffffffu, 5.0f});
+    }
+}
+
+std::string SignalView::object_name(const std::uint32_t object) const {
+    const auto it = object_names_.find(object);
+    return it == object_names_.end() ? std::string{} : it->second;
+}
+
 void SignalView::set_authority(std::function<std::optional<double>(const simulation::Train&)> authority) {
     authority_ = std::move(authority);
     if (system_) system_->set_authority(authority_);
+}
+
+void SignalView::set_player(std::function<bool(const simulation::Train&)> is_player) {
+    player_ = std::move(is_player);
+    if (system_) system_->set_player(player_);
 }
 
 void SignalView::update(const float elapsed, const simulation::Train* train,
@@ -110,6 +163,31 @@ void SignalView::update(const float elapsed, const simulation::Train* train,
         }
         system_ = std::make_unique<simulation::SignalSystem>(*network_, loaded_->config, loaded_->scripts, loaded_->signals);
         if (authority_) system_->set_authority(authority_);
+        if (player_) system_->set_player(player_);
+        // Names: each named unit of the route database belongs to a TDB
+        // signal item (formats::match_signal_units: RTS's 0.2 m match, then
+        // the nearest free item within 30 m for signals moved since the
+        // database was written); the name stands over that item's place, and
+        // the object of the item's head gets it. A unit with no item keeps
+        // its own position, as RTS draws it.
+        const auto& items = network_->database().items;
+        const auto& units = loaded_->database.signal_units;
+        const auto matched = formats::match_signal_units(network_->database(), loaded_->database);
+        std::vector<char> placed(units.size(), 0);
+        std::map<std::uint32_t, std::string> item_names;
+        for (const auto& [item, u] : matched) {
+            const auto& at = items[item];
+            names_.push_back({formats::RoutePosition{.tile_x = at.tile_x, .tile_z = at.tile_z, .x = at.x, .y = at.y, .z = at.z},
+                              units[u].name});
+            placed[u] = 1;
+            item_names[item] = units[u].name;
+        }
+        for (std::size_t u = 0; u < units.size(); ++u) {
+            if (!units[u].name.empty() && !placed[u]) names_.push_back({units[u].position, units[u].name});
+        }
+        for (const auto& head : system_->heads()) {
+            if (const auto it = item_names.find(head.track_item); it != item_names.end()) object_names_[head.object] = it->second;
+        }
         for (std::uint32_t i = 0; i < system_->objects().size(); ++i) {
             const auto& placement = system_->objects()[i].placement;
             by_world_object[{placement.position.tile_x, placement.position.tile_z, placement.uid}] = i;

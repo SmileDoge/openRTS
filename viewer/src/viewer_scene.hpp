@@ -57,6 +57,15 @@ struct WorldLabel {
     std::uint32_t colour = 0xffffffffu; // 0xAABBGGRR (ImGui)
 };
 
+// A line between two points of the scene drawn over the 3D view (screen
+// space, `thickness` pixels), e.g. a signal to its track.
+struct WorldLine {
+    glm::vec3 a{};
+    glm::vec3 b{};
+    std::uint32_t colour = 0xffffffffu; // 0xAABBGGRR (ImGui)
+    float thickness = 2.0f;
+};
+
 // Keys the scene reacts to this frame (edges are "pressed this frame").
 struct SceneInput {
     bool step_up = false;        // Up arrow held (shape scenes: animation frames)
@@ -78,7 +87,14 @@ struct SceneInput {
     bool independent_less = false; // ,
     bool toggle_ep = false;        // K: ЭПТ on/off
     bool turn_around = false;      // X: drive from the other end of the train
-    bool toggle_track_control = false; // F7: the Track control window
+    bool toggle_track_control = false; // Ctrl+Alt+F7 (RTS): the Track control window
+    bool place_names = false;     // F7 (RTS): platform and siding names along the track
+    // RTS's information keys (docs/reverse/dispatcher.md).
+    bool car_info = false;        // F5: a page of the train's cars; again: the next page
+    bool car_info_shift = false;  // Shift held with F5: the train as a whole
+    bool limits_panel = false;    // Ctrl+F5: speed limits and the kilometre
+    bool stations_panel = false;  // F6: the stations ahead
+    bool signal_names = false;    // Ctrl+F7: signal names near the camera
 };
 
 // Lighting and background colour the scene wants for the current frame.

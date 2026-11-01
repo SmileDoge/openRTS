@@ -236,6 +236,55 @@ std::optional<float> TrackView::switch_frame(const renderer::StreamedInstance& i
     return it->second;
 }
 
+void TrackView::collect_places(std::vector<WorldLabel>& labels, std::vector<WorldLine>& lines, const glm::vec3& eye,
+                               const float range) const {
+    if (item_places_.empty()) {
+        auto& places = const_cast<std::map<std::uint32_t, std::pair<std::uint32_t, double>>&>(item_places_);
+        for (std::uint32_t n = 1; n < network_->node_count(); ++n) {
+            const auto* node = network_->node(n);
+            if (!node || node->kind != formats::TrackNodeKind::vector) continue;
+            for (const auto& entry : node->items) places[entry.item] = {n, entry.offset};
+        }
+    }
+    const auto& items = network_->database().items;
+    constexpr float lift = 0.6f; // over the TDB line (rail top 0.33)
+    for (const auto& [id, place] : item_places_) {
+        if (id >= items.size()) continue;
+        const auto& item = items[id];
+        const bool platform = item.kind == formats::TrackItemKind::platform;
+        if (!platform && item.kind != formats::TrackItemKind::siding) continue;
+        // Each pair once: from the end with the lower id.
+        const auto other = item_places_.find(item.linked);
+        if (other != item_places_.end() && item.linked < id) continue;
+        const std::uint32_t line_colour = platform ? 0xffff7030u : 0xff00d0ffu; // blue / yellow (ABGR)
+        const std::uint32_t text_colour = platform ? 0xffff9a60u : 0xff40e0ffu;
+        std::vector<glm::vec3> stretch;
+        if (other != item_places_.end() && other->second.first == place.first) {
+            const double a = place.second, b = other->second.second;
+            const int steps = (std::max)(1, static_cast<int>(std::abs(b - a) / 5.0));
+            for (int k = 0; k <= steps; ++k) {
+                if (const auto p = network_->point(place.first, a + (b - a) * k / steps)) stretch.push_back(local(*p, lift));
+            }
+        } else {
+            if (const auto p = network_->point(place.first, place.second)) stretch.push_back(local(*p, lift));
+            if (other != item_places_.end()) {
+                if (const auto p = network_->point(other->second.first, other->second.second)) stretch.push_back(local(*p, lift));
+            }
+        }
+        if (stretch.empty()) continue;
+        const auto middle = stretch[stretch.size() / 2];
+        if (glm::distance(middle, eye) > range) continue;
+        if (stretch.size() == 1) stretch.push_back(stretch.front() + glm::vec3{0.0f, 0.01f, 0.0f});
+        for (std::size_t k = 0; k + 1 < stretch.size(); ++k) lines.push_back({stretch[k], stretch[k + 1], line_colour, 6.0f});
+        std::string text = item.name;
+        if (platform && !item.station.empty() && item.station != item.name) text = item.station + " (" + item.name + ")";
+        if (text.empty()) continue;
+        const auto top = middle + glm::vec3{0.0f, platform ? 8.0f : 6.0f, 0.0f};
+        lines.push_back({middle, top, line_colour, 1.5f});
+        labels.push_back({.position = top, .text = std::move(text), .colour = text_colour});
+    }
+}
+
 void TrackView::collect_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, const float range) const {
     for (std::uint32_t i = 1; i < network_->node_count(); ++i) {
         const auto* node = network_->node(i);

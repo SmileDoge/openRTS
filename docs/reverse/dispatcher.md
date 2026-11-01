@@ -241,3 +241,45 @@ openRTS keeps the queue, takeover and release semantics (`docs/paths.md`)
 with a simpler priority (30 s earlier and the holder beyond its stopping
 distance) and a section lock for single lines instead of `0x48C21C` /
 `0x48C654`.
+
+## Signal names ("литеры") — CONFIRMED (2026-11-01)
+
+The names live in the route database (`.rtsdb`, UTF-16
+`SIMISA@@@@@@@@@@JINX1R0t`), one `SignalUnit` per signal object:
+`Position ( tile_x tile_z x y z )` (the server finds the signal in the TDB by
+it: "Could not find signal in tdb. Location: … Continue?"), `NumSigItems`,
+an optional `Name ( "…" )`, `UnitFlags` (hex), `DefaultAspect` (aspect name)
+— the writer's and reader's tokens in `rts_server.exe`. The same file holds
+`SignalTypeShownAsNormal`, `JunctionDefaultStates ( Junction ( node state ) … )`,
+`RoutePoints` (Name, PointType 1/2, Flags, StationName, Point1 / Point2),
+`RouteTrainRoutes` (ID, Name, Flags, StationName, Start, End) and
+`RouteTrainPaths` (RouteID, Priority, Start, Points). A name is set in
+"Редактирование сигнала" (field "Название", `edtSigName`) and shown on the
+console map with "Отображать литеры сигналов" (`btSigName`, `mnSigName`).
+The user's `stepanovka.rtsdb` has 5 252 signal units and no names; the
+installed routes ship `ROUTES/<route>/<RouteID>.rtsdb` with names (Kuban 900
+of 1 406 signal units, Kievskij hod 2 480 of 3 308, Chernyshevsk 1 144 of
+1 601, Novokuznetsk 1 584 of 3 506, Pavlovsk 1 450 of 2 203, Uspensk 797 of
+1 125), e.g. "М14", "Ч2". On the shapes themselves a name exists only as a
+NUMBER_PLATE sub-object (a textured plate).
+
+**In the game too** (`rts1.exe`, single player and multiplayer):
+`0x4903DC` ("Loading RTS track database") reads `<route path><RouteID>.rtsdb`;
+each `SignalUnit` is matched to a TDB signal item by position (tile and
+x/y/z within 0.2 m) and its name kept; `0x41B6D0` then creates a label
+object (world kind 20) 3 m above each named signal.
+
+## In-game overlay keys (`rts1.exe`, `0x402C88` toggles, `0x408574` draws) — CONFIRMED
+
+| Keys | Flag | What is drawn |
+|---|---|---|
+| Ctrl+F7 | `byte_5E04BD` | signal names (kind 20 labels) within 150 m of the camera, full colour up to 30 m and fading out to 150 m, colour (1, 0.9, 0.25); the other players (person.ace icons at their trains, `dword_631E58` list) |
+| F7 | `byte_5E04BC` | platform names "platform (station)" 10 m above the platform item with a line down, blue (0.1, 0.1, 1); siding names, yellow; car numbers on both sides of every car body (the number the console gives, `0x45C54C`) |
+| Ctrl+Alt+F7 | — | the Track control menu (`0x462FC8`, mode 4) |
+| F6 | `byte_61D55E` | a panel of the stations and stops ahead with distances (`0x466F70`, columns at 25/40/55/70/85 % of its width) |
+| Ctrl+F5 | `byte_5E04BE` | the speed limit now and the kilometre post (ordinate) at the top, the limits ahead and their distances (`0x468544` / `0x4686F4`) |
+| F5 | `byte_5E04B9` | a per-car information page, paged through the train with F5 (Shift: ...) |
+| F4 | `byte_5E04BA` | performance and position statistics |
+
+(The user's guide describes the same keys; Ctrl+F7 works in single player
+too.)

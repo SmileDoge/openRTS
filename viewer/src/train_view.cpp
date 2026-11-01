@@ -3,7 +3,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <set>
 #include <iostream>
 
 #include <glm/ext/matrix_transform.hpp>
@@ -18,6 +21,8 @@
 #ifdef OPENRTS_HAS_IMGUI
 #include <imgui.h>
 #endif
+
+#include "viewer_state.hpp"
 
 namespace openrts::viewer {
 namespace {
@@ -87,6 +92,7 @@ struct TrainView::Car {
     std::shared_ptr<const formats::SoundScript> script;
     core::VirtualPath script_path;
     std::unique_ptr<audio::SoundInstance> sound;
+    std::optional<formats::SoundOwner> sound_owner; // what `sound` was built for (none: no group for it)
     std::vector<formats::SoundEvent> pending_events;
 };
 
@@ -98,6 +104,7 @@ struct TrainView::Unit {
     bool freight = true; // no passenger cars: freight speed limits
     std::unique_ptr<simulation::AutoDriver> ai;
     float wait_left = -1.0f; // s still to wait at a waiting point
+    float still = 0.0f;      // s standing still (RTS: a LOOSE train becomes STATIC after 30 s)
     std::vector<simulation::CarPlacement> previous, current;
     std::vector<double> previous_travelled, current_travelled;
 
@@ -159,6 +166,10 @@ const simulation::Train* TrainView::train() const noexcept {
     return loaded() ? units_.front().train.get() : nullptr;
 }
 
+bool TrainView::is_player(const std::uint64_t id) const noexcept {
+    return loaded() && units_.front().role == Role::driven && units_.front().train->id() == id;
+}
+
 simulation::Train& TrainView::driven() {
     return *units_.front().train;
 }
@@ -182,7 +193,23 @@ glm::vec3 TrainView::local(const formats::RoutePosition& position) const {
 
 std::string TrainView::make_unit(const std::string_view consist_name, Unit& unit,
                                  std::vector<std::unique_ptr<formats::WagonDefinition>>& stock) const {
-    const auto consist = formats::load_consist(*vfs_, consist_name);
+    // A .con file anywhere on disk (Track control's "Browse..."), else RTS's
+    // lookup (CONSISTS_RTS, then CONSISTS) or a virtual path. The cars come
+    // from the content's TRAINSET either way.
+    formats::ConsistDefinition consist;
+    const std::filesystem::path file(std::u8string(consist_name.begin(), consist_name.end()));
+    std::error_code file_error;
+    if (file.is_absolute() && std::filesystem::is_regular_file(file, file_error)) {
+        std::ifstream input(file, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(input)), {});
+        consist = formats::parse_consist(bytes);
+        if (consist.name.empty()) {
+            const auto stem = file.stem().u8string();
+            consist.name = std::string(stem.begin(), stem.end());
+        }
+    } else {
+        consist = formats::load_consist(*vfs_, consist_name);
+    }
     if (!consist.ok()) return "consist '" + std::string(consist_name) + "': " + consist.error;
     std::vector<Car> cars;
     std::vector<simulation::CarSetup> setups;
@@ -536,6 +563,26 @@ void TrainView::step_trains() {
         break; // the list changed; the rest meet on the next step
     }
 
+    // STATIC consists (RTS train type 0): a standing train with nobody at
+    // its handles goes to sleep after 30 s below 0.3 m/s, as RTS turns a
+    // LOOSE train STATIC (0x424488); a meeting that moved it wakes it (RTS:
+    // pushed without coupling it becomes LOOSE and moves on).
+    for (auto& unit : units_) {
+        auto& train = *unit.train;
+        if (train.asleep()) {
+            if (unit.role != Role::standing || std::abs(train.speed()) > 0.01) {
+                train.set_asleep(false);
+                unit.still = 0.0f;
+            }
+            continue;
+        }
+        if (unit.role != Role::standing || !train.placed() || train.derailed()) {
+            unit.still = 0.0f;
+            continue;
+        }
+        unit.still = std::abs(train.speed()) < 0.3 ? unit.still + static_cast<float>(simulation::train_step) : 0.0f;
+        if (unit.still > 30.0f) train.set_asleep(true);
+    }
     for (auto& unit : units_) {
         if (unit.role == Role::ai && unit.ai && unit.train->placed()) {
             unit.ai->step(simulation::train_step, *unit.train, drive_orders(unit));
@@ -634,7 +681,8 @@ std::vector<TrainView::Summary> TrainView::summaries() const {
                           .cars = unit.cars.size(),
                           .length = unit.train->length(),
                           .target = unit.ai ? unit.ai->target_speed() : -1.0f,
-                          .derailed = unit.train->derailed()});
+                          .derailed = unit.train->derailed(),
+                          .asleep = unit.train->asleep()});
     }
     return result;
 }
@@ -642,6 +690,20 @@ std::vector<TrainView::Summary> TrainView::summaries() const {
 const simulation::Train* TrainView::train_by_id(const std::uint64_t id) const {
     const auto* unit = find_unit(id);
     return unit ? unit->train.get() : nullptr;
+}
+
+std::filesystem::path TrainView::default_consist_folder() {
+    // The folder of the first consist the content lists, on disk.
+    for (const auto& path : consist_list()) {
+        if (const auto virtual_path = core::VirtualPath::parse(path)) {
+            // Folder files come back as they are (a consist in a pack is
+            // copied to the temporary folder first).
+            if (const auto file = vfs_->real_path(*virtual_path, std::filesystem::temp_directory_path() / "openrts")) {
+                return file->parent_path();
+            }
+        }
+    }
+    return {};
 }
 
 const std::vector<std::string>& TrainView::consist_list() {
@@ -709,9 +771,30 @@ std::string TrainView::remove(const std::uint64_t id) {
 std::string TrainView::uncouple_at(const std::uint64_t id, const std::size_t index) {
     auto* unit = find_unit(id);
     if (!unit) return "no such train";
+    unit->train->set_asleep(false);
+    unit->still = 0.0f;
     if (std::abs(unit->train->speed()) > 0.1) return "stop the train to uncouple";
     if (index == 0 || index >= unit->cars.size()) return "no coupling there";
     split(static_cast<std::size_t>(unit - units_.data()), index, true, true);
+    return {};
+}
+
+std::string TrainView::consist_layout(const std::string_view consist, ConsistLayout& layout) const {
+    Unit unit;
+    std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
+    if (auto error = make_unit(consist, unit, stock); !error.empty()) return error;
+    layout = {.name = unit.name, .length = unit.train->length()};
+    // Car centres as the train lays them (Train::placements): offsets from
+    // the last car's centre.
+    const auto& cars = unit.train->cars();
+    if (cars.empty()) return "the consist has no cars";
+    const double head = cars.front().offset + cars.front().definition->length * 0.5;
+    for (std::size_t i = 0; i < cars.size(); ++i) {
+        const float length = cars[i].definition->length;
+        layout.lengths.push_back(length);
+        layout.fronts.push_back(head - (cars[i].offset + length * 0.5));
+        layout.engines.push_back(cars[i].definition->engine.has_value());
+    }
     return {};
 }
 
@@ -725,6 +808,9 @@ std::string TrainView::spawn(const std::string_view consist, const simulation::T
     unit.name += " #" + std::to_string(++spawned_);
     unit.role = role == Role::driven ? Role::standing : role;
     unit.settle();
+    // A consist put down to stand is STATIC from the start (RTS's static
+    // consists do not roll away).
+    if (unit.role == Role::standing) unit.train->set_asleep(true);
     units_.push_back(std::move(unit));
     attach_role(units_.back());
     return {};
@@ -750,6 +836,259 @@ std::string TrainView::save_path(const std::uint64_t id, const std::string& name
     output.close();
     load_user_paths();
     return {};
+}
+
+void TrainView::car_info_key(const bool shift) {
+    // As RTS (0x402C88): the first press shows the page (the train as a
+    // whole with Shift); then F5 turns the page, Shift+F5 switches to the
+    // whole train, and past the last page (or from the whole train) it hides.
+    const auto* unit = shown_unit();
+    if (!car_info_) {
+        car_info_ = true;
+        car_info_overall_ = shift;
+        car_page_ = 0;
+        return;
+    }
+    if (car_info_overall_ || !unit) {
+        car_info_ = false;
+        return;
+    }
+    if (shift) {
+        car_info_overall_ = true;
+        return;
+    }
+    car_page_ += car_page_size;
+    if (car_page_ >= unit->cars.size()) car_info_ = false;
+}
+
+const TrainView::Unit* TrainView::shown_unit() const {
+    const Unit* unit = follow_id_ != 0 ? find_unit(follow_id_) : nullptr;
+    if (!unit && !units_.empty()) unit = &units_.front();
+    return unit && unit->train && unit->train->placed() ? unit : nullptr;
+}
+
+std::vector<std::pair<std::string, double>> TrainView::stations_ahead(const Unit& unit) const {
+    std::vector<std::pair<std::string, double>> result;
+    const auto& items = network_->database().items;
+    std::set<std::string> seen;
+    const auto add = [&](const std::uint32_t item, const double distance) {
+        if (item >= items.size() || items[item].kind != formats::TrackItemKind::platform) return;
+        const auto& platform = items[item];
+        // "station, platform"; a platform named after its station adds only
+        // the rest ("о.п. Фабрика кожизделий п.I" -> "о.п. Фабрика кожизделий, п.I").
+        std::string label = platform.station.empty() ? platform.name : platform.station;
+        if (!platform.station.empty() && !platform.name.empty() && platform.name != platform.station) {
+            std::string_view rest = platform.name;
+            if (rest.starts_with(platform.station)) rest.remove_prefix(platform.station.size());
+            while (!rest.empty() && (rest.front() == ' ' || rest.front() == ',' || rest.front() == '-')) rest.remove_prefix(1);
+            if (!rest.empty()) label += ", " + std::string(rest);
+        }
+        if (label.empty() || !seen.insert(label).second) return;
+        result.emplace_back(label, distance);
+    };
+    // Along the path when the train has one, else along the junctions as set.
+    const auto id = unit.train->id();
+    const auto* route = dispatcher_->route(id);
+    const auto* progress = dispatcher_->progress(id);
+    if (route && progress && progress->on_route) {
+        for (std::size_t l = progress->leg; l < route->legs.size() && result.size() < 10; ++l) {
+            const auto& leg = route->legs[l];
+            const double base = l == progress->leg ? progress->head : 0.0;
+            for (const auto& span : leg.spans) {
+                if (span.start + span.length() < base) continue;
+                const auto* node = network_->node(span.node);
+                if (!node) continue;
+                std::vector<std::pair<double, std::uint32_t>> here;
+                for (const auto& entry : node->items) {
+                    const double low = (std::min)(span.from, span.to), high = (std::max)(span.from, span.to);
+                    if (entry.offset < low || entry.offset > high) continue;
+                    const double along = span.start + (span.forward ? entry.offset - span.from : span.from - entry.offset) - base;
+                    if (along >= 0.0) here.emplace_back(along, entry.item);
+                }
+                std::sort(here.begin(), here.end());
+                for (const auto& [along, item] : here) add(item, along);
+            }
+            if (l != progress->leg) break; // the next leg runs back: only the current one
+        }
+        return result;
+    }
+    const auto lead = unit.train->leading_end();
+    if (!lead) return result;
+    const auto ahead = simulation::look_ahead(*network_, lead->node(), lead->offset(), lead->forward(), 40000.0,
+                                              [](const formats::TrackItem& item) { return item.kind == formats::TrackItemKind::platform; }, 40);
+    for (const auto& found : ahead.items) add(found.item, found.distance);
+    return result;
+}
+
+bool TrainView::begin_panel(const char* id, HudPanel& place, const float default_x, const float default_y) {
+#ifdef OPENRTS_HAS_IMGUI
+    const auto display = ImGui::GetIO().DisplaySize;
+    if (!place.loaded) {
+        place.loaded = true;
+        place.x = default_x;
+        place.y = default_y;
+        if (const auto saved = remembered(place.key)) {
+            // "x y", fractions of the display.
+            char* end = nullptr;
+            const float x = std::strtof(saved->c_str(), &end);
+            const char* rest = end;
+            const float y = std::strtof(rest, &end);
+            if (end != rest) {
+                place.x = std::clamp(x, 0.0f, 1.0f);
+                place.y = std::clamp(y, 0.0f, 1.0f);
+            }
+        }
+    }
+    // Moved by hand (NoMove): dragging anywhere on the panel shifts its
+    // anchor, so a right-anchored panel keeps its right edge while its text
+    // gets wider or narrower.
+    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove
+        | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+    ImGui::SetNextWindowPos(ImVec2(place.x * display.x, place.y * display.y), ImGuiCond_Always, ImVec2(place.pivot_x, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.75f);
+    const bool open = ImGui::Begin(id, nullptr, flags);
+    if (open && display.x > 0.0f && display.y > 0.0f) {
+        if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) place.dragging = true;
+        if (place.dragging) {
+            const auto delta = ImGui::GetIO().MouseDelta;
+            const auto size = ImGui::GetWindowSize();
+            // The whole panel stays on the screen.
+            const float low_x = place.pivot_x * size.x / display.x;
+            const float high_x = 1.0f - (1.0f - place.pivot_x) * size.x / display.x;
+            place.x = std::clamp(place.x + delta.x / display.x, (std::min)(low_x, high_x), (std::max)(low_x, high_x));
+            place.y = std::clamp(place.y + delta.y / display.y, 0.0f, (std::max)(1.0f - size.y / display.y, 0.0f));
+        }
+    }
+    return open;
+#else
+    (void)id;
+    (void)place;
+    (void)default_x;
+    (void)default_y;
+    return false;
+#endif
+}
+
+void TrainView::end_panel(HudPanel& place) {
+#ifdef OPENRTS_HAS_IMGUI
+    ImGui::End();
+    if (place.dragging && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        place.dragging = false;
+        char text[64];
+        std::snprintf(text, sizeof text, "%.4f %.4f", place.x, place.y);
+        remember(place.key, text);
+    }
+#else
+    (void)place;
+#endif
+}
+
+void TrainView::draw_hud() {
+#ifdef OPENRTS_HAS_IMGUI
+    const auto* unit = shown_unit();
+    if (!unit) return;
+    const auto& train = *unit->train;
+    const auto display = ImGui::GetIO().DisplaySize;
+    // Default places: 10 px from the side, 60 px from the top.
+    const float margin_x = display.x > 0.0f ? 10.0f / display.x : 0.0f;
+    const float margin_y = display.y > 0.0f ? 60.0f / display.y : 0.0f;
+    const auto limit = limits_->evaluate(train, unit->freight);
+    const auto ordinate = limits_->ordinate(train);
+    if (car_info_) {
+        if (begin_panel("##car_info", car_info_place_, margin_x, margin_y)) {
+            if (car_info_overall_) {
+                std::size_t passenger = 0, freight = 0, engines = 0;
+                for (const auto& car : unit->cars) {
+                    if (!car.definition) continue;
+                    if (car.definition->engine) ++engines;
+                    else if (car.definition->kind == formats::WagonKind::passenger) ++passenger;
+                    else ++freight;
+                }
+                ImGui::Text("Overall: mass %.1f t, length %.0f m, units %zu (passenger %zu, freight %zu, engines %zu)",
+                            train.mass() / 1000.0, train.length(), unit->cars.size(), passenger, freight, engines);
+            } else {
+                char next[64] = "none";
+                if (limit.ahead > 0.0f) std::snprintf(next, sizeof next, "%.0f km/h in %.0f m", limit.ahead * 3.6f, limit.ahead_distance);
+                ImGui::Text("Overall: speed %.2f km/h, acceleration %.3f m/s2, limit %.0f km/h, next limit %s, km %s",
+                            train.speed() * 3.6, train.cars().front().acceleration, limit.current * 3.6f, next,
+                            ordinate ? (std::to_string(static_cast<int>(*ordinate)) + "." + std::to_string(static_cast<int>(std::abs(*ordinate) * 100.0) % 100)).c_str() : "-");
+                const auto& states = train.cars();
+                const auto last = (std::min)(car_page_ + car_page_size, unit->cars.size());
+                for (std::size_t i = car_page_; i < last && i < states.size(); ++i) {
+                    const auto& car = unit->cars[i];
+                    const auto& state = states[i];
+                    ImGui::Text("%02zu - %s. Mass %.1f t", i + 1, car.definition ? car.definition->name.c_str() : "?",
+                                car.definition ? car.definition->mass / 1000.0f : 0.0f);
+                    ImGui::Text("     Pipe %.3f Aux %.3f Cylinder %.3f  Velocity %.2f Acceleration %.3f  Force %.1f kN BF %.1f kN CF %.0f kN%s%s",
+                                state.pipe, state.auxiliary, state.cylinder, state.velocity, state.acceleration, state.force / 1000.0f,
+                                state.brake_force / 1000.0f, state.coupler_force / 1000.0f,
+                                state.handbrake > 0.0f ? (" [HANDBRAKE " + std::to_string(static_cast<int>(state.handbrake * 100.0f)) + "%]").c_str() : "",
+                                state.derailed ? " [DERAILED]" : "");
+                }
+                ImGui::TextDisabled("F5: next page (%zu-%zu of %zu)  Shift+F5: the whole train", car_page_ + 1, last, unit->cars.size());
+            }
+        }
+        end_panel(car_info_place_);
+    }
+    if (limits_panel_) {
+        if (begin_panel("##limits", limits_place_, 1.0f - margin_x, margin_y)) {
+            if (ordinate) {
+                const double km = std::floor(*ordinate);
+                const int picket = static_cast<int>((*ordinate - km) * 10.0) + 1;
+                ImGui::Text("km %.0f  pk %d  (%.3f)", km, picket, *ordinate);
+            } else {
+                ImGui::TextDisabled("km -");
+            }
+            ImGui::Text("Limit %.0f km/h", limit.current * 3.6f);
+            ImGui::Separator();
+            const auto ahead = limits_->limits_ahead(train, unit->freight, 10000.0, 6);
+            if (!ahead.empty() && ImGui::BeginTable("##limits_ahead", 2, ImGuiTableFlags_SizingFixedFit)) {
+                for (const auto& [speed, distance] : ahead) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%4.0f km/h", speed * 3.6f);
+                    ImGui::TableNextColumn();
+                    ImGui::Text(distance >= 1000.0 ? "%.2f km" : "%.0f m", distance >= 1000.0 ? distance / 1000.0 : distance);
+                }
+                ImGui::EndTable();
+            }
+            if (signals_) {
+                const auto next = signals_->ahead(train);
+                if (next.valid) {
+                    ImGui::Separator();
+                    ImGui::Text("Signal %s in %.0f m%s", formats::to_string(next.aspect), next.distance,
+                                next.speed > 0.0f ? (", " + std::to_string(static_cast<int>(next.speed * 3.6f)) + " km/h").c_str() : "");
+                }
+            }
+        }
+        end_panel(limits_place_);
+    }
+    if (stations_panel_) {
+        if (begin_panel("##stations", stations_place_, 1.0f - margin_x, 0.45f)) {
+            ImGui::Text("Stations ahead: %s", unit->name.c_str());
+            ImGui::Separator();
+            const auto stations = stations_ahead(*unit);
+            if (stations.empty()) ImGui::TextDisabled("none within 40 km");
+            // Two columns sized to the longest name: names never run into
+            // the distances, which are right-aligned.
+            if (!stations.empty() && ImGui::BeginTable("##stations_ahead", 2, ImGuiTableFlags_SizingFixedFit)) {
+                for (std::size_t k = 0; k < stations.size() && k < 8; ++k) {
+                    const auto& [name, distance] = stations[k];
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(name.c_str());
+                    ImGui::TableNextColumn();
+                    char text[32];
+                    std::snprintf(text, sizeof text, distance >= 1000.0 ? "in %.2f km" : "in %.0f m",
+                                  distance >= 1000.0 ? distance / 1000.0 : distance);
+                    ImGui::TextUnformatted(text);
+                }
+                ImGui::EndTable();
+            }
+        }
+        end_panel(stations_place_);
+    }
+#endif
 }
 
 void TrainView::follow_train(const std::uint64_t id) {
@@ -1001,13 +1340,19 @@ void TrainView::update(const SceneInput& input, ViewerCamera& camera, const floa
 
 void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound) {
     if (!bank_) bank_ = std::make_unique<audio::SoundBank>(vfs_);
+    // First every car's script, group and clips, then the updates: a car
+    // loading its clips must not delay the cars after it while the ones
+    // before it already play (identical loops a fraction of a second apart
+    // sound like an echo).
     std::uint32_t seed = 0;
     for (std::size_t u = 0; u < units_.size(); ++u) {
     auto& unit = units_[u];
     const auto& states = unit.train->cars();
+    // RTS: the player's train plays group 7 of each script, other trains
+    // the first group numbered 5 or 0 (none: that car is silent).
+    const auto owner = u == 0 && unit.role == Role::driven ? formats::SoundOwner::player_train : formats::SoundOwner::train;
     for (std::size_t i = 0; i < unit.cars.size() && i < states.size() && i < unit.current.size(); ++i, ++seed) {
         auto& car = unit.cars[i];
-        const auto& state = states[i];
         if (!car.script_tried && !car.definition->sound.empty()) {
             car.script_tried = true;
             // Wagon sounds: <wagon folder>/SOUND/<file>, then the global SOUND.
@@ -1025,17 +1370,30 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
                 car.script_path = candidate;
                 break;
             }
-            if (car.script) {
-                if (const auto* group = car.script->select_group(formats::SoundOwner::player_train)) {
-                    auto lookup = [this, path = car.script_path](const std::string& name) -> std::shared_ptr<const audio::AudioClip> {
-                        const auto file = audio::find_sound_file(*vfs_, path, name);
-                        return file ? bank_->get(*file) : nullptr;
-                    };
-                    car.sound = std::make_unique<audio::SoundInstance>(car.script, *group, formats::SoundOwner::player_train,
-                                                                       std::move(lookup), seed * 7919u + 17u);
-                }
+        }
+        if (car.script && car.sound_owner != owner) {
+            // New, or the train became / stopped being the player's.
+            if (car.sound) car.sound->stop(sound);
+            car.sound.reset();
+            car.sound_owner = owner;
+            if (const auto* group = car.script->select_group(owner)) {
+                auto lookup = [this, path = car.script_path](const std::string& name) -> std::shared_ptr<const audio::AudioClip> {
+                    const auto file = audio::find_sound_file(*vfs_, path, name);
+                    return file ? bank_->get(*file) : nullptr;
+                };
+                car.sound = std::make_unique<audio::SoundInstance>(car.script, *group, owner, std::move(lookup), seed * 7919u + 17u);
+                car.sound->preload();
             }
         }
+        if (car.sound) car.sound->set_random_loop_phase(random_loop_phase_);
+    }
+    }
+    for (std::size_t u = 0; u < units_.size(); ++u) {
+    auto& unit = units_[u];
+    const auto& states = unit.train->cars();
+    for (std::size_t i = 0; i < unit.cars.size() && i < states.size() && i < unit.current.size(); ++i) {
+        auto& car = unit.cars[i];
+        const auto& state = states[i];
         if (!car.sound) {
             car.pending_events.clear();
             continue;
@@ -1252,6 +1610,9 @@ void TrainView::draw_overlay() {
     ImGui::SliderFloat("Body sway", &sway_scale_, 0.0f, 10.0f, "%.1f");
     ImGui::SameLine();
     ImGui::TextDisabled("(1 = RTS model; RTS shows it in the cab only)");
+    ImGui::Checkbox("Car loops start at random points", &random_loop_phase_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(openRTS: identical loops on many cars do not add up in phase; RTS starts them together)");
     if (ImGui::SliderInt("Coupler sub-steps", &substeps_, 1, 4)) {
         for (auto& unit : units_) unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
     }

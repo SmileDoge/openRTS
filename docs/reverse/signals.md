@@ -162,6 +162,27 @@ The installed routes have 168–308 scripts each, about 2100 in total.
   same pass. `enabled` is set while the script runs and cleared after. A
   signal with no train approaching runs its script with no chain, so
   `next_sig_*` returns STOP there.
+- **Observed in RTS (2026-11-01, Kuban_RTS, ЗИП, M10 = UiD 12924, INFO type
+  `T_Head_WB-new`), compared with openRTS by the user:**
+  - its script (the first of two for the type; RTS: "Multiple signal
+    scripts for %s, only first one is used") shows white when `next_sig_*`
+    gives STOP or the block is occupied, blue otherwise;
+  - approaching with the player's train: blue; passing it: white (behind
+    the front, free-running); backing off a little: **blue again, and it
+    stays blue** moving forward or back;
+  - openRTS showed white after backing off: it built only the chain ahead of
+    the end the train last moved towards. Fixed by the rule below; the user
+    checked M10 again in openRTS and it now behaves as in RTS.
+- **Both ends for the player's train (CONFIRMED, `0x508520`):**
+  - the front pass (from the front traveller `train+0xA8`) runs when
+    `speed (+92) > 0`, or the train type is 1 or 4, or flag `+4` bit 0x80
+    is clear;
+  - the rear pass (from `train+0xE8`, backwards) runs when `speed < 0`, or
+    the type is 1 or 4, or that bit is set;
+  - so the player's train (type 1; 4 PROBABLE a remote player) has the
+    signals ahead of both ends evaluated every frame, also standing;
+  - UNKNOWN: what bit 0x80 of `+4` is. openRTS keeps other trains on the
+    end they last moved towards.
 - **Aspect obeyed by the train**: the least restrictive aspect over the
   object's NORMAL heads. Train flags `obey_distance`, `obey_shunting` and
   `obey_info` add the heads of that type. The speed limit is the lowest
@@ -476,8 +497,8 @@ checked against RTS's own `sigscr.dat.asm` of TestRoute_RTS.
   - flag 1 with aspect 1 (STOP_AND_PROCEED) fails with "passed red signal"
     (`0x41B4F4` code 1);
   - flag 8 with aspect 0 (STOP) fails with "passed stop signal" (code 4).
-- **Backwards:** a mirrored pass runs from the rear when the train moves
-  backwards (+92 > 0).
+- **Backwards:** a mirrored pass runs from the rear (`train+0xE8`). Which
+  passes run: see "Both ends for the player's train" above.
 - **Occupancy for `block_state`:** per node, a list of train records with an
   offset (`node+52`, entries with an offset at +40). openRTS uses the whole
   train's extent per node instead (`docs/signals.md`). That covers every

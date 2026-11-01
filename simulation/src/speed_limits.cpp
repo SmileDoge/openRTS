@@ -31,6 +31,7 @@ SpeedLimits::SpeedLimits(const TrackNetwork& network, const float route_limit)
         for (const auto& entry : node->items) {
             if (entry.item >= items.size()) continue;
             const auto post = formats::speed_post(items[entry.item]);
+            if (post && !post->limit && !post->warning) mileposts_[entry.item] = post->number;
             if (!post || !post->limit) continue;
             SpeedPostOnTrack on{.item = entry.item, .node = n, .offset = entry.offset, .post = *post};
             if (const auto where = network.point(n, entry.offset)) {
@@ -70,6 +71,42 @@ float SpeedLimits::limit_at(const std::uint32_t node, const double offset, const
         return on->post.resume ? route_limit_ : on->post.speed;
     }
     return route_limit_;
+}
+
+std::vector<std::pair<float, double>> SpeedLimits::limits_ahead(const Train& train, const bool freight, const double distance,
+                                                                const std::size_t count) const {
+    std::vector<std::pair<float, double>> result;
+    const auto lead = train.leading_end();
+    if (!lead) return result;
+    const auto ahead = look_ahead(*network_, lead->node(), lead->offset(), lead->forward(), distance,
+                                  [&](const formats::TrackItem& item) { return by_item_.contains(item.id); });
+    for (const auto& found : ahead.items) {
+        const auto* on = post(found.item);
+        if (!on || !applies(*on, found.facing_forward, freight)) continue;
+        result.emplace_back(on->post.resume ? route_limit_ : on->post.speed, found.distance);
+        if (result.size() >= count) break;
+    }
+    return result;
+}
+
+std::optional<double> SpeedLimits::ordinate(const Train& train) const {
+    const auto lead = train.leading_end();
+    if (!lead || mileposts_.empty()) return std::nullopt;
+    const auto is_post = [&](const formats::TrackItem& item) { return mileposts_.contains(item.id); };
+    const auto behind = look_ahead(*network_, lead->node(), lead->offset(), !lead->forward(), 5000.0, is_post, 1);
+    if (behind.items.empty()) return std::nullopt;
+    const double last = mileposts_.at(behind.items.front().item);
+    const double from_last = behind.items.front().distance;
+    const auto ahead = look_ahead(*network_, lead->node(), lead->offset(), lead->forward(), 5000.0, is_post, 4);
+    double direction = 1.0;
+    for (const auto& found : ahead.items) {
+        const double next = mileposts_.at(found.item);
+        if (next != last) {
+            direction = next > last ? 1.0 : -1.0;
+            break;
+        }
+    }
+    return last + direction * from_last / 1000.0;
 }
 
 SpeedLimit SpeedLimits::evaluate(const Train& train, const bool freight, const double distance) const {

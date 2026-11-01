@@ -406,6 +406,14 @@ std::optional<TrackTraveller> Train::rear_end() const {
     return impl_->tail;
 }
 
+std::optional<TrackTraveller> Train::trailing_end() const {
+    if (impl_->moving_backward) return impl_->head;
+    if (!impl_->tail) return std::nullopt;
+    auto trailing = *impl_->tail;
+    trailing.reverse();
+    return trailing;
+}
+
 std::optional<TrackTraveller> Train::leading_end() const {
     if (!impl_->moving_backward) return impl_->head;
     if (!impl_->tail) return std::nullopt;
@@ -748,8 +756,17 @@ std::vector<CarPlacement> Train::placements() const {
     return result;
 }
 
+void Train::set_asleep(const bool asleep) noexcept {
+    asleep_ = asleep;
+    if (!asleep) return;
+    for (auto& car : cars_) {
+        car.velocity = 0.0f;
+        car.acceleration = 0.0f;
+    }
+}
+
 void Train::step() {
-    if (!network_ || cars_.empty()) return;
+    if (!network_ || cars_.empty() || asleep_) return;
     const auto n = cars_.size();
     const auto dt = static_cast<float>(train_step);
     auto& impl = *impl_;

@@ -46,6 +46,15 @@ public:
     // `offset`: the nearest applicable post behind, else the route's limit.
     [[nodiscard]] float limit_at(std::uint32_t node, double offset, bool forward, bool freight) const;
     [[nodiscard]] float route_limit() const noexcept { return route_limit_; }
+    // The limits ahead of the train within `distance` m: (speed m/s, metres
+    // from the leading end), nearest first, at most `count` (Ctrl+F5).
+    [[nodiscard]] std::vector<std::pair<float, double>> limits_ahead(const Train& train, bool freight, double distance,
+                                                                     std::size_t count) const;
+    // The train's ordinate (kilometre and picket, RTS's "Milepost"): the
+    // nearest kilometre post behind its leading end plus the distance from
+    // it, counting up or down as the next post ahead tells; nothing without
+    // a post within 5 km behind.
+    [[nodiscard]] std::optional<double> ordinate(const Train& train) const;
     [[nodiscard]] const std::vector<SpeedPostOnTrack>& posts() const noexcept { return posts_; }
     // The post for item `item`, if it is a limit post on the network.
     [[nodiscard]] const SpeedPostOnTrack* post(std::uint32_t item) const;
@@ -57,6 +66,7 @@ private:
     float route_limit_;
     std::vector<SpeedPostOnTrack> posts_;
     std::unordered_map<std::uint32_t, std::size_t> by_item_;
+    std::unordered_map<std::uint32_t, float> mileposts_; // item -> the kilometre (or mile) it shows
 };
 
 } // namespace openrts::simulation

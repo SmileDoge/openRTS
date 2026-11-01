@@ -41,6 +41,10 @@ public:
     // Labels of the junctions within `range` of `eye`: id, set branch, and
     // whether a train holds it.
     void collect_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, float range) const;
+    // Platforms and sidings within `range` of `eye` (RTS F7): a thick line
+    // along the track between the two ends, blue for platforms and yellow
+    // for sidings, and the name on a post above its middle.
+    void collect_places(std::vector<WorldLabel>& labels, std::vector<WorldLine>& lines, const glm::vec3& eye, float range) const;
     [[nodiscard]] simulation::TrackNetwork& network() noexcept { return *network_; }
     // A traveller on the track nearest to `eye` (within 5 km).
     [[nodiscard]] std::optional<simulation::TrackTraveller> nearest_track(const glm::vec3& eye);
@@ -62,6 +66,7 @@ private:
     std::string message_;
     std::map<std::uint32_t, float> switch_frames_; // junction -> current blade frame
     simulation::JointStatistics joints_;
+    std::map<std::uint32_t, std::pair<std::uint32_t, double>> item_places_; // TDB item -> vector node, offset
 };
 
 } // namespace openrts::viewer

@@ -243,6 +243,8 @@ void read_item(Tokenizer& tokens, const std::string& keyword, TrackDatabase& dat
             if (list.size() > 3) item.name = list[3];
         } else if (equals_ignore_case(name, "SpeedpostTrItemData")) {
             for (std::size_t i = 0; i < list.size(); ++i) item.speed_post_data.push_back(float_at(list, i));
+        } else if (equals_ignore_case(name, "PlatformTrItemData") || equals_ignore_case(name, "SidingTrItemData")) {
+            if (list.size() > 1) item.linked = uint_at(list, 1);
         } else if (equals_ignore_case(name, "PlatformName") || equals_ignore_case(name, "SidingName")) {
             if (!list.empty()) item.name = list[0];
         } else if (equals_ignore_case(name, "Station")) {

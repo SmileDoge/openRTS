@@ -148,6 +148,12 @@ void AudioEngine::set(const VoiceId id, const float volume, const float pitch, c
     ma_sound_set_position(&sound, -position.x, position.y, position.z);
 }
 
+void AudioEngine::seek(const VoiceId id, const std::uint64_t frame) {
+    const auto it = impl_->voices.find(id);
+    if (it == impl_->voices.end() || !it->second->clip || it->second->clip->frames == 0) return;
+    ma_sound_seek_to_pcm_frame(&it->second->sound, frame % it->second->clip->frames);
+}
+
 bool AudioEngine::playing(const VoiceId id) const {
     const auto it = impl_->voices.find(id);
     return it != impl_->voices.end() && !ma_sound_at_end(&it->second->sound);

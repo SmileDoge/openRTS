@@ -57,6 +57,7 @@ public:
         double length{};
         float target = -1.0f; // the test driver's target speed, m/s
         bool derailed = false;
+        bool asleep = false;  // STATIC: not simulated until something moves it
     };
 
     TrainView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath route, formats::RoutePosition origin,
@@ -92,6 +93,8 @@ public:
     [[nodiscard]] bool following() const noexcept { return follow_; }
     // The driven train.
     [[nodiscard]] const simulation::Train* train() const noexcept;
+    // Train `id` is the one driven from the keyboard (the player's).
+    [[nodiscard]] bool is_player(std::uint64_t id) const noexcept;
     // Every train on the track (the driven one first).
     [[nodiscard]] std::vector<const simulation::Train*> trains() const;
     // A traveller at the end of the train that leads (by the motion, else
@@ -108,6 +111,18 @@ public:
     // The route's paths, then the ones saved from Track control.
     [[nodiscard]] const std::vector<formats::TrainPath>& route_paths() const noexcept { return paths_; }
     [[nodiscard]] const std::vector<std::string>& consist_list();
+    // Where the content's consists lie on disk (for a file dialog).
+    [[nodiscard]] std::filesystem::path default_consist_folder();
+    // A consist's cars without putting it anywhere (Track control's preview):
+    // each car's length and where its front is behind the front of car 0.
+    struct ConsistLayout {
+        std::string name;
+        std::vector<float> lengths;  // car 0 (the front) first
+        std::vector<double> fronts;  // metres from the front of car 0
+        std::vector<bool> engines;
+        double length{};             // the whole train, as Train::length()
+    };
+    [[nodiscard]] std::string consist_layout(std::string_view consist, ConsistLayout& layout) const;
     // Gives train `id` this path (built on the network); an error text on failure.
     [[nodiscard]] std::string assign_path(std::uint64_t id, simulation::PathPlan plan);
     [[nodiscard]] std::string assign_route_path(std::uint64_t id, const formats::TrainPath& path);
@@ -126,6 +141,13 @@ public:
     void set_signals(const simulation::SignalSystem* signals) noexcept { signals_ = signals; }
     // Text about train `id`'s path: leg, reserved way, what it waits for.
     [[nodiscard]] std::string path_status(std::uint64_t id) const;
+    // RTS's information keys (docs/reverse/dispatcher.md): F5 a page of the
+    // train's cars (again: the next page; with Shift: the train as a whole),
+    // Ctrl+F5 the speed limits and the kilometre, F6 the stations ahead.
+    void car_info_key(bool shift);
+    void toggle_limits_panel() noexcept { limits_panel_ = !limits_panel_; }
+    void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
+    void draw_hud();
     // Where Track control keeps saved paths: user_paths/<route> in the
     // working directory.
     [[nodiscard]] std::filesystem::path user_path_folder() const;
@@ -172,6 +194,10 @@ private:
     // What the test driver of `unit` must do this step.
     [[nodiscard]] simulation::DriveOrders drive_orders(Unit& unit);
     void load_user_paths();
+    // The unit the information panels describe: the followed train, else the driven one.
+    [[nodiscard]] const Unit* shown_unit() const;
+    // Platforms ahead of the unit's leading end: (station and platform, metres).
+    [[nodiscard]] std::vector<std::pair<std::string, double>> stations_ahead(const Unit& unit) const;
 
     std::shared_ptr<const core::Vfs> vfs_;
     core::VirtualPath route_;
@@ -188,6 +214,29 @@ private:
     std::uint64_t follow_id_ = 0;
     std::size_t spawned_ = 0;
     float overspeed_time_ = 0.0f;
+    bool car_info_ = false;
+    bool car_info_overall_ = false;
+    std::size_t car_page_ = 0;
+    static constexpr std::size_t car_page_size = 15;
+    bool limits_panel_ = false;
+    bool stations_panel_ = false;
+    // A HUD panel the user can drag: where its pivot corner sits, as a
+    // fraction of the display (it keeps its place when the window is
+    // resized), remembered in viewer_state.ini.
+    struct HudPanel {
+        const char* key;
+        float x = 0.0f;
+        float y = 0.0f;
+        float pivot_x = 0.0f; // 0: anchored by the left edge, 1: by the right one
+        bool loaded = false;
+        bool dragging = false;
+    };
+    HudPanel car_info_place_{.key = "hud_car_info"};
+    HudPanel limits_place_{.key = "hud_limits", .pivot_x = 1.0f};
+    HudPanel stations_place_{.key = "hud_stations", .pivot_x = 1.0f};
+    // Starts a panel window at its place; false when it is not drawn.
+    bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y);
+    void end_panel(HudPanel& place);
     std::shared_ptr<simulation::DriverHandles> driver_;
     double accumulator_{};
     bool follow_ = true;
@@ -196,6 +245,7 @@ private:
     std::unique_ptr<audio::SoundBank> bank_;
     int substeps_ = 1;
     float sway_scale_ = 1.0f; // body sway shown on the cars: 1 = the RTS model's size, 0 off
+    bool random_loop_phase_ = true; // SoundInstance::set_random_loop_phase for every car
 
     // Panel: route paths and the consist picker.
     std::vector<formats::TrainPath> paths_;

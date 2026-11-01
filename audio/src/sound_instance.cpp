@@ -119,6 +119,16 @@ void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
     }
 }
 
+void SoundInstance::preload() {
+    for (const auto& stream : streams_) {
+        for (const auto& trigger : stream.definition->triggers) {
+            for (const auto& action : trigger.actions) {
+                for (const auto& file : action.files) (void)clips_(file.name);
+            }
+        }
+    }
+}
+
 void SoundInstance::fire(Stream& stream, const std::size_t index, const float volume, const SoundInputs& inputs,
                          VoiceSink& sink) {
     const auto& trigger = stream.definition->triggers[index];
@@ -139,6 +149,9 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
         if (!clip) return {};
         const auto id = sink.play(clip, playback, space);
         if (!id) return {};
+        if (playback == VoicePlayback::loop && random_loop_phase_ && clip->frames > 1) {
+            sink.seek(id, std::uniform_int_distribution<std::uint64_t>(0, clip->frames - 1)(random_));
+        }
         sink.set(id, 0.0f, 1.0f, inputs.position); // real values follow in this update
         return {.id = id, .volume = volume, .clip = std::move(clip), .fade_in = action.fade};
     };
@@ -244,7 +257,12 @@ void SoundInstance::update(const float dt, const SoundInputs& raw_inputs, VoiceS
     if (!active_) {
         const bool any_camera = !activation.cab_camera && !activation.external_camera && !activation.passenger_camera;
         const bool camera = any_camera || camera_listed(activation, inputs.camera);
-        if (!camera || (distances && distance > activate_within)) return;
+        // Deactivation wins: with a deactivation distance below the
+        // activation one (mdd_ed4m-engMotor.sms: 1000 / 300 m) a group
+        // between the two would otherwise start and stop on alternate
+        // updates, restarting its loops. RTS's runtime test is not traced;
+        // its sounds do not stutter there (PROBABLE).
+        if (!camera || (distances && (distance > activate_within || distance > deactivate_beyond))) return;
         activate(inputs, sink);
     } else if (camera_deactivates || (distances && distance > deactivate_beyond)) {
         stop(sink);

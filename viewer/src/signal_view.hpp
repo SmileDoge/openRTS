@@ -62,6 +62,17 @@ public:
     // Movement authority of the trains (their reserved way); passed on to
     // the signal system once it is loaded.
     void set_authority(std::function<std::optional<double>(const simulation::Train&)> authority);
+    // The player's train: signals ahead of both its ends (SignalSystem::set_player).
+    void set_player(std::function<bool(const simulation::Train&)> is_player);
+    // Signal names from the route database (RTS Ctrl+F7): within 150 m of
+    // `eye`, 3 m above the signal, fading from 30 m on.
+    void collect_names(std::vector<WorldLabel>& labels, const glm::vec3& eye) const;
+    // The name of signal object `object` (empty when the database has none).
+    [[nodiscard]] std::string object_name(std::uint32_t object) const;
+    [[nodiscard]] std::size_t named_signals() const noexcept { return names_.size(); }
+    // A line from every signal within `range` of `eye` down to the place on
+    // the track each of its heads stands for (which track it governs).
+    void collect_links(std::vector<WorldLine>& lines, const glm::vec3& eye, float range) const;
 
 private:
     struct Loaded;
@@ -88,6 +99,13 @@ private:
     std::string status_ = "loading signals...";
     bool lights_ = true;
     std::function<std::optional<double>(const simulation::Train&)> authority_;
+    std::function<bool(const simulation::Train&)> player_;
+    struct Name {
+        formats::RoutePosition position;
+        std::string text;
+    };
+    std::vector<Name> names_;
+    std::map<std::uint32_t, std::string> object_names_; // signal object -> name
 };
 
 } // namespace openrts::viewer

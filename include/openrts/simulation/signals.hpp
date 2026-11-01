@@ -110,6 +110,11 @@ public:
     // beyond it run with `enabled` 0 (RTS 0x508520: beyond the train's path
     // or reservation end). No value: unlimited (a train without a path).
     void set_authority(std::function<std::optional<double>(const Train&)> authority);
+    // The player's train (RTS train types 1 and 4). RTS runs the signals
+    // ahead of both its ends every step, whichever way it moves or when it
+    // stands (0x508520: the front pass and the rear pass). Other trains: the
+    // end they last moved towards. No function: no player train.
+    void set_player(std::function<bool(const Train&)> is_player);
     // Debug/test: run every head every step instead of only changed ones.
     void set_full_evaluation(bool on) noexcept { full_evaluation_ = on; }
     // block_state / route_set of a head right now (debug panel).
