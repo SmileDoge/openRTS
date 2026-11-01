@@ -1,11 +1,14 @@
 # Windows build: Release, the tests, and an archive with the viewer and the
 # tools (openRTS-windows-x64). The tests need no RTS content, GPU or sound
 # card: they build their own small tracks and render sound offline.
+# Releases: a tag vX.Y.Z makes the release "openRTS vX.Y.Z"; every push to
+# master replaces the "nightly" pre-release.
 name: Build
 
 on:
   push:
     branches: [master]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -79,3 +82,47 @@ jobs:
           name: openRTS-windows-x64
           path: openRTS-windows-x64
           retention-days: 14
+
+  release:
+    # The archive of the Windows job as a GitHub release, with the text from
+    # .github/scripts/release-notes.sh (what is needed to run, then the
+    # commits since the previous version tag). Linux: cheaper minutes.
+    needs: windows
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: openRTS-windows-x64
+          path: openRTS-windows-x64
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            title="openRTS $tag"
+          else
+            tag=nightly
+            title="openRTS nightly ($(date -u +%Y-%m-%d), ${GITHUB_SHA::7})"
+          fi
+          # One folder inside the zip, so unpacking does not spill files.
+          folder="openRTS-$tag"
+          mv openRTS-windows-x64 "$folder"
+          archive="openRTS-windows-x64-$tag.zip"
+          zip -qr "$archive" "$folder"
+          bash .github/scripts/release-notes.sh "$tag" > notes.md
+          if [ "$tag" = nightly ]; then
+            gh release delete nightly --cleanup-tag --yes || true
+            gh release create nightly "$archive" --title "$title" --notes-file notes.md --prerelease --target "$GITHUB_SHA"
+          else
+            gh release create "$tag" "$archive" --title "$title" --notes-file notes.md --verify-tag
+          fi

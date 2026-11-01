@@ -67,10 +67,16 @@ In the order of the plan (`docs/roadmap.md`):
 
 ## Prebuilt binaries
 
-Every push to `master` is built on GitHub Actions. The `openRTS-windows-x64`
-archive (the viewer, the tools, `wgpu_native.dll`) is on the **Actions** tab →
-the latest successful run → **Artifacts**. While the repository is private,
-only its members can download it.
+Every push to `master` is built on GitHub Actions. Ready archives (the viewer,
+the tools, `wgpu_native.dll`) are in **Releases**:
+- **nightly** — a pre-release with the latest `master` build, replaced
+  automatically;
+- **vX.Y.Z** — versions; the release is created automatically when a version
+  tag is pushed.
+
+A version's release text is its section of [`CHANGELOG.md`](CHANGELOG.md)
+(in Russian); nightly's comes from the commits. While the repository is
+private, only its members can download the builds.
 
 > **The Microsoft Visual C++ Redistributable (x64) is required.** Without it
 > Windows reports that `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` or
@@ -181,6 +187,7 @@ RTS's DLLs.
 
 ## Documentation
 
+- `CHANGELOG.md` — changes by version (in Russian);
 - `docs/roadmap.md` — the plan and the current state;
 - `docs/train.md`, `docs/track.md`, `docs/signals.md`, `docs/paths.md`,
   `docs/sound.md` — how the subsystems work;

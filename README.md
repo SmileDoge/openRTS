@@ -64,10 +64,15 @@ RTrainSim (RTS). Цель — запускать существующий кон
 
 ## Готовая сборка
 
-Каждый push в `master` собирается на GitHub Actions. Архив
-`openRTS-windows-x64` (вьювер, инструменты, `wgpu_native.dll`) лежит на вкладке
-**Actions** → последний успешный запуск → **Artifacts**. Пока репозиторий
-приватный, скачать его могут только участники.
+Каждый push в `master` собирается на GitHub Actions. Готовые архивы (вьювер,
+инструменты, `wgpu_native.dll`) лежат в **Releases**:
+- **nightly** — пререлиз с последней сборкой `master`, обновляется сам;
+- **vX.Y.Z** — версии; релиз создаётся сам, когда в репозиторий приходит тег
+  версии.
+
+Текст релиза версии берётся из её раздела в [`CHANGELOG.md`](CHANGELOG.md), у
+nightly — из коммитов. Пока репозиторий приватный, скачать сборки могут только
+участники.
 
 > **Нужен Microsoft Visual C++ Redistributable (x64).** Без него Windows
 > пишет, что не найден `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` или
@@ -178,6 +183,7 @@ DLL RTS.
 
 ## Документация
 
+- `CHANGELOG.md` — изменения по версиям;
 - `docs/roadmap.md` — план и текущее состояние;
 - `docs/train.md`, `docs/track.md`, `docs/signals.md`, `docs/paths.md`,
   `docs/sound.md` — как устроены подсистемы;
