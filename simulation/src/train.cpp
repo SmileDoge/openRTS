@@ -351,6 +351,7 @@ struct Train::Impl {
     bool stopped_at_end = false;
     // Junctions the tail passed facing, still held for their ClearanceDist.
     std::vector<std::uint32_t> clearing;
+    bool moving_backward = false;
 };
 
 Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
@@ -393,6 +394,14 @@ std::optional<TrackTraveller> Train::rear_end() const {
     return impl_->tail;
 }
 
+std::optional<TrackTraveller> Train::leading_end() const {
+    if (!impl_->moving_backward) return impl_->head;
+    if (!impl_->tail) return std::nullopt;
+    auto lead = *impl_->tail;
+    lead.reverse();
+    return lead;
+}
+
 void Train::set_coupler_substeps(const std::uint32_t substeps) noexcept {
     settings_.coupler_substeps = std::clamp<std::uint32_t>(substeps, 1, 8);
 }
@@ -415,8 +424,58 @@ std::vector<TrainEvent> Train::take_events() {
     return std::exchange(impl_->events, {});
 }
 
+void Train::vacate() {
+    if (!network_ || !impl_->tail) return;
+    // Junctions under the train, from the tail to the front.
+    TrackTraveller walker = *impl_->tail;
+    const auto under = walker.move(length(), JunctionMode::plain);
+    for (const auto& pass : under.junctions) network_->release_junction(pass.junction, id_);
+    // Junctions behind it that the tail still keeps (clearance).
+    for (std::uint32_t node = 0; node < network_->node_count(); ++node) {
+        auto* state = network_->junction(node);
+        if (state && state->clearance.contains(id_)) network_->release_junction(node, id_);
+    }
+}
+
+bool Train::turn_around() {
+    if (!network_ || !impl_->head || !impl_->tail || cars_.empty()) return false;
+    for (const auto& car : cars_) {
+        if (std::abs(car.velocity) > 0.1f) return false;
+    }
+    // The ends swap and face the other way.
+    auto head = *impl_->tail;
+    auto tail = *impl_->head;
+    head.reverse();
+    tail.reverse();
+    impl_->head = head;
+    impl_->tail = tail;
+    // Offsets are measured forward from the last car: the old first car is
+    // the new last one, and forward is the old backward.
+    const double first = cars_.front().offset;
+    for (auto& car : cars_) {
+        car.offset = first - car.offset;
+        car.flipped = !car.flipped;
+        car.velocity = -car.velocity;
+        car.acceleration = -car.acceleration;
+        car.pitch = -car.pitch;
+        car.coupler_force = 0.0f;
+        car.travelled = -car.travelled;
+        std::swap(car.bogie_ahead, car.bogie_behind);
+    }
+    std::reverse(cars_.begin(), cars_.end());
+    std::reverse(impl_->controllers.begin(), impl_->controllers.end());
+    std::reverse(impl_->demands.begin(), impl_->demands.end());
+    std::reverse(impl_->last_bogie.begin(), impl_->last_bogie.end());
+    for (auto& bogies : impl_->last_bogie) std::swap(bogies[0], bogies[1]);
+    impl_->moving_backward = false;
+    impl_->stopped_at_end = false;
+    move_and_update(0.0, 0.0);
+    return true;
+}
+
 bool Train::place(TrackNetwork& network, const std::uint32_t node, const double offset, const bool forward,
                   std::string* error) {
+    vacate();
     if (cars_.empty()) {
         if (error) *error = "empty train";
         return false;
@@ -853,6 +912,7 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
     auto& impl = *impl_;
     if (front_moved != 0.0 || rear_moved != 0.0) {
         const bool forward = front_moved > 0.0 || (front_moved == 0.0 && rear_moved > 0.0);
+        impl.moving_backward = !forward;
         MoveResult front_result;
         MoveResult rear_result;
         // The leading end moves first; when it stops short (end of track), the

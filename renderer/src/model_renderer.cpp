@@ -1,6 +1,7 @@
 #include <openrts/renderer/model_renderer.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
+#include <openrts/renderer/depth.hpp>
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -99,6 +100,7 @@ struct FrameUniform {
     float fog_colour[4];
     float fog_distance[4]; // x: start, y: end (<= 0 disables)
     glm::mat4 view_projection;
+    float eye[4]; // camera position (experimental path: view vector)
 };
 
 // Bindings and types shared by both shading paths.
@@ -120,6 +122,7 @@ struct Frame {
     fog_colour: vec4<f32>,
     fog_distance: vec4<f32>,
     view_projection: mat4x4<f32>,
+    eye: vec4<f32>,
 };
 
 // One primitive of the shape (static per model generation).
@@ -382,8 +385,20 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 }
 )";
 
-// openRTS's own shading: normalised Lambert sun lighting with ambient term.
-// Extension point for PBR materials and shadow mapping.
+// openRTS's own shading. Lighting is computed in linear light (textures and
+// the RTS sun colours are display-encoded, gamma 2.2) and encoded back with a
+// soft shoulder instead of a hard clip:
+//  - ambient from the sky: full from above, darker towards the ground;
+//  - Lambert sun diffuse;
+//  - Blinn-Phong sun highlight, strength and sharpness by the MSTS light
+//    material (normal faint, LoShine, HiShine);
+//  - surfaces seen from behind use the flipped normal (two-sided geometry,
+//    foliage cards);
+//  - MSTS light materials: FullBright and the unlit shaders take the texture
+//    as is, HalfBright uses the vertex colour as ambient, DarkShade gets only
+//    the dimmed ambient as its light, vertex-colour emission adds the vertex
+//    colour, Circumference lights as if facing up.
+// Fog is applied in display space, as the fog colour is given (RTS).
 constexpr char experimental_shader_body[] = R"(
 @vertex
 fn vs_main(input: VertexIn) -> VertexOut {
@@ -393,9 +408,35 @@ fn vs_main(input: VertexIn) -> VertexOut {
     out.clip = frame.view_projection * out.world;
     out.uv = input.uv;
     out.normal = (place.normal_matrix * vec4<f32>(input.normal, 0.0)).xyz;
-    out.colour = vec4<f32>(1.0);
+    if (draw.light_material == -9) { // Circumference
+        out.normal = vec3<f32>(0.0, 1.0, 0.0);
+    }
+    // HalfBright: ambient from the first vertex colour; emission: the second.
+    out.colour = vec4<f32>(0.0);
+    if (draw.light_material == -11) {
+        out.colour = input.colour1;
+    } else if (draw.light_material == -1) {
+        out.colour = input.colour2;
+    }
     out.fog = fog_for(out.clip.z);
     return out;
+}
+
+fn to_linear(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
+fn to_display(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+}
+
+// Linear up to the knee, then an exponential roll-off towards 1.
+fn shoulder(c: vec3<f32>) -> vec3<f32> {
+    let knee = 0.6;
+    let room = 1.0 - knee;
+    let over = max(c - vec3<f32>(knee), vec3<f32>(0.0));
+    let rolled = vec3<f32>(knee) + room * (vec3<f32>(1.0) - exp(-over / room));
+    return select(c, rolled, c > vec3<f32>(knee));
 }
 
 @fragment
@@ -406,20 +447,60 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     }
 
     let shader = draw.named_shader;
-    let unlit = shader == 1 || shader == 3 || shader == 6 || draw.light_material == -8;
-    var lighting = vec3<f32>(1.0);
+    let material = draw.light_material;
+    let unlit = shader == 1 || shader == 3 || shader == 6 || material == -8;
+    let base = to_linear(texel.xyz);
+    var colour = base;
     if (!unlit) {
         let sun = frame.lights[0];
-        let n = normalize(input.normal);
-        let diffuse = max(dot(n, -normalize(sun.direction)), 0.0);
-        lighting = min(sun.ambient.xyz + sun.diffuse.xyz * diffuse, vec3<f32>(1.0));
+        let sun_colour = to_linear(sun.diffuse.xyz);
+        let sky_colour = to_linear(sun.ambient.xyz);
+        let view = normalize(frame.eye.xyz - input.world.xyz);
+        var n = normalize(input.normal);
+        if (dot(n, view) < 0.0) {
+            n = -n;
+        }
+        let to_sun = -normalize(sun.direction);
+        let facing = max(dot(n, to_sun), 0.0);
+
+        // Sky light. Environments give the sun an ambient colour as bright as
+        // its direct one at noon (SummerClear: both ffffffff), which RTS
+        // shows flat (max of the two). Here the stronger the direct sun, the
+        // less of that ambient is taken, down to 35 %, so the sun's
+        // direction always shows; at night (no direct sun) it stays as given.
+        // Full from above, 55 % from below.
+        let sun_strength = clamp(dot(sun_colour, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+        var ambient = sky_colour * (1.0 - 0.65 * sun_strength) * mix(0.55, 1.0, n.y * 0.5 + 0.5);
+        var diffuse = sun_colour * facing;
+        var strength = 0.04;
+        var sharpness = 16.0;
+        if (material == -6) { // LoShine
+            strength = 0.25;
+            sharpness = 32.0;
+        } else if (material == -7) { // HiShine
+            strength = 0.6;
+            sharpness = 64.0;
+        } else if (material == -11) { // HalfBright
+            ambient = max(ambient, to_linear(input.colour.xyz));
+        } else if (material == -12) { // DarkShade
+            ambient = vec3<f32>(0.0);
+            diffuse = sky_colour * facing;
+            strength = 0.0;
+        }
+        let halfway = normalize(to_sun + view);
+        let highlight = sun_colour * strength * pow(max(dot(n, halfway), 0.0), sharpness) * step(0.0, dot(n, to_sun));
+
+        colour = base * (ambient + diffuse) + highlight;
+        if (material == -1) { // vertex colour emission
+            colour = max(colour, base * to_linear(input.colour.xyz));
+        }
     }
 
-    var color = vec4<f32>(texel.xyz * lighting, texel.w);
+    var display = to_display(shoulder(colour));
     if (input.fog.w > 0.0) {
-        color = vec4<f32>(mix(color.xyz, input.fog.xyz, input.fog.w), color.w);
+        display = mix(display, input.fog.xyz, input.fog.w);
     }
-    return color;
+    return vec4<f32>(display, texel.w);
 }
 )";
 
@@ -464,9 +545,14 @@ void copy_vec4(float (&target)[4], const glm::vec4& value) {
     target[3] = value.w;
 }
 
-[[nodiscard]] FrameUniform frame_uniform(const ModelLighting& lighting, const glm::mat4& view_projection) {
+[[nodiscard]] FrameUniform frame_uniform(const ModelLighting& lighting, const glm::mat4& view_projection,
+                                         const glm::vec3& eye) {
     FrameUniform result{};
     result.view_projection = view_projection;
+    result.eye[0] = eye.x;
+    result.eye[1] = eye.y;
+    result.eye[2] = eye.z;
+    result.eye[3] = 1.0f;
     auto& sun = result.lights[0];
     copy_vec4(sun.diffuse, lighting.sun_diffuse);
     copy_vec4(sun.ambient, lighting.sun_ambient);
@@ -614,9 +700,9 @@ constexpr std::size_t shading_path_count = 2;
     };
     // RTS leaves glDepthFunc at GL_LEQUAL from terrain drawing.
     const WGPUDepthStencilState depth{
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = depth_format,
         .depthWriteEnabled = key.depth_write ? WGPUOptionalBool_True : WGPUOptionalBool_False,
-        .depthCompare = WGPUCompareFunction_LessEqual,
+        .depthCompare = depth_nearer_or_equal,
         .stencilFront = keep_stencil,
         .stencilBack = keep_stencil,
         .stencilReadMask = ~0u,
@@ -1484,7 +1570,7 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass) {
     impl_->ensure_capacity(instances.size(), ids.size(), (std::max)(impl_->frame_locals.size(), std::size_t{1}));
     if (!impl_->frame_binding) return;
 
-    const auto lighting = frame_uniform(impl_->frame.lighting, impl_->frame.view_projection);
+    const auto lighting = frame_uniform(impl_->frame.lighting, impl_->frame.view_projection, impl_->frame.camera_position);
     const auto queue = wgpuDeviceGetQueue(impl_->device);
     wgpuQueueWriteBuffer(queue, impl_->frame_buffer, 0, &lighting, sizeof(lighting));
     wgpuQueueWriteBuffer(queue, impl_->instance_buffer, 0, instances.data(), instances.size() * sizeof(GpuInstance));

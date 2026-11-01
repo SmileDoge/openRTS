@@ -60,6 +60,7 @@ public:
     void draw_overlay();
     void stop_sound(audio::AudioEngine& sound);
     [[nodiscard]] bool following() const noexcept { return follow_; }
+    [[nodiscard]] const simulation::Train* train() const noexcept { return train_.get(); }
     // A traveller at the end of the train that leads (by the motion, else
     // the reverser), facing away from the train.
     [[nodiscard]] std::optional<simulation::TrackTraveller> ahead() const;
@@ -74,6 +75,9 @@ private:
     void request_models(renderer::ModelLibrary& library);
     void fit_shapes(renderer::ModelLibrary& library);
     void apply_handles(const SceneInput& input);
+    // Train::turn_around plus the viewer's per-car state; the driver moves to
+    // the new front engine with the handles as they were, reverser neutral.
+    void turn_around();
     void step_train();
     void update_sound(float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound);
     void list_consists();
@@ -109,6 +113,7 @@ private:
     int consist_choice_ = -1;
     std::string pending_load_;
     bool pending_path_ = false;
+    bool pending_turn_ = false;
     std::string message_;
 };
 

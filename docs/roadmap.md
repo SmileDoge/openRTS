@@ -11,7 +11,7 @@ on screen. Reverse notes live in `docs/reverse/`.
 | `assets` | content resolver (route / global lookup) |
 | `renderer` | WebGPU shapes with RTS material/pass rules, sky + time of day, seasonal terrain, world streaming, frustum culling; RTS and experimental shading paths |
 | `viewer` | free camera over a route, time/season/weather controls |
-| `simulation` | track network and travellers with the RTS junction modes (`track.md`); trains with RTS physics, couplers, RTS brakes, the 395 valve and ЭПТ (`train.md`) |
+| `simulation` | track network and travellers with the RTS junction modes (`track.md`); trains with RTS physics, couplers, RTS brakes, the 395 valve and ЭПТ (`train.md`); signals: the RTS script VM, block_state/route_set, train chains (`signals.md`) |
 | `formats` (trains) | `.con`, `.eng`/`.wag` with `.rtseng` merge, `.pat`, `.sms`/`.ws` |
 | `audio` | `.sms` runner, miniaudio output, world and train sounds (`sound.md`) |
 | `viewer` (trains) | drive a consist from a path start, follow camera, Train panel |
@@ -22,7 +22,9 @@ on screen. Reverse notes live in `docs/reverse/`.
 Steps 1 and 2 are done: a consist from the content can be driven over a
 route with the keyboard. Not done from them: Dyntrack rendering, consist
 changes (coupling, uncoupling, coupler breaks and derailment have no
-consequences yet). Next: step 3, signals.
+consequences yet). Step 3 (signals) is done as `docs/signals.md` describes:
+scripts compiled exactly as RTS does, evaluated on the train step, lit on
+screen. Next: step 4, paths and interlocking.
 
 ## What is needed
 

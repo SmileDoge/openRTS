@@ -52,12 +52,21 @@ enum class WorldObjectKind {
 
 [[nodiscard]] const char* to_string(WorldObjectKind kind) noexcept;
 
+// One head of a world `Signal`: the shape's sub-object and its TDB item.
+struct WorldSignalUnit {
+    std::uint32_t sub_object{};
+    std::uint32_t track_item{}; // TrItemId (the second value; the first is the database, 0 = TDB)
+};
+
 struct WorldObjectPlacement {
     WorldObjectKind kind = WorldObjectKind::static_object;
     std::uint32_t uid{};
     std::filesystem::path shape_file;
     RoutePosition position;
     std::array<float, 4> rotation{0.f, 0.f, 0.f, 1.f};
+    // Signals: SignalSubObj (bit n = sub-object n shown) and the heads.
+    std::uint32_t signal_sub_objects{};
+    std::vector<WorldSignalUnit> signal_units;
 };
 
 struct WorldTile {

@@ -74,6 +74,19 @@ struct ItemAhead {
     bool facing_forward = true; // travel direction on that node
 };
 
+// The next vector node from the end of `node` in the `forward` direction,
+// through junctions as they are set. Junctions passed are listed; a trailing
+// junction set for another branch stops with junction_obstructed;
+// `visited` (optional) receives every junction looked at, the obstructing
+// one included.
+struct NodeStep {
+    std::uint32_t node{};
+    bool forward = true; // travel direction on the new node
+    std::vector<JunctionPass> junctions;
+};
+[[nodiscard]] std::optional<NodeStep> next_vector_node(const TrackNetwork& network, std::uint32_t node, bool forward,
+                                                       MoveStop& stop, std::vector<std::uint32_t>* visited = nullptr);
+
 enum class LookAheadStop : std::uint8_t { distance, end_of_track, junction_obstructed, loop };
 
 struct LookAhead {

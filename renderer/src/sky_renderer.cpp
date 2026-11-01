@@ -1,6 +1,7 @@
 #include <openrts/renderer/sky_renderer.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
+#include <openrts/renderer/depth.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -461,7 +462,7 @@ namespace {
     };
     // RTS draws the sky with GL_DEPTH_TEST disabled, which also disables writes.
     const WGPUDepthStencilState depth{
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = depth_format,
         .depthWriteEnabled = WGPUOptionalBool_False,
         .depthCompare = WGPUCompareFunction_Always,
         .stencilFront = keep_stencil,

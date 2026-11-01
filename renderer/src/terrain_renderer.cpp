@@ -170,6 +170,7 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 } // namespace openrts::renderer
 
 #ifdef OPENRTS_HAS_WGPU
+#include <openrts/renderer/depth.hpp>
 #include <array>
 #include <chrono>
 #include <cstring>
@@ -535,9 +536,9 @@ namespace {
     };
     // RTS terrain: depth test GL_LEQUAL with writes, blend and alpha test off.
     const WGPUDepthStencilState depth{
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = depth_format,
         .depthWriteEnabled = WGPUOptionalBool_True,
-        .depthCompare = WGPUCompareFunction_LessEqual,
+        .depthCompare = depth_nearer_or_equal,
         .stencilFront = keep_stencil,
         .stencilBack = keep_stencil,
         .stencilReadMask = ~0u,

@@ -1,6 +1,7 @@
 #include <openrts/renderer/debug_lines.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
+#include <openrts/renderer/depth.hpp>
 #include <array>
 #include <cstddef>
 
@@ -56,9 +57,9 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         .passOp = WGPUStencilOperation_Keep,
     };
     const WGPUDepthStencilState depth{
-        .format = WGPUTextureFormat_Depth24Plus,
+        .format = depth_format,
         .depthWriteEnabled = WGPUOptionalBool_False,
-        .depthCompare = depth_test ? WGPUCompareFunction_LessEqual : WGPUCompareFunction_Always,
+        .depthCompare = depth_test ? depth_nearer_or_equal : WGPUCompareFunction_Always,
         .stencilFront = keep,
         .stencilBack = keep,
         .stencilReadMask = ~0u,

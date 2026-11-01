@@ -25,6 +25,7 @@
 #include <openrts/simulation/track_network.hpp>
 
 #include "track_view.hpp"
+#include "signal_view.hpp"
 #include "train_view.hpp"
 
 #ifdef OPENRTS_HAS_IMGUI
@@ -188,7 +189,11 @@ public:
         terrain_ = std::make_unique<renderer::TerrainRenderer>(gpu.device, gpu.target_format, content_.vfs(), route_,
                                                                origin_, terrain_radius);
         if (!terrain_->ready()) terrain_.reset();
-        if (track_) track_->attach(gpu.device, gpu.target_format);
+        if (track_) {
+            track_->attach(gpu.device, gpu.target_format);
+            signals_ = std::make_unique<SignalView>(content_.vfs(), route_, origin_, track_->network());
+            signals_->attach(gpu.device, gpu.target_format);
+        }
         audio_ = gpu.audio;
         if (audio_) world_sounds_ = std::make_unique<audio::WorldSounds>(content_.vfs(), route_, origin_);
 
@@ -220,6 +225,7 @@ public:
         train_.reset();
         world_sounds_.reset();
         audio_ = nullptr;
+        signals_.reset();
         if (track_) track_->detach();
         terrain_.reset();
         sky_renderer_.reset();
@@ -228,6 +234,7 @@ public:
     }
 
     void update(ModelRenderer&, ViewerCamera& camera, const SceneClock& clock, const SceneInput& input) override {
+        if (input.toggle_labels) labels_ = !labels_;
         if (track_) {
             track_->update(input, clock.elapsed);
             if (input.throw_junction) {
@@ -244,6 +251,7 @@ public:
             if (input.place_train && train_->loaded()) place_train(camera);
             train_->update(input, camera, clock.elapsed, *library_, audio_);
         }
+        if (signals_) signals_->update(clock.elapsed, train_ ? train_->train() : nullptr, camera.eye());
         const auto camera_position = renderer::route_position(camera.eye(), origin_);
         apply_conditions(clock.season, clock.weather);
         if (terrain_) terrain_->update(camera_position);
@@ -288,6 +296,8 @@ public:
     }
 
     void submit(ModelRenderer& renderer, const FrameView& frame) override {
+        last_view_projection_ = frame.projection * frame.view;
+        last_eye_ = frame.eye;
         const auto frustum = renderer::Frustum::from_view_projection(frame.projection * frame.view);
 
         drawn_instances_ = 0;
@@ -303,17 +313,23 @@ public:
             // Switch shapes follow their junction; other shapes stay at rest.
             if (const auto blade = track_ ? track_->switch_frame(instance) : std::nullopt) {
                 renderer.submit(*model, instance.transform, *blade);
+            } else if (const auto hidden = signals_ ? signals_->hidden_parts(instance, *library_)
+                                                    : std::vector<renderer::NodeAdjustment>{};
+                       !hidden.empty()) {
+                renderer.submit(*model, instance.transform, hidden);
             } else {
                 renderer.submit(*model, instance.transform);
             }
             ++drawn_instances_;
         }
         if (train_) train_->submit(renderer, *library_);
+        if (signals_) signals_->collect_lights(streamer_->visible_instances(), *library_, frame.eye, draw_distance);
     }
 
     [[nodiscard]] std::optional<formats::RoutePosition> origin() const override { return origin_; }
 
     void draw_foreground(const WGPURenderPassEncoder pass, const FrameView& frame) override {
+        if (signals_) signals_->draw(pass, frame, frame.viewport_height);
         if (track_) track_->draw(pass, frame.projection * frame.view, train_ && train_->placed() ? train_->head_position() : frame.eye);
     }
 
@@ -346,8 +362,11 @@ public:
         }
         ImGui::Text("Models: %zu GPU, %zu CPU queued, %zu pending", models.models, models.queued_uploads,
                     stream.pending_model_assets);
+        ImGui::Checkbox("Labels: junctions and signals (L)", &labels_);
+        if (labels_) draw_labels();
         if (track_) track_->draw_overlay();
         if (train_) train_->draw_overlay();
+        if (signals_) signals_->draw_overlay();
         content_.draw_overlay(library_.get());
 #endif
     }
@@ -448,6 +467,38 @@ private:
     std::unique_ptr<audio::WorldSounds> world_sounds_;
     // Debug switch in the overlay; the overlay callback is const.
     mutable bool culling_ = true;
+    mutable bool labels_ = false;
+    glm::mat4 last_view_projection_{1.0f};
+    glm::vec3 last_eye_{};
+
+    // Service labels over the 3D view (behind the panels), from the last
+    // submitted frame's camera.
+    void draw_labels() const {
+#ifdef OPENRTS_HAS_IMGUI
+        constexpr float range = 600.0f;
+        std::vector<WorldLabel> labels;
+        if (track_) track_->collect_labels(labels, last_eye_, range);
+        if (signals_) signals_->collect_labels(labels, last_eye_, range);
+        const auto size = ImGui::GetIO().DisplaySize;
+        auto* list = ImGui::GetBackgroundDrawList();
+        // Far labels first, so near ones are drawn on top.
+        std::sort(labels.begin(), labels.end(), [&](const WorldLabel& a, const WorldLabel& b) {
+            return glm::distance(a.position, last_eye_) > glm::distance(b.position, last_eye_);
+        });
+        for (const auto& label : labels) {
+            const auto clip = last_view_projection_ * glm::vec4{label.position, 1.0f};
+            if (clip.w <= 0.1f) continue;
+            const auto ndc = glm::vec3{clip} / clip.w;
+            if (ndc.x < -1.2f || ndc.x > 1.2f || ndc.y < -1.2f || ndc.y > 1.2f || ndc.z < 0.0f || ndc.z > 1.0f) continue;
+            const ImVec2 anchor{(ndc.x * 0.5f + 0.5f) * size.x, (0.5f - ndc.y * 0.5f) * size.y};
+            const auto text_size = ImGui::CalcTextSize(label.text.c_str());
+            const ImVec2 corner{anchor.x - text_size.x * 0.5f, anchor.y - text_size.y};
+            list->AddRectFilled({corner.x - 3.0f, corner.y - 2.0f}, {corner.x + text_size.x + 3.0f, corner.y + text_size.y + 2.0f},
+                                0xb0000000u, 3.0f);
+            list->AddText(corner, label.colour, label.text.c_str());
+        }
+#endif
+    }
     std::optional<renderer::rts::SkySimulation> sky_simulation_;
     std::optional<renderer::rts::SkyState> sky_state_;
     std::unique_ptr<renderer::SkyRenderer> sky_renderer_;
@@ -455,6 +506,7 @@ private:
     std::unique_ptr<renderer::ModelLibrary> library_;
     std::optional<TrackView> track_;
     std::unique_ptr<TrainView> train_;
+    std::unique_ptr<SignalView> signals_;
     std::size_t drawn_instances_ = 0;
 };
 

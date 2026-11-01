@@ -119,6 +119,14 @@ In `openrts_simulation`, no rendering.
 - A consist is put on the track at a `TrackNetwork::Location` (the probe,
   or a point on the track near the camera) facing a direction.
 - The cars are laid back along the track through junctions as they are set.
+- Placing a train again first frees the junctions it held (`vacate()`): the
+  junctions under it and those its tail still kept for ClearanceDist.
+- Changing ends (`turn_around()`, viewer key X): only while standing. The
+  old rear becomes the train front facing the other way, the car order
+  reverses and every car's `flipped` toggles (each car stays as it is on the
+  track); controllers move with their cars. The viewer then puts the driver
+  on the new front engine with the old handles, throttle 0 and reverser
+  neutral. How RTS changes cabs (ChangeLoco and the master) is not traced.
 
 ### Movement
 

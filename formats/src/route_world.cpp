@@ -1,5 +1,6 @@
 #include <openrts/formats/route_world.hpp>
 
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 
@@ -81,6 +82,8 @@ void read_static_field(Tokenizer& tokens,
         object.position.y = *py;
         object.position.z = *pz;
         has_position = true;
+    } else if (equals_ignore_case(field, "SignalSubObj")) {
+        if (const auto value = tokens.next()) object.signal_sub_objects = static_cast<std::uint32_t>(std::strtoul(value->c_str(), nullptr, 16));
     } else if (equals_ignore_case(field, "QDirection")) {
         for (auto& component : object.rotation) {
             if (const auto value = tokens.next()) {
@@ -135,6 +138,42 @@ constexpr ObjectKeyword object_keywords[] = {
         }
         if (depth != 1 || !tokens.open_block()) continue;
 
+        if (kind == WorldObjectKind::signal && equals_ignore_case(*field, "SignalUnits")) {
+            // SignalUnits ( n  SignalUnit ( sub  TrItemId ( db item ) ) ... )
+            std::vector<std::string> path; // names of the blocks open inside SignalUnits
+            std::string previous;
+            WorldSignalUnit unit;
+            bool expect_sub_object = false;
+            std::vector<std::string> item_values;
+            while (const auto token = tokens.next()) {
+                if (*token == "(") {
+                    path.push_back(previous);
+                    expect_sub_object = equals_ignore_case(previous, "SignalUnit");
+                    if (expect_sub_object) unit = {};
+                    if (equals_ignore_case(previous, "TrItemId")) item_values.clear();
+                    previous.clear();
+                    continue;
+                }
+                if (*token == ")") {
+                    if (path.empty()) break; // the end of SignalUnits
+                    if (equals_ignore_case(path.back(), "TrItemId") && !item_values.empty()) {
+                        if (const auto item = parse_integer<std::uint32_t>(item_values.back())) unit.track_item = *item;
+                    } else if (equals_ignore_case(path.back(), "SignalUnit")) {
+                        object.signal_units.push_back(unit);
+                    }
+                    path.pop_back();
+                    continue;
+                }
+                if (expect_sub_object) {
+                    if (const auto index = parse_integer<std::uint32_t>(*token)) unit.sub_object = *index;
+                    expect_sub_object = false;
+                } else if (!path.empty() && equals_ignore_case(path.back(), "TrItemId")) {
+                    item_values.push_back(*token);
+                }
+                previous = *token;
+            }
+            continue;
+        }
         read_static_field(tokens, *field, object, has_shape, has_position);
         tokens.skip_block();
     }

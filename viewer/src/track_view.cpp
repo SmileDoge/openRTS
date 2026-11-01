@@ -231,6 +231,26 @@ std::optional<float> TrackView::switch_frame(const renderer::StreamedInstance& i
     return it->second;
 }
 
+void TrackView::collect_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, const float range) const {
+    for (std::uint32_t i = 1; i < network_->node_count(); ++i) {
+        const auto* node = network_->node(i);
+        if (!node || node->kind != formats::TrackNodeKind::junction) continue;
+        const auto position = network_->node_position(i);
+        const auto* state = network_->junction(i);
+        if (!position || !state) continue;
+        const auto at = local(*position, 2.5f);
+        if (glm::distance(at, eye) > range) continue;
+        std::string text = "J" + std::to_string(i) + "  branch " + std::to_string(state->selected) + "/"
+            + std::to_string(node->branch_count());
+        if (state->selected == state->main_route) text += " (main)";
+        const bool held = state->occupied || !state->clearance.empty();
+        if (state->occupied) text += "\noccupied";
+        if (!state->clearance.empty()) text += state->occupied ? ", clearance" : "\nclearance";
+        if (!state->reservations.empty()) text += "\nreserved x" + std::to_string(state->reservations.size());
+        labels.push_back({.position = at, .text = std::move(text), .colour = held ? 0xff5080ffu : 0xff60e0ffu});
+    }
+}
+
 void TrackView::draw_overlay() const {
 #ifdef OPENRTS_HAS_IMGUI
     if (!ImGui::CollapsingHeader("Track", ImGuiTreeNodeFlags_DefaultOpen)) return;

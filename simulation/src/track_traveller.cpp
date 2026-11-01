@@ -201,6 +201,24 @@ TrackPoint TrackTraveller::pose() const {
     return point;
 }
 
+std::optional<NodeStep> next_vector_node(const TrackNetwork& network, const std::uint32_t node, const bool forward,
+                                        MoveStop& stop, std::vector<std::uint32_t>* visited) {
+    NodeStep step;
+    stop = MoveStop::completed;
+    const auto arrival = follow(network, node, forward ? 1 : 0,
+                                [&](const std::uint32_t junction, const bool facing, const std::uint32_t branch) {
+                                    step.junctions.push_back({.junction = junction, .facing = facing, .branch = branch});
+                                    if (visited) visited->push_back(junction);
+                                    const auto* state = network.junction(junction);
+                                    return facing || !state || state->selected == branch;
+                                },
+                                stop);
+    if (!arrival) return std::nullopt;
+    step.node = arrival->node;
+    step.forward = arrival->forward;
+    return step;
+}
+
 LookAhead look_ahead(const TrackNetwork& network, std::uint32_t node, double offset, bool forward,
                      const double max_distance, const std::function<bool(const formats::TrackItem&)>& filter,
                      const std::size_t max_items) {

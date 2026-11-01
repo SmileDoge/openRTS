@@ -1,6 +1,7 @@
 #include "window_viewer.hpp"
 
 #ifdef OPENRTS_HAS_WGPU
+#include <openrts/renderer/depth.hpp>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -41,7 +42,6 @@ constexpr int initial_width = 1280;
 constexpr int initial_height = 720;
 constexpr float vertical_fov = 0.85f;
 constexpr double max_frame_seconds = 0.1;
-constexpr WGPUTextureFormat depth_format = WGPUTextureFormat_Depth24Plus;
 
 class GlfwSession {
 public:
@@ -178,7 +178,7 @@ private:
             .usage = WGPUTextureUsage_RenderAttachment,
             .dimension = WGPUTextureDimension_2D,
             .size = {.width = config_.width, .height = config_.height, .depthOrArrayLayers = 1},
-            .format = depth_format,
+            .format = renderer::depth_format,
             .mipLevelCount = 1,
             .sampleCount = 1,
         };
@@ -326,7 +326,7 @@ public:
         info.Device = device;
         info.NumFramesInFlight = 3;
         info.RenderTargetFormat = target_format;
-        info.DepthStencilFormat = depth_format;
+        info.DepthStencilFormat = renderer::depth_format;
         initialized_ = ImGui_ImplWGPU_Init(&info);
     }
 
@@ -495,8 +495,9 @@ struct CameraInput {
     bool junction_key_down = false;
     bool follow_key_down = false;
     bool track_key_down = false;
+    bool labels_key_down = false;
     bool save_key_down = false;
-    std::array<bool, 10> train_keys_down{};
+    std::array<bool, 11> train_keys_down{};
     double cursor_x = 0.0;
     double cursor_y = 0.0;
 };
@@ -618,6 +619,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .throw_junction = pressed(GLFW_KEY_J, input.junction_key_down),
         .toggle_follow = pressed(GLFW_KEY_V, input.follow_key_down),
         .toggle_track = pressed(GLFW_KEY_T, input.track_key_down),
+        .toggle_labels = pressed(GLFW_KEY_L, input.labels_key_down),
         .place_train = pressed(GLFW_KEY_C, input.train_keys_down[0]),
         .throttle_up = pressed(GLFW_KEY_HOME, input.train_keys_down[1]),
         .throttle_down = pressed(GLFW_KEY_END, input.train_keys_down[2]),
@@ -629,6 +631,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .independent_more = pressed(GLFW_KEY_PERIOD, input.train_keys_down[7]),
         .independent_less = pressed(GLFW_KEY_COMMA, input.train_keys_down[8]),
         .toggle_ep = pressed(GLFW_KEY_K, input.train_keys_down[9]),
+        .turn_around = pressed(GLFW_KEY_X, input.train_keys_down[10]),
     };
 }
 
@@ -731,7 +734,7 @@ void report_adapter(const WGPUAdapter adapter) {
 
 [[nodiscard]] glm::mat4 projection(const ViewerCamera& camera, const float aspect) {
     const auto near_plane = (std::max)(camera.distance * 0.002f, 0.01f);
-    return glm::perspectiveRH_ZO(vertical_fov, aspect, near_plane, camera.distance * 20.0f);
+    return renderer::reversed_z_perspective(vertical_fov, aspect, near_plane, camera.distance * 20.0f);
 }
 
 struct FrameTargets {
@@ -754,7 +757,7 @@ struct FrameTargets {
         .view = targets.depth,
         .depthLoadOp = WGPULoadOp_Clear,
         .depthStoreOp = WGPUStoreOp_Store,
-        .depthClearValue = 1.0f,
+        .depthClearValue = renderer::depth_clear_value,
         .depthReadOnly = false,
         .stencilLoadOp = WGPULoadOp_Undefined,
         .stencilStoreOp = WGPUStoreOp_Undefined,
@@ -915,6 +918,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             .projection = projection(camera, aspect),
             .vertical_fov = vertical_fov,
             .aspect = aspect,
+            .viewport_height = static_cast<float>(height),
         };
         stage_clock.mark(FrameStage::begin, stages);
         scene.draw_background(pass, frame);

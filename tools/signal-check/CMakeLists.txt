@@ -1,0 +1,4 @@
+add_executable(openrts_signal_check src/main.cpp)
+set_target_properties(openrts_signal_check PROPERTIES OUTPUT_NAME openrts-signal-check)
+openrts_configure_target(openrts_signal_check)
+target_link_libraries(openrts_signal_check PRIVATE openrts_simulation openrts_formats openrts_core)

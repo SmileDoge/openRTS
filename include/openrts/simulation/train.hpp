@@ -178,7 +178,18 @@ public:
 
     // Puts the train with the front of car 0 at (node, offset), facing along
     // the node when `forward`; the cars are laid back along the track.
+    // A train already placed first frees the junctions it held (vacate()).
     bool place(TrackNetwork& network, std::uint32_t node, double offset, bool forward, std::string* error = nullptr);
+    // Takes the train off the track: frees the junctions under it and those
+    // its tail still keeps for ClearanceDist. The train stays where it was
+    // for drawing until placed again.
+    void vacate();
+    // Turns the train end for end while it stands (the driver walks to the
+    // other end): the last car becomes car 0 and the train front is the old
+    // rear. Every car keeps its place and orientation on the track, so each
+    // one's `flipped` toggles; controllers move with their cars. Fails while
+    // moving faster than 0.1 m/s.
+    bool turn_around();
     [[nodiscard]] bool placed() const noexcept { return network_ != nullptr; }
 
     // Controllers drive engines; cars without one get no demands.
@@ -196,6 +207,10 @@ public:
     // last car, facing the train front too.
     [[nodiscard]] std::optional<TrackTraveller> front_end() const;
     [[nodiscard]] std::optional<TrackTraveller> rear_end() const;
+    // The end that led the last movement (the front when standing still at
+    // the start), facing the direction of travel.
+    [[nodiscard]] std::optional<TrackTraveller> leading_end() const;
+    [[nodiscard]] TrackNetwork* network() const noexcept { return network_; }
     [[nodiscard]] std::vector<TrainEvent> take_events();
     [[nodiscard]] double speed() const noexcept { return cars_.empty() ? 0.0 : cars_.front().velocity; }
     [[nodiscard]] double length() const noexcept;

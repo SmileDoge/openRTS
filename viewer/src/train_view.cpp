@@ -323,6 +323,31 @@ void TrainView::apply_handles(const SceneInput& input) {
     if (input.toggle_ep) d.ep_brake = !d.ep_brake;
 }
 
+void TrainView::turn_around() {
+    if (!train_ || !train_->turn_around()) {
+        message_ = "stop the train to change ends";
+        return;
+    }
+    std::reverse(cars_.begin(), cars_.end());
+    for (auto& car : cars_) car.flipped = !car.flipped;
+    // Controllers moved with their cars; the master must be the new front
+    // engine, so the driver is put on again with the old handles.
+    const auto old = driver_ ? std::optional<simulation::DriverHandles>{*driver_} : std::nullopt;
+    driver_ = simulation::attach_keyboard_driver(*train_);
+    if (driver_ && old) {
+        const auto notches = driver_->notches;
+        *driver_ = *old;
+        driver_->notches = notches;
+        driver_->throttle = 0;
+        driver_->reverser = 0;
+    }
+    previous_ = current_ = train_->placements();
+    current_travelled_.resize(train_->cars().size());
+    for (std::size_t i = 0; i < current_travelled_.size(); ++i) current_travelled_[i] = train_->cars()[i].travelled;
+    previous_travelled_ = current_travelled_;
+    message_ = "now driving from the other end";
+}
+
 void TrainView::step_train() {
     train_->step();
     for (const auto& event : train_->take_events()) {
@@ -399,6 +424,10 @@ void TrainView::update(const SceneInput& input, ViewerCamera& camera, const floa
     }
     if (!placed()) return;
     if (input.toggle_follow) follow_ = !follow_;
+    if (input.turn_around || pending_turn_) {
+        pending_turn_ = false;
+        turn_around();
+    }
     apply_handles(input);
 
     accumulator_ += (std::min)(elapsed, 0.25f);
@@ -581,6 +610,10 @@ void TrainView::draw_overlay() {
             ImGui::EndCombo();
         }
         if (train_ && ImGui::Button("Put on the path start")) pending_path_ = true;
+        if (train_) {
+            ImGui::SameLine();
+            if (ImGui::Button("Change ends (X)")) pending_turn_ = true;
+        }
     } else {
         ImGui::TextDisabled("The route has no paths (PATHS/*.pat).");
     }

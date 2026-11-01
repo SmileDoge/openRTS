@@ -202,6 +202,30 @@ void test_buffer_stop(const Stock& stock) {
           "train ends stay a train length apart at the end of the track");
 }
 
+// Changing ends: the old rear becomes the front, facing the other way, the
+// cars keep their places, and driving ahead moves towards the old rear.
+void test_turn_around(const Stock& stock) {
+    Run r(stock, {}, 1500.0);
+    const auto old_front = *r.train.front_end();
+    const auto old_rear = *r.train.rear_end();
+    const bool first_flipped = r.train.cars().front().flipped;
+    check(r.train.turn_around(), "a standing train changes ends");
+    const auto front = *r.train.front_end();
+    const auto rear = *r.train.rear_end();
+    check(front.node() == old_rear.node() && near(front.offset(), old_rear.offset(), 0.05) && front.forward() != old_rear.forward(),
+          "the new front is the old rear, facing the other way");
+    check(rear.node() == old_front.node() && near(rear.offset(), old_front.offset(), 0.05), "the new rear is the old front");
+    check(r.train.cars().back().flipped != first_flipped, "the old first car is last and turned");
+    // The master is the new front engine, as the viewer re-attaches it.
+    r.driver = simulation::attach_keyboard_driver(r.train);
+    r.driver->reverser = 1;
+    r.driver->throttle = r.driver->notches;
+    r.run(20.0);
+    const auto moved = *r.train.front_end();
+    check(moved.offset() < front.offset() - 1.0, "driving ahead after changing ends moves towards the old rear");
+    check(!r.train.turn_around(), "a moving train does not change ends");
+}
+
 } // namespace
 
 // ЭПТ: every car fills at once, the pipe stays charged, I/II release.
@@ -240,6 +264,7 @@ int main() {
     test_parse(stock);
     test_brakes(stock);
     test_buffer_stop(stock);
+    test_turn_around(stock);
     test_ept();
     if (failures == 0) std::cout << "train tests passed\n";
     return failures == 0 ? 0 : 1;

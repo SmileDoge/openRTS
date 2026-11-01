@@ -29,6 +29,7 @@ struct FrameView {
     glm::mat4 projection{1.0f};
     float vertical_fov = 0.0f;
     float aspect = 1.0f;
+    float viewport_height = 720.0f; // pixels
 };
 
 // GPU objects a scene may create resources with.
@@ -48,6 +49,14 @@ struct SceneClock {
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
 };
 
+// A service label drawn over the 3D view at a point of the scene (junction
+// ids, signal heads); text may have several lines.
+struct WorldLabel {
+    glm::vec3 position{};
+    std::string text;
+    std::uint32_t colour = 0xffffffffu; // 0xAABBGGRR (ImGui)
+};
+
 // Keys the scene reacts to this frame (edges are "pressed this frame").
 struct SceneInput {
     bool step_up = false;        // Up arrow held (shape scenes: animation frames)
@@ -55,6 +64,7 @@ struct SceneInput {
     bool throw_junction = false; // J
     bool toggle_follow = false;  // V
     bool toggle_track = false;   // T
+    bool toggle_labels = false;  // L: junction and signal labels
     // Train driving (edges).
     bool place_train = false;      // C
     bool throttle_up = false;      // Home
@@ -67,6 +77,7 @@ struct SceneInput {
     bool independent_more = false; // .
     bool independent_less = false; // ,
     bool toggle_ep = false;        // K: ЭПТ on/off
+    bool turn_around = false;      // X: drive from the other end of the train
 };
 
 // Lighting and background colour the scene wants for the current frame.
