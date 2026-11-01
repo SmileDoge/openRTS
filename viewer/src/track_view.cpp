@@ -142,7 +142,7 @@ void TrackView::throw_junction(const std::uint32_t junction) {
     const auto branch = static_cast<std::uint32_t>((state->selected + 1) % node->branch_count());
     message_ = network_->throw_junction(junction, branch)
         ? "junction " + std::to_string(junction) + " -> branch " + std::to_string(branch)
-        : "junction " + std::to_string(junction) + " is occupied";
+        : "junction " + std::to_string(junction) + (state->occupied ? " is occupied" : " is held by a train's path");
 }
 
 void TrackView::throw_junction_ahead(const simulation::TrackTraveller& from) {

@@ -230,6 +230,15 @@ RouteDefinition parse_route_definition(const std::string_view trk_bytes) {
             tokens.skip_block();
         } else if (equals_ignore_case(*key, "Environment") && tokens.open_block()) {
             read_environments(tokens, result.environments);
+        } else if ((equals_ignore_case(*key, "SpeedLimit") || equals_ignore_case(*key, "TempRestrictedSpeed"))
+                   && tokens.open_block()) {
+            const bool limit = equals_ignore_case(*key, "SpeedLimit");
+            if (const auto value = tokens.next()) {
+                if (const auto parsed = parse_double(*value)) {
+                    (limit ? result.speed_limit : result.temp_restricted_speed) = static_cast<float>(*parsed);
+                }
+            }
+            tokens.skip_block();
         }
     }
 

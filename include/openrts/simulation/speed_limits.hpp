@@ -1,0 +1,62 @@
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <unordered_map>
+#include <vector>
+
+#include <openrts/formats/track_database.hpp>
+#include <openrts/simulation/track_network.hpp>
+
+// Speed limits from the route's speed posts (docs/paths.md): a limit post
+// sets the limit for trains passing it in the direction its sign faces, a
+// post that ends a restriction sets the route's SpeedLimit back (RTS
+// 0x482680 reads them). A lower limit applies from the train's front, a
+// higher one once the whole train has passed the post.
+namespace openrts::simulation {
+
+class Train;
+
+struct SpeedPostOnTrack {
+    std::uint32_t item{};
+    std::uint32_t node{};
+    double offset{};
+    // The direction of travel on the node the post is for (along the node,
+    // or against it); posts whose angle does not tell apply both ways.
+    bool along = true;
+    bool against = true;
+    formats::SpeedPost post;
+};
+
+struct SpeedLimit {
+    float current = -1.0f;      // m/s, -1: none
+    float ahead = -1.0f;        // m/s, the next post's limit (-1: none within the look-ahead)
+    double ahead_distance = 0.0; // m from the leading end
+};
+
+class SpeedLimits {
+public:
+    // `route_limit`: the .trk SpeedLimit (m/s, 0: none).
+    SpeedLimits(const TrackNetwork& network, float route_limit);
+
+    // The limit for a train moving the way it last moved; `freight` picks the
+    // freight limits of posts that have separate ones.
+    [[nodiscard]] SpeedLimit evaluate(const Train& train, bool freight, double look_ahead = 3000.0) const;
+    // The limit in force for a train travelling `forward` on `node` at
+    // `offset`: the nearest applicable post behind, else the route's limit.
+    [[nodiscard]] float limit_at(std::uint32_t node, double offset, bool forward, bool freight) const;
+    [[nodiscard]] float route_limit() const noexcept { return route_limit_; }
+    [[nodiscard]] const std::vector<SpeedPostOnTrack>& posts() const noexcept { return posts_; }
+    // The post for item `item`, if it is a limit post on the network.
+    [[nodiscard]] const SpeedPostOnTrack* post(std::uint32_t item) const;
+    // Whether `post` applies to travel `forward` on its node.
+    [[nodiscard]] static bool applies(const SpeedPostOnTrack& post, bool forward, bool freight);
+
+private:
+    const TrackNetwork* network_;
+    float route_limit_;
+    std::vector<SpeedPostOnTrack> posts_;
+    std::unordered_map<std::uint32_t, std::size_t> by_item_;
+};
+
+} // namespace openrts::simulation

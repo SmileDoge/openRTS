@@ -26,6 +26,7 @@
 
 #include "track_view.hpp"
 #include "signal_view.hpp"
+#include "track_control.hpp"
 #include "train_view.hpp"
 
 #ifdef OPENRTS_HAS_IMGUI
@@ -51,6 +52,7 @@ public:
     [[nodiscard]] const std::shared_ptr<core::Vfs>& vfs() const noexcept { return content_.vfs; }
     [[nodiscard]] const std::string& consist() const noexcept { return content_.consist; }
     [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
+    [[nodiscard]] bool track_control() const noexcept { return content_.track_control; }
 
     // Hands this frame's VFS changes to the model library.
     void forward_changes(renderer::ModelLibrary& library) {
@@ -204,6 +206,14 @@ public:
         camera.fly = true;
         if (track_) {
             train_ = std::make_unique<TrainView>(content_.vfs(), route_, origin_, track_->network());
+            track_control_ = std::make_unique<TrackControl>(track_->network(), origin_);
+            if (content_.track_control()) track_control_->toggle();
+            // Signals beyond a routed train's reserved way stay at danger.
+            if (signals_) {
+                signals_->set_authority([dispatcher = &train_->dispatcher()](const simulation::Train& train) {
+                    return dispatcher->authority_ahead(train.id());
+                });
+            }
             if (!content_.consist().empty()) {
                 if (const auto error = train_->load(content_.consist()); !error.empty()) {
                     std::cout << "train: " << error << '\n';
@@ -222,6 +232,8 @@ public:
     void detach() override {
         if (world_sounds_ && audio_) world_sounds_->stop(*audio_);
         if (train_ && audio_) train_->stop_sound(*audio_);
+        track_control_.reset();
+        if (signals_) signals_->set_authority({});
         train_.reset();
         world_sounds_.reset();
         audio_ = nullptr;
@@ -248,7 +260,9 @@ public:
                 }
             }
         }
+        if (input.toggle_track_control && track_control_) track_control_->toggle();
         if (train_) {
+            train_->set_signals(signals_ ? signals_->system() : nullptr);
             if (input.place_train && train_->loaded()) place_train(camera);
             train_->set_obstacles(streamer_ ? &streamer_->visible_instances() : nullptr);
             train_->update(input, camera, clock.elapsed, *library_, audio_);
@@ -369,9 +383,14 @@ public:
                     stream.pending_model_assets);
         ImGui::Checkbox("Labels: junctions and signals (L)", &labels_);
         if (labels_) draw_labels();
+        if (track_control_) {
+            bool open = track_control_->is_open();
+            if (ImGui::Checkbox("Track control (F7)", &open)) track_control_->toggle();
+        }
         if (track_) track_->draw_overlay();
         if (train_) train_->draw_overlay();
         if (signals_) signals_->draw_overlay();
+        if (track_control_ && train_) track_control_->draw(*train_, signals_ ? signals_->system() : nullptr);
         content_.draw_overlay(library_.get());
 #endif
     }
@@ -532,6 +551,7 @@ private:
     std::unique_ptr<renderer::ModelLibrary> library_;
     std::optional<TrackView> track_;
     std::unique_ptr<TrainView> train_;
+    std::unique_ptr<TrackControl> track_control_;
     std::unique_ptr<SignalView> signals_;
     std::size_t drawn_instances_ = 0;
 };

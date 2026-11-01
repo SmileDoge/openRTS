@@ -1,5 +1,7 @@
 #include <openrts/formats/track_database.hpp>
 
+#include <cmath>
+
 #include <algorithm>
 
 #include "text_tokenizer.hpp"
@@ -270,6 +272,36 @@ const char* to_string(const TrackItemKind kind) noexcept {
     case TrackItemKind::other: return "other";
     }
     return "other";
+}
+
+std::optional<SpeedPost> speed_post(const TrackItem& item) {
+    if (item.kind != TrackItemKind::speed_post || item.speed_post_data.empty()) return std::nullopt;
+    const auto& v = item.speed_post_data;
+    SpeedPost post;
+    post.flags = static_cast<std::uint32_t>(v[0]);
+    std::size_t at = 1;
+    const auto next = [&]() { return at < v.size() ? v[at++] : 0.0f; };
+    const bool limit = (post.flags & 2u) != 0;
+    const bool one = (post.flags & 1u) != 0;
+    if (limit) {
+        post.limit = true;
+        post.resume = one;
+        if (!one) post.speed = next();
+        if ((post.flags & 0x10u) != 0) post.number = next();
+    } else {
+        post.warning = one;
+        if ((post.flags & 8u) != 0) post.speed = next();
+        post.number = next();
+    }
+    post.angle = next();
+    post.speed = std::abs(post.speed);
+    // km/h, or mph with flag 0x100 (RTS multiplies by 0.4469444 and 0.2777778).
+    if (!post.resume) post.speed *= (post.flags & 0x100u) != 0 ? 0.44694444f : 0.27777778f;
+    if ((post.flags & 0x80u) == 0 && (post.flags & 0x60u) != 0) {
+        post.passenger = (post.flags & 0x20u) != 0;
+        post.freight = (post.flags & 0x40u) != 0;
+    }
+    return post;
 }
 
 const TrackNode* TrackDatabase::node(const std::uint32_t index) const {

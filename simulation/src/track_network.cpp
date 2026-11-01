@@ -108,12 +108,23 @@ const JunctionState* TrackNetwork::junction(const std::uint32_t node) const {
     return it == junctions_.end() ? nullptr : &it->second;
 }
 
-bool TrackNetwork::throw_junction(const std::uint32_t node, const std::uint32_t branch) {
+bool TrackNetwork::throw_junction(const std::uint32_t node, const std::uint32_t branch, const std::uint64_t owner) {
     auto* state = junction(node);
     const auto* info = this->node(node);
     if (!state || !info || branch >= info->branch_count() || state->occupied) return false;
+    if (!state->reservations.empty() && state->reservations.front().first != owner) return false;
     state->selected = branch;
     return true;
+}
+
+void TrackNetwork::cancel_reservation(const std::uint32_t node, const std::uint64_t owner) {
+    auto* state = junction(node);
+    if (!state) return;
+    const auto before = state->reservations.size();
+    const bool was_first = !state->reservations.empty() && state->reservations.front().first == owner;
+    std::erase_if(state->reservations, [&](const auto& r) { return r.first == owner; });
+    if (state->reservations.size() == before || state->occupied || !was_first) return;
+    state->selected = state->reservations.empty() ? state->main_route : state->reservations.front().second;
 }
 
 void TrackNetwork::release_junction(const std::uint32_t node, const std::uint64_t owner) {

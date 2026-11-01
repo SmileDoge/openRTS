@@ -135,3 +135,21 @@ The installed RTS config has `Antialiasing = 4x MSAA +Alpha` and
 not in the exe). openRTS: 4x MSAA by default (`--msaa 1|4`), alpha-to-coverage
 on alpha-tested pipelines, and 16x anisotropic filtering on samplers whose
 min, mag and mip filters are all linear (models, terrain).
+
+## Face culling — CONFIRMED (2026-11-01)
+
+- `create_game_window` (`0x40564D`) enables `GL_CULL_FACE` once; RTS never
+  calls `glFrontFace` or `glCullFace`, so OpenGL's defaults hold:
+  counter-clockwise triangles are the front, back faces are culled.
+- It is turned off only around the shadow map pass (`0x47BEB0`, `0x47C5DC`),
+  one textured overlay (`0x456E8C`) and the shader effects (`0x4BEDA0`,
+  `0x4BF3F8`, `0x4BF878`) and turned back on after each; shapes
+  (`draw_elements_1`) are always drawn with back faces culled.
+- openRTS: model pipelines cull back faces with a **clockwise** front. With
+  a counter-clockwise front (the reasoning "one X mirror in each, wgpu's ccw
+  is OpenGL's") the visible faces were culled in the viewer, so the faces
+  RTS shows come out clockwise on screen here; the cause (RTS reordering
+  indices on load, or wgpu's convention) is not traced — UNKNOWN. Without
+  culling the coplanar front and back faces of two-sided parts (a signal
+  head's back plate) fought in depth. The viewer panel's "Cull back faces
+  (RTS)" turns it off for comparison.

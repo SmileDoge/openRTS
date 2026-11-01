@@ -117,6 +117,10 @@ public:
     [[nodiscard]] bool ready() const noexcept;
     void set_shading_path(ShadingPath path) noexcept;
     [[nodiscard]] ShadingPath shading_path() const noexcept;
+    // Back faces culled as RTS draws shapes (on by default); off draws both
+    // sides, for comparison.
+    void set_face_culling(bool enabled) noexcept;
+    [[nodiscard]] bool face_culling() const noexcept;
     // Merging identical primitives into instanced draw calls (on by default).
     // Off draws every instance primitive separately in submission order, for
     // comparison.

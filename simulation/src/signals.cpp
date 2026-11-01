@@ -86,6 +86,7 @@ struct SignalSystem::Impl {
     std::vector<std::pair<std::uint32_t, bool>> junctions; // by node: selected, occupied
     std::vector<std::vector<std::uint32_t>> dep_nodes, dep_junctions;
     std::vector<char> dirty, in_chain, was_in_chain, always, stale;
+    std::function<std::optional<double>(const Train&)> authority;
     std::map<std::uint64_t, TrainState> trains;
     std::vector<SignalPass> passes;
     // The head being run, for dependency recording.
@@ -209,8 +210,13 @@ struct Walker {
         const auto it = occupancy.find(node);
         if (it == occupancy.end()) return false;
         if (!range) return !it->second.empty();
+        // Strictly inside: a train whose end only touches a bound (a head
+        // standing exactly at the signal) is not in the block yet; otherwise
+        // the signal drops in the very step the head reaches it and the pass
+        // reads as one at danger.
+        constexpr double touch = 0.01;
         for (const auto& interval : it->second) {
-            if (interval.high >= range->first && interval.low <= range->second) return true;
+            if (interval.high > range->first + touch && interval.low < range->second - touch) return true;
         }
         return false;
     }
@@ -773,6 +779,7 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
 
         // Evaluate from the farthest to the nearest.
         const double passing = std::abs(train->speed()) * dt * 1.5;
+        const auto authority = impl.authority ? impl.authority(*train) : std::nullopt;
         bool seen_normal = false;
         for (std::size_t k = state.chain.size(); k-- > 0;) {
             auto& chain_node = state.chain[k];
@@ -783,6 +790,7 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
                 if (!seen_normal && count_reached) enabled = 0.0f;
                 seen_normal = true;
             }
+            if (authority && chain_node.distance > *authority + 1.0) enabled = 0.0f;
             for (const auto h : chain_node.heads) {
                 auto& head = heads_[h];
                 head.enabled = enabled;
@@ -815,9 +823,16 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
                                    .object = state.nearest_object,
                                    .aspect = static_cast<formats::SignalAspect>(std::clamp(static_cast<int>(state.nearest_aspect), 0, 9))});
         }
+        // The aspect a pass is judged by is the one shown while the train was
+        // still beyond the passing distance (RTS 0x508520: an object being
+        // passed now is no longer run for the train); at the signal itself
+        // the train's own front may already count in its block.
+        const bool new_object = nearest != state.nearest_object;
         state.nearest_object = nearest;
         state.nearest_distance = state.ahead.valid ? state.ahead.distance : 0.0;
-        state.nearest_aspect = state.ahead.valid ? static_cast<float>(state.ahead.aspect) : 0.0f;
+        if (new_object || state.nearest_distance > passing + 0.5) {
+            state.nearest_aspect = state.ahead.valid ? static_cast<float>(state.ahead.aspect) : 0.0f;
+        }
     }
     std::erase_if(impl.trains, [&](const auto& entry) { return !alive.contains(entry.first); });
 
@@ -844,6 +859,10 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
         head.flash_timer += static_cast<float>(dt);
         if (head.flash_timer > head.type->flash_on + head.type->flash_off) head.flash_timer = 0.0f;
     }
+}
+
+void SignalSystem::set_authority(std::function<std::optional<double>(const Train&)> authority) {
+    impl_->authority = std::move(authority);
 }
 
 bool SignalSystem::reads_stale(const std::uint32_t head) const {

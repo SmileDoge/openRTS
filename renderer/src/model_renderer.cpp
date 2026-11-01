@@ -673,11 +673,22 @@ constexpr std::size_t shading_path_count = 2;
     return path == ShadingPath::rts_compatible ? 0 : 1;
 }
 
+// Faces: RTS enables GL_CULL_FACE once (create_game_window, 0x40564D) with
+// OpenGL's defaults (counter-clockwise front, back faces culled) and turns it
+// off only for its shadow map (0x47BEB0) and shader effects (0x4BEDA0,
+// 0x4BF3F8, 0x4BF878), never for shapes; glFrontFace is never called.
+// In openRTS the faces RTS shows come out clockwise on screen (seen in the
+// viewer: with a counter-clockwise front the visible faces were culled), so
+// the front is clockwise here. Why the winding differs from RTS's (RTS
+// reordering indices on load, or wgpu's convention against OpenGL's) is not
+// traced — UNKNOWN. Without culling, the coplanar front and back faces of a
+// two-sided part (a signal's back plate) fight in depth.
 [[nodiscard]] WGPURenderPipeline create_pipeline(const WGPUDevice device,
                                                  const WGPUPipelineLayout layout,
                                                  const WGPUShaderModule shader,
                                                  const WGPUTextureFormat target_format,
-                                                 const PipelineKey key) {
+                                                 const PipelineKey key,
+                                                 const bool cull_back_faces) {
     const std::array<WGPUVertexAttribute, 5> attributes{{
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(GpuVertex, position), .shaderLocation = 0},
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(GpuVertex, normal), .shaderLocation = 1},
@@ -739,7 +750,9 @@ constexpr std::size_t shading_path_count = 2;
             .bufferCount = 1,
             .buffers = &vertex_layout,
         },
-        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
+                      .frontFace = WGPUFrontFace_CW,
+                      .cullMode = cull_back_faces ? WGPUCullMode_Back : WGPUCullMode_None},
         .depthStencil = &depth,
         .multisample = scene_multisample(key.alpha_test),
         .fragment = &fragment,
@@ -907,6 +920,8 @@ struct ModelRenderer::Impl {
     WGPUBindGroupLayout material_layout = nullptr;
     WGPUBindGroupLayout frame_layout = nullptr;
     std::array<std::array<WGPURenderPipeline, pipeline_variant_count>, shading_path_count> pipelines{};
+    std::array<std::array<WGPURenderPipeline, pipeline_variant_count>, shading_path_count> pipelines_two_sided{};
+    bool face_culling = true;
     ShadingPath shading = ShadingPath::rts_compatible;
     bool batching = true;
     std::map<rts::TextureFilter, WGPUSampler> samplers;
@@ -954,9 +969,11 @@ struct ModelRenderer::Impl {
         for (const auto& [_, sampler] : samplers) {
             if (sampler) wgpuSamplerRelease(sampler);
         }
-        for (const auto& variants : pipelines) {
-            for (const auto pipeline : variants) {
-                if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        for (const auto* set : {&pipelines, &pipelines_two_sided}) {
+            for (const auto& variants : *set) {
+                for (const auto pipeline : variants) {
+                    if (pipeline) wgpuRenderPipelineRelease(pipeline);
+                }
             }
         }
         if (frame_layout) wgpuBindGroupLayoutRelease(frame_layout);
@@ -1188,7 +1205,9 @@ ModelRenderer::ModelRenderer(const WGPUDevice device, const WGPUTextureFormat ta
                 for (const bool alpha_test : {false, true}) {
                     const PipelineKey key{.blend = blend, .depth_write = depth_write, .alpha_test = alpha_test};
                     impl_->pipelines[path_index(path)][key.index()] =
-                        create_pipeline(device, pipeline_layout, shader, target_format, key);
+                        create_pipeline(device, pipeline_layout, shader, target_format, key, true);
+                    impl_->pipelines_two_sided[path_index(path)][key.index()] =
+                        create_pipeline(device, pipeline_layout, shader, target_format, key, false);
                 }
             }
         }
@@ -1211,6 +1230,14 @@ void ModelRenderer::set_shading_path(const ShadingPath path) noexcept {
 
 ShadingPath ModelRenderer::shading_path() const noexcept {
     return impl_ ? impl_->shading : ShadingPath::rts_compatible;
+}
+
+void ModelRenderer::set_face_culling(const bool enabled) noexcept {
+    if (impl_) impl_->face_culling = enabled;
+}
+
+bool ModelRenderer::face_culling() const noexcept {
+    return impl_ ? impl_->face_culling : true;
 }
 
 void ModelRenderer::set_batching(const bool enabled) noexcept {
@@ -1616,7 +1643,8 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass) {
     for (const auto& batch : batches) {
         if (bound_pipeline != batch.pipeline.index()) {
             bound_pipeline = batch.pipeline.index();
-            wgpuRenderPassEncoderSetPipeline(pass, impl_->pipelines[path_index(impl_->shading)][*bound_pipeline]);
+            const auto& set = impl_->face_culling ? impl_->pipelines : impl_->pipelines_two_sided;
+            wgpuRenderPassEncoderSetPipeline(pass, set[path_index(impl_->shading)][*bound_pipeline]);
         }
         if (bound_model != batch.model) {
             bound_model = batch.model;

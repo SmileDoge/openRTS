@@ -110,6 +110,28 @@ struct TrackItem {
     std::vector<float> speed_post_data;
 };
 
+// What a speed post means, read as RTS does (0x482680) from the
+// SpeedpostTrItemData values: flags first; with flag 2 (a limit) the speed
+// follows unless flag 1 is also set (the limit ends: back to the route's
+// SpeedLimit), then a display number with flag 0x10; without flag 2 an
+// optional speed (flag 8) and the post's number (kilometre or mile post,
+// warning boards); the sign's rotation last. Speeds are km/h, mph with flag
+// 0x100. Flags 0x20 / 0x40 / 0x80: passenger / freight / both (none: both).
+struct SpeedPost {
+    std::uint32_t flags{};
+    bool limit = false;     // flag 2
+    bool resume = false;    // flags 2 + 1: the restriction ends
+    bool warning = false;   // flag 1 without 2: an advance warning board
+    bool passenger = true;
+    bool freight = true;
+    float speed{};          // m/s (limits that do not resume)
+    float number{};         // posts without flag 2: the number shown
+    float angle{};          // radians, the sign's rotation
+};
+
+struct TrackItem;
+[[nodiscard]] std::optional<SpeedPost> speed_post(const TrackItem& item);
+
 struct TrackDatabase {
     std::uint32_t serial{};
     // Indexed by node number; entry 0 is unused (numbering starts at 1).

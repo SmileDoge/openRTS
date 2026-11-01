@@ -9,6 +9,8 @@
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/geometric.hpp>
 
+#include <fstream>
+
 #include <openrts/formats/sound.hpp>
 #include <openrts/formats/terrain.hpp>
 #include <openrts/simulation/track_traveller.hpp>
@@ -91,6 +93,11 @@ struct TrainView::Car {
 struct TrainView::Unit {
     std::unique_ptr<simulation::Train> train;
     std::vector<Car> cars;
+    Role role = Role::standing;
+    std::string name;
+    bool freight = true; // no passenger cars: freight speed limits
+    std::unique_ptr<simulation::AutoDriver> ai;
+    float wait_left = -1.0f; // s still to wait at a waiting point
     std::vector<simulation::CarPlacement> previous, current;
     std::vector<double> previous_travelled, current_travelled;
 
@@ -108,6 +115,34 @@ TrainView::TrainView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath rou
     : vfs_(std::move(vfs)), route_(std::move(route)), origin_(origin), network_(&network) {
     paths_ = formats::load_train_paths(*vfs_, route_);
     std::erase_if(paths_, [](const formats::TrainPath& path) { return !path.ok(); });
+    load_user_paths();
+    dispatcher_ = std::make_unique<simulation::Dispatcher>(network);
+    const auto definition = formats::load_route_definition(*vfs_, route_);
+    limits_ = std::make_unique<simulation::SpeedLimits>(network, definition.ok() ? definition.speed_limit : 0.0f);
+}
+
+std::filesystem::path TrainView::user_path_folder() const {
+    return std::filesystem::current_path() / "user_paths" / std::string(route_.filename());
+}
+
+void TrainView::load_user_paths() {
+    std::error_code error;
+    const auto folder = user_path_folder();
+    if (!std::filesystem::is_directory(folder, error)) return;
+    std::vector<formats::TrainPath> saved;
+    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
+        if (entry.path().extension() != ".pat") continue;
+        std::ifstream input(entry.path(), std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(input)), {});
+        auto path = formats::parse_train_path(bytes);
+        if (!path.ok()) continue;
+        const auto stem = entry.path().stem().u8string();
+        path.file = "user/" + std::string(stem.begin(), stem.end());
+        saved.push_back(std::move(path));
+    }
+    std::sort(saved.begin(), saved.end(), [](const auto& a, const auto& b) { return a.file < b.file; });
+    std::erase_if(paths_, [](const formats::TrainPath& path) { return path.file.starts_with("user/"); });
+    for (auto& path : saved) paths_.push_back(std::move(path));
 }
 
 TrainView::~TrainView() = default;
@@ -145,16 +180,18 @@ glm::vec3 TrainView::local(const formats::RoutePosition& position) const {
         .tile_x = position.tile_x, .tile_z = position.tile_z, .x = position.x, .y = position.y, .z = position.z});
 }
 
-std::string TrainView::load(const std::string_view consist_name) {
+std::string TrainView::make_unit(const std::string_view consist_name, Unit& unit,
+                                 std::vector<std::unique_ptr<formats::WagonDefinition>>& stock) const {
     const auto consist = formats::load_consist(*vfs_, consist_name);
     if (!consist.ok()) return "consist '" + std::string(consist_name) + "': " + consist.error;
-    std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
     std::vector<Car> cars;
     std::vector<simulation::CarSetup> setups;
+    bool passenger = false;
     for (const auto& entry : consist.entries) {
         auto wagon = std::make_unique<formats::WagonDefinition>(
             formats::load_wagon(*vfs_, entry.folder, entry.name, entry.engine));
         if (!wagon->ok()) return entry.folder + "/" + entry.name + ": " + wagon->error;
+        passenger = passenger || wagon->kind == formats::WagonKind::passenger;
         Car car;
         car.definition = wagon.get();
         car.folder = entry.folder;
@@ -166,15 +203,26 @@ std::string TrainView::load(const std::string_view consist_name) {
         stock.push_back(std::move(wagon));
         cars.push_back(std::move(car));
     }
-    consist_ = consist.name;
-    units_.clear();
-    stock_ = std::move(stock);
-    Unit unit;
+    unit.name = consist.name;
+    unit.freight = !passenger;
     unit.cars = std::move(cars);
     unit.train = std::make_unique<simulation::Train>(std::move(setups));
     unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
+    return {};
+}
+
+std::string TrainView::load(const std::string_view consist_name) {
+    Unit unit;
+    std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
+    if (auto error = make_unit(consist_name, unit, stock); !error.empty()) return error;
+    for (const auto& old : units_) dispatcher_->clear(old.train->id());
+    consist_ = unit.name;
+    units_.clear();
+    stock_ = std::move(stock);
+    unit.role = Role::driven;
     driver_ = simulation::attach_keyboard_driver(*unit.train);
     units_.push_back(std::move(unit));
+    follow_id_ = 0;
     joints_ = junctions_ = coupler_breaks_ = derailments_ = 0;
     end_of_track_ = false;
     return {};
@@ -357,7 +405,7 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
 
 void TrainView::apply_handles(const SceneInput& input) {
     using Handle = simulation::DriverHandles::BrakeHandle;
-    if (!driver_) return;
+    if (!driver_ || units_.empty() || units_.front().role != Role::driven) return;
     auto& d = *driver_;
     // Position I is held: the handle springs back to II when [ is let go.
     if (d.brake == Handle::charge && !input.brake_less_held) d.brake = Handle::running;
@@ -394,6 +442,10 @@ void TrainView::turn_around() {
 
 void TrainView::reattach_driver() {
     if (!loaded()) return;
+    if (units_.front().role != Role::driven) {
+        attach_role(units_.front());
+        return;
+    }
     auto& train = driven();
     for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_controller(i, nullptr);
     const auto old = driver_ ? std::optional<simulation::DriverHandles>{*driver_} : std::nullopt;
@@ -430,8 +482,10 @@ void TrainView::split(const std::size_t unit_index, const std::size_t index, con
     if (unit_index == 0) {
         reattach_driver();
     } else {
-        for (std::size_t i = 0; i < unit.train->cars().size(); ++i) unit.train->set_controller(i, nullptr);
+        attach_role(unit);
     }
+    cut.name = unit.name + " (cut)";
+    cut.freight = unit.freight;
     unit.settle();
     cut.settle();
     units_.push_back(std::move(cut));
@@ -474,7 +528,7 @@ void TrainView::step_trains() {
         if (survivor == 0) {
             reattach_driver();
         } else {
-            for (std::size_t i = 0; i < units_[survivor].train->cars().size(); ++i) units_[survivor].train->set_controller(i, nullptr);
+            attach_role(units_[survivor]);
         }
         units_[survivor].settle();
         message_ = "coupled: " + std::to_string(units_[survivor].cars.size()) + " cars";
@@ -482,6 +536,11 @@ void TrainView::step_trains() {
         break; // the list changed; the rest meet on the next step
     }
 
+    for (auto& unit : units_) {
+        if (unit.role == Role::ai && unit.ai && unit.train->placed()) {
+            unit.ai->step(simulation::train_step, *unit.train, drive_orders(unit));
+        }
+    }
     std::vector<std::pair<std::size_t, std::size_t>> breaks;
     for (std::size_t u = 0; u < units_.size(); ++u) {
         auto& unit = units_[u];
@@ -523,6 +582,201 @@ void TrainView::step_trains() {
         split(it->first, it->second, false, false);
         message_ = "train damaged: the coupler behind car " + std::to_string(it->second) + " broke";
     }
+    // Paths: progress and the junctions reserved ahead.
+    std::vector<const simulation::Train*> all;
+    for (const auto& unit : units_) all.push_back(unit.train.get());
+    dispatcher_->update(all);
+}
+
+simulation::DriveOrders TrainView::drive_orders(Unit& unit) {
+    return simulation::path_orders(*unit.train, *dispatcher_, signals_, *limits_, unit.freight, unit.wait_left);
+}
+
+void TrainView::attach_role(Unit& unit) {
+    auto& train = *unit.train;
+    for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_controller(i, nullptr);
+    unit.ai.reset();
+    if (unit.role == Role::ai) {
+        auto handles = simulation::attach_keyboard_driver(train);
+        if (handles) {
+            unit.ai = std::make_unique<simulation::AutoDriver>(std::move(handles));
+        } else {
+            unit.role = Role::standing;
+        }
+    } else if (unit.role == Role::driven && &unit == &units_.front()) {
+        reattach_driver();
+    }
+}
+
+TrainView::Unit* TrainView::find_unit(const std::uint64_t id) {
+    for (auto& unit : units_) {
+        if (unit.train && unit.train->id() == id) return &unit;
+    }
+    return nullptr;
+}
+
+const TrainView::Unit* TrainView::find_unit(const std::uint64_t id) const {
+    for (const auto& unit : units_) {
+        if (unit.train && unit.train->id() == id) return &unit;
+    }
+    return nullptr;
+}
+
+std::vector<TrainView::Summary> TrainView::summaries() const {
+    std::vector<Summary> result;
+    for (const auto& unit : units_) {
+        if (!unit.train) continue;
+        result.push_back({.id = unit.train->id(),
+                          .name = unit.name,
+                          .role = unit.role,
+                          .speed = unit.train->speed(),
+                          .placed = unit.train->placed(),
+                          .cars = unit.cars.size(),
+                          .length = unit.train->length(),
+                          .target = unit.ai ? unit.ai->target_speed() : -1.0f,
+                          .derailed = unit.train->derailed()});
+    }
+    return result;
+}
+
+const simulation::Train* TrainView::train_by_id(const std::uint64_t id) const {
+    const auto* unit = find_unit(id);
+    return unit ? unit->train.get() : nullptr;
+}
+
+const std::vector<std::string>& TrainView::consist_list() {
+    if (!consists_listed_) list_consists();
+    return consists_;
+}
+
+std::string TrainView::assign_path(const std::uint64_t id, simulation::PathPlan plan) {
+    if (!find_unit(id)) return "no such train";
+    auto route = simulation::build_route(*network_, plan);
+    if (!route.ok()) return route.error;
+    dispatcher_->assign(id, std::move(plan), std::move(route));
+    return {};
+}
+
+std::string TrainView::assign_route_path(const std::uint64_t id, const formats::TrainPath& path) {
+    std::string error;
+    auto plan = simulation::plan_from_path(*network_, path, &error);
+    if (!plan) return path.file + ": " + error;
+    return assign_path(id, std::move(*plan));
+}
+
+void TrainView::clear_path(const std::uint64_t id) {
+    dispatcher_->clear(id);
+}
+
+std::string TrainView::set_role(const std::uint64_t id, const Role role) {
+    auto* unit = find_unit(id);
+    if (!unit) return "no such train";
+    if (role == Role::driven) {
+        const auto index = static_cast<std::size_t>(unit - units_.data());
+        if (index != 0) {
+            units_.front().role = Role::standing;
+            attach_role(units_.front());
+            std::swap(units_.front(), units_[index]);
+        }
+        units_.front().role = Role::driven;
+        units_.front().ai.reset();
+        if (driver_) {
+            driver_->throttle = 0;
+            driver_->reverser = 0;
+        }
+        reattach_driver();
+        follow_id_ = 0;
+        consist_ = units_.front().name;
+        return {};
+    }
+    unit->role = role;
+    attach_role(*unit);
+    if (role == Role::ai && unit->role != Role::ai) return "the train has no engine to drive";
+    return {};
+}
+
+std::string TrainView::remove(const std::uint64_t id) {
+    auto* unit = find_unit(id);
+    if (!unit) return "no such train";
+    if (unit == &units_.front()) return "make another train the driven one first";
+    dispatcher_->clear(id);
+    unit->train->vacate();
+    units_.erase(units_.begin() + (unit - units_.data()));
+    if (follow_id_ == id) follow_id_ = 0;
+    return {};
+}
+
+std::string TrainView::uncouple_at(const std::uint64_t id, const std::size_t index) {
+    auto* unit = find_unit(id);
+    if (!unit) return "no such train";
+    if (std::abs(unit->train->speed()) > 0.1) return "stop the train to uncouple";
+    if (index == 0 || index >= unit->cars.size()) return "no coupling there";
+    split(static_cast<std::size_t>(unit - units_.data()), index, true, true);
+    return {};
+}
+
+std::string TrainView::spawn(const std::string_view consist, const simulation::TrackLocation& where, const Role role) {
+    Unit unit;
+    std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
+    if (auto error = make_unit(consist, unit, stock); !error.empty()) return error;
+    std::string error;
+    if (!unit.train->place(*network_, where.node, where.offset, where.forward, &error)) return error;
+    for (auto& definition : stock) stock_.push_back(std::move(definition));
+    unit.name += " #" + std::to_string(++spawned_);
+    unit.role = role == Role::driven ? Role::standing : role;
+    unit.settle();
+    units_.push_back(std::move(unit));
+    attach_role(units_.back());
+    return {};
+}
+
+std::string TrainView::save_path(const std::uint64_t id, const std::string& name) {
+    const auto* plan = dispatcher_->plan(id);
+    const auto* route = dispatcher_->route(id);
+    if (!plan || !route) return "the train has no path";
+    std::string clean;
+    for (const char c : name) clean += (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') ? '_' : c;
+    if (clean.empty()) return "give the path a name";
+    auto path = simulation::path_from_route(*network_, *plan, *route);
+    path.id = path.name = clean;
+    const auto folder = user_path_folder();
+    std::error_code fs_error;
+    std::filesystem::create_directories(folder, fs_error);
+    const auto file = folder / std::filesystem::path(std::u8string(clean.begin(), clean.end())).replace_extension(".pat");
+    std::ofstream output(file, std::ios::binary);
+    if (!output) return "cannot write " + file.string();
+    const auto bytes = formats::write_train_path(path);
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    output.close();
+    load_user_paths();
+    return {};
+}
+
+void TrainView::follow_train(const std::uint64_t id) {
+    follow_id_ = id;
+    follow_ = true;
+}
+
+std::string TrainView::path_status(const std::uint64_t id) const {
+    const auto* route = dispatcher_->route(id);
+    const auto* progress = dispatcher_->progress(id);
+    if (!route || !progress) return "no path";
+    const auto& leg = route->legs[progress->leg];
+    char text[256];
+    if (!progress->on_route) return route->name + ": not on its path";
+    if (progress->finished) return route->name + ": arrived";
+    std::snprintf(text, sizeof text, "%s: leg %zu/%zu, %.0f of %.0f m, way reserved for %.0f m", route->name.c_str(),
+                  progress->leg + 1, route->legs.size(), progress->head, leg.length(),
+                  (std::max)(0.0, progress->authority - progress->head));
+    std::string result = text;
+    if (progress->blocked_at) {
+        result += ", waits at junction " + std::to_string(*progress->blocked_at);
+        if (progress->blocked_by != 0) {
+            const auto* other = find_unit(progress->blocked_by);
+            result += " for " + (other ? other->name : "train " + std::to_string(progress->blocked_by));
+        }
+    }
+    return result;
 }
 
 float TrainView::alpha() const noexcept {
@@ -729,9 +983,11 @@ void TrainView::update(const SceneInput& input, ViewerCamera& camera, const floa
         }
     }
 
-    if (follow_ && !units_.front().current.empty()) {
+    const Unit* followed = follow_id_ != 0 ? find_unit(follow_id_) : nullptr;
+    if (!followed) followed = &units_.front();
+    if (follow_ && !followed->current.empty()) {
         // From the interpolated head car, as it is drawn.
-        const auto head = pose(units_.front(), 0);
+        const auto head = pose(*followed, 0);
         glm::vec3 forward = head.front - head.rear;
         forward.y = 0.0f;
         if (glm::length(forward) > 0.01f) forward = glm::normalize(forward);

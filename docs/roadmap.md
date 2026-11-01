@@ -101,16 +101,43 @@ Result: signals react to the player's train and to switch positions.
 
 ### 4. Paths, routes, interlocking
 
-- `.pat` paths (player and AI), path reservation through junctions.
-- Automatic switch setting along a reserved path; manual switch control.
-- Speed posts and the speed limit ahead.
-- Signal modes and overrides (RTS: `SetSignalMode`, `SignalOverride`).
-- Dispatcher view (map of track, signals, trains). RTS has a dispatcher
-  console ("Пульт ДСП"), which also matters for multiplayer.
-- **Test AI trains**: spawn a consist on a `.pat` path or a chosen track
-  point and let a simple driver follow it, obey signal aspects and speed
-  limits and stop at red. They exist to load signals and blocks and to
-  stand in for remote trains, not to replay activities.
+Status (2026-11-01): items 1–3 below are done (`paths.md`): paths from .pat
+and from Track control, junction reservations with RTS's queue and
+takeover, signals clearing along the reserved way, speed limits from the
+speed posts, the Track control window, test trains with a simple driver.
+Not done from this step: signal modes and overrides (nothing sets them yet).
+
+Order (the user's decision, 2026-11-01): the logic first, then the
+**Track control** map in the viewer, then test AI trains. The dispatcher
+console (Пульт ДСП) moves to step 6: in RTS it is a network client of the
+server, and its stations' routes, players and messages only make sense with
+multiplayer. Both share one map component (`reverse/dispatcher.md`: RTS draws
+Track control, the route editor map and the console with the same code).
+
+1. **Logic** — start from RTS's path module (`0x48B8C8`, `0x48BAF8`,
+   `0x48BBF0`, `0x48D220`, `0x48DD94`, used by Track control):
+   - `.pat` paths (player and AI) as node/direction chains over the TDB;
+   - path reservation through junctions (the junction's list of reserving
+     trains, released by `0x48C85C`), automatic switch setting ahead,
+     manual switching refused on reserved junctions;
+   - signals open along a set route (`route_set`, `block_state` see the
+     reservation);
+   - speed posts and the speed limit ahead, overspeed detection;
+   - signal modes and overrides (`SetSignalMode`, `SignalOverride`) as the
+     internal base, without UI yet.
+2. **Track control in the viewer** (as RTS's in-game window, `0x549A60`):
+   - map of the real track geometry from above: zoom, pan, trains,
+     signals, junctions with their set branch, platform and station names,
+     sidings and electrification layers;
+   - train menu: jump to train, show / edit / save / load path, uncouple,
+     cast PLAYER / STATIC / TRAFFIC, remove;
+   - path editing: start, waiting, reverse and end points, start direction,
+     waiting time; switch a junction on the path;
+   - signal info, force update.
+3. **Test AI trains** through Track control: spawn a consist on a `.pat`
+   path or a chosen track point, give it a path, start it; a simple driver
+   follows it, obeys aspects and speed limits and stops at red. They load
+   signals and blocks and stand in for remote trains, not activities.
 
 ### 5. Cab and on-board systems
 
@@ -126,6 +153,20 @@ Result: signals react to the player's train and to switch positions.
 See "Multiplayer: feasibility" below. The network carries train, switch and
 signal state, so it builds on steps 1–4. The chunk dumper for `multdata`
 and capture tooling do not depend on the simulation and can start earlier.
+
+**Dispatcher console (Пульт ДСП)** — here, not in step 4 (see there):
+- station routes and interlocking: route points (tracks, exits), routes
+  between them (main track, one way, priority, composite), route
+  generation, assembling a train's route;
+- signal control: set aspect, automatic block, home signal, defaults;
+- an HTML client over WebSocket on the same map component as Track
+  control, in the console's look (grey background, black track, route
+  colours, the console's icons);
+- the console's forms by priority: trains (place, start, stop, reverse,
+  speed, brakes, chocks), players (assign, ban, assistant, messages),
+  events; later weather, electrification, cargo, situation save / load;
+- RTS compatibility (Legacy on): the console and server protocol from
+  `0x45D3EC`, `0x4C3DE0` and the server logs (`reverse/dispatcher.md`).
 
 **Server "Legacy" switch** (the user's decision):
 

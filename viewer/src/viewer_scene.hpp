@@ -78,6 +78,7 @@ struct SceneInput {
     bool independent_less = false; // ,
     bool toggle_ep = false;        // K: ЭПТ on/off
     bool turn_around = false;      // X: drive from the other end of the train
+    bool toggle_track_control = false; // F7: the Track control window
 };
 
 // Lighting and background colour the scene wants for the current frame.
@@ -131,6 +132,7 @@ struct SceneContent {
     bool watching = false;
     std::string consist;         // route scenes: consist to load, put on a path start
     std::string path;            // route scenes: the path for the consist (file name, id or name); the first by default
+    bool track_control = false;  // route scenes: open the Track control window at start
 };
 
 [[nodiscard]] SceneLoadResult load_shape_scene(SceneContent content, const core::VirtualPath& shape);

@@ -1,8 +1,10 @@
 #pragma once
 
 #ifdef OPENRTS_HAS_WGPU
+#include <functional>
 #include <future>
 #include <map>
+#include <optional>
 #include <memory>
 #include <span>
 #include <string>
@@ -55,6 +57,11 @@ public:
     // the world UiD and, per head, its index, type, aspect and draw state.
     void collect_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, float range) const;
     [[nodiscard]] bool ready() const noexcept { return system_ != nullptr; }
+    [[nodiscard]] const simulation::SignalSystem* system() const noexcept { return system_.get(); }
+    [[nodiscard]] simulation::SignalSystem* system() noexcept { return system_.get(); }
+    // Movement authority of the trains (their reserved way); passed on to
+    // the signal system once it is loaded.
+    void set_authority(std::function<std::optional<double>(const simulation::Train&)> authority);
 
 private:
     struct Loaded;
@@ -80,6 +87,7 @@ private:
     std::string last_pass_;
     std::string status_ = "loading signals...";
     bool lights_ = true;
+    std::function<std::optional<double>(const simulation::Train&)> authority_;
 };
 
 } // namespace openrts::viewer

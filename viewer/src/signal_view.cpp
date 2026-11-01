@@ -92,6 +92,11 @@ void SignalView::detach() {
     textures_uploaded_ = false;
 }
 
+void SignalView::set_authority(std::function<std::optional<double>(const simulation::Train&)> authority) {
+    authority_ = std::move(authority);
+    if (system_) system_->set_authority(authority_);
+}
+
 void SignalView::update(const float elapsed, const simulation::Train* train,
                         const std::span<const simulation::Train* const> trains, const glm::vec3& eye) {
     eye_ = eye;
@@ -104,6 +109,7 @@ void SignalView::update(const float elapsed, const simulation::Train* train,
             return;
         }
         system_ = std::make_unique<simulation::SignalSystem>(*network_, loaded_->config, loaded_->scripts, loaded_->signals);
+        if (authority_) system_->set_authority(authority_);
         for (std::uint32_t i = 0; i < system_->objects().size(); ++i) {
             const auto& placement = system_->objects()[i].placement;
             by_world_object[{placement.position.tile_x, placement.position.tile_z, placement.uid}] = i;

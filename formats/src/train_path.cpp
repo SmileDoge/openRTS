@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 
 #include "rts_text.hpp"
 
@@ -95,6 +96,75 @@ TrainPath parse_train_path(const std::string_view bytes) {
         }
     }
     return path;
+}
+
+namespace {
+
+// UTF-8 to UTF-16 LE bytes.
+void append_utf16(std::string& out, const std::string_view text) {
+    const auto put = [&](const std::uint32_t unit) {
+        out.push_back(static_cast<char>(unit & 0xFFu));
+        out.push_back(static_cast<char>((unit >> 8) & 0xFFu));
+    };
+    for (std::size_t i = 0; i < text.size();) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        std::uint32_t code = c;
+        std::size_t extra = 0;
+        if (c >= 0xF0) {
+            code = c & 0x07u;
+            extra = 3;
+        } else if (c >= 0xE0) {
+            code = c & 0x0Fu;
+            extra = 2;
+        } else if (c >= 0xC0) {
+            code = c & 0x1Fu;
+            extra = 1;
+        }
+        ++i;
+        for (std::size_t k = 0; k < extra && i < text.size(); ++k, ++i) {
+            code = (code << 6) | (static_cast<unsigned char>(text[i]) & 0x3Fu);
+        }
+        if (code >= 0x10000u) {
+            code -= 0x10000u;
+            put(0xD800u + (code >> 10));
+            put(0xDC00u + (code & 0x3FFu));
+        } else {
+            put(code);
+        }
+    }
+}
+
+} // namespace
+
+std::string write_train_path(const TrainPath& path) {
+    std::string text = "SIMISA@@@@@@@@@@JINX0P0t______\r\n\r\nSerial ( 1 )\r\nTrackPDPs (\r\n";
+    char line[256];
+    for (const auto& point : path.points) {
+        std::snprintf(line, sizeof line, "\tTrackPDP ( %d %d %.3f %.3f %.3f %u %u )\r\n", point.position.tile_x,
+                      point.position.tile_z, point.position.x, point.position.y, point.position.z, point.kind, point.flags);
+        text += line;
+    }
+    const auto quoted = [](const std::string& value) {
+        std::string escaped;
+        for (const char c : value) escaped += c == '"' ? '\'' : c;
+        return "\"" + escaped + "\"";
+    };
+    text += ")\r\nTrackPath (\r\n";
+    text += "\tTrPathName ( " + quoted(path.id) + " )\r\n";
+    text += "\tTrPathFlags ( 00000000 )\r\n";
+    text += "\tName ( " + quoted(path.name) + " )\r\n";
+    text += "\tTrPathStart ( " + quoted(path.start) + " )\r\n";
+    text += "\tTrPathEnd ( " + quoted(path.end) + " )\r\n";
+    text += "\tTrPathNodes ( " + std::to_string(path.nodes.size()) + "\r\n";
+    for (const auto& node : path.nodes) {
+        std::snprintf(line, sizeof line, "\t\tTrPathNode ( %08x %u %u %u )\r\n", node.flags, node.next, node.next_siding,
+                      node.point);
+        text += line;
+    }
+    text += "\t)\r\n)\r\n";
+    std::string bytes = "\xFF\xFE";
+    append_utf16(bytes, text);
+    return bytes;
 }
 
 std::vector<TrainPath> load_train_paths(const core::Vfs& vfs, const core::VirtualPath& route) {

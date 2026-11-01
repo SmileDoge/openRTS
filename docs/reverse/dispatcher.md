@@ -124,3 +124,120 @@ cut from the start handler; making one needs the world fed in another way
   players, drivers throwing hand-operated switches not locked by a
   dispatcher route, a static consist pushed without coupling becoming LOOSE,
   per-player packet limits.
+
+## How the map is drawn: `rts1.exe` vs the console (2026-11-01)
+
+Both draw the **real track geometry from above**, not a schematic — the
+console's map is the route editor map of `rts1.exe`, the same code built
+into a VCL form. CONFIRMED by the matching function bodies:
+
+| | `rts1.exe` "RTS RE map" | console / server `TfPult` |
+|---|---|---|
+| Where | own window `RTSREMapWnd`, own thread `0x5ADAF0` and GL context (`0x5ACEE0`, 16-bit colour, no depth); opened only in the IPC route editor mode (`/startIPC`, `0x59BE80` → `0x59D6B4`), not in normal play | an OpenGL panel inside the `TfPult` form; viewport inset 5 px (`0x46476C`) |
+| Paint | `0x59D8E4` (WM_PAINT) | `0x4647E4` |
+| Projection | `glOrtho(-1, 1, 1, -1)`, zoom `dbl_631F20` (start 512): visible half-size `zoom·128·0.5` m, aspect from the client rect, sizes scaled by `1041 / width` | the same (`dbl_54DC70`, same formulas) |
+| Background | `glClearColor(0.9, 0.85, 0.9)` | `glClearColor(0.8, 0.8, 0.8)` |
+| Track | every TDB node within the view (72-byte records, world x/z = tile·2048 + offset, culled by distance − node length), black, line width 2 | the same pass, then colour per section: a train route's own colour (ARGB from the route object), alpha 0.2 where it is not set/active; the selected route green; junction branches green when set |
+| Icons | textures from `GLOBAL\TEXTURES` (signal, `RTSplatf`, `person`, `RTSpaths`, `RTS_savebtn`, `RTSelectro`, `RTSGlobalObjs`, `bluediamond`) | `.ace` files beside the exe (`points`, `sig`, `platf`, `person`, `cargo`, `brakes`, `arrow`, `circle`, `finish`, `RTSGlobalObjs`) |
+| Text | GL bitmap fonts: Arial 16, Times New Roman 14, Book Antiqua 16, Arial 12 bold | the same mechanism (`0x420870`, `0x420974`) |
+| Extras | editor layers by a bitmask (block points, paths, platforms with names, electrification, global objects) and an edit selection | operation layers: signals as icons rotated to their heading (`glRotatef`), aspect colour; trains (`0x4782F4`) as rotated rectangles coloured by state (player, traffic, static, loose: magenta, purple, brown, olive, green) with a red outline when selected and small markers (yellow, dark red) for brakes / chocks; players' icons; platform and station names (blue / olive); route end points; the route being assembled (green points, Ctrl toggles); pickups; red "E" marks |
+
+For openRTS the dispatcher is one map with two modes (editor layers,
+operation layers) over the same geometry renderer; its look (grey
+background, black track, route colours) follows the console.
+
+## In-game "RTS track control" (`rts1.exe`) — CONFIRMED
+
+Opened from the in-game menu (`0x462FC8`, item "Track control"; the user
+reaches it with Ctrl+Shift+F7). Module `Rts_trackcontrol`; also used by the
+activity viewer ("RTS Activity track control", `0x54FF80`).
+
+- Window `RTSTrackControlWnd` "RTS track control" (`0x549A60`), 500×500 at
+  50,50, its own GL context and icons (`0x549650`); background
+  `glClearColor(0.8, 1.8, 0.8)` = light green; start zoom 16 (the RE map:
+  512). System menu: Show sidings, Show electrosections, cargo layers.
+- Paint `0x53F990`: the same map engine as the RE map and the console
+  (track nodes in world coordinates, set branches green, signals, platform
+  and station names blue / olive, trains, pickups, activity events
+  "Event %i:%i", the selected path, coupler forces in N / kN in red, three
+  buttons at the top right).
+- Mouse (`0x548C8C`, `0x548E40`): right drag pans (cursor clipped to the
+  window), a right click opens the context menu (`0x547F24` → `0x5439E4`),
+  a left click selects; wheel zooms.
+- Context menus by what is under the cursor:
+  - train: Jump to train, Release block point, Show train path, No auto
+    remove, Uncouple cars, Trigger board / unboard / tracking event, Edit /
+    Cancel / Create route, Save route, Load path…, Save path as…, Remove
+    train, Assign to player…, Load for player, Traffic options…, Cast to
+    PLAYER / STATIC / TRAFFIC, Start / Cancel shunting;
+  - location: Move location, Save location here, Cancel location edit;
+  - junction on the edited path: Switch junction (first / n-th / last
+    pass);
+  - path point: Change start direction, Remove start / reverse / waiting /
+    end / block point, Change waiting time, Turn to normal path / static
+    placement;
+  - track: Place start / waiting / reverse / end point;
+  - signal: Signal info, Force signal update;
+  - electrification: Switch / Reset power source;
+  - cargo loader: Switch state (Off / Ready / Load / Unload), Select
+    current cargo, Information.
+- The command handler (`0x54478C`) edits train paths with the path module
+  (`0x48B8C8`, `0x48BAF8`, `0x48BBF0`, `0x48D220`, `0x48DD94`, `0x48D0A0`,
+  `0x48D470`) — the same module step 4 needs for path reservation.
+
+So RTS has three faces of one map: the in-game track control (single
+player / host: trains, paths, junctions, signals, power, cargo), the route
+editor map (editing layers) and the dispatcher console (multiplayer
+operation). openRTS: one map component with these modes.
+
+## The path module and junction reservations (`rts1.exe`) — 2026-11-01
+
+CONFIRMED from the code unless marked.
+
+**Path points** (92 bytes, `0x4886EC` loads a .pat): +0 TrPathNode flags,
++4 next, +8 siding next, +12 TrackPDP index, +16 / +20 next / previous
+pointers, +24 a 64-byte copy of the TrackPDP and its traveller: +40 kind
+(1 a point on the track, 2 a junction, 5 a block point of a service), +48
+the node (the junction for kind 2), +52 the branch, +64 the offset, +84 a
+direction byte (for a junction: 1 = entered from a branch, leaves by the
+trunk), +88 the distance from the path start.
+- For a junction point the branch is the one whose track reaches the next
+  point; the loop over branches does not stop at a match, so the last
+  matching branch wins.
+- `0x48BBF0` re-routes from an edited point to the next user point along
+  the junctions' main routes (or their set branches), inserting junction
+  points (Track control's path editing); `0x48BAF8` switches a junction on
+  the path to its next branch and re-routes.
+
+**Junction record:** +8 the default (MainRoute), +12 the selected branch,
++32 branch count, +36 trunk pin, +40 branch pins (8 bytes: node, end), +52
+the reservation queue, +56 a lock byte (a junction with it set is never
+reserved through; UNKNOWN who sets it, PROBABLE the dispatcher console).
+Queue entries (32 bytes): +0 the owner (the train's path follower), +4 its
+path point (whose +52 is the wanted branch), +16 / +20 links, +24 / +28 the
+owner's time and distance to the junction, kept by `0x48CA28`.
+- `0x48C7B8` appends the owner (queues it).
+- `0x48C924` puts the owner first and sets the switch to its branch; the
+  previous first owner's reservations from that point on are released
+  (`0x48A8AC`).
+- `0x48C85C` removes the owner; the switch goes to the new first owner's
+  branch or to the default.
+
+**Reserving ahead** (`0x48A0F8`, from the train update): from the train's
+current point, junction points one after another:
+- free: queue the owner, check opposing moves (`0x48C21C`: another owner
+  whose direction byte differs and whose distance is within reach of the
+  next junction), set the switch;
+- the owner first already: the same checks, set the switch;
+- held by others: queue and stop there, unless the owner's time to the
+  junction (distance / speed, plus a horizon of 5000 m / speed or the
+  service's own) beats the queued owners': then it takes the junction over
+  (`0x48C924`), after checking the opposing moves on the stretch back to its
+  own reservation (`0x48C50C`, `0x48C654`);
+- it stops at a locked junction, at a waiting point not yet due, and at a
+  block point whose conditions (`0x48E36C`) fail.
+
+openRTS keeps the queue, takeover and release semantics (`docs/paths.md`)
+with a simpler priority (30 s earlier and the holder beyond its stopping
+distance) and a section lock for single lines instead of `0x48C21C` /
+`0x48C654`.

@@ -36,6 +36,10 @@ struct RouteDefinition {
     std::filesystem::path root;
     std::optional<RoutePosition> start;
     std::vector<RouteEnvironment> environments;
+    // SpeedLimit / TempRestrictedSpeed, m/s (0: not given). RTS uses the
+    // speed limit for speed posts that end a restriction (0x482680).
+    float speed_limit{};
+    float temp_restricted_speed{};
     std::string error;
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
 };

@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <optional>
 #include <memory>
 #include <span>
 #include <string>
@@ -103,6 +105,11 @@ public:
     [[nodiscard]] std::vector<SignalPass> take_passes();
     [[nodiscard]] const SignalStats& stats() const noexcept { return stats_; }
     [[nodiscard]] const std::vector<std::string>& messages() const noexcept { return messages_; }
+    // Movement authority: metres ahead of a train's leading end reserved for
+    // it (its path's reserved junctions, simulation::Dispatcher). Heads
+    // beyond it run with `enabled` 0 (RTS 0x508520: beyond the train's path
+    // or reservation end). No value: unlimited (a train without a path).
+    void set_authority(std::function<std::optional<double>(const Train&)> authority);
     // Debug/test: run every head every step instead of only changed ones.
     void set_full_evaluation(bool on) noexcept { full_evaluation_ = on; }
     // block_state / route_set of a head right now (debug panel).

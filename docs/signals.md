@@ -343,3 +343,14 @@ makes them visible.
 - ALSN and cab signalling (step 5, with the DLL `ALSN` callback).
 - Activities' `SignalOverride` and `SetSignalMode` events (step 7; the
   override API is ready for them).
+
+## Paths and the reserved way (2026-11-01)
+
+- A train with a path has a movement authority (its reserved way,
+  `paths.md`); heads beyond it run with `enabled` 0 (RTS 0x508520).
+- A pass is judged by the aspect shown while the train was still beyond the
+  passing distance (RTS no longer runs an object being passed for the
+  train); the train's own front reaching the signal no longer turns the pass
+  into one at danger.
+- `block_state` counts a train only when it is strictly inside the bounds
+  (a front exactly at the signal is not in its block yet).

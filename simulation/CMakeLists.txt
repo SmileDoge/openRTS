@@ -4,6 +4,10 @@ add_library(openrts_simulation STATIC
     src/track_network.cpp
     src/track_traveller.cpp
     src/train.cpp
-    src/signals.cpp)
+    src/signals.cpp
+    src/train_route.cpp
+    src/dispatcher.cpp
+    src/speed_limits.cpp
+    src/auto_driver.cpp)
 openrts_configure_target(openrts_simulation)
 target_link_libraries(openrts_simulation PUBLIC openrts_core openrts_formats)

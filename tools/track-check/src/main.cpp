@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <numbers>
 #include <random>
 #include <set>
 #include <string>
@@ -23,6 +24,8 @@
 #include <openrts/formats/shape_file.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/track_traveller.hpp>
+#include <openrts/formats/train_path.hpp>
+#include <openrts/simulation/train_route.hpp>
 
 namespace {
 
@@ -228,6 +231,115 @@ void survey_switch_animations(const core::Vfs& vfs, const TrackNetwork& network)
     for (const auto& [pattern, count] : patterns) std::cout << "    " << count << " x " << pattern << '\n';
 }
 
+// Every .pat of the route resolved as a plan and a route (docs/paths.md).
+void check_paths(const core::Vfs& vfs, const core::VirtualPath& route, const TrackNetwork& network) {
+    const auto paths = formats::load_train_paths(vfs, route);
+    std::size_t total = 0, resolved = 0, legs = 0, junctions = 0;
+    std::vector<std::string> problems;
+    for (const auto& path : paths) {
+        if (!path.ok()) continue;
+        ++total;
+        std::string error;
+        const auto plan = simulation::plan_from_path(network, path, &error);
+        if (!plan) {
+            problems.push_back(path.file + ": " + error);
+            continue;
+        }
+        const auto built = simulation::build_route(network, *plan);
+        if (!built.ok()) {
+            problems.push_back(path.file + ": " + built.error);
+            continue;
+        }
+        ++resolved;
+        legs += built.legs.size();
+        for (const auto& leg : built.legs) junctions += leg.junctions.size();
+    }
+    std::printf("  paths: %zu of %zu resolve (%zu legs, %zu junction passes)\n", resolved, total, legs, junctions);
+    for (std::size_t i = 0; i < problems.size() && i < 8; ++i) std::printf("    %s\n", problems[i].c_str());
+}
+
+// Which way speed posts face (docs/paths.md). Four readings of the angle are
+// tested: the sign's facing as a heading (angle, or angle + pi), or as a
+// mathematical angle in the ground plane (pi/2 - angle, or that + pi; the
+// last is the one simulation/speed_limits.cpp uses). A post is for travel
+// against its facing. Two tests: a warning board comes before the limit
+// post of the speed it shows, and a post that ends a restriction comes after
+// a limit post for the same direction.
+void check_speed_posts(const TrackNetwork& network) {
+    std::string summary;
+    std::size_t total_posts = 0;
+    for (int variant = 0; variant < 4; ++variant) {
+    struct Placed {
+        std::uint32_t node{};
+        double offset{};
+        formats::SpeedPost post;
+        bool along = true; // by the convention
+    };
+    std::map<std::uint32_t, Placed> posts;
+    const auto& items = network.database().items;
+    for (std::uint32_t n = 1; n < network.node_count(); ++n) {
+        const auto* node = network.node(n);
+        if (!node || node->kind != formats::TrackNodeKind::vector) continue;
+        for (const auto& entry : node->items) {
+            if (entry.item >= items.size()) continue;
+            const auto post = formats::speed_post(items[entry.item]);
+            const auto where = network.point(n, entry.offset);
+            if (!post || !where) continue;
+            double facing = variant < 2 ? post->angle : std::numbers::pi / 2.0 - post->angle;
+            if (variant % 2 == 1) facing += std::numbers::pi;
+            posts[entry.item] = {n, entry.offset, *post, std::cos(facing - where->heading) < 0.0};
+        }
+    }
+    if (posts.empty()) return;
+    const auto speed_posts = [&](const formats::TrackItem& item) { return posts.contains(item.id); };
+    std::size_t warning_agree = 0, warning_disagree = 0, resume_agree = 0, resume_disagree = 0;
+    for (const auto& [item, placed] : posts) {
+        if (placed.post.warning && placed.post.number > 0.0f) {
+            // The nearest limit post of that speed either way along the track:
+            // trains going that way see the board first.
+            double nearest[2] = {1e9, 1e9};
+            for (const bool forward : {true, false}) {
+                const auto ahead = simulation::look_ahead(network, placed.node, placed.offset, forward, 3000.0, speed_posts);
+                for (const auto& found : ahead.items) {
+                    const auto& other = posts.at(found.item);
+                    if (!other.post.limit || other.post.resume) continue;
+                    if (std::abs(other.post.speed * 3.6f - placed.post.number) > 1.0f) continue;
+                    nearest[forward ? 0 : 1] = found.distance;
+                    break;
+                }
+            }
+            if (nearest[0] < 1e8 || nearest[1] < 1e8) {
+                const bool towards = nearest[0] <= nearest[1];
+                (placed.along == towards ? warning_agree : warning_disagree)++;
+            }
+        }
+        if (placed.post.limit && placed.post.resume) {
+            // The nearest limit post behind, for travel the way this post is for.
+            const auto behind = simulation::look_ahead(network, placed.node, placed.offset, !placed.along, 5000.0, speed_posts);
+            for (const auto& found : behind.items) {
+                const auto& other = posts.at(found.item);
+                if (!other.post.limit || other.post.resume) continue;
+                // A limit for the other direction often stands at the same
+                // place (where that direction's restriction begins).
+                if (found.distance < 50.0) continue;
+                // Travel on that node towards the resume post is the walk reversed.
+                const bool other_for_us = other.along == !found.facing_forward;
+                (other_for_us ? resume_agree : resume_disagree)++;
+                break;
+            }
+        }
+    }
+    static const char* names[] = {"angle", "angle+pi", "pi/2-angle", "3pi/2-angle (used)"};
+    char line[160];
+    std::snprintf(line, sizeof line, "%s%s %zu/%zu, %zu/%zu", summary.empty() ? "" : "; ", names[variant], warning_agree,
+                  warning_agree + warning_disagree, resume_agree, resume_agree + resume_disagree);
+    summary += line;
+    total_posts = posts.size();
+    }
+    std::printf("  speed posts: %zu; agreeing (warning boards, restriction ends) by reading: %s\n", total_posts,
+                summary.c_str());
+}
+
 void check_route(const core::Vfs& vfs, const std::string& name) {
     const auto route = *core::VirtualPath::parse("ROUTES/" + name);
     const auto started = std::chrono::steady_clock::now();
@@ -367,6 +479,8 @@ void check_route(const core::Vfs& vfs, const std::string& name) {
                     distances.size(), distances[distances.size() / 2], distances[distances.size() * 95 / 100],
                     distances.back());
     }
+    check_paths(vfs, route, *network);
+    check_speed_posts(*network);
 }
 
 } // namespace

@@ -1,0 +1,4 @@
+add_executable(openrts_path_check src/main.cpp)
+set_target_properties(openrts_path_check PROPERTIES OUTPUT_NAME openrts-path-check)
+openrts_configure_target(openrts_path_check)
+target_link_libraries(openrts_path_check PRIVATE openrts_simulation openrts_formats openrts_core)

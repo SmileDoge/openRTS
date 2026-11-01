@@ -147,7 +147,8 @@ PACKS/base/VL80k.zip : TRAINS/TRAINSET/VL80k/VL80k.s
 Either way the route appears in the route list:
 
 1. **Folder (as today):** unpack into `ROUTES/<Name>/`.
-2. **Pack:** put `<Name>.zip` into `PACKS/`.
+2. **Pack:** put `<Name>.zip` into `PACKS/base/` (only `PACKS/base` and
+   `PACKS/patch` are mounted; a ZIP directly in `PACKS/` is ignored).
 
 The route list is every `ROUTES/<dir>/` in the VFS that contains a `.trk`.
 Global track shapes the route needs come from `GLOBAL` (folder or a GLOBAL
@@ -159,7 +160,7 @@ overlap.
 
 1. **Folder:** `TRAINS/TRAINSET/<Name>/` plus consists in
    `TRAINS/CONSISTS_RTS/` or `TRAINS/CONSISTS/`.
-2. **Pack:** `PACKS/<Name>.zip` containing the same paths.
+2. **Pack:** `PACKS/base/<Name>.zip` containing the same paths.
 
 The rolling-stock list is every `TRAINS/TRAINSET/<dir>/` with `.eng`/`.wag`;
 the consist list comes from the `CONSISTS*` folders. Alias folders shared

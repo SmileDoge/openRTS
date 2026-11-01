@@ -1,6 +1,7 @@
 #pragma once
 
 #ifdef OPENRTS_HAS_WGPU
+#include <filesystem>
 #include <future>
 #include <memory>
 #include <optional>
@@ -23,8 +24,13 @@
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/route_streamer.hpp>
 #include <openrts/formats/terrain.hpp>
+#include <openrts/simulation/auto_driver.hpp>
+#include <openrts/simulation/dispatcher.hpp>
+#include <openrts/simulation/signals.hpp>
+#include <openrts/simulation/speed_limits.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train.hpp>
+#include <openrts/simulation/train_route.hpp>
 
 #include "camera.hpp"
 #include "viewer_scene.hpp"
@@ -38,6 +44,21 @@ namespace openrts::viewer {
 // collide as RTS decides (simulation::resolve_contacts).
 class TrainView {
 public:
+    // Who drives a train: the keyboard, the test driver along its path, or
+    // nobody (it stands with its brakes as they are).
+    enum class Role : std::uint8_t { driven, ai, standing };
+    struct Summary {
+        std::uint64_t id{};
+        std::string name;
+        Role role = Role::standing;
+        double speed{};      // m/s
+        bool placed = false;
+        std::size_t cars{};
+        double length{};
+        float target = -1.0f; // the test driver's target speed, m/s
+        bool derailed = false;
+    };
+
     TrainView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath route, formats::RoutePosition origin,
               simulation::TrackNetwork& network);
     ~TrainView();
@@ -78,6 +99,37 @@ public:
     [[nodiscard]] std::optional<simulation::TrackTraveller> ahead() const;
     [[nodiscard]] glm::vec3 head_position() const;
 
+    // Track control (docs/paths.md): every train, paths, roles.
+    [[nodiscard]] std::vector<Summary> summaries() const;
+    [[nodiscard]] const simulation::Train* train_by_id(std::uint64_t id) const;
+    [[nodiscard]] simulation::Dispatcher& dispatcher() noexcept { return *dispatcher_; }
+    [[nodiscard]] const simulation::Dispatcher& dispatcher() const noexcept { return *dispatcher_; }
+    [[nodiscard]] const simulation::SpeedLimits& speed_limits() const noexcept { return *limits_; }
+    // The route's paths, then the ones saved from Track control.
+    [[nodiscard]] const std::vector<formats::TrainPath>& route_paths() const noexcept { return paths_; }
+    [[nodiscard]] const std::vector<std::string>& consist_list();
+    // Gives train `id` this path (built on the network); an error text on failure.
+    [[nodiscard]] std::string assign_path(std::uint64_t id, simulation::PathPlan plan);
+    [[nodiscard]] std::string assign_route_path(std::uint64_t id, const formats::TrainPath& path);
+    void clear_path(std::uint64_t id);
+    [[nodiscard]] std::string set_role(std::uint64_t id, Role role);
+    [[nodiscard]] std::string remove(std::uint64_t id);
+    // Uncouples train `id` before car `index` (end cocks closed, couplers left open).
+    [[nodiscard]] std::string uncouple_at(std::uint64_t id, std::size_t index);
+    // A consist put on the track with its front at `where`, facing along it.
+    [[nodiscard]] std::string spawn(std::string_view consist, const simulation::TrackLocation& where, Role role);
+    // Saves train `id`'s path as <user_path_folder>/<name>.pat (never into the route).
+    [[nodiscard]] std::string save_path(std::uint64_t id, const std::string& name);
+    // The camera follows train `id` (0: the driven train).
+    void follow_train(std::uint64_t id);
+    // The route's signals, for the test drivers (next signal and its aspect).
+    void set_signals(const simulation::SignalSystem* signals) noexcept { signals_ = signals; }
+    // Text about train `id`'s path: leg, reserved way, what it waits for.
+    [[nodiscard]] std::string path_status(std::uint64_t id) const;
+    // Where Track control keeps saved paths: user_paths/<route> in the
+    // working directory.
+    [[nodiscard]] std::filesystem::path user_path_folder() const;
+
 private:
     struct Car;
     struct Unit;
@@ -110,6 +162,16 @@ private:
     void collide_slides(renderer::ModelLibrary& library);
     [[nodiscard]] glm::vec3 local(const simulation::TrackPoint& point) const;
     [[nodiscard]] glm::vec3 local(const formats::RoutePosition& position) const;
+    // A consist's cars and train, its stock appended to `stock`.
+    [[nodiscard]] std::string make_unit(std::string_view consist, Unit& unit,
+                                        std::vector<std::unique_ptr<formats::WagonDefinition>>& stock) const;
+    // Controllers as the unit's role wants them.
+    void attach_role(Unit& unit);
+    [[nodiscard]] Unit* find_unit(std::uint64_t id);
+    [[nodiscard]] const Unit* find_unit(std::uint64_t id) const;
+    // What the test driver of `unit` must do this step.
+    [[nodiscard]] simulation::DriveOrders drive_orders(Unit& unit);
+    void load_user_paths();
 
     std::shared_ptr<const core::Vfs> vfs_;
     core::VirtualPath route_;
@@ -119,7 +181,13 @@ private:
     simulation::TrackNetwork* network_ = nullptr;
     std::string consist_;
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock_;
-    std::vector<Unit> units_; // [0]: the driven train; the rest: cuts left on the track
+    std::vector<Unit> units_; // [0]: the driven train; the rest: cuts and trains from Track control
+    std::unique_ptr<simulation::Dispatcher> dispatcher_;
+    std::unique_ptr<simulation::SpeedLimits> limits_;
+    const simulation::SignalSystem* signals_ = nullptr;
+    std::uint64_t follow_id_ = 0;
+    std::size_t spawned_ = 0;
+    float overspeed_time_ = 0.0f;
     std::shared_ptr<simulation::DriverHandles> driver_;
     double accumulator_{};
     bool follow_ = true;

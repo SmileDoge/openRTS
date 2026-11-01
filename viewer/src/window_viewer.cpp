@@ -445,6 +445,8 @@ public:
         }
         bool batching = renderer.batching();
         if (ImGui::Checkbox("Merge identical primitives (instancing)", &batching)) renderer.set_batching(batching);
+        bool culling = renderer.face_culling();
+        if (ImGui::Checkbox("Cull back faces (RTS)", &culling)) renderer.set_face_culling(culling);
 
         if (ImGui::Button("Save debug view (F6)")) panel.save_view = true;
         if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
@@ -534,6 +536,7 @@ struct CameraInput {
     bool follow_key_down = false;
     bool track_key_down = false;
     bool labels_key_down = false;
+    bool track_control_key_down = false;
     bool save_key_down = false;
     std::array<bool, 11> train_keys_down{};
     double cursor_x = 0.0;
@@ -670,6 +673,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .independent_less = pressed(GLFW_KEY_COMMA, input.train_keys_down[8]),
         .toggle_ep = pressed(GLFW_KEY_K, input.train_keys_down[9]),
         .turn_around = pressed(GLFW_KEY_X, input.train_keys_down[10]),
+        .toggle_track_control = pressed(GLFW_KEY_F7, input.track_control_key_down),
     };
 }
 

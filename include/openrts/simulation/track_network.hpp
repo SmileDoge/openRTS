@@ -99,8 +99,14 @@ public:
 
     [[nodiscard]] JunctionState* junction(std::uint32_t node);
     [[nodiscard]] const JunctionState* junction(std::uint32_t node) const;
-    // Manual switching; refused while the junction is occupied.
-    bool throw_junction(std::uint32_t node, std::uint32_t branch);
+    // Manual switching; refused while the junction is occupied or reserved
+    // for another owner's path (a driver may throw a hand switch only when
+    // no dispatcher route holds it, rts_server version notes).
+    bool throw_junction(std::uint32_t node, std::uint32_t branch, std::uint64_t owner = 0);
+    // Drops `owner`'s reservation without touching occupancy (its path
+    // changed or no longer reaches here). A free junction is then set as a
+    // release sets it: to the next reservation's branch or MainRoute.
+    void cancel_reservation(std::uint32_t node, std::uint64_t owner);
     // A train's tail has left the junction (RTS 0x48C85C): free it, drop the
     // owner's reservation and clearance, and set the switch to the next
     // reservation's branch or to MainRoute.

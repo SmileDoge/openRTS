@@ -12,7 +12,9 @@ openrts_viewer --window --route D:\Games\MDDRTS\ROUTES\Kuban_RTS [--consist <nam
                  signals red, speed posts blue, platforms cyan; green = selected branch)
     C            put the train on the track nearest to the camera
     J            throw the first facing junction within 300 m ahead of the train
-                 (by its motion, else the reverser); without a train, the one nearest to the camera
+                 (by its motion, else the reverser); without a train, the one nearest to the camera;
+                 refused while the junction is occupied or held by a train's path (paths.md)
+    F7           Track control (paths.md)
     V            camera follows the train
     F6 / button  save a debug view -> debug_views/last.view (+ timestamped copy)
 openrts_viewer --window --view last        reopen the saved view
