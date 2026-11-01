@@ -1,92 +1,179 @@
 # openRTS
 
-Independent, modular RTS/MSTS-compatible implementation.  The project is
-written in C++20 and uses CMake so the common layers can build on Windows and
-Linux.
+[English version](README_EN.md)
 
-## Build
+**openRTS** — открытая независимая реализация железнодорожного симулятора
+RTrainSim (RTS). Цель — запускать существующий контент RTS и MSTS (маршруты
+и подвижной состав СНГ: ЭД4М, ЧС4Т, ВЛ10, 2ТЭ10 и другие) на современном
+движке, восстанавливая поведение RTS там, где его видно игроку: физику,
+тормоза, сигнализацию, звук.
 
-```powershell
-cmake -S . -B build -G Ninja
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
+Поведение RTS восстанавливается по его документации, файлам контента и
+разбору `rts1.exe`. Каждая находка помечена степенью уверенности
+(CONFIRMED / PROBABLE / UNKNOWN) в `docs/reverse/`.
 
-The default renderer is platform-neutral and null. The optional WebGPU backend
-uses an externally supplied `wgpu-native` SDK, so ordinary builds remain free
-from graphics-SDK downloads. To enable it, configure with
-`-DOPENRTS_ENABLE_WGPU=ON -DOPENRTS_WGPU_ROOT=<extracted-sdk-root>`.
+> Проект находится в разработке. Сейчас это вьювер маршрутов с вождением
+> поезда, сигнализацией, диспетчерским окном и звуком, а не готовая игра.
 
-For a Windows MSVC SDK, a headless upload check can be run without a window:
+## Что уже работает
 
-```powershell
-cmake -S . -B build `
-  -DOPENRTS_ENABLE_WGPU=ON `
-  -DOPENRTS_WGPU_ROOT=C:\path\to\wgpu-native-sdk
-cmake --build build --config Debug
-.\build\viewer\Debug\openrts_viewer.exe --ace D:\Games\MDDRTS\GLOBAL\TEXTURES\ACleanTrack2.ace
-```
+- **Контент:** виртуальная файловая система: папки установки, zip-паки,
+  патчи, моды, горячая перезагрузка; ACE, модели `.s` / `.sd`, мир `.w`,
+  рельеф, окружение, `.trk`, база путей `.tdb` / `.tsection`, `.con`,
+  `.eng` / `.wag` (с `.rtseng`), пути `.pat`, звук `.sms` / `.ws`,
+  `sigcfg.dat` / `sigscr.dat`, база маршрута `.rtsdb`.
+- **Графика (WebGPU):**
+  - правила материалов и проходов RTS;
+  - небо и время суток, сезоны и погода;
+  - потоковая подгрузка маршрута, LOD, MSAA;
+  - анимация моделей, огни сигналов, инстансинг одинаковых моделей.
+- **Поезд:**
+  - физика RTS, сцепки и автосцепка, удары и столкновения;
+  - тормоза RTS: кран машиниста 395, ЭПТ, вспомогательный тормоз;
+  - сход с рельс как в RTS (опрокидывание в кривой, сход в тупике);
+  - колебания кузова на рессорах;
+  - стоящие составы засыпают (STATIC) и не тратят время на симуляцию.
+- **Сигнализация:**
+  - скрипты `sigscr.dat` компилируются так же, как в RTS;
+  - блок-участки, маршруты, занятость всем составом;
+  - цепочки сигналов перед поездом игрока (с обоих концов, как в RTS).
+- **Маршруты и движение:**
+  - пути `.pat`, бронирование стрелок с очередью RTS;
+  - ограничения скорости по путевым знакам;
+  - тестовые поезда с простым машинистом: едут по маршруту, держат
+    скорость, стоят у красного.
+- **Track control (Ctrl+Alt+F7):**
+  - карта путей сверху: поезда, стрелки, сигналы, платформы;
+  - построение и правка маршрутов, роли поездов, расцепка;
+  - расстановка составов с предпросмотром: показывает, куда встанет состав
+    и куда смотрит головной вагон; состав можно двигать вдоль пути и
+    разворачивать.
+- **Звук:** исполнение скриптов `.sms` (активация, триггеры, кривые, петли),
+  звуки маршрута и поездов, позиционный звук (miniaudio).
+- **Информационные панели как в RTS:** F5, Ctrl+F5, F6, F7, Ctrl+F7.
 
-`viewer --ace` decodes the supported structured ACE variant into CPU RGBA8,
-creates a `RGBA8Unorm` WebGPU texture and uploads it. It has no window or
-presentation surface yet.
+## Чего пока нет
 
-The next viewer pass is a fullscreen textured triangle: it will sample the
-uploaded ACE texture through a WebGPU sampler rather than retaining the clear
-pass as final output.
+По порядку плана (`docs/roadmap.md`):
+1. 3D-кабины и DLL локомотивов через 32-битный процесс-посредник, АЛСН,
+   звук кабины. 2D-кабин не будет.
+2. Мультиплеер (совместимый с RTS режим Legacy и собственный протокол) и
+   пульт ДСП.
+3. Активности и полноценный AI-трафик.
+4. PBR-материалы.
 
-When GLFW is enabled (the default), `openrts_viewer --window` opens a
-cross-platform native window without creating an OpenGL context. The WebGPU
-surface/presentation pass is the next layer on top of that window.
+## Сборка
 
-## Module boundaries
+Основная платформа — Windows 10/11 x64. Нужны:
+- Visual Studio 2022 или новее с C++ (C++20);
+- CMake 3.24+ и Git;
+- SDK [wgpu-native](https://github.com/gfx-rs/wgpu-native/releases) v27.0.4.0
+  (`wgpu-windows-x86_64-msvc-release.zip`), распакованный в папку с `include/`
+  и `lib/`.
 
-| Target | Responsibility | May depend on |
-|---|---|---|
-| `openrts_core` | errors, logging, paths, VFS, encodings, math | standard library |
-| `openrts_formats` | RTS/MSTS parsers and schema readers | core |
-| `openrts_assets` | content resolution and CPU assets | core, formats |
-| `openrts_renderer` | renderer API and backends | core |
-| `openrts_platform` | window, input, audio, timing abstraction | core |
-| `openrts_simulation` | train and world simulation | core, formats |
-| `openrts_compat` | future legacy Win32 DLL compatibility boundary | core |
-| `openrts_viewer` | asset/shape viewer executable | assets, renderer, platform |
-| `openrts_game` | future game host executable | assets, renderer, platform, simulation |
-
-`viewer` and `game` are composition roots.  Lower layers must not depend on
-them, on a concrete graphics API, or on a legacy DLL implementation.
-
-## First content milestone
-
-`openrts_asset_dump` resolves a relative asset name without writing to the
-installation.  The current supported contexts are route-local shapes/textures,
-global shape/texture fallbacks, and trainset-local assets.  Main locomotive DLL
-lookup follows the statically observed RTS order: trainset-local first, then
-`GLOBAL/LIB`.
-
-```powershell
-.\build\tools\asset-dump\Debug\openrts_asset_dump.exe `
-  --root D:\Games\MDDRTS `
-  --kind texture `
-  --route SomeRoute `
-  --asset SomeTexture.ace
-```
-
-It can also resolve a Shape Description and its primary model relative to the
-located `.sd` file:
+GLFW, Dear ImGui, glm, miniaudio, zlib и zstd CMake скачивает сам.
 
 ```powershell
-.\build\tools\asset-dump\Debug\openrts_asset_dump.exe `
-  --root D:\Games\MDDRTS `
-  --sd 050.sd
+cmake -S . -B build -DOPENRTS_ENABLE_WGPU=ON -DOPENRTS_WGPU_ROOT=C:\sdk\wgpu-native
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-The command probes the resolved `.s` envelope and reports whether it is text,
-binary, or compressed binary.  Texture references are intentionally not guessed
-for malformed or unsupported shapes. For recognised compressed binary shapes,
-the bounded image table is parsed and each texture name is resolved through the
-same content context.
+Без `OPENRTS_ENABLE_WGPU` собираются только библиотеки, инструменты и тесты,
+без окна.
 
-Compressed narrow binary `.s` files are inflated with zlib after validating the
-SIMIS declared output size. CMake first uses a system `ZLIB`; otherwise it fetches
-the pinned upstream zlib `v1.3.1` during configuration.
+## Запуск
+
+Нужна установленная RTS с контентом: openRTS ничего в ней не меняет и сам
+контента не содержит.
+
+```powershell
+.\build\viewer\Release\openrts_viewer.exe --window --route Kuban_RTS --root D:\Games\RTS --consist "ED4M-0050 12vag"
+```
+
+| Параметр | Что делает |
+|---|---|
+| `--window --route <имя или путь>` | открыть маршрут |
+| `--window --shape <имя>` | открыть одну модель |
+| `--window --view last` | открыть последний сохранённый вид (Ctrl+F6) |
+| `--root <папка>` | папка установки RTS (если маршрут указан именем) |
+| `--consist <имя>` | состав из `TRAINS/CONSISTS_RTS` или `CONSISTS` |
+| `--path <имя>` | путь `.pat`, с начала которого поставить состав |
+| `--track-control` | сразу открыть Track control |
+| `--time 06:30:00`, `--speed <x>` | время суток и его скорость |
+| `--season spring\|summer\|autumn\|winter` | сезон |
+| `--weather clear\|snow\|rain` | погода |
+| `--no-sound`, `--volume 0..1` | без звука, громкость |
+| `--msaa 1`, `--no-vsync`, `--no-batching` | настройки графики |
+| `--experimental` | экспериментальное освещение вместо RTS |
+| `--mount <папка или zip>` | подключить мод поверх установки |
+| `--no-hot-reload` | не следить за изменениями файлов |
+
+### Управление
+
+| Клавиши | Действие |
+|---|---|
+| ПКМ + мышь, WASD, Q/E, Shift | свободная камера |
+| F | свободная / орбитальная камера |
+| C | поставить состав на путь у камеры |
+| Home / End | контроллер машиниста |
+| Page Up / Page Down | реверсор |
+| `]` / `[` | кран машиниста (395) |
+| `.` / `,` | вспомогательный тормоз |
+| K | ЭПТ |
+| X | перейти в другую кабину |
+| V | камера следует за поездом |
+| J | перевести стрелку впереди |
+| T, L | схема путей, подписи стрелок и сигналов |
+| R | освещение RTS / экспериментальное |
+| F5, Shift+F5, Ctrl+F5 | вагоны, поезд целиком, ограничения и километр |
+| F6 | станции впереди |
+| F7, Ctrl+F7 | названия платформ, названия сигналов |
+| Ctrl+Alt+F7 | Track control |
+| Ctrl+F6 | сохранить вид для отладки |
+
+## Инструменты
+
+| Программа | Назначение |
+|---|---|
+| `openrts-pack` | сборка и проверка паков контента (`docs/vfs-tutorial-ru.md`) |
+| `openrts-track-check` | проверка сети путей, путей `.pat`, путевых знаков |
+| `openrts-path-check` | прогон тестовых поездов по путям, бронирование, планировщик |
+| `openrts-signal-check` | компиляция всех `sigscr.dat`, сверка с ассемблером RTS |
+| `openrts-sound-check` | разбор всех `.sms` / `.ws` и звуковых файлов |
+| `openrts-train-check` | загрузка всех составов, прогон на тестовом пути |
+| `openrts_asset_dump` | поиск ассетов так, как их ищет RTS |
+
+## Устройство
+
+| Модуль | Отвечает за |
+|---|---|
+| `core` | ошибки, пути, виртуальная файловая система, кодировки |
+| `formats` | разбор форматов RTS/MSTS |
+| `assets` | поиск и загрузка контента |
+| `renderer` | отрисовка (WebGPU) |
+| `simulation` | сеть путей, поезда, тормоза, сигналы, диспетчер |
+| `audio` | исполнение `.sms`, вывод звука |
+| `compat` | мост к DLL локомотивов (в работе) |
+| `viewer` | вьювер: окно, ввод, камера, панели |
+| `tools` | консольные проверки |
+
+Нижние слои не зависят от `viewer`, от конкретного графического API и от
+DLL RTS.
+
+## Документация
+
+- `docs/roadmap.md` — план и текущее состояние;
+- `docs/train.md`, `docs/track.md`, `docs/signals.md`, `docs/paths.md`,
+  `docs/sound.md` — как устроены подсистемы;
+- `docs/vfs.md`, `docs/vfs-tutorial-ru.md` — контент, паки и моды;
+- `docs/train-dll.md` — план моста к DLL локомотивов;
+- `docs/reverse/` — разбор поведения RTS с адресами и степенью уверенности.
+
+## Правовое
+
+openRTS не связан с авторами RTrainSim и MSTS. Маршруты, подвижной состав и
+другой контент в репозиторий не входят. Для работы нужна своя установка RTS.
+Файлы `docs/RTSFileFormat.dat`, `docs/RTSFileReference.html`, `docs/export.pdf`
+и `docs/ext.pdf` — документация RTS, права на неё принадлежат её авторам.
+Лицензия проекта пока не выбрана.
