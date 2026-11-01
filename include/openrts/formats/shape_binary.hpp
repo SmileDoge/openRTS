@@ -100,6 +100,7 @@ struct ShapeDrawRange {
     std::uint32_t index_count{};
     std::uint32_t primitive_state_index{};
     std::int32_t matrix_index{-1};
+    std::uint8_t level{}; // distance level (index into ShapeModel::level_distances)
 };
 
 struct ShapeModel {
@@ -115,7 +116,10 @@ struct ShapeModel {
     std::vector<ShapeVertexState> vertex_states;
     std::vector<ShapePrimitiveState> primitive_states;
     std::vector<std::filesystem::path> images;
-    std::vector<ShapeDrawRange> draws;
+    std::vector<ShapeDrawRange> draws; // every distance level's primitives
+    // dlevel_selection of each distance level (m), nearest first; empty for
+    // a single-level shape. The hierarchy is the first level's.
+    std::vector<float> level_distances;
     std::vector<ShapeAnimation> animations;
     std::string error;
 

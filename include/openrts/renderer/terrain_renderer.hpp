@@ -81,6 +81,8 @@ public:
     void set_conditions(rts::Season season, rts::Weather weather);
     // Schedules tile and texture jobs and uploads finished ones.
     void update(const formats::RoutePosition& camera);
+    // Moves the scene origin (tile offsets are computed per frame from it).
+    void set_origin(const formats::RoutePosition& origin);
     void render(WGPURenderPassEncoder pass, const glm::mat4& view_projection, const ModelLighting& lighting);
 
     [[nodiscard]] std::size_t loaded_tiles() const noexcept;

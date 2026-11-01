@@ -19,6 +19,7 @@ struct WindowOptions {
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
     bool vsync = true;
     bool batching = true;
+    std::uint32_t msaa = 4; // samples (--msaa 1|4); 4 as RTS's "4x MSAA +Alpha"
     bool sound = true;
     float sound_volume = 0.5f; // master volume, 0..1
     // What is open (root, mode, content), recorded in saved debug views.

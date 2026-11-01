@@ -561,7 +561,7 @@ namespace {
         },
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
         .depthStencil = &depth,
-        .multisample = {.count = 1, .mask = ~0u},
+        .multisample = scene_multisample(),
         .fragment = &fragment,
     };
     return wgpuDeviceCreateRenderPipeline(device, &descriptor);
@@ -593,7 +593,7 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
         .minFilter = WGPUFilterMode_Linear,
         .mipmapFilter = WGPUMipmapFilterMode_Linear,
         .lodMaxClamp = 32.0f,
-        .maxAnisotropy = 1,
+        .maxAnisotropy = max_anisotropy,
     };
     impl_->sampler = wgpuDeviceCreateSampler(device, &sampler);
 
@@ -635,6 +635,10 @@ void TerrainRenderer::set_conditions(const rts::Season season, const rts::Weathe
     impl_->weather = weather;
     // Texture paths depend on the conditions; decoded textures stay cached by path.
     impl_->release_materials();
+}
+
+void TerrainRenderer::set_origin(const formats::RoutePosition& origin) {
+    if (impl_) impl_->origin = origin;
 }
 
 void TerrainRenderer::update(const formats::RoutePosition& camera) {

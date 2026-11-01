@@ -106,7 +106,7 @@ struct ContentTarget {
 // followed by optional `--root <installation>`, `--mount <zip|folder>` (an
 // extra mod-layer source), `--no-hot-reload`, `--consist <name>` and `--path <name>` (a train to drive, on a
 // route path start; C puts it on the track nearest to the camera), (
-// the route start), `--experimental`, `--no-vsync`, `--no-batching`, `--no-sound`, `--volume <0..1>` (default 0.5),
+// the route start), `--experimental`, `--no-vsync`, `--no-batching`, `--msaa 1|4` (default 4), `--no-sound`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
 int run_window(std::string_view mode, std::string_view path, const std::vector<std::string_view>& flags) {
@@ -165,6 +165,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.sound = false;
         } else if (flags[i] == "--volume" && has_value) {
             options.sound_volume = std::clamp(std::stof(std::string(flags[++i])), 0.0f, 1.0f);
+        } else if (flags[i] == "--msaa" && has_value) {
+            options.msaa = std::stoi(std::string(flags[++i])) > 1 ? 4u : 1u;
         } else if (flags[i] == "--no-batching") {
             options.batching = false;
         } else if (flags[i] == "--no-vsync") {

@@ -121,6 +121,23 @@ In `openrts_simulation`, no rendering.
 - The cars are laid back along the track through junctions as they are set.
 - Placing a train again first frees the junctions it held (`vacate()`): the
   junctions under it and those its tail still kept for ClearanceDist.
+- Consist changes (RTS `0x469858` uncouple, `0x424488` meeting,
+  `0x469ED8` coupling, `0x4FB8CC` pushing apart):
+  - `uncouple(index, close_cocks, keep_open)`: the cars from `index` become
+    a new train where they stand; hoses at the cut are disconnected. From
+    the menu RTS closes both end cocks (`0x4FECB0`) and keeps the couplers
+    open; a coupler break uncouples with the cocks open, so both parts vent
+    (10 atm/s at an open end) and brake ("Train damaged");
+  - the brake pipe flows only through connected hoses and open cocks
+    (`pipe_ends`, ts.h flags byte 2);
+  - `resolve_contacts()`: ends meeting within the step couple when both
+    couplers are automatic and not left open, the closing speed reaches the
+    coupling `Velocity` and the impact `overlap / dt · (m1 + m2)` (RTS's
+    measure, which depends on where in the step the ends touch) is at most
+    both cars' `DerailBufferForce`; otherwise momentum is exchanged
+    inelastically and an overlap is pushed apart by the masses;
+  - the viewer keeps cuts as further trains (not driven); the driver stays
+    with the part holding the master engine.
 - Changing ends (`turn_around()`, viewer key X): only while standing. The
   old rear becomes the train front facing the other way, the car order
   reverses and every car's `flipped` toggles (each car stays as it is on the
@@ -503,8 +520,9 @@ makes it audible.
 - **Signals** (roadmap step 3): the train's events and look-ahead are ready
   for them.
 - **AI trains, activities, timetables.**
-- **Consist changes:** coupling and uncoupling on the move, train-to-train
-  collisions.
-- **Derailment:** detection is computed and reported, but there are no
-  visuals or recovery yet.
+- **Derailment:** overturning and sliding as RTS starts them
+  (`reverse/runtime-overview.md`); RTS's solver for derailed trains, ground
+  contact and impacts are not ported.
+- **Coupling hoses:** RTS's hose handling when trains couple is not traced;
+  openRTS connects the hoses and opens the cocks at the joint.
 - **Lights, pantographs, doors, multiple-unit control.**

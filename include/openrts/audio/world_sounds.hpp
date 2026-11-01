@@ -41,6 +41,8 @@ public:
 
     // `listener` in scene coordinates (relative to the origin).
     void update(float dt, const glm::vec3& listener, SoundCamera camera, VoiceSink& sink);
+    // Moves the scene origin; loaded sources move with it.
+    void set_origin(const formats::RoutePosition& origin);
     void stop(VoiceSink& sink);
     [[nodiscard]] WorldSoundStats stats() const;
 

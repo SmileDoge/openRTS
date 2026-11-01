@@ -161,3 +161,31 @@ On the installed content (2026-10):
 - 1828 engines, 1818 of them with a `LibraryModule` DLL.
 - `train-check --run` (120 s full throttle, then emergency) passes for all
   2209 complete consists.
+
+## Body on its springs and rail joints (`0x4F5B34`, parser `0x44247C`)
+
+Wagon fields: `FrameSpringStiffness` (+280, double, default mass·30),
+`FrameSpringDamping` (+288, double, default mass·1.25), `FrameOscCorrection`
+(+296/+300/+304: lateral amplitude, lateral frequency, vertical amplitude;
+default 1, negative → 0) — CONFIRMED.
+
+Per car, three axes (offsets +116/+120/+124, rates +132/+136/+140, hunting
+phase +128), integrated in 0.05 s sub-steps with spring and damper — CONFIRMED:
+- lateral: Q1·m·v²/R from the radius under the bogies (|R| ≥ 1), plus hunting
+  `sin(phase)·v·0.008·mass·Q1`, phase += `v·k·0.3·m·dt·Q2/damping`;
+- vertical: on the first sub-step, `−0.001·n·(|v|/10.5)·m/dt²` near a node
+  end, else `−0.0005·j·(|v|/10.5)·m/dt²` near a rail joint, times Q3; plus a
+  term from the grade change under the bogies (not ported);
+- longitudinal: `−a·m`.
+- Stiffness is FrameSpringStiffness + 45 · car field +144 (UNKNOWN, perhaps the
+  load).
+
+Impacts per bogie: `n = 1 − (distance since the node end entered) / w`,
+`j = 1 − (distance since the last rail joint) / w`, both clamped to 0 below,
+`w = WheelRadius · 1.25 · NumWheels`. Rail joints lie every 50 m along a node,
+or on nodes longer than 2000 m in groups at 0, 12.5, 25, 37.5 m every 600 m.
+Crossing a joint triggers the wagon sound event 3, changing node event 2.
+
+Use: only the driven engine's offsets, times player mass · 0.0055, move the
+cab camera (`0x424488`); the car shapes are drawn without them. openRTS
+applies them to the car bodies too (viewer slider, 1 = this size).

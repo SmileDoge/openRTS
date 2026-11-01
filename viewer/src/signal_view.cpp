@@ -92,7 +92,8 @@ void SignalView::detach() {
     textures_uploaded_ = false;
 }
 
-void SignalView::update(const float elapsed, const simulation::Train* train, const glm::vec3& eye) {
+void SignalView::update(const float elapsed, const simulation::Train* train,
+                        const std::span<const simulation::Train* const> trains, const glm::vec3& eye) {
     eye_ = eye;
     train_ = train && train->placed() ? train : nullptr;
     if (!system_ && loading_.valid() && loading_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -123,11 +124,13 @@ void SignalView::update(const float elapsed, const simulation::Train* train, con
         }
     }
     accumulator_ += (std::min)(elapsed, 0.25f);
-    const simulation::Train* list[] = {train_};
+    std::vector<const simulation::Train*> placed;
+    for (const auto* each : trains) {
+        if (each && each->placed()) placed.push_back(each);
+    }
     while (accumulator_ >= simulation::train_step) {
         accumulator_ -= simulation::train_step;
-        system_->update(train_ ? std::span<const simulation::Train* const>(list) : std::span<const simulation::Train* const>{},
-                        simulation::train_step);
+        system_->update(placed, simulation::train_step);
         for (const auto& pass : system_->take_passes()) {
             ++passes_;
             if (pass.at_danger()) ++passes_at_danger_;
@@ -212,9 +215,12 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
             }
             if (!state) continue;
             // RTS 0x4491E8: the light's Position plus the translation (not
-            // the rotation) of the head sub-object's matrix, in RTS space,
-            // whose Z is the shape's flipped: (x - tx, y + ty, tz - z) here.
-            // Checked on TestRoute_RTS: the lenses face -Z in the shapes.
+            // the rotation) of the head sub-object's matrix. Position is
+            // turned 180 degrees about the vertical against the shape (X and
+            // Z flipped), so in shape space a light is at (tx - x, ty + y,
+            // tz - z). Checked: TestRoute_RTS lenses face -Z (z flip); Kuban
+            // T_Small_YGW_Rx-new has its red lens column at shape x +0.28
+            // for Position x -0.28 (x flip).
             glm::vec3 offset{0.0f};
             if (rig && shape) {
                 for (const auto& sub : shape->sub_objects) {
@@ -247,10 +253,15 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
                 // housing hides it. Lifted 1 cm off the lens to its front.
                 const float z = offset.z - light->position[2];
                 const float lift = z < 0.0f ? -0.01f : 0.01f;
-                const auto world = glm::vec3{frame * glm::vec4{light->position[0] - offset.x, light->position[1] + offset.y,
+                const auto world = glm::vec3{frame * glm::vec4{offset.x - light->position[0], light->position[1] + offset.y,
                                                                z + lift, 1.0f}};
                 const auto axis_x = glm::normalize(glm::vec3{frame[0]});
                 const auto axis_y = glm::normalize(glm::vec3{frame[1]});
+                // RTS keeps GL_CULL_FACE on (enabled in create_game_window,
+                // default back faces): the one-sided quad is not drawn from
+                // behind the lens plane. The lens faces the side of its z.
+                const auto facing = glm::normalize(glm::vec3{frame[2]}) * (z < 0.0f ? -1.0f : 1.0f);
+                if (glm::dot(eye - world, facing) <= 0.0f) continue;
                 const auto packed = static_cast<std::uint32_t>(colour->argb[1]) | (static_cast<std::uint32_t>(colour->argb[2]) << 8)
                     | (static_cast<std::uint32_t>(colour->argb[3]) << 16) | (static_cast<std::uint32_t>(colour->argb[0]) << 24);
                 sprites_.push_back({.position = world,

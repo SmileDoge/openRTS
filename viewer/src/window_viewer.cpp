@@ -99,9 +99,24 @@ public:
             if (mode == WGPUPresentMode_Mailbox && uncapped_mode_ != WGPUPresentMode_Immediate) uncapped_mode_ = mode;
         }
         if (capabilities.formatCount > 0 && capabilities.alphaModeCount > 0) {
+            // A plain (non-sRGB) target: the shaders write display values
+            // as RTS's GL framebuffer took them; an sRGB surface (often the
+            // first offered, e.g. Vulkan on NVIDIA) would encode them again
+            // and brighten everything.
+            WGPUTextureFormat format = capabilities.formats[0];
+            for (const auto wanted : {WGPUTextureFormat_BGRA8Unorm, WGPUTextureFormat_RGBA8Unorm}) {
+                bool offered = false;
+                for (std::size_t i = 0; i < capabilities.formatCount; ++i) offered = offered || capabilities.formats[i] == wanted;
+                if (offered) {
+                    format = wanted;
+                    break;
+                }
+            }
+            std::cout << "surface format: " << static_cast<int>(format) << " (first offered "
+                      << static_cast<int>(capabilities.formats[0]) << ")" << std::endl;
             config_ = {
                 .device = device_,
-                .format = capabilities.formats[0],
+                .format = format,
                 .usage = WGPUTextureUsage_RenderAttachment,
                 .width = initial_width,
                 .height = initial_height,
@@ -130,6 +145,9 @@ public:
     [[nodiscard]] bool ok() const noexcept { return surface_ && configured_; }
     [[nodiscard]] WGPUTextureFormat format() const noexcept { return config_.format; }
     [[nodiscard]] WGPUTextureView depth_view() const noexcept { return depth_view_; }
+    // The multisampled colour target (resolved into the frame), or nullptr
+    // without multisampling.
+    [[nodiscard]] WGPUTextureView msaa_view() const noexcept { return msaa_view_; }
 
     // False when the surface only offers Fifo, so vsync cannot be turned off.
     [[nodiscard]] bool vsync_optional() const noexcept { return uncapped_mode_ != WGPUPresentMode_Fifo; }
@@ -174,23 +192,40 @@ public:
 private:
     void recreate_depth() {
         release_depth();
+        const auto samples = renderer::render_sample_count();
         const WGPUTextureDescriptor descriptor{
             .usage = WGPUTextureUsage_RenderAttachment,
             .dimension = WGPUTextureDimension_2D,
             .size = {.width = config_.width, .height = config_.height, .depthOrArrayLayers = 1},
             .format = renderer::depth_format,
             .mipLevelCount = 1,
-            .sampleCount = 1,
+            .sampleCount = samples,
         };
         depth_ = wgpuDeviceCreateTexture(device_, &descriptor);
         if (depth_) depth_view_ = wgpuTextureCreateView(depth_, nullptr);
+        if (samples > 1) {
+            const WGPUTextureDescriptor colour{
+                .usage = WGPUTextureUsage_RenderAttachment,
+                .dimension = WGPUTextureDimension_2D,
+                .size = {.width = config_.width, .height = config_.height, .depthOrArrayLayers = 1},
+                .format = config_.format,
+                .mipLevelCount = 1,
+                .sampleCount = samples,
+            };
+            msaa_ = wgpuDeviceCreateTexture(device_, &colour);
+            if (msaa_) msaa_view_ = wgpuTextureCreateView(msaa_, nullptr);
+        }
     }
 
     void release_depth() {
         if (depth_view_) wgpuTextureViewRelease(depth_view_);
         if (depth_) wgpuTextureRelease(depth_);
+        if (msaa_view_) wgpuTextureViewRelease(msaa_view_);
+        if (msaa_) wgpuTextureRelease(msaa_);
         depth_view_ = nullptr;
         depth_ = nullptr;
+        msaa_view_ = nullptr;
+        msaa_ = nullptr;
     }
 
     WGPUDevice device_ = nullptr;
@@ -200,6 +235,8 @@ private:
     WGPUPresentMode uncapped_mode_ = WGPUPresentMode_Fifo;
     WGPUTexture depth_ = nullptr;
     WGPUTextureView depth_view_ = nullptr;
+    WGPUTexture msaa_ = nullptr;
+    WGPUTextureView msaa_view_ = nullptr;
 };
 
 // CPU stages of one frame, in loop order.
@@ -327,6 +364,7 @@ public:
         info.NumFramesInFlight = 3;
         info.RenderTargetFormat = target_format;
         info.DepthStencilFormat = renderer::depth_format;
+        info.PipelineMultisampleState.count = renderer::render_sample_count();
         initialized_ = ImGui_ImplWGPU_Init(&info);
     }
 
@@ -738,8 +776,9 @@ void report_adapter(const WGPUAdapter adapter) {
 }
 
 struct FrameTargets {
-    WGPUTextureView color;
+    WGPUTextureView color;   // the frame
     WGPUTextureView depth;
+    WGPUTextureView msaa = nullptr; // multisampled colour, resolved into `color`
 };
 
 [[nodiscard]] WGPURenderPassEncoder begin_main_pass(const WGPUCommandEncoder encoder,
@@ -747,16 +786,17 @@ struct FrameTargets {
                                                     const glm::vec4& clear_colour,
                                                     const WGPURenderPassTimestampWrites* timestamps) {
     const WGPURenderPassColorAttachment color{
-        .view = targets.color,
+        .view = targets.msaa ? targets.msaa : targets.color,
         .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+        .resolveTarget = targets.msaa ? targets.color : nullptr,
         .loadOp = WGPULoadOp_Clear,
-        .storeOp = WGPUStoreOp_Store,
+        .storeOp = targets.msaa ? WGPUStoreOp_Discard : WGPUStoreOp_Store,
         .clearValue = {.r = clear_colour.r, .g = clear_colour.g, .b = clear_colour.b, .a = clear_colour.a},
     };
     const WGPURenderPassDepthStencilAttachment depth{
         .view = targets.depth,
         .depthLoadOp = WGPULoadOp_Clear,
-        .depthStoreOp = WGPUStoreOp_Store,
+        .depthStoreOp = WGPUStoreOp_Discard,
         .depthClearValue = renderer::depth_clear_value,
         .depthReadOnly = false,
         .stencilLoadOp = WGPULoadOp_Undefined,
@@ -807,6 +847,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     CameraInput input{.camera = &camera};
     install_input_callbacks(window.get(), input);
 
+    renderer::render_sample_count() = options.msaa;
+    std::cout << "antialiasing: " << (options.msaa > 1 ? std::to_string(options.msaa) + "x MSAA, alpha-to-coverage" : "off")
+              << ", anisotropy " << renderer::max_anisotropy << "x" << std::endl;
     PresentationSurface surface(context.context, window.get());
     if (!surface.ok()) return exit_code::surface_failed;
 
@@ -908,7 +951,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const auto frame_view = wgpuTextureCreateView(frame_texture, nullptr);
         const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
         const auto pass =
-            begin_main_pass(encoder, {.color = frame_view, .depth = surface.depth_view()}, environment.clear_colour,
+            begin_main_pass(encoder, {.color = frame_view, .depth = surface.depth_view(), .msaa = surface.msaa_view()}, environment.clear_colour,
                             gpu_timer.begin_frame());
 
         const auto aspect = static_cast<float>(width) / static_cast<float>(height);

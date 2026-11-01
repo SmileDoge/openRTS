@@ -269,9 +269,10 @@ Each answer goes into `docs/reverse/signals.md` with its confidence.
   part of the model renderer): one batch per frame, depth-tested.
 - **Heads in shapes:** `SignalSubObj` and `SIGNAL_HEAD` sub-objects decide
   which parts of a shared signal shape are visible (the world mask).
-- **Semaphores:** `SemaphorePos` per draw state → the arm's animation
-  frame, moved at the shape's frame rate (as switch blades). Synthetic test
-  only.
+- **Semaphores:** dropped (the user's decision, 2026-11-01). For the
+  record: `SemaphorePos` per draw state gives the arm's animation frame, and
+  RTS animates the head's matrix when the type has flag +6 bit 1
+  (`0x4491E8`).
 - **Track overlay:** signal markers coloured by the head's aspect. Option:
   the head's script state in a tooltip for debugging.
 

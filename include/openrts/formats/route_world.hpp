@@ -67,6 +67,9 @@ struct WorldObjectPlacement {
     // Signals: SignalSubObj (bit n = sub-object n shown) and the heads.
     std::uint32_t signal_sub_objects{};
     std::vector<WorldSignalUnit> signal_units;
+    // CollideFlags (RTS 0x41B6D0, object +60): non-zero without bit 2 makes
+    // the object an obstacle for derailed cars (RTS 0x58A630).
+    std::uint32_t collide_flags{};
 };
 
 struct WorldTile {

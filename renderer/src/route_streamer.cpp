@@ -91,9 +91,22 @@ struct RouteStreamer::Impl {
                 .world_tile_x = tile.tile_x,
                 .world_tile_z = tile.tile_z,
                 .uid = object.uid,
+                .collide_flags = object.collide_flags,
             });
         }
         return result;
+    }
+
+    // The instance's translation relative to the current origin.
+    void relocate(StreamedInstance& instance) const {
+        constexpr double tile_size = formats::route_tile_size;
+        const auto& p = instance.position;
+        instance.transform[3] = glm::vec4{
+            static_cast<float>((p.tile_x - origin.tile_x) * tile_size + p.x - origin.x),
+            static_cast<float>(p.y - origin.y),
+            static_cast<float>((p.tile_z - origin.tile_z) * tile_size + p.z - origin.z),
+            1.0f,
+        };
     }
 
     void request_model(const core::VirtualPath& shape) {
@@ -109,6 +122,8 @@ struct RouteStreamer::Impl {
             if (!result.error.empty()) continue;
 
             state.instances = result.instances;
+            // The tile may have been read before an origin change.
+            for (auto& instance : state.instances) relocate(instance);
             visible_stale = true;
             for (const auto& instance : state.instances) request_model(instance.source_path);
         }
@@ -167,6 +182,14 @@ RouteStreamer::RouteStreamer(std::shared_ptr<const core::Vfs> vfs,
 RouteStreamer::~RouteStreamer() = default;
 RouteStreamer::RouteStreamer(RouteStreamer&&) noexcept = default;
 RouteStreamer& RouteStreamer::operator=(RouteStreamer&&) noexcept = default;
+
+void RouteStreamer::set_origin(const formats::RoutePosition& origin) {
+    impl_->origin = origin;
+    for (auto& [_, state] : impl_->tiles) {
+        for (auto& instance : state.instances) impl_->relocate(instance);
+    }
+    impl_->visible_stale = true;
+}
 
 void RouteStreamer::update(const formats::RoutePosition& camera) {
     for (auto& [_, state] : impl_->tiles) state.desired = false;

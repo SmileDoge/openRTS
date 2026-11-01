@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <tuple>
+#include <array>
 #include <vector>
 
 #include <openrts/formats/rolling_stock.hpp>
@@ -28,6 +31,7 @@ bool near(const double a, const double b, const double tolerance) { return std::
 const std::string common = R"(
     Size ( 3m 4m 20m )
     WheelRadius ( 0.6m )
+    NumWheels ( 4 )
     Coupling ( Type ( Automatic ) Spring ( Stiffness ( 1e6 1e6 ) Damping ( 1e6 1e6 ) Break ( 1e7 1e7 ) r0 ( 0.1m 0.1m ) ) )
     Friction ( 1000 1 0 0 1 )
     Adheasion ( 0.2 0.3 2 0 )
@@ -39,6 +43,7 @@ const std::string common = R"(
     MaxApplicationRate ( 30 )
     MaxAuxilaryChargingRate ( 2 )
     BrakeCylinderPressureForMaxBrakeBrakeForce ( 55 )
+    DerailBufferForce ( 732kN )
 )";
 
 const std::string engine_text = "Wagon ( loco\n Type ( Engine )\n Mass ( 100t )\n" + common + R"()
@@ -204,6 +209,118 @@ void test_buffer_stop(const Stock& stock) {
 
 // Changing ends: the old rear becomes the front, facing the other way, the
 // cars keep their places, and driving ahead moves towards the old rear.
+// The body on its springs: driving over a straight track, the rail joints
+// knock it up and down, hunting sways it sideways, acceleration nods it;
+// all stays within centimetres, as in RTS.
+// 1000 m of straight track along +z, then a 60 m radius 90 degree curve.
+std::unique_ptr<simulation::TrackNetwork> curved_test_track() {
+    const std::string sections = "SIMISA@@@@@@@@@@JINX0T0t______\nTrackSections ( 2\n"
+                                 "    TrackSection ( 1 SectionSize ( 1.5 500 ) )\n"
+                                 "    TrackSection ( 2 SectionSize ( 1.5 0 ) SectionCurve ( 60 90 ) )\n)\nTrackShapes ( 0 )\n";
+    const std::string database = "SIMISA@@@@@@@@@@JINX0T0t______\nTrackDB ( Serial ( 1 ) TrackNodes ( 3\n"
+                                 "TrackNode ( 1 TrVectorNode ( TrVectorSections ( 3 "
+                                 "1 0 0 0 0 1 1 00 0 0 0 0 0 0 0 0 "
+                                 "1 0 0 0 0 1 1 00 0 0 0 0 500 0 0 0 "
+                                 "2 0 0 0 0 1 1 00 0 0 0 0 1000 0 0 0 "
+                                 ") ) TrPins ( 1 1 TrPin ( 2 1 ) TrPin ( 3 1 ) ) )\n"
+                                 "TrackNode ( 2 TrEndNode ( 0 ) UiD ( 0 0 0 0 0 0 0 0 0 0 0 0 ) TrPins ( 1 0 TrPin ( 1 1 ) ) )\n"
+                                 "TrackNode ( 3 TrEndNode ( 0 ) UiD ( 0 0 0 0 0 0 0 0 0 0 0 0 ) TrPins ( 1 0 TrPin ( 1 0 ) ) )\n"
+                                 ") TrItemTable ( 0\n) )\n";
+    auto library = formats::parse_track_sections(sections);
+    auto db = formats::parse_track_database(database);
+    if (!library.ok() || !db.ok()) return nullptr;
+    return std::make_unique<simulation::TrackNetwork>(std::move(db), std::move(library));
+}
+
+// Too fast into a tight curve: a car overturns outwards (RTS 0x580B30), its
+// roll grows to 0.1 + 0.04 |v|, and past 0.8 rad it lies down with its hoses
+// torn off, so the train loses its air.
+void test_overturn(const Stock& stock) {
+    auto network = curved_test_track();
+    check(network != nullptr, "curved test track builds");
+    if (!network) return;
+    simulation::Train train(stock.cars(3));
+    std::string error;
+    check(train.place(*network, 1, 960.0, true, &error), "placed before the curve: " + error);
+    train.add_velocity(25.0f);
+    bool derailed = false;
+    float most = 0.0f;
+    bool fallen = false;
+    for (int i = 0; i < static_cast<int>(8.0 / simulation::train_step); ++i) {
+        train.step();
+        for (const auto& event : train.take_events()) derailed = derailed || event.kind == simulation::TrainEventKind::derailment;
+        for (const auto& car : train.cars()) {
+            most = (std::max)(most, std::abs(car.tilt));
+            fallen = fallen || car.fallen;
+        }
+    }
+    std::cerr << "  overturn: most roll " << most << " rad, speed " << train.speed() << '\n';
+    check(derailed, "overspeed in a tight curve derails");
+    check(most > 0.8f && fallen, "the car rolls past 0.8 rad and lies down");
+    bool torn = false;
+    for (const auto& car : train.cars()) torn = torn || (car.fallen && (car.pipe_ends & simulation::pipe_hose_front) != 0);
+    check(torn, "a fallen car's hoses are torn off");
+}
+
+// Off the end of the track the leading car derails and slides on along
+// its heading until its friction stops it (RTS 0x5059A8, sliding branch).
+void test_slide_off(const Stock& stock) {
+    Run r(stock, {}, 2950.0);
+    r.driver->reverser = 1;
+    r.driver->throttle = r.driver->notches;
+    bool derailed = false;
+    for (int i = 0; i < static_cast<int>(40.0 / simulation::train_step) && !derailed; ++i) {
+        r.train.step();
+        for (const auto& event : r.train.take_events()) derailed = derailed || event.kind == simulation::TrainEventKind::derailment;
+    }
+    check(derailed, "running off the end of the track derails");
+    const auto& lead = r.train.cars().front();
+    check(lead.derail == simulation::DerailKind::sliding, "the leading car slides off");
+    r.driver->throttle = 0;
+    for (int i = 0; i < static_cast<int>(10.0 / simulation::train_step); ++i) r.train.step();
+    check(r.train.cars().front().slide > 0.2f && r.train.cars().front().slide_speed == 0.0f,
+          "the slid car comes to rest a little way on");
+    check(r.train.cars().front().slide_origin_set, "the place it left the track is kept");
+    std::size_t folded = 0;
+    for (const auto& car : r.train.cars()) folded += car.derail == simulation::DerailKind::sliding && car.yaw != 0.0f;
+    std::cerr << "  slide off: lead slid " << r.train.cars().front().slide << " m, " << folded << " cars folded\n";
+    check(folded > 0, "the cars behind run into it and fold");
+}
+
+// A hit on a car on the rails: below DerailBufferForce the body takes the
+// shove, above it the car comes off (RTS 0x589A14).
+void test_hit(const Stock& stock) {
+    Run r(stock, {}, 1500.0);
+    const float along[3] = {0.0f, 0.0f, 1.0f};
+    r.train.hit(2, 100000.0f, along, 0.1f);
+    check(r.train.cars()[2].derail == simulation::DerailKind::none && r.train.cars()[2].body[2] > 0.0f,
+          "a light hit shoves the body");
+    r.train.hit(2, 2000000.0f, along, 0.1f);
+    check(r.train.cars()[2].derail == simulation::DerailKind::sliding, "a hard hit derails the car");
+}
+
+void test_sway(const Stock& stock) {
+    Run r(stock, {}, 1500.0);
+    r.driver->reverser = 1;
+    r.driver->throttle = r.driver->notches;
+    float lateral = 0.0f, vertical = 0.0f, longitudinal = 0.0f;
+    std::size_t joints = 0;
+    for (int i = 0; i < static_cast<int>(60.0 / simulation::train_step); ++i) {
+        r.train.step();
+        for (const auto& event : r.train.take_events()) joints += event.kind == simulation::TrainEventKind::joint;
+        const auto& car = r.train.cars()[3];
+        lateral = (std::max)(lateral, std::abs(car.body[0]));
+        vertical = (std::max)(vertical, std::abs(car.body[1]));
+        longitudinal = (std::max)(longitudinal, std::abs(car.body[2]));
+    }
+    std::cerr << "  sway: lateral " << lateral << " vertical " << vertical << " longitudinal " << longitudinal
+              << " m, " << joints << " joint events, speed " << r.train.speed() << '\n';
+    check(joints > 10, "rail joints every 50 m give joint events");
+    check(vertical > 0.001f && vertical < 0.2f, "rail joints knock the body within centimetres");
+    check(lateral > 0.0f && lateral < 0.2f, "hunting sways the body sideways");
+    check(longitudinal > 0.0f && longitudinal < 0.2f, "acceleration nods the body");
+}
+
 void test_turn_around(const Stock& stock) {
     Run r(stock, {}, 1500.0);
     const auto old_front = *r.train.front_end();
@@ -224,6 +341,101 @@ void test_turn_around(const Stock& stock) {
     const auto moved = *r.train.front_end();
     check(moved.offset() < front.offset() - 1.0, "driving ahead after changing ends moves towards the old rear");
     check(!r.train.turn_around(), "a moving train does not change ends");
+}
+
+// Uncoupling: closed cocks keep both parts charged; open cocks (a coupler
+// break) vent the pipe and both parts brake. The cut stands where it was.
+void test_uncouple(const Stock& stock) {
+    {
+        Run r(stock, {}, 1500.0);
+        const auto old_rear = *r.train.rear_end();
+        const auto cars = r.train.cars().size();
+        auto cut = r.train.uncouple(4, true, true);
+        check(cut != nullptr && cut->cars().size() == cars - 4 && r.train.cars().size() == 4, "uncoupling splits the cars");
+        check(cut && cut->rear_end()->node() == old_rear.node() && near(cut->rear_end()->offset(), old_rear.offset(), 0.01),
+              "the cut keeps the old rear end");
+        if (cut) {
+            auto walker = *cut->front_end();
+            const auto gap_to_front = *r.train.rear_end();
+            check(near(walker.offset(), gap_to_front.offset(), 1.0), "the cut's front is at the train's new rear");
+        }
+        for (int i = 0; i < 100; ++i) {
+            r.train.step();
+            if (cut) cut->step();
+        }
+        check(r.train.cars().back().pipe > 4.5f && cut && cut->cars().front().pipe > 4.5f,
+              "closed end cocks keep both parts charged");
+    }
+    {
+        Run r(stock, {}, 1500.0);
+        auto cut = r.train.uncouple(4, false, false);
+        for (int i = 0; i < 100; ++i) {
+            r.train.step();
+            if (cut) cut->step();
+        }
+        // At the cut both open ends empty fast; farther cars follow slower.
+        check(r.train.cars().back().pipe < 1.0f && cut && cut->cars().front().pipe < 1.0f, "open pipe ends vent both parts");
+        check(cut && cut->cars().front().cylinder > 2.0f && cut->cars().back().pipe < 3.0f, "the vented cut brakes");
+    }
+}
+
+// Two trains meeting: gently they couple, hard they collide, and couplers
+// left open after uncoupling only push.
+void test_contacts(const Stock& stock) {
+    // The trains start `gap` metres apart and the contacts are resolved
+    // before each step, so the impact (RTS: the overlap the step would
+    // make) is known: closing speed * dt - gap.
+    const auto meet = [&](const float speed, const double gap, const bool keep_open) {
+        auto network = simulation::straight_test_track(3000.0);
+        simulation::Train ahead(stock.cars(3));
+        simulation::Train behind(stock.cars(3));
+        std::string error;
+        check(ahead.place(*network, 1, 1500.0, true, &error), "ahead placed: " + error);
+        // 5 m behind the first train's rear end.
+        const double rear = ahead.rear_end()->offset();
+        check(behind.place(*network, 1, rear - gap, true, &error), "behind placed: " + error);
+        if (keep_open) {
+            auto cut = behind.uncouple(3, true, true); // open coupler only at the cut, not at the front
+            (void)cut;
+        }
+        behind.add_velocity(speed);
+        std::vector<simulation::ContactResult> results;
+        std::array<simulation::Train*, 2> trains{&ahead, &behind};
+        for (int i = 0; i < 200 && results.empty(); ++i) {
+            results = simulation::resolve_contacts(trains);
+            ahead.step();
+            behind.step();
+        }
+        return std::tuple{results, ahead.cars().size(), behind.cars().size(), ahead.speed(), behind.speed()};
+    };
+    {
+        const auto [results, ahead_cars, behind_cars, ahead_speed, behind_speed] = meet(1.0f, 5.0, false);
+        check(!results.empty() && results.front().outcome == simulation::ContactOutcome::coupled, "a gentle meeting couples");
+        check(ahead_cars == 8 && behind_cars == 0, "the coupled train has every car");
+    }
+    {
+        const auto [results, ahead_cars, behind_cars, ahead_speed, behind_speed] = meet(8.0f, 0.05, false);
+        check(!results.empty() && results.front().outcome == simulation::ContactOutcome::collision, "a hard meeting collides");
+        check(ahead_cars == 4 && behind_cars == 4 && ahead_speed > 1.0 && near(ahead_speed, behind_speed, 0.5),
+              "a collision passes the momentum on");
+    }
+    {
+        // The front train's rear coupler was left open by an uncoupling: a
+        // gentle meeting only pushes.
+        auto network = simulation::straight_test_track(3000.0);
+        simulation::Train ahead(stock.cars(4));
+        check(ahead.place(*network, 1, 1500.0, true), "ahead placed");
+        auto cut = ahead.uncouple(4, true, true);
+        cut.reset();
+        simulation::Train behind(stock.cars(3));
+        check(behind.place(*network, 1, ahead.rear_end()->offset() - 0.02, true), "behind placed");
+        behind.add_velocity(1.0f);
+        std::array<simulation::Train*, 2> trains{&ahead, &behind};
+        const auto results = simulation::resolve_contacts(trains);
+        check(!results.empty() && results.front().outcome == simulation::ContactOutcome::buffers,
+              "an open coupler does not couple");
+        check(ahead.cars().size() == 4 && behind.cars().size() == 4 && ahead.speed() > 0.3, "the trains push each other");
+    }
 }
 
 } // namespace
@@ -265,6 +477,12 @@ int main() {
     test_brakes(stock);
     test_buffer_stop(stock);
     test_turn_around(stock);
+    test_sway(stock);
+    test_slide_off(stock);
+    test_overturn(stock);
+    test_hit(stock);
+    test_uncouple(stock);
+    test_contacts(stock);
     test_ept();
     if (failures == 0) std::cout << "train tests passed\n";
     return failures == 0 ? 0 : 1;

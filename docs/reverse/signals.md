@@ -499,8 +499,10 @@ state (flashing included). The lights are drawn by the light system, not as
 part of the shape. RTS space has Z flipped against the MSTS shape space:
 TestRoute_RTS's mast signals have their lenses towards −Z in the shape, while
 `Position` puts the lights at +Z (0.65 m). openRTS therefore places a light at
-(x − tx, y + ty, tz − z) in shape space — PROBABLE (the X sign is unverified;
-the light X is 0 in the installed content).
+(tx − x, y + ty, tz − z) in shape space: Position is turned 180° about the
+vertical against the shape. The X sign is checked on Kuban's
+T_Small_YGW_Rx-new (red lens column at shape x +0.28 for Position x −0.28),
+the Z sign on TestRoute's mast heads — CONFIRMED by geometry.
 
 ### Drawing a light (`0x408574` light loop, `0x449818` quad)
 
@@ -527,3 +529,12 @@ matrix of the same name. Nothing else is hidden: heads stay drawn whatever the
 mask or OPTIONAL say (many shapes name every head "SIGNAL", the matrix that
 holds the whole mast). A SIGNAL_HEAD whose type has flag +6 bit 1 sets matrix
 flag 2 and gets an animation (semaphore arms) - CONFIRMED.
+
+### Lights seen from behind
+
+RTS enables `GL_CULL_FACE` once (`create_game_window`, `0x40564D`) with the
+default back-face culling and only disables it briefly elsewhere; the light
+loop does not. The one-sided light quad is therefore invisible from behind
+the lens plane — CONFIRMED. openRTS skips a light whose lens faces away from
+the camera, which also hides the far-grown quad around a head seen from
+behind.

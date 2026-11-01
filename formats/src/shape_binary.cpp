@@ -362,6 +362,7 @@ struct RawSubobject {
 struct RawLodLevel {
     std::vector<RawSubobject> subobjects;
     std::vector<std::int32_t> hierarchy;
+    float selection{}; // dlevel_selection, m
 };
 
 [[nodiscard]] std::optional<std::vector<std::int32_t>> read_hierarchy(
@@ -438,6 +439,75 @@ struct RawLodLevel {
         }
     }
     return result.vertices.empty() ? std::nullopt : std::optional(std::move(result));
+}
+
+constexpr std::uint32_t token_dlevel_selection = 35;
+
+// Every distance level of the first lod_control (MSTS shapes have one).
+[[nodiscard]] std::optional<std::vector<RawLodLevel>> read_lod_levels(std::string_view body, const Block& lod_controls) {
+    std::size_t controls_offset = lod_controls.payload;
+    const auto controls_count = read_u32(body, controls_offset, lod_controls.end);
+    if (!controls_count || *controls_count == 0) return std::nullopt;
+    const auto control = read_block(body, controls_offset, lod_controls.end);
+    if (!control || control->token != token_lod_control) return std::nullopt;
+    std::size_t control_offset = control->payload;
+    while (control_offset < control->end) {
+        const auto child = read_block(body, control_offset, control->end);
+        if (!child) return std::nullopt;
+        control_offset = child->end;
+        if (child->token != token_distance_levels) continue;
+        std::size_t levels_offset = child->payload;
+        const auto count = read_u32(body, levels_offset, child->end);
+        if (!count || *count == 0) return std::nullopt;
+        std::vector<RawLodLevel> levels;
+        for (std::uint32_t index = 0; index < *count; ++index) {
+            const auto level = read_block(body, levels_offset, child->end);
+            if (!level || level->token != token_distance_level) return std::nullopt;
+            levels_offset = level->end;
+            RawLodLevel result;
+            std::size_t level_offset = level->payload;
+            while (level_offset < level->end) {
+                const auto level_child = read_block(body, level_offset, level->end);
+                if (!level_child) return std::nullopt;
+                level_offset = level_child->end;
+                if (level_child->token == token_distance_level_header) {
+                    std::size_t header_offset = level_child->payload;
+                    while (header_offset < level_child->end) {
+                        const auto header_child = read_block(body, header_offset, level_child->end);
+                        if (!header_child) return std::nullopt;
+                        header_offset = header_child->end;
+                        if (header_child->token == token_hierarchy) {
+                            const auto hierarchy = read_hierarchy(body, *header_child);
+                            if (!hierarchy) return std::nullopt;
+                            result.hierarchy = *hierarchy;
+                        } else if (header_child->token == token_dlevel_selection) {
+                            std::size_t at = header_child->payload;
+                            result.selection = read_f32(body, at, header_child->end).value_or(0.0f);
+                        }
+                    }
+                    continue;
+                }
+                if (level_child->token != token_sub_objects) continue;
+                std::size_t object_offset = level_child->payload;
+                const auto object_count = read_u32(body, object_offset, level_child->end);
+                if (!object_count) return std::nullopt;
+                result.subobjects.reserve(*object_count);
+                for (std::uint32_t object = 0; object < *object_count; ++object) {
+                    const auto subobject = read_block(body, object_offset, level_child->end);
+                    if (!subobject || subobject->token != token_sub_object) return std::nullopt;
+                    object_offset = subobject->end;
+                    const auto parsed = read_subobject_all(body, *subobject);
+                    if (!parsed) return std::nullopt;
+                    result.subobjects.push_back(*parsed);
+                }
+                if (object_offset != level_child->end) return std::nullopt;
+            }
+            levels.push_back(std::move(result));
+        }
+        if (levels.front().subobjects.empty()) return std::nullopt;
+        return levels;
+    }
+    return std::nullopt;
 }
 
 [[nodiscard]] std::optional<RawLodLevel> read_first_lod_subobjects(
@@ -841,7 +911,7 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
     std::optional<std::vector<std::string>> filter_names;
     std::optional<std::vector<ShapeVertexState>> vertex_states;
     std::optional<std::vector<ShapePrimitiveState>> primitive_states;
-    std::optional<RawLodLevel> level;
+    std::optional<std::vector<RawLodLevel>> levels;
     std::optional<Block> animations_block;
 
     offset = root->payload;
@@ -858,7 +928,7 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
         else if (child->token == token_shader_names) shader_names = read_shader_names(body, *child);
         else if (child->token == token_vtx_states) vertex_states = read_vtx_states(body, *child);
         else if (child->token == token_prim_states) primitive_states = read_prim_states(body, *child);
-        else if (child->token == token_lod_controls) level = read_first_lod_subobjects(body, *child);
+        else if (child->token == token_lod_controls) levels = read_lod_levels(body, *child);
         else if (child->token == token_animations) animations_block = *child;
         if ((child->token == token_points && !points) || (child->token == token_uv_points && !uv_points)
             || (child->token == token_matrices && !matrices) || (child->token == token_textures && !textures)
@@ -866,11 +936,11 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
             || (child->token == token_normals && !normals)
             || (child->token == token_texture_filter_names && !filter_names)
             || (child->token == token_vtx_states && !vertex_states) || (child->token == token_prim_states && !primitive_states)
-            || (child->token == token_lod_controls && !level)) {
+            || (child->token == token_lod_controls && !levels)) {
             return {.error = "Shape table " + std::to_string(child->token) + " uses an unsupported binary layout."};
         }
     }
-    if (!points || !uv_points || !level) {
+    if (!points || !uv_points || !levels) {
         return {.error = "Binary shape lacks points, UVs, or subobjects in its first distance level."};
     }
 
@@ -883,7 +953,7 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
         identity.values[0] = identity.values[4] = identity.values[8] = 1.0f;
         model.matrices.push_back(identity);
     }
-    model.hierarchy = level->hierarchy;
+    model.hierarchy = levels->front().hierarchy;
     if (model.hierarchy.empty()) model.hierarchy.assign(model.matrices.size(), -1);
     if (model.hierarchy.size() != model.matrices.size()) {
         return {.error = "Distance-level hierarchy count does not match the matrix table."};
@@ -904,7 +974,11 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
     if (primitive_states) model.primitive_states = *primitive_states;
     if (model.primitive_states.empty()) model.primitive_states.push_back({});
 
-    for (const auto& subobject : level->subobjects) {
+    if (levels->size() > 1) {
+        for (const auto& each : *levels) model.level_distances.push_back(each.selection);
+    }
+    for (std::size_t level_index = 0; level_index < levels->size() && level_index < 255; ++level_index) {
+    for (const auto& subobject : (*levels)[level_index].subobjects) {
         const auto base_vertex = static_cast<std::uint32_t>(model.vertices.size());
         for (const auto& reference : subobject.vertices) {
             const bool has_uv = reference.uv_index != no_uv;
@@ -946,8 +1020,10 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
             model.draws.push_back({.first_index = first_index,
                                    .index_count = static_cast<std::uint32_t>(list.indices.size()),
                                    .primitive_state_index = list.primitive_state,
-                                   .matrix_index = matrix_index});
+                                   .matrix_index = matrix_index,
+                                   .level = static_cast<std::uint8_t>(level_index)});
         }
+    }
     }
     if (!model.ok()) model.error = "First shape distance level has no indexed triangle lists.";
     return model;

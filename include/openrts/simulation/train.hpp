@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <optional>
 #include <string>
 #include <vector>
@@ -124,14 +125,37 @@ enum class TrainEventKind : std::uint8_t {
     joint,        // a bogie passed a section boundary
     junction,     // a bogie passed a junction
     end_of_track, // the train ran onto an end node and stopped
-    coupler_break,
+    coupler_break, // the coupler behind `car` broke (the owner uncouples there)
     derailment,
 };
+
+// Brake pipe ends of a car (ts.h Wagon flags byte 2).
+inline constexpr std::uint8_t pipe_hose_front = 0x01; // hose disconnected
+inline constexpr std::uint8_t pipe_hose_rear = 0x02;
+inline constexpr std::uint8_t pipe_cock_front = 0x40; // end cock closed
+inline constexpr std::uint8_t pipe_cock_rear = 0x80;
+// Coupler ends kept open after uncoupling, so the cars do not couple again
+// on contact (RTS car +14 bits).
+inline constexpr std::uint8_t coupler_open_front = 0x01;
+inline constexpr std::uint8_t coupler_open_rear = 0x02;
 
 struct TrainEvent {
     TrainEventKind kind{};
     std::uint32_t car{};
     std::uint8_t bogie{}; // 0 front, 1 rear
+};
+
+// Front and rear bogie (or car end) positions of a car on the track.
+struct CarPlacement {
+    TrackPoint front;
+    TrackPoint rear;
+};
+
+// How a car has come off the rails (RTS 0x5059A8 / 0x580B30).
+enum class DerailKind : std::uint8_t {
+    none,
+    tipping, // overturning sideways where it stands (curve overspeed, a tipped neighbour)
+    sliding, // off the end of the track, sliding on along its heading
 };
 
 // State of one car (the ts.h Wagon fields RTS simulates on).
@@ -160,14 +184,33 @@ struct CarState {
     float bogie_behind{};
     bool wheelslip = false;
     bool derailed = false;
+    // Brake pipe ends (pipe_hose_*, pipe_cock_*). A train's end cars start
+    // with the outer hose disconnected and its end cock closed.
+    std::uint8_t pipe_ends{};
+    std::uint8_t coupler_open{}; // coupler_open_*
+    // The body swaying on its springs (RTS 0x4F5B34): offset from its rest
+    // pose (m) along the curve's turning side (lateral), up (vertical) and
+    // towards the train front (longitudinal), and the rates.
+    float body[3]{};
+    float body_rate[3]{};
+    float hunting_phase{}; // rad, the lateral hunting oscillation
+    float curvature{};     // 1/m, positive: turning towards the lateral axis
+    // Derailment (RTS 0x580B30, 0x581BC4, 0x581694).
+    DerailKind derail = DerailKind::none;
+    float tilt{};          // rad, roll towards the lateral axis (tipping)
+    float tilt_target{};   // rad, the roll it settles at
+    float tilt_rate{};     // rad/s
+    float tilt_friction{}; // N at the full target roll
+    bool fallen = false;   // rolled past 0.8 rad: hoses torn off
+    float slide{};         // m slid off the track (sliding), signed towards the train front
+    float slide_speed{};   // m/s, signed towards the train front
+    bool slide_origin_set = false;
+    CarPlacement slide_from{}; // bogie points where it left the track
+    float yaw{};           // rad, a slid car folding about its end towards the slide
+    float yaw_target{};    // rad, the fold it settles at
     double travelled{}; // m, along the train front direction, for wheel animation
 };
 
-// Front and rear bogie (or car end) positions of a car on the track.
-struct CarPlacement {
-    TrackPoint front;
-    TrackPoint rear;
-};
 
 class Train {
 public:
@@ -190,6 +233,40 @@ public:
     // one's `flipped` toggles; controllers move with their cars. Fails while
     // moving faster than 0.1 m/s.
     bool turn_around();
+    // Uncouples behind car `index - 1` (RTS 0x469858): cars index.. become a
+    // new train standing where they are; this train keeps the cars ahead.
+    // The hoses at the cut are disconnected; `close_cocks` closes both end
+    // cocks first (RTS's uncoupling from the menu), otherwise the open pipe
+    // ends vent and both parts brake (a coupler break). `keep_open` leaves
+    // the couplers open so the parts do not couple again on contact.
+    // Controllers move with their cars. nullptr for an index out of range.
+    [[nodiscard]] std::unique_ptr<Train> uncouple(std::size_t index, bool close_cocks, bool keep_open);
+    // Couples `other` onto this train's front (`at_front`) or rear. `other`
+    // touches with its front (`other_front`) or rear and is turned as needed
+    // so the cars keep their places; `gap` is the distance between the two
+    // ends. The hoses at the joint are connected and the cocks opened.
+    // `other` is left empty and off the track. Returns false if either train
+    // is not placed.
+    bool couple(Train& other, bool at_front, bool other_front, double gap);
+    // A car has derailed (it tips over or slides off; placing the train
+    // again puts everything back on the rails).
+    [[nodiscard]] bool derailed() const noexcept;
+    // Moves the whole train along the track by `metres` towards its front.
+    void shift(double metres);
+    // Adds `change` (m/s, towards the train front) to every car's velocity.
+    void add_velocity(float change);
+    // Total mass, kg.
+    [[nodiscard]] double mass() const noexcept;
+    // A hit on car `index` (RTS 0x589A14): `force` N along `direction`
+    // (car axes: x towards the side the car turns to, y up, z towards the
+    // train front), over `time` s. On the rails, above its DerailBufferForce
+    // the car comes off and slides; below, the body on its springs takes the
+    // shove (offset += direction * force / m * time). A derailed car hit from
+    // the side starts to roll: target (F / m * t * 0.04 + 0.1), rate
+    // |F / m * t / width|.
+    void hit(std::size_t index, float force, const float (&direction)[3], float time);
+    // A sliding car ran into an obstacle and stops sliding.
+    void stop_slide(std::size_t index);
     [[nodiscard]] bool placed() const noexcept { return network_ != nullptr; }
 
     // Controllers drive engines; cars without one get no demands.
@@ -220,6 +297,11 @@ public:
     [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
 
 private:
+    void reverse_cars();
+    void sway();
+    void start_tipping(std::size_t index, const CarState* neighbour);
+    void derailment();
+    void occupy_under();
     void advance_clearance(const MoveResult& leading, const MoveResult& trailing);
     void move_and_update(double front_moved, double rear_moved);
 
@@ -230,6 +312,28 @@ private:
     TrackNetwork* network_ = nullptr;
     std::uint64_t id_;
 };
+
+// What happened where two trains meet (RTS train update 0x424488).
+enum class ContactOutcome : std::uint8_t {
+    coupled,   // automatic couplers met gently: `absorbed` joined `survivor`
+    buffers,   // the couplers could not couple: the trains pushed each other
+    collision, // the impact exceeded DerailBufferForce
+};
+
+struct ContactResult {
+    ContactOutcome outcome{};
+    Train* survivor = nullptr;
+    Train* absorbed = nullptr;   // coupled: now empty, to be removed
+    bool absorbed_ahead = false; // coupled: its cars went in front
+    bool absorbed_turned = false; // coupled: its car order was reversed
+    double force{};              // N, the impact measure RTS compares
+};
+
+// Finds trains whose ends will meet within the next step and resolves each
+// meeting once: couples them when both couplers are automatic and not left
+// open and the impact is at most both cars' DerailBufferForce (the earlier
+// train in `trains` survives), otherwise exchanges momentum inelastically.
+std::vector<ContactResult> resolve_contacts(std::span<Train* const> trains);
 
 // A straight test track of `length` metres (synthetic network), for checks.
 [[nodiscard]] std::unique_ptr<TrackNetwork> straight_test_track(double length);

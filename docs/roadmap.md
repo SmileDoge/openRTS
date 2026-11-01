@@ -1,6 +1,6 @@
 # openRTS roadmap: train movement, signals, routes, multiplayer
 
-Snapshot as of 2026-10-31. "Exists" means it is in the code and tested or seen
+Snapshot as of 2026-11-01. "Exists" means it is in the code and tested or seen
 on screen. Reverse notes live in `docs/reverse/`.
 
 ## What exists
@@ -21,10 +21,27 @@ on screen. Reverse notes live in `docs/reverse/`.
 
 Steps 1 and 2 are done: a consist from the content can be driven over a
 route with the keyboard. Not done from them: Dyntrack rendering, consist
-changes (coupling, uncoupling, coupler breaks and derailment have no
-consequences yet). Step 3 (signals) is done as `docs/signals.md` describes:
+changes are done since (see the leftovers below). Step 3 (signals) is done as `docs/signals.md` describes:
 scripts compiled exactly as RTS does, evaluated on the train step, lit on
-screen. Next: step 4, paths and interlocking.
+screen. Next: step 4, paths and interlocking, starting with the train's
+path and junction reservation (how RTS reserves and sets junctions along a
+`.pat`: the junction record keeps a list of reserving trains, released by
+`0x48C85C`; who fills it is still to be traced).
+
+Leftovers from earlier steps (2026-11-01):
+- done: consist changes — uncoupling (menu: end cocks closed; coupler break:
+  open, both parts brake), coupling when trains meet gently, buffer pushes
+  and collisions as RTS decides (`train.md`); body sway on springs, rail
+  joints; derailment as RTS starts it: overturning, sliding off, hoses torn,
+  neighbours pulled, hits, folding, ground and obstacle contact
+  (`reverse/runtime-overview.md`; RTS's solver for derailed trains is
+  replaced by a simpler folding rule);
+- `z_bias`: RTS parses it and never uses it in drawing
+  (`reverse/shape-rendering.md`), so the RTS path is right as it is;
+- Dyntrack: deferred, no installed route has any to check against;
+- shunting signal modes: the signal system handles SHUNT/FAILED/EXCL; what
+  sets a train's modes (activities' `SetSignalMode`, the dispatcher) belongs
+  to step 4.
 
 ## What is needed
 
@@ -75,7 +92,8 @@ Result: drive a train with the keyboard over a route.
   `route_set`, `next_sig_*`, `this_sig_*`, `sig_feature`.
 - Block occupancy from train travellers.
 - Per-train evaluation pass (far to near, `NumClearAhead + 2` NORMAL signals).
-- Rendering: signal lights (`LightTex`, colours, flashing), semaphore arms.
+- Rendering: signal lights (`LightTex`, colours, flashing). Semaphore arms
+  are dropped (the user's decision, 2026-11-01: not needed).
 - The train reads the aspect and speed limit ahead. Passing a red signal is
   detected.
 
@@ -131,6 +149,16 @@ Deferred until single-player driving and multiplayer work.
 - `.act`/`.srv`/`.trf`: services, timetables, player train placement.
 - Full AI: timetabled services, platform stops, activity events and outcomes
   (large RTS extension list in `RTSFileReference.html`).
+
+### 8. PBR materials and models (last)
+
+An add-on after everything else (the user's decision, 2026-11-01). Plan as
+discussed: first PBR maps next to MSTS textures by naming convention
+(normal, AO/roughness/metallic; tangents computed at load) with GGX shading
+in the experimental path, sky reflections and sun shadows; then optional
+glTF replacements of whole `.s` shapes with the same node names. The RTS
+path always draws the MSTS version; the choice is visual only and never
+affects simulation or multiplayer.
 
 ## Multiplayer: feasibility
 

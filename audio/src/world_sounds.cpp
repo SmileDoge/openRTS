@@ -90,6 +90,18 @@ void WorldSounds::load_tile(const TileKey& key) {
     }
 }
 
+void WorldSounds::set_origin(const formats::RoutePosition& origin) {
+    const glm::vec3 shift{
+        static_cast<float>((origin.tile_x - origin_.tile_x) * formats::route_tile_size + origin.x - origin_.x),
+        static_cast<float>(origin.y - origin_.y),
+        static_cast<float>((origin.tile_z - origin_.tile_z) * formats::route_tile_size + origin.z - origin_.z),
+    };
+    origin_ = origin;
+    for (auto& [_, sources] : tiles_) {
+        for (auto& source : sources) source.position -= shift;
+    }
+}
+
 void WorldSounds::update(const float dt, const glm::vec3& listener, const SoundCamera camera, VoiceSink& sink) {
     // Tiles around the listener.
     const auto tile_x = origin_.tile_x + static_cast<std::int32_t>(std::floor((listener.x + origin_.x) / formats::route_tile_size + 0.5));

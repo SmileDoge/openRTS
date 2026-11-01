@@ -37,7 +37,10 @@ public:
 
     void attach(WGPUDevice device, WGPUTextureFormat target_format);
     void detach();
-    void update(float elapsed, const simulation::Train* train, const glm::vec3& eye);
+    // `train`: the driven train (panel: next signal); `trains`: every train
+    // on the track, for occupancy and the signal chains.
+    void update(float elapsed, const simulation::Train* train, std::span<const simulation::Train* const> trains,
+                const glm::vec3& eye);
     // Lights of the signal instances drawn this frame.
     void collect_lights(std::span<const renderer::StreamedInstance> instances, renderer::ModelLibrary& library,
                         const glm::vec3& eye, float draw_distance);
@@ -47,6 +50,7 @@ public:
     [[nodiscard]] std::vector<renderer::NodeAdjustment> hidden_parts(const renderer::StreamedInstance& instance,
                                                                      renderer::ModelLibrary& library) const;
     void draw_overlay();
+    void set_origin(const formats::RoutePosition& origin) { origin_ = origin; }
     // One label per signal within `range` of `eye`, above its highest light:
     // the world UiD and, per head, its index, type, aspect and draw state.
     void collect_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, float range) const;

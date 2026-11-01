@@ -392,8 +392,6 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 //  - Lambert sun diffuse;
 //  - Blinn-Phong sun highlight, strength and sharpness by the MSTS light
 //    material (normal faint, LoShine, HiShine);
-//  - surfaces seen from behind use the flipped normal (two-sided geometry,
-//    foliage cards);
 //  - MSTS light materials: FullBright and the unlit shaders take the texture
 //    as is, HalfBright uses the vertex colour as ambient, DarkShade gets only
 //    the dimmed ambient as its light, vertex-colour emission adds the vertex
@@ -456,10 +454,11 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         let sun_colour = to_linear(sun.diffuse.xyz);
         let sky_colour = to_linear(sun.ambient.xyz);
         let view = normalize(frame.eye.xyz - input.world.xyz);
-        var n = normalize(input.normal);
-        if (dot(n, view) < 0.0) {
-            n = -n;
-        }
+        // The normal as the shape gives it, never turned towards the camera:
+        // MSTS trees and many buildings point their normals up on purpose
+        // (Circumference), and turning them would darken everything above
+        // the camera's height.
+        let n = normalize(input.normal);
         let to_sun = -normalize(sun.direction);
         let facing = max(dot(n, to_sun), 0.0);
 
@@ -640,7 +639,8 @@ void copy_vec4(float (&target)[4], const glm::vec4& value) {
         .minFilter = min,
         .mipmapFilter = mip,
         .lodMaxClamp = 32.0f,
-        .maxAnisotropy = 1,
+        .maxAnisotropy = static_cast<std::uint16_t>(
+            mag == WGPUFilterMode_Linear && min == WGPUFilterMode_Linear && mip == WGPUMipmapFilterMode_Linear ? max_anisotropy : 1),
     };
     return wgpuDeviceCreateSampler(device, &descriptor);
 }
@@ -741,7 +741,7 @@ constexpr std::size_t shading_path_count = 2;
         },
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
         .depthStencil = &depth,
-        .multisample = {.count = 1, .mask = ~0u},
+        .multisample = scene_multisample(key.alpha_test),
         .fragment = &fragment,
     };
     return wgpuDeviceCreateRenderPipeline(device, &descriptor);
@@ -845,6 +845,8 @@ struct RenderModel::Impl {
     WGPUBuffer materials = nullptr;
     std::uint16_t model_flags = 0;
     ModelBounds bounds{};
+    // Distance levels (ShapeModel::level_distances); empty: one level.
+    std::vector<float> level_distances;
 
     Impl() = default;
     Impl(const Impl&) = delete;
@@ -894,6 +896,8 @@ struct ModelRenderer::Impl {
     struct QueuedModel {
         RenderModel::Impl* model = nullptr;
         ModelTransform transform{};
+        // Distance level drawn for this instance.
+        std::uint8_t level = 0;
         // First of this instance's animated local matrices in
         // `frame_locals`, or -1 for the model's rest pose.
         std::ptrdiff_t matrices = -1;
@@ -1081,6 +1085,7 @@ std::optional<WGPUTextureView> ModelRenderer::Impl::primitive_texture(const Rend
 // from the transformed vertices actually referenced by those draws.
 void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const formats::ShapeModel& model) {
     gpu.model_flags = rts::model_flags(model);
+    gpu.level_distances = model.level_distances;
 
     BoundsAccumulator bounds;
     std::vector<WGPUTextureView> views; // per kept draw
@@ -1340,7 +1345,23 @@ void ModelRenderer::begin_frame(const ModelFrameContext& frame) {
 void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) {
     if (!impl_ || !model.impl_) return;
     if (impl_->frame_models.empty() || impl_->frame_models.back() != model.impl_) impl_->frame_models.push_back(model.impl_);
-    impl_->queue.push_back({.model = model.impl_.get(), .transform = transform});
+    // Distance level (MSTS rule, PROBABLE for RTS): the first level whose
+    // dlevel_selection reaches the camera distance to the model's centre;
+    // beyond all of them the last level.
+    std::uint8_t level = 0;
+    const auto& distances = model.impl_->level_distances;
+    if (distances.size() > 1) {
+        const auto centre = glm::vec3{transform * glm::vec4{model.impl_->bounds.center, 1.0f}};
+        const float distance = glm::distance(centre, impl_->frame.camera_position);
+        level = static_cast<std::uint8_t>(distances.size() - 1);
+        for (std::size_t i = 0; i < distances.size(); ++i) {
+            if (distance <= distances[i]) {
+                level = static_cast<std::uint8_t>(i);
+                break;
+            }
+        }
+    }
+    impl_->queue.push_back({.model = model.impl_.get(), .transform = transform, .level = level});
 }
 
 void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform, const float frame) {
@@ -1438,7 +1459,9 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass) {
             for (std::size_t instance = 0; instance < impl_->queue.size(); ++instance) {
                 const auto& model = *impl_->queue[instance].model;
                 const auto object_pass = rts::object_pass(model.model_flags);
+                const auto level = impl_->queue[instance].level;
                 for (const auto& draw : model.draws) {
+                    if (draw.range.level != level) continue;
                     if (!rts::draws_in_pass(object_pass_number, object_pass, model.model_flags, draw.material.flags)) {
                         continue;
                     }
@@ -1462,6 +1485,7 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass) {
             for (std::size_t instance = 0; instance < impl_->queue.size(); ++instance) {
                 const auto& submitted = impl_->queue[instance];
                 for (const auto& draw : submitted.model->draws) {
+                    if (draw.range.level != submitted.level) continue;
                     const auto& material = draw.material;
                     const bool blend_shader = material.shader == rts::NamedShader::blend_a_tex
                         || material.shader == rts::NamedShader::blend_a_tex_diff;
@@ -1483,7 +1507,11 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass) {
         std::stable_sort(translucent.begin(), translucent.end(),
                          [](const auto& a, const auto& b) { return a.distance2 > b.distance2; });
         for (const auto& item : translucent) {
-            emit(item.instance, *item.draw, {.blend = true, .depth_write = false, .alpha_test = false}, 2);
+            // Depth is written as the material says, as RTS does in its
+            // translucent pass: MSTS content counts on it, and without it
+            // anything drawn later (track lines, a misordered pane) shows
+            // through the glass.
+            emit(item.instance, *item.draw, {.blend = true, .depth_write = item.draw->material.depth_write, .alpha_test = false}, 2);
         }
     }
     impl_->last_instances = impl_->queue.size();

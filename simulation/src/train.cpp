@@ -346,7 +346,14 @@ struct Train::Impl {
     std::optional<TrackTraveller> tail; // rear end of the last car
     std::vector<std::unique_ptr<LocomotiveController>> controllers;
     std::vector<EngineDemands> demands;
-    std::vector<std::array<std::pair<std::uint32_t, std::size_t>, 2>> last_bogie; // (node, section) per bogie
+    // Per car and bogie: the node and offset along it at the last update.
+    struct BogieTrack {
+        std::uint32_t node = ~0u;
+        double offset{};
+    };
+    std::vector<std::array<BogieTrack, 2>> last_bogie;
+    // Per car: this step's rail joint impacts (RTS v118 / v119, 0..1).
+    std::vector<std::array<float, 2>> impacts;
     std::vector<TrainEvent> events;
     bool stopped_at_end = false;
     // Junctions the tail passed facing, still held for their ClearanceDist.
@@ -367,6 +374,10 @@ Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
         if (setup.definition && setup.definition->engine) car.main_reservoir = 8.5f;
         cars_.push_back(car);
     }
+    if (!cars_.empty()) {
+        cars_.front().pipe_ends |= pipe_hose_front | pipe_cock_front;
+        cars_.back().pipe_ends |= pipe_hose_rear | pipe_cock_rear;
+    }
     // Centres laid back from the last car with every joint at gap 0.
     for (std::size_t i = cars_.size(); i-- > 1;) {
         auto& ahead = cars_[i - 1];
@@ -377,6 +388,7 @@ Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
     impl_->controllers.resize(cars_.size());
     impl_->demands.resize(cars_.size());
     impl_->last_bogie.resize(cars_.size());
+    impl_->impacts.resize(cars_.size());
 }
 
 Train::~Train() = default;
@@ -449,6 +461,22 @@ bool Train::turn_around() {
     tail.reverse();
     impl_->head = head;
     impl_->tail = tail;
+    reverse_cars();
+    impl_->moving_backward = false;
+    impl_->stopped_at_end = false;
+    move_and_update(0.0, 0.0);
+    return true;
+}
+
+// The car order and every car's orientation reverse; the ends of the
+// travellers are the caller's business.
+void Train::reverse_cars() {
+    const auto swap_ends = [](const std::uint8_t bits, const std::uint8_t front, const std::uint8_t rear) {
+        std::uint8_t result = bits & static_cast<std::uint8_t>(~(front | rear));
+        if (bits & front) result |= rear;
+        if (bits & rear) result |= front;
+        return result;
+    };
     // Offsets are measured forward from the last car: the old first car is
     // the new last one, and forward is the old backward.
     const double first = cars_.front().offset;
@@ -461,14 +489,200 @@ bool Train::turn_around() {
         car.coupler_force = 0.0f;
         car.travelled = -car.travelled;
         std::swap(car.bogie_ahead, car.bogie_behind);
+        car.body[2] = -car.body[2];
+        car.body_rate[2] = -car.body_rate[2];
+        car.pipe_ends = swap_ends(car.pipe_ends, pipe_hose_front, pipe_hose_rear);
+        car.pipe_ends = swap_ends(car.pipe_ends, pipe_cock_front, pipe_cock_rear);
+        car.coupler_open = swap_ends(car.coupler_open, coupler_open_front, coupler_open_rear);
     }
     std::reverse(cars_.begin(), cars_.end());
     std::reverse(impl_->controllers.begin(), impl_->controllers.end());
     std::reverse(impl_->demands.begin(), impl_->demands.end());
     std::reverse(impl_->last_bogie.begin(), impl_->last_bogie.end());
+    std::reverse(impl_->impacts.begin(), impl_->impacts.end());
     for (auto& bogies : impl_->last_bogie) std::swap(bogies[0], bogies[1]);
-    impl_->moving_backward = false;
+}
+
+void Train::occupy_under() {
+    if (!network_ || !impl_->tail) return;
+    TrackTraveller walker = *impl_->tail;
+    walker.move(length(), JunctionMode::occupy, id_);
+}
+
+bool Train::derailed() const noexcept {
+    return std::any_of(cars_.begin(), cars_.end(), [](const CarState& car) { return car.derailed; });
+}
+
+double Train::mass() const noexcept {
+    double total = 0.0;
+    for (const auto& car : cars_) total += mass_of(car);
+    return total;
+}
+
+void Train::hit(const std::size_t index, const float force, const float (&direction)[3], const float time) {
+    if (index >= cars_.size() || force <= 0.0f) return;
+    auto& car = cars_[index];
+    const float m = mass_of(car);
+    const float shove = force / m * time;
+    if (!car.derailed) {
+        if (settings_.derailment && force > car.definition->derail_buffer_force) {
+            car.derailed = true;
+            car.derail = DerailKind::sliding;
+            car.slide_speed = car.velocity;
+            car.slide = 0.0f;
+            car.slide_origin_set = false;
+            impl_->events.push_back({.kind = TrainEventKind::derailment, .car = static_cast<std::uint32_t>(index)});
+            return;
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            car.body[axis] = std::clamp(car.body[axis] + direction[axis] * shove, -0.3f, 0.3f);
+        }
+        return;
+    }
+    // Derailed and sliding: a hit along it folds it a little more.
+    if (car.derail == DerailKind::sliding && std::abs(direction[2]) > 0.7f) {
+        const float side = car.yaw_target < 0.0f ? -1.0f : 1.0f;
+        car.yaw_target = side * (std::min)(std::abs(car.yaw_target) + shove * 0.02f, 0.8f);
+    }
+    // Derailed: a side hit rolls it (the 0x589A14 branch for a hit near the
+    // middle of the car).
+    if (std::abs(direction[0]) > 0.3f) {
+        const float side = direction[0] > 0.0f ? 1.0f : -1.0f;
+        const float target = (std::min)(shove * 0.04f + 0.1f, 1.8f);
+        if (target > std::abs(car.tilt_target)) {
+            car.tilt_target = target * side;
+            car.tilt_rate = std::abs(shove / (std::max)(car.definition->width, 1.0f)) * side;
+            car.tilt_friction = m * 10.0f * (target < 1.57f ? target * 0.637f : 1.0f);
+        }
+    }
+}
+
+void Train::stop_slide(const std::size_t index) {
+    if (index < cars_.size()) cars_[index].slide_speed = 0.0f;
+}
+
+void Train::add_velocity(const float change) {
+    for (auto& car : cars_) car.velocity += change;
+}
+
+void Train::shift(const double metres) {
+    if (!network_ || !impl_->head || metres == 0.0) return;
+    move_and_update(metres, metres);
+}
+
+std::unique_ptr<Train> Train::uncouple(const std::size_t index, const bool close_cocks, const bool keep_open) {
+    if (!network_ || !impl_->tail || index == 0 || index >= cars_.size()) return nullptr;
+    vacate();
+    impl_->clearing.clear();
+    auto rear = std::make_unique<Train>(std::vector<CarSetup>{}, settings_);
+    // The new ends, measured from the tail (offsets count from the last car).
+    const double last_half = length_of(cars_.back()) * 0.5;
+    TrackTraveller rear_head = *impl_->tail;
+    rear_head.move(cars_[index].offset + length_of(cars_[index]) * 0.5 + last_half);
+    TrackTraveller front_tail = *impl_->tail;
+    front_tail.move(cars_[index - 1].offset - length_of(cars_[index - 1]) * 0.5 + last_half);
+    rear->network_ = network_;
+    rear->impl_->head = rear_head;
+    rear->impl_->tail = *impl_->tail;
+    rear->impl_->moving_backward = impl_->moving_backward;
+    impl_->tail = front_tail;
+
+    const auto split = static_cast<std::ptrdiff_t>(index);
+    const auto move_tail = [split](auto& from, auto& to) {
+        to.assign(std::make_move_iterator(from.begin() + split), std::make_move_iterator(from.end()));
+        from.erase(from.begin() + split, from.end());
+    };
+    move_tail(cars_, rear->cars_);
+    move_tail(impl_->controllers, rear->impl_->controllers);
+    move_tail(impl_->demands, rear->impl_->demands);
+    move_tail(impl_->last_bogie, rear->impl_->last_bogie);
+    move_tail(impl_->impacts, rear->impl_->impacts);
+    // This train's new last car is the reference.
+    const double base = cars_.back().offset;
+    for (auto& car : cars_) car.offset -= base;
+
+    auto& behind = cars_.back();
+    auto& ahead = rear->cars_.front();
+    behind.pipe_ends |= pipe_hose_rear;
+    ahead.pipe_ends |= pipe_hose_front;
+    if (close_cocks) {
+        behind.pipe_ends |= pipe_cock_rear;
+        ahead.pipe_ends |= pipe_cock_front;
+    }
+    if (keep_open) {
+        behind.coupler_open |= coupler_open_rear;
+        ahead.coupler_open |= coupler_open_front;
+    }
+    for (auto* train : {this, rear.get()}) {
+        for (auto& car : train->cars_) car.coupler_force = 0.0f;
+        train->occupy_under();
+        train->move_and_update(0.0, 0.0);
+    }
+    return rear;
+}
+
+bool Train::couple(Train& other, const bool at_front, const bool other_front, const double gap) {
+    if (&other == this || !network_ || !other.network_ || !impl_->tail || !other.impl_->tail || other.cars_.empty()) {
+        return false;
+    }
+    vacate();
+    other.vacate();
+    // The other train must touch with its rear when it goes in front, with
+    // its front when it goes behind.
+    if (other_front == at_front) {
+        auto head = *other.impl_->tail;
+        auto tail = *other.impl_->head;
+        head.reverse();
+        tail.reverse();
+        other.impl_->head = head;
+        other.impl_->tail = tail;
+        other.reverse_cars();
+    }
+    auto& joint_behind = at_front ? other.cars_.back() : cars_.back();
+    auto& joint_ahead = at_front ? cars_.front() : other.cars_.front();
+    joint_behind.pipe_ends &= static_cast<std::uint8_t>(~(pipe_hose_rear | pipe_cock_rear));
+    joint_ahead.pipe_ends &= static_cast<std::uint8_t>(~(pipe_hose_front | pipe_cock_front));
+    joint_behind.coupler_open &= static_cast<std::uint8_t>(~coupler_open_rear);
+    joint_ahead.coupler_open &= static_cast<std::uint8_t>(~coupler_open_front);
+
+    const auto join = [](auto& first, auto& second) {
+        // first = first + second
+        first.insert(first.end(), std::make_move_iterator(second.begin()), std::make_move_iterator(second.end()));
+        second.clear();
+    };
+    if (at_front) {
+        // Other ahead: its last car's centre is this front car's front end,
+        // the gap and its half length ahead of this train's front car centre.
+        const double distance = cars_.front().offset + length_of(cars_.front()) * 0.5 + gap + length_of(other.cars_.back()) * 0.5;
+        for (auto& car : other.cars_) car.offset += distance;
+        join(other.cars_, cars_);
+        join(other.impl_->controllers, impl_->controllers);
+        join(other.impl_->demands, impl_->demands);
+        join(other.impl_->last_bogie, impl_->last_bogie);
+        join(other.impl_->impacts, impl_->impacts);
+        std::swap(cars_, other.cars_);
+        std::swap(impl_->controllers, other.impl_->controllers);
+        std::swap(impl_->demands, other.impl_->demands);
+        std::swap(impl_->last_bogie, other.impl_->last_bogie);
+        std::swap(impl_->impacts, other.impl_->impacts);
+        impl_->head = other.impl_->head;
+    } else {
+        // Other behind: its last car becomes the reference.
+        const double distance = other.cars_.front().offset + length_of(other.cars_.front()) * 0.5 + gap + length_of(cars_.back()) * 0.5;
+        for (auto& car : cars_) car.offset += distance;
+        join(cars_, other.cars_);
+        join(impl_->controllers, other.impl_->controllers);
+        join(impl_->demands, other.impl_->demands);
+        join(impl_->last_bogie, other.impl_->last_bogie);
+        join(impl_->impacts, other.impl_->impacts);
+        impl_->tail = other.impl_->tail;
+    }
+    other.network_ = nullptr;
+    other.impl_->head.reset();
+    other.impl_->tail.reset();
+    impl_->clearing.clear();
     impl_->stopped_at_end = false;
+    occupy_under();
     move_and_update(0.0, 0.0);
     return true;
 }
@@ -494,9 +708,19 @@ bool Train::place(TrackNetwork& network, const std::uint32_t node, const double 
     TrackTraveller walker = tail;
     walker.move(length(), JunctionMode::occupy, id_);
     impl_->stopped_at_end = false;
+    for (auto& car : cars_) {
+        car.derailed = false;
+        car.derail = DerailKind::none;
+        car.tilt = car.tilt_target = car.tilt_rate = car.tilt_friction = 0.0f;
+        car.fallen = false;
+        car.slide = car.slide_speed = 0.0f;
+        car.slide_origin_set = false;
+        car.yaw = car.yaw_target = 0.0f;
+        car.velocity = 0.0f;
+        car.acceleration = 0.0f;
+    }
     for (std::size_t i = 0; i < cars_.size(); ++i) {
-        auto& last = impl_->last_bogie[i];
-        last = {std::pair{~0u, std::size_t{}}, std::pair{~0u, std::size_t{}}};
+        impl_->last_bogie[i] = {};
     }
     // Pitch, radius and bogie positions for the first step.
     move_and_update(0.0, 0.0);
@@ -598,6 +822,18 @@ void Train::step() {
     std::vector<float> pipe_start(n);
     for (std::size_t i = 0; i < n; ++i) pipe_start[i] = cars_[i].pipe;
     const auto pipe_volume = [&](const std::size_t i) { return length_of(cars_[i]) * pipe_area; };
+    // Air flows between car i and i + 1 only through connected hoses and
+    // open end cocks; a pipe end with an open cock and nothing coupled vents
+    // at 10 atm/s (RTS; the hiss is sound variable 80).
+    const auto joined = [&](const std::size_t i) {
+        return !(cars_[i].pipe_ends & (pipe_hose_rear | pipe_cock_rear))
+            && !(cars_[i + 1].pipe_ends & (pipe_hose_front | pipe_cock_front));
+    };
+    for (auto& car : cars_) {
+        const bool front_open = (car.pipe_ends & pipe_hose_front) && !(car.pipe_ends & pipe_cock_front);
+        const bool rear_open = (car.pipe_ends & pipe_hose_rear) && !(car.pipe_ends & pipe_cock_rear);
+        if (front_open || rear_open) car.pipe = (std::max)(car.pipe - 10.0f * dt, 0.0f);
+    }
     for (std::size_t j = 0; j < n; ++j) {
         const auto& demands = impl.demands[j];
         auto& loco = cars_[j];
@@ -611,13 +847,13 @@ void Train::step() {
             const float vented = (std::max)(loco.pipe + rate, 0.0f);
             loco.pipe += (vented - loco.pipe) * dt;
             float distance = 0.0f;
-            for (std::size_t m = j + 1; m < n; ++m) {
+            for (std::size_t m = j + 1; m < n && joined(m - 1); ++m) {
                 distance += length_of(cars_[m - 1]);
                 const float factor = (std::min)(1.0f, 30.0f / distance) * dt;
                 cars_[m].pipe += (std::min)((vented - cars_[m].pipe) * factor, 0.0f);
             }
             distance = 0.0f;
-            for (std::size_t m = j; m-- > 0;) {
+            for (std::size_t m = j; m-- > 0 && joined(m);) {
                 distance += length_of(cars_[m + 1]);
                 const float factor = (std::min)(1.0f, 30.0f / distance) * dt;
                 cars_[m].pipe += (std::min)((vented - cars_[m].pipe) * factor, 0.0f);
@@ -636,12 +872,12 @@ void Train::step() {
         };
         feed(loco, 1.0f, pipe_volume(j));
         float distance = 0.0f;
-        for (std::size_t m = j + 1; m < n; ++m) {
+        for (std::size_t m = j + 1; m < n && joined(m - 1); ++m) {
             distance += length_of(cars_[m - 1]);
             feed(cars_[m], distance, pipe_volume(m - 1));
         }
         distance = 0.0f;
-        for (std::size_t m = j; m-- > 0;) {
+        for (std::size_t m = j; m-- > 0 && joined(m);) {
             distance += length_of(cars_[m + 1]);
             feed(cars_[m], distance, pipe_volume(m));
         }
@@ -650,7 +886,7 @@ void Train::step() {
     for (std::size_t i = 1; i < n; ++i) {
         auto& car = cars_[i];
         const float volume = pipe_volume(i);
-        for (std::size_t k = i; k-- > 0;) {
+        for (std::size_t k = i; k-- > 0 && joined(k);) {
             auto& ahead = cars_[k];
             if (ahead.pipe == car.pipe) continue;
             const float ahead_volume = pipe_volume(k);
@@ -749,8 +985,7 @@ void Train::step() {
             car.resistance += 7.0f / car.radius * mass_of(car);
             if (settings_.derailment && !car.derailed
                 && mass_of(car) * car.velocity * car.velocity / car.radius > wagon.derail_rail_force) {
-                car.derailed = true;
-                impl.events.push_back({.kind = TrainEventKind::derailment, .car = static_cast<std::uint32_t>(&car - cars_.data())});
+                start_tipping(static_cast<std::size_t>(&car - cars_.data()), nullptr);
             }
         }
     }
@@ -763,6 +998,11 @@ void Train::step() {
         auto& car = cars_[i];
         float force = car.force - car.grade;
         float friction = car.brake_force + car.resistance;
+        if (car.derail == DerailKind::tipping && car.tilt_target != 0.0f) {
+            friction += std::abs(car.tilt / car.tilt_target) * car.tilt_friction;
+        } else if (car.derail == DerailKind::sliding) {
+            friction += mass_of(car) * 5.0f; // RTS: the slid body's friction, mass * 5
+        }
         const float magnitude = std::abs(force);
         if (magnitude <= friction) {
             friction -= magnitude;
@@ -783,6 +1023,7 @@ void Train::step() {
     }
     if (!moving) {
         move_and_update(0.0, 0.0);
+        derailment();
         return;
     }
 
@@ -870,6 +1111,142 @@ void Train::step() {
         }
     }
     move_and_update(cars_.front().velocity * train_step, last_moved);
+    sway();
+    derailment();
+}
+
+// A car starts overturning (RTS 0x580B30, its "not sliding" branch): the
+// roll aims at 0.1 + 0.04 |v| rad (a tipped neighbour: 0.75 of its roll,
+// at 0.8 of its rate), at most 1.8, and grows at |v| / 33 rad/s; the drag
+// at the full roll is m * 10, times 0.637 * target below 1.57 rad. It rolls
+// outwards of the curve, or the way the neighbour rolls.
+void Train::start_tipping(const std::size_t index, const CarState* neighbour) {
+    auto& car = cars_[index];
+    if (car.derailed) return;
+    car.derailed = true;
+    car.derail = DerailKind::tipping;
+    const float speed = std::abs(neighbour ? neighbour->velocity : car.velocity);
+    float target = neighbour ? std::abs(neighbour->tilt_target) * 0.75f : speed * 0.04f + 0.1f;
+    target = (std::min)(target, 1.8f);
+    car.tilt_friction = mass_of(car) * 10.0f;
+    if (target < 1.57f) car.tilt_friction *= target * 0.637f;
+    float rate = neighbour ? std::abs(neighbour->tilt_rate) * 0.8f : std::abs(car.velocity) * (1.0f / 33.0f);
+    // Outwards: against the side the car turns to.
+    const float side = neighbour ? (neighbour->tilt_target < 0.0f ? -1.0f : 1.0f) : (car.curvature > 0.0f ? -1.0f : 1.0f);
+    car.tilt_target = target * side;
+    car.tilt_rate = rate * side;
+    impl_->events.push_back({.kind = TrainEventKind::derailment, .car = static_cast<std::uint32_t>(index)});
+}
+
+// Per step after the move (RTS 0x581BC4 and 0x581694):
+// - a tipping car rolls on, by rate * dt * (|target - roll| / |target| + 0.2),
+//   until it reaches the target;
+// - past 0.8 rad it has fallen: its hoses are torn off (both ends, and the
+//   neighbours' ends facing it), so the pipe vents and the train brakes;
+// - it pulls its neighbours with 0.637 * |roll| * m: above a neighbour's
+//   DerailBufferForce the neighbour overturns too; past 0.9 rad the coupler
+//   breaks;
+// - a sliding car slides on along its heading, slowing by its friction.
+void Train::derailment() {
+    const auto dt = static_cast<float>(train_step);
+    const auto n = cars_.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        auto& car = cars_[i];
+        if (car.derail != DerailKind::none && car.tilt_target != 0.0f && car.tilt != car.tilt_target) {
+            const float share = std::abs(car.tilt_target - car.tilt) / std::abs(car.tilt_target) + 0.2f;
+            car.tilt += car.tilt_rate * dt * share;
+            if (std::abs(car.tilt) >= std::abs(car.tilt_target)) {
+                car.tilt = car.tilt_target;
+                car.tilt_rate = 0.0f;
+            }
+        }
+        if (car.derail == DerailKind::sliding && car.yaw != car.yaw_target) {
+            const float rate = (std::max)(0.3f, std::abs(car.slide_speed) * 0.2f) * dt;
+            const float diff = car.yaw_target - car.yaw;
+            car.yaw = std::abs(diff) <= rate ? car.yaw_target : car.yaw + std::copysign(rate, diff);
+        }
+        if (car.derail == DerailKind::sliding && car.slide_speed != 0.0f) {
+            car.slide += car.slide_speed * dt;
+            const float slowed = std::abs(car.slide_speed) - 5.0f * dt;
+            car.slide_speed = slowed > 0.0f ? std::copysign(slowed, car.slide_speed) : 0.0f;
+        }
+        if (car.derail != DerailKind::none && !car.fallen && std::abs(car.tilt) > 0.8f) {
+            car.fallen = true;
+            car.pipe_ends |= pipe_hose_front | pipe_hose_rear;
+            car.pipe_ends &= static_cast<std::uint8_t>(~(pipe_cock_front | pipe_cock_rear));
+            if (i > 0) cars_[i - 1].pipe_ends |= pipe_hose_rear;
+            if (i + 1 < n) cars_[i + 1].pipe_ends |= pipe_hose_front;
+        }
+    }
+    if (!settings_.derailment) return;
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& car = cars_[i];
+        if (car.derail != DerailKind::tipping) continue;
+        const float pull = 0.637f * std::abs(car.tilt) * mass_of(car);
+        for (const std::size_t k : {i - 1, i + 1}) {
+            if (k >= n || cars_[k].derailed) continue;
+            if (pull > cars_[k].definition->derail_buffer_force) {
+                start_tipping(k, &cars_[i]);
+            } else if (std::abs(car.tilt) > 0.9f) {
+                impl_->events.push_back({.kind = TrainEventKind::coupler_break, .car = static_cast<std::uint32_t>((std::min)(i, k))});
+            }
+        }
+    }
+}
+
+// The body on its springs, per axis a mass on a spring and a damper
+// (RTS 0x4F5B34, one 0.05 s sub-step as RTS takes per 0.05 s):
+// - lateral: the centrifugal force FrameOscCorrection[0] * m * v^2 / R and
+//   the hunting sway sin(phase) * v * 0.008 * mass * [0], the phase moving by
+//   v * 0.3 * m * dt * [1] / damping;
+// - vertical: a knock at node ends (0.001) or rail joints (0.0005), times
+//   the impact, |v| / 10.5 and m / dt^2, times [2]; RTS also adds a knock
+//   from the grade change under the bogies, not taken here;
+// - longitudinal: -acceleration * m.
+// Stiffness FrameSpringStiffness (RTS adds 45 * a car field, likely the
+// load: UNKNOWN, not taken), damping FrameSpringDamping. RTS feeds the
+// result only to the cab camera of the driven engine; openRTS also shows it
+// on the car bodies.
+void Train::sway() {
+    const auto dt = static_cast<float>(train_step);
+    for (std::size_t i = 0; i < cars_.size(); ++i) {
+        auto& car = cars_[i];
+        const auto& wagon = *car.definition;
+        const bool resting = car.velocity == 0.0f && car.body[0] == 0.0f && car.body[1] == 0.0f && car.body[2] == 0.0f
+            && car.body_rate[0] == 0.0f && car.body_rate[1] == 0.0f && car.body_rate[2] == 0.0f;
+        if (resting) continue;
+        const float m = mass_of(car);
+        const auto stiffness = static_cast<float>(wagon.frame_spring_stiffness > 0.0 ? wagon.frame_spring_stiffness : m * 30.0);
+        const auto damping = static_cast<float>(wagon.frame_spring_damping > 0.0 ? wagon.frame_spring_damping : m * 1.25);
+        const float v = car.velocity;
+        const auto* q = wagon.frame_osc_correction;
+        // Lateral: outwards of the curve, the body moves against the turn.
+        const float centrifugal = -q[0] * m * v * v * car.curvature;
+        const float hunting = std::sin(car.hunting_phase) * (v * 0.008f * (std::max)(wagon.mass, 1.0f) * q[0]);
+        car.hunting_phase += v * 0.3f * m * dt * q[1] / damping;
+        if (car.hunting_phase > 3.14159265f) car.hunting_phase -= 6.28318531f;
+        if (car.hunting_phase < -3.14159265f) car.hunting_phase += 6.28318531f;
+        const auto& impact = impl_->impacts[i];
+        float knock = 0.0f;
+        const float speed_share = std::abs(v) * (1.0f / 10.5f);
+        if (impact[0] != 0.0f) {
+            knock = -0.001f * impact[0] * speed_share * m / (dt * dt);
+        } else if (impact[1] != 0.0f) {
+            knock = -0.0005f * impact[1] * speed_share * m / (dt * dt);
+        }
+        knock *= q[2];
+        const float force[3] = {
+            hunting + centrifugal - car.body[0] * stiffness - car.body_rate[0] * damping,
+            knock - car.body[1] * stiffness - car.body_rate[1] * damping,
+            -car.acceleration * m - car.body[2] * stiffness - car.body_rate[2] * damping,
+        };
+        for (int axis = 0; axis < 3; ++axis) {
+            car.body_rate[axis] += force[axis] / m * dt;
+            car.body[axis] += car.body_rate[axis] * dt;
+            if (std::abs(car.body[axis]) < 0.001f) car.body[axis] = 0.0f;
+            if (std::abs(car.body_rate[axis]) < 0.001f) car.body_rate[axis] = 0.0f;
+        }
+    }
 }
 
 // Moves the end travellers and refreshes per-car geometry and events. The
@@ -930,6 +1307,43 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
         }
         advance_clearance(forward ? front_result : rear_result, forward ? rear_result : front_result);
         if (!front_result.ok() || !rear_result.ok()) {
+            // RTS: a failed advance derails the car there (0x5059A8, its
+            // sliding branch); the rest stops at the end as before.
+            if (settings_.derailment && !impl.stopped_at_end) {
+                auto& lead = forward ? cars_.front() : cars_.back();
+                if (!lead.derailed && std::abs(lead.velocity) > 0.5f) {
+                    lead.derailed = true;
+                    lead.derail = DerailKind::sliding;
+                    lead.slide_speed = lead.velocity;
+                    lead.slide = 0.0f;
+                    lead.slide_origin_set = false;
+                    impl.events.push_back({.kind = TrainEventKind::derailment,
+                                           .car = static_cast<std::uint32_t>(forward ? 0 : cars_.size() - 1)});
+                    // The rest runs into it (the role of RTS's solver for
+                    // derailed trains, 0x586E6C): the stopping force of the
+                    // cars behind, m * v over 0.5 s, derails each next car
+                    // while it is above its DerailBufferForce; they fold to
+                    // alternate sides, the more the faster.
+                    const float v = std::abs(lead.velocity);
+                    double rest = mass() - mass_of(lead);
+                    float side = 1.0f;
+                    const auto n = cars_.size();
+                    for (std::size_t k = 1; k < n; ++k) {
+                        auto& next = cars_[forward ? k : n - 1 - k];
+                        if (next.derailed || rest * v / 0.5 <= next.definition->derail_buffer_force) break;
+                        next.derailed = true;
+                        next.derail = DerailKind::sliding;
+                        next.slide_speed = lead.velocity * 0.5f;
+                        next.slide = 0.0f;
+                        next.slide_origin_set = false;
+                        next.yaw_target = side * (std::min)(0.1f + 0.02f * v, 0.6f);
+                        side = -side;
+                        rest -= mass_of(next);
+                        impl.events.push_back({.kind = TrainEventKind::derailment,
+                                               .car = static_cast<std::uint32_t>(forward ? k : n - 1 - k)});
+                    }
+                }
+            }
             for (auto& car : cars_) {
                 car.velocity = 0.0f;
                 car.acceleration = 0.0f;
@@ -952,6 +1366,10 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
         front.move(ahead + behind);
         const auto front_pose = front.pose();
         const auto rear_pose = rear.pose();
+        if (car.derail == DerailKind::sliding && !car.slide_origin_set) {
+            car.slide_from = {front_pose, rear_pose};
+            car.slide_origin_set = true;
+        }
         const double dx = front_pose.x - rear_pose.x + (front_pose.tile_x - rear_pose.tile_x) * tile_size;
         const double dz = front_pose.z - rear_pose.z + (front_pose.tile_z - rear_pose.tile_z) * tile_size;
         const double dy = front_pose.y - rear_pose.y;
@@ -964,24 +1382,229 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
                 car.radius = static_cast<float>(definition->radius);
             }
         }
-        // Joint and junction events per bogie.
+        // Curvature under the car from the bogie headings (towards the
+        // side the car turns to); headings may run along the node's other
+        // direction, hence the half-turn fold.
+        {
+            constexpr double pi = 3.14159265358979323846;
+            double turn = front_pose.heading - rear_pose.heading;
+            while (turn > pi) turn -= 2.0 * pi;
+            while (turn < -pi) turn += 2.0 * pi;
+            if (turn > pi * 0.5) turn -= pi;
+            if (turn < -pi * 0.5) turn += pi;
+            car.curvature = distance > 0.5 ? static_cast<float>(turn / distance) : 0.0f;
+        }
+        // Rail joints as RTS places them (0x4F5B34): a junction event when a
+        // bogie changes node; a joint event when it passes a rail joint along
+        // the node: every 50 m, or on nodes over 2000 m (welded) a group at
+        // 0, 12.5, 25 and 37.5 m every 600 m. Each also gives an impact for
+        // the body springs that fades over WheelRadius * 1.25 * NumWheels.
+        const auto& wagon = *car.definition;
+        const double window = static_cast<double>(wagon.wheel_radius) * 1.25 * wagon.wheels;
+        const auto since_joint = [](const double offset, const double node_length) {
+            if (node_length > 2000.0) {
+                double in = offset - std::floor(offset / 600.0) * 600.0;
+                if (in < 37.5) {
+                    if (in >= 25.0) in -= 25.0;
+                    else if (in >= 12.5) in -= 12.5;
+                } else {
+                    in -= 37.5;
+                }
+                return in;
+            }
+            return offset - std::floor(offset / 50.0) * 50.0;
+        };
+        const auto joint_index = [](const double offset, const double node_length) {
+            if (node_length > 2000.0) {
+                const double group = std::floor(offset / 600.0);
+                const double in = offset - group * 600.0;
+                return group * 4.0 + (in < 12.5 ? 0.0 : in < 25.0 ? 1.0 : in < 37.5 ? 2.0 : 3.0);
+            }
+            return std::floor(offset / 50.0);
+        };
+        auto& impact = impl.impacts[i];
+        impact = {0.0f, 0.0f};
         const std::array<const TrackTraveller*, 2> bogies{&front, &rear};
         for (std::uint8_t b = 0; b < 2; ++b) {
-            const std::pair now{bogies[b]->node(), bogies[b]->section()};
+            const auto* traveller = bogies[b];
+            const auto* node = network_->node(traveller->node());
+            const double length = node ? node->length : 0.0;
+            const double offset = traveller->offset();
             auto& before = impl.last_bogie[i][b];
-            if (before.first != ~0u && now != before) {
-                if (now.first != before.first) {
+            if (before.node != ~0u && car.velocity != 0.0f) {
+                if (before.node != traveller->node()) {
                     impl.events.push_back(
                         {.kind = TrainEventKind::junction, .car = static_cast<std::uint32_t>(i), .bogie = b});
+                } else if (joint_index(before.offset, length) != joint_index(offset, length)) {
+                    impl.events.push_back({.kind = TrainEventKind::joint, .car = static_cast<std::uint32_t>(i), .bogie = b});
                 }
-                impl.events.push_back({.kind = TrainEventKind::joint, .car = static_cast<std::uint32_t>(i), .bogie = b});
+                if (window > 0.0) {
+                    // Distance since the node end the bogie entered by.
+                    const bool along = traveller->forward() == (car.velocity > 0.0f);
+                    const double entered = along ? offset : length - offset;
+                    const double node_impact = entered / window <= 1.0 ? 1.0 - entered / window : 0.0;
+                    const double joint = since_joint(offset, length) / window;
+                    const double joint_impact = joint <= 1.0 ? 1.0 - joint : 0.0;
+                    impact[0] = (std::max)(impact[0], static_cast<float>(node_impact));
+                    impact[1] = (std::max)(impact[1], static_cast<float>(joint_impact));
+                }
             }
-            before = now;
+            before = {traveller->node(), offset};
         }
     }
 }
 
 
+
+// ---------------------------------------------------------------------------
+// Trains meeting (RTS 0x424488, 0x469ED8 coupling, 0x4FB8CC pushing apart)
+
+namespace {
+
+struct Meeting {
+    Train* other = nullptr;
+    bool other_front = false;
+    double gap{};
+};
+
+// The nearest end of another train along the set route from `start` (a
+// traveller facing away from the train), within `reach` metres; a slight
+// overlap (up to 0.5 m) still counts as a meeting.
+std::optional<Meeting> nearest_end(const TrackNetwork& network, const TrackTraveller& start, const Train& self,
+                                   std::span<Train* const> trains, const double reach) {
+    std::uint32_t node = start.node();
+    bool forward = start.forward();
+    double offset = start.offset();
+    double walked = 0.0;
+    for (int guard = 0; guard < 256; ++guard) {
+        const auto* info = network.node(node);
+        if (!info) return std::nullopt;
+        std::optional<Meeting> best;
+        for (auto* other : trains) {
+            if (!other || other == &self || !other->placed()) continue;
+            for (const bool front : {true, false}) {
+                const auto end = front ? other->front_end() : other->rear_end();
+                if (!end || end->node() != node) continue;
+                const double along = forward ? end->offset() - offset : offset - end->offset();
+                if (along < (guard == 0 ? -0.5 : 0.0)) continue;
+                const double gap = walked + along;
+                if (gap > reach) continue;
+                if (!best || gap < best->gap) best = Meeting{other, front, gap};
+            }
+        }
+        if (best) return best;
+        walked += forward ? info->length - offset : offset;
+        if (walked > reach) return std::nullopt;
+        MoveStop stop = MoveStop::completed;
+        const auto step = next_vector_node(network, node, forward, stop);
+        if (!step) return std::nullopt;
+        node = step->node;
+        forward = step->forward;
+        const auto* next = network.node(node);
+        offset = forward || !next ? 0.0 : next->length;
+    }
+    return std::nullopt;
+}
+
+// Mass-weighted mean velocity of a train towards its front.
+double mean_velocity(const Train& train) {
+    double momentum = 0.0;
+    for (const auto& car : train.cars()) momentum += static_cast<double>(car.velocity) * (std::max)(car.definition->mass, 1.0f);
+    return momentum / (std::max)(train.mass(), 1.0);
+}
+
+} // namespace
+
+std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains) {
+    std::vector<ContactResult> results;
+    std::vector<bool> gone(trains.size(), false);
+    const auto index_of = [&](const Train* train) {
+        return static_cast<std::size_t>(std::find(trains.begin(), trains.end(), train) - trains.begin());
+    };
+    for (std::size_t a = 0; a < trains.size(); ++a) {
+        auto* train = trains[a];
+        if (gone[a] || !train || !train->placed() || !train->network()) continue;
+        for (const bool front : {true, false}) {
+            if (gone[a]) break;
+            auto start = front ? train->front_end() : train->rear_end();
+            if (!start) continue;
+            if (!front) start->reverse();
+            const auto meeting = nearest_end(*train->network(), *start, *train, trains, 60.0);
+            if (!meeting) continue;
+            const auto b = index_of(meeting->other);
+            if (b >= trains.size() || gone[b]) continue;
+            auto* other = meeting->other;
+            // Speeds along the line from this train towards the other.
+            const double side_a = front ? 1.0 : -1.0;
+            const double side_b = meeting->other_front ? 1.0 : -1.0;
+            const auto& end_a = front ? train->cars().front() : train->cars().back();
+            const auto& end_b = meeting->other_front ? other->cars().front() : other->cars().back();
+            const double towards_a = side_a * end_a.velocity;
+            const double towards_b = -side_b * end_b.velocity;
+            const double closing = towards_a - towards_b;
+            const double overlap = closing * train_step - meeting->gap;
+            if (overlap <= 0.0) continue;
+            // The impact RTS compares with DerailBufferForce.
+            const double force = overlap / train_step * ((std::max)(end_a.definition->mass, 1.0f) + (std::max)(end_b.definition->mass, 1.0f));
+            const auto& coupler_a = front ? (end_a.flipped ? end_a.definition->couplings[0] : end_a.definition->couplings[1])
+                                          : (end_a.flipped ? end_a.definition->couplings[1] : end_a.definition->couplings[0]);
+            const auto& coupler_b = meeting->other_front
+                ? (end_b.flipped ? end_b.definition->couplings[0] : end_b.definition->couplings[1])
+                : (end_b.flipped ? end_b.definition->couplings[1] : end_b.definition->couplings[0]);
+            const bool open_a = (end_a.coupler_open & (front ? coupler_open_front : coupler_open_rear)) != 0;
+            const bool open_b = (end_b.coupler_open & (meeting->other_front ? coupler_open_front : coupler_open_rear)) != 0;
+            const bool too_hard = force > end_a.definition->derail_buffer_force || force > end_b.definition->derail_buffer_force;
+            const bool can_couple = coupler_a.type == 0 && coupler_b.type == 0 && !open_a && !open_b && !too_hard
+                && closing >= (std::max)(coupler_a.velocity, coupler_b.velocity) && !train->derailed() && !other->derailed();
+            if (can_couple) {
+                // The earlier train in the list survives.
+                const bool keep_a = a < b;
+                auto* survivor = keep_a ? train : other;
+                auto* absorbed = keep_a ? other : train;
+                const bool survivor_front = keep_a ? front : meeting->other_front;
+                const bool absorbed_front = keep_a ? meeting->other_front : front;
+                if (survivor->couple(*absorbed, survivor_front, absorbed_front, (std::max)(meeting->gap, 0.0))) {
+                    results.push_back({.outcome = ContactOutcome::coupled,
+                                       .survivor = survivor,
+                                       .absorbed = absorbed,
+                                       .absorbed_ahead = survivor_front,
+                                       .absorbed_turned = absorbed_front == survivor_front,
+                                       .force = force});
+                    gone[keep_a ? b : a] = true;
+                    continue;
+                }
+            }
+            // Inelastic: both trains continue with the common speed along
+            // the line (masses of the whole trains); an overlap is pushed
+            // apart in proportion to the masses.
+            const double mass_a = train->mass();
+            const double mass_b = other->mass();
+            const double common = (mass_a * side_a * mean_velocity(*train) + mass_b * -side_b * mean_velocity(*other)) / (mass_a + mass_b);
+            const double change_a = side_a * common - mean_velocity(*train);
+            const double change_b = -side_b * common - mean_velocity(*other);
+            results.push_back({.outcome = too_hard ? ContactOutcome::collision : ContactOutcome::buffers,
+                               .survivor = train,
+                               .absorbed = other,
+                               .force = force});
+            train->add_velocity(static_cast<float>(change_a));
+            other->add_velocity(static_cast<float>(change_b));
+            // Each end car takes the hit (RTS 0x58A07C -> 0x589A14): pushed
+            // away from the other train, over one step; above its
+            // DerailBufferForce it comes off.
+            const float push_a[3] = {0.0f, 0.0f, front ? -1.0f : 1.0f};
+            const float push_b[3] = {0.0f, 0.0f, meeting->other_front ? -1.0f : 1.0f};
+            train->hit(front ? 0 : train->cars().size() - 1, static_cast<float>(force), push_a, static_cast<float>(train_step));
+            other->hit(meeting->other_front ? 0 : other->cars().size() - 1, static_cast<float>(force), push_b,
+                       static_cast<float>(train_step));
+            if (meeting->gap < 0.0) {
+                const double push = -meeting->gap;
+                train->shift(-side_a * push * mass_b / (mass_a + mass_b));
+                other->shift(-side_b * push * mass_a / (mass_a + mass_b));
+            }
+        }
+    }
+    return results;
+}
 
 // ---------------------------------------------------------------------------
 // Test track and test run

@@ -498,7 +498,7 @@ namespace {
         },
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
         .depthStencil = &depth,
-        .multisample = {.count = 1, .mask = ~0u},
+        .multisample = scene_multisample(),
         .fragment = &fragment,
     };
     return wgpuDeviceCreateRenderPipeline(device, &descriptor);

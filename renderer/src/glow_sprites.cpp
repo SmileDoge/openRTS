@@ -221,7 +221,7 @@ GlowSpriteRenderer::GlowSpriteRenderer(const WGPUDevice device, const WGPUTextur
         .vertex = {.module = shader, .entryPoint = wgsl_name("vs_main"), .bufferCount = 1, .buffers = &vertex_layout},
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
         .depthStencil = &depth,
-        .multisample = {.count = 1, .mask = ~0u},
+        .multisample = scene_multisample(),
         .fragment = &fragment,
     };
     impl.pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);

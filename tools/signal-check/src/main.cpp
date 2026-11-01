@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -82,6 +83,9 @@ int compare_assembly(const std::string& ours, const std::string& reference_path)
     return differences == 0 ? 0 : 1;
 }
 
+// --head N: print one head's links and script inputs after the first update.
+std::optional<std::uint32_t> debug_head;
+
 const char* aspect_name(float state) {
     return formats::to_string(static_cast<formats::SignalAspect>(std::clamp(static_cast<int>(state), 0, 9)));
 }
@@ -115,6 +119,25 @@ int run_route(const core::Vfs& vfs, const core::VirtualPath& route, const format
     signals.update({}, simulation::train_step);
     reference.update({}, simulation::train_step);
     compare();
+    if (debug_head && *debug_head < signals.heads().size()) {
+        const auto h = *debug_head;
+        const auto& head = signals.heads()[h];
+        std::printf("  head %u: type %s, item %u, node %u at %.1f %s, aspect %s draw %.0f\n", h,
+                    head.type ? head.type->name.c_str() : "?", head.track_item, head.node, head.offset,
+                    head.forward ? "forward" : "backward", aspect_name(head.state), head.draw_state);
+        for (const auto& [junction, branch] : head.links) {
+            const auto* state = network->junction(junction);
+            std::printf("    link: junction %u branch %u (selected %u, main %u)\n", junction, branch,
+                        state ? state->selected : 99u, state ? state->main_route : 99u);
+        }
+        std::printf("    route_set %d, block_state %d\n", signals.route_set(h, 0), signals.block_state(h, 0));
+        const auto& items = network->database().items;
+        if (head.track_item < items.size()) {
+            for (const auto& dir : items[head.track_item].signal_directions) {
+                std::printf("    TrSignalDir: junction %u values %u %u %u\n", dir.junction, dir.values[0], dir.values[1], dir.values[2]);
+            }
+        }
+    }
     const auto first_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     std::map<std::string, int> by_aspect;
     for (const auto& head : signals.heads()) ++by_aspect[aspect_name(head.state)];
@@ -218,7 +241,10 @@ int main(int argc, char** argv) {
     std::string consist_name = "1,5VL10k-1654+943b";
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--run") {
+        if (arg == "--head" && i + 1 < argc) {
+            debug_head = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+            run = true;
+        } else if (arg == "--run") {
             run = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') consist_name = argv[++i];
         } else if (arg == "--shape" && i + 1 < argc) {
@@ -253,6 +279,7 @@ int main(int argc, char** argv) {
             };
             float lo[3] = {1e9f, 1e9f, 1e9f}, hi[3] = {-1e9f, -1e9f, -1e9f};
             for (const auto& draw : model.draws) {
+                if (draw.level != 0) continue;
                 const auto transform = node_world(draw.matrix_index);
                 for (std::uint32_t k = 0; k < draw.index_count; ++k) {
                     const auto& vertex = model.vertices[model.indices[draw.first_index + k]];
@@ -266,19 +293,23 @@ int main(int argc, char** argv) {
             }
             // Per 0.3 m height band, the z extent of geometry near x = 0
             // (lenses, hoods, mast) to see which side the heads face.
-            for (float band = 2.0f; band < 9.0f; band += 0.3f) {
-                float zlo = 1e9f, zhi = -1e9f;
+            for (float band = 0.0f; band < 9.0f; band += 0.3f) {
+                float zlo = 1e9f, zhi = -1e9f, xlo = 1e9f, xhi = -1e9f;
                 for (const auto& draw : model.draws) {
+                    if (draw.level != 0) continue;
                     const auto transform = node_world(draw.matrix_index);
                     for (std::uint32_t k = 0; k < draw.index_count; ++k) {
                         const auto& vertex = model.vertices[model.indices[draw.first_index + k]];
                         const auto p = transform(vertex.position[0], vertex.position[1], vertex.position[2]);
-                        if (p[1] < band || p[1] >= band + 0.3f || std::abs(p[0]) > 0.1f) continue;
+                        if (p[1] < band || p[1] >= band + 0.3f) continue;
+                        xlo = (std::min)(xlo, p[0]);
+                        xhi = (std::max)(xhi, p[0]);
+                        if (std::abs(p[0]) > 0.1f) continue;
                         zlo = (std::min)(zlo, p[2]);
                         zhi = (std::max)(zhi, p[2]);
                     }
                 }
-                if (zlo < zhi) std::printf("  y %.1f..%.1f: z %.2f..%.2f\n", band, band + 0.3f, zlo, zhi);
+                if (xlo < xhi) std::printf("  y %.1f..%.1f: x %.2f..%.2f, z near x=0 %.2f..%.2f\n", band, band + 0.3f, xlo, xhi, zlo, zhi);
             }
             for (std::size_t s = 0; s < model.primitive_states.size(); ++s) {
                 const auto& state = model.primitive_states[s];
@@ -328,6 +359,7 @@ int main(int argc, char** argv) {
                 std::vector<Tri> tris;
                 for (std::size_t di = 0; di < model.draws.size(); ++di) {
                     const auto& draw = model.draws[di];
+                    if (draw.level != 0) continue;
                     const auto transform = node_world(draw.matrix_index);
                     for (std::uint32_t k = 0; k + 2 < draw.index_count; k += 3) {
                         Tri tri{};
@@ -394,6 +426,16 @@ int main(int argc, char** argv) {
                 }
             }
             std::printf("geometry above 2 m: x %.2f..%.2f  y %.2f..%.2f  z %.2f..%.2f\n", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+            for (std::size_t level = 0; level < (std::max)(model.level_distances.size(), std::size_t{1}); ++level) {
+                std::size_t draws = 0, triangles = 0;
+                for (const auto& draw : model.draws) {
+                    if (draw.level != level) continue;
+                    ++draws;
+                    triangles += draw.index_count / 3;
+                }
+                std::printf("level %zu: up to %.0f m, %zu draws, %zu triangles\n", level,
+                            level < model.level_distances.size() ? model.level_distances[level] : 0.0f, draws, triangles);
+            }
             return 0;
         } else if (arg == "--asm" && i + 1 < argc) {
             asm_reference = argv[++i];

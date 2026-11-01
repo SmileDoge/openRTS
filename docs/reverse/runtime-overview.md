@@ -231,6 +231,28 @@ After the frame:
 - **Offsets:** `offset += v·dt`, rebased so the last car stays the
   reference. A coupler gap below `0.001·dt` is snapped to exactly 0 by
   shifting all cars ahead.
+- **Uncoupling** (`0x469858(train, index, close_cocks, keep_open)`), CONFIRMED:
+  - the cars from `index` form a new train (type 3, standing);
+  - car flags `+28`: the cut's rear car gets `0x2A00` set (hose, second
+    pipe and EP line rear disconnected; byte `+29` 0x02/0x08/0x20), the cut's
+    front car `0x1500` (the same at the front); the end cocks stay as they
+    were;
+  - `close_cocks` (or a train of type 2) runs `0x4FECB0`: rear `0x8200`,
+    front `0x4100` — the end cocks closed (and EP / second pipe when both
+    cars have them);
+  - `keep_open` sets car `+14` bits 2 / 1 (couplers left open);
+  - callers: coupler break with (0, 0) after "Train damaged"; the uncouple
+    menu `0x54F288` with (1, 0); multiplayer and requests by car flags.
+- **Trains meeting** (`0x424488`), CONFIRMED: neighbouring trains keep the
+  gap between their ends. When a step closes it, the impact is
+  `−gap_after / dt · (m1 + m2)` of the two end cars. Above either car's
+  `DerailBufferForce` (`+0xE4`), or for a derailed car, `0x58A07C` handles a
+  collision (impulse, damage flags 16/32 above the coupler threshold). Else
+  the trains couple (`0x469ED8`) unless a coupler is not automatic (and the
+  train is not type 2), a contact end is left open (`+14` 0x11 / 0x22), or
+  the closing speed is below the coupling `Velocity` (`+36` of the
+  coupling block); then they only push (`0x4FB8CC`: the overlap split by
+  the trains' masses).
 - **Coupler break** (player train only, unless switched off in the config):
   - the stored coupler force is compared with the weaker end's `Break`
     value — tension or compression by the force sign, and tension for
@@ -313,3 +335,51 @@ sound, animation and the object model the DLL edits.
 - Brake cylinder model per car (`0x50D3B4`, `0x514630`) — not read yet.
 - Switch animation stepper and mouse picking in the cab (`0x4121BC` and the
   renderer) — not traced; behaviour above is from `ts.h`/`export.pdf`.
+
+## Derailment (`0x5059A8` → `0x580B30`; per frame `0x581BC4`, `0x581694`, `0x586E6C`, `0x58AB30`)
+
+A derailed car gets a body (208 bytes, list at train +384, next at +204) —
+CONFIRMED for the parts below, the rest of the module (~40 KB: a solver for
+derailed trains `0x586E6C`/`0x588184`, ground contact `0x58A390`/`0x58A630`,
+impacts `0x589A14`, the 19 KB `0x581ECC`) is not ported.
+- **Overturning** (curve overspeed `m·v²/R > DerailRailForce`, or a tipped
+  neighbour): target roll `0.1 + 0.04·|v|` rad (neighbour: 0.75 of its), at
+  most 1.8; rate `|v|/33` rad/s (neighbour: 0.8 of its); drag at full roll
+  `m·10` (times `0.637·target` below 1.57); the roll grows by
+  `rate·dt·(|target − roll|/|target| + 0.2)` (`0x581BC4`); outwards of the
+  curve or as the neighbour rolls.
+- **Fallen** past 0.8 rad: car flags `0x3F00` (hose, second pipe and EP
+  lines both ends) and the neighbours' facing ends.
+- **Neighbours** (`0x581694`): `0.637·|roll|·m` above a neighbour's
+  `DerailBufferForce` derails it; past 0.9 rad the coupler is damaged
+  (flags 16/32); farther apart than the half lengths + 0.5 m, the hoses part.
+- **Sliding** (a failed advance, e.g. the end of the track): an on-ground
+  body moving along the car's heading with the car's speed, drag `m·5`.
+
+- **Ground contact** (`0x58A390`, CONFIRMED structure): the body's
+  corners (±width/2, height) are tested against nearby world objects
+  (`0x58A630`: objects with `CollideFlags` non-zero and bit 2 clear, sphere
+  ×1.42 prefilter, then their triangles); contacts sum a support force
+  (contact depth × 1 170 000 for the ground kind 1, × 3000 otherwise) and
+  limit the body's descent.
+- **Hits** (`0x589A14`): a hit near the middle of a derailed body rolls it
+  (target `F/m·t·0.04 + 0.1`, rate `|F/m·t/width|`), towards one end turns it;
+  on the rails it adds to the body's motion.
+
+openRTS: the overturn and sliding rules above; hits (`Train::hit`: on the
+rails above DerailBufferForce the car comes off sliding, below it the body
+takes the shove; a derailed car hit from the side rolls by the formula
+above, a sliding one hit along folds); a train running off the end of the
+track or into an obstacle folds: each next car derails while the stopping
+force of the cars behind it (m·v over 0.5 s, PROBABLE stand-in for the
+`0x586E6C` solver) is above its DerailBufferForce, folding to alternate sides
+by `0.1 + 0.02·v` rad (at most 0.6); buffer collisions between trains hit
+both end cars. The viewer puts slid cars on the terrain (bilinear heights,
+never above the rails, at most 6 m down), lowers an overturning car onto
+lower ground beside the track, and stops a sliding car at a world object
+with CollideFlags (bit 2 clear) ahead within half its bounding radius.
+openRTS: the overturn and sliding rules above; a fallen car's hoses are
+torn (the pipe vents); past 0.9 rad the coupler breaks (the viewer uncouples
+there); a sliding car slows at 5 m/s² (its drag over its mass); the viewer
+rolls an overturning body about the rail on its falling side and moves a
+sliding one along the line it left by, 0.3 m down.

@@ -77,7 +77,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         .vertex = {.module = shader, .entryPoint = wgsl_name("vs_main"), .bufferCount = 1, .buffers = &vertex_layout},
         .primitive = {.topology = WGPUPrimitiveTopology_LineList},
         .depthStencil = &depth,
-        .multisample = {.count = 1, .mask = ~0u},
+        .multisample = scene_multisample(),
         .fragment = &fragment,
     };
     return wgpuDeviceCreateRenderPipeline(device, &descriptor);

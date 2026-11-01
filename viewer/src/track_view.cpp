@@ -69,6 +69,11 @@ void TrackView::attach(const WGPUDevice device, const WGPUTextureFormat target_f
     build_lines();
 }
 
+void TrackView::set_origin(const formats::RoutePosition& origin) {
+    origin_ = origin;
+    if (lines_) build_lines();
+}
+
 void TrackView::detach() {
     lines_.reset();
 }
@@ -262,6 +267,25 @@ void TrackView::draw_overlay() const {
         ImGui::Text("  worst: %s node %u%s%u  %.2f m", joint.between_nodes ? "pin" : "section", joint.node,
                     joint.between_nodes ? " -> " : " #",
                     joint.between_nodes ? joint.other : static_cast<std::uint32_t>(joint.section), joint.gap);
+    }
+    if (ImGui::TreeNode("Legend")) {
+        const auto row = [](const std::uint32_t colour, const char* text) {
+            // debug_colour packs 0xAABBGGRR like ImGui.
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colour | 0xff000000u), "|");
+            ImGui::SameLine();
+            ImGui::TextUnformatted(text);
+        };
+        row(colour_track, "track");
+        row(colour_junction, "junction");
+        row(colour_branch, "set branch of a junction");
+        row(colour_end, "end of track");
+        row(item_colour(formats::TrackItemKind::signal), "signal (5 m post)");
+        row(item_colour(formats::TrackItemKind::speed_post), "speed post (3 m)");
+        row(item_colour(formats::TrackItemKind::platform), "platform start / end (2 m)");
+        row(item_colour(formats::TrackItemKind::siding), "siding start / end (2 m)");
+        row(item_colour(formats::TrackItemKind::level_crossing), "level crossing (2 m)");
+        row(item_colour(formats::TrackItemKind::crossover), "crossover (2 m)");
+        ImGui::TreePop();
     }
     if (!message_.empty()) ImGui::Text("%s", message_.c_str());
 #endif

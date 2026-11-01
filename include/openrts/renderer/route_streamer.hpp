@@ -20,6 +20,7 @@ struct StreamedInstance {
     std::int32_t world_tile_x{};
     std::int32_t world_tile_z{};
     std::uint32_t uid{};
+    std::uint32_t collide_flags{}; // WorldObjectPlacement::collide_flags
 };
 
 struct RouteStreamerStats {
@@ -45,6 +46,10 @@ public:
     // Schedules missing tiles in a square around camera. This call is cheap and
     // never waits for file parsing or ACE decoding.
     void update(const formats::RoutePosition& camera);
+    // Moves the scene origin: every instance's translation is computed again
+    // from its route position (double precision), so float positions stay
+    // precise near the camera on long routes.
+    void set_origin(const formats::RoutePosition& origin);
     // Collects completed worker jobs and schedules model/texture jobs.
     void poll();
     [[nodiscard]] std::vector<StreamedModelAsset> take_ready_models();

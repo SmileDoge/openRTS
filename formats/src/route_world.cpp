@@ -82,6 +82,10 @@ void read_static_field(Tokenizer& tokens,
         object.position.y = *py;
         object.position.z = *pz;
         has_position = true;
+    } else if (equals_ignore_case(field, "CollideFlags")) {
+        if (const auto value = tokens.next()) {
+            if (const auto flags = parse_integer<std::uint32_t>(*value)) object.collide_flags = *flags;
+        }
     } else if (equals_ignore_case(field, "SignalSubObj")) {
         if (const auto value = tokens.next()) object.signal_sub_objects = static_cast<std::uint32_t>(std::strtoul(value->c_str(), nullptr, 16));
     } else if (equals_ignore_case(field, "QDirection")) {

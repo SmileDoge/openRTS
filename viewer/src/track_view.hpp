@@ -37,6 +37,7 @@ public:
     // switch: MainRoute at frame 0, the other branch at frame 1.
     [[nodiscard]] std::optional<float> switch_frame(const renderer::StreamedInstance& instance);
     void draw_overlay() const;
+    void set_origin(const formats::RoutePosition& origin);
     // Labels of the junctions within `range` of `eye`: id, set branch, and
     // whether a train holds it.
     void collect_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, float range) const;

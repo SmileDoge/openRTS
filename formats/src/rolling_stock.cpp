@@ -244,6 +244,18 @@ WagonDefinition parse_wagon(const std::string_view bytes) {
     wagon.derail_rail_force = static_cast<float>(values(t, "derailrailforce").product());
     if (wagon.derail_rail_force <= 0.0f) wagon.derail_rail_force = 240000.0f;
     wagon.derail_buffer_force = static_cast<float>(values(t, "derailbufferforce").quantity());
+    {
+        auto stiffness = values(t, "framespringstiffness");
+        const auto read = stiffness.atof();
+        wagon.frame_spring_stiffness = rts_find(t, "framespringstiffness") ? read : wagon.mass * 30.0;
+        auto damping = values(t, "framespringdamping");
+        const auto damped = damping.atof();
+        wagon.frame_spring_damping = rts_find(t, "framespringdamping") ? damped : wagon.mass * 1.25;
+        if (rts_find(t, "frameosccorrection")) {
+            auto correction = values(t, "frameosccorrection");
+            for (auto& value : wagon.frame_osc_correction) value = (std::max)(static_cast<float>(correction.atof()), 0.0f);
+        }
+    }
 
     std::string brake_error;
     read_brakes(t, wagon.brakes, brake_error);

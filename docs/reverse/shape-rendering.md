@@ -109,3 +109,29 @@ by distance into 10 UBOs.
 Interior lights (`LightsInt`), the night/instance unlit flags, alpha to
 coverage, mipmap generation (so LOD bias has no visible effect yet), passes
 other than 1 and 2, light source binning.
+
+## Distance levels (openRTS, 2026-11-01)
+
+Shapes carry several distance levels (`dlevel_selection` per level: the
+TestRoute signal heads 100 / 250 / 500 / 2000 m, the ВЛ10к 300 … 2000 m),
+each a simpler mesh. openRTS loads all levels of the first `lod_control`
+and draws, per instance, the first level whose selection distance reaches
+the camera's distance to the model centre, else the last one. RTS draws the
+level an object holds at +104 (`0x4B1664`); where RTS chooses it (another
+thread, distance, FOV or a LOD bias) is not traced, so the rule is the MSTS
+one — PROBABLE. The hierarchy of the first level is used for all levels.
+
+## Output colour format
+
+RTS draws into a plain GL framebuffer: the shaders' outputs go to the screen
+as they are. The viewer picks a non-sRGB surface format (BGRA8 / RGBA8
+Unorm); an sRGB surface, which Vulkan on NVIDIA offers first, encodes the
+values again and made the whole picture brighter than RTS.
+
+## Antialiasing and anisotropy
+
+The installed RTS config has `Antialiasing = 4x MSAA +Alpha` and
+`Anisotropy = 16` (where rts1.exe reads them is not traced: the key name is
+not in the exe). openRTS: 4x MSAA by default (`--msaa 1|4`), alpha-to-coverage
+on alpha-tested pipelines, and 16x anisotropic filtering on samplers whose
+min, mag and mip filters are all linear (models, terrain).

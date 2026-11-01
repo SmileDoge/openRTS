@@ -235,6 +235,7 @@ public:
 
     void update(ModelRenderer&, ViewerCamera& camera, const SceneClock& clock, const SceneInput& input) override {
         if (input.toggle_labels) labels_ = !labels_;
+        rebase_near(camera);
         if (track_) {
             track_->update(input, clock.elapsed);
             if (input.throw_junction) {
@@ -249,9 +250,13 @@ public:
         }
         if (train_) {
             if (input.place_train && train_->loaded()) place_train(camera);
+            train_->set_obstacles(streamer_ ? &streamer_->visible_instances() : nullptr);
             train_->update(input, camera, clock.elapsed, *library_, audio_);
         }
-        if (signals_) signals_->update(clock.elapsed, train_ ? train_->train() : nullptr, camera.eye());
+        if (signals_) {
+            const auto trains = train_ ? train_->trains() : std::vector<const simulation::Train*>{};
+            signals_->update(clock.elapsed, train_ ? train_->train() : nullptr, trains, camera.eye());
+        }
         const auto camera_position = renderer::route_position(camera.eye(), origin_);
         apply_conditions(clock.season, clock.weather);
         if (terrain_) terrain_->update(camera_position);
@@ -467,6 +472,27 @@ private:
     std::unique_ptr<audio::WorldSounds> world_sounds_;
     // Debug switch in the overlay; the overlay callback is const.
     mutable bool culling_ = true;
+
+    // Floating origin: positions are floats relative to origin_, which at
+    // 100+ km (Kuban: 132 km from RouteStart) step by centimetres and make
+    // everything shake. When the camera is more than 1 km from the origin,
+    // the origin moves under it (whole metres, same height) and every part
+    // of the scene follows.
+    void rebase_near(ViewerCamera& camera) {
+        constexpr float rebase_distance = 1000.0f;
+        const auto eye = camera.eye();
+        if (std::abs(eye.x) < rebase_distance && std::abs(eye.z) < rebase_distance) return;
+        const glm::vec3 shift{std::round(eye.x), 0.0f, std::round(eye.z)};
+        origin_ = renderer::route_position(shift, origin_);
+        camera.position -= shift;
+        camera.target -= shift;
+        if (streamer_) streamer_->set_origin(origin_);
+        if (terrain_) terrain_->set_origin(origin_);
+        if (track_) track_->set_origin(origin_);
+        if (train_) train_->set_origin(origin_);
+        if (signals_) signals_->set_origin(origin_);
+        if (world_sounds_) world_sounds_->set_origin(origin_);
+    }
     mutable bool labels_ = false;
     glm::mat4 last_view_projection_{1.0f};
     glm::vec3 last_eye_{};

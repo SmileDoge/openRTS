@@ -112,6 +112,12 @@ struct WagonDefinition {
     float derail_rail_height{};
     float derail_rail_force = 240000.0f;
     float derail_buffer_force{};
+    // Body on its springs (RTS 0x44247C, used by 0x4F5B34).
+    double frame_spring_stiffness{}; // FrameSpringStiffness, default mass * 30
+    double frame_spring_damping{};   // FrameSpringDamping, default mass * 1.25
+    // FrameOscCorrection: lateral amplitude, lateral frequency, vertical
+    // amplitude factors (default 1, negative read as 0).
+    float frame_osc_correction[3]{1.0f, 1.0f, 1.0f};
     BrakeEquipment brakes;
     std::string sound;          // RTSExteriorSound, else Sound
     std::string cab_sound;      // RTSCabinSound
