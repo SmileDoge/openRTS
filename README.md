@@ -62,6 +62,20 @@ RTrainSim (RTS). Цель — запускать существующий кон
 3. Активности и полноценный AI-трафик.
 4. PBR-материалы.
 
+## Готовая сборка
+
+Каждый push в `master` собирается на GitHub Actions. Архив
+`openRTS-windows-x64` (вьювер, инструменты, `wgpu_native.dll`) лежит на вкладке
+**Actions** → последний успешный запуск → **Artifacts**. Пока репозиторий
+приватный, скачать его могут только участники.
+
+> **Нужен Microsoft Visual C++ Redistributable (x64).** Без него Windows
+> пишет, что не найден `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` или
+> `MSVCP140.dll`. Скачать с сайта Microsoft:
+> [vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+> ([страница со всеми версиями](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)).
+> Нужна именно x64-версия; x86 не подойдёт.
+
 ## Сборка
 
 Основная платформа — Windows 10/11 x64. Нужны:
@@ -85,7 +99,8 @@ ctest --test-dir build -C Release --output-on-failure
 ## Запуск
 
 Нужна установленная RTS с контентом: openRTS ничего в ней не меняет и сам
-контента не содержит.
+контента не содержит. На компьютере без Visual Studio нужен Visual C++
+Redistributable (x64), см. «Готовая сборка».
 
 ```powershell
 .\build\viewer\Release\openrts_viewer.exe --window --route Kuban_RTS --root D:\Games\RTS --consist "ED4M-0050 12vag"

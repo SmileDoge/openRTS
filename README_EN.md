@@ -65,6 +65,20 @@ In the order of the plan (`docs/roadmap.md`):
 3. Activities and full AI traffic.
 4. PBR materials.
 
+## Prebuilt binaries
+
+Every push to `master` is built on GitHub Actions. The `openRTS-windows-x64`
+archive (the viewer, the tools, `wgpu_native.dll`) is on the **Actions** tab →
+the latest successful run → **Artifacts**. While the repository is private,
+only its members can download it.
+
+> **The Microsoft Visual C++ Redistributable (x64) is required.** Without it
+> Windows reports that `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` or
+> `MSVCP140.dll` was not found. Get it from Microsoft:
+> [vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+> ([all versions](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)).
+> It must be the x64 version; x86 will not do.
+
 ## Building
 
 The main platform is Windows 10/11 x64. You need:
@@ -88,7 +102,8 @@ with no window.
 ## Running
 
 You need an RTS installation with content: openRTS changes nothing in it and
-ships no content of its own.
+ships no content of its own. A computer without Visual Studio needs the
+Visual C++ Redistributable (x64), see "Prebuilt binaries".
 
 ```powershell
 .\build\viewer\Release\openrts_viewer.exe --window --route Kuban_RTS --root D:\Games\RTS --consist "ED4M-0050 12vag"

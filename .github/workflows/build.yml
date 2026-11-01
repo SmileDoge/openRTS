@@ -1,0 +1,81 @@
+# Windows build: Release, the tests, and an archive with the viewer and the
+# tools (openRTS-windows-x64). The tests need no RTS content, GPU or sound
+# card: they build their own small tracks and render sound offline.
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      WGPU_VERSION: v27.0.4.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache wgpu-native
+        id: wgpu-cache
+        uses: actions/cache@v4
+        with:
+          path: wgpu-native
+          key: wgpu-native-${{ env.WGPU_VERSION }}-windows-x86_64-msvc-release
+
+      - name: Download wgpu-native
+        if: steps.wgpu-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/gfx-rs/wgpu-native/releases/download/$env:WGPU_VERSION/wgpu-windows-x86_64-msvc-release.zip"
+          Invoke-WebRequest $url -OutFile wgpu.zip
+          Expand-Archive wgpu.zip -DestinationPath wgpu-native
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -DOPENRTS_ENABLE_WGPU=ON "-DOPENRTS_WGPU_ROOT=$env:GITHUB_WORKSPACE/wgpu-native"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "openRTS-windows-x64"
+          New-Item -ItemType Directory -Force "$out/tools" | Out-Null
+          Copy-Item build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll $out
+          Get-ChildItem build/tools -Recurse -Filter *.exe | Where-Object { $_.DirectoryName -like '*\Release' } |
+              ForEach-Object { Copy-Item $_.FullName "$out/tools" }
+          Copy-Item README.md, README_EN.md $out
+          # What people miss first: the VC++ runtime and the RTS installation.
+          @(
+            'openRTS - перед запуском / before you start',
+            '',
+            '1. Нужен Microsoft Visual C++ Redistributable (x64). Без него Windows пишет,',
+            '   что не найден VCRUNTIME140.dll / VCRUNTIME140_1.dll / MSVCP140.dll.',
+            '   The Microsoft Visual C++ Redistributable (x64) is required. Without it',
+            '   Windows reports VCRUNTIME140.dll / VCRUNTIME140_1.dll / MSVCP140.dll missing.',
+            '   https://aka.ms/vs/17/release/vc_redist.x64.exe',
+            '',
+            '2. Нужна своя установка RTS с маршрутами и подвижным составом.',
+            '   You need your own RTS installation with routes and rolling stock.',
+            '',
+            '3. Пример / example:',
+            '   openrts_viewer.exe --window --route Kuban_RTS --root D:\Games\RTS --consist "ED4M-0050 12vag"',
+            '',
+            'Подробности / details: README.md (русский), README_EN.md (English).'
+          ) | Out-File -Encoding utf8BOM "$out/README_FIRST.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openRTS-windows-x64
+          path: openRTS-windows-x64
+          retention-days: 14
