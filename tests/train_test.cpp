@@ -470,6 +470,142 @@ void test_ept() {
     check(most < 0.05f, "II releases the EP brake");
 }
 
+// openRTS realistic air (docs/train.md): stability, service, release, emergency;
+// a controller tuned to RTS's triple valve keeps the RTS model.
+void test_realistic_air(const Stock& stock) {
+    using Handle = simulation::DriverHandles::BrakeHandle;
+    simulation::TrainSettings settings;
+    settings.brake_model = simulation::BrakeModel::realistic;
+    {
+        Run r(stock, settings, 1000.0);
+        check(r.train.brake_model() == simulation::BrakeModel::realistic, "the realistic model runs");
+        r.run(120.0);
+        check(r.max_cylinder < 0.05f, "realistic: II keeps the train released");
+        check(near(r.train.cars().back().pipe, r.driver->charging_pressure, 0.2), "realistic: II holds the charging pressure");
+        // Stability: the УР let down at 0.2 atm/min (below the 483's 0.3) applies nothing.
+        r.driver->brake = Handle::lap;
+        for (int i = 0; i < static_cast<int>(60.0 / simulation::train_step); ++i) {
+            r.driver->equalising -= 0.2f / 60.0f * static_cast<float>(simulation::train_step);
+            r.run(simulation::train_step);
+        }
+        check(r.max_cylinder < 0.05f, "realistic: a slow fall below the stability applies nothing");
+        r.driver->brake = Handle::running;
+        r.run(120.0);
+        // Service: V 4 s, III 20 s.
+        r.max_cylinder = 0.0f;
+        r.driver->brake = Handle::service;
+        r.run(4.0);
+        r.driver->brake = Handle::lap;
+        r.run(20.0);
+        float least = 99.0f;
+        for (const auto& car : r.train.cars()) least = (std::min)(least, car.cylinder);
+        check(least > 0.3f, "realistic: a service step applies every car");
+        // II: back within reach of the control chambers, the 483s release.
+        r.driver->brake = Handle::running;
+        r.run(240.0);
+        float most = 0.0f;
+        for (const auto& car : r.train.cars()) most = (std::max)(most, car.cylinder);
+        check(most < 0.05f, "realistic: II releases after a service step");
+    }
+    {
+        Run r(stock, settings, 1000.0);
+        r.run(60.0);
+        r.driver->brake = Handle::emergency;
+        r.run(10.0);
+        check(r.train.cars().back().cylinder > 2.0f, "realistic: VI applies the whole train within 10 s");
+    }
+    {
+        struct RtsValve final : simulation::LocomotiveController {
+            void step(double, const simulation::EngineInputs&, simulation::EngineDemands&) override {}
+            [[nodiscard]] bool rts_brakes() const override { return true; }
+        };
+        Run r(stock, settings, 1000.0);
+        r.train.set_controller(0, std::make_unique<RtsValve>());
+        check(r.train.brake_model() == simulation::BrakeModel::rts, "a legacy valve keeps the RTS model");
+    }
+}
+
+// What a hand at the track does (RTS's car menu, 0x463F84): brake shoes,
+// the release valve, the emergency valve, parted hoses, the EP cable, and
+// the train standing at a free end.
+void test_car_menu(const Stock& stock) {
+    using Flags = simulation::Train::CarFlags;
+    using Handle = simulation::DriverHandles::BrakeHandle;
+    {
+        Run r(stock, {}, 1000.0);
+        r.run(1.0);
+        const float before = r.train.cars()[3].brake_force;
+        r.train.set_car_flags(3, Flags::chocks, simulation::chock_front | simulation::chock_rear, true);
+        r.run(0.1);
+        check(near(r.train.cars()[3].brake_force - before, 2.0 * simulation::chock_force, 1.0), "two brake shoes add 20 kN");
+        r.train.set_car_flags(3, Flags::chocks, simulation::chock_front, false);
+        r.run(0.1);
+        check(near(r.train.cars()[3].brake_force - before, simulation::chock_force, 1.0), "a removed shoe takes its 10 kN away");
+    }
+    {
+        Run r(stock, {}, 1000.0);
+        r.run(60.0);
+        r.driver->brake = Handle::service;
+        r.run(3.0);
+        r.driver->brake = Handle::lap;
+        r.run(10.0);
+        const float applied = r.train.cars()[5].cylinder;
+        r.train.set_car_flags(5, Flags::valves, simulation::valve_release, true);
+        r.run(4.0);
+        check(applied > 0.5f && r.train.cars()[5].cylinder < 0.05f, "the release valve empties the cylinder");
+        check(r.train.cars()[6].cylinder > applied - 0.2f, "the next car keeps its brake");
+    }
+    {
+        Run r(stock, {}, 1000.0);
+        r.run(60.0);
+        r.train.set_car_flags(5, Flags::valves, simulation::valve_emergency, true);
+        r.run(10.0);
+        // The valve in II still feeds the pipe; the open valve holds it low.
+        check(r.train.cars()[5].pipe < 1.0f && r.train.cars().back().cylinder > 2.0f, "the emergency valve vents and brakes the train");
+    }
+    {
+        Run r(stock, {}, 1000.0);
+        r.run(60.0);
+        r.train.set_car_flags(2, Flags::pipe_ends, simulation::pipe_hose_rear, true);
+        r.train.set_car_flags(3, Flags::pipe_ends, simulation::pipe_hose_front, true);
+        r.run(10.0);
+        check(r.train.cars()[3].pipe < 1.0f && r.train.cars()[3].cylinder > 2.0f, "parted hoses with open cocks vent and brake");
+    }
+    {
+        Run r(stock, {}, 1000.0);
+        r.run(60.0);
+        r.train.set_car_flags(2, Flags::pipe_ends, simulation::pipe_cock_rear | simulation::pipe_hose_rear, true);
+        r.train.set_car_flags(3, Flags::pipe_ends, simulation::pipe_cock_front | simulation::pipe_hose_front, true);
+        r.run(10.0);
+        check(r.train.cars()[3].pipe > 4.5f && r.train.cars()[3].cylinder < 0.1f, "closed cocks first: the hoses part quietly");
+    }
+    {
+        const Stock ep(true);
+        Run r(ep, {}, 1000.0);
+        r.run(60.0);
+        r.train.set_car_flags(3, Flags::pipe_ends, simulation::ep_cable_rear, true);
+        r.train.set_car_flags(4, Flags::pipe_ends, simulation::ep_cable_front, true);
+        r.driver->ep_brake = true;
+        r.driver->brake = Handle::ep_service;
+        r.run(3.0);
+        r.driver->brake = Handle::lap_feed;
+        r.run(5.0);
+        check(r.train.cars()[2].cylinder > 1.0f && r.train.cars()[7].cylinder < 0.3f, "the EP demand stops at a parted EP cable");
+    }
+    {
+        Run r(stock, {}, 1500.0);
+        auto cut = r.train.uncouple(4, true, true);
+        check(cut != nullptr, "uncoupled for the contact");
+        if (cut) {
+            std::vector<simulation::Train*> trains{&r.train, cut.get()};
+            const auto contact = simulation::end_contact(r.train, false, trains, 5.0);
+            check(contact && contact->other == cut.get() && contact->other_front && contact->gap < 0.6,
+                  "the cut stands at the train's rear end");
+            check(!simulation::end_contact(r.train, true, trains, 5.0), "nothing at the train's front");
+        }
+    }
+}
+
 int main() {
     test_units();
     const Stock stock;
@@ -484,6 +620,8 @@ int main() {
     test_uncouple(stock);
     test_contacts(stock);
     test_ept();
+    test_realistic_air(stock);
+    test_car_menu(stock);
     if (failures == 0) std::cout << "train tests passed\n";
     return failures == 0 ? 0 : 1;
 }

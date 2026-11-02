@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 #include <string_view>
 
 #include <glm/mat4x4.hpp>
@@ -18,6 +19,7 @@
 #include <openrts/formats/route_world.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/rts_sky.hpp>
+#include <openrts/renderer/scene_effects.hpp>
 
 #include "camera.hpp"
 
@@ -30,6 +32,13 @@ struct FrameView {
     float vertical_fov = 0.0f;
     float aspect = 1.0f;
     float viewport_height = 720.0f; // pixels
+    // The experimental path's effects (SceneEffects::bind_group) for the
+    // terrain; the distance within which shadow casters out of view are
+    // wanted (0: none).
+    WGPUBindGroup effects = nullptr;
+    float shadow_range = 0.0f;
+    // Workers the scene may spread its culling over (nullptr: none).
+    renderer::TaskPool* pool = nullptr;
 };
 
 // GPU objects a scene may create resources with.
@@ -55,10 +64,16 @@ struct WorldLabel {
     glm::vec3 position{};
     std::string text;
     std::uint32_t colour = 0xffffffffu; // 0xAABBGGRR (ImGui)
+    // Hidden when the scene in front covers it (read from the depth buffer a
+    // frame late); off for captions on the very surface they name.
+    bool occludable = true;
+    // Who the label is, for the late occlusion answer; 0: its text and place
+    // (a label riding a moving train needs a key of its own).
+    std::size_t key{};
 };
 
-// A line between two points of the scene drawn over the 3D view (screen
-// space, `thickness` pixels), e.g. a signal to its track.
+// A line between two points of the scene, `thickness` pixels wide, e.g. a
+// signal to its track; drawn in the scene pass, hidden behind what is in front.
 struct WorldLine {
     glm::vec3 a{};
     glm::vec3 b{};
@@ -67,13 +82,24 @@ struct WorldLine {
 };
 
 // Keys the scene reacts to this frame (edges are "pressed this frame").
+// A key going down or up, for cab keys bound by the content (AssignKey).
+struct KeyEvent {
+    int key{};     // GLFW key code
+    bool down = false;
+    bool shift = false, ctrl = false, alt = false;
+};
+
 struct SceneInput {
+    // The eye the train's lights are seen from (--capture-camera, whose
+    // camera is set after the scene drives its own); otherwise the camera's.
+    std::optional<glm::vec3> light_eye;
     bool step_up = false;        // Up arrow held (shape scenes: animation frames)
     bool step_down = false;      // Down arrow held
     bool throw_junction = false; // J
     bool toggle_follow = false;  // V
     bool toggle_track = false;   // T
     bool toggle_labels = false;  // L: junction and signal labels
+    bool car_menu = false;       // Num3 / `: the car menu at a coupling or bogie (edge)
     // Train driving (edges).
     bool place_train = false;      // C
     bool throttle_up = false;      // Home
@@ -95,6 +121,26 @@ struct SceneInput {
     bool limits_panel = false;    // Ctrl+F5: speed limits and the kilometre
     bool stations_panel = false;  // F6: the stations ahead
     bool signal_names = false;    // Ctrl+F7: signal names near the camera
+    // The engineer on foot (engineer.hpp), with the cab keys or without.
+    bool walk_forward = false, walk_back = false, walk_left = false, walk_right = false; // arrows held
+    bool walk_run = false;             // Shift held
+    bool walk_slow = false;            // End held
+    bool engineer_action = false;      // Enter
+    bool engineer_action_ctrl = false; // Ctrl held with that Enter
+    bool cab_labels = false;           // Alt held: the captions of the cab's controls
+    bool cab_window = false;           // Num0: the chair's window
+    bool head_out = false;             // Num1: the head out of it
+    // The mouse over the 3-D view (not over a panel, not turning the view):
+    // where it points (normalised device coordinates), a left click, the wheel.
+    bool pointer = false;
+    float pointer_x{}, pointer_y{};
+    bool click = false;
+    bool release = false;              // the left button let go (a held cab button returns)
+    bool held = false;                 // the left button is down (a cab control is dragged)
+    float cursor_x{}, cursor_y{};      // the cursor in window pixels (y down)
+    bool click_shift = false;
+    float scroll{};
+    std::vector<KeyEvent> keys;   // every key press and release this frame (not repeats)
 };
 
 // Lighting and background colour the scene wants for the current frame.
@@ -129,11 +175,47 @@ public:
     virtual void submit(renderer::ModelRenderer& renderer, const FrameView& frame) = 0;
     // Draws after the models (debug overlays such as the track network).
     virtual void draw_foreground(WGPURenderPassEncoder, const FrameView&) {}
+    // In the main pass after the opaque models, before the translucent ones
+    // (glass): helpers that show through glass but hide behind solid models.
+    virtual void draw_before_translucent(WGPURenderPassEncoder, const FrameView&) {}
+    // Depth only, for the experimental path's shadow cascades and depth
+    // pre-pass (SceneEffects): what the scene draws besides the models (the
+    // terrain).
+    virtual void draw_depth(WGPURenderPassEncoder, std::uint32_t /*slot*/, const glm::mat4& /*view_projection*/,
+                            renderer::DepthPassKind /*kind*/) {}
+    // Called once before the depth passes, which may run on several threads.
+    virtual void prepare_depth() {}
+    // After the translucent models (glass), before the cab: where RTS draws
+    // its lights (0x408574's light loop between object passes 2 and 3).
+    virtual void draw_after_translucent(WGPURenderPassEncoder, const FrameView&) {}
+    // The occlusion queries the main pass is begun with (nullptr: none).
+    [[nodiscard]] virtual WGPUQuerySet occlusion_query_set() const { return nullptr; }
+    // After the main pass ended, before the encoder is finished; and after
+    // the frame was submitted.
+    virtual void after_main_pass(WGPUCommandEncoder) {}
+    virtual void frame_submitted() {}
     // Route coordinates of the scene's local origin (route scenes only), for
     // saving and restoring debug views in absolute coordinates.
     [[nodiscard]] virtual std::optional<formats::RoutePosition> origin() const { return std::nullopt; }
     // Adds scene-specific lines to the debug overlay (ImGui builds only).
     virtual void draw_overlay(const ViewerCamera& camera) const = 0;
+    // The scene takes the keyboard (a cab's own keys): the camera and the
+    // default driving keys stay off.
+    [[nodiscard]] virtual bool keyboard_captured() const { return false; }
+    // The mouse wheel works the scene (the 3-D cab) instead of zooming.
+    [[nodiscard]] virtual bool takes_scroll() const { return false; }
+    // Switch `id` of the driven train's cab to `state` (--capture-switch).
+    virtual void set_cab_switch(std::uint32_t, std::uint32_t) {}
+    // Car `car` of the driven train, shape space to world (--capture-camera).
+    [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
+    // The engineer into the driven train's cab (--capture-cab).
+    virtual void enter_cab() {}
+    // --capture-menu: pick an item of the open car menu; the menu as text.
+    virtual void choose_car_menu_item(int) {}
+    [[nodiscard]] virtual std::string car_menu_report() const { return {}; }
+    // What the shadows look at most closely this frame (after submit): the
+    // cab the engineer is in.
+    [[nodiscard]] virtual std::optional<renderer::ShadowFocus> shadow_focus() const { return std::nullopt; }
 };
 
 struct SceneLoadResult {
@@ -149,6 +231,9 @@ struct SceneContent {
     std::string consist;         // route scenes: consist to load, put on a path start
     std::string path;            // route scenes: the path for the consist (file name, id or name); the first by default
     bool track_control = false;  // route scenes: open the Track control window at start
+    int start_state = -1;        // route scenes: the DLLs' start (--start cold|on|running)
+    // The installation folder: RTS's own files (RTS\config.ini) are not in the VFS.
+    std::filesystem::path root;
 };
 
 [[nodiscard]] SceneLoadResult load_shape_scene(SceneContent content, const core::VirtualPath& shape);

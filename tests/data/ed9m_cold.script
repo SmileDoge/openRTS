@@ -1,0 +1,5 @@
+# ED9M-0062 started cold (--start cold, an activity's TrainState 0): the DLL
+# leaves everything off: pantographs down, the breaker open.
+0.5  expect panto == 0
+0.5  expect main_switch == 0
+1    expect alive == 1

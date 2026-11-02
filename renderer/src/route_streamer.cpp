@@ -11,6 +11,8 @@
 #include <openrts/assets/content_resolver.hpp>
 #include <openrts/renderer/route_space.hpp>
 
+#include "transfer_shape.hpp"
+
 namespace openrts::renderer {
 namespace {
 
@@ -44,6 +46,7 @@ struct RouteStreamer::Impl {
     core::VirtualPath route;
     std::string route_name;
     std::vector<core::VirtualPath> texture_directories;
+    TextureVariant variant;
     formats::RoutePosition origin;
     int radius{};
     std::map<TileKey, core::VirtualPath> world_files;
@@ -56,6 +59,7 @@ struct RouteStreamer::Impl {
     mutable std::vector<StreamedInstance> visible;
     mutable std::vector<TileKey> visible_tiles;
     mutable bool visible_stale = true;
+    mutable std::uint64_t visible_generation = 0;
 
     explicit Impl(std::shared_ptr<const core::Vfs> shared) : vfs(shared), resolver(std::move(shared)) {}
 
@@ -81,10 +85,18 @@ struct RouteStreamer::Impl {
 
         const assets::AssetContext context{.route_name = route_name};
         for (const auto& object : tile.objects) {
-            const auto resolved = resolver.resolve(assets::AssetKind::shape, object.shape_file.generic_string(), context);
-            if (!resolved.found()) continue;
+            std::optional<core::VirtualPath> source;
+            if (object.kind == formats::WorldObjectKind::transfer) {
+                // A ground texture: its own shape, built from the world file
+                // and the terrain (transfer_shape.hpp).
+                source = transfer_shape_path(file, object.uid);
+            } else {
+                const auto resolved = resolver.resolve(assets::AssetKind::shape, object.shape_file.generic_string(), context);
+                if (resolved.found()) source = *resolved.resolved_path;
+            }
+            if (!source) continue;
             result.instances.push_back({
-                .source_path = *resolved.resolved_path,
+                .source_path = *source,
                 .position = object.position,
                 .transform = placement_transform(object, origin),
                 .kind = object.kind,
@@ -92,6 +104,7 @@ struct RouteStreamer::Impl {
                 .world_tile_z = tile.tile_z,
                 .uid = object.uid,
                 .collide_flags = object.collide_flags,
+                .static_flags = object.static_flags,
             });
         }
         return result;
@@ -147,8 +160,8 @@ struct RouteStreamer::Impl {
             auto path = std::move(pending_models.front());
             pending_models.pop_front();
             auto key = path.key();
-            auto task = std::async(std::launch::async, [vfs = vfs, path, directories = texture_directories] {
-                return load_model_asset(*vfs, path, directories);
+            auto task = std::async(std::launch::async, [vfs = vfs, path, directories = texture_directories, variant = variant] {
+                return load_model_asset(*vfs, path, directories, nullptr, variant);
             });
             model_tasks.emplace(std::move(key), std::move(task));
         }
@@ -161,6 +174,8 @@ struct RouteStreamer::Impl {
         });
     }
 };
+
+void RouteStreamer::set_texture_variant(const TextureVariant& variant) { impl_->variant = variant; }
 
 RouteStreamer::RouteStreamer(std::shared_ptr<const core::Vfs> vfs,
                              core::VirtualPath route,
@@ -236,8 +251,13 @@ const std::vector<StreamedInstance>& RouteStreamer::visible_instances() const {
         }
         impl.visible_tiles = std::move(tiles);
         impl.visible_stale = false;
+        ++impl.visible_generation;
     }
     return impl.visible;
+}
+
+std::uint64_t RouteStreamer::visible_generation() const noexcept {
+    return impl_->visible_generation;
 }
 
 RouteStreamerStats RouteStreamer::stats() const {

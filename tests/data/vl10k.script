@@ -1,0 +1,29 @@
+# VL10k (tsrLoco_VL10k-1461, sections a + b as the consist has them: b is
+# not turned, its LibraryModule parameter 1 tells the DLL it is the rear
+# section). The legacy DLL drives the real train simulation through
+# openrts-dllhost32. Switch IDs are those of cab/cab.sd and vl10k_main.cpp.
+#
+#   openrts-train-check <RTS root> --dll tsrLoco_VL10k-1461 vl10k-1461a vl10k-1461b --script tests/data/vl10k.script
+0    expect panto == 3          # Init with a running start raises both pantographs
+0    expect main_switch == 1    # and closes the main breaker
+0.5  expect key38 == 2          # Init also turned the K_STR key to 2 with SetBoth: no Switched yet
+1    switch 38 1                # K_STR key back to neutral (KEY switch: state 1 = key in at position 0)
+2    switch 38 2                # and forward again: Switched(38) sets Engine::Reverse
+3    expect reverse == 1
+4    switch B_S 1               # "S" (series) button: the first notch
+6    switch B_S 0
+8    switch B_+ 1               # "+" notches up, one press at a time
+8.5  switch B_+ 0
+10   switch B_+ 1
+10.5 switch B_+ 0
+12   switch B_+ 1
+12.5 switch B_+ 0
+14   switch B_+ 1
+14.5 switch B_+ 0
+16   switch B_+ 1
+16.5 switch B_+ 0
+18   expect throttle > 3
+18   expect force > 20000       # both sections pull (the slave follows the master's controller)
+40   expect speed > 5
+40   expect main_switch == 1    # no overload trip
+40   expect alive == 1

@@ -213,10 +213,100 @@ same constants. It keeps the equalising reservoir in
 - It does not brake the train.
 - The earlier `distributor_stability` setting was removed.
 
-#### Proposal: realistic pneumatics (openRTS path)
+#### The car menu (Num3)
 
-Not implemented; to be agreed first. The RTS model (`docs/reverse/brakes.md`)
-stays as it is and remains the only path with Legacy on.
+RTS's menu at a coupling or a bogie (`docs/reverse/car-menu.md`), in
+`TrainView::car_menu_key` / `car_menu_items` / `do_car_menu_item`:
+- **Key:** Num3 (RTS layout), or ` (openRTS layout), off the cab.
+  - Picking: within RTS's reach (a coupling 5 m, a bogie twice the car's
+    width), the one nearest to the cursor is taken, or to the screen's
+    middle when the mouse looks around. RTS takes the nearest one, which by
+    a joint is often the neighbour's bogie.
+  - The cab car's own bogies are offered too (RTS leaves out the player's
+    locomotive).
+  - In the menu, the arrows and Enter (or a click) choose an item; Esc or
+    the key closes it. The engineer does not walk while it is open.
+- **Joint:** uncouple, end cocks, train pipe hoses, charging pipe hoses
+  and EP cable.
+  - Uncouple is RTS's `(0, 0)`: the cocks stay as they are and the couplers
+    are not held open. The Train window's "uncouple here" stays the closing
+    one.
+  - The EP demand now stops at a parted EP cable. The charging pipe itself
+    is not simulated yet (no `ChargingRate`), so its hoses are only state.
+- **Free end:** its cock, the coupler held open ("lever on the buffer") or
+  freed, and "Couple" with a train standing within the couplers' r0 —
+  `simulation::end_contact`, then `Train::couple` and `merge_units` as a
+  meeting does.
+- **Bogie:** brake shoe (`CarState::chocks`, 10 kN each), handbrake,
+  release valve, emergency valve (`CarState::valves`).
+  - The release valve bleeds the cylinder at 0.5 atm/s; the emergency
+    valve vents the pipe at 18 atm/s. Both act in both brake models.
+- **Sounds:** RTS's discrete triggers go to the cars' SMS (80 air, 81 it
+  stops, 82 / 83 hose, 84 / 85 EP, 86 / 87 cock, 59 / 62 coupler, 92 / 93
+  release valve).
+- **Not yet:**
+  - SME cable and high-voltage bus (they rebuild the DLL multiple-unit
+    groups in RTS);
+  - "Fix coupling", cargo information, activity board events;
+  - multiplayer.
+- **Tests:** `test_car_menu` in `tests/train_test.cpp`. `--capture-menu
+  <item>` opens the menu where `--capture-camera` stands, picks the item and
+  prints the menu and the car states.
+
+#### Realistic pneumatics (openRTS path)
+
+**Implemented (2026-11-01)** as `BrakeModel::realistic`
+(`simulation/src/realistic_air.cpp`, the Train window's "Realistic air"
+checkbox, `openrts-train-check --brake ... --realistic`). Off by default;
+the RTS model (`docs/reverse/brakes.md`) stays as it is and is the only path
+with Legacy on (the server fixes the choice, like the coupler sub-steps). A
+train with a legacy DLL keeps the RTS model whatever is chosen
+(`LocomotiveController::rts_brakes`): its valve is tuned to RTS's triple
+valve. What is built, against the proposal below:
+- **Pipe:** per-car volumes (0.8 l per metre, a 32 mm bore), flow
+  `q = k · V · Δp` with k = 200 1/s between joined neighbours, about 30
+  sub-steps per 0.05 s, open ends venting, `TrainPipeLeakRate`.
+- **Distributor types** inferred as proposed (EP equipment → 305 with the
+  292 behind it, `Type ( Freight )` → 483, the rest → 292). 483: РК with its
+  0.3 atm/min stability, application at 0.15, quick service, the cylinder
+  by load (3.8 / 3.0 / 1.5 atm over 60 / 35 t), flat release when the pipe
+  is back within 0.06 atm of the РК (0.025 in the research made a 100-car
+  train never release in II). 292: the ЗР as the reference with its
+  0.5 atm/min stability, full release at +0.12 above the ЗР. 305: the
+  cylinder follows the EP demand at 1 atm/s.
+- **Emergency:** the front starts at the driver's valve in VI or at an open
+  pipe end and moves from car to car at 280 m/s (the accelerators); the
+  flow model alone would carry it faster than sound.
+- **Driver's valve 395:** the pipe follows the УР through the relay
+  (20 l/(s·atm), 50 l·atm/s feed, 20 vent), fed from the main reservoir;
+  VI vents at 50 l/(s·atm). The keyboard controller drops RTS's forced
+  overcharge in II and its stabiliser removes an overcharge at 0.12 atm/min.
+- **Main reservoir:** the real volume (`AirBrakesMainResVolume` in litres
+  when above 50, else cubic feet) and a КТ-6 compressor (0.088 m³·atm/s).
+
+Measured (`--brake 60 "1,5VL10k-1654+943b" rzd_poluvag17_96vag_7906t_1322m`,
+99 cars, 8182 t, 1372 m):
+
+| | RTS model | realistic |
+|---|---|---|
+| emergency from 60 km/h | 412 m, 44 s | 418 m, 45 s |
+| the last cylinder above 0.1 atm | 2.0 s | 3.1 s (the accelerator front: 4.9 s) |
+| head cylinder released in II | 8 s | 148 s |
+| tail cylinder released in II | 11 s | about 13 min |
+
+The slow release in II after an emergency is how a long freight train
+behaves with a 483 in flat mode: drivers release with I (an overcharge).
+ЭД4М (12 cars, 292 / 305) from 100 km/h: 314 m, 19 s, released in 45 s.
+
+Tests: `test_realistic_air` in `tests/train_test.cpp` (II holds the train
+released, a slow fall below the stability applies nothing, a service step
+applies every car and II releases it, VI applies the whole train within
+10 s, a legacy valve keeps the RTS model).
+
+#### Proposal: realistic pneumatics (the design it was built from)
+
+The RTS model (`docs/reverse/brakes.md`) stays as it is and remains the
+only path with Legacy on.
 
 **Setting.** `TrainSettings::brake_model`: `rts` (the default and the Legacy
 path) or `realistic`, and the server
@@ -449,8 +539,9 @@ The train emits events for sound and, later, signals:
   - wheel nodes rotate by distance / wheel radius;
   - bogie nodes turn to their traveller's heading relative to the car body;
   - freight animation (`FreightAnim`) is shown static.
-- **Not yet:** lights and pantographs come with the cab and DLL steps
-  (panto state comes from there).
+- **Not yet:** lights and pantographs come with step 5 (`roadmap.md`): from
+  the `.eng` with default logic for stock without a DLL (AI trains), from the
+  DLL otherwise.
 
 ## 6. Train sounds
 
@@ -482,7 +573,37 @@ The train emits events for sound and, later, signals:
 - **`openrts-train-check`:**
   - every consist parses and resolves;
   - every consist runs 60 s on a straight test track with full throttle,
-    then with the brake: no NaN, finite speeds, it stops.
+    then with the brake: no NaN, finite speeds, it stops;
+  - `--brake <km/h> <consist>...`: one train made of the named consists
+    (searched in every subfolder), full throttle to the speed, then the
+    valve to VI. Prints the stopping distance and time, when the first and
+    the last car's cylinder pass 0.1 atm, the largest coupler compression
+    and tension (where, when), breaks, derailments and a speed profile.
+    2026-11-01, VL10-1479 + 67 / 90 freight cars (6271 / 7623 t), 60 km/h,
+    level: 397 / 416 m in 44 / 45 s; the last car brakes after 1.6 / 2.0 s
+    (about 600 m/s — real emergency waves are 200–300 m/s,
+    `reverse/air-brakes-real.md`; whether RTS's pipe is as fast is not
+    checked); compression up to 390 kN near the head 5–6 s in; no breaks,
+    no derailments.
+  - then the valve to II (same train): the pipe 0 → 4.2 / 3.9 atm (head /
+    tail) in 20 s, 4.9 at the tail after 150 s; the cylinders are empty after
+    7.5 s (head) and 9.2 s (tail) while the tail pipe is still about 1.6 atm;
+    the tail auxiliary reservoir 4.32 after 60 s, 4.64 after 120 s, then
+    stays at 4.79 (not 4.8 within 900 s); the main reservoir 8.50 → 8.48.
+  - Why (the RTS model as ported, `reverse/brakes.md`):
+    - `AirBrakesMainResVolume` is used as it stands against pipe volumes in
+      m³: the VL10-1479's 750 acts as 750 m³, so the air never runs short
+      (content mixes units: the VL10k has 55);
+    - every car is fed from the main reservoir directly (`30 / L` factor),
+      not through the cars before it;
+    - the triple valve releases on any rise of the pipe, not near the
+      working chamber's pressure as a 483 in flat mode does.
+  - Real (`reverse/air-brakes-real.md`): an emergency wave of 200–300 m/s;
+    release in flat mode only with the pipe within about 0.2–0.3 atm of the
+    working chamber; an auxiliary reservoir charges in about 4.5 min; the
+    main reservoir and compressors limit how fast a long train recharges.
+    A "realistic air" openRTS option (off in Legacy) belongs to step 5's
+    "brakes in detail", after the DLL host (DLLs drive the valves).
 - **Viewer:** a real consist (VL10k with freight cars; an ED4M EMU) on
   TestRoute and Kuban:
   - accelerates, brakes, passes switches both ways;

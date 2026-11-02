@@ -33,6 +33,7 @@ struct SoundInstance::Stream {
         float fade_out = 0.0f;  // seconds from full to silent after release
         float age = 0.0f;
         float released = -1.0f; // age when released with a fade, else < 0
+        std::uint64_t start_frame = 0; // where a loop began in its clip
 
         // Fade factor at the current age; 0 once a fade-out has ended.
         [[nodiscard]] float fade() const {
@@ -50,6 +51,11 @@ struct SoundInstance::Stream {
     Voice loop;
     std::vector<Voice> one_shots;
     float volume = 1.0f; // SetStreamVolume
+    // The trigger whose StartLoop / StartLoopRelease is this stream's loop
+    // (RTS: the stream state's current trigger and its flag bit 0), and,
+    // after a deactivation, the frame to resume the loop at.
+    std::optional<std::size_t> current;
+    std::optional<std::uint64_t> resume_frame;
 };
 
 SoundInstance::SoundInstance(std::shared_ptr<const formats::SoundScript> script, const formats::SoundGroup& group,
@@ -90,6 +96,17 @@ bool SoundInstance::camera_listed(const formats::SoundActivation& activation, co
 
 void SoundInstance::stop(VoiceSink& sink) {
     for (auto& stream : streams_) {
+        // A playing loop is remembered with its position (RTS 0x4A9A84 keeps
+        // the current trigger of a looping stream and stores the buffer
+        // position); anything else is forgotten.
+        stream.resume_frame.reset();
+        if (stream.loop.id && stream.current && sink.playing(stream.loop.id) && stream.loop.clip &&
+            stream.loop.clip->frames > 0) {
+            const auto played = static_cast<std::uint64_t>(stream.loop.age * static_cast<float>(stream.loop.clip->sample_rate));
+            stream.resume_frame = (stream.loop.start_frame + played) % stream.loop.clip->frames;
+        } else {
+            stream.current.reset();
+        }
         if (stream.loop.id) sink.stop(stream.loop.id);
         for (const auto& voice : stream.one_shots) sink.stop(voice.id);
         stream.loop = {};
@@ -101,6 +118,21 @@ void SoundInstance::stop(VoiceSink& sink) {
 
 void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
     active_ = true;
+    if (activated_once_) {
+        // Again (RTS 0x4A9BA8): random triggers wait their minimum delay, the
+        // loops that played when the group went off start where they were;
+        // trigger and stream states stay as they were.
+        for (auto& stream : streams_) {
+            const auto& triggers = stream.definition->triggers;
+            for (std::size_t i = 0; i < triggers.size(); ++i) {
+                if (triggers[i].kind == SoundTriggerKind::random) stream.countdown[i] = triggers[i].minimum;
+            }
+            if (stream.current && *stream.current < triggers.size()) fire(stream, *stream.current, 1.0f, inputs, sink);
+            stream.resume_frame.reset();
+        }
+        return;
+    }
+    activated_once_ = true;
     for (auto& stream : streams_) {
         std::fill(stream.enabled.begin(), stream.enabled.end(), true);
         stream.running = true;
@@ -149,11 +181,16 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
         if (!clip) return {};
         const auto id = sink.play(clip, playback, space);
         if (!id) return {};
-        if (playback == VoicePlayback::loop && random_loop_phase_ && clip->frames > 1) {
-            sink.seek(id, std::uniform_int_distribution<std::uint64_t>(0, clip->frames - 1)(random_));
+        std::uint64_t start_frame = 0;
+        if (playback != VoicePlayback::once && stream.resume_frame && clip->frames > 1) {
+            start_frame = *stream.resume_frame % clip->frames; // a loop going on after a deactivation
+            sink.seek(id, start_frame);
+        } else if (playback == VoicePlayback::loop && random_loop_phase_ && clip->frames > 1) {
+            start_frame = std::uniform_int_distribution<std::uint64_t>(0, clip->frames - 1)(random_);
+            sink.seek(id, start_frame);
         }
         sink.set(id, 0.0f, 1.0f, inputs.position); // real values follow in this update
-        return {.id = id, .volume = volume, .clip = std::move(clip), .fade_in = action.fade};
+        return {.id = id, .volume = volume, .clip = std::move(clip), .fade_in = action.fade, .start_frame = start_frame};
     };
 
     for (const auto& action : trigger.actions) {
@@ -166,9 +203,11 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
             if (stream.loop.id) sink.stop(stream.loop.id);
             stream.loop = start(action, action.kind == SoundActionKind::start_loop ? VoicePlayback::loop
                                                                                     : VoicePlayback::loop_region);
+            stream.current = index;
             break;
         case SoundActionKind::release_loop_release:
         case SoundActionKind::release_loop_release_with_jump:
+            stream.current.reset();
             if (stream.loop.id) {
                 if (action.fade > 0.0f) {
                     // Fade out, then stop (the voice keeps looping meanwhile).
@@ -198,6 +237,7 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
             }
             break;
         case SoundActionKind::halt_playback:
+            stream.current.reset();
             if (stream.loop.id) sink.stop(stream.loop.id);
             for (const auto& voice : stream.one_shots) sink.stop(voice.id);
             stream.loop = {};
@@ -210,6 +250,7 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
                 auto& target = streams_[action.index - 1];
                 target.running = action.kind == SoundActionKind::enable_stream;
                 if (action.kind == SoundActionKind::disable_stream) {
+                    target.current.reset();
                     if (target.loop.id) sink.stop(target.loop.id);
                     for (const auto& voice : target.one_shots) sink.stop(voice.id);
                     target.loop = {};
@@ -262,7 +303,14 @@ void SoundInstance::update(const float dt, const SoundInputs& raw_inputs, VoiceS
         // between the two would otherwise start and stop on alternate
         // updates, restarting its loops. RTS's runtime test is not traced;
         // its sounds do not stutter there (PROBABLE).
-        if (!camera || (distances && (distance > activate_within || distance > deactivate_beyond))) return;
+        if (!camera || (distances && (distance > activate_within || distance > deactivate_beyond))) {
+            // Codes wait in the queue (RTS: 96 entries) for the next activation.
+            queued_.insert(queued_.end(), inputs.discrete.begin(), inputs.discrete.end());
+            queued_.insert(queued_.end(), posted_.begin(), posted_.end());
+            posted_.clear();
+            if (queued_.size() > 96) queued_.erase(queued_.begin(), queued_.end() - 96);
+            return;
+        }
         activate(inputs, sink);
     } else if (camera_deactivates || (distances && distance > deactivate_beyond)) {
         stop(sink);
@@ -271,7 +319,9 @@ void SoundInstance::update(const float dt, const SoundInputs& raw_inputs, VoiceS
 
     // Discrete codes: RTS trigger pairs pass only the first "on" until an
     // "off" arrives, and the other way round.
-    std::vector<std::uint32_t> incoming(inputs.discrete.begin(), inputs.discrete.end());
+    std::vector<std::uint32_t> incoming = std::move(queued_);
+    queued_.clear();
+    incoming.insert(incoming.end(), inputs.discrete.begin(), inputs.discrete.end());
     incoming.insert(incoming.end(), posted_.begin(), posted_.end());
     posted_.clear();
     std::vector<std::uint32_t> codes;

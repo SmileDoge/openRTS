@@ -164,6 +164,18 @@ activity viewer ("RTS Activity track control", `0x54FF80`).
 - Mouse (`0x548C8C`, `0x548E40`): right drag pans (cursor clipped to the
   window), a right click opens the context menu (`0x547F24` → `0x5439E4`),
   a left click selects; wheel zooms.
+- **Names on the map (CONFIRMED, `0x53F990`; zoom = half the view / 64 m):**
+  - station names: a list built when the window opens (`0x5555D8` →
+    `0x555624`): every platform item counted under its station name
+    (`lstrcmpiW`), the label at the running mean of the items' positions.
+    Drawn black in Arial 16 at the mean plus (0.03, 0.03) of the half view
+    (right and up), while zoom < 3500 and items × 300 > zoom — the big
+    stations stay named farthest out;
+  - platform and siding icons while zoom < 250 (flags "show platforms /
+    sidings"); their names (Times New Roman 14; blue 0, 0, 0.7, sidings
+    olive 0.5, 0.5, 0) only while zoom < 5;
+  - fonts made at window creation (`0x549650`): Arial 16, Times New Roman 14,
+    Book Antiqua 16, Arial 12 bold.
 - Context menus by what is under the cursor:
   - train: Jump to train, Release block point, Show train path, No auto
     remove, Uncouple cars, Trigger board / unboard / tracking event, Edit /
@@ -274,7 +286,7 @@ object (world kind 20) 3 m above each named signal.
 | Keys | Flag | What is drawn |
 |---|---|---|
 | Ctrl+F7 | `byte_5E04BD` | signal names (kind 20 labels) within 150 m of the camera, full colour up to 30 m and fading out to 150 m, colour (1, 0.9, 0.25); the other players (person.ace icons at their trains, `dword_631E58` list) |
-| F7 | `byte_5E04BC` | platform names "platform (station)" 10 m above the platform item with a line down, blue (0.1, 0.1, 1); siding names, yellow; car numbers on both sides of every car body (the number the console gives, `0x45C54C`) |
+| F7 | `byte_5E04BC` | platform names "platform (station)" 10 m above the platform item with a line down, blue (0.1, 0.1, 1); siding names, yellow; car numbers on both sides of every car body (the number the console gives, `0x45C54C`: car +16 written "AAAA-BBBB-CCCC" with bits 18+, 10..17 and 0..9, each zero-padded to 4 digits; drawn 2.64–2.8 m from the body's rear end at half its height, both side walls) |
 | Ctrl+Alt+F7 | — | the Track control menu (`0x462FC8`, mode 4) |
 | F6 | `byte_61D55E` | a panel of the stations and stops ahead with distances (`0x466F70`, columns at 25/40/55/70/85 % of its width) |
 | Ctrl+F5 | `byte_5E04BE` | the speed limit now and the kilometre post (ordinate) at the top, the limits ahead and their distances (`0x468544` / `0x4686F4`) |
@@ -283,3 +295,18 @@ object (world kind 20) 3 m above each named signal.
 
 (The user's guide describes the same keys; Ctrl+F7 works in single player
 too.)
+
+### Car numbers (F7)
+
+- **Format (CONFIRMED, `0x45C54C`):** car +16 printed as `AAAA-BBBB-CCCC`:
+  `n >> 18`, `(n >> 10) & 0xFF`, `n & 0x3FF`, each padded with zeros to four
+  digits, `-` between them.
+- **Composition (`0x4EF740`, putting a train on the track):** bits 10..17
+  from the train's record (+20, its field +52); bits 18 and up from the
+  train's id record (+16), or, without one, the next value of a global
+  counter (`dword_61D6CC`). PROBABLE: the low bits are the UiD of the car's
+  consist entry, set when the consist loads (the ED4M consists number their
+  cars 3..14). In single player the middle part is PROBABLY 0.
+- **openRTS:** each car keeps its number through uncoupling and coupling,
+  as the field stays with the car; the train part counts the trains put on
+  the track, the middle part is 0.

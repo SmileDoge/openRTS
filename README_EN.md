@@ -35,7 +35,15 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
   - derailment as RTS does it (overturning in curves, running off the end
     of the track);
   - body sway on the springs;
-  - standing consists go to sleep (STATIC) and cost no simulation time.
+  - standing consists go to sleep (STATIC) and cost no simulation time;
+  - an optional "realistic air" brake model: flow along the brake pipe,
+    483 / 292 / 305 distributors, a 280 m/s emergency wave (RTS's brakes by
+    default).
+- **RTS locomotive DLLs:** run unchanged in the 32-bit
+  `openrts-dllhost32.exe` (RTS's call order, masters and slaves,
+  AuxLibraries, adapters for older ts.h versions); a cab window, RTS's cab
+  keys, a 3-D cab view with moving switches and gauges, the cab sound,
+  pantographs.
 - **Signalling:**
   - `sigscr.dat` scripts compiled exactly as RTS compiles them;
   - blocks, routes, occupancy by the whole train;
@@ -46,7 +54,9 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
   - test trains with a simple driver that follow their path, keep the
     limits and stop at red.
 - **Track control (Ctrl+Alt+F7):**
-  - the track map from above: trains, junctions, signals, platforms;
+  - the track map from above: trains, junctions, signals, platforms, station
+    names, the player's figure with the way the camera looks; "Teleport
+    here" from the right-click menu;
   - building and editing paths, train roles, uncoupling;
   - placing consists with a preview of where the consist will stand and
     which way its front car faces; it can be slid along the track and
@@ -58,8 +68,9 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
 ## Not yet
 
 In the order of the plan (`docs/roadmap.md`):
-1. 3-D cabs and locomotive DLLs through a 32-bit host process, ALSN cab
-   signalling, cab sound. There will be no 2-D cabs.
+1. The rest of the cab: mouse clicks on 3-D controls, digital displays,
+   locomotive lights, ALSN from the route's signals, native plugins from
+   the `.eng`. There will be no 2-D cabs.
 2. Multiplayer (an RTS-compatible Legacy mode and an own protocol) and the
    dispatcher console (Пульт ДСП).
 3. Activities and full AI traffic.
@@ -107,9 +118,24 @@ with no window.
 
 ## Running
 
+The interface is in Russian by default; English is chosen in the main window
+("Язык / Language") and remembered.
+
 You need an RTS installation with content: openRTS changes nothing in it and
 ships no content of its own. A computer without Visual Studio needs the
 Visual C++ Redistributable (x64), see "Prebuilt binaries".
+
+The easiest way is the start menu: it picks the RTS folder, route, consist,
+path, time, season, weather and how the train starts, and the settings
+(language, keys, sound and volume, anti-aliasing, VSync), all remembered in
+`viewer_state.ini`. "Start" runs the game as a process of its own (its output
+goes to `openrts.log`); the menu comes back when the game is closed.
+
+```powershell
+.\build\game\Release\openrts_game.exe
+```
+
+The game can also be started directly:
 
 ```powershell
 .\build\viewer\Release\openrts_viewer.exe --window --route Kuban_RTS --root D:\Games\RTS --consist "ED4M-0050 12vag"
@@ -165,7 +191,8 @@ Visual C++ Redistributable (x64), see "Prebuilt binaries".
 | `openrts-path-check` | drive test trains along paths: reservations, the planner |
 | `openrts-signal-check` | compile every `sigscr.dat`, compare with RTS's assembly |
 | `openrts-sound-check` | parse every `.sms` / `.ws` and the sound files |
-| `openrts-train-check` | load every consist and drive it on a test track |
+| `openrts-train-check` | load every consist and drive it on a test track; `--dll` runs a locomotive DLL by a script, `--cab` shows how a cab binds, `--brake ... --realistic` brakes |
+| `openrts-dllhost32 --probe <folder>` | versions and layouts of every locomotive DLL |
 | `openrts_asset_dump` | resolve assets the way RTS looks them up |
 
 ## Layout

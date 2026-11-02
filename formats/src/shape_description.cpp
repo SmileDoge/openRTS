@@ -1,9 +1,12 @@
 #include <openrts/formats/shape_description.hpp>
 
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <utility>
+
+#include "text_tree.hpp"
 
 namespace openrts::formats {
 namespace {
@@ -113,6 +116,58 @@ void append_utf8(std::string& output, const char32_t code_point) {
     return utf8;
 }
 
+[[nodiscard]] const detail::TextNode* find_node(const detail::TextNode& node, const std::string_view name) {
+    for (const auto& child : node.children) {
+        if (child.name == name) return &child;
+        if (const auto* found = find_node(child, name)) return found;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] float value(const detail::TextNode* node, const std::size_t index, const float fallback = 0.0f) {
+    return node ? static_cast<float>(node->number(index, fallback)) : fallback;
+}
+
+// ESD_Alternative_Texture and ESD_LightSources of the Shape block.
+void read_extensions(const std::string_view text, ShapeDescription& description) {
+    detail::TextNode root;
+    detail::read_text_tree(text, root);
+    if (const auto* alternative = find_node(root, "esd_alternative_texture")) {
+        description.alternative_texture = static_cast<std::uint32_t>((std::max)(0.0, alternative->number(0, 0.0)));
+    }
+    const auto* lights = find_node(root, "esd_lightsources");
+    if (!lights) return;
+    for (const auto& node : lights->children) {
+        if (node.name != "lightsource") continue;
+        ShapeLight light;
+        const auto* position = node.child("position");
+        const auto* points_to = node.child("pointsto");
+        light.position = {value(position, 0), value(position, 1), value(position, 2)};
+        light.points_to = {value(points_to, 0), value(points_to, 1), value(points_to, 2)};
+        light.radius = {value(node.child("radius"), 0), value(node.child("radius"), 1)};
+        if (const auto* colour = node.child("colour"); colour && !colour->values.empty()) {
+            light.colour = static_cast<std::uint32_t>(std::strtoul(colour->values.front().c_str(), nullptr, 16));
+        }
+        if (const auto* flags = node.child("flags")) {
+            for (const auto& word : flags->values) {
+                if (!light.flags.empty()) light.flags.push_back(' ');
+                light.flags += detail::lower_ascii(word);
+            }
+        }
+        light.distance = value(node.child("distance"), 0);
+        light.spot_exponent = value(node.child("spotexponent"), 0);
+        light.source_radius = value(node.child("sourceradius"), 0);
+        light.auto_when_world_lit = value(node.child("autowhenworldlit"), 0);
+        light.light_fade = value(node.child("lightfade"), 0);
+        if (const auto* attenuation = node.child("attenuation")) {
+            // Attenuation ( D1 D2 Type ): the start and length shares, then the kind.
+            const float start = value(attenuation, 0), length = value(attenuation, 1), kind = value(attenuation, 2);
+            if (start >= 0.0f && length > 0.0f) light.attenuation = {kind, start, length};
+        }
+        description.lights.push_back(std::move(light));
+    }
+}
+
 } // namespace
 
 ShapeDescriptionResult parse_shape_description(std::string_view text) {
@@ -124,7 +179,9 @@ ShapeDescriptionResult parse_shape_description(std::string_view text) {
         if (!open_paren || *open_paren != "(" || !shape_name || *shape_name == ")") {
             return {.error = "Malformed Shape(...) node in SD file."};
         }
-        return {.value = ShapeDescription{.shape_file = *shape_name}};
+        ShapeDescription description{.shape_file = *shape_name};
+        read_extensions(text, description);
+        return {.value = std::move(description)};
     }
     return {.error = "SD file does not contain a Shape(...) node."};
 }

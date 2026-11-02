@@ -111,8 +111,8 @@ std::uint16_t model_flags(const formats::ShapeModel& model) {
     return flags;
 }
 
-FixedFunctionState apply_material(const PrimitiveMaterial& material, const FixedFunctionState current) noexcept {
-    if (!is_blend_shader(material.shader)) return current;
+FixedFunctionState apply_material(const PrimitiveMaterial& material) noexcept {
+    if (!is_blend_shader(material.shader)) return {};
     if (material.alpha_test_mode) return {.blend = false, .alpha_test = true};
     return {.blend = true, .alpha_test = false};
 }
@@ -121,17 +121,34 @@ int object_pass(const std::uint16_t flags) noexcept {
     return (flags & primitive_translucent) != 0 ? translucent_pass : opaque_pass;
 }
 
-bool draws_in_pass(const int pass, const int object_pass_value, const std::uint16_t flags, const std::uint16_t primitive) noexcept {
+int object_pass(const std::uint16_t model_flags, const std::uint32_t static_flags) noexcept {
+    int pass = object_pass(model_flags);
+    if ((static_flags & static_flag_terrain) != 0) pass = terrain_pass;
+    if ((static_flags & static_flag_global) != 0) pass = global_pass;
+    return pass;
+}
+
+bool visits(const int pass, const int object_pass_value) noexcept {
+    if (pass == opaque_pass) return object_pass_value >= global_pass && object_pass_value <= translucent_pass;
+    return pass == object_pass_value;
+}
+
+bool draws_in_pass(const int pass, const int object_pass_value, const std::uint16_t flags, const std::uint16_t primitive,
+                   const std::uint32_t static_flags) noexcept {
+    if (!visits(pass, object_pass_value)) return false;
     switch (pass) {
+    case terrain_pass:
+        return (primitive & primitive_translucent) == 0;
+    case global_pass:
+        return (primitive & primitive_no_depth_write) != 0;
     case opaque_pass:
-        // Objects of passes 0..2 are visited; models with any special
-        // primitive draw only their plain ones here.
-        if (object_pass_value < 0 || object_pass_value > translucent_pass) return false;
+        // Models with any special primitive draw only their plain ones here.
         return flags == 0 || (primitive & (primitive_translucent | primitive_no_depth_write)) == 0;
     case translucent_pass:
-        return object_pass_value == translucent_pass && (primitive & primitive_translucent) != 0;
-    default:
-        return false;
+        return (primitive & primitive_translucent) != 0
+            && !((primitive & primitive_no_depth_write) != 0 && (static_flags & static_flag_global) != 0);
+    default: // -2 (transfers) and 3 (the cab): every primitive
+        return true;
     }
 }
 

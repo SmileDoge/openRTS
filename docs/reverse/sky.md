@@ -62,6 +62,7 @@ growth and fog in `satellite.vert`).
 
 ## Not ported
 
-Night texture switching (`is_night` reloads route textures), the cab sky
-background (`0x5656B0`), weather blending of a second environment
-(`dword_61D644`), precipitation, water layers.
+The cab sky background (`0x5656B0`), weather blending of a second
+environment (`dword_61D644`), precipitation, water layers. Night texture
+switching (`is_night` reloads route textures) is done: shape-rendering.md,
+"Night and seasonal textures".

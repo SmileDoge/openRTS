@@ -78,11 +78,37 @@ function(openrts_configure_target target)
     target_include_directories(${target} PUBLIC "${PROJECT_SOURCE_DIR}/include")
 
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive-)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endfunction()
+
+# openrts-dllhost32.exe: legacy RTS locomotive DLLs are 32-bit, so they run
+# in a separate Win32 process (docs/train-dll.md). Built as an external
+# project for the Win32 platform and copied next to the programs that use it.
+if(WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_GENERATOR MATCHES "Visual Studio")
+    include(ExternalProject)
+    set(OPENRTS_DLLHOST_DIR "${CMAKE_BINARY_DIR}/bin32")
+    ExternalProject_Add(openrts_dllhost32
+        SOURCE_DIR "${PROJECT_SOURCE_DIR}/dllhost"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/dllhost32"
+        CMAKE_GENERATOR "${CMAKE_GENERATOR}"
+        CMAKE_GENERATOR_PLATFORM Win32
+        CMAKE_ARGS "-DOPENRTS_DLLHOST_OUTPUT=${OPENRTS_DLLHOST_DIR}" "-DOPENRTS_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
+        BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config $<CONFIG>
+        INSTALL_COMMAND ""
+        BUILD_ALWAYS TRUE)
+    function(openrts_copy_dllhost target)
+        add_dependencies(${target} openrts_dllhost32)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${OPENRTS_DLLHOST_DIR}/$<CONFIG>/openrts-dllhost32.exe" "$<TARGET_FILE_DIR:${target}>")
+    endfunction()
+else()
+    function(openrts_copy_dllhost target)
+    endfunction()
+endif()
 
 add_subdirectory(core)
 add_subdirectory(formats)
@@ -90,6 +116,8 @@ add_subdirectory(assets)
 add_subdirectory(renderer)
 add_subdirectory(platform)
 add_subdirectory(simulation)
+add_subdirectory(trainplugin)
+add_subdirectory(sdk)
 add_subdirectory(audio)
 add_subdirectory(compat)
 

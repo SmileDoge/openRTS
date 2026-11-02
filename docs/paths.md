@@ -47,7 +47,10 @@ train, else the driven one):
   on the track;
 - **F7** — platform and siding names as RTS shows them: a thick line along
   the track between the two ends of each (blue platforms, yellow sidings) and
-  the name on a post above its middle ("station (platform)");
+  the name on a post above its middle ("station (platform)"); and every car's
+  number ("AAAA-BBBB-CCCC" as RTS writes it: the train, 0, the car's UiD in
+  its consist) on the side facing the camera, 2.7 m from the end of the body,
+  within 60 m;
 - with Ctrl+F7 and with the service labels (L), every signal gets a line
   down to the place on the track its head stands for, with a short mark
   along the track pointing the way the head protects — which track a signal
@@ -71,13 +74,27 @@ train, else the driven one):
   and its name from the route database when zoomed in; platforms as a thick
   blue line along the track between their two ends, sidings yellow, their
   names on a leader;
+- the player (the camera) as a small figure with a cone the way it looks;
+  "Teleport here" in the menu of a track point (eye height over the track,
+  looking along it), a junction or an empty spot (over the ground, keeping
+  the view direction) moves the camera there and stops following a train;
+- station names as RTS writes them: black, larger text at the middle of each
+  station's platforms; zooming out, only the stations with more platforms
+  stay named (RTS's rule: items × 300 above its zoom, none past zoom 3500);
+  "Stations" turns them off;
 - menus:
   - **train:** jump to it (the camera follows it), drive it with the
     keyboard / give it the test driver / let it stand, create or edit its
     path, cancel the path, load a route path, save the path, uncouple, remove;
+    "Signals for this train": the mode its signals get (as they are, SHUNT,
+    NORMAL — RTS's SetSignalMode) and whether it obeys shunting, distance and
+    info signals;
   - **junction:** who reserves it; throw it (refused while occupied or
     held by a path); on the edited path, switch it at that pass;
-  - **signal:** its heads (aspect, draw state, block_state, route_set);
+  - **signal:** its heads (aspect, draw state, block_state, route_set, mode,
+    whether overridden); per head an override (RTS SignalOverride): a mode
+    (NORMAL, SHUNT, FAILED — dark, EXCL — left out of chains) and / or an
+    aspect from its type, or clear it;
   - **track:** while editing, place the start, a point to pass, a waiting
     point (seconds), a reverse point, the end point; otherwise "path for the
     selected train to here"; put a consist here — from the content's list or

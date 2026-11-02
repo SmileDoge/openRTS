@@ -376,7 +376,9 @@ struct SkyRenderer::Impl {
             return false;
         }
         element.texture = upload_rgba8_texture(
-            device, {.width = decoded.image->width, .height = decoded.image->height, .pixels = &decoded.image->pixels},
+            device,
+            {.width = decoded.image->width, .height = decoded.image->height, .pixels = &decoded.image->pixels,
+             .mips = &decoded.image->mips},
             shader.texture);
         if (!element.texture.ok()) return false;
         element.view = wgpuTextureCreateView(element.texture.texture.get(), nullptr);

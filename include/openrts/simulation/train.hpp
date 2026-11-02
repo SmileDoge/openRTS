@@ -21,6 +21,11 @@ namespace openrts::simulation {
 // One simulation step, s: the RTS coupler sub-step and the network tick.
 inline constexpr double train_step = 0.05;
 
+// The air brake model: RTS's (the default, and the only one with Legacy on)
+// or openRTS's realistic pneumatics (docs/train.md). A train with a legacy
+// DLL keeps RTS's: its driver's valve is tuned to the RTS triple valve.
+enum class BrakeModel : std::uint8_t { rts, realistic };
+
 struct TrainSettings {
     // Coupler solver passes per step: 1 is RTS (0.05 s); 2..4 are the
     // experimental finer integration of the stiff part only.
@@ -28,6 +33,7 @@ struct TrainSettings {
     // Report coupler breaks and derailments (as RTS with its default config).
     bool coupler_break = true;
     bool derailment = true;
+    BrakeModel brake_model = BrakeModel::rts;
 };
 
 struct CarSetup {
@@ -50,6 +56,11 @@ struct EngineDemands {
     std::uint16_t systems = 1;   // BrakeSystemsEngaged: 1 pipe, 2 EP, 4 charging pipe
     bool release_train_brake = false;       // EngineFlags 1
     bool release_independent_brake = false; // EngineFlags 2
+    // Realistic air only: the equalising reservoir the driver's valve holds
+    // (the pipe follows it through the relay; < 0: this engine's valve is
+    // not working the pipe), and position VI.
+    float equalising = -1.0f;
+    bool emergency = false;
 };
 
 // What a controller sees of its locomotive.
@@ -61,6 +72,12 @@ struct EngineInputs {
     float independent{};    // independent brake cylinder, atm
     bool flipped = false;   // the car faces the train rear
     const formats::WagonDefinition* definition = nullptr;
+    bool realistic_air = false; // the train runs BrakeModel::realistic
+    // The line at the pantographs (electric engines; Locomotive::LineVoltage,
+    // LineFreq): V and Hz. Negative voltage: the route's electrification is
+    // not modelled, the engine has power anywhere.
+    float line_voltage = -1.0f;
+    float line_frequency{};
 };
 
 // Source of a locomotive's demands: the built-in keyboard controller now;
@@ -69,6 +86,9 @@ class LocomotiveController {
 public:
     virtual ~LocomotiveController() = default;
     virtual void step(double dt, const EngineInputs& inputs, EngineDemands& demands) = 0;
+    // The controller's valve is made for RTS's triple valve (legacy DLLs):
+    // the train keeps BrakeModel::rts.
+    [[nodiscard]] virtual bool rts_brakes() const { return false; }
 };
 
 // Driver's handles shared by every engine of a train (multiple-unit
@@ -132,8 +152,22 @@ enum class TrainEventKind : std::uint8_t {
 // Brake pipe ends of a car (ts.h Wagon flags byte 2).
 inline constexpr std::uint8_t pipe_hose_front = 0x01; // hose disconnected
 inline constexpr std::uint8_t pipe_hose_rear = 0x02;
+inline constexpr std::uint8_t charging_hose_front = 0x04; // second (charging) pipe hose disconnected
+inline constexpr std::uint8_t charging_hose_rear = 0x08;
+inline constexpr std::uint8_t ep_cable_front = 0x10; // EP line disconnected
+inline constexpr std::uint8_t ep_cable_rear = 0x20;
 inline constexpr std::uint8_t pipe_cock_front = 0x40; // end cock closed
 inline constexpr std::uint8_t pipe_cock_rear = 0x80;
+// Valves on a car (ts.h Wagon Flags1, RTS +32): the emergency valve vents
+// the pipe at 18 atm/s; the pulled release (bleed) valve empties the brake
+// cylinder at 0.5 atm/s (RTS 0x424488).
+inline constexpr std::uint8_t valve_emergency = 0x10;
+inline constexpr std::uint8_t valve_release = 0x80;
+// Brake shoes (drags) under a car's bogie towards the train front / rear
+// (RTS +31 bits 1, 2): each adds 10 kN of static brake force.
+inline constexpr std::uint8_t chock_front = 0x01;
+inline constexpr std::uint8_t chock_rear = 0x02;
+inline constexpr float chock_force = 10000.0f;
 // Coupler ends kept open after uncoupling, so the cars do not couple again
 // on contact (RTS car +14 bits).
 inline constexpr std::uint8_t coupler_open_front = 0x01;
@@ -188,6 +222,8 @@ struct CarState {
     // with the outer hose disconnected and its end cock closed.
     std::uint8_t pipe_ends{};
     std::uint8_t coupler_open{}; // coupler_open_*
+    std::uint8_t valves{};       // valve_*
+    std::uint8_t chocks{};       // chock_*
     // The body swaying on its springs (RTS 0x4F5B34): offset from its rest
     // pose (m) along the curve's turning side (lateral), up (vertical) and
     // towards the train front (longitudinal), and the rates.
@@ -209,6 +245,10 @@ struct CarState {
     float yaw{};           // rad, a slid car folding about its end towards the slide
     float yaw_target{};    // rad, the fold it settles at
     double travelled{}; // m, along the train front direction, for wheel animation
+    // The overhead line (electric engines; set by Electrification::apply):
+    // V, Hz. Negative voltage: not modelled.
+    float line_voltage = -1.0f;
+    float line_frequency{};
 };
 
 
@@ -248,6 +288,13 @@ public:
     // `other` is left empty and off the track. Returns false if either train
     // is not placed.
     bool couple(Train& other, bool at_front, bool other_front, double gap);
+    // What a hand at the track changes on car `car` (RTS's car menu,
+    // 0x463F84): set or clear `mask` in its pipe ends, coupler ends left
+    // open, valves or brake shoes. A sleeping train wakes.
+    enum class CarFlags : std::uint8_t { pipe_ends, coupler_open, valves, chocks };
+    void set_car_flags(std::size_t car, CarFlags which, std::uint8_t mask, bool on);
+    // Car `car`'s handbrake, 0..1.
+    void set_handbrake(std::size_t car, float value);
     // A car has derailed (it tips over or slides off; placing the train
     // again puts everything back on the rails).
     [[nodiscard]] bool derailed() const noexcept;
@@ -286,6 +333,11 @@ public:
 
     [[nodiscard]] const std::vector<CarState>& cars() const noexcept { return cars_; }
     [[nodiscard]] std::vector<CarPlacement> placements() const;
+    // A traveller at the centre of each car, facing the train front; empty
+    // while the train is not on the track.
+    [[nodiscard]] std::vector<TrackTraveller> car_centres() const;
+    // The overhead line at car `car`'s pantographs (CarState::line_voltage).
+    void set_line_supply(std::size_t car, float voltage, float frequency);
     // The front end of car 0, facing the train front; the rear end of the
     // last car, facing the train front too.
     [[nodiscard]] std::optional<TrackTraveller> front_end() const;
@@ -302,6 +354,10 @@ public:
     [[nodiscard]] const TrainSettings& settings() const noexcept { return settings_; }
     // Coupler solver sub-steps (1 = RTS); takes effect on the next step.
     void set_coupler_substeps(std::uint32_t substeps) noexcept;
+    // The air brake model from the next step on.
+    void set_brake_model(BrakeModel model) noexcept;
+    // The model this step runs: realistic only when no controller needs RTS's.
+    [[nodiscard]] BrakeModel brake_model() const noexcept;
     [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
 
 private:
@@ -343,6 +399,16 @@ struct ContactResult {
 // open and the impact is at most both cars' DerailBufferForce (the earlier
 // train in `trains` survives), otherwise exchanges momentum inelastically.
 std::vector<ContactResult> resolve_contacts(std::span<Train* const> trains);
+
+// The nearest end of another train in `trains` facing `train`'s front (or
+// rear) end along the track within `reach` metres: that train, which of its
+// ends, and the gap between the two ends (m).
+struct EndContact {
+    Train* other = nullptr;
+    bool other_front = false;
+    double gap{};
+};
+[[nodiscard]] std::optional<EndContact> end_contact(const Train& train, bool front, std::span<Train* const> trains, double reach);
 
 // A straight test track of `length` metres (synthetic network), for checks.
 [[nodiscard]] std::unique_ptr<TrackNetwork> straight_test_track(double length);

@@ -64,6 +64,15 @@ void AudioEngine::set_listener(const glm::vec3& position, const glm::vec3& forwa
     ma_engine_listener_set_direction(&impl_->engine, 0, -forward.x, forward.y, forward.z);
 }
 
+void AudioEngine::set_paused(const bool paused) {
+    if (!ok() || paused == paused_) return;
+    paused_ = paused;
+    if (paused) ma_engine_stop(&impl_->engine);
+    else ma_engine_start(&impl_->engine);
+}
+
+bool AudioEngine::paused() const noexcept { return paused_; }
+
 void AudioEngine::set_volume(const float volume) {
     if (ok()) ma_engine_set_volume(&impl_->engine, volume);
 }

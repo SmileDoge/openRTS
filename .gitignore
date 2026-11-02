@@ -3,3 +3,5 @@ imgui.ini
 debug_views/
 user_paths/
 viewer_state.ini
+openrts.log
+.git-rewrite/

@@ -1,6 +1,8 @@
 #ifdef OPENRTS_HAS_WGPU
 #include "signal_view.hpp"
 
+#include "ui_text.hpp"
+
 #include <openrts/formats/route_database.hpp>
 
 #include <algorithm>
@@ -203,7 +205,8 @@ void SignalView::update(const float elapsed, const simulation::Train* train,
     if (glows_ && !textures_uploaded_ && loaded_) {
         textures_uploaded_ = true;
         for (const auto& [name, image] : loaded_->light_images) {
-            light_textures_[name] = glows_->add_texture({.width = image.width, .height = image.height, .pixels = &image.pixels});
+            light_textures_[name] =
+                glows_->add_texture({.width = image.width, .height = image.height, .pixels = &image.pixels, .mips = &image.mips});
             light_texture_widths_[name] = image.width;
         }
     }
@@ -292,7 +295,10 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
                     far_scale *= static_cast<float>(width->second / 512);
                 }
             }
-            const auto draw = static_cast<std::uint32_t>(std::max(0.0f, head.draw_state));
+            // A negative draw state lights nothing (RTS: a FAILED head with no
+            // override, 0x499948).
+            if (head.draw_state < 0.0f) continue;
+            const auto draw = static_cast<std::uint32_t>(head.draw_state);
             const formats::SignalDrawState* state = nullptr;
             for (const auto& candidate : type.draw_states) {
                 if (candidate.index == draw) state = &candidate;
@@ -361,11 +367,15 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
     }
 }
 
+void SignalView::draw_lights(const WGPURenderPassEncoder pass, const FrameView& frame, const float viewport_height,
+                             const renderer::GlowBlend blend) {
+    if (!glows_) return;
+    glows_->set_sprites(sprites_);
+    glows_->render(pass, frame.projection, frame.view, viewport_height, blend);
+}
+
 void SignalView::draw(const WGPURenderPassEncoder pass, const FrameView& frame, const float viewport_height) {
-    if (glows_) {
-        glows_->set_sprites(sprites_);
-        glows_->render(pass, frame.projection, frame.view, viewport_height);
-    }
+    (void)viewport_height;
     if (markers_ && system_ && show_markers_) {
         // A post per head, coloured by its aspect, within 3 km.
         std::vector<renderer::DebugVertex> lines;
@@ -429,29 +439,34 @@ void SignalView::collect_labels(std::vector<WorldLabel>& labels, const glm::vec3
 
 void SignalView::draw_overlay() {
 #ifdef OPENRTS_HAS_IMGUI
-    if (!ImGui::CollapsingHeader("Signals", ImGuiTreeNodeFlags_DefaultOpen)) return;
-    ImGui::TextUnformatted(status_.c_str());
+    if (!ImGui::CollapsingHeader(tr("Signals"), ImGuiTreeNodeFlags_DefaultOpen)) return;
+    if (system_ && loaded_ && loaded_->scripts) {
+        ImGui::Text(tr("Signals: %zu objects, %zu heads, %zu scripts"), system_->objects().size(), system_->heads().size(),
+                    loaded_->scripts->scripts.size());
+    } else {
+        ImGui::TextUnformatted(status_.c_str()); // loading, or the error (English, as in the log)
+    }
     if (!system_) return;
     const auto& stats = system_->stats();
-    ImGui::Text("Last step: %zu chain runs, %zu free runs; %zu heads run every step", stats.chain_runs, stats.free_runs,
+    ImGui::Text(tr("Last step: %zu chain runs, %zu free runs; %zu heads run every step"), stats.chain_runs, stats.free_runs,
                 stats.always_run_heads);
-    ImGui::Text("Lights drawn: %zu", sprites_.size());
+    ImGui::Text(tr("Lights drawn: %zu"), sprites_.size());
     ImGui::SameLine();
-    ImGui::Checkbox("Lights", &lights_);
+    ImGui::Checkbox(tr("Lights"), &lights_);
     ImGui::SameLine();
-    ImGui::Checkbox("Aspect posts", &show_markers_);
+    ImGui::Checkbox(tr("Aspect posts"), &show_markers_);
     if (train_) {
         const auto ahead = system_->ahead(*train_);
         if (ahead.valid) {
-            ImGui::Text("Next signal: %s in %.0f m%s", formats::to_string(ahead.aspect), ahead.distance,
+            ImGui::Text(tr("Next signal: %s in %.0f m%s"), formats::to_string(ahead.aspect), ahead.distance,
                         ahead.speed >= 0.0f ? (" (limit " + std::to_string(static_cast<int>(ahead.speed * 3.6f)) + " km/h)").c_str() : "");
         } else {
-            ImGui::TextUnformatted("Next signal: none ahead");
+            ImGui::TextUnformatted(tr("Next signal: none ahead"));
         }
-        ImGui::Text("Passed %zu signals, %zu at danger%s%s", passes_, passes_at_danger_, last_pass_.empty() ? "" : "; last: ",
+        ImGui::Text(tr("Passed %zu signals, %zu at danger%s%s"), passes_, passes_at_danger_, last_pass_.empty() ? "" : tr("; last: "),
                     last_pass_.c_str());
     }
-    if (ImGui::TreeNode("Nearest head")) {
+    if (ImGui::TreeNode(tr("Nearest head"))) {
         // The head nearest to the camera.
         const auto& heads = system_->heads();
         std::optional<std::uint32_t> best;
@@ -470,12 +485,12 @@ void SignalView::draw_overlay() {
         }
         if (best) {
             const auto& head = heads[*best];
-            ImGui::Text("Head %u, %.0f m away: %s, item %u, node %u at %.1f m %s", *best, best_distance,
+            ImGui::Text(tr("Head %u, %.0f m away: %s, item %u, node %u at %.1f m %s"), *best, best_distance,
                         head.type ? head.type->display_name.c_str() : "?", head.track_item, head.node, head.offset,
-                        head.forward ? "forward" : "backward");
-            ImGui::Text("Aspect %s, draw state %.0f, speed %.1f, mode %.0f", aspect_name(head.state), head.draw_state,
+                        head.forward ? tr("forward") : tr("backward"));
+            ImGui::Text(tr("Aspect %s, draw state %.0f, speed %.1f, mode %.0f"), aspect_name(head.state), head.draw_state,
                         head.speed, head.mode);
-            ImGui::Text("block_state %d, route_set %d%s", system_->block_state(*best), system_->route_set(*best),
+            ImGui::Text(tr("block_state %d, route_set %d%s"), system_->block_state(*best), system_->route_set(*best),
                         system_->reads_stale(*best) ? ", reads a stale local" : "");
             for (const auto& [name, value] : system_->locals(*best)) ImGui::Text("  local %s = %g", name.c_str(), value);
         }

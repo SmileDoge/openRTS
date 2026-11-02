@@ -1,0 +1,9 @@
+EXPORTS
+    _InitRTSLibrary = InitRTSLibrary
+    _DLLVersion = DLLVersion
+    _Init = Init
+    _ChangeLoco = ChangeLoco
+    _CanWorkWith = CanWorkWith
+    _CanSwitch = CanSwitch
+    _Switched = Switched
+    _Run = Run

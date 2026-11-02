@@ -188,4 +188,18 @@ Crossing a joint triggers the wagon sound event 3, changing node event 2.
 
 Use: only the driven engine's offsets, times player mass · 0.0055, move the
 cab camera (`0x424488`); the car shapes are drawn without them. openRTS
-applies them to the car bodies too (viewer slider, 1 = this size).
+applies them to the car bodies too (viewer slider, 1 = this size); in the cab
+the player is in, the cab shape stays at rest and the camera takes the
+offsets, so the cab sways around the driver as in RTS. (The 0.0055 factor was
+not found again as a constant: UNKNOWN; openRTS moves the camera by the
+offsets times the slider.)
+
+## The exterior in the cab (`0x438D50`, parser `0x44247C`)
+
+- **CONFIRMED** wagon type byte +32: bits 0-1 the `Cabin ( "x.s" n )`
+  parameter, bits 4-5 `DoNotHideExtInCabin ( n ) & 3`, bits 6-7
+  `DoNotHideExtInSalon ( n ) & 3`.
+- On a camera change (`0x438D50`): entering the cab hides the car's exterior
+  (its shape instance flag +88 = 20) unless bits 4-5 are set; putting the
+  head out of the window (camera mode 4) shows it again (flag 0), back in
+  the cab hides it. Bits 6-7 do the same for a salon.

@@ -46,6 +46,9 @@ public:
     // Lights of the signal instances drawn this frame.
     void collect_lights(std::span<const renderer::StreamedInstance> instances, renderer::ModelLibrary& library,
                         const glm::vec3& eye, float draw_distance);
+    // The signal lights (where RTS draws its lights: after the glass, before the cab).
+    void draw_lights(WGPURenderPassEncoder pass, const FrameView& frame, float viewport_height, renderer::GlowBlend blend);
+    // The helper markers (posts by aspect), before the glass.
     void draw(WGPURenderPassEncoder pass, const FrameView& frame, float viewport_height);
     // Optional head sub-objects a signal instance does not use (its
     // SignalSubObjs), collapsed so they are not drawn. Empty: draw as is.

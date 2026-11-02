@@ -54,7 +54,7 @@ jobs:
         run: |
           $out = "openRTS-windows-x64"
           New-Item -ItemType Directory -Force "$out/tools" | Out-Null
-          Copy-Item build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll $out
+          Copy-Item build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll, build/viewer/Release/openrts-dllhost32.exe $out
           Get-ChildItem build/tools -Recurse -Filter *.exe | Where-Object { $_.DirectoryName -like '*\Release' } |
               ForEach-Object { Copy-Item $_.FullName "$out/tools" }
           Copy-Item README.md, README_EN.md $out

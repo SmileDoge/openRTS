@@ -18,4 +18,11 @@ namespace openrts::formats {
 // through its stock rail.
 [[nodiscard]] std::vector<ShapeMatrix> animate_matrices(const ShapeModel& model, std::size_t animation, float frame);
 
+// One node's local matrix at `frame` (its stored value when the animation has
+// no keys for it): what animate_matrices gives for that node, without the rest.
+[[nodiscard]] ShapeMatrix animate_matrix(const ShapeModel& model, std::size_t animation, std::size_t matrix, float frame);
+// The last key frame the animation has for node `matrix` (0: no keys). Cab
+// switches and gauges spread their states over the frames 0..last.
+[[nodiscard]] float last_key_frame(const ShapeModel& model, std::size_t animation, std::size_t matrix);
+
 } // namespace openrts::formats

@@ -1,5 +1,9 @@
 #include <openrts/simulation/train.hpp>
 
+#include <openrts/simulation/electrification.hpp>
+
+#include "realistic_air.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -227,8 +231,12 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     const int reverser = handles.reverser * (inputs.flipped ? -1 : 1);
     const auto brake = handles.brake;
     const auto* engine = inputs.definition && inputs.definition->engine ? &*inputs.definition->engine : nullptr;
-    // Traction: MaxForce up to the power hyperbola, scaled by the notch.
-    if (engine && reverser != 0 && throttle > 0 && brake != BrakeHandle::emergency) {
+    // Traction: MaxForce up to the power hyperbola, scaled by the notch. An
+    // electric engine needs a line it works on (WorksOnLineVoltages) when the
+    // route's electrification is modelled.
+    const bool powered = !engine || engine->kind != formats::EngineKind::electric || inputs.line_voltage < 0.0f
+        || Electrification::works_on(*engine, {inputs.line_voltage, inputs.line_frequency});
+    if (engine && powered && reverser != 0 && throttle > 0 && brake != BrakeHandle::emergency) {
         const float max_force = engine->max_force > 0.0f ? engine->max_force : 300000.0f;
         const float power = engine->max_power > 0.0f ? engine->max_power : max_force * 10.0f;
         const float speed = std::abs(inputs.speed);
@@ -245,6 +253,13 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     if (inputs.main_reservoir < 7.5f) compressor_ = true;
     if (inputs.main_reservoir > 9.0f) compressor_ = false;
     demands.main_reservoir_rate = compressor_ ? 0.05f : 0.0f;
+    if (inputs.realistic_air && compressor_ && engine) {
+        // A КТ-6 delivers about 5.3 m³ of free air a minute (0.088 m³·atm/s)
+        // into the real main reservoir volume.
+        const float v = engine->main_reservoir_volume;
+        const float volume = v <= 0.0f ? 1.0f : v > 50.0f ? v * 0.001f : v * 0.0283f;
+        demands.main_reservoir_rate = 0.088f / volume;
+    }
     // The independent brake acts on every engine (multiple-unit line).
     demands.independent_brake = std::clamp(handles.independent, 0.0f, 4.0f);
     if (!master_) return;
@@ -271,13 +286,19 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     case BrakeHandle::running:
         if (ur < handles.charging_pressure) {
             ur += std::clamp((mr - ur) * 2.0f, 0.0f, ur_charge_rate) * time;
-        } else if (inputs.cylinder > 0.0f && ur - p < 0.1f) {
+        } else if (!inputs.realistic_air && inputs.cylinder > 0.0f && ur - p < 0.1f) {
             // The DLL's own overcharge while the locomotive is still braked:
             // it pushes the release through the RTS triple valve.
             ur += 0.15f * time;
         }
         ur = (std::min)(ur, mr);
-        if (ur > p) ur -= 0.003f * time; // stabiliser: overcharge removal
+        // Stabiliser: overcharge removal (the DLL's 0.003 atm/s; the real
+        // valve's 0.2 atm in 80-120 s with realistic air).
+        if (ur > handles.charging_pressure && (inputs.realistic_air || ur > p)) {
+            ur = (std::max)(ur - (inputs.realistic_air ? 0.002f : 0.003f) * time, handles.charging_pressure);
+        } else if (!inputs.realistic_air && ur > p) {
+            ur -= 0.003f * time;
+        }
         if (p < ur - 0.01f) {
             rate = (ur - p) / pipe_charge_div;
         } else if (p > ur) {
@@ -313,6 +334,8 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
         break;
     }
     demands.train_pipe_rate = rate;
+    demands.equalising = ur;
+    demands.emergency = brake == BrakeHandle::emergency;
     // ЭПТ (ЭР9Т rates): EPT_APPLY_RATE 0.5, EPT_RELEASE_RATE 0.5 (II) and
     // EPT_RELEASE_RATE1 0.8 (I), at most 6 atm; none in VI (pneumatic).
     auto& target = handles_->ep_target;
@@ -359,6 +382,7 @@ struct Train::Impl {
     // Junctions the tail passed facing, still held for their ClearanceDist.
     std::vector<std::uint32_t> clearing;
     bool moving_backward = false;
+    detail::RealisticAir air;
 };
 
 Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
@@ -375,8 +399,8 @@ Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
         cars_.push_back(car);
     }
     if (!cars_.empty()) {
-        cars_.front().pipe_ends |= pipe_hose_front | pipe_cock_front;
-        cars_.back().pipe_ends |= pipe_hose_rear | pipe_cock_rear;
+        cars_.front().pipe_ends |= pipe_hose_front | charging_hose_front | ep_cable_front | pipe_cock_front;
+        cars_.back().pipe_ends |= pipe_hose_rear | charging_hose_rear | ep_cable_rear | pipe_cock_rear;
     }
     // Centres laid back from the last car with every joint at gap 0.
     for (std::size_t i = cars_.size(); i-- > 1;) {
@@ -422,8 +446,41 @@ std::optional<TrackTraveller> Train::leading_end() const {
     return lead;
 }
 
+void Train::set_brake_model(const BrakeModel model) noexcept {
+    if (settings_.brake_model != model && model == BrakeModel::realistic) impl_->air.reset(cars_);
+    settings_.brake_model = model;
+}
+
+BrakeModel Train::brake_model() const noexcept {
+    if (settings_.brake_model != BrakeModel::realistic) return BrakeModel::rts;
+    for (const auto& c : impl_->controllers)
+        if (c && c->rts_brakes()) return BrakeModel::rts;
+    return BrakeModel::realistic;
+}
+
 void Train::set_coupler_substeps(const std::uint32_t substeps) noexcept {
     settings_.coupler_substeps = std::clamp<std::uint32_t>(substeps, 1, 8);
+}
+
+void Train::set_car_flags(const std::size_t car, const CarFlags which, const std::uint8_t mask, const bool on) {
+    if (car >= cars_.size()) return;
+    auto& state = cars_[car];
+    std::uint8_t* bits = nullptr;
+    switch (which) {
+    case CarFlags::pipe_ends: bits = &state.pipe_ends; break;
+    case CarFlags::coupler_open: bits = &state.coupler_open; break;
+    case CarFlags::valves: bits = &state.valves; break;
+    case CarFlags::chocks: bits = &state.chocks; break;
+    }
+    if (!bits) return;
+    *bits = on ? static_cast<std::uint8_t>(*bits | mask) : static_cast<std::uint8_t>(*bits & ~mask);
+    asleep_ = false;
+}
+
+void Train::set_handbrake(const std::size_t car, const float value) {
+    if (car >= cars_.size()) return;
+    cars_[car].handbrake = std::clamp(value, 0.0f, 1.0f);
+    asleep_ = false;
 }
 
 void Train::set_bogies(const std::size_t car, const float ahead, const float behind) {
@@ -500,8 +557,11 @@ void Train::reverse_cars() {
         car.body[2] = -car.body[2];
         car.body_rate[2] = -car.body_rate[2];
         car.pipe_ends = swap_ends(car.pipe_ends, pipe_hose_front, pipe_hose_rear);
+        car.pipe_ends = swap_ends(car.pipe_ends, charging_hose_front, charging_hose_rear);
+        car.pipe_ends = swap_ends(car.pipe_ends, ep_cable_front, ep_cable_rear);
         car.pipe_ends = swap_ends(car.pipe_ends, pipe_cock_front, pipe_cock_rear);
         car.coupler_open = swap_ends(car.coupler_open, coupler_open_front, coupler_open_rear);
+        car.chocks = swap_ends(car.chocks, chock_front, chock_rear);
     }
     std::reverse(cars_.begin(), cars_.end());
     std::reverse(impl_->controllers.begin(), impl_->controllers.end());
@@ -611,8 +671,8 @@ std::unique_ptr<Train> Train::uncouple(const std::size_t index, const bool close
 
     auto& behind = cars_.back();
     auto& ahead = rear->cars_.front();
-    behind.pipe_ends |= pipe_hose_rear;
-    ahead.pipe_ends |= pipe_hose_front;
+    behind.pipe_ends |= pipe_hose_rear | charging_hose_rear | ep_cable_rear;
+    ahead.pipe_ends |= pipe_hose_front | charging_hose_front | ep_cable_front;
     if (close_cocks) {
         behind.pipe_ends |= pipe_cock_rear;
         ahead.pipe_ends |= pipe_cock_front;
@@ -648,8 +708,8 @@ bool Train::couple(Train& other, const bool at_front, const bool other_front, co
     }
     auto& joint_behind = at_front ? other.cars_.back() : cars_.back();
     auto& joint_ahead = at_front ? cars_.front() : other.cars_.front();
-    joint_behind.pipe_ends &= static_cast<std::uint8_t>(~(pipe_hose_rear | pipe_cock_rear));
-    joint_ahead.pipe_ends &= static_cast<std::uint8_t>(~(pipe_hose_front | pipe_cock_front));
+    joint_behind.pipe_ends &= static_cast<std::uint8_t>(~(pipe_hose_rear | charging_hose_rear | ep_cable_rear | pipe_cock_rear));
+    joint_ahead.pipe_ends &= static_cast<std::uint8_t>(~(pipe_hose_front | charging_hose_front | ep_cable_front | pipe_cock_front));
     joint_behind.coupler_open &= static_cast<std::uint8_t>(~coupler_open_rear);
     joint_ahead.coupler_open &= static_cast<std::uint8_t>(~coupler_open_front);
 
@@ -756,6 +816,25 @@ std::vector<CarPlacement> Train::placements() const {
     return result;
 }
 
+std::vector<TrackTraveller> Train::car_centres() const {
+    std::vector<TrackTraveller> result;
+    if (!impl_->tail || cars_.empty()) return result;
+    const auto& last = cars_.back();
+    result.reserve(cars_.size());
+    for (const auto& car : cars_) {
+        TrackTraveller centre = *impl_->tail;
+        centre.move(length_of(last) * 0.5 + car.offset);
+        result.push_back(centre);
+    }
+    return result;
+}
+
+void Train::set_line_supply(const std::size_t car, const float voltage, const float frequency) {
+    if (car >= cars_.size()) return;
+    cars_[car].line_voltage = voltage;
+    cars_[car].line_frequency = frequency;
+}
+
 void Train::set_asleep(const bool asleep) noexcept {
     asleep_ = asleep;
     if (!asleep) return;
@@ -771,6 +850,7 @@ void Train::step() {
     const auto dt = static_cast<float>(train_step);
     auto& impl = *impl_;
 
+    const bool realistic_air = brake_model() == BrakeModel::realistic;
     // 1. Locomotive controllers and their engine part (0x5031D8).
     for (std::size_t i = 0; i < n; ++i) {
         auto& car = cars_[i];
@@ -788,6 +868,9 @@ void Train::step() {
             .independent = car.independent,
             .flipped = car.flipped,
             .definition = car.definition,
+            .realistic_air = realistic_air,
+            .line_voltage = car.line_voltage,
+            .line_frequency = car.line_frequency,
         };
         impl.controllers[i]->step(dt, inputs, demands);
         const auto& brakes = car.definition->brakes;
@@ -820,8 +903,12 @@ void Train::step() {
         const auto& demands = impl.demands[i];
         if (!(demands.systems & 2) || demands.ep_value < 0.0f || !(cars_[i].definition->brakes.system & 2)) continue;
         cars_[i].ep = demands.ep_value;
-        for (std::size_t k = i + 1; k < n && (cars_[k].definition->brakes.system & 2); ++k) cars_[k].ep = demands.ep_value;
-        for (std::size_t k = i; k-- > 0 && (cars_[k].definition->brakes.system & 2);) cars_[k].ep = demands.ep_value;
+        // As far as the EP line runs: EP cars with the cables connected.
+        const auto ep_joined = [&](const std::size_t k) {
+            return !(cars_[k].pipe_ends & ep_cable_rear) && !(cars_[k + 1].pipe_ends & ep_cable_front);
+        };
+        for (std::size_t k = i + 1; k < n && (cars_[k].definition->brakes.system & 2) && ep_joined(k - 1); ++k) cars_[k].ep = demands.ep_value;
+        for (std::size_t k = i; k-- > 0 && (cars_[k].definition->brakes.system & 2) && ep_joined(k);) cars_[k].ep = demands.ep_value;
     }
 
     // 2. Brake force from the cylinders (before this step's air update, as RTS).
@@ -832,156 +919,182 @@ void Train::step() {
             ? cylinder / brakes.cylinder_pressure_for_max_force * brakes.max_brake_force
             : 0.0f;
         car.brake_force += car.handbrake * brakes.max_handbrake_force;
+        // Brake shoes under its bogies (RTS: 10 kN each).
+        if (car.chocks & chock_front) car.brake_force += chock_force;
+        if (car.chocks & chock_rear) car.brake_force += chock_force;
     }
     for (std::size_t i = 0; i < n; ++i) cars_[i].brake_force += impl.demands[i].brake_force;
 
-    // 3. Air: pipe from the locomotives, equalisation, triple valves.
-    std::vector<float> pipe_start(n);
-    for (std::size_t i = 0; i < n; ++i) pipe_start[i] = cars_[i].pipe;
-    const auto pipe_volume = [&](const std::size_t i) { return length_of(cars_[i]) * pipe_area; };
-    // Air flows between car i and i + 1 only through connected hoses and
-    // open end cocks; a pipe end with an open cock and nothing coupled vents
-    // at 10 atm/s (RTS; the hiss is sound variable 80).
-    const auto joined = [&](const std::size_t i) {
-        return !(cars_[i].pipe_ends & (pipe_hose_rear | pipe_cock_rear))
-            && !(cars_[i + 1].pipe_ends & (pipe_hose_front | pipe_cock_front));
-    };
-    for (auto& car : cars_) {
-        const bool front_open = (car.pipe_ends & pipe_hose_front) && !(car.pipe_ends & pipe_cock_front);
-        const bool rear_open = (car.pipe_ends & pipe_hose_rear) && !(car.pipe_ends & pipe_cock_rear);
-        if (front_open || rear_open) car.pipe = (std::max)(car.pipe - 10.0f * dt, 0.0f);
-    }
-    for (std::size_t j = 0; j < n; ++j) {
-        const auto& demands = impl.demands[j];
-        auto& loco = cars_[j];
-        if (!loco.definition->engine || !impl.controllers[j] || !(demands.systems & 1)) continue;
-        // Only engines that ask for it touch the pipe (the master's valve).
-        const float rate = demands.train_pipe_rate;
-        if (rate == 0.0f) continue;
-        const float reservoir_volume = loco.definition->engine->main_reservoir_volume;
-        if (rate < 0.0f) {
-            // Vent at the locomotive, the rest follows (lowering only).
-            const float vented = (std::max)(loco.pipe + rate, 0.0f);
-            loco.pipe += (vented - loco.pipe) * dt;
+    // 3. Air: realistic pneumatics (openRTS), or RTS's pipe and triple valves.
+    if (realistic_air) {
+        detail::AirInputs air{};
+        air.demands = &impl.demands;
+        std::vector<bool> has(n);
+        for (std::size_t i = 0; i < n; ++i) has[i] = impl.controllers[i] != nullptr;
+        air.has_controller = &has;
+        air.joined.resize(n > 0 ? n - 1 : 0);
+        for (std::size_t i = 0; i + 1 < n; ++i) {
+            air.joined[i] = !(cars_[i].pipe_ends & (pipe_hose_rear | pipe_cock_rear))
+                && !(cars_[i + 1].pipe_ends & (pipe_hose_front | pipe_cock_front));
+        }
+        impl.air.step(cars_, air, dt);
+        // The valves a hand opened, as in the RTS model.
+        for (auto& car : cars_) {
+            if (car.valves & valve_emergency) car.pipe = (std::max)(car.pipe - 18.0f * dt, 0.0f);
+            if (car.valves & valve_release) car.cylinder = (std::max)(car.cylinder - 0.5f * dt, 0.0f);
+        }
+    } else {
+        // 3. Air: pipe from the locomotives, equalisation, triple valves.
+        std::vector<float> pipe_start(n);
+        for (std::size_t i = 0; i < n; ++i) pipe_start[i] = cars_[i].pipe;
+        const auto pipe_volume = [&](const std::size_t i) { return length_of(cars_[i]) * pipe_area; };
+        // Air flows between car i and i + 1 only through connected hoses and
+        // open end cocks; a pipe end with an open cock and nothing coupled vents
+        // at 10 atm/s (RTS; the hiss is sound variable 80).
+        const auto joined = [&](const std::size_t i) {
+            return !(cars_[i].pipe_ends & (pipe_hose_rear | pipe_cock_rear))
+                && !(cars_[i + 1].pipe_ends & (pipe_hose_front | pipe_cock_front));
+        };
+        for (auto& car : cars_) {
+            const bool front_open = (car.pipe_ends & pipe_hose_front) && !(car.pipe_ends & pipe_cock_front);
+            const bool rear_open = (car.pipe_ends & pipe_hose_rear) && !(car.pipe_ends & pipe_cock_rear);
+            if (front_open || rear_open) car.pipe = (std::max)(car.pipe - 10.0f * dt, 0.0f);
+            if (car.valves & valve_emergency) car.pipe = (std::max)(car.pipe - 18.0f * dt, 0.0f);
+            if (car.valves & valve_release) car.cylinder = (std::max)(car.cylinder - 0.5f * dt, 0.0f);
+        }
+        for (std::size_t j = 0; j < n; ++j) {
+            const auto& demands = impl.demands[j];
+            auto& loco = cars_[j];
+            if (!loco.definition->engine || !impl.controllers[j] || !(demands.systems & 1)) continue;
+            // Only engines that ask for it touch the pipe (the master's valve).
+            const float rate = demands.train_pipe_rate;
+            if (rate == 0.0f) continue;
+            const float reservoir_volume = loco.definition->engine->main_reservoir_volume;
+            if (rate < 0.0f) {
+                // Vent at the locomotive, the rest follows (lowering only).
+                const float vented = (std::max)(loco.pipe + rate, 0.0f);
+                loco.pipe += (vented - loco.pipe) * dt;
+                float distance = 0.0f;
+                for (std::size_t m = j + 1; m < n && joined(m - 1); ++m) {
+                    distance += length_of(cars_[m - 1]);
+                    const float factor = (std::min)(1.0f, 30.0f / distance) * dt;
+                    cars_[m].pipe += (std::min)((vented - cars_[m].pipe) * factor, 0.0f);
+                }
+                distance = 0.0f;
+                for (std::size_t m = j; m-- > 0 && joined(m);) {
+                    distance += length_of(cars_[m + 1]);
+                    const float factor = (std::min)(1.0f, 30.0f / distance) * dt;
+                    cars_[m].pipe += (std::min)((vented - cars_[m].pipe) * factor, 0.0f);
+                }
+                continue;
+            }
+            if (reservoir_volume <= 0.0f) continue;
+            // Fed from the main reservoir: volume-weighted equalisation, slower
+            // with the distance from the locomotive.
+            const auto feed = [&](CarState& car, const float distance, const float volume) {
+                const float factor = (std::min)(1.0f, (std::min)(1.0f, 30.0f / (std::max)(distance, 1.0f)) * dt * rate);
+                const float average = (loco.main_reservoir * reservoir_volume + car.pipe * volume) / (reservoir_volume + volume);
+                const float change = (average - car.pipe) * factor;
+                car.pipe += change;
+                loco.main_reservoir = (std::max)(loco.main_reservoir - change * volume / reservoir_volume, 0.0f);
+            };
+            feed(loco, 1.0f, pipe_volume(j));
             float distance = 0.0f;
             for (std::size_t m = j + 1; m < n && joined(m - 1); ++m) {
                 distance += length_of(cars_[m - 1]);
-                const float factor = (std::min)(1.0f, 30.0f / distance) * dt;
-                cars_[m].pipe += (std::min)((vented - cars_[m].pipe) * factor, 0.0f);
+                feed(cars_[m], distance, pipe_volume(m - 1));
             }
             distance = 0.0f;
             for (std::size_t m = j; m-- > 0 && joined(m);) {
                 distance += length_of(cars_[m + 1]);
-                const float factor = (std::min)(1.0f, 30.0f / distance) * dt;
-                cars_[m].pipe += (std::min)((vented - cars_[m].pipe) * factor, 0.0f);
+                feed(cars_[m], distance, pipe_volume(m));
             }
-            continue;
         }
-        if (reservoir_volume <= 0.0f) continue;
-        // Fed from the main reservoir: volume-weighted equalisation, slower
-        // with the distance from the locomotive.
-        const auto feed = [&](CarState& car, const float distance, const float volume) {
-            const float factor = (std::min)(1.0f, (std::min)(1.0f, 30.0f / (std::max)(distance, 1.0f)) * dt * rate);
-            const float average = (loco.main_reservoir * reservoir_volume + car.pipe * volume) / (reservoir_volume + volume);
-            const float change = (average - car.pipe) * factor;
-            car.pipe += change;
-            loco.main_reservoir = (std::max)(loco.main_reservoir - change * volume / reservoir_volume, 0.0f);
-        };
-        feed(loco, 1.0f, pipe_volume(j));
-        float distance = 0.0f;
-        for (std::size_t m = j + 1; m < n && joined(m - 1); ++m) {
-            distance += length_of(cars_[m - 1]);
-            feed(cars_[m], distance, pipe_volume(m - 1));
-        }
-        distance = 0.0f;
-        for (std::size_t m = j; m-- > 0 && joined(m);) {
-            distance += length_of(cars_[m + 1]);
-            feed(cars_[m], distance, pipe_volume(m));
-        }
-    }
-    // Every car equalises with each car ahead of it, slower with distance.
-    for (std::size_t i = 1; i < n; ++i) {
-        auto& car = cars_[i];
-        const float volume = pipe_volume(i);
-        for (std::size_t k = i; k-- > 0 && joined(k);) {
-            auto& ahead = cars_[k];
-            if (ahead.pipe == car.pipe) continue;
-            const float ahead_volume = pipe_volume(k);
-            const double distance = ahead.offset - car.offset;
-            const float factor = (distance == 0.0 ? 1.0f : (std::min)(1.0f, static_cast<float>(30.0 / std::abs(distance)))) * dt;
-            const float average = (ahead.pipe * ahead_volume + car.pipe * volume) / (ahead_volume + volume);
-            car.pipe += (average - car.pipe) * factor;
-            ahead.pipe += (average - ahead.pipe) * factor;
-        }
-    }
-    for (std::size_t i = 0; i < n; ++i) {
-        auto& car = cars_[i];
-        const auto& brakes = car.definition->brakes;
-        float pipe_change = car.pipe - pipe_start[i];
-        const float ratio = (std::max)(brakes.triple_valve_ratio, 0.01f);
-        if (car.definition->engine && impl.controllers[i] && impl.demands[i].release_train_brake) {
-            car.cylinder = (std::max)(car.cylinder - brakes.max_release_rate * dt, 0.0f);
-        }
-        // EP brake.
-        if ((brakes.system & 2) && car.ep >= 0.0f) {
-            if (car.cylinder < car.ep) {
-                float equalised = (car.auxiliary - car.cylinder) / (ratio + 0.625f);
-                equalised = (std::max)(equalised, 0.0f);
-                float rise = (std::min)(car.ep - car.cylinder, brakes.max_application_rate * dt);
-                rise = (std::min)(rise, equalised * ratio);
-                car.cylinder += rise;
-                car.auxiliary = (std::max)(car.auxiliary - rise / ratio * 0.625f, 0.0f);
-            } else if (car.cylinder > car.ep) {
-                car.cylinder = (std::max)(car.cylinder - brakes.max_release_rate * dt, car.ep);
+        // Every car equalises with each car ahead of it, slower with distance.
+        for (std::size_t i = 1; i < n; ++i) {
+            auto& car = cars_[i];
+            const float volume = pipe_volume(i);
+            for (std::size_t k = i; k-- > 0 && joined(k);) {
+                auto& ahead = cars_[k];
+                if (ahead.pipe == car.pipe) continue;
+                const float ahead_volume = pipe_volume(k);
+                const double distance = ahead.offset - car.offset;
+                const float factor = (distance == 0.0 ? 1.0f : (std::min)(1.0f, static_cast<float>(30.0 / std::abs(distance)))) * dt;
+                const float average = (ahead.pipe * ahead_volume + car.pipe * volume) / (ahead_volume + volume);
+                car.pipe += (average - car.pipe) * factor;
+                ahead.pipe += (average - ahead.pipe) * factor;
             }
-            pipe_change = 0.0f;
         }
-        if (!(brakes.system & 5)) continue;
-        // Control chamber.
-        if (brakes.system & 4) {
-            if (car.charging_pipe > car.auxiliary) {
-                float charge = (car.charging_pipe - car.auxiliary) * 0.05f;
-                if (charge / dt > brakes.max_auxiliary_charging_rate) charge = brakes.max_auxiliary_charging_rate * dt;
-                car.auxiliary += charge;
-                car.charging_pipe = (std::max)(car.charging_pipe - 10.0f * charge, 0.0f);
+        for (std::size_t i = 0; i < n; ++i) {
+            auto& car = cars_[i];
+            const auto& brakes = car.definition->brakes;
+            float pipe_change = car.pipe - pipe_start[i];
+            const float ratio = (std::max)(brakes.triple_valve_ratio, 0.01f);
+            if (car.definition->engine && impl.controllers[i] && impl.demands[i].release_train_brake) {
+                car.cylinder = (std::max)(car.cylinder - brakes.max_release_rate * dt, 0.0f);
             }
-            if (car.cylinder == 0.0f && pipe_change >= 0.0f) {
-                const float target = car.pipe - 0.2f;
-                if (car.control < target) {
-                    car.control = (std::min)(car.control + car.pipe * 0.04f * dt, target);
-                } else if (car.control > target) {
-                    car.control = (std::max)(car.control - car.pipe * 0.04f * dt, target);
+            // EP brake.
+            if ((brakes.system & 2) && car.ep >= 0.0f) {
+                if (car.cylinder < car.ep) {
+                    float equalised = (car.auxiliary - car.cylinder) / (ratio + 0.625f);
+                    equalised = (std::max)(equalised, 0.0f);
+                    float rise = (std::min)(car.ep - car.cylinder, brakes.max_application_rate * dt);
+                    rise = (std::min)(rise, equalised * ratio);
+                    car.cylinder += rise;
+                    car.auxiliary = (std::max)(car.auxiliary - rise / ratio * 0.625f, 0.0f);
+                } else if (car.cylinder > car.ep) {
+                    car.cylinder = (std::max)(car.cylinder - brakes.max_release_rate * dt, car.ep);
                 }
+                pipe_change = 0.0f;
             }
-        } else {
-            car.control = car.auxiliary;
+            if (!(brakes.system & 5)) continue;
+            // Control chamber.
+            if (brakes.system & 4) {
+                if (car.charging_pipe > car.auxiliary) {
+                    float charge = (car.charging_pipe - car.auxiliary) * 0.05f;
+                    if (charge / dt > brakes.max_auxiliary_charging_rate) charge = brakes.max_auxiliary_charging_rate * dt;
+                    car.auxiliary += charge;
+                    car.charging_pipe = (std::max)(car.charging_pipe - 10.0f * charge, 0.0f);
+                }
+                if (car.cylinder == 0.0f && pipe_change >= 0.0f) {
+                    const float target = car.pipe - 0.2f;
+                    if (car.control < target) {
+                        car.control = (std::min)(car.control + car.pipe * 0.04f * dt, target);
+                    } else if (car.control > target) {
+                        car.control = (std::max)(car.control - car.pipe * 0.04f * dt, target);
+                    }
+                }
+            } else {
+                car.control = car.auxiliary;
+            }
+            if (pipe_change >= 0.0f) {
+                // Charge the auxiliary reservoir from the pipe.
+                if (car.auxiliary + 0.2f < car.pipe) {
+                    float charge = (car.pipe - car.auxiliary - 0.2f) * 0.05f;
+                    if (charge / dt > brakes.max_auxiliary_charging_rate) charge = brakes.max_auxiliary_charging_rate * dt;
+                    if ((brakes.system & 4) && car.charging_pipe > car.pipe) charge = 0.0f;
+                    car.auxiliary += charge;
+                    car.pipe = (std::max)(car.pipe - 10.0f * charge, 0.0f);
+                    pipe_change -= 10.0f * charge;
+                }
+                // Graduated release with the pipe rise.
+                if (pipe_change > 0.0f) car.cylinder = (std::max)(car.cylinder - pipe_change * ratio, 0.0f);
+            } else if (car.control > car.pipe) {
+                // Application in proportion to the pipe drop, up to equalisation
+                // with the auxiliary reservoir.
+                float rise = -pipe_change * ratio;
+                float drop = pipe_change * 0.625f;
+                if (car.cylinder + rise > car.auxiliary + drop) {
+                    drop = (std::min)(-(car.auxiliary - car.cylinder) / (ratio + 0.625f), 0.0f);
+                    rise = -drop * ratio;
+                    drop *= 0.625f;
+                }
+                car.cylinder += rise;
+                car.auxiliary = (std::max)(car.auxiliary + drop, 0.0f);
+                car.cylinder = (std::min)(car.cylinder, car.auxiliary);
+            }
         }
-        if (pipe_change >= 0.0f) {
-            // Charge the auxiliary reservoir from the pipe.
-            if (car.auxiliary + 0.2f < car.pipe) {
-                float charge = (car.pipe - car.auxiliary - 0.2f) * 0.05f;
-                if (charge / dt > brakes.max_auxiliary_charging_rate) charge = brakes.max_auxiliary_charging_rate * dt;
-                if ((brakes.system & 4) && car.charging_pipe > car.pipe) charge = 0.0f;
-                car.auxiliary += charge;
-                car.pipe = (std::max)(car.pipe - 10.0f * charge, 0.0f);
-                pipe_change -= 10.0f * charge;
-            }
-            // Graduated release with the pipe rise.
-            if (pipe_change > 0.0f) car.cylinder = (std::max)(car.cylinder - pipe_change * ratio, 0.0f);
-        } else if (car.control > car.pipe) {
-            // Application in proportion to the pipe drop, up to equalisation
-            // with the auxiliary reservoir.
-            float rise = -pipe_change * ratio;
-            float drop = pipe_change * 0.625f;
-            if (car.cylinder + rise > car.auxiliary + drop) {
-                drop = (std::min)(-(car.auxiliary - car.cylinder) / (ratio + 0.625f), 0.0f);
-                rise = -drop * ratio;
-                drop *= 0.625f;
-            }
-            car.cylinder += rise;
-            car.auxiliary = (std::max)(car.auxiliary + drop, 0.0f);
-            car.cylinder = (std::min)(car.cylinder, car.auxiliary);
-        }
+
     }
 
     // 4. Resistance, grade, curve.
@@ -1522,6 +1635,20 @@ std::optional<Meeting> nearest_end(const TrackNetwork& network, const TrackTrave
     }
     return std::nullopt;
 }
+
+} // namespace
+
+std::optional<EndContact> end_contact(const Train& train, const bool front, const std::span<Train* const> trains, const double reach) {
+    if (!train.placed() || !train.network()) return std::nullopt;
+    auto start = front ? train.front_end() : train.rear_end();
+    if (!start) return std::nullopt;
+    if (!front) start->reverse();
+    const auto meeting = nearest_end(*train.network(), *start, train, trains, reach);
+    if (!meeting) return std::nullopt;
+    return EndContact{.other = meeting->other, .other_front = meeting->other_front, .gap = meeting->gap};
+}
+
+namespace {
 
 // Mass-weighted mean velocity of a train towards its front.
 double mean_velocity(const Train& train) {

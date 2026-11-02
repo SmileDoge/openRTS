@@ -21,6 +21,7 @@ struct StreamedInstance {
     std::int32_t world_tile_z{};
     std::uint32_t uid{};
     std::uint32_t collide_flags{}; // WorldObjectPlacement::collide_flags
+    std::uint32_t static_flags{};  // WorldObjectPlacement::static_flags (its RTS draw pass)
 };
 
 struct RouteStreamerStats {
@@ -57,7 +58,12 @@ public:
     // only when that set of tiles changes; the reference stays valid until
     // the next update() or poll().
     [[nodiscard]] const std::vector<StreamedInstance>& visible_instances() const;
+    // Grows each time visible_instances() is built again (another set of tiles).
+    [[nodiscard]] std::uint64_t visible_generation() const noexcept;
     [[nodiscard]] RouteStreamerStats stats() const;
+    // Night, season and weather for the models it loads from now on
+    // (ESD_Alternative_Texture; ModelLibrary::set_texture_variant reloads the rest).
+    void set_texture_variant(const TextureVariant& variant);
     // Folders searched first for model textures (the route's TEXTURES).
     [[nodiscard]] const std::vector<core::VirtualPath>& texture_directories() const noexcept;
 

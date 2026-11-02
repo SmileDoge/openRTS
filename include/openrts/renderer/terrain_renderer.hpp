@@ -30,6 +30,8 @@ struct TerrainVertex {
 struct TerrainPatchMesh {
     std::uint32_t first_index{};
     std::uint32_t index_count{};
+    float center[3]{}; // bounding sphere in the tile's space
+    float radius{};
     std::string texture;      // terrain_texslot 0
     std::string microtexture; // terrain_texslot 1 (DetailTerrain), empty otherwise
 };
@@ -79,11 +81,22 @@ public:
     [[nodiscard]] bool ready() const noexcept;
     // Selects the seasonal texture variant; textures are re-resolved.
     void set_conditions(rts::Season season, rts::Weather weather);
+    // RTS's terrain shading, or the experimental path's (as the models': linear
+    // light, lamps added; ModelRenderer::shading_path).
+    void set_shading_path(ShadingPath path) noexcept;
     // Schedules tile and texture jobs and uploads finished ones.
     void update(const formats::RoutePosition& camera);
     // Moves the scene origin (tile offsets are computed per frame from it).
     void set_origin(const formats::RoutePosition& origin);
-    void render(WGPURenderPassEncoder pass, const glm::mat4& view_projection, const ModelLighting& lighting);
+    // `effects`: SceneEffects::bind_group (nullptr: a built-in one, every effect off).
+    void render(WGPURenderPassEncoder pass, const glm::mat4& view_projection, const ModelLighting& lighting,
+                WGPUBindGroup effects = nullptr);
+    // Depth only, for SceneEffects: every loaded tile from `view_projection`
+    // in depth slot `slot` (< 12).
+    void render_depth(WGPURenderPassEncoder pass, std::uint32_t slot, const glm::mat4& view_projection, DepthPassKind kind);
+    // Sizes what the depth passes use; call before them (they may run on
+    // several threads at once and change nothing shared).
+    void prepare_depth();
 
     [[nodiscard]] std::size_t loaded_tiles() const noexcept;
     [[nodiscard]] std::size_t pending_jobs() const noexcept;

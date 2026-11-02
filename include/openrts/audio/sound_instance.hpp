@@ -81,7 +81,9 @@ public:
     ~SoundInstance();
 
     void update(float dt, const SoundInputs& inputs, VoiceSink& sink);
-    // Stops every voice (deactivation, unloading).
+    // Stops every voice (deactivation, unloading). As RTS (0x4A9CF4), the
+    // loop each stream was playing is remembered with its position and
+    // starts again there when the group activates again (0x4A9BA8).
     void stop(VoiceSink& sink);
     // Fetches every clip the group can play, so the first update does not
     // decode files while voices already started elsewhere keep playing (one
@@ -116,6 +118,10 @@ private:
     // SetVariableValue / IncreaseVariableValue: replace the input from then on.
     std::array<std::optional<float>, formats::sound_variable_count> overrides_{};
     bool active_ = false;
+    bool activated_once_ = false; // Initial_Triggers fire on the first activation only
+    // Discrete codes that came while inactive: RTS keeps them in the object's
+    // 96-entry queue and runs them at its next active update.
+    std::vector<std::uint32_t> queued_;
     bool random_loop_phase_ = false;
 };
 

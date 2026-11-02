@@ -167,6 +167,7 @@ SkyState SkySimulation::update(const std::int32_t time_of_day,
     const auto sun = state.satellites.empty() ? SatelliteState{} : state.satellites.front();
     const auto direct = colour_from_argb(sun.direct_colour);
     auto ambient = colour_from_argb(sun.ambient_colour);
+    state.world_lit = (ambient.r + ambient.g + ambient.b + direct.r + direct.g + direct.b) / 6.0f;
     const auto ambient_floor = colour_from_argb(environment.ambient_light.value_or(default_ambient_light));
     ambient = glm::vec4{glm::max(glm::vec3{ambient}, glm::vec3{ambient_floor}), ambient.w};
 

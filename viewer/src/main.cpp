@@ -22,6 +22,7 @@
 
 #include "debug_view.hpp"
 #include "viewer_scene.hpp"
+#include "viewer_state.hpp"
 #include "window_viewer.hpp"
 #endif
 
@@ -112,6 +113,14 @@ struct ContentTarget {
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
 int run_window(std::string_view mode, std::string_view path, const std::vector<std::string_view>& flags) {
     openrts::viewer::WindowOptions options;
+    // The volume last set (viewer panel or the start menu); --volume overrides it.
+    if (const auto volume = openrts::viewer::remembered("volume")) {
+        try {
+            options.sound_volume = std::clamp(std::stof(*volume), 0.0f, 1.0f);
+        } catch (...) {
+        }
+    }
+    options.title = "openRTS";
     // --view first: it sets what to open and the conditions; later flags win.
     std::string view_mode;
     std::string view_content;
@@ -147,6 +156,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     std::string consist;
     std::string train_path;
     bool track_control = false;
+    int start_state = -1;
     for (std::size_t i = 0; i < flags.size(); ++i) {
         const bool has_value = i + 1 < flags.size();
         if (flags[i] == "--view" && has_value) {
@@ -163,10 +173,34 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             consist = flags[++i];
         } else if (flags[i] == "--path" && has_value) {
             train_path = flags[++i];
+        } else if (flags[i] == "--start" && has_value) {
+            // The DLLs' start state, as an activity's TrainState.
+            const auto& value = flags[++i];
+            start_state = value == "cold" ? 0 : value == "on" ? 1 : -1;
         } else if (flags[i] == "--track-control") {
             track_control = true;
         } else if (flags[i] == "--no-sound") {
             options.sound = false;
+        } else if (flags[i] == "--capture" && has_value) {
+            options.capture_path = std::string(flags[++i]);
+        } else if (flags[i] == "--capture-at" && has_value) {
+            options.capture_at = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--capture-switch" && i + 2 < flags.size()) {
+            const auto id = static_cast<std::uint32_t>(std::atoi(std::string(flags[++i]).c_str()));
+            const auto state = static_cast<std::uint32_t>(std::atoi(std::string(flags[++i]).c_str()));
+            options.capture_switches.emplace_back(id, state);
+        } else if (flags[i] == "--capture-menu" && has_value) {
+            options.capture_menu = std::atoi(std::string(flags[++i]).c_str());
+        } else if (flags[i] == "--capture-cab") {
+            options.capture_cab = true;
+        } else if (flags[i] == "--capture-car" && has_value) {
+            options.capture_car = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--capture-camera" && i + 6 < flags.size()) {
+            std::array<float, 6> c{};
+            for (auto& v : c) v = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+            options.capture_camera = c;
+        } else if (flags[i] == "--hdr") {
+            options.hdr = true;
         } else if (flags[i] == "--volume" && has_value) {
             options.sound_volume = std::clamp(std::stof(std::string(flags[++i])), 0.0f, 1.0f);
         } else if (flags[i] == "--msaa" && has_value) {
@@ -175,6 +209,24 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.batching = false;
         } else if (flags[i] == "--no-vsync") {
             options.vsync = false;
+        } else if (flags[i] == "--shadow-cache" && has_value) {
+            options.shadow_cache = std::string(flags[++i]) != "off";
+        } else if (flags[i] == "--cab-shadows" && has_value) {
+            options.cab_shadows = std::string(flags[++i]) != "off";
+        } else if (flags[i] == "--parallel-recording" && has_value) {
+            options.parallel_recording = std::string(flags[++i]) != "off";
+        } else if (flags[i] == "--shadow-settings" && has_value) {
+            options.shadow_settings = std::string(flags[++i]);
+        } else if (flags[i] == "--headlight-reach" && has_value) {
+            options.headlight_reach = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--lamp-shadows" && has_value) {
+            options.lamp_shadows = std::atoi(std::string(flags[++i]).c_str());
+        } else if (flags[i] == "--lamps-daylight" && has_value) {
+            options.lamps_daylight = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--light-range" && has_value) {
+            options.light_range = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--effects" && has_value) {
+            options.effects = std::string(flags[++i]);
         } else if (flags[i] == "--experimental") {
             options.shading = openrts::renderer::ShadingPath::experimental;
         } else if (flags[i] == "--time" && has_value) {
@@ -246,7 +298,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     }
 
     const openrts::viewer::SceneContent content{
-        .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control};
+        .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control,
+        .start_state = start_state, .root = target->root};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)
                                     : openrts::viewer::load_route_scene(content, target->path);
 

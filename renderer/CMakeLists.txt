@@ -1,9 +1,16 @@
 add_library(openrts_renderer STATIC
     src/renderer.cpp
     src/debug_lines.cpp
+    src/occlusion_probe.cpp
+    src/wide_lines.cpp
     src/glow_sprites.cpp
+    src/screen_quads.cpp
+    src/tone_map.cpp
     src/frustum.cpp
     src/model_assets.cpp
+    src/transfer_shape.cpp
+    src/scene_effects.cpp
+    src/task_pool.cpp
     src/model_library.cpp
     src/model_lighting.cpp
     src/model_renderer.cpp

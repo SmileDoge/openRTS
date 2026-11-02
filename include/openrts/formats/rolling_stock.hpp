@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
@@ -78,6 +79,72 @@ struct BrakeEquipment {
     float train_pipe_leak_rate{};       // atm/s
 };
 
+// EngExtended EngineParameters / AuxLibraryParameters entry (names lower
+// case, as RTS reads the file).
+struct EngineParameter {
+    std::string name;
+    float value{};
+    std::string text; // the quoted form, when the value is a string
+};
+
+// EngExtended AuxLibraries ( AuxLibrary ( ... ) ): an extra DLL run around
+// the main one (docs/reverse/train-dll.md section 7).
+// One state of a light (RTS keeps the first for a steady light).
+struct LightState {
+    std::uint32_t colour = 0xFFFFFFFFu; // LightColour, AARRGGBB
+    float duration{};
+    std::array<float, 3> position{};    // in the car's shape
+    std::array<float, 3> azimuth{};     // degrees: [1] turns it about the vertical (180: backwards)
+    std::array<float, 3> elevation{};   // degrees: [0] up / down
+    float transition{};
+    float radius{};                     // a glow's half size; a beam's reach, m
+    float angle{};                      // a beam's half angle, degrees
+    float source_radius{};
+};
+
+// An exterior light of a car (Lights / RTSLights). Type 0 is a glow sprite
+// (LightTexture), 1 a spotlight, 2 a sphere, 3 orthogonal, 4 a cone: the
+// light sources RTS's shaders take. A DLL switches them (LightObj Flags 8).
+struct LightDefinition {
+    std::uint8_t type{};
+    // Conditions: Headlight, Control, Service, Unit, TimeOfDay, Weather.
+    std::uint8_t headlight{}, control{}, service{}, unit{}, time_of_day{}, weather{};
+    float fade_in{}, fade_out{}, cycle{};
+    std::string texture;                // relative to TRAINS/TRAINSET
+    std::vector<LightState> states;
+    std::array<float, 3> attenuation{2.0f, 0.6f, 0.4f}; // kind (2 linear), start share, length share
+    float spot_exponent = 64.0f;        // SpotExponent x 128
+};
+
+// AuxLibrarySoundType: AMBIENT (no position), WAGON (at the car, with its
+// sound variables), ROUTEFORWAGON (a wagon sound looked up in the route's
+// SOUND first, then next to the engine).
+enum class AuxSoundType : std::uint8_t { ambient, wagon, route_for_wagon };
+
+struct AuxLibraryDefinition {
+    std::string name;   // AuxLibraryName
+    std::string module; // AuxLibraryModule, relative to the .eng folder
+    std::uint32_t variable_stack{};
+    std::vector<EngineParameter> parameters;
+    std::vector<std::pair<std::string, int>> calls; // AuxCall ( "run" order ), lower case
+    std::string sound;  // AuxLibrarySound, relative to the .eng folder
+    AuxSoundType sound_type = AuxSoundType::wagon;
+    std::array<float, 3> sound_position{}; // AuxLibrarySoundPosition, in the car
+    bool sound_external = false;    // AuxLibrarySoundExternal: fades with distance
+    bool sound_own_stack = false;   // AuxLibrarySoundOwnStack: no Var1..8 from the engine
+    bool sound_single_wagon = false; // AuxLibrarySoundSingleWagon: only with the player in the car
+};
+
+// One LineVoltage ( MinVoltage MaxVoltage MinFreq MaxFreq ) of
+// WorksOnLineVoltages: V and Hz (0 0 for DC).
+struct LineVoltageRange {
+    float min_voltage{}, max_voltage{};
+    float min_frequency{}, max_frequency{};
+    [[nodiscard]] bool contains(const float voltage, const float frequency) const noexcept {
+        return voltage >= min_voltage && voltage <= max_voltage && frequency >= min_frequency && frequency <= max_frequency;
+    }
+};
+
 struct EngineDefinition {
     EngineKind kind = EngineKind::unknown;
     float max_power{};            // W
@@ -89,9 +156,28 @@ struct EngineDefinition {
     float main_reservoir_volume{};
     float dynamic_brake_max_force{};
     std::uint32_t throttle_notches{};
-    std::string library_module; // EngExtended LibraryModule (legacy DLL)
-    std::string cabin;
+    std::string library_module; // EngExtended LibraryModule (legacy DLL), relative to the .eng folder
+    std::uint32_t library_param{}; // its second value (Locomotive::LibParam)
+    std::string cabin;          // EngExtended Cabin: the cab shape
+    std::uint32_t cabin_param{};
+    // EngExtended DoNotHideExtInCabin ( n ) & 3 (RTS 0x44247C): non-zero
+    // keeps the exterior shape drawn while the player is in the cab.
+    std::uint8_t keep_exterior_in_cab{};
     std::uint32_t variable_stack{};
+    std::string series;         // LocomotiveSeries (CanWorkWith)
+    std::uint32_t num_engines{}; // NumEngines
+    std::uint32_t num_axles{};   // NumAxles
+    std::uint32_t max_slaves{};  // MaxNumSlaveLoco
+    std::array<std::uint8_t, 2> sme_cable{}; // SMECable ( front rear ): multiple-unit control cable
+    std::array<std::uint8_t, 2> hv_bus{};    // HVBus ( front rear )
+    std::vector<EngineParameter> parameters; // EngineParameters
+    std::vector<AuxLibraryDefinition> aux_libraries;
+    // EngExtended WorksOnLineVoltages: the supplies it works on, in file
+    // order (RTS gives the middle of the first on a route without an
+    // .electrotype, docs/electrification.md).
+    std::vector<LineVoltageRange> line_voltages;
+    float max_line_current{};          // MaxLineCurrent, A per raised pantograph
+    float max_line_current_burn_time{}; // MaxLineCurrentCatenaryBurnTime, s
 };
 
 struct WagonDefinition {
@@ -121,6 +207,9 @@ struct WagonDefinition {
     BrakeEquipment brakes;
     std::string sound;          // RTSExteriorSound, else Sound
     std::string cab_sound;      // RTSCabinSound
+    // Lights ( n Light ( ... ) ) and RTSLights: by LightID (RTS 0x44247C,
+    // 0x50036C); an entry that was never given has no states.
+    std::vector<LightDefinition> lights;
     std::optional<EngineDefinition> engine;
     std::string error;
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }

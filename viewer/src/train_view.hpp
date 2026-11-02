@@ -3,6 +3,7 @@
 #ifdef OPENRTS_HAS_WGPU
 #include <filesystem>
 #include <future>
+#include <map>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -19,13 +20,17 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/train_path.hpp>
+#include <openrts/renderer/frustum.hpp>
 #include <openrts/renderer/model_assets.hpp>
 #include <openrts/renderer/model_library.hpp>
 #include <openrts/renderer/model_renderer.hpp>
+#include <openrts/renderer/glow_sprites.hpp>
 #include <openrts/renderer/route_streamer.hpp>
+#include <openrts/renderer/scene_effects.hpp>
 #include <openrts/formats/terrain.hpp>
 #include <openrts/simulation/auto_driver.hpp>
 #include <openrts/simulation/dispatcher.hpp>
+#include <openrts/simulation/electrification.hpp>
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/speed_limits.hpp>
 #include <openrts/simulation/track_network.hpp>
@@ -33,6 +38,9 @@
 #include <openrts/simulation/train_route.hpp>
 
 #include "camera.hpp"
+#include "cab_view.hpp"
+#include "engineer.hpp"
+#include "legacy_cab.hpp"
 #include "viewer_scene.hpp"
 
 namespace openrts::viewer {
@@ -83,14 +91,43 @@ public:
 
     void update(const SceneInput& input, ViewerCamera& camera, float elapsed, renderer::ModelLibrary& library,
                 audio::AudioEngine* sound);
-    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library);
+    // The trains' cars for this frame. A car out of `frustum` is left out,
+    // or given as a shadow caster only (no pose) when it is within
+    // `shadow_range` of `eye`; one farther than `draw_distance` (on the
+    // ground plane) is left out. The car the engineer is in is always drawn.
+    struct SubmitView {
+        const renderer::Frustum* frustum = nullptr;
+        glm::vec3 eye{};
+        float draw_distance = 0.0f;  // <= 0: no limit
+        float shadow_range = 0.0f;
+    };
+    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view = {});
+    // The engineer into the driving cab's seat (--capture-cab).
+    void enter_cab() { set_engineer(true); }
+    // The cab the engineer is in as the last submit() drew it: a sphere
+    // around his place in it, fixed to the cab, and its forward, for the
+    // cab's own shadow map.
+    [[nodiscard]] std::optional<renderer::ShadowFocus> cab_shadow_focus() const { return cab_focus_; }
     void draw_overlay();
-    void set_origin(const formats::RoutePosition& origin) { origin_ = origin; }
+    void set_origin(const formats::RoutePosition& origin);
     // The streamed world objects near the camera: obstacles for derailed
     // cars sliding along (null: none).
     void set_obstacles(const std::vector<renderer::StreamedInstance>* obstacles) { obstacles_ = obstacles; }
     void stop_sound(audio::AudioEngine& sound);
+    // The player's cab keys are on (a locomotive DLL's cab): the viewer's
+    // camera and default driving keys are off.
+    [[nodiscard]] bool keyboard_captured() const noexcept;
+    // Whether the driving keys (the DLL's cab keys, openRTS's handles) reach
+    // the driven cab: not while the engineer is on foot out of the driven car
+    // (on the platform, in another car). With the engineer off (an outside
+    // camera) they do, as RTS lets one drive from any view.
+    [[nodiscard]] bool cab_keys_live() const noexcept;
+    // Which of a sound script's camera groups play for the player's train.
+    [[nodiscard]] audio::SoundCamera sound_camera() const noexcept;
     [[nodiscard]] bool following() const noexcept { return follow_; }
+    void stop_following() noexcept { follow_ = false; }
+    // Terrain height at a scene point (x, z), when its tile has heights.
+    [[nodiscard]] std::optional<float> ground_at(const glm::vec3& point) const { return ground_height(point); }
     // The driven train.
     [[nodiscard]] const simulation::Train* train() const noexcept;
     // Train `id` is the one driven from the keyboard (the player's).
@@ -101,6 +138,14 @@ public:
     // the reverser), facing away from the train.
     [[nodiscard]] std::optional<simulation::TrackTraveller> ahead() const;
     [[nodiscard]] glm::vec3 head_position() const;
+    // RTS's config.ini (engineer.Height, engineer.velocity, ...): it is not in the VFS.
+    void set_rts_config(std::string text) { rts_config_ = std::move(text); }
+    // Switch `id` of the player's cab to `state` (--capture-switch).
+    void set_cab_switch(std::uint32_t id, std::uint32_t state) {
+        if (legacy_) legacy_->set_switch(id, state);
+    }
+    // Car `car` of the driven train: shape space to world (no body sway).
+    [[nodiscard]] std::optional<glm::mat4> car_transform(std::size_t car) const;
 
     // Track control (docs/paths.md): every train, paths, roles.
     [[nodiscard]] std::vector<Summary> summaries() const;
@@ -108,6 +153,31 @@ public:
     [[nodiscard]] simulation::Dispatcher& dispatcher() noexcept { return *dispatcher_; }
     [[nodiscard]] const simulation::Dispatcher& dispatcher() const noexcept { return *dispatcher_; }
     [[nodiscard]] const simulation::SpeedLimits& speed_limits() const noexcept { return *limits_; }
+    // The DLLs' start state for the next loaded consist: -1 running (the
+    // default), 0 cold, 1 on (an activity's TrainState, docs/train-dll.md).
+    void set_start_state(int state) noexcept { start_state_ = state; }
+    // The route's overhead line (docs/electrification.md).
+    [[nodiscard]] simulation::Electrification& electrification() noexcept { return *electrification_; }
+    // The player train's exterior lights that are on (DLL-switched): glow
+    // sprites (type 0, by texture) and light sources for the shaders
+    // (headlights, searchlight), made by update().
+    struct LightGlow {
+        renderer::GlowSprite sprite;
+        core::VirtualPath texture;
+    };
+    [[nodiscard]] const std::vector<LightGlow>& light_glows() const noexcept { return light_glows_; }
+    [[nodiscard]] const std::vector<renderer::ModelExtraLight>& light_beams() const noexcept { return light_beams_; }
+    // The lamps of the cab or salon the engineer is in that are on.
+    [[nodiscard]] const std::vector<renderer::ModelExtraLight>& interior_lights() const noexcept { return interior_lights_; }
+    // The world clock the DLLs read (RTS_VAR_TIME, RTS_ISNIGHT): the scene's
+    // time of day, s since midnight, and whether the sky is at night.
+    void set_world_clock(const double day_time, const bool night) noexcept {
+        day_time_ = day_time;
+        night_ = night;
+    }
+    // The cab screens (КЛУБ, САВПЭ ...) of the cab the engineer is in, for
+    // this frame, in scene coordinates (filled by submit()).
+    [[nodiscard]] const std::vector<ScreenBatch>& screen_batches() const noexcept { return screen_batches_; }
     // The route's paths, then the ones saved from Track control.
     [[nodiscard]] const std::vector<formats::TrainPath>& route_paths() const noexcept { return paths_; }
     [[nodiscard]] const std::vector<std::string>& consist_list();
@@ -123,6 +193,35 @@ public:
         double length{};             // the whole train, as Train::length()
     };
     [[nodiscard]] std::string consist_layout(std::string_view consist, ConsistLayout& layout) const;
+    // The 3-D cab: the caption of the control under the mouse, and with Alt
+    // (`all`) the captions of every control near `eye`.
+    void collect_cab_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, bool all) const;
+    // The mouse in the 3-D cab: the ray from `eye` (none: not over the view),
+    // a left click, the wheel. A click or the wheel works the switch under it.
+    // `release`: the left button was let go (a NONFIXED button comes back).
+    // `cursor`: the cursor in RTS's window pixels (the scene scales ours by
+    // the view angle), `held`: the left button down (a CONTROLLERX /
+    // CONTROLLERY control taken hold of follows the cursor).
+    // RTS's car menu (Num3, rts1.exe 0x4121BC): outside the cab, a coupling
+    // (within 5 m) or bogie (within twice the car's width) on the screen gets
+    // a menu of what a hand can do there (0x415A34 picks, 0x462FC8 builds,
+    // 0x463F84 acts); the key again closes it. RTS takes the nearest one;
+    // here the one nearest to `aim` (the cursor, else the screen's middle,
+    // in clip x / y) is taken, so the one looked at opens, and the cab car's
+    // own bogies are offered too.
+    void car_menu_key(const glm::vec3& eye, const glm::mat4& view_projection, glm::vec2 aim = {});
+    [[nodiscard]] bool car_menu_open() const noexcept { return car_menu_.has_value(); }
+    // --capture-menu: pick item `id` of the open menu (done in update());
+    // the menu (or the last one) and its car's state as text.
+    void choose_car_menu_item(int id) {
+        if (car_menu_) car_menu_choice_ = id;
+    }
+    [[nodiscard]] std::string car_menu_report() const;
+    void pointer(const glm::vec3& eye, const std::optional<glm::vec3>& direction, bool click, bool shift, float scroll,
+                 bool release = false, const glm::vec2& cursor = {}, bool held = false);
+    [[nodiscard]] bool engineer_inside() const noexcept { return engineer_.inside(); }
+    // F7: car numbers on the side of each car facing `eye`, within `range`.
+    void collect_car_numbers(std::vector<WorldLabel>& labels, const glm::vec3& eye, float range) const;
     // Gives train `id` this path (built on the network); an error text on failure.
     [[nodiscard]] std::string assign_path(std::uint64_t id, simulation::PathPlan plan);
     [[nodiscard]] std::string assign_route_path(std::uint64_t id, const formats::TrainPath& path);
@@ -210,9 +309,15 @@ private:
     std::vector<Unit> units_; // [0]: the driven train; the rest: cuts and trains from Track control
     std::unique_ptr<simulation::Dispatcher> dispatcher_;
     std::unique_ptr<simulation::SpeedLimits> limits_;
+    std::unique_ptr<simulation::Electrification> electrification_;
+    int start_state_ = -1;
+    simulation::LineSupply line_;   // the driven train's, last step
+    bool line_engines_ = false;     // the driven train has electric engines
     const simulation::SignalSystem* signals_ = nullptr;
     std::uint64_t follow_id_ = 0;
     std::size_t spawned_ = 0;
+    std::uint32_t numbered_trains_ = 0; // RTS's train counter for car numbers
+    void number_cars(Unit& unit);
     float overspeed_time_ = 0.0f;
     bool car_info_ = false;
     bool car_info_overall_ = false;
@@ -238,12 +343,108 @@ private:
     bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y);
     void end_panel(HudPanel& place);
     std::shared_ptr<simulation::DriverHandles> driver_;
+    // The player's train runs locomotive DLLs (legacy_cab.hpp).
+    std::unique_ptr<LegacyCab> legacy_;
+    std::string legacy_status_;
+    void attach_legacy();
+    void update_pantographs(float elapsed);
+    void update_exterior_doors(float elapsed);
+    // Each train's line voltage at its electric engines, before the step.
+    void feed_line();
+    // The signals and limits ahead for the DLLs, before their step.
+    void feed_world(const Unit& unit);
+    // The next signal's aspect (the cab's locomotive signal lights without a DLL).
+    [[nodiscard]] std::uint32_t signal_aspect(const Unit& unit) const;
+    void update_engineer(const SceneInput& input, ViewerCamera& camera, float elapsed, renderer::ModelLibrary& library);
+    // The engineer outside: what is around him this frame.
+    void gather_walk_world(const glm::vec3& around, renderer::ModelLibrary& library);
+    [[nodiscard]] std::optional<float> walk_floor(const glm::vec3& at) const;
+    [[nodiscard]] bool walk_blocked(const glm::vec3& from, const glm::vec3& to) const;
+    void update_aux_sounds(Unit& unit, std::size_t u, std::size_t i, const audio::SoundInputs& exterior, float elapsed,
+                           const ViewerCamera& camera, audio::AudioEngine& sound);
+    void update_cab_sound(Unit& unit, std::size_t u, std::size_t i, const audio::SoundInputs& exterior, float elapsed,
+                          const ViewerCamera& camera, audio::AudioEngine& sound);
+    struct BodyPose {
+        glm::mat4 transform{1.0f};
+        Pose here;
+        float heading{};
+    };
+    // Where car `i`'s body is drawn this frame (interpolated, swaying, tipped).
+    // `sway` off: on its springs at rest (the cab the player is in: RTS sways
+    // the camera instead, 0x424488).
+    [[nodiscard]] std::optional<BodyPose> body_pose(const Unit& unit, std::size_t i, bool sway = true) const;
+    // The body's offset on its springs in the scene (times the sway slider).
+    [[nodiscard]] glm::vec3 sway_offset(const Unit& unit, std::size_t i) const;
+    // The 3-D cab (cab_view.hpp) of car cab_car_ of the driven train.
+    std::unique_ptr<CabView> cab_;
+    std::size_t cab_car_ = SIZE_MAX;
+    bool cab_requested_ = false;
+    std::future<renderer::StreamedModelAsset> cab_loading_;
+    // The player on foot: in a cab chair, walking about the cab, outside.
+    Engineer engineer_;
+    std::size_t engineer_car_ = SIZE_MAX;  // the car he is in (or got off)
+    // That car's cab when it is not cab_car_ (he walked into the next section).
+    std::unique_ptr<CabView> visit_cab_;
+    bool visit_requested_ = false;
+    std::future<renderer::StreamedModelAsset> visit_loading_;
+    std::optional<CabView::Picked> hovered_; // the control under the mouse
+    bool keys_were_live_ = true;             // cab_keys_live() the last frame
+    glm::vec2 drag_cursor_{};                // where the cursor was when a dragged control last moved
+    std::vector<ScreenBatch> screen_batches_; // this frame's cab screens, scene coordinates
+    // The cab shape's placement in the last submitted frame: the mouse ray and
+    // the captions use it with that frame's camera, so they keep still on the move.
+    std::optional<glm::mat4> cab_to_scene_;
+    std::optional<renderer::ShadowFocus> cab_focus_;
+    // Where that sphere sits in the cab (cab coordinates) and for which cab:
+    // it follows the eye only when he has moved a metre from it, so the
+    // body's sway does not shake the map.
+    std::optional<glm::vec3> cab_focus_anchor_;
+    const void* cab_focus_cab_ = nullptr;
+    double day_time_ = 12.0 * 3600.0;
+    std::vector<LightGlow> light_glows_;
+    std::vector<renderer::ModelExtraLight> light_beams_;
+    std::vector<renderer::ModelExtraLight> interior_lights_;
+    // Textures the cabs' TextureChanges draw, held while the train is here.
+    std::map<std::string, std::shared_ptr<const renderer::GpuTexture>> cab_textures_;
+    std::vector<float> lamp_level_; // the engineer's cab or salon, by lamp (LightFade)
+    void update_lights(float elapsed, const glm::vec3& eye);
+    bool night_ = false;
+    float frame_elapsed_{};
+    [[nodiscard]] CabView* engineer_cab() noexcept { return engineer_car_ == cab_car_ ? cab_.get() : visit_cab_.get(); }
+    [[nodiscard]] const CabView* engineer_cab() const noexcept {
+        return engineer_car_ == cab_car_ ? cab_.get() : visit_cab_.get();
+    }
+    void set_engineer(bool on);
+    // Through door `door` of his cab into the car coupled at that end.
+    void pass_to_next_car(std::size_t door);
+    bool engineer_configured_ = false;
+    std::string rts_config_; // RTS's config.ini text (set_rts_config)
+    glm::vec3 look_{0.0f, 0.0f, 1.0f}; // the camera's direction, for the cab labels
+    // Outside he collides with the world's objects and stands on them
+    // (platforms, ballast, bridges), or only with the ground and the trains.
+    bool walk_objects_ = true;
+    struct WalkMesh {
+        std::future<std::shared_ptr<CabCollision>> loading;
+        std::shared_ptr<CabCollision> mesh; // null while loading or when it does not read
+    };
+    std::unordered_map<std::string, WalkMesh> walk_meshes_; // by shape path
+    struct WalkObject {
+        const CabCollision* mesh{};
+        glm::mat4 transform{1.0f}, inverse{1.0f};
+    };
+    std::vector<WalkObject> walk_objects_near_;
+    struct WalkBox { // a car body: |x| < half_width, |z| < half_length, 0 < y < height (car coordinates)
+        glm::mat4 inverse{1.0f};
+        float half_width{}, half_length{}, height{};
+    };
+    std::vector<WalkBox> walk_cars_;
     double accumulator_{};
     bool follow_ = true;
     std::size_t joints_ = 0, junctions_ = 0, coupler_breaks_ = 0, derailments_ = 0;
     bool end_of_track_ = false;
     std::unique_ptr<audio::SoundBank> bank_;
     int substeps_ = 1;
+    bool realistic_air_ = false; // openRTS realistic air for every train (BrakeModel::realistic)
     float sway_scale_ = 1.0f; // body sway shown on the cars: 1 = the RTS model's size, 0 off
     bool random_loop_phase_ = true; // SoundInstance::set_random_loop_phase for every car
 
@@ -258,6 +459,29 @@ private:
     bool pending_path_ = false;
     bool pending_turn_ = false;
     std::optional<std::size_t> pending_uncouple_; // uncouple the driven train before this car
+    // The open car menu: a coupling (the joint at a car's end) or a bogie.
+    struct CarMenu {
+        bool coupling = true;
+        std::uint64_t train = 0; // simulation::Train::id()
+        std::size_t car = 0;     // in that train
+        bool front = true;       // the end / bogie towards the train front
+        int highlight = 0;
+    };
+    struct CarMenuItem {
+        int id;            // RTS's item id (0x463F84)
+        const char* label; // English, translated when shown
+    };
+    std::optional<CarMenu> car_menu_;
+    std::optional<CarMenu> last_car_menu_; // for car_menu_report()
+    std::optional<int> car_menu_choice_; // picked in the window, done in update()
+    [[nodiscard]] std::vector<CarMenuItem> car_menu_items(const CarMenu& menu) const;
+    void update_car_menu(const glm::vec3& eye);
+    void do_car_menu_item(const CarMenu& menu, int id);
+    void draw_car_menu();
+    // Joins `absorbed`'s unit into `survivor`'s after Train::couple (as
+    // resolve_contacts reports it); returns the survivor's index.
+    std::size_t merge_units(const simulation::Train* survivor, const simulation::Train* absorbed, bool absorbed_ahead,
+                            bool absorbed_turned);
     std::string message_;
 };
 

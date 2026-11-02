@@ -29,8 +29,13 @@ struct GlowSprite {
     glm::vec3 axis_y{};
 };
 
+// How sprites meet the frame: added (rgb x alpha, an emissive light in the
+// HDR experimental path) or laid over by their alpha as RTS does (its light
+// loop keeps GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA).
+enum class GlowBlend { added, over };
+
 // Light sprites (signal lights, RTS LightTex): a textured quad tinted by the
-// light colour, added to the scene, depth-tested without writing depth. A
+// light colour, added to the scene or laid over it (GlowBlend), depth-tested without writing depth. A
 // quad either lies in a given plane (signal lights: flat on the lens, like
 // RTS) or faces the camera. Near, a sprite has its own size; far, it keeps a
 // constant angular size (far_scale), and everything scales with the field of
@@ -45,9 +50,13 @@ public:
     [[nodiscard]] bool ready() const noexcept;
     // An RGBA8 texture for sprites; returns its id (0 on failure: the built-in glow).
     [[nodiscard]] std::uint32_t add_texture(Rgba8ImageView image);
-    // Sprites for this frame.
+    // Sprites for this frame. Their size is fixed: RTS multiplies a light's
+    // size by its camera's field of view / 45 degrees, so its lights grow and
+    // shrink as the FOV changes; here it is the factor at RTS's installed
+    // FOV (65 degrees), whatever the field of view, as content was made for.
     void set_sprites(std::vector<GlowSprite> sprites);
-    void render(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, float viewport_height);
+    void render(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, float viewport_height,
+                GlowBlend blend = GlowBlend::added);
 
 private:
     struct Impl;

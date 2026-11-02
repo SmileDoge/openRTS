@@ -1,6 +1,7 @@
 // Sound scripts: parsing (.sms, .ws), the script runner against a recording
 // voice sink, and WAV decoding with loop regions.
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -9,8 +10,13 @@
 #include <vector>
 
 #include <openrts/audio/audio_engine.hpp>
+#include <filesystem>
+#include <span>
+#include <openrts/core/installation.hpp>
+#include <openrts/core/vfs.hpp>
 #include <openrts/audio/sound_bank.hpp>
 #include <openrts/audio/sound_instance.hpp>
+#include <openrts/formats/rolling_stock.hpp>
 #include <openrts/formats/sound.hpp>
 
 namespace {
@@ -323,6 +329,51 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) Distance ( 500 ) ) Str
     check(sink.voices.size() == 3 && sink.seeks.size() == 1, "one-shots start at 0");
 }
 
+// Going into the cab and out again (RTS 0x4A9CF4 / 0x4A9BA8): the loop a
+// discrete trigger started outside comes back where it was, the initial
+// trigger does not fire again, and a code that came while in the cab runs
+// when the group is back.
+void test_cab_round_trip() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCam ( ) ) Streams ( 2
+    Stream ( Triggers ( 2
+        Initial_Trigger ( StartLoop ( 1 File ( "idle.wav" -1 ) ) )
+        Discrete_Trigger ( 5 StartLoop ( 1 File ( "hum.wav" -1 ) ) ) ) )
+    Stream ( Triggers ( 1 Discrete_Trigger ( 7 StartLoop ( 1 File ( "fan.wav" -1 ) ) ) ) ) ) ) ))"));
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips;
+    for (const char* name : {"idle.wav", "hum.wav", "fan.wav"}) clips[name] = test_clip(1000);
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string& name) { return clips.at(name); }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::external;
+    inputs[SoundVariable::distance] = 0;
+    sound.update(0.01f, inputs, sink);
+    check(sink.voices.size() == 1 && sink.voices.begin()->second.clip == clips["idle.wav"], "outside: the initial loop");
+    const std::uint32_t five = 5, seven = 7;
+    inputs.discrete = std::span(&five, 1);
+    sound.update(0.01f, inputs, sink);
+    inputs.discrete = {};
+    sound.update(0.03f, inputs, sink); // the hum has played 0.04 s = 40 frames
+    inputs.camera = audio::SoundCamera::cab;
+    sound.update(0.01f, inputs, sink);
+    check(!sound.active() && sink.live() == 0, "in the cab: the exterior group is off");
+    inputs.discrete = std::span(&seven, 1);
+    sound.update(0.01f, inputs, sink);
+    inputs.discrete = {};
+    const auto before = sink.voices.size();
+    inputs.camera = audio::SoundCamera::external;
+    sound.update(0.01f, inputs, sink);
+    std::vector<std::shared_ptr<const audio::AudioClip>> started;
+    for (auto it = sink.voices.begin(); it != sink.voices.end(); ++it) {
+        if (it->first > before) started.push_back(it->second.clip);
+    }
+    check(started.size() == 2 && started[0] == clips["hum.wav"] && started[1] == clips["fan.wav"],
+          "outside again: the hum goes on, the fan the code in the cab asked for starts, no initial loop");
+    const auto hum = static_cast<audio::VoiceId>(before + 1);
+    check(sink.seeks.contains(hum) && sink.seeks[hum] >= 30 && sink.seeks[hum] <= 50, "the hum resumes where it was");
+}
+
 void test_ambient_runner() {
     auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(ambient_script));
     std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips{
@@ -434,15 +485,80 @@ void test_engine() {
     check(!engine.playing(voice) && engine.active_voices() == 0, "released loop ends and is freed");
 }
 
+// The ED9M's cab script (MaDaDev): the DLL posts 16 for a controller step,
+// 15 for the reverser; in the cab they must start one-shots.
+void test_content_ed9m_cab(const std::filesystem::path& root) {
+    core::Vfs vfs;
+    core::mount_installation(vfs, root, core::load_installation_config(root));
+    const auto path = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_ED4m-Alias/Sound/mdd_ed4m-cabHead.sms");
+    if (!path || !vfs.exists(*path)) {
+        std::cout << "ed9m cab: not installed, skipped\n";
+        return;
+    }
+    // RTS 0x44247C: no RTSCabinSound, so the Engine block's Sound is the cab script.
+    const auto g = formats::load_wagon(vfs, "mdd_ED9M-0062", "mdd_ED9M-0062_G", true);
+    auto lower = [](std::string text) {
+        std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return text;
+    };
+    check(g.ok() && lower(g.cab_sound).ends_with("mdd_ed4m-cabhead.sms"), "ed9m: the cab script from Engine ( Sound )");
+    check(g.ok() && lower(g.sound).ends_with("mdd_ed9m-enghead.sms"), "ed9m: the exterior script from Wagon ( Sound )");
+    if (g.ok() && g.engine && g.engine->aux_libraries.size() >= 2) {
+        const auto& brakes = g.engine->aux_libraries[0];
+        const auto& usavp = g.engine->aux_libraries[1];
+        check(lower(brakes.sound).ends_with("brakes.sms") && brakes.sound_single_wagon && !brakes.sound_external &&
+                  std::abs(brakes.sound_position[2] - 9.254f) < 1e-3f && brakes.sound_type == formats::AuxSoundType::wagon,
+              "ed9m: Brakes.sms, single wagon, at the cab");
+        check(lower(usavp.sound).ends_with("usavp.sms") && usavp.sound_external && !usavp.sound_single_wagon,
+              "ed9m: Usavp.sms, external");
+    } else {
+        check(false, "ed9m: two aux libraries");
+    }
+    auto script = std::make_shared<formats::SoundScript>(formats::load_sound_script(vfs, *path));
+    check(script->ok(), "ed9m cab: the script parses");
+    const auto* group = script->select_group(formats::SoundOwner::player_train);
+    check(group != nullptr, "ed9m cab: group 7");
+    if (!group) return;
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips;
+    audio::SoundInstance sound(script, *group, formats::SoundOwner::player_train,
+                               [&](const std::string& name) {
+                                   auto& clip = clips[name];
+                                   if (!clip) clip = test_clip(1000);
+                                   return clip;
+                               }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::cab;
+    inputs[SoundVariable::distance] = 0;
+    sound.update(0.01f, inputs, sink);
+    check(sound.active(), "ed9m cab: active in the cab");
+    for (const std::uint32_t code : {16u, 15u}) {
+        const auto before = sink.voices.size();
+        inputs.discrete = std::span(&code, 1);
+        sound.update(0.01f, inputs, sink);
+        inputs.discrete = {};
+        bool started = false;
+        for (const auto& [id, voice] : sink.voices)
+            if (id > before && voice.playback == audio::VoicePlayback::once) started = true;
+        check(started, code == 16 ? "ed9m cab: code 16 plays the controller" : "ed9m cab: code 15 plays the reverser");
+    }
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc > 1) {
+        test_content_ed9m_cab(argv[1]);
+        if (failures == 0) std::cout << "sound content: all checks passed\n";
+        return failures == 0 ? 0 : 1;
+    }
     test_parsing();
     test_station_runner();
     test_ambient_runner();
     test_default_distances();
     test_crossed_distances();
     test_loop_phase();
+    test_cab_round_trip();
     test_decoding();
     test_engine();
     if (failures == 0) std::cout << "sound: all checks passed\n";

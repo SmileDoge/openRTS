@@ -63,12 +63,11 @@ int main() {
     check(masked.flags == 0, "alpha-tested blend is opaque-pass");
     check(no_depth.flags == rts::primitive_no_depth_write && !no_depth.depth_write, "no depth write flag");
 
-    // Fixed-function state: blend shaders set it, everything else inherits it.
-    const auto after_blend = rts::apply_material(translucent, rts::object_pass_entry_state);
-    check(after_blend == rts::FixedFunctionState{.blend = true, .alpha_test = false}, "blend state");
-    check(rts::apply_material(lit_material, after_blend) == after_blend, "texdiff inherits blend");
-    const auto after_mask = rts::apply_material(masked, after_blend);
-    check(after_mask == rts::FixedFunctionState{.blend = false, .alpha_test = true}, "alpha test state");
+    // Fixed-function state: every primitive sets its own (0x4B042C); other
+    // shaders than the blend ones draw without blend and alpha test.
+    check(rts::apply_material(translucent) == rts::FixedFunctionState{.blend = true, .alpha_test = false}, "blend state");
+    check(rts::apply_material(lit_material) == rts::FixedFunctionState{}, "texdiff draws without blend");
+    check(rts::apply_material(masked) == rts::FixedFunctionState{.blend = false, .alpha_test = true}, "alpha test state");
 
     // Passes: translucent primitives only in pass 2 and only for pass-2 objects;
     // a z_buf_mode 3 opaque primitive of a static is never drawn.
@@ -83,6 +82,27 @@ int main() {
     check(!rts::draws_in_pass(rts::opaque_pass, rts::opaque_pass, depthless, rts::primitive_no_depth_write)
               && !rts::draws_in_pass(rts::translucent_pass, rts::opaque_pass, depthless, rts::primitive_no_depth_write),
           "z_buf_mode 3 opaque prim dropped");
+
+    // Passes -2..0 (0x4E0BFC, 0x408574, 0x4B042C): StaticFlags Terrain and
+    // Global override the model's pass; Global objects draw their depthless
+    // primitives in pass 0 and the rest in pass 1, never in pass 2; Terrain
+    // objects only in pass -1, without their translucent primitives.
+    check(rts::object_pass(mixed, rts::static_flag_terrain) == rts::terrain_pass, "Terrain flag pass -1");
+    check(rts::object_pass(mixed, rts::static_flag_global | 0x180u) == rts::global_pass, "Global flag pass 0");
+    check(rts::object_pass(0, rts::static_flag_global | rts::static_flag_terrain) == rts::global_pass, "Global wins");
+    check(rts::draws_in_pass(rts::global_pass, rts::global_pass, depthless, rts::primitive_no_depth_write), "Global depthless in pass 0");
+    check(!rts::draws_in_pass(rts::global_pass, rts::global_pass, 0, 0), "Global plain not in pass 0");
+    check(rts::draws_in_pass(rts::opaque_pass, rts::global_pass, 0, 0), "Global plain in pass 1");
+    check(!rts::draws_in_pass(rts::translucent_pass, rts::global_pass, mixed, rts::primitive_translucent), "Global not in pass 2");
+    check(rts::draws_in_pass(rts::terrain_pass, rts::terrain_pass, mixed, 0)
+              && !rts::draws_in_pass(rts::terrain_pass, rts::terrain_pass, mixed, rts::primitive_translucent)
+              && !rts::draws_in_pass(rts::opaque_pass, rts::terrain_pass, 0, 0)
+              && !rts::draws_in_pass(rts::translucent_pass, rts::terrain_pass, mixed, rts::primitive_translucent),
+          "Terrain object only in pass -1, opaque prims");
+    check(rts::draws_in_pass(rts::transfer_pass, rts::transfer_pass, mixed, rts::primitive_translucent)
+              && !rts::draws_in_pass(rts::opaque_pass, rts::transfer_pass, mixed, rts::primitive_translucent)
+              && !rts::draws_in_pass(rts::transfer_pass, rts::opaque_pass, 0, 0),
+          "transfer only in pass -2, every prim");
 
     if (failures == 0) std::printf("rts material rules: all checks passed\n");
     return failures == 0 ? 0 : 1;

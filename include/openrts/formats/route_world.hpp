@@ -40,6 +40,9 @@ struct RouteDefinition {
     // speed limit for speed posts that end a restriction (0x482680).
     float speed_limit{};
     float temp_restricted_speed{};
+    // Electrified ( 1 ): RTS gives an electric engine its own voltage on a
+    // route without an .electrotype (docs/electrification.md).
+    bool electrified = false;
     std::string error;
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
 };
@@ -52,6 +55,7 @@ enum class WorldObjectKind {
     collide_object, // CollideObject
     signal,         // Signal
     speed_post,     // Speedpost
+    transfer,       // Transfer: a texture laid on the ground (FileName is the texture)
 };
 
 [[nodiscard]] const char* to_string(WorldObjectKind kind) noexcept;
@@ -74,6 +78,12 @@ struct WorldObjectPlacement {
     // CollideFlags (RTS 0x41B6D0, object +60): non-zero without bit 2 makes
     // the object an obstacle for derailed cars (RTS 0x58A630).
     std::uint32_t collide_flags{};
+    // StaticFlags (hex, object +56): 0x40000 Terrain and 0x200000 Global
+    // decide the object's draw pass (rts1.exe 0x4E0BFC).
+    std::uint32_t static_flags{};
+    // A transfer's Width and Height in metres (RTS's default 100).
+    float transfer_width = 100.0f;
+    float transfer_height = 100.0f;
 };
 
 struct WorldTile {

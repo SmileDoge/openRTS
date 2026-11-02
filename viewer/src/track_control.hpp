@@ -30,6 +30,25 @@ public:
     // Signal names (route database, Ctrl+F7) by signal object.
     void set_signal_names(std::function<std::string(std::uint32_t)> names) { signal_names_ = std::move(names); }
     [[nodiscard]] bool is_open() const noexcept { return open_; }
+    // The camera this frame, in scene coordinates against the scene's
+    // current (floating) origin: the player's figure on the map.
+    void set_viewer(const glm::vec3& eye, const glm::vec3& forward, const formats::RoutePosition& scene_origin) noexcept {
+        eye_ = eye;
+        forward_ = forward;
+        scene_origin_ = scene_origin;
+    }
+    // "Teleport here": where to put the camera, on the route (absolute), the
+    // track's height when known (else the ground there) and the yaw.
+    struct Teleport {
+        formats::RoutePosition at;
+        bool on_track = false; // at.y is the track's height
+        float yaw{};
+    };
+    [[nodiscard]] std::optional<Teleport> take_teleport() {
+        auto request = teleport_;
+        teleport_.reset();
+        return request;
+    }
     // Draws the window (ImGui builds) and acts on the trains and the network.
     void draw(TrainView& trains, simulation::SignalSystem* signals);
 
@@ -58,12 +77,24 @@ private:
     [[nodiscard]] std::optional<simulation::TrackLocation> nearest_track(float mouse_x, float mouse_y, double reach) const;
     void draw_map(TrainView& trains, const simulation::SignalSystem* signals);
     void draw_panel(TrainView& trains, simulation::SignalSystem* signals);
+    // "Signal info": a window with everything about one signal object.
+    void draw_signal_window(simulation::SignalSystem* signals);
+    std::optional<std::uint32_t> signal_window_;
     void draw_menu(TrainView& trains, simulation::SignalSystem* signals);
     void apply_plan(TrainView& trains);
     void start_editing(TrainView& trains, std::uint64_t id);
 
     simulation::TrackNetwork* network_;
     formats::RoutePosition origin_;
+    glm::vec3 eye_{};
+    glm::vec3 forward_{0.0f, 0.0f, -1.0f};
+    formats::RoutePosition scene_origin_;
+    std::optional<Teleport> teleport_;
+    // Map metres (against origin_) of a scene point.
+    [[nodiscard]] double map_x(double scene_x) const;
+    [[nodiscard]] double map_z(double scene_z) const;
+    // A teleport to map point (x, z); `track` gives the height and heading.
+    void request_teleport(double x, double z, const simulation::TrackPoint* track);
     std::vector<Line> lines_;
     bool open_ = false;
     bool centred_ = false;
@@ -117,6 +148,20 @@ private:
     bool show_all_paths_ = false;
     bool show_signal_names_ = true;
     bool show_sidings_ = true;
+    bool show_station_names_ = true;
+    bool show_electrification_ = false;
+    // The electrification layer: each node's stretches, built when first drawn.
+    std::vector<std::vector<simulation::Electrification::Stretch>> electro_stretches_;
+    std::vector<bool> electro_built_;
+    void draw_electrification_panel(TrainView& trains);
+    // Station names (RTS 0x555624): every platform item counted under its
+    // station's name, the label at the middle of them.
+    struct Station {
+        std::string name;
+        double x{}, z{}; // route metres
+        std::uint32_t items{};
+    };
+    std::vector<Station> stations_;
     // Platforms and sidings: the stretch of track between their two ends.
     struct Place {
         bool platform = true;

@@ -1,8 +1,10 @@
 #include <openrts/formats/ace_file.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 
 #include <zlib.h>
 
@@ -77,8 +79,44 @@ void decode_dxt1_block(const std::string_view block, const bool punch_through, s
     }
 }
 
-// Raw ACE: a table of mip offsets follows the channel definitions; each mip is
-// a u32 byte count followed by compressed blocks. Only DXT1 occurs in content.
+// One DXT1 level at `offset` of the raw ACE payload (a u32 byte count, then
+// the 8-byte blocks) as RGBA8.
+[[nodiscard]] std::optional<std::vector<std::uint8_t>> decode_dxt1_level(const std::string_view payload,
+                                                                         const std::size_t offset,
+                                                                         const std::uint32_t width,
+                                                                         const std::uint32_t height,
+                                                                         const bool punch_through) {
+    if (!range_fits(offset, 4, payload.size())) return std::nullopt;
+    const auto size = read_u32_le(payload, offset);
+    const auto blocks_x = (static_cast<std::size_t>(width) + 3) / 4;
+    const auto blocks_y = (static_cast<std::size_t>(height) + 3) / 4;
+    const auto expected = blocks_x * blocks_y * 8;
+    if (size < expected || !range_fits(offset + 4, expected, payload.size())) return std::nullopt;
+
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height * 4);
+    std::uint8_t tile[16][4];
+    for (std::size_t by = 0; by < blocks_y; ++by) {
+        for (std::size_t bx = 0; bx < blocks_x; ++bx) {
+            decode_dxt1_block(payload.substr(offset + 4 + (by * blocks_x + bx) * 8, 8), punch_through, tile);
+            for (std::size_t ty = 0; ty < 4; ++ty) {
+                const auto y = by * 4 + ty;
+                if (y >= height) break;
+                for (std::size_t tx = 0; tx < 4; ++tx) {
+                    const auto x = bx * 4 + tx;
+                    if (x >= width) break;
+                    const auto target = (y * width + x) * 4;
+                    for (int channel = 0; channel < 4; ++channel) pixels[target + channel] = tile[ty * 4 + tx][channel];
+                }
+            }
+        }
+    }
+    return pixels;
+}
+
+// Raw ACE: a table of mip offsets (one u32 per level) follows the channel
+// definitions; each level is a u32 byte count followed by compressed blocks.
+// Only DXT1 occurs in content. RTS uploads the file's levels when the options
+// are 17 or 21 (0x44F554); a square texture's chain goes down to 1x1.
 [[nodiscard]] AceDecodeResult decode_raw_ace(const std::string_view payload,
                                               const std::size_t header_offset,
                                               const AceHeader& header,
@@ -89,35 +127,37 @@ void decode_dxt1_block(const std::string_view block, const bool punch_through, s
 
     const auto table_offset = header_offset + 24 + 128 + static_cast<std::size_t>(header.channel_count) * 16;
     if (!range_fits(table_offset, 4, payload.size())) return {.error = "Truncated raw ACE mip table."};
-    const auto mip_offset = header_offset + read_u32_le(payload, table_offset);
-    if (!range_fits(mip_offset, 4, payload.size())) return {.error = "Raw ACE mip offset points beyond file data."};
-    const auto mip_size = read_u32_le(payload, mip_offset);
+    const auto level_offset = [&](const std::uint32_t level) -> std::optional<std::size_t> {
+        const auto entry = table_offset + static_cast<std::size_t>(level) * 4;
+        if (!range_fits(entry, 4, payload.size())) return std::nullopt;
+        return header_offset + read_u32_le(payload, entry);
+    };
+    auto level0 = decode_dxt1_level(payload, *level_offset(0), header.width, header.height, has_mask_channel);
+    if (!level0) return {.error = "Truncated raw ACE DXT1 data."};
 
-    const auto blocks_x = (static_cast<std::size_t>(header.width) + 3) / 4;
-    const auto blocks_y = (static_cast<std::size_t>(header.height) + 3) / 4;
-    const auto expected = blocks_x * blocks_y * 8;
-    if (mip_size < expected || !range_fits(mip_offset + 4, expected, payload.size())) {
-        return {.error = "Truncated raw ACE DXT1 data."};
-    }
-
-    AceRgbaImage image{.width = header.width, .height = header.height,
-        .pixels = std::vector<std::uint8_t>(static_cast<std::size_t>(header.width) * header.height * 4)};
-    std::uint8_t tile[16][4];
-    for (std::size_t by = 0; by < blocks_y; ++by) {
-        for (std::size_t bx = 0; bx < blocks_x; ++bx) {
-            decode_dxt1_block(payload.substr(mip_offset + 4 + (by * blocks_x + bx) * 8, 8), has_mask_channel, tile);
-            for (std::size_t ty = 0; ty < 4; ++ty) {
-                const auto y = by * 4 + ty;
-                if (y >= header.height) break;
-                for (std::size_t tx = 0; tx < 4; ++tx) {
-                    const auto x = bx * 4 + tx;
-                    if (x >= header.width) break;
-                    const auto target = (y * header.width + x) * 4;
-                    for (int channel = 0; channel < 4; ++channel) image.pixels[target + channel] = tile[ty * 4 + tx][channel];
-                }
-            }
+    AceRgbaImage image{.width = header.width, .height = header.height, .pixels = std::move(*level0)};
+    // The file's DXT1 levels go down to 4x4. Its 2x2 and 1x1 entries are not
+    // DXT1 blocks (7carfloat.ace ends in one RGB texel), so those two levels
+    // are built from the 4x4 one.
+    if ((header.options == 17 || header.options == 21) && header.width == header.height && header.width >= 8) {
+        std::vector<std::vector<std::uint8_t>> mips;
+        bool complete = true;
+        std::uint32_t level = 1;
+        auto size = header.width / 2;
+        for (; size >= 4 && complete; size /= 2, ++level) {
+            const auto offset = level_offset(level);
+            auto pixels = offset ? decode_dxt1_level(payload, *offset, size, size, has_mask_channel) : std::nullopt;
+            if (pixels) mips.push_back(std::move(*pixels));
+            else complete = false;
+        }
+        if (complete) {
+            auto rest = build_rgba_mipmaps(size * 2, size * 2, mips.back());
+            for (auto& each : rest) mips.push_back(std::move(each));
+            image.mips = std::move(mips);
+            image.mips_from_file = true;
         }
     }
+    if (!image.mips_from_file) image.mips = build_rgba_mipmaps(image.width, image.height, image.pixels);
     return {.image = std::move(image)};
 }
 
@@ -252,37 +292,142 @@ AceDecodeResult decode_structured_ace_rgba(const std::string_view bytes) {
         return {.error = "Structured ACE has no complete RGB channels."};
 
     const std::size_t scanlines_offset = channels_offset + channels_size;
-    const std::size_t scanlines_size = static_cast<std::size_t>(header.height) * 4;
-    if (!range_fits(scanlines_offset, scanlines_size, payload.size()))
-        return {.error = "Truncated ACE scanline offset table."};
-
-    AceRgbaImage image{.width = header.width, .height = header.height,
-        .pixels = std::vector<std::uint8_t>(static_cast<std::size_t>(pixel_count) * 4, 0xFF)};
-    for (std::uint32_t y = 0; y < header.height; ++y) {
-        // Scanline offsets are relative to the ACE body, which in an
-        // uncompressed file starts after the 16-byte SIMISA envelope.
-        const auto row_offset = header_offset + read_u32_le(payload, scanlines_offset + static_cast<std::size_t>(y) * 4);
-        if (row_offset >= payload.size()) return {.error = "ACE scanline offset points beyond file data."};
-        std::size_t cursor = row_offset;
+    const auto row_bytes = [&](const std::uint32_t width) {
+        std::size_t size = 0;
         for (const auto& channel : channels) {
-            const auto plane_size = channel.bits == 8 ? static_cast<std::size_t>(header.width)
-                                                       : (static_cast<std::size_t>(header.width) + 7) / 8;
-            if (!range_fits(cursor, plane_size, payload.size())) return {.error = "Truncated ACE channel plane."};
-            for (std::uint32_t x = 0; x < header.width; ++x) {
-                const auto value = channel.bits == 8
-                    ? static_cast<std::uint8_t>(payload[cursor + x])
-                    : static_cast<std::uint8_t>(((static_cast<unsigned char>(payload[cursor + x / 8])
-                         >> (7 - (x % 8))) & 1) * 255);
-                const auto rgba = (static_cast<std::size_t>(y) * header.width + x) * 4;
-                if (channel.type == red_channel) image.pixels[rgba] = value;
-                else if (channel.type == green_channel) image.pixels[rgba + 1] = value;
-                else if (channel.type == blue_channel) image.pixels[rgba + 2] = value;
-                else if (channel.type == alpha_channel || channel.type == mask_channel) image.pixels[rgba + 3] = value;
-            }
-            cursor += plane_size;
+            size += channel.bits == 8 ? static_cast<std::size_t>(width) : (static_cast<std::size_t>(width) + 7) / 8;
+        }
+        return size;
+    };
+    // The levels the file holds (options bit 0: a mipmap chain, its scanline
+    // table one entry per row of every level) and the ones RTS reads: all of
+    // a square texture's with options exactly 5, else level 0 (0x44F554).
+    struct Level {
+        std::uint32_t width;
+        std::uint32_t height;
+    };
+    std::vector<Level> levels{{header.width, header.height}};
+    if ((header.options & 1u) != 0) {
+        for (auto w = header.width, h = header.height; h > 1;) {
+            w = (std::max)(w / 2, 1u);
+            h /= 2;
+            levels.push_back({w, h});
         }
     }
+    const bool file_mips = header.options == 5 && header.width == header.height && levels.size() > 1;
+    const std::size_t read_levels = file_mips ? levels.size() : 1;
+    std::size_t entries = 0;
+    for (const auto& level : levels) entries += level.height;
+    if (!range_fits(scanlines_offset, static_cast<std::size_t>(header.height) * 4, payload.size()))
+        return {.error = "Truncated ACE scanline offset table."};
+    if (file_mips && !range_fits(scanlines_offset, entries * 4, payload.size()))
+        return {.error = "Truncated ACE scanline offset table."};
+
+    // Some tools write a broken scanline table (Pavlovsk's terrain.ace: a
+    // 6144-byte row step for 1536-byte rows) while the rows follow each other
+    // right after it, as the file size shows; the games read them. When the
+    // table points outside the file, the rows are read in order after the
+    // whole table (every mipmap level's entries). RTS always reads them in
+    // order.
+    bool table_ok = true;
+    for (std::size_t level = 0, row = 0; level < read_levels && table_ok; ++level) {
+        const auto size = row_bytes(levels[level].width);
+        for (std::uint32_t y = 0; y < levels[level].height && table_ok; ++y, ++row) {
+            const auto row_offset = header_offset + read_u32_le(payload, scanlines_offset + row * 4);
+            table_ok = range_fits(row_offset, size, payload.size());
+        }
+    }
+    const std::size_t sequential_start = scanlines_offset + ((header.options & 1u) != 0 ? entries : header.height) * 4;
+    if (!table_ok) {
+        std::size_t total = 0;
+        for (std::size_t level = 0; level < read_levels; ++level) total += row_bytes(levels[level].width) * levels[level].height;
+        if (!range_fits(sequential_start, total, payload.size()))
+            return {.error = "ACE scanline offset points beyond file data."};
+    }
+
+    std::vector<std::vector<std::uint8_t>> decoded;
+    for (std::size_t level = 0, first_row = 0, sequential = sequential_start; level < read_levels; ++level) {
+        const auto width = levels[level].width;
+        const auto height = levels[level].height;
+        std::vector<std::uint8_t> pixels(static_cast<std::size_t>(width) * height * 4, 0xFF);
+        const auto size = row_bytes(width);
+        for (std::uint32_t y = 0; y < height; ++y) {
+            // Scanline offsets are relative to the ACE body, which in an
+            // uncompressed file starts after the 16-byte SIMISA envelope.
+            const auto row_offset = table_ok
+                ? header_offset + read_u32_le(payload, scanlines_offset + (first_row + y) * 4)
+                : sequential + static_cast<std::size_t>(y) * size;
+            if (row_offset >= payload.size()) return {.error = "ACE scanline offset points beyond file data."};
+            std::size_t cursor = row_offset;
+            for (const auto& channel : channels) {
+                const auto plane_size = channel.bits == 8 ? static_cast<std::size_t>(width)
+                                                           : (static_cast<std::size_t>(width) + 7) / 8;
+                if (!range_fits(cursor, plane_size, payload.size())) return {.error = "Truncated ACE channel plane."};
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    const auto value = channel.bits == 8
+                        ? static_cast<std::uint8_t>(payload[cursor + x])
+                        : static_cast<std::uint8_t>(((static_cast<unsigned char>(payload[cursor + x / 8])
+                             >> (7 - (x % 8))) & 1) * 255);
+                    const auto rgba = (static_cast<std::size_t>(y) * width + x) * 4;
+                    if (channel.type == red_channel) pixels[rgba] = value;
+                    else if (channel.type == green_channel) pixels[rgba + 1] = value;
+                    else if (channel.type == blue_channel) pixels[rgba + 2] = value;
+                    else if (channel.type == alpha_channel || channel.type == mask_channel) pixels[rgba + 3] = value;
+                }
+                cursor += plane_size;
+            }
+        }
+        decoded.push_back(std::move(pixels));
+        first_row += height;
+        sequential += size * height;
+    }
+
+    AceRgbaImage image{.width = header.width, .height = header.height, .pixels = std::move(decoded.front())};
+    if (file_mips) {
+        image.mips.assign(std::make_move_iterator(decoded.begin() + 1), std::make_move_iterator(decoded.end()));
+        image.mips_from_file = true;
+    } else {
+        image.mips = build_rgba_mipmaps(image.width, image.height, image.pixels);
+    }
     return {.image = std::move(image)};
+}
+
+std::vector<std::vector<std::uint8_t>> build_rgba_mipmaps(const std::uint32_t width, const std::uint32_t height,
+                                                          const std::vector<std::uint8_t>& pixels) {
+    std::vector<std::vector<std::uint8_t>> mips;
+    if (width == 0 || height == 0 || pixels.size() != static_cast<std::size_t>(width) * height * 4) return mips;
+    const std::vector<std::uint8_t>* source = &pixels;
+    auto w = width;
+    auto h = height;
+    while (w > 1 || h > 1) {
+        const auto next_w = (std::max)(w / 2, 1u);
+        const auto next_h = (std::max)(h / 2, 1u);
+        std::vector<std::uint8_t> level(static_cast<std::size_t>(next_w) * next_h * 4);
+        const auto at = [&](const std::uint32_t sx, const std::uint32_t sy, const int c) {
+            return static_cast<unsigned>((*source)[(static_cast<std::size_t>(sy) * w + sx) * 4 + c]);
+        };
+        for (std::uint32_t y = 0; y < next_h; ++y) {
+            for (std::uint32_t x = 0; x < next_w; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    unsigned value = 0;
+                    if (w > 1 && h > 1) {
+                        value = (at(2 * x, 2 * y, c) + at(2 * x + 1, 2 * y, c) + at(2 * x, 2 * y + 1, c)
+                                 + at(2 * x + 1, 2 * y + 1, c) + 2) / 4;
+                    } else if (w > 1) {
+                        value = (at(2 * x, 0, c) + at(2 * x + 1, 0, c) + 1) / 2;
+                    } else {
+                        value = (at(0, 2 * y, c) + at(0, 2 * y + 1, c) + 1) / 2;
+                    }
+                    level[(static_cast<std::size_t>(y) * next_w + x) * 4 + c] = static_cast<std::uint8_t>(value);
+                }
+            }
+        }
+        mips.push_back(std::move(level));
+        source = &mips.back();
+        w = next_w;
+        h = next_h;
+    }
+    return mips;
 }
 
 AceDecodeResult decode_ace_rgba(const core::Vfs& vfs, const core::VirtualPath& file) {

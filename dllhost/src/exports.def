@@ -1,0 +1,12 @@
+EXPORTS
+    _RTSGetInteger = RTSGetInteger
+    _RTSSetIntegerG = RTSSetIntegerG
+    _RTSGetObject = RTSGetObject
+    _RTSGetObjectByName = RTSGetObjectByName
+    _RTSGetLocoObject = RTSGetLocoObject
+    _RTSGetLocoObjectByName = RTSGetLocoObjectByName
+    _RTSGetCabObject = RTSGetCabObject
+    _RTSGetCabObjectByName = RTSGetCabObjectByName
+    _RTSGetTrackItems = RTSGetTrackItems
+    _RTSGetNamedInteger = RTSGetNamedInteger
+    _RTSIsSMSTriggerOn = RTSIsSMSTriggerOn

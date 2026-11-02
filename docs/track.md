@@ -216,9 +216,10 @@ Blades then follow `JunctionState`.
 
 - **`Dyntrack`:** parse it and build its geometry and TDB sections. No
   installed route uses it.
-- **RTS additions:** `.electrodb` / `.electrotype` electrification sections
-  (needed for electric traction), track retarders, `.rdb` roads (car
-  spawners).
+- **RTS additions:** track retarders, `.rdb` roads (car spawners). The
+  `.electrodb` / `.electrotype` electrification is done
+  (`docs/electrification.md`); RTS's own drawing of the wires from the
+  catenary types is not.
 
 ## Order and size (done)
 

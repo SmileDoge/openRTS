@@ -63,8 +63,6 @@ Not done from the plan:
 - **Optional decor parts** of a signal shape (`SignalSubObj` mask) are all
   drawn.
 - **Semaphore arms**: no content has them.
-- **Signal modes from trains** (shunting flags) are not set, and script
-  mode changes do not spread along the chain.
 - **Path ends and reservations** do not limit the chain (step 4).
 
 ## What exists
@@ -252,9 +250,22 @@ Each answer goes into `docs/reverse/signals.md` with its confidence.
   updates (step 1) only matters if RTS's results differ observably, for
   example a free-running head lagging behind.
   - **Modes:** FAILED/EXCL heads skip the script. SHUNT forces aspects 3..7
-    to RESTRICTING unless `RTS_ShuntingAutoMode`. An override API (for
-    activities later, the dispatcher in step 4) sets aspect, draw state and
-    speed limit.
+    to RESTRICTING unless `RTS_ShuntingAutoMode`.
+  - **Overrides** (`SignalSystem::set_override`, RTS `SignalOverride`): a
+    mode, an aspect, a draw state (or the type's for the aspect) and a speed
+    in place of the script's; unset fields are left to the script. A FAILED
+    or EXCL head without an override shows FAILED and lights nothing.
+  - **Train flags** (`set_train_settings`, RTS train +7 / +6): a train's
+    chain gives its heads SHUNT or NORMAL (FAILED heads keep theirs), and
+    distance, shunting or info heads count for the aspect it obeys when they
+    are an object's lowest function.
+  - **Along a chain:** an object's first head takes the next object's mode
+    unless that is SHUNT or FAILED, its other heads their object's; a mode a
+    script sets spreads to the objects beyond, unless an override holds the
+    head. The details: `docs/reverse/signals.md`.
+  - **Track control** sets both for testing (a signal's "Override" menus, a
+    train's "Signals for this train"); activities and the dispatcher console
+    will use the same API.
 - **For the train** (`Train` gets a look-ahead, no new physics):
   - the next signal object ahead: distance, the aspect it obeys (least
     restrictive NORMAL head; distance, shunting and info heads by the train

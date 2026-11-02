@@ -385,19 +385,28 @@ checked against RTS's own `sigscr.dat.asm` of TestRoute_RTS.
   compiled script, so all heads of a signal type share them, and a run sees
   the previous run's values. A script that reads a local before writing it
   depends on evaluation order.
-- **Before a run:**
+- **Before a run (`0x499948`, CONFIRMED by code reading):**
   - the speed limit is set to −1;
-  - in a chain, the mode comes from the chain (the train's flags);
-  - overrides (the `SignalOverride` list, head +120) set mode, aspect,
-    draw state and speed.
+  - in a chain, unless the head is FAILED: the object's first head takes
+    the next (farther) object's mode when that is neither SHUNT nor FAILED;
+    the object's other heads take the object's own mode (chain node +12);
+  - overrides (the `SignalOverride` list, head +120, every record in turn)
+    set the mode (+8 unless 0xFFFF), the speed (+12 when above −2), the
+    aspect (+6 when not negative) and the draw state (+4 unless 0xFFFF; −2
+    means the type's draw state for the aspect).
 - **FAILED / EXCL mode:** the script is skipped.
   - aspect: the override, else 9 (FAILED);
-  - speed: the override, else a default;
-  - draw state: the override, else the type's default for the aspect
-    (`0x47A138`).
-- **After a run:**
-  - a mode the script set spreads along the chain (`0x50B6F4`);
-  - overrides apply;
+  - speed: the override, else a global default (`dword_61D7D4`, value
+    UNKNOWN);
+  - draw state: the override (−2: the type's for the aspect, `0x47A138`),
+    else −1: no draw state, the head is dark. (Earlier notes said the
+    type's default; the code gives −1.)
+- **After a run (in a chain):**
+  - the object's mode becomes the head's;
+  - with no override, a mode other than NORMAL that differs from the next
+    object's spreads to every object beyond (`0x50B6F4`: object and heads,
+    FAILED heads excepted);
+  - overrides apply (aspect, speed, draw state as above);
   - SHUNT mode (unless `RTS_ShuntingAutoMode`) turns aspects 3..7 into 2
     (RESTRICTING), with that aspect's draw state and speed.
 - **`block_state(mask)` and `route_set(mask)`:** the argument selects which
@@ -476,7 +485,9 @@ checked against RTS's own `sigscr.dat.asm` of TestRoute_RTS.
 - **A chain node** holds:
   - the obeyed aspect and the minimum head function;
   - the distance;
-  - the mode from the train's flags (bit 1 shunt, bit 2 normal);
+  - the mode from the train's flags: `+7` bit 0 gives SHUNT, bit 1 NORMAL,
+    to the object and to each of its heads that is not FAILED (none set:
+    the heads keep theirs);
   - the heads, next and previous.
 - **Evaluate from the farthest to the nearest.**
   - `enabled` is 2 for the run, except 0:
@@ -489,8 +500,9 @@ checked against RTS's own `sigscr.dat.asm` of TestRoute_RTS.
     `enabled = 2` for the frame, so the free run skips it. A nearer one
     ("being passed now") is reset to 0.
 - **Obeyed aspect:** the train obeys the max aspect over the object's
-  NORMAL heads. With the train flags (+6 bits 1, 2, 4), distance, shunting
-  and info heads count too, when that type is the object's minimum. The
+  NORMAL heads. With the train flags `+6`, other heads count too when their
+  function is the object's minimum: bit 0 DISTANCE (also needs single
+  player or the player's train), bit 1 SHUNTING, bit 2 INFO. The
   speed limit is the lowest positive one.
 - **Passing:** the first object within the passing distance sets the
   train's speed limit (+108). For the player train in an activity:
@@ -539,7 +551,33 @@ Half size s = Radius * fov/45 * max(1, d * light_scale * |u1 - u0| * k / Radius)
 where d is the camera distance, light_scale = 0.012 * LightsScale (rts.ini)
 and k = texture width / 512 (integer division) when the texture flag +13 is
 set. Near it is the lens's size, far it keeps a constant angular size -
-CONFIRMED. The lens geometry itself is part of the shape; nothing else lights it.
+CONFIRMED. The fov is RTS's camera field of view, config.ini `FOV` (65 in
+this installation).
+
+**Quirk — a light's size follows the field of view.** The factor fov/45 is
+computed by `rts1.exe` and handed to `lamp.vert.shader` in `Size` (the
+shader only draws a quad of `Size.x * Size.y` around the light). It keeps a
+glow's size on the screen when the FOV changes, which suits a halo, but RTS
+applies it to every light quad, also to those that are part of a model:
+lamp faces, and the ED9M's searchlight cone built of six glow quads
+(train-dll.md, exterior lights). Changing the FOV in RTS grows and shrinks
+them around their centres: lamp faces overflow or shrink inside their
+housings, the cone moves away from or into its lamp. Content is made at
+the FOV its author used (the ED9M cone sits at its lamp at 65). openRTS
+sizes every light (signals and trains) with the factor at 65 degrees,
+fixed, whatever the field of view (`GlowSpriteRenderer`). The lens geometry itself is part of the shape; nothing else lights it.
+
+**PROBABLE** blending: the light quad (`0x449818`) enables `GL_BLEND` and
+disables the alpha test but sets no blend function of its own, and the
+light loop of `0x408574` sets none before it; the frame's standing one is
+`GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA` (set back there after its additive
+part). So a light is laid over the scene by its alpha (`lamp.frag`:
+texture x LightColor), after every object, the blended glass included.
+The loop sits between object passes 2 and 3 (shape-rendering.md, Passes):
+after the glass, before the cab. openRTS draws train and signal lights
+there, laid over by their alpha in the RTS path (`GlowBlend::over`) and
+added in the experimental path (`GlowBlend::added`, emissive in the HDR
+frame).
 
 ### SignalSubObjs and shape parts (`0x4491E8`, parser `0x483694`)
 

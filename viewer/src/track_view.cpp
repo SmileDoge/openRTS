@@ -1,5 +1,7 @@
 #include "track_view.hpp"
 
+#include "ui_text.hpp"
+
 #ifdef OPENRTS_HAS_WGPU
 #include <algorithm>
 #include <cmath>
@@ -129,7 +131,7 @@ std::optional<simulation::TrackTraveller> TrackView::nearest_track(const glm::ve
     // A route start may lie away from the track (TestRoute_RTS: 600 m).
     const auto location = network_->locate(target, 5000.0);
     if (!location) {
-        message_ = "no track within 5 km";
+        message_ = tr("no track within 5 km");
         return std::nullopt;
     }
     return simulation::TrackTraveller(*network_, location->node, location->offset, true);
@@ -159,7 +161,7 @@ void TrackView::throw_junction_ahead(const simulation::TrackTraveller& from) {
         walked += result.moved;
         if (!result.ok() || result.moved <= 0.0) break;
     }
-    message_ = "no facing junction within " + std::to_string(static_cast<int>(junction_reach)) + " m ahead";
+    message_ = tr("no facing junction within ") + std::to_string(static_cast<int>(junction_reach)) + " m ahead";
 }
 
 void TrackView::throw_nearest_junction(const glm::vec3& point) {
@@ -177,7 +179,7 @@ void TrackView::throw_nearest_junction(const glm::vec3& point) {
         }
     }
     if (!best) {
-        message_ = "no junction within 300 m";
+        message_ = tr("no junction within 300 m");
         return;
     }
     throw_junction(*best);
@@ -307,33 +309,33 @@ void TrackView::collect_labels(std::vector<WorldLabel>& labels, const glm::vec3&
 
 void TrackView::draw_overlay() const {
 #ifdef OPENRTS_HAS_IMGUI
-    if (!ImGui::CollapsingHeader("Track", ImGuiTreeNodeFlags_DefaultOpen)) return;
-    ImGui::Text("Network: %zu nodes, %zu data issues%s", network_->node_count() - 1, network_->issues().size(),
-                visible_ ? "" : " (hidden: T)");
-    ImGui::Text("Joints: median %.1f mm, p95 %.1f cm, max %.2f m", joints_.median * 1000.0, joints_.p95 * 100.0,
+    if (!ImGui::CollapsingHeader(tr("Track"), ImGuiTreeNodeFlags_DefaultOpen)) return;
+    ImGui::Text(tr("Network: %zu nodes, %zu data issues%s"), network_->node_count() - 1, network_->issues().size(),
+                visible_ ? "" : tr(" (hidden: T)"));
+    ImGui::Text(tr("Joints: median %.1f mm, p95 %.1f cm, max %.2f m"), joints_.median * 1000.0, joints_.p95 * 100.0,
                 joints_.max);
     for (const auto& joint : joints_.worst) {
-        ImGui::Text("  worst: %s node %u%s%u  %.2f m", joint.between_nodes ? "pin" : "section", joint.node,
+        ImGui::Text(tr("  worst: %s node %u%s%u  %.2f m"), joint.between_nodes ? tr("pin") : tr("section"), joint.node,
                     joint.between_nodes ? " -> " : " #",
                     joint.between_nodes ? joint.other : static_cast<std::uint32_t>(joint.section), joint.gap);
     }
-    if (ImGui::TreeNode("Legend")) {
+    if (ImGui::TreeNode(tr("Legend"))) {
         const auto row = [](const std::uint32_t colour, const char* text) {
             // debug_colour packs 0xAABBGGRR like ImGui.
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colour | 0xff000000u), "|");
             ImGui::SameLine();
             ImGui::TextUnformatted(text);
         };
-        row(colour_track, "track");
-        row(colour_junction, "junction");
-        row(colour_branch, "set branch of a junction");
-        row(colour_end, "end of track");
-        row(item_colour(formats::TrackItemKind::signal), "signal (5 m post)");
-        row(item_colour(formats::TrackItemKind::speed_post), "speed post (3 m)");
-        row(item_colour(formats::TrackItemKind::platform), "platform start / end (2 m)");
-        row(item_colour(formats::TrackItemKind::siding), "siding start / end (2 m)");
-        row(item_colour(formats::TrackItemKind::level_crossing), "level crossing (2 m)");
-        row(item_colour(formats::TrackItemKind::crossover), "crossover (2 m)");
+        row(colour_track, tr("track"));
+        row(colour_junction, tr("junction"));
+        row(colour_branch, tr("set branch of a junction"));
+        row(colour_end, tr("end of track"));
+        row(item_colour(formats::TrackItemKind::signal), tr("signal (5 m post)"));
+        row(item_colour(formats::TrackItemKind::speed_post), tr("speed post (3 m)"));
+        row(item_colour(formats::TrackItemKind::platform), tr("platform start / end (2 m)"));
+        row(item_colour(formats::TrackItemKind::siding), tr("siding start / end (2 m)"));
+        row(item_colour(formats::TrackItemKind::level_crossing), tr("level crossing (2 m)"));
+        row(item_colour(formats::TrackItemKind::crossover), tr("crossover (2 m)"));
         ImGui::TreePop();
     }
     if (!message_.empty()) ImGui::Text("%s", message_.c_str());

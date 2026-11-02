@@ -50,6 +50,27 @@ struct SignalHead {
     [[nodiscard]] formats::SignalAspect aspect() const noexcept;
 };
 
+// RTS SignalOverride (an activity outcome; later the dispatcher console),
+// head +120: replaces what the head's script gives (0x499948). Unset fields
+// are left to the script.
+struct SignalOverride {
+    std::optional<SignalMode> mode;
+    std::optional<formats::SignalAspect> aspect;
+    std::optional<int> draw_state; // -2: the type's draw state for the aspect
+    std::optional<float> speed;    // m/s
+};
+
+// RTS train flags read by the signal pass (0x508520). +7 bit 0 / bit 1: the
+// mode the train's chain gives its heads, SHUNT or NORMAL (activities'
+// SetSignalMode); +6 bits 0 / 1 / 2: distance, shunting and info heads count
+// for the aspect the train obeys, when they are the object's lowest function.
+struct TrainSignalSettings {
+    std::optional<SignalMode> mode; // shunt or normal; none: the heads keep theirs
+    bool obey_distance = false;
+    bool obey_shunting = false;
+    bool obey_info = false;
+};
+
 struct SignalObject {
     formats::WorldObjectPlacement placement; // the world Signal (shape, position, sub-objects)
     std::vector<std::uint32_t> heads;
@@ -115,6 +136,13 @@ public:
     // stands (0x508520: the front pass and the rear pass). Other trains: the
     // end they last moved towards. No function: no player train.
     void set_player(std::function<bool(const Train&)> is_player);
+    // Overrides by head; the head runs again at the next step.
+    void set_override(std::uint32_t head, const SignalOverride& value);
+    void clear_override(std::uint32_t head);
+    [[nodiscard]] const SignalOverride* override_of(std::uint32_t head) const;
+    // A train's signal flags (by train id); default: none set.
+    void set_train_settings(std::uint64_t train, const TrainSignalSettings& settings);
+    [[nodiscard]] TrainSignalSettings train_settings(std::uint64_t train) const;
     // Debug/test: run every head every step instead of only changed ones.
     void set_full_evaluation(bool on) noexcept { full_evaluation_ = on; }
     // block_state / route_set of a head right now (debug panel).

@@ -42,6 +42,11 @@ public:
     void add(StreamedModelAsset&& asset);
     [[nodiscard]] RenderModel* find(const core::VirtualPath& shape);
     void notify_changes(const std::vector<core::VirtualPath>& changed);
+    // Night, season and weather for ESD_Alternative_Texture: every model whose
+    // images then come from other subfolders is reloaded on a worker thread
+    // (RTS reloads the route's textures when night falls); models loaded
+    // under another variant are reloaded when they arrive.
+    void set_texture_variant(const TextureVariant& variant);
     // Publishes a finished reload batch, starts the next one and uploads up
     // to `uploads` queued models. Call once per frame on the render thread.
     void update(std::size_t uploads = 1);

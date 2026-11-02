@@ -8,17 +8,12 @@
 
 #include <openrts/formats/environment.hpp>
 #include <openrts/renderer/model_renderer.hpp>
+#include <openrts/renderer/rts_season.hpp>
 
 // Time-of-day sky of the original RTS renderer (rts1.exe 0x417D74), see
 // docs/reverse/sky.md. Backend-independent: it turns an environment file and a
 // clock into satellite positions, layer fades and the scene's Light[0].
 namespace openrts::renderer::rts {
-
-// Order of the .trk Environment block and of RTS's season variable.
-enum class Season : std::uint8_t { spring = 0, summer = 1, autumn = 2, winter = 3 };
-
-// RTS weather variable (MSTS activity order).
-enum class Weather : std::uint8_t { clear = 0, snow = 1, rain = 2 };
 
 // .trk Environment block condition for a season and weather, e.g. "SummerClear".
 [[nodiscard]] const char* environment_condition(Season season, Weather weather) noexcept;
@@ -49,6 +44,10 @@ struct SkyState {
     std::vector<SatelliteState> satellites;
     std::vector<SkyLayerState> layers;
     bool night = false;
+    // How lit the world is, RTS's dword_61D60C (0x408C19): the sun's ambient
+    // and direct colours, before the ambient is raised, red, green and blue
+    // averaged over the six. NIGHT_AUTO lamps with AutoWhenWorldLit use it.
+    float world_lit = 0.0f;
     glm::vec4 clear_colour{0.0f};
     glm::vec4 fog_colour{0.0f};
     float fog_start = 300.0f;

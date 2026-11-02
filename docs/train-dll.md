@@ -1,7 +1,15 @@
 # Locomotive DLLs: legacy bridge and the openRTS train plugin API
 
-Status: plan, deferred until trains are implemented (roadmap step 5, cab
-and on-board systems). Nothing here is implemented yet. Sources:
+Status (2026-11-01): the legacy bridge works — `openrts-dllhost32.exe`, the
+mirrors, the 11 host functions, the adapters for TS_VERSION 101–103, the
+call sequence of RTS, the game side (`trainplugin/`), the viewer's cab
+window, keys and 3-D cab. All 54 installed DLLs load (53 accepted, one
+refused as RTS refuses it), one consist per DLL runs through the host
+without a crash (29 consists), the VL10k drives the train simulation in a
+regression test. The native plugin API exists (`train_plugin.h`, C++
+layer, loader, a sample, a parity test against a legacy DLL); the VL10k
+port as a native sample is still to do. The "how it works in RTS" notes
+are in `docs/reverse/train-dll.md`. Sources:
 - `TRAINS/TRAINSET/tsrLoco_VL80k-125/CAB/ts.h`, the header RTS ships for DLL
   authors (TS_VERSION 104);
 - the VL10k source (`tsrLoco_VL10k-1461/cab/vl10k_main.cpp`);
@@ -79,22 +87,15 @@ content gets a clean 64-bit interface.
     `IndependentBrakeValue`, `EPTvalue`, `Sanding`, ... and updates the cab
     switches, displays and lights.
 
-### UNKNOWN (IDA, targeted)
+### Answered by the reverse notes
 
-- What the `time` argument of `Init` / `Run` is: the frame step or game time.
-  export.pdf says "step"; check against `vl10k_main.cpp` and the RTS call
-  site.
-- The exact call order per frame (main DLL, aux libraries with negative and
-  positive `AuxCall` order, slave locomotives) and when
-  `ChangeLoco` / `LostMaster` fire.
-- How RTS consumes the outputs: the units and sign of `Force`, the rate
-  semantics, `ALSNOn` encoding. These are in physics, `@@Physics`.
-- **Adapters:** RTS refuses a DLL whose sizes differ (see the MSVC case above).
-  Still to trace: which codes it compares, and what the adapters do for older
-  `TS_VERSION`s and compliance levels.
-- `RTSGetInteger` / `RTSSetIntegerG` codes beyond the 7 in ts.h.
-- The FPU control word RTS runs DLL code with. Borland code may expect
-  unmasked exceptions or 64-bit precision.
+The questions this section listed (what `time` is, the call order, when
+`ChangeLoco` / `LostMaster` fire, how outputs are read, the adapters, the
+host function codes, the FPU) are answered in `docs/reverse/train-dll.md`
+(sections 2–7 and 10). In short: `time` is the frame step in seconds; `Run`
+goes in car order, auxiliary libraries around it by their `AuxCall` order;
+RTS never touches the FPU control word; DLLs of TS_VERSION 101–103 get
+shadow objects without the fields their layout lacks.
 
 ## Why a proxy
 
@@ -123,6 +124,43 @@ openRTS (x64)                         openrts-dllhost32.exe (x86)
 One host per player train consist. All its locomotives and auxiliary
 libraries load in one process, so a DLL used by two locomotives shares its
 globals, as in RTS.
+
+#### One address space for the whole consist (requirement)
+
+A legacy master DLL can change a slave's fields directly through a pointer
+(from `_RTSGetLocoObject` / `_RTSGetLocoObjectByName`, or pointers inside the
+shared objects), and a DLL can keep such pointers between frames. So every
+DLL of a consist must see the same, consistent objects in one 32-bit address
+space; per-DLL commands over IPC are not enough. Consequences:
+
+- **Mirror objects for every car of the consist** live in the host, not only
+  for the locomotives with a DLL, with the pointers between them that RTS
+  sets (which fields carry pointers, and to what, is a question for step 1).
+  `_RTSGetLocoObject` and the other resolvers return these mirrors.
+- **Stable addresses.** A mirror never moves while its car is in the
+  consist (no reallocation); a DLL may hold a pointer to it.
+- **One snapshot in, one round of calls, everything out.** Per frame the game
+  writes the inputs of all cars, the host runs every DLL in RTS's order
+  (masters, slaves, auxiliary libraries, wagons with DLLs) inside the same
+  frame, so a slave's DLL sees what the master wrote a moment earlier, as in
+  RTS. Then the host reads back the outputs of **all** mirrors, not only
+  those of the DLL that ran: a master's write into a slave's `Engine` is a
+  normal output of that slave.
+- **Field ownership.** Each field is either written by the game (inputs:
+  speeds, pressures, voltages, signals) or by DLLs (outputs: forces, rates,
+  switches, lights). The game never overwrites DLL-owned fields with its
+  snapshot, so values a DLL wrote into another car survive to the next
+  frame. Which fields are which comes from step 1 (what RTS fills before a
+  call and what it reads after).
+- **The consist changes in place.** Coupling, uncoupling and changing cabs
+  add or remove mirrors and DLL instances in the same host, with
+  `ChangeLoco` / `LostMaster` as RTS calls them; a DLL module used by
+  several locomotives stays loaded once.
+- **Native plugins get the same power without raw pointers:** multiple-unit
+  control goes through host calls (train lines such as `SMECable` / `HVBus`
+  as named channels a master writes and slaves read), so a native master can
+  drive native or legacy slaves and the other way round, with the bridge
+  copying between the channels and the slaves' mirror fields.
 
 - **Exports:** the host exports the 11 functions under their exact names
   (`.def` file, `_RTSGetObject` …). It passes its own `HMODULE` to
@@ -261,22 +299,135 @@ const OrtsTrainPlugin* orts_train_plugin(uint32_t host_api_version);
 
 - **New content in the .eng:** declared as `ORTSTrainPlugin ( "file.dll" )`.
   The `LibraryModule` path keeps meaning a legacy DLL.
+
+### One cab for both kinds of DLL (the user's requirement, 2026-11-01)
+
+Legacy RTS DLLs must keep working unchanged, and native openRTS DLLs must
+manage at least as well. So the cab is not part of either plugin kind:
+
+```text
+                cab files (.s + RTS cab .sd: Switch, Display, lights, ...)
+                                   │
+                              CabModel (openRTS)
+     controls: value, states, limits, frames, click areas, hints, keys
+     indicators: displays, gauges, lamps, texture changes, animations
+     sounds: cab SMS with SoundSources
+         ▲            ▲                 ▲                    ▲
+   mouse / keys    renderer        LegacyDllPlugin       native plugin
+   (CanSwitch →  (draws the cab   (ActSwitch / ActDisplay   (find_control by
+    Switched)     from the model)  arrays by .sd ID,         name → handle,
+                                   via the x86 host)         in process, x64)
+```
+
+- **CabModel is the only owner of cab state.** Input changes controls
+  through it, the renderer only reads it, and both plugin kinds read and
+  write it through the plugin interface. A cab works the same whichever kind
+  drives it, and works (switches move, gauges read the simulation) with no
+  DLL at all.
+- **Addressing:** legacy DLLs see the RTS arrays indexed as the `.sd` IDs
+  give them (the bridge copies between the arrays and the model each frame);
+  native plugins resolve `.sd` `Name`s once (`find_control`), and openRTS cab
+  files may add names where RTS ones have only IDs.
+- **What native plugins get beyond the legacy interface:** no fixed struct
+  layouts (size-first, append-only structs), several plugins per locomotive
+  without globals, explicit save / load (savegames, joining a multiplayer
+  session), UTF-8 messages, typed parameters from the `.eng`, track items
+  and signals through host calls rather than raw arrays.
+- **Equal footing, checked:** an SDK (`train_plugin.h`, a small C++
+  wrapper over the C ABI, a sample plugin) and a parity test. The VL10k's
+  published logic (`vl10k_main.cpp`) is ported to a native sample plugin;
+  the harness runs one scripted sequence through the legacy DLL in the x86
+  host and through the native port, and their outputs must agree. That
+  proves the native API is enough for real locomotive logic.
+- **Native plugins run in the game process** (64-bit, no IPC); a crash there
+  is the plugin's bug, reported with the plugin's name. Legacy DLLs stay
+  isolated in the host process.
 - **Save / load:** an explicit `save` / `load` is needed for savegames and
   for joining a multiplayer session mid-run. For legacy DLLs the bridge
   saves `Engine::var` and the mirror state.
 - **Later:** the same API can be offered to a scripting runtime (for example
   WASM) without changing the simulation side.
 
+## As built
+
+```text
+openRTS (x64)                                    openrts-dllhost32.exe (x86, static CRT)
+  viewer / train-check                             --serve <shared memory> --parent <pid>
+  trainplugin::LegacyConsist  -- shared memory --  dllhost::Host
+    (.eng/.wag/.sd -> SetupRequest)  8 MB, 2 events   mirrors (ts.h layout, stable addresses)
+    LegacyController per DLL engine                   modules (LoadLibraryEx, DLLVersion, adapters)
+    LegacyHost (start, timeouts, crash)               the 11 _RTS* exports (exports.def)
+```
+
+- **Protocol** (`include/openrts/dllhost/protocol.hpp`): `hello` (versions,
+  sizes of the shared structs), `setup` (cars, DLL paths, parameters,
+  auxiliary libraries, cabs), `enter` (the player's engine: bind, `Init`,
+  `ChangeLoco`, grouping by cables), `step` (the cars' state in; engine
+  outputs, switches, displays, lights, SMS triggers and Var1..8, GlobalMsg
+  texts out), `can_switch`, `shutdown`. A step is one round trip; a step
+  that takes longer than 3 s counts as a hung DLL and the host is killed.
+- **The host owns the legacy cab state**: switches move to `SetState` over
+  their `AnimTime` and fire `Switched` when they get there (RTS's cab
+  update); the game shows what the replies say and asks with `can_switch`.
+- **Isolation**: every DLL call runs under SEH; a crash switches that DLL
+  off and the log names the module, the offset and the bad address
+  (`ep2d.dll+0x7624, reading 0x0000002C`). A host that ends or hangs is
+  reported; the game keeps running.
+- **Paths**: DLLs are loaded from their real files (`Vfs::real_path`, so
+  packs are extracted to the cache); the RTS program folder is the DLL
+  directory (for `bass.dll` and `CC3260MT.DLL`).
+- **Tools**: `openrts-dllhost32 --probe <folder>` (versions and layouts of
+  every DLL, calls only `DLLVersion` and `InitRTSLibrary`);
+  `openrts-train-check <root> --dll <folder> <eng>... | consist <name>
+  [--script f] [--seconds s] [--cars]` (runs the DLLs on a test track and
+  checks a script); `openrts-train-check <root> --cab <folder> <eng>` (how
+  the `.sd` binds to the cab shape).
+- **Tests**: `openrts.dllhost` (the fake DLL `dllhost/test/fake_loco.cpp`,
+  no content needed: Init, master / slave, CanSwitch, Switched, sounds,
+  messages, the flip), `openrts.plugin_parity` (the same logic as a legacy
+  DLL and as a native plugin), and with `-DOPENRTS_TEST_ROOT=<RTS>`:
+  `openrts.content.dll_probe`, `openrts.content.dll_vl10k`
+  (`tests/data/vl10k.script`).
+
+### Native plugins (as built)
+
+- `include/openrts/plugin/train_plugin.h`: the C ABI (size-first structs,
+  one context per locomotive, named controls); `train_plugin.hpp`: a C++
+  base class and `ORTS_TRAIN_PLUGIN(Class, "name")` for the export.
+- `trainplugin::NativeLocomotive` loads one (`orts_train_plugin`), keeps a
+  `CabModel` from the cab `.sd` (controls and indicators by name, RTS's
+  movement and `Switched` order) and is the simulation's controller.
+- `sdk/samples/fake_native`: the fake DLL's logic on the native API; the
+  parity test runs both through one script and compares every step.
+- Not yet: the `ORTSTrainPlugin ( "x.dll" )` key in the game (the loader
+  is there, the viewer does not pick it up), the VL10k port.
+
+### Remaining
+
+- The VL10k logic as a native sample, and the parity run against
+  `vl10k.dll` on the VL10k script.
+- Exterior lights (`LightObj` from the `.eng` `Lights`), doors by name,
+  close-up screens, track items for `RTSGetTrackItems`, named SMS triggers
+  (`RTSGetNamedInteger`), cab signals for `ALSN` from the signal system.
+- Changing ends and coupling while a legacy consist runs: the consist is
+  rebuilt (the DLLs get `Init` again) instead of `ChangeLoco` /
+  `LostMaster` keeping their state.
+
 ## Order
+
+Start with understanding the layer (the user's decision, 2026-11-01): how
+RTS and the DLLs talk — when each call happens, what is passed and read
+back, and why — before writing the host. See roadmap step 5, item 0.
 
 | Step | Content | Depends on |
 |---|---|---|
-| 1 | `openrts-dllhost32 --probe`: load every installed DLL, `DLLVersion` table | — |
-| 2 | Reverse notes `docs/reverse/train-dll.md`: call order, `time`, adapters, output consumption, FPU | IDA |
+| 1 | Reverse notes `docs/reverse/train-dll.md`: the RTS ↔ DLL layer — load and init, per-frame fill / call order / read-back, `time`, event calls and their triggers, masters and slaves, aux libraries and wagons with DLLs, adapters, FPU, and why | IDA, `vl10k_main.cpp` |
+| 2 | `openrts-dllhost32 --probe`: load every installed DLL, `DLLVersion` table | 1 |
 | 3 | Mirror layouts (`pack(4)`, size asserts against step 1) and the 11 host functions | 1 |
 | 4 | Host process, shared memory protocol, `--run` harness, VL10k regression | 3 |
 | 5 | `train_plugin.h` and the legacy bridge plugin on the openRTS side | 4 |
-| 6 | Wiring into the train simulation and cab (roadmap step 2) | 5, train |
+| 6 | CabModel from the cab `.sd` and wiring into the train simulation and the 3-D cab | 5, train |
+| 7 | SDK: the C++ wrapper, the native VL10k sample plugin, the parity test against the legacy VL10k | 5, 6 |
 
 Steps 1–4 need no train simulation in openRTS and prove compatibility on
 their own. Step 6 comes with the train and cab work.

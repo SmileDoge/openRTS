@@ -1,6 +1,8 @@
 #include <openrts/renderer/webgpu_context.hpp>
 
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <thread>
 
 namespace openrts::renderer {
@@ -24,6 +26,15 @@ void on_adapter(const WGPURequestAdapterStatus status, const WGPUAdapter adapter
     request.status = status;
     request.adapter = adapter;
     request.complete = true;
+}
+
+// Validation and out-of-memory errors nobody caught: printed, so a broken
+// pipeline or binding says what is wrong instead of failing silently.
+void on_uncaptured_error(WGPUDevice const*, const WGPUErrorType type, const WGPUStringView message, void*, void*) {
+    std::fprintf(stderr, "WebGPU error %d: %.*s\n", static_cast<int>(type),
+                 static_cast<int>(message.data ? (message.length == WGPU_STRLEN ? std::strlen(message.data) : message.length) : 0),
+                 message.data ? message.data : "");
+    std::fflush(stderr);
 }
 
 void on_device(const WGPURequestDeviceStatus status, const WGPUDevice device, WGPUStringView,
@@ -116,6 +127,7 @@ WgpuDeviceContextResult create_headless_wgpu_device() {
     const WGPUDeviceDescriptor device_descriptor{
         .requiredFeatureCount = has_timestamps ? 1u : 0u,
         .requiredFeatures = has_timestamps ? &timestamps : nullptr,
+        .uncapturedErrorCallbackInfo = {.callback = on_uncaptured_error},
     };
     wgpuAdapterRequestDevice(context.adapter_, &device_descriptor, device_callback);
     if (!wait_for_request(context.instance_, device_request)

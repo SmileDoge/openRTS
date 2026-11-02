@@ -86,6 +86,14 @@ void read_static_field(Tokenizer& tokens,
         if (const auto value = tokens.next()) {
             if (const auto flags = parse_integer<std::uint32_t>(*value)) object.collide_flags = *flags;
         }
+    } else if (equals_ignore_case(field, "StaticFlags")) {
+        if (const auto value = tokens.next()) object.static_flags = static_cast<std::uint32_t>(std::strtoul(value->c_str(), nullptr, 16));
+    } else if (object.kind == WorldObjectKind::transfer && (equals_ignore_case(field, "Width") || equals_ignore_case(field, "Height"))) {
+        if (const auto value = tokens.next()) {
+            if (const auto parsed = parse_double(*value)) {
+                (equals_ignore_case(field, "Width") ? object.transfer_width : object.transfer_height) = static_cast<float>(*parsed);
+            }
+        }
     } else if (equals_ignore_case(field, "SignalSubObj")) {
         if (const auto value = tokens.next()) object.signal_sub_objects = static_cast<std::uint32_t>(std::strtoul(value->c_str(), nullptr, 16));
     } else if (equals_ignore_case(field, "QDirection")) {
@@ -109,6 +117,7 @@ constexpr ObjectKeyword object_keywords[] = {
     {"CollideObject", WorldObjectKind::collide_object},
     {"Signal", WorldObjectKind::signal},
     {"Speedpost", WorldObjectKind::speed_post},
+    {"Transfer", WorldObjectKind::transfer},
 };
 
 [[nodiscard]] std::optional<WorldObjectKind> object_kind(const std::string& keyword) {
@@ -238,6 +247,9 @@ RouteDefinition parse_route_definition(const std::string_view trk_bytes) {
                     (limit ? result.speed_limit : result.temp_restricted_speed) = static_cast<float>(*parsed);
                 }
             }
+            tokens.skip_block();
+        } else if (equals_ignore_case(*key, "Electrified") && tokens.open_block()) {
+            if (const auto value = tokens.next()) result.electrified = std::strtoul(value->c_str(), nullptr, 16) != 0;
             tokens.skip_block();
         }
     }

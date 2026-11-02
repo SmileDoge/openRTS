@@ -103,6 +103,20 @@ TerrainTileMesh build_terrain_tile_mesh(const core::Vfs& vfs,
             }
 
             TerrainPatchMesh patch_mesh{.first_index = static_cast<std::uint32_t>(mesh.indices.size())};
+            {
+                glm::vec3 lo{mesh.vertices[base].position[0], mesh.vertices[base].position[1], mesh.vertices[base].position[2]};
+                glm::vec3 hi = lo;
+                for (auto v = base; v < mesh.vertices.size(); ++v) {
+                    const glm::vec3 p{mesh.vertices[v].position[0], mesh.vertices[v].position[1], mesh.vertices[v].position[2]};
+                    lo = glm::min(lo, p);
+                    hi = glm::max(hi, p);
+                }
+                const auto centre = (lo + hi) * 0.5f;
+                patch_mesh.center[0] = centre.x;
+                patch_mesh.center[1] = centre.y;
+                patch_mesh.center[2] = centre.z;
+                patch_mesh.radius = glm::length(hi - centre);
+            }
             const auto stride = samples_per_patch + 1;
             for (std::uint32_t i = 0; i < samples_per_patch; ++i) {
                 for (std::uint32_t j = 0; j < samples_per_patch; ++j) {
@@ -177,10 +191,17 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 #include <future>
 #include <iostream>
 #include <map>
+#include <string>
 #include <utility>
 
 #include <openrts/formats/ace_file.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
+
+#include <openrts/renderer/frustum.hpp>
+#include <openrts/renderer/scene_effects.hpp>
+
+#include "rts_light_shapes.hpp"
+#include "scene_effects_wgsl.hpp"
 
 namespace openrts::renderer {
 namespace {
@@ -192,20 +213,29 @@ constexpr std::uint64_t draw_uniform_stride = 256;
 
 struct DrawUniform {
     glm::mat4 mvp;
+    float offset[4]; // the tile's place relative to the route origin
 };
+
+// Headlights and searchlights on the ground: the model renderer's further
+// lights in their rings (LightRings; RTS Shader.NumLights 10, the sun first).
+constexpr std::size_t ring_lights = LightRings::count * LightRings::capacity;
 
 struct FrameUniform {
     float light_diffuse[4];
     float light_ambient[4];
     float light_direction[4];
     float fog_colour[4];
-    float fog_distance[4];
+    float fog_distance[4]; // x: start, y: end, w: physical falloff
+    detail::GpuLight lights[ring_lights];
+    std::int32_t ring_counts[12];
+    float shading[4]; // x: night_ambient_scale()
 };
 
-// Port of RTS terrain.vert/frag (additional light sources not yet fed).
+// Port of RTS terrain.vert/frag, the additional light sources included.
 constexpr char terrain_shader[] = R"(
 struct Draw {
     mvp: mat4x4<f32>,
+    offset: vec4<f32>,
 };
 
 struct Frame {
@@ -214,7 +244,15 @@ struct Frame {
     light_direction: vec4<f32>,
     fog_colour: vec4<f32>,
     fog_distance: vec4<f32>,
+    lights: array<Light, 90>, // nine a ring
+    ring_counts: array<vec4<i32>, 3>,
+    shading: vec4<f32>, // x: the experimental path's night ambient factor
 };
+
+// The experimental path (openRTS's shading, as the models': linear light,
+// lamps added) and the HDR frame (no soft clip, the tone pass does it).
+override experimental: bool = false;
+override hdr_output: bool = false;
 
 @group(0) @binding(0) var base_texture: texture_2d<f32>;
 @group(0) @binding(1) var micro_texture: texture_2d<f32>;
@@ -226,6 +264,8 @@ struct VertexIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    // The patch's ring of further lights, passed as the draw's first instance.
+    @builtin(instance_index) ring: u32,
 };
 
 struct VertexOut {
@@ -233,13 +273,23 @@ struct VertexOut {
     @location(0) uv: vec2<f32>,
     @location(1) colour: vec4<f32>,
     @location(2) fog: vec4<f32>,
+    @location(3) world: vec4<f32>,
+    @location(4) normal: vec3<f32>,
+    @location(5) @interpolate(flat) ring: u32,
 };
+
+fn ring_count(ring: u32) -> i32 {
+    return min(frame.ring_counts[ring / 4u][ring % 4u], 9);
+}
 
 @vertex
 fn vs_main(input: VertexIn) -> VertexOut {
     var out: VertexOut;
+    out.ring = min(input.ring, 9u);
     out.clip = draw.mvp * vec4<f32>(input.position, 1.0);
     out.uv = input.uv;
+    out.world = vec4<f32>(input.position + draw.offset.xyz, 1.0);
+    out.normal = input.normal;
 
     let factor = clamp(-dot(input.normal, frame.light_direction.xyz) * 2.0, 0.0, 1.0);
     let diffuse = max(frame.light_diffuse * factor, vec4<f32>(0.0));
@@ -259,18 +309,130 @@ fn vs_main(input: VertexIn) -> VertexOut {
     return out;
 }
 
+fn to_linear(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
+fn to_display(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+}
+
+// Linear up to the knee, then an exponential roll-off towards 1 (as the models').
+fn shoulder(c: vec3<f32>) -> vec3<f32> {
+    let knee = 0.6;
+    let room = 1.0 - knee;
+    let over = max(c - vec3<f32>(knee), vec3<f32>(0.0));
+    let rolled = vec3<f32>(knee) + room * (vec3<f32>(1.0) - exp(-over / room));
+    return select(c, rolled, c > vec3<f32>(knee));
+}
+
+// The experimental path, as the models' (model_renderer.cpp): sky ambient
+// (less of it the stronger the sun, darker towards the ground), Lambert sun,
+// the further lights added, all in linear light (each light's falloff taken
+// in display space, as RTS's).
+fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> vec3<f32> {
+    if (physical) {
+        let strength = physical_light(light, world, n);
+        if (strength > 0.0) {
+            return to_linear(light.diffuse.xyz) * strength;
+        }
+        return vec3<f32>(0.0);
+    }
+    let factor = light_factor(light, world, n);
+    if (factor > 0.0) {
+        return to_linear(light.diffuse.xyz * factor);
+    }
+    return vec3<f32>(0.0);
+}
+
+fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
+    let base = to_linear(texel.xyz);
+    let sun_colour = to_linear(frame.light_diffuse.xyz);
+    let sky_colour = to_linear(frame.light_ambient.xyz);
+    let n = normalize(input.normal);
+    let to_sun = -normalize(frame.light_direction.xyz);
+    let facing = max(dot(n, to_sun), 0.0);
+    let sun_strength = clamp(dot(sun_colour, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    // The sun's shadow and the ambient occlusion (SceneEffects).
+    let shadow = effects_shadow(input.world.xyz, n, input.clip);
+    let ambient = sky_colour * (1.0 - 0.65 * sun_strength) * mix(0.55, 1.0, n.y * 0.5 + 0.5)
+        * mix(1.0, frame.shading.x, 1.0 - sun_strength) * effects_ao(input.clip);
+    var lamps = vec3<f32>(0.0);
+    let physical = frame.fog_distance.w > 0.5; // physical_light_falloff()
+    if (effects.flags.x != 0u) {
+        let cluster = effects_cluster(input.clip, input.world.xyz);
+        let count = min(cluster_counts[cluster], effects.clusters.w);
+        let first = cluster * effects.clusters.w;
+        for (var i = 0u; i < count; i = i + 1u) {
+            let index = cluster_lights[first + i];
+            let light = lamp_light(scene_lights[index], input.world, n, physical);
+            if (any(light > vec3<f32>(0.0))) {
+                lamps = lamps + light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
+            }
+        }
+    } else {
+        let lights = ring_count(input.ring);
+        for (var i = 0; i < lights; i = i + 1) {
+            lamps = lamps + lamp_light(frame.lights[input.ring * 9u + u32(i)], input.world, n, physical);
+        }
+    }
+    lamps = lamps * (1.0 - effects.lamps.x); // weaker by day
+    var colour = base * (ambient + sun_colour * facing * shadow + lamps);
+    if (effects.flags.z != 0u) {
+        colour = effects_aerial(colour, input.world.xyz);
+    }
+    if (effects.flags.y == 2u) {
+        return vec4<f32>(vec3<f32>(effects_ao(input.clip)), texel.w); // the occlusion itself (--effects show-ao)
+    }
+    var display = to_display(select(shoulder(colour), max(colour, vec3<f32>(0.0)), hdr_output));
+    if (effects.flags.z == 0u && input.fog.w > 0.0) {
+        display = mix(display, input.fog.xyz, input.fog.w);
+    }
+    return vec4<f32>(display, texel.w);
+}
+
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let texel = textureSample(base_texture, terrain_sampler, input.uv)
         * textureSample(micro_texture, terrain_sampler, input.uv * 16.0) * 2.0;
+    if (experimental) {
+        if (texel.w <= 0.0) {
+            return vec4<f32>(0.0);
+        }
+        return shade_experimental(input, texel);
+    }
     var color = vec4<f32>(0.0);
     if (texel.w > 0.0) {
-        color = texel * input.colour;
+        // The further lights as RTS adds them to models: the strongest wins.
+        var light_colour = vec4<f32>(0.0);
+        let normal = normalize(input.normal);
+        let lights = ring_count(input.ring);
+        for (var i = 0; i < lights; i = i + 1) {
+            let light = frame.lights[input.ring * 9u + u32(i)];
+            let factor = light_factor(light, input.world, normal);
+            if (factor < 0.0) { continue; }
+            light_colour = max(light_colour, light.diffuse * factor);
+        }
+        color = texel * max(input.colour, light_colour);
         if (input.fog.w > 0.0) {
             color = vec4<f32>(((1.0 - input.fog.w) * color + input.fog.w * input.fog).xyz, color.w);
         }
     }
     return color;
+}
+)";
+
+// Depth only (SceneEffects): each tile's whole mesh in one draw.
+constexpr char terrain_depth_shader[] = R"(
+struct Draw {
+    mvp: mat4x4<f32>,
+    offset: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> draw: Draw;
+
+@vertex
+fn vs_depth(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> {
+    return draw.mvp * vec4<f32>(position, 1.0);
 }
 )";
 
@@ -325,6 +487,20 @@ struct TerrainRenderer::Impl {
     WGPUBindGroupLayout material_layout = nullptr;
     WGPUBindGroupLayout frame_layout = nullptr;
     WGPURenderPipeline pipeline = nullptr;
+    WGPURenderPipeline experimental_pipeline = nullptr;
+    ShadingPath shading = ShadingPath::rts_compatible;
+    // Group 2 (SceneEffects), read by the experimental pipeline; a built-in
+    // one with every effect off when none is given.
+    WGPUBindGroupLayout effects_layout = nullptr;
+    std::unique_ptr<SceneEffects> fallback_effects;
+    // Depth only: a view-projection per slot and tile (dynamic offset).
+    static constexpr std::uint32_t depth_slots = 12;
+    WGPUBindGroupLayout depth_layout = nullptr;
+    WGPURenderPipeline shadow_pipeline = nullptr;
+    WGPURenderPipeline camera_depth_pipeline = nullptr;
+    WGPUBuffer depth_buffer = nullptr;
+    std::uint64_t depth_capacity = 0; // tiles a slot holds
+    WGPUBindGroup depth_binding = nullptr;
     WGPUSampler sampler = nullptr;
     WgpuTextureUploadResult black;  // failed base texture: RTS draws with texture 0
     WgpuTextureUploadResult grey;   // missing microtexture: neutral under the * 2 detail blend
@@ -368,6 +544,14 @@ struct TerrainRenderer::Impl {
         if (black_view) wgpuTextureViewRelease(black_view);
         if (sampler) wgpuSamplerRelease(sampler);
         if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        if (experimental_pipeline) wgpuRenderPipelineRelease(experimental_pipeline);
+        fallback_effects.reset();
+        if (depth_binding) wgpuBindGroupRelease(depth_binding);
+        if (depth_buffer) wgpuBufferRelease(depth_buffer);
+        if (shadow_pipeline) wgpuRenderPipelineRelease(shadow_pipeline);
+        if (camera_depth_pipeline) wgpuRenderPipelineRelease(camera_depth_pipeline);
+        if (depth_layout) wgpuBindGroupLayoutRelease(depth_layout);
+        if (effects_layout) wgpuBindGroupLayoutRelease(effects_layout);
         if (frame_layout) wgpuBindGroupLayoutRelease(frame_layout);
         if (material_layout) wgpuBindGroupLayoutRelease(material_layout);
     }
@@ -400,7 +584,8 @@ struct TerrainRenderer::Impl {
             if (decoded.ok()) {
                 texture.texture = upload_rgba8_texture(
                     device,
-                    {.width = decoded.image->width, .height = decoded.image->height, .pixels = &decoded.image->pixels},
+                    {.width = decoded.image->width, .height = decoded.image->height, .pixels = &decoded.image->pixels,
+                     .mips = &decoded.image->mips},
                     std::string(path->filename()));
                 if (texture.texture.ok()) texture.view = wgpuTextureCreateView(texture.texture.texture.get(), nullptr);
             }
@@ -465,6 +650,19 @@ struct TerrainRenderer::Impl {
         frame_binding = wgpuDeviceCreateBindGroup(device, &descriptor);
     }
 
+    void ensure_depth_capacity(const std::uint64_t tiles_count) {
+        if (depth_buffer && tiles_count <= depth_capacity) return;
+        auto capacity = (std::max)(depth_capacity, std::uint64_t{32});
+        while (capacity < tiles_count) capacity *= 2;
+        if (depth_binding) wgpuBindGroupRelease(depth_binding);
+        if (depth_buffer) wgpuBufferRelease(depth_buffer);
+        depth_buffer = create_buffer(device, WGPUBufferUsage_Uniform, capacity * depth_slots * draw_uniform_stride);
+        depth_capacity = capacity;
+        const WGPUBindGroupEntry entry{.binding = 0, .buffer = depth_buffer, .size = sizeof(DrawUniform)};
+        const WGPUBindGroupDescriptor descriptor{.layout = depth_layout, .entryCount = 1, .entries = &entry};
+        depth_binding = wgpuDeviceCreateBindGroup(device, &descriptor);
+    }
+
     void upload(TerrainTileMesh&& mesh) {
         const TileKey key{mesh.tile_x, mesh.tile_z};
         if (!mesh.ok()) {
@@ -513,10 +711,48 @@ namespace {
     return wgpuDeviceCreateBindGroupLayout(device, &descriptor);
 }
 
+[[nodiscard]] WGPURenderPipeline create_depth_pipeline(const WGPUDevice device, const WGPUPipelineLayout layout, const WGPUShaderModule shader,
+                                                       const bool shadow) {
+    const WGPUVertexAttribute attribute{.format = WGPUVertexFormat_Float32x3, .offset = offsetof(TerrainVertex, position), .shaderLocation = 0};
+    const WGPUVertexBufferLayout vertex_layout{
+        .stepMode = WGPUVertexStepMode_Vertex,
+        .arrayStride = sizeof(TerrainVertex),
+        .attributeCount = 1,
+        .attributes = &attribute,
+    };
+    constexpr WGPUStencilFaceState keep{
+        .compare = WGPUCompareFunction_Always,
+        .failOp = WGPUStencilOperation_Keep,
+        .depthFailOp = WGPUStencilOperation_Keep,
+        .passOp = WGPUStencilOperation_Keep,
+    };
+    const WGPUDepthStencilState depth{
+        .format = depth_format,
+        .depthWriteEnabled = WGPUOptionalBool_True,
+        .depthCompare = shadow ? WGPUCompareFunction_LessEqual : depth_nearer_or_equal,
+        .stencilFront = keep,
+        .stencilBack = keep,
+        .stencilReadMask = ~0u,
+        .stencilWriteMask = ~0u,
+        .depthBias = shadow ? 2 : 0,
+        .depthBiasSlopeScale = shadow ? 2.0f : 0.0f,
+        .depthBiasClamp = 0.0f,
+    };
+    const WGPURenderPipelineDescriptor descriptor{
+        .layout = layout,
+        .vertex = {.module = shader, .entryPoint = wgsl_name("vs_depth"), .bufferCount = 1, .buffers = &vertex_layout},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+        .depthStencil = &depth,
+        .multisample = {.count = 1, .mask = ~0u, .alphaToCoverageEnabled = false},
+        .fragment = nullptr,
+    };
+    return wgpuDeviceCreateRenderPipeline(device, &descriptor);
+}
+
 [[nodiscard]] WGPURenderPipeline create_pipeline(const WGPUDevice device,
                                                  const WGPUPipelineLayout layout,
                                                  const WGPUShaderModule shader,
-                                                 const WGPUTextureFormat target_format) {
+                                                 const WGPUTextureFormat target_format, const bool experimental) {
     const std::array<WGPUVertexAttribute, 3> attributes{{
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(TerrainVertex, position), .shaderLocation = 0},
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(TerrainVertex, normal), .shaderLocation = 1},
@@ -545,9 +781,15 @@ namespace {
         .stencilWriteMask = ~0u,
     };
     const WGPUColorTargetState target{.format = target_format, .writeMask = WGPUColorWriteMask_All};
+    const std::array<WGPUConstantEntry, 2> constants{{
+        {.key = wgsl_name("experimental"), .value = experimental ? 1.0 : 0.0},
+        {.key = wgsl_name("hdr_output"), .value = scene_hdr() ? 1.0 : 0.0},
+    }};
     const WGPUFragmentState fragment{
         .module = shader,
         .entryPoint = wgsl_name("fs_main"),
+        .constantCount = constants.size(),
+        .constants = constants.data(),
         .targetCount = 1,
         .targets = &target,
     };
@@ -604,21 +846,46 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
     if (impl_->black.ok()) impl_->black_view = wgpuTextureCreateView(impl_->black.texture.get(), nullptr);
     if (impl_->grey.ok()) impl_->grey_view = wgpuTextureCreateView(impl_->grey.texture.get(), nullptr);
 
+    // One module for both paths (the `experimental` override): both read
+    // the effects (group 2), so both layouts have it.
+    const auto shader_code = std::string(detail::light_shapes_wgsl) + detail::effects_struct_wgsl + detail::effects_main_wgsl + terrain_shader;
     const WGPUShaderSourceWGSL source{
         .chain = {.sType = WGPUSType_ShaderSourceWGSL},
-        .code = wgsl_name(terrain_shader),
+        .code = {.data = shader_code.data(), .length = shader_code.size()},
     };
     const WGPUShaderModuleDescriptor shader_descriptor{.nextInChain = &source.chain};
     const auto shader = wgpuDeviceCreateShaderModule(device, &shader_descriptor);
-    const std::array<WGPUBindGroupLayout, 2> layouts{impl_->material_layout, impl_->frame_layout};
+    impl_->effects_layout = create_scene_effects_layout(device);
+    const std::array<WGPUBindGroupLayout, 3> layouts{impl_->material_layout, impl_->frame_layout, impl_->effects_layout};
     const WGPUPipelineLayoutDescriptor layout_descriptor{
         .bindGroupLayoutCount = layouts.size(),
         .bindGroupLayouts = layouts.data(),
     };
     const auto pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
-    impl_->pipeline = create_pipeline(device, pipeline_layout, shader, target_format);
+    impl_->pipeline = create_pipeline(device, pipeline_layout, shader, target_format, false);
+    impl_->experimental_pipeline = create_pipeline(device, pipeline_layout, shader, target_format, true);
     wgpuPipelineLayoutRelease(pipeline_layout);
     wgpuShaderModuleRelease(shader);
+
+    {
+        WGPUBindGroupLayoutEntry entry{};
+        entry.binding = 0;
+        entry.visibility = WGPUShaderStage_Vertex;
+        entry.buffer.type = WGPUBufferBindingType_Uniform;
+        entry.buffer.hasDynamicOffset = true;
+        entry.buffer.minBindingSize = sizeof(DrawUniform);
+        const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = 1, .entries = &entry};
+        impl_->depth_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+        const WGPUPipelineLayoutDescriptor depth_layout_descriptor{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl_->depth_layout};
+        const auto depth_pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &depth_layout_descriptor);
+        const WGPUShaderSourceWGSL depth_source{.chain = {.sType = WGPUSType_ShaderSourceWGSL}, .code = wgsl_name(terrain_depth_shader)};
+        const WGPUShaderModuleDescriptor depth_descriptor{.nextInChain = &depth_source.chain};
+        const auto depth_shader = wgpuDeviceCreateShaderModule(device, &depth_descriptor);
+        impl_->shadow_pipeline = create_depth_pipeline(device, depth_pipeline_layout, depth_shader, true);
+        impl_->camera_depth_pipeline = create_depth_pipeline(device, depth_pipeline_layout, depth_shader, false);
+        wgpuShaderModuleRelease(depth_shader);
+        wgpuPipelineLayoutRelease(depth_pipeline_layout);
+    }
 }
 
 TerrainRenderer::~TerrainRenderer() = default;
@@ -635,6 +902,10 @@ void TerrainRenderer::set_conditions(const rts::Season season, const rts::Weathe
     impl_->weather = weather;
     // Texture paths depend on the conditions; decoded textures stay cached by path.
     impl_->release_materials();
+}
+
+void TerrainRenderer::set_shading_path(const ShadingPath path) noexcept {
+    if (impl_) impl_->shading = path;
 }
 
 void TerrainRenderer::set_origin(const formats::RoutePosition& origin) {
@@ -686,11 +957,91 @@ void TerrainRenderer::update(const formats::RoutePosition& camera) {
     }
 }
 
+void TerrainRenderer::prepare_depth() {
+    if (!ready() || impl_->tiles.empty()) return;
+    impl_->ensure_depth_capacity(impl_->tiles.size());
+}
+
+void TerrainRenderer::render_depth(const WGPURenderPassEncoder pass, const std::uint32_t slot, const glm::mat4& view_projection,
+                                   const DepthPassKind kind) {
+    if (!ready() || impl_->tiles.empty() || slot >= Impl::depth_slots) return;
+    auto& impl = *impl_;
+    // Depth passes may run on several threads: nothing shared is changed here
+    // (prepare_depth() sized the buffer before them).
+    if (!impl.depth_binding || impl.depth_capacity < impl.tiles.size()) return;
+    constexpr double tile_size = formats::route_tile_size;
+    std::vector<std::byte> uniforms(impl.tiles.size() * draw_uniform_stride);
+    std::size_t index = 0;
+    for (const auto& [key, _] : impl.tiles) {
+        const auto offset = glm::vec3{
+            static_cast<float>((key.first - impl.origin.tile_x) * tile_size - impl.origin.x),
+            static_cast<float>(-impl.origin.y),
+            static_cast<float>((key.second - impl.origin.tile_z) * tile_size - impl.origin.z),
+        };
+        glm::mat4 model{1.0f};
+        model[3] = glm::vec4{offset, 1.0f};
+        const DrawUniform uniform{.mvp = view_projection * model, .offset = {offset.x, offset.y, offset.z, 0.0f}};
+        std::memcpy(uniforms.data() + index * draw_uniform_stride, &uniform, sizeof(uniform));
+        ++index;
+    }
+    const auto base = static_cast<std::uint64_t>(slot) * impl.depth_capacity * draw_uniform_stride;
+    const auto queue = wgpuDeviceGetQueue(impl.device);
+    wgpuQueueWriteBuffer(queue, impl.depth_buffer, base, uniforms.data(), uniforms.size());
+    if (queue) wgpuQueueRelease(queue);
+    wgpuRenderPassEncoderSetPipeline(pass, kind == DepthPassKind::shadow ? impl.shadow_pipeline : impl.camera_depth_pipeline);
+    const auto frustum = Frustum::from_view_projection(view_projection);
+    index = 0;
+    for (auto& [key, tile] : impl.tiles) {
+        const auto offset = static_cast<std::uint32_t>(base + index++ * draw_uniform_stride);
+        if (tile.patches.empty()) continue;
+        const auto tile_offset = glm::vec3{
+            static_cast<float>((key.first - impl.origin.tile_x) * tile_size - impl.origin.x),
+            static_cast<float>(-impl.origin.y),
+            static_cast<float>((key.second - impl.origin.tile_z) * tile_size - impl.origin.z),
+        };
+        bool bound = false;
+        // Runs of contiguous patches in view, one draw each.
+        std::uint32_t run_first = 0, run_count = 0;
+        const auto flush = [&] {
+            if (run_count == 0) return;
+            if (!bound) {
+                wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.depth_binding, 1, &offset);
+                wgpuRenderPassEncoderSetVertexBuffer(pass, 0, tile.vertices, 0, WGPU_WHOLE_SIZE);
+                wgpuRenderPassEncoderSetIndexBuffer(pass, tile.indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+                bound = true;
+            }
+            wgpuRenderPassEncoderDrawIndexed(pass, run_count, 1, run_first, 0, 0);
+            run_count = 0;
+        };
+        for (const auto& patch : tile.patches) {
+            const glm::vec3 centre = tile_offset + glm::vec3{patch.center[0], patch.center[1], patch.center[2]};
+            if (!frustum.intersects_sphere(centre, patch.radius)) {
+                flush();
+                continue;
+            }
+            if (run_count > 0 && run_first + run_count == patch.first_index) {
+                run_count += patch.index_count;
+            } else {
+                flush();
+                run_first = patch.first_index;
+                run_count = patch.index_count;
+            }
+        }
+        flush();
+    }
+}
+
 void TerrainRenderer::render(const WGPURenderPassEncoder pass,
                              const glm::mat4& view_projection,
-                             const ModelLighting& lighting) {
+                             const ModelLighting& lighting,
+                             WGPUBindGroup effects) {
     if (!ready() || impl_->tiles.empty()) return;
     auto& impl = *impl_;
+    if (!effects) {
+        if (!impl.fallback_effects) impl.fallback_effects = std::make_unique<SceneEffects>(impl.device);
+        effects = impl.fallback_effects->bind_group();
+    }
+    if (!effects) return;
 
     impl.ensure_draw_capacity(impl.tiles.size());
     if (!impl.frame_binding) return;
@@ -707,7 +1058,7 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
         };
         glm::mat4 model{1.0f};
         model[3] = glm::vec4{offset, 1.0f};
-        const DrawUniform uniform{.mvp = view_projection * model};
+        const DrawUniform uniform{.mvp = view_projection * model, .offset = {offset.x, offset.y, offset.z, 0.0f}};
         std::memcpy(uniforms.data() + index * draw_uniform_stride, &uniform, sizeof(uniform));
         ++index;
     }
@@ -719,24 +1070,43 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
     copy_vec4(frame.fog_colour, lighting.fog_colour);
     frame.fog_distance[0] = lighting.fog_start;
     frame.fog_distance[1] = lighting.fog_end;
+    frame.fog_distance[3] = physical_light_falloff() ? 1.0f : 0.0f;
+    frame.shading[0] = night_ambient_scale();
+    const auto& rings = lighting.light_rings;
+    for (std::size_t k = 0; k < LightRings::count; ++k) {
+        const auto n = (std::min)(rings.lights[k].size(), LightRings::capacity);
+        frame.ring_counts[k] = static_cast<std::int32_t>(n);
+        for (std::size_t i = 0; i < n; ++i) detail::pack_light(frame.lights[k * LightRings::capacity + i], rings.lights[k][i]);
+    }
 
     const auto queue = wgpuDeviceGetQueue(impl.device);
     wgpuQueueWriteBuffer(queue, impl.draw_buffer, 0, uniforms.data(), uniforms.size());
     wgpuQueueWriteBuffer(queue, impl.frame_buffer, 0, &frame, sizeof(frame));
     if (queue) wgpuQueueRelease(queue);
 
-    wgpuRenderPassEncoderSetPipeline(pass, impl.pipeline);
+    wgpuRenderPassEncoderSetPipeline(
+        pass, impl.shading == ShadingPath::experimental && impl.experimental_pipeline ? impl.experimental_pipeline : impl.pipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 2, effects, 0, nullptr);
+    const auto frustum = Frustum::from_view_projection(view_projection);
     index = 0;
-    for (auto& [_, tile] : impl.tiles) {
+    for (auto& [key, tile] : impl.tiles) {
+        const auto tile_offset = glm::vec3{
+            static_cast<float>((key.first - impl.origin.tile_x) * tile_size - impl.origin.x),
+            static_cast<float>(-impl.origin.y),
+            static_cast<float>((key.second - impl.origin.tile_z) * tile_size - impl.origin.z),
+        };
         const auto offset = static_cast<std::uint32_t>(index++ * draw_uniform_stride);
         wgpuRenderPassEncoderSetBindGroup(pass, 1, impl.frame_binding, 1, &offset);
         wgpuRenderPassEncoderSetVertexBuffer(pass, 0, tile.vertices, 0, WGPU_WHOLE_SIZE);
         wgpuRenderPassEncoderSetIndexBuffer(pass, tile.indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
         for (const auto& patch : tile.patches) {
+            if (!frustum.intersects_sphere(tile_offset + glm::vec3{patch.center[0], patch.center[1], patch.center[2]}, patch.radius)) continue;
             const auto material = impl.material(patch);
             if (!material) continue;
             wgpuRenderPassEncoderSetBindGroup(pass, 0, material, 0, nullptr);
-            wgpuRenderPassEncoderDrawIndexed(pass, patch.index_count, 1, patch.first_index, 0, 0);
+            // The patch's ring of further lights (RTS 0x4A2AD4) as the first instance.
+            const auto ring = rings.ring_for(tile_offset + glm::vec3{patch.center[0], patch.center[1], patch.center[2]}, patch.radius);
+            wgpuRenderPassEncoderDrawIndexed(pass, patch.index_count, 1, patch.first_index, 0, ring);
         }
     }
 }

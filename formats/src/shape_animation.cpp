@@ -59,14 +59,7 @@ void set_rotation(ShapeMatrix& matrix, const float (&q)[4]) {
     m[8] = 1.0f - 2.0f * (x * x + y * y);
 }
 
-} // namespace
-
-std::vector<ShapeMatrix> animate_matrices(const ShapeModel& model, const std::size_t animation, const float frame) {
-    auto matrices = model.matrices;
-    if (animation >= model.animations.size()) return matrices;
-    for (const auto& node : model.animations[animation].nodes) {
-        if (node.matrix_index < 0 || static_cast<std::size_t>(node.matrix_index) >= matrices.size()) continue;
-        auto& matrix = matrices[static_cast<std::size_t>(node.matrix_index)];
+void pose(const ShapeAnimationNode& node, const float frame, ShapeMatrix& matrix) {
         if (!node.rotations.empty()) {
             const auto [i, t] = bracket(node.rotations, frame);
             float q[4];
@@ -85,8 +78,41 @@ std::vector<ShapeMatrix> animate_matrices(const ShapeModel& model, const std::si
                 matrix.values[9 + c] = a + (b - a) * t;
             }
         }
+}
+
+const ShapeAnimationNode* node_of(const ShapeModel& model, const std::size_t animation, const std::size_t matrix) {
+    if (animation >= model.animations.size()) return nullptr;
+    for (const auto& node : model.animations[animation].nodes) {
+        if (node.matrix_index >= 0 && static_cast<std::size_t>(node.matrix_index) == matrix) return &node;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+std::vector<ShapeMatrix> animate_matrices(const ShapeModel& model, const std::size_t animation, const float frame) {
+    auto matrices = model.matrices;
+    if (animation >= model.animations.size()) return matrices;
+    for (const auto& node : model.animations[animation].nodes) {
+        if (node.matrix_index < 0 || static_cast<std::size_t>(node.matrix_index) >= matrices.size()) continue;
+        pose(node, frame, matrices[static_cast<std::size_t>(node.matrix_index)]);
     }
     return matrices;
+}
+
+ShapeMatrix animate_matrix(const ShapeModel& model, const std::size_t animation, const std::size_t matrix, const float frame) {
+    ShapeMatrix out = matrix < model.matrices.size() ? model.matrices[matrix] : ShapeMatrix{};
+    if (const auto* node = node_of(model, animation, matrix)) pose(*node, frame, out);
+    return out;
+}
+
+float last_key_frame(const ShapeModel& model, const std::size_t animation, const std::size_t matrix) {
+    const auto* node = node_of(model, animation, matrix);
+    if (!node) return 0.0f;
+    std::uint32_t last = 0;
+    for (const auto& k : node->rotations) last = (std::max)(last, static_cast<std::uint32_t>(k.frame));
+    for (const auto& k : node->positions) last = (std::max)(last, static_cast<std::uint32_t>(k.frame));
+    return static_cast<float>(last);
 }
 
 } // namespace openrts::formats

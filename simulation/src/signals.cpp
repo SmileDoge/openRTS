@@ -32,6 +32,7 @@ struct ChainNode {
     int min_function = 5;
     float aspect{}; // obeyed aspect, filled from the far end
     float speed = -1.0f;
+    float mode{};   // the object's signal mode (RTS chain node +12)
 };
 
 struct TrainState {
@@ -89,6 +90,8 @@ struct SignalSystem::Impl {
     std::vector<char> dirty, in_chain, was_in_chain, always, stale;
     std::function<std::optional<double>(const Train&)> authority;
     std::function<bool(const Train&)> player;
+    std::map<std::uint32_t, SignalOverride> overrides;            // by head
+    std::map<std::uint64_t, TrainSignalSettings> train_settings;  // by train id
     std::map<std::uint64_t, TrainState> trains;
     std::vector<SignalPass> passes;
     // The head being run, for dependency recording.
@@ -376,17 +379,42 @@ namespace {
 // Returns whether the run read a local before writing it: its result then
 // depends on earlier runs, so the head runs again next step.
 static bool run_head(SignalSystem::Impl& impl, std::vector<SignalHead>& heads, const std::uint32_t index,
-                     const std::vector<ChainNode>* chain, const std::size_t self, const formats::SignalConfig& config,
+                     std::vector<ChainNode>* chain, const std::size_t self, const formats::SignalConfig& config,
                      const Walker& walker_template) {
     auto& head = heads[index];
     if (!head.script || !head.script->ok() || !head.type) return false;
     head.speed = -1.0f;
+    // In a chain the mode comes from the chain (0x499948): an object's first
+    // head takes the next object's mode unless that is SHUNT or FAILED, its
+    // other heads take their object's. A FAILED head keeps its mode.
+    auto* node = chain && self < chain->size() ? &(*chain)[self] : nullptr;
+    if (node && static_cast<int>(head.mode) != 2) {
+        if (!node->heads.empty() && node->heads.front() == index) {
+            if (self + 1 < chain->size()) {
+                const float next = (*chain)[self + 1].mode;
+                if (next != 1.0f && next != 2.0f) head.mode = next;
+            }
+        } else {
+            head.mode = node->mode;
+        }
+    }
+    const auto found = impl.overrides.find(index);
+    const SignalOverride* forced = found == impl.overrides.end() ? nullptr : &found->second;
+    if (forced && forced->mode) head.mode = static_cast<float>(*forced->mode);
+    // An override's draw state: -2 is the type's for the aspect shown.
+    const auto forced_draw = [&](const int draw) {
+        if (draw != -2) return static_cast<float>(draw);
+        return static_cast<float>((std::max)(aspect_entry(*head.type, static_cast<int>(head.state)).first, 0));
+    };
     const auto mode = static_cast<int>(head.mode);
     if (mode == 2 || mode == 3) {
-        head.state = 9.0f;
-        const auto [draw, speed] = aspect_entry(*head.type, 9);
-        head.draw_state = static_cast<float>((std::max)(draw, 0));
-        head.speed = speed;
+        // FAILED / EXCL: no script. The override's aspect, else FAILED; its
+        // draw state, else none (dark); its speed, else RTS's default for
+        // failed heads (UNKNOWN value: the type's speed for the aspect here).
+        const int aspect = forced && forced->aspect ? static_cast<int>(*forced->aspect) : 9;
+        head.state = static_cast<float>(aspect);
+        head.speed = forced && forced->speed ? *forced->speed : aspect_entry(*head.type, aspect).second;
+        head.draw_state = forced && forced->draw_state ? forced_draw(*forced->draw_state) : -1.0f;
         return false;
     }
     auto& locals = impl.locals[head.script];
@@ -608,6 +636,25 @@ static bool run_head(SignalSystem::Impl& impl, std::vector<SignalHead>& heads, c
         }
         ++pc;
     }
+    if (node) {
+        node->mode = head.mode;
+        // A mode the script set spreads to the objects beyond (0x50B6F4),
+        // FAILED heads excepted; not when an override holds the head.
+        if (!forced && head.mode != 0.0f && self + 1 < chain->size() && (*chain)[self + 1].mode != head.mode) {
+            for (auto k = self + 1; k < chain->size(); ++k) {
+                auto& beyond = (*chain)[k];
+                beyond.mode = head.mode;
+                for (const auto h : beyond.heads) {
+                    if (static_cast<int>(heads[h].mode) != 2) heads[h].mode = head.mode;
+                }
+            }
+        }
+    }
+    if (forced) {
+        if (forced->aspect) head.state = static_cast<float>(*forced->aspect);
+        if (forced->speed) head.speed = *forced->speed;
+        if (forced->draw_state) head.draw_state = forced_draw(*forced->draw_state);
+    }
     // SHUNT mode without RTS_ShuntingAutoMode: proceed aspects become RESTRICTING.
     if (!config.shunting_auto_mode && static_cast<int>(head.mode) == 1) {
         const auto aspect = static_cast<std::int64_t>(head.state);
@@ -701,8 +748,15 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
     // `from` and run them from the farthest to the nearest. `authority`: the
     // reserved way ahead of `from`; `off_path`: every head runs with
     // `enabled` 0 (the far end of a train that has a path).
+    // Whether a train obeys heads of function `fn` (besides NORMAL, which all
+    // obey) when they are an object's lowest function.
+    const auto obeys = [](const TrainSignalSettings* settings, const int fn) {
+        if (fn == 1) return true;
+        if (!settings) return false;
+        return (fn == 2 && settings->obey_shunting) || (fn == 3 && settings->obey_distance) || (fn == 5 && settings->obey_info);
+    };
     const auto run_pass = [&](const TrackTraveller& from, std::vector<ChainNode>& chain, const std::optional<double> authority,
-                              const bool off_path, const double passing) {
+                              const bool off_path, const double passing, const TrainSignalSettings* settings) {
         chain.clear();
         auto node = from.node();
         double offset = from.offset();
@@ -775,6 +829,16 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
         // Objects whose first head is EXCL are left out (0x508520).
         std::erase_if(chain, [&](const ChainNode& c) { return static_cast<int>(heads_[c.heads.front()].mode) == 3; });
         const bool count_reached = normal_count >= needed;
+        // The train's mode flags (0x508520): SHUNT or NORMAL for every object
+        // and head of its chain, FAILED heads excepted.
+        for (auto& chain_node : chain) {
+            chain_node.mode = 0.0f;
+            if (!settings || !settings->mode) continue;
+            chain_node.mode = *settings->mode == SignalMode::shunt ? 1.0f : 0.0f;
+            for (const auto h : chain_node.heads) {
+                if (static_cast<int>(heads_[h].mode) != 2) heads_[h].mode = chain_node.mode;
+            }
+        }
 
         // Evaluate from the farthest to the nearest.
         bool seen_normal = false;
@@ -796,7 +860,9 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
                 head.enabled = chain_node.distance > passing ? 2.0f : 0.0f;
                 impl.in_chain[h] = 1;
                 impl.dirty[h] = 0;
-                if (head.type && head.type->function == formats::SignalFunction::normal && chain_node.aspect < head.state) {
+                const int fn = head.type ? static_cast<int>(head.type->function) : 0;
+                const bool obeyed = fn == 1 || (fn == chain_node.min_function && obeys(settings, fn));
+                if (obeyed && chain_node.aspect < head.state) {
                     chain_node.aspect = static_cast<float>(static_cast<std::int64_t>(head.state));
                     if (head.speed > chain_node.speed || head.speed < 0.0f) chain_node.speed = head.speed;
                 }
@@ -815,7 +881,9 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
         if (!lead) continue;
         const double passing = std::abs(train->speed()) * dt * 1.5;
         const auto authority = impl.authority ? impl.authority(*train) : std::nullopt;
-        run_pass(*lead, state.chain, authority, false, passing);
+        const auto flags = impl.train_settings.find(train->id());
+        const TrainSignalSettings* settings = flags == impl.train_settings.end() ? nullptr : &flags->second;
+        run_pass(*lead, state.chain, authority, false, passing, settings);
         // The player's train: the other end too, also when it stands or
         // backs off (0x508520 runs both passes for train types 1 and 4). A
         // train with a path has nothing reserved that way. Other trains run
@@ -823,12 +891,14 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
         // the rear one when moving back or it is set; what the flag is is
         // UNKNOWN, so they keep the end they last moved towards.
         if (impl.player && impl.player(*train)) {
-            if (const auto other = train->trailing_end()) run_pass(*other, state.other_chain, std::nullopt, authority.has_value(), passing);
+            if (const auto other = train->trailing_end()) {
+                run_pass(*other, state.other_chain, std::nullopt, authority.has_value(), passing, settings);
+            }
         }
         // What the train sees, and passes.
         state.ahead = {};
         for (const auto& chain_node : state.chain) {
-            if (chain_node.min_function != 1) continue;
+            if (!obeys(settings, chain_node.min_function)) continue;
             state.ahead = {.valid = true,
                            .object = chain_node.object,
                            .distance = chain_node.distance,
@@ -887,6 +957,36 @@ void SignalSystem::set_authority(std::function<std::optional<double>(const Train
 
 void SignalSystem::set_player(std::function<bool(const Train&)> is_player) {
     impl_->player = std::move(is_player);
+}
+
+void SignalSystem::set_override(const std::uint32_t head, const SignalOverride& value) {
+    if (head >= heads_.size()) return;
+    impl_->overrides[head] = value;
+    impl_->dirty[head] = 1;
+}
+
+void SignalSystem::clear_override(const std::uint32_t head) {
+    if (head >= heads_.size()) return;
+    if (impl_->overrides.erase(head)) {
+        // The override's mode goes with it (a free run would keep FAILED or
+        // EXCL otherwise).
+        heads_[head].mode = 0.0f;
+        impl_->dirty[head] = 1;
+    }
+}
+
+const SignalOverride* SignalSystem::override_of(const std::uint32_t head) const {
+    const auto it = impl_->overrides.find(head);
+    return it == impl_->overrides.end() ? nullptr : &it->second;
+}
+
+void SignalSystem::set_train_settings(const std::uint64_t train, const TrainSignalSettings& settings) {
+    impl_->train_settings[train] = settings;
+}
+
+TrainSignalSettings SignalSystem::train_settings(const std::uint64_t train) const {
+    const auto it = impl_->train_settings.find(train);
+    return it == impl_->train_settings.end() ? TrainSignalSettings{} : it->second;
 }
 
 bool SignalSystem::reads_stale(const std::uint32_t head) const {

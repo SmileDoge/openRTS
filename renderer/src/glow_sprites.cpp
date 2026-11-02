@@ -58,7 +58,8 @@ fn vs_main(@builtin(vertex_index) index: u32, @location(0) centre: vec3<f32>, @l
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let texel = textureSample(light_texture, light_sampler, input.uv);
     let intensity = texel.a * input.colour.a;
-    return vec4<f32>(texel.rgb * input.colour.rgb * intensity, 1.0);
+    // Premultiplied: added (rgb x alpha) or laid over by its alpha.
+    return vec4<f32>(texel.rgb * input.colour.rgb * intensity, intensity);
 }
 )";
 
@@ -102,7 +103,8 @@ struct GlowSpriteRenderer::Impl {
     };
     WGPUDevice device = nullptr;
     WGPUBindGroupLayout layout = nullptr;
-    WGPURenderPipeline pipeline = nullptr;
+    WGPURenderPipeline pipeline = nullptr;      // GlowBlend::added
+    WGPURenderPipeline over_pipeline = nullptr; // GlowBlend::over
     WGPUBuffer uniform = nullptr;
     WGPUSampler sampler = nullptr;
     std::vector<Texture> textures;
@@ -121,6 +123,7 @@ struct GlowSpriteRenderer::Impl {
         if (sampler) wgpuSamplerRelease(sampler);
         if (uniform) wgpuBufferRelease(uniform);
         if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        if (over_pipeline) wgpuRenderPipelineRelease(over_pipeline);
         if (layout) wgpuBindGroupLayoutRelease(layout);
     }
 
@@ -171,7 +174,10 @@ GlowSpriteRenderer::GlowSpriteRenderer(const WGPUDevice device, const WGPUTextur
     sampler.addressModeW = WGPUAddressMode_ClampToEdge;
     sampler.magFilter = WGPUFilterMode_Linear;
     sampler.minFilter = WGPUFilterMode_Linear;
-    sampler.mipmapFilter = WGPUMipmapFilterMode_Nearest;
+    // Mipmapped as every RTS texture (0x44150C: GL_LINEAR_MIPMAP_LINEAR; the
+    // ACE's levels come with the image, Rgba8ImageView::mips).
+    sampler.mipmapFilter = WGPUMipmapFilterMode_Linear;
+    sampler.lodMaxClamp = 32.0f;
     sampler.maxAnisotropy = 1;
     impl.sampler = wgpuDeviceCreateSampler(device, &sampler);
 
@@ -214,17 +220,25 @@ GlowSpriteRenderer::GlowSpriteRenderer(const WGPUDevice device, const WGPUTextur
         .color = {.operation = WGPUBlendOperation_Add, .srcFactor = WGPUBlendFactor_One, .dstFactor = WGPUBlendFactor_One},
         .alpha = {.operation = WGPUBlendOperation_Add, .srcFactor = WGPUBlendFactor_Zero, .dstFactor = WGPUBlendFactor_One},
     };
-    const WGPUColorTargetState target{.format = target_format, .blend = &additive, .writeMask = WGPUColorWriteMask_All};
-    const WGPUFragmentState fragment{.module = shader, .entryPoint = wgsl_name("fs_main"), .targetCount = 1, .targets = &target};
-    const WGPURenderPipelineDescriptor descriptor{
-        .layout = pipeline_layout,
-        .vertex = {.module = shader, .entryPoint = wgsl_name("vs_main"), .bufferCount = 1, .buffers = &vertex_layout},
-        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
-        .depthStencil = &depth,
-        .multisample = scene_multisample(),
-        .fragment = &fragment,
+    // RTS's light loop (0x449818) blends with the frame's standing
+    // GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA: premultiplied, One / OneMinusSrcAlpha.
+    const WGPUBlendState over{
+        .color = {.operation = WGPUBlendOperation_Add, .srcFactor = WGPUBlendFactor_One, .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha},
+        .alpha = {.operation = WGPUBlendOperation_Add, .srcFactor = WGPUBlendFactor_Zero, .dstFactor = WGPUBlendFactor_One},
     };
-    impl.pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
+    for (const auto* blend : {&additive, &over}) {
+        const WGPUColorTargetState target{.format = target_format, .blend = blend, .writeMask = WGPUColorWriteMask_All};
+        const WGPUFragmentState fragment{.module = shader, .entryPoint = wgsl_name("fs_main"), .targetCount = 1, .targets = &target};
+        const WGPURenderPipelineDescriptor descriptor{
+            .layout = pipeline_layout,
+            .vertex = {.module = shader, .entryPoint = wgsl_name("vs_main"), .bufferCount = 1, .buffers = &vertex_layout},
+            .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+            .depthStencil = &depth,
+            .multisample = scene_multisample(),
+            .fragment = &fragment,
+        };
+        (blend == &additive ? impl.pipeline : impl.over_pipeline) = wgpuDeviceCreateRenderPipeline(device, &descriptor);
+    }
     wgpuPipelineLayoutRelease(pipeline_layout);
     wgpuShaderModuleRelease(shader);
 
@@ -236,7 +250,7 @@ GlowSpriteRenderer::GlowSpriteRenderer(const WGPUDevice device, const WGPUTextur
 GlowSpriteRenderer::~GlowSpriteRenderer() = default;
 
 bool GlowSpriteRenderer::ready() const noexcept {
-    return impl_->pipeline && !impl_->textures.empty();
+    return impl_->pipeline && impl_->over_pipeline && !impl_->textures.empty();
 }
 
 std::uint32_t GlowSpriteRenderer::add_texture(const Rgba8ImageView image) {
@@ -270,7 +284,7 @@ void GlowSpriteRenderer::set_sprites(std::vector<GlowSprite> sprites) {
 }
 
 void GlowSpriteRenderer::render(const WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view,
-                                const float viewport_height) {
+                                const float viewport_height, const GlowBlend blend) {
     auto& impl = *impl_;
     if (!ready() || impl.sprites.empty()) return;
     const glm::mat4 inverse = glm::inverse(view);
@@ -280,16 +294,14 @@ void GlowSpriteRenderer::render(const WGPURenderPassEncoder pass, const glm::mat
         .up = glm::vec4{view[0][1], view[1][1], view[2][1], 0.0f},
         .eye = glm::vec4{glm::vec3{inverse[3]}, 0.0f},
     };
-    // RTS scales lights by fov / 45 degrees (0.0222 * fov); P[1][1] = 1 / tan(fov / 2).
     (void)viewport_height;
-    const float scale = std::abs(projection[1][1]);
-    const float fov_degrees = scale > 0.0f ? 2.0f * std::atan(1.0f / scale) * 57.2957795f : 45.0f;
-    frame.eye.w = fov_degrees / 45.0f;
+    // RTS's fov / 45 at its installed FOV of 65 degrees, fixed (see set_sprites).
+    frame.eye.w = 65.0f / 45.0f;
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
         wgpuQueueWriteBuffer(queue, impl.uniform, 0, &frame, sizeof(frame));
         wgpuQueueRelease(queue);
     }
-    wgpuRenderPassEncoderSetPipeline(pass, impl.pipeline);
+    wgpuRenderPassEncoderSetPipeline(pass, blend == GlowBlend::over ? impl.over_pipeline : impl.pipeline);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, impl.instances, 0, WGPU_WHOLE_SIZE);
     for (const auto& [first, count] : impl.ranges) {
         wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.textures[impl.sprites[first].texture].group, 0, nullptr);

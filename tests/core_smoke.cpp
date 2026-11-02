@@ -144,6 +144,18 @@ int main() {
     append_u32(structured_ace, 204);
     structured_ace += std::string("\x10\x20\x30\x40\x50\x60", 6);
     const auto decoded_ace = openrts::formats::decode_structured_ace_rgba(structured_ace);
+    // A broken scanline table (Pavlovsk's terrain.ace): the rows are read in
+    // order right after it.
+    std::string broken_ace = "SIMISA@@@@@@@@@@";
+    for (const std::uint32_t value : {1u, 0u, 2u, 2u, 0u, 3u}) append_u32(broken_ace, value);
+    broken_ace.append(128, '\0');
+    append_u64(broken_ace, 8); append_u64(broken_ace, 3);
+    append_u64(broken_ace, 8); append_u64(broken_ace, 4);
+    append_u64(broken_ace, 8); append_u64(broken_ace, 5);
+    append_u32(broken_ace, 208);
+    append_u32(broken_ace, 99999);
+    broken_ace += std::string("\x10\x20\x30\x40\x50\x60\x11\x21\x31\x41\x51\x61", 12);
+    const auto decoded_broken = openrts::formats::decode_structured_ace_rgba(broken_ace);
     std::string point_table;
     append_u32(point_table, 3);
     for (const auto& point : {std::array<float, 3>{0.0f, 0.0f, 0.0f},
@@ -232,6 +244,9 @@ int main() {
         && ace_probe.header && ace_probe.header->width == 256 && ace_probe.header->height == 128
         && decoded_ace.ok() && decoded_ace.image->pixels
         == std::vector<std::uint8_t>({0x10, 0x30, 0x50, 0xFF, 0x20, 0x40, 0x60, 0xFF})
+        && decoded_broken.ok() && decoded_broken.image->pixels
+        == std::vector<std::uint8_t>({0x10, 0x30, 0x50, 0xFF, 0x20, 0x40, 0x60, 0xFF,
+                                      0x11, 0x31, 0x51, 0xFF, 0x21, 0x41, 0x61, 0xFF})
         && mesh.ok() && mesh.vertices.size() == 3 && mesh.indices == std::vector<std::uint32_t>({0, 1, 2})
         && mesh.vertices[1].position[0] == 1.0f && mesh.vertices[2].uv[1] == 1.0f
         && model.ok() && model.draws.size() == 1 && model.indices == std::vector<std::uint32_t>({0, 1, 2})

@@ -39,21 +39,17 @@ WgpuTextureUploadResult upload_rgba8_texture(
         || source_size64 != image.pixels->size())
         return {.error = "RGBA8 image byte count does not match its dimensions."};
 
-    const auto source_row_bytes = static_cast<std::uint32_t>(source_row_bytes64);
-    const auto upload_row_bytes = align_to_256(source_row_bytes);
-    if (upload_row_bytes < source_row_bytes)
-        return {.error = "RGBA8 row alignment overflow."};
-
-    const std::uint8_t* upload_data = image.pixels->data();
-    std::vector<std::uint8_t> padded_rows;
-    if (upload_row_bytes != source_row_bytes) {
-        padded_rows.assign(static_cast<std::size_t>(upload_row_bytes) * image.height, 0);
-        for (std::uint32_t y = 0; y < image.height; ++y) {
-            std::copy_n(image.pixels->data() + static_cast<std::size_t>(y) * source_row_bytes,
-                        source_row_bytes,
-                        padded_rows.data() + static_cast<std::size_t>(y) * upload_row_bytes);
+    // The mipmap levels that fit the chain; a wrong-sized one ends it.
+    std::vector<const std::vector<std::uint8_t>*> levels{image.pixels};
+    if (image.mips) {
+        for (std::size_t k = 1; k <= image.mips->size(); ++k) {
+            const auto w = (std::max)(image.width >> k, 1u);
+            const auto h = (std::max)(image.height >> k, 1u);
+            const auto& level = (*image.mips)[k - 1];
+            if (level.size() != static_cast<std::size_t>(w) * h * 4) break;
+            levels.push_back(&level);
+            if (w == 1 && h == 1) break;
         }
-        upload_data = padded_rows.data();
     }
 
     const WGPUTextureDescriptor descriptor{
@@ -63,7 +59,7 @@ WgpuTextureUploadResult upload_rgba8_texture(
         .dimension = WGPUTextureDimension_2D,
         .size = {.width = image.width, .height = image.height, .depthOrArrayLayers = 1},
         .format = WGPUTextureFormat_RGBA8Unorm,
-        .mipLevelCount = 1,
+        .mipLevelCount = static_cast<std::uint32_t>(levels.size()),
         .sampleCount = 1,
         .viewFormatCount = 0,
         .viewFormats = nullptr,
@@ -76,20 +72,36 @@ WgpuTextureUploadResult upload_rgba8_texture(
         wgpuTextureRelease(texture);
         return {.error = "wgpuDeviceGetQueue returned null."};
     }
-    const WGPUTexelCopyTextureInfo destination{
-        .texture = texture,
-        .mipLevel = 0,
-        .origin = {.x = 0, .y = 0, .z = 0},
-        .aspect = WGPUTextureAspect_All,
-    };
-    const WGPUTexelCopyBufferLayout layout{
-        .offset = 0,
-        .bytesPerRow = upload_row_bytes,
-        .rowsPerImage = image.height,
-    };
-    const WGPUExtent3D size{.width = image.width, .height = image.height, .depthOrArrayLayers = 1};
-    wgpuQueueWriteTexture(queue, &destination, upload_data,
-                          static_cast<std::size_t>(upload_row_bytes) * image.height, &layout, &size);
+    std::vector<std::uint8_t> padded_rows;
+    for (std::size_t k = 0; k < levels.size(); ++k) {
+        const auto width = (std::max)(image.width >> k, 1u);
+        const auto height = (std::max)(image.height >> k, 1u);
+        const auto source_row_bytes = width * 4;
+        const auto upload_row_bytes = align_to_256(source_row_bytes);
+        const std::uint8_t* upload_data = levels[k]->data();
+        if (upload_row_bytes != source_row_bytes) {
+            padded_rows.assign(static_cast<std::size_t>(upload_row_bytes) * height, 0);
+            for (std::uint32_t y = 0; y < height; ++y) {
+                std::copy_n(levels[k]->data() + static_cast<std::size_t>(y) * source_row_bytes, source_row_bytes,
+                            padded_rows.data() + static_cast<std::size_t>(y) * upload_row_bytes);
+            }
+            upload_data = padded_rows.data();
+        }
+        const WGPUTexelCopyTextureInfo destination{
+            .texture = texture,
+            .mipLevel = static_cast<std::uint32_t>(k),
+            .origin = {.x = 0, .y = 0, .z = 0},
+            .aspect = WGPUTextureAspect_All,
+        };
+        const WGPUTexelCopyBufferLayout layout{
+            .offset = 0,
+            .bytesPerRow = upload_row_bytes,
+            .rowsPerImage = height,
+        };
+        const WGPUExtent3D size{.width = width, .height = height, .depthOrArrayLayers = 1};
+        wgpuQueueWriteTexture(queue, &destination, upload_data, static_cast<std::size_t>(upload_row_bytes) * height, &layout,
+                              &size);
+    }
     wgpuQueueRelease(queue);
     return {.texture = WgpuTexture(texture)};
 }

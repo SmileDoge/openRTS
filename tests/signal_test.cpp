@@ -256,11 +256,63 @@ void test_system() {
     check(system.ahead(train).object != 1, "what the train obeys still comes from the end it moves towards");
 }
 
+// Modes and overrides (0x499948, 0x508520): an override replaces the
+// script's aspect; FAILED skips the script and lights nothing; a train in
+// shunting mode gives its chain SHUNT, which turns proceed aspects into
+// RESTRICTING.
+void test_modes() {
+    auto network = signal_track();
+    if (!network) return;
+    auto config = std::make_shared<formats::SignalConfig>(formats::parse_signal_config(test_config));
+    auto scripts = std::make_shared<formats::SignalScriptFile>(formats::compile_signal_scripts(test_scripts, config.get()));
+    std::vector<formats::WorldObjectPlacement> signals;
+    for (std::uint32_t i = 0; i < 3; ++i) {
+        formats::WorldObjectPlacement placement{.kind = formats::WorldObjectKind::signal, .uid = i, .shape_file = "test.s"};
+        placement.signal_units.push_back({.sub_object = 0, .track_item = i});
+        signals.push_back(placement);
+    }
+    simulation::SignalSystem system(*network, config, scripts, signals);
+    system.update({}, simulation::train_step);
+    check(system.heads()[0].aspect() == SignalAspect::approach_1, "modes: free-running APPROACH_1 to start with");
+
+    system.set_override(0, {.aspect = SignalAspect::clear_2});
+    system.update({}, simulation::train_step);
+    check(system.heads()[0].aspect() == SignalAspect::clear_2, "an override's aspect replaces the script's");
+    system.clear_override(0);
+    system.update({}, simulation::train_step);
+    check(system.heads()[0].aspect() == SignalAspect::approach_1, "cleared: the script decides again");
+
+    system.set_override(1, {.mode = simulation::SignalMode::failed});
+    system.update({}, simulation::train_step);
+    check(static_cast<int>(system.heads()[1].state) == 9 && system.heads()[1].draw_state < 0.0f,
+          "FAILED: no script, aspect FAILED, no lights");
+    system.clear_override(1);
+    system.update({}, simulation::train_step);
+    check(system.heads()[1].aspect() == SignalAspect::approach_1 && system.heads()[1].mode == 0.0f, "FAILED cleared");
+
+    const auto engine = formats::parse_wagon(engine_text);
+    simulation::Train train({{.definition = &engine}});
+    std::string error;
+    check(train.place(*network, 1, 500.0, true, &error), "modes: train placed: " + error);
+    const simulation::Train* trains[] = {&train};
+    system.update(trains, simulation::train_step);
+    check(system.heads()[0].aspect() == SignalAspect::clear_2, "a train's chain: CLEAR_2");
+    system.set_train_settings(train.id(), {.mode = simulation::SignalMode::shunt});
+    system.update(trains, simulation::train_step);
+    check(system.heads()[0].mode == 1.0f && system.heads()[0].aspect() == SignalAspect::restricting,
+          "a shunting train: SHUNT, CLEAR_2 becomes RESTRICTING");
+    check(system.ahead(train).aspect == SignalAspect::restricting, "and the train obeys RESTRICTING");
+    system.set_train_settings(train.id(), {.mode = simulation::SignalMode::normal});
+    system.update(trains, simulation::train_step);
+    check(system.heads()[0].mode == 0.0f && system.heads()[0].aspect() == SignalAspect::clear_2, "back to NORMAL: CLEAR_2");
+}
+
 } // namespace
 
 int main() {
     test_compiler();
     test_system();
+    test_modes();
     if (failures == 0) std::cout << "signal tests passed\n";
     return failures == 0 ? 0 : 1;
 }

@@ -44,6 +44,9 @@ public:
     void set_listener(const glm::vec3& position, const glm::vec3& forward);
     void set_volume(float volume);
     [[nodiscard]] float volume() const noexcept;
+    // Stops the output (every voice holds where it is) or starts it again.
+    void set_paused(bool paused);
+    [[nodiscard]] bool paused() const noexcept;
     // Releases finished voices; call once per frame.
     void update();
     void seek(VoiceId voice, std::uint64_t frame) override;
@@ -60,6 +63,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    bool paused_ = false;
 };
 
 } // namespace openrts::audio

@@ -136,6 +136,203 @@ void read_brakes(std::string_view text, BrakeEquipment& brakes, std::string& err
     }
 }
 
+std::uint32_t read_uint(Values v) {
+    return static_cast<std::uint32_t>((std::max)(0, rts_atoi(v.here())));
+}
+
+// "count name ( value ) name ( "text" ) ..." (EngineParameters, AuxLibraryParameters).
+std::vector<EngineParameter> read_parameters(std::string_view text, TextRange block) {
+    std::vector<EngineParameter> out;
+    std::size_t at = rts_next(text, block.begin, block.end); // past the count
+    while (at < block.end) {
+        const auto name = rts_token(text, at, block.end);
+        if (name.empty()) break;
+        auto open = rts_next(text, at, block.end);
+        if (open >= block.end || text[open] != '(') break;
+        ++open;
+        std::size_t close = open;
+        bool quoted = false;
+        while (close < block.end && (quoted || text[close] != ')')) {
+            if (text[close] == '"') quoted = !quoted;
+            ++close;
+        }
+        EngineParameter p;
+        p.name = name;
+        std::size_t v = open;
+        while (v < close && detail::rts_space(text[v])) ++v;
+        if (v < close && text[v] == '"') {
+            p.text = rts_token(text, v, close);
+            p.value = static_cast<float>(rts_atof(p.text));
+        } else {
+            p.value = static_cast<float>(rts_atof(text.substr(v, close - v)));
+        }
+        out.push_back(std::move(p));
+        at = close + 1;
+        while (at < block.end && detail::rts_space(text[at])) ++at;
+    }
+    return out;
+}
+
+// Every block `keyword` inside `within`, in order.
+std::vector<TextRange> blocks(std::string_view text, std::string_view keyword, TextRange within) {
+    std::vector<TextRange> out;
+    std::size_t from = within.begin;
+    while (const auto b = rts_find(text, keyword, {from, within.end})) {
+        out.push_back(*b);
+        from = b->end + 1;
+        if (from >= within.end) break;
+    }
+    return out;
+}
+
+// RTS 0x50036C: one Light block.
+LightDefinition read_light(std::string_view text, TextRange light) {
+    LightDefinition d;
+    if (auto type = values(text, "type", light); type.found()) d.type = static_cast<std::uint8_t>(read_uint(type));
+    if (const auto conditions = rts_find(text, "conditions", light)) {
+        auto byte = [&](std::string_view key) {
+            auto v = values(text, key, *conditions);
+            return v.found() ? static_cast<std::uint8_t>(read_uint(v)) : std::uint8_t{0};
+        };
+        d.headlight = byte("headlight");
+        d.control = byte("control");
+        d.service = byte("service");
+        d.unit = byte("unit");
+        d.time_of_day = byte("timeofday");
+        d.weather = byte("weather");
+    }
+    d.fade_in = static_cast<float>(values(text, "fadein", light).atof());
+    d.fade_out = static_cast<float>(values(text, "fadeout", light).atof());
+    d.cycle = static_cast<float>(values(text, "cycle", light).atof());
+    d.texture = values(text, "lighttexture", light).token();
+    if (const auto states = rts_find(text, "states", light)) {
+        for (const auto state : blocks(text, "state", *states)) {
+            LightState s;
+            if (auto colour = values(text, "lightcolour", state); colour.found())
+                s.colour = static_cast<std::uint32_t>(std::strtoul(colour.token().c_str(), nullptr, 16));
+            s.duration = static_cast<float>(values(text, "duration", state).atof());
+            if (auto p = values(text, "position", state); p.found())
+                for (auto& v : s.position) v = static_cast<float>(p.atof());
+            if (auto a = values(text, "azimuth", state); a.found())
+                for (auto& v : s.azimuth) v = static_cast<float>(a.atof());
+            if (auto e = values(text, "elevation", state); e.found())
+                for (auto& v : s.elevation) v = static_cast<float>(e.atof());
+            s.transition = static_cast<float>(values(text, "transition", state).atof());
+            s.radius = static_cast<float>(values(text, "radius", state).atof());
+            s.angle = static_cast<float>(values(text, "angle", state).atof());
+            s.source_radius = static_cast<float>(values(text, "sourceradius", state).atof());
+            d.states.push_back(s);
+        }
+    }
+    if (auto a = values(text, "attenuation", light); a.found()) {
+        const float start = static_cast<float>(a.atof());
+        const float length = static_cast<float>(a.atof());
+        const float kind = static_cast<float>(a.atof());
+        if (start >= 0.0f && length > 0.0f) d.attenuation = {kind, start, length};
+    }
+    if (auto e = values(text, "spotexponent", light); e.found()) d.spot_exponent = static_cast<float>(e.atof()) * 128.0f;
+    return d;
+}
+
+// Lights ( n ... ) then RTSLights ( m ... ): n + m entries, a LightID puts a
+// block at its index (RTS 0x44247C).
+void read_lights(std::string_view text, TextRange wagon, std::vector<LightDefinition>& lights) {
+    auto add = [&](std::string_view list, std::string_view item) {
+        const auto block = rts_find(text, list, wagon);
+        if (!block) return;
+        const auto declared = static_cast<std::size_t>((std::min)(read_uint(values(text, list, wagon)), 8192u));
+        const std::size_t base = lights.size();
+        lights.resize(base + declared);
+        std::size_t next = base;
+        for (const auto light : blocks(text, item, *block)) {
+            std::size_t index = next;
+            if (auto id = values(text, "lightid", light); id.found()) {
+                const auto wanted = static_cast<std::size_t>(read_uint(id));
+                if (wanted < lights.size()) index = wanted;
+            }
+            if (index >= lights.size()) break;
+            lights[index] = read_light(text, light);
+            next = index + 1;
+        }
+    };
+    add("lights", "light");
+    add("rtslights", "rtslight");
+}
+
+void read_extended(std::string_view text, TextRange extended, EngineDefinition& engine) {
+    auto library = values(text, "librarymodule", extended);
+    engine.library_module = library.token();
+    engine.library_param = static_cast<std::uint32_t>((std::max)(0, rts_atoi(library.here())));
+    auto cabin = values(text, "cabin", extended);
+    engine.cabin = cabin.token();
+    engine.cabin_param = static_cast<std::uint32_t>((std::max)(0, rts_atoi(cabin.here())));
+    if (auto keep = values(text, "donothideextincabin", extended); keep.found())
+        engine.keep_exterior_in_cab = static_cast<std::uint8_t>(read_uint(keep) & 3u);
+    if (auto stack = values(text, "variablestack", extended); stack.found()) engine.variable_stack = read_uint(stack);
+    engine.series = values(text, "locomotiveseries", extended).token();
+    if (auto n = values(text, "numengines", extended); n.found()) engine.num_engines = read_uint(n);
+    if (auto n = values(text, "numaxles", extended); n.found()) engine.num_axles = read_uint(n);
+    if (auto n = values(text, "maxnumslaveloco", extended); n.found()) engine.max_slaves = read_uint(n);
+    if (auto c = values(text, "smecable", extended); c.found()) {
+        engine.sme_cable[0] = static_cast<std::uint8_t>(c.atof() != 0.0);
+        engine.sme_cable[1] = static_cast<std::uint8_t>(c.atof() != 0.0);
+    }
+    if (auto c = values(text, "hvbus", extended); c.found()) {
+        engine.hv_bus[0] = static_cast<std::uint8_t>(c.atof() != 0.0);
+        engine.hv_bus[1] = static_cast<std::uint8_t>(c.atof() != 0.0);
+    }
+    if (const auto params = rts_find(text, "engineparameters", extended)) engine.parameters = read_parameters(text, *params);
+    if (const auto voltages = rts_find(text, "worksonlinevoltages", extended)) {
+        for (const auto range : blocks(text, "linevoltage", *voltages)) {
+            float v[4]{};
+            auto at = range.begin;
+            for (auto& value : v) {
+                if (at >= range.end) break;
+                value = static_cast<float>(rts_atof(rts_token(text, at, range.end)));
+                at = rts_next(text, at, range.end);
+            }
+            engine.line_voltages.push_back({v[0], v[1], v[2], v[3]});
+        }
+    }
+    if (auto current = values(text, "maxlinecurrent", extended); current.found()) {
+        engine.max_line_current = static_cast<float>(current.atof());
+    }
+    if (auto burn = values(text, "maxlinecurrentcatenaryburntime", extended); burn.found()) {
+        engine.max_line_current_burn_time = static_cast<float>(burn.atof());
+    }
+    if (const auto aux = rts_find(text, "auxlibraries", extended)) {
+        for (const auto lib : blocks(text, "auxlibrary", *aux)) {
+            AuxLibraryDefinition a;
+            a.name = values(text, "auxlibraryname", lib).token();
+            a.module = values(text, "auxlibrarymodule", lib).token();
+            if (auto stack = values(text, "auxvariablestack", lib); stack.found()) a.variable_stack = read_uint(stack);
+            if (const auto params = rts_find(text, "auxlibraryparameters", lib)) a.parameters = read_parameters(text, *params);
+            for (const auto call : blocks(text, "auxcall", lib)) {
+                const auto fn = rts_token(text, call.begin, call.end);
+                const auto next = rts_next(text, call.begin, call.end);
+                const auto order = rts_atoi(text.substr(next, call.end - next));
+                a.calls.emplace_back(fn, order);
+            }
+            a.sound = values(text, "auxlibrarysound", lib).token();
+            const auto sound_type = values(text, "auxlibrarysoundtype", lib).token();
+            a.sound_type = sound_type == "ambient"         ? AuxSoundType::ambient
+                : sound_type == "routeforwagon"            ? AuxSoundType::route_for_wagon
+                                                           : AuxSoundType::wagon;
+            if (auto position = values(text, "auxlibrarysoundposition", lib); position.found()) {
+                for (auto& v : a.sound_position) v = static_cast<float>(position.atof());
+            }
+            const auto flag = [&](std::string_view key) {
+                auto v = values(text, key, lib);
+                return v.found() && read_uint(v) != 0;
+            };
+            a.sound_external = flag("auxlibrarysoundexternal");
+            a.sound_own_stack = flag("auxlibrarysoundownstack");
+            a.sound_single_wagon = flag("auxlibrarysoundsinglewagon");
+            engine.aux_libraries.push_back(std::move(a));
+        }
+    }
+}
+
 [[nodiscard]] EngineDefinition read_engine(std::string_view text, TextRange block) {
     EngineDefinition engine;
     const auto type = values(text, "type", block).token();
@@ -156,13 +353,7 @@ void read_brakes(std::string_view text, BrakeEquipment& brakes, std::string& err
             engine.throttle_notches = static_cast<std::uint32_t>((std::max)(0, rts_atoi(values(text, "numnotches", *throttle).here())));
         }
     }
-    if (const auto extended = rts_find(text, "engextended")) {
-        engine.library_module = values(text, "librarymodule", *extended).token();
-        engine.cabin = values(text, "cabin", *extended).token();
-        if (auto stack = values(text, "variablestack", *extended); stack.found()) {
-            engine.variable_stack = static_cast<std::uint32_t>((std::max)(0, rts_atoi(stack.here())));
-        }
-    }
+    if (const auto extended = rts_find(text, "engextended")) read_extended(text, *extended, engine);
     return engine;
 }
 
@@ -261,11 +452,18 @@ WagonDefinition parse_wagon(const std::string_view bytes) {
     read_brakes(t, wagon.brakes, brake_error);
     if (wagon.error.empty() && !brake_error.empty()) wagon.error = brake_error;
 
-    wagon.sound = values(t, "rtsexteriorsound").token();
-    if (wagon.sound.empty()) wagon.sound = values(t, "sound").token();
-    wagon.cab_sound = values(t, "rtscabinsound").token();
+    // RTS 0x44247C: in the Wagon block RTSExteriorSound, else Sound; in the
+    // Engine block RTSCabinSound, else Sound (MSTS kept the cab script there:
+    // the MaDaDev ED9M names mdd_ed4m-cabHead.sms so).
+    read_lights(t, *block, wagon.lights);
+    wagon.sound = values(t, "rtsexteriorsound", *block).token();
+    if (wagon.sound.empty()) wagon.sound = values(t, "sound", *block).token();
 
-    if (const auto engine = rts_find(t, "engine")) wagon.engine = read_engine(t, *engine);
+    if (const auto engine = rts_find(t, "engine")) {
+        wagon.engine = read_engine(t, *engine);
+        wagon.cab_sound = values(t, "rtscabinsound", *engine).token();
+        if (wagon.cab_sound.empty()) wagon.cab_sound = values(t, "sound", *engine).token();
+    }
     return wagon;
 }
 

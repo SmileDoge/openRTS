@@ -162,11 +162,35 @@ first match in file order, not by number:
 
 ### Activation
 
-- When a group activates:
-  - every trigger is enabled again;
-  - streams run, stream volumes reset to 1;
-  - `Initial_Trigger`s fire in order.
-- When it deactivates, all voices stop.
+- **CONFIRMED (`0x44AB7C`, the sound objects' update):** the camera flags of
+  a group (`+32`): `Activation` CabCam 2, ExternalCam 8 (4: a third kind,
+  for the player's train only), `Deactivation` 0x10 / 0x20 / 0x40. Outside
+  (the free and the external camera, head out of the window) a group
+  activates with ExternalCam within its distance; in the cab with CabCam
+  (the player's locomotive), and other trains' groups with ExternalCam.
+  openRTS (`TrainView::sound_camera`): the engineer in the driven car: cab;
+  in another car of the train: passenger (the ED9M's scripts list
+  PassengerCam); on foot outside or the head out of a window: external;
+  other trains: external. Interior areas and doors' `SoundProof` (how much
+  a shut or open door between the listener's area and the sound damps it)
+  are not done yet.
+- **CONFIRMED going off (`0x4A9CF4` → `0x4A9A84`):** every voice stops; a
+  stream that was looping keeps its current trigger (flag bit 0) and the
+  buffer position of a `StartLoop` (state `+64`); others forget theirs.
+- **CONFIRMED going on again (`0x4A9BA8`):** every trigger marked current
+  fires again (the loops resume at their position), random triggers wait
+  their minimum delay; trigger and stream states are not reset.
+- **CONFIRMED while off:** the object's 96-entry queue of discrete codes is
+  not run (`0x4A8284` runs only for an active object); the codes run at the
+  next active update.
+- openRTS (`audio::SoundInstance`):
+  - the first activation enables every trigger, runs the streams at volume
+    1 and fires the `Initial_Trigger`s;
+  - later ones resume the remembered loops (the position from the loop's
+    age), then run the codes queued meanwhile (up to 96);
+  - before (until 2026-11-01) every activation fired the initial triggers
+    again and the loops a DLL had started were lost after a trip into the
+    cab.
 - The free camera of the viewer counts as `ExternalCam`.
 - **Deactivation distance below the activation distance** (four installed
   groups: the ED4M, ED9M and EP2D `engMotor` scripts, 1000 / 300 m):
@@ -284,7 +308,39 @@ first match in file order, not by number:
     junction events;
   - group 7 for the player's train.
 - **With the cab:** `SoundSources` / `Sources` / `Attenuation` inside cabs,
-  `AllowStreamOnWindowCamera`, VariableN and trigger codes from DLLs, named
-  triggers.
+  `AllowStreamOnWindowCamera`, named triggers.
+
+## The cab sound (2026-11-01)
+
+- The engine the player drives plays its cab script as a second sound
+  object (owner: the player's train), next to its exterior sound.
+- **CONFIRMED** (`0x44247C`): the cab script is the Engine block's
+  `RTSCabinSound`, else its `Sound` (MSTS kept it there; the MaDaDev ED9M
+  does so); the exterior one the Wagon block's `RTSExteriorSound`, else its
+  `Sound`. Each is looked up in the block, not the whole file.
+  Inside the 3-D cab it is heard at the driver's seat, outside at the car.
+- Sound objects get the camera kind (`cab` inside the 3-D cab, `external`
+  otherwise) for their streams' `CabCam` / `ExternalCam` activation.
+- A legacy DLL's triggers (`SMSObject::Queue`, `PostTriggerCab` /
+  `PostTriggerEng`) go to the cab and the exterior object; its
+  `SMSObject` Var1..Var8 replace the engine variables 1..8 the keyboard
+  driver would set.
 - **Loading:** clips decode on the render thread when first played; moving
   that to a worker comes with train sounds.
+
+## Aux library sounds (2026-11-02)
+
+- An `AuxLibrary` with `AuxLibrarySound ( file.sms )` (path relative to the
+  .eng) has an SMS object of its own: what the library posts to it
+  (`RTSGetObject(lib, AUXLIB, Sound)`) plays there, not in the cab script
+  (Brakes.sms: КЛУБ / САУТ codes 120..3223, Usavp.sms: voice messages
+  2000+). The host reports them per library (`CarOutput::aux_sound`).
+- From the reference: `AuxLibrarySoundType` AMBIENT (no position), WAGON
+  (at the car, with its variables, the default) or ROUTEFORWAGON (the
+  route's SOUND first); `AuxLibrarySoundPosition` in the car;
+  `AuxLibrarySoundExternal` fades with distance (else heard as at the
+  listener); `AuxLibrarySoundOwnStack` keeps its own Var1..8 (else the
+  engine's); `AuxLibrarySoundSingleWagon` plays only while the player is in
+  that car. The runtime was not traced (PROBABLE as described).
+- `openrts-train-check --triggers` prints every trigger a DLL posts, per
+  car and SMS (ext, cab, aux n).

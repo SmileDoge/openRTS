@@ -28,6 +28,8 @@ struct ModelLibrary::Impl {
     std::unordered_map<std::string, std::unordered_set<std::string>> dependents; // file key -> shape keys
     std::deque<StreamedModelAsset> uploads;
     std::vector<core::VirtualPath> pending_changes;
+    TextureVariant variant;
+    std::vector<core::VirtualPath> variant_reloads; // shapes whose texture folders changed
     std::future<ReloadBatch> job;
     ModelLibraryStats statistics;
 
@@ -61,6 +63,8 @@ struct ModelLibrary::Impl {
         const auto affect = [&](const core::VirtualPath& shape) {
             if (seen.insert(shape.key()).second) affected.push_back(shape);
         };
+        for (const auto& shape : variant_reloads) affect(shape);
+        variant_reloads.clear();
         for (const auto& key : changed) {
             if (const auto it = models.find(key); it != models.end()) affect(it->second.source());
             if (const auto it = dependents.find(key); it != dependents.end()) {
@@ -83,11 +87,11 @@ struct ModelLibrary::Impl {
         if (affected.empty()) return;
 
         statistics.reloading = true;
-        job = std::async(std::launch::async, [vfs = vfs, directories = texture_directories,
+        job = std::async(std::launch::async, [vfs = vfs, directories = texture_directories, variant = variant,
                                               affected = std::move(affected), changed = std::move(changed)] {
             ReloadBatch batch{.changed_keys = changed};
             TextureDecodeCache cache; // a texture shared by many models is decoded once
-            for (const auto& shape : affected) batch.assets.push_back(load_model_asset(*vfs, shape, directories, &cache));
+            for (const auto& shape : affected) batch.assets.push_back(load_model_asset(*vfs, shape, directories, &cache, variant));
             return batch;
         });
     }
@@ -165,17 +169,37 @@ void ModelLibrary::notify_changes(const std::vector<core::VirtualPath>& changed)
     impl_->pending_changes.insert(impl_->pending_changes.end(), changed.begin(), changed.end());
 }
 
+void ModelLibrary::set_texture_variant(const TextureVariant& variant) {
+    auto& impl = *impl_;
+    if (impl.variant == variant) return;
+    impl.variant = variant;
+    const auto before = impl.variant_reloads.size();
+    for (const auto& [_, model] : impl.models) {
+        if (model.alternative_texture() == 0) continue;
+        if (texture_variant_key(model.alternative_texture(), model.fullbright_images(), variant) != model.texture_key()) {
+            impl.variant_reloads.push_back(model.source());
+        }
+    }
+    std::cout << "textures: " << (variant.night ? "night" : "day") << ", season " << static_cast<int>(variant.season) << ", weather "
+              << static_cast<int>(variant.weather) << ": " << impl.variant_reloads.size() - before << " model(s) to reload" << std::endl;
+}
+
 void ModelLibrary::update(const std::size_t uploads) {
     auto& impl = *impl_;
     using namespace std::chrono_literals;
     if (impl.job.valid() && impl.job.wait_for(0ms) == std::future_status::ready) impl.apply(impl.job.get());
-    if (!impl.job.valid() && !impl.pending_changes.empty()) impl.start_batch();
+    if (!impl.job.valid() && (!impl.pending_changes.empty() || !impl.variant_reloads.empty())) impl.start_batch();
 
     for (std::size_t i = 0; i < uploads && !impl.uploads.empty(); ++i) {
         auto asset = std::move(impl.uploads.front());
         impl.uploads.pop_front();
         const auto key = asset.source_path.key();
         if (impl.models.contains(key)) continue;
+        // Loaded under another night / season: shown now, reloaded for this one.
+        if (asset.alternative_texture != 0
+            && texture_variant_key(asset.alternative_texture, asset.fullbright_images, impl.variant) != asset.texture_key) {
+            impl.variant_reloads.push_back(asset.source_path);
+        }
         if (auto model = impl.renderer.create_model(std::move(asset))) {
             impl.index(model);
             impl.models.emplace(key, std::move(model));
