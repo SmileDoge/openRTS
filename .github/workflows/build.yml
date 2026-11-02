@@ -54,10 +54,10 @@ jobs:
         run: |
           $out = "openRTS-windows-x64"
           New-Item -ItemType Directory -Force "$out/tools" | Out-Null
-          Copy-Item build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll, build/viewer/Release/openrts-dllhost32.exe $out
+          Copy-Item build/game/Release/openrts_game.exe, build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll, build/viewer/Release/openrts-dllhost32.exe $out
           Get-ChildItem build/tools -Recurse -Filter *.exe | Where-Object { $_.DirectoryName -like '*\Release' } |
               ForEach-Object { Copy-Item $_.FullName "$out/tools" }
-          Copy-Item README.md, README_EN.md $out
+          Copy-Item README.md, README_EN.md, INSTALL.md, INSTALL_EN.md, LICENSE $out
           # What people miss first: the VC++ runtime and the RTS installation.
           @(
             'openRTS - перед запуском / before you start',
@@ -71,10 +71,10 @@ jobs:
             '2. Нужна своя установка RTS с маршрутами и подвижным составом.',
             '   You need your own RTS installation with routes and rolling stock.',
             '',
-            '3. Пример / example:',
-            '   openrts_viewer.exe --window --route Kuban_RTS --root D:\Games\RTS --consist "ED4M-0050 12vag"',
+            '3. Запустите openrts_game.exe (стартовое меню) и укажите папку RTS.',
+            '   Run openrts_game.exe (the start menu) and give it the RTS folder.',
             '',
-            'Подробности / details: README.md (русский), README_EN.md (English).'
+            'Подробности / details: INSTALL.md (русский), INSTALL_EN.md (English).'
           ) | Out-File -Encoding utf8BOM "$out/README_FIRST.txt"
 
       - uses: actions/upload-artifact@v4

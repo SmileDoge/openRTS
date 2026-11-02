@@ -1,6 +1,6 @@
 # openRTS
 
-[Русская версия](README.md)
+[Русская версия](README.md) · **[Installing and running](INSTALL_EN.md)**
 
 **openRTS** is an open, independent implementation of the RTrainSim (RTS)
 train simulator. The goal is to run existing RTS and MSTS content (routes and
@@ -78,16 +78,16 @@ In the order of the plan (`docs/roadmap.md`):
 
 ## Prebuilt binaries
 
-Every push to `master` is built on GitHub Actions. Ready archives (the viewer,
-the tools, `wgpu_native.dll`) are in **Releases**:
+Every push to `master` is built on GitHub Actions. Ready archives (the start
+menu, the game, the locomotive DLL host, the tools, `wgpu_native.dll`) are in
+**Releases**; how to install and run them is in [INSTALL_EN.md](INSTALL_EN.md):
 - **nightly** — a pre-release with the latest `master` build, replaced
   automatically;
 - **vX.Y.Z** — versions; the release is created automatically when a version
   tag is pushed.
 
 A version's release text is its section of [`CHANGELOG.md`](CHANGELOG.md)
-(in Russian); nightly's comes from the commits. While the repository is
-private, only its members can download the builds.
+(in Russian); nightly's comes from the commits.
 
 > **The Microsoft Visual C++ Redistributable (x64) is required.** Without it
 > Windows reports that `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` or
@@ -229,5 +229,9 @@ openRTS is not affiliated with the authors of RTrainSim or MSTS. Routes,
 rolling stock and other content are not part of this repository; you need
 your own RTS installation. `docs/RTSFileFormat.dat`,
 `docs/RTSFileReference.html`, `docs/export.pdf` and `docs/ext.pdf` are RTS's
-documentation and belong to its authors. The project's licence is not chosen
-yet.
+documentation and belong to its authors; openRTS's licence does not cover
+them.
+
+openRTS is licensed under the **GNU General Public License v3.0**: you may
+use, study, change and share it, and modified versions only under the same
+licence and with their source. The full text is in [LICENSE](LICENSE).
