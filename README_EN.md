@@ -26,7 +26,10 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
   - RTS's material and pass rules;
   - sky and time of day, seasons and weather;
   - route streaming, LOD, MSAA;
-  - shape animation, signal lights, instancing of identical shapes.
+  - shape animation, signal lights, instancing of identical shapes;
+  - experimental lighting (R): sun shadows (cascades and a map of the cab's
+    own), lamp shadows, ambient occlusion (GTAO), every lamp at once,
+    aerial haze; passes recorded on several threads.
 - **Trains:**
   - RTS physics, couplers and automatic coupling, buffer hits and
     collisions;
@@ -68,9 +71,9 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
 ## Not yet
 
 In the order of the plan (`docs/roadmap.md`):
-1. The rest of the cab: mouse clicks on 3-D controls, digital displays,
-   locomotive lights, ALSN from the route's signals, native plugins from
-   the `.eng`. There will be no 2-D cabs.
+1. The rest of the cab and consist: ALSN from the route's signals, native
+   plugins from the `.eng`, the SME cable and high-voltage bus in the car
+   menu. There will be no 2-D cabs.
 2. Multiplayer (an RTS-compatible Legacy mode and an own protocol) and the
    dispatcher console (Пульт ДСП).
 3. Activities and full AI traffic.
