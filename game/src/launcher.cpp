@@ -671,7 +671,7 @@ void Launcher::draw_overlay(const viewer::ViewerCamera&) const {
             if (ImGui::Combo("##backend", &backend, backends, 4))
                 remember("backend", renderer::graphics_backend_key(static_cast<renderer::GraphicsBackend>(backend)));
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("Automatic: Vulkan, else DirectX 12. Try DirectX 12 if the game does not start or the screen stays black; OpenGL is for old cards, the experimental lighting may not work there."));
+                ImGui::SetTooltip("%s", tr("Automatic: Vulkan, else DirectX 12. Try DirectX 12 if the game does not start or the screen stays black; OpenGL is for old cards, the experimental renderer may not work there."));
             form_row(tr("Sound"));
             ImGui::Checkbox("##sound", &s.sound);
             form_row(tr("Sound volume"));
@@ -682,11 +682,11 @@ void Launcher::draw_overlay(const viewer::ViewerCamera&) const {
             ImGui::Checkbox("##msaa", &s.msaa);
             form_row(tr("VSync"));
             ImGui::Checkbox("##vsync", &s.vsync);
-            form_row(tr("Experimental lighting"));
+            form_row(tr("Experimental renderer"));
             ImGui::Checkbox("##experimental", &s.experimental);
             form_row("HDR");
             ImGui::Checkbox("##hdr", &s.hdr);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("HDR (tone curve with experimental lighting)"));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("HDR (tone curve with the experimental renderer)"));
             ImGui::EndTable();
         }
 #ifdef _WIN32

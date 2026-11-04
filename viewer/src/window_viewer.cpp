@@ -512,11 +512,11 @@ struct PanelState {
     float night_exposure = 2.0f;
     float night = 0.0f; // 0 day .. 1 night, from the sun (shown)
     float saturation = 1.0f;
-    bool physical_light = false; // physical falloff of headlights and lamps (experimental lighting)
-    float night_ambient = 1.0f;  // sky light at night, a factor (experimental lighting)
-    float light_range = 0.0f;    // lamps lit within this distance, m; 0: RTS's MaxLightDistance (experimental lighting)
-    float headlight_reach = 1.0f; // the trains' headlights reach this many times the .eng's (experimental lighting)
-    bool light_fullbright = false; // FullBright surfaces lit as ordinary ones (experimental lighting)
+    bool physical_light = false; // physical falloff of headlights and lamps (experimental renderer)
+    float night_ambient = 1.0f;  // sky light at night, a factor (experimental renderer)
+    float light_range = 0.0f;    // lamps lit within this distance, m; 0: RTS's MaxLightDistance (experimental renderer)
+    float headlight_reach = 1.0f; // the trains' headlights reach this many times the .eng's (experimental renderer)
+    bool light_fullbright = false; // FullBright surfaces lit as ordinary ones (experimental renderer)
     float fov = default_fov_degrees; // vertical field of view, degrees
     // The experimental path's effects (renderer::SceneEffects).
     renderer::SceneEffectSettings effects;
@@ -648,7 +648,7 @@ public:
             const char* paths[] = {tr("RTS"), tr("Experimental")};
             ImGui::BeginDisabled(!panel.experimental_supported);
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::Combo(tr("Lighting (R)"), &path_index, paths, 2))
+            if (ImGui::Combo(tr("Renderer (R)"), &path_index, paths, 2))
                 path = path_index == 1 ? renderer::ShadingPath::experimental : renderer::ShadingPath::rts_compatible;
             ImGui::EndDisabled();
             if (!panel.experimental_supported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -660,7 +660,7 @@ public:
             if (ImGui::Combo(tr("Graphics API"), &panel.backend_choice, backends, 4))
                 remember("backend", renderer::graphics_backend_key(static_cast<renderer::GraphicsBackend>(panel.backend_choice)));
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("Takes effect after a restart. Automatic: Vulkan, else DirectX 12. OpenGL is for old cards; the experimental lighting may not work there."));
+                ImGui::SetTooltip("%s", tr("Takes effect after a restart. Automatic: Vulkan, else DirectX 12. OpenGL is for old cards; the experimental renderer may not work there."));
             ImGui::TextDisabled("%s", trf("now: %s", std::string(panel.backend_now).c_str()).c_str());
             ImGui::BeginDisabled(!panel.vsync_optional);
             const auto vsync_label = std::string(tr("VSync")) + " (" + panel.present_mode + ")###vsync";
@@ -686,7 +686,7 @@ public:
                 const char* curves[] = {tr("none (as RTS)"), "Khronos PBR Neutral", "AgX (punchy)", "ACES",
                                         tr("auto: Khronos by day, AgX by night")};
                 ImGui::SetNextItemWidth(220.0f);
-                if (ImGui::Combo(tr("Tone curve (experimental lighting)"), &panel.tone_curve, curves, 5))
+                if (ImGui::Combo(tr("Tone curve (experimental renderer)"), &panel.tone_curve, curves, 5))
                     remember("tone_mode", std::to_string(panel.tone_curve));
                 ImGui::SetNextItemWidth(220.0f);
                 if (ImGui::SliderFloat(tr("Exposure"), &panel.exposure, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
@@ -703,7 +703,7 @@ public:
             }
         }
 
-        if (ImGui::CollapsingHeader(tr("Experimental lighting"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader(tr("Experimental renderer"), ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::BeginDisabled(!panel.experimental_supported);
             ImGui::SeparatorText(tr("Sun"));
             if (ImGui::Checkbox(tr("Sun shadows"), &panel.effects.shadows)) remember("effect_shadows", panel.effects.shadows ? "1" : "0");
@@ -1638,7 +1638,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     panel.reshade_depth = options.reshade_depth.value_or(remembered("reshade_depth").value_or("0") == "1");
     panel.experimental_supported = experimental_supported;
     if (!panel.experimental_supported)
-        std::cout << "OpenGL: the experimental lighting and the depth copy for ReShade are not available "
+        std::cout << "OpenGL: the experimental renderer and the depth copy for ReShade are not available "
                      "(wgpu cannot read depth textures with textureLoad in GLSL); the RTS path only." << std::endl;
     if (const auto key = remembered("backend"))
         panel.backend_choice = static_cast<int>(renderer::parse_graphics_backend(*key).value_or(renderer::GraphicsBackend::automatic));

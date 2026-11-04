@@ -76,7 +76,7 @@ What the archive holds:
    - keys: RTS, with the numeric keypad (Num0, Num1, Num3), or openRTS,
      without it, for laptops (`-`, `=`, the key left of `1`);
    - sound and volume, anti-aliasing, VSync;
-   - experimental lighting;
+   - experimental renderer;
    - the graphics API: Automatic (Vulkan, else DirectX 12), Vulkan,
      DirectX 12, or OpenGL for old cards.
 5. **Press Start.** The game opens in a window of its own while the menu
@@ -126,8 +126,8 @@ graphics, mods) are listed in the [README](README_EN.md#running).
   - F6 — stations ahead;
   - F7 — platform names;
   - Ctrl+Alt+F7 — Track control (track map, junctions, trains).
-- **Lighting.** `R` switches between RTS lighting and the experimental
-  one (shadows, ambient occlusion, every lamp, haze). Its settings are in
+- **Renderer.** `R` switches between the RTS renderer and the
+  experimental one (shadows, ambient occlusion, every lamp, haze). Its settings are in
   the openRTS panel.
 
 The full key list is in the [README](README_EN.md#controls).
@@ -179,7 +179,7 @@ included, so depth effects reach them too.
 | "There is no ROUTES folder here" | Give the folder holding `rts1.exe` |
 | No window, or a black screen | Update the graphics driver (Vulkan or DirectX 12 is needed). In the start menu's Settings choose Graphics API → DirectX 12. Look for `WebGPU error` lines in `openrts.log` |
 | A DLL locomotive does not respond, the cab window is empty | `openrts-dllhost32.exe` must sit next to `openrts_viewer.exe`. An antivirus may block it — add the folder to its exclusions. The reason is written to `openrts.log` |
-| Low frame rate | Turn experimental lighting off (`R`), or shadows and occlusion in the openRTS panel; lower anti-aliasing |
+| Low frame rate | Turn experimental renderer off (`R`), or shadows and occlusion in the openRTS panel; lower anti-aliasing |
 | Settings went wrong | Delete `viewer_state.ini` in `%LOCALAPPDATA%\openRTS` to reset everything |
 
 If that does not help, open an issue: say what you did and attach

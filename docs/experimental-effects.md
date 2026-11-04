@@ -97,7 +97,7 @@ end of the land stays hidden.
 
 ## Settings
 
-The viewer panel (experimental lighting): «Тени от солнца», «Все источники
+The viewer panel (experimental renderer): «Тени от солнца», «Все источники
 света, кластеры», «Затенение углов, GTAO», «Атмосферная перспектива»,
 remembered in `viewer_state.ini` (`effect_shadows`, `effect_clusters`,
 `effect_ao`, `effect_aerial`), the two ranges above (`light_range`,

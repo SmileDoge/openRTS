@@ -39,7 +39,7 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
     rain and snow, diesel smoke, as RTS has them;
   - an HDR frame with tone mapping (`--hdr`);
   - Vulkan, DirectX 12 or OpenGL to choose from; depth for ReShade;
-  - experimental lighting (R): sun shadows (cascades and a map of the cab's
+  - experimental renderer (R): sun shadows (cascades and a map of the cab's
     own), lamp shadows, ambient occlusion (GTAO), every lamp at once,
     light bounced off the ground, aerial haze; passes recorded on several
     threads.
@@ -175,7 +175,7 @@ Visual C++ Redistributable (x64), see "Prebuilt binaries".
 The easiest way is the start menu. It picks the RTS folder, route, consist,
 path, time, season, weather and how the train starts (running, switched on,
 cold), and the settings: language, key layout, sound and volume,
-anti-aliasing, VSync, experimental lighting, HDR. All of it is remembered in
+anti-aliasing, VSync, experimental renderer, HDR. All of it is remembered in
 `%LOCALAPPDATA%\openRTS\viewer_state.ini`. "Start" runs the game as a
 process of its own (its output goes to `openrts.log` there too); the menu
 comes back when the game is closed.
@@ -208,10 +208,10 @@ The game can also be started directly:
 | `--no-sound`, `--volume 0..1` | no sound, volume |
 | `--msaa 1`, `--no-vsync`, `--no-batching` | graphics settings |
 | `--hdr` | an HDR frame with tone mapping |
-| `--backend auto\|vulkan\|dx12\|opengl` | the graphics API (OpenGL: RTS lighting only) |
+| `--backend auto\|vulkan\|dx12\|opengl` | the graphics API (OpenGL: the RTS renderer only) |
 | `--reshade-depth on\|off` | depth for ReShade ([INSTALL_EN.md](INSTALL_EN.md#reshade)) |
-| `--experimental` | experimental lighting instead of RTS's |
-| `--effects shadows,clusters,ao,aerial\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | experimental lighting settings for one run ([details](docs/experimental-effects.md)) |
+| `--experimental` | experimental renderer instead of RTS's |
+| `--effects shadows,clusters,ao,aerial\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | experimental renderer settings for one run ([details](docs/experimental-effects.md)) |
 | `--capture <file.ppm>` | take one frame and exit; `--capture-at <s>`, `--capture-car <n>`, `--capture-camera ex ey ez tx ty tz`, `--capture-cab` say when and from where |
 | `--mount <folder or zip>` | mount a mod over the installation |
 | `--no-hot-reload` | do not watch files for changes |
@@ -232,7 +232,7 @@ numeric keypad (Num0, Num1, Num3), and openRTS, without it, for laptops
 | C | put the consist on the track near the camera |
 | J | throw the junction ahead |
 | T, L | track overlay, junction and signal labels |
-| R | RTS / experimental lighting |
+| R | RTS / experimental renderer |
 | Pause | pause |
 
 **A train without a DLL**
@@ -317,7 +317,7 @@ RTS's DLLs.
 - `docs/train.md`, `docs/track.md`, `docs/signals.md`, `docs/paths.md`,
   `docs/sound.md`, `docs/electrification.md` — how the subsystems work;
 - `docs/train-dll.md` — the locomotive DLL bridge and the native plugin API;
-- `docs/experimental-effects.md` — the experimental lighting: what it does
+- `docs/experimental-effects.md` — the experimental renderer: what it does
   and what it costs;
 - `docs/world-objects.md` — forests, level crossings, road traffic, water,
   rain and snow and smoke, as RTS builds and runs them;
