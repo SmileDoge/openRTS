@@ -351,6 +351,15 @@ CabDisplay read_display(const TextNode& node) {
     d.granularity = number(node.child("granularity"), 0);
     d.initial_state = static_cast<std::uint32_t>(number(node.child("initialstate"), 0));
     d.anim_speed = number(node.child("animspeed"), 0);
+    if (const auto* fade = node.child("displayfade")) {
+        d.fade = (std::max)(number(fade, 0), 0.0f);
+        d.blink = number(fade, 1);
+    }
+    if (const auto* nodes = node.child("statenodes")) {
+        // ( n "a" "b" ... ): the count first, then the names (fewer when the list runs short).
+        const auto count = static_cast<std::size_t>((std::max)(number(nodes, 0), 0.0f));
+        for (std::size_t k = 1; k < nodes->values.size() && d.state_nodes.size() < count; ++k) d.state_nodes.push_back(nodes->values[k]);
+    }
     if (const auto* screen = node.child("displayscreen")) {
         if (const auto* subs = screen->child("subobjects")) {
             for (const auto& c : subs->children)
@@ -539,6 +548,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
             l.flags = joined(node.child("flags"));
             l.global_id = static_cast<std::uint32_t>(number(node.child("globalid"), 0, 0.0f));
             l.source_radius = number(node.child("sourceradius"), 0, 0.0f);
+            l.auto_when_world_lit = number(node.child("autowhenworldlit"), 0, 0.0f);
             if (const auto* a = node.child("attenuation")) {
                 const float start = number(a, 0), length = number(a, 1), kind = number(a, 2);
                 if (start >= 0.0f && length > 0.0f) l.attenuation = {kind, start, length};
@@ -636,6 +646,11 @@ CabDescription parse_cab_description(std::string_view bytes) {
                 d.anim_time = number(node.child("animtime"), 0, 1.0f);
                 d.global_id = static_cast<std::uint32_t>(number(node.child("globalid"), 0, 0.0f));
                 d.can_be_opened = number(node.child("canbeopened"), 0, 1.0f) != 0.0f;
+                d.opened = node.child("opened") != nullptr;
+                if (const auto* proof = node.child("soundproof")) {
+                    d.sound_closed = number(proof, 0);
+                    d.sound_open = number(proof, 1);
+                }
                 cab.doors.push_back(std::move(d));
             }
         }
@@ -645,8 +660,15 @@ CabDescription parse_cab_description(std::string_view bytes) {
                 CabWindow w;
                 w.name = text(node.child("name"));
                 w.can_open = number(node.child("canbeopened"), 0) != 0.0f;
+                w.opened = node.child("opened") != nullptr;
                 w.head_out = vec3(node.child("headoutposition"));
+                w.has_position = node.child("position") != nullptr;
+                w.position = vec3(node.child("position"));
                 w.anim_time = number(node.child("animtime"), 0, 1.0f);
+                if (const auto* proof = node.child("soundproof")) {
+                    w.sound_closed = number(proof, 0);
+                    w.sound_open = number(proof, 1);
+                }
                 cab.windows.push_back(std::move(w));
             }
         }

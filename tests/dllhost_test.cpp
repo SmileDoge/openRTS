@@ -34,6 +34,7 @@ CarSpec loco(const std::u16string& module) {
     c.num_axles = 4;
     c.lights = 2;
     c.cab.present = true;
+    c.cab.signal_scripted = true; // ALSN is called
     for (std::uint32_t id = 0; id < 3; ++id) {
         SwitchSpec s;
         s.id = id;
@@ -73,6 +74,15 @@ int main(int argc, char** argv) {
     // Two engines joined by control cables, then a wagon.
     SetupRequest setup;
     setup.cars = {loco(module), loco(module), CarSpec{}};
+    for (std::uint32_t i = 0; i < 3; ++i) setup.cars[i].key = i + 1; // the game's keys of the cars
+    // The first engine's cab script: a NamedTriggersTable and one trigger
+    // pair (vl80k_aux.sms has these two names).
+    SoundTableSpec table;
+    table.names = {u"aux on", u"aux off"};
+    table.codes = {1, 2};
+    table.pair_on = {{1}};
+    setup.sound_tables = {table};
+    setup.cars[0].sound_cab = 0;
     std::vector<ModuleReport> modules;
     check(host->setup(setup, modules), "setup");
     check(modules.size() == 1 && modules[0].status == 0, "the module loads");
@@ -148,11 +158,160 @@ int main(int argc, char** argv) {
         check(reply.cars[0].engine.throttle == 5, "and the DLL hears it");
     }
 
+    // ALSN (RTS 0x508520): the three arrays and the next speed post.
+    {
+        StepRequest s = step;
+        SignalInput ahead;
+        ahead.distance = 500.0f;
+        ahead.aspect[0] = 6;
+        ahead.flags = 1;
+        s.alsn_ahead = {ahead, ahead};
+        s.alsn_behind = {ahead};
+        s.next_limit = 16.0f;
+        s.next_limit_distance = 300.0f;
+        check(host->step(s, reply), "step with signals");
+        if (reply.cars.size() == 3) {
+            check(reply.cars[0].engine.charging_rate == 12.0f, "ALSN got two ahead, one behind, none passing");
+            check(reply.cars[0].engine.handbrake_percent == 6.0f, "the aspect ahead");
+            check(reply.cars[0].engine.dynamic_brake_percent == 16300.0f, "the next speed post in the integer slots");
+        }
+    }
+
+    // Named SMS triggers and trigger pairs (RTS 0x4394F4, 0x439548): before
+    // any pair code there are no PairedFlags (-2); then the pair's state.
+    check(host->step(step, reply), "step for the sound tables");
+    if (reply.cars.size() == 3) {
+        check(reply.cars[0].engine.main_reservoir_rate == 108.0f, "\"Aux On\" is 1 (case aside), its pair not known yet (-2)");
+        check(reply.cars[1].engine.main_reservoir_rate == 7.0f, "no script: 0 and -3");
+    }
+    {
+        StepRequest s = step;
+        SoundPairState pairs{.car = 0, .object = sound_cabin};
+        pairs.on[0] = pairs.known[0] = 1;
+        s.sound_pairs = {pairs};
+        check(host->step(s, reply), "step with the pair on");
+        check(reply.cars.size() == 3 && reply.cars[0].engine.main_reservoir_rate == 111.0f, "the pair is on");
+        pairs.on[0] = 0;
+        s.sound_pairs = {pairs};
+        check(host->step(s, reply), "step with the pair off");
+        check(reply.cars.size() == 3 && reply.cars[0].engine.main_reservoir_rate == 110.0f, "the pair is off");
+    }
+
+    // Track items (RTS 0x4805D8): ahead within the asked distance, under
+    // the train always, signals never; the platform's station name.
+    {
+        StepRequest s = step;
+        TrackItemSpec post{.id = 10, .type = 2};
+        TrackItemSpec platform{.id = 11, .type = 3};
+        platform.name = u"P1";
+        platform.station = u"Станция";
+        TrackItemSpec siding{.id = 12, .type = 4};
+        TrackItemSpec signal{.id = 13, .type = 1};
+        TrackItemSpec crossover{.id = 14, .type = 6};
+        s.items = {post, platform, siding, signal, crossover};
+        s.track_items = {{.distance = 300.0f, .z = 330.0f, .pos = item_ahead, .item = 10},
+                         {.distance = 2000.0f, .z = 2030.0f, .pos = item_ahead, .item = 11},
+                         {.distance = -10.0f, .z = 20.0f, .pos = item_under, .item = 12},
+                         {.distance = 100.0f, .z = 130.0f, .pos = item_ahead, .item = 13},
+                         {.distance = 50.0f, .z = -50.0f, .pos = item_behind, .item = 14}};
+        s.items_range = 5000.0f;
+        check(host->step(s, reply), "step with track items");
+        if (reply.cars.size() == 3) {
+            check(reply.cars[0].engine.ep_value == 224.0f, "within 1 km ahead and under: the speed post and the siding");
+            check(reply.cars[0].engine.power_consuming == 7.0f, "the platform's station name (5 km)");
+        }
+        check(reply.items_wanted == 5000.0f, "the farthest distance asked comes back");
+    }
+
+    // ALSN's RTSSignalData (RTS 0x4903DC): the route database's entry.
+    {
+        StepRequest s = step;
+        SignalUnitSpec unit{.id = 7};
+        unit.tile[0] = -5;
+        unit.tile[1] = 3;
+        unit.name = u"M14";
+        s.signal_units = {unit};
+        SignalInput ahead;
+        ahead.distance = 500.0f;
+        ahead.unit = 7;
+        s.alsn_ahead = {ahead};
+        check(host->step(s, reply), "step with a named signal");
+        check(reply.cars.size() == 3 && reply.cars[0].engine.independent_brake == 3003.0f, "ALSN sees the signal's name and tile");
+        s.signal_units.clear();
+        s.alsn_ahead[0].unit = -1;
+        check(host->step(s, reply), "step with an unnamed signal");
+        check(reply.cars.size() == 3 && reply.cars[0].engine.independent_brake == -1.0f, "no entry: no RTSSignalData");
+    }
+
+    // The control cable parts (the car menu): the slave gets LostMaster.
+    {
+        StepRequest s = step;
+        s.cars[0].flags &= ~0x20000u;
+        s.cars[1].flags &= ~0x10000u;
+        check(host->step(s, reply), "step with the cable parted");
+        check(reply.cars.size() == 3 && reply.cars[1].engine.auxiliary_rate == 7.0f, "the slave got LostMaster");
+    }
+
     // A flipped car sees its velocity in its own direction.
     step.cars[1].flags |= 1;
     check(host->step(step, reply), "step with a flipped slave");
     check(std::abs(reply.cars[1].engine.brake_force + 2.0f) < 1e-6f, "the flipped car saw -velocity");
     check(std::abs(reply.cars[1].engine.power + 1.0f) < 1e-6f, "the flipped car's TRAINDIR is -1");
+
+    // Coupling and cutting (RTS 0x469ED8 / 0x469858 -> 0x4F995C): the DLLs
+    // keep their state, an engine coupled on joins the group as a slave
+    // (bound and initialised), one cut off keeps its state until it is
+    // coupled again.
+    {
+        check(host->step(step, reply) && reply.cars.size() == 3, "step before the coupling");
+        const auto switch0 = reply.cars.empty() ? 0u : reply.cars[0].switches[0].state;
+        const auto throttle = reply.cars.empty() ? 0u : reply.cars[0].engine.throttle;
+        std::printf("before the coupling: switch 0 at %u, throttle %u\n", switch0, throttle);
+        auto added = loco(module);
+        added.key = 4;
+        ReconsistRequest r;
+        r.cars = {{reconsist_new, added}, {0, {}}, {1, {}}, {2, {}}};
+        r.inputs = {input(0x20000), input(0x30000), input(0x10000 | 1), input(0)};
+        check(host->reconsist(r, reply), "reconsist: an engine coupled on ahead");
+        check(reply.cars.size() == 4, "four cars after the coupling");
+        if (reply.cars.size() == 4) {
+            check(reply.cars[1].switches.size() == 3 && reply.cars[1].switches[0].state == switch0 && reply.cars[1].engine.throttle == throttle
+                      && switch0 != 1,
+                  "the player's engine kept its state (no second Init: it sets switch 0 to 1)");
+            check((reply.cars[1].loco_flags & 0x21) == 0x21, "the player's engine is still master");
+            check(reply.cars[0].has_engine && (reply.cars[0].loco_flags & 0x21) == 0x20, "the new engine is bound as a slave");
+            check(reply.cars[0].engine.panto == 0, "its Init had the standing train's state (1: no pantographs)");
+            check(reply.cars[2].engine.auxiliary_rate == 7.0f, "the old slave kept its state");
+        }
+        StepRequest s = step;
+        s.cars = r.inputs;
+        check(host->step(s, reply), "step after the coupling");
+        check(reply.cars.size() == 4 && reply.cars[0].engine.throttle == throttle, "the master drives the new slave");
+
+        // The old slave (key 2) is cut off: LostMaster, kept aside.
+        ReconsistRequest cut;
+        cut.cars = {{0, {}}, {1, {}}, {3, {}}};
+        cut.inputs = {input(0x20000), input(0x10000), input(0)};
+        check(host->reconsist(cut, reply), "reconsist: a slave cut off");
+        check(reply.cars.size() == 3 && reply.cars[1].engine.throttle == throttle, "three cars, the player's engine unchanged");
+        s.cars = cut.inputs;
+        check(host->step(s, reply), "step after the cut");
+
+        // And coupled back behind the player's engine.
+        ReconsistRequest back;
+        CarSpec parked;
+        parked.key = 2;
+        back.cars = {{0, {}}, {1, {}}, {reconsist_parked, parked}, {2, {}}};
+        back.inputs = {input(0x20000), input(0x30000), input(0x10000), input(0)};
+        check(host->reconsist(back, reply), "reconsist: the cut engine coupled again");
+        if (reply.cars.size() == 4) {
+            check(reply.cars[2].has_engine && (reply.cars[2].loco_flags & 0x21) == 0x20, "it is a slave again");
+            check(reply.cars[2].engine.auxiliary_rate == 7.0f, "with the state it had (its mirror was kept)");
+        } else {
+            check(false, "four cars after coupling back");
+        }
+        step.cars = back.inputs;
+    }
 
     const auto messages = host->take_messages();
     if (!messages.empty()) std::printf("host said:\n%s", messages.c_str());

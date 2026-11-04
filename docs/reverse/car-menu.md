@@ -151,3 +151,24 @@ What the flags do in the train update is in `brakes.md`:
 - emergency: the pipe vents at 18 atm/s;
 - release valve: the cylinder bleeds at 0.5 atm/s;
 - each fastened bogie: 10 kN of brake force.
+
+## Repair, cargo, cables (2026-11-04)
+
+- **CONFIRMED** "Fix coupling" (17) stores the car in `0x61D6D0` and
+  `dword_61D5B4` (120 s, set at start by `0x403BF4`) in `flt_61D6D4`; the
+  train update (`0x424488`) counts it down unless a menu of type 2 / 3 is
+  open, then clears the car's `+14` bits 0x30. While it runs the item is
+  greyed (`+16` bit 0). One repair at a time.
+- **CONFIRMED** the broken bits come from a collision (`0x58A07C`): the
+  car's share of the impact (the other train's mass over both) above its
+  end's coupling `Break` (tension, `+104` / `+144` of the type) sets `+14`
+  0x10 (front) or 0x20 (rear) through `0x4FF4B0`.
+- **CONFIRMED** "Cargo information" (8) needs car `+326` (the number of
+  cargo items) and the type's `+31` = 2; `0x502680` writes `0x50BC20`'s
+  text (each item's cargo and mass, then the car's total) as a message for
+  30 s.
+- **CONFIRMED** uncoupling (`0x469858`) parts the cables at the cut
+  (`0xA0000` off the front part's last car, `0x50000` off the cut's first
+  car); coupling (`0x469ED8`) only regroups (`0x4F9FB4`, `0x4F995C`).
+- openRTS has every item (`docs/train-systems.md`); the cargo comes from
+  the consist's `FreightAnim` entries.

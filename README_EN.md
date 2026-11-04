@@ -12,11 +12,12 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.2.0](../../releases/tag/v0.2.0):
+> Work in progress. The latest version is [v0.3.0](../../releases/tag/v0.3.0):
 > a nearly playable single-player game. Driving from a 3-D cab with RTS's
-> locomotive DLLs, signalling, a dispatcher window, sound and a living route
-> (forests, level crossings, road traffic, water, rain and snow, smoke) are
-> there; multiplayer and activities are not yet.
+> locomotive DLLs, signalling, a dispatcher window, a living route (forests,
+> level crossings, road traffic, water, rain and snow, smoke), sound by the
+> cab's rooms, coupling and uncoupling with the DLLs are there; multiplayer
+> and activities are not yet.
 
 ## What works
 
@@ -52,26 +53,37 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
     483 / 292 / 305 distributors, a 280 m/s emergency wave (RTS's brakes by
     default);
   - the car menu (Num3 / the key left of `1`): at a coupling — end cocks,
-    hoses, the EP cable, uncoupling; at a bogie — brake shoe, handbrake,
-    release valve, emergency valve;
+    hoses, the EP cable, the SME cable and the high-voltage bus,
+    uncoupling, fixing a broken coupler; at a bogie — brake shoe,
+    handbrake, release valve, emergency valve, cargo information;
   - derailment as RTS does it (overturning in curves, running off the end
     of the track);
   - body sway on the springs, rail joints;
   - electrification as RTS has it: the kind of current and the voltage
     under every electric engine, neutral sections, changeover stations;
-    animated pantographs;
+    the pantographs' current, burning the contact wire, the substations'
+    load; animated pantographs;
+  - trains without a DLL (AI, standing, simple stock): their lights by
+    their conditions as RTS decides them; pantographs by RTS's rules
+    (`AlwaysUsePanto`, `LowerPantoOnStop` and the rest); horn, bell, sand
+    and doors from the keyboard;
   - passenger doors worked from the cab, with their sound;
   - standing consists go to sleep (STATIC) and cost no simulation time.
 - **RTS locomotive DLLs** run unchanged in the 32-bit
   `openrts-dllhost32.exe`: RTS's call order, masters and slaves over the
   SME cable, auxiliary libraries (AuxLibraries such as `Brakes.dll`),
-  adapters for older ts.h versions. A DLL that crashes is switched off and
-  the game goes on.
+  adapters for older ts.h versions, ALSN with the full signal data, taking
+  another cab (`ChangeLoco`). A DLL that crashes is switched off and the
+  game goes on.
+- **openRTS native plugins** (64-bit DLLs, `ORTSTrainPlugin` in the
+  `.eng`) drive an engine, its cab, gauges and sound; the example is the
+  VL10k's logic (`sdk/samples/vl10k`).
 - **The 3-D cab:**
   - switches, keys, gauge needles and lamps move with the DLL's state;
   - the mouse as in RTS: click, wheel, dragging handles; the cab keys from
     the `.sd`;
-  - the КЛУБ, САУТ, САВПЭ and ИТП screens; the cab signal (ALSN);
+  - the КЛУБ, САУТ, САВПЭ and ИТП screens; DISPLAY state nodes, blinking
+    lamps; the cab signal (ALSN); the cab lamps;
   - the cab sound; the sound follows where the engineer is;
   - the "Cab (locomotive DLL)" window: switches, gauges, DLL messages.
 - **The engineer on foot:** stand up at the desk, open the window and lean
@@ -244,6 +256,11 @@ numeric keypad (Num0, Num1, Num3), and openRTS, without it, for laptops
 | `]` / `[` | driver's brake valve (395) |
 | `.` / `,` | independent brake |
 | K | electro-pneumatic brake |
+| Space (held) | horn |
+| B | bell on / off |
+| X (held) | sand |
+| P | pantographs down / up |
+| Y / U | left / right doors (standing) |
 
 An engine with a DLL is driven from its cab with the mouse and the cab keys
 from the `.sd`, as in RTS: the "Cab keys of the locomotive DLL" checkbox in
@@ -321,9 +338,16 @@ RTS's DLLs.
   and what it costs;
 - `docs/world-objects.md` — forests, level crossings, road traffic, water,
   rain and snow and smoke, as RTS builds and runs them;
+- `docs/train-systems.md` — lights, pantographs, horn and doors without a
+  DLL, the cab's displays and lamps, cables and coupler repair, taking
+  another cab, native plugins, the line current and wire burning, ALSN;
 - `docs/vfs.md` — content, packs and mods (a Russian tutorial:
   `docs/vfs-tutorial-ru.md`);
 - `docs/reverse/` — RTS's behaviour with addresses and confidence levels.
+
+`docs/ru/` holds Russian copies of these documents with the same layout.
+The English text is authoritative; a change to an English document is made
+to its Russian copy in the same change.
 
 ## Legal
 

@@ -7,8 +7,9 @@ window, keys and 3-D cab. All 54 installed DLLs load (53 accepted, one
 refused as RTS refuses it), one consist per DLL runs through the host
 without a crash (29 consists), the VL10k drives the train simulation in a
 regression test. The native plugin API exists (`train_plugin.h`, C++
-layer, loader, a sample, a parity test against a legacy DLL); the VL10k
-port as a native sample is still to do. The "how it works in RTS" notes
+layer, loader, a sample, a parity test against a legacy DLL), the game
+runs `ORTSTrainPlugin` engines, and the VL10k logic is a native example
+(2026-11-04, `docs/train-systems.md`). The "how it works in RTS" notes
 are in `docs/reverse/train-dll.md`. Sources:
 - `TRAINS/TRAINSET/tsrLoco_VL80k-125/CAB/ts.h`, the header RTS ships for DLL
   authors (TS_VERSION 104);
@@ -20,6 +21,86 @@ are in `docs/reverse/train-dll.md`. Sources:
 
 Goal: every installed locomotive DLL works in openRTS unchanged, and new
 content gets a clean 64-bit interface.
+
+## What a locomotive DLL is
+
+A locomotive DLL is not the car's behaviour as a whole. It is the
+locomotive's onboard equipment. RTS simulates the vehicle and what the
+train shares: mass, couplers, rails, the air along the train, the
+catenary, sound, drawing. The DLL simulates what stands between the
+driver's handle and the wheels on a real locomotive:
+- the electrical circuits: contactors, relays, traction motors, the main
+  breaker, protections;
+- the driver's brake valve;
+- the safety devices (КЛУБ, САУТ, ЭПК);
+- the gauges and lamps.
+
+```text
+driver → cab (the switches' SetState)
+           ↓ CanSwitch / Switched
+      DLL: the locomotive's circuits
+           ↓ Force, TrainPipeRate, lights, sound triggers, gauges
+      RTS: the vehicle — mass, couplers, air along the train, rails, catenary
+           ↑ speed, pressures, line voltage
+```
+
+In control terms RTS is the plant, the DLL the control system and the cab
+the operator interface.
+
+**Similar designs elsewhere:**
+- **Flight simulators.** Add-on aircraft for FSX / P3D bring their own
+  DLL with the aircraft's systems (hydraulics, electrics, flight
+  management, instruments) on top of the simulator's flight model. That is
+  the same role.
+- **The Quake 2 game DLL.** It uses the same mechanism:
+  - the engine and `gamex86.dll` share structures with a fixed layout
+    (`edict_t`);
+  - the engine hands the DLL a table of its functions (`game_import_t`);
+  - the DLL returns its callbacks (`game_export_t`);
+  - the API version is checked on load.
+
+  RTS has the `ts.h` structures, the 11 `_RTS*` functions, `Init` / `Run`
+  / `Switched` and `DLLVersion`. Only the scope differs: one locomotive
+  type, not the whole game.
+- **In entity-component terms**, a DLL is a system attached to entities by
+  type (`LibraryModule` in the `.eng`).
+  - Its private component is the `VariableStack`, an unnamed float array
+    (`var[5]`, `var[12]`).
+  - Auxiliary libraries are further systems, ordered before or after it.
+
+**Where it departs from an entity-component design:**
+- **The line runs across the entity, not around it.** One car has two
+  writers: RTS writes speeds and pressures, the DLL forces and rates.
+  Nothing declares which field is whose; it had to be found by reverse
+  engineering (what RTS fills before a call and reads after).
+- **No API, only the engine's memory.** The DLL gets pointers to RTS's
+  own objects and may keep them. Hence one address space per consist in
+  the host.
+- **Entities write into each other.** A master writes into its slaves'
+  stacks through pointers.
+- **Logic and presentation are one.** The same DLL computes the traction
+  current, moves the ammeter needle, lights the lamp and posts the sound.
+- **Part of the state is global.** It lives in the DLL's globals, and
+  locomotives of one series share it because the module is loaded once.
+
+**Three approaches to locomotive logic:**
+
+| Simulator | A locomotive is defined by | Logic |
+|---|---|---|
+| MSTS | data | the engine's built-in model, parameters from the `.eng` |
+| RTS | code | the DLL replaces the built-in model; RTS keeps the vehicle physics |
+| Open Rails | data plus scripts | the built-in model with scripts for chosen parts: brake controller, circuit breaker, power supply, train control system |
+
+**In openRTS** the DLL fills the slot of the locomotive's controller. The
+keyboard driver fills the same slot when there is no DLL. The native
+plugin API (below) turns the Quake 2 style module into a component with
+declared inputs and outputs:
+- typed `inputs` / `outputs` instead of shared structures;
+- cab controls by name;
+- a context per instance;
+- explicit `save` / `load`.
+
+The cab belongs to `CabModel`, not to the plugin.
 
 ## What the legacy DLLs are
 
@@ -345,8 +426,10 @@ manage at least as well. So the cab is not part of either plugin kind:
 - **Save / load:** an explicit `save` / `load` is needed for savegames and
   for joining a multiplayer session mid-run. For legacy DLLs the bridge
   saves `Engine::var` and the mirror state.
-- **Later:** the same API can be offered to a scripting runtime (for example
-  WASM) without changing the simulation side.
+- **Later:** the same API can be offered to a scripting runtime without
+  changing the simulation side. The plan is Lua (LuaJIT) with a PascalCase
+  API in the style of `ts.h`: `roadmap.md`, "Train plugins in Lua and
+  replaceable train systems".
 
 ## As built
 
@@ -399,19 +482,25 @@ openRTS (x64)                                    openrts-dllhost32.exe (x86, sta
   movement and `Switched` order) and is the simulation's controller.
 - `sdk/samples/fake_native`: the fake DLL's logic on the native API; the
   parity test runs both through one script and compares every step.
-- Not yet: the `ORTSTrainPlugin ( "x.dll" )` key in the game (the loader
-  is there, the viewer does not pick it up), the VL10k port.
+- The viewer runs the driven engine's `ORTSTrainPlugin ( "x.dll" )`
+  (relative to the `.eng` folder): its controller, its cab (`.sd` keys,
+  the mouse, RTS's step rules), gauges, lamps, sounds and messages; the
+  3-D cab shows its state as a DLL's.
+- `sdk/samples/vl10k`: the VL10k's logic as an example (one section; no
+  multiple units, regenerative braking, КЛУБ / САУТ).
 
 ### Remaining
 
-- The VL10k logic as a native sample, and the parity run against
-  `vl10k.dll` on the VL10k script.
-- Exterior lights (`LightObj` from the `.eng` `Lights`), doors by name,
-  close-up screens, track items for `RTSGetTrackItems`, named SMS triggers
-  (`RTSGetNamedInteger`), cab signals for `ALSN` from the signal system.
-- Changing ends and coupling while a legacy consist runs: the consist is
-  rebuilt (the DLLs get `Init` again) instead of `ChangeLoco` /
-  `LostMaster` keeping their state.
+- The parity run of the VL10k example against `vl10k.dll` (not wanted for
+  now: the port stays an example), native plugins on the other engines of
+  a multiple unit.
+- Doors by name, close-up screens. (Track items for `RTSGetTrackItems`,
+  named SMS triggers and trigger pairs, `RTSSignalData` for `ALSN`: done
+  2026-11-04, `reverse/train-dll.md` §19.)
+- An engine cut off from the player's train: RTS keeps running its DLL,
+  openRTS keeps its state but does not run it until it is coupled again.
+  (Coupling and uncoupling keep the DLLs' state since 2026-11-04,
+  `reverse/train-dll.md` §3, "Regrouping".)
 
 ## Order
 

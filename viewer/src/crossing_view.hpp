@@ -39,8 +39,10 @@ public:
 
     // Each frame: the crossings among the streamed objects, the trains'
     // marks, the gates, the lights and the bells.
+    // `gain`: the share of outside sound that reaches the listener (his room's doors and windows).
     void update(float elapsed, const std::vector<renderer::StreamedInstance>& visible,
-                const std::vector<const simulation::Train*>& trains, const glm::vec3& listener, audio::VoiceSink* sink);
+                const std::vector<const simulation::Train*>& trains, const glm::vec3& listener, audio::VoiceSink* sink,
+                float gain = 1.0f);
     void stop_sound(audio::VoiceSink& sink);
     // The gates' and lights' frames of a crossing's shape (nullopt: not a crossing).
     [[nodiscard]] std::optional<std::vector<renderer::NodeAdjustment>> adjustments(const renderer::StreamedInstance& instance,

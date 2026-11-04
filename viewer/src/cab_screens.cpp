@@ -173,9 +173,11 @@ CabScreens::CabScreens(const formats::CabDescription& cab, const core::VirtualPa
     }
 }
 
-void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std::vector<ScreenBatch>& out) {
+void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std::vector<ScreenBatch>& out,
+                       const std::vector<bool>* blinked_off) {
     for (auto& screen : screens_) {
         const auto& display = cab_->displays[screen.display];
+        if (blinked_off && screen.display < blinked_off->size() && (*blinked_off)[screen.display]) continue;
         // The display itself: State 0 hides it (SetDisplayState).
         const std::uint32_t display_state = state && display.id < state->displays.size() ? state->displays[display.id].state
                                                                                          : display.initial_state;

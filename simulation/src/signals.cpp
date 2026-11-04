@@ -38,6 +38,7 @@ struct ChainNode {
 struct TrainState {
     std::vector<ChainNode> chain;       // ahead of the leading end
     std::vector<ChainNode> other_chain; // ahead of the other end (the player's train)
+    bool lead_is_front = true;          // the leading end is the train's front
     SignalAhead ahead;
     std::uint32_t nearest_object = no_index;
     double nearest_distance{};
@@ -879,6 +880,11 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
         state.other_chain.clear();
         const auto lead = train->leading_end();
         if (!lead) continue;
+        {
+            const auto front = train->front_end();
+            state.lead_is_front = !front || (front->node() == lead->node() && std::abs(front->offset() - lead->offset()) < 1e-3
+                                             && front->forward() == lead->forward());
+        }
         const double passing = std::abs(train->speed()) * dt * 1.5;
         const auto authority = impl.authority ? impl.authority(*train) : std::nullopt;
         const auto flags = impl.train_settings.find(train->id());
@@ -996,6 +1002,39 @@ bool SignalSystem::reads_stale(const std::uint32_t head) const {
 SignalAhead SignalSystem::ahead(const Train& train) const {
     const auto it = impl_->trains.find(train.id());
     return it == impl_->trains.end() ? SignalAhead{} : it->second.ahead;
+}
+
+std::vector<SignalPosition> SignalSystem::positions(const Train& train, const bool front) const {
+    std::vector<SignalPosition> out;
+    const auto it = impl_->trains.find(train.id());
+    if (it == impl_->trains.end()) return out;
+    const auto& state = it->second;
+    const auto& chain = front == state.lead_is_front ? state.chain : state.other_chain;
+    for (const auto& node : chain) {
+        SignalPosition p;
+        p.object = node.object;
+        p.distance = node.distance;
+        p.speed = node.speed;
+        // 0x508520: NORMAL -> Aspect[0] (flag 1), DISTANCE -> [1] (2),
+        // SHUNTING -> [2] (4), INFO -> [3] (8); the highest state of each.
+        for (const auto h : node.heads) {
+            const auto& head = heads_[h];
+            const int fn = head.type ? static_cast<int>(head.type->function) : 0;
+            int slot = -1;
+            switch (fn) {
+            case 1: slot = 0; p.flags |= 1u; break;
+            case 3: slot = 1; p.flags |= 2u; break;
+            case 2: slot = 2; p.flags |= 4u; break;
+            case 5: slot = 3; p.flags |= 8u; break;
+            default: break;
+            }
+            if (slot < 0) continue;
+            const auto state_value = static_cast<std::uint32_t>((std::max)(static_cast<std::int64_t>(head.state), std::int64_t{0}));
+            p.aspect[slot] = (std::max)(p.aspect[slot], state_value);
+        }
+        out.push_back(p);
+    }
+    return out;
 }
 
 std::vector<SignalPass> SignalSystem::take_passes() {

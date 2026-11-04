@@ -230,12 +230,23 @@ void read_item(Tokenizer& tokens, const std::string& keyword, TrackDatabase& dat
             item.z = float_at(list, 2);
             item.tile_x = int_at(list, 3);
             item.tile_z = int_at(list, 4);
-        } else if (equals_ignore_case(name, "TrItemPData") && !item.has_position) {
-            item.has_position = true;
-            item.x = float_at(list, 0);
-            item.z = float_at(list, 1);
-            item.tile_x = int_at(list, 2);
-            item.tile_z = int_at(list, 3);
+            item.has_rdata = true;
+            for (int k = 0; k < 3; ++k) item.rdata[k] = float_at(list, static_cast<std::size_t>(k));
+            item.rdata_tile[0] = int_at(list, 3);
+            item.rdata_tile[1] = int_at(list, 4);
+        } else if (equals_ignore_case(name, "TrItemPData")) {
+            item.has_pdata = true;
+            item.pdata[0] = float_at(list, 0);
+            item.pdata[1] = float_at(list, 1);
+            item.pdata_tile[0] = int_at(list, 2);
+            item.pdata_tile[1] = int_at(list, 3);
+            if (!item.has_position) {
+                item.has_position = true;
+                item.x = float_at(list, 0);
+                item.z = float_at(list, 1);
+                item.tile_x = int_at(list, 2);
+                item.tile_z = int_at(list, 3);
+            }
         } else if (equals_ignore_case(name, "TrSignalType")) {
             item.signal_flags = hex_at(list, 0);
             item.signal_direction = uint_at(list, 1);
@@ -244,7 +255,18 @@ void read_item(Tokenizer& tokens, const std::string& keyword, TrackDatabase& dat
         } else if (equals_ignore_case(name, "SpeedpostTrItemData")) {
             for (std::size_t i = 0; i < list.size(); ++i) item.speed_post_data.push_back(float_at(list, i));
         } else if (equals_ignore_case(name, "PlatformTrItemData") || equals_ignore_case(name, "SidingTrItemData")) {
+            item.item_flags = hex_at(list, 0);
             if (list.size() > 1) item.linked = uint_at(list, 1);
+        } else if (equals_ignore_case(name, "PlatformMinWaitingTime")) {
+            item.min_wait = uint_at(list, 0);
+        } else if (equals_ignore_case(name, "PlatformNumPassengersWaiting")) {
+            item.passengers = uint_at(list, 0);
+        } else if (equals_ignore_case(name, "CrossoverTrItemData")) {
+            item.crossover[0] = uint_at(list, 0);
+            item.crossover[1] = uint_at(list, 1);
+        } else if (equals_ignore_case(name, "PickupTrItemData")) {
+            item.pickup_amount = float_at(list, 0);
+            item.pickup_flags = hex_at(list, 1);
         } else if (equals_ignore_case(name, "PlatformName") || equals_ignore_case(name, "SidingName")) {
             if (!list.empty()) item.name = list[0];
         } else if (equals_ignore_case(name, "Station")) {

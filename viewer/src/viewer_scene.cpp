@@ -398,6 +398,7 @@ public:
             if (input.place_train && train_->loaded()) place_train(camera);
             train_->set_obstacles(streamer_ ? &streamer_->visible_instances() : nullptr);
             train_->set_world_clock(clock.time_of_day, sky_state_ && sky_state_->night);
+            train_->set_world_light(sky_state_ ? sky_state_->world_lit : 1.0f, static_cast<std::uint8_t>(clock.weather));
             train_->update(input, camera, clock.elapsed, *library_, audio_);
         }
         if (signals_) {
@@ -433,13 +434,17 @@ public:
         library_->update();
         collect_lights(camera.eye(), clock.elapsed);
 
-        // The free camera is an external camera for sound activation.
+        // The free camera is an external camera for sound activation; RTS
+        // activates the world's sounds by ExternalCam in the cab too
+        // (0x44AB7C: not the player's train). Heard from the engineer's room,
+        // they pass its doors and windows (docs/sound.md).
+        const float outside_gain = train_ ? train_->outside_gain() : 1.0f;
         if (world_sounds_ && audio_) {
-            world_sounds_->update(clock.elapsed, camera.eye(), audio::SoundCamera::external, *audio_);
+            world_sounds_->update(clock.elapsed, camera.eye(), audio::SoundCamera::external, *audio_, outside_gain);
         }
         if (crossings_) {
             const auto trains = train_ ? train_->trains() : std::vector<const simulation::Train*>{};
-            crossings_->update(clock.elapsed, streamer_->visible_instances(), trains, camera.eye(), audio_);
+            crossings_->update(clock.elapsed, streamer_->visible_instances(), trains, camera.eye(), audio_, outside_gain);
         }
         if (roads_ && effects_.traffic) roads_->update(clock.elapsed, streamer_->visible_instances(), crossings_.get(), *library_);
         if (precipitation_ || smoke_) {
@@ -460,7 +465,7 @@ public:
                 smoke_->update(clock.elapsed, sources, opaque);
             }
         }
-        update_weather_sound(clock.elapsed, camera.eye());
+        update_weather_sound(clock.elapsed, camera.eye(), outside_gain);
     }
 
     [[nodiscard]] SceneEnvironment environment() const override {
@@ -667,6 +672,7 @@ public:
         const auto streamed = streamer_->stats();
         report += "; terrain tiles " + std::to_string(terrain_ ? terrain_->loaded_tiles() : 0) + ", world tiles " + std::to_string(streamed.loaded_tiles) + " of "
             + std::to_string(streamed.requested_tiles) + ", instances " + std::to_string(streamed.visible_instances);
+        if (train_ && train_->placed()) report += std::string(1, '\n') + "trains: " + train_->systems_report();
         return report;
     }
     [[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>> cab_switch_state(const std::uint32_t id) const override {
@@ -683,6 +689,9 @@ public:
     }
     void choose_car_menu_item(const int id) override {
         if (train_) train_->choose_car_menu_item(id);
+    }
+    void uncouple_driven(const std::size_t index) override {
+        if (train_) train_->uncouple_driven(index);
     }
     [[nodiscard]] std::string car_menu_report() const override { return train_ ? train_->car_menu_report() : std::string{}; }
     [[nodiscard]] std::optional<renderer::ShadowFocus> shadow_focus() const override {
@@ -865,7 +874,11 @@ private:
     // of the scene follows.
     // The rain or the snow heard (RTS 0x55859C: the environment's sound, else
     // rain_ex.sms / snow_ex.sms), while it falls.
-    void update_weather_sound(const float elapsed, const glm::vec3& eye) {
+    // In the cab RTS plays the outside sound too, through the room's doors
+    // and windows: rain_in / snow_in list only CabCam and PassengerCam, which
+    // RTS starts for the player's train's objects, never for the weather's
+    // (0x44AB7C), so they stay silent (docs/sound.md).
+    void update_weather_sound(const float elapsed, const glm::vec3& eye, const float gain) {
         const bool falling = audio_ && precipitation_ && precipitation_->drops() > 0;
         const bool snow = precipitation_ && precipitation_->snow();
         if (weather_sound_ && (!falling || snow != weather_snow_)) {
@@ -896,6 +909,7 @@ private:
         }
         if (!weather_sound_) return;
         audio::SoundInputs inputs{.camera = audio::SoundCamera::external, .position = eye};
+        inputs.gain = gain;
         weather_sound_->update(elapsed, inputs, *audio_);
     }
 

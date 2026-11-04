@@ -143,7 +143,7 @@ Client → server events:
 | `0x4639`, `0x463A`, `0x463D` | PROBABLE: a cab control of the player's engine changed. Sent from the cab switch handlers (`0x437AA4`, `0x437E64`, `0x438430`, `0x438708`), rate-limited by the server, relayed so others see the lights, pantographs and sounds |
 | `0x462D` | the player's position, the person icon of Ctrl+F7 (relayed with the user id and name added) |
 | `0x4636` | per-car state with `0x4638` blocks — UNKNOWN in detail |
-| `0x4649` | PROBABLE: train graph data (train, point, time); forwarded to dispatchers only |
+| `0x4649` | CONFIRMED (2026-11-04, client `0x4CF464`): a substation's load — substation, phase (int16), the energy summed over the window, its length in s (`0x5B6030` sends it every 2 s while the line is loaded); forwarded to dispatchers only |
 | `0x4640`, `0x4641`, `0x461D` | UNKNOWN |
 
 Server → client:
@@ -155,7 +155,7 @@ Server → client:
 | `0x460D` | time of day |
 | `0x4605` | a train's kind, subtype, number (car numbers, bits 18+), start state — PROBABLE |
 | `0x4613` | brake pressures of a train other than the player's (four values per car). PROBABLE: what the dispatcher's "Тормоза" form sets |
-| `0x4610` | a train's id changed (after coupling) |
+| `0x4610` | a train's id changed (after coupling; see "Coupling in play") |
 | `0x4611` | a dispatcher's text message ("Dispatcher") |
 | `0x4616` | server suspended (pause) |
 | `0x4601` | train assignment |
@@ -213,6 +213,87 @@ The main loop is `TfPult::MainTimerTimer`, "main dispatcher function".
 That is why the user's logs show no train positions. One 8-hour session of about 50 users:
 - clients sent a few hundred `0x460A` each and little else;
 - the server sent 220 000 `0x460C`, 83 000 `0x460A`, 15 000 `0x4613` and 8 000 `0x4605`.
+
+## Coupling in play, two players' trains too — CONFIRMED unless marked (2026-11-04)
+
+Read from `rts_server.exe` and `rts1.exe`. A and B below are two players: A's
+train runs into B's.
+
+**Train kinds.**
+- On the server (`+296`): 0 STATIC, 1 PLAYER, 2 TRAFFIC, 3 LOOSE. PROBABLE
+  numbering: it follows the console's list and the server's use below.
+- On a client, another player's PLAYER train becomes kind 2 with flag
+  `0x10000` (the `0x4607` handler in `0x4C3DE0`). Its position comes from
+  `0x4603`.
+
+**1. The client of the train that runs in notices it** (its physics calls
+`0x469ED8`):
+- its own train (kind 1) always takes the other in: if the other is its own,
+  the two swap places;
+- first it waits, pumping the network, while either train has flag `0x800`:
+  at most 500 × 50 ms (`0x4CDF30`). `0x4610` clears that flag. PROBABLE:
+  `0x800` marks a train waiting for an id from the server;
+- it couples locally and sends `0x460F`: its train's id, the other's id, and
+  one byte for each train's end.
+
+**2. The server** (`0x40FB90` case `0xD` → `0x4501E0`):
+- the other train's cars join the sender's train at that end, turned where
+  needed, positions recomputed; every car now belongs to the sender's train;
+  the other train is deleted (`0x457F44`) and leaves the console's lists;
+- **two players:** when both trains are PLAYER with different owners and B is
+  connected, the server unassigns B: `0x4601` with a 0 byte to B
+  (`0x44ECAC`);
+- `0x460F` (the merged train's id, B's old id, the two end bytes) to everyone
+  but the sender (audience 2);
+- two players only: `0x4610` (B's old id, the merged train's id) to B
+  (audience 1);
+- `0x4603` / `0x4604` of the merged train to everyone but the sender
+  (`0x44F2F0`).
+
+**3. Every other client** repeats the coupling from `0x460F` (`0x469ED8`
+with `0x631E76` set: no swap).
+
+**4. Player B:**
+- B's train goes into A's, which on B's client is another player's train
+  (kind 2): its position now comes from A's `0x4603`;
+- the client's player train (`0x61D680`, PROBABLE) moves to the merged
+  train, which gets flag `0x20`. B stays in their cab; the train is moved by
+  A's simulation. PROBABLE: nothing carries B's controls into it (the
+  `0x4639` family only shows lights, pantographs and sounds to others);
+- in play the client has no handler for `0x4601` (only the menu waiting for
+  an assignment reads it, `0x461F00`), so B's client never learns it was
+  unassigned;
+- `0x4610` names B's old train, which is already gone: the client logs
+  "not found" (event 5) and nothing changes.
+
+**Not done by RTS:**
+- no speed is computed for two players' trains: the cars are joined as they
+  are;
+- B does not become a helper: only the dispatcher assigns helpers;
+- the uncoupling later is `0x460E`, and the server picks the cut part's id
+  (the client reads it into `0x631E78` before splitting, `0x469858`). Who
+  owns the cut part is not traced.
+
+**The server's own coupling** (`0x40DCDC`; the server moves LOOSE trains
+itself, a static train pushed without coupling becomes LOOSE):
+- a moving train reaching a STATIC or LOOSE one takes it in at the speed
+  `(v1·m1 + v2·m2) / (m1 + m2)` (PROBABLE: `0x458E80` is the mass);
+- reaching a PLAYER or TRAFFIC train, it is taken in by that train, and the
+  `0x460F` goes to everyone. `version.txt`: "a PLAYER or TRAFFIC train
+  absorbs the LOOSE one";
+- PROBABLE: a LOOSE train standing for 30 s becomes STATIC.
+
+**Both clients at once (PROBABLE).** When both trains move towards each
+other, both clients can notice the coupling:
+- each couples with its own train in front and sends `0x460F`;
+- the server carries out the first. The second names a train that no longer
+  exists, and `0x458EC0` finds nothing;
+- on B, the server's `0x460F` names A's train, which B has already taken in,
+  and is dropped too (event 5). `0x4610` then renames B's merged train to
+  A's id: this looks like what `0x4610` is for;
+- that merged train is still kind 1 on B: both clients would simulate it and
+  send its `0x4603`. Whether the server drops positions from a player who
+  no longer owns the train is not traced.
 
 ## The player mini-server (`rts1.exe`) — CONFIRMED
 
@@ -391,8 +472,18 @@ How everyone else treats it:
     - the engineer answers with the whole cab, `0x4624` (5 758 bytes).
   - The engineer streams as soon as its connection is up, before a helper exists. A relay should drop that, not queue it.
 
+**Coupling of two players' trains.**
+- Legacy on: as RTS does it (above), so RTS clients see what they expect.
+- Legacy off:
+  - the server decides a coupling in one step, so two clients cannot both
+    carry it out;
+  - the player whose train was taken in chooses: stay in the merged train as
+    a helper, or uncouple and take their engine back.
+
 **Next reverse steps:**
 - the payloads of the `0x45xx` dispatcher packages;
 - the `0x4620` family;
 - the remaining `0x4603` fields;
-- a capture with the server's full data trace to check the counts and the period.
+- a capture with the server's full data trace to check the counts and the period;
+- after a coupling: whether the server drops `0x4603` from a player who no
+  longer owns the train, and who owns a part cut off later (`0x44FE34`).

@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include <openrts/audio/interior_acoustics.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/rolling_stock.hpp>
@@ -333,6 +334,39 @@ int cab_check(const core::Vfs& vfs, const std::vector<std::string>& args) {
         std::printf("door %s (%s - %s) at (%.2f %.2f %.2f): node %s%s\n", door.name.c_str(), door.from.c_str(),
                     door.to.c_str(), door.position[0], door.position[1], door.position[2],
                     it != nodes.end() ? "yes" : "no", animated ? ", animated" : "");
+    }
+    // Rooms and sound proofing (docs/sound.md): the share of an outside sound
+    // heard in each room with everything shut, the windows open, all open;
+    // and between the rooms with everything shut.
+    if (!cab.areas.empty()) {
+        const audio::InteriorAcoustics rooms(cab);
+        const std::vector<float> doors_shut(cab.doors.size(), 0.0f), doors_open(cab.doors.size(), 1.0f);
+        const std::vector<float> windows_shut(cab.windows.size(), 0.0f), windows_open(cab.windows.size(), 1.0f);
+        constexpr int out = audio::InteriorAcoustics::outside;
+        for (std::size_t r = 0; r < cab.areas.size(); ++r) {
+            const auto& area = cab.areas[r];
+            const int room = static_cast<int>(r);
+            std::printf("room %s (%.2f %.2f .. %.2f %.2f): outside heard %.2f shut, %.2f windows open, %.2f all open;",
+                        area.name.c_str(), area.x1, area.z1, area.x2, area.z2,
+                        rooms.transmission(room, out, doors_shut, windows_shut),
+                        rooms.transmission(room, out, doors_shut, windows_open),
+                        rooms.transmission(room, out, doors_open, windows_open));
+            for (std::size_t s = 0; s < cab.areas.size(); ++s) {
+                if (s == r) continue;
+                std::printf(" from %s %.2f", cab.areas[s].name.c_str(),
+                            rooms.transmission(static_cast<int>(s), room, doors_shut, windows_shut));
+            }
+            std::printf("\n");
+        }
+        for (const auto& window : cab.windows) {
+            const int room = window.has_position ? rooms.room_at(window.position[0], window.position[2]) : out;
+            std::printf("window %s: room %s, SoundProof %.2f / %.2f\n", window.name.c_str(),
+                        room == out ? "none" : cab.areas[static_cast<std::size_t>(room)].name.c_str(), window.sound_closed,
+                        window.sound_open);
+        }
+        for (const auto& door : cab.doors)
+            std::printf("door %s: SoundProof %.2f / %.2f%s\n", door.name.c_str(), door.sound_closed, door.sound_open,
+                        door.opened ? ", opened" : "");
     }
     return 0;
 }

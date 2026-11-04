@@ -222,8 +222,11 @@ playable game. Order (the user's decisions, 2026-11-01):
   `EngineParameters`, `AuxLibraries`, `LocomotiveSeries`, `NumEngines`,
   `SMECable`, `HVBus`, `MaxNumSlaveLoco`), `.repaint`, the exterior
   animations and doors for DLLs, pantographs animated (from the DLL, else
-  the rear one by the direction of travel). Not yet: lights, horn / bell /
-  sanders / doors without a DLL, `AlwaysUsePanto`, `_LowerPantoOnStop`.
+  the rear one by the direction of travel). Done since (2026-11-04,
+  `docs/train-systems.md`): lights without a DLL by their Conditions as RTS
+  decides them, horn / bell / sand / doors keys, `AlwaysUsePanto`,
+  `LowerPantoOnStop`, `RaiseSecondPantoWhenSpeedBelow`,
+  `ExcludePantograph`, `PantographRaiseTime`, the sand supply.
   Done since: route electrification (`docs/electrification.md`): the line
   under each engine from the `.electrotype` / `.electrodb` as RTS finds
   it, given to the DLLs; `WorksOnLineVoltages` for engines without a DLL
@@ -234,15 +237,20 @@ playable game. Order (the user's decisions, 2026-11-01):
   their nodes), the mouse on the 3-D cab (hover hint, click, wheel), Alt
   labels; the engineer on foot as RTS has him (chair keys, the window and
   head out, walking through the car and into the next section, out onto
-  the ground, `docs/reverse/train-dll.md` §13). Not yet: digital displays
-  and screens, cab lights.
+  the ground, `docs/reverse/train-dll.md` §13). Done since (2026-11-04): DISPLAY
+  state nodes and the displays' blink, cab lamps without a DLL by their
+  Flags, `ALSN` with RTS's three arrays, taking another cab by walking
+  into it (`ChangeLoco`), the car menu's cables, coupling repair and
+  cargo, the line current, wire burning and substation load.
 - 4 done: `RTSCabinSound` of the player's engine with the DLL's cab
   triggers and Var1..8; the camera kind for SMS activation.
 - 5 done: `BrakeModel::realistic` (Train window, off by default; trains
   with a legacy DLL keep RTS's air).
-- 6 partly: the API, the C++ layer, the loader, a sample and the parity
-  test; the VL10k port and the `.eng` key in the game are still to do.
-- 7: the CHANGELOG has the step; commit, push and tag wait for the user.
+- 6 done: the API, the C++ layer, the loader, a sample and the parity
+  test; the `ORTSTrainPlugin` key in the game (cab, keys, mouse, gauges);
+  the VL10k logic as a native example (`sdk/samples/vl10k`, one section,
+  no parity run against the DLL: the user's call, 2026-11-04).
+- 7 done: `v0.1.0`, then `v0.2.0` and `v0.3.0` (2026-11-04).
 
 - This is where most RTS rolling-stock logic lives: in the DLLs, with
   `ALSN` (cab signalling) and `SpeedLimit` callbacks.
@@ -252,6 +260,62 @@ playable game. Order (the user's decisions, 2026-11-01):
 See "Multiplayer: feasibility" below. The network carries train, switch and
 signal state, so it builds on steps 1–4. The chunk dumper for `multdata`
 and capture tooling do not depend on the simulation and can start earlier.
+
+**Order (2026-11-04).** Steps 1–5 are done, and there is no network code
+yet. Each stage ends with something that runs and is checked:
+
+1. **The RTS protocol without a network.**
+   - What: a library `openrts_net`: the framing (`u16` id, `u32` length,
+     nested packages), a reader and writer, and the packages of the startup
+     snapshot. Then the snapshot itself: time, junctions, signals,
+     electrification, pickups, trains with their cars (`0x4607`,
+     `0x4603` / `0x4604`, cargo), players.
+   - Reverse first: the payloads the client reads (`0x4C3DE0`,
+     `0x4CAEAC`).
+   - Check: a tool prints `RTS/multdata` package by package; the viewer
+     loads a world from it (time, junctions, signals, trains placed),
+     still offline.
+2. **openRTS as a client of the original `rts_server.exe` (Legacy).**
+   - What: TCP, the login `0x4600` (version 101) and its replies, the
+     network thread with a queue into the main loop.
+   - In play:
+     - the player's train goes out as `0x4603` / `0x4604` every 1.5 s;
+     - other trains come in as remote trains: no physics of their own,
+       positions from `0x4603`, extrapolated, stopped after 5 s without an
+       update;
+     - the server decides junctions, signals and time;
+     - car menu actions, couplings (as RTS does them,
+       `reverse/multiplayer.md`), messages, pause, "Server down".
+   - Check: on one PC with `rts_server.exe`, an `rts1.exe` and openRTS see
+     each other's trains, as the test of 2026-11-03 did with two `rts1.exe`.
+3. **The openRTS server.**
+   - One program for players and dispatchers, the Legacy switch and its
+     rules, the agreed settings for everyone.
+   - Coupling of two players' trains decided by the server in one step
+     (Legacy off).
+4. **Helpers** through the relay (the scheme tested on 2026-11-03), and
+   for openRTS clients over the normal connection.
+5. **The dispatcher console** as an HTML client.
+
+**Still to reverse for it** (a capture with the server's full data trace
+answers most):
+- the payloads of the snapshot packages and of `0x4605`;
+- the remaining fields of `0x4603`;
+- `0x4620`..`0x462C`, what the engineer sends a helper;
+- `0x4639` / `0x463A` / `0x463D` (now PROBABLE: cab controls others see);
+- `0x4636` / `0x4638`, `0x4640`, `0x4641`, `0x461D`;
+- the dispatcher's `0x4504`..`0x450E`;
+- after a coupling: whether the server drops `0x4603` from a player who no
+  longer owns the train, and who owns a part cut off later.
+
+**What the client lacks** (by stage 2):
+- remote trains (above) with their lights, pantographs and sounds from the
+  cab packages;
+- the world from the server, not its own: signal aspects (there is an
+  aspect override to build on), locked junctions, time and pause, brake
+  pressures of other trains (`0x4613`), electrification, weather areas
+  (`0x4634`; openRTS has one weather for the whole route);
+- the cab snapshot for a helper (`0x4624`).
 
 **Dispatcher console (Пульт ДСП)** — here, not in step 4 (see there):
 - station routes and interlocking: route points (tracks, exits), routes
@@ -320,6 +384,194 @@ in the experimental path, sky reflections and sun shadows; then optional
 glTF replacements of whole `.s` shapes with the same node names. The RTS
 path always draws the MSTS version; the choice is visual only and never
 affects simulation or multiplayer.
+
+## Left to do outside multiplayer (2026-11-04)
+
+None of it blocks multiplayer.
+
+**Cab and DLLs:**
+- screens: close-up scenes, LINK scenes, `CopySubObjects`, the lighting of
+  the `…Diff` shaders;
+- `DisplayFade`: lamps and displays switch, RTS fades them;
+- doors by name for the DLLs;
+- an engine cut off from the player's train: RTS keeps running its DLL,
+  openRTS keeps its state without running it;
+- native plugins only on the driven engine, not on the other engines of a
+  multiple unit; the VL10k example has one section, no regenerative
+  braking, no КЛУБ / САУТ;
+- track items: a level crossing's `Time` / `Distance` are 0 (RTS's
+  runtime fill not traced); the walk's mode and the train's length
+  reference are PROBABLE (`reverse/train-dll.md` §19).
+
+**Sound:**
+- RTS's volume law (30·log10) and its distance fade: they change every
+  sound, to be done separately and listened to;
+- a salon's own sound (`SoundInt`, one installed wagon);
+- where RTS puts the listener while the head is out of the window;
+- route ambient sounds (`ingame.sms`), the default signal and tower sounds
+  of the `.trk`.
+
+**Rolling stock and the world:**
+- a report of the `.eng` keywords openRTS does not read
+  (`openrts-train-check`), promised in step 5;
+- how RTS connects the hoses when trains couple (not traced);
+- RTS's solver for derailed trains (a simpler folding rule stands in);
+- Dyntrack, deer (`Hazard`), the pickup animation, car sounds, drawing the
+  wires from the catenary types.
+
+**Later, planned:** Lua plugins and replaceable train systems (below),
+activities and full AI traffic (step 7), PBR (step 8).
+
+## Train plugins in Lua and replaceable train systems (plan, 2026-11-04)
+
+Not started: the user's plans and what was worked out with them. Nothing
+here is decided beyond that.
+
+**Why.**
+- Authors without a C++ compiler or a 32-bit DLL.
+- People who know the real hardware: a Metrostroi developer wants to put the
+  real ЭР9 circuit in.
+
+### Lua plugins (LuaJIT)
+
+**How it fits:**
+- one more implementation of the plugin interface (`train_plugin.h`), as
+  the legacy bridge is. The simulation, `CabModel`, sound and network do not
+  change;
+- in the `.eng` the same key: `ORTSTrainPlugin ( "logic.lua" )`, chosen by
+  the extension and read through the VFS (packs and mods work);
+- one `lua_State` per car. Cars talk only through the host's train wires,
+  never through shared globals.
+
+**The API as authors see it** (a Lua layer over the C ABI):
+- PascalCase names as in `ts.h` (`SetSwitch`, `TrainPipeRate`,
+  `PostTrigger`, `ShowMessage`), so DLL logic such as `vl10k_main.cpp`
+  ports almost line by line. What `ts.h` lacks gets names in the same
+  style: `Train:Wire(n)`, `Track:Items(5000)`, `Param("MaxForce", 0)`;
+- events are plain functions, only the used ones need to exist: `OnInit`,
+  `OnStep`, `OnSwitchRequest`, `OnSwitched`, `OnSave`, `OnLoad`;
+- properties instead of calls: `Engine.Force = …`; `Loco.Speed` is
+  read-only. Writing a read-only or unknown field is an error with the file
+  and line;
+- cab controls by name or by the `.sd` ID. An unknown name fails at load and
+  lists the cab's names;
+- RTS units (m/s, N, atm), UTF-8 strings (Russian messages just work);
+- a definitions file for the Lua Language Server, for completion and hints
+  in the editor.
+
+```lua
+function OnStep(dt)
+    local notch = Cab:Switch("C_MAIN")
+    Engine.Force = notch * 30000 * Engine.Reverse
+    Cab:Display("AMMETER").Value = Loco.LineCurrent
+    if Loco.Speed > 25 and not overspeed then
+        overspeed = true
+        Sound:Post(120)
+        ShowMessage("Превышение скорости!")
+    end
+end
+
+function OnSwitchRequest(name, from, to)
+    return not (name == "K_STR" and Loco.Speed > 0.5)
+end
+```
+
+**For a real circuit (ЭР9 class)** — part of the first version, not added
+later:
+1. plugins on every car, `.wag` too: the motor, trailer and head cars each
+   run their part;
+2. train wires by number over the connections between cars (the СМЕ cable
+   of the car menu, which already connects and parts). A car writes a wire
+   and the others read it. Reads see the previous sub-step, so the order of
+   the cars does not matter;
+3. sub-steps: a script can ask for `StepRate = 200`, and the host calls it
+   several times per simulation step (a 0.2 s relay is too coarse at 50 ms);
+4. `require` from the train's folder through the VFS, for code in many
+   files and modules shared by the cars;
+5. a library of parts: a relay with on and off delays, a contactor, a DC
+   traction motor, a compressor, a battery, a fuse. Authors can write their
+   own;
+6. debugging:
+   - a viewer window with the live relays and wires the script publishes
+     through `Debug`;
+   - a log;
+   - reloading the script on the fly, keeping its state through `OnSave` /
+     `OnLoad`;
+7. the link to the physics exists already: the line voltage, the current
+   back into the contact network (substation load, wire burning), the car's
+   force, the brakes through `TrainPipeRate` and ЭПТ, the cab, a sound for
+   every relay click.
+
+**Safety:**
+- a sandbox by default: no `io`, `os` or `ffi`, `require` only from the VFS;
+- the JIT and full access only for packs the player trusts (a switch per
+  pack). LuaJIT's instruction-count hook does not fire inside compiled
+  code, so a hang there cannot be stopped cleanly. Untrusted scripts run
+  interpreted with a limit, which is fast enough at 20 steps per second;
+- an alternative if the sandbox matters more than the speed: Luau, which has
+  the sandbox and the interrupt built in. Not chosen.
+
+**Multiplayer:**
+- the step runs on the owner's machine and its outputs are synchronised, as
+  for native plugins;
+- `OnSave` / `OnLoad` serve joining mid-session;
+- a helper gets the cab's state, not the whole circuit.
+
+**The C ABI needs, for native plugins too:**
+- `save` / `load` (in the principles of `train-dll.md`, not in the ABI yet);
+- plugins on wagons;
+- train wires and sub-steps;
+- track items;
+- debug values.
+
+**Licences.**
+- LuaJIT is MIT, compatible with GPLv3.
+- Code brought from Metrostroi: check its licence first. The approach
+  carries over freely; the code not necessarily.
+
+**Work:**
+- LuaJIT in the CMake build (`FetchContent` and its MSVC build);
+- `trainplugin::LuaLocomotive`, the bindings, the sandbox;
+- a sample (the VL10k or the fake engine in Lua);
+- a parity test against the native version, as for the DLLs;
+- docs.
+
+### Replaceable train systems
+
+The user's plan ("пока что просто в планах"):
+
+| Car | Logic | Air brakes | Physics |
+|---|---|---|---|
+| ordinary wagon | standard MSTS | RTS | RTS |
+| engine driven from the keyboard | MSTS + keyboard | RTS | RTS |
+| engine with an RTS DLL | the DLL | RTS: the DLLs' valves are tuned to RTS's distributor (`reverse/air-brakes-real.md`) | RTS |
+| engine with our plugin (native or Lua) | the plugin | per module: RTS or the author's own | RTS, with forces from the modules |
+
+What follows from it:
+- **RTS is a module too.** RTS's distributor, its traction and the keyboard
+  driver's valve implement the same interfaces as an author's module. They
+  are not hard-wired.
+  - Choosing is choosing a module.
+  - An author's module is checked by the same parity tests.
+  - Legacy means RTS modules everywhere.
+- **What belongs to the whole train stays there.**
+  - The coupler solver is one per train. Cars give it their forces:
+    traction, braking, extra resistance, later their own adhesion. A plugin
+    does not replace the solver.
+  - The brake pipe flow between cars is the train's model (RTS or the
+    realistic one; both exist).
+  - The devices in a car are its modules: the driver's valve, the
+    distributor, the reservoirs, the cylinder. They take air from the pipe
+    and give it back at their point. This is what lets a mixed train work:
+    an author's valve with ordinary wagons on RTS distributors, or an own 483
+    on some cars only.
+- **Where modules are named:**
+  - a plugin declares which modules it takes ("my air, my traction"); the
+    rest keeps the default;
+  - perhaps also in an ordinary `.wag`, so an own 483 works on a freight car
+    behind any engine. This extends the first row; the user's decision.
+- **Multiplayer:** the owner computes, the others see the outputs. Whether
+  authors' modules are allowed under Legacy is a server setting.
 
 ## Multiplayer: feasibility
 

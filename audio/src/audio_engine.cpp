@@ -163,6 +163,14 @@ void AudioEngine::seek(const VoiceId id, const std::uint64_t frame) {
     ma_sound_seek_to_pcm_frame(&it->second->sound, frame % it->second->clip->frames);
 }
 
+std::optional<std::uint64_t> AudioEngine::cursor(const VoiceId id) const {
+    const auto it = impl_->voices.find(id);
+    if (it == impl_->voices.end()) return std::nullopt;
+    ma_uint64 frame = 0;
+    if (ma_sound_get_cursor_in_pcm_frames(&it->second->sound, &frame) != MA_SUCCESS) return std::nullopt;
+    return static_cast<std::uint64_t>(frame);
+}
+
 bool AudioEngine::playing(const VoiceId id) const {
     const auto it = impl_->voices.find(id);
     return it != impl_->voices.end() && !ma_sound_at_end(&it->second->sound);

@@ -253,9 +253,11 @@ signals and blocks and will stand in for remote trains.
 - Station routes and interlocking as the dispatcher console sets them
   (route points, routes between them, route generation): step 6, with the
   console (`roadmap.md`).
-- Signal modes and overrides (`SetSignalMode`, `SignalOverride`): the
-  signal system handles the modes; nothing sets them yet.
-- Track control: electrification and cargo layers (no data model yet), the
-  editor's three buttons, `Release block point` and activity events (step 7).
+- Signal modes and overrides (`SetSignalMode`, `SignalOverride`): set from
+  Track control's train and signal menus; activities and the dispatcher
+  console do not set them yet.
+- Track control: the cargo layer (no data model yet; the electrification
+  layer exists, `electrification.md`), the editor's three buttons, `Release
+  block point` and activity events (step 7).
 - The test driver is not RTS's AI; RTS's traffic priorities (`0x424488`,
   `0x48A0F8` time estimates) are only partly followed (the takeover rule).

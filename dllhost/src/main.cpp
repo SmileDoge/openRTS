@@ -166,6 +166,14 @@ int serve(const std::wstring& name, DWORD parent_pid) {
             write(out, reply);
             break;
         }
+        case Command::reconsist: {
+            ReconsistRequest request;
+            read(in, request);
+            StepReply reply;
+            if (in.failed() || !host.reconsist(request, reply)) status = -1;
+            write(out, reply);
+            break;
+        }
         case Command::step: {
             StepRequest request;
             read(in, request);

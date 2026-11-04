@@ -295,11 +295,32 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
         }
     }
     if (auto current = values(text, "maxlinecurrent", extended); current.found()) {
-        engine.max_line_current = static_cast<float>(current.atof());
+        engine.max_line_current = (std::max)(static_cast<float>(current.atof()), 0.0f);
+    }
+    if (auto cooling = values(text, "maxlinecurrentvelocityincrease", extended); cooling.found()) {
+        engine.line_current_cooling[0] = static_cast<float>(cooling.atof());
+        engine.line_current_cooling[1] = static_cast<float>(cooling.atof());
+        // RTS 0x44247C: a negative value drops both.
+        if (engine.line_current_cooling[0] < 0.0f || engine.line_current_cooling[1] < 0.0f) engine.line_current_cooling = {};
     }
     if (auto burn = values(text, "maxlinecurrentcatenaryburntime", extended); burn.found()) {
-        engine.max_line_current_burn_time = static_cast<float>(burn.atof());
+        engine.max_line_current_burn_time = (std::max)(static_cast<float>(burn.atof()), 0.0f);
     }
+    // Pantographs (0x44247C): ExcludePantograph may repeat, 1..8.
+    for (const auto excluded : blocks(text, "excludepantograph", extended)) {
+        const int number = rts_atoi(text.substr(excluded.begin, excluded.end - excluded.begin));
+        if (number >= 1 && number <= 8) engine.exclude_pantographs |= static_cast<std::uint8_t>(1u << (number - 1));
+    }
+    if (auto speed = values(text, "raisesecondpantowhenspeedbelow", extended); speed.found()) {
+        engine.raise_second_panto_below = static_cast<float>(speed.quantity());
+    }
+    if (auto mask = values(text, "alwaysusepanto", extended); mask.found()) {
+        engine.always_use_panto = static_cast<std::uint8_t>(read_uint(mask));
+    }
+    if (auto mask = values(text, "lowerpantoonstop", extended); mask.found()) {
+        engine.lower_panto_on_stop = static_cast<std::uint8_t>(read_uint(mask));
+    }
+    engine.train_plugin = values(text, "ortstrainplugin", extended).token();
     if (const auto aux = rts_find(text, "auxlibraries", extended)) {
         for (const auto lib : blocks(text, "auxlibrary", *aux)) {
             AuxLibraryDefinition a;
@@ -400,6 +421,7 @@ void read_exhausts(std::string_view text, TextRange block, EngineDefinition& eng
     engine.max_velocity = static_cast<float>(values(text, "maxvelocity").quantity());
     engine.max_current = static_cast<float>(values(text, "maxcurrent").atof());
     engine.sanding_speed = static_cast<float>(values(text, "sanding").quantity());
+    if (auto sand = values(text, "maxsandingtime"); sand.found()) engine.max_sanding_time = static_cast<float>(sand.atof());
     engine.main_reservoir_volume = static_cast<float>(values(text, "airbrakesmainresvolume").atof());
     engine.dynamic_brake_max_force = static_cast<float>(values(text, "dynamicbrakesmaximumforce").quantity());
     if (const auto controllers = rts_find(text, "enginecontrollers")) {
@@ -461,6 +483,10 @@ WagonDefinition parse_wagon(const std::string_view bytes) {
     wagon.mass = static_cast<float>(rts_atof(values(t, "mass").token()) * 1000.0);
     wagon.wheel_radius = static_cast<float>(values(t, "wheelradius").atof());
     wagon.wheels = static_cast<std::uint8_t>(rts_atoi(values(t, "numwheels").here()));
+    if (auto raise = values(t, "pantographraisetime", *block); raise.found()) {
+        wagon.pantograph_raise_time = static_cast<float>(raise.atof());
+        if (wagon.pantograph_raise_time <= 0.0f) wagon.pantograph_raise_time = 3.0f;
+    }
 
     if (const auto front = rts_find(t, "coupling")) {
         read_coupling(t, *front, wagon.mass, nullptr, wagon.couplings[0]);
@@ -586,6 +612,20 @@ ConsistDefinition parse_consist(const std::string_view bytes) {
         entry.cold = is_engine && rts_find(t, "cold", block).has_value();
         if (auto handbrake = values(t, "handbrakepercent", block); handbrake.found()) {
             entry.handbrake = static_cast<float>(handbrake.atof());
+        }
+        for (const auto anim : blocks(t, "freightanim", block)) {
+            ConsistFreight f;
+            auto shape = values(t, "freightanimshape", anim);
+            f.shape = shape.token();
+            f.shape_location = static_cast<std::uint32_t>((std::max)(0, rts_atoi(shape.here())));
+            if (auto position = values(t, "freightanimposition", anim); position.found()) {
+                for (auto& v : f.position) v = static_cast<float>(position.atof());
+            }
+            if (auto mass = values(t, "freightanimmass", anim); mass.found()) f.mass = static_cast<float>(mass.quantity());
+            if (auto volume = values(t, "freightanimvolume", anim); volume.found()) f.volume = static_cast<float>(volume.atof());
+            f.cargo_type = values(t, "freightanimcargotype", anim).token();
+            if (auto id = values(t, "freightanimcargoid", anim); id.found()) f.cargo_id = rts_atoi(id.here());
+            entry.freight.push_back(std::move(f));
         }
         if (!entry.name.empty()) consist.entries.push_back(std::move(entry));
         at = block.end + 1;

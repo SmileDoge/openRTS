@@ -137,7 +137,8 @@ void CrossingView::start_sound(Crossing& crossing) {
 }
 
 void CrossingView::update(const float elapsed, const std::vector<renderer::StreamedInstance>& visible,
-                          const std::vector<const simulation::Train*>& trains, const glm::vec3& listener, audio::VoiceSink* sink) {
+                          const std::vector<const simulation::Train*>& trains, const glm::vec3& listener, audio::VoiceSink* sink,
+                          const float gain) {
     for (auto& [_, crossing] : crossings_) crossing.seen = false;
     for (const auto& instance : visible) {
         if (instance.kind != formats::WorldObjectKind::level_crossing) continue;
@@ -221,6 +222,7 @@ void CrossingView::update(const float elapsed, const std::vector<renderer::Strea
         start_sound(crossing);
         if (!crossing.sound) continue;
         audio::SoundInputs inputs{.camera = audio::SoundCamera::external, .position = crossing.position};
+        inputs.gain = gain;
         inputs[formats::SoundVariable::distance] = hearing;
         inputs.discrete = crossing.triggers;
         crossing.sound->update(elapsed, inputs, *sink);

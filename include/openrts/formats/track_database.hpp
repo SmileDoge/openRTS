@@ -99,6 +99,20 @@ struct TrackItem {
     bool has_position = false;
     std::int32_t tile_x{}, tile_z{};
     float x{}, y{}, z{};
+    // TrItemRData and TrItemPData as written (x y z tile_x tile_z; x z
+    // tile_x tile_z); the position above is RData, else PData.
+    bool has_rdata = false, has_pdata = false;
+    float rdata[3]{};
+    std::int32_t rdata_tile[2]{};
+    float pdata[2]{};
+    std::int32_t pdata_tile[2]{};
+    // PlatformTrItemData / SidingTrItemData flags (hex); PickupTrItemData
+    // (amount, flags hex); CrossoverTrItemData (the other item, the section).
+    std::uint32_t item_flags{};
+    std::uint32_t min_wait{}, passengers{}; // PlatformMinWaitingTime, PlatformNumPassengersWaiting
+    std::uint32_t crossover[2]{};
+    float pickup_amount{};
+    std::uint32_t pickup_flags{};
     std::string name;    // platform / siding name, signal type
     std::string station; // platforms
     // Platforms and sidings: the item at the other end (PlatformTrItemData /

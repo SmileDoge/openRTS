@@ -99,6 +99,20 @@ rts1.exe; findings from the decompiled code, on a copy of the database.
   `renderer::ScreenQuadRenderer` draws them before the translucent pass (the
   cab glass covers them), a millimetre towards the eye.
 - Not done: LINK (2-D scenes), close-up scenes, `CopySubObjects`, the
-  lighting of the `…Diff` shaders, the display-level blink.
+  lighting of the `…Diff` shaders.
+
+## The other displays (`0x525DB0`)
+
+- **CONFIRMED** `DisplayFade ( fade blink )` (`0x51CD88`, display `+76`
+  / `+80`): with a blink the display counts its clock (`+72`) to twice the
+  blink and is hidden in the second half.
+- **CONFIRMED** a LAMP display (type bit 2) shows its node while its State
+  is set and not blinked off (`0x4B355C(node, fade, on)`).
+- **CONFIRMED** a DISPLAY (type bit 4) has `StateNodes ( n "node" ... )`
+  (`+52` names, `+56` nodes, `+68` count): node j is shown for bit j of the
+  State, or, with flag `0x40000` (`DISPLAY_SEQUENCE`), when the State is
+  j + 1; all hidden while blinked off. 202 DISPLAYs in the installed cabs
+  (the ЧС4т's lamp groups among them).
+- openRTS: `CabView::adjustments` (show / hide; the fade is not done).
 - `openrts-train-check --screens` prints what every screen shows;
   `--screens-image <dir>` writes them as PPM images.

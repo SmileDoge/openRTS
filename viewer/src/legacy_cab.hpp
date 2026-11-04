@@ -28,6 +28,7 @@ struct LegacyCarRef {
     const formats::WagonDefinition* definition = nullptr;
     std::string folder; // TRAINSET subfolder
     std::uint32_t uid{};
+    std::uint32_t key{}; // unique in the game: follows the car through couplings
 };
 
 class LegacyCab {
@@ -36,8 +37,10 @@ public:
     // (`status` says why).
     // `start_state`: the DLLs' Init state as an activity's TrainState (0 cold,
     // 1 on, 3 running), -1 running (the default).
+    // `route`: for the library sounds RTS finds in the route's SOUND first (ROUTEFORWAGON).
     [[nodiscard]] static std::unique_ptr<LegacyCab> attach(const core::Vfs& vfs, const std::vector<LegacyCarRef>& cars,
-                                                           simulation::Train& train, std::string& status, int start_state = -1);
+                                                           simulation::Train& train, std::string& status, int start_state = -1,
+                                                           const core::VirtualPath* route = nullptr);
 
     // Before train.step(): one round trip with the host. Sound triggers per
     // car are added to `triggers` (exterior SMS), messages to the log.
@@ -84,10 +87,20 @@ public:
     // `extra`: more of the window, drawn under the cab keys checkbox.
     void draw_window(const std::function<void()>& extra = {});
 
+    // Cars coupled on or cut off (`cars` and `train` as they are now): the
+    // DLLs keep their state and regroup (LegacyConsist::reconsist), the
+    // controllers go on the DLL engines' new places. False: attach again.
+    bool reconsist(const core::Vfs& vfs, const std::vector<LegacyCarRef>& cars, simulation::Train& train);
+    // The player takes locomotive `car` (the engineer walked into its cab):
+    // the host enters it (Init, ChangeLoco, the multiple-unit groups) and its
+    // cab's keys are bound. False when it has no DLL or the host refuses.
+    bool enter(std::size_t car, const simulation::Train& train);
     [[nodiscard]] bool keyboard() const noexcept { return keyboard_; }
     void set_keyboard(bool on) noexcept { keyboard_ = on; }
     [[nodiscard]] bool alive() const { return consist_ && consist_->alive(); }
     [[nodiscard]] std::size_t player() const { return consist_ ? consist_->player() : SIZE_MAX; }
+    // The farthest RTSGetTrackItems asked for in the last step, m.
+    [[nodiscard]] float items_wanted() const { return consist_ ? consist_->items_wanted() : 0.0f; }
     [[nodiscard]] bool has_dll(std::size_t car) const { return consist_ && consist_->has_dll(car); }
     [[nodiscard]] const dllhost::CarOutput* output(std::size_t car) const { return consist_ ? consist_->output(car) : nullptr; }
     // SMS Var1..Var8 the DLL set for car `car` (exterior), if any.
@@ -104,6 +117,7 @@ private:
     // a click (0) or a step up / down (+1 / -1).
     [[nodiscard]] std::uint32_t next_state(std::uint32_t id, int direction, bool shift, std::size_t car = SIZE_MAX);
     void operate(std::uint32_t id, std::uint32_t state, std::size_t car = SIZE_MAX);
+    void bind_keys(std::size_t car);
     [[nodiscard]] std::size_t car_or_player(std::size_t car) const;
     void log(std::string line);
 
@@ -123,6 +137,7 @@ private:
 public:
     // What the DLLs see of the world (signals, speed limits), set before each step.
     trainplugin::LegacyWorld& world() noexcept { return world_; }
+    [[nodiscard]] const trainplugin::LegacyWorld& world() const noexcept { return world_; }
 
 private:
     trainplugin::LegacyWorld world_;

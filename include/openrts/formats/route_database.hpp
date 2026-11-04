@@ -42,6 +42,11 @@ struct TrackDatabase;
 // server reports such "Signal ID changes (shifts) in tdb"). Item -> unit.
 [[nodiscard]] std::map<std::uint32_t, std::size_t> match_signal_units(const TrackDatabase& tdb, const RouteDatabase& database,
                                                                       double reach = 30.0);
+// The unit RTS hangs on each TDB signal item (its RTSSignalData, 0x4903DC):
+// units in file order, each taken by every signal item still without one on
+// the same tile within 0.2 m in x, y and z. Named or not; no fallback.
+// By item number; -1 none.
+[[nodiscard]] std::vector<std::int32_t> rts_signal_units(const TrackDatabase& tdb, const RouteDatabase& database);
 // `<route>/<RouteID>.rtsdb` (RouteID from the .trk, as RTS builds the name),
 // else the only .rtsdb of the folder; an empty database when there is none.
 [[nodiscard]] RouteDatabase load_route_database(const core::Vfs& vfs, const core::VirtualPath& route);

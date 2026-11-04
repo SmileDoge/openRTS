@@ -320,6 +320,16 @@ std::unique_ptr<CabView> CabView::create(const core::Vfs& vfs, const formats::Wa
     }
     view->doors_.resize(view->cab_.doors.size());
     view->windows_.resize(view->cab_.windows.size());
+    // Opened: open from the start (RTS 0x51CD88 sets State and SetState).
+    for (std::size_t i = 0; i < view->doors_.size(); ++i) {
+        view->doors_[i].target = view->cab_.doors[i].opened;
+        view->doors_[i].open = view->doors_[i].target ? 1.0f : 0.0f;
+    }
+    for (std::size_t i = 0; i < view->windows_.size(); ++i) {
+        view->windows_[i].target = view->cab_.windows[i].opened;
+        view->windows_[i].open = view->windows_[i].target ? 1.0f : 0.0f;
+    }
+    view->acoustics_ = audio::InteriorAcoustics(view->cab_);
     // The cab shape's surfaces and nodes for the engineer on foot, read
     // aside (the renderer keeps no vertices on the CPU).
     view->loading_ = std::async(std::launch::async, [&vfs, path = *shape]() -> std::shared_ptr<Geometry> {
@@ -360,11 +370,29 @@ void CabView::bind(const formats::ShapeModel& rig) {
         if (switches_.back().node >= 0) ++switch_nodes_;
     }
     for (const auto& d : cab_.displays) displays_.push_back(find(d.name));
+    state_nodes_.clear();
+    for (const auto& d : cab_.displays) {
+        std::vector<std::int32_t> list;
+        for (const auto& name : d.state_nodes) list.push_back(find(name).node);
+        state_nodes_.push_back(std::move(list));
+    }
+    blink_clock_.assign(cab_.displays.size(), 0.0f);
     signal_lights_.clear();
     for (const auto& light : cab_.signalization.lights) signal_lights_.push_back(find(light).node);
     lamp_nodes_.clear();
     for (const auto& lamp : cab_.lights) lamp_nodes_.push_back(lamp.name.empty() ? -1 : find(lamp.name).node);
     bound_ = true;
+}
+
+void CabView::step_displays(const float elapsed) {
+    blink_clock_.resize(cab_.displays.size(), 0.0f);
+    for (std::size_t i = 0; i < cab_.displays.size(); ++i) {
+        const float blink = cab_.displays[i].blink;
+        if (blink <= 0.0f) continue;
+        auto& clock = blink_clock_[i];
+        clock += elapsed;
+        if (clock > blink * 2.0f) clock = std::fmod(clock, blink * 2.0f);
+    }
 }
 
 void CabView::poll() {
@@ -479,6 +507,19 @@ std::optional<std::size_t> CabView::find_window(const std::string_view name) con
 bool CabView::window_open(const std::size_t window) const noexcept {
     // A window without a node of its own is an opening.
     return window < windows_.size() && (windows_[window].node < 0 || windows_[window].open >= 0.95f);
+}
+
+float CabView::sound_transmission(const int from, const int to) const {
+    // A door or window with a node passes sound as far as the node has
+    // opened; one without passes it by its state (RTS 0x5143DC: the node's
+    // position, else the activator's State).
+    const auto fractions = [](const std::vector<Door>& list) {
+        std::vector<float> out(list.size());
+        for (std::size_t i = 0; i < list.size(); ++i)
+            out[i] = list[i].node >= 0 ? list[i].open : (list[i].target ? 1.0f : 0.0f);
+        return out;
+    };
+    return acoustics_.transmission(from, to, fractions(doors_), fractions(windows_));
 }
 
 void CabView::toggle_window(const std::size_t window) {
@@ -694,7 +735,6 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
     }
     for (std::size_t i = 0; i < cab_.displays.size() && i < displays_.size(); ++i) {
         const auto& b = displays_[i];
-        if (b.node < 0) continue;
         const auto& d = cab_.displays[i];
         float value = 0.0f;
         std::uint32_t lit = d.initial_state;
@@ -702,6 +742,22 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             value = state->displays[d.id].value;
             lit = state->displays[d.id].state;
         }
+        // RTS 0x525DB0: with a blink the display is hidden for the second
+        // half of each 2 x blink period.
+        const bool blinked_off = d.blink > 0.0f && i < blink_clock_.size() && blink_clock_[i] > d.blink;
+        if (d.type == formats::CabDisplayType::display && i < state_nodes_.size()) {
+            // StateNodes: node j shows for bit j of the State, or with
+            // DISPLAY_SEQUENCE for the State j + 1; all hidden while blinked off.
+            const bool sequence = (d.flags & formats::cab_check_distance) != 0;
+            for (std::size_t j = 0; j < state_nodes_[i].size(); ++j) {
+                const auto node = state_nodes_[i][j];
+                if (node < 0) continue;
+                bool show = sequence ? lit == j + 1 : j < 32 && (lit & (1u << j)) != 0;
+                if (blinked_off) show = false;
+                if (!show) out.push_back({.matrix = node, .hidden = true});
+            }
+        }
+        if (b.node < 0) continue;
         switch (d.type) {
         case formats::CabDisplayType::arrow: {
             const float span = d.range[1] - d.range[0];
@@ -710,6 +766,7 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             break;
         }
         case formats::CabDisplayType::lamp:
+            if (blinked_off) lit = 0;
             if (b.last_frame > 0.0f) {
                 out.push_back({.matrix = b.node, .frame = lit ? b.last_frame : 0.0f});
             } else if (!lit) {
@@ -717,7 +774,7 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             }
             break;
         default:
-            break; // digital displays and screens: not drawn yet
+            break; // DISPLAY: its StateNodes above; SCREEN: CabScreens
         }
     }
     // A lamp's node (its Name; rts1.exe 0x514630): without SOURCE_VISIBLE it

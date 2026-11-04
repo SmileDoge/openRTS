@@ -168,6 +168,53 @@ that was a slave and is no longer in its master's group gets
 **`LostMaster(lost, master, State)`** with auxiliary handlers before and
 after (event 8).
 
+**CONFIRMED (2026-11-04) in detail:**
+- Nothing happens for a one-car train or a train without flag 4 (the
+  player has been in it).
+- The groups are runs of cars joined by control cables (Wagon byte `+30`
+  bits 1 / 2). A group counts its engines that are neither cold nor AI.
+- Every master in a group (`LocoFlags & 0x21` = `0x21`: master, DLL
+  bound) gets a new slave list:
+  - its `CanWorkWith` (`+452`) is asked about each other engine of the
+    group, already a slave or not;
+  - an accepted one has its cab loaded if it has none (failing that, it is
+    left out); its DLL is bound and initialised only if it is not bound yet
+    (`0x5026FC`, skipped with `LocoFlags & 0x20`); its engine sound is made
+    (`0x5030B4`);
+  - a slave of the old list missing from the new one gets `LostMaster`.
+- So a DLL is bound and initialised once per car. A car that is cut off and
+  coupled again keeps its DLL's state; nothing calls `Init` or
+  `ChangeLoco` for it again.
+- **Coupling** (`0x469ED8`): the train taking the other in regroups if it
+  has flag 4. Each car taken into the player's train from a train without
+  flag 4 gets its sounds again (`0x500EDC`, group 7 for engines with
+  `LocoFlags` bit 7, else 5).
+- **Uncoupling** (`0x469858`): the cut part is a new train that copies the
+  train's flags (`0x4EEC50`), flag 4 too, and both parts regroup.
+  - In single player the cut part is LOOSE (kind 3). If the player's part
+    has no master and the cut part has one, they swap places (`0x469744`).
+  - The `Run` dispatch takes every train with flag 4 that is not of kind 2
+    or 4 (below), so **a cut-off engine's DLL keeps running** with the
+    player out of it.
+- **VL10k (source):** `LostMaster` clears the master's commands in the
+  slave's `var[4]` (breaker, fans, positions: `&= ~14016`, `~(2 << 16)`).
+  A section cut off and coupled back is a slave again and follows the
+  controller, but pulls only after the driver gives those commands again.
+
+**openRTS** (`dllhost::Command::reconsist`, `LegacyConsist::reconsist`):
+- after a coupling or a cut the host gets the new car list. The mirrors of
+  the cars that stay move with them, new cars get new mirrors, and the
+  groups are made again as above (new slaves bound and initialised with the
+  train's state of the moment, lost ones `LostMaster`);
+- a cut-off car's mirror is kept aside with its DLL's state and comes back
+  when the car is coupled again. It is not run meanwhile: RTS runs it;
+- the game follows cars by a key of its own, since the `.con` UiD repeats
+  between consists;
+- the viewer keeps the cab, the engineer (seated stays seated) and a
+  native plugin;
+- tests: `openrts.dllhost` (fake DLL), `openrts.content.dll_vl10k_couple`
+  (section b of the VL10k cut off and coupled back).
+
 ### Masters writing into slaves
 
 **CONFIRMED (VL10k source).** The master changes its slaves directly: the
@@ -188,7 +235,8 @@ sub-steps at 0.05 s.
 
 ### Before the DLLs
 
-**CONFIRMED (`0x424488`).** For every car of every train:
+**CONFIRMED (`0x424488`).** For every car of every train with flag 4 that
+is not of kind 2 or 4 (the trains whose DLLs run):
 - `Force` = 0;
 - `TrainPipeRate` := `TrainPipePressure` (the field doubles as "pressure at
   the start of the frame" for the pipe's Δp);
@@ -790,8 +838,8 @@ per train (skipped when train byte `+5` bit 0 is set).
   frequency fall in the engine's `WorksOnLineVoltages` (in their order),
   cached on the piece.
 - openRTS (`simulation::Electrification`): all of the above except the
-  cache (the choice is made per engine each time), the substations' load,
-  the phases and the pantograph burning; the distance is horizontal (the
+  cache (the choice is made per engine each time); the load, the burning
+  and the HV bus groups are in §17; the distance is horizontal (the
   feeders' heights are 0 in the files); without an `.electrotype` and
   `WorksOnLineVoltages` an engine gets 3 kV DC (RTS reads a value it never
   set there); the activity's automatic choice is a Track control option.
@@ -805,9 +853,231 @@ per train (skipped when train byte `+5` bit 0 is set).
   route electrified without an `.electrodb`; Uspensk not electrified.
   Dual-system engines: VL82m (`vl82m.dll`), EP20 (`Brakes.dll` only).
 
+## 15. Exterior lights without a DLL (`0x4F07D4`, `0x4FFDF8`, `0x4FF9B8`)
+
+- **CONFIRMED** a light definition (72 bytes, the wagon type's `+356`,
+  count `+348`; loader `0x50036C`): `+0` Type, `+1` Headlight, `+2`
+  Control, `+3` Service, `+4` Unit, `+5` TimeOfDay, `+6` Weather, `+8`
+  FadeIn, `+12` FadeOut, `+16` Cycle, `+40` the number of States, `+44`
+  the States (76 bytes each, `+4` Duration).
+- **CONFIRMED** `0x4F07D4(train)` sets LightObj bit 8 ("turn on") of every
+  car's lights from their conditions; it runs on events: night falling
+  (`0x4F0798` from the sky update `0x417D74`), coupling, uncoupling, a
+  train's type or direction changing (`0x469858`, `0x469ED8`, `0x4F549C`,
+  `0x4FA374`, `0x507634`, `0x50B430`, `0x48A0F8`).
+  - The player's train (type 1): an engine whose `LocoFlags & 0x88` is 0
+    (not cold, not AI) is skipped: its DLL switches its lights.
+  - Only cars with Wagon `Flags` bit 1 ("in sight").
+  - A train of type 0 (STATIC) or 3 (LOOSE) lights nothing unless its
+    activity service says so (train `+20`: `+96` bit 0x40 off, `+72` set).
+  - Car 0 is tried with Unit 2 (4 when the train runs reversed, train `+4`
+    bit 0x80), the last car with 3 (5); one car is both; the rest 1.
+- **CONFIRMED** `0x4FFDF8(car, light, unit, train type)`:
+  - Control 1: off for types 1 and 4; 2: on only for them.
+  - Service 1: on for a cold engine (`IsLocomotive` and `LocoFlags` bit 3)
+    or types 0 / 3; 2: off for a cold engine and types 0 / 3.
+  - Unit: must equal the place given.
+  - TimeOfDay 1: off when `is_night` and the light level
+    (`dword_61D60C`, the sun's ambient and direct colours averaged over
+    six channels, `0x408574`) is below 0.5; 2: off when not night and the
+    level is at least 0.5.
+  - Weather (`byte_61D62D`: 0 clear, 1 snow, 2 rain): 1 clear, 2 rain, 3
+    snow.
+  - Headlight: the phase is 1 (day), 2 (level below 0.5), 3 (night), and
+    1 for a cold engine; 4 wants 2 or 3, the others their phase.
+- **CONFIRMED** `0x4FF9B8(car, dt)`: a light turned on fades in over FadeIn
+  (none: at once), off over FadeOut; with more than one State it shows
+  them by their Durations (Cycle 0) or Cycle spread evenly
+  (`0x4FF5E0` picks the State).
+- openRTS: `simulation/train_lights`, every frame for every train
+  (`docs/train-systems.md`).
+
+## 16. Pantographs and sand without a DLL (`0x424488`)
+
+- **CONFIRMED** the `.eng` (`0x44247C`, engine type `+593..+632`):
+  `ExcludePantograph` bits (`+593`, repeatable, 1..8),
+  `AlwaysUsePanto` (`+594`), `LowerPantoOnStop` (`+595`),
+  `RaiseSecondPantoWhenSpeedBelow` (`+632`, a speed); the activity's
+  `TrainAlwaysUsePanto`, `TrainLowerPantoOnStop`,
+  `TrainRaiseSecondPantoWhenSpeedBelow` override them (`0x4F072C`).
+  `PantographRaiseTime` is the wagon's (`+276`, default 3 s, 0 or less is
+  3).
+- **CONFIRMED** an AI train (train `+4` bit 8), each electric engine not
+  cold: the raised bits `|=` 1 when `(Flags & 1) != (train +4 & 0x80)` is
+  false, else 2 (the comparison of bit 0 with bit 0x80 is true unless both
+  are clear: a turned car in a reversed train gets 2 as well); the second
+  goes up below `RaiseSecondPantoWhenSpeedBelow` (0: never) and down
+  otherwise; `LowerPantoOnStop`'s bits go down while the train's `+5` bit
+  8 is set (PROBABLY standing at a stop); `AlwaysUsePanto`'s go up;
+  `LocoFlags` bits 0x400 / 0x800 put the first / second down (PROBABLY
+  damaged).
+- **CONFIRMED** sand: adhesion is `Adheasion`'s second value; while
+  `Engine::Sanding` it is times the third (`+208`), `SandLeft` (`+408`)
+  runs down and stops the sanding at 0; after it stops the effect lasts
+  while the engine's run since then (`+412`) is within its length. The
+  first value (`+200`) multiplies it after a slip. `MaxSandingTime`
+  (`+520`, default −1).
+
+## 17. The line current, the wire and the substations (`0x503CE4`, `0x5B6030`)
+
+- **CONFIRMED** `0x503CE4(train, loco, dt)` works on the cars between the
+  engine's `+436` and `+440`, which `0x4F9FB4` sets to the run of cars
+  joined by the high-voltage bus (Wagon `Flags` 0x40000 front, 0x80000
+  rear) around each engine that is not cold (an engine without a bus: only
+  itself). It is called from the `Run` dispatch while `LineVoltage` is 0,
+  so once per group and frame.
+- **CONFIRMED** for each electric engine of the group:
+  - with a burn time (`+608` = `MaxLineCurrent` x
+    `MaxLineCurrentCatenaryBurnTime` when both are positive, else 0) and
+    not burnt: the heat (`+416`) cools by (`MLC_A` x |speed| + `MLC_B`) x
+    dt (`MaxLineCurrentVelocityIncrease ( MLC_B MLC_A )`, `+600` / `+604`;
+    negative values drop both), not below 0;
+  - pantographs down, burnt (`LocoFlags` 0x200) or car flag `+32` 0x20:
+    no line from it; its power (`+484` `+212`, `PowerConsuming`) still
+    counts; a burnt one counts 60 s in `+416`, then the flag clears;
+  - else its line (`0x5B53A8`), the number of raised pantographs, and the
+    wire's burn factor: of the type-1 catenary pieces over it the BurnQ (0
+    if any has 0, else the largest; −1 without one; 1 without an
+    `.electrodb` piece).
+- **CONFIRMED** then the highest voltage goes to every electric engine of
+  the group with the frequency of the last one found; `LineCurrent` = the
+  group's power / voltage x this engine's raised pantographs / all raised.
+  Per pantograph: without a burn time, above `MaxLineCurrent` it burns at
+  once; with one, the heat grows by current / BurnQ x dt (only BurnQ > 0)
+  and burns at the limit: heat 0, `LocoFlags |= 0x200`, a message
+  (`off_5F81D0`).
+- **CONFIRMED** `0x5B6030(substation, phase, power, dt)`: unless the
+  substation is off (`+44` bit 0) its phase record (20 bytes, `+56`)
+  sums power x dt; after 2000 ms (`dword_5E04E8`) the average (`+12`) is
+  sent to the server as package `0x4649` (substation, phase, energy,
+  seconds; `0x4CF464`), or in single player simply reset. The engine's
+  share: the group's power x its pantographs / all; two sources (in
+  multiplayer only) split it by the electrosection's shares. The server
+  (`rts_server.exe` `0x4436C8`) relays `0x4649` to the dispatchers; it
+  reads `PowerDecline` (`0x437D44`) but nothing lowers the voltage by the
+  load.
+
+## 18. ALSN's arrays and taking another cab
+
+- **CONFIRMED** (`0x508520`) the front pass collects up to 16 signal
+  objects ahead of the train front (56-byte chain nodes), the rear pass up
+  to 16 behind its rear; those within the passing distance (speed x dt x
+  1.5) count as passed (`v100` at the front, `v101` at the rear).
+  `ALSN(loco, A, nA, B, nB, C, nC, limit, x, y, reversed)`: A = the front
+  objects not passed, B = the rear ones not passed, C = the passed ones
+  (front first). Each `SignalsInfo`: `Distance`; `Aspect[0]` the highest
+  state of its NORMAL heads (flag 1), `[1]` DISTANCE (2), `[2]` SHUNTING
+  (4), `[3]` INFO (8); flag 0x10 beyond an obstruction; `SpeedLimit` the
+  node's (−1 with train flag `+6` bit 3); `RTSSignalData*` the first
+  head's `+124`. `limit` = the lowest of the train's limits; `x` / `y` =
+  the next speed post's limit and distance (train `+120` / `+116`,
+  floats); `reversed` = the car faces against the train's direction
+  (`+4` bit 0x40). Auxiliary handlers get the same (`0x56EF60`).
+- **CONFIRMED** walking through a door whose target is a cab (`-3`,
+  `0x435654`) into another engine calls `0x436734`, which enters it as
+  the player's (`0x468C74`: bind, `Init`, `ChangeLoco`, grouping) and makes
+  its cab current. The `-7` target is a salon.
+
+## 19. Track items, named triggers and the signal's data (2026-11-04)
+
+### `RTSGetTrackItems` (`0x4805D8`)
+
+- **CONFIRMED** the call: `(dll, loco, code, distance, items&, count&)`.
+  - A DLL whose `TrackItem` size differs from RTS's is told so once; one
+    whose `TrackItemsItem` size differs throws "Critical DLL structure
+    mismatch" (the module's flags from `DLLVersion(20 / 21)`, `0x5364D0`).
+  - `distance` <= 0 means 5000 m.
+  - A locomotive facing the train's rear (Wagon `Flags` bit 0) has bits 1
+    and 2 of `code` swapped, and in what it gets ahead and behind swapped
+    and `Z` negated.
+- **CONFIRMED** the list is the train's (`+392`, 28 bytes):
+  - a count, 16-byte `TrackItemsItem` entries and an output copy;
+  - how far it reaches ahead and behind, and whether the items under the
+    train are in.
+- **CONFIRMED** it is gathered when the request goes further (`0x4808DC`
+  → `0x480A08`).
+  - The walk starts at the train's rear traveller (`+232`).
+  - Forward it covers the train's length (car 0's `ZOrd` + half its
+    length, `0x4FB6BC`) plus `distance`. Backward it covers `distance`.
+  - Each item found (`0x47F214`, any type) is an entry: `Distance` =
+    from the front ahead, negative under the train; from the rear
+    behind. `Z` = the signed distance from the rear. `Pos` = 1 ahead, 2
+    behind, 4 under the train.
+- **CONFIRMED** the per-train signal pass (`0x508520`) clears the list
+  every frame the train moves; standing still, it is kept.
+- **CONFIRMED** returned: the entries with `Pos & code`, within `distance`
+  (under the train: always), leaving out signals (type 1: `ALSN` gives
+  them).
+- **CONFIRMED** the items (`0x482680`): `TrackItem` (44 bytes: `Type`,
+  `ID`, `TrItemSData` offset and flags, `TrItemPData` x z tile,
+  `TrItemRData` x y z tile, x negated) and per type:
+  - 2 speed post (64 bytes): `Flags`, `Value` (with flag 2 the limit, with
+    1 the route's as it is, else km/h or with 0x100 mph made m/s), `Off`
+    (the sign's rotation), `KM` (without flag 2), `Number` (flag 0x10);
+  - 3 platform (76): flags, the other item, platform and station names
+    (`wchar_t*`), `PlatformMinWaitingTime`, `PlatformNumPassengersWaiting`;
+  - 4 siding (76): flags, the other item, its name;
+  - 5 level crossing (52): `Time` and `Distance` not read at load;
+  - 6 crossover (52): the other item and the section;
+  - 7 pickup (56): amount and flags;
+  - 8 car spawner (48);
+  - 1 signal (128);
+  - anything else 0 (44).
+- **openRTS** gives every step the list from the player's train's rear,
+  forward over its length and back, as far as the DLLs asked (5000 m at
+  least).
+  - The walk follows the set junctions and ends at an end of track or at
+    a trailing junction set against the way.
+  - The train's length is from its rear end to its front end.
+
+  Both points are PROBABLE: which `0x47ECD0` mode `0x47F214` walks with
+  here, and where RTS's rear traveller stands, are not traced.
+- **Content:** the ED9M asks for code 1 and code 4 at 4000 m
+  (`OPENRTS_DLLHOST_TRACE`).
+
+### Named triggers and trigger pairs (`0x4394F4`, `0x439548`)
+
+- **CONFIRMED** `RTSGetNamedInteger(SMSObject::sms, 5, name)` looks the
+  name up in the script's `NamedTriggersTable` without case and returns
+  its code. Any other code, or no match, gives 0.
+  - The table (`0x4DD0EC`) is the file's first `NamedTriggersTable` block;
+    every group gets it.
+  - Its tokens are pairs, a name and its code (`_wtoi`). An empty name
+    stops it with a message.
+  - Installed: `Usavp.sms` (7955 entries: a train's stops and their
+    announcements per route) and `vl80k_aux.sms`.
+- **CONFIRMED** `RTSIsSMSTriggerOn(SMSObject*, code)`:
+  - −3 without a script or without trigger pairs;
+  - −2 before any pair code (no `PairedFlags`);
+  - for an On code of a pair, that pair's state (`0x4A8A58`): 1 on, 0
+    off, −1 not known yet;
+  - −4 for any other code.
+  - ts.h's `IsTriggerOn` gives −5 itself without `PairedFlags`.
+- **CONFIRMED** `PairedFlags` (32 bytes, `0x4A87C8`, allocated at the
+  first pair code): four words of pairs on, four of pairs known.
+  - An On code is dropped while its pair is known to be on; an Off code
+    while it is known to be off. Before a pair's first code both pass.
+  - A Halt code sets its pair off and passes.
+  - Pairs past the 128th keep no state.
+- **openRTS:**
+  - the host gets each script's table and its group's pairs at setup
+    (once per file);
+  - every step it gets the states the game's sound objects keep;
+  - the sound objects drop and pass codes as above. Until now an Off
+    code before any On was dropped.
+
+### `RTSSignalData` (`0x4903DC`)
+
+- **CONFIRMED** the route database's `SignalUnit` (20 bytes: tile x z,
+  `Position` x y z with x negated, the name or null).
+  - Each unit is hung (`+124`) on every TDB signal item still without
+    one, on the same tile within 0.2 m in x, y and z. Named or not.
+  - `ALSN` gets the first head's; `Cabin::Signal` the next signal's.
+- **openRTS:** `formats::rts_signal_units`, sent to the host once per
+  unit. On Kuban the signals ahead at the start all have one.
+
 ## Open questions
 
-- The three `ALSN` arrays and its two integer arguments.
 - Train types 4 and 5 (`State` bits `0x200` / `0x400`): PROBABLY a remote
   player's train and a dispatcher-controlled one in multiplayer.
 - Section 14: the `Electricity` flags' high byte (`+11`, a distance limit
@@ -817,4 +1087,7 @@ per train (skipped when train byte `+5` bit 0 is set).
 - The auxiliary entry layout (`0x54` bytes) and whether entries are sorted
   by order or kept in declaration order.
 - The FPU control word at run time.
-- Lights and doors: the exterior light list (LightObj) is not filled from the .eng Lights yet; DLLs that switch lights get no light objects.
+- `LowerPantoOnStop`'s train flag (`+5` bit 8) and `LocoFlags` 0x400 / 0x800
+  (§16) were not traced to where they are set.
+- The display fade (`DisplayFade` first value, `0x4B355C`): how the node is
+  faded.

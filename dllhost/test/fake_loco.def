@@ -7,3 +7,5 @@ EXPORTS
     _CanSwitch = CanSwitch
     _Switched = Switched
     _Run = Run
+    _LostMaster = LostMaster
+    _ALSN = ALSN

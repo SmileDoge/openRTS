@@ -2,7 +2,7 @@ add_executable(openrts_train_check src/main.cpp src/dll_check.cpp src/cab_check.
 target_include_directories(openrts_train_check PRIVATE ../../viewer/src)
 set_target_properties(openrts_train_check PROPERTIES OUTPUT_NAME openrts-train-check)
 openrts_configure_target(openrts_train_check)
-target_link_libraries(openrts_train_check PRIVATE openrts_trainplugin openrts_simulation openrts_formats openrts_core glm::glm)
+target_link_libraries(openrts_train_check PRIVATE openrts_trainplugin openrts_simulation openrts_audio openrts_formats openrts_core glm::glm)
 openrts_copy_dllhost(openrts_train_check)
 if(WIN32)
     target_link_libraries(openrts_train_check PRIVATE shell32)

@@ -40,7 +40,9 @@ public:
     WorldSounds& operator=(const WorldSounds&) = delete;
 
     // `listener` in scene coordinates (relative to the origin).
-    void update(float dt, const glm::vec3& listener, SoundCamera camera, VoiceSink& sink);
+    // `gain`: the share of outside sound that reaches the listener (the
+    // doors and windows of the room he is in, docs/sound.md).
+    void update(float dt, const glm::vec3& listener, SoundCamera camera, VoiceSink& sink, float gain = 1.0f);
     // Moves the scene origin; loaded sources move with it.
     void set_origin(const formats::RoutePosition& origin);
     void stop(VoiceSink& sink);

@@ -112,6 +112,13 @@ struct SceneInput {
     bool independent_more = false; // .
     bool independent_less = false; // ,
     bool toggle_ep = false;        // K: ЭПТ on/off
+    // A train without a DLL (openRTS's default logic; a DLL's cab has its own keys).
+    bool horn = false;             // Space held
+    bool sander = false;           // X held
+    bool bell = false;             // B: the bell (whistle) on / off
+    bool pantographs = false;      // P: pantographs down / up again
+    bool doors_left = false;       // Y: the left doors open / shut
+    bool doors_right = false;      // U: the right doors open / shut
     bool toggle_track_control = false; // Ctrl+Alt+F7 (RTS): the Track control window
     bool place_names = false;     // F7 (RTS): platform and siding names along the track
     // RTS's information keys (docs/reverse/dispatcher.md).
@@ -216,6 +223,8 @@ public:
     virtual void enter_cab() {}
     // --capture-menu: pick an item of the open car menu; the menu as text.
     virtual void choose_car_menu_item(int) {}
+    // --capture-uncouple: uncouple the driven train before car `index` (from 0).
+    virtual void uncouple_driven(std::size_t) {}
     [[nodiscard]] virtual std::string car_menu_report() const { return {}; }
     // What the shadows look at most closely this frame (after submit): the
     // cab the engineer is in.

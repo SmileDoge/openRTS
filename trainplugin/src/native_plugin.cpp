@@ -245,6 +245,7 @@ void NativeLocomotive::step(double dt, const simulation::EngineInputs& inputs, s
     demands.systems = static_cast<std::uint16_t>(out.brake_systems);
     demands.equalising = out.equalising;
     demands.emergency = out.emergency != 0;
+    demands.sanding = out.sanding > 0.5f;
 }
 
 std::vector<std::uint32_t> NativeLocomotive::take_sounds(bool cab) { return std::exchange(cab ? sounds_cab_ : sounds_ext_, {}); }

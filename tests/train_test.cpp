@@ -606,6 +606,77 @@ void test_car_menu(const Stock& stock) {
     }
 }
 
+// A collision breaks the end couplers; broken ends only push (RTS +14 0x10).
+// Sanding raises adhesion by Adheasion's third value and runs out.
+void test_broken_and_sand(const Stock& stock) {
+    const auto network = simulation::straight_test_track(3000.0);
+    simulation::Train a(stock.cars(0));
+    simulation::Train b(stock.cars(0));
+    std::string error;
+    check(a.place(*network, 1, 1000.0, true, &error) && b.place(*network, 1, 970.0, true, &error), "two engines placed: " + error);
+    a.set_car_flags(0, simulation::Train::CarFlags::coupler_open, simulation::coupler_broken_rear, true);
+    a.add_velocity(-0.5f);
+    simulation::Train* list[] = {&a, &b};
+    bool coupled = false;
+    for (int i = 0; i < 400 && !coupled; ++i) {
+        for (const auto& r : simulation::resolve_contacts(list)) coupled = coupled || r.outcome == simulation::ContactOutcome::coupled;
+        a.step();
+        b.step();
+    }
+    check(!coupled, "a broken coupler does not couple");
+
+    // Sand: the keyboard driver's limit and the car's adhesion.
+    simulation::Train t(stock.cars(0));
+    check(t.place(*network, 1, 500.0, true, &error), "placed: " + error);
+    const auto driver = simulation::attach_keyboard_driver(t);
+    driver->reverser = 1;
+    driver->throttle = driver->notches;
+    t.step();
+    const float plain = std::abs(t.cars()[0].force);
+    driver->sanding = true;
+    t.step();
+    const float sanded = std::abs(t.cars()[0].force);
+    check(t.cars()[0].sanding && sanded > plain, "sand raises the force the adhesion allows: " + std::to_string(plain) + " -> " + std::to_string(sanded));
+}
+
+void test_engine_keys() {
+    const auto engine = formats::parse_wagon(engine_text.substr(0, engine_text.size() - 1) + R"(
+        MaxSandingTime ( 600 )
+)
+EngExtended (
+    ExcludePantograph ( 2 )
+    AlwaysUsePanto ( 4 )
+    LowerPantoOnStop ( 1 )
+    RaiseSecondPantoWhenSpeedBelow ( 6 )
+    MaxLineCurrent ( 2000 )
+    MaxLineCurrentVelocityIncrease ( 10 500 )
+    MaxLineCurrentCatenaryBurnTime ( 12100 )
+    ORTSTrainPlugin ( "cab/x.dll" )
+))");
+    check(engine.ok() && engine.engine, "engine with EngExtended parses");
+    if (!engine.engine) return;
+    const auto& e = *engine.engine;
+    check(e.exclude_pantographs == 2 && e.always_use_panto == 4 && e.lower_panto_on_stop == 1, "pantograph masks");
+    check(near(e.raise_second_panto_below, 6.0, 1e-6), "RaiseSecondPantoWhenSpeedBelow");
+    check(e.line_current_cooling[0] == 10.0f && e.line_current_cooling[1] == 500.0f, "MaxLineCurrentVelocityIncrease");
+    check(e.train_plugin == "cab/x.dll", "ORTSTrainPlugin");
+    check(near(e.max_sanding_time, 600.0, 1e-6), "MaxSandingTime");
+    check(near(engine.pantograph_raise_time, 3.0, 1e-6), "PantographRaiseTime defaults to 3 s");
+
+    const auto consist = formats::parse_consist(R"(SIMISA@@@@@@@@@@JINX0D0t______
+Train ( TrainCfg ( "c"
+    Wagon ( UiD ( 1 ) WagonData ( car folder )
+        FreightAnim ( FreightAnimShape ( "coal.s" 0 ) FreightAnimPosition ( 0 1.5 0 ) FreightAnimMass ( 60t ) FreightAnimCargoType ( Coal ) ) )
+) )
+)");
+    check(consist.ok() && consist.entries.size() == 1 && consist.entries[0].freight.size() == 1, "FreightAnim in a consist");
+    if (consist.ok() && !consist.entries.empty() && !consist.entries[0].freight.empty()) {
+        const auto& f = consist.entries[0].freight[0];
+        check(f.shape == "coal.s" && near(f.position[1], 1.5, 1e-6) && near(f.mass, 60000.0, 1.0) && (f.cargo_type == "coal" || f.cargo_type == "Coal"),
+              "FreightAnim shape, position, mass, cargo type");
+    }
+}
+
 int main() {
     test_units();
     const Stock stock;
@@ -622,6 +693,8 @@ int main() {
     test_ept();
     test_realistic_air(stock);
     test_car_menu(stock);
+    test_broken_and_sand(stock);
+    test_engine_keys();
     if (failures == 0) std::cout << "train tests passed\n";
     return failures == 0 ? 0 : 1;
 }

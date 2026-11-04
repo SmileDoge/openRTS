@@ -233,6 +233,87 @@ void test_line() {
     check(gap.at(1, 100.0, point_at(*network, 100.0), &*dc.engine).state == LineState::no_wire, "start > 0 with length -1: no wire");
 }
 
+// The line current, the wire burning and the substations' load
+// (0x503CE4, 0x5B6030), and the high-voltage bus groups.
+void test_load() {
+    const auto network = simulation::straight_test_track(2000.0);
+    if (!network) return;
+    // 700 A per pantograph for 10 s (heat limit 7000), cooling 0 + 10 x speed.
+    const auto gradual = formats::parse_wagon(engine_text(
+        "WorksOnLineVoltages ( 1 LineVoltage ( 2500 4000 0 0 ) ) MaxLineCurrentCatenaryBurnTime ( 10 ) MaxLineCurrentVelocityIncrease ( 0 10 )"));
+    const auto instant = formats::parse_wagon(engine_text("WorksOnLineVoltages ( 1 LineVoltage ( 2500 4000 0 0 ) )"));
+    check(gradual.engine && gradual.engine->line_current_cooling[1] == 10.0f && gradual.engine->max_line_current_burn_time == 10.0f,
+          "MaxLineCurrentVelocityIncrease and the burn time");
+    Electrification line(route(true, true, true), *network);
+
+    // A standing engine drawing 3.3 MW at ~3.3 kV: ~1000 A, past 700 A.
+    {
+        simulation::Train train({{.definition = &instant}});
+        std::string error;
+        check(train.place(*network, 1, 300.0, true, &error), "placed: " + error);
+        // CarState::power comes from the step; set it through a controller.
+        struct Draw final : simulation::LocomotiveController {
+            void step(double, const simulation::EngineInputs&, simulation::EngineDemands& d) override { d.power = 3.3e6f; }
+        };
+        train.set_controller(0, std::make_unique<Draw>());
+        train.step();
+        line.apply(train, {1}, simulation::train_step);
+        const auto burns = line.take_burns();
+        check(burns.size() == 1 && train.cars()[0].line_burnt, "no burn time: the wire burns at once past MaxLineCurrent");
+        line.apply(train, {1}, simulation::train_step);
+        check(train.cars()[0].line_voltage == 0.0f, "a burnt pantograph gives no line");
+        // 60 s cooling, then (still drawing the same) it burns again.
+        bool cooled = false;
+        for (int i = 0; i < 1300 && !cooled; ++i) {
+            line.apply(train, {1}, simulation::train_step);
+            cooled = !train.cars()[0].line_burnt;
+            if (cooled) check(i > 1150 && i < 1250, "it cools in 60 s: " + std::to_string(i) + " steps");
+        }
+        check(cooled, "it cools");
+        (void)line.take_burns();
+    }
+    {
+        simulation::Train train({{.definition = &gradual}});
+        std::string error;
+        check(train.place(*network, 1, 300.0, true, &error), "placed: " + error);
+        struct Draw final : simulation::LocomotiveController {
+            void step(double, const simulation::EngineInputs&, simulation::EngineDemands& d) override { d.power = 2.5e6f; }
+        };
+        train.set_controller(0, std::make_unique<Draw>());
+        train.step();
+        float seconds = 0.0f;
+        bool burnt = false;
+        while (seconds < 60.0f && !burnt) {
+            line.advance_loads(simulation::train_step);
+            line.apply(train, {1}, simulation::train_step);
+            burnt = !line.take_burns().empty();
+            seconds += static_cast<float>(simulation::train_step);
+        }
+        // ~760 A against 700 A x 10 s: about 9 s standing.
+        check(burnt && seconds > 7.0f && seconds < 12.0f, "with a burn time it burns after the heat builds up: " + std::to_string(seconds) + " s");
+        const auto loads = line.substation_loads();
+        check(loads.size() == 1 && loads[0].substation == 1 && near(loads[0].power, 2.5e6, 1e3), "the DC substation carries 2.5 MW");
+    }
+    // Two sections: the HV bus shares the line, without it each its own.
+    {
+        auto text = engine_text("WorksOnLineVoltages ( 1 LineVoltage ( 2500 4000 0 0 ) ) HVBus ( 1 1 )");
+        const auto bus = formats::parse_wagon(text);
+        simulation::Train train({{.definition = &bus}, {.definition = &bus}});
+        std::string error;
+        check(train.place(*network, 1, 300.0, true, &error), "placed: " + error);
+        check((train.cars()[0].cables & simulation::cable_hv_rear) && (train.cars()[1].cables & simulation::cable_hv_front),
+              "the HV bus starts connected between two engines that have it");
+        line.apply(train, {1, 0});
+        check(train.cars()[1].line_voltage > 3000.0f, "the HV bus gives the second section the first one's line");
+        train.set_car_flags(0, simulation::Train::CarFlags::cables, simulation::cable_hv_rear, false);
+        line.apply(train, {1, 0});
+        check(train.cars()[1].line_voltage == 0.0f && train.cars()[0].line_voltage > 3000.0f, "without it each section has its own");
+        auto cut = train.uncouple(1, true, false);
+        check(cut && cut->cars().front().cables == 0 && (train.cars().back().cables & simulation::cable_sme_rear) == 0,
+              "uncoupling parts the cables");
+    }
+}
+
 // The installed routes.
 void test_content(const std::filesystem::path& root) {
     core::Vfs vfs;
@@ -294,6 +375,7 @@ void test_content(const std::filesystem::path& root) {
 int main(const int argc, char** argv) {
     test_parse();
     test_line();
+    test_load();
     if (argc > 1) test_content(argv[1]);
     std::cout << (failures ? "FAILED" : "passed") << '\n';
     return failures ? 1 : 0;

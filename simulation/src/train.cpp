@@ -208,17 +208,22 @@ void equalise(std::vector<CarState>& cars, const std::size_t a, const std::size_
 KeyboardController::KeyboardController(std::shared_ptr<DriverHandles> handles, const bool master)
     : handles_(std::move(handles)), master_(master) {}
 
-std::shared_ptr<DriverHandles> attach_keyboard_driver(Train& train) {
-    std::shared_ptr<DriverHandles> handles;
+std::shared_ptr<DriverHandles> attach_keyboard_driver(Train& train, std::size_t master) {
+    const auto engine = [&](const std::size_t i) {
+        const auto* definition = i < train.cars().size() ? train.cars()[i].definition : nullptr;
+        return definition && definition->engine ? &*definition->engine : nullptr;
+    };
+    if (!engine(master)) {
+        master = SIZE_MAX;
+        for (std::size_t i = 0; i < train.cars().size() && master == SIZE_MAX; ++i)
+            if (engine(i)) master = i;
+    }
+    if (master == SIZE_MAX) return nullptr;
+    auto handles = std::make_shared<DriverHandles>();
+    if (engine(master)->throttle_notches > 0) handles->notches = engine(master)->throttle_notches;
     for (std::size_t i = 0; i < train.cars().size(); ++i) {
-        const auto* definition = train.cars()[i].definition;
-        if (!definition || !definition->engine) continue;
-        const bool master = !handles;
-        if (master) {
-            handles = std::make_shared<DriverHandles>();
-            if (definition->engine->throttle_notches > 0) handles->notches = definition->engine->throttle_notches;
-        }
-        train.set_controller(i, std::make_unique<KeyboardController>(handles, master));
+        if (!engine(i)) continue;
+        train.set_controller(i, std::make_unique<KeyboardController>(handles, i == master));
     }
     return handles;
 }
@@ -245,7 +250,9 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
         if (engine->max_velocity > 0.0f && speed > engine->max_velocity) force = 0.0f;
         // Stay within adhesion: MaxForce of DLL engines is often far above it
         // (RTS ignores it), and slipping would make keyboard driving jumpy.
-        const float mu = inputs.definition->adhesion[1];
+        // The sander raises the limit as it raises adhesion (Adheasion's third value).
+        const float sand = handles.sanding && inputs.definition->adhesion[2] > 0.0f ? inputs.definition->adhesion[2] : 1.0f;
+        const float mu = inputs.definition->adhesion[1] * sand;
         if (mu > 0.0f) force = (std::min)(force, inputs.definition->mass * 10.0f * mu * 0.9f);
         demands.force = force * static_cast<float>(reverser);
     }
@@ -262,6 +269,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     }
     // The independent brake acts on every engine (multiple-unit line).
     demands.independent_brake = std::clamp(handles.independent, 0.0f, 4.0f);
+    demands.sanding = handles.sanding;
     if (!master_) return;
     // Brake valve 395, as the ВЛ10к DLL (vl10k_main.cpp) works it. The pipe
     // follows the equalising reservoir; positive rates feed from the main
@@ -395,12 +403,34 @@ Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
         car.auxiliary = 4.8f;
         car.control = 4.8f;
         car.charging_pipe = 0.0f;
-        if (setup.definition && setup.definition->engine) car.main_reservoir = 8.5f;
+        if (setup.definition && setup.definition->engine) {
+            car.main_reservoir = 8.5f;
+            car.sand_left = setup.definition->engine->max_sanding_time;
+        }
         cars_.push_back(car);
     }
     if (!cars_.empty()) {
         cars_.front().pipe_ends |= pipe_hose_front | charging_hose_front | ep_cable_front | pipe_cock_front;
         cars_.back().pipe_ends |= pipe_hose_rear | charging_hose_rear | ep_cable_rear | pipe_cock_rear;
+    }
+    // Multiple-unit cables start connected where both touching ends have
+    // one (SMECable / HVBus front, rear of the .eng; a flipped car's own
+    // front faces the train rear). RTS's start state is not traced; the car
+    // menu connects and disconnects them.
+    const auto end_has = [](const CarState& c, const bool train_front, const bool hv) {
+        if (!c.definition || !c.definition->engine) return false;
+        const auto& e = *c.definition->engine;
+        const bool own_front = train_front != c.flipped;
+        return (hv ? e.hv_bus : e.sme_cable)[own_front ? 0 : 1] != 0;
+    };
+    for (std::size_t i = 0; i + 1 < cars_.size(); ++i) {
+        auto& ahead = cars_[i];
+        auto& behind = cars_[i + 1];
+        for (const bool hv : {false, true}) {
+            if (!end_has(ahead, false, hv) || !end_has(behind, true, hv)) continue;
+            ahead.cables |= hv ? cable_hv_rear : cable_sme_rear;
+            behind.cables |= hv ? cable_hv_front : cable_sme_front;
+        }
     }
     // Centres laid back from the last car with every joint at gap 0.
     for (std::size_t i = cars_.size(); i-- > 1;) {
@@ -471,6 +501,7 @@ void Train::set_car_flags(const std::size_t car, const CarFlags which, const std
     case CarFlags::coupler_open: bits = &state.coupler_open; break;
     case CarFlags::valves: bits = &state.valves; break;
     case CarFlags::chocks: bits = &state.chocks; break;
+    case CarFlags::cables: bits = &state.cables; break;
     }
     if (!bits) return;
     *bits = on ? static_cast<std::uint8_t>(*bits | mask) : static_cast<std::uint8_t>(*bits & ~mask);
@@ -561,6 +592,9 @@ void Train::reverse_cars() {
         car.pipe_ends = swap_ends(car.pipe_ends, ep_cable_front, ep_cable_rear);
         car.pipe_ends = swap_ends(car.pipe_ends, pipe_cock_front, pipe_cock_rear);
         car.coupler_open = swap_ends(car.coupler_open, coupler_open_front, coupler_open_rear);
+        car.coupler_open = swap_ends(car.coupler_open, coupler_broken_front, coupler_broken_rear);
+        car.cables = swap_ends(car.cables, cable_sme_front, cable_sme_rear);
+        car.cables = swap_ends(car.cables, cable_hv_front, cable_hv_rear);
         car.chocks = swap_ends(car.chocks, chock_front, chock_rear);
     }
     std::reverse(cars_.begin(), cars_.end());
@@ -673,6 +707,9 @@ std::unique_ptr<Train> Train::uncouple(const std::size_t index, const bool close
     auto& ahead = rear->cars_.front();
     behind.pipe_ends |= pipe_hose_rear | charging_hose_rear | ep_cable_rear;
     ahead.pipe_ends |= pipe_hose_front | charging_hose_front | ep_cable_front;
+    // RTS 0x469858: the control cable and the HV bus part at the cut too.
+    behind.cables &= static_cast<std::uint8_t>(~(cable_sme_rear | cable_hv_rear));
+    ahead.cables &= static_cast<std::uint8_t>(~(cable_sme_front | cable_hv_front));
     if (close_cocks) {
         behind.pipe_ends |= pipe_cock_rear;
         ahead.pipe_ends |= pipe_cock_front;
@@ -835,6 +872,13 @@ void Train::set_line_supply(const std::size_t car, const float voltage, const fl
     cars_[car].line_frequency = frequency;
 }
 
+void Train::set_line_load(const std::size_t car, const float current, const float heat, const bool burnt) {
+    if (car >= cars_.size()) return;
+    cars_[car].line_current = current;
+    cars_[car].line_heat = heat;
+    cars_[car].line_burnt = burnt;
+}
+
 void Train::set_asleep(const bool asleep) noexcept {
     asleep_ = asleep;
     if (!asleep) return;
@@ -889,11 +933,27 @@ void Train::step() {
         // second value). RTS cuts a slipping force to a random 10..40 %;
         // here it is 25 % so runs are deterministic.
         float force = demands.force;
-        const float mu = car.definition->adhesion[1];
+        float mu = car.definition->adhesion[1];
+        // Sanding (RTS 0x424488): the sand runs out over MaxSandingTime; the
+        // sanded rail lasts the engine's length of travel after it stops.
+        // Adhesion x the .eng's sanding factor (Adheasion's third value).
+        if (demands.sanding && car.sand_left != 0.0f) {
+            if (car.sand_left > 0.0f) car.sand_left = (std::max)(car.sand_left - dt, 0.0f);
+            car.sanding = true;
+            car.sand_travel = 0.0f;
+        } else {
+            car.sanding = false;
+            if (car.sand_travel >= 0.0f) {
+                car.sand_travel += std::abs(car.velocity) * dt;
+                if (car.sand_travel > car.definition->length) car.sand_travel = -1.0f;
+            }
+        }
+        if ((car.sanding || car.sand_travel >= 0.0f) && car.definition->adhesion[2] > 0.0f) mu *= car.definition->adhesion[2];
         const float limit = mass_of(car) * gravity * mu;
         car.wheelslip = mu > 0.0f && std::abs(force) > limit;
         if (car.wheelslip) force *= 0.25f;
         car.force = force * direction;
+        car.power = demands.power >= 0.0f ? demands.power : std::abs(force * car.velocity);
         car.handbrake = (std::max)(car.handbrake, 0.01f * demands.handbrake);
     }
 
@@ -1695,8 +1755,11 @@ std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains
             const auto& coupler_b = meeting->other_front
                 ? (end_b.flipped ? end_b.definition->couplings[0] : end_b.definition->couplings[1])
                 : (end_b.flipped ? end_b.definition->couplings[1] : end_b.definition->couplings[0]);
-            const bool open_a = (end_a.coupler_open & (front ? coupler_open_front : coupler_open_rear)) != 0;
-            const bool open_b = (end_b.coupler_open & (meeting->other_front ? coupler_open_front : coupler_open_rear)) != 0;
+            // Held open or broken: it only pushes (RTS +14 0x11 / 0x22).
+            constexpr std::uint8_t front_end = coupler_open_front | coupler_broken_front;
+            constexpr std::uint8_t rear_end = coupler_open_rear | coupler_broken_rear;
+            const bool open_a = (end_a.coupler_open & (front ? front_end : rear_end)) != 0;
+            const bool open_b = (end_b.coupler_open & (meeting->other_front ? front_end : rear_end)) != 0;
             const bool too_hard = force > end_a.definition->derail_buffer_force || force > end_b.definition->derail_buffer_force;
             const bool can_couple = coupler_a.type == 0 && coupler_b.type == 0 && !open_a && !open_b && !too_hard
                 && closing >= (std::max)(coupler_a.velocity, coupler_b.velocity) && !train->derailed() && !other->derailed();
@@ -1732,6 +1795,19 @@ std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains
                                .force = force});
             train->add_velocity(static_cast<float>(change_a));
             other->add_velocity(static_cast<float>(change_b));
+            // A collision breaks an end coupler whose share of the impact
+            // passes its Break force (RTS 0x58A07C: the share is the other
+            // train's mass over both).
+            if (too_hard) {
+                const double share_a = force * mass_b / (mass_a + mass_b);
+                const double share_b = force * mass_a / (mass_a + mass_b);
+                if (share_a > coupler_a.break_tension)
+                    train->set_car_flags(front ? 0 : train->cars().size() - 1, Train::CarFlags::coupler_open,
+                                         front ? coupler_broken_front : coupler_broken_rear, true);
+                if (share_b > coupler_b.break_tension)
+                    other->set_car_flags(meeting->other_front ? 0 : other->cars().size() - 1, Train::CarFlags::coupler_open,
+                                         meeting->other_front ? coupler_broken_front : coupler_broken_rear, true);
+            }
             // Each end car takes the hit (RTS 0x58A07C -> 0x589A14): pushed
             // away from the other train, over one step; above its
             // DerailBufferForce it comes off.

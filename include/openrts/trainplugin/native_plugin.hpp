@@ -72,6 +72,7 @@ public:
     [[nodiscard]] std::vector<std::uint32_t> take_sounds(bool cab);
     [[nodiscard]] std::vector<std::string> take_messages();
     [[nodiscard]] const std::string& name() const noexcept { return name_; }
+    [[nodiscard]] const formats::WagonDefinition* definition() const noexcept { return engine_; }
 
 private:
     explicit NativeLocomotive(const formats::CabDescription* cab) : cab_(cab) {}

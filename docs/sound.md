@@ -1,7 +1,7 @@
 # Sound
 
-Status: foundation. World sounds of routes play in the viewer. Train, cab and
-DLL-driven sounds come with the train (roadmap steps 2 and 5).
+Status: the routes' world sounds, the trains' sounds, the cab sound and
+what the DLLs post play in the viewer (the sections below).
 
 ## Layout
 
@@ -106,6 +106,74 @@ The action of a trigger is the first keyword found in this order:
 - **Selection:** `SelectionMethod ( RandomSelection )` selects randomly; any
   other value, or none, selects sequentially.
 
+### How RTS plays a sound (CONFIRMED 2026-11-04)
+
+- **The wave** (`0x4DF378`): only `fmt `, `data` and `smpl` are read; `cue `
+  is not. Each `smpl` loop is kept as byte offsets (start, end × the block
+  size). A file without `smpl` gets one loop: the whole data.
+- **The buffer** (`0x4AA178`): a DirectSound buffer is made for each start
+  with just the bytes it plays, flags `0xAA` (volume, frequency, software,
+  static). No pan and no 3-D: RTS does not place sounds, it only sets
+  their volume.
+- **What a start puts in it** (`0x4A8C00`):
+  - `PlayOneShot` and `StartLoop`: the whole file;
+  - `StartLoopRelease`: from the file's start to the loop's end, looped as
+    a whole, so the part before the loop plays on every pass. Only when the
+    group comes on again (`0x4A9BA8`) or a stream's triggers run again
+    (`0x4A9A18`, object flag 4) is it the loop alone;
+  - `ReleaseLoopRelease` stops the looping: the buffer plays to its end,
+    which is the loop's end;
+  - `…WithJump`: from (data length − the place reached), or from the loop
+    start when that is past it; with the loop alone, from the place reached;
+    on to the end of the file.
+- **Each update** (`0x4A78A0`): volume = `Volume` × the volume curve ×
+  `SetStreamVolume` × the object's volume × `Attenuation` by distance
+  (unless the curve is distance-controlled), × the fades, to the buffer as
+  `log10(volume) × 3000` hundredths of a dB (floor −10000). Frequency: the
+  curve's value in Hz (100 000 at most); below 100 Hz the sound is silent.
+- **Content (ChS4t):** `ezda`, `al4545`, `transform`, the fans and the
+  compressors have `smpl` loops, and most of them begin quiet: by the code
+  above RTS's loop falls to near silence at each pass (`chs4t_comp`,
+  `vent_vu`, `al4545`). openRTS loops the `smpl` region instead (level even
+  across the seam); `vent_vu`'s seam steps 3.3 times the wave's usual step.
+
+### How a stream runs its actions (`0x4A8C00`, CONFIRMED 2026-11-04)
+
+- **A stream plays one sound at a time.** It has one sound buffer and is
+  busy while that plays.
+  - `PlayOneShot` on a busy stream is ignored.
+  - `StartLoop` / `StartLoopRelease`: ignored while the stream's loop is
+    looping. If the stream is busy otherwise (a one-shot, or a released
+    loop playing out), that sound is stopped and the loop starts anew.
+  - `ReleaseLoopRelease` and `…WithJump` do nothing on a stream that is not
+    busy.
+- **`ReleaseLoopRelease`** without `Fade`: the buffer stops looping and plays
+  its current pass to the end. With `Fade`: it fades out.
+- **`ReleaseLoopReleaseWithJump`** stops the buffer and goes on from another
+  place, once:
+  - a loop region from cue points: from the current place to the end of
+    the file;
+  - no cue points: from (length − the place it had reached), so it plays as
+    much of the file's end as it had played of its start.
+
+  A loop started and released with a jump in the same frame therefore
+  plays almost nothing.
+- **Codes per frame** (`0x4A8284`): before the streams, the queue goes
+  through the trigger pairs (`0x4A874C`). A sound object that takes 1700
+  codes within 2000 updates stops taking codes ("Sound object generates too
+  many discrete triggers"). The codes in the group's
+  `NonDistributableTriggers` do not count: the list is only that.
+- **Content (ChS4t, `chs4t.dll` `Run` `0x4064F4`):**
+  - with the auxiliary compressor on (switch 22 at "[ВК]"; the DLL's `Init`
+    puts it there for a running start), the DLL posts 67 every frame while
+    its pressure `var[19]` > 0 is still rising, and 68 while it is above
+    7.0;
+  - the pressure rises towards 7.0 + 0.7 per compressor, so above 7.0 both
+    codes come every frame, for good;
+  - `ev_CHS4t-cab.sms` starts `kompr_pant2.wav` (0.56 s, no cue points)
+    with 67 and releases it with a jump with 68, and lists 67 and 68 as
+    `NonDistributableTriggers`. In RTS the compressor falls silent at 7.0.
+
 ### Stream `Sources` (PROBABLE, static: 0x4DD0EC and its exception table)
 
 - **`Sources ( n i … )`** points a stream at the group's `SoundSources`
@@ -121,8 +189,9 @@ The action of a trigger is the first keyword found in this order:
 - **A script that fails as a whole** (any other exception) is caught in
   0x4A72D4: message 0x23, "Failed to load sms-file %s"; that object has no
   sound.
-- **openRTS:** stream sources are not used yet (cab work); every stream plays
-  at the object, which is what RTS does for the bad references.
+- **openRTS:** a stream with a bad reference has no sources and plays at
+  its own volume. The cab script's sources set its streams' volumes
+  ("Rooms and sound proofing", below).
 
 ### Unknown to RTS
 
@@ -162,18 +231,22 @@ first match in file order, not by number:
 
 ### Activation
 
-- **CONFIRMED (`0x44AB7C`, the sound objects' update):** the camera flags of
-  a group (`+32`): `Activation` CabCam 2, ExternalCam 8 (4: a third kind,
-  for the player's train only), `Deactivation` 0x10 / 0x20 / 0x40. Outside
-  (the free and the external camera, head out of the window) a group
-  activates with ExternalCam within its distance; in the cab with CabCam
-  (the player's locomotive), and other trains' groups with ExternalCam.
-  openRTS (`TrainView::sound_camera`): the engineer in the driven car: cab;
-  in another car of the train: passenger (the ED9M's scripts list
-  PassengerCam); on foot outside or the head out of a window: external;
-  other trains: external. Interior areas and doors' `SoundProof` (how much
-  a shut or open door between the listener's area and the sound damps it)
-  are not done yet.
+- **CONFIRMED (`0x44AB7C`, the sound objects' update; flags `0x45B668`):**
+  the camera flags of a group (`+32`): `Activation` CabCam 2, PassengerCam
+  4, ExternalCam 8; `Deactivation` 0x10 / 0x20 / 0x40 for the same cameras.
+  - Outside (the free and the external camera, on foot, the head out of a
+    window): ExternalCam groups.
+  - In the train (walking, seated): CabCam groups of the player's train's
+    objects while a cab is loaded, PassengerCam ones while a salon is, and
+    ExternalCam groups of anything not in the player's train (other trains,
+    the world, the weather).
+  - So `rain_in.sms` / `snow_in.sms` (CabCam, PassengerCam) never start:
+    the weather belongs to no train. In the cab `rain_ex.sms` plays through
+    the room's share ("Rooms and sound proofing", below).
+  - openRTS (`TrainView::sound_camera`): the engineer in the driven car:
+    cab; in another car of the train: passenger (the ED9M's scripts list
+    PassengerCam); on foot outside or the head out of a window: external;
+    other trains, the world and the weather: external.
 - **CONFIRMED going off (`0x4A9CF4` → `0x4A9A84`):** every voice stops; a
   stream that was looping keeps its current trigger (flag bit 0) and the
   buffer position of a `StartLoop` (state `+64`); others forget theirs.
@@ -232,8 +305,14 @@ first match in file order, not by number:
   - re-enabling draws a new delay.
 - **`Discrete_Trigger ( code )`:** codes come from the simulation, a DLL or
   `PostTrigger`.
-- **RTS `DiscreteTriggerPairs`:** an "on" code passes once until an "off"
-  code of the pair arrives.
+- **RTS `DiscreteTriggerPairs`** (`0x4A87C8`):
+  - an On code is dropped while its pair is known to be on, an Off code
+    while it is known to be off;
+  - before a pair's first code both pass;
+  - a Halt code sets the pair off.
+
+  The DLLs read the states (`RTSIsSMSTriggerOn`,
+  `reverse/train-dll.md` §19).
 - **`Event_Trigger`:** `WagonOnJoint` / `WagonOnJunction` /
   `WagonOnAnyJoint` events from the train.
 - **Indices:** `EnableTrigger` / `DisableTrigger` count from 1, as
@@ -241,12 +320,20 @@ first match in file order, not by number:
 
 ### Actions
 
-- **`PlayOneShot`:** plays a file once.
-- **`StartLoop`:** loops the whole file and replaces the stream's loop.
+- **One sound per stream**, as RTS (2026-11-04, "How a stream runs its
+  actions" above).
+- **`PlayOneShot`:** plays a file once, unless the stream plays something.
+- **`StartLoop`:** loops the whole file.
 - **`StartLoopRelease`:** plays into the loop region and loops it. The
   region comes from the first `smpl` loop, else the first two cue points.
-- **`ReleaseLoopRelease` (`…WithJump`):** leaves the loop and plays to the
+- **Both starts** leave a looping loop alone; anything else the stream plays
+  stops and the loop starts anew.
+- **`ReleaseLoopRelease`:** leaves the loop; the current pass plays to the
   end.
+- **`…WithJump`:** in a loop region it plays on to the end of the file;
+  otherwise from (length − the place reached), found by the voice's cursor.
+  Started and released in one update, the sound stops at once (the ChS4t's
+  auxiliary compressor above 7 atm: silent, as in RTS).
 - **`Fade`:** a started loop fades in, a released loop fades out and stops.
 - **`EnableStream` / `DisableStream` / `SuspendStream` (index from 1):** a
   disabled stream stops its voices; a suspended one keeps them but its
@@ -268,7 +355,20 @@ first match in file order, not by number:
   - distance attenuation is off, because scripts carry their own distance
     curves;
   - weather and environment sounds are not positioned (`Ignore3d` itself
-    is unknown to RTS).
+    is unknown to RTS);
+  - nor are the sounds heard at the listener: the cab's own script inside
+    and the library sounds in the car (2026-11-04). Placed at the head, a
+    frame's travel away from the listener once the train moves (1 mm at
+    1–2 km/h), they were panned by turns and lost up to half their power:
+    miniaudio pans a source farther than 1 mm, and one straight ahead gets
+    0.5 per channel. RTS places no sound at all (above).
+- **CONFIRMED, not ported (2026-11-04):**
+  - `0x4A78A0` sets DirectSound's volume to 3000 × log10(v) hundredths of
+    a dB: 30 dB a decade, an amplitude of v^1.5 (openRTS: v);
+  - objects with flag 0x20 (`.ws` sources, `0x41B6D0`;
+    `AuxLibrarySoundExternal`, `0x56DC3C`) fade with distance by the
+    `Attenuation` rule (`0x4A7764`, below) unless their volume curve is
+    distance controlled. Rolling stock has no such flag.
 - **UNKNOWN:**
   - whether RTS adds DirectSound 3D rolloff on top of the curves;
   - how RTS applies `Granularity`, `Priority` and the voice limits;
@@ -299,16 +399,15 @@ first match in file order, not by number:
 
 ## Not yet
 
-- **Route ambient sounds:**
-  - `ingame.sms` (what its `Variable1` is, is UNKNOWN);
-  - weather sounds from `.env` (`world_environment_sound_ex/in`, RTS);
-  - default signal, crossing and tower sounds from the `.trk`.
-- **With the train:**
-  - wagon and engine scripts with speed, distance travelled, joint and
-    junction events;
-  - group 7 for the player's train.
-- **With the cab:** `SoundSources` / `Sources` / `Attenuation` inside cabs,
-  `AllowStreamOnWindowCamera`, named triggers.
+- **Route ambient sounds:** `ingame.sms` (what its `Variable1` is, is
+  UNKNOWN); default signal and tower sounds from the `.trk`. (Weather and
+  level crossing sounds came with `v0.2.0`, `world-objects.md`; the trains'
+  sounds with roadmap step 2, above.)
+- **With the cab:** a salon's own sound (`Interior ( SoundInt )`, one
+  installed wagon). Named triggers are done (2026-11-04,
+  `reverse/train-dll.md` §19).
+- **Loudness:** RTS's volume law and distance fade (the CONFIRMED items
+  under "Volume, pitch and position").
 
 ## The cab sound (2026-11-01)
 
@@ -344,3 +443,96 @@ first match in file order, not by number:
   that car. The runtime was not traced (PROBABLE as described).
 - `openrts-train-check --triggers` prints every trigger a DLL posts, per
   car and SMS (ext, cab, aux n).
+
+## Rooms and sound proofing (2026-11-04)
+
+Static analysis of `rts1.exe`, CONFIRMED unless marked: `0x44AB7C`,
+`0x44B6B4`, `0x51434C`, `0x5143DC`, `0x513E8C`, `0x4D47A4`, `0x51CD88`,
+`0x4A78A0`, `0x4A7764`. openRTS: `audio::InteriorAcoustics`,
+`CabView::sound_transmission`, `TrainView::update_listener`.
+
+### The data
+
+The cab loader `0x51CD88` reads them; a salon's loader (`0x515434`) the
+same way.
+- **Rooms:** `InteriorAreas ( n InteriorArea ( name X1 Z1 X2 Z2 ... ) )`,
+  68 bytes each.
+- **Doors** (`InteriorDoors`, 120 bytes):
+  - `Connects ( a b )` (`0x4D47A4`): EXTERIOR −1, EXT_WAG −2, INTERIOR −3,
+    WAGON_BACK / WAGON_FRONT −4 / −5 (swapped for a turned car),
+    INTERIORPASS −7, else a room's name (−6 and its index; an unknown name
+    leaves 0);
+  - `SoundProof ( closed open )` at `+104` / `+108`, default 1 / 1;
+  - `Opened` (its presence) opens it from the start.
+- **Windows** (`InteriorWindows`, 100 bytes): `SoundProof` at `+80` /
+  `+84`, default 0 / 0. A window's room is the one its `Position` is in
+  (`+92`, `0x51434C` at load); without a Position it has none.
+- **Content:** 237 installed cab `.sd` files have `SoundProof`, 240 have
+  `InteriorAreas`. The ChS4t has CABIN1, MACHINE and CABIN2; side doors
+  0.5 / 0.9, the cab doors 0.6 / 0.9, the windows 0.5 / 0.8.
+
+### The room of a point (`0x51434C`)
+
+The last room whose rectangle holds the point, strictly: X1 < x < X2 and
+Z2 < z < Z1 (RTS keeps X negated). A point outside every rectangle is in
+no room.
+
+### What passes from one room to another (`0x5143DC`)
+
+- **The same room:** everything (1).
+- **Through a door:** every door with a side in the room the sound is in
+  (`0x513E8C`). Its share is closed + (open − closed) × how far its node
+  has opened, or by its State without a node. That share is multiplied by
+  what passes on from the door's other side to the listener's room.
+- **The open air:** a door's other side is the open air when it is
+  EXTERIOR, EXT_WAG or a car end. INTERIOR, INTERIORPASS and unknown names
+  lead to room 0.
+- **No loops:** a way enters no room it came through, nor the open air
+  twice.
+- **Windows:** towards the open air, the windows of the room the sound is in
+  count too.
+- **The result** is the best way.
+- **ChS4t** (`openrts-train-check D:\Games\MDDRTS --cab ev_CHS4t-563
+  ev_chs4t-563`): CABIN1 hears 0.50 of the outside shut, 0.80 with its
+  windows open, 0.81 with everything open. MACHINE to CABIN1: 0.60.
+
+### Where it is used (`0x44AB7C`, every frame)
+
+- **The listener's room:** the player's position in the car
+  (`pos_in_train`), in the cab or salon he is in.
+- **Outside sounds:** every sound object plays at its group volume × what
+  passes from the listener's room to the open air. That covers trains,
+  `.ws` sources, crossings, the weather and library sounds.
+- **A library sound placed in the locomotive** (`AuxLibrarySoundPosition`,
+  flag 0x40 from `0x56DC3C`) inside a room: what passes from its room to
+  the listener's instead.
+- **The cab script** (`0x44B6B4`) is not one of these objects. It plays at
+  its group volume while the player is in that locomotive.
+  - Its `SoundSources ( n x y z volume … )` are points in the car; a turned
+    cab turns them.
+  - Each point counts with its volume × what passes from the listener's room
+    to the point's room, and with its distance from the listener.
+  - A stream with `Sources` plays at the loudest of its points, each through
+    the stream's `Attenuation` over its distance.
+- **The head out of a window** (camera mode 4): the cab script keeps
+  playing only if its group has an `AllowStreamOnWindowCamera` stream, and
+  then only those streams (`0x4A78A0`: object flag 0x200).
+- **`Attenuation ( D1 D2 type )`** (`0x4A7764`):
+  - type 1: 1 − 0.5 / D1 × d / D2 up to D2, then 0.5 / D1 × D2 / d;
+  - type 2: D1 − d / D2, not below 0;
+  - any other type: 0.5 × (2 − d / k) up to k, then 0.5 × k / d. Here k is
+    50 m, or a fifth of the deactivation distance when that is below 250 m.
+
+### openRTS
+
+- **The listener:** `TrainView::update_listener` takes the camera's
+  position in the engineer's cab or salon (openRTS choice; RTS takes the
+  player's position, PROBABLY the same while he sits or walks). Doors and
+  windows count as far as their nodes have opened (`CabView`).
+- **The share** goes to every car's sound, the library sounds, the world
+  sounds, crossings and the weather. The cab script gets its sources and
+  the window rule.
+- **Checked live:** the capture report's `trains:` line gives `listener
+  room <name> outside <share>`. In the ChS4t's cab it is CABIN1, 0.50.
+- **Not traced:** where RTS's `pos_in_train` is while the head is out of the
+  window. openRTS uses the eye, which is mostly outside the rooms.

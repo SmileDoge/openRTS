@@ -974,7 +974,7 @@ struct CameraInput {
     int releases = 0;          // left button let go (anywhere, over a panel too)
     double scroll = 0.0;       // wheel since the last scene_input()
     bool scene_takes_scroll = false;
-    std::array<bool, 10> train_keys_down{};
+    std::array<bool, 14> train_keys_down{};
     std::vector<KeyEvent> key_events; // since the last scene_input()
     bool keyboard_captured = false;   // the scene takes the keyboard (cab keys)
     double cursor_x = 0.0;
@@ -1189,6 +1189,12 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .independent_more = pressed(GLFW_KEY_PERIOD, input.train_keys_down[7]),
         .independent_less = pressed(GLFW_KEY_COMMA, input.train_keys_down[8]),
         .toggle_ep = pressed(GLFW_KEY_K, input.train_keys_down[9]),
+        .horn = down(GLFW_KEY_SPACE),
+        .sander = down(GLFW_KEY_X),
+        .bell = pressed(GLFW_KEY_B, input.train_keys_down[10]),
+        .pantographs = pressed(GLFW_KEY_P, input.train_keys_down[11]),
+        .doors_left = pressed(GLFW_KEY_Y, input.train_keys_down[12]),
+        .doors_right = pressed(GLFW_KEY_U, input.train_keys_down[13]),
         .toggle_track_control = f7 && ctrl && alt,
         .place_names = f7 && !ctrl && !alt,
         .car_info = f5 && !ctrl,
@@ -1619,6 +1625,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     bool capture_switched = false;
     std::size_t capture_switch_next = 0; // the next --capture-switch to make
     bool capture_menu_picked = false;
+    std::size_t capture_menu_next = 0; // of capture_menu_more: the next to open and pick
+    bool capture_menu_open = false;
+    bool capture_uncoupled = false;
 
     ClockControls clock{
         .time_of_day = static_cast<double>(options.time_of_day),
@@ -1768,9 +1777,25 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             if (options.capture_menu) frame_input.car_menu = true;
             capture_switched = true;
         } else if (capture && capture_switched && options.capture_menu && *options.capture_menu > 0 && !capture_menu_picked
-                   && glfwGetTime() - capture_start >= options.capture_at * 0.75) {
+                   && glfwGetTime() - capture_start >= options.capture_at * 0.6) {
             scene.choose_car_menu_item(*options.capture_menu);
             capture_menu_picked = true;
+        } else if (capture && capture_menu_picked && capture_menu_next < options.capture_menu_more.size()) {
+            // The next items: opened and picked in turn over 0.65..0.95 of capture_at.
+            const double slot = 0.3 / static_cast<double>(options.capture_menu_more.size());
+            const double at = 0.65 + slot * static_cast<double>(capture_menu_next);
+            const double since = glfwGetTime() - capture_start;
+            if (!capture_menu_open && since >= options.capture_at * at) {
+                frame_input.car_menu = true;
+                capture_menu_open = true;
+            } else if (capture_menu_open && since >= options.capture_at * (at + slot * 0.5)) {
+                scene.choose_car_menu_item(options.capture_menu_more[capture_menu_next++]);
+                capture_menu_open = false;
+            }
+        }
+        if (capture && options.capture_uncouple && !capture_uncoupled && glfwGetTime() - capture_start >= options.capture_at * 0.6) {
+            scene.uncouple_driven(*options.capture_uncouple);
+            capture_uncoupled = true;
         }
         // The switches one after another, half a second apart, as a hand
         // would (a DLL checks the others' State, which follows SetState

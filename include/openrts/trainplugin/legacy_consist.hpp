@@ -12,14 +12,20 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
 #include <openrts/dllhost/protocol.hpp>
 #include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/formats/route_database.hpp>
+#include <openrts/formats/track_database.hpp>
 #include <openrts/simulation/train.hpp>
 #include <openrts/trainplugin/legacy_host.hpp>
 
@@ -28,7 +34,8 @@ namespace openrts::trainplugin {
 struct LegacyCar {
     const formats::WagonDefinition* definition = nullptr;
     core::VirtualPath file; // its .eng / .wag (relative DLL and cab paths start here)
-    std::uint32_t uid{};
+    std::uint32_t uid{};    // the .con UiD the DLLs see (not unique between consists)
+    std::uint32_t key{};    // unique in the game (0: none): reconsist() follows the car by it
 };
 
 // What the world tells the DLLs each step.
@@ -41,7 +48,23 @@ struct LegacyWorld {
     float line_voltage = 3000.0f;
     float line_frequency = 0.0f;
     dllhost::SpeedLimitInput route, signal, event; // m/s, m
-    std::vector<dllhost::SignalInput> signals_ahead;
+    std::vector<dllhost::SignalInput> signals_ahead; // the next obeyed signal (Cabin::Signal)
+    // ALSN's arrays (dllhost::StepRequest) and the next speed post.
+    std::vector<dllhost::SignalInput> alsn_ahead, alsn_behind, alsn_passing;
+    float next_limit = -1.0f;
+    float next_limit_distance = -1.0f;
+    // The route database the SignalInputs' units index (RTSSignalData), the
+    // TDB the track item list names, and the route's SpeedLimit, m/s (a
+    // resuming speed post's Value, RTS 0x482680).
+    const formats::RouteDatabase* route_database = nullptr;
+    const formats::TrackDatabase* tdb = nullptr;
+    float route_speed_limit = 0.0f;
+    // RTSGetTrackItems: the player's train's items (RTS 0x4808DC) and how
+    // far ahead and behind the list reaches.
+    std::vector<dllhost::TrackItemEntry> track_items;
+    float items_range = 0.0f;
+    // The SMS objects' trigger pair states (RTSIsSMSTriggerOn).
+    std::vector<dllhost::SoundPairState> sound_pairs;
 };
 
 class LegacyConsist {
@@ -57,7 +80,8 @@ public:
                                                                std::vector<LegacyCar> cars,
                                                                const std::filesystem::path& rts_root,
                                                                std::string* error,
-                                                               const std::filesystem::path& host_executable = {});
+                                                               const std::filesystem::path& host_executable = {},
+                                                               const core::VirtualPath* route = nullptr);
     ~LegacyConsist();
 
     // The player takes locomotive `car` (Init of it and its multiple-unit group).
@@ -66,6 +90,13 @@ public:
     bool enter(std::size_t car, const simulation::Train& train, bool running = true, int state = -1);
     // One round trip: the train's state in, the DLLs' outputs out.
     bool step(double dt, const simulation::Train& train, const LegacyWorld& world);
+    // Cars were coupled on or cut off: `cars` is the consist now, `train`
+    // its train (cars matched by key). The DLLs of the cars that stay keep
+    // their state, as in RTS; new engines join the groups (bound and
+    // initialised as slaves); a cut-off car keeps its state until it is
+    // coupled again. False (nothing changed) when the player's engine is
+    // not among `cars`, or the host failed: then start again with create().
+    bool reconsist(const core::Vfs& vfs, std::vector<LegacyCar> cars, const simulation::Train& train);
     // The player moves a cab switch of `car` to `state`: CanSwitch, then the
     // host moves it (Switched fires when it gets there). False if refused.
     bool operate(std::size_t car, std::uint32_t id, std::uint32_t state);
@@ -77,6 +108,8 @@ public:
     [[nodiscard]] bool has_dll(std::size_t car) const;
     [[nodiscard]] const std::vector<dllhost::ModuleReport>& modules() const noexcept { return modules_; }
     [[nodiscard]] std::size_t player() const noexcept { return player_; }
+    // The farthest RTSGetTrackItems asked for in the last step, m (0: none).
+    [[nodiscard]] float items_wanted() const noexcept { return items_wanted_; }
     [[nodiscard]] bool alive() const;
     [[nodiscard]] std::string error() const;
     [[nodiscard]] std::string take_messages();
@@ -95,6 +128,25 @@ private:
     std::shared_ptr<Outputs> outputs_ = std::make_shared<Outputs>();
     std::size_t player_ = SIZE_MAX;
     std::string messages_;
+    // Per car: each AuxLibrary of the .eng as the host numbers them (only
+    // the ones whose module was found), -1 missing.
+    std::vector<std::vector<std::int16_t>> aux_index_;
+    // The sound scripts the host has tables of (by path), for new cars.
+    std::map<std::string, std::int32_t> sound_paths_;
+    std::int32_t sound_count_ = 0;
+    std::filesystem::path cache_root_;
+    std::optional<core::VirtualPath> route_;
+    // Cars cut off (by key), as the host keeps them, until coupled again.
+    struct Parked {
+        LegacyCar car;
+        formats::CabDescription cab;
+        bool dll = false;
+        std::vector<std::int16_t> aux_index;
+    };
+    std::unordered_map<std::uint32_t, Parked> parked_;
+    std::unordered_set<std::uint32_t> items_sent_;
+    std::unordered_set<std::int32_t> units_sent_;
+    float items_wanted_ = 0.0f;
 };
 
 // Engine outputs of a legacy DLL as the simulation's demands.

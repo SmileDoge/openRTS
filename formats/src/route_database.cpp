@@ -67,6 +67,22 @@ RouteDatabase parse_route_database(const std::string_view bytes) {
     return database;
 }
 
+std::vector<std::int32_t> rts_signal_units(const TrackDatabase& tdb, const RouteDatabase& database) {
+    std::vector<std::int32_t> units(tdb.items.size(), -1);
+    for (std::size_t u = 0; u < database.signal_units.size(); ++u) {
+        const auto& unit = database.signal_units[u];
+        for (std::size_t k = 0; k < tdb.items.size(); ++k) {
+            const auto& item = tdb.items[k];
+            if (item.kind != TrackItemKind::signal || units[k] >= 0 || !item.has_position) continue;
+            if (item.tile_x != unit.position.tile_x || item.tile_z != unit.position.tile_z) continue;
+            if (std::abs(item.x - unit.position.x) <= 0.2 && std::abs(item.y - unit.position.y) <= 0.2
+                && std::abs(item.z - unit.position.z) <= 0.2)
+                units[k] = static_cast<std::int32_t>(u);
+        }
+    }
+    return units;
+}
+
 std::map<std::uint32_t, std::size_t> match_signal_units(const TrackDatabase& tdb, const RouteDatabase& database, const double reach) {
     std::map<std::uint32_t, std::size_t> matched;
     std::vector<std::uint32_t> signals;

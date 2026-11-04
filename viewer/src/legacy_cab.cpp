@@ -87,7 +87,8 @@ CabKey parse_cab_key(std::string_view text) {
 }
 
 std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::vector<LegacyCarRef>& cars,
-                                             simulation::Train& train, std::string& status, const int start_state) {
+                                             simulation::Train& train, std::string& status, const int start_state,
+                                             const core::VirtualPath* route) {
     status.clear();
     bool any = false;
     for (const auto& c : cars)
@@ -98,12 +99,13 @@ std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::ve
         trainplugin::LegacyCar l;
         l.definition = c.definition;
         l.uid = c.uid;
+        l.key = c.key;
         if (c.definition) l.file = formats::wagon_path(c.folder, c.definition->name, c.definition->engine.has_value());
         legacy.push_back(std::move(l));
     }
     std::string error;
     auto consist = trainplugin::LegacyConsist::create(vfs, std::filesystem::temp_directory_path() / "openrts", legacy,
-                                                      rts_program_folder(vfs, cars), &error);
+                                                      rts_program_folder(vfs, cars), &error, {}, route);
     if (!consist) {
         status = error;
         return nullptr;
@@ -123,18 +125,65 @@ std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::ve
         if (m.status != 0) status += "refused: " + trainplugin::utf16_to_utf8(m.path) + "\n";
     }
     cab->consist_ = std::move(consist);
-    if (const auto* sd = cab->consist_->cab(player)) {
-        for (const auto& s : sd->switches) {
-            for (std::size_t k = 0; k < s.keys.size() && k < 2; ++k) {
-                const auto key = parse_cab_key(s.keys[k]);
-                if (!key.key) continue;
-                const int direction = s.keys.size() >= 2 ? (k == 0 ? 1 : -1) : 0;
-                cab->bindings_.push_back({s.id, key.key, key.shift, key.ctrl, direction});
-            }
-        }
-    }
+    cab->bind_keys(player);
     cab->log(cab->consist_->take_messages());
     return cab;
+}
+
+void LegacyCab::bind_keys(const std::size_t car) {
+    bindings_.clear();
+    const auto* sd = consist_ ? consist_->cab(car) : nullptr;
+    if (!sd) return;
+    for (const auto& s : sd->switches) {
+        for (std::size_t k = 0; k < s.keys.size() && k < 2; ++k) {
+            const auto key = parse_cab_key(s.keys[k]);
+            if (!key.key) continue;
+            const int direction = s.keys.size() >= 2 ? (k == 0 ? 1 : -1) : 0;
+            bindings_.push_back({s.id, key.key, key.shift, key.ctrl, direction});
+        }
+    }
+}
+
+bool LegacyCab::reconsist(const core::Vfs& vfs, const std::vector<LegacyCarRef>& cars, simulation::Train& train) {
+    if (!consist_) return false;
+    std::vector<trainplugin::LegacyCar> legacy;
+    for (const auto& c : cars) {
+        trainplugin::LegacyCar l;
+        l.definition = c.definition;
+        l.uid = c.uid;
+        l.key = c.key;
+        if (c.definition) l.file = formats::wagon_path(c.folder, c.definition->name, c.definition->engine.has_value());
+        legacy.push_back(std::move(l));
+    }
+    const auto before = consist_->player();
+    const bool ok = consist_->reconsist(vfs, std::move(legacy), train);
+    log(consist_->take_messages());
+    if (!ok) return false;
+    // What the mouse holds in the player's cab stays held (at its car's new
+    // place); in another car it is let go.
+    const auto player = consist_->player();
+    if (held_ && held_->first == before) held_->first = player; else held_.reset();
+    if (drag_ && drag_->car == before) drag_->car = player; else drag_.reset();
+    std::map<std::uint64_t, std::uint8_t> going_down;
+    for (const auto& [k, v] : going_down_)
+        if ((k >> 32) == before) going_down[(static_cast<std::uint64_t>(player) << 32) | (k & 0xFFFFFFFFu)] = v;
+    going_down_ = std::move(going_down);
+    for (std::size_t i = 0; i < cars.size(); ++i)
+        if (consist_->has_dll(i)) train.set_controller(i, consist_->controller(i));
+    bind_keys(consist_->player());
+    return true;
+}
+
+bool LegacyCab::enter(const std::size_t car, const simulation::Train& train) {
+    if (!consist_ || !consist_->has_dll(car) || car == consist_->player()) return false;
+    release_keys();
+    held_.reset();
+    drag_.reset();
+    const bool ok = consist_->enter(car, train, true);
+    log(consist_->take_messages());
+    if (!ok) return false;
+    bind_keys(car);
+    return true;
 }
 
 void LegacyCab::log(std::string line) {

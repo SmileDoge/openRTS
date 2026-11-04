@@ -38,7 +38,10 @@ public:
     [[nodiscard]] bool empty() const noexcept { return screens_.empty(); }
     // `state`: the DLL's output for the cab's car; null: the .sd's initial
     // states. `elapsed` drives blinking and the smoothed arrows and bars.
-    void build(const dllhost::CarOutput* state, float elapsed, std::vector<ScreenBatch>& out);
+    // `blinked_off`: by display index, the display is in the hidden half of
+    // its DisplayFade blink (RTS 0x525DB0); null: none.
+    void build(const dllhost::CarOutput* state, float elapsed, std::vector<ScreenBatch>& out,
+               const std::vector<bool>* blinked_off = nullptr);
 
 private:
     struct Object {

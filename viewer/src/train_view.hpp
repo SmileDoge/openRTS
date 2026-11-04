@@ -15,6 +15,8 @@
 #include <glm/vec3.hpp>
 
 #include <openrts/audio/audio_engine.hpp>
+#include <openrts/audio/interior_acoustics.hpp>
+#include <openrts/formats/route_database.hpp>
 #include <openrts/audio/sound_bank.hpp>
 #include <openrts/audio/sound_instance.hpp>
 #include <openrts/core/vfs.hpp>
@@ -36,7 +38,9 @@
 #include <openrts/simulation/speed_limits.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train.hpp>
+#include <openrts/simulation/train_lights.hpp>
 #include <openrts/simulation/train_route.hpp>
+#include <openrts/trainplugin/native_plugin.hpp>
 
 #include "camera.hpp"
 #include "cab_view.hpp"
@@ -126,6 +130,11 @@ public:
     [[nodiscard]] bool cab_keys_live() const noexcept;
     // Which of a sound script's camera groups play for the player's train.
     [[nodiscard]] audio::SoundCamera sound_camera() const noexcept;
+    // The share of a sound outside that reaches the engineer's room through
+    // its doors and windows (1 when he is in no room). RTS multiplies every
+    // sound object by it: trains, the world, the weather (0x44AB7C,
+    // docs/sound.md "Rooms and sound proofing").
+    [[nodiscard]] float outside_gain() const noexcept { return outside_gain_; }
     [[nodiscard]] bool following() const noexcept { return follow_; }
     void stop_following() noexcept { follow_ = false; }
     // Terrain height at a scene point (x, z), when its tile has heights.
@@ -147,9 +156,10 @@ public:
     // Switch `id` of the player's cab to `state` (--capture-switch).
     void set_cab_switch(std::uint32_t id, std::uint32_t state) {
         if (legacy_) legacy_->set_switch(id, state);
+        if (native_) (void)native_->operate(static_cast<OrtsHandle>(id), static_cast<float>(state));
     }
     [[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>> cab_switch_state(std::uint32_t id) const {
-        const auto* out = legacy_ ? legacy_->output(legacy_->player()) : nullptr;
+        const auto* out = native_ ? &native_output_ : legacy_ ? legacy_->output(legacy_->player()) : nullptr;
         if (!out || id >= out->switches.size()) return std::nullopt;
         return std::pair{out->switches[id].state, out->switches[id].set_state};
     }
@@ -201,6 +211,13 @@ public:
         day_time_ = day_time;
         night_ = night;
     }
+    // How lit the world is (SkyState::world_lit) and the weather (0 clear, 1
+    // snow, 2 rain): the light conditions of trains without a DLL, the cab
+    // lamps' NIGHT_AUTO.
+    void set_world_light(const float world_lit, const std::uint8_t weather) noexcept {
+        world_lit_ = world_lit;
+        weather_ = weather;
+    }
     // The cab screens (КЛУБ, САВПЭ ...) of the cab the engineer is in, for
     // this frame, in scene coordinates (filled by submit()).
     [[nodiscard]] const std::vector<ScreenBatch>& screen_batches() const noexcept { return screen_batches_; }
@@ -242,7 +259,13 @@ public:
     void choose_car_menu_item(int id) {
         if (car_menu_) car_menu_choice_ = id;
     }
+    // --capture-uncouple: the Train window's "uncouple here" before car `index`
+    // of the driven train (done in update(), the train standing).
+    void uncouple_driven(std::size_t index) { pending_uncouple_ = index; }
     [[nodiscard]] std::string car_menu_report() const;
+    // For the capture report: lights, pantographs, the line, cables, the
+    // native plugin, of every train.
+    [[nodiscard]] std::string systems_report() const;
     void pointer(const glm::vec3& eye, const std::optional<glm::vec3>& direction, bool click, bool shift, float scroll,
                  bool release = false, const glm::vec2& cursor = {}, bool held = false);
     [[nodiscard]] bool engineer_inside() const noexcept { return engineer_.inside(); }
@@ -289,13 +312,23 @@ private:
     void apply_handles(const SceneInput& input);
     void step_trains();
     // Uncouples unit `unit` behind car `index - 1`; the driver stays with
-    // the part that has the master engine.
+    // the part he drives from (the cab's car, else the master engine).
     void split(std::size_t unit, std::size_t index, bool close_cocks, bool keep_open);
+    // The cars the cab and the engineer are in (Car::key), taken before the
+    // driven train's cars change.
+    struct DrivenKeys {
+        std::uint32_t cab{}, engineer{};
+    };
+    [[nodiscard]] DrivenKeys driven_keys() const;
     // Puts the keyboard driver on the driven train again (new master after
-    // the cars changed), keeping the handles.
-    void reattach_driver();
+    // the cars changed), keeping the handles. With `keep` (cars coupled on
+    // or cut off): the DLLs, the cab and the engineer stay with their cars,
+    // as RTS keeps them (0x469ED8 / 0x469858); else they start again.
+    void reattach_driver(const DrivenKeys* keep = nullptr);
+    bool keep_attached(const DrivenKeys& keep);
     [[nodiscard]] simulation::Train& driven();
     [[nodiscard]] const simulation::Train& driven() const;
+    void update_listener(const ViewerCamera& camera);
     void update_sound(float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound);
     void list_consists();
     [[nodiscard]] float alpha() const noexcept;
@@ -380,6 +413,16 @@ private:
     std::unique_ptr<LegacyCab> legacy_;
     std::string legacy_status_;
     void attach_legacy();
+    // The driven train's engine with a native plugin (EngExtended
+    // ORTSTrainPlugin): its controller and its cab state.
+    void attach_native();
+    // The engineer walked into another engine's cab (RTS 0x435654 ->
+    // 0x436734): it becomes the player's (the DLLs' ChangeLoco, the keyboard
+    // driver's master).
+    void change_cab(std::size_t car);
+    // openRTS's default logic for the driven train without a DLL: horn,
+    // bell, sander, pantographs, doors (SceneInput keys).
+    void apply_default_systems(const SceneInput& input);
     void update_pantographs(float elapsed);
     void update_exterior_doors(float elapsed);
     // Each train's line voltage at its electric engines, before the step.
@@ -418,6 +461,23 @@ private:
     std::size_t engineer_car_ = SIZE_MAX;  // the car he is in (or got off)
     // That car's cab when it is not cab_car_ (he walked into the next section).
     std::unique_ptr<CabView> visit_cab_;
+    // Where the listener is in the engineer's cab or salon (its shape
+    // coordinates) and which room that is, for the sounds this frame.
+    // The route database's signal units on the TDB signal items as RTS
+    // hangs them (RTSSignalData for the DLLs' ALSN), read aside once.
+    struct SignalUnits {
+        formats::RouteDatabase database;
+        std::vector<std::int32_t> item_unit; // by TDB item, -1 none
+    };
+    std::shared_future<std::shared_ptr<const SignalUnits>> signal_units_;
+    [[nodiscard]] const SignalUnits* signal_units();
+    double items_searched_[2]{}; // how far the item list's walks went (ahead, behind), m
+    const CabView* listener_cab_ = nullptr;
+    glm::vec3 listener_local_{};
+    int listener_room_ = audio::InteriorAcoustics::outside;
+    int traced_room_ = -2; // OPENRTS_SOUND_TRACE: the room last logged
+    float outside_gain_ = 1.0f;
+    std::vector<audio::SoundSourceLevel> source_levels_; // the cab script's SoundSources as heard
     bool visit_requested_ = false;
     std::future<renderer::StreamedModelAsset> visit_loading_;
     std::optional<CabView::Picked> hovered_; // the control under the mouse
@@ -442,7 +502,41 @@ private:
     std::vector<float> lamp_level_; // the engineer's cab or salon, by lamp (LightFade)
     void update_lights(float elapsed, const glm::vec3& eye);
     bool night_ = false;
+    float world_lit_ = 1.0f;
+    std::uint8_t weather_ = 0;
     float frame_elapsed_{};
+    // The driven train without a DLL: openRTS's default systems.
+    bool horn_ = false;
+    bool bell_ = false;
+    bool pantographs_down_ = false;      // P: the driver lowered them
+    std::array<bool, 2> doors_open_{};    // [0] right (GlobalID 1), [1] left (GlobalID 2)
+    // The native plugin of the driven train (attach_native).
+    std::shared_ptr<trainplugin::NativeLocomotive> native_;
+    std::size_t native_car_ = SIZE_MAX;
+    dllhost::CarOutput native_output_;    // its cab as the 3-D cab draws it
+    struct NativeBinding {
+        std::uint32_t id{};
+        int key{};
+        bool shift = false, ctrl = false;
+        int direction{};
+    };
+    std::vector<NativeBinding> native_bindings_;
+    std::map<std::uint32_t, bool> native_going_down_;
+    void native_operate(std::uint32_t id, int direction);
+    // The cab state the 3-D cab of car `car` shows: a DLL's or the native plugin's.
+    [[nodiscard]] const dllhost::CarOutput* cab_state(std::size_t car) const;
+    // A coupling being fixed (the car menu's "Fix coupling", RTS 0x463F84
+    // id 17: 120 s, 0x424488 counts it down).
+    struct Repair {
+        std::uint64_t train{};
+        std::size_t car{};
+        bool front = true;
+        float left{};
+    };
+    std::optional<Repair> repair_;
+    // The car menu's "Cargo information" (RTS 0x502680: a message for 30 s).
+    std::string cargo_text_;
+    float cargo_time_{};
     [[nodiscard]] CabView* engineer_cab() noexcept { return engineer_car_ == cab_car_ ? cab_.get() : visit_cab_.get(); }
     [[nodiscard]] const CabView* engineer_cab() const noexcept {
         return engineer_car_ == cab_car_ ? cab_.get() : visit_cab_.get();

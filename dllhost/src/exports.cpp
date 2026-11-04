@@ -74,20 +74,19 @@ int __cdecl RTSGetTrackItems(void* dll, const abi::Locomotive* loco, unsigned co
     return r;
 }
 
-// RTSGetNamedInteger(sms, RTS_TRIGGERID, name): named SMS triggers. The
-// mirrors carry no names yet, so every name is unknown (0, as RTS answers).
+// RTSGetNamedInteger(sms, RTS_TRIGGERID, name): the script's
+// NamedTriggersTable, the name compared without case (RTS 0x4394F4); 0 for
+// any other code or an unknown name.
 int __cdecl RTSGetNamedInteger(const void* obj, unsigned code, wchar_t* name) {
-    (void)obj;
-    (void)code;
-    (void)name;
-    return 0;
+    if (!host() || code != 5) return 0;
+    return host()->named_integer(obj, name);
 }
 
-// RTSIsSMSTriggerOn: -3 when the sound object has no SMS (RTS 0x439548).
+// RTSIsSMSTriggerOn: whether the trigger pair with this On code is on (RTS
+// 0x439548; host.cpp).
 int __cdecl RTSIsSMSTriggerOn(const abi::SMSObject* sound, unsigned short trigger) {
-    (void)sound;
-    (void)trigger;
-    return -3;
+    if (!host()) return -3;
+    return host()->trigger_on(sound, trigger);
 }
 
 } // extern "C"

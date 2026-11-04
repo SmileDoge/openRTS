@@ -10,6 +10,7 @@ add_library(openrts_simulation STATIC
     src/dispatcher.cpp
     src/speed_limits.cpp
     src/auto_driver.cpp
-    src/electrification.cpp)
+    src/electrification.cpp
+    src/train_lights.cpp)
 openrts_configure_target(openrts_simulation)
 target_link_libraries(openrts_simulation PUBLIC openrts_core openrts_formats)

@@ -80,7 +80,13 @@ struct WindowOptions {
     // The car menu for the capture (--capture-menu <item>): opened at half of
     // capture_at with the camera where --capture-camera puts it, item
     // `capture_menu` picked a moment later (0: none); the capture prints it.
+    // More --capture-menu items: the menu is opened again for each, one
+    // after another before the capture (an uncoupling, then a coupling).
     std::optional<int> capture_menu;
+    std::vector<int> capture_menu_more;
+    // --capture-uncouple <index>: at 0.6 of capture_at the driven train is
+    // uncoupled before car `index` (from 0), as the Train window's button does.
+    std::optional<std::size_t> capture_uncouple;
 };
 
 [[nodiscard]] int run_window_viewer(ViewerScene& scene, const WindowOptions& options);

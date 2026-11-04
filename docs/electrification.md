@@ -40,10 +40,12 @@ RTS takes:
 
 Before each step `Electrification::apply` looks under every electric engine
 with a pantograph up (risen to the top of its animation, else what the DLL
-wants, else while the train works), takes the highest voltage found and
-gives it with its frequency to every electric engine of the train
-(`CarState::line_voltage` / `line_frequency`): RTS's `LineVoltage` /
-`LineFreq`. No pantograph up: 0 V.
+wants, else while the train works) and not burnt, takes the highest voltage
+found in each group of cars joined by the high-voltage bus (an engine
+without one is a group of its own) and gives it with its frequency to every
+electric engine of that group (`CarState::line_voltage` /
+`line_frequency`): RTS's `LineVoltage` / `LineFreq`. No pantograph up in
+the group: 0 V.
 
 - **Engines with a DLL** see it in `Locomotive::LineVoltage` / `LineFreq` and
   decide themselves (the VL10k opens its breaker on AC and scales its force
@@ -68,12 +70,24 @@ The option "a section with several sources feeds what the engine works on"
 is what RTS does in an activity: the first source whose substation voltage
 and frequency an engine works on, in its `WorksOnLineVoltages` order.
 
+## The current, the wire, the substations
+
+As RTS (`0x503CE4`, `0x5B6030`; details in `docs/train-systems.md` and
+`docs/reverse/train-dll.md` §17):
+- the cars joined by the high-voltage bus share the line (an engine without
+  one has its own);
+- the line current is the group's power over the voltage, split by the
+  raised pantographs, and goes to the DLLs (`LineCurrent`);
+- a pantograph past `MaxLineCurrent` burns the wire at once, or with
+  `MaxLineCurrentCatenaryBurnTime` when the heat (current / the wire's
+  `BurnQ`, cooled by `MaxLineCurrentVelocityIncrease`) reaches the limit;
+  it gives no line for 60 s;
+- each substation phase's load over 2 s windows is in Track control's
+  electrification layer. RTS's client only reports it (package `0x4649`);
+  the voltage does not sag with it, and `PowerDecline` is not used.
+
 ## Not done
 
-- The substations' load (power, `PowerDecline`, the voltage sagging under
-  the trains' current) and the phases.
-- Pantographs burning the wire (`MaxLineCurrent`,
-  `MaxLineCurrentCatenaryBurnTime` are read).
 - Drawing the wires from the catenary types (RTS draws them itself).
 - The activity's `SetTrainElectricity`, the dispatcher console's power
   controls (roadmap step 6).

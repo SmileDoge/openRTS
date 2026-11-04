@@ -14,8 +14,10 @@
 #include <span>
 #include <openrts/core/installation.hpp>
 #include <openrts/core/vfs.hpp>
+#include <openrts/audio/interior_acoustics.hpp>
 #include <openrts/audio/sound_bank.hpp>
 #include <openrts/audio/sound_instance.hpp>
+#include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/formats/sound.hpp>
 
@@ -64,7 +66,19 @@ public:
         return it != voices.end() && !it->second.stopped && !finished.contains(voice);
     }
     void seek(audio::VoiceId voice, std::uint64_t frame) override { seeks[voice] = frame; }
+    std::optional<std::uint64_t> cursor(audio::VoiceId voice) const override {
+        const auto it = cursors.find(voice);
+        return it != cursors.end() ? std::optional(it->second) : std::nullopt;
+    }
     std::map<audio::VoiceId, std::uint64_t> seeks;
+    std::map<audio::VoiceId, std::uint64_t> cursors; // set by a test: where a voice is
+
+    // Time passes: the one-shots and released loops finish (the test clips
+    // are a few milliseconds long); loops go on.
+    void advance() {
+        for (const auto& [id, voice] : voices)
+            if (voice.playback == audio::VoicePlayback::once || voice.released) finished[id] = true;
+    }
 
     [[nodiscard]] std::size_t live() const {
         std::size_t count = 0;
@@ -336,8 +350,9 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) Distance ( 500 ) ) Str
 void test_cab_round_trip() {
     auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
 Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCam ( ) ) Streams ( 2
-    Stream ( Triggers ( 2
+    Stream ( Triggers ( 3
         Initial_Trigger ( StartLoop ( 1 File ( "idle.wav" -1 ) ) )
+        Discrete_Trigger ( 4 ReleaseLoopRelease ( ) )
         Discrete_Trigger ( 5 StartLoop ( 1 File ( "hum.wav" -1 ) ) ) ) )
     Stream ( Triggers ( 1 Discrete_Trigger ( 7 StartLoop ( 1 File ( "fan.wav" -1 ) ) ) ) ) ) ) ))"));
     std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips;
@@ -350,7 +365,14 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCa
     inputs[SoundVariable::distance] = 0;
     sound.update(0.01f, inputs, sink);
     check(sink.voices.size() == 1 && sink.voices.begin()->second.clip == clips["idle.wav"], "outside: the initial loop");
-    const std::uint32_t five = 5, seven = 7;
+    const std::uint32_t four = 4, five = 5, seven = 7;
+    // RTS 0x4A8C00: a StartLoop is ignored while the stream's loop loops.
+    inputs.discrete = std::span(&five, 1);
+    sound.update(0.01f, inputs, sink);
+    check(sink.voices.size() == 1, "the hum waits: the idle loop still loops");
+    inputs.discrete = std::span(&four, 1);
+    sound.update(0.01f, inputs, sink);
+    sink.advance(); // the released idle pass ends
     inputs.discrete = std::span(&five, 1);
     sound.update(0.01f, inputs, sink);
     inputs.discrete = {};
@@ -374,6 +396,220 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCa
     check(sink.seeks.contains(hum) && sink.seeks[hum] >= 30 && sink.seeks[hum] <= 50, "the hum resumes where it was");
 }
 
+// Trigger pairs as RTS keeps them (0x4A87C8) and the named triggers table
+// (0x4DD0EC), which a DLL reads through RTSIsSMSTriggerOn / RTSGetNamedInteger.
+void test_trigger_pairs() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( NamedTriggersTable ( "Aux On" 1 "aux off" 2 "100" 7 )
+ScalabiltyGroup ( 7 DiscreteTriggerPairs ( 2 Pair ( On ( 1 45 ) Off ( 1 46 ) Halt ( 1 47 ) ) Pair ( On ( 1 50 ) Off ( 1 51 ) ) )
+Streams ( 1 Stream ( Triggers ( 2
+    Discrete_Trigger ( 45 PlayOneShot ( 1 File ( "on.wav" -1 ) ) )
+    Discrete_Trigger ( 46 PlayOneShot ( 1 File ( "off.wav" -1 ) ) ) ) ) ) ) ))"));
+    check(script->named_triggers.size() == 3 && script->named_triggers[0].first == "aux on"
+              && script->named_triggers[0].second == 1 && script->named_triggers[2].first == "100"
+              && script->named_triggers[2].second == 7,
+          "NamedTriggersTable: name and code in pairs, names lower-cased");
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips{{"on.wav", test_clip()}, {"off.wav", test_clip()}};
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string& name) { return clips.at(name); }, 9);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    const auto send = [&](const std::uint32_t code) {
+        sink.advance();
+        inputs.discrete = std::span(&code, 1);
+        const auto before = sink.voices.size();
+        sound.update(0.01f, inputs, sink);
+        inputs.discrete = {};
+        return sink.voices.size() > before;
+    };
+    sound.update(0.01f, inputs, sink);
+    check(!sound.trigger_pairs(), "no pair state before a pair code");
+    check(send(46), "an Off code passes before its pair is known");
+    check(!send(46), "a second Off is dropped");
+    check(send(45), "On passes");
+    check(!send(45), "a second On is dropped");
+    const auto state = sound.trigger_pairs();
+    check(state && state->known[0] == 1u && state->on[0] == 1u, "pair 0 known and on, pair 1 not known");
+    send(47);
+    const auto halted = sound.trigger_pairs();
+    check(halted && halted->known[0] == 1u && halted->on[0] == 0u, "Halt sets the pair off");
+    check(send(45), "On passes again after Halt");
+}
+
+// A stream plays one sound at a time (RTS 0x4A8C00): one-shots wait for a
+// free stream, a StartLoop leaves a looping loop alone and restarts anything
+// else, ReleaseLoopReleaseWithJump jumps.
+void test_stream_rules() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Streams ( 3
+    Stream ( Triggers ( 1 Discrete_Trigger ( 1 PlayOneShot ( 1 File ( "click.wav" -1 ) ) ) ) )
+    Stream ( Triggers ( 3
+        Discrete_Trigger ( 2 StartLoopRelease ( 1 File ( "comp.wav" -1 ) ) )
+        Discrete_Trigger ( 3 ReleaseLoopReleaseWithJump ( ) )
+        Discrete_Trigger ( 4 ReleaseLoopRelease ( ) ) ) )
+    Stream ( Triggers ( 2
+        Discrete_Trigger ( 5 StartLoopRelease ( 1 File ( "region.wav" -1 ) ) )
+        Discrete_Trigger ( 6 ReleaseLoopReleaseWithJump ( ) ) ) ) ) ) ))"));
+    auto region = std::make_shared<audio::AudioClip>(*test_clip());
+    region->loop_start = 20;
+    region->loop_end = 60;
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips{
+        {"click.wav", test_clip()}, {"comp.wav", test_clip()}, {"region.wav", region}};
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string& name) { return clips.at(name); }, 5);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::cab;
+    inputs.at_listener = true; // the cab's own script: not placed
+    const auto send = [&](std::initializer_list<std::uint32_t> codes) {
+        const std::vector<std::uint32_t> list(codes);
+        inputs.discrete = std::span(list.data(), list.size());
+        sound.update(0.05f, inputs, sink);
+        inputs.discrete = {};
+    };
+    const auto count = [&](const char* name) {
+        std::size_t n = 0;
+        for (const auto& [id, voice] : sink.voices) n += voice.clip == clips.at(name) ? 1 : 0;
+        return n;
+    };
+    const auto live = [&](const char* name) {
+        std::size_t n = 0;
+        for (const auto& [id, voice] : sink.voices) n += voice.clip == clips.at(name) && sink.playing(id) ? 1 : 0;
+        return n;
+    };
+    sound.update(0.05f, inputs, sink);
+
+    send({1, 1});
+    check(count("click.wav") == 1, "two clicks in one update: the second waits for nothing, it is dropped");
+    check(sink.voices.rbegin()->second.space == audio::VoiceSpace::flat, "a sound heard at the listener is not placed");
+    send({1});
+    check(count("click.wav") == 1, "a click while the stream plays the last one is dropped");
+    sink.advance();
+    send({1});
+    check(count("click.wav") == 2, "a click on a free stream plays");
+
+    send({2});
+    send({2});
+    check(count("comp.wav") == 1 && live("comp.wav") == 1, "StartLoopRelease while the loop loops: nothing new");
+    send({4});
+    send({2});
+    check(count("comp.wav") == 2 && live("comp.wav") == 1, "StartLoopRelease while a released pass plays out: that stops, the loop starts anew");
+    // The ChS4t's auxiliary compressor above 7 atm: start and release with a jump every step.
+    send({3});
+    sink.advance();
+    const auto before = count("comp.wav");
+    for (int i = 0; i < 20; ++i) {
+        send({2, 3});
+        check(live("comp.wav") == 0, "start and jump in one update: nothing left playing");
+    }
+    check(count("comp.wav") == before + 20, "each step's start is gone at once (no voices pile up)");
+    // A jump after the loop played 30 frames of 100: from frame 70, once.
+    send({2});
+    const auto loop = sink.next - 1;
+    sink.cursors[loop] = 30;
+    send({3});
+    check(sink.seeks.contains(loop) && sink.seeks[loop] == 70 && sink.voices[loop].released, "WithJump: from (length - played)");
+    // With a loop region: on from where it is to the end, no jump.
+    send({5});
+    const auto in_region = sink.next - 1;
+    sink.cursors[in_region] = 40;
+    send({6});
+    check(!sink.seeks.contains(in_region) && sink.voices[in_region].released, "WithJump in a loop region: plays on to the end");
+}
+
+// Rooms and sound proofing (RTS 0x51434C, 0x5143DC): a ChS4t-like cab, two
+// cabins and the machine room between them.
+void test_rooms() {
+    const auto cab = formats::parse_cab_description(R"(SIMISA@@@@@@@@@@JINX0t1t______
+Shape ( cab.s ESD_Interior ( InteriorGeometryInfo (
+    InteriorAreas ( 3
+        InteriorArea ( "CABIN1" -1.5 9.5 1.5 7.66 ChildNodes ( 0 ) )
+        InteriorArea ( "MACHINE" -1.5 7.66 1.5 -7.40 ChildNodes ( 0 ) )
+        InteriorArea ( "CABIN2" -1.5 -7.40 1.5 -9.5 ChildNodes ( 0 ) ) )
+    InteriorDoors ( 3
+        InteriorDoor ( Name ( DOOR_A ) Connects ( MACHINE EXTERIOR ) SoundProof ( 0.5 0.9 ) )
+        InteriorDoor ( Name ( DOOR_C2 ) Connects ( MACHINE CABIN1 ) SoundProof ( 0.6 0.9 ) Opened ( ) )
+        InteriorDoor ( Name ( DOOR_C4 ) Connects ( Machine Cabin2 ) SoundProof ( 0.6 0.9 ) ) )
+    InteriorWindows ( 2
+        InteriorWindow ( Name ( okno_1 ) Position ( 0.8 2.5 8.5 ) SoundProof ( 0.5 0.8 ) )
+        InteriorWindow ( Name ( okno_3 ) Position ( 0.8 2.5 -8.5 ) ) ) ) ) ))");
+    check(cab.ok() && cab.doors.size() == 3 && cab.windows.size() == 2, "rooms: the cab parses");
+    if (cab.doors.size() != 3 || cab.windows.size() != 2) return;
+    check(near(cab.doors[0].sound_closed, 0.5) && near(cab.doors[0].sound_open, 0.9) && !cab.doors[0].opened,
+          "door SoundProof");
+    check(cab.doors[1].opened, "Opened ( ) opens a door from the start");
+    check(cab.windows[0].has_position && near(cab.windows[0].position[2], 8.5), "window Position");
+    check(near(cab.windows[1].sound_closed, 0.0) && near(cab.windows[1].sound_open, 0.0),
+          "a window without SoundProof passes nothing");
+
+    const audio::InteriorAcoustics rooms(cab);
+    constexpr int out = audio::InteriorAcoustics::outside;
+    check(rooms.room_at(0, 8.5f) == 0 && rooms.room_at(0, 0) == 1 && rooms.room_at(0, -8.5f) == 2,
+          "the room of a point");
+    check(rooms.room_at(0, 12) == out && rooms.room_at(2, 8) == out && rooms.room_at(0, 9.5f) == out,
+          "outside every rectangle (edges excluded)");
+    const std::vector<float> shut(3, 0.0f), windows_shut(2, 0.0f);
+    // CABIN1 to the open air: its window 0.5 beats the way through the
+    // machine room (0.6 x 0.5).
+    check(near(rooms.transmission(0, out, shut, windows_shut), 0.5), "cabin to the outside, all shut");
+    check(near(rooms.transmission(0, out, shut, std::vector<float>{1.0f, 0.0f}), 0.8), "the cabin's window open");
+    check(near(rooms.transmission(0, out, std::vector<float>{1.0f, 1.0f, 0.0f}, windows_shut), 0.81),
+          "both doors open: 0.9 x 0.9");
+    check(near(rooms.transmission(0, out, std::vector<float>{0.5f, 0.0f, 0.0f}, windows_shut), 0.5),
+          "a half-open door passes between its two values");
+    check(near(rooms.transmission(1, 0, shut, windows_shut), 0.6), "machine room to the cabin: the cabin door");
+    check(near(rooms.transmission(out, 0, shut, windows_shut), 0.3),
+          "the outside into the cabin: doors only (windows count towards the outside)");
+    check(near(rooms.transmission(2, 2, shut, windows_shut), 1.0) && near(rooms.transmission(out, out, shut, windows_shut), 1.0),
+          "the same room passes everything");
+    check(near(rooms.transmission(2, out, shut, windows_shut), 0.3), "the other cabin: its window passes nothing");
+}
+
+// SoundSources, Attenuation, the head out of a window and the room's share
+// (RTS 0x44B6B4, 0x4A7764, 0x4A78A0).
+void test_sources_and_window() {
+    using formats::SoundAttenuation;
+    check(near(audio::attenuation_gain(SoundAttenuation{.scale = 1, .distance = 10, .type = 1}, 5), 0.75)
+              && near(audio::attenuation_gain(SoundAttenuation{.scale = 1, .distance = 10, .type = 1}, 20), 0.25),
+          "Attenuation type 1");
+    check(near(audio::attenuation_gain(SoundAttenuation{.scale = 1, .distance = 10, .type = 2}, 5), 0.5)
+              && near(audio::attenuation_gain(SoundAttenuation{.scale = 1, .distance = 10, .type = 2}, 20), 0.0),
+          "Attenuation type 2");
+    check(near(audio::attenuation_gain(SoundAttenuation{.scale = 1, .distance = 10, .type = 3}, 10, 100), 0.75)
+              && near(audio::attenuation_gain(SoundAttenuation{.scale = 1, .distance = 10, .type = 3}, 40, 100), 0.25),
+          "Attenuation of another type: halves at a fifth of the deactivation distance");
+
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( CabCam ( ) ) SoundSources ( 2 0 2 8 0.5  0 2 0 1.0 ) Streams ( 3
+    Stream ( Sources ( 1 1 ) Triggers ( 1 Initial_Trigger ( StartLoop ( 1 File ( "a.wav" -1 ) ) ) ) )
+    Stream ( AllowStreamOnWindowCamera ( ) Triggers ( 1 Initial_Trigger ( StartLoop ( 1 File ( "b.wav" -1 ) ) ) ) )
+    Stream ( Sources ( 2 0 1 ) Attenuation ( 1 10 1 ) Triggers ( 1 Initial_Trigger ( StartLoop ( 1 File ( "c.wav" -1 ) ) ) ) ) ) ) ))"));
+    check(script->ok() && script->groups.at(0).sources.size() == 2, "SoundSources parse");
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips;
+    for (const char* name : {"a.wav", "b.wav", "c.wav"}) clips[name] = test_clip(1000);
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string& name) { return clips.at(name); }, 5);
+    RecordingSink sink;
+    const std::vector<audio::SoundSourceLevel> levels{{0.5f, 0.0f}, {0.6f, 5.0f}};
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::cab;
+    inputs.sources = levels;
+    inputs.gain = 0.7f;
+    sound.update(0.01f, inputs, sink);
+    const auto volume = [&](const char* name) {
+        for (const auto& [_, voice] : sink.voices)
+            if (voice.clip == clips[name] && !voice.stopped) return voice.volume;
+        return -1.0f;
+    };
+    check(near(volume("a.wav"), 0.6 * 0.7, 1e-4), "a stream with Sources plays at its point's level");
+    check(near(volume("b.wav"), 0.7, 1e-4), "a stream without Sources plays at its own volume, times the room's share");
+    check(near(volume("c.wav"), 0.5 * 0.7, 1e-4), "the loudest point through the stream's Attenuation");
+    inputs.window = true;
+    sound.update(0.01f, inputs, sink);
+    check(near(volume("a.wav"), 0.0) && near(volume("c.wav"), 0.0) && near(volume("b.wav"), 0.7, 1e-4),
+          "the head out of a window: only AllowStreamOnWindowCamera streams");
+}
+
 void test_ambient_runner() {
     auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(ambient_script));
     std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips{
@@ -382,11 +618,15 @@ void test_ambient_runner() {
                                [&](const std::string& name) { return clips[name]; }, 3);
     RecordingSink sink;
     audio::SoundInputs inputs;
-    for (int i = 0; i < 30; ++i) sound.update(0.1f, inputs, sink);
+    const auto tick = [&] {
+        sound.update(0.1f, inputs, sink);
+        sink.advance();
+    };
+    for (int i = 0; i < 30; ++i) tick();
     check(sound.active() && sink.voices.empty(), "random trigger disabled by the initial trigger");
 
     inputs[SoundVariable::variable1] = 12;
-    for (int i = 0; i < 25; ++i) sound.update(0.1f, inputs, sink);
+    for (int i = 0; i < 25; ++i) tick();
     check(sink.voices.size() == 2, "enabled random trigger fires every second");
     check(sink.voices[1].clip == clips["a.wav"] && sink.voices[2].clip == clips["b.wav"], "sequential selection");
     check(sink.voices[1].space == audio::VoiceSpace::flat && sink.voices[1].playback == audio::VoicePlayback::once,
@@ -394,18 +634,18 @@ void test_ambient_runner() {
     check(near(sink.voices[2].volume, 0.5), "Volume_Min_Max");
 
     inputs[SoundVariable::variable1] = 4;
-    for (int i = 0; i < 30; ++i) sound.update(0.1f, inputs, sink);
+    for (int i = 0; i < 30; ++i) tick();
     check(sink.voices.size() == 2, "TriggerActions disabled the random trigger");
 
     const std::uint32_t on[] = {45, 45};
     inputs.discrete = on;
-    sound.update(0.1f, inputs, sink);
+    tick();
     check(sink.voices.size() == 3, "trigger pair passes only the first 'on'");
-    sound.update(0.1f, inputs, sink);
+    tick();
     check(sink.voices.size() == 3, "repeated 'on' without 'off' is dropped");
     const std::uint32_t off_on[] = {46, 45};
     inputs.discrete = off_on;
-    sound.update(0.1f, inputs, sink);
+    tick();
     check(sink.voices.size() == 4, "'off' re-arms the pair");
 }
 
@@ -495,6 +735,15 @@ void test_content_ed9m_cab(const std::filesystem::path& root) {
         std::cout << "ed9m cab: not installed, skipped\n";
         return;
     }
+    // The USAVP library's script: its NamedTriggersTable, the stops of the
+    // routes' trains the DLL reads through RTSGetNamedInteger (0x4DD0EC).
+    if (const auto usavp = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_Libraries/Usavp/Usavp.sms"); usavp && vfs.exists(*usavp)) {
+        const auto script = formats::load_sound_script(vfs, *usavp);
+        check(script.ok() && script.named_triggers.size() == 7955, "Usavp.sms: 7955 named triggers");
+        check(!script.named_triggers.empty() && script.named_triggers.front().first == "mdd_info_r20_7161_number"
+                  && script.named_triggers.front().second == 7161,
+              "Usavp.sms: the first entry, lower-cased, with its code");
+    }
     // RTS 0x44247C: no RTSCabinSound, so the Engine block's Sound is the cab script.
     const auto g = formats::load_wagon(vfs, "mdd_ED9M-0062", "mdd_ED9M-0062_G", true);
     auto lower = [](std::string text) {
@@ -533,6 +782,7 @@ void test_content_ed9m_cab(const std::filesystem::path& root) {
     sound.update(0.01f, inputs, sink);
     check(sound.active(), "ed9m cab: active in the cab");
     for (const std::uint32_t code : {16u, 15u}) {
+        sink.advance();
         const auto before = sink.voices.size();
         inputs.discrete = std::span(&code, 1);
         sound.update(0.01f, inputs, sink);
@@ -544,11 +794,63 @@ void test_content_ed9m_cab(const std::filesystem::path& root) {
     }
 }
 
+// The ChS4t's cab script with chs4t.dll's codes (docs/sound.md, "How a stream
+// runs its actions"): 67 starts kompr_pant2.wav, 68 releases it with a jump.
+void test_content_chs4t_compressor(const std::filesystem::path& root) {
+    core::Vfs vfs;
+    core::mount_installation(vfs, root, core::load_installation_config(root));
+    const auto path = core::VirtualPath::parse("TRAINS/TRAINSET/ev_CHS4t-Alias/Sound/ev_CHS4t-cab.sms");
+    if (!path || !vfs.exists(*path)) {
+        std::cout << "chs4t cab: not installed, skipped\n";
+        return;
+    }
+    auto script = std::make_shared<formats::SoundScript>(formats::load_sound_script(vfs, *path));
+    const auto* group = script->select_group(formats::SoundOwner::player_train);
+    check(script->ok() && group != nullptr, "chs4t cab: the script parses, group 7");
+    if (!group) return;
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips;
+    audio::SoundInstance sound(script, *group, formats::SoundOwner::player_train,
+                               [&](const std::string& name) {
+                                   auto& clip = clips[name];
+                                   if (!clip) clip = test_clip(1000);
+                                   return clip;
+                               }, 7);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::cab;
+    inputs[SoundVariable::distance] = 0;
+    sound.update(0.05f, inputs, sink);
+    const auto compressor = [&](const bool playing_only) {
+        std::size_t n = 0;
+        for (const auto& [id, voice] : sink.voices) {
+            const auto it = std::find_if(clips.begin(), clips.end(), [&](const auto& c) { return c.second == voice.clip; });
+            if (it == clips.end() || it->first.find("kompr_pant2") == std::string::npos) continue;
+            if (!playing_only || sink.playing(id)) ++n;
+        }
+        return n;
+    };
+    const auto step = [&](std::initializer_list<std::uint32_t> codes) {
+        const std::vector<std::uint32_t> list(codes);
+        inputs.discrete = std::span(list.data(), list.size());
+        sound.update(0.05f, inputs, sink);
+        inputs.discrete = {};
+    };
+    // Below 7 atm: 67 every step, the compressor loops on.
+    for (int i = 0; i < 20; ++i) step({67});
+    check(compressor(false) == 1 && compressor(true) == 1, "chs4t: below 7 atm one compressor loop, not restarted");
+    // Above 7 atm: 67 and 68 every step, silence as in RTS.
+    for (int i = 0; i < 20; ++i) {
+        step({67, 68});
+        check(compressor(true) == 0, "chs4t: 67 + 68 in one step leave nothing playing");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc > 1) {
         test_content_ed9m_cab(argv[1]);
+        test_content_chs4t_compressor(argv[1]);
         if (failures == 0) std::cout << "sound content: all checks passed\n";
         return failures == 0 ? 0 : 1;
     }
@@ -559,6 +861,10 @@ int main(int argc, char** argv) {
     test_crossed_distances();
     test_loop_phase();
     test_cab_round_trip();
+    test_trigger_pairs();
+    test_stream_rules();
+    test_rooms();
+    test_sources_and_window();
     test_decoding();
     test_engine();
     if (failures == 0) std::cout << "sound: all checks passed\n";

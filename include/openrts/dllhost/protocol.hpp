@@ -22,7 +22,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 3;
+inline constexpr std::uint32_t protocol_version = 6;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -36,6 +36,7 @@ enum class Command : std::uint32_t {
     can_switch = 5, // the player operates a switch: CanSwitch -> allowed
     shutdown = 6,
     drag_switch = 7, // the player drags a switch with the mouse -> moved
+    reconsist = 8,   // cars coupled or cut off: the new car list, the DLLs keep their state
 };
 
 struct Header {
@@ -159,6 +160,17 @@ struct AuxLibrarySpec {
     std::vector<Parameter> parameters;
     std::vector<AuxCallSpec> calls;
     bool has_sound = false; // AuxLibrarySound given: the library gets an SMS object
+    std::int32_t sound_table = -1; // its SMS's SetupRequest::sound_tables entry, -1 none
+};
+
+// What a DLL can ask of a sound script (RTS 0x4394F4, 0x439548): its
+// NamedTriggersTable (name, code), and the On codes of each of its group's
+// DiscreteTriggerPairs pairs. One per script; SMS objects refer to it by
+// index.
+struct SoundTableSpec {
+    std::vector<std::u16string> names;
+    std::vector<std::uint16_t> codes;
+    std::vector<std::vector<std::uint16_t>> pair_on;
 };
 
 struct SwitchSpec { // .sd Switch: what the mirror ActSwitch starts with
@@ -237,6 +249,7 @@ struct LightSpec {
 struct CarSpec {
     std::uint8_t kind = car_wagon;
     std::uint32_t uid{};
+    std::uint32_t key{};          // this car in the game (0: none): follows it through couplings
     float mass{};
     std::uint32_t lights{};       // exterior LightObj count
     std::uint32_t doors{};
@@ -255,13 +268,15 @@ struct CarSpec {
     std::vector<Parameter> parameters;
     std::vector<AuxLibrarySpec> aux;
     CabSpec cab;
-    std::u16string sms_triggers;  // unused yet
+    // The exterior and cab SMS scripts' SetupRequest::sound_tables entries, -1 none.
+    std::int32_t sound_ext = -1, sound_cab = -1;
 };
 
 struct SetupRequest {
     std::u16string rts_root;      // searched for bass.dll / CC3260MT.DLL
     std::uint8_t train_type = 1;  // RTS train type: 1 the player's
     std::vector<CarSpec> cars;
+    std::vector<SoundTableSpec> sound_tables;
 };
 
 struct ModuleReport {             // per loaded module, in the setup reply
@@ -276,11 +291,61 @@ struct SpeedLimitInput {          // SpeedLimitDescr, m/s and m; -1 unknown
     float limit = -1.0f, next_limit = -1.0f, distance = -1.0f;
 };
 
-struct SignalInput {              // SignalsInfo without the RTSSignalData pointer
+struct SignalInput {              // SignalsInfo; the RTSSignalData as a unit number
     float distance{};
     std::uint32_t aspect[4]{};
     std::uint32_t flags{};
     float speed_limit = -1.0f;
+    std::int32_t unit = -1;       // SignalUnitSpec::id of the signal's route database entry, -1 none
+};
+
+// A signal of the route database as RTS hangs it on the TDB signal item
+// (RTSSignalData, 0x4903DC): its tile, its position in RTS axes (x
+// negated) and its name. Sent once; SignalInput::unit refers to it.
+struct SignalUnitSpec {
+    std::int32_t id{};
+    std::int16_t tile[2]{};
+    float position[3]{};
+    std::u16string name;
+};
+
+// An SMS object's trigger pair states (RTS SMSObject::PairedFlags: 4 words
+// of pairs on, 4 of pairs known; 0x4A87C8). Sent for the objects that have
+// had a pair code.
+inline constexpr std::int16_t sound_exterior = -1;
+inline constexpr std::int16_t sound_cabin = -2; // else an AuxLibrary's index
+struct SoundPairState {
+    std::uint32_t car{};
+    std::int16_t object{};
+    std::uint32_t on[4]{}, known[4]{};
+};
+
+// A track item as RTS keeps it (TrackItem and its kind's fields, 0x482680):
+// sent once per item. Positions in RTS axes (x negated).
+inline constexpr std::uint16_t item_ahead = 1, item_behind = 2, item_under = 4;
+struct TrackItemSpec {
+    std::uint32_t id{}, type{};          // TIT_*: 1 signal .. 8 car spawner, 0 other
+    float node_offset{};                 // TrItemSData
+    std::uint32_t data_flags{};
+    float pdata[2]{};                    // TrItemPData x z, tile
+    std::int16_t ptile[2]{};
+    float rdata[3]{};                    // TrItemRData x y z, tile
+    std::int16_t rtile[2]{};
+    std::uint32_t flags{};               // speed post Flags; platform / siding TrItemFlags; pickup PickupFlags
+    std::uint32_t link{};                // platform / siding TrItemConj; crossover Conj
+    std::uint32_t section{};             // crossover SectionIDX
+    float value{}, off{}, km{};          // speed post Value (m/s), Off, KM; pickup Amount in value
+    std::int32_t number{};               // speed post Number
+    std::uint32_t min_wait{}, passengers{}; // platforms
+    std::u16string name, station;        // platform / siding name, station
+};
+// One entry of RTSGetTrackItems (TrackItemsItem): the distance from the
+// train's front (ahead, under it: negative) or rear (behind), the signed
+// distance from its rear along it, ahead / behind / under, and the item.
+struct TrackItemEntry {
+    float distance{}, z{};
+    std::uint16_t pos{};
+    std::uint32_t item{};
 };
 
 struct SwitchState {
@@ -321,6 +386,8 @@ struct CarInput {
     float train_pipe{}, charging_pipe{}, handbrake{};
     float main_reservoir{};       // locomotives
     float line_voltage{}, line_frequency{}; // electric
+    float line_current{};         // electric: Locomotive::LineCurrent (RTS 0x503CE4, before Run)
+    std::uint8_t line_burnt{};    // electric: the pantograph burnt the wire (LocoFlags 0x200)
 };
 
 struct EnterRequest {
@@ -332,6 +399,25 @@ struct EnterRequest {
     std::vector<CarInput> cars;   // the consist as it stands (flags: cables, player)
 };
 
+// The consist after a coupling or a cut (RTS 0x469ED8 / 0x469858): every
+// car says where its mirror comes from. The mirrors of the cars that stay
+// keep their DLLs' state (RTS binds a DLL to the car once, 0x5026FC); a car
+// that leaves is kept aside until it is coupled again; the groups are made
+// again (0x4F995C: new slaves bound and initialised, lost ones LostMaster).
+inline constexpr std::int32_t reconsist_new = -1;    // built from `spec`
+inline constexpr std::int32_t reconsist_parked = -2; // the car cut off earlier with `spec.key`
+struct ReconsistCar {
+    std::int32_t from = reconsist_new; // >= 0: the car now at that index
+    CarSpec spec;                      // for a new car (a parked one: only its key)
+};
+
+struct ReconsistRequest {
+    std::vector<SoundTableSpec> sound_tables; // the new cars' scripts, numbered after the setup's
+    std::vector<ReconsistCar> cars;
+    bool running = false;                     // Init's State bit 1 for engines bound now (the train moves)
+    std::vector<CarInput> inputs;             // the new consist (its cables decide the groups)
+};
+
 struct StepRequest {
     double day_time{};            // s since midnight (RTSGetInteger 1)
     float dt{};
@@ -340,7 +426,24 @@ struct StepRequest {
     std::uint8_t train_direction = 1; // 1 along car 0's front, 0 reversed
     std::vector<CarInput> cars;
     SpeedLimitInput route, signal, event;
+    // The next signal the train obeys ahead of its leading end
+    // (Cabin::Signal of the leading cab); at most one.
     std::vector<SignalInput> signals_ahead;
+    // The ALSN arrays (RTS 0x508520): the signal objects ahead of the
+    // train's front not yet reached, those behind its rear, and those its
+    // ends pass this step (front ones first).
+    std::vector<SignalInput> alsn_ahead;
+    std::vector<SignalInput> alsn_behind;
+    std::vector<SignalInput> alsn_passing;
+    // The next speed post ahead (train +120 / +116): its limit, m/s, and
+    // the distance to it, m; -1 when there is none.
+    float next_limit = -1.0f;
+    float next_limit_distance = -1.0f;
+    std::vector<SignalUnitSpec> signal_units;  // units not sent before
+    std::vector<SoundPairState> sound_pairs;
+    std::vector<TrackItemSpec> items;          // items not sent before
+    std::vector<TrackItemEntry> track_items;   // the player's train's items (RTS's 0x4808DC list)
+    float items_range{};                       // how far ahead and behind the list reaches, m
 };
 
 struct EngineOutput {
@@ -409,6 +512,7 @@ struct CarOutput {
 struct StepReply {
     std::vector<CarOutput> cars;
     std::int32_t set_direction{}; // RTSSetIntegerG(6): -1 / 1 requested, 0 none
+    float items_wanted{};         // the farthest RTSGetTrackItems asked for this step, m
 };
 
 struct CanSwitchRequest {
@@ -465,10 +569,12 @@ inline void read(Reader& r, AuxCallSpec& c) { c.event = r.get<std::uint16_t>(); 
 inline void write(Writer& w, const AuxLibrarySpec& a) {
     w.text(a.name); w.text(a.module); w.put(a.stack_size);
     write_list(w, a.parameters); write_list(w, a.calls); w.put(static_cast<std::uint8_t>(a.has_sound));
+    w.put(a.sound_table);
 }
 inline void read(Reader& r, AuxLibrarySpec& a) {
     a.name = r.text(); a.module = r.text(); a.stack_size = r.get<std::uint32_t>();
     read_list(r, a.parameters); read_list(r, a.calls); a.has_sound = r.get<std::uint8_t>() != 0;
+    a.sound_table = r.get<std::int32_t>();
 }
 
 inline void write(Writer& w, const SwitchSpec& s) {
@@ -527,25 +633,66 @@ inline void read(Reader& r, CabSpec& c) {
 }
 
 inline void write(Writer& w, const CarSpec& c) {
-    w.put(c.kind); w.put(c.uid); w.put(c.mass); w.put(c.lights); w.put(c.doors);
+    w.put(c.kind); w.put(c.uid); w.put(c.key); w.put(c.mass); w.put(c.lights); w.put(c.doors);
     write_list(w, c.animations); write_pod_list(w, c.door_times); write_pod_list(w, c.door_groups);
     write_pod_list(w, c.light_specs); w.text(c.name);
     w.text(c.series); w.text(c.module); w.put(c.lib_param); w.put(c.stack_size);
     w.put(c.num_engines); w.put(c.num_axles);
-    write_list(w, c.parameters); write_list(w, c.aux); write(w, c.cab); w.text(c.sms_triggers);
+    write_list(w, c.parameters); write_list(w, c.aux); write(w, c.cab); w.put(c.sound_ext); w.put(c.sound_cab);
 }
 inline void read(Reader& r, CarSpec& c) {
-    c.kind = r.get<std::uint8_t>(); c.uid = r.get<std::uint32_t>(); c.mass = r.get<float>();
+    c.kind = r.get<std::uint8_t>(); c.uid = r.get<std::uint32_t>(); c.key = r.get<std::uint32_t>(); c.mass = r.get<float>();
     c.lights = r.get<std::uint32_t>(); c.doors = r.get<std::uint32_t>();
     read_list(r, c.animations); read_pod_list(r, c.door_times, 4096); read_pod_list(r, c.door_groups, 4096);
     read_pod_list(r, c.light_specs, 16384); c.name = r.text();
     c.series = r.text(); c.module = r.text(); c.lib_param = r.get<std::uint32_t>(); c.stack_size = r.get<std::uint32_t>();
     c.num_engines = r.get<std::uint32_t>(); c.num_axles = r.get<std::uint32_t>();
-    read_list(r, c.parameters); read_list(r, c.aux); read(r, c.cab); c.sms_triggers = r.text();
+    read_list(r, c.parameters); read_list(r, c.aux); read(r, c.cab);
+    c.sound_ext = r.get<std::int32_t>(); c.sound_cab = r.get<std::int32_t>();
 }
 
-inline void write(Writer& w, const SetupRequest& s) { w.text(s.rts_root); w.put(s.train_type); write_list(w, s.cars); }
-inline void read(Reader& r, SetupRequest& s) { s.rts_root = r.text(); s.train_type = r.get<std::uint8_t>(); read_list(r, s.cars, 2000); }
+inline void write(Writer& w, const SoundTableSpec& t) {
+    write_list(w, t.names); write_pod_list(w, t.codes);
+    w.put(static_cast<std::uint32_t>(t.pair_on.size()));
+    for (const auto& pair : t.pair_on) write_pod_list(w, pair);
+}
+inline void read(Reader& r, SoundTableSpec& t) {
+    read_list(r, t.names, 200000); read_pod_list(r, t.codes, 200000);
+    const auto pairs = r.get<std::uint32_t>();
+    if (pairs > 4096) return;
+    t.pair_on.resize(pairs);
+    for (auto& pair : t.pair_on) read_pod_list(r, pair, 4096);
+}
+
+inline void write(Writer& w, const SetupRequest& s) {
+    w.text(s.rts_root); w.put(s.train_type); write_list(w, s.cars); write_list(w, s.sound_tables);
+}
+inline void read(Reader& r, SetupRequest& s) {
+    s.rts_root = r.text(); s.train_type = r.get<std::uint8_t>(); read_list(r, s.cars, 2000); read_list(r, s.sound_tables, 4096);
+}
+
+inline void write(Writer& w, const SignalUnitSpec& u) {
+    w.put(u.id); w.bytes(u.tile, sizeof(u.tile)); w.bytes(u.position, sizeof(u.position)); w.text(u.name);
+}
+inline void read(Reader& r, SignalUnitSpec& u) {
+    u.id = r.get<std::int32_t>(); r.bytes(u.tile, sizeof(u.tile)); r.bytes(u.position, sizeof(u.position)); u.name = r.text();
+}
+
+inline void write(Writer& w, const TrackItemSpec& t) {
+    w.put(t.id); w.put(t.type); w.put(t.node_offset); w.put(t.data_flags);
+    w.bytes(t.pdata, sizeof(t.pdata)); w.bytes(t.ptile, sizeof(t.ptile));
+    w.bytes(t.rdata, sizeof(t.rdata)); w.bytes(t.rtile, sizeof(t.rtile));
+    w.put(t.flags); w.put(t.link); w.put(t.section); w.put(t.value); w.put(t.off); w.put(t.km); w.put(t.number);
+    w.put(t.min_wait); w.put(t.passengers); w.text(t.name); w.text(t.station);
+}
+inline void read(Reader& r, TrackItemSpec& t) {
+    t.id = r.get<std::uint32_t>(); t.type = r.get<std::uint32_t>(); t.node_offset = r.get<float>(); t.data_flags = r.get<std::uint32_t>();
+    r.bytes(t.pdata, sizeof(t.pdata)); r.bytes(t.ptile, sizeof(t.ptile));
+    r.bytes(t.rdata, sizeof(t.rdata)); r.bytes(t.rtile, sizeof(t.rtile));
+    t.flags = r.get<std::uint32_t>(); t.link = r.get<std::uint32_t>(); t.section = r.get<std::uint32_t>();
+    t.value = r.get<float>(); t.off = r.get<float>(); t.km = r.get<float>(); t.number = r.get<std::int32_t>();
+    t.min_wait = r.get<std::uint32_t>(); t.passengers = r.get<std::uint32_t>(); t.name = r.text(); t.station = r.text();
+}
 
 inline void write(Writer& w, const ModuleReport& m) { w.text(m.path); w.put(m.status); w.bytes(m.version, sizeof(m.version)); }
 inline void read(Reader& r, ModuleReport& m) { m.path = r.text(); m.status = r.get<std::int32_t>(); r.bytes(m.version, sizeof(m.version)); }
@@ -554,12 +701,33 @@ inline void write(Writer& w, const StepRequest& s) {
     w.put(s.day_time); w.put(s.dt); w.put(s.air_temperature); w.put(s.night); w.put(s.train_direction);
     write_pod_list(w, s.cars); w.put(s.route); w.put(s.signal); w.put(s.event);
     write_pod_list(w, s.signals_ahead);
+    write_pod_list(w, s.alsn_ahead);
+    write_pod_list(w, s.alsn_behind);
+    write_pod_list(w, s.alsn_passing);
+    w.put(s.next_limit); w.put(s.next_limit_distance);
+    write_list(w, s.signal_units); write_pod_list(w, s.sound_pairs);
+    write_list(w, s.items); write_pod_list(w, s.track_items); w.put(s.items_range);
 }
 inline void read(Reader& r, StepRequest& s) {
     s.day_time = r.get<double>(); s.dt = r.get<float>(); s.air_temperature = r.get<float>();
     s.night = r.get<std::uint8_t>(); s.train_direction = r.get<std::uint8_t>();
     read_pod_list(r, s.cars, 2000); s.route = r.get<SpeedLimitInput>(); s.signal = r.get<SpeedLimitInput>();
     s.event = r.get<SpeedLimitInput>(); read_pod_list(r, s.signals_ahead, 64);
+    read_pod_list(r, s.alsn_ahead, 64); read_pod_list(r, s.alsn_behind, 64); read_pod_list(r, s.alsn_passing, 64);
+    s.next_limit = r.get<float>(); s.next_limit_distance = r.get<float>();
+    read_list(r, s.signal_units, 100000); read_pod_list(r, s.sound_pairs, 4096);
+    read_list(r, s.items, 200000); read_pod_list(r, s.track_items, 200000); s.items_range = r.get<float>();
+}
+
+inline void write(Writer& w, const ReconsistCar& c) { w.put(c.from); write(w, c.spec); }
+inline void read(Reader& r, ReconsistCar& c) { c.from = r.get<std::int32_t>(); read(r, c.spec); }
+
+inline void write(Writer& w, const ReconsistRequest& q) {
+    write_list(w, q.sound_tables); write_list(w, q.cars); w.put(static_cast<std::uint8_t>(q.running)); write_pod_list(w, q.inputs);
+}
+inline void read(Reader& r, ReconsistRequest& q) {
+    read_list(r, q.sound_tables, 4096); read_list(r, q.cars, 2000); q.running = r.get<std::uint8_t>() != 0;
+    read_pod_list(r, q.inputs, 2000);
 }
 
 inline void write(Writer& w, const EnterRequest& e) {
@@ -606,7 +774,9 @@ inline void read(Reader& r, CarOutput& c) {
     read_pod_list(r, c.exhausts, 16);
 }
 
-inline void write(Writer& w, const StepReply& s) { write_list(w, s.cars); w.put(s.set_direction); }
-inline void read(Reader& r, StepReply& s) { read_list(r, s.cars, 2000); s.set_direction = r.get<std::int32_t>(); }
+inline void write(Writer& w, const StepReply& s) { write_list(w, s.cars); w.put(s.set_direction); w.put(s.items_wanted); }
+inline void read(Reader& r, StepReply& s) {
+    read_list(r, s.cars, 2000); s.set_direction = r.get<std::int32_t>(); s.items_wanted = r.get<float>();
+}
 
 } // namespace openrts::dllhost

@@ -1516,6 +1516,23 @@ void TrackControl::draw_electrification_panel(TrainView& trains) {
             ImGui::EndCombo();
         }
     }
+    // The substations' load (RTS 0x5B6030: the power the trains drew
+    // through each phase over the last 2 s), against the substation's Power.
+    const auto loads = electro.substation_loads();
+    if (!loads.empty()) {
+        ImGui::SeparatorText(tr("Substation load"));
+        for (const auto& load : loads) {
+            const auto* sub = electro.substation(load.substation);
+            const std::string name = sub ? sub->name : "#" + std::to_string(load.substation);
+            if (sub && sub->power > 0.0f) {
+                // Power is written in MW (the server reads it x 1000 as kW).
+                ImGui::Text(tr("%s, phase %u: %.2f MW of %.1f MW"), name.c_str(), load.phase, load.power / 1e6f, sub->power);
+                ImGui::ProgressBar(std::clamp(load.power / (sub->power * 1e6f), 0.0f, 1.0f), ImVec2(-1.0f, 0.0f));
+            } else {
+                ImGui::Text(tr("%s, phase %u: %.2f MW"), name.c_str(), load.phase, load.power / 1e6f);
+            }
+        }
+    }
     ImGui::PopTextWrapPos();
 #else
     (void)trains;

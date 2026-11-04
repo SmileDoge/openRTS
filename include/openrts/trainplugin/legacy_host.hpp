@@ -29,6 +29,7 @@ public:
 
     bool setup(const dllhost::SetupRequest& request, std::vector<dllhost::ModuleReport>& modules);
     bool enter(const dllhost::EnterRequest& request, dllhost::StepReply& reply);
+    bool reconsist(const dllhost::ReconsistRequest& request, dllhost::StepReply& reply);
     bool step(const dllhost::StepRequest& request, dllhost::StepReply& reply);
     bool can_switch(const dllhost::CanSwitchRequest& request, bool& allowed);
     bool drag_switch(const dllhost::DragSwitchRequest& request, bool& moved, dllhost::SwitchState& state);

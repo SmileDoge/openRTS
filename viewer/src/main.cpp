@@ -201,7 +201,14 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             const auto state = static_cast<std::uint32_t>(std::atoi(std::string(flags[++i]).c_str()));
             options.capture_switches.emplace_back(id, state);
         } else if (flags[i] == "--capture-menu" && has_value) {
-            options.capture_menu = std::atoi(std::string(flags[++i]).c_str());
+            const int item = std::atoi(std::string(flags[++i]).c_str());
+            if (options.capture_menu) {
+                options.capture_menu_more.push_back(item);
+            } else {
+                options.capture_menu = item;
+            }
+        } else if (flags[i] == "--capture-uncouple" && has_value) {
+            options.capture_uncouple = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--capture-cab") {
             options.capture_cab = true;
         } else if (flags[i] == "--capture-car" && has_value) {

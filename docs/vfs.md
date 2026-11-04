@@ -348,7 +348,9 @@ Verified on content:
 Not yet:
 - The Linux `inotify` watcher is written but not compiled or run here.
 - Terrain, sky and world files are read through the VFS but not hot-reloaded.
-- `Vfs::real_path` extraction exists for the future DLL host.
+
+`Vfs::real_path` extraction is what the DLL host and the native plugins
+load their DLLs from.
 
 ## Usage
 

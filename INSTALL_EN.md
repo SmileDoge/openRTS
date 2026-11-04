@@ -118,7 +118,9 @@ graphics, mods) are listed in the [README](README_EN.md#running).
   - Page Up / Page Down — reverser;
   - `]` / `[` — driver's brake valve;
   - `.` / `,` — independent brake;
-  - `K` — EP brake.
+  - `K` — EP brake;
+  - Space — horn, `B` — bell, `X` — sand, `P` — pantographs, `Y` / `U` —
+    left / right doors.
 - **Free camera:** right mouse button + mouse, WASD, Q/E, Shift.
 - **Information:**
   - F5 — cars;

@@ -1,0 +1,126 @@
+# Экраны кабины (дисплеи SCREEN)
+
+> Перевод [`docs/reverse/cab-screens.md`](../../reverse/cab-screens.md).
+> Основной текст — английский: при расхождении верен он.
+
+КЛУБ, САВПЭ, ИТП и похожие дисплеи 3D-кабин — это блоки `Display` с
+`DisplayType ( SCREEN )`: плоский четырёхугольник в кабине с подобъектами
+(картинки, текст, полосы, секторы), которые переключает и заполняет DLL.
+Все адреса — rts1.exe; находки из декомпилированного кода, на копии базы.
+
+## Загрузка
+
+- **CONFIRMED** `0x51CD88` (загрузчик кабины): `InitialState` дисплея идёт
+  в `ActivatorObject::State` (+44). Ламповые и экранные дисплеи (биты
+  `Flags` 0x200 / 0x800) берут `Colour ( AARRGGBB )` в `ValuesRange` как
+  RGBA (белый, если его нет). Для экрана выделяется `ActScreen` (76 байт),
+  указатель хранится в ячейке `Granularity` дисплея (+68), и ставится бит 0
+  флагов кабины.
+- **CONFIRMED** `0x529F00` (`DisplayScreen`): `TopLeft`, `TopRight`,
+  `BottomRight` с отрицательным x (оси моделей RTS); `Pos` = центр и
+  радиус, `Pivot` = левый верхний угол, `Width` = |TL − TR|, `Height` =
+  |TR − BR|, `Up` от правого нижнего к правому верхнему, `Norm` = right × up.
+  `ReferenceScreen ( id )` (или `ReferenceCloseup`) показывает объекты
+  другого экрана вместо своих. `SubObjects ( n` выделяет n объектов по 204
+  байта (`CloseUpSubObject` из ts.h); `CopySubObjects ( ScreenID | SceneID
+  StartFrom NumObjects InsertBefore IncrementID )` копирует чужие.
+- **CONFIRMED** `0x519B8C` (подобъект): `Type` FRAME 0, ARROW 1, LINK 2,
+  LABEL 3, BAR 4, GRID 5, SECTOR 6; `ParentSub` (+196, хранится + 1);
+  `Hint`; `Area` / `UV` / `Activation` (x0 y0 x1 y1, 0..1) ставят флаги
+  0x20 / 0x80 / 0x40; `Textures ( n files )` относительно папки файла
+  кабины; `NamedShader` (+8: Tex 1, TexDiff 2, BlendATex 3, BlendATexDiff 4,
+  Gloss 5, AddATex 6, AddATexDiff 7, `0x45B1E0`); `InitialState` → `State`
+  и `SetState`; `Flags`: ключевые слова переключателей без 0x20..0x80, плюс
+  `CONTROLLERY` → 2 и `PRECISE` → 0x200; `AnimFlags`, `AnimTime`;
+  `SubFade ( fade blink )` → `Fade[1]`, `Fade[2]` (без SubFade: `Fade[2]` =
+  −1); `SubColour` → `Colour` и флаг 0x100.
+  - ARROW: `Center` → Pt[0..1], `ValuesRange` → Pt[2..5].
+  - LINK: `LinkTo` → Pt[0] (−1, если нет).
+  - LABEL: Pt[0] указывает на 44-байтовую запись шрифта: `CharacterWidth`,
+    `CharacterHeight`, `CharacterSpacing`, `LineSpacing` (единицы экрана и
+    текстуры), `Alignment` (LEFT 0, CENTER 1, RIGHT 2, JUSTIFIED 3,
+    BOTTOM 4, TOP 5; `0x45BF44`), символов в строке текстуры =
+    floor((u1 − u0) / (width + spacing)), `Alphabet`, `MaxStringLength`.
+    Высота текстуры ≤ 0 или ни одного символа в строке выключают надпись.
+    Pt[1] = MaxStringLength + 1, и в буфере текста (`hint`) столько же
+    символов.
+  - BAR: `BarStyle` H_LEFT 1, V_UP 2, V_DOWN 3, H_RIGHT 4 → Pt[0];
+    ValuesRange → Pt[2..5].
+  - GRID: `GridNumRows ( shown texture )` → Pt[0], Pt[1]; `GridNumCols` →
+    Pt[2], Pt[3].
+  - SECTOR: `SectorShape` ROUND 0 / RECT 1 плюс `SectorFillType` STARTPOS
+    10 / ENDPOS 20 → Pt[6], `SectorGranularity` → Pt[7], ValuesRange →
+    Pt[2..5].
+  - `AnimationFrames ( n Frame ( Area Activation UV TexID ) )` (`0x51B6CC`,
+    по 64 байта), `AnimTimeScale`.
+  - Значение начинается с min(0, минимум ValuesRange).
+
+## Доступ из DLL
+
+- **CONFIRMED** `_RTSGetCabObject` (`0x536B14`): код 10 → `ActScreen`
+  дисплея (только для экранного дисплея), код 11 → его подобъект на
+  позиции `sub` (не по ID). Помощники ts.h пишут `SetState`, `Value`,
+  `Area`, `Fade[1..2]`, текст надписи (`lstrcpynW(hint, text, Pt[1])`) и
+  биты сетки (`SetState`, бит строка × Pt[2] + столбец).
+
+## Отрисовка (`0x46B668`)
+
+- **CONFIRMED** Экранный дисплей рисуется, пока его `State` не нулевой (и
+  пока это позволяет мигание дисплея). Проверка глубины включена, запись
+  глубины выключена, текстурирование включено.
+- Каждый объект, каждый нарисованный кадр: `State = SetState`. Он
+  рисуется, когда `CurrentTex` — загруженная текстура, `State ≥ 0` и ни у
+  одного родителя нет отрицательного `State` (`0x52B054`).
+- `0x52AAD4`: с кадрами анимации кадр `State` задаёт область, активацию,
+  UV и текстуру; `PRECISE` берёт кадр из `(int) Value` и смешивает области
+  двух кадров по дробной части. Область потомка — относительно области
+  родителя.
+- Шейдеры Tex, BlendATex, AddATex рисуют без освещения; BlendATex,
+  BlendATexDiff, AddATex, AddATexDiff — со смешиванием.
+- Мигание: при `Fade[2]` > 0 `Fade[0]` идёт по модулю 2 × `Fade[2]`, и
+  объект виден, пока оно ≤ `Fade[2]`.
+- FRAME: четырёхугольник области. ARROW: повёрнут вокруг Center на
+  (Pt[4] − v) × Pt[5] / (Pt[4] − Pt[2]) градусов, v движется к Value на
+  Pt[5] × dt / AnimTime и прижимается к диапазону. BAR: область обрезана
+  до (v − min) / (max − min) по стилю; UV обрезается тоже, если нет
+  `STRETCH_UV`. GRID: биты State; ячейки области делятся на числа
+  текстуры, ячейки текстуры — на показываемые числа (как написано).
+  SECTOR: веер из центра области по углам, которых достигает значение
+  (STARTPOS: от Pt[4] до Pt[4] + развёртка, округлённая вверх до шага;
+  ENDPOS: вниз от Pt[5]), шаги по 5° без шага; угол 0 — вверх, по часовой
+  стрелке; RECT отображает угол на край квадрата. При значении STARTPOS ≤
+  min ничего нет.
+- LABEL: символы, найденные в алфавите, раскладываются по строкам по
+  выравниваниям; с родителем размеры символов масштабируются по области
+  родителя; `\n` (или `\r\n`) начинает строку (шаг строки не
+  масштабируется). Неизвестные символы оставляют пробел.
+
+## openRTS
+
+- `formats::CabScreen` / `ScreenObject` (cab_description) разбирают это;
+  хост строит `ActScreen` и `CloseUpSubObject` (`build_screens`), отвечает
+  на коды 10 / 11, копирует `SetState` в `State` после каждого шага и
+  отправляет состояния, значения, области и тексты надписей
+  (`CarOutput::screens`).
+- `viewer/src/cab_screens` раскладывает объекты, как описано выше;
+  `renderer::ScreenQuadRenderer` рисует их до прохода полупрозрачных
+  (их закрывает стекло кабины), на миллиметр ближе к глазу.
+- Не сделано: LINK (2D-сцены), сцены крупного плана, `CopySubObjects`,
+  освещение шейдеров `…Diff`.
+
+## Другие дисплеи (`0x525DB0`)
+
+- **CONFIRMED** `DisplayFade ( fade blink )` (`0x51CD88`, дисплей `+76` /
+  `+80`): с миганием дисплей считает свои часы (`+72`) до удвоенного
+  мигания и скрыт во второй половине.
+- **CONFIRMED** дисплей LAMP (бит типа 2) показывает свой узел, пока его
+  State выставлен и не погашен миганием (`0x4B355C(node, fade, on)`).
+- **CONFIRMED** у DISPLAY (бит типа 4) есть `StateNodes ( n "node" ... )`
+  (`+52` имена, `+56` узлы, `+68` число): узел j показывается при бите j
+  State или, с флагом `0x40000` (`DISPLAY_SEQUENCE`), когда State равен
+  j + 1; все скрыты, пока погашены миганием. В установленных кабинах 202
+  DISPLAY (среди них группы ламп ЧС4т).
+- openRTS: `CabView::adjustments` (показать / скрыть; само затухание не
+  сделано).
+- `openrts-train-check --screens` печатает, что показывает каждый экран;
+  `--screens-image <dir>` пишет их картинками PPM.

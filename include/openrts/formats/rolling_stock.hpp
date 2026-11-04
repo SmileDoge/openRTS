@@ -20,6 +20,18 @@ namespace openrts::formats {
 
 // ---- consists ---------------------------------------------------------------
 
+// FreightAnim of a consist entry (RTS "FreightAnim description"): a cargo or
+// another object fastened to the car, with its mass.
+struct ConsistFreight {
+    std::string shape;                 // FreightAnimShape, relative to the car's folder
+    std::uint32_t shape_location{};    // its second value
+    std::array<float, 3> position{};   // FreightAnimPosition, in the car
+    float mass{};                      // FreightAnimMass, kg
+    float volume{};                    // FreightAnimVolume, m³
+    std::string cargo_type;            // FreightAnimCargoType
+    std::int32_t cargo_id{};           // FreightAnimCargoID
+};
+
 struct ConsistEntry {
     bool engine = false;
     std::uint32_t uid{};
@@ -28,6 +40,7 @@ struct ConsistEntry {
     bool flipped = false;
     bool cold = false;                  // engines
     std::optional<float> handbrake;     // HandbrakePercent
+    std::vector<ConsistFreight> freight; // FreightAnim blocks
 };
 
 struct ConsistDefinition {
@@ -169,6 +182,7 @@ struct EngineDefinition {
     float max_velocity{};         // m/s (used for the overspeed penalty)
     float max_current{};
     float sanding_speed{};
+    float max_sanding_time = -1.0f; // MaxSandingTime, s of sand (-1: unlimited)
     float main_reservoir_volume{};
     float dynamic_brake_max_force{};
     std::uint32_t throttle_notches{};
@@ -186,6 +200,18 @@ struct EngineDefinition {
     std::uint32_t max_slaves{};  // MaxNumSlaveLoco
     std::array<std::uint8_t, 2> sme_cable{}; // SMECable ( front rear ): multiple-unit control cable
     std::array<std::uint8_t, 2> hv_bus{};    // HVBus ( front rear )
+    // Pantographs without a DLL (rts1.exe 0x44247C, used by the AI logic in
+    // 0x424488): bit n-1 is pantograph n.
+    std::uint8_t exclude_pantographs{};  // ExcludePantograph ( n ), repeated: never raised
+    std::uint8_t always_use_panto{};     // AlwaysUsePanto ( bitmask ): raised whatever the direction
+    std::uint8_t lower_panto_on_stop{};  // LowerPantoOnStop ( bitmask ): lowered at a stop
+    float raise_second_panto_below{};    // RaiseSecondPantoWhenSpeedBelow, m/s (0: never)
+    // MaxLineCurrentVelocityIncrease ( MLC_B MLC_A ): the wire cools by
+    // MLC_B + MLC_A * speed a second (negative read as none).
+    std::array<float, 2> line_current_cooling{};
+    // EngExtended ORTSTrainPlugin: a native openRTS plugin (train_plugin.h),
+    // relative to the .eng folder. With it the legacy LibraryModule is not run.
+    std::string train_plugin;
     std::vector<EngineParameter> parameters; // EngineParameters
     std::vector<AuxLibraryDefinition> aux_libraries;
     // EngExtended WorksOnLineVoltages: the supplies it works on, in file
@@ -214,6 +240,7 @@ struct WagonDefinition {
     std::array<Coupling, 2> couplings;
     Friction friction;
     std::array<float, 4> adhesion{};
+    float pantograph_raise_time = 3.0f; // PantographRaiseTime, s (RTS default 3; <= 0 is 3)
     float derail_rail_height{};
     float derail_rail_force = 240000.0f;
     float derail_buffer_force{};

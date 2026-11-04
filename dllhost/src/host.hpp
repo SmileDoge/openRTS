@@ -64,6 +64,7 @@ struct AuxMirror {
     std::vector<abi::EngineParam> params;
     abi::SMSObject sound{};
     bool has_sound = false;
+    std::array<std::uint32_t, 8> pairs{}; // its SMSObject::PairedFlags once a pair code came
 };
 
 struct CarMirror {
@@ -105,6 +106,7 @@ struct CarMirror {
     std::vector<abi::FreeAnimation> anims;
     std::vector<abi::ExhaustContr> exhaust;
     abi::SMSObject sound_ext{}, sound_cab{};
+    std::array<std::uint32_t, 8> pairs_ext{}, pairs_cab{}; // their PairedFlags (RTS: 4 words on, 4 known)
 
     std::vector<float> var;
     std::vector<abi::EngineParam> params;
@@ -148,6 +150,9 @@ public:
     // The player takes locomotive `car`: binds and initialises it and its
     // group (0x468C74). Fills `reply` with the state after Init.
     bool enter(const EnterRequest& request, const std::vector<CarInput>& inputs, StepReply& reply);
+    // Cars coupled or cut off (ReconsistRequest): the mirrors move with
+    // their cars, then the groups are made again. Fills `reply` like a step's.
+    bool reconsist(const ReconsistRequest& request, StepReply& reply);
     bool step(const StepRequest& request, StepReply& reply);
     bool can_switch(const CanSwitchRequest& request, bool& allowed);
     bool drag_switch(const DragSwitchRequest& request, bool& moved);
@@ -175,6 +180,10 @@ public:
     void* aux_object_by_name(const abi::AuxLibrary* aux, int code, const wchar_t* name, int sub);
     int track_items(const abi::Locomotive* loco, std::uint32_t code, float distance, abi::TrackItemsItem*& items,
                     std::uint32_t& count);
+    // RTSGetNamedInteger(sms, RTS_TRIGGERID, name) and RTSIsSMSTriggerOn
+    // (RTS 0x4394F4, 0x439548): `table` is an SMSObject::sms.
+    int named_integer(const void* table, const wchar_t* name) const;
+    int trigger_on(const abi::SMSObject* sound, std::uint16_t code) const;
 
 private:
     Module* module_for(const std::wstring& path);
@@ -186,6 +195,9 @@ private:
     std::uint32_t init_state(const CarMirror& car, bool player) const;
     std::uint32_t run_state(const CarMirror& car) const;
     void group(CarMirror& player);
+    // RTS 0x4F995C after a cable changed: the groups again; a slave left out
+    // of its master's group gets LostMaster.
+    void regroup();
     void write_inputs(const std::vector<CarInput>& inputs);
     void write_cabs(const StepRequest& request);
     void run_car(CarMirror& car, float dt, float air_temperature);
@@ -213,6 +225,10 @@ private:
 
     std::vector<std::unique_ptr<Module>> modules_;
     std::vector<std::unique_ptr<CarMirror>> cars_;
+    // Cars cut off from the consist, by key, with their DLLs' state, until
+    // they are coupled again (RTS keeps the Engine with the car).
+    std::unordered_map<std::uint32_t, std::unique_ptr<CarMirror>> parked_;
+    void add_sound_tables(const std::vector<SoundTableSpec>& tables);
     std::vector<abi::Wagon*> train_cars_; // the train's car list (FirstInGroup / LastInGroup point into it)
     std::unordered_map<const void*, CarMirror*> by_object_;
     std::unordered_map<const void*, CarMirror*> by_cabin_;
@@ -230,7 +246,29 @@ private:
     float air_temperature_ = 20.0f;
     int set_direction_ = 0;
     std::uint32_t player_ = UINT32_MAX;
-    std::vector<abi::TrackItemsItem> track_items_;
+    std::vector<std::uint32_t> cables_; // each car's control-cable bits last step (Wagon Flags 0x30000)
+    std::vector<abi::TrackItemsItem> track_items_; // what RTSGetTrackItems hands out
+
+    // What an SMSObject::sms points to: the script's tables (SoundTableSpec).
+    struct SoundTable {
+        std::vector<std::wstring> names;
+        std::vector<std::uint16_t> codes;
+        std::vector<std::vector<std::uint16_t>> pair_on;
+    };
+    std::vector<std::unique_ptr<SoundTable>> sound_tables_;
+    void* sound_table(std::int32_t index) const;
+    // Track items as RTS keeps them (TrackItem and its kind's fields), by
+    // TDB id; the player's train's list this step (RTS's 0x4808DC cache).
+    std::unordered_map<std::uint32_t, std::unique_ptr<std::uint32_t[]>> items_;
+    std::vector<abi::TrackItemsItem> window_;
+    float items_wanted_ = 0.0f;
+    void add_item(const TrackItemSpec& spec);
+    // The route database's signals (RTSSignalData), by unit id.
+    std::unordered_map<std::int32_t, std::unique_ptr<abi::RTSSignalData>> units_;
+    abi::RTSSignalData* unit(std::int32_t id) const;
+    // OPENRTS_DLLHOST_TRACE: each kind of these calls is logged once.
+    mutable std::vector<std::wstring> traced_;
+    void trace_once(const std::wstring& key, const std::wstring& line) const;
 };
 
 const wchar_t* keep(std::deque<std::wstring>& strings, std::u16string_view text);

@@ -235,6 +235,11 @@ bool LegacyHost::enter(const EnterRequest& request, StepReply& reply) {
         Command::enter, [&](Writer& w) { write(w, request); }, [&](Reader& r) { read(r, reply); }, 20000);
 }
 
+bool LegacyHost::reconsist(const ReconsistRequest& request, StepReply& reply) {
+    return call(
+        Command::reconsist, [&](Writer& w) { write(w, request); }, [&](Reader& r) { read(r, reply); }, 20000);
+}
+
 bool LegacyHost::step(const StepRequest& request, StepReply& reply) {
     return call(
         Command::step, [&](Writer& w) { write(w, request); }, [&](Reader& r) { read(r, reply); }, step_timeout_);

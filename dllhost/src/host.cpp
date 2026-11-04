@@ -336,6 +336,8 @@ bool Host::init_rts_library(Module& module) {
 
 bool Host::setup(const SetupRequest& request, std::vector<ModuleReport>& modules) {
     cars_.clear();
+    parked_.clear();
+    cables_.clear();
     by_object_.clear();
     by_cabin_.clear();
     by_aux_.clear();
@@ -347,6 +349,11 @@ bool Host::setup(const SetupRequest& request, std::vector<ModuleReport>& modules
     train_object_[0] = train_type_;
     rts_root_ = from_u16(request.rts_root);
     if (!rts_root_.empty()) SetDllDirectoryW(rts_root_.c_str()); // bass.dll, CC3260MT.DLL
+    items_.clear();
+    units_.clear();
+    window_.clear();
+    sound_tables_.clear();
+    add_sound_tables(request.sound_tables);
 
     for (std::uint32_t i = 0; i < request.cars.size(); ++i) {
         auto car = std::make_unique<CarMirror>();
@@ -376,6 +383,66 @@ bool Host::setup(const SetupRequest& request, std::vector<ModuleReport>& modules
         report_module(car->spec.module);
         for (const auto& aux : car->spec.aux) report_module(aux.module);
     }
+    return true;
+}
+
+void Host::add_sound_tables(const std::vector<SoundTableSpec>& tables) {
+    for (const auto& spec : tables) {
+        auto table = std::make_unique<SoundTable>();
+        for (const auto& name : spec.names) table->names.push_back(from_u16(name));
+        table->codes = spec.codes;
+        table->pair_on = spec.pair_on;
+        sound_tables_.push_back(std::move(table));
+    }
+}
+
+// --- coupling and cutting (0x469ED8, 0x469858) ------------------------------------
+
+bool Host::reconsist(const ReconsistRequest& request, StepReply& reply) {
+    add_sound_tables(request.sound_tables);
+    const CarMirror* player = player_ < cars_.size() ? cars_[player_].get() : nullptr;
+    auto old = std::move(cars_);
+    cars_.clear();
+    for (const auto& entry : request.cars) {
+        std::unique_ptr<CarMirror> car;
+        if (entry.from >= 0 && static_cast<std::size_t>(entry.from) < old.size()) {
+            car = std::move(old[static_cast<std::size_t>(entry.from)]);
+        } else if (entry.from == reconsist_parked) {
+            if (const auto it = parked_.find(entry.spec.key); it != parked_.end() && entry.spec.key) {
+                car = std::move(it->second);
+                parked_.erase(it);
+            }
+        }
+        if (!car) {
+            // A car not seen before (or named twice): a new mirror.
+            car = std::make_unique<CarMirror>();
+            car->spec = entry.spec;
+            build_car(*car);
+        }
+        car->index = static_cast<std::uint32_t>(cars_.size());
+        cars_.push_back(std::move(car));
+    }
+    // The cars that left keep their mirrors (and stay known to the host
+    // functions: a lost slave's LostMaster names them).
+    for (auto& car : old) {
+        if (!car) continue;
+        car->wagon()->flags &= ~4u;
+        if (!car->spec.key) continue; // nothing to find it by: dropped
+        const auto key = car->spec.key;
+        parked_[key] = std::move(car);
+    }
+    player_ = UINT32_MAX;
+    for (std::size_t i = 0; i < cars_.size(); ++i)
+        if (cars_[i].get() == player) player_ = static_cast<std::uint32_t>(i);
+    link_cars();
+    write_inputs(request.inputs);
+    // RTS binds the new slaves with the train's state at the time (0x5026FC:
+    // bit 1 when it moves); an activity's TrainState still replaces it.
+    start_running_ = request.running;
+    cables_.assign(cars_.size(), 0);
+    for (std::size_t i = 0; i < cars_.size(); ++i) cables_[i] = cars_[i]->wagon()->flags & 0x30000u;
+    if (player_ < cars_.size()) regroup();
+    collect(reply);
     return true;
 }
 
@@ -425,6 +492,7 @@ void Host::build_car(CarMirror& car) {
     w->num_anim = static_cast<abi::u16>(car.anims.size());
     w->anims = car.anims.empty() ? nullptr : car.anims.data();
     car.sound_ext.flags = 1 | 2; // discrete triggers, on
+    car.sound_ext.sms = sound_table(spec.sound_ext);
     w->sound = &car.sound_ext;
 
     if (!car.is_loco()) return;
@@ -525,6 +593,7 @@ void Host::build_car(CarMirror& car) {
         l->cab = &c;
     }
     car.sound_cab.flags = 1 | 2;
+    car.sound_cab.sms = sound_table(spec.sound_cab);
 }
 
 void Host::link_cars() {
@@ -631,6 +700,7 @@ bool Host::bind(CarMirror& car) {
         }
         info.has_sound = spec.has_sound;
         info.sound.flags = 1 | 2;
+        info.sound.sms = sound_table(spec.sound_table);
         car.aux_info.push_back(std::move(info));
         abi::AuxLibrary lib{};
         lib.lib = am;
@@ -884,9 +954,42 @@ void Host::write_inputs(const std::vector<CarInput>& inputs) {
         w->ept_value = -1.0f;
         if (car.is_loco()) car.loco()->main_res_pressure = in.main_reservoir;
         if (car.spec.kind == car_electric) {
+            // RTS 0x503CE4 sets these before Run (the current from the last
+            // step's PowerConsuming); a burnt pantograph is LocoFlags 0x200.
             car.electric()->line_voltage = in.line_voltage;
             car.electric()->line_freq = in.line_frequency;
-            car.electric()->line_current = 0.0f;
+            car.electric()->line_current = in.line_current;
+            if (in.line_burnt)
+                car.loco()->loco_flags |= 0x200u;
+            else
+                car.loco()->loco_flags &= ~0x200u;
+        }
+    }
+}
+
+void Host::regroup() {
+    if (player_ >= cars_.size()) return;
+    CarMirror& player = *cars_[player_];
+    if (!player.is_loco()) return;
+    const std::vector<abi::Locomotive*> before = player.slaves;
+    group(player);
+    abi::Locomotive* master = player.loco();
+    for (auto* slave : before) {
+        if (std::find(player.slaves.begin(), player.slaves.end(), slave) != player.slaves.end()) continue;
+        CarMirror* lost = car_of(slave);
+        if (!lost) continue;
+        slave->loco_flags &= ~4u; // no longer in the player's join
+        if (!lost->initialised || !lost->module || lost->module->failed) continue;
+        const std::uint32_t state = lost->wagon()->flags;
+        aux_change_loco(*lost, true, master, state);
+        if (lost->module->lost_master) {
+            auto* fn = reinterpret_cast<abi::LostMasterFn>(lost->module->lost_master);
+            prepare_fpu();
+            abi::Locomotive* v = view(*lost, lost->module);
+            const abi::Locomotive* mv = view(player, lost->module);
+            const DWORD crash = guarded([&] { fn(v, mv, state); });
+            sync();
+            if (crash) fail(*lost->module, L"LostMaster", crash);
         }
     }
 }
@@ -897,7 +1000,57 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
     train_reversed_ = request.train_direction == 0;
     air_temperature_ = request.air_temperature;
     set_direction_ = 0;
+    items_wanted_ = 0.0f;
+    // The route database's signals, the track items and the player's
+    // train's item list, and the SMS objects' trigger pairs.
+    for (const auto& u : request.signal_units) {
+        auto data = std::make_unique<abi::RTSSignalData>();
+        data->tile[0] = u.tile[0];
+        data->tile[1] = u.tile[1];
+        std::memcpy(data->pos, u.position, sizeof(data->pos));
+        data->name = u.name.empty() ? nullptr : const_cast<wchar_t*>(keep(strings_, u.name));
+        units_[u.id] = std::move(data);
+    }
+    for (const auto& item : request.items) add_item(item);
+    window_.clear();
+    for (const auto& e : request.track_items) {
+        const auto it = items_.find(e.item);
+        if (it == items_.end()) continue;
+        window_.push_back({e.distance, e.z, e.pos, reinterpret_cast<abi::TrackItem*>(it->second.get())});
+    }
+    for (const auto& p : request.sound_pairs) {
+        if (p.car >= cars_.size()) continue;
+        CarMirror& car = *cars_[p.car];
+        std::array<std::uint32_t, 8>* block = nullptr;
+        abi::SMSObject* sound = nullptr;
+        if (p.object == sound_exterior) {
+            block = &car.pairs_ext;
+            sound = &car.sound_ext;
+        } else if (p.object == sound_cabin) {
+            block = &car.pairs_cab;
+            sound = &car.sound_cab;
+        } else if (p.object >= 0 && static_cast<std::size_t>(p.object) < car.aux_info.size()) {
+            block = &car.aux_info[static_cast<std::size_t>(p.object)].pairs;
+            sound = &car.aux_info[static_cast<std::size_t>(p.object)].sound;
+        }
+        if (!block) continue;
+        std::memcpy(block->data(), p.on, sizeof(p.on));
+        std::memcpy(block->data() + 4, p.known, sizeof(p.known));
+        sound->paired_flags = block->data();
+    }
     write_inputs(request.cars);
+    // A control cable connected or parted (the car menu): the multiple-unit
+    // groups again (RTS 0x4F995C).
+    {
+        bool changed = cables_.size() != cars_.size();
+        cables_.resize(cars_.size());
+        for (std::size_t i = 0; i < cars_.size(); ++i) {
+            const std::uint32_t bits = cars_[i]->wagon()->flags & 0x30000u;
+            if (bits != cables_[i]) changed = true;
+            cables_[i] = bits;
+        }
+        if (changed && player_ < cars_.size()) regroup();
+    }
     signals(request);
     for (auto& car : cars_) {
         if (car->is_loco() && car->initialised && car->module && !car->module->failed)
@@ -951,6 +1104,7 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
     }
     collect(reply);
     reply.set_direction = set_direction_;
+    reply.items_wanted = items_wanted_;
     return true;
 }
 
@@ -1016,6 +1170,7 @@ void Host::signals(const StepRequest& request) {
         std::memcpy(ahead[i].aspect, s.aspect, sizeof(s.aspect));
         ahead[i].flags = s.flags;
         ahead[i].speed_limit = s.speed_limit;
+        ahead[i].signal = unit(s.unit);
     }
     float limit = -1.0f;
     for (const float v : {route.limit, signal.limit, event.limit})
@@ -1037,6 +1192,7 @@ void Host::signals(const StepRequest& request) {
                 std::memcpy(s.aspect, ahead.front().aspect, sizeof(s.aspect));
                 s.flags = ahead.front().flags;
                 s.speed_limit = ahead.front().speed_limit;
+                s.signal = ahead.front().signal;
             } else if (i == leading) {
                 s.aspect[0] = 0; // no signal known ahead
             } else {
@@ -1069,23 +1225,50 @@ void Host::signals(const StepRequest& request) {
         }
         // ALSN only for cabs with scripted signal lights (Cabin::SignalScripted).
         if (!car.spec.cab.present || !car.cabin.signal_scripted) continue;
+        // RTS 0x508520: ALSN(loco, A ahead of the front, B behind the rear,
+        // C being passed, the lowest limit, the next speed post's limit and
+        // its distance (floats in the two integer slots), the locomotive
+        // facing against the train's direction).
         const bool reversed = ((car.wagon()->flags & 1) != 0) != train_reversed_;
-        const auto na = static_cast<std::uint32_t>(ahead.size());
-        const int y = static_cast<int>(0xBF800000u); // -1.0f as RTS keeps it when unknown
+        std::int32_t x = 0, y = 0;
+        std::memcpy(&x, &request.next_limit, sizeof x);
+        std::memcpy(&y, &request.next_limit_distance, sizeof y);
         // Older DLLs get 28-byte SignalsInfo (no RTSSignalData pointer, adapter code 23).
-        std::vector<std::uint8_t> packed;
-        auto signals_for = [&](const Module& m) -> abi::SignalsInfo* {
-            if (ahead.empty()) return nullptr;
-            if (!m.signals_variant) return ahead.data();
-            packed.assign(ahead.size() * 28, 0);
-            for (std::size_t k = 0; k < ahead.size(); ++k) std::memcpy(packed.data() + k * 28, &ahead[k], 28);
-            return reinterpret_cast<abi::SignalsInfo*>(packed.data());
+        struct Array {
+            std::vector<abi::SignalsInfo> info;
+            std::vector<std::uint8_t> packed;
         };
+        std::array<Array, 3> arrays;
+        const std::vector<SignalInput>* sources[3] = {&request.alsn_ahead, &request.alsn_behind, &request.alsn_passing};
+        for (std::size_t k = 0; k < 3; ++k) {
+            arrays[k].info.resize(sources[k]->size());
+            for (std::size_t j = 0; j < sources[k]->size(); ++j) {
+                const auto& s = (*sources[k])[j];
+                auto& d = arrays[k].info[j];
+                d.distance = s.distance;
+                std::memcpy(d.aspect, s.aspect, sizeof(s.aspect));
+                d.flags = s.flags;
+                d.speed_limit = s.speed_limit;
+                d.signal = unit(s.unit);
+            }
+        }
+        auto signals_for = [&](const Module& m, Array& array) -> abi::SignalsInfo* {
+            if (array.info.empty()) return nullptr;
+            if (!m.signals_variant) return array.info.data();
+            array.packed.assign(array.info.size() * 28, 0);
+            for (std::size_t k = 0; k < array.info.size(); ++k) std::memcpy(array.packed.data() + k * 28, &array.info[k], 28);
+            return reinterpret_cast<abi::SignalsInfo*>(array.packed.data());
+        };
+        const auto na = static_cast<std::uint32_t>(arrays[0].info.size());
+        const auto nb = static_cast<std::uint32_t>(arrays[1].info.size());
+        const auto nc = static_cast<std::uint32_t>(arrays[2].info.size());
         if (car.module->alsn) {
             auto* fn = reinterpret_cast<abi::ALSNFn>(car.module->alsn);
             abi::Locomotive* v = view(car, car.module);
-            abi::SignalsInfo* a = signals_for(*car.module);
-            const DWORD crash = guarded([&] { fn(v, a, na, nullptr, 0, nullptr, 0, limit, 0, y, reversed); });
+            abi::SignalsInfo* a = signals_for(*car.module, arrays[0]);
+            abi::SignalsInfo* b = signals_for(*car.module, arrays[1]);
+            abi::SignalsInfo* c = signals_for(*car.module, arrays[2]);
+            const DWORD crash = guarded([&] { fn(v, a, na, b, nb, c, nc, limit, x, y, reversed); });
             sync();
             if (crash) fail(*car.module, L"ALSN", crash);
         }
@@ -1095,8 +1278,10 @@ void Host::signals(const StepRequest& request) {
             for (const auto& call : car.aux_info[i].calls) {
                 if (call.event != aux_alsn) continue;
                 auto* fn = reinterpret_cast<abi::AuxALSNFn>(am.alsn);
-                abi::SignalsInfo* a = signals_for(am);
-                const DWORD crash = guarded([&] { fn(&car.aux[i], a, na, nullptr, 0, nullptr, 0, limit, 0, y, reversed); });
+                abi::SignalsInfo* a = signals_for(am, arrays[0]);
+                abi::SignalsInfo* b = signals_for(am, arrays[1]);
+                abi::SignalsInfo* c = signals_for(am, arrays[2]);
+                const DWORD crash = guarded([&] { fn(&car.aux[i], a, na, b, nb, c, nc, limit, x, y, reversed); });
                 sync();
                 if (crash) fail(am, L"ALSN (aux)", crash);
                 break;
@@ -1866,15 +2051,172 @@ void* Host::aux_object_by_name(const abi::AuxLibrary* aux, int code, const wchar
     return nullptr;
 }
 
+void Host::trace_once(const std::wstring& key, const std::wstring& line) const {
+    if (!GetEnvironmentVariableW(L"OPENRTS_DLLHOST_TRACE", nullptr, 0)) return;
+    for (const auto& k : traced_)
+        if (k == key) return;
+    traced_.push_back(key);
+    const_cast<Host*>(this)->log(line);
+}
+
+void* Host::sound_table(const std::int32_t index) const {
+    return index >= 0 && static_cast<std::size_t>(index) < sound_tables_.size() ? sound_tables_[static_cast<std::size_t>(index)].get()
+                                                                                 : nullptr;
+}
+
+abi::RTSSignalData* Host::unit(const std::int32_t id) const {
+    if (id < 0) return nullptr;
+    const auto it = units_.find(id);
+    return it == units_.end() ? nullptr : it->second.get();
+}
+
+// RTS 0x482680: TrackItem (44 bytes) and its kind's fields after it.
+void Host::add_item(const TrackItemSpec& s) {
+    if (items_.contains(s.id)) return;
+    static constexpr std::uint32_t sizes[] = {44, 128, 64, 76, 76, 52, 52, 56, 48};
+    const std::uint32_t bytes = s.type < 9 ? sizes[s.type] : 44;
+    auto block = std::make_unique<std::uint32_t[]>(bytes / 4);
+    std::memset(block.get(), 0, bytes);
+    auto* item = reinterpret_cast<abi::TrackItem*>(block.get());
+    item->type = s.type;
+    item->id = s.id;
+    item->s_node_off = s.node_offset;
+    item->s_data_flags = s.data_flags;
+    item->p_data_x = s.pdata[0];
+    item->p_data_z = s.pdata[1];
+    item->p_data_tile_x = s.ptile[0];
+    item->p_data_tile_z = s.ptile[1];
+    item->r_data_x = s.rdata[0];
+    item->r_data_y = s.rdata[1];
+    item->r_data_z = s.rdata[2];
+    item->r_tile_x = s.rtile[0];
+    item->r_tile_z = s.rtile[1];
+    auto* extra = reinterpret_cast<std::uint8_t*>(block.get()) + 44;
+    const auto u32 = [&](std::size_t at, std::uint32_t v) { std::memcpy(extra + at, &v, 4); };
+    const auto f32 = [&](std::size_t at, float v) { std::memcpy(extra + at, &v, 4); };
+    const auto text = [&](std::size_t at, const std::u16string& t) {
+        const wchar_t* p = t.empty() ? nullptr : keep(strings_, t);
+        std::memcpy(extra + at, &p, sizeof(p));
+    };
+    switch (s.type) {
+    case 2: // SpeedPostItem: Flags, Value, Off, KM, Number
+        u32(0, s.flags);
+        f32(4, s.value);
+        f32(8, s.off);
+        f32(12, s.km);
+        u32(16, static_cast<std::uint32_t>(s.number));
+        break;
+    case 3: // PlatformItem: TrItemFlags, TrItemConj, PlatformName, StationName, MinWaitTime, Passengers, pl, at
+        u32(0, s.flags);
+        u32(4, s.link);
+        text(8, s.name);
+        text(12, s.station);
+        u32(16, s.min_wait);
+        u32(20, s.passengers);
+        break;
+    case 4: // SidingItem: flags, conj, SidingName
+        u32(0, s.flags);
+        u32(4, s.link);
+        text(8, s.name);
+        break;
+    case 6: // CrossoverItem: Conj, SectionIDX
+        u32(0, s.link);
+        u32(4, s.section);
+        break;
+    case 7: // PickupItem: Amount, PickupFlags, at
+        f32(0, s.value);
+        u32(4, s.flags);
+        break;
+    default:
+        break;
+    }
+    items_[s.id] = std::move(block);
+}
+
+// RTS 0x4805D8: the player's train's items (gathered from its rear,
+// 0x4808DC) the DLL asks for: ahead (code 1) / behind (2) within
+// `distance` (<= 0: 5000 m), under the train (4) always; signals left out
+// (ALSN gives them). A locomotive facing the train's rear has ahead and
+// behind swapped and Z negated, in its request and in what it gets.
 int Host::track_items(const abi::Locomotive* loco, std::uint32_t code, float distance, abi::TrackItemsItem*& items,
                       std::uint32_t& count) {
-    (void)loco;
-    (void)code;
-    (void)distance;
-    // Not provided yet: no items. RTS returns its own array (0x4805D8).
-    items = track_items_.empty() ? nullptr : track_items_.data();
     count = 0;
-    return 0;
+    const CarMirror* car = loco ? car_of(loco) : nullptr;
+    if (!car) {
+        items = nullptr;
+        return 0;
+    }
+    if (distance <= 0.0f) distance = 5000.0f;
+    items_wanted_ = (std::max)(items_wanted_, distance);
+    trace_once(L"items" + std::to_wstring(code), L"RTSGetTrackItems code " + std::to_wstring(code) + L" distance "
+                                                     + std::to_wstring(static_cast<int>(distance)) + L", "
+                                                     + std::to_wstring(window_.size()) + L" items in the list");
+    const bool flipped = (const_cast<CarMirror*>(car)->wagon()->flags & 1) != 0;
+    std::uint32_t want = code & 0xFFFFu;
+    if (flipped) {
+        if ((want & 1) && !(want & 2)) want = (want & ~3u) | 2u;
+        else if ((want & 2) && !(want & 1)) want = (want & ~3u) | 1u;
+    }
+    track_items_.clear();
+    for (const auto& e : window_) {
+        if (!(want & e.pos)) continue;
+        if (e.pos != item_under && e.distance > distance) continue;
+        if (!e.obj || e.obj->type == 1) continue;
+        abi::TrackItemsItem out = e;
+        if (flipped) {
+            if (out.pos == item_ahead) out.pos = item_behind;
+            else if (out.pos == item_behind) out.pos = item_ahead;
+            if (out.pos != item_under) out.z = -out.z;
+        }
+        track_items_.push_back(out);
+    }
+    if (track_items_.empty()) return 0;
+    items = track_items_.data();
+    count = static_cast<std::uint32_t>(track_items_.size());
+    return static_cast<int>(count);
+}
+
+int Host::named_integer(const void* table, const wchar_t* name) const {
+    if (!name) return 0;
+    int found = 0;
+    for (const auto& t : sound_tables_) {
+        if (!table || t.get() != table) continue;
+        for (std::size_t i = 0; i < t->names.size() && i < t->codes.size(); ++i) {
+            if (lstrcmpiW(t->names[i].c_str(), name) == 0) {
+                found = t->codes[i];
+                break;
+            }
+        }
+        break;
+    }
+    trace_once(L"named", L"RTSGetNamedInteger \"" + std::wstring(name) + L"\" = " + std::to_wstring(found)
+                             + (table ? L"" : L" (no script)"));
+    return found;
+}
+
+// 0x439548: -3 without a script or pairs, -2 before any pair code (no
+// PairedFlags), the pair's state for one of its On codes (0x4A8A58: -1 while
+// it is not known), -4 for any other code.
+int Host::trigger_on(const abi::SMSObject* sound, const std::uint16_t code) const {
+    trace_once(L"trigger_on", L"RTSIsSMSTriggerOn " + std::to_wstring(code));
+    if (!sound || !sound->sms) return -3;
+    const SoundTable* table = nullptr;
+    for (const auto& t : sound_tables_)
+        if (t.get() == sound->sms) table = t.get();
+    if (!table || table->pair_on.empty()) return -3;
+    if (!sound->paired_flags) return -2;
+    const auto* flags = static_cast<const std::uint32_t*>(sound->paired_flags);
+    for (std::size_t i = 0; i < table->pair_on.size(); ++i) {
+        for (const auto c : table->pair_on[i]) {
+            if (c != code) continue;
+            const std::size_t word = i >> 5;
+            const std::uint32_t bit = 1u << (i & 31);
+            if (word > 3) return -1;
+            if (!(flags[4 + word] & bit)) return -1;
+            return (flags[word] & bit) != 0 ? 1 : 0;
+        }
+    }
+    return -4;
 }
 
 } // namespace openrts::dllhost

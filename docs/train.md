@@ -244,14 +244,16 @@ RTS's menu at a coupling or a bogie (`docs/reverse/car-menu.md`), in
 - **Sounds:** RTS's discrete triggers go to the cars' SMS (80 air, 81 it
   stops, 82 / 83 hose, 84 / 85 EP, 86 / 87 cock, 59 / 62 coupler, 92 / 93
   release valve).
-- **Not yet:**
-  - SME cable and high-voltage bus (they rebuild the DLL multiple-unit
-    groups in RTS);
-  - "Fix coupling", cargo information, activity board events;
-  - multiplayer.
+- **Since (2026-11-04, `docs/train-systems.md`):** the SME cable and the
+  high-voltage bus (they regroup the DLLs), "Fix coupling", cargo
+  information.
+- **Not yet:** activity board events; multiplayer.
 - **Tests:** `test_car_menu` in `tests/train_test.cpp`. `--capture-menu
   <item>` opens the menu where `--capture-camera` stands, picks the item and
-  prints the menu and the car states.
+  prints the menu and the car states. Given again, it opens the menu again
+  for each next item (uncouple, hold the coupler open, couple: `1 15 16`).
+  `--capture-uncouple <index>` uncouples the driven train before that car,
+  as the Train window's button does (the engineer may sit in the cab).
 
 #### Realistic pneumatics (openRTS path)
 
@@ -539,9 +541,8 @@ The train emits events for sound and, later, signals:
   - wheel nodes rotate by distance / wheel radius;
   - bogie nodes turn to their traveller's heading relative to the car body;
   - freight animation (`FreightAnim`) is shown static.
-- **Not yet:** lights and pantographs come with step 5 (`roadmap.md`): from
-  the `.eng` with default logic for stock without a DLL (AI trains), from the
-  DLL otherwise.
+- **Lights and pantographs** came with step 5: from the DLL, else by RTS's
+  default logic from the `.eng` (`docs/train-systems.md`).
 
 ## 6. Train sounds
 
@@ -553,9 +554,10 @@ The train emits events for sound and, later, signals:
   travelled, curve radius of the car's section.
 - **Events:** joint and junction events per bogie (`WagonOnJoint`,
   `WagonOnJunction`, `WagonOnAnyJoint`).
-- **Not yet:** cab sounds and `VariableN` from DLLs are the cab step. The
-  built-in controller may set the MSTS meaning of Variable1..3 (throttle,
-  brake, dynamic brake) so engine sounds react.
+- **Engine variables:** a DLL sets Var1..8 itself (`SMSObject`). Without
+  a DLL the built-in controller gives the MSTS meaning of Variable1..3:
+  throttle, force against the adhesion limit, brake cylinder. Cab sounds
+  came with step 5 (`docs/sound.md`).
 
 ## 7. Checks
 

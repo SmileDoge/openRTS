@@ -88,6 +88,13 @@ float Electrification::source_voltage(const formats::ElectroPowerSource& source,
     return voltage;
 }
 
+// Bits set in a pantograph mask.
+[[nodiscard]] static unsigned raised_count(const std::uint8_t mask) {
+    unsigned n = 0;
+    for (std::uint8_t m = mask; m; m &= static_cast<std::uint8_t>(m - 1)) ++n;
+    return n;
+}
+
 bool Electrification::wire_at(const formats::NodeElectrification& node, const double offset) const {
     const auto& pieces = node.catenary;
     if (pieces.size() == 1 && pieces[0].start <= 0.0f && pieces[0].length < 0.0f) return true;
@@ -132,6 +139,24 @@ LinePoint Electrification::at(const std::uint32_t node, const double offset, con
     const auto* data = node < nodes_.size() ? nodes_[node] : nullptr;
     if (!data || !wire_at(*data, offset)) return out;
     out.state = LineState::dead;
+    // The wire's BurnQ (0x5B53A8): type-1 catenary pieces over the point.
+    out.burn_q = -1.0f;
+    const auto burn_of = [&](const formats::CatenaryPiece& p) {
+        for (const auto& t : data_.types.catenary_types) {
+            if (t.id != p.type || t.type != 1) continue;
+            if (out.burn_q >= 0.0f) {
+                if (t.burn_q == 0.0f || (out.burn_q > 0.0f && t.burn_q > out.burn_q)) out.burn_q = t.burn_q;
+            } else {
+                out.burn_q = t.burn_q;
+            }
+        }
+    };
+    if (data->catenary.size() == 1 && data->catenary[0].start <= 0.0f && data->catenary[0].length < 0.0f) {
+        burn_of(data->catenary[0]);
+    } else {
+        for (const auto& p : data->catenary)
+            if (p.length > 0.0f && p.start <= offset && p.start + p.length >= offset) burn_of(p);
+    }
     const auto* piece = piece_at(*data, offset);
     if (!piece || piece->section == 0 || piece->section >= section_by_id_.size() || section_by_id_[piece->section] < 0) {
         return out;
@@ -209,27 +234,120 @@ LinePoint Electrification::at(const std::uint32_t node, const double offset, con
     return out;
 }
 
-LineSupply Electrification::apply(Train& train, const std::vector<bool>& raised) const {
+LineSupply Electrification::apply(Train& train, const std::vector<std::uint8_t>& pantographs, const double dt) {
     const auto& cars = train.cars();
     const auto centres = train.car_centres();
-    LineSupply line;
-    bool any = false;
-    for (std::size_t i = 0; i < cars.size() && i < centres.size(); ++i) {
-        if (!electric(cars[i]) || i >= raised.size() || !raised[i]) continue;
-        any = true;
-        const auto& traveller = centres[i];
-        const auto point = at(traveller.node(), traveller.offset(), traveller.pose(), &*cars[i].definition->engine);
-        if (point.supply.voltage != 0.0f) {
-            // As 0x503CE4: the highest voltage, the frequency of the last one found.
-            line.voltage = (std::max)(line.voltage, point.supply.voltage);
-            line.frequency = point.supply.frequency;
+    const std::size_t n = cars.size();
+    const auto step = static_cast<float>(dt);
+    LineSupply highest;
+    std::vector<bool> done(n, false);
+    std::vector<LinePoint> points(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!electric(cars[i]) || done[i]) continue;
+        // The group joined by the HV bus (RTS 0x4F9FB4 sets each engine's
+        // +436 / +440 so): back while this car's front and the next car's
+        // rear end are connected, and on likewise.
+        std::size_t lo = i, hi = i;
+        while (lo > 0 && (cars[lo].cables & cable_hv_front) && (cars[lo - 1].cables & cable_hv_rear)) --lo;
+        while (hi + 1 < n && (cars[hi].cables & cable_hv_rear) && (cars[hi + 1].cables & cable_hv_front)) ++hi;
+        LineSupply line;
+        float power = 0.0f;
+        unsigned raised_total = 0;
+        std::vector<float> heat(hi - lo + 1, 0.0f);
+        std::vector<bool> burnt(hi - lo + 1, false);
+        for (std::size_t k = lo; k <= hi; ++k) {
+            if (!electric(cars[k])) continue;
+            const auto& car = cars[k];
+            const auto& engine = *car.definition->engine;
+            float& h = heat[k - lo];
+            bool b = car.line_burnt;
+            h = car.line_heat;
+            power += car.power;
+            // The wire cools under a working pantograph (MLC_B + MLC_A x speed
+            // a second); a burnt one counts its 60 s.
+            const bool gradual = engine.max_line_current > 0.0f && engine.max_line_current_burn_time > 0.0f;
+            if (gradual && !b) {
+                h = (std::max)(h - (engine.line_current_cooling[1] * std::abs(car.velocity) + engine.line_current_cooling[0]) * step, 0.0f);
+            }
+            const std::uint8_t mask = k < pantographs.size() ? pantographs[k] : 0;
+            if (b) {
+                h += step;
+                if (h > 60.0f) b = false;
+            }
+            burnt[k - lo] = b;
+            // As 0x503CE4: a pantograph burnt at the start of the step gives
+            // no line this step even if it has just cooled.
+            if (!mask || car.line_burnt || k >= centres.size()) continue;
+            const auto& traveller = centres[k];
+            points[k] = at(traveller.node(), traveller.offset(), traveller.pose(), &engine);
+            raised_total += raised_count(mask);
+            if (points[k].supply.voltage != 0.0f) {
+                // As 0x503CE4: the highest voltage, the frequency of the last one found.
+                line.voltage = (std::max)(line.voltage, points[k].supply.voltage);
+                line.frequency = points[k].supply.frequency;
+            }
+        }
+        if (line.voltage > highest.voltage) highest = line;
+        const float current_total = line.voltage > 0.0f ? power / line.voltage : 0.0f;
+        for (std::size_t k = lo; k <= hi; ++k) {
+            if (!electric(cars[k])) continue;
+            done[k] = true;
+            const auto& engine = *cars[k].definition->engine;
+            train.set_line_supply(k, line.voltage, line.frequency);
+            float h = heat[k - lo];
+            bool b = burnt[k - lo];
+            const std::uint8_t mask = k < pantographs.size() ? pantographs[k] : 0;
+            const unsigned own = b || cars[k].line_burnt ? 0u : raised_count(mask);
+            float current = 0.0f;
+            if (own && raised_total && line.voltage > 0.0f) current = current_total * static_cast<float>(own) / static_cast<float>(raised_total);
+            if (current != 0.0f && wire_burning) {
+                const float per = std::abs(current) / static_cast<float>(own);
+                const float limit = engine.max_line_current * engine.max_line_current_burn_time;
+                bool burns = false;
+                if (limit <= 0.0f) {
+                    burns = engine.max_line_current > 0.0f && per > engine.max_line_current;
+                } else if (points[k].burn_q > 0.0f) {
+                    h += per / points[k].burn_q * step;
+                    burns = h >= limit;
+                }
+                if (burns) {
+                    h = 0.0f;
+                    b = true;
+                    burns_.push_back({.train = train.id(), .car = k, .current = per});
+                }
+            }
+            train.set_line_load(k, b ? 0.0f : current, h, b);
+            // The substation feeding it takes the group's power by this
+            // engine's share of the pantographs (0x5B6030).
+            const auto& point = points[k];
+            if (!b && own && raised_total && point.section >= 0 && point.source >= 0 && step > 0.0f) {
+                const auto& section = data_.database.sections[static_cast<std::size_t>(point.section)];
+                const auto& source = section.sources[static_cast<std::size_t>(point.source)];
+                const float share = power * static_cast<float>(own) / static_cast<float>(raised_total);
+                auto& load = loads_[static_cast<std::uint64_t>(source.substation) << 32 | source.phase];
+                load.substation = source.substation;
+                load.phase = source.phase;
+                load.energy += share * step;
+            }
         }
     }
-    if (!any) line = {};
-    for (std::size_t i = 0; i < cars.size(); ++i) {
-        if (electric(cars[i])) train.set_line_supply(i, line.voltage, line.frequency);
+    return highest;
+}
+
+void Electrification::advance_loads(const double dt) {
+    for (auto& [key, load] : loads_) {
+        load.window += static_cast<float>(dt);
+        if (load.window < 2.0f) continue;
+        load.power = load.energy / load.window;
+        load.energy = 0.0f;
+        load.window = 0.0f;
     }
-    return line;
+}
+
+std::vector<SubstationLoad> Electrification::substation_loads() const {
+    std::vector<SubstationLoad> out;
+    for (const auto& [key, load] : loads_) out.push_back(load);
+    return out;
 }
 
 int Electrification::current_source(const std::size_t section) const {

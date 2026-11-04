@@ -88,6 +88,9 @@ double field(const std::string& name, const trainplugin::LegacyConsist& consist,
     if (name == "main_switch") return e.main_switch;
     if (name == "ur") return e.equalising;
     if (name == "brake_force") return e.brake_force;
+    if (name == "loco_flags") return out->loco_flags;
+    if (name == "master") return (out->loco_flags & 1) ? 1.0 : 0.0;
+    if (name == "bound") return (out->loco_flags & 0x20) ? 1.0 : 0.0;
     if (name.rfind("disp", 0) == 0) { // dispN: state of cab display N (a lamp: lit or not)
         const auto id = static_cast<std::size_t>(std::atoi(name.c_str() + 4));
         return id < out->displays.size() ? out->displays[id].state : std::nan("");
@@ -275,7 +278,8 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             return 2;
         }
         setups.push_back({def.get(), flipped, 0.0f});
-        legacy.push_back({def.get(), path, static_cast<std::uint32_t>(legacy.size() + 1)});
+        const auto n = static_cast<std::uint32_t>(legacy.size() + 1);
+        legacy.push_back({def.get(), path, n, n}); // uid, key
         stock.push_back(std::move(def));
     }
     const auto cache = std::filesystem::temp_directory_path() / "openrts-cache";
@@ -312,6 +316,20 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     int failures = 0;
     double time = 0.0;
     double next_print = 0.0;
+    // cut / couple: the part cut off stands behind until coupled back.
+    std::unique_ptr<simulation::Train> cut_train;
+    std::vector<trainplugin::LegacyCar> cut_cars;
+    const auto reconsisted = [&](const char* what) {
+        const bool ok = consist->reconsist(vfs, legacy, train);
+        for (std::size_t i = 0; i < legacy.size(); ++i)
+            if (consist->has_dll(i)) train.set_controller(i, consist->controller(i));
+        player = consist->player();
+        cab = consist->cab(player);
+        std::printf("%6.1f %s: %zu cars, %s, the player in car %zu\n", time, what, legacy.size(),
+                    ok ? "the DLLs kept" : "FAILED", player);
+        if (!ok) ++failures;
+        if (const auto text = consist->take_messages(); !text.empty()) std::printf("%s", text.c_str());
+    };
     std::uint64_t triggers = 0;
     std::printf("%6s %7s %9s %5s %4s %5s %3s %6s %6s %6s %6s %8s %5s\n", "t,s", "km/h", "F,kN", "notch", "rev",
                 "panto", "BV", "TM", "UR", "GR", "TC", "brake,kN", "snd");
@@ -381,6 +399,42 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             } else if (c.verb == "voltage" && !c.args.empty()) {
                 world.line_voltage = static_cast<float>(std::atof(c.args[0].c_str()));
                 world.line_frequency = c.args.size() > 1 ? static_cast<float>(std::atof(c.args[1].c_str())) : 0.0f;
+            } else if (c.verb == "cut" && !c.args.empty() && !cut_train) {
+                // cut <index>: uncouple behind car index - 1 (the car menu's way: cocks closed)
+                const auto index = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
+                cut_train = train.uncouple(index, true, true);
+                if (!cut_train) {
+                    std::printf("%6.1f cut %zu: no such car\n", time, index);
+                    ++failures;
+                    continue;
+                }
+                cut_cars.assign(legacy.begin() + static_cast<std::ptrdiff_t>(index), legacy.end());
+                legacy.resize(index);
+                reconsisted("cut");
+            } else if (c.verb == "couple" && cut_train) {
+                // couple: the part cut off back on at the rear, its control cable connected
+                using Flags = simulation::Train::CarFlags;
+                const auto joint = legacy.size() - 1;
+                if (!train.couple(*cut_train, false, true, 0.0)) {
+                    std::printf("%6.1f couple: failed\n", time);
+                    ++failures;
+                    continue;
+                }
+                cut_train.reset();
+                legacy.insert(legacy.end(), cut_cars.begin(), cut_cars.end());
+                cut_cars.clear();
+                train.set_car_flags(joint, Flags::cables, simulation::cable_sme_rear, true);
+                train.set_car_flags(joint + 1, Flags::cables, simulation::cable_sme_front, true);
+                reconsisted("coupled");
+            } else if (c.verb == "expect_car" && c.args.size() >= 4) {
+                // expect_car <car> <field> <op> <value>
+                const auto car_index = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
+                const double value = car_index < train.cars().size() ? field(c.args[1], *consist, car_index, train) : std::nan("");
+                const double want = std::atof(c.args[3].c_str());
+                const bool ok = compare(value, c.args[2], want);
+                std::printf("%6.1f expect car %zu %s %s %g: %g %s\n", time, car_index, c.args[1].c_str(), c.args[2].c_str(), want, value,
+                            ok ? "ok" : "FAILED");
+                if (!ok) ++failures;
             } else if (c.verb == "expect" && c.args.size() >= 3) {
                 const double value = field(c.args[0], *consist, player, train);
                 const double want = std::atof(c.args[2].c_str());

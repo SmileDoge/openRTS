@@ -61,6 +61,12 @@ struct EngineDemands {
     // not working the pipe), and position VI.
     float equalising = -1.0f;
     bool emergency = false;
+    // Engine::Sanding: adhesion x the .eng's sanding factor (Adheasion's
+    // third value) while the sand lasts (RTS 0x424488).
+    bool sanding = false;
+    // W the engine draws from the line (ElectricEngine::PowerConsuming);
+    // < 0: its traction power |F v|.
+    float power = -1.0f;
 };
 
 // What a controller sees of its locomotive.
@@ -113,6 +119,7 @@ struct DriverHandles {
     float charging_pressure = 5.0f; // the pressure II charges the equalising reservoir to, atm
     float equalising = 5.0f;      // equalising reservoir (УР, Engine::UR), kept by the master's valve, atm
     bool ep_brake = false;        // ЭПТ switched on
+    bool sanding = false;         // the sander held (every engine of the unit sands)
     float ep_target = 0.0f;       // ЭПТ cylinder demand (Engine::EPTvalue), kept by the master's valve, atm
 };
 
@@ -137,9 +144,10 @@ private:
 };
 
 class Train;
-// Puts keyboard controllers on every engine of `train`, the first one master.
-// Returns the shared handles, or nullptr when the train has no engine.
-std::shared_ptr<DriverHandles> attach_keyboard_driver(Train& train);
+// Puts keyboard controllers on every engine of `train`, engine `master` (the
+// first one when it is not an engine) master. Returns the shared handles, or
+// nullptr when the train has no engine.
+std::shared_ptr<DriverHandles> attach_keyboard_driver(Train& train, std::size_t master = SIZE_MAX);
 
 enum class TrainEventKind : std::uint8_t {
     joint,        // a bogie passed a section boundary
@@ -172,6 +180,19 @@ inline constexpr float chock_force = 10000.0f;
 // on contact (RTS car +14 bits).
 inline constexpr std::uint8_t coupler_open_front = 0x01;
 inline constexpr std::uint8_t coupler_open_rear = 0x02;
+// Coupler ends broken in a collision (RTS car +14 bits 0x10 / 0x20, set by
+// 0x58A07C when the impact passes the end's Break force): they do not couple
+// until fixed (the car menu's "Fix coupling", 120 s).
+inline constexpr std::uint8_t coupler_broken_front = 0x10;
+inline constexpr std::uint8_t coupler_broken_rear = 0x20;
+// Multiple-unit cables between cars (ts.h Wagon Flags byte 3,
+// WagonData::Cables; RTS 0x10000 / 0x20000 SMECable, 0x40000 / 0x80000
+// HVBus): connected at the front / rear end. The control cable joins engines
+// into one multiple unit, the high-voltage bus shares the line.
+inline constexpr std::uint8_t cable_sme_front = 0x01;
+inline constexpr std::uint8_t cable_sme_rear = 0x02;
+inline constexpr std::uint8_t cable_hv_front = 0x04;
+inline constexpr std::uint8_t cable_hv_rear = 0x08;
 
 struct TrainEvent {
     TrainEventKind kind{};
@@ -221,7 +242,8 @@ struct CarState {
     // Brake pipe ends (pipe_hose_*, pipe_cock_*). A train's end cars start
     // with the outer hose disconnected and its end cock closed.
     std::uint8_t pipe_ends{};
-    std::uint8_t coupler_open{}; // coupler_open_*
+    std::uint8_t coupler_open{}; // coupler_open_*, coupler_broken_*
+    std::uint8_t cables{};       // cable_*
     std::uint8_t valves{};       // valve_*
     std::uint8_t chocks{};       // chock_*
     // The body swaying on its springs (RTS 0x4F5B34): offset from its rest
@@ -249,6 +271,20 @@ struct CarState {
     // V, Hz. Negative voltage: not modelled.
     float line_voltage = -1.0f;
     float line_frequency{};
+    // The current at its pantographs (Locomotive::LineCurrent), A, and the
+    // wire's heat under them (RTS +416: grows by the current over the wire's
+    // BurnQ, cools by MaxLineCurrentVelocityIncrease); a burnt wire
+    // (LocoFlags 0x200) gives it no line for 60 s, then `line_heat` counts that.
+    float line_current{};
+    float line_heat{};
+    bool line_burnt = false;
+    float power{};              // W the engine drew last step (EngineDemands::power)
+    // Sanding (RTS 0x424488): the sand left (s, MaxSandingTime; < 0
+    // unlimited), and the effect lasting over the engine's length of travel
+    // after the sanding stopped.
+    bool sanding = false;
+    float sand_left = -1.0f;
+    float sand_travel = -1.0f;  // m since the sanding stopped, < 0: no effect left
 };
 
 
@@ -291,7 +327,7 @@ public:
     // What a hand at the track changes on car `car` (RTS's car menu,
     // 0x463F84): set or clear `mask` in its pipe ends, coupler ends left
     // open, valves or brake shoes. A sleeping train wakes.
-    enum class CarFlags : std::uint8_t { pipe_ends, coupler_open, valves, chocks };
+    enum class CarFlags : std::uint8_t { pipe_ends, coupler_open, valves, chocks, cables };
     void set_car_flags(std::size_t car, CarFlags which, std::uint8_t mask, bool on);
     // Car `car`'s handbrake, 0..1.
     void set_handbrake(std::size_t car, float value);
@@ -338,6 +374,8 @@ public:
     [[nodiscard]] std::vector<TrackTraveller> car_centres() const;
     // The overhead line at car `car`'s pantographs (CarState::line_voltage).
     void set_line_supply(std::size_t car, float voltage, float frequency);
+    // Its line current and wire heat (Electrification::apply).
+    void set_line_load(std::size_t car, float current, float heat, bool burnt);
     // The front end of car 0, facing the train front; the rear end of the
     // last car, facing the train front too.
     [[nodiscard]] std::optional<TrackTraveller> front_end() const;

@@ -132,6 +132,15 @@ struct CabDisplay {
     float anim_speed{};
     std::uint32_t screen_subobjects{}; // DisplayScreen SubObjects
     CabScreen screen;
+    // DisplayFade ( fade blink ) (RTS 0x51CD88, display +76 / +80): a lamp,
+    // display or screen comes on and goes off over `fade` s and, with a
+    // blink, is shown `blink` s and hidden `blink` s (0x525DB0).
+    float fade{};
+    float blink{};
+    // StateNodes ( n "node" ... ) of a DISPLAY (+52 / +68): node j shows when
+    // bit j of the State is set, or with DISPLAY_SEQUENCE (flag 0x40000)
+    // when the State is j + 1.
+    std::vector<std::string> state_nodes;
 };
 
 // LightSources ( LightSource ( ... ) ): a lamp of the cab or salon (RTS
@@ -149,6 +158,9 @@ struct CabLight {
     std::uint32_t global_id{};
     float source_radius{};
     std::array<float, 3> attenuation{2.0f, 0.6f, 0.4f}; // kind (2 linear), start share, length share
+    // AutoWhenWorldLit (InternalLight +88): a NIGHT_AUTO lamp burns while the
+    // world is at most this lit (0: at night).
+    float auto_when_world_lit{};
 };
 
 // TextureChanges Change ( TexID "file" Change GlobalID ) (RTS 0x51CD88):
@@ -209,12 +221,22 @@ struct CabDoor {
     // train's doors (GM_DOOR_OPEN / CLOSE, RTS 0x424488); 0 none.
     std::uint32_t global_id{};
     bool can_be_opened = true; // CanBeOpened: the player may open it by hand
+    bool opened = false;       // Opened: open from the start (RTS: the keyword's presence)
+    // SoundProof ( closed open ): the share of a sound that passes the door
+    // shut and open; without it everything passes (RTS 0x51CD88: 1, 1).
+    float sound_closed = 1.0f, sound_open = 1.0f;
 };
 struct CabWindow {
     std::string name;
     bool can_open = false;
+    bool opened = false; // Opened: open from the start
     std::array<float, 3> head_out{};
+    std::array<float, 3> position{};
+    bool has_position = false;
     float anim_time = 1.0f;
+    // SoundProof ( closed open ) towards the outside of the room the window's
+    // Position is in; without it nothing passes (RTS 0x51CD88: 0, 0).
+    float sound_closed = 0.0f, sound_open = 0.0f;
 };
 
 // ESD_Extended_Animation AnimationNode ( Name ( "x" ) Shortcut ( n f1 .. fn )

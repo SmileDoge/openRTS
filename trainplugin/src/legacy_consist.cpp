@@ -1,9 +1,12 @@
 #include <openrts/trainplugin/legacy_consist.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <map>
 #include <optional>
 
 #include <openrts/formats/cab_description.hpp>
+#include <openrts/formats/sound.hpp>
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/formats/shape_file.hpp>
 
@@ -187,171 +190,345 @@ void apply_engine_output(const EngineOutput& out, simulation::EngineDemands& dem
     demands.systems = out.systems;
     demands.release_train_brake = (out.engine_flags & 1) != 0;
     demands.release_independent_brake = (out.engine_flags & 2) != 0;
+    demands.sanding = out.sanding != 0;
+    // RTS 0x503CE4: the line current comes from ElectricEngine::PowerConsuming.
+    demands.power = out.power_consuming;
 }
+
+namespace {
+
+// The sound scripts' tables for the host (SoundTableSpec): NamedTriggersTable
+// and the On codes of the trigger pairs of the group the player's train
+// plays (group 7, else the first). One per file.
+struct SoundTables {
+    std::vector<SoundTableSpec>& out;
+    std::map<std::string, std::int32_t>& by_path; // kept by the consist across couplings
+    std::int32_t base = 0;                        // tables the host has already
+
+    std::int32_t add(const core::Vfs& vfs, const std::vector<std::optional<core::VirtualPath>>& candidates) {
+        for (const auto& path : candidates) {
+            if (!path || !vfs.exists(*path)) continue;
+            const std::string key(path->str());
+            if (const auto it = by_path.find(key); it != by_path.end()) return it->second;
+            const auto script = formats::load_sound_script(vfs, *path);
+            SoundTableSpec t;
+            if (script.ok()) {
+                for (const auto& [name, code] : script.named_triggers) {
+                    t.names.push_back(u16(name));
+                    t.codes.push_back(static_cast<std::uint16_t>(code));
+                }
+                if (const auto* group = script.select_group(formats::SoundOwner::player_train)) {
+                    for (const auto& pair : group->trigger_pairs) {
+                        std::vector<std::uint16_t> on;
+                        for (const auto c : pair.on) on.push_back(static_cast<std::uint16_t>(c));
+                        t.pair_on.push_back(std::move(on));
+                    }
+                }
+            }
+            if (t.names.empty() && t.pair_on.empty()) return by_path[key] = -1;
+            out.push_back(std::move(t));
+            return by_path[key] = base + static_cast<std::int32_t>(out.size() - 1);
+        }
+        return -1;
+    }
+};
+
+struct BuiltCar {
+    CarSpec spec;
+    formats::CabDescription cab;
+    bool dll = false;
+    std::vector<std::int16_t> aux_index; // each AuxLibrary of the .eng as the host numbers them, -1 missing
+};
+
+std::optional<core::VirtualPath> in(const core::VirtualPath& folder, const std::string& file) {
+    if (file.empty()) return std::nullopt;
+    return folder.resolve(file);
+}
+
+// RTS's TrackItem and its kind's fields (0x482680) from the TDB item.
+TrackItemSpec item_spec(const formats::TrackItem& item, const float route_speed_limit) {
+    using formats::TrackItemKind;
+    TrackItemSpec s;
+    s.id = item.id;
+    switch (item.kind) {
+    case TrackItemKind::signal: s.type = 1; break;
+    case TrackItemKind::speed_post: s.type = 2; break;
+    case TrackItemKind::platform: s.type = 3; break;
+    case TrackItemKind::siding: s.type = 4; break;
+    case TrackItemKind::level_crossing: s.type = 5; break;
+    case TrackItemKind::crossover: s.type = 6; break;
+    case TrackItemKind::pickup: s.type = 7; break;
+    case TrackItemKind::car_spawner: s.type = 8; break;
+    default: s.type = 0; break;
+    }
+    s.node_offset = item.distance;
+    s.data_flags = item.data_flags;
+    // RTS axes: x negated.
+    if (item.has_pdata) {
+        s.pdata[0] = -item.pdata[0];
+        s.pdata[1] = item.pdata[1];
+        s.ptile[0] = static_cast<std::int16_t>(item.pdata_tile[0]);
+        s.ptile[1] = static_cast<std::int16_t>(item.pdata_tile[1]);
+    }
+    if (item.has_rdata) {
+        s.rdata[0] = -item.rdata[0];
+        s.rdata[1] = item.rdata[1];
+        s.rdata[2] = item.rdata[2];
+        s.rtile[0] = static_cast<std::int16_t>(item.rdata_tile[0]);
+        s.rtile[1] = static_cast<std::int16_t>(item.rdata_tile[1]);
+    }
+    switch (s.type) {
+    case 2: {
+        // SpeedpostTrItemData as 0x482680 reads it: flags; with flag 2 the
+        // limit (flag 1: the route's, as it is) and with 0x10 a number;
+        // without it a speed with flag 8, then the post's number (KM); the
+        // sign's rotation (Off) last. km/h, mph with 0x100, to m/s unless
+        // flag 1.
+        const auto& v = item.speed_post_data;
+        std::size_t i = 0;
+        const auto next = [&] { return i < v.size() ? v[i++] : 0.0f; };
+        const auto flags = static_cast<std::uint32_t>(static_cast<std::int32_t>(next()));
+        s.flags = flags;
+        if (flags & 2u) {
+            s.value = (flags & 1u) ? route_speed_limit : next();
+            if (flags & 0x10u) s.number = static_cast<std::int32_t>(next());
+        } else {
+            if (flags & 8u) s.value = next();
+            s.km = next();
+        }
+        s.off = next();
+        s.value = std::abs(s.value);
+        if (!(flags & 1u)) s.value *= (flags & 0x100u) ? 0.4469444444f : 1.0f / 3.6f;
+        break;
+    }
+    case 3:
+        s.flags = item.item_flags;
+        s.link = item.linked;
+        s.name = u16(item.name);
+        s.station = u16(item.station);
+        s.min_wait = item.min_wait;
+        s.passengers = item.passengers;
+        break;
+    case 4:
+        s.flags = item.item_flags;
+        s.link = item.linked;
+        s.name = u16(item.name);
+        break;
+    case 6:
+        s.link = item.crossover[0];
+        s.section = item.crossover[1];
+        break;
+    case 7:
+        s.value = item.pickup_amount;
+        s.flags = item.pickup_flags;
+        break;
+    default:
+        break;
+    }
+    return s;
+}
+
+// What the host needs of one car (CarSpec), with its cab and whether a DLL
+// runs it. `tables` collects the sound scripts' tables.
+BuiltCar build_spec(const core::Vfs& vfs, const std::filesystem::path& cache_root, const LegacyCar& car,
+                    const core::VirtualPath* route, SoundTables& tables, std::string& problems) {
+    BuiltCar out;
+    CarSpec& spec = out.spec;
+    spec.uid = car.uid;
+    spec.key = car.key;
+    if (!car.definition) return out;
+    const auto global_sound = core::VirtualPath::parse("SOUND");
+    const auto& d = *car.definition;
+    spec.mass = d.mass;
+    spec.name = u16(d.name);
+    // The exterior and cab scripts, looked up as the viewer does
+    // (TrainView::update_sound / update_cab_sound).
+    const auto folder = car.file.parent();
+    const auto sound_folder = folder.resolve("SOUND");
+    if (!d.sound.empty())
+        spec.sound_ext = tables.add(vfs, {sound_folder ? in(*sound_folder, d.sound) : std::nullopt,
+                                          global_sound ? in(*global_sound, d.sound) : std::nullopt});
+    if (!d.cab_sound.empty())
+        spec.sound_cab = tables.add(vfs, {sound_folder ? in(*sound_folder, d.cab_sound) : std::nullopt, in(folder, d.cab_sound),
+                                          global_sound ? in(*global_sound, d.cab_sound) : std::nullopt});
+    if (d.engine) {
+        const auto& e = *d.engine;
+        spec.kind = e.kind == formats::EngineKind::electric ? car_electric
+                  : e.kind == formats::EngineKind::diesel   ? car_diesel
+                                                            : car_wagon;
+        spec.series = u16(e.series);
+        spec.lib_param = e.library_param;
+        spec.stack_size = e.variable_stack;
+        spec.num_engines = e.num_engines;
+        spec.num_axles = e.num_axles;
+        spec.parameters = parameters(e.parameters);
+        if (!e.library_module.empty() && spec.kind != car_wagon) {
+            if (const auto path = find_module(vfs, cache_root, car.file, e.library_module)) {
+                spec.module = path->u16string();
+                out.dll = true;
+            } else {
+                problems += "DLL not found: " + e.library_module + " (" + d.name + ")\n";
+            }
+        }
+        for (const auto& a : e.aux_libraries) {
+            AuxLibrarySpec aux;
+            aux.name = u16(a.name);
+            aux.stack_size = a.variable_stack;
+            aux.parameters = parameters(a.parameters);
+            aux.has_sound = !a.sound.empty();
+            if (aux.has_sound) {
+                // TrainView::update_aux_sounds: the route's SOUND first
+                // for ROUTEFORWAGON, then next to the .eng.
+                std::optional<core::VirtualPath> route_file;
+                if (route && a.sound_type == formats::AuxSoundType::route_for_wagon)
+                    if (const auto f = route->resolve("SOUND")) route_file = in(*f, a.sound);
+                aux.sound_table = tables.add(vfs, {route_file, in(folder, a.sound)});
+            }
+            for (const auto& [fn, order] : a.calls)
+                if (const auto ev = aux_event(fn)) aux.calls.push_back({ev, static_cast<std::int16_t>(order)});
+            if (const auto path = find_module(vfs, cache_root, car.file, a.module)) {
+                aux.module = path->u16string();
+                out.aux_index.push_back(static_cast<std::int16_t>(spec.aux.size()));
+                spec.aux.push_back(std::move(aux));
+            } else {
+                out.aux_index.push_back(-1);
+                problems += "aux library not found: " + a.module + " (" + d.name + ")\n";
+            }
+        }
+        // The cab: the .sd of the EngExtended Cabin shape (through a
+        // .repaint file when the cab is a repaint of another one).
+        if (!e.cabin.empty()) {
+            std::optional<core::VirtualPath> sd;
+            const auto cabin = car.file.parent().resolve(e.cabin);
+            if (cabin) sd = shape_description(vfs, *cabin);
+            if (sd) {
+                if (const auto bytes = vfs.read(*sd)) {
+                    auto cab = formats::parse_cab_description(*bytes);
+                    if (cab.ok()) {
+                        CabSpec& c = spec.cab;
+                        c.present = true;
+                        for (const auto& s : cab.switches) {
+                            SwitchSpec ss;
+                            ss.id = s.id;
+                            ss.num_states = s.num_states;
+                            ss.initial_state = s.initial_state;
+                            ss.fixed_state = s.fixed_state;
+                            ss.flags = s.flags;
+                            ss.anim_time = s.anim_time;
+                            ss.name = u16(s.name);
+                            ss.precision[0] = s.precision[0];
+                            ss.precision[1] = s.precision[1];
+                            c.switches.push_back(std::move(ss));
+                        }
+                        add_shortcuts(vfs, *cabin, cab, c.switches);
+                        for (const auto& dsp : cab.displays) {
+                            DisplaySpec ds;
+                            ds.id = dsp.id;
+                            std::copy(dsp.range.begin(), dsp.range.end(), ds.range);
+                            ds.granularity = dsp.granularity;
+                            ds.flags = dsp.flags;
+                            ds.name = u16(dsp.name);
+                            ds.initial_state = dsp.initial_state;
+                            if (dsp.screen.present) {
+                                const auto& screen = dsp.screen;
+                                ds.has_screen = true;
+                                for (int k = 0; k < 3; ++k) {
+                                    ds.corners[k] = screen.top_left[k];
+                                    ds.corners[3 + k] = screen.top_right[k];
+                                    ds.corners[6 + k] = screen.bottom_right[k];
+                                }
+                                ds.reference_screen = screen.reference_screen;
+                                for (const auto& o : screen.objects) ds.screen.push_back(screen_object_spec(o));
+                            }
+                            c.displays.push_back(std::move(ds));
+                        }
+                        c.internal_lights = static_cast<std::uint32_t>(cab.lights.size());
+                        c.tex_changes = static_cast<std::uint32_t>(cab.texture_changes.size());
+                        c.doors = cab.interior_doors;
+                        for (const auto& door : cab.doors) {
+                            c.door_names.push_back(u16(door.name));
+                            c.door_groups.push_back(door.global_id);
+                        }
+                        c.signal_lights = static_cast<std::uint32_t>(cab.signalization.lights.size());
+                        c.signal_aspects = static_cast<std::uint32_t>(cab.signalization.aspects.size());
+                        c.signal_scripted = cab.signalization.scripted;
+                        c.switch_count = cab.switch_count;
+                        for (const auto& lamp : cab.lights) c.internal_light_groups.push_back(lamp.global_id);
+                        for (const auto& change : cab.texture_changes) {
+                            c.tex_change_images.push_back(change.texture);
+                            c.tex_change_groups.push_back(change.values[1]);
+                        }
+                        c.display_count = cab.display_count;
+                        for (const auto& a : cab.animations) c.animations.push_back(u16(a.name));
+                        out.cab = std::move(cab);
+                    } else {
+                        problems += "cab " + std::string(sd->str()) + ": " + cab.error + "\n";
+                    }
+                }
+            }
+        }
+    }
+    // Exterior lights by LightID: a DLL switches them (SwitchLight).
+    spec.lights = static_cast<std::uint32_t>(d.lights.size());
+    for (const auto& light : d.lights) {
+        dllhost::LightSpec l;
+        l.type = light.type;
+        l.fade_in = light.fade_in;
+        l.fade_out = light.fade_out;
+        l.spot_exponent = light.spot_exponent;
+        if (!light.states.empty()) {
+            const auto& s = light.states.front();
+            l.colour = s.colour;
+            l.radius = s.radius;
+            for (int k = 0; k < 3; ++k) l.position[k] = s.position[k];
+        }
+        spec.light_specs.push_back(l);
+    }
+    // The car's own shape: free animations and doors a DLL looks up by name.
+    if (!d.shape.empty()) {
+        if (const auto shape = car.file.parent().resolve(d.shape)) {
+            if (const auto bytes = vfs.read(shape_description(vfs, *shape))) {
+                const auto ext = formats::parse_exterior_details(*bytes);
+                for (const auto& a : ext.animations) spec.animations.push_back(u16(a.name));
+                spec.doors = static_cast<std::uint32_t>(ext.doors.size());
+                for (const auto& door : ext.door_details) {
+                    spec.door_times.push_back(door.anim_time);
+                    spec.door_groups.push_back(door.global_id);
+                }
+            }
+        }
+    }
+    return out;
+}
+
+} // namespace
 
 std::unique_ptr<LegacyConsist> LegacyConsist::create(const core::Vfs& vfs, const std::filesystem::path& cache_root,
                                                      std::vector<LegacyCar> cars,
                                                      const std::filesystem::path& rts_root, std::string* error,
-                                                     const std::filesystem::path& host_executable) {
+                                                     const std::filesystem::path& host_executable,
+                                                     const core::VirtualPath* route) {
     std::unique_ptr<LegacyConsist> consist(new LegacyConsist());
     SetupRequest setup;
     setup.rts_root = rts_root.u16string();
     setup.train_type = 1;
     bool any = false;
     std::string problems;
+    SoundTables tables{setup.sound_tables, consist->sound_paths_, 0};
     consist->cabs_.resize(cars.size());
     consist->dll_.assign(cars.size(), false);
+    consist->aux_index_.resize(cars.size());
     for (std::size_t i = 0; i < cars.size(); ++i) {
-        const auto& car = cars[i];
-        CarSpec spec;
-        spec.uid = car.uid;
-        if (!car.definition) {
-            setup.cars.push_back(std::move(spec));
-            continue;
-        }
-        const auto& d = *car.definition;
-        spec.mass = d.mass;
-        spec.name = u16(d.name);
-        if (d.engine) {
-            const auto& e = *d.engine;
-            spec.kind = e.kind == formats::EngineKind::electric ? car_electric
-                      : e.kind == formats::EngineKind::diesel   ? car_diesel
-                                                                : car_wagon;
-            spec.series = u16(e.series);
-            spec.lib_param = e.library_param;
-            spec.stack_size = e.variable_stack;
-            spec.num_engines = e.num_engines;
-            spec.num_axles = e.num_axles;
-            spec.parameters = parameters(e.parameters);
-            if (!e.library_module.empty() && spec.kind != car_wagon) {
-                if (const auto path = find_module(vfs, cache_root, car.file, e.library_module)) {
-                    spec.module = path->u16string();
-                    consist->dll_[i] = true;
-                    any = true;
-                } else {
-                    problems += "DLL not found: " + e.library_module + " (" + d.name + ")\n";
-                }
-            }
-            for (const auto& a : e.aux_libraries) {
-                AuxLibrarySpec aux;
-                aux.name = u16(a.name);
-                aux.stack_size = a.variable_stack;
-                aux.parameters = parameters(a.parameters);
-                aux.has_sound = !a.sound.empty();
-                for (const auto& [fn, order] : a.calls)
-                    if (const auto ev = aux_event(fn)) aux.calls.push_back({ev, static_cast<std::int16_t>(order)});
-                if (const auto path = find_module(vfs, cache_root, car.file, a.module)) {
-                    aux.module = path->u16string();
-                    spec.aux.push_back(std::move(aux));
-                } else {
-                    problems += "aux library not found: " + a.module + " (" + d.name + ")\n";
-                }
-            }
-            // The cab: the .sd of the EngExtended Cabin shape (through a
-            // .repaint file when the cab is a repaint of another one).
-            if (!e.cabin.empty()) {
-                std::optional<core::VirtualPath> sd;
-                const auto cabin = car.file.parent().resolve(e.cabin);
-                if (cabin) sd = shape_description(vfs, *cabin);
-                if (sd) {
-                    if (const auto bytes = vfs.read(*sd)) {
-                        auto cab = formats::parse_cab_description(*bytes);
-                        if (cab.ok()) {
-                            CabSpec& c = spec.cab;
-                            c.present = true;
-                            for (const auto& s : cab.switches) {
-                                SwitchSpec ss;
-                                ss.id = s.id;
-                                ss.num_states = s.num_states;
-                                ss.initial_state = s.initial_state;
-                                ss.fixed_state = s.fixed_state;
-                                ss.flags = s.flags;
-                                ss.anim_time = s.anim_time;
-                                ss.name = u16(s.name);
-                                ss.precision[0] = s.precision[0];
-                                ss.precision[1] = s.precision[1];
-                                c.switches.push_back(std::move(ss));
-                            }
-                            add_shortcuts(vfs, *cabin, cab, c.switches);
-                            for (const auto& dsp : cab.displays) {
-                                DisplaySpec ds;
-                                ds.id = dsp.id;
-                                std::copy(dsp.range.begin(), dsp.range.end(), ds.range);
-                                ds.granularity = dsp.granularity;
-                                ds.flags = dsp.flags;
-                                ds.name = u16(dsp.name);
-                                ds.initial_state = dsp.initial_state;
-                                if (dsp.screen.present) {
-                                    const auto& screen = dsp.screen;
-                                    ds.has_screen = true;
-                                    for (int k = 0; k < 3; ++k) {
-                                        ds.corners[k] = screen.top_left[k];
-                                        ds.corners[3 + k] = screen.top_right[k];
-                                        ds.corners[6 + k] = screen.bottom_right[k];
-                                    }
-                                    ds.reference_screen = screen.reference_screen;
-                                    for (const auto& o : screen.objects) ds.screen.push_back(screen_object_spec(o));
-                                }
-                                c.displays.push_back(std::move(ds));
-                            }
-                            c.internal_lights = static_cast<std::uint32_t>(cab.lights.size());
-                            c.tex_changes = static_cast<std::uint32_t>(cab.texture_changes.size());
-                            c.doors = cab.interior_doors;
-                            for (const auto& door : cab.doors) {
-                                c.door_names.push_back(u16(door.name));
-                                c.door_groups.push_back(door.global_id);
-                            }
-                            c.signal_lights = static_cast<std::uint32_t>(cab.signalization.lights.size());
-                            c.signal_aspects = static_cast<std::uint32_t>(cab.signalization.aspects.size());
-                            c.signal_scripted = cab.signalization.scripted;
-                            c.switch_count = cab.switch_count;
-                            for (const auto& lamp : cab.lights) c.internal_light_groups.push_back(lamp.global_id);
-                            for (const auto& change : cab.texture_changes) {
-                                c.tex_change_images.push_back(change.texture);
-                                c.tex_change_groups.push_back(change.values[1]);
-                            }
-                            c.display_count = cab.display_count;
-                            for (const auto& a : cab.animations) c.animations.push_back(u16(a.name));
-                            consist->cabs_[i] = std::move(cab);
-                        } else {
-                            problems += "cab " + std::string(sd->str()) + ": " + cab.error + "\n";
-                        }
-                    }
-                }
-            }
-        }
-        // Exterior lights by LightID: a DLL switches them (SwitchLight).
-        spec.lights = static_cast<std::uint32_t>(d.lights.size());
-        for (const auto& light : d.lights) {
-            dllhost::LightSpec l;
-            l.type = light.type;
-            l.fade_in = light.fade_in;
-            l.fade_out = light.fade_out;
-            l.spot_exponent = light.spot_exponent;
-            if (!light.states.empty()) {
-                const auto& s = light.states.front();
-                l.colour = s.colour;
-                l.radius = s.radius;
-                for (int k = 0; k < 3; ++k) l.position[k] = s.position[k];
-            }
-            spec.light_specs.push_back(l);
-        }
-        // The car's own shape: free animations and doors a DLL looks up by name.
-        if (!d.shape.empty()) {
-            if (const auto shape = car.file.parent().resolve(d.shape)) {
-                if (const auto bytes = vfs.read(shape_description(vfs, *shape))) {
-                    const auto ext = formats::parse_exterior_details(*bytes);
-                    for (const auto& a : ext.animations) spec.animations.push_back(u16(a.name));
-                    spec.doors = static_cast<std::uint32_t>(ext.doors.size());
-                    for (const auto& door : ext.door_details) {
-                        spec.door_times.push_back(door.anim_time);
-                        spec.door_groups.push_back(door.global_id);
-                    }
-                }
-            }
-        }
-        setup.cars.push_back(std::move(spec));
+        auto built = build_spec(vfs, cache_root, cars[i], route, tables, problems);
+        consist->cabs_[i] = std::move(built.cab);
+        consist->dll_[i] = built.dll;
+        if (built.dll) any = true;
+        consist->aux_index_[i] = std::move(built.aux_index);
+        setup.cars.push_back(std::move(built.spec));
     }
+    consist->sound_count_ = static_cast<std::int32_t>(setup.sound_tables.size());
+    consist->cache_root_ = cache_root;
+    if (route) consist->route_ = *route;
     if (!any) {
         if (error) *error = problems.empty() ? "no DLL in the consist" : problems;
         return nullptr;
@@ -380,23 +557,16 @@ std::vector<CarInput> LegacyConsist::inputs(const simulation::Train& train, cons
     const auto& cars = train.cars();
     std::vector<CarInput> out(cars_.size());
     const std::size_t n = (std::min)(cars.size(), cars_.size());
-    // Multiple-unit cables (Flags byte 3, 0x10000 towards the train front,
-    // 0x20000 towards the rear): connected where both touching ends have one.
-    auto cable_at = [&](std::size_t i, bool train_front) -> bool {
-        const auto* d = cars[i].definition;
-        if (!d || !d->engine) return false;
-        const auto& e = *d->engine;
-        // A flipped car's own front faces the train rear.
-        const bool own_front = train_front != cars[i].flipped;
-        return e.sme_cable[own_front ? 0 : 1] != 0;
-    };
     for (std::size_t i = 0; i < n; ++i) {
         const auto& c = cars[i];
         CarInput& in = out[i];
         std::uint32_t flags = c.flipped ? 1u : 0u;
         flags |= static_cast<std::uint32_t>(c.pipe_ends) << 8;
-        if (i > 0 && cable_at(i, true) && cable_at(i - 1, false)) flags |= 0x10000;
-        if (i + 1 < n && cable_at(i, false) && cable_at(i + 1, true)) flags |= 0x20000;
+        // Byte 3, WagonData::Cables: SMECable 0x10000 front / 0x20000 rear,
+        // HVBus 0x40000 / 0x80000 (CarState::cables, the car menu's); byte 4
+        // bits 1, 2: the bogies fastened (brake shoes).
+        flags |= static_cast<std::uint32_t>(c.cables & 0x0Fu) << 16;
+        flags |= static_cast<std::uint32_t>(c.chocks & 0x03u) << 24;
         in.flags = flags;
         in.coupling = c.coupler_open;
         in.mass = c.definition ? c.definition->mass : 0.0f;
@@ -419,6 +589,8 @@ std::vector<CarInput> LegacyConsist::inputs(const simulation::Train& train, cons
             if (c.line_voltage >= 0.0f) {
                 in.line_voltage = c.line_voltage;
                 in.line_frequency = c.line_frequency;
+                in.line_current = c.line_current;
+                in.line_burnt = c.line_burnt ? 1 : 0;
             } else if (world) {
                 in.line_voltage = world->line_voltage;
                 in.line_frequency = world->line_frequency;
@@ -462,6 +634,49 @@ bool LegacyConsist::step(double dt, const simulation::Train& train, const Legacy
     request.signal = world.signal;
     request.event = world.event;
     request.signals_ahead = world.signals_ahead;
+    request.alsn_ahead = world.alsn_ahead;
+    request.alsn_behind = world.alsn_behind;
+    request.alsn_passing = world.alsn_passing;
+    request.next_limit = world.next_limit;
+    request.next_limit_distance = world.next_limit_distance;
+    // What the host has not been sent yet: the items the list names and the
+    // route database's signals the SignalInputs name.
+    request.track_items = world.track_items;
+    request.items_range = world.items_range;
+    // The libraries' sounds by the host's numbering of the libraries.
+    for (const auto& p : world.sound_pairs) {
+        auto q = p;
+        if (q.object >= 0) {
+            const auto& map = q.car < aux_index_.size() ? aux_index_[q.car] : std::vector<std::int16_t>{};
+            if (static_cast<std::size_t>(q.object) >= map.size() || map[static_cast<std::size_t>(q.object)] < 0) continue;
+            q.object = map[static_cast<std::size_t>(q.object)];
+        }
+        request.sound_pairs.push_back(q);
+    }
+    if (world.tdb) {
+        for (const auto& e : world.track_items) {
+            if (e.item >= world.tdb->items.size() || !items_sent_.insert(e.item).second) continue;
+            request.items.push_back(item_spec(world.tdb->items[e.item], world.route_speed_limit));
+        }
+    }
+    if (world.route_database) {
+        const auto& units = world.route_database->signal_units;
+        for (const auto* list : {&request.signals_ahead, &request.alsn_ahead, &request.alsn_behind, &request.alsn_passing}) {
+            for (const auto& s : *list) {
+                if (s.unit < 0 || static_cast<std::size_t>(s.unit) >= units.size() || !units_sent_.insert(s.unit).second) continue;
+                const auto& unit = units[static_cast<std::size_t>(s.unit)];
+                SignalUnitSpec spec;
+                spec.id = s.unit;
+                spec.tile[0] = static_cast<std::int16_t>(unit.position.tile_x);
+                spec.tile[1] = static_cast<std::int16_t>(unit.position.tile_z);
+                spec.position[0] = static_cast<float>(-unit.position.x);
+                spec.position[1] = static_cast<float>(unit.position.y);
+                spec.position[2] = static_cast<float>(unit.position.z);
+                spec.name = u16(unit.name);
+                request.signal_units.push_back(std::move(spec));
+            }
+        }
+    }
     StepReply reply;
     const bool ok = host_->step(request, reply);
     messages_ += host_->take_messages();
@@ -469,6 +684,75 @@ bool LegacyConsist::step(double dt, const simulation::Train& train, const Legacy
         outputs_->valid = false;
         return false;
     }
+    outputs_->cars = std::move(reply.cars);
+    outputs_->valid = true;
+    items_wanted_ = reply.items_wanted;
+    return true;
+}
+
+bool LegacyConsist::reconsist(const core::Vfs& vfs, std::vector<LegacyCar> cars, const simulation::Train& train) {
+    if (!host_ || !host_->alive() || player_ >= cars_.size()) return false;
+    const auto player_key = cars_[player_].key;
+    std::size_t player = SIZE_MAX;
+    for (std::size_t i = 0; i < cars.size() && player_key; ++i)
+        if (cars[i].key == player_key) player = i;
+    if (player == SIZE_MAX) return false;
+    std::unordered_map<std::uint32_t, std::size_t> before;
+    for (std::size_t i = 0; i < cars_.size(); ++i)
+        if (cars_[i].key) before.emplace(cars_[i].key, i);
+    ReconsistRequest request;
+    std::string problems;
+    SoundTables tables{request.sound_tables, sound_paths_, sound_count_};
+    std::vector<formats::CabDescription> cabs(cars.size());
+    std::vector<bool> dll(cars.size(), false);
+    std::vector<std::vector<std::int16_t>> aux(cars.size());
+    std::vector<bool> kept(cars_.size(), false);
+    for (std::size_t i = 0; i < cars.size(); ++i) {
+        ReconsistCar entry;
+        entry.spec.uid = cars[i].uid;
+        entry.spec.key = cars[i].key;
+        if (const auto it = before.find(cars[i].key); it != before.end() && !kept[it->second]) {
+            const auto from = it->second;
+            kept[from] = true;
+            entry.from = static_cast<std::int32_t>(from);
+            cabs[i] = std::move(cabs_[from]);
+            dll[i] = dll_[from];
+            aux[i] = std::move(aux_index_[from]);
+        } else if (const auto p = parked_.find(cars[i].key); p != parked_.end()) {
+            entry.from = reconsist_parked;
+            cabs[i] = std::move(p->second.cab);
+            dll[i] = p->second.dll;
+            aux[i] = std::move(p->second.aux_index);
+            parked_.erase(p);
+        } else {
+            auto built = build_spec(vfs, cache_root_, cars[i], route_ ? &*route_ : nullptr, tables, problems);
+            entry.spec = std::move(built.spec);
+            cabs[i] = std::move(built.cab);
+            dll[i] = built.dll;
+            aux[i] = std::move(built.aux_index);
+        }
+        request.cars.push_back(std::move(entry));
+    }
+    // What left waits, as the host keeps its mirror.
+    for (std::size_t i = 0; i < cars_.size(); ++i) {
+        if (kept[i] || !cars_[i].key) continue;
+        parked_[cars_[i].key] = Parked{cars_[i], std::move(cabs_[i]), dll_[i], std::move(aux_index_[i])};
+    }
+    sound_count_ += static_cast<std::int32_t>(request.sound_tables.size());
+    cars_ = std::move(cars);
+    cabs_ = std::move(cabs);
+    dll_ = std::move(dll);
+    aux_index_ = std::move(aux);
+    request.running = std::abs(train.speed()) > 0.01;
+    request.inputs = inputs(train, nullptr);
+    StepReply reply;
+    const bool ok = host_->reconsist(request, reply);
+    messages_ += problems + host_->take_messages();
+    if (!ok) {
+        outputs_->valid = false;
+        return false;
+    }
+    player_ = player;
     outputs_->cars = std::move(reply.cars);
     outputs_->valid = true;
     return true;

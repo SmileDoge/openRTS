@@ -1,7 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
@@ -33,6 +35,27 @@ struct LinePoint {
     LineSupply supply;
     int section = -1; // index into data().database.sections
     int source = -1;  // the power source used, index into that section's sources
+    // The wire's BurnQ (RTS 0x5B53A8: of the type-1 catenary pieces over the
+    // point, 0 if any has 0, else the largest; -1 without one): the burning
+    // heat grows by current / BurnQ. 1 where the route has no .electrodb.
+    float burn_q = 1.0f;
+};
+
+// A pantograph that burnt the wire this step (LineSupply::burnt).
+struct LineBurn {
+    std::uint64_t train{};
+    std::size_t car{};
+    float current{}; // A per raised pantograph when it burnt
+};
+
+// A substation's load (RTS 0x5B6030): the power its feeders gave the trains,
+// averaged over 2 s windows, by phase.
+struct SubstationLoad {
+    std::uint32_t substation{};
+    std::uint32_t phase{};
+    float power{};      // W, the last full window
+    float energy{};     // J in the running window
+    float window{};     // s of the running window
 };
 
 class Electrification {
@@ -57,11 +80,26 @@ public:
     [[nodiscard]] LinePoint at(std::uint32_t node, double offset, const TrackPoint& where,
                                const formats::EngineDefinition* engine) const;
 
-    // The train's supply as RTS sets it before the DLLs: the highest voltage
-    // under its electric engines with a pantograph up (`raised[car]`), given
-    // to every electric engine of the train (Train::set_line_supply). No
-    // engine with a pantograph up: 0 V. Returns what it set.
-    LineSupply apply(Train& train, const std::vector<bool>& raised) const;
+    // The train's line as RTS sets it before the DLLs (0x503CE4), by groups
+    // of cars joined by the high-voltage bus (an engine alone without one):
+    // the highest voltage under the group's electric engines with a
+    // pantograph up (`pantographs[car]`, the raised ones as bits) and not
+    // burnt, given to every electric engine of the group
+    // (Train::set_line_supply). Then the line current: the group's power
+    // (CarState::power) over that voltage, split by raised pantographs
+    // (Train::set_line_load); over `dt` seconds the wire heats and cools and
+    // may burn (MaxLineCurrent, MaxLineCurrentCatenaryBurnTime,
+    // MaxLineCurrentVelocityIncrease); and the substations feeding it are
+    // loaded. Returns the highest voltage it set (0: none).
+    LineSupply apply(Train& train, const std::vector<std::uint8_t>& pantographs, double dt = 0.0);
+    // Pantographs that burnt the wire since the last call.
+    [[nodiscard]] std::vector<LineBurn> take_burns() { return std::exchange(burns_, {}); }
+    // Every substation phase that fed a train, with its load.
+    [[nodiscard]] std::vector<SubstationLoad> substation_loads() const;
+    // Once a step before the trains: closes the 2 s windows (RTS 0x5B6030).
+    void advance_loads(double dt);
+    // Off: pantographs never burn the wire (an openRTS option; on as RTS).
+    bool wire_burning = true;
 
     // The section's chosen source (the dispatcher's "Switch power source"):
     // the CurrentSource of the file at first; -1 lets the sources' Active
@@ -111,6 +149,8 @@ private:
     std::vector<int> section_by_id_;                           // electrosection id -> index
     std::vector<int> current_;                                 // per section
     std::vector<std::vector<std::uint32_t>> active_;           // per section, per source (Active flags)
+    std::vector<LineBurn> burns_;
+    std::map<std::uint64_t, SubstationLoad> loads_;            // substation << 32 | phase
 };
 
 } // namespace openrts::simulation

@@ -115,6 +115,11 @@ openrts_configure_target(openrts_electrification_test)
 target_link_libraries(openrts_electrification_test PRIVATE openrts_simulation openrts_formats)
 add_test(NAME openrts.electrification COMMAND openrts_electrification_test)
 
+add_executable(openrts_train_lights_test train_lights_test.cpp)
+openrts_configure_target(openrts_train_lights_test)
+target_link_libraries(openrts_train_lights_test PRIVATE openrts_simulation openrts_formats)
+add_test(NAME openrts.train_lights COMMAND openrts_train_lights_test)
+
 add_executable(openrts_ui_text_test ui_text_test.cpp ../viewer/src/ui_text.cpp)
 openrts_configure_target(openrts_ui_text_test)
 add_test(NAME openrts.ui_text COMMAND openrts_ui_text_test)
@@ -155,6 +160,9 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     # The VL10k DLL drives the train simulation through the host.
     add_test(NAME openrts.content.dll_vl10k COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll tsrLoco_VL10k-1461 vl10k-1461a vl10k-1461b --script "${CMAKE_CURRENT_SOURCE_DIR}/data/vl10k.script")
+    # Section b cut off and coupled back: the DLLs keep their state (RTS 0x4F995C).
+    add_test(NAME openrts.content.dll_vl10k_couple COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll tsrLoco_VL10k-1461 vl10k-1461a vl10k-1461b --script "${CMAKE_CURRENT_SOURCE_DIR}/data/vl10k_couple.script")
     # The ED9M's reverser, a KEY switch the DLL locks while another head cab has its key in.
     add_test(NAME openrts.content.dll_ed9m COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_ED9M-0062 mdd_ED9M-0062_G mdd_ED9M-0062_M mdd_ED9M-0062_P mdd_ED9M-0062_GR
@@ -177,6 +185,6 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_viewer)
     add_executable(openrts_engineer_test engineer_test.cpp
         ../viewer/src/cab_view.cpp ../viewer/src/cab_screens.cpp ../viewer/src/engineer.cpp ../viewer/src/key_layout.cpp ../viewer/src/camera.cpp ../viewer/src/ui_text.cpp)
     openrts_configure_target(openrts_engineer_test)
-    target_link_libraries(openrts_engineer_test PRIVATE openrts_assets openrts_formats openrts_renderer openrts_trainplugin)
+    target_link_libraries(openrts_engineer_test PRIVATE openrts_assets openrts_audio openrts_formats openrts_renderer openrts_trainplugin)
     add_test(NAME openrts.content.engineer_vl10k COMMAND openrts_engineer_test "${OPENRTS_TEST_ROOT}")
 endif()

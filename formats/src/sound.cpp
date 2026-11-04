@@ -369,16 +369,14 @@ SoundScript parse_sound_script(const std::string_view bytes) {
     collect_groups(root, groups);
     for (const auto* group : groups) script.groups.push_back(reader.group(*group));
     if (const auto* table = find(root, "namedtriggerstable")) {
-        // "name" code [index] ... : a name, then its code.
-        std::optional<std::string> pending;
-        for (const auto& value : table->values) {
-            const auto number = detail::parse_double(value);
-            if (!number) {
-                pending = value;
-            } else if (pending) {
-                script.named_triggers.emplace_back(*pending, static_cast<std::uint32_t>(*number));
-                pending.reset();
-            }
+        // RTS 0x4DD0EC: the file's first NamedTriggersTable, for every group;
+        // its tokens in pairs, a name then its code (_wtoi), names
+        // lower-cased with the file.
+        for (std::size_t i = 0; i + 1 < table->values.size(); i += 2) {
+            const auto& name = table->values[i];
+            if (name.empty()) break; // RTS: "Empty name in named triggers table"
+            const auto number = detail::parse_double(table->values[i + 1]);
+            script.named_triggers.emplace_back(name, number ? static_cast<std::uint32_t>(static_cast<std::int64_t>(*number)) : 0u);
         }
     }
     // No groups: the script is silent (RTS does not require Tr_SMS either).

@@ -23,6 +23,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
+#include <openrts/audio/interior_acoustics.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/dllhost/protocol.hpp>
 #include <openrts/formats/cab_description.hpp>
@@ -102,11 +103,18 @@ public:
     // (with one, its Cabin::Signal and ALSNOn decide).
     void adjustments(const dllhost::CarOutput* state, std::vector<renderer::NodeAdjustment>& out,
                      std::uint32_t aspect = 0) const;
+    // The displays' blinking (DisplayFade's second value) over `elapsed` s.
+    void step_displays(float elapsed);
     // The driver's seat (Pos1 of the first chair), in the engine's shape coordinates.
     [[nodiscard]] glm::vec3 eye() const noexcept { return eye_; }
     // The SCREEN displays for this frame, in cab shape coordinates.
     void screens(const dllhost::CarOutput* state, float elapsed, std::vector<ScreenBatch>& out) {
-        if (screens_) screens_->build(state, elapsed, out);
+        if (!screens_) return;
+        // A screen display blinks too (DisplayFade, RTS 0x525DB0).
+        std::vector<bool> off(cab_.displays.size(), false);
+        for (std::size_t i = 0; i < off.size() && i < blink_clock_.size(); ++i)
+            off[i] = cab_.displays[i].blink > 0.0f && blink_clock_[i] > cab_.displays[i].blink;
+        screens_->build(state, elapsed, out, &off);
     }
     [[nodiscard]] std::size_t switches_bound() const noexcept { return switch_nodes_; }
     // The frames of switch `index`'s node a position takes, as RTS counts
@@ -147,6 +155,11 @@ public:
     [[nodiscard]] std::optional<std::size_t> find_window(std::string_view name) const;
     [[nodiscard]] bool window_open(std::size_t window) const noexcept;
     void toggle_window(std::size_t window);
+    // The rooms (InteriorAreas) and how much sound passes between them
+    // through the doors and windows as they are open now (docs/sound.md,
+    // "Rooms and sound proofing"). Rooms: audio::InteriorAcoustics indices.
+    [[nodiscard]] const audio::InteriorAcoustics& acoustics() const noexcept { return acoustics_; }
+    [[nodiscard]] float sound_transmission(int from, int to) const;
     // What the mouse points at (cab shape coordinates): the switch or display
     // whose node (or a node under it) the ray meets first.
     struct Picked {
@@ -183,6 +196,7 @@ private:
     core::VirtualPath shape_;
     bool turned_ = false;
     formats::CabDescription cab_;
+    audio::InteriorAcoustics acoustics_;
     std::vector<Bound> switches_; // by position in cab_.switches
     std::vector<Bound> displays_;
     std::vector<std::int32_t> signal_lights_; // LocomotiveSignalization SignalLights' nodes
@@ -208,6 +222,8 @@ private:
     std::vector<std::vector<std::uint32_t>> switch_owned_;
     std::vector<glm::vec3> switch_lower_, switch_upper_;
     std::unique_ptr<CabScreens> screens_;
+    std::vector<std::vector<std::int32_t>> state_nodes_; // a DISPLAY's StateNodes, by display
+    std::vector<float> blink_clock_;                     // by display (RTS display +72)
 };
 
 } // namespace openrts::viewer

@@ -85,6 +85,18 @@ struct SignalAhead {
     float speed = -1.0f;
 };
 
+// A signal object along a train's way as RTS hands it to a locomotive DLL's
+// ALSN (SignalsInfo, 0x508520): the strongest aspect of its heads of each
+// function, which functions it has, and the speed the train obeys there.
+struct SignalPosition {
+    std::uint32_t object{};
+    double distance{};
+    // [0] NORMAL, [1] DISTANCE, [2] SHUNTING, [3] INFO (0 without a head of it).
+    std::uint32_t aspect[4]{};
+    std::uint32_t flags{}; // 1 normal, 2 distance, 4 shunting, 8 info (ts.h SignalsInfo::Flags)
+    float speed = -1.0f;   // m/s
+};
+
 // A train's leading end passed a signal object.
 struct SignalPass {
     std::uint64_t train{};
@@ -122,6 +134,10 @@ public:
     [[nodiscard]] const std::vector<SignalObject>& objects() const noexcept { return objects_; }
     [[nodiscard]] const formats::SignalConfig& config() const noexcept { return *config_; }
     [[nodiscard]] SignalAhead ahead(const Train& train) const;
+    // The objects of the train's chain ahead of its front end (`front`) or
+    // its rear end, nearest first. The rear one is known only for the
+    // player's train (both ends run) or when the train leads with its rear.
+    [[nodiscard]] std::vector<SignalPosition> positions(const Train& train, bool front) const;
     // Passes since the last call.
     [[nodiscard]] std::vector<SignalPass> take_passes();
     [[nodiscard]] const SignalStats& stats() const noexcept { return stats_; }
