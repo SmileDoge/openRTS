@@ -1,0 +1,33 @@
+name: Announce
+
+# Announces a published version on Discord by hand (Actions -> Announce ->
+# Run workflow): one released before the DISCORD_WEBHOOK_URL secret was
+# there, or again. Releases announce themselves (build.yml, "Announce on
+# Discord").
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag (vX.Y.Z)
+        required: true
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Announce on Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Not a version tag: $TAG"; exit 1; }
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "No DISCORD_WEBHOOK_URL secret."
+            exit 1
+          fi
+          gh release view "$TAG" > /dev/null # the release must be published
+          bash .github/scripts/discord-announce.sh "$TAG"
