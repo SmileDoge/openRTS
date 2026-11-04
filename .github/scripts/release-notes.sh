@@ -10,6 +10,11 @@ if [[ "$tag" == v* ]]; then
     limit=()
 else
     prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
+    # A nightly of the version commit itself: the changes since the version
+    # before it (else the list is empty).
+    if [ -n "$prev" ] && [ "$(git rev-parse "$prev^{commit}")" = "$(git rev-parse HEAD)" ]; then
+        prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+    fi
     limit=(-n 15)
 fi
 range=HEAD
@@ -56,5 +61,6 @@ else
 fi
 echo
 # Commit trailers are not for players: co-authors, session links, sign-offs.
+# grep finds nothing in an empty range; that is not an error.
 git log --no-merges "${limit[@]}" --format='#### %s%n%n%b' "$range" |
-    grep -viE '^(Co-Authored-By|Claude-Session|Signed-off-by):' | cat -s
+    { grep -viE '^(Co-Authored-By|Claude-Session|Signed-off-by):' || true; } | cat -s
