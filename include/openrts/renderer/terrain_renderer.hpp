@@ -10,6 +10,7 @@
 #include <glm/mat4x4.hpp>
 
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/environment.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/rts_sky.hpp>
@@ -36,12 +37,24 @@ struct TerrainPatchMesh {
     std::string microtexture; // terrain_texslot 1 (DetailTerrain), empty otherwise
 };
 
+// A corner of a water patch (rts1.exe 0x49B088): its place in the tile, the
+// patch's north-west corner (UVs of the camera-following layers) and which
+// corner it is (0 / 1 east, 0 / 1 south).
+struct TerrainWaterVertex {
+    float position[3];
+    float patch[2];
+    float corner[2];
+};
+
 struct TerrainTileMesh {
     std::int32_t tile_x{};
     std::int32_t tile_z{};
     std::vector<TerrainVertex> vertices;
     std::vector<std::uint32_t> indices;
     std::vector<TerrainPatchMesh> patches;
+    // The water patches (flag bits 0xC0), two triangles each, at the tile's
+    // water heights (terrain_water_height_offset as 0x4A2A5C spreads them).
+    std::vector<TerrainWaterVertex> water;
     std::string error;
 
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
@@ -97,6 +110,15 @@ public:
     // Sizes what the depth passes use; call before them (they may run on
     // several threads at once and change nothing shared).
     void prepare_depth();
+
+    // The environment's water layers (nullptr: none), their textures from
+    // `texture_folders` in order; drawn over the water patches after the
+    // terrain, as RTS (0x4A2144) does.
+    void set_water(const formats::EnvWater* water, std::vector<core::VirtualPath> texture_folders);
+    // Moves the layers' scrolls and frames on, and where the eye is (the
+    // layers that follow the camera).
+    void update_water(float elapsed, const glm::vec3& eye);
+    [[nodiscard]] std::size_t water_quads() const noexcept;
 
     [[nodiscard]] std::size_t loaded_tiles() const noexcept;
     [[nodiscard]] std::size_t pending_jobs() const noexcept;

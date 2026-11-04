@@ -82,6 +82,8 @@ struct CarMirror {
     // theirs until its SetState changes otherwise (RTS: the node driven by
     // hand, 0x437E64).
     std::vector<std::uint8_t> held_switches;
+    // Per switch id: its node's Shortcut sets, in positions (SwitchSpec).
+    std::vector<std::vector<std::vector<float>>> switch_shortcuts;
     std::vector<abi::ActDisplay> displays;
     std::vector<float> door_clock; // s an exterior door has been moving to its SetState
     // SCREEN displays: the ActScreen RTS hangs on the display (its +68) and

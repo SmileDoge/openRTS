@@ -1,5 +1,7 @@
 #include "debug_view.hpp"
 
+#include "viewer_state.hpp"
+
 #include <fstream>
 #include <iomanip>
 #include <map>
@@ -101,7 +103,7 @@ bool save_debug_view(const std::filesystem::path& file, const DebugView& view, s
 }
 
 std::filesystem::path debug_view_directory() {
-    return std::filesystem::current_path() / "debug_views";
+    return user_data_directory() / "debug_views";
 }
 
 std::filesystem::path resolve_debug_view(const std::string& argument) {

@@ -30,11 +30,12 @@ struct Effects {
     horizon: vec4<f32>,        // xyz: RTS's fog colour (linear), w: where its fog ends (m)
     focus: mat4x4<f32>,        // world -> the focus map's clip (the cab)
     focus_params: vec4<f32>,   // x: its layer + 1 (0: none), y: its texel (m), z: margin (clip units), w: least filter radius (m)
-    lamps: vec4<f32>,          // x: how much daylight dims the lamps (0: not at all)
+    lamps: vec4<f32>,          // x: how much daylight dims the lamps (0: not at all), y: the ground's reflectance for the bounce
     lamp_shadows: array<mat4x4<f32>, 4>, // world -> each shadowed lamp's clip
     lamp_shadow_ids: vec4<u32>,          // each one's index in scene_lights + 1
     lamp_shadow_texel: vec4<f32>,        // a texel a metre from the lamp (parallel: in metres)
     lamp_shadow_params: vec4<f32>,       // x: lamps, y: map size, z: filter radius (texels)
+    lamp_shadow_keys: array<vec4<f32>, 4>, // each one's to_light translation (the lamp in the RTS rings)
 };
 )";
 
@@ -54,26 +55,41 @@ inline constexpr char effects_main_wgsl[] = R"(
 fn effects_lamp_shadow(index: u32, world: vec3<f32>, normal: vec3<f32>, frag: vec4<f32>) -> f32 {
     let count = u32(effects.lamp_shadow_params.x);
     for (var s = 0u; s < count; s = s + 1u) {
-        if (effects.lamp_shadow_ids[s] != index + 1u) { continue; }
-        let m = effects.lamp_shadows[s];
-        let rough = m * vec4<f32>(world, 1.0);
-        if (rough.w <= 0.0) { return 1.0; }
-        let texel = effects.lamp_shadow_texel[s] * rough.w;
-        let clip = m * vec4<f32>(world + normalize(normal) * texel * 2.0, 1.0);
-        let ndc = clip.xyz / clip.w;
-        let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-        if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z < 0.0 || ndc.z > 1.0) { return 1.0; }
-        let radius = effects.lamp_shadow_params.z / effects.lamp_shadow_params.y;
-        let turn = 6.2831853 * fract(52.9829189 * fract(dot(floor(frag.xy), vec2<f32>(0.06711056, 0.00583715))));
-        var lit = 0.0;
-        for (var i = 0; i < 8; i = i + 1) {
-            let r = sqrt((f32(i) + 0.5) / 8.0) * radius;
-            let angle = f32(i) * 2.3999632 + turn;
-            lit = lit + textureSampleCompareLevel(lamp_shadow_map, shadow_sampler, uv + vec2<f32>(cos(angle), sin(angle)) * r, s, ndc.z);
-        }
-        return lit / 8.0;
+        if (effects.lamp_shadow_ids[s] == index + 1u) { return effects_lamp_shadow_slot(s, world, normal, frag); }
     }
     return 1.0;
+}
+
+// The same for a lamp of the RTS light rings (the clustered list off): found
+// by its to_light translation, as the light was packed from the same lamp.
+fn effects_lamp_shadow_of(light: Light, world: vec3<f32>, normal: vec3<f32>, frag: vec4<f32>) -> f32 {
+    let key = light.translation[3].xyz;
+    let count = u32(effects.lamp_shadow_params.x);
+    for (var s = 0u; s < count; s = s + 1u) {
+        if (distance(effects.lamp_shadow_keys[s].xyz, key) < 0.001) { return effects_lamp_shadow_slot(s, world, normal, frag); }
+    }
+    return 1.0;
+}
+
+// The light of shadowed lamp `s` reaching a point.
+fn effects_lamp_shadow_slot(s: u32, world: vec3<f32>, normal: vec3<f32>, frag: vec4<f32>) -> f32 {
+    let m = effects.lamp_shadows[s];
+    let rough = m * vec4<f32>(world, 1.0);
+    if (rough.w <= 0.0) { return 1.0; }
+    let texel = effects.lamp_shadow_texel[s] * rough.w;
+    let clip = m * vec4<f32>(world + normalize(normal) * texel * 2.0, 1.0);
+    let ndc = clip.xyz / clip.w;
+    let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z < 0.0 || ndc.z > 1.0) { return 1.0; }
+    let radius = effects.lamp_shadow_params.z / effects.lamp_shadow_params.y;
+    let turn = 6.2831853 * fract(52.9829189 * fract(dot(floor(frag.xy), vec2<f32>(0.06711056, 0.00583715))));
+    var lit = 0.0;
+    for (var i = 0; i < 8; i = i + 1) {
+        let r = sqrt((f32(i) + 0.5) / 8.0) * radius;
+        let angle = f32(i) * 2.3999632 + turn;
+        lit = lit + textureSampleCompareLevel(lamp_shadow_map, shadow_sampler, uv + vec2<f32>(cos(angle), sin(angle)) * r, s, ndc.z);
+    }
+    return lit / 8.0;
 }
 
 // The sun's light reaching a point: 1 lit, 0 in shadow (cascaded shadow

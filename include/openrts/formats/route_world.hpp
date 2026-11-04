@@ -56,6 +56,10 @@ enum class WorldObjectKind {
     signal,         // Signal
     speed_post,     // Speedpost
     transfer,       // Transfer: a texture laid on the ground (FileName is the texture)
+    forest,         // Forest: trees built by RTS (0x4B3C40), no shape file
+    level_crossing, // LevelCr: a crossing's shape, gates closed by trains (0x422C18)
+    pickup,         // Pickup: a water tower, fuel point ... (drawn at rest)
+    car_spawner,    // CarSpawner: road traffic between two road items, no shape file
 };
 
 [[nodiscard]] const char* to_string(WorldObjectKind kind) noexcept;
@@ -84,6 +88,29 @@ struct WorldObjectPlacement {
     // A transfer's Width and Height in metres (RTS's default 100).
     float transfer_width = 100.0f;
     float transfer_height = 100.0f;
+    // Forest (rts1.exe 0x41B6D0, built by 0x4B3C40): TreeTexture, Area (100 x
+    // 100 m), ScaleRange (read; RTS does not use it), Population (at most
+    // 10000), TreeSize. RTS builds it only with TreeTexture, ScaleRange,
+    // Population and TreeSize all given (`forest_complete`).
+    std::string tree_texture;
+    std::array<float, 2> forest_area{100.0f, 100.0f};
+    std::array<float, 2> scale_range{};
+    std::uint32_t population{};
+    std::array<float, 2> tree_size{};
+    bool forest_complete = false;
+    // LevelCr: LevelCrParameters ( time distance ) (25 s, 50 m), CrashProbability,
+    // LevelCrData ( flags tracks ), LevelCrTiming ( initial serious anim ) (60,
+    // 60, 5 s); TrItemId ( 0 n ) a rail item, ( 1 n ) a road item.
+    std::array<float, 2> crossing_parameters{25.0f, 50.0f};
+    float crash_probability{};
+    std::uint32_t crossing_flags{};
+    std::uint32_t crossing_tracks{};
+    std::array<float, 3> crossing_timing{60.0f, 60.0f, 5.0f};
+    std::vector<std::uint32_t> rail_items;
+    std::vector<std::uint32_t> road_items; // a car spawner's too: start, end
+    // CarSpawner: CarFrequency (30 s), CarAvSpeed (20 m/s).
+    float car_frequency = 30.0f;
+    float car_average_speed = 20.0f;
 };
 
 struct WorldTile {

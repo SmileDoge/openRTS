@@ -138,12 +138,12 @@ In `openrts_simulation`, no rendering.
     inelastically and an overlap is pushed apart by the masses;
   - the viewer keeps cuts as further trains (not driven); the driver stays
     with the part holding the master engine.
-- Changing ends (`turn_around()`, viewer key X): only while standing. The
-  old rear becomes the train front facing the other way, the car order
-  reverses and every car's `flipped` toggles (each car stays as it is on the
-  track); controllers move with their cars. The viewer then puts the driver
-  on the new front engine with the old handles, throttle 0 and reverser
-  neutral. How RTS changes cabs (ChangeLoco and the master) is not traced.
+- Changing ends (`Train::turn_around()`): only while standing. The old rear
+  becomes the train front facing the other way, the car order reverses and
+  every car's `flipped` toggles (each car stays as it is on the track);
+  controllers move with their cars. The viewer's key X for it is gone: RTS
+  has no such key, its driver walks to the other cab and the DLL takes over
+  through `ChangeLoco` (not traced yet).
 
 ### Movement
 

@@ -110,6 +110,7 @@ struct GlowSpriteRenderer::Impl {
     std::vector<Texture> textures;
     WGPUBuffer instances = nullptr;
     std::uint64_t capacity = 0;
+    float size_factor = 65.0f / 45.0f;
     std::vector<GlowSprite> sprites;
     // Per texture: first sprite and count, after sorting.
     std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
@@ -296,7 +297,7 @@ void GlowSpriteRenderer::render(const WGPURenderPassEncoder pass, const glm::mat
     };
     (void)viewport_height;
     // RTS's fov / 45 at its installed FOV of 65 degrees, fixed (see set_sprites).
-    frame.eye.w = 65.0f / 45.0f;
+    frame.eye.w = impl.size_factor;
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
         wgpuQueueWriteBuffer(queue, impl.uniform, 0, &frame, sizeof(frame));
         wgpuQueueRelease(queue);
@@ -307,6 +308,10 @@ void GlowSpriteRenderer::render(const WGPURenderPassEncoder pass, const glm::mat
         wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.textures[impl.sprites[first].texture].group, 0, nullptr);
         wgpuRenderPassEncoderDraw(pass, 6, count, 0, first);
     }
+}
+
+void GlowSpriteRenderer::set_size_factor(const float factor) noexcept {
+    if (impl_) impl_->size_factor = factor;
 }
 
 } // namespace openrts::renderer

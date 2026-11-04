@@ -1,6 +1,6 @@
 # openRTS roadmap: train movement, signals, routes, multiplayer
 
-Snapshot as of 2026-11-01. "Exists" means it is in the code and tested or seen
+Snapshot as of 2026-11-01, with later notes dated. "Exists" means it is in the code and tested or seen
 on screen. Reverse notes live in `docs/reverse/`.
 
 ## What exists
@@ -39,6 +39,11 @@ Leftovers from earlier steps (2026-11-01):
 - `z_bias`: RTS parses it and never uses it in drawing
   (`reverse/shape-rendering.md`), so the RTS path is right as it is;
 - Dyntrack: deferred, no installed route has any to check against;
+- done (2026-11-04, `v0.2.0`): the world objects RTS builds or runs itself
+  (`world-objects.md`): forests, level crossings with their gates, bells and
+  the trains marking them, pickups (drawn, not animated), road traffic,
+  water, rain and snow, diesel smoke. Not done: deer (`Hazard`), the pickup
+  animation, car sounds;
 - shunting signal modes: the signal system handles SHUNT/FAILED/EXCL; what
   sets a train's modes (activities' `SetSignalMode`, the dispatcher) belongs
   to step 4.
@@ -200,6 +205,8 @@ playable game. Order (the user's decisions, 2026-11-01):
    wrapper, the VL10k logic ported as a native sample, the same scripted
    run through both must agree.
 7. **Release `v0.1.0`:** CHANGELOG / README as a game, commit, push, tag.
+   Done; `v0.2.0` (2026-11-04) followed with the world objects, train
+   situations, start modes and the graphics API choice.
 
 - 3-D cabs only: controls, instruments. No 2-D cabs and no `.cvf` (the
   user's decision, 2026-11-01).
@@ -275,6 +282,27 @@ and capture tooling do not depend on the simulation and can start earlier.
     path (physics step, sound, signals);
   - the server can tell clients which path is in force.
 
+**Helpers without open ports** (tested 2026-11-03, `reverse/multiplayer.md`):
+- **RTS clients (Legacy on).** The openRTS server relays the helper link. Both sides are told to connect out to it, the engineer only once per helper. Proven with two original `rts1.exe` and a proxy in front of `rts_server.exe`.
+- **openRTS clients.** There is no peer link at all: the helper's packages go over the normal server connection.
+
+**A fun idea: the openRTS protocol tunnelled through an RTS server.**
+- **The channel.**
+  - An original `rts_server.exe` relays `0x461D` / `0x463F` to everyone unread.
+  - Original clients drop them when the leading 20 bytes name no world object (`reverse/multiplayer.md`, "A data channel between openRTS clients").
+  - So openRTS clients on an RTS server could talk to each other in their own protocol, unseen by RTS players.
+- **One interface, two transports.** A `PeerChannel` interface would have two implementations:
+  - `NativeChannel` on an openRTS server;
+  - `RtsTunnelChannel` (`new RTSLegacyKostylChannel()`) on an RTS server: a marker and version, the receiver inside, splitting and zstd, a small byte budget (the server copies every package to every player).
+- **What it could carry.** Only things that add to RTS, never what the RTS server decides:
+  - smooth positions of each other's trains (5–10 Hz against RTS's 1.5 s);
+  - realistic air;
+  - our car menu cables;
+  - chat.
+- **Fallback.** If the tunnel stops working, the client stays a plain RTS client.
+
+Not planned yet; tested by the code reading only.
+
 ### 7. Activities and full AI traffic (deferred)
 
 Deferred until single-player driving and multiplayer work.
@@ -294,6 +322,13 @@ path always draws the MSTS version; the choice is visual only and never
 affects simulation or multiplayer.
 
 ## Multiplayer: feasibility
+
+How RTS does it is in `reverse/multiplayer.md` (2026-11-03):
+- the client;
+- the player mini-server inside `rts1.exe`;
+- the helper peer link;
+- the dedicated server with the dispatcher console;
+- why the dispatcher cannot join `rts1.exe`.
 
 Recreating the protocol is feasible:
 

@@ -100,9 +100,9 @@ end of the land stays hidden.
 The viewer panel (experimental lighting): «Тени от солнца», «Все источники
 света, кластеры», «Затенение углов, GTAO», «Атмосферная перспектива»,
 remembered in `viewer_state.ini` (`effect_shadows`, `effect_clusters`,
-`effect_ao`, `effect_aerial`), and the two ranges above (`light_range`,
-`headlight_reach`). `--effects shadows,clusters,ao,aerial | none`
-sets them for one run; `show-ao` shows the occlusion itself as the colour.
+`effect_ao`, `effect_aerial`), the two ranges above (`light_range`,
+`headlight_reach`) and the ground bounce (`ground_bounce`, see below).
+`--effects shadows,clusters,ao,aerial | none` sets them for one run; `show-ao` shows the occlusion itself as the colour.
 
 ## Cost
 
@@ -220,7 +220,7 @@ mean change of the frame +14.4 -> +7.0; at night unchanged.
 
 ### Lamp shadows
 
-Up to four lamps of the clustered list throw shadows (`lamp_shadows`,
+Up to four lamps throw shadows (`lamp_shadows`,
 «Тени от фонарей», `--lamp-shadows 0..4`, 3), chosen in
 `SceneEffects::set_focus` after the scene's submit. The focus is the cab
 sphere, else 20 m around a point 12 m ahead of the camera. Each lamp is
@@ -245,3 +245,35 @@ ED9M at night in the cab: a lamp 8 m above the cab shining down and a
 floodlight 99 m away high up pointed at it were chosen; the cab no longer
 lit through the roof (70 % of the frame darker, one patch, the same with a
 four times larger offset off the surface). Two maps cost about 0.1 ms.
+
+**Without the clustered lights (2026-11-03).**
+- The lamps are still chosen the same way, from the scene's lamps nearest first.
+- The RTS light rings the shaders then use number their lamps differently. So each shadow map also carries its lamp's key, the translation of its `to_light` matrix (`lamp_shadow_keys`).
+- The ring loops of the model and terrain shaders find a lamp's map by that key (`effects_lamp_shadow_of`).
+- ED9M at night in the cab with the clusters off: 2 lamps chosen, 74 % of the frame darker. The result is the same with the clusters on.
+
+**Sphere lamps (2026-11-03, `openrts_asset_dump --lights all`).**
+- The installed routes place about 10 600 lamps (`ESD_LightSources` of 115 `.sd` files), all `LIGHT_CONE`, with no sphere or box lamp.
+- Sphere lamps occur only in rolling stock (166 in 33 cab and salon `.sd` files). Those light the inside through the interior loop, which takes no lamp shadows.
+- So the six-map cube a sphere lamp inside the cab sphere would need is left out:
+  - about 0.3 ms;
+  - 24 MB at 1024².
+
+### Ground bounce
+
+The sunlit ground throws light back up; without it the underframe and
+bogies get only the sky's ambient, cut to 35 % in full sun, and look
+black beside the lit sides. The model shader adds
+`reflectance * (sun * max(to_sun.y, 0) + sky * (1 - 0.65 * sun_strength))
+* (0.5 - 0.5 * n.y) * occlusion` to the lighting: the ground taken as a flat
+plane lit by the sun and the (already cut) sky, all of it on a surface
+turned down, half on one turned sideways, none on one turned up, darkened
+by the GTAO term so gaps under the body stay dark. Not on DarkShade
+materials (dark already by design). Reflectance `ground_bounce`
+(«Отражённый свет земли», `--ground-bounce 0..0.5`, 0.2, about ballast
+and grass; 0: off), sent as `Effects.lamps.y`, 0 on the RTS path. No
+extra pass: a few instructions a pixel.
+
+ED9M side on at the bogies, 12:00, mean luma 0..255: the band of the car
+side and the bogies 73.0 -> 79.5 (0.2) -> 83.1 (0.35), the darkest tenth of
+it (deep under the body) 14.9 -> 16.1 -> 17.0, the ground unchanged.

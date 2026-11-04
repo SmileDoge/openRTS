@@ -46,6 +46,10 @@ struct SceneEffectSettings {
     // sees a cab lamp. Their colours are made for the night (RTS lays a
     // lamp over the lighting with max(), so by day its full ambient hides it).
     float lamps_in_daylight = 0.25f;
+    // Light the ground throws back onto surfaces turned down or sideways
+    // (bogies, the underframe), as the ground's reflectance (0..0.5): the
+    // ground taken as lit by the sun and the sky. 0: none.
+    float ground_bounce = 0.2f;
     // Lamps throwing shadows (0..4, with the clustered lights): those
     // lighting the shadow focus (the cab, else around the view) most, by
     // their power, where they shine and how far they reach, so a floodlight

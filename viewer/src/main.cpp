@@ -108,7 +108,7 @@ struct ContentTarget {
 // extra mod-layer source), `--no-hot-reload`, `--consist <name>` and `--path <name>` (a train to drive, on a
 // route path start; C puts it on the track nearest to the camera), `--track-control` (open the
 // Track control window at start), (
-// the route start), `--experimental`, `--no-vsync`, `--no-batching`, `--msaa 1|4` (default 4), `--no-sound`, `--volume <0..1>` (default 0.5),
+// the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|4` (default 4), `--no-sound`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
 int run_window(std::string_view mode, std::string_view path, const std::vector<std::string_view>& flags) {
@@ -157,6 +157,9 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     std::string train_path;
     bool track_control = false;
     int start_state = -1;
+    std::filesystem::path situation; // --situation
+    int start_view = 0;              // --spawn
+    std::string save_situation;      // --save-situation
     for (std::size_t i = 0; i < flags.size(); ++i) {
         const bool has_value = i + 1 < flags.size();
         if (flags[i] == "--view" && has_value) {
@@ -177,6 +180,14 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             // The DLLs' start state, as an activity's TrainState.
             const auto& value = flags[++i];
             start_state = value == "cold" ? 0 : value == "on" ? 1 : -1;
+        } else if (flags[i] == "--situation" && has_value) {
+            const auto value = flags[++i];
+            situation = std::filesystem::path(std::u8string(value.begin(), value.end()));
+        } else if (flags[i] == "--save-situation" && has_value) {
+            save_situation = std::string(flags[++i]);
+        } else if (flags[i] == "--spawn" && has_value) {
+            const auto value = std::string(flags[++i]);
+            start_view = value == "cab" ? 1 : value == "car" ? 2 : value == "above" ? 3 : 0;
         } else if (flags[i] == "--track-control") {
             track_control = true;
         } else if (flags[i] == "--no-sound") {
@@ -201,6 +212,12 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.capture_camera = c;
         } else if (flags[i] == "--hdr") {
             options.hdr = true;
+        } else if (flags[i] == "--reshade-depth" && has_value) {
+            options.reshade_depth = std::string(flags[++i]) != "off";
+        } else if (flags[i] == "--backend" && has_value) {
+            const auto value = std::string(flags[++i]);
+            options.backend = openrts::renderer::parse_graphics_backend(value);
+            if (!options.backend) std::cerr << "Unknown --backend " << value << " (auto, vulkan, dx12, opengl)." << std::endl;
         } else if (flags[i] == "--volume" && has_value) {
             options.sound_volume = std::clamp(std::stof(std::string(flags[++i])), 0.0f, 1.0f);
         } else if (flags[i] == "--msaa" && has_value) {
@@ -221,6 +238,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.headlight_reach = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--lamp-shadows" && has_value) {
             options.lamp_shadows = std::atoi(std::string(flags[++i]).c_str());
+        } else if (flags[i] == "--ground-bounce" && has_value) {
+            options.ground_bounce = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--lamps-daylight" && has_value) {
             options.lamps_daylight = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--light-range" && has_value) {
@@ -299,7 +318,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
 
     const openrts::viewer::SceneContent content{
         .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control,
-        .start_state = start_state, .root = target->root};
+        .start_state = start_state, .situation = situation, .start_view = start_view,
+        .save_situation = save_situation, .root = target->root};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)
                                     : openrts::viewer::load_route_scene(content, target->path);
 

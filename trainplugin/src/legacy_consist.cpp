@@ -1,6 +1,11 @@
 #include <openrts/trainplugin/legacy_consist.hpp>
 
 #include <algorithm>
+#include <optional>
+
+#include <openrts/formats/cab_description.hpp>
+#include <openrts/formats/shape_binary.hpp>
+#include <openrts/formats/shape_file.hpp>
 
 namespace openrts::trainplugin {
 
@@ -97,18 +102,56 @@ std::optional<std::filesystem::path> find_module(const core::Vfs& vfs, const std
     return std::nullopt;
 }
 
-// The .sd of a shape path: <shape>.sd, or for an RTS .repaint the
-// ShapeDescription (or Shape) it names, relative to the repaint file.
-core::VirtualPath shape_description(const core::Vfs& vfs, const core::VirtualPath& shape) {
-    if (core::fold_case(std::string(shape.extension())) != ".repaint") return shape.with_extension(".sd");
-    if (const auto text = vfs.read(shape)) {
-        const auto repaint = formats::parse_repaint(*text);
-        const auto& name = !repaint.description.empty() ? repaint.description : repaint.shape;
-        if (const auto target = shape.parent().resolve(name)) {
-            return repaint.description.empty() ? target->with_extension(".sd") : *target;
+using formats::shape_description;
+
+// The Shortcut frames of a cab's animation nodes as positions of the
+// switches with those names. RTS (0x4B30DC): a position's frame is the
+// node's first key frame + position x (its key span / (States - 1)), whole
+// frames per position.
+void add_shortcuts(const core::Vfs& vfs, const core::VirtualPath& cabin, const formats::CabDescription& cab,
+                   std::vector<SwitchSpec>& switches) {
+    if (cab.animation_nodes.empty()) return;
+    core::VirtualPath shape = cabin;
+    if (core::fold_case(cabin.extension()) == ".repaint") {
+        const auto text = vfs.read(cabin);
+        const auto repaint = text ? formats::parse_repaint(*text) : formats::Repaint{};
+        const auto target = repaint.ok() ? cabin.parent().resolve(repaint.shape) : std::nullopt;
+        if (!target) return;
+        shape = *target;
+    }
+    const auto body = formats::load_binary_shape_body(vfs, shape);
+    if (!body.ok()) return;
+    const auto model = formats::parse_binary_shape_model(*body.body);
+    if (!model.ok() || model.animations.empty()) return;
+    for (const auto& node : cab.animation_nodes) {
+        // The node's keys: first frame and span.
+        std::optional<std::uint32_t> first, last;
+        for (const auto& animation : model.animations) {
+            for (const auto& track : animation.nodes) {
+                if (core::fold_case(track.name) != core::fold_case(node.name)) continue;
+                const auto see = [&](const std::uint32_t frame) {
+                    first = first ? (std::min)(*first, frame) : frame;
+                    last = last ? (std::max)(*last, frame) : frame;
+                };
+                for (const auto& key : track.positions) see(key.frame);
+                for (const auto& key : track.rotations) see(key.frame);
+            }
+        }
+        if (!first || !last) continue;
+        for (auto& sw : switches) {
+            if (core::fold_case(utf16_to_utf8(sw.name)) != core::fold_case(node.name) || sw.num_states < 2) continue;
+            const std::uint32_t per_position = (*last - *first) / (sw.num_states - 1);
+            if (per_position == 0) continue;
+            const float key_out = (sw.flags & 2) != 0 ? 1.0f : 0.0f;
+            for (const auto& frames : node.shortcuts) {
+                std::vector<float> set;
+                for (const auto frame : frames) {
+                    set.push_back((static_cast<float>(frame) - static_cast<float>(*first)) / static_cast<float>(per_position) + key_out);
+                }
+                sw.shortcuts.push_back(std::move(set));
+            }
         }
     }
-    return shape.with_extension(".sd");
 }
 
 class LegacyController final : public simulation::LocomotiveController {
@@ -208,7 +251,8 @@ std::unique_ptr<LegacyConsist> LegacyConsist::create(const core::Vfs& vfs, const
             // .repaint file when the cab is a repaint of another one).
             if (!e.cabin.empty()) {
                 std::optional<core::VirtualPath> sd;
-                if (const auto shape = car.file.parent().resolve(e.cabin)) sd = shape_description(vfs, *shape);
+                const auto cabin = car.file.parent().resolve(e.cabin);
+                if (cabin) sd = shape_description(vfs, *cabin);
                 if (sd) {
                     if (const auto bytes = vfs.read(*sd)) {
                         auto cab = formats::parse_cab_description(*bytes);
@@ -228,6 +272,7 @@ std::unique_ptr<LegacyConsist> LegacyConsist::create(const core::Vfs& vfs, const
                                 ss.precision[1] = s.precision[1];
                                 c.switches.push_back(std::move(ss));
                             }
+                            add_shortcuts(vfs, *cabin, cab, c.switches);
                             for (const auto& dsp : cab.displays) {
                                 DisplaySpec ds;
                                 ds.id = dsp.id;

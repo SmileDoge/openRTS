@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <openrts/core/vfs.hpp>
+
 namespace openrts::formats {
 
 // ActSwitch::Flags bits as RTS sets them from the .sd keywords.
@@ -215,8 +217,19 @@ struct CabWindow {
     float anim_time = 1.0f;
 };
 
+// ESD_Extended_Animation AnimationNode ( Name ( "x" ) Shortcut ( n f1 .. fn )
+// ... ): frames of the node's animation it jumps between instead of running
+// through the frames in between (RTS: parsed 0x4BB7BC, sorted; used
+// 0x4B30DC with 0x4B3778 / 0x4B3884). The ChS7's controller goes from 0 to
+// +1 past its field weakening sector so.
+struct CabAnimationNode {
+    std::string name;
+    std::vector<std::vector<std::uint16_t>> shortcuts; // each ascending
+};
+
 struct CabDescription {
     std::vector<CabSwitch> switches;   // by position in the file; ids may have gaps
+    std::vector<CabAnimationNode> animation_nodes;
     // The counts the file declares (Switches ( n .. ), Displays ( n .. )): RTS
     // makes that many (0x51CD88), so an id up to n - 1 exists without a block.
     std::uint32_t switch_count{};
@@ -272,6 +285,9 @@ struct Repaint {
     [[nodiscard]] bool ok() const noexcept { return !shape.empty(); }
 };
 [[nodiscard]] Repaint parse_repaint(std::string_view bytes);
+// The .sd of a shape path: <shape>.sd, or for an RTS .repaint the
+// ShapeDescription (or its Shape's .sd) it names, relative to the repaint.
+[[nodiscard]] core::VirtualPath shape_description(const core::Vfs& vfs, const core::VirtualPath& shape);
 
 // The switch and display flag bits of a Flags ( ... ) keyword list.
 [[nodiscard]] std::uint32_t cab_flags(std::string_view keywords);

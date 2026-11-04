@@ -465,6 +465,18 @@ Repaint parse_repaint(std::string_view bytes) {
     return out;
 }
 
+core::VirtualPath shape_description(const core::Vfs& vfs, const core::VirtualPath& shape) {
+    if (core::fold_case(shape.extension()) != ".repaint") return shape.with_extension(".sd");
+    if (const auto text = vfs.read(shape)) {
+        const auto repaint = parse_repaint(*text);
+        const auto& name = !repaint.description.empty() ? repaint.description : repaint.shape;
+        if (const auto target = shape.parent().resolve(name)) {
+            return repaint.description.empty() ? target->with_extension(".sd") : *target;
+        }
+    }
+    return shape.with_extension(".sd");
+}
+
 CabDescription parse_cab_description(std::string_view bytes) {
     CabDescription cab;
     std::string error;
@@ -482,6 +494,26 @@ CabDescription parse_cab_description(std::string_view bytes) {
     if (!interior) {
         cab.error = "no ESD_Interior block";
         return cab;
+    }
+    if (const auto* extended = find(root, "esd_extended_animation")) {
+        for (const auto& node : extended->children) {
+            if (node.name != "animationnode") continue;
+            CabAnimationNode animation{.name = text(node.child("name"))};
+            if (animation.name.empty()) continue;
+            for (const auto& shortcut : node.children) {
+                if (shortcut.name != "shortcut") continue;
+                // Shortcut ( n f1 .. fn ): a set of n frames (none: skipped).
+                const auto n = static_cast<std::size_t>(number(&shortcut, 0, 0.0f));
+                std::vector<std::uint16_t> frames;
+                for (std::size_t k = 0; k < n && k + 1 < shortcut.values.size(); ++k) {
+                    frames.push_back(static_cast<std::uint16_t>(number(&shortcut, k + 1, 0.0f)));
+                }
+                if (frames.size() < 2) continue;
+                std::sort(frames.begin(), frames.end());
+                animation.shortcuts.push_back(std::move(frames));
+            }
+            if (!animation.shortcuts.empty()) cab.animation_nodes.push_back(std::move(animation));
+        }
     }
     if (const auto* switches = interior->child("switches")) {
         cab.switch_count = static_cast<std::uint32_t>(number(switches, 0, 0));

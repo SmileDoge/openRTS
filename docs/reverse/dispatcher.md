@@ -81,6 +81,9 @@ trace, settings), pickups, retarders.
 
 ## For openRTS
 
+- The network side (logins `0x4500` / `0x4600`, the server's threads,
+  rights and routing, the mini-server in `rts1.exe`) is in
+  `multiplayer.md`.
 - A dispatcher in openRTS can be an HTML client of the server
   (`roadmap.md` step 4 / 6). The forms above are its feature list.
 - The multiplayer protocol (step 6) can start from `0x45D3EC` (writer) and

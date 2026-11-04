@@ -145,6 +145,22 @@ struct LineVoltageRange {
     }
 };
 
+// DieselSpecialEffects ( ExhaustN ( x y z  dx dy dz  size  [RTS:] Colour
+// Density Mass Magnitude Rate Dispersion Texture ) ) as rts1.exe 0x44247C
+// reads it, its defaults and limits; the smoke itself: 0x50D3B4.
+struct DieselExhaust {
+    std::array<float, 3> position{};
+    std::array<float, 3> direction{};
+    float size{};                       // the nozzle's width, m
+    std::uint32_t colour = 0xCF656577u; // ARGB
+    float density{};
+    float mass = 1.0f;                  // 0.5..5 when used
+    std::array<float, 2> magnitude{};   // idle, full load
+    std::array<float, 2> rate{};        // puffs a second: idle, full load
+    float dispersion = 1.0f;
+    std::string texture;                // relative to the engine's folder; empty: GLOBAL t_diesel_smoke.ace
+};
+
 struct EngineDefinition {
     EngineKind kind = EngineKind::unknown;
     float max_power{};            // W
@@ -178,6 +194,9 @@ struct EngineDefinition {
     std::vector<LineVoltageRange> line_voltages;
     float max_line_current{};          // MaxLineCurrent, A per raised pantograph
     float max_line_current_burn_time{}; // MaxLineCurrentCatenaryBurnTime, s
+    // DieselSmokeEffect* (defaults for the exhausts' Magnitude and Rate).
+    float smoke_initial_magnitude{}, smoke_max_magnitude{}, smoke_initial_rate{}, smoke_max_rate{};
+    std::vector<DieselExhaust> exhausts;
 };
 
 struct WagonDefinition {

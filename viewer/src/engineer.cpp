@@ -108,6 +108,14 @@ std::optional<std::size_t> Engineer::chair_window(const CabView& cab) const {
     return window;
 }
 
+void Engineer::stand_outside(const glm::vec3& feet) {
+    feet_ = feet;
+    mode_ = Mode::outside;
+    blend_ = 1.0f;
+    head_out_ = false;
+    camera_set_ = true;
+}
+
 void Engineer::off() noexcept {
     mode_ = Mode::off;
     camera_set_ = false;

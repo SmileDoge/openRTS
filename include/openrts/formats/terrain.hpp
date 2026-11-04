@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <array>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -49,6 +51,10 @@ struct TerrainTile {
     std::vector<TerrainShader> shaders;
     std::uint32_t patches_per_side{};
     std::vector<TerrainPatch> patches; // row-major, row 0 at the north edge
+    // terrain_water_height_offset (token 251): four heights as stored; RTS
+    // (0x4A2A5C) spreads them over the patch corners. Patches with flag bits
+    // 0xC0 are water (0x49B088, 0x4A2144).
+    std::optional<std::array<float, 4>> water_heights;
     std::string error;
 
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }

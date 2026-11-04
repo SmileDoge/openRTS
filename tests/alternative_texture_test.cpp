@@ -1,6 +1,7 @@
 // Night and seasonal textures (ESD_Alternative_Texture) and scenery lamps
 // (ESD_LightSources): the folder rule, the .sd reader, and with an installed
 // Kuban_RTS (argument: the installation) a lamp's images by night and day.
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
@@ -9,9 +10,15 @@
 
 #include <openrts/core/installation.hpp>
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/shape_description.hpp>
 #include <openrts/formats/route_world.hpp>
+#include <openrts/formats/terrain.hpp>
+#include <openrts/formats/rolling_stock.hpp>
+#include <openrts/formats/environment.hpp>
+#include <openrts/formats/car_spawn.hpp>
 #include <openrts/renderer/model_assets.hpp>
+#include "../renderer/src/forest_shape.hpp"
 #include "../renderer/src/transfer_shape.hpp"
 
 namespace {
@@ -124,6 +131,36 @@ void test_content(const std::filesystem::path& root) {
         check(decoded, "Fon_Rostov's night texture decodes");
     }
 
+    // An RTS .repaint: the shape and .sd it names, TextureReplace images
+    // from their new files, the model under the repaint's own path.
+    if (const auto repaint = core::VirtualPath::parse("TRAINS/TRAINSET/ev_CHS4t-Alias/Cabview/cab1.repaint"); repaint && vfs.exists(*repaint)) {
+        const auto asset = renderer::load_model_asset(vfs, *repaint, {});
+        check(asset.ok(), "cab1.repaint loads: " + asset.error);
+        check(asset.source_path == *repaint, "the model keeps the repaint's path");
+        const auto from = [&](const std::string& image) -> std::string {
+            for (const auto& texture : asset.textures) {
+                if (core::fold_case(texture.image_name) == image && texture.source_path) return core::fold_case(texture.source_path->filename());
+            }
+            return {};
+        };
+        check(from("cab_16.ace") == "cab_16_2.ace", "TextureReplace cab_16 -> cab_16_2: " + from("cab_16.ace"));
+        check(from("stekla.ace") == "stekla_1.ace", "TextureReplace stekla -> stekla_1: " + from("stekla.ace"));
+        const auto keys = asset.dependency_keys();
+        const auto depends = [&](const char* path) {
+            const auto key = core::VirtualPath::parse(path)->key();
+            return std::find(keys.begin(), keys.end(), key) != keys.end();
+        };
+        check(depends("TRAINS/TRAINSET/ev_CHS4t-Alias/Cabview/cab.s") && depends("TRAINS/TRAINSET/ev_CHS4t-Alias/Cabview/cab1.sd"),
+              "a repaint depends on its shape and .sd");
+        check(core::fold_case(formats::shape_description(vfs, *repaint).filename()) == "cab1.sd", "a repaint's .sd: its ShapeDescription");
+    } else {
+        std::cout << "ChS4t cab repaint: not installed, skipped" << std::endl;
+    }
+    if (const auto chs2 = core::VirtualPath::parse("TRAINS/TRAINSET/tsrloco_chs2-010/tsrloco_chs2-010.repaint"); chs2 && vfs.exists(*chs2)) {
+        const auto asset = renderer::load_model_asset(vfs, *chs2, {});
+        check(asset.ok() && !asset.textures.empty(), "TSR ChS2's body (a repaint in its .rtseng) loads: " + asset.error);
+    }
+
     // A transfer (rts1.exe 0x4B4E60): Kuban's UiD 325, 80 x 80 m of
     // zemlya5.ace: a 20 x 20 grid of 4 m cells on the terrain, the far level
     // a quad, BlendATexDiff with the mip bias -3, its texture from TEXTURES
@@ -158,6 +195,82 @@ void test_content(const std::filesystem::path& root) {
             check(winter.texture_folders == std::vector<std::string>{"SNOW"}, "transfer texture from SNOW in winter");
         }
     }
+
+    // World objects RTS builds or runs itself (docs/world-objects.md).
+    const auto world = [&](const char* name) { return formats::load_world_tile(vfs, *core::VirtualPath::parse(std::string("ROUTES/Kuban_RTS/WORLD/") + name)); };
+    if (vfs.exists(*core::VirtualPath::parse("ROUTES/Kuban_RTS/WORLD/w-004493+014580.w"))) {
+        const auto tile = world("w-004493+014580.w");
+        const formats::WorldObjectPlacement* forest = nullptr;
+        for (const auto& object : tile.objects) {
+            if (object.kind == formats::WorldObjectKind::forest && object.uid == 2760) forest = &object;
+        }
+        check(forest != nullptr, "Kuban forest 2760 parsed");
+        if (forest) {
+            check(forest->forest_complete && forest->population == 77 && forest->tree_texture == "grass-green.ace", "forest fields");
+            check(std::fabs(forest->forest_area[0] - 214.25f) < 0.01f && forest->tree_size[0] == 5.0f && forest->tree_size[1] == 4.0f,
+                  "forest area and tree size");
+        }
+        const auto path = renderer::forest_shape_path(*core::VirtualPath::parse("ROUTES/Kuban_RTS/WORLD/w-004493+014580.w"), 2760);
+        const auto trees = renderer::build_forest_shape(vfs, *path);
+        check(trees.error.empty() && trees.model.vertices.size() == 77 * 8 && trees.model.indices.size() == 77 * 24,
+              "forest 2760: 77 trees, two crossed quads both sides each: " + trees.error);
+        // 0x4B3C40: the first tree at x = W / 4 - W / 2, z wrapped into the 17 m deep area.
+        if (!trees.model.vertices.empty()) {
+            const auto& first = trees.model.vertices.front();
+            check(std::fabs(first.position[0] - (-53.5625f)) < 0.001f, "first tree x as RTS places it");
+            check(std::fabs(first.position[2] - (2.14062f - 8.5703f + 2.5f)) < 0.01f, "first tree z as RTS places it");
+        }
+    }
+    if (vfs.exists(*core::VirtualPath::parse("ROUTES/Kuban_RTS/WORLD/w-004494+014579.w"))) {
+        const auto tile = world("w-004494+014579.w");
+        std::size_t crossings = 0;
+        for (const auto& object : tile.objects) {
+            if (object.kind != formats::WorldObjectKind::level_crossing) continue;
+            ++crossings;
+            if (object.rail_items == std::vector<std::uint32_t>{435, 436}) {
+                check(object.road_items == std::vector<std::uint32_t>{59, 60}, "level crossing road items");
+            }
+        }
+        check(crossings >= 2, "Kuban level crossings parsed");
+    }
+    if (vfs.exists(*core::VirtualPath::parse("ROUTES/Kuban_RTS/WORLD/w-004493+014584.w"))) {
+        const auto tile = world("w-004493+014584.w");
+        bool found = false;
+        for (const auto& object : tile.objects) {
+            if (object.kind != formats::WorldObjectKind::car_spawner || object.uid != 252) continue;
+            found = true;
+            check(object.car_frequency == 5.0f && object.car_average_speed == 20.0f, "car spawner frequency and speed");
+            check(object.road_items == std::vector<std::uint32_t>{90, 103}, "car spawner road items");
+        }
+        check(found, "Kuban car spawner 252 parsed");
+        const auto cars = formats::load_car_spawn_list(vfs, *core::VirtualPath::parse("ROUTES/Kuban_RTS"));
+        check(cars.ok() && cars.types.size() > 10 && cars.types.front().shape == "VAZ2106.s" && cars.types.front().distance == 2.0f,
+              "carspawn.dat read");
+    }
+    if (const auto rain = core::VirtualPath::parse("ROUTES/Kuban_RTS/ENVFILES/rain.env"); rain && vfs.exists(*rain)) {
+        const auto environment = formats::load_environment(vfs, *rain);
+        check(environment.precipitation && !environment.precipitation->snow && environment.precipitation->density == 2048
+                  && environment.precipitation->speed == 40.0f && environment.precipitation->shader.frames.size() == 4
+                  && environment.precipitation->shader.frames[3].has_uv_stamp,
+              "rain.env precipitation");
+        check(environment.water && environment.water->layers.size() >= 3 && environment.water->layers[0].height == -1.0f,
+              "rain.env water layers");
+        check(environment.wind.size() == 1 && environment.wind[0].speed == 3.0f,
+              "rain.env wind (the _world_wind_layers block left out): " + std::to_string(environment.wind.size()) + " layers, "
+                  + (environment.wind.empty() ? std::string() : std::to_string(environment.wind[0].speed)));
+    }
+    if (const auto tiles = core::VirtualPath::parse("ROUTES/Kuban_RTS/TILES"); tiles && vfs.exists(*core::VirtualPath::parse("ROUTES/Kuban_RTS/Kuban_RTS.trk"))) {
+        const auto tile = formats::load_terrain_tile(vfs, *tiles, -4494, 14578);
+        std::size_t water = 0;
+        for (const auto& patch : tile.patches) water += (patch.flags & 0xC0u) != 0 ? 1 : 0;
+        check(tile.ok() && water == 7, "Kuban tile -4494 14578: 7 water patches, got " + std::to_string(water));
+    }
+    if (const auto eng = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_2TE116-773/mdd_2te116-773a.eng"); eng && vfs.exists(*eng)) {
+        const auto wagon = formats::load_wagon(vfs, "mdd_2TE116-773", "mdd_2te116-773a", true);
+        check(wagon.ok() && wagon.engine && !wagon.engine->exhausts.empty() && wagon.engine->exhausts.front().size > 0.0f,
+              "2TE116 DieselSpecialEffects read: " + wagon.error);
+    }
+
 }
 
 } // namespace

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -104,6 +105,65 @@ const wchar_t* version_name(std::uint32_t code) {
 }
 
 bool same_name(const wchar_t* a, const wchar_t* b) { return a && b && lstrcmpiW(a, b) == 0; }
+
+
+// A switch's node moving `distance` positions from `from` towards `target`
+// (RTS 0x4B30DC). Through a point of one of its Shortcut sets it jumps to
+// the set's farthest point that is not past the target, at no cost:
+// upwards the first point in (at, next] (0x4B3778), downwards the last in
+// (next, at] (0x4B3884), which counts the point it stands on.
+float advance_switch(const float from, const float target, float distance, const std::vector<std::vector<float>>* shortcuts) {
+    float at = from;
+    for (int guard = 0; guard < 16 && distance > 0.0f && at != target; ++guard) {
+        const bool up = target > at;
+        const float next = up ? (std::min)(at + distance, target) : (std::max)(at - distance, target);
+        std::optional<std::pair<float, float>> jump; // the point passed, where it lands
+        if (shortcuts) {
+            for (const auto& set : *shortcuts) {
+                std::optional<float> hit;
+                std::optional<float> land;
+                if (up) {
+                    for (const float v : set) {
+                        if (v > at && v <= next) {
+                            hit = v;
+                            break;
+                        }
+                    }
+                    if (!hit) continue;
+                    for (auto v = set.rbegin(); v != set.rend() && *v > *hit; ++v) {
+                        if (*v <= target) {
+                            land = *v;
+                            break;
+                        }
+                    }
+                } else {
+                    for (auto v = set.rbegin(); v != set.rend(); ++v) {
+                        if (*v <= at && *v > next) {
+                            hit = *v;
+                            break;
+                        }
+                    }
+                    if (!hit) continue;
+                    for (const float v : set) {
+                        if (v >= *hit) break;
+                        if (v >= target) {
+                            land = v;
+                            break;
+                        }
+                    }
+                }
+                if (land) {
+                    jump = std::pair{*hit, *land};
+                    break;
+                }
+            }
+        }
+        if (!jump) return next;
+        distance -= std::abs(jump->first - at);
+        at = jump->second;
+    }
+    return at;
+}
 
 } // namespace
 
@@ -390,6 +450,7 @@ void Host::build_car(CarMirror& car) {
         for (const auto& s : cab.switches) n_switches = (std::max)(n_switches, s.id + 1);
         car.switches.resize(n_switches);
         car.held_switches.assign(n_switches, 0);
+        car.switch_shortcuts.assign(n_switches, {});
         for (auto& s : car.switches) s.parent = w;
         for (const auto& s : cab.switches) {
             abi::ActSwitch& sw = car.switches[s.id];
@@ -409,6 +470,7 @@ void Host::build_car(CarMirror& car) {
             sw.current_frame = static_cast<float>(sw.state);
             sw.prec_dx = s.precision[0];
             sw.prec_dy = s.precision[1];
+            car.switch_shortcuts[s.id] = s.shortcuts;
         }
         std::uint32_t n_displays = (std::min)(cab.display_count, 4096u);
         for (const auto& d : cab.displays) n_displays = (std::max)(n_displays, d.id + 1);
@@ -858,13 +920,15 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
                 continue;
             }
             const float rate = sw.anim_time > 0.0f ? request.dt / sw.anim_time : 1e9f;
-            if (std::abs(target - sw.current_frame) <= rate || sw.anim_time <= 0.0f) {
+            const auto* shortcuts = id < car->switch_shortcuts.size() ? &car->switch_shortcuts[id] : nullptr;
+            const float next = sw.anim_time > 0.0f ? advance_switch(sw.current_frame, target, rate, shortcuts) : target;
+            if (next == target) {
                 sw.current_frame = target;
                 const std::uint32_t previous = sw.state;
                 sw.state = sw.set_state;
                 switched(*car, id, previous);
             } else {
-                sw.current_frame += target > sw.current_frame ? rate : -rate;
+                sw.current_frame = next;
             }
         }
     }
@@ -1129,8 +1193,14 @@ bool Host::can_switch(const CanSwitchRequest& request, bool& allowed) {
     CarMirror& car = *cars_[request.car];
     if (request.id >= car.switches.size()) return false;
     abi::ActSwitch& sw = car.switches[request.id];
+    // RTS 0x437AA4: SetState takes the new state before CanSwitch and a
+    // refusal puts the old one back; what the DLL writes there meanwhile
+    // stays. The ChS7 sends its controller from 11 straight to +1 (1) and
+    // from 2 back to 0 (12); its field weakening is another switch's.
+    const std::uint32_t before = sw.set_state;
+    sw.set_state = request.set_state;
     allowed = allows_switch(car, request.id, request.set_state);
-    if (allowed) sw.set_state = request.set_state;
+    if (!allowed) sw.set_state = before;
     return true;
 }
 
@@ -1449,6 +1519,11 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
     }
     out.doors.resize(car.doors.size());
     for (std::size_t k = 0; k < car.doors.size(); ++k) out.doors[k] = {car.doors[k].state, car.doors[k].set_state};
+    out.exhausts.resize(car.exhaust.size());
+    for (std::size_t k = 0; k < car.exhaust.size(); ++k) {
+        const auto& e = car.exhaust[k];
+        out.exhausts[k] = {e.rate, e.magnitude, e.dispersion, e.mass, e.colour};
+    }
     // Screens: RTS copies SetState to State each time it draws one (0x46B668).
     out.screens.resize(car.screens.size());
     for (std::size_t s = 0; s < car.screens.size(); ++s) {

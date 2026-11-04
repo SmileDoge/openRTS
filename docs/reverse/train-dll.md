@@ -440,8 +440,19 @@ without compliance and RTS refuses it too.
   ends (the "goes down" bit `0x10` of `Flags` remembers the direction);
   `LOOP` wraps instead; `DISABLED` ignores; `CHECKDISTANCEONPRESS` needs the
   driver within `Radius`. A step down / up (two keys, `AssignKey ( "up"
-  "down" )`) goes one way only. `CanSwitch` sees the new state; a refusal
-  restores the old one.
+  "down" )`) goes one way only.
+- **`CanSwitch` order:** RTS writes the new state into `SetState` (`+48`)
+  first, then calls `CanSwitch`, and a refusal restores the old state.
+  Anything the DLL writes into `SetState` during the call stays.
+  - The ChS7 (`chs7.dll`, switch 0 `C_MAIN`) relies on this:
+    - a step from 0 (state 12) to 11 sends the controller to +1 (1);
+    - a step to 2 sends it back to 0 (12);
+    - its field-weakening sector (5..10) is entered through switch 200,
+      which moves `FixedState` and `SetState` to 10 and sets bit `0x1000`
+      of the engine's flags.
+  - openRTS used to set `SetState` after an allowed call, overwriting the
+    DLL's choice. The controller then stayed at 11 and the next step went
+    into the field-weakening sector.
 - **`KEY` switches** have a "key out" state 0 below their positions: the
   first press inserts the key at `InitialState + 1`; Shift with the key
   there takes it out (CONFIRMED `0x437AA4`, `+56`; an earlier note here
@@ -476,6 +487,14 @@ without compliance and RTS refuses it too.
   SourceRadius Angle ) )`, `Attenuation ( start length kind )` (default
   2 / 0.6 / 0.4), `SpotExponent` (x 128, default 64), `LightArray`. A DLL
   switches them with `SwitchLight` (LightObj Flags 8, by LightID).
+  **CONFIRMED** angles (loader `0x50036C`): the X angle is −`Elevation`
+  (first value), the Y angle is `Azimuth` (second value) + π, and the lamp
+  faces its −Z (OpenGL). With +Z as forward, that is a turn by +`Elevation`
+  about X: a positive `Elevation` dips the light (the 2ES4k's headlights,
+  +3), a negative one lifts it (the ChS7's roof lamp on its sloping front,
+  −38). Across TRAINSET, type 0 glows have 3609 negative and 1355 positive
+  elevations; type 1 beams have only positive ones. openRTS turned the
+  other way until the ChS7's roof glow showed it.
   openRTS draws type 0 as a flat glow facing where the light points and
   feeds 1..4 to the shape and terrain shaders. **CONFIRMED** (the shader
   source, GLOBAL\SHADERS\lamp.vert.shader): a glow quad has UV (0,0) at its

@@ -2,8 +2,10 @@
 
 #include <algorithm>
 
+#include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/shape_file.hpp>
 
+#include "forest_shape.hpp"
 #include "transfer_shape.hpp"
 
 namespace openrts::renderer {
@@ -77,10 +79,37 @@ namespace {
     return result;
 }
 
+// A forest (forest_shape.hpp), loaded as a shape. Its tree texture comes
+// from the route's TEXTURES (else GLOBAL\TEXTURES), from the season's
+// folder (rts1.exe 0x41B6D0 builds its path with 0x4224F8 and 252).
+[[nodiscard]] StreamedModelAsset load_forest_asset(const core::Vfs& vfs, const core::VirtualPath& path, TextureDecodeCache* cache,
+                                                   const TextureVariant& variant) {
+    StreamedModelAsset result{.source_path = path};
+    auto forest = build_forest_shape(vfs, path);
+    if (!forest.error.empty()) {
+        result.error = forest.error;
+        return result;
+    }
+    result.model = std::move(forest.model);
+    result.alternative_texture = 252;
+    result.texture_folders = alternative_texture_folders(result.alternative_texture, variant);
+    result.texture_key = texture_variant_key(result.alternative_texture, false, variant);
+    std::vector<core::VirtualPath> candidates;
+    if (forest.route_textures) {
+        if (auto file = forest.route_textures->resolve(forest.texture)) candidates.push_back(std::move(*file));
+    }
+    if (const auto global = core::VirtualPath::parse("GLOBAL/TEXTURES")) {
+        if (auto file = global->resolve(forest.texture)) candidates.push_back(std::move(*file));
+    }
+    result.textures.push_back(resolve_texture(vfs, forest.texture, std::move(candidates), result.texture_folders, cache));
+    return result;
+}
+
 } // namespace
 
 std::vector<std::string> StreamedModelAsset::dependency_keys() const {
     std::vector<std::string> keys{source_path.key(), source_path.with_extension(".sd").key()};
+    for (const auto& source : sources) keys.push_back(source.key());
     for (const auto& texture : textures) {
         for (const auto& candidate : texture.candidates) keys.push_back(candidate.key());
     }
@@ -140,14 +169,40 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
                                     TextureDecodeCache* cache,
                                     const TextureVariant& variant) {
     if (shape.extension() == ".transfer") return load_transfer_asset(vfs, shape, cache, variant);
+    if (shape.extension() == ".forest") return load_forest_asset(vfs, shape, cache, variant);
     StreamedModelAsset result{.source_path = shape};
-    if (const auto description = formats::load_shape_description(vfs, shape.with_extension(".sd")); description.ok()) {
+    // An RTS .repaint (TSR's ChS2 and others: the .rtseng's WagonShape, a
+    // cab's Cabin): Repaint ( Shape ( "x.s" ) ShapeDescription ( "x.sd" )
+    // TextureReplace ( "old.ace" "new.ace" ) ... ), named relative to it.
+    core::VirtualPath geometry = shape;
+    core::VirtualPath description_file = shape.with_extension(".sd");
+    formats::Repaint repaint;
+    if (core::fold_case(shape.extension()) == ".repaint") {
+        const auto text = vfs.read(shape);
+        if (!text) {
+            result.error = "cannot read the repaint";
+            return result;
+        }
+        repaint = formats::parse_repaint(*text);
+        const auto target = repaint.ok() ? shape.parent().resolve(repaint.shape) : std::nullopt;
+        if (!target) {
+            result.error = "a repaint without a Shape";
+            return result;
+        }
+        geometry = *target;
+        description_file = geometry.with_extension(".sd");
+        if (!repaint.description.empty()) {
+            if (const auto named = shape.parent().resolve(repaint.description)) description_file = *named;
+        }
+        result.sources = {geometry, description_file};
+    }
+    if (const auto description = formats::load_shape_description(vfs, description_file); description.ok()) {
         result.alternative_texture = description.value->alternative_texture;
         result.lights = description.value->lights;
     }
     result.texture_folders = alternative_texture_folders(result.alternative_texture, variant);
 
-    const auto body = formats::load_binary_shape_body(vfs, shape);
+    const auto body = formats::load_binary_shape_body(vfs, geometry);
     if (!body.ok()) {
         result.error = body.error;
         return result;
@@ -180,6 +235,26 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
         const auto name = image.generic_string();
         auto folders = result.texture_folders;
         if (variant.fullbright_lit && fullbright_use[index] == 1) std::erase(folders, std::string("NIGHT"));
+        if (repaint.ok()) {
+            // A replaced image: its new file beside the repaint, then beside
+            // the shape; the others as the shape has them.
+            const auto file_name = [](const std::string& path) {
+                const auto slash = path.find_last_of("/\\");
+                return core::fold_case(slash == std::string::npos ? path : path.substr(slash + 1));
+            };
+            const auto swap = std::find_if(repaint.textures.begin(), repaint.textures.end(),
+                                           [&](const auto& pair) { return file_name(pair.first) == file_name(name); });
+            const auto& wanted = swap != repaint.textures.end() ? swap->second : name;
+            auto candidates = swap != repaint.textures.end() ? shape_texture_candidates(shape, wanted, texture_directories)
+                                                             : std::vector<core::VirtualPath>{};
+            for (auto& candidate : shape_texture_candidates(geometry, wanted, texture_directories)) {
+                if (std::find(candidates.begin(), candidates.end(), candidate) == candidates.end()) candidates.push_back(std::move(candidate));
+            }
+            auto texture = resolve_texture(vfs, wanted, std::move(candidates), folders, cache);
+            texture.image_name = name;
+            result.textures.push_back(std::move(texture));
+            continue;
+        }
         result.textures.push_back(resolve_texture(vfs, name, shape_texture_candidates(shape, name, texture_directories), folders, cache));
     }
     return result;

@@ -32,7 +32,7 @@ struct DebugView {
 [[nodiscard]] std::optional<DebugView> load_debug_view(const std::filesystem::path& file, std::string& error);
 bool save_debug_view(const std::filesystem::path& file, const DebugView& view, std::string& error);
 
-// `debug_views/` in the working directory; `--view last` means last.view there.
+// `debug_views/` in user_data_directory(); `--view last` means last.view there.
 [[nodiscard]] std::filesystem::path debug_view_directory();
 [[nodiscard]] std::filesystem::path resolve_debug_view(const std::string& argument);
 

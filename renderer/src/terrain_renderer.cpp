@@ -145,6 +145,34 @@ TerrainTileMesh build_terrain_tile_mesh(const core::Vfs& vfs,
             mesh.patches.push_back(std::move(patch_mesh));
         }
     }
+
+    // Water (rts1.exe 0x49B088): a quad over each patch flagged 0xC0, its
+    // corners at the water height 0x4A2A5C takes from the tile's four
+    // values (bug for bug: away from the first values, not towards the others).
+    const auto water = tile.water_heights.value_or(std::array<float, 4>{});
+    const auto water_height = [&](const float column, const float row) {
+        const float near = column * (water[2] - water[3]) * 0.0625f + water[2];
+        const float far = column * (water[0] - water[1]) * 0.0625f + water[0];
+        return row * (near - far) * 0.0625f + near;
+    };
+    const float patch_size = half_extent * 2.0f / static_cast<float>(tile.patches_per_side);
+    for (std::uint32_t patch_row = 0; patch_row < tile.patches_per_side; ++patch_row) {
+        for (std::uint32_t patch_column = 0; patch_column < tile.patches_per_side; ++patch_column) {
+            const auto& patch = tile.patches[static_cast<std::size_t>(patch_row) * tile.patches_per_side + patch_column];
+            if ((patch.flags & 0xC0u) == 0) continue;
+            const float west = static_cast<float>(patch_column) * patch_size - half_extent;
+            const float north = half_extent - static_cast<float>(patch_row) * patch_size;
+            const auto c = static_cast<float>(patch_column);
+            const auto r = static_cast<float>(patch_row);
+            const TerrainWaterVertex corners[4] = {
+                {{west, water_height(c, r), north}, {west, north}, {0.0f, 0.0f}},
+                {{west + patch_size, water_height(c + 1.0f, r), north}, {west, north}, {1.0f, 0.0f}},
+                {{west + patch_size, water_height(c + 1.0f, r + 1.0f), north - patch_size}, {west, north}, {1.0f, 1.0f}},
+                {{west, water_height(c, r + 1.0f), north - patch_size}, {west, north}, {0.0f, 1.0f}},
+            };
+            for (const int k : {0, 1, 2, 0, 2, 3}) mesh.water.push_back(corners[k]);
+        }
+    }
     return mesh;
 }
 
@@ -214,6 +242,10 @@ constexpr std::uint64_t draw_uniform_stride = 256;
 struct DrawUniform {
     glm::mat4 mvp;
     float offset[4]; // the tile's place relative to the route origin
+    // Texture coordinates: uv = uv_rect.xy + uv * uv_rect.zw (terrain: 0 0 1 1);
+    // water: uv_mode x 1 follows the camera (y, z: the eye; w: patch size).
+    float uv_rect[4]{0.0f, 0.0f, 1.0f, 1.0f};
+    float uv_mode[4]{};
 };
 
 // Headlights and searchlights on the ground: the model renderer's further
@@ -236,6 +268,8 @@ constexpr char terrain_shader[] = R"(
 struct Draw {
     mvp: mat4x4<f32>,
     offset: vec4<f32>,
+    uv_rect: vec4<f32>,
+    uv_mode: vec4<f32>,
 };
 
 struct Frame {
@@ -287,7 +321,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
     var out: VertexOut;
     out.ring = min(input.ring, 9u);
     out.clip = draw.mvp * vec4<f32>(input.position, 1.0);
-    out.uv = input.uv;
+    out.uv = draw.uv_rect.xy + input.uv * draw.uv_rect.zw;
     out.world = vec4<f32>(input.position + draw.offset.xyz, 1.0);
     out.normal = input.normal;
 
@@ -296,6 +330,45 @@ fn vs_main(input: VertexIn) -> VertexOut {
     let ambient = max(frame.light_ambient, vec4<f32>(0.0));
     out.colour = max(diffuse, ambient);
 
+    let fog_start = frame.fog_distance.x;
+    let fog_end = frame.fog_distance.y;
+    if (fog_end <= 0.0) {
+        out.fog = vec4<f32>(0.0);
+    } else if (fog_end > fog_start) {
+        let amount = clamp(frame.fog_colour.w * ((out.clip.z - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
+        out.fog = vec4<f32>(frame.fog_colour.xyz, amount);
+    } else {
+        out.fog = frame.fog_colour;
+    }
+    return out;
+}
+
+// Water layers (RTS water.vert): lit with the normal up; UVs per patch, or
+// following the camera (world_water_layer_sky_reflection, 0x4A2144).
+struct WaterIn {
+    @location(0) position: vec3<f32>,
+    @location(1) patch_corner: vec2<f32>,
+    @location(2) corner: vec2<f32>,
+    @builtin(instance_index) ring: u32,
+};
+
+@vertex
+fn vs_water(input: WaterIn) -> VertexOut {
+    var out: VertexOut;
+    out.ring = min(input.ring, 9u);
+    out.clip = draw.mvp * vec4<f32>(input.position, 1.0);
+    if (draw.uv_mode.x > 0.5) {
+        let size = draw.uv_mode.w;
+        let start = vec2<f32>((input.patch_corner.x + draw.offset.x - draw.uv_mode.y) / size,
+                              (draw.uv_mode.z - input.patch_corner.y - draw.offset.z) / size);
+        out.uv = start + draw.uv_rect.xy + input.corner * draw.uv_rect.zw;
+    } else {
+        out.uv = draw.uv_rect.xy + input.corner * draw.uv_rect.zw;
+    }
+    out.world = vec4<f32>(input.position + draw.offset.xyz, 1.0);
+    out.normal = vec3<f32>(0.0, 1.0, 0.0);
+    let factor = clamp(-dot(out.normal, frame.light_direction.xyz) * 2.0, 0.0, 1.0);
+    out.colour = max(max(frame.light_diffuse * factor, vec4<f32>(0.0)), max(frame.light_ambient, vec4<f32>(0.0)));
     let fog_start = frame.fog_distance.x;
     let fog_end = frame.fog_distance.y;
     if (fog_end <= 0.0) {
@@ -373,7 +446,11 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
     } else {
         let lights = ring_count(input.ring);
         for (var i = 0; i < lights; i = i + 1) {
-            lamps = lamps + lamp_light(frame.lights[input.ring * 9u + u32(i)], input.world, n, physical);
+            let ring_light = frame.lights[input.ring * 9u + u32(i)];
+            let light = lamp_light(ring_light, input.world, n, physical);
+            if (any(light > vec3<f32>(0.0))) {
+                lamps = lamps + light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
+            }
         }
     }
     lamps = lamps * (1.0 - effects.lamps.x); // weaker by day
@@ -474,6 +551,24 @@ struct TerrainRenderer::Impl {
         WGPUBuffer vertices = nullptr;
         WGPUBuffer indices = nullptr;
         std::vector<TerrainPatchMesh> patches;
+        WGPUBuffer water = nullptr;
+        std::uint32_t water_vertices = 0;
+    };
+
+    // An environment water layer and where its animation is (0x4A2144):
+    // flag 1 tiles, 2 scrolls, 4 stamps frames in turn.
+    struct WaterLayer {
+        std::optional<core::VirtualPath> texture;
+        bool blended = false;
+        bool sky_reflection = false;
+        float height = 0.0f;
+        std::uint32_t flags = 0;
+        float tiles[2]{1.0f, 1.0f};
+        float scroll_speed[2]{};
+        std::vector<std::array<float, 4>> stamps;
+        float frame_length = 0.0f;
+        float scroll[2]{};
+        float frame = 0.0f;
     };
 
     struct GpuTexture {
@@ -488,6 +583,9 @@ struct TerrainRenderer::Impl {
     WGPUBindGroupLayout frame_layout = nullptr;
     WGPURenderPipeline pipeline = nullptr;
     WGPURenderPipeline experimental_pipeline = nullptr;
+    WGPURenderPipeline water_pipelines[2][2]{}; // [experimental][blended]
+    std::vector<WaterLayer> water_layers;
+    glm::vec3 eye{};
     ShadingPath shading = ShadingPath::rts_compatible;
     // Group 2 (SceneEffects), read by the experimental pipeline; a built-in
     // one with every effect off when none is given.
@@ -545,6 +643,11 @@ struct TerrainRenderer::Impl {
         if (sampler) wgpuSamplerRelease(sampler);
         if (pipeline) wgpuRenderPipelineRelease(pipeline);
         if (experimental_pipeline) wgpuRenderPipelineRelease(experimental_pipeline);
+        for (auto& pair : water_pipelines) {
+            for (auto& water_pipeline : pair) {
+                if (water_pipeline) wgpuRenderPipelineRelease(water_pipeline);
+            }
+        }
         fallback_effects.reset();
         if (depth_binding) wgpuBindGroupRelease(depth_binding);
         if (depth_buffer) wgpuBufferRelease(depth_buffer);
@@ -557,6 +660,7 @@ struct TerrainRenderer::Impl {
     }
 
     static void release_tile(GpuTile& tile) {
+        if (tile.water) wgpuBufferRelease(tile.water);
         if (tile.indices) wgpuBufferRelease(tile.indices);
         if (tile.vertices) wgpuBufferRelease(tile.vertices);
         tile = {};
@@ -573,6 +677,11 @@ struct TerrainRenderer::Impl {
     [[nodiscard]] std::optional<WGPUTextureView> texture_view(const std::string& name, const WGPUTextureView fallback) {
         if (name.empty()) return fallback;
         const auto path = resolve_terrain_texture(*vfs, route, name, season, weather);
+        if (!path) return fallback;
+        return texture_view_at(path, fallback);
+    }
+
+    [[nodiscard]] std::optional<WGPUTextureView> texture_view_at(const std::optional<core::VirtualPath>& path, const WGPUTextureView fallback) {
         if (!path) return fallback;
         auto [it, inserted] = textures.try_emplace(path->key());
         auto& texture = it->second;
@@ -598,6 +707,25 @@ struct TerrainRenderer::Impl {
         if (texture.view) return texture.view;
         if (texture.failed) return fallback;
         return std::nullopt;
+    }
+
+    // A water layer's material: its texture and the neutral grey detail.
+    [[nodiscard]] WGPUBindGroup water_material(const WaterLayer& layer) {
+        const auto key = std::pair{std::string("water:") + (layer.texture ? layer.texture->key() : std::string()), std::string()};
+        if (const auto it = materials.find(key); it != materials.end()) return it->second;
+        const auto base = texture_view_at(layer.texture, black_view);
+        if (!base) return nullptr;
+        std::array<WGPUBindGroupEntry, 3> entries{};
+        entries[0].binding = 0;
+        entries[0].textureView = *base;
+        entries[1].binding = 1;
+        entries[1].textureView = grey_view;
+        entries[2].binding = 2;
+        entries[2].sampler = sampler;
+        const WGPUBindGroupDescriptor descriptor{.layout = material_layout, .entryCount = entries.size(), .entries = entries.data()};
+        const auto binding = wgpuDeviceCreateBindGroup(device, &descriptor);
+        materials.emplace(key, binding);
+        return binding;
     }
 
     [[nodiscard]] WGPUBindGroup material(const TerrainPatchMesh& patch) {
@@ -675,6 +803,10 @@ struct TerrainRenderer::Impl {
         tile.indices = create_buffer(device, WGPUBufferUsage_Index, mesh.indices.size() * sizeof(std::uint32_t),
                                      mesh.indices.data());
         tile.patches = std::move(mesh.patches);
+        if (!mesh.water.empty()) {
+            tile.water = create_buffer(device, WGPUBufferUsage_Vertex, mesh.water.size() * sizeof(TerrainWaterVertex), mesh.water.data());
+            tile.water_vertices = static_cast<std::uint32_t>(mesh.water.size());
+        }
         tiles[key] = std::move(tile);
     }
 };
@@ -809,6 +941,64 @@ namespace {
     return wgpuDeviceCreateRenderPipeline(device, &descriptor);
 }
 
+// A water layer (RTS 0x4A2144): depth test GL_LEQUAL with writes; the
+// blend shaders laid over by alpha, the others drawn opaque.
+[[nodiscard]] WGPURenderPipeline create_water_pipeline(const WGPUDevice device, const WGPUPipelineLayout layout, const WGPUShaderModule shader,
+                                                       const WGPUTextureFormat target_format, const bool experimental, const bool blended) {
+    const std::array<WGPUVertexAttribute, 3> attributes{{
+        {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(TerrainWaterVertex, position), .shaderLocation = 0},
+        {.format = WGPUVertexFormat_Float32x2, .offset = offsetof(TerrainWaterVertex, patch), .shaderLocation = 1},
+        {.format = WGPUVertexFormat_Float32x2, .offset = offsetof(TerrainWaterVertex, corner), .shaderLocation = 2},
+    }};
+    const WGPUVertexBufferLayout vertex_layout{
+        .stepMode = WGPUVertexStepMode_Vertex,
+        .arrayStride = sizeof(TerrainWaterVertex),
+        .attributeCount = attributes.size(),
+        .attributes = attributes.data(),
+    };
+    constexpr WGPUStencilFaceState keep_stencil{
+        .compare = WGPUCompareFunction_Always,
+        .failOp = WGPUStencilOperation_Keep,
+        .depthFailOp = WGPUStencilOperation_Keep,
+        .passOp = WGPUStencilOperation_Keep,
+    };
+    const WGPUDepthStencilState depth{
+        .format = depth_format,
+        .depthWriteEnabled = WGPUOptionalBool_True,
+        .depthCompare = depth_nearer_or_equal,
+        .stencilFront = keep_stencil,
+        .stencilBack = keep_stencil,
+        .stencilReadMask = ~0u,
+        .stencilWriteMask = ~0u,
+    };
+    const WGPUBlendState over{
+        .color = {.operation = WGPUBlendOperation_Add, .srcFactor = WGPUBlendFactor_SrcAlpha, .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha},
+        .alpha = {.operation = WGPUBlendOperation_Add, .srcFactor = WGPUBlendFactor_One, .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha},
+    };
+    const WGPUColorTargetState target{.format = target_format, .blend = blended ? &over : nullptr, .writeMask = WGPUColorWriteMask_All};
+    const std::array<WGPUConstantEntry, 2> constants{{
+        {.key = wgsl_name("experimental"), .value = experimental ? 1.0 : 0.0},
+        {.key = wgsl_name("hdr_output"), .value = scene_hdr() ? 1.0 : 0.0},
+    }};
+    const WGPUFragmentState fragment{
+        .module = shader,
+        .entryPoint = wgsl_name("fs_main"),
+        .constantCount = constants.size(),
+        .constants = constants.data(),
+        .targetCount = 1,
+        .targets = &target,
+    };
+    const WGPURenderPipelineDescriptor descriptor{
+        .layout = layout,
+        .vertex = {.module = shader, .entryPoint = wgsl_name("vs_water"), .bufferCount = 1, .buffers = &vertex_layout},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+        .depthStencil = &depth,
+        .multisample = scene_multisample(),
+        .fragment = &fragment,
+    };
+    return wgpuDeviceCreateRenderPipeline(device, &descriptor);
+}
+
 } // namespace
 
 TerrainRenderer::TerrainRenderer(const WGPUDevice device,
@@ -864,6 +1054,12 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
     const auto pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
     impl_->pipeline = create_pipeline(device, pipeline_layout, shader, target_format, false);
     impl_->experimental_pipeline = create_pipeline(device, pipeline_layout, shader, target_format, true);
+    for (int experimental = 0; experimental < 2; ++experimental) {
+        for (int blended = 0; blended < 2; ++blended) {
+            impl_->water_pipelines[experimental][blended] =
+                create_water_pipeline(device, pipeline_layout, shader, target_format, experimental != 0, blended != 0);
+        }
+    }
     wgpuPipelineLayoutRelease(pipeline_layout);
     wgpuShaderModuleRelease(shader);
 
@@ -1043,11 +1239,15 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
     }
     if (!effects) return;
 
-    impl.ensure_draw_capacity(impl.tiles.size());
+    // A draw for each tile, then one for each tile with water and each layer.
+    std::size_t water_tiles = 0;
+    for (const auto& [_, tile] : impl.tiles) water_tiles += tile.water_vertices > 0 ? 1 : 0;
+    const std::size_t draws = impl.tiles.size() + water_tiles * impl.water_layers.size();
+    impl.ensure_draw_capacity(draws);
     if (!impl.frame_binding) return;
 
     constexpr double tile_size = formats::route_tile_size;
-    std::vector<std::byte> uniforms(impl.tiles.size() * draw_uniform_stride);
+    std::vector<std::byte> uniforms(draws * draw_uniform_stride);
     std::size_t index = 0;
     for (const auto& [key, _] : impl.tiles) {
         // Tile-centred vertices, placed relative to the route origin.
@@ -1061,6 +1261,47 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
         const DrawUniform uniform{.mvp = view_projection * model, .offset = {offset.x, offset.y, offset.z, 0.0f}};
         std::memcpy(uniforms.data() + index * draw_uniform_stride, &uniform, sizeof(uniform));
         ++index;
+    }
+    const std::size_t first_water_draw = index;
+    for (const auto& [key, tile] : impl.tiles) {
+        if (tile.water_vertices == 0) continue;
+        for (const auto& layer : impl.water_layers) {
+            // RTS 0x4A2144: the layer's height above the water, its UVs a
+            // patch (tiles, a frame's stamp) moved by the scroll.
+            const auto offset = glm::vec3{
+                static_cast<float>((key.first - impl.origin.tile_x) * tile_size - impl.origin.x),
+                static_cast<float>(-impl.origin.y) + layer.height,
+                static_cast<float>((key.second - impl.origin.tile_z) * tile_size - impl.origin.z),
+            };
+            glm::mat4 model{1.0f};
+            model[3] = glm::vec4{offset, 1.0f};
+            DrawUniform uniform{.mvp = view_projection * model, .offset = {offset.x, offset.y, offset.z, 0.0f}};
+            float rect[4]{0.0f, 0.0f, 1.0f, 1.0f};
+            if ((layer.flags & 4u) != 0 && !layer.stamps.empty()) {
+                const auto frame = (std::min)(static_cast<std::size_t>(layer.frame), layer.stamps.size() - 1);
+                const auto& stamp = layer.stamps[frame];
+                rect[0] = stamp[0];
+                rect[1] = stamp[1];
+                rect[2] = stamp[2] - stamp[0];
+                rect[3] = stamp[3] - stamp[1];
+            } else if ((layer.flags & 1u) != 0) {
+                rect[2] = layer.tiles[0];
+                rect[3] = layer.tiles[1];
+            }
+            if ((layer.flags & 2u) != 0) {
+                rect[0] += layer.scroll[0];
+                rect[1] += layer.scroll[1];
+            }
+            std::copy(std::begin(rect), std::end(rect), uniform.uv_rect);
+            if (layer.sky_reflection) {
+                uniform.uv_mode[0] = 1.0f;
+                uniform.uv_mode[1] = impl.eye.x;
+                uniform.uv_mode[2] = impl.eye.z;
+                uniform.uv_mode[3] = static_cast<float>(tile_size / 16.0);
+            }
+            std::memcpy(uniforms.data() + index * draw_uniform_stride, &uniform, sizeof(uniform));
+            ++index;
+        }
     }
 
     FrameUniform frame{};
@@ -1109,6 +1350,101 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
             wgpuRenderPassEncoderDrawIndexed(pass, patch.index_count, 1, patch.first_index, 0, ring);
         }
     }
+
+    // The water layers in order over the water patches (RTS: right after the terrain).
+    if (impl.water_layers.empty() || water_tiles == 0) return;
+    const int path = impl.shading == ShadingPath::experimental ? 1 : 0;
+    index = first_water_draw;
+    for (auto& [key, tile] : impl.tiles) {
+        if (tile.water_vertices == 0) continue;
+        const auto tile_offset = glm::vec3{
+            static_cast<float>((key.first - impl.origin.tile_x) * tile_size - impl.origin.x),
+            static_cast<float>(-impl.origin.y),
+            static_cast<float>((key.second - impl.origin.tile_z) * tile_size - impl.origin.z),
+        };
+        const bool visible = frustum.intersects_sphere(tile_offset, static_cast<float>(tile_size * 0.75));
+        const auto ring = rings.ring_for(tile_offset, static_cast<float>(tile_size * 0.75));
+        for (const auto& layer : impl.water_layers) {
+            const auto offset = static_cast<std::uint32_t>(index++ * draw_uniform_stride);
+            if (!visible) continue;
+            const auto material = impl.water_material(layer);
+            const auto pipeline = impl.water_pipelines[path][layer.blended ? 1 : 0];
+            if (!material || !pipeline) continue;
+            wgpuRenderPassEncoderSetPipeline(pass, pipeline);
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, material, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(pass, 1, impl.frame_binding, 1, &offset);
+            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, tile.water, 0, WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderDraw(pass, tile.water_vertices, 1, 0, ring);
+        }
+    }
+}
+
+void TerrainRenderer::set_water(const formats::EnvWater* water, std::vector<core::VirtualPath> texture_folders) {
+    auto& impl = *impl_;
+    impl.water_layers.clear();
+    if (!water) return;
+    for (const auto& source : water->layers) {
+        Impl::WaterLayer layer;
+        layer.height = source.height;
+        layer.sky_reflection = source.sky_reflection;
+        const auto& shader = source.shader;
+        // Tex / TexDiff opaque; BlendATex(Diff) and AddATex(Diff) by alpha (0x4A2144).
+        std::string name = shader.shader_name;
+        for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        layer.blended = name.find("blend") != std::string::npos || name.find("add") != std::string::npos;
+        for (const auto& folder : texture_folders) {
+            if (shader.texture.empty()) break;
+            if (auto file = folder.resolve(shader.texture); file && impl.vfs->exists(*file)) {
+                layer.texture = *file;
+                break;
+            }
+        }
+        if (!shader.frames.empty()) {
+            const auto& first = shader.frames.front();
+            if (first.has_uv_tiles) {
+                layer.flags |= 1u;
+                layer.tiles[0] = first.uv_tiles[0];
+                layer.tiles[1] = first.uv_tiles[1];
+            }
+            if (first.has_uv_scroll) {
+                layer.flags |= 2u;
+                layer.scroll_speed[0] = first.uv_scroll[0];
+                layer.scroll_speed[1] = first.uv_scroll[1];
+            }
+            for (const auto& frame : shader.frames) {
+                if (frame.has_uv_stamp) layer.stamps.push_back({frame.uv_stamp[0], frame.uv_stamp[1], frame.uv_stamp[2], frame.uv_stamp[3]});
+            }
+            if (!layer.stamps.empty()) layer.flags |= 4u;
+        }
+        layer.frame_length = shader.frame_length;
+        impl.water_layers.push_back(std::move(layer));
+    }
+}
+
+void TerrainRenderer::update_water(const float elapsed, const glm::vec3& eye) {
+    auto& impl = *impl_;
+    impl.eye = eye;
+    for (auto& layer : impl.water_layers) {
+        // 0x4A2144: the scroll wraps past 1, the frames over their count.
+        if ((layer.flags & 2u) != 0) {
+            for (int k = 0; k < 2; ++k) {
+                layer.scroll[k] += layer.scroll_speed[k] * elapsed;
+                if (std::fabs(layer.scroll[k]) > 1.0f) layer.scroll[k] = std::fmod(layer.scroll[k], 1.0f);
+            }
+        }
+        if ((layer.flags & 4u) != 0 && layer.frame_length > 0.0f) {
+            layer.frame += elapsed / layer.frame_length;
+            const auto frames = static_cast<float>(layer.stamps.size());
+            if (layer.frame >= frames) layer.frame = std::fmod(layer.frame, frames);
+        }
+    }
+}
+
+std::size_t TerrainRenderer::water_quads() const noexcept {
+    if (!impl_) return 0;
+    std::size_t quads = 0;
+    for (const auto& [_, tile] : impl_->tiles) quads += tile.water_vertices / 6;
+    return quads;
 }
 
 std::size_t TerrainRenderer::loaded_tiles() const noexcept {

@@ -18,7 +18,8 @@ add_library(openrts_formats STATIC
     src/environment.cpp
     src/terrain.cpp
     src/track_database.cpp
-    src/track_sections.cpp)
+    src/track_sections.cpp
+    src/car_spawn.cpp)
 openrts_configure_target(openrts_formats)
 target_link_libraries(openrts_formats PUBLIC openrts_core)
 target_link_libraries(openrts_formats PRIVATE ZLIB::ZLIB)

@@ -484,8 +484,14 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             * mix(1.0, frame.shading.x, 1.0 - sun_strength);
         // The sun's shadow and the ambient occlusion (SceneEffects).
         let shadow = effects_shadow(input.world.xyz, n, input.clip);
-        ambient = ambient * effects_ao(input.clip);
+        let occlusion = effects_ao(input.clip);
+        ambient = ambient * occlusion;
         var diffuse = sun_colour * facing * shadow;
+        // Light the ground throws back (SceneEffectSettings::ground_bounce):
+        // the ground lit by the sun and the sky, onto surfaces turned down
+        // (all of it) or sideways (half); the occlusion keeps gaps dark.
+        var bounce = effects.lamps.y * (sun_colour * max(to_sun.y, 0.0) + sky_colour * (1.0 - 0.65 * sun_strength))
+            * (0.5 - 0.5 * n.y) * occlusion;
         var strength = 0.04;
         var sharpness = 16.0;
         if (material == -6) { // LoShine
@@ -498,6 +504,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             ambient = max(ambient, to_linear(input.colour.xyz));
         } else if (material == -12) { // DarkShade
             ambient = vec3<f32>(0.0);
+            bounce = vec3<f32>(0.0);
             diffuse = sky_colour * facing;
             strength = 0.0;
         }
@@ -523,9 +530,14 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                 }
             }
         } else {
+            // The RTS rings; the lamps throwing shadows found by their key.
             let extra_lights = ring_count(input.ring);
             for (var i = 0; i < extra_lights; i = i + 1) {
-                lamps = lamps + lamp_light(frame.rings[input.ring * 9u + u32(i)], input.world, n, physical);
+                let ring_light = frame.rings[input.ring * 9u + u32(i)];
+                let light = lamp_light(ring_light, input.world, n, physical);
+                if (any(light > vec3<f32>(0.0))) {
+                    lamps = lamps + light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
+                }
             }
         }
         let interior_lights = min(i32(frame.fog_distance.z), 8);
@@ -538,7 +550,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 
         // Weaker by day (SceneEffectSettings::lamps_in_daylight).
         lamps = lamps * (1.0 - effects.lamps.x);
-        colour = base * (ambient + diffuse + lamps) + highlight;
+        colour = base * (ambient + diffuse + lamps + bounce) + highlight;
         if (material == -1) { // vertex colour emission
             colour = max(colour, base * to_linear(input.colour.xyz));
         }

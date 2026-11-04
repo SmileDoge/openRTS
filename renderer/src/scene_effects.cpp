@@ -58,6 +58,9 @@ struct EffectsUniform {
     std::uint32_t lamp_shadow_ids[4]{}; // the lamp's index in the light list + 1
     glm::vec4 lamp_shadow_texel{0.0f};  // a texel's size a metre from the lamp (or in metres, parallel)
     glm::vec4 lamp_shadow_params{0.0f}; // x: lamps, y: map size, z: filter radius (texels)
+    // Each one's to_light translation: finds the lamp among the RTS light
+    // rings when the clustered list is off.
+    glm::vec4 lamp_shadow_keys[SceneEffects::max_lamp_shadows]{};
 };
 static_assert(sizeof(EffectsUniform) % 16 == 0);
 
@@ -875,7 +878,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     const float shadow_strength = sun_up * glm::clamp(sun_luma * 1.6f, 0.0f, 1.0f);
     const bool shadows = active && s.shadows && shadow_strength > 0.01f;
     impl.ensure_shadow(active && s.shadows);
-    impl.ensure_lamp_shadow(active && s.clustered_lights && s.lamp_shadows > 0);
+    impl.ensure_lamp_shadow(active && s.lamp_shadows > 0);
     impl.ensure_ao(active && s.ambient_occlusion, (std::max)(view.width, 1u), (std::max)(view.height, 1u));
     impl.ensure_groups();
 
@@ -913,8 +916,9 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     impl.light_count = 0;
     impl.packed_lights.clear();
     impl.lamp_shadow_count = 0;
-    if (active && s.clustered_lights) {
-        // The scene's lights, nearest first.
+    if (active && (s.clustered_lights || s.lamp_shadows > 0)) {
+        // The scene's lights, nearest first: the clustered list, and the
+        // lamps the shadows are chosen from (also without clusters).
         struct Candidate {
             const ModelExtraLight* light;
             glm::vec3 centre;
@@ -938,8 +942,8 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
             impl.packed_lights.push_back(*candidates[i].light);
             spheres[i] = glm::vec4{glm::vec3(view.view * glm::vec4{candidates[i].centre, 1.0f}), candidates[i].radius};
         }
-        impl.light_count = static_cast<std::uint32_t>(count);
-        if (count > 0) {
+        impl.light_count = s.clustered_lights ? static_cast<std::uint32_t>(count) : 0u;
+        if (impl.light_count > 0) {
             const auto queue = wgpuDeviceGetQueue(impl.device);
             wgpuQueueWriteBuffer(queue, impl.lights, 0, packed.data(), packed.size() * sizeof(detail::GpuLight));
             wgpuQueueWriteBuffer(queue, impl.spheres, 0, spheres.data(), spheres.size() * sizeof(glm::vec4));
@@ -950,7 +954,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     frame.flags[1] = active && s.ambient_occlusion && impl.ao_is_real ? (s.show_occlusion ? 2u : 1u) : 0u;
     frame.flags[2] = active && s.aerial_perspective ? 1u : 0u;
     frame.flags[3] = impl.light_count;
-    impl.lamp_shadows_wanted = active && s.clustered_lights && s.lamp_shadows > 0 && impl.light_count > 0 && impl.lamp_layers[0];
+    impl.lamp_shadows_wanted = active && s.lamp_shadows > 0 && !impl.packed_lights.empty() && impl.lamp_layers[0];
 
     // Haze from the environment: a third of the light left at RTS's fog end
     // (the sky dome's edge), thinning with height over about 1.5 km; the
@@ -969,7 +973,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
         const float t = glm::clamp((light - 0.1f) / 0.5f, 0.0f, 1.0f);
         impl.daylight = active ? t * t * (3.0f - 2.0f * t) : 0.0f;
         const float strength = 1.0f - impl.daylight * (1.0f - std::clamp(s.lamps_in_daylight, 0.0f, 1.0f));
-        frame.lamps = glm::vec4{1.0f - strength, 0.0f, 0.0f, 0.0f};
+        frame.lamps = glm::vec4{1.0f - strength, active ? std::clamp(s.ground_bounce, 0.0f, 0.5f) : 0.0f, 0.0f, 0.0f};
     }
 
     const auto queue = wgpuDeviceGetQueue(impl.device);
@@ -1022,6 +1026,7 @@ void SceneEffects::Impl::fit_focus(const std::optional<ShadowFocus>& focus) {
 void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& focus) {
     lamp_shadow_count = 0;
     std::fill(std::begin(frame.lamp_shadow_ids), std::end(frame.lamp_shadow_ids), 0u);
+    std::fill(std::begin(frame.lamp_shadow_keys), std::end(frame.lamp_shadow_keys), glm::vec4{0.0f});
     frame.lamp_shadow_params = glm::vec4{0.0f};
     if (!lamp_shadows_wanted) {
         lamp_shadow_kept.clear();
@@ -1113,6 +1118,7 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
         lamp_matrices[k] = matrix;
         frame.lamp_shadows[k] = matrix;
         frame.lamp_shadow_ids[k] = picks[k].index + 1;
+        frame.lamp_shadow_keys[k] = glm::vec4{glm::vec3(light.to_light[3]), 1.0f};
         frame.lamp_shadow_texel[static_cast<int>(k)] = texel;
         lamp_shadow_kept.push_back(position);
     }

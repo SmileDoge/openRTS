@@ -11,6 +11,7 @@
 #include <openrts/assets/content_resolver.hpp>
 #include <openrts/renderer/route_space.hpp>
 
+#include "forest_shape.hpp"
 #include "transfer_shape.hpp"
 
 namespace openrts::renderer {
@@ -90,6 +91,14 @@ struct RouteStreamer::Impl {
                 // A ground texture: its own shape, built from the world file
                 // and the terrain (transfer_shape.hpp).
                 source = transfer_shape_path(file, object.uid);
+            } else if (object.kind == formats::WorldObjectKind::forest) {
+                // Trees RTS builds itself (forest_shape.hpp); an incomplete
+                // forest is not drawn, as in RTS.
+                if (object.forest_complete) source = forest_shape_path(file, object.uid);
+            } else if (object.kind == formats::WorldObjectKind::car_spawner) {
+                // Road traffic: no shape of its own; listed (an empty path)
+                // for the viewer's RoadTraffic to find it.
+                source = core::VirtualPath{};
             } else {
                 const auto resolved = resolver.resolve(assets::AssetKind::shape, object.shape_file.generic_string(), context);
                 if (resolved.found()) source = *resolved.resolved_path;
@@ -123,6 +132,7 @@ struct RouteStreamer::Impl {
     }
 
     void request_model(const core::VirtualPath& shape) {
+        if (shape.empty()) return; // a car spawner
         if (requested_models.insert(shape.key()).second) pending_models.push_back(shape);
     }
 

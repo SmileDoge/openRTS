@@ -63,11 +63,13 @@ struct StreamedModelAsset {
     bool fullbright_images = false;       // some image is drawn only on FullBright surfaces
     std::vector<std::string> texture_key; // texture_variant_key it was loaded with
     std::vector<formats::ShapeLight> lights;
+    // For an RTS .repaint (source_path): the shape and .sd it names.
+    std::vector<core::VirtualPath> sources;
     std::string error;
 
     [[nodiscard]] bool ok() const noexcept { return error.empty() && model.ok(); }
-    // Keys of every file the model depends on: the shape, its .sd and all
-    // texture candidates.
+    // Keys of every file the model depends on: the shape, its .sd, a
+    // repaint's shape and .sd, and all texture candidates.
     [[nodiscard]] std::vector<std::string> dependency_keys() const;
 };
 
@@ -83,6 +85,8 @@ using TextureDecodeCache = std::unordered_map<std::string, std::shared_ptr<const
                                                                       const std::vector<core::VirtualPath>& preferred);
 
 // Worker-thread job: parses the shape and decodes every texture it uses.
+// `shape` may be an RTS .repaint: the Shape and ShapeDescription it names,
+// with its TextureReplace images; the model keeps the repaint's path.
 [[nodiscard]] StreamedModelAsset load_model_asset(const core::Vfs& vfs,
                                                   const core::VirtualPath& shape,
                                                   const std::vector<core::VirtualPath>& texture_directories,

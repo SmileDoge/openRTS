@@ -171,6 +171,9 @@ struct SwitchSpec { // .sd Switch: what the mirror ActSwitch starts with
     std::uint8_t keys[4]{};
     std::u16string name;
     float precision[2]{}; // SwitchPrecision PrecX, PrecY (ActSwitch prec_dx / prec_dy)
+    // Its node's Shortcut sets (ESD_Extended_Animation), as positions of the
+    // switch (a KEY switch's key-out state counted), each ascending.
+    std::vector<std::vector<float>> shortcuts;
 };
 
 // A SCREEN display's sub-object as the host builds it (RTS CloseUpSubObject).
@@ -369,6 +372,13 @@ struct AuxSoundOutput {
     std::array<float, 8> vars{};         // its SMSObject Var1..Var8
 };
 
+// A diesel's ExhaustContr (RTSGetLocoObject ot_exhaust): what its DLL says
+// the smoke of exhaust n is (rts1.exe 0x50D3B4 takes it instead of the .eng).
+struct ExhaustOutput {
+    float rate{}, magnitude{}, dispersion{}, mass{};
+    std::uint32_t colour{};
+};
+
 struct CarOutput {
     bool has_engine = false;
     EngineOutput engine;
@@ -392,6 +402,8 @@ struct CarOutput {
     std::vector<ScreenOutput> screens;
     // The car's exterior doors (ActDoor State, SetState), in .sd order.
     std::vector<DoorState> doors;
+    // Diesels with a DLL: the exhausts' smoke as the DLL sets it.
+    std::vector<ExhaustOutput> exhausts;
 };
 
 struct StepReply {
@@ -462,11 +474,17 @@ inline void read(Reader& r, AuxLibrarySpec& a) {
 inline void write(Writer& w, const SwitchSpec& s) {
     w.put(s.id); w.put(s.num_states); w.put(s.initial_state); w.put(s.flags); w.put(s.anim_time);
     w.bytes(s.keys, 4); w.text(s.name); w.put(s.fixed_state); w.put(s.precision[0]); w.put(s.precision[1]);
+    w.put(static_cast<std::uint32_t>(s.shortcuts.size()));
+    for (const auto& set : s.shortcuts) write_pod_list(w, set);
 }
 inline void read(Reader& r, SwitchSpec& s) {
     s.id = r.get<std::uint32_t>(); s.num_states = r.get<std::uint32_t>(); s.initial_state = r.get<std::uint32_t>();
     s.flags = r.get<std::uint32_t>(); s.anim_time = r.get<float>(); r.bytes(s.keys, 4); s.name = r.text(); s.fixed_state = r.get<std::uint32_t>();
     s.precision[0] = r.get<float>(); s.precision[1] = r.get<float>();
+    const auto sets = r.get<std::uint32_t>();
+    if (sets > 64) return;
+    s.shortcuts.resize(sets);
+    for (auto& set : s.shortcuts) read_pod_list(r, set, 1024);
 }
 
 inline void write(Writer& w, const DisplaySpec& d) {
@@ -572,6 +590,7 @@ inline void write(Writer& w, const CarOutput& c) {
     write_list(w, c.aux_sound);
     write_list(w, c.screens);
     write_pod_list(w, c.doors);
+    write_pod_list(w, c.exhausts);
 }
 inline void read(Reader& r, CarOutput& c) {
     c.has_engine = r.get<std::uint8_t>() != 0; c.engine = r.get<EngineOutput>();
@@ -584,6 +603,7 @@ inline void read(Reader& r, CarOutput& c) {
     read_list(r, c.aux_sound);
     read_list(r, c.screens, 256);
     read_pod_list(r, c.doors, 4096);
+    read_pod_list(r, c.exhausts, 16);
 }
 
 inline void write(Writer& w, const StepReply& s) { write_list(w, s.cars); w.put(s.set_direction); }

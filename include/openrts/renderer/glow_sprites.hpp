@@ -55,6 +55,8 @@ public:
     // shrink as the FOV changes; here it is the factor at RTS's installed
     // FOV (65 degrees), whatever the field of view, as content was made for.
     void set_sprites(std::vector<GlowSprite> sprites);
+    // The size factor (default RTS's lights: 65 / 45); smoke and rain use 1.
+    void set_size_factor(float factor) noexcept;
     void render(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, float viewport_height,
                 GlowBlend blend = GlowBlend::added);
 

@@ -4,69 +4,112 @@
 
 **openRTS** is an open, independent implementation of the RTrainSim (RTS)
 train simulator. The goal is to run existing RTS and MSTS content (routes and
-rolling stock of the former USSR railways: ED4M, ChS4T, VL10, 2TE10 and
-others) on a modern engine, and to bring back RTS's behaviour wherever the
-player sees it: physics, brakes, signalling, sound.
+rolling stock of the former USSR railways: ED4M, ED9M, ChS4T, VL10, 2TE10
+and others) on a modern engine, and to bring back RTS's behaviour wherever
+the player sees it: physics, brakes, signalling, sound.
 
 RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. Today it is a route viewer with train driving, signalling,
-> a dispatcher window and sound, not a finished game.
+> Work in progress. The latest version is [v0.2.0](../../releases/tag/v0.2.0):
+> a nearly playable single-player game. Driving from a 3-D cab with RTS's
+> locomotive DLLs, signalling, a dispatcher window, sound and a living route
+> (forests, level crossings, road traffic, water, rain and snow, smoke) are
+> there; multiplayer and activities are not yet.
 
 ## What works
 
+- **The start menu** `openrts_game.exe`: the RTS folder, route, consist,
+  path, time, season, weather, how the train starts, and the settings; the
+  game runs as a process of its own.
 - **Content:** a virtual file system (installation folders, zip packs,
   patches, mods, hot reload); ACE, `.s` / `.sd` shapes, `.w` world files,
   terrain, environment, `.trk`, the `.tdb` / `.tsection` track database,
-  `.con`, `.eng` / `.wag` (with `.rtseng`), `.pat` paths, `.sms` / `.ws`
-  sound, `sigcfg.dat` / `sigscr.dat`, the `.rtsdb` route database.
+  `.con`, `.eng` / `.wag` (with `.rtseng`), `.repaint`, `.pat` paths,
+  `.sms` / `.ws` sound, `sigcfg.dat` / `sigscr.dat`, the `.rtsdb` route
+  database, `.electrotype` / `.electrodb` electrification.
 - **Graphics (WebGPU):**
   - RTS's material and pass rules;
-  - sky and time of day, seasons and weather;
-  - route streaming, LOD, MSAA;
-  - shape animation, signal lights, instancing of identical shapes;
+  - sky and time of day, seasons and weather, night and seasonal textures;
+  - route streaming, LOD, mipmaps, MSAA;
+  - shape animation, signal and train lights, route lamps, cab and saloon
+    lights, instancing of identical shapes;
+  - forests, level crossings with gates, pickups, road traffic, water,
+    rain and snow, diesel smoke, as RTS has them;
+  - an HDR frame with tone mapping (`--hdr`);
+  - Vulkan, DirectX 12 or OpenGL to choose from; depth for ReShade;
   - experimental lighting (R): sun shadows (cascades and a map of the cab's
     own), lamp shadows, ambient occlusion (GTAO), every lamp at once,
-    aerial haze; passes recorded on several threads.
+    light bounced off the ground, aerial haze; passes recorded on several
+    threads.
 - **Trains:**
   - RTS physics, couplers and automatic coupling, buffer hits and
     collisions;
   - RTS brakes: the 395 driver's valve, the electro-pneumatic brake (ЭПТ),
     the independent brake;
-  - derailment as RTS does it (overturning in curves, running off the end
-    of the track);
-  - body sway on the springs;
-  - standing consists go to sleep (STATIC) and cost no simulation time;
   - an optional "realistic air" brake model: flow along the brake pipe,
     483 / 292 / 305 distributors, a 280 m/s emergency wave (RTS's brakes by
-    default).
-- **RTS locomotive DLLs:** run unchanged in the 32-bit
-  `openrts-dllhost32.exe` (RTS's call order, masters and slaves,
-  AuxLibraries, adapters for older ts.h versions); a cab window, RTS's cab
-  keys, a 3-D cab view with moving switches and gauges, the cab sound,
-  pantographs.
+    default);
+  - the car menu (Num3 / the key left of `1`): at a coupling — end cocks,
+    hoses, the EP cable, uncoupling; at a bogie — brake shoe, handbrake,
+    release valve, emergency valve;
+  - derailment as RTS does it (overturning in curves, running off the end
+    of the track);
+  - body sway on the springs, rail joints;
+  - electrification as RTS has it: the kind of current and the voltage
+    under every electric engine, neutral sections, changeover stations;
+    animated pantographs;
+  - passenger doors worked from the cab, with their sound;
+  - standing consists go to sleep (STATIC) and cost no simulation time.
+- **RTS locomotive DLLs** run unchanged in the 32-bit
+  `openrts-dllhost32.exe`: RTS's call order, masters and slaves over the
+  SME cable, auxiliary libraries (AuxLibraries such as `Brakes.dll`),
+  adapters for older ts.h versions. A DLL that crashes is switched off and
+  the game goes on.
+- **The 3-D cab:**
+  - switches, keys, gauge needles and lamps move with the DLL's state;
+  - the mouse as in RTS: click, wheel, dragging handles; the cab keys from
+    the `.sd`;
+  - the КЛУБ, САУТ, САВПЭ and ИТП screens; the cab signal (ALSN);
+  - the cab sound; the sound follows where the engineer is;
+  - the "Cab (locomotive DLL)" window: switches, gauges, DLL messages.
+- **The engineer on foot:** stand up at the desk, open the window and lean
+  out, walk through the cab and into the next section, get down onto the
+  ground and climb back.
 - **Signalling:**
   - `sigscr.dat` scripts compiled exactly as RTS compiles them;
   - blocks, routes, occupancy by the whole train;
-  - signal chains ahead of the player's train (at both ends, as RTS does).
+  - signal chains ahead of the player's train (at both ends, as RTS does);
+  - shunting mode, failed and excluded signals, overridden aspects.
 - **Paths and movement:**
   - `.pat` paths, junction reservation with RTS's queue;
-  - speed limits from the speed posts;
+  - speed limits from the speed posts and the `.trk`;
   - test trains with a simple driver that follow their path, keep the
     limits and stop at red.
+- **Situations:** all the trains on the route are saved (Train window →
+  Situations) and stand where they stood when loaded, or from the start
+  menu. You can start:
+  - in the cab;
+  - beside the car, as RTS does;
+  - above the train;
+  - with no train (a flight over the route; trains through Track control).
 - **Track control (Ctrl+Alt+F7):**
   - the track map from above: trains, junctions, signals, platforms, station
     names, the player's figure with the way the camera looks; "Teleport
     here" from the right-click menu;
+  - the Electrification layer with the power source switch;
   - building and editing paths, train roles, uncoupling;
   - placing consists with a preview of where the consist will stand and
     which way its front car faces; it can be slid along the track and
     turned before it is placed.
-- **Sound:** `.sms` scripts (activation, triggers, curves, loops), route and
-  train sounds, positional audio (miniaudio).
-- **RTS information panels:** F5, Ctrl+F5, F6, F7, Ctrl+F7.
+- **Sound:** `.sms` scripts (activation, triggers, curves, loops); route,
+  train, cab and auxiliary library sounds (КЛУБ, САУТ); positional audio
+  (miniaudio).
+- **Interface:** RTS's information panels (F5, Ctrl+F5, F6, F7, Ctrl+F7),
+  pause, Russian and English.
+- **For rolling stock authors:** an SDK for native 64-bit locomotive
+  plugins (`train_plugin.h`, a C++ wrapper, a sample).
 
 ## Not yet
 
@@ -121,18 +164,21 @@ with no window.
 
 ## Running
 
-The interface is in Russian by default; English is chosen in the main window
-("Язык / Language") and remembered.
+The interface is in Russian by default; English is chosen in the start menu
+(Settings → "Язык / Language") or in the game's openRTS panel, and
+remembered.
 
 You need an RTS installation with content: openRTS changes nothing in it and
 ships no content of its own. A computer without Visual Studio needs the
 Visual C++ Redistributable (x64), see "Prebuilt binaries".
 
-The easiest way is the start menu: it picks the RTS folder, route, consist,
-path, time, season, weather and how the train starts, and the settings
-(language, keys, sound and volume, anti-aliasing, VSync), all remembered in
-`viewer_state.ini`. "Start" runs the game as a process of its own (its output
-goes to `openrts.log`); the menu comes back when the game is closed.
+The easiest way is the start menu. It picks the RTS folder, route, consist,
+path, time, season, weather and how the train starts (running, switched on,
+cold), and the settings: language, key layout, sound and volume,
+anti-aliasing, VSync, experimental lighting, HDR. All of it is remembered in
+`%LOCALAPPDATA%\openRTS\viewer_state.ini`. "Start" runs the game as a
+process of its own (its output goes to `openrts.log` there too); the menu
+comes back when the game is closed.
 
 ```powershell
 .\build\game\Release\openrts_game.exe
@@ -152,33 +198,77 @@ The game can also be started directly:
 | `--root <folder>` | the RTS installation (when the route is given by name) |
 | `--consist <name>` | a consist from `TRAINS/CONSISTS_RTS` or `CONSISTS` |
 | `--path <name>` | a `.pat` path to put the consist at the start of |
+| `--start running\|on\|cold` | a train with DLLs starts running, switched on and standing, or cold |
 | `--track-control` | open Track control at once |
+| `--situation <name\|file>` | put the trains of a saved situation back |
+| `--spawn cab\|car\|above` | start in the cab, beside the car or above the train |
 | `--time 06:30:00`, `--speed <x>` | time of day and how fast it runs |
 | `--season spring\|summer\|autumn\|winter` | season |
 | `--weather clear\|snow\|rain` | weather |
 | `--no-sound`, `--volume 0..1` | no sound, volume |
 | `--msaa 1`, `--no-vsync`, `--no-batching` | graphics settings |
-| `--experimental` | experimental shading instead of RTS's |
+| `--hdr` | an HDR frame with tone mapping |
+| `--backend auto\|vulkan\|dx12\|opengl` | the graphics API (OpenGL: RTS lighting only) |
+| `--reshade-depth on\|off` | depth for ReShade ([INSTALL_EN.md](INSTALL_EN.md#reshade)) |
+| `--experimental` | experimental lighting instead of RTS's |
+| `--effects shadows,clusters,ao,aerial\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | experimental lighting settings for one run ([details](docs/experimental-effects.md)) |
+| `--capture <file.ppm>` | take one frame and exit; `--capture-at <s>`, `--capture-car <n>`, `--capture-camera ex ey ez tx ty tz`, `--capture-cab` say when and from where |
 | `--mount <folder or zip>` | mount a mod over the installation |
 | `--no-hot-reload` | do not watch files for changes |
 
 ### Controls
 
+Two key layouts (the start menu or the openRTS panel → Keys): RTS, with the
+numeric keypad (Num0, Num1, Num3), and openRTS, without it, for laptops
+(`-`, `=`, the key left of `1`); openRTS by default.
+
+**Camera and world**
+
 | Keys | Action |
 |---|---|
 | RMB + mouse, WASD, Q/E, Shift | free camera |
 | F | free / orbit camera |
+| V | camera follows the train |
 | C | put the consist on the track near the camera |
+| J | throw the junction ahead |
+| T, L | track overlay, junction and signal labels |
+| R | RTS / experimental lighting |
+| Pause | pause |
+
+**A train without a DLL**
+
+| Keys | Action |
+|---|---|
 | Home / End | throttle |
 | Page Up / Page Down | reverser |
 | `]` / `[` | driver's brake valve (395) |
 | `.` / `,` | independent brake |
 | K | electro-pneumatic brake |
-| X | change to the other cab |
-| V | camera follows the train |
-| J | throw the junction ahead |
-| T, L | track overlay, junction and signal labels |
-| R | RTS / experimental shading |
+
+An engine with a DLL is driven from its cab with the mouse and the cab keys
+from the `.sd`, as in RTS: the "Cab keys of the locomotive DLL" checkbox in
+the Train window gives them the keyboard (the camera keys are off then; the
+F keys still work).
+
+**The engineer and the cab** (the 3-D cab: the "3D cab view" checkbox in
+the Train window)
+
+| Keys | Action |
+|---|---|
+| Enter | stand up at the desk / sit down / open a door / climb in |
+| Ctrl+Enter | step out into the passage; outside at a door, climb in |
+| Arrows, Shift, End | walk, run, slower |
+| Num0 / `-` | open the window |
+| Num1 / `=` | lean out |
+| Num3 / the key left of `1` | the car menu at the coupling or bogie under the cursor (outside) |
+| RMB + mouse | look round |
+| Mouse | click works a control, the wheel moves it a step, dragging moves handles and blinds |
+| Alt | captions of the controls |
+
+**Information**
+
+| Keys | Action |
+|---|---|
 | F5, Shift+F5, Ctrl+F5 | cars, the whole train, limits and the kilometre |
 | F6 | stations ahead |
 | F7, Ctrl+F7 | platform names, signal names |
@@ -194,9 +284,9 @@ The game can also be started directly:
 | `openrts-path-check` | drive test trains along paths: reservations, the planner |
 | `openrts-signal-check` | compile every `sigscr.dat`, compare with RTS's assembly |
 | `openrts-sound-check` | parse every `.sms` / `.ws` and the sound files |
-| `openrts-train-check` | load every consist and drive it on a test track; `--dll` runs a locomotive DLL by a script, `--cab` shows how a cab binds, `--brake ... --realistic` brakes |
+| `openrts-train-check` | load every consist and drive it on a test track; `--dll` runs a locomotive DLL by a script (with `--screens` the cab screens, `--triggers` its sound triggers), `--cab` shows how a cab binds, `--brake ... --realistic` brakes |
 | `openrts-dllhost32 --probe <folder>` | versions and layouts of every locomotive DLL |
-| `openrts_asset_dump` | resolve assets the way RTS looks them up |
+| `openrts_asset_dump` | resolve assets the way RTS looks them up; `--lights <route\|all>` counts the placed shapes' lamps by kind |
 
 ## Layout
 
@@ -206,24 +296,33 @@ The game can also be started directly:
 | `formats` | RTS/MSTS file formats |
 | `assets` | content lookup and loading |
 | `renderer` | drawing (WebGPU) |
-| `simulation` | track network, trains, brakes, signals, dispatcher |
+| `simulation` | track network, trains, brakes, signals, electrification, dispatcher |
 | `audio` | the `.sms` runner and audio output |
-| `compat` | the bridge to locomotive DLLs (in progress) |
-| `viewer` | the viewer: window, input, camera, panels |
+| `trainplugin` | locomotive logic: the bridge to RTS's DLLs and native plugins |
+| `dllhost` | `openrts-dllhost32.exe`: the 32-bit process RTS's DLLs run in |
+| `sdk` | a sample native plugin (the API is `include/openrts/plugin/train_plugin.h`) |
+| `viewer` | the game: window, input, camera, cab, panels |
+| `game` | the start menu |
 | `tools` | command-line checks |
+| `platform`, `compat` | placeholders |
 
 Lower layers do not depend on `viewer`, on a particular graphics API or on
 RTS's DLLs.
 
 ## Documentation
 
+- [INSTALL_EN.md](INSTALL_EN.md) — installing and the first start;
 - `CHANGELOG.md` — changes by version (in Russian);
 - `docs/roadmap.md` — the plan and the current state;
 - `docs/train.md`, `docs/track.md`, `docs/signals.md`, `docs/paths.md`,
-  `docs/sound.md` — how the subsystems work;
+  `docs/sound.md`, `docs/electrification.md` — how the subsystems work;
+- `docs/train-dll.md` — the locomotive DLL bridge and the native plugin API;
+- `docs/experimental-effects.md` — the experimental lighting: what it does
+  and what it costs;
+- `docs/world-objects.md` — forests, level crossings, road traffic, water,
+  rain and snow and smoke, as RTS builds and runs them;
 - `docs/vfs.md` — content, packs and mods (a Russian tutorial:
   `docs/vfs-tutorial-ru.md`);
-- `docs/train-dll.md` — the plan for the locomotive DLL bridge;
 - `docs/reverse/` — RTS's behaviour with addresses and confidence levels.
 
 ## Legal

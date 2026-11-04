@@ -38,7 +38,11 @@
 #include <openrts/simulation/track_network.hpp>
 
 #include "track_view.hpp"
+#include "crossing_view.hpp"
+#include "particle_effects.hpp"
+#include "road_traffic.hpp"
 #include "signal_view.hpp"
+#include "viewer_state.hpp"
 #include "track_control.hpp"
 #include "train_view.hpp"
 
@@ -65,6 +69,9 @@ public:
     [[nodiscard]] const std::shared_ptr<core::Vfs>& vfs() const noexcept { return content_.vfs; }
     [[nodiscard]] const std::string& consist() const noexcept { return content_.consist; }
     [[nodiscard]] int start_state() const noexcept { return content_.start_state; }
+    [[nodiscard]] const std::filesystem::path& situation() const noexcept { return content_.situation; }
+    [[nodiscard]] int start_view() const noexcept { return content_.start_view; }
+    [[nodiscard]] const std::string& save_situation() const noexcept { return content_.save_situation; }
     [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
     [[nodiscard]] bool track_control() const noexcept { return content_.track_control; }
     // RTS's config.ini text (read once from the installation folder).
@@ -231,7 +238,14 @@ public:
             track_->attach(gpu.device, gpu.target_format);
             signals_ = std::make_unique<SignalView>(content_.vfs(), route_, origin_, track_->network());
             signals_->attach(gpu.device, gpu.target_format);
+            crossings_ = std::make_unique<CrossingView>(content_.vfs(), route_, &track_->network());
         }
+        roads_ = std::make_unique<RoadTraffic>(content_.vfs(), route_, origin_);
+        if (!roads_->ready()) roads_.reset();
+        precipitation_ = std::make_unique<PrecipitationView>(gpu.device, gpu.target_format, content_.vfs());
+        if (!precipitation_->ready()) precipitation_.reset();
+        smoke_ = std::make_unique<SmokeView>(gpu.device, gpu.target_format, content_.vfs());
+        if (!smoke_->ready()) smoke_.reset();
         audio_ = gpu.audio;
         if (audio_) world_sounds_ = std::make_unique<audio::WorldSounds>(content_.vfs(), route_, origin_);
 
@@ -259,6 +273,14 @@ public:
                 signals_->set_player([trains = train_.get()](const simulation::Train& train) { return trains->is_player(train.id()); });
             }
             train_->set_start_state(content_.start_state());
+            train_->set_start_view(static_cast<TrainView::StartView>(std::clamp(content_.start_view(), 0, 3)));
+            if (!content_.situation().empty()) {
+                // A bare name: the route's situation folder.
+                auto file = content_.situation();
+                if (!file.has_parent_path()) file = train_->situation_folder() / file.replace_extension(".situation");
+                train_->request_situation(file);
+            }
+            if (!content_.save_situation().empty()) train_->save_situation_when_placed(content_.save_situation());
             if (!content_.consist().empty()) {
                 if (const auto error = train_->load(content_.consist()); !error.empty()) {
                     std::cout << "train: " << error << '\n';
@@ -277,6 +299,9 @@ public:
     void detach() override {
         if (world_sounds_ && audio_) world_sounds_->stop(*audio_);
         if (train_ && audio_) train_->stop_sound(*audio_);
+        if (crossings_ && audio_) crossings_->stop_sound(*audio_);
+        if (weather_sound_ && audio_) weather_sound_->stop(*audio_);
+        weather_sound_.reset();
         track_control_.reset();
         if (signals_) {
             signals_->set_authority({});
@@ -381,7 +406,10 @@ public:
         }
         const auto camera_position = renderer::route_position(camera.eye(), origin_);
         apply_conditions(clock.season, clock.weather);
-        if (terrain_) terrain_->update(camera_position);
+        if (terrain_) {
+            terrain_->update(camera_position);
+            terrain_->update_water(clock.elapsed, camera.eye());
+        }
         if (sky_simulation_) {
             sky_state_ = sky_simulation_->update(clock.time_of_day, clock.elapsed, camera_position.tile_z, clock.season);
         }
@@ -409,6 +437,30 @@ public:
         if (world_sounds_ && audio_) {
             world_sounds_->update(clock.elapsed, camera.eye(), audio::SoundCamera::external, *audio_);
         }
+        if (crossings_) {
+            const auto trains = train_ ? train_->trains() : std::vector<const simulation::Train*>{};
+            crossings_->update(clock.elapsed, streamer_->visible_instances(), trains, camera.eye(), audio_);
+        }
+        if (roads_ && effects_.traffic) roads_->update(clock.elapsed, streamer_->visible_instances(), crossings_.get(), *library_);
+        if (precipitation_ || smoke_) {
+            // The light on a surface facing up, as RTS's prec / smoke shaders take it.
+            const auto& lighting = environment().lighting;
+            const float factor = std::clamp(-lighting.sun_direction.y * 2.0f, 0.0f, 1.0f);
+            const glm::vec4 light{glm::max(glm::max(lighting.sun_ambient, lighting.sun_diffuse * factor), glm::vec4{0.0f})};
+            const glm::vec4 opaque{glm::vec3{light}, 1.0f};
+            if (precipitation_) {
+                const auto forward = camera.forward();
+                glm::vec3 right{forward.z, 0.0f, -forward.x};
+                right = glm::length(right) > 1e-4f ? glm::normalize(right) : glm::vec3{1.0f, 0.0f, 0.0f};
+                precipitation_->update(clock.elapsed, camera.eye(), right, effects_.precipitation ? 1.0f : 0.0f, opaque);
+            }
+            if (smoke_) {
+                std::vector<ExhaustSource> sources;
+                if (train_ && effects_.smoke) train_->collect_exhausts(sources);
+                smoke_->update(clock.elapsed, sources, opaque);
+            }
+        }
+        update_weather_sound(clock.elapsed, camera.eye());
     }
 
     [[nodiscard]] SceneEnvironment environment() const override {
@@ -507,6 +559,8 @@ public:
             // Switch shapes follow their junction; other shapes stay at rest.
             if (const auto blade = track_ ? track_->switch_frame(instance) : std::nullopt) {
                 renderer.submit(*model, instance.transform, *blade);
+            } else if (const auto gates = crossings_ ? crossings_->adjustments(instance, *library_) : std::nullopt) {
+                renderer.submit(*model, instance.transform, *gates);
             } else if (const auto hidden = signals_ ? signals_->hidden_parts(instance, *library_)
                                                     : std::vector<renderer::NodeAdjustment>{};
                        !hidden.empty()) {
@@ -522,6 +576,7 @@ public:
                            {.frustum = culling_ ? &frustum : nullptr, .eye = frame.eye, .draw_distance = culling_ ? draw_distance : 0.0f,
                             .shadow_range = frame.shadow_range});
         }
+        if (roads_ && effects_.traffic) roads_->submit(renderer, *library_, culling_ ? &frustum : nullptr, frame.eye, culling_ ? draw_distance : 0.0f);
         if (signals_) signals_->collect_lights(streamer_->visible_instances(), *library_, frame.eye, draw_distance);
     }
 
@@ -532,6 +587,10 @@ public:
     // cab (pass 3), without writing depth. RTS lays them over by their alpha;
     // the experimental path adds them (emissive, HDR).
     void draw_after_translucent(const WGPURenderPassEncoder pass, const FrameView& frame) override {
+        // Rain or snow, then the smoke (RTS 0x408574: the precipitation in
+        // the object passes, the smoke after them).
+        if (precipitation_) precipitation_->render(pass, frame.projection, frame.view, frame.viewport_height);
+        if (smoke_) smoke_->render(pass, frame.projection, frame.view, frame.viewport_height);
         const auto blend = experimental_ ? renderer::GlowBlend::added : renderer::GlowBlend::over;
         if (signals_) signals_->draw_lights(pass, frame, frame.viewport_height, blend);
         if (train_glows_ && train_ && !train_->light_glows().empty()) {
@@ -592,6 +651,27 @@ public:
 
     [[nodiscard]] bool keyboard_captured() const override { return train_ && train_->keyboard_captured(); }
     [[nodiscard]] bool takes_scroll() const override { return train_ && train_->engineer_inside(); }
+    [[nodiscard]] std::string world_report() const override {
+        std::string report = "water " + std::to_string(terrain_ ? terrain_->water_quads() : 0) + " quads";
+        std::size_t forests = 0, crossings = 0, pickups = 0;
+        for (const auto& instance : streamer_->visible_instances()) {
+            forests += instance.kind == formats::WorldObjectKind::forest ? 1 : 0;
+            crossings += instance.kind == formats::WorldObjectKind::level_crossing ? 1 : 0;
+            pickups += instance.kind == formats::WorldObjectKind::pickup ? 1 : 0;
+        }
+        report += ", forests " + std::to_string(forests) + ", level crossings " + std::to_string(crossings) + " ("
+            + std::to_string(crossings_ ? crossings_->closed() : 0) + " closed), pickups " + std::to_string(pickups) + ", car spawners "
+            + std::to_string(roads_ ? roads_->spawners() : 0) + ", cars " + std::to_string(roads_ ? roads_->cars() : 0) + ", "
+            + (precipitation_ && precipitation_->snow() ? "snowflakes " : "raindrops ") + std::to_string(precipitation_ ? precipitation_->drops() : 0)
+            + ", smoke puffs " + std::to_string(smoke_ ? smoke_->particles() : 0);
+        const auto streamed = streamer_->stats();
+        report += "; terrain tiles " + std::to_string(terrain_ ? terrain_->loaded_tiles() : 0) + ", world tiles " + std::to_string(streamed.loaded_tiles) + " of "
+            + std::to_string(streamed.requested_tiles) + ", instances " + std::to_string(streamed.visible_instances);
+        return report;
+    }
+    [[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>> cab_switch_state(const std::uint32_t id) const override {
+        return train_ ? train_->cab_switch_state(id) : std::nullopt;
+    }
     void set_cab_switch(const std::uint32_t id, const std::uint32_t state) override {
         if (train_) train_->set_cab_switch(id, state);
     }
@@ -627,6 +707,15 @@ public:
         ImGui::Text(tr("Lights: %zu scenery lamps lit nearby, %zu in the rings, %zu in the nearest one (of 9)"), scenery_lamps_lit_,
                     light_rings_.placed(), light_rings_.lights[0].size());
         ImGui::Checkbox(tr("Distance and frustum culling"), &culling_);
+        // The world's extras (remembered): road traffic, rain and snow, diesel smoke.
+        if (ImGui::Checkbox(tr("Cars on the roads"), &effects_.traffic)) remember("world_traffic", effects_.traffic ? "1" : "0");
+        ImGui::SameLine();
+        if (ImGui::Checkbox(tr("Rain and snow"), &effects_.precipitation)) remember("world_precipitation", effects_.precipitation ? "1" : "0");
+        ImGui::SameLine();
+        if (ImGui::Checkbox(tr("Diesel smoke"), &effects_.smoke)) remember("world_smoke", effects_.smoke ? "1" : "0");
+        ImGui::TextDisabled(tr("Water %zu patches, cars %zu, %s %zu, smoke puffs %zu"), terrain_ ? terrain_->water_quads() : std::size_t{0},
+                            roads_ ? roads_->cars() : std::size_t{0}, precipitation_ && precipitation_->snow() ? tr("snowflakes") : tr("raindrops"),
+                            precipitation_ ? precipitation_->drops() : std::size_t{0}, smoke_ ? smoke_->particles() : std::size_t{0});
 
         const auto stream = streamer_->stats();
         const auto models = library_->stats();
@@ -720,6 +809,16 @@ private:
 
         environment_ = &it->second;
         sky_simulation_.emplace(*environment_);
+        if (terrain_) {
+            // The environment's water over the water patches (RTS 0x4A2144).
+            terrain_->set_water(environment_->water ? &*environment_->water : nullptr,
+                                {child(envfiles, "TEXTURES"), *core::VirtualPath::parse("GLOBAL/TEXTURES")});
+        }
+        if (precipitation_) {
+            precipitation_->set_environment(environment_->precipitation ? &*environment_->precipitation : nullptr, environment_->wind,
+                                            {child(envfiles, "TEXTURES"), *core::VirtualPath::parse("GLOBAL/TEXTURES")});
+        }
+        if (smoke_) smoke_->set_wind(environment_->wind);
         if (sky_renderer_) {
             sky_renderer_->load(*environment_, *content_.vfs(),
                                 {child(envfiles, "TEXTURES"), *core::VirtualPath::parse("GLOBAL/TEXTURES")});
@@ -764,6 +863,42 @@ private:
     // everything shake. When the camera is more than 1 km from the origin,
     // the origin moves under it (whole metres, same height) and every part
     // of the scene follows.
+    // The rain or the snow heard (RTS 0x55859C: the environment's sound, else
+    // rain_ex.sms / snow_ex.sms), while it falls.
+    void update_weather_sound(const float elapsed, const glm::vec3& eye) {
+        const bool falling = audio_ && precipitation_ && precipitation_->drops() > 0;
+        const bool snow = precipitation_ && precipitation_->snow();
+        if (weather_sound_ && (!falling || snow != weather_snow_)) {
+            weather_sound_->stop(*audio_);
+            weather_sound_.reset();
+        }
+        if (!falling) return;
+        if (!weather_sound_) {
+            weather_snow_ = snow;
+            const std::string name = snow ? "snow_ex.sms" : "rain_ex.sms";
+            std::vector<core::VirtualPath> candidates{child(child(route_, "SOUND"), name)};
+            if (const auto global = core::VirtualPath::parse("SOUND/" + name)) candidates.push_back(*global);
+            for (const auto& candidate : candidates) {
+                if (!content_.vfs()->exists(candidate)) continue;
+                auto script = std::make_shared<formats::SoundScript>(formats::load_sound_script(*content_.vfs(), candidate));
+                const auto* group = script->ok() ? script->select_group(formats::SoundOwner::environment) : nullptr;
+                if (!group) continue;
+                if (!weather_bank_) weather_bank_ = std::make_unique<audio::SoundBank>(content_.vfs());
+                auto lookup = [this, candidate](const std::string& file) -> std::shared_ptr<const audio::AudioClip> {
+                    const auto found = audio::find_sound_file(*content_.vfs(), candidate, file);
+                    return found ? weather_bank_->get(*found) : nullptr;
+                };
+                weather_script_ = std::move(script);
+                weather_sound_ = std::make_unique<audio::SoundInstance>(weather_script_, *group, formats::SoundOwner::environment,
+                                                                        std::move(lookup), 7u);
+                break;
+            }
+        }
+        if (!weather_sound_) return;
+        audio::SoundInputs inputs{.camera = audio::SoundCamera::external, .position = eye};
+        weather_sound_->update(elapsed, inputs, *audio_);
+    }
+
     void rebase_near(ViewerCamera& camera) {
         constexpr float rebase_distance = 1000.0f;
         const auto eye = camera.eye();
@@ -777,6 +912,8 @@ private:
         if (track_) track_->set_origin(origin_);
         if (train_) train_->set_origin(origin_);
         if (signals_) signals_->set_origin(origin_);
+        if (roads_) roads_->set_origin(origin_);
+        if (smoke_) smoke_->set_origin_shift(shift);
         if (world_sounds_) world_sounds_->set_origin(origin_);
     }
     mutable bool labels_ = false;
@@ -1162,6 +1299,27 @@ private:
     mutable bool place_names_ = false;  // F7
     mutable bool cab_labels_ = false;   // Alt held in the 3-D cab
     std::unique_ptr<SignalView> signals_;
+    std::unique_ptr<CrossingView> crossings_;
+    std::unique_ptr<RoadTraffic> roads_;
+    std::unique_ptr<PrecipitationView> precipitation_;
+    std::unique_ptr<SmokeView> smoke_;
+    std::unique_ptr<audio::SoundBank> weather_bank_;
+    std::shared_ptr<const formats::SoundScript> weather_script_;
+    std::unique_ptr<audio::SoundInstance> weather_sound_;
+    bool weather_snow_ = false;
+    // The world's extras the viewer panel turns on and off (remembered).
+    struct WorldEffects {
+        bool traffic = true;
+        bool precipitation = true;
+        bool smoke = true;
+    };
+    mutable WorldEffects effects_ = [] {
+        WorldEffects effects;
+        effects.traffic = remembered("world_traffic").value_or("1") != "0";
+        effects.precipitation = remembered("world_precipitation").value_or("1") != "0";
+        effects.smoke = remembered("world_smoke").value_or("1") != "0";
+        return effects;
+    }();
     std::size_t drawn_instances_ = 0;
 };
 

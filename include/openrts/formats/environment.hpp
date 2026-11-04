@@ -18,6 +18,10 @@ struct EnvAnimFrame {
     float uv_tiles[2]{1.0f, 1.0f};
     float uv_scroll[2]{};
     bool has_uv_scroll = false;
+    bool has_uv_tiles = false;
+    // world_anim_shader_frame_uvstamp ( u0 v0 u1 v1 ): the frame's rectangle.
+    float uv_stamp[4]{0.0f, 0.0f, 1.0f, 1.0f};
+    bool has_uv_stamp = false;
 };
 
 struct EnvShader {
@@ -26,6 +30,38 @@ struct EnvShader {
     // terrain_texslot addressing value: 2 clamps, anything else repeats.
     std::uint32_t texture_addressing = 1;
     std::vector<EnvAnimFrame> frames;
+    float frame_length{}; // world_anim_shader_framelen, s a frame
+};
+
+// world_water: layers drawn over the terrain patches flagged as water
+// (rts1.exe 0x55859C parses, 0x4A2144 draws), each at its height above the
+// tile's water level.
+struct EnvWaterLayer {
+    float height{};
+    bool sky_reflection = false; // world_water_layer_sky_reflection: UVs follow the camera
+    EnvShader shader;
+};
+struct EnvWater {
+    float wave_height{};
+    float wave_speed{};
+    std::vector<EnvWaterLayer> layers;
+};
+
+// world_precipitation (0x55859C; drawn by 0x41A318).
+struct EnvPrecipitation {
+    bool snow = false;
+    std::uint32_t density = 1024; // drops in the 100 x 60 x 100 m box at full precipitation
+    float speed = 5.0f;           // m/s down
+    EnvShader shader;
+};
+
+// world_wind_layers: below `max_height` above the camera (rain) or the
+// ground (smoke), things drift along `direction` x `speed`.
+struct EnvWindLayer {
+    float max_height{};
+    float direction[3]{};
+    float speed{};
+    float turbulence{};
 };
 
 struct SkyEdgeStep {
@@ -68,6 +104,9 @@ struct EnvironmentDefinition {
     std::uint16_t layers_behind_satellites{};
     std::vector<SkyLayer> sky_layers;
     std::vector<SkySatellite> satellites;
+    std::optional<EnvWater> water;
+    std::optional<EnvPrecipitation> precipitation;
+    std::vector<EnvWindLayer> wind;
     std::string error;
 
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }

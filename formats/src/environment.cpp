@@ -1,6 +1,7 @@
 #include <openrts/formats/environment.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -87,12 +88,18 @@ void read_node_contents(Tokenizer& tokens, TextNode& node) {
     EnvShader result;
     if (!anim) return result;
 
+    result.frame_length = static_cast<float>(number_of(anim->child("world_anim_shader_framelen")));
     if (const auto* frames = anim->child("world_anim_shader_frames")) {
         for (const auto* frame : frames->all("world_anim_shader_frame")) {
             EnvAnimFrame parsed;
             if (const auto* tiles = frame->child("world_anim_shader_frame_uvtiles")) {
                 parsed.uv_tiles[0] = static_cast<float>(number_of(tiles, 0, 1.0));
                 parsed.uv_tiles[1] = static_cast<float>(number_of(tiles, 1, 1.0));
+                parsed.has_uv_tiles = true;
+            }
+            if (const auto* stamp = frame->child("world_anim_shader_frame_uvstamp")) {
+                for (std::size_t k = 0; k < 4; ++k) parsed.uv_stamp[k] = static_cast<float>(number_of(stamp, k));
+                parsed.has_uv_stamp = true;
             }
             if (const auto* scroll = frame->child("world_anim_shader_frame_uvscroll")) {
                 parsed.uv_scroll[0] = static_cast<float>(number_of(scroll, 0));
@@ -251,6 +258,55 @@ EnvironmentDefinition parse_environment(const std::string_view bytes) {
     }
 
     if (const auto* ambient = world->child("world_environment_ambient_light")) result.ambient_light = colour_of(ambient);
+
+    if (const auto* water = world->child("world_water")) {
+        EnvWater parsed;
+        parsed.wave_height = static_cast<float>(number_of(water->child("world_water_wave_height")));
+        parsed.wave_speed = static_cast<float>(number_of(water->child("world_water_wave_speed")));
+        if (const auto* layers = water->child("world_water_layers")) {
+            // As many as the count says, or as there are (0x55859C).
+            const auto declared = static_cast<std::size_t>((std::max)(0, integer_of(layers)));
+            for (const auto* layer : layers->all("world_water_layer")) {
+                if (parsed.layers.size() >= declared) break;
+                EnvWaterLayer read;
+                read.height = static_cast<float>(number_of(layer->child("world_water_layer_height")));
+                read.sky_reflection = layer->child("world_water_layer_sky_reflection") != nullptr;
+                read.shader = read_anim_shader(layer->child("world_anim_shader"));
+                parsed.layers.push_back(std::move(read));
+            }
+        }
+        result.water = std::move(parsed);
+    }
+    if (const auto* precipitation = world->child("world_precipitation")) {
+        EnvPrecipitation parsed;
+        if (const auto* type = precipitation->child("world_precipitation_type")) {
+            std::string value = type->value();
+            for (auto& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            parsed.snow = value.find("snow") != std::string::npos;
+        }
+        if (const auto* density = precipitation->child("world_precipitation_density")) {
+            parsed.density = static_cast<std::uint32_t>(number_of(density, 0, 1024.0));
+        }
+        if (const auto* speed = precipitation->child("world_precipitation_speed")) parsed.speed = static_cast<float>(number_of(speed, 0, 5.0));
+        parsed.shader = read_anim_shader(precipitation->child("world_anim_shader"));
+        result.precipitation = std::move(parsed);
+    }
+    if (const auto* wind = world->child("world_wind")) {
+        if (const auto* layers = wind->child("world_wind_layers")) {
+            const auto declared = static_cast<std::size_t>((std::max)(0, integer_of(layers)));
+            for (const auto* layer : layers->all("world_wind_layer")) {
+                if (result.wind.size() >= declared) break;
+                EnvWindLayer read;
+                read.max_height = static_cast<float>(number_of(layer->child("world_wind_layer_maxheight")));
+                if (const auto* direction = layer->child("world_wind_layer_direction")) {
+                    for (std::size_t k = 0; k < 3; ++k) read.direction[k] = static_cast<float>(number_of(direction, k));
+                }
+                read.speed = static_cast<float>(number_of(layer->child("world_wind_layer_speed")));
+                read.turbulence = static_cast<float>(number_of(layer->child("world_wind_layer_turbulencep")));
+                result.wind.push_back(read);
+            }
+        }
+    }
     return result;
 }
 

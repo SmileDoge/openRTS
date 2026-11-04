@@ -9,6 +9,7 @@
 
 #include <openrts/core/vfs.hpp>
 #include <openrts/renderer/depth.hpp>
+#include <openrts/renderer/depth_export.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/renderer/tone_map.hpp>
@@ -56,6 +57,32 @@ int main() {
     }
     const renderer::ToneMapper tone(device, WGPUTextureFormat_BGRA8Unorm);
     check(tone.ready(), "tone mapper");
+    // The depth copy for ReShade, with a draw: a 4x depth sampled into a single-sample one.
+    {
+        renderer::DepthExport depth_export(device);
+        check(depth_export.ready(), "depth export");
+        const WGPUTextureDescriptor descriptor{
+            .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {.width = 64, .height = 32, .depthOrArrayLayers = 1},
+            .format = renderer::depth_format,
+            .mipLevelCount = 1,
+            .sampleCount = 4,
+        };
+        const auto depth = wgpuDeviceCreateTexture(device, &descriptor);
+        const auto view = wgpuTextureCreateView(depth, nullptr);
+        const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+        depth_export.record(encoder, view, 64, 32);
+        check(depth_export.texture() != nullptr, "depth export texture");
+        const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
+        const auto queue = wgpuDeviceGetQueue(device);
+        wgpuQueueSubmit(queue, 1, &commands);
+        wgpuQueueRelease(queue);
+        wgpuCommandBufferRelease(commands);
+        wgpuCommandEncoderRelease(encoder);
+        wgpuTextureViewRelease(view);
+        wgpuTextureRelease(depth);
+    }
     const WGPUPopErrorScopeCallbackInfo pop{
         .mode = WGPUCallbackMode_AllowProcessEvents,
         .callback = [](const WGPUPopErrorScopeStatus, const WGPUErrorType type, const WGPUStringView message, void*, void*) {

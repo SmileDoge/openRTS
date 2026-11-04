@@ -111,6 +111,29 @@ Nodes are classified by name prefix:
   (`ESD_Extended_Animation`, `AnimationNode`, `Shortcut`, `AnimTimeScale`)
   are parsed in the same area. They are for the train work.
 
+### Shortcut (CONFIRMED)
+
+`ESD_Extended_Animation ( AnimationNode ( Name ( "x" ) Shortcut ( n f1 ..
+fn ) ... ) )` in a shape's `.sd`.
+
+- **Parsing (`0x4BB7BC`):** each `Shortcut` is a set of n frames of the
+  node's animation, kept sorted; a set with n = 0 is dropped. After the
+  shape loads, `0x4BB3F8` binds nodes to matrices by name.
+- **Use (`0x4B30DC`):** while a switch's node moves towards its target
+  frame, passing a point of a set makes it jump to the set's farthest point
+  that is not past the target. The jump costs no time.
+  - Upwards (`0x4B3778`): the first point in (from, to].
+  - Downwards (`0x4B3884`): the last point in (to, from], which includes
+    the point the node stands on.
+- **Frames of a position:** the node's first key frame + position ×
+  (key span / (States − 1)), in whole frames.
+- **Content:** 36 cab `.sd` files use it (ChS4t, ChS7). The ChS7's
+  `C_MAIN` (`Shortcut ( 2 2 12 )`, `Shortcut ( 2 10 4 )`, 15 states) moves
+  between 0 (12) and +1 (1) without crossing the field-weakening frames.
+- **openRTS:** the trainplugin converts the frames to switch positions from
+  the cab shape's keys, and the DLL host moves the switch through them. So
+  `State` arrives as early as in RTS.
+
 ### Switches
 
 - **CONFIRMED (content):** every switch shape the installed routes use has a

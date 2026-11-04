@@ -60,6 +60,9 @@ public:
     [[nodiscard]] bool inside() const noexcept { return mode_ == Mode::seated || mode_ == Mode::standing; }
     // Into the cab, seated in chair `chair` (0: the driver).
     void sit(std::size_t chair);
+    // On foot outside at `feet` (scene coordinates), as RTS starts an
+    // activity beside the player's car.
+    void stand_outside(const glm::vec3& feet);
     void off() noexcept;
 
     // `car`: the cab car's body this frame (cab shape -> scene). Moves the

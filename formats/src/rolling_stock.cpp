@@ -333,6 +333,60 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
     }
 }
 
+// rts1.exe 0x44247C: the smoke defaults of the engine, then each exhaust of
+// DieselSpecialEffects with RTS's own keywords and limits.
+void read_exhausts(std::string_view text, TextRange block, EngineDefinition& engine) {
+    engine.smoke_initial_magnitude = static_cast<float>(values(text, "dieselsmokeeffectinitialmagnitude", block).atof());
+    engine.smoke_max_magnitude = static_cast<float>(values(text, "dieselsmokeeffectmaxmagnitude", block).atof());
+    if (auto rate = values(text, "dieselsmokeeffectinitialsmokerate", block); rate.found()) {
+        engine.smoke_initial_rate = (std::min)(static_cast<float>(rate.atof()), 1.0f);
+    }
+    if (auto rate = values(text, "dieselsmokeeffectmaxsmokerate", block); rate.found()) {
+        engine.smoke_max_rate = static_cast<float>(rate.atof()) * 0.01f;
+    }
+    engine.smoke_initial_rate = (std::min)(engine.smoke_initial_rate, 3.0f);
+    engine.smoke_max_rate = (std::min)(engine.smoke_max_rate, 3.0f);
+    const auto effects = rts_find(text, "dieselspecialeffects", block);
+    if (!effects) return;
+    for (int k = 0; k <= 16; ++k) {
+        const std::string name = k == 0 ? std::string("exhaust") : "exhaust" + std::to_string(k);
+        const auto exhaust = rts_find(text, name, *effects);
+        if (!exhaust) continue;
+        DieselExhaust e;
+        Values v(text, exhaust);
+        for (auto& p : e.position) p = static_cast<float>(v.atof());
+        for (auto& d : e.direction) d = static_cast<float>(v.atof());
+        e.size = static_cast<float>(v.atof());
+        if (auto colour = values(text, "colour", *exhaust); colour.found()) {
+            e.colour = static_cast<std::uint32_t>(std::strtoul(colour.token().c_str(), nullptr, 16));
+        }
+        if (auto density = values(text, "density", *exhaust); density.found()) e.density = static_cast<float>(density.atof());
+        if (auto mass = values(text, "mass", *exhaust); mass.found()) e.mass = static_cast<float>(mass.atof());
+        if (auto magnitude = values(text, "magnitude", *exhaust); magnitude.found()) {
+            e.magnitude = {static_cast<float>(magnitude.atof()), static_cast<float>(magnitude.atof())};
+        } else {
+            e.magnitude = {engine.smoke_initial_magnitude * 0.65f, engine.smoke_max_magnitude};
+        }
+        if (auto rate = values(text, "rate", *exhaust); rate.found()) {
+            e.rate = {static_cast<float>(rate.atof()), static_cast<float>(rate.atof())};
+        } else {
+            e.rate = {engine.smoke_initial_rate, engine.smoke_max_rate};
+        }
+        e.dispersion = 0.5f;
+        if (auto dispersion = values(text, "dispersion", *exhaust); dispersion.found()) e.dispersion = static_cast<float>(dispersion.atof());
+        if (auto texture = values(text, "texture", *exhaust); texture.found()) e.texture = texture.token();
+        // The limits RTS puts on them.
+        e.density = (std::max)(e.density, 0.0f);
+        e.dispersion = (std::max)(e.dispersion, 1.0f);
+        if (e.magnitude[0] <= 0.5f) e.magnitude[0] = 0.5f;
+        e.magnitude[1] = (std::max)(e.magnitude[1], 1.0f);
+        e.mass = (std::max)(e.mass, 0.5f);
+        e.rate[0] = (std::max)(e.rate[0], 0.0f);
+        if (e.rate[1] < 0.0f) e.rate[1] = 1.0f;
+        engine.exhausts.push_back(std::move(e));
+    }
+}
+
 [[nodiscard]] EngineDefinition read_engine(std::string_view text, TextRange block) {
     EngineDefinition engine;
     const auto type = values(text, "type", block).token();
@@ -354,6 +408,7 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
         }
     }
     if (const auto extended = rts_find(text, "engextended")) read_extended(text, *extended, engine);
+    read_exhausts(text, block, engine);
     return engine;
 }
 

@@ -27,10 +27,18 @@ openRTS changes nothing in it.
    - **vX.Y.Z** — versions.
 
    Download `openRTS-windows-x64-….zip`.
-2. **Unpack the whole archive** into any folder you can write to, for
-   example `D:\Games\openRTS`. Do not use `Program Files`: the settings
-   (`viewer_state.ini`) and the log (`openrts.log`) are kept next to the
-   program. It can go beside RTS or inside its folder.
+2. **Unpack the whole archive** into any folder, for example
+   `D:\Games\openRTS`: beside RTS, inside its folder or in `Program Files`.
+   The settings and the log are kept in `%LOCALAPPDATA%\openRTS`:
+   - `viewer_state.ini` — the settings;
+   - `openrts.log` — the game's log;
+   - `imgui.ini` — where the windows are;
+   - `debug_views` — saved views;
+   - `user_paths` — Track control's paths.
+
+   The start menu's Settings have "Open the settings and log folder". To
+   keep everything next to the program (on a USB stick, say), put an empty
+   file `portable.txt` beside the exe.
 3. **Install the Visual C++ Redistributable x64** if it is not there yet.
 
 What the archive holds:
@@ -50,14 +58,27 @@ What the archive holds:
    to English under Settings (Язык / Language).
 2. **RTS folder:** give the folder with `rts1.exe` and press Read. The
    route list should appear.
-3. **What to run:** choose a route, a consist and a train path. Train
-   start sets where to begin. Set the time, season and weather.
+3. **What to run:** choose a route, a consist and a train path. Set the
+   time, season and weather.
+   - **Train start:** the state the engine starts in (running, switched
+     on, cold).
+   - **Start at:**
+     - in the cab;
+     - beside the car — on foot next to the cab car, as RTS starts an
+       activity;
+     - above the train;
+     - no train — just fly over the route. The first consist you put on
+       the track in Track control (Ctrl+Alt+F7) is yours.
+   - **Situation:** trains saved in the game (Train window → Situations)
+     stand where they stood, instead of the consist chosen.
 4. **Settings:**
    - language;
    - keys: RTS, with the numeric keypad (Num0, Num1, Num3), or openRTS,
      without it, for laptops (`-`, `=`, the key left of `1`);
    - sound and volume, anti-aliasing, VSync;
-   - experimental lighting.
+   - experimental lighting;
+   - the graphics API: Automatic (Vulkan, else DirectX 12), Vulkan,
+     DirectX 12, or OpenGL for old cards.
 5. **Press Start.** The game opens in a window of its own while the menu
    waits; it comes back when the game is closed. Every choice is
    remembered.
@@ -117,6 +138,38 @@ A folder or zip over the RTS installation can be mounted with
 `--mount <folder or zip>` or listed in `openrts.ini`; see
 [docs/vfs.md](docs/vfs.md).
 
+## ReShade
+
+openRTS gives ReShade the scene depth. Effects such as depth of field
+(DOF), ambient occlusion (MXAO) and fog need it.
+
+1. In the game's openRTS panel turn on "Depth for ReShade" (or start with
+   `--reshade-depth on`). Use Vulkan or DirectX 12; it is not available on
+   OpenGL.
+2. Install ReShade on `openrts_viewer.exe`: that is the game,
+   `openrts_game.exe` is only the menu. In the installer choose the same
+   API as the game. Automatic usually means Vulkan; the openRTS panel shows
+   it next to "Graphics API".
+3. In ReShade, under "Edit global preprocessor definitions", set:
+
+   | Setting | Value | Why |
+   |---|---|---|
+   | `RESHADE_DEPTH_INPUT_IS_REVERSED` | `1` | the depth is reversed; the ReShade installer writes 0, change it |
+   | `RESHADE_DEPTH_MULTIPLIER` | `20` | openRTS's near plane is 5 cm |
+   | `RESHADE_DEPTH_INPUT_IS_UPSIDE_DOWN` | `0` | |
+   | `RESHADE_DEPTH_LINEARIZATION_FAR_PLANE` | `1000` | the distance in metres beyond which the effects treat depth as infinite; more for fog and far DOF |
+
+4. Check with DisplayDepth: near dark, far light, the sky white.
+
+**How it works.**
+- openRTS keeps the depth until the end of the frame.
+- With anti-aliasing (MSAA) it adds a single-sample copy, for a ReShade
+  that cannot take a multisampled depth by itself.
+- The cost is next to nothing.
+
+**Limitation.** ReShade works on the finished frame, interface windows
+included, so depth effects reach them too.
+
 ## Troubleshooting
 
 | What you see | What to do |
@@ -124,13 +177,13 @@ A folder or zip over the RTS installation can be mounted with
 | `VCRUNTIME140.dll` / `MSVCP140.dll` not found | Install the Visual C++ Redistributable **x64** |
 | "openrts_viewer.exe is not found next to the menu" | Unpack the whole archive; do not move the exe files one by one |
 | "There is no ROUTES folder here" | Give the folder holding `rts1.exe` |
-| No window, or a black screen | Update the graphics driver (Vulkan or DirectX 12 is needed); look for `WebGPU error` lines in `openrts.log` |
+| No window, or a black screen | Update the graphics driver (Vulkan or DirectX 12 is needed). In the start menu's Settings choose Graphics API → DirectX 12. Look for `WebGPU error` lines in `openrts.log` |
 | A DLL locomotive does not respond, the cab window is empty | `openrts-dllhost32.exe` must sit next to `openrts_viewer.exe`. An antivirus may block it — add the folder to its exclusions. The reason is written to `openrts.log` |
 | Low frame rate | Turn experimental lighting off (`R`), or shadows and occlusion in the openRTS panel; lower anti-aliasing |
-| Settings went wrong | Delete `viewer_state.ini` next to the program to reset everything |
+| Settings went wrong | Delete `viewer_state.ini` in `%LOCALAPPDATA%\openRTS` to reset everything |
 
 If that does not help, open an issue: say what you did and attach
-`openrts.log`.
+`openrts.log` from `%LOCALAPPDATA%\openRTS`.
 
 ## Building from source
 

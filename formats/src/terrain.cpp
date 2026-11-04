@@ -28,6 +28,7 @@ constexpr std::uint32_t token_patchset = 159;
 constexpr std::uint32_t token_patchset_npatches = 161;
 constexpr std::uint32_t token_patchset_patches = 163;
 constexpr std::uint32_t token_patchset_patch = 164;
+constexpr std::uint32_t token_water_height_offset = 251;
 
 constexpr std::size_t patch_record_size = 60;
 
@@ -309,6 +310,15 @@ template <typename ReadFile>
             read_shaders(child->contents, tile);
         } else if (child->token == token_patches) {
             read_patches(child->contents, tile);
+        } else if (child->token == token_water_height_offset) {
+            std::array<float, 4> heights{};
+            bool all = true;
+            for (auto& height : heights) {
+                const auto value = child->contents.f32();
+                if (!value) all = false;
+                height = value.value_or(0.0f);
+            }
+            if (all) tile.water_heights = heights;
         }
     }
 

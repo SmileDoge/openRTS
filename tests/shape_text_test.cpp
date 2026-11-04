@@ -4,7 +4,9 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/formats/shape_file.hpp>
 
@@ -184,6 +186,23 @@ int main() {
     const auto truncated = utf16_file("SIMISA@@@@@@@@@@JINX0s1t______\nshape ( points ( 1");
     check(!load_binary_shape_body(std::string_view(truncated)).ok(),
           "truncated text is an error");
+
+    // A cab .sd's ESD_Extended_Animation (the ChS7's controller): Shortcut
+    // ( n frames ) sets, sorted as RTS keeps them (0x4BB7BC).
+    {
+        const auto cab = parse_cab_description(utf16_file(
+            "SIMISA@@@@@@@@@@JINX0t1t______\nShape ( cab.s\n ESD_Extended_Animation ( AnimationNode ( Name ( \"C_MAIN\" )\n"
+            " Shortcut ( 2 2 12 ) Shortcut ( 2 10 4 ) Shortcut ( 0 ) ) )\n"
+            " ESD_Interior ( Switches ( 1 Switch ( ID ( 0 ) Name ( C_MAIN ) States ( 15 12 ) Flags ( CONTROLLERX ) ) ) ) )"));
+        check(cab.ok() && cab.switches.size() == 1, "cab with an extended animation parses");
+        check(cab.animation_nodes.size() == 1 && cab.animation_nodes[0].name == "C_MAIN", "AnimationNode by name");
+        if (cab.animation_nodes.size() == 1) {
+            const auto& sets = cab.animation_nodes[0].shortcuts;
+            check(sets.size() == 2, "two Shortcut sets, the empty one skipped");
+            check(sets.size() == 2 && sets[0] == std::vector<std::uint16_t>{2, 12} && sets[1] == std::vector<std::uint16_t>{4, 10},
+                  "Shortcut frames sorted");
+        }
+    }
 
     if (failures == 0) std::cout << "shape text: all checks passed\n";
     return failures == 0 ? 0 : 1;

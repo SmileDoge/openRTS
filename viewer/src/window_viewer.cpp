@@ -3,15 +3,18 @@
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
 #include <openrts/renderer/tone_map.hpp>
+#include <openrts/renderer/depth_export.hpp>
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <ctime>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -69,6 +72,95 @@ private:
     bool initialized_;
 };
 
+// Where a window was left, as viewer_state.ini keeps it ("x y width height
+// maximized"): its restored rectangle (the content area, screen
+// coordinates) and whether it was maximized. The game and the start menu
+// keep one each (window_game, window_menu).
+struct WindowPlacement {
+    int x = 0;
+    int y = 0;
+    int width = initial_width;
+    int height = initial_height;
+    bool positioned = false; // x and y are known
+    bool maximized = false;
+    bool operator==(const WindowPlacement&) const = default;
+};
+
+[[nodiscard]] std::optional<WindowPlacement> remembered_placement(const std::string_view key) {
+    const auto value = remembered(key);
+    if (!value) return std::nullopt;
+    std::istringstream fields(*value);
+    WindowPlacement placement;
+    int maximized = 0;
+    if (!(fields >> placement.x >> placement.y >> placement.width >> placement.height >> maximized)) return std::nullopt;
+    placement.width = std::clamp(placement.width, 320, 16384);
+    placement.height = std::clamp(placement.height, 200, 16384);
+    placement.positioned = true;
+    placement.maximized = maximized != 0;
+    return placement;
+}
+
+// Whether the title bar of a window placed so stays on a screen: a monitor
+// unplugged since leaves the window where the system puts it.
+[[nodiscard]] bool on_a_monitor(const WindowPlacement& placement) {
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    for (int i = 0; i < count; ++i) {
+        int x = 0, y = 0, width = 0, height = 0;
+        glfwGetMonitorWorkarea(monitors[i], &x, &y, &width, &height);
+        const int left = (std::max)(placement.x, x);
+        const int right = (std::min)(placement.x + placement.width, x + width);
+        const int top = (std::max)(placement.y - 30, y);
+        const int bottom = (std::min)(placement.y, y + height);
+        if (right - left >= 100 && bottom - top >= 15) return true;
+    }
+    return false;
+}
+
+// Follows the window's place and size and writes them a second after they
+// settle, and when the window goes (a crash later keeps them too).
+class PlacementKeeper {
+public:
+    PlacementKeeper(std::string key, const WindowPlacement& start) : key_(std::move(key)), last_(start) {}
+    ~PlacementKeeper() {
+        if (dirty_) save();
+    }
+    PlacementKeeper(const PlacementKeeper&) = delete;
+    PlacementKeeper& operator=(const PlacementKeeper&) = delete;
+
+    void update(GLFWwindow* window, const double now) {
+        if (glfwGetWindowAttrib(window, GLFW_ICONIFIED)) return;
+        auto placement = last_;
+        placement.maximized = glfwGetWindowAttrib(window, GLFW_MAXIMIZED) != 0;
+        // Maximized, the restored rectangle stays the one seen last.
+        if (!placement.maximized) {
+            glfwGetWindowPos(window, &placement.x, &placement.y);
+            glfwGetWindowSize(window, &placement.width, &placement.height);
+            placement.positioned = true;
+        }
+        if (placement.width <= 0 || placement.height <= 0) return;
+        if (placement != last_) {
+            last_ = placement;
+            changed_at_ = now;
+            dirty_ = true;
+        }
+        if (dirty_ && now - changed_at_ > 1.0) save();
+    }
+
+private:
+    void save() {
+        dirty_ = false;
+        if (!last_.positioned) return;
+        remember(key_, std::to_string(last_.x) + ' ' + std::to_string(last_.y) + ' ' + std::to_string(last_.width) + ' '
+                           + std::to_string(last_.height) + ' ' + (last_.maximized ? '1' : '0'));
+    }
+
+    std::string key_;
+    WindowPlacement last_;
+    double changed_at_ = 0.0;
+    bool dirty_ = false;
+};
+
 class Window {
 public:
     Window(const int width, const int height, const char* title) {
@@ -103,6 +195,10 @@ public:
 
         WGPUSurfaceCapabilities capabilities{};
         wgpuSurfaceGetCapabilities(surface_, context.adapter(), &capabilities);
+        // A capture copies the frame out; where the surface cannot be a copy
+        // source (OpenGL), the frame is drawn into a texture of its own.
+        const bool copy_supported = (capabilities.usages & WGPUTextureUsage_CopySrc) != 0;
+        offscreen_capture_ = copy_source && !copy_supported;
         // Fifo (vsync) is always available; without vsync prefer Immediate,
         // then Mailbox (no tearing, still uncapped).
         for (std::size_t i = 0; i < capabilities.presentModeCount; ++i) {
@@ -129,7 +225,7 @@ public:
             config_ = {
                 .device = device_,
                 .format = format,
-                .usage = WGPUTextureUsage_RenderAttachment | (copy_source ? WGPUTextureUsage_CopySrc : WGPUTextureUsage_None),
+                .usage = WGPUTextureUsage_RenderAttachment | (copy_source && copy_supported ? WGPUTextureUsage_CopySrc : WGPUTextureUsage_None),
                 .width = initial_width,
                 .height = initial_height,
                 .alphaMode = capabilities.alphaModes[0],
@@ -190,8 +286,21 @@ public:
         recreate_depth();
     }
 
+    // The scene depth stays after the frame and can be sampled (the copy for
+    // ReShade, renderer::DepthExport); remakes the depth buffer when it changes.
+    void set_depth_export(const bool on) {
+        if (depth_export_ == on) return;
+        depth_export_ = on;
+        recreate_depth();
+    }
+    [[nodiscard]] bool depth_export() const noexcept { return depth_export_; }
+
     // Returns the frame texture, or nullptr when the surface has nothing to draw into.
     [[nodiscard]] WGPUTexture acquire() const {
+        if (offscreen_) {
+            wgpuTextureAddRef(offscreen_);
+            return offscreen_;
+        }
         WGPUSurfaceTexture frame{};
         wgpuSurfaceGetCurrentTexture(surface_, &frame);
         const bool usable = frame.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal
@@ -199,14 +308,16 @@ public:
         return usable ? frame.texture : nullptr;
     }
 
-    void present() const { wgpuSurfacePresent(surface_); }
+    void present() const {
+        if (!offscreen_) wgpuSurfacePresent(surface_);
+    }
 
 private:
     void recreate_depth() {
         release_depth();
         const auto samples = renderer::render_sample_count();
         const WGPUTextureDescriptor descriptor{
-            .usage = WGPUTextureUsage_RenderAttachment,
+            .usage = WGPUTextureUsage_RenderAttachment | (depth_export_ ? WGPUTextureUsage_TextureBinding : WGPUTextureUsage_None),
             .dimension = WGPUTextureDimension_2D,
             .size = {.width = config_.width, .height = config_.height, .depthOrArrayLayers = 1},
             .format = renderer::depth_format,
@@ -214,6 +325,17 @@ private:
             .sampleCount = samples,
         };
         depth_ = wgpuDeviceCreateTexture(device_, &descriptor);
+        if (offscreen_capture_) {
+            const WGPUTextureDescriptor frame{
+                .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc,
+                .dimension = WGPUTextureDimension_2D,
+                .size = {.width = config_.width, .height = config_.height, .depthOrArrayLayers = 1},
+                .format = config_.format,
+                .mipLevelCount = 1,
+                .sampleCount = 1,
+            };
+            offscreen_ = wgpuDeviceCreateTexture(device_, &frame);
+        }
         if (depth_) depth_view_ = wgpuTextureCreateView(depth_, nullptr);
         if (samples > 1) {
             const WGPUTextureDescriptor colour{
@@ -258,6 +380,8 @@ private:
         if (msaa_) wgpuTextureRelease(msaa_);
         if (hdr_view_) wgpuTextureViewRelease(hdr_view_);
         if (hdr_) wgpuTextureRelease(hdr_);
+        if (offscreen_) wgpuTextureRelease(offscreen_);
+        offscreen_ = nullptr;
         depth_view_ = nullptr;
         depth_ = nullptr;
         msaa_view_ = nullptr;
@@ -268,6 +392,9 @@ private:
 
     WGPUTexture hdr_ = nullptr;
     WGPUTextureView hdr_view_ = nullptr;
+    WGPUTexture offscreen_ = nullptr; // the frame of a capture the surface cannot copy
+    bool offscreen_capture_ = false;
+    bool depth_export_ = false;
     WGPUDevice device_ = nullptr;
     WGPUSurface surface_ = nullptr;
     WGPUSurfaceConfiguration config_{};
@@ -372,6 +499,12 @@ struct PanelState {
     bool paused = false;
     bool menu = false; // the scene draws the whole interface
     bool hdr = false;  // the frame is HDR: the tone curve and exposure apply
+    std::string_view backend_now = "-"; // the graphics API this run draws through
+    bool reshade_depth = false;         // keep the depth and copy it single-sample (INSTALL.md, ReShade)
+    // False on OpenGL: the experimental path's compute shaders read depth
+    // textures with textureLoad, which wgpu's GLSL output does not support.
+    bool experimental_supported = true;
+    int backend_choice = 0;             // the remembered one: auto, vulkan, dx12, opengl
     // 0 none (RTS look), 1 Khronos PBR Neutral, 2 AgX, 3 ACES, 4 Khronos by
     // day and AgX by night: in the experimental path.
     int tone_curve = 4;
@@ -414,9 +547,19 @@ struct ClockControls {
 #ifdef OPENRTS_HAS_IMGUI
 class DebugOverlay {
 public:
-    DebugOverlay(GLFWwindow* window, const WGPUDevice device, const WGPUTextureFormat target_format) {
+    DebugOverlay(GLFWwindow* window, const WGPUDevice device, const WGPUTextureFormat target_format, const bool menu) {
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
+        // Where the windows were left: imgui.ini beside the settings (UTF-8,
+        // as ImGui opens files). The start menu keeps a file of its own:
+        // it stays open while the game runs, and ImGui writes its whole
+        // layout when it closes, which would put back the game's windows
+        // as they were before the game moved them.
+        layout_file_ = [menu] {
+            const auto text = (user_data_directory() / (menu ? "imgui_menu.ini" : "imgui.ini")).u8string();
+            return std::string(text.begin(), text.end());
+        }();
+        ImGui::GetIO().IniFilename = layout_file_.c_str();
         ImGui::StyleColorsDark();
         load_font();
         // Callbacks are forwarded by the viewer's own GLFW handlers.
@@ -440,6 +583,8 @@ public:
 
     DebugOverlay(const DebugOverlay&) = delete;
     DebugOverlay& operator=(const DebugOverlay&) = delete;
+    DebugOverlay(DebugOverlay&&) = delete;
+    DebugOverlay& operator=(DebugOverlay&&) = delete;
 
     [[nodiscard]] bool ok() const noexcept { return initialized_; }
 
@@ -469,11 +614,18 @@ public:
             list->AddText(at, 0xff40e0ffu, text);
         }
         ImGui::Begin(tr("openRTS viewer###viewer"));
-        // Language of the interface (Russian by default), remembered.
-        {
+        // What is open and how fast it runs; then the settings, a section
+        // each, one setting a line, top to bottom.
+        // Scene titles are literals: their text is NUL-terminated.
+        ImGui::TextUnformatted(tr(scene.title().data()));
+        ImGui::Text(tr("FPS %.0f  |  %.2f ms avg, %.2f ms worst"), panel.stats.fps(), panel.stats.average_ms(),
+                    panel.stats.worst_ms());
+
+        if (ImGui::CollapsingHeader(tr("General"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            // Language of the interface (Russian by default), remembered.
             int language = ui_language() == UiLanguage::russian ? 0 : 1;
             const char* languages[] = {"Русский", "English"};
-            ImGui::SetNextItemWidth(120.0f);
+            ImGui::SetNextItemWidth(220.0f);
             if (ImGui::Combo("Язык / Language", &language, languages, 2)) {
                 set_ui_language(language == 0 ? UiLanguage::russian : UiLanguage::english);
                 remember("language", language == 0 ? "ru" : "en");
@@ -486,133 +638,200 @@ public:
                 set_key_layout(layout == 0 ? KeyLayout::rts : KeyLayout::openrts);
                 remember("key_layout", layout == 0 ? "rts" : "openrts");
             }
+            ImGui::Checkbox(tr("Pause (Pause)"), &panel.paused);
         }
-        ImGui::Checkbox(tr("Pause (Pause)"), &panel.paused);
-        if (ImGui::Checkbox(tr("Physical light falloff (experimental lighting)"), &panel.physical_light))
-            remember("light_falloff", panel.physical_light ? "physical" : "rts");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("Headlights and lamps fall off as 1/distance squared with a soft cone edge; off: the RTS light shapes."));
-        ImGui::SetNextItemWidth(200.0f);
-        if (ImGui::SliderFloat(tr("Night sky light (experimental lighting)"), &panel.night_ambient, 0.5f, 8.0f, "%.2f",
-                               ImGuiSliderFlags_Logarithmic))
-            remember("night_ambient", std::to_string(panel.night_ambient));
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("The environment's ambient light at night, as a factor: the unlit surroundings brighter, the lamps as they are. No effect by day."));
-        ImGui::SetNextItemWidth(200.0f);
-        if (ImGui::SliderFloat(tr("Lamps in daylight (experimental lighting)"), &panel.effects.lamps_in_daylight, 0.0f, 1.0f, "%.2f"))
-            remember("lamps_daylight", std::to_string(panel.effects.lamps_in_daylight));
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("How strong lamps are in full daylight against the night: an eye used to the sun hardly sees a cab lamp. 1: as at night."));
-        {
-            int lamp_shadows = static_cast<int>(panel.effects.lamp_shadows);
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderInt(tr("Lamp shadows (experimental lighting)"), &lamp_shadows, 0, 4)) {
-                panel.effects.lamp_shadows = static_cast<std::uint32_t>(lamp_shadows);
-                remember("lamp_shadows", std::to_string(lamp_shadows));
-            }
+
+        if (ImGui::CollapsingHeader(tr("Graphics"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            // The lighting: RTS's or the experimental one (R); not on OpenGL.
+            auto path = renderer.shading_path();
+            int path_index = path == renderer::ShadingPath::experimental ? 1 : 0;
+            const char* paths[] = {tr("RTS"), tr("Experimental")};
+            ImGui::BeginDisabled(!panel.experimental_supported);
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo(tr("Lighting (R)"), &path_index, paths, 2))
+                path = path_index == 1 ? renderer::ShadingPath::experimental : renderer::ShadingPath::rts_compatible;
+            ImGui::EndDisabled();
+            if (!panel.experimental_supported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", tr("Not available on OpenGL: choose Vulkan or DirectX 12 (Graphics API) and restart."));
+            renderer.set_shading_path(path);
+            // The graphics API, from the next start (the device is made once).
+            const char* backends[] = {tr("Automatic"), "Vulkan", "DirectX 12", "OpenGL"};
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo(tr("Graphics API"), &panel.backend_choice, backends, 4))
+                remember("backend", renderer::graphics_backend_key(static_cast<renderer::GraphicsBackend>(panel.backend_choice)));
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("Lamps that throw shadows: those lighting the cab (or the view) most, by power, direction and reach, so a floodlight does not shine through the roof. Each is one more pass; needs the clustered lights."));
+                ImGui::SetTooltip("%s", tr("Takes effect after a restart. Automatic: Vulkan, else DirectX 12. OpenGL is for old cards; the experimental lighting may not work there."));
+            ImGui::TextDisabled("%s", trf("now: %s", std::string(panel.backend_now).c_str()).c_str());
+            ImGui::BeginDisabled(!panel.vsync_optional);
+            const auto vsync_label = std::string(tr("VSync")) + " (" + panel.present_mode + ")###vsync";
+            ImGui::Checkbox(vsync_label.c_str(), &panel.vsync);
+            ImGui::EndDisabled();
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::SliderFloat(tr("Field of view"), &panel.fov, 30.0f, 100.0f, tr("%.0f degrees")))
+                remember("fov", std::to_string(panel.fov));
+            ImGui::BeginDisabled(!panel.experimental_supported);
+            if (ImGui::Checkbox(tr("Depth for ReShade"), &panel.reshade_depth))
+                remember("reshade_depth", panel.reshade_depth ? "1" : "0");
+            ImGui::EndDisabled();
+            if (!panel.experimental_supported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", tr("Not available on OpenGL: choose Vulkan or DirectX 12 (Graphics API) and restart."));
+            else if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("Keeps the scene depth to the end of the frame and, with anti-aliasing, adds a copy ReShade can take. In ReShade: RESHADE_DEPTH_INPUT_IS_REVERSED 1, RESHADE_DEPTH_MULTIPLIER 20 (see INSTALL.md)."));
+            bool batching = renderer.batching();
+            if (ImGui::Checkbox(tr("Merge identical primitives (instancing)"), &batching)) renderer.set_batching(batching);
+            bool culling = renderer.face_culling();
+            if (ImGui::Checkbox(tr("Cull back faces (RTS)"), &culling)) renderer.set_face_culling(culling);
+            if (panel.hdr) {
+                ImGui::SeparatorText("HDR");
+                const char* curves[] = {tr("none (as RTS)"), "Khronos PBR Neutral", "AgX (punchy)", "ACES",
+                                        tr("auto: Khronos by day, AgX by night")};
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::Combo(tr("Tone curve (experimental lighting)"), &panel.tone_curve, curves, 5))
+                    remember("tone_mode", std::to_string(panel.tone_curve));
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::SliderFloat(tr("Exposure"), &panel.exposure, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
+                    remember("exposure", std::to_string(panel.exposure));
+                if (panel.tone_curve == 4) {
+                    ImGui::SetNextItemWidth(220.0f);
+                    if (ImGui::SliderFloat(tr("Night exposure"), &panel.night_exposure, 0.5f, 6.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
+                        remember("night_exposure", std::to_string(panel.night_exposure));
+                    ImGui::TextDisabled(tr("night %.0f %%"), panel.night * 100.0f);
+                }
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::SliderFloat(tr("Saturation"), &panel.saturation, 0.5f, 1.8f, "%.2f"))
+                    remember("saturation", std::to_string(panel.saturation));
+            }
         }
-        ImGui::SetNextItemWidth(200.0f);
-        if (ImGui::SliderFloat(tr("Light range (experimental lighting)"), &panel.light_range, 0.0f, 3000.0f,
-                               panel.light_range < 1.0f ? tr("as RTS") : tr("%.0f m")))
-            remember("light_range", std::to_string(panel.light_range));
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("How far the scenery's lamps and floodlights still light the scene; at 0 as RTS's MaxLightDistance."));
-        ImGui::SetNextItemWidth(200.0f);
-        if (ImGui::SliderFloat(tr("Headlight reach (experimental lighting)"), &panel.headlight_reach, 1.0f, 5.0f, "x%.1f"))
-            remember("headlight_reach", std::to_string(panel.headlight_reach));
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("How far the trains' headlights and searchlights reach, as a factor of their .eng; 1 as RTS."));
-        if (ImGui::Checkbox(tr("Light FullBright as ordinary surfaces (experimental lighting)"), &panel.light_fullbright))
-            remember("light_fullbright", panel.light_fullbright ? "1" : "0");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("MSTS FullBright surfaces (platforms, signs) take sun, sky and lamps; their darkened night textures are left out."));
-        if (ImGui::Checkbox(tr("Parallel recording (experimental lighting)"), &panel.parallel_recording))
-            remember("parallel_recording", panel.parallel_recording ? "1" : "0");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("The shadow cascades and the depth pre-pass are recorded on worker threads while the main pass is."));
-        if (ImGui::Checkbox(tr("Sun shadows (experimental lighting)"), &panel.effects.shadows))
-            remember("effect_shadows", panel.effects.shadows ? "1" : "0");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("Cascaded shadow maps of the sun, as far from the camera as set below."));
-        if (panel.effects.shadows) {
-            ImGui::Indent();
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderFloat(tr("Shadow distance"), &panel.effects.shadow_distance, 100.0f, 1000.0f, tr("%.0f m")))
-                remember("shadow_distance", std::to_string(panel.effects.shadow_distance));
+
+        if (ImGui::CollapsingHeader(tr("Experimental lighting"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::BeginDisabled(!panel.experimental_supported);
+            ImGui::SeparatorText(tr("Sun"));
+            if (ImGui::Checkbox(tr("Sun shadows"), &panel.effects.shadows)) remember("effect_shadows", panel.effects.shadows ? "1" : "0");
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("How far from the camera things cast shadows; farther makes the far cascade coarser."));
-            const char* sizes[] = {"1024", "2048", "4096"};
-            int quality = panel.effects.shadow_map_size <= 1024 ? 0 : panel.effects.shadow_map_size >= 4096 ? 2 : 1;
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::Combo(tr("Shadow quality"), &quality, sizes, 3)) {
-                panel.effects.shadow_map_size = 1024u << quality;
-                remember("shadow_quality", std::to_string(panel.effects.shadow_map_size));
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("Texels a side of each cascade's map: sharper shadows, more video memory (4096: 64 MB a cascade)."));
-            int cascades = static_cast<int>(panel.effects.shadow_cascades);
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderInt(tr("Shadow cascades"), &cascades, 2, 4)) {
-                panel.effects.shadow_cascades = static_cast<std::uint32_t>(cascades);
-                remember("shadow_cascades", std::to_string(cascades));
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("Pieces the shadow distance is split into: more keeps the middle distance sharp, each one more pass."));
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderFloat(tr("Shadow softness"), &panel.effects.shadow_softness, 0.5f, 4.0f, "%.1f"))
-                remember("shadow_softness", std::to_string(panel.effects.shadow_softness));
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("How blurred shadow edges are, in shadow map texels."));
-            if (ImGui::Checkbox(tr("Keep the far cascades"), &panel.effects.cache_far_cascades))
-                remember("shadow_cache", panel.effects.cache_far_cascades ? "1" : "0");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("The far cascades are drawn every other frame, and at once when the view leaves them."));
-            if (ImGui::Checkbox(tr("Sharp shadows in the cab"), &panel.effects.cab_shadows))
-                remember("shadow_cab", panel.effects.cab_shadows ? "1" : "0");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("A shadow map of its own around the cab: sharp edges on the desk, one more pass."));
-            ImGui::Unindent();
-        }
-        if (ImGui::Checkbox(tr("Every lamp, clustered (experimental lighting)"), &panel.effects.clustered_lights))
-            remember("effect_clusters", panel.effects.clustered_lights ? "1" : "0");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("Every lamp and headlight near the camera lights the scene, not RTS's nine a ring."));
-        if (ImGui::Checkbox(tr("Ambient occlusion, GTAO (experimental lighting)"), &panel.effects.ambient_occlusion))
-            remember("effect_ao", panel.effects.ambient_occlusion ? "1" : "0");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("Darkens the sky light in corners and creases, from the depth of the scene."));
-        if (ImGui::Checkbox(tr("Aerial perspective (experimental lighting)"), &panel.effects.aerial_perspective))
-            remember("effect_aerial", panel.effects.aerial_perspective ? "1" : "0");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", tr("Distance haze thinning with height and brighter towards the sun, instead of RTS's linear fog."));
-        if (panel.hdr) {
-            const char* curves[] = {tr("none (as RTS)"), "Khronos PBR Neutral", "AgX (punchy)", "ACES",
-                                    tr("auto: Khronos by day, AgX by night")};
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::Combo(tr("Tone curve (experimental lighting)"), &panel.tone_curve, curves, 5))
-                remember("tone_mode", std::to_string(panel.tone_curve));
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderFloat(tr("Exposure"), &panel.exposure, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
-                remember("exposure", std::to_string(panel.exposure));
-            if (panel.tone_curve == 4) {
+                ImGui::SetTooltip("%s", tr("Cascaded shadow maps of the sun, as far from the camera as set below."));
+            if (panel.effects.shadows) {
+                ImGui::Indent();
                 ImGui::SetNextItemWidth(200.0f);
-                if (ImGui::SliderFloat(tr("Night exposure"), &panel.night_exposure, 0.5f, 6.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
-                    remember("night_exposure", std::to_string(panel.night_exposure));
-                ImGui::SameLine();
-                ImGui::TextDisabled(tr("night %.0f %%"), panel.night * 100.0f);
+                if (ImGui::SliderFloat(tr("Shadow distance"), &panel.effects.shadow_distance, 100.0f, 1000.0f, tr("%.0f m")))
+                    remember("shadow_distance", std::to_string(panel.effects.shadow_distance));
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", tr("How far from the camera things cast shadows; farther makes the far cascade coarser."));
+                const char* sizes[] = {"1024", "2048", "4096"};
+                int quality = panel.effects.shadow_map_size <= 1024 ? 0 : panel.effects.shadow_map_size >= 4096 ? 2 : 1;
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::Combo(tr("Shadow quality"), &quality, sizes, 3)) {
+                    panel.effects.shadow_map_size = 1024u << quality;
+                    remember("shadow_quality", std::to_string(panel.effects.shadow_map_size));
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", tr("Texels a side of each cascade's map: sharper shadows, more video memory (4096: 64 MB a cascade)."));
+                int cascades = static_cast<int>(panel.effects.shadow_cascades);
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::SliderInt(tr("Shadow cascades"), &cascades, 2, 4)) {
+                    panel.effects.shadow_cascades = static_cast<std::uint32_t>(cascades);
+                    remember("shadow_cascades", std::to_string(cascades));
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", tr("Pieces the shadow distance is split into: more keeps the middle distance sharp, each one more pass."));
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::SliderFloat(tr("Shadow softness"), &panel.effects.shadow_softness, 0.5f, 4.0f, "%.1f"))
+                    remember("shadow_softness", std::to_string(panel.effects.shadow_softness));
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("How blurred shadow edges are, in shadow map texels."));
+                if (ImGui::Checkbox(tr("Keep the far cascades"), &panel.effects.cache_far_cascades))
+                    remember("shadow_cache", panel.effects.cache_far_cascades ? "1" : "0");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", tr("The far cascades are drawn every other frame, and at once when the view leaves them."));
+                if (ImGui::Checkbox(tr("Sharp shadows in the cab"), &panel.effects.cab_shadows))
+                    remember("shadow_cab", panel.effects.cab_shadows ? "1" : "0");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", tr("A shadow map of its own around the cab: sharp edges on the desk, one more pass."));
+                ImGui::Unindent();
+            }
+
+            ImGui::SeparatorText(tr("Lamps"));
+            if (ImGui::Checkbox(tr("Every lamp, clustered"), &panel.effects.clustered_lights))
+                remember("effect_clusters", panel.effects.clustered_lights ? "1" : "0");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("Every lamp and headlight near the camera lights the scene, not RTS's nine a ring."));
+            {
+                int lamp_shadows = static_cast<int>(panel.effects.lamp_shadows);
+                ImGui::SetNextItemWidth(200.0f);
+                if (ImGui::SliderInt(tr("Lamp shadows"), &lamp_shadows, 0, 4)) {
+                    panel.effects.lamp_shadows = static_cast<std::uint32_t>(lamp_shadows);
+                    remember("lamp_shadows", std::to_string(lamp_shadows));
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", tr("Lamps that throw shadows: those lighting the cab (or the view) most, by power, direction and reach, so a floodlight does not shine through the roof. Each is one more pass."));
             }
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderFloat(tr("Saturation"), &panel.saturation, 0.5f, 1.8f, "%.2f"))
-                remember("saturation", std::to_string(panel.saturation));
+            if (ImGui::SliderFloat(tr("Light range"), &panel.light_range, 0.0f, 3000.0f, panel.light_range < 1.0f ? tr("as RTS") : tr("%.0f m")))
+                remember("light_range", std::to_string(panel.light_range));
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("How far the scenery's lamps and floodlights still light the scene; at 0 as RTS's MaxLightDistance."));
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::SliderFloat(tr("Headlight reach"), &panel.headlight_reach, 1.0f, 5.0f, "x%.1f"))
+                remember("headlight_reach", std::to_string(panel.headlight_reach));
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("How far the trains' headlights and searchlights reach, as a factor of their .eng; 1 as RTS."));
+            if (ImGui::Checkbox(tr("Physical light falloff"), &panel.physical_light))
+                remember("light_falloff", panel.physical_light ? "physical" : "rts");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("Headlights and lamps fall off as 1/distance squared with a soft cone edge; off: the RTS light shapes."));
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::SliderFloat(tr("Lamps in daylight"), &panel.effects.lamps_in_daylight, 0.0f, 1.0f, "%.2f"))
+                remember("lamps_daylight", std::to_string(panel.effects.lamps_in_daylight));
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("How strong lamps are in full daylight against the night: an eye used to the sun hardly sees a cab lamp. 1: as at night."));
+
+            ImGui::SeparatorText(tr("Sky and surroundings"));
+            if (ImGui::Checkbox(tr("Ambient occlusion, GTAO"), &panel.effects.ambient_occlusion))
+                remember("effect_ao", panel.effects.ambient_occlusion ? "1" : "0");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Darkens the sky light in corners and creases, from the depth of the scene."));
+            if (ImGui::Checkbox(tr("Aerial perspective"), &panel.effects.aerial_perspective))
+                remember("effect_aerial", panel.effects.aerial_perspective ? "1" : "0");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("Distance haze thinning with height and brighter towards the sun, instead of RTS's linear fog."));
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::SliderFloat(tr("Night sky light"), &panel.night_ambient, 0.5f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
+                remember("night_ambient", std::to_string(panel.night_ambient));
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("The environment's ambient light at night, as a factor: the unlit surroundings brighter, the lamps as they are. No effect by day."));
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::SliderFloat(tr("Ground bounce"), &panel.effects.ground_bounce, 0.0f, 0.5f, "%.2f"))
+                remember("ground_bounce", std::to_string(panel.effects.ground_bounce));
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("Light the sunlit ground throws back onto bogies and the underframe, as the ground's reflectance (ballast and grass about 0.2). 0: none."));
+            if (ImGui::Checkbox(tr("Light FullBright as ordinary surfaces"), &panel.light_fullbright))
+                remember("light_fullbright", panel.light_fullbright ? "1" : "0");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("MSTS FullBright surfaces (platforms, signs) take sun, sky and lamps; their darkened night textures are left out."));
+            ImGui::EndDisabled();
         }
-        // Scene titles are literals: their text is NUL-terminated.
-        ImGui::TextUnformatted(tr(scene.title().data()));
-        ImGui::Text(tr("FPS %.0f  |  %.2f ms avg, %.2f ms worst"), panel.stats.fps(), panel.stats.average_ms(),
-                    panel.stats.worst_ms());
-        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-        if (ImGui::TreeNode(tr("Frame time"))) {
+
+        if (ImGui::CollapsingHeader(tr("Sound"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (panel.sound) {
+                float volume = panel.sound->volume();
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::SliderFloat(tr("Sound volume"), &volume, 0.0f, 1.0f, "%.2f")) {
+                    panel.sound->set_volume(volume);
+                    remember("volume", std::to_string(volume)); // the next run starts with it
+                }
+                ImGui::TextDisabled(tr("%zu voices"), panel.sound->active_voices());
+            } else {
+                ImGui::TextDisabled("%s", tr("Sound: off"));
+            }
+        }
+
+        if (ImGui::CollapsingHeader(tr("Time and weather"), ImGuiTreeNodeFlags_DefaultOpen)) draw_clock(clock, time_of_day_applies);
+
+        if (ImGui::CollapsingHeader(tr("Scene"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text(tr("Camera: %s"), camera.fly ? "fly" : "orbit");
+            scene.draw_overlay(camera);
+            if (ImGui::Button(tr("Save debug view (Ctrl+F6)"))) panel.save_view = true;
+            if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
+        }
+
+        if (ImGui::CollapsingHeader(tr("Performance"))) {
             const auto& stages = panel.stats.stage_ms();
             double cpu = 0.0;
             for (std::size_t i = 0; i < frame_stage_count; ++i) {
@@ -624,58 +843,18 @@ public:
             if (panel.gpu_timing) {
                 ImGui::Text(tr("GPU pass %5.2f ms"), panel.stats.gpu_ms());
             } else {
-                ImGui::TextDisabled(tr("GPU pass: no timestamp queries on this device"));
+                ImGui::TextDisabled("%s", tr("GPU pass: no timestamp queries on this device"));
             }
-            ImGui::TreePop();
+            const auto gpu = renderer.stats();
+            ImGui::Text(tr("GPU: %zu textures, %zu retired waiting, frame %llu done"), gpu.cached_textures, gpu.retired_pending,
+                        static_cast<unsigned long long>(gpu.completed_frame));
+            ImGui::Text(tr("Models: %zu instances, %zu primitives, %zu draw calls"), gpu.instances, gpu.primitives, gpu.draw_calls);
+            if (ImGui::Checkbox(tr("Parallel recording"), &panel.parallel_recording))
+                remember("parallel_recording", panel.parallel_recording ? "1" : "0");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", tr("The shadow cascades and the depth pre-pass are recorded on worker threads while the main pass is."));
         }
-        ImGui::BeginDisabled(!panel.vsync_optional);
-        ImGui::Checkbox(tr("VSync"), &panel.vsync);
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::TextDisabled("(%s)", panel.present_mode);
-        ImGui::Text(tr("Camera: %s"), camera.fly ? "fly" : "orbit");
-        ImGui::SetNextItemWidth(200.0f);
-        if (ImGui::SliderFloat(tr("Field of view"), &panel.fov, 30.0f, 100.0f, tr("%.0f degrees")))
-            remember("fov", std::to_string(panel.fov));
-        scene.draw_overlay(camera);
-        ImGui::Separator();
-        auto path = renderer.shading_path();
-        ImGui::TextUnformatted(tr("Shading (R):"));
-        ImGui::SameLine();
-        if (ImGui::RadioButton(tr("RTS"), path == renderer::ShadingPath::rts_compatible)) {
-            path = renderer::ShadingPath::rts_compatible;
-        }
-        ImGui::SameLine();
-        if (ImGui::RadioButton(tr("Experimental"), path == renderer::ShadingPath::experimental)) {
-            path = renderer::ShadingPath::experimental;
-        }
-        renderer.set_shading_path(path);
-        const auto gpu = renderer.stats();
-        ImGui::Text(tr("GPU: %zu textures, %zu retired waiting, frame %llu done"), gpu.cached_textures, gpu.retired_pending,
-                    static_cast<unsigned long long>(gpu.completed_frame));
-        ImGui::Text(tr("Models: %zu instances, %zu primitives, %zu draw calls"), gpu.instances, gpu.primitives,
-                    gpu.draw_calls);
-        if (panel.sound) {
-            float volume = panel.sound->volume();
-            ImGui::SetNextItemWidth(160.0f);
-            if (ImGui::SliderFloat(tr("Sound volume"), &volume, 0.0f, 1.0f, "%.2f")) {
-                panel.sound->set_volume(volume);
-                remember("volume", std::to_string(volume)); // the next run starts with it
-            }
-            ImGui::SameLine();
-            ImGui::Text(tr("%zu voices"), panel.sound->active_voices());
-        } else {
-            ImGui::TextDisabled(tr("Sound: off"));
-        }
-        bool batching = renderer.batching();
-        if (ImGui::Checkbox(tr("Merge identical primitives (instancing)"), &batching)) renderer.set_batching(batching);
-        bool culling = renderer.face_culling();
-        if (ImGui::Checkbox(tr("Cull back faces (RTS)"), &culling)) renderer.set_face_culling(culling);
 
-        if (ImGui::Button(tr("Save debug view (Ctrl+F6)"))) panel.save_view = true;
-        if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
-        ImGui::Separator();
-        draw_clock(clock, time_of_day_applies);
         ImGui::Separator();
         ImGui::TextUnformatted(tr("RMB: look  WASD: move  Q/E: vertical"));
         ImGui::TextUnformatted(tr("Shift: boost  F: fly/orbit"));
@@ -747,8 +926,17 @@ private:
                 break;
             }
         }
+        // The start menu's title and large button (Segoe UI Semibold).
+        for (const char* file : {"C:/Windows/Fonts/seguisb.ttf", "C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arial.ttf",
+                                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"}) {
+            if (!std::filesystem::is_regular_file(file)) continue;
+            title_font() = io.Fonts->AddFontFromFileTTF(file, 34.0f, nullptr, ranges);
+            large_font() = io.Fonts->AddFontFromFileTTF(file, 21.0f, nullptr, ranges);
+            break;
+        }
     }
 
+    std::string layout_file_; // ImGui keeps the pointer until the context goes
     bool initialized_ = false;
 };
 #endif
@@ -786,7 +974,7 @@ struct CameraInput {
     int releases = 0;          // left button let go (anywhere, over a panel too)
     double scroll = 0.0;       // wheel since the last scene_input()
     bool scene_takes_scroll = false;
-    std::array<bool, 11> train_keys_down{};
+    std::array<bool, 10> train_keys_down{};
     std::vector<KeyEvent> key_events; // since the last scene_input()
     bool keyboard_captured = false;   // the scene takes the keyboard (cab keys)
     double cursor_x = 0.0;
@@ -1001,7 +1189,6 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .independent_more = pressed(GLFW_KEY_PERIOD, input.train_keys_down[7]),
         .independent_less = pressed(GLFW_KEY_COMMA, input.train_keys_down[8]),
         .toggle_ep = pressed(GLFW_KEY_K, input.train_keys_down[9]),
-        .turn_around = pressed(GLFW_KEY_X, input.train_keys_down[10]),
         .toggle_track_control = f7 && ctrl && alt,
         .place_names = f7 && !ctrl && !alt,
         .car_info = f5 && !ctrl,
@@ -1124,6 +1311,7 @@ struct FrameTargets {
     WGPUTextureView color;   // the frame
     WGPUTextureView depth;
     WGPUTextureView msaa = nullptr; // multisampled colour, resolved into `color`
+    bool keep_depth = false;        // the depth stays after the pass (for ReShade)
 };
 
 [[nodiscard]] WGPURenderPassEncoder begin_main_pass(const WGPUCommandEncoder encoder,
@@ -1142,7 +1330,7 @@ struct FrameTargets {
     const WGPURenderPassDepthStencilAttachment depth{
         .view = targets.depth,
         .depthLoadOp = WGPULoadOp_Clear,
-        .depthStoreOp = WGPUStoreOp_Discard,
+        .depthStoreOp = targets.keep_depth ? WGPUStoreOp_Store : WGPUStoreOp_Discard,
         .depthClearValue = renderer::depth_clear_value,
         .depthReadOnly = false,
         .stencilLoadOp = WGPULoadOp_Undefined,
@@ -1242,14 +1430,82 @@ struct FrameCapture {
     return written;
 }
 
+// What ReShade makes of the exported depth with RESHADE_DEPTH_INPUT_IS_REVERSED 1,
+// RESHADE_DEPTH_MULTIPLIER 1/near and RESHADE_DEPTH_LINEARIZATION_FAR_PLANE
+// 1000 (ReShade.fxh GetLinearizedDepth), against the true distance.
+void report_reshade_depth(const renderer::WgpuDeviceContext& context, const FrameCapture& shot, const float near_plane,
+                          const float far_plane) {
+    bool mapped = false, done = false;
+    struct State {
+        bool* mapped;
+        bool* done;
+    } state{&mapped, &done};
+    const WGPUBufferMapCallbackInfo callback{
+        .mode = WGPUCallbackMode_AllowProcessEvents,
+        .callback = [](const WGPUMapAsyncStatus status, WGPUStringView, void* data, void*) {
+            auto* s = static_cast<State*>(data);
+            *s->mapped = status == WGPUMapAsyncStatus_Success;
+            *s->done = true;
+        },
+        .userdata1 = &state,
+    };
+    const auto size = static_cast<std::size_t>(shot.row_bytes) * shot.height;
+    wgpuBufferMapAsync(shot.buffer, WGPUMapMode_Read, 0, size, callback);
+    for (int i = 0; i < 1000 && !done; ++i) {
+        wgpuDevicePoll(context.device(), true, nullptr);
+        wgpuInstanceProcessEvents(context.instance());
+    }
+    if (mapped) {
+        const auto* bytes = static_cast<const std::uint8_t*>(wgpuBufferGetConstMappedRange(shot.buffer, 0, size));
+        const auto at = [&](const std::uint32_t x, const std::uint32_t y) {
+            float d = 0.0f;
+            std::memcpy(&d, bytes + static_cast<std::size_t>(y) * shot.row_bytes + x * 4u, 4);
+            return d;
+        };
+        constexpr float far_reshade = 1000.0f;
+        const auto reshade_metres = [&](const float d) {
+            const float x = 1.0f - d / near_plane;
+            return x / (far_reshade - x * (far_reshade - 1.0f)) * far_reshade;
+        };
+        // Reversed Z (glm perspectiveRH_ZO with near and far swapped).
+        const auto true_metres = [&](const float d) { return near_plane * far_plane / (d * (far_plane - near_plane) + near_plane); };
+        std::size_t sky = 0;
+        for (std::uint32_t y = 0; y < shot.height; ++y)
+            for (std::uint32_t x = 0; x < shot.width; ++x) sky += at(x, y) <= 0.0f;
+        std::cout << "reshade depth: " << shot.width << "x" << shot.height << ", sky "
+                  << 100.0 * static_cast<double>(sky) / (static_cast<double>(shot.width) * shot.height) << " %";
+        for (const auto& [name, fy] : {std::pair{"centre", 0.5f}, std::pair{"lower", 0.8f}, std::pair{"bottom", 0.97f}}) {
+            const float d = at(shot.width / 2, static_cast<std::uint32_t>(fy * static_cast<float>(shot.height - 1)));
+            std::cout << ", " << name << ' ';
+            if (d <= 0.0f)
+                std::cout << "sky";
+            else
+                std::cout << reshade_metres(d) << " m (true " << true_metres(d) << " m)";
+        }
+        std::cout << std::endl;
+        wgpuBufferUnmap(shot.buffer);
+    } else {
+        std::cout << "reshade depth: readback failed" << std::endl;
+    }
+    wgpuBufferRelease(shot.buffer);
+}
+
 int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
-    auto context = renderer::create_headless_wgpu_device();
+    // The graphics API: --backend for this run, else the remembered choice.
+    auto backend = options.backend;
+    if (!backend) {
+        if (const auto key = remembered("backend")) backend = renderer::parse_graphics_backend(*key);
+    }
+    auto context = renderer::create_wgpu_device(backend.value_or(renderer::GraphicsBackend::automatic));
     if (!context.ok()) {
         std::cerr << "WebGPU device failed: " << context.error << '\n';
         return exit_code::device_failed;
     }
     const auto device = context.context.device();
     report_adapter(context.context.adapter());
+    // OpenGL: the experimental path's compute shaders read depth textures
+    // with textureLoad, which wgpu's GLSL output cannot do.
+    const bool experimental_supported = renderer::adapter_backend_name(context.context.adapter()).substr(0, 6) != "OpenGL";
 
     const GlfwSession glfw;
     if (!glfw.ok()) {
@@ -1262,9 +1518,26 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
         glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
     }
-    const Window window(initial_width, initial_height, options.title.c_str());
+    // The size and place it was left at (not for a capture: its frame is 1280 x 720).
+    const std::string placement_key = options.menu ? "window_menu" : "window_game";
+    WindowPlacement placement;
+    if (!capture) {
+        if (const auto saved = remembered_placement(placement_key)) {
+            placement = *saved;
+            if (on_a_monitor(placement)) {
+                glfwWindowHint(GLFW_POSITION_X, placement.x);
+                glfwWindowHint(GLFW_POSITION_Y, placement.y);
+            } else {
+                placement.positioned = false;
+            }
+            glfwWindowHint(GLFW_MAXIMIZED, placement.maximized ? GLFW_TRUE : GLFW_FALSE);
+        }
+    }
+    const Window window(placement.width, placement.height, options.title.c_str());
     if (!window.get()) return exit_code::window_failed;
     if (capture) glfwSetWindowPos(window.get(), -20000, -20000);
+    std::optional<PlacementKeeper> placement_keeper;
+    if (!capture) placement_keeper.emplace(placement_key, placement);
 
     ViewerCamera camera;
     CameraInput input{.camera = &camera};
@@ -1281,11 +1554,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     renderer::ModelRenderer renderer(device, surface.scene_format());
     std::unique_ptr<renderer::ToneMapper> tone;
     if (renderer::scene_hdr()) tone = std::make_unique<renderer::ToneMapper>(device, surface.format());
+    std::unique_ptr<renderer::DepthExport> depth_export;
     if (!renderer.ready()) {
         std::cerr << "Model renderer initialization failed.\n";
         return exit_code::renderer_failed;
     }
-    renderer.set_shading_path(options.shading);
+    renderer.set_shading_path(experimental_supported ? options.shading : renderer::ShadingPath::rts_compatible);
     renderer.set_batching(options.batching);
     // The experimental path's shadows, lamps, occlusion and haze.
     renderer::SceneEffects effects(device);
@@ -1298,7 +1572,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     }
 
 #ifdef OPENRTS_HAS_IMGUI
-    const DebugOverlay overlay(window.get(), device, surface.format());
+    const DebugOverlay overlay(window.get(), device, surface.format(), options.menu);
     if (!overlay.ok()) {
         std::cerr << "ImGui initialization failed.\n";
         return exit_code::renderer_failed;
@@ -1332,10 +1606,18 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (options.view) apply_view(*options.view, scene.origin(), camera);
     const double capture_start = glfwGetTime();
     // A capture from a saved view (--view, no --capture-camera) keeps that
-    // camera: the scene's own (the engineer's cab) is put back after it.
-    const std::optional<ViewerCamera> capture_view =
-        capture && options.view && !options.capture_camera ? std::optional<ViewerCamera>(camera) : std::nullopt;
+    // camera: the scene's own (the engineer's cab) is put back after it,
+    // from the view each frame, as the scene moves its origin along with a
+    // camera far from it (rebase_near): a copy of the camera would be left
+    // behind and the origin would run away.
+    const auto capture_view = [&]() -> std::optional<ViewerCamera> {
+        if (!capture || !options.view || options.capture_camera) return std::nullopt;
+        ViewerCamera view_camera = camera;
+        apply_view(*options.view, scene.origin(), view_camera);
+        return view_camera;
+    };
     bool capture_switched = false;
+    std::size_t capture_switch_next = 0; // the next --capture-switch to make
     bool capture_menu_picked = false;
 
     ClockControls clock{
@@ -1352,6 +1634,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         .vsync = surface.vsync(), .vsync_optional = surface.vsync_optional(), .gpu_timing = gpu_timer.available()};
     panel.menu = options.menu;
     panel.hdr = renderer::scene_hdr();
+    panel.backend_now = renderer::adapter_backend_name(context.context.adapter());
+    panel.reshade_depth = options.reshade_depth.value_or(remembered("reshade_depth").value_or("0") == "1");
+    panel.experimental_supported = experimental_supported;
+    if (!panel.experimental_supported)
+        std::cout << "OpenGL: the experimental lighting and the depth copy for ReShade are not available "
+                     "(wgpu cannot read depth textures with textureLoad in GLSL); the RTS path only." << std::endl;
+    if (const auto key = remembered("backend"))
+        panel.backend_choice = static_cast<int>(renderer::parse_graphics_backend(*key).value_or(renderer::GraphicsBackend::automatic));
     if (const auto curve = remembered("tone_mode")) panel.tone_curve = std::clamp(std::atoi(curve->c_str()), 0, 4);
     if (const auto falloff = remembered("light_falloff")) panel.physical_light = *falloff == "physical";
     if (const auto fullbright = remembered("light_fullbright")) panel.light_fullbright = *fullbright == "1";
@@ -1366,6 +1656,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto lamps = remembered("lamps_daylight"))
         panel.effects.lamps_in_daylight = std::clamp(static_cast<float>(std::atof(lamps->c_str())), 0.0f, 1.0f);
     if (options.lamps_daylight) panel.effects.lamps_in_daylight = std::clamp(*options.lamps_daylight, 0.0f, 1.0f);
+    if (const auto bounce = remembered("ground_bounce"))
+        panel.effects.ground_bounce = std::clamp(static_cast<float>(std::atof(bounce->c_str())), 0.0f, 0.5f);
+    if (options.ground_bounce) panel.effects.ground_bounce = std::clamp(*options.ground_bounce, 0.0f, 0.5f);
     if (const auto count = remembered("lamp_shadows")) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(std::atoi(count->c_str()), 0, 4));
     if (options.lamp_shadows) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(*options.lamp_shadows, 0, 4));
     if (const auto saturation = remembered("saturation"))
@@ -1437,6 +1730,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         stage_clock.start();
         glfwPollEvents();
         const double now = glfwGetTime();
+        if (placement_keeper) placement_keeper->update(window.get(), now);
         int gpu_count = 0;
         const double gpu_sum = gpu_timer.take_sum_ms(gpu_count);
         panel.stats.add(now - last_time, stages, gpu_sum, gpu_count);
@@ -1448,6 +1742,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         last_time = now;
 
         toggle_shading_from_keyboard(window.get(), input, renderer);
+        if (!panel.experimental_supported) renderer.set_shading_path(renderer::ShadingPath::rts_compatible);
         {
             // Pause: trains, DLLs, the clock and the sound stop; the free camera still flies.
             const bool pause_key = glfwGetKey(window.get(), GLFW_KEY_PAUSE) == GLFW_PRESS;
@@ -1467,16 +1762,23 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 frame_input.light_eye = glm::vec3{*car * glm::vec4{c[0], c[1], c[2], 1.0f}};
             }
         }
-        if (capture_view) frame_input.light_eye = capture_view->eye();
+        if (const auto view_camera = capture_view()) frame_input.light_eye = view_camera->eye();
         if (capture && !capture_switched && glfwGetTime() - capture_start >= options.capture_at * 0.5) {
             if (options.capture_cab) scene.enter_cab();
-            for (const auto& [id, state] : options.capture_switches) scene.set_cab_switch(id, state);
             if (options.capture_menu) frame_input.car_menu = true;
             capture_switched = true;
         } else if (capture && capture_switched && options.capture_menu && *options.capture_menu > 0 && !capture_menu_picked
                    && glfwGetTime() - capture_start >= options.capture_at * 0.75) {
             scene.choose_car_menu_item(*options.capture_menu);
             capture_menu_picked = true;
+        }
+        // The switches one after another, half a second apart, as a hand
+        // would (a DLL checks the others' State, which follows SetState
+        // after the animation).
+        if (capture_switched && capture_switch_next < options.capture_switches.size()
+            && glfwGetTime() - capture_start >= options.capture_at * 0.5 + 0.5 * static_cast<double>(capture_switch_next)) {
+            const auto [id, state] = options.capture_switches[capture_switch_next++];
+            scene.set_cab_switch(id, state);
         }
         scene.update(renderer, camera, clock.advance(panel.paused ? 0.0f : elapsed), frame_input);
         if (capture && options.capture_camera) {
@@ -1491,7 +1793,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 camera.yaw = std::atan2(-direction.x, -direction.z);
             }
         }
-        if (capture_view) camera = *capture_view;
+        if (const auto view_camera = capture_view()) camera = *view_camera;
         if (sound) {
             sound->set_listener(camera.eye(), camera.forward());
             sound->update();
@@ -1521,6 +1823,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         surface.resize(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
 
         const bool capture_now = capture && glfwGetTime() - capture_start >= options.capture_at;
+        // Not on OpenGL: no copy there, and a kept, sampled multisampled
+        // depth makes wgpu's GL frame several times slower.
+        const bool reshade_depth = panel.reshade_depth && panel.experimental_supported;
+        surface.set_depth_export(reshade_depth);
         const auto frame_texture = surface.acquire();
         stage_clock.mark(FrameStage::wait, stages);
         if (!frame_texture) continue;
@@ -1583,7 +1889,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
         stage_clock.mark(FrameStage::effects, stages);
         const auto pass =
-            begin_main_pass(encoder, {.color = hdr ? surface.hdr_view() : frame_view, .depth = surface.depth_view(), .msaa = surface.msaa_view()},
+            begin_main_pass(encoder,
+                            {.color = hdr ? surface.hdr_view() : frame_view,
+                             .depth = surface.depth_view(),
+                             .msaa = surface.msaa_view(),
+                             .keep_depth = reshade_depth},
                             environment.clear_colour, gpu_timer.begin_frame(), scene.occlusion_query_set());
         stage_clock.mark(FrameStage::begin, stages);
         scene.draw_background(pass, frame);
@@ -1597,6 +1907,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
 #endif
         stage_clock.mark(FrameStage::foreground, stages);
         wgpuRenderPassEncoderEnd(pass);
+        // The depth for ReShade: a single-sample copy of a multisampled one
+        // (a single-sample depth is kept as it is, keep_depth above).
+        const bool depth_copy = reshade_depth && renderer::render_sample_count() > 1;
+        if (depth_copy) {
+            // Made on first use: its pipeline does not exist on OpenGL.
+            if (!depth_export) depth_export = std::make_unique<renderer::DepthExport>(device);
+            depth_export->record(encoder, surface.depth_view(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+        }
         if (hdr) {
             // The tone curve to the screen, then the panels over it.
             // The RTS path stays as RTS drew it; the curve is the experimental path's.
@@ -1633,7 +1951,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         gpu_timer.resolve(encoder);
 
         FrameCapture shot;
+        FrameCapture depth_shot;
         if (capture_now) shot = begin_capture(device, encoder, frame_texture, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+        if (capture_now && depth_copy && depth_export->texture())
+            depth_shot = begin_capture(device, encoder, depth_export->texture(), static_cast<std::uint32_t>(width),
+                                       static_cast<std::uint32_t>(height));
         const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
         // The workers' command buffers first: the shadows and the occlusion
         // the main pass reads.
@@ -1656,8 +1978,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             std::cout << (written ? "captured: " : "capture failed: ") << options.capture_path << std::endl;
             // The frame times before it, for comparing settings (--no-vsync).
             std::cout << "frame times: " << panel.stats.average_ms() << " ms avg, " << panel.stats.worst_ms() << " ms worst" << std::endl;
+            for (const auto& [id, asked] : options.capture_switches) {
+                if (const auto where = scene.cab_switch_state(id)) {
+                    std::cout << "cab switch " << id << ": asked " << asked << ", State " << where->first << ", SetState " << where->second << std::endl;
+                }
+            }
             const auto model_stats = renderer.stats();
             std::cout << "models: " << model_stats.instances << " instances, " << model_stats.draw_calls << " draw calls" << std::endl;
+            if (const auto world = scene.world_report(); !world.empty()) std::cout << "world: " << world << std::endl;
             if (options.capture_menu) std::cout << "car menu: " << scene.car_menu_report() << std::endl;
             const auto effect_stats = effects.stats();
             std::cout << "effects: " << effect_stats.cascades << " cascades (" << effect_stats.cascades_drawn << " drawn, nearest texel "
@@ -1669,6 +1997,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             std::cout << "cpu stages (ms):";
             for (std::size_t i = 0; i < frame_stage_count; ++i) std::cout << ' ' << frame_stage_names[i] << ' ' << panel.stats.stage_ms()[i];
             std::cout << "; gpu main pass " << panel.stats.gpu_ms() << " ms" << std::endl;
+            if (depth_shot.buffer) {
+                const auto near_plane = std::clamp(camera.distance * 0.002f, 0.01f, 0.05f);
+                report_reshade_depth(context.context, depth_shot, near_plane, camera.distance * 20.0f);
+            }
             wgpuTextureRelease(frame_texture);
             return written ? exit_code::success : exit_code::device_failed;
         }

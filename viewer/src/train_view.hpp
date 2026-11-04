@@ -1,6 +1,7 @@
 #pragma once
 
 #ifdef OPENRTS_HAS_WGPU
+#include <array>
 #include <filesystem>
 #include <future>
 #include <map>
@@ -41,6 +42,7 @@
 #include "cab_view.hpp"
 #include "engineer.hpp"
 #include "legacy_cab.hpp"
+#include "particle_effects.hpp"
 #include "viewer_scene.hpp"
 
 namespace openrts::viewer {
@@ -134,6 +136,8 @@ public:
     [[nodiscard]] bool is_player(std::uint64_t id) const noexcept;
     // Every train on the track (the driven one first).
     [[nodiscard]] std::vector<const simulation::Train*> trains() const;
+    // Every diesel exhaust of every train this frame (SmokeView).
+    void collect_exhausts(std::vector<ExhaustSource>& out) const;
     // A traveller at the end of the train that leads (by the motion, else
     // the reverser), facing away from the train.
     [[nodiscard]] std::optional<simulation::TrackTraveller> ahead() const;
@@ -143,6 +147,11 @@ public:
     // Switch `id` of the player's cab to `state` (--capture-switch).
     void set_cab_switch(std::uint32_t id, std::uint32_t state) {
         if (legacy_) legacy_->set_switch(id, state);
+    }
+    [[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>> cab_switch_state(std::uint32_t id) const {
+        const auto* out = legacy_ ? legacy_->output(legacy_->player()) : nullptr;
+        if (!out || id >= out->switches.size()) return std::nullopt;
+        return std::pair{out->switches[id].state, out->switches[id].set_state};
     }
     // Car `car` of the driven train: shape space to world (no body sway).
     [[nodiscard]] std::optional<glm::mat4> car_transform(std::size_t car) const;
@@ -156,6 +165,23 @@ public:
     // The DLLs' start state for the next loaded consist: -1 running (the
     // default), 0 cold, 1 on (an activity's TrainState, docs/train-dll.md).
     void set_start_state(int state) noexcept { start_state_ = state; }
+    // Where the player starts once the driven train stands on the track
+    // (--spawn): in its cab; on foot beside the cab car, as RTS starts an
+    // activity by default (0x42F4A4: 2 m off the car's left side at its
+    // front end); or the free camera above the train.
+    enum class StartView : std::uint8_t { none, cab, car, above };
+    void set_start_view(StartView view) noexcept { start_view_ = view; }
+    // Situations: the trains on the route as they stand (roles, where each
+    // front is, the cars in order), <situation_folder>/<name>.situation.
+    [[nodiscard]] std::filesystem::path situation_folder() const;
+    [[nodiscard]] std::vector<std::string> situations() const;
+    [[nodiscard]] std::string save_situation(const std::string& name) const;
+    // Puts a saved situation back at the next update (the trains there now
+    // and their sounds go first).
+    void request_situation(std::filesystem::path file) { pending_situation_ = std::move(file); }
+    // Saves the situation as `name` once the driven train stands on the
+    // track (--save-situation, for scripted checks).
+    void save_situation_when_placed(std::string name) { save_when_placed_ = std::move(name); }
     // The route's overhead line (docs/electrification.md).
     [[nodiscard]] simulation::Electrification& electrification() noexcept { return *electrification_; }
     // The player train's exterior lights that are on (DLL-switched): glow
@@ -247,8 +273,8 @@ public:
     void toggle_limits_panel() noexcept { limits_panel_ = !limits_panel_; }
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
     void draw_hud();
-    // Where Track control keeps saved paths: user_paths/<route> in the
-    // working directory.
+    // Where Track control keeps saved paths: user_paths/<route> in
+    // user_data_directory().
     [[nodiscard]] std::filesystem::path user_path_folder() const;
 
 private:
@@ -261,9 +287,6 @@ private:
     void request_models(renderer::ModelLibrary& library);
     void fit_shapes(renderer::ModelLibrary& library);
     void apply_handles(const SceneInput& input);
-    // Train::turn_around plus the viewer's per-car state; the driver moves to
-    // the new front engine with the handles as they were, reverser neutral.
-    void turn_around();
     void step_trains();
     // Uncouples unit `unit` behind car `index - 1`; the driver stays with
     // the part that has the master engine.
@@ -286,6 +309,16 @@ private:
     // A consist's cars and train, its stock appended to `stock`.
     [[nodiscard]] std::string make_unit(std::string_view consist, Unit& unit,
                                         std::vector<std::unique_ptr<formats::WagonDefinition>>& stock) const;
+    // The same from its cars, front to back.
+    [[nodiscard]] std::string make_unit_from(std::string name, const std::vector<formats::ConsistEntry>& entries, Unit& unit,
+                                             std::vector<std::unique_ptr<formats::WagonDefinition>>& stock) const;
+    [[nodiscard]] std::string load_situation(const std::filesystem::path& file);
+    void apply_start_view(ViewerCamera& camera);
+    StartView start_view_ = StartView::none;
+    std::filesystem::path pending_situation_;
+    std::string save_when_placed_;
+    std::array<char, 64> situation_name_{}; // the Train window's name for a situation to save
+    int situation_choice_ = -1;
     // Controllers as the unit's role wants them.
     void attach_role(Unit& unit);
     [[nodiscard]] Unit* find_unit(std::uint64_t id);
@@ -457,7 +490,6 @@ private:
     int consist_choice_ = -1;
     std::string pending_load_;
     bool pending_path_ = false;
-    bool pending_turn_ = false;
     std::optional<std::size_t> pending_uncouple_; // uncouple the driven train before this car
     // The open car menu: a coupling (the joint at a car's end) or a bogie.
     struct CarMenu {

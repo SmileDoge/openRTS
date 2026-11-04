@@ -4,13 +4,25 @@
 #error "webgpu_context.hpp requires OPENRTS_ENABLE_WGPU and an installed wgpu-native SDK."
 #endif
 
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include <webgpu/webgpu.h>
 
 namespace openrts::renderer {
 
 struct WgpuDeviceContextResult;
+
+// The graphics API wgpu draws through. automatic: wgpu's own choice (on
+// Windows Vulkan, else DirectX 12).
+enum class GraphicsBackend { automatic, vulkan, d3d12, opengl };
+
+// "auto", "vulkan", "dx12", "opengl" (as on the command line and in viewer_state.ini).
+[[nodiscard]] std::string_view graphics_backend_key(GraphicsBackend backend) noexcept;
+[[nodiscard]] std::optional<GraphicsBackend> parse_graphics_backend(std::string_view key) noexcept;
+// The API a device runs on, for the interface: "Vulkan", "DirectX 12", "OpenGL", ...
+[[nodiscard]] std::string_view adapter_backend_name(WGPUAdapter adapter);
 
 class WgpuDeviceContext {
 public:
@@ -28,7 +40,7 @@ public:
     [[nodiscard]] explicit operator bool() const noexcept { return device_ != nullptr; }
 
 private:
-    friend WgpuDeviceContextResult create_headless_wgpu_device();
+    friend WgpuDeviceContextResult create_wgpu_device(GraphicsBackend backend);
     WGPUInstance instance_ = nullptr;
     WGPUAdapter adapter_ = nullptr;
     WGPUDevice device_ = nullptr;
@@ -41,8 +53,11 @@ struct WgpuDeviceContextResult {
     [[nodiscard]] bool ok() const noexcept { return static_cast<bool>(context); }
 };
 
-// Requests a default adapter and device without a surface. Intended for asset
-// upload validation; a windowed viewer will own a surface separately.
+// Requests an adapter of that API and a device, without a surface (a windowed
+// viewer creates its surface on this instance). A chosen API that has no
+// adapter here falls back to the automatic choice, with a line on stderr.
+[[nodiscard]] WgpuDeviceContextResult create_wgpu_device(GraphicsBackend backend);
+// The automatic choice (tests, tools, captures).
 [[nodiscard]] WgpuDeviceContextResult create_headless_wgpu_device();
 
 } // namespace openrts::renderer

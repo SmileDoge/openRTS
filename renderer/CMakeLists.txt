@@ -6,9 +6,11 @@ add_library(openrts_renderer STATIC
     src/glow_sprites.cpp
     src/screen_quads.cpp
     src/tone_map.cpp
+    src/depth_export.cpp
     src/frustum.cpp
     src/model_assets.cpp
     src/transfer_shape.cpp
+    src/forest_shape.cpp
     src/scene_effects.cpp
     src/task_pool.cpp
     src/model_library.cpp

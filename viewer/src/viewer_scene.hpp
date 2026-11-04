@@ -112,7 +112,6 @@ struct SceneInput {
     bool independent_more = false; // .
     bool independent_less = false; // ,
     bool toggle_ep = false;        // K: ЭПТ on/off
-    bool turn_around = false;      // X: drive from the other end of the train
     bool toggle_track_control = false; // Ctrl+Alt+F7 (RTS): the Track control window
     bool place_names = false;     // F7 (RTS): platform and siding names along the track
     // RTS's information keys (docs/reverse/dispatcher.md).
@@ -206,6 +205,11 @@ public:
     [[nodiscard]] virtual bool takes_scroll() const { return false; }
     // Switch `id` of the driven train's cab to `state` (--capture-switch).
     virtual void set_cab_switch(std::uint32_t, std::uint32_t) {}
+    // Where it is now: State and SetState (the capture's report).
+    [[nodiscard]] virtual std::optional<std::pair<std::uint32_t, std::uint32_t>> cab_switch_state(std::uint32_t) const { return std::nullopt; }
+    // What the world has around (water, forests, crossings, cars, rain,
+    // smoke), a line for the capture's report.
+    [[nodiscard]] virtual std::string world_report() const { return {}; }
     // Car `car` of the driven train, shape space to world (--capture-camera).
     [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
     // The engineer into the driven train's cab (--capture-cab).
@@ -232,6 +236,16 @@ struct SceneContent {
     std::string path;            // route scenes: the path for the consist (file name, id or name); the first by default
     bool track_control = false;  // route scenes: open the Track control window at start
     int start_state = -1;        // route scenes: the DLLs' start (--start cold|on|running)
+    // Route scenes: a saved situation to put the trains back from
+    // (--situation: a file, or a name in the route's situation folder).
+    std::filesystem::path situation;
+    // Route scenes: where the player starts (--spawn): 0 as before (the
+    // camera at the route start), 1 the cab, 2 beside the cab car, 3 above
+    // the train.
+    int start_view = 0;
+    // Route scenes: save the situation under this name once the train
+    // stands on the track (--save-situation).
+    std::string save_situation;
     // The installation folder: RTS's own files (RTS\config.ini) are not in the VFS.
     std::filesystem::path root;
 };

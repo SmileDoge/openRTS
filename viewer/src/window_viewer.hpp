@@ -7,6 +7,8 @@
 #include <vector>
 #include <utility>
 
+#include <openrts/renderer/webgpu_context.hpp>
+
 #include "debug_view.hpp"
 #include "viewer_scene.hpp"
 
@@ -25,6 +27,8 @@ struct WindowOptions {
     std::optional<float> headlight_reach;
     // --lamps-daylight <0..1>: the lamps' strength in full daylight for this run.
     std::optional<float> lamps_daylight;
+    // --ground-bounce <0..0.5>: the ground's reflectance for this run.
+    std::optional<float> ground_bounce;
     // --lamp-shadows <0..4>: lamps throwing shadows for this run.
     std::optional<int> lamp_shadows;
     // --shadow-settings distance,size,cascades,softness: this run's shadows.
@@ -52,6 +56,11 @@ struct WindowOptions {
     bool menu = false;
     // HDR frame with a tone curve (AgX in the experimental path), --hdr.
     bool hdr = false;
+    // --backend auto|vulkan|dx12|opengl: this run's graphics API, instead of
+    // the remembered one (viewer_state.ini `backend`).
+    std::optional<renderer::GraphicsBackend> backend;
+    // --reshade-depth on|off: keep the depth for ReShade this run (else remembered).
+    std::optional<bool> reshade_depth;
     std::string title = "openRTS shape viewer";
     // A frame to a file and exit (--capture <file.ppm>): the window off the
     // screen, without focus and panels, the frame taken `capture_at` seconds
@@ -62,7 +71,8 @@ struct WindowOptions {
     std::optional<std::array<float, 6>> capture_camera;
     std::size_t capture_car = 0;
     // Cab switches set before the capture (--capture-switch <id> <state>,
-    // repeatable): at half of capture_at, so the DLL has the time to act.
+    // repeatable): from half of capture_at on, half a second apart and in
+    // order, so the DLL has the time to act.
     std::vector<std::pair<std::uint32_t, std::uint32_t>> capture_switches;
     // The engineer in the cab's seat for the capture (--capture-cab), at
     // half of capture_at with the switches.

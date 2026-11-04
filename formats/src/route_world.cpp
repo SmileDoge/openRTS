@@ -94,6 +94,60 @@ void read_static_field(Tokenizer& tokens,
                 (equals_ignore_case(field, "Width") ? object.transfer_width : object.transfer_height) = static_cast<float>(*parsed);
             }
         }
+    } else if (equals_ignore_case(field, "TrItemId")) {
+        // ( database item ): 0 the track database, else the road one.
+        const auto database = tokens.next();
+        const auto item = tokens.next();
+        if (database && item) {
+            const auto db = parse_integer<std::uint32_t>(*database);
+            const auto id = parse_integer<std::uint32_t>(*item);
+            if (db && id) (*db == 0 && object.kind != WorldObjectKind::car_spawner ? object.rail_items : object.road_items).push_back(*id);
+        }
+    } else if (object.kind == WorldObjectKind::forest) {
+        const auto pair = [&](std::array<float, 2>& out) {
+            for (auto& value : out) {
+                if (const auto token = tokens.next()) {
+                    if (const auto parsed = parse_double(*token)) value = static_cast<float>(*parsed);
+                }
+            }
+        };
+        if (equals_ignore_case(field, "TreeTexture")) {
+            if (const auto value = tokens.next()) object.tree_texture = *value;
+        } else if (equals_ignore_case(field, "Area")) {
+            pair(object.forest_area);
+        } else if (equals_ignore_case(field, "ScaleRange")) {
+            pair(object.scale_range);
+        } else if (equals_ignore_case(field, "Population")) {
+            if (const auto value = tokens.next()) object.population = static_cast<std::uint32_t>(std::strtoul(value->c_str(), nullptr, 10));
+        } else if (equals_ignore_case(field, "TreeSize")) {
+            pair(object.tree_size);
+        }
+    } else if (object.kind == WorldObjectKind::level_crossing) {
+        const auto floats = [&](float* out, const std::size_t n) {
+            for (std::size_t i = 0; i < n; ++i) {
+                if (const auto token = tokens.next()) {
+                    if (const auto parsed = parse_double(*token)) out[i] = static_cast<float>(*parsed);
+                }
+            }
+        };
+        if (equals_ignore_case(field, "LevelCrParameters")) {
+            floats(object.crossing_parameters.data(), 2);
+        } else if (equals_ignore_case(field, "CrashProbability")) {
+            floats(&object.crash_probability, 1);
+        } else if (equals_ignore_case(field, "LevelCrData")) {
+            if (const auto value = tokens.next()) object.crossing_flags = static_cast<std::uint32_t>(std::strtoul(value->c_str(), nullptr, 16));
+            if (const auto value = tokens.next()) object.crossing_tracks = static_cast<std::uint32_t>(std::strtoul(value->c_str(), nullptr, 10));
+        } else if (equals_ignore_case(field, "LevelCrTiming")) {
+            floats(object.crossing_timing.data(), 3);
+        }
+    } else if (object.kind == WorldObjectKind::car_spawner) {
+        if (equals_ignore_case(field, "CarFrequency") || equals_ignore_case(field, "CarAvSpeed")) {
+            if (const auto value = tokens.next()) {
+                if (const auto parsed = parse_double(*value)) {
+                    (equals_ignore_case(field, "CarFrequency") ? object.car_frequency : object.car_average_speed) = static_cast<float>(*parsed);
+                }
+            }
+        }
     } else if (equals_ignore_case(field, "SignalSubObj")) {
         if (const auto value = tokens.next()) object.signal_sub_objects = static_cast<std::uint32_t>(std::strtoul(value->c_str(), nullptr, 16));
     } else if (equals_ignore_case(field, "QDirection")) {
@@ -118,6 +172,10 @@ constexpr ObjectKeyword object_keywords[] = {
     {"Signal", WorldObjectKind::signal},
     {"Speedpost", WorldObjectKind::speed_post},
     {"Transfer", WorldObjectKind::transfer},
+    {"Forest", WorldObjectKind::forest},
+    {"LevelCr", WorldObjectKind::level_crossing},
+    {"Pickup", WorldObjectKind::pickup},
+    {"CarSpawner", WorldObjectKind::car_spawner},
 };
 
 [[nodiscard]] std::optional<WorldObjectKind> object_kind(const std::string& keyword) {
@@ -191,7 +249,15 @@ constexpr ObjectKeyword object_keywords[] = {
         tokens.skip_block();
     }
 
-    if (!has_shape || !has_position) return std::nullopt;
+    if (!has_position) return std::nullopt;
+    if (kind == WorldObjectKind::forest) {
+        object.forest_complete = !object.tree_texture.empty() && object.population > 0 && object.tree_size[0] != 0.0f
+            && object.tree_size[1] != 0.0f && (object.scale_range[0] != 0.0f || object.scale_range[1] != 0.0f);
+        object.population = (std::min)(object.population, 10000u);
+        return object;
+    }
+    if (kind == WorldObjectKind::car_spawner) return object;
+    if (!has_shape) return std::nullopt;
     return object;
 }
 
