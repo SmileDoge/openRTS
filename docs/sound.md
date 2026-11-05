@@ -165,7 +165,9 @@ The action of a trigger is the first keyword found in this order:
   through the trigger pairs (`0x4A874C`). A sound object that takes 1700
   codes within 2000 updates stops taking codes ("Sound object generates too
   many discrete triggers"). The codes in the group's
-  `NonDistributableTriggers` do not count: the list is only that.
+  `NonDistributableTriggers` do not count. They are also the codes a
+  network game does not send to the other players (`0x4639`,
+  `reverse/multiplayer.md`).
 - **Content (ChS4t, `chs4t.dll` `Run` `0x4064F4`):**
   - with the auxiliary compressor on (switch 22 at "[ВК]"; the DLL's `Init`
     puts it there for a running start), the DLL posts 67 every frame while

@@ -297,20 +297,24 @@ yet. Each stage ends with something that runs and is checked:
    for openRTS clients over the normal connection.
 5. **The dispatcher console** as an HTML client.
 
-**Still to reverse for it** (a capture with the server's full data trace
-answers most):
-- the payloads of the snapshot packages and of `0x4605`;
-- the remaining fields of `0x4603`;
-- `0x4620`..`0x462C`, what the engineer sends a helper;
-- `0x4639` / `0x463A` / `0x463D` (now PROBABLE: cab controls others see);
-- `0x4636` / `0x4638`, `0x4640`, `0x4641`, `0x461D`;
-- the dispatcher's `0x4504`..`0x450E`;
-- after a coupling: whether the server drops `0x4603` from a player who no
-  longer owns the train, and who owns a part cut off later.
+**Still to reverse for it.** Every package is catalogued with its payload
+(2026-11-05, `reverse/multiplayer-protocol.md`). Left UNKNOWN:
+- the first optional block of `0x4638` (a derailed car's placement) and
+  three values of a `0x463B` stream;
+- two flags of a station route segment (`0x450B`) and whether its priority
+  does more than order the queue;
+- why relayed coupler actions can miss on another client;
+- a capture with the server's full data trace would check the counts and
+  periods. The first live capture (2026-11-05, through the proxy) confirmed
+  most of the catalogue and corrected a few fields
+  (`reverse/multiplayer-protocol.md`, "Live capture"); what openRTS should
+  do better is in `reverse/multiplayer.md`, "For openRTS".
 
 **What the client lacks** (by stage 2):
-- remote trains (above) with their lights, pantographs and sounds from the
-  cab packages;
+- remote trains (above) with their lights (`0x4617`), pantographs
+  (`0x463C`) and sounds (`0x4639` / `0x463D`, the whole state `0x463A`
+  when the train loads), `reverse/multiplayer.md`, "Other players'
+  trains";
 - the world from the server, not its own: signal aspects (there is an
   aspect override to build on), locked junctions, time and pause, brake
   pressures of other trains (`0x4613`), electrification, weather areas
@@ -321,6 +325,10 @@ answers most):
 - station routes and interlocking: route points (tracks, exits), routes
   between them (main track, one way, priority, composite), route
   generation, assembling a train's route;
+- a train's direction for its route: a button "reverse the direction" (a
+  button, not a checkbox; the user's choice, 2026-11-05). RTS builds the
+  route the way the train last moved, from `0x4603`: the reverser is not
+  sent, so after a stop the dispatcher had to have the train nudged back;
 - signal control: set aspect, automatic block, home signal, defaults;
 - an HTML client over WebSocket on the same map component as Track
   control, in the console's look (grey background, black track, route

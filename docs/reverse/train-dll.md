@@ -1092,12 +1092,15 @@ per train (skipped when train byte `+5` bit 0 is set).
 
 ## Open questions
 
-- Train types 4 and 5 (`State` bits `0x200` / `0x400`): PROBABLY a remote
-  player's train and a dispatcher-controlled one in multiplayer.
+- Train types 4 and 5 (`State` bits `0x200` / `0x400`): PROBABLY type 4 is
+  the engineer's train on its helper's client (it asks for the cab, its cab
+  sound takes `0x463A`) and type 5 a dispatcher-controlled one. A remote
+  player's train is type 2 with flag `0x10000` (`reverse/multiplayer.md`).
 - Section 14: the `Electricity` flags' high byte (`+11`, a distance limit
   in `0x5B53A8`, 0 in the installed routes); `sub_45F570` (the distance:
-  3-D or plane); the global `dword_61D31C` `+36` (PROBABLY `.trk`
-  `Electrified`).
+  3-D or plane); the global `dword_61D31C` `+36`, PROBABLY "playing
+  through the network thread" (`reverse/multiplayer.md`): why the line
+  voltage reads it is not traced.
 - The auxiliary entry layout (`0x54` bytes) and whether entries are sorted
   by order or kept in declaration order.
 - The FPU control word at run time.

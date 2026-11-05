@@ -24,6 +24,8 @@ train it skips only the engines a DLL drives. openRTS:
 | `Weather` | 1 clear, 2 rain, 3 snow | the weather |
 
 - A STATIC or LOOSE train (standing, nobody at its handles) shows none.
+- In a network game another player's train skips this: it shows its
+  owner's lights (`0x4617`, `reverse/multiplayer.md`).
 - Each light fades over `FadeIn` / `FadeOut`; with several `States` it
   cycles them by their `Duration`s, or spreads `Cycle` evenly over them
   (`0x4FF9B8`).

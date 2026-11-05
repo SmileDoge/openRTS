@@ -49,3 +49,4 @@
 | [terrain.md](reverse/terrain.md) | рельеф и выбор окружения |
 | [dispatcher.md](reverse/dispatcher.md) | пульт диспетчера, трек-контроль, модуль маршрутов |
 | [multiplayer.md](reverse/multiplayer.md) | сетевая игра: клиент, мини-сервер, сервер диспетчера |
+| [multiplayer-protocol.md](reverse/multiplayer-protocol.md) | каталог сетевых пакетов: содержимое, направления, обработка |

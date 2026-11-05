@@ -7,12 +7,14 @@ Analysed read-only on copies, 2026-11-03:
 
 The network logs of the user's server were used for counts only. They hold real players' addresses and nicknames and are not copied here.
 
+Every package id with its payload: `multiplayer-protocol.md` (2026-11-05).
+
 ## Three programs, three roles
 
 | Program | Role |
 |---|---|
 | `rts1.exe` | Has three roles: <ul><li>the player client;</li><li>the **player mini-server** ("Player-mini-server"), started from the in-game menu in single player;</li><li>a **peer node** for the helper (assistant driver) link.</li></ul> |
-| `rts_server.exe` | The dedicated server with the dispatcher console built in (`TfPult`, "RTS Dispatcher"), default port 800. It links RTS's own simulation code (train physics, path module, signals, DLL exports such as `_SpeedLimit`). It is the authority for: <ul><li>junctions, signals and time;</li><li>train kinds and assignments;</li><li>AI and static trains (PROBABLE).</li></ul> |
+| `rts_server.exe` | The dedicated server with the dispatcher console built in (`TfPult`, "RTS Dispatcher"), default port 800. It links RTS's own simulation code (train physics, path module, signals, DLL exports such as `_SpeedLimit`). It is the authority for: <ul><li>junctions, signals and time;</li><li>train kinds and assignments;</li><li>trains it drives itself: TRAFFIC trains, with positions every 0.5 s (CONFIRMED by the live capture of 2026-11-05).</li></ul> |
 | `rts_server_DSP.exe` | The same source built as a dispatcher client of `rts_server.exe` (`dispatcher.md`). |
 
 ## Transport and framing — CONFIRMED
@@ -117,7 +119,7 @@ In the menu the client then waits ("Waiting for assignment…"):
   - writes the multiplayer recovery file (`0x47B09C`);
   - quits.
 
-  There is no reconnect in play: any dropped connection ends the game. The next login can restore the position ("Restore player position"). Seen on 2026-11-03 when the test proxy was restarted.
+  There is no reconnect in play: any dropped connection ends the game. The next login can restore the position and the own trains' state from the client's `multRecoveryData.dat` (`multiplayer-protocol.md`, "The player's recovery file"). Seen on 2026-11-03 when the test proxy was restarted.
 
 **The player's own train (kind PLAYER):**
 - simulated locally: physics, DLLs, cab;
@@ -140,9 +142,12 @@ Client → server events:
 | `0x460A` | junction: index, branch, lock (handled by the server at once, `0x40C52C`) |
 | `0x460E` / `0x460F` | uncouple / couple |
 | `0x461B` | a car menu action: the dedicated server relays it to the others, every client carries it out (the mini-server's host carries it out itself) |
-| `0x4639`, `0x463A`, `0x463D` | PROBABLE: a cab control of the player's engine changed. Sent from the cab switch handlers (`0x437AA4`, `0x437E64`, `0x438430`, `0x438708`), rate-limited by the server, relayed so others see the lights, pantographs and sounds |
+| `0x4617` | a car light's state ("Other players' trains", below) |
+| `0x4639`, `0x463A`, `0x463D` | a car's sound: a discrete trigger, the whole state, the variables (below) |
+| `0x463C` | a car's pantographs and a diesel's engine (below) |
+| `0x4623` | mode 2: asks a train's owner for its state; the server forwards it to the owner (below) |
 | `0x462D` | the player's position, the person icon of Ctrl+F7 (relayed with the user id and name added) |
-| `0x4636` | per-car state with `0x4638` blocks — UNKNOWN in detail |
+| `0x4636` | a flag per car (`+32 & 0x20`, PROBABLE: derailed), then a `0x4638` block (a placement) for each car with it; sent with `0x4603` while the train flag `+5 & 0x10` is set (`0x4CDF70`, `0x57FF64`). The block's fields are UNKNOWN in detail |
 | `0x4649` | CONFIRMED (2026-11-04, client `0x4CF464`): a substation's load — substation, phase (int16), the energy summed over the window, its length in s (`0x5B6030` sends it every 2 s while the line is loaded); forwarded to dispatchers only |
 | `0x4640`, `0x4641`, `0x461D` | UNKNOWN |
 
@@ -206,7 +211,7 @@ The main loop is `TfPult::MainTimerTimer`, "main dispatcher function".
 
 **Dispatchers** get the world packages too, and their own `0x4504`..`0x450E`. PROBABLE: player and train lists, `0x450A` the trains for the map.
 
-**Network log.** It is written with the "lognetpackages" / data trace setting and hides frequent packages unless the trace level is raised (`0x46BB98`):
+**Network log.** It is written with the "lognetpackages" / data trace setting (the menu item "Data trace", `TfPult_mnDataTraceClick` → `0x417064`) and hides frequent packages unless the trace level is raised (`0x46BB98`). The level (`word_53D27C`) is 0 in the exe and nothing writes it (CONFIRMED, 2026-11-05), so the lists below are never logged: a full capture needs a proxy (`multiplayer-protocol.md`, "Live capture"):
 - level 1 or more: `0x4603`, `0x4606`, `0x4607`, `0x4617`, `0x4620`, `0x4623`, `0x4624`, `0x4630`, `0x463C`;
 - level 2 or more: `0x4609`, `0x460B`, `0x460D`, `0x4618`, `0x4619`, `0x4622`, `0x462D`, `0x462E`, `0x4632`, `0x4639`, `0x463A`, `0x463D`, `0x463F`.
 
@@ -258,11 +263,16 @@ with `0x631E76` set: no swap).
   (kind 2): its position now comes from A's `0x4603`;
 - the client's player train (`0x61D680`, PROBABLE) moves to the merged
   train, which gets flag `0x20`. B stays in their cab; the train is moved by
-  A's simulation. PROBABLE: nothing carries B's controls into it (the
-  `0x4639` family only shows lights, pantographs and sounds to others);
-- in play the client has no handler for `0x4601` (only the menu waiting for
-  an assignment reads it, `0x461F00`), so B's client never learns it was
-  unassigned;
+  A's simulation. PROBABLE: nothing carries B's controls into it (the cab's
+  switches go to a helper only, `0x4622`; the others get lights,
+  pantographs and sounds, "Other players' trains");
+- the in-game handler reads `0x4601` too (`0x4C3DE0`; it reaches the case
+  by subtraction, so a search for the constant misses it). Earlier notes
+  said it had none. CONFIRMED by the live capture of 2026-11-05: the
+  server sends B this `0x4601` ("not yours") **before** the `0x460F`. B's
+  client makes its own train another player's (kind 2), so its DLL stops
+  (controller, doors, КЛУБ), and the train then moves by extrapolation
+  (`multiplayer-protocol.md`, "Live capture");
 - `0x4610` names B's old train, which is already gone: the client logs
   "not found" (event 5) and nothing changes.
 
@@ -294,6 +304,95 @@ other, both clients can notice the coupling:
 - that merged train is still kind 1 on B: both clients would simulate it and
   send its `0x4603`. Whether the server drops positions from a player who
   no longer owns the train is not traced.
+
+## Other players' trains: lights, pantographs, sounds — CONFIRMED unless marked (2026-11-05)
+
+Read from `rts1.exe` and `rts_server.exe`.
+
+**A remote train has nothing of its own.** On a client another player's
+train is kind 2 with flag `0x10000` (above). `Run` skips kinds 2 and 4
+(`0x424488`), and the regroup needs flag 4. So the train has no DLL and no
+library sounds: its owner sends what it looks and sounds like.
+
+**Who sends.** The owner's client sends in the simulation step
+(`0x424488`), for each of its trains with flag 4 that is not of kind 2 or 4:
+its own train and the parts cut off from it. Per car:
+
+| Id | When | Payload | On the receiving client |
+|---|---|---|---|
+| `0x4617` (`0x4CC864`) | a light changed: its lit bit, colour or radius (`0x566314`) | train id, car index, light index (`u32` each); lit (`u8`); radius (`+88`), colour (`+8`), position (`+12`, three floats) | sets the light's "on" bit (`+0` bit 3) and copies the rest; the light fades in or out by itself (`0x4FF9B8`) |
+| `0x463C` (`0x4CEE44`) | at most every 250 ms, when the car changed (`0x566520`) | train id, car index, then `u8` car kind (`+12`), `u32` `Flags` (`+28`), `u32` `+32`, then `u8` each: `+14`, the raised-pantograph mask (`+13`), "running" | the pantograph mask, then `0x504584` when `Flags` bit 1 is set; for a diesel (kind 2) "running" clears the cold bit (`LocoFlags` bit 3), else sets it. `Flags`, `+32` and `+14` are skipped |
+| `0x463D` (`0x4CE5C8`) | at most every 200 ms, when they changed (`0x566384`) | train id, car index (`u32`), sound slot (`u16`), Var1..8, the distance travelled (`+284`), the volume (`+308`) (`f32` each) | copied into that sound object (`0x4CED34`) |
+| `0x4639` (`0x4CE870`) | every discrete trigger in the car's sound queue (96 codes) while the object is active (PROBABLE: object flag `+4` bit 0) | train id, car index (`u32`), slot (`u16`), `1` (`u16`), the code (`u32`), `0` (`u32`) | the code goes into that sound object's queue (`0x4A9F48`); the last `u32` is not read |
+
+- "Running" is the byte `+208` of the DLL engine (`car+484`) when the car
+  has a DLL, else "not cold".
+- The slot is always 3 here: the exterior `.sms` (`car+376`).
+- The codes in the group's `NonDistributableTriggers` are not sent: the name
+  means "not distributed over the network". They also stay out of the flood
+  count (`sound.md`).
+- The remote car's sound takes its speed and acceleration from `0x4604`.
+  The step sets the object's `+204` / `+292` from the car.
+
+**Slots on the receiving side** (`0x4C3DE0`):
+- 1, the cab sound (`car+444+16`): for `0x463A` only, and only on a kind-4
+  train. PROBABLE: kind 4 is the engineer's train on its helper's client.
+  `0x4639` / `0x463D` for a kind-4 train are dropped;
+- 2, the object at `car+372+204`: accepted; no sender found;
+- 3, the exterior `.sms`.
+
+**The whole state, asked once.**
+- When a client loads another player's train (the train flag `|= 2`;
+  `0x4232A8`, `0x424190`), it sends `0x4623` (`0x4D0228`): mode 2, the
+  train id, two zeros.
+- The server (`0x40FB90`) takes mode 2 only. It finds the train and
+  forwards the package to the train's owner alone. While `byte_54C807` is
+  set (the ТЧД operator's player menu or message is using the user list) it
+  leaves them in the queue for a later pass.
+- The owner (`0x4C9120` → `0x4D0CA4`) answers for each car:
+  - every light (`0x4617`);
+  - the exterior sound's whole state (`0x463A`, `0x4CE290`): the
+    `0x463D` values, the number of streams, then per stream a nested
+    `0x463B` (`0x4CE290` / `0x4CEA38`): its flags, the current trigger + 1
+    (0 none), the value it started with (PROBABLE the loop position), the
+    stream flags, three values (UNKNOWN, PROBABLE volumes), the trigger
+    count and a `u32` per trigger. A client whose sound is active restarts
+    the stream on that trigger (`0x4A8C00`); an inactive one keeps them
+    for when it wakes;
+  - the car state (`0x463C`).
+- Mode 1 comes from a helper that loads the engineer's train (kind 4). The
+  engineer answers with its whole cab (`0x4D03E4`: `0x4624`…, the cab sound
+  as `0x463A` slot 1).
+
+**The server relays** `0x4617`, `0x4639`, `0x463A`, `0x463C`, `0x463D` to
+every player within 3 km of the train, without reading them (audience 4,
+`0x4436C8`). The 500-a-second limit counts `0x4639`, `0x463A` and `0x463D`.
+
+**Lights.** In a network game the conditions pass (`0x4F07D4`) skips a
+kind-2 train with flag `0x10000`. Its lights are only what `0x4617` set.
+So the others see the owner's lights as its DLL or its conditions made
+them, cycling states included.
+
+**Not sent:**
+- the library sounds (USAVP, КЛУБ);
+- the cab sound and the cab's switches: they go to a helper only (`0x4622`,
+  "Helpers").
+
+**`dword_61D31C+36`** is set while the client plays through its network
+thread, connected to a server or to a player's mini-server. PROBABLE: every
+sender above queues to that thread when it is set. A mini-server's host
+sends its own train straight to its peers.
+
+**For openRTS:**
+- **Legacy on:** send and take these as RTS does. A remote car needs:
+  - its exterior `.sms` with the owner's variables and triggers;
+  - its lights from `0x4617`;
+  - its pantographs from `0x463C`.
+
+  openRTS's own trains take the same things from the DLL host; a remote
+  train takes them from the packages instead.
+- **Legacy off:** the same data in openRTS's own packages, and the library
+  sounds can be added.
 
 ## The player mini-server (`rts1.exe`) — CONFIRMED
 
@@ -350,7 +449,7 @@ Track control's "Assign to player…" sends `0x4601`.
    - IPv4 address and port;
    - session;
    - the train.
-4. The helper's node connects **straight to the engineer**. It makes up to 5 attempts and reconnects on loss.
+4. The helper's node connects **straight to the engineer**. It makes up to 5 attempts and reconnects on loss (the code; the live capture of 2026-11-05 saw 18 attempts after an engineer's crash).
 5. It introduces itself with `0x1700`:
    - node id: a hash of its name;
    - the session.
@@ -359,7 +458,13 @@ Track control's "Assign to player…" sends `0x4601`.
 6. Over that link:
    - the engineer streams the train: `0x4620`, with cars `0x4621`, engine `0x4628`, electric / diesel `0x4629` / `0x462A`;
    - the engineer streams the cab: `0x4624`..`0x462C`, `0x4631`;
-   - the helper sends `0x4623` (PROBABLE: its cab actions).
+   - either side sends `0x4622` when it moves a cab control (`0x4CFC74`;
+     the other side applies it through `CanSwitch`, `0x4C9120`): train id,
+     car index, the control (index `u32`, kind `u16`, owner `u16`: 1 the
+     cab, 2 the object at `car+372`; `0x528030`), its position (`+48`), its
+     value (`+44`), its animation (two `u32`);
+   - the helper sends `0x4623` mode 1 when it loads the engineer's train: a
+     sync request, answered with the whole cab ("Other players' trains").
 
 **Who streams — CONFIRMED** (`0x424488`). A client streams when two things hold:
 - its train is of kind PLAYER;
@@ -452,7 +557,7 @@ How everyone else treats it:
 **Test, 2026-11-03.**
 - Setup:
   - one PC: `rts_server.exe` on port 800, two `rts1.exe` from two folders, a VL80s on Kuban;
-  - a proxy in front of the server (`build/mp_test/mp_proxy.py`, not in the repository).
+  - a proxy in front of the server (`tools/mp-capture/mp_proxy.py`).
 - Results, by the proxy's mode:
   - **observe:** the helper links straight to the engineer on port 801 and sees the cab;
   - **helper only through the relay:** works;
@@ -480,10 +585,36 @@ How everyone else treats it:
   - the player whose train was taken in chooses: stay in the merged train as
     a helper, or uncouple and take their engine back.
 
+**What the live capture of 2026-11-05 asks of openRTS** (Legacy off; with
+Legacy on, RTS clients keep what they do):
+- **Remote trains** are drawn about one package period in the past and
+  interpolated between known points, not extrapolated. With RTS senders
+  that is 1.5–2 s. When a client must predict, the acceleration fades out
+  instead of being carried on. openRTS senders send on every control
+  change and 10–20 times a second.
+- **Doors and the joints** (hoses, cocks, cables, chocks, handbrakes) are
+  part of the car state the server holds and sends to everyone. A car menu
+  action names the cars by key, not by index.
+- **A train that changes owner** keeps one state: nothing freezes on one
+  client and nothing restarts from `Init` on another. Either the engines'
+  DLLs keep running where they ran (a client's DLL host already runs
+  several trains), or their state goes with the train. The choice is open.
+- **Dispatchers** get the owners and the assignments. A split sends the new
+  part's name and number to everyone.
+- **Derailed cars:** while a car falls its owner sends its placement
+  often, and once it lies still, the final one; every client shows that.
+- **Removing a train from the world** and placing it back never leaves a
+  train without its place on the track, a player's own train included
+  (RTS crashed its owner, `multiplayer-protocol.md`).
+- **The route direction** is a dispatcher's button (`roadmap.md`, the
+  console).
+
 **Next reverse steps:**
 - the payloads of the `0x45xx` dispatcher packages;
 - the `0x4620` family;
 - the remaining `0x4603` fields;
-- a capture with the server's full data trace to check the counts and the period;
-- after a coupling: whether the server drops `0x4603` from a player who no
-  longer owns the train, and who owns a part cut off later (`0x44FE34`).
+- a capture with the server's full data trace to check the counts and the period (done 2026-11-05 through the proxy; a pickup was left out: only Uspensk has any);
+- after a coupling: the server takes `0x4603` for a PLAYER train from any
+  sender, with no owner check (`0x40FB90`). A part cut off later keeps the
+  kind and the owner of its train (`0x44FE34` → `0x456958`). Both are in
+  `multiplayer-protocol.md`.
