@@ -1,4 +1,7 @@
 build/
+tools/mp-capture/*.bin
+tools/mp-capture/*.log
+__pycache__/
 imgui.ini
 debug_views/
 user_paths/
