@@ -185,6 +185,8 @@ struct TrainView::Unit {
     // it): host_train is its train there (0: the driven one).
     bool host = false;
     std::size_t host_train = SIZE_MAX;
+    // Driven by another client: moved by the network, no physics (add_remote).
+    bool remote = false;
 
     // Both interpolation ends at the train's present state.
     void settle() {
@@ -1105,6 +1107,7 @@ void TrainView::step_trains() {
     // pushed without coupling it becomes LOOSE and moves on).
     for (auto& unit : units_) {
         auto& train = *unit.train;
+        if (unit.remote) continue;
         if (train.asleep()) {
             if (unit.role != Role::standing || std::abs(train.speed()) > 0.01) {
                 train.set_asleep(false);
@@ -1127,6 +1130,7 @@ void TrainView::step_trains() {
     std::vector<std::pair<std::size_t, std::size_t>> breaks;
     for (std::size_t u = 0; u < units_.size(); ++u) {
         auto& unit = units_[u];
+        if (unit.remote) continue;
         unit.train->step();
         for (const auto& event : unit.train->take_events()) {
             auto* car = event.car < unit.cars.size() ? &unit.cars[event.car] : nullptr;
@@ -1590,6 +1594,51 @@ std::string TrainView::load_situation(const std::filesystem::path& file) {
     std::erase_if(saved, [](const PlacedTrain& train) { return !train.front || train.cars.empty(); });
     if (saved.empty()) return trf("no trains in %s", file.filename().string().c_str());
     return put_back(std::move(saved), "situation");
+}
+
+std::uint64_t TrainView::add_remote(const PlacedTrain& placed, std::string* error) {
+    if (!placed.front || placed.cars.empty()) {
+        if (error) *error = "no place or no cars";
+        return 0;
+    }
+    Unit unit;
+    std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
+    if (auto problem = make_unit_from(placed.name, placed.cars, unit, stock); !problem.empty()) {
+        if (error) *error = std::move(problem);
+        return 0;
+    }
+    const auto& where = *placed.front;
+    std::string problem;
+    if (!unit.train->place(*network_, where.node, where.offset, where.forward, &problem)) {
+        if (error) *error = std::move(problem);
+        return 0;
+    }
+    for (auto& definition : stock) stock_.push_back(std::move(definition));
+    unit.role = Role::standing;
+    unit.remote = true;
+    unit.train->set_asleep(true);
+    number_cars(unit);
+    unit.settle();
+    const auto id = unit.train->id();
+    units_.push_back(std::move(unit));
+    return id;
+}
+
+simulation::Train* TrainView::find_train(const std::uint64_t id) {
+    for (auto& unit : units_) {
+        if (unit.train->id() == id) return unit.train.get();
+    }
+    return nullptr;
+}
+
+bool TrainView::remove_train(const std::uint64_t id) {
+    const auto it = std::find_if(units_.begin(), units_.end(), [id](const Unit& unit) { return unit.train->id() == id; });
+    if (it == units_.end() || it == units_.begin() && it->role == Role::driven) return false;
+    dispatcher_->clear(id);
+    it->train->vacate();
+    if (follow_id_ == id) follow_id_ = 0;
+    units_.erase(it);
+    return true;
 }
 
 std::string TrainView::put_back(std::vector<PlacedTrain> saved, const std::string& source) {

@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include <openrts/net/packages.hpp>
+#include <openrts/net/play.hpp>
 
 namespace openrts::net {
 
@@ -656,6 +657,113 @@ Bytes write_snapshot(const Snapshot& s) {
         w.end();
     }
     return w.take();
+}
+
+std::optional<float> decode_time(const ByteView body) {
+    float time{};
+    if (!parse_body(body, [&](WireReader& r) { time = r.f32(); })) return std::nullopt;
+    return time;
+}
+
+std::optional<JunctionState> decode_junction(const ByteView body) {
+    JunctionState j;
+    if (!parse_body(body, [&](WireReader& r) {
+            j.index = r.u32();
+            j.branch = r.u32();
+            j.lock = r.u8();
+        })) {
+        return std::nullopt;
+    }
+    return j;
+}
+
+std::optional<SignalHeadState> decode_signal_head(const ByteView body) {
+    SignalHeadState h;
+    if (!parse_body(body, [&](WireReader& r) {
+            h.item = r.u32();
+            h.semaphore = r.u16();
+            h.state = r.f32();
+            h.draw_state = r.f32();
+            h.value_92 = r.f32();
+            h.mode = r.f32();
+            h.speed = r.f32();
+        })) {
+        return std::nullopt;
+    }
+    return h;
+}
+
+std::optional<SnapshotTrain> decode_train_add(const ByteView body) {
+    SnapshotTrain t;
+    if (!read_train(body, t)) return std::nullopt;
+    return t;
+}
+
+std::optional<TrainPosUpdate> decode_train_pos(const ByteView body) {
+    TrainPosUpdate update;
+    if (!read_pos(body, update.train, update.pos)) return std::nullopt;
+    return update;
+}
+
+std::optional<std::uint32_t> decode_train_id(const ByteView body) {
+    std::uint32_t train{};
+    if (!parse_body(body, [&](WireReader& r) { train = r.u32(); })) return std::nullopt;
+    return train;
+}
+
+std::optional<TrainRemove> decode_train_remove(const ByteView body) {
+    TrainRemove x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.train = r.u32();
+            x.remove = r.u8();
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+std::optional<TrainInfo> decode_train_info(const ByteView body) {
+    TrainInfo x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.train = r.u32();
+            x.kind = r.u16();
+            x.subtype = r.u16();
+            x.number = r.u32();
+            x.state = r.u8();
+            x.path = r.u32();
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+std::optional<TrainAssignUpdate> decode_train_assign(const ByteView body) {
+    TrainAssignUpdate x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.train = r.u32();
+            x.assign = read_assign(r);
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+std::optional<std::u16string> decode_message(const ByteView body) {
+    // u32 n, the text and a zero; a server may pad it, so the rest is left.
+    WireReader r(body);
+    const auto count = r.u32();
+    if (!r.ok() || count > r.remaining() / 2) return std::nullopt;
+    std::u16string text(count, u'\0');
+    for (auto& unit : text) unit = static_cast<char16_t>(r.u16());
+    if (!r.ok()) return std::nullopt;
+    while (!text.empty() && text.back() == u'\0') text.pop_back();
+    return text;
+}
+
+std::optional<bool> decode_pause(const ByteView body) {
+    std::uint8_t value{};
+    if (!parse_body(body, [&](WireReader& r) { value = r.u8(); })) return std::nullopt;
+    return value != 0;
 }
 
 double front_distance(const SnapshotTrain& train) {

@@ -1,16 +1,42 @@
-// The RTS wire format, package names and the startup snapshot (docs/net.md).
-// With a game folder: RTS/multdata, the snapshot the client saved at its
-// last login, reads without a problem and writes back byte for byte.
+// The RTS wire format, package names, the startup snapshot, the packages of
+// a game in play and a connection to a fake RTS server on the loopback
+// (docs/net.md). With a game folder: RTS/multdata, the snapshot the client
+// saved at its last login, reads without a problem and writes back byte for
+// byte.
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <thread>
 
+#include <openrts/net/connection.hpp>
 #include <openrts/net/packages.hpp>
+#include <openrts/net/play.hpp>
 #include <openrts/net/snapshot.hpp>
 #include <openrts/net/wire.hpp>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+using TestSocket = SOCKET;
+#define close_test_socket closesocket
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+using TestSocket = int;
+#define close_test_socket ::close
+#endif
 
 namespace {
 
@@ -211,6 +237,151 @@ void broken_snapshot() {
     check(read.problems.size() == 1 && read.snapshot.other.size() == 2, "a stray position is a problem and kept");
 }
 
+void play_packages() {
+    WireWriter w;
+    w.u32(4);
+    w.f32(1.5f);
+    w.f32(-0.2f);
+    w.u32(1482);
+    w.f32(41.26f);
+    w.u8(1);
+    w.u32(1);
+    w.begin(id(Package::car_pos));
+    w.f64(8.15);
+    w.f32(1.5f);
+    w.f32(-0.2f);
+    w.end();
+    const auto pos = decode_train_pos(w.data());
+    check(pos && pos->train == 4 && pos->pos.node == 1482 && !pos->pos.forward() && pos->pos.cars.size() == 1,
+          "a train position in play");
+    // 0x4605 as the live capture had it: train 4, PLAYER, passenger, 266, "Включен".
+    const Bytes info_bytes{4, 0, 0, 0, 1, 0, 1, 0, 0x0a, 1, 0, 0, 1, 0, 0, 0, 0};
+    const auto info = decode_train_info(info_bytes);
+    check(info && info->train == 4 && info->kind == 1 && info->subtype == 1 && info->number == 266 && info->state == 1,
+          "train info");
+    const Bytes remove_bytes{4, 0, 0, 0, 0};
+    const auto remove = decode_train_remove(remove_bytes);
+    check(remove && remove->train == 4 && remove->remove == 0, "taken off the track");
+    WireWriter m;
+    m.u32(6);
+    for (const auto unit : std::u16string(u"Привет")) m.u16(static_cast<std::uint16_t>(unit));
+    m.u16(0);
+    const auto message = decode_message(m.data());
+    check(message && *message == u"Привет", "a dispatcher's message");
+    const Bytes pause_bytes{1};
+    check(decode_pause(pause_bytes) == true, "pause");
+    check(!decode_time(Bytes{1, 2, 3}), "a short time does not parse");
+}
+
+// A fake RTS server on the loopback: the login and its reply, an
+// assignment, the snapshot on request, then it hangs up.
+void connection_loopback() {
+#ifdef _WIN32
+    WSADATA wsa{};
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    struct Cleanup {
+        ~Cleanup() { WSACleanup(); }
+    } cleanup;
+#endif
+    TestSocket listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in where{};
+    where.sin_family = AF_INET;
+    where.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    where.sin_port = 0;
+    if (::bind(listener, reinterpret_cast<sockaddr*>(&where), sizeof where) != 0 || ::listen(listener, 1) != 0) {
+        check(false, "a loopback listener");
+        close_test_socket(listener);
+        return;
+    }
+    socklen_t size = sizeof where;
+    ::getsockname(listener, reinterpret_cast<sockaddr*>(&where), &size);
+    const auto port = ntohs(where.sin_port);
+
+    bool login_ok = false;
+    bool asked = false;
+    std::thread server([&] {
+        const auto peer = ::accept(listener, nullptr, nullptr);
+        const auto read = [&](std::uint8_t* out, int n) {
+            while (n > 0) {
+                const auto got = ::recv(peer, reinterpret_cast<char*>(out), n, 0);
+                if (got <= 0) return false;
+                out += got;
+                n -= got;
+            }
+            return true;
+        };
+        const auto write = [&](const Bytes& bytes) {
+            ::send(peer, reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()), 0);
+        };
+        std::uint8_t head[6];
+        if (read(head, 6)) {
+            const auto length = head[2] | (head[3] << 8);
+            Bytes body(static_cast<std::size_t>(length - 6));
+            read(body.data(), static_cast<int>(body.size()));
+            WireReader r(body);
+            login_ok = head[0] == 0x00 && head[1] == 0x46 && length == 12 + 2 * 4 && r.u16() == 101 && r.text_u16() == u"Test";
+        }
+        // The reply has no length field.
+        WireWriter reply;
+        reply.u16(0x4600);
+        reply.u16(101);
+        reply.text_u16(u"Маршрут: Test");
+        reply.u8(1);
+        reply.u8(0);
+        reply.text_u16(u"testroute");
+        for (std::uint32_t i = 0; i < 4; ++i) reply.u32(i + 1);
+        write(reply.data());
+        WireWriter assign;
+        assign.begin(id(Package::train_assign));
+        assign.u32(3);
+        assign.u8(1);
+        assign.u32(101);
+        assign.u16(0);
+        assign.u16(1);
+        assign.end();
+        write(assign.data());
+        if (read(head, 6)) asked = head[0] == 0x08 && head[1] == 0x46;
+        Snapshot s;
+        s.root = true;
+        s.complete = true;
+        s.time = 3600.0f;
+        s.junctions = {{3, 1, 0}};
+        write(write_snapshot(s));
+        close_test_socket(peer);
+    });
+
+    RtsConnection connection;
+    const auto login = connection.connect("127.0.0.1:" + std::to_string(port), u"Test", 5000);
+    check(login.ok() && login.reply->route == u"testroute" && login.reply->description == u"Маршрут: Test" &&
+              login.reply->season == 1 && login.reply->counts[3] == 4,
+          "the login reply without a length field");
+    std::vector<ReceivedPackage> got;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    bool sent = false;
+    while (std::chrono::steady_clock::now() < until) {
+        for (auto& p : connection.receive()) {
+            if (p.id == id(Package::train_assign) && !sent) sent = connection.send(id(Package::snapshot), {});
+            got.push_back(std::move(p));
+        }
+        if (!got.empty() && got.back().id == id(Package::server_down)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    server.join();
+    close_test_socket(listener);
+    check(login_ok, "the login as RTS sends it: version 101, the nick");
+    check(asked, "the snapshot asked for after the assignment");
+    // assign, root, time, junctions, end, then the hang-up.
+    check(got.size() == 6 && got[0].id == 0x4601 && got[1].id == 0x4600 && got[2].id == 0x460D && got[4].id == 0x4608 &&
+              got[5].id == id(Package::server_down),
+          "packages in order, then server_down when the server hangs up");
+    check(!connection.connected(), "not connected after the hang-up");
+    const auto bad = RtsConnection().connect("127.0.0.1:1", u"Test", 1000);
+    check(!bad.ok() && !bad.error.empty(), "no server: an error");
+    check(parse_address("host") && parse_address("host")->port == 800 && parse_address("1.2.3.4:7800")->port == 7800 &&
+              !parse_address("host:x"),
+          "addresses");
+}
+
 void content(const std::filesystem::path& root) {
     const auto file = root / "RTS" / "multdata";
     if (!std::filesystem::exists(file)) {
@@ -240,6 +411,8 @@ int main(const int argc, char** argv) {
         names();
         snapshot_round_trip();
         broken_snapshot();
+        play_packages();
+        connection_loopback();
     }
     if (failures == 0) std::cout << "net tests passed\n";
     return failures == 0 ? 0 : 1;

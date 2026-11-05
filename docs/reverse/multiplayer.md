@@ -83,7 +83,7 @@ On an error the server sends only a `u16` code and closes the connection:
 |---|---|
 | `0x4701` | nickname busy |
 | `0x4702` | <ul><li>the server takes no new players, or no new dispatchers: a separate switch for each kind;</li><li>on the mini-server: the name is not in its player list.</li></ul> |
-| `0x4703` | startup data already sent (a second `0x4608`) |
+| `0x4703` | startup data refused: already sent (a second `0x4608`), or the player has no train assigned yet |
 | `0x4704` | the first package is neither `0x4500` nor `0x4600` ("Probably wrong engine version") |
 | `0x4705` | protocol version is not 101 |
 | `0x4706` | packet flood (the server's packet limits), then disconnect |
@@ -91,7 +91,7 @@ On an error the server sends only a `u16` code and closes the connection:
 
 **Reconnect.** On the dedicated server a login with a nickname it already holds is not "busy": the new socket is attached to that user ("User N reconnected"). The main thread checks the name within 12 s (`0x442A94`, the ban list too). The mini-server answers `0x4701` while that name is connected.
 
-**Startup data.** After the reply the client sends `0x4608`. The server sends a snapshot of its world:
+**Startup data.** After the reply the client sends `0x4608`. The server takes it only from a player it has assigned a train (`0x44ECAC` sets the user's `+41`) or one coming back to a game it was in (`+92` bit 1); otherwise it answers `0x4703` (`0x4436C8`). The client's menu waits for the assignment before "Зайти". The server sends a snapshot of its world:
 - `0x4600` (root);
 - `0x460D` time;
 - `0x4609`, then `0x460A` per junction;

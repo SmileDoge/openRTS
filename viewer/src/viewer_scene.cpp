@@ -45,6 +45,7 @@
 #include "signal_view.hpp"
 #include "viewer_state.hpp"
 #include "track_control.hpp"
+#include "net_session.hpp"
 #include "train_view.hpp"
 
 #ifdef OPENRTS_HAS_IMGUI
@@ -121,6 +122,8 @@ public:
     [[nodiscard]] int start_view() const noexcept { return content_.start_view; }
     [[nodiscard]] const std::string& save_situation() const noexcept { return content_.save_situation; }
     [[nodiscard]] const std::shared_ptr<const net::Snapshot>& snapshot() const noexcept { return content_.snapshot; }
+    [[nodiscard]] const std::shared_ptr<net::RtsConnection>& connection() const noexcept { return content_.connection; }
+    [[nodiscard]] std::vector<net::ReceivedPackage> take_early() { return std::exchange(content_.early, {}); }
     [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
     [[nodiscard]] bool track_control() const noexcept { return content_.track_control; }
     // RTS's config.ini text (read once from the installation folder).
@@ -331,8 +334,14 @@ public:
             }
             if (!content_.save_situation().empty()) train_->save_situation_when_placed(content_.save_situation());
             if (const auto& snapshot = content_.snapshot()) {
-                apply_snapshot(*snapshot, track_->network(), *train_);
-                snapshot_signals_ = true;
+                if (content_.connection()) {
+                    // Watching a live game: the session puts the trains on
+                    // the track and keeps the world as the server says.
+                    net_ = std::make_unique<NetSession>(content_.connection(), *snapshot, content_.take_early());
+                } else {
+                    apply_snapshot(*snapshot, track_->network(), *train_);
+                    snapshot_signals_ = true;
+                }
             }
             if (!content_.consist().empty()) {
                 if (const auto error = train_->load(content_.consist()); !error.empty()) {
@@ -452,6 +461,7 @@ public:
             train_->set_obstacles(streamer_ ? &streamer_->visible_instances() : nullptr);
             train_->set_world_clock(clock.time_of_day, sky_state_ && sky_state_->night);
             train_->set_world_light(sky_state_ ? sky_state_->world_lit : 1.0f, static_cast<std::uint8_t>(clock.weather));
+            if (net_) net_->update(track_->network(), signals_ ? signals_->system() : nullptr, *train_);
             train_->update(input, camera, clock.elapsed, *library_, audio_);
         }
         if (signals_) {
@@ -713,6 +723,10 @@ public:
 
     [[nodiscard]] bool keyboard_captured() const override { return train_ && train_->keyboard_captured(); }
     [[nodiscard]] bool takes_scroll() const override { return train_ && train_->engineer_inside(); }
+    [[nodiscard]] std::optional<double> take_time_of_day() override {
+        return net_ ? net_->take_time_of_day() : std::nullopt;
+    }
+
     [[nodiscard]] std::string world_report() const override {
         std::string report = "water " + std::to_string(terrain_ ? terrain_->water_quads() : 0) + " quads";
         std::size_t forests = 0, crossings = 0, pickups = 0;
@@ -1368,6 +1382,7 @@ private:
     std::unique_ptr<renderer::ModelLibrary> library_;
     std::optional<TrackView> track_;
     std::unique_ptr<TrainView> train_;
+    std::unique_ptr<NetSession> net_; // --mp-connect: the server's game
     std::unique_ptr<TrackControl> track_control_;
     mutable bool signal_names_ = false; // Ctrl+F7
     mutable bool place_names_ = false;  // F7

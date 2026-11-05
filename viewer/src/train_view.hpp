@@ -204,6 +204,12 @@ public:
         pending_trains_ = std::move(trains);
         pending_trains_source_ = std::move(source);
     }
+    // A train another client drives (the network, docs/net.md): put on the
+    // track now, never simulated and never woken; the network moves it
+    // (find_train()->shift / place). Its id, 0 when it does not fit.
+    std::uint64_t add_remote(const PlacedTrain& train, std::string* error = nullptr);
+    [[nodiscard]] simulation::Train* find_train(std::uint64_t id);
+    bool remove_train(std::uint64_t id);
     // Saves the situation as `name` once the driven train stands on the
     // track (--save-situation, for scripted checks).
     void save_situation_when_placed(std::string name) { save_when_placed_ = std::move(name); }

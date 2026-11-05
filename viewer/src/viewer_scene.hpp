@@ -17,6 +17,7 @@
 #include <openrts/audio/audio_engine.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/route_world.hpp>
+#include <openrts/net/connection.hpp>
 #include <openrts/net/snapshot.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/rts_sky.hpp>
@@ -218,6 +219,8 @@ public:
     // What the world has around (water, forests, crossings, cars, rain,
     // smoke), a line for the capture's report.
     [[nodiscard]] virtual std::string world_report() const { return {}; }
+    // A time of day the scene sets (an RTS server's clock), taken once.
+    [[nodiscard]] virtual std::optional<double> take_time_of_day() { return std::nullopt; }
     // Car `car` of the driven train, shape space to world (--capture-camera).
     [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
     // The engineer into the driven train's cab (--capture-cab).
@@ -263,6 +266,11 @@ struct SceneContent {
     // Route scenes: an RTS startup snapshot to set the world from
     // (--mp-snapshot, docs/net.md): junctions, signal aspects, trains.
     std::shared_ptr<const net::Snapshot> snapshot;
+    // Route scenes: a live RTS server (--mp-connect) the snapshot came from;
+    // the scene watches its game (NetSession). `early`: packages that came
+    // after the snapshot's end.
+    std::shared_ptr<net::RtsConnection> connection;
+    std::vector<net::ReceivedPackage> early;
 };
 
 [[nodiscard]] SceneLoadResult load_shape_scene(SceneContent content, const core::VirtualPath& shape);

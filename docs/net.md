@@ -105,11 +105,65 @@ openrts_viewer --window --route Kuban_RTS --root <game folder> --mp-snapshot <ga
 supplies), chocks and handbrakes from the car flags, cargo, derailments,
 track objects, weather. The snapshot reads them; the viewer leaves them.
 
+## Watching a game: `--mp-connect` (stage 2, the observer)
+
+```text
+openrts_viewer --window --route Kuban_RTS --root <game folder> --mp-connect 127.0.0.1:800 --mp-nick openRTS
+```
+
+**The connection** (`openrts/net/connection.hpp`, `RtsConnection`):
+- TCP to "host:port" (port 800 when none is given); the login `0x4600` with
+  the protocol version 101 and the nick (1 to 15 characters).
+- The reply has no length field: `0x4600`, the version, the description,
+  season and weather, the route id and four counts; or a code alone
+  (`0x4701` nick in use, `0x4702` no new players, `0x4705` another
+  version).
+- Then a thread reads whole packages into a queue the main loop takes.
+  When the socket closes it queues a `server_down` of its own, as
+  `rts1.exe` does.
+
+**Joining:**
+1. The viewer logs in and says on the console that it waits for a train.
+2. **The dispatcher assigns it one** on the console (ТЧД). The server sends
+   the world only to a player with a train (reverse: `0x44ECAC` sets the
+   user's `+41`; without it `0x4608` gets `0x4703`).
+3. On the assignment (`train_assign`, mine) it asks for the snapshot
+   (`0x4608`) and takes the packages from the empty `0x4600` to `0x4608`.
+4. The route scene comes up with the snapshot's time, junctions, signals
+   and trains.
+
+**In play** (`viewer/src/net_session.cpp`, the packages from
+`openrts/net/play.hpp`):
+- the time of day (`time`), junctions (`junction`, set the server's way even
+  where a train here holds them), signal heads (`signal_head`, overrides);
+- trains: `train_add`, `train_pos` / `train_pos_forced`, `train_stands`,
+  `train_remove` (off the track or deleted), `train_info`;
+- the dispatcher's messages, pause and `server_down` on the console.
+
+**Remote trains** (`net::RemoteMotion`): every train is another client's
+or the server's. It is put on the track as a train that is never
+simulated (`TrainView::add_remote`) and drawn one package interval behind
+(measured: 1.5 s for players, 0.5 s for TRAFFIC), interpolated along the
+track between its positions; past the last one it goes on at its speed for
+one more interval, and stops where `train_stands` says. A position the
+track does not join to the last one puts the train there when it is due.
+
+**Not yet:** nothing is sent back, the assigned train is not driven
+(stage 2, "own train"); a coupling or a split is not repeated, so a
+train whose car count changed stays where it was (RTS drops such a
+position too); lights, pantographs and sounds of remote trains;
+electrification; the server's pause does not stop the clock.
+
 ## Tests
 
 - `openrts.net`: fields and strings both ways, nested packages, broken
   lengths, package names, a snapshot with every modelled package written,
-  read and written again byte for byte, a stray position.
+  read and written again byte for byte, a stray position; the packages of
+  play; a connection to a fake server on the loopback (the login, its reply
+  without a length, an assignment, the snapshot, the hang-up).
+- `openrts.net_world`: on a synthetic switch, distances along the track,
+  junctions set the server's way, a train's front from its rear end, a
+  remote train interpolated, run on, stopped and put across a jump.
 - `openrts.content.net_multdata` (with `OPENRTS_TEST_ROOT`): `RTS/multdata`
   reads without a problem and writes back byte for byte. It is skipped when
   the file is not there. The file stays in the game folder: it holds the

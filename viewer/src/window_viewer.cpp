@@ -1810,6 +1810,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             const auto [id, state] = options.capture_switches[capture_switch_next++];
             scene.set_cab_switch(id, state);
         }
+        if (const auto time = scene.take_time_of_day()) clock.time_of_day = *time;
         scene.update(renderer, camera, clock.advance(panel.paused ? 0.0f : elapsed), frame_input);
         if (capture && options.capture_camera) {
             if (const auto car = scene.train_car_transform(options.capture_car)) {

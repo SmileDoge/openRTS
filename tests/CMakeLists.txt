@@ -94,6 +94,13 @@ add_executable(openrts_net_test net_test.cpp)
 openrts_configure_target(openrts_net_test)
 target_link_libraries(openrts_net_test PRIVATE openrts_net)
 add_test(NAME openrts.net COMMAND openrts_net_test)
+
+# A snapshot in openRTS terms on a synthetic track: distances, junctions,
+# train fronts, remote trains' motion.
+add_executable(openrts_net_world_test net_world_test.cpp)
+openrts_configure_target(openrts_net_world_test)
+target_link_libraries(openrts_net_world_test PRIVATE openrts_net_world openrts_formats)
+add_test(NAME openrts.net_world COMMAND openrts_net_world_test)
 if(OPENRTS_TEST_ROOT)
     add_test(NAME openrts.content.net_multdata COMMAND openrts_net_test "${OPENRTS_TEST_ROOT}")
 endif()

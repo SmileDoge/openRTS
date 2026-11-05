@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <thread>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -19,6 +20,9 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/ace_file.hpp>
 #include <openrts/formats/environment.hpp>
+#include <openrts/net/connection.hpp>
+#include <openrts/net/packages.hpp>
+#include <openrts/net/play.hpp>
 #include <openrts/renderer/webgpu_context.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
 
@@ -113,6 +117,85 @@ struct ContentTarget {
 // the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|4` (default 4), `--no-sound`, `--sound-offline`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
+// Joins an RTS server as a player (docs/net.md, "Observer"): the login, then
+// the wait for a train the dispatcher assigns (the server sends the world
+// only then: 0x44ECAC), then the startup snapshot. Packages after its end
+// go to `early`. Nothing on failure, said on the console.
+std::optional<openrts::net::Bytes> join_server(openrts::net::RtsConnection& connection, const std::string& address,
+                                               const std::string& nick, const std::string_view route,
+                                               std::vector<openrts::net::ReceivedPackage>& early) {
+    namespace net = openrts::net;
+    const auto login = connection.connect(address, net::from_utf8(nick));
+    if (!login.ok()) {
+        std::cerr << "Server " << address << ": " << login.error;
+        switch (login.refused) {
+        case 0: break;
+        case 0x4701: std::cerr << " (the nickname is in use)"; break;
+        case 0x4702: std::cerr << " (the server takes no new players)"; break;
+        case 0x4705: std::cerr << " (not protocol 101)"; break;
+        default: std::cerr << " (code 0x" << std::hex << login.refused << std::dec << ")"; break;
+        }
+        std::cerr << std::endl;
+        return std::nullopt;
+    }
+    const auto& reply = *login.reply;
+    std::cout << "net: logged in to " << address << " as " << nick << "; route " << net::to_utf8(reply.route) << "; "
+              << net::to_utf8(reply.description) << std::endl;
+    std::string ours(route);
+    std::string theirs = net::to_utf8(reply.route);
+    const auto lower = [](std::string& text) {
+        std::transform(text.begin(), text.end(), text.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    };
+    lower(ours);
+    lower(theirs);
+    if (ours != theirs) std::cout << "net: the server plays route " << theirs << ", this is " << ours << std::endl;
+    std::cout << "net: waiting for a train: assign one to " << nick << " on the dispatcher console" << std::endl;
+
+    bool asked = false;
+    bool collecting = false;
+    bool done = false;
+    net::WireWriter world;
+    const auto started = std::chrono::steady_clock::now();
+    while (!done) {
+        for (auto& package : connection.receive()) {
+            if (done) {
+                early.push_back(std::move(package));
+                continue;
+            }
+            if (package.id == net::id(net::Package::server_down)) {
+                std::cerr << "Server " << address << " closed the connection" << std::endl;
+                return std::nullopt;
+            }
+            if (!asked) {
+                const auto assign = package.id == net::id(net::Package::train_assign)
+                                        ? net::decode_train_assign(package.body)
+                                        : std::nullopt;
+                if (assign && assign->assign.mine) {
+                    std::cout << "net: train " << assign->train << " assigned; asking for the world" << std::endl;
+                    connection.send(net::id(net::Package::snapshot), {});
+                    asked = true;
+                }
+                continue;
+            }
+            if (package.id == net::id(net::Package::snapshot_again)) {
+                std::cerr << "Server " << address << " will not send the world (0x4703)" << std::endl;
+                return std::nullopt;
+            }
+            if (package.id == net::id(net::Package::login) && package.body.empty()) collecting = true;
+            if (!collecting) continue;
+            world.frame(package.id, package.body);
+            if (package.id == net::id(net::Package::snapshot)) done = true;
+        }
+        if (done) break;
+        if (std::chrono::steady_clock::now() - started > std::chrono::minutes(30)) {
+            std::cerr << "Server " << address << ": no train assigned in 30 minutes" << std::endl;
+            return std::nullopt;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return world.take();
+}
+
 int run_window(std::string_view mode, std::string_view path, const std::vector<std::string_view>& flags) {
     openrts::viewer::WindowOptions options;
     // The volume last set (viewer panel or the start menu); --volume overrides it.
@@ -163,6 +246,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     int start_view = 0;              // --spawn
     std::string save_situation;      // --save-situation
     std::filesystem::path mp_snapshot; // --mp-snapshot
+    std::string mp_connect;          // --mp-connect host:port
+    std::string mp_nick = "openRTS"; // --mp-nick
     bool time_given = false;         // --time wins over a snapshot's time
     for (std::size_t i = 0; i < flags.size(); ++i) {
         const bool has_value = i + 1 < flags.size();
@@ -187,6 +272,10 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         } else if (flags[i] == "--situation" && has_value) {
             const auto value = flags[++i];
             situation = std::filesystem::path(std::u8string(value.begin(), value.end()));
+        } else if (flags[i] == "--mp-connect" && has_value) {
+            mp_connect = std::string(flags[++i]);
+        } else if (flags[i] == "--mp-nick" && has_value) {
+            mp_nick = std::string(flags[++i]);
         } else if (flags[i] == "--mp-snapshot" && has_value) {
             const auto value = flags[++i];
             mp_snapshot = std::filesystem::path(std::u8string(value.begin(), value.end()));
@@ -335,19 +424,32 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         vfs->start_watching({.reconcile_interval = std::chrono::seconds(config.reconcile_seconds)});
     }
 
-    // An RTS startup snapshot (docs/net.md): its time of day here, the rest
-    // when the route scene is up.
+    // An RTS startup snapshot (docs/net.md): from a file (--mp-snapshot) or
+    // from a live server (--mp-connect, then the scene watches its game). Its
+    // time of day here, the rest when the route scene is up.
     std::shared_ptr<const openrts::net::Snapshot> snapshot;
-    if (!mp_snapshot.empty()) {
+    std::shared_ptr<openrts::net::RtsConnection> connection;
+    std::vector<openrts::net::ReceivedPackage> early;
+    std::optional<openrts::net::Bytes> snapshot_bytes;
+    std::string snapshot_source;
+    if (!mp_connect.empty()) {
+        connection = std::make_shared<openrts::net::RtsConnection>();
+        snapshot_bytes = join_server(*connection, mp_connect, mp_nick, target->path.filename(), early);
+        if (!snapshot_bytes) return exit_code::content_failed;
+        snapshot_source = mp_connect;
+    } else if (!mp_snapshot.empty()) {
         std::ifstream in(mp_snapshot, std::ios::binary);
         if (!in) {
             std::cerr << "Cannot read " << mp_snapshot.string() << '\n';
             return exit_code::content_failed;
         }
-        const openrts::net::Bytes bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        auto read = openrts::net::read_snapshot(bytes);
+        snapshot_bytes = openrts::net::Bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        snapshot_source = mp_snapshot.string();
+    }
+    if (snapshot_bytes) {
+        auto read = openrts::net::read_snapshot(*snapshot_bytes);
         for (const auto& problem : read.problems) std::cout << "snapshot: " << problem << '\n';
-        std::cout << "snapshot: " << mp_snapshot.string() << ": " << read.snapshot.junctions.size() << " junctions, "
+        std::cout << "snapshot: " << snapshot_source << ": " << read.snapshot.junctions.size() << " junctions, "
                   << read.snapshot.signals.size() << " signal heads, " << read.snapshot.trains.size() << " trains"
                   << std::endl;
         if (read.snapshot.time && !time_given) {
@@ -361,7 +463,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     const openrts::viewer::SceneContent content{
         .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control,
         .start_state = start_state, .situation = situation, .start_view = start_view,
-        .save_situation = save_situation, .root = target->root, .snapshot = snapshot};
+        .save_situation = save_situation, .root = target->root, .snapshot = snapshot, .connection = connection,
+        .early = std::move(early)};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)
                                     : openrts::viewer::load_route_scene(content, target->path);
 
