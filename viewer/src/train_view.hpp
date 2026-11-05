@@ -210,6 +210,11 @@ public:
     std::uint64_t add_remote(const PlacedTrain& train, std::string* error = nullptr);
     [[nodiscard]] simulation::Train* find_train(std::uint64_t id);
     bool remove_train(std::uint64_t id);
+    // A remote train's look as its owner sends it (car_light, car_state):
+    // RTS draws another player's train only by these, its own lights'
+    // conditions and pantograph rules are not worked out (0x4F07D4).
+    void set_remote_light(std::uint64_t id, std::size_t car, std::size_t light, bool on);
+    void set_remote_look(std::uint64_t id, std::size_t car, std::uint8_t pantographs, bool running);
     // Saves the situation as `name` once the driven train stands on the
     // track (--save-situation, for scripted checks).
     void save_situation_when_placed(std::string name) { save_when_placed_ = std::move(name); }

@@ -34,6 +34,22 @@ train it skips only the engines a DLL drives. openRTS:
 - Trains farther than 3 km are not worked out; the nearest nine beams
   light the scene, glows show for every train.
 
+## Pantograph numbers
+
+A shape's pantograph is its nodes `PANTOGRAPHTOP`, `PANTOGRAPHMIDDLE` and
+`PANTOGRAPHBOTTOM`, each with the number and an optional `A` or `B`
+(`PANTOGRAPHBOTTOM1A`, up to 8; RTS `0x4F0BC8`). RTS does not keep the
+numbers 1 and 2 from the names: a pantograph towards the shape's rear
+(z < 0) is 1, towards its front 2 (CONFIRMED). The ED9M's motor car has
+one pantograph named 1 in its front half, so it is pantograph 2, and the
+same car turned (`_MR`) has pantograph 1; its DLL raises them by these
+numbers (masks 0x2 and 0x1, seen in the live game of 2026-11-06). RTS
+takes each part's own z, so a middle arm with a z of its own (the ED9M's
+`MIDDLE1A`, −1.05 on the `_M`) gets the other number; openRTS lets the
+pantograph's base (`BOTTOM`) decide for all its parts. Before 2026-11-06
+openRTS took the last character of the name, so the ED9M's front motor
+cars never raised theirs.
+
 ## Pantographs without a DLL
 
 RTS's AI trains (`0x424488`): the main pantograph is 1, or 2 when the car

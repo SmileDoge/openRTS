@@ -461,7 +461,10 @@ public:
             train_->set_obstacles(streamer_ ? &streamer_->visible_instances() : nullptr);
             train_->set_world_clock(clock.time_of_day, sky_state_ && sky_state_->night);
             train_->set_world_light(sky_state_ ? sky_state_->world_lit : 1.0f, static_cast<std::uint8_t>(clock.weather));
-            if (net_) net_->update(track_->network(), signals_ ? signals_->system() : nullptr, *train_);
+            if (net_) {
+                net_->update(track_->network(), signals_ ? signals_->system() : nullptr, *train_,
+                             renderer::route_position(camera.eye(), origin_));
+            }
             train_->update(input, camera, clock.elapsed, *library_, audio_);
         }
         if (signals_) {

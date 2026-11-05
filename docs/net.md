@@ -142,17 +142,53 @@ openrts_viewer --window --route Kuban_RTS --root <game folder> --mp-connect 127.
 
 **Remote trains** (`net::RemoteMotion`): every train is another client's
 or the server's. It is put on the track as a train that is never
-simulated (`TrainView::add_remote`) and drawn one package interval behind
-(measured: 1.5 s for players, 0.5 s for TRAFFIC), interpolated along the
-track between its positions; past the last one it goes on at its speed for
-one more interval, and stops where `train_stands` says. A position the
-track does not join to the last one puts the train there when it is due.
+simulated (`TrainView::add_remote`) and moved along the track
+(`Train::shift`, which turns the wheels too):
+- **Drawn behind:** one package interval (measured: 1.5 s for players,
+  0.5 s for TRAFFIC) and a margin of 0.25 s for a package that comes late.
+  Positions RTS sends out of turn (stopping, starting: 0.06 s after the
+  last) do not count for the interval.
+- **Between two positions** the train follows a curve through the speeds
+  the packages give (Hermite), not a straight line: the speed runs on from
+  one package to the next instead of jumping at each. Replayed from the
+  live capture of 2026-11-05 at 60 Hz, the largest acceleration drawn fell
+  from 27-62 m/s² (the straight line's speed steps) to 0.5-1.2 m/s².
+- **The drawing clock** catches up a delay that changed at most 10 %
+  faster or slower than real time, instead of jumping.
+- Past the last position the train goes on at its speed for one more
+  interval and stops where `train_stands` says. A position the track does
+  not join to the last one puts the train there when it is due.
 
-**Not yet:** nothing is sent back, the assigned train is not driven
-(stage 2, "own train"); a coupling or a split is not repeated, so a
-train whose car count changed stays where it was (RTS drops such a
-position too); lights, pantographs and sounds of remote trains;
-electrification; the server's pause does not stop the clock.
+**Checked against a live server** (2026-11-06: `rts_server.exe` with
+Kuban, one `rts1.exe` driving an ED9M, the observer as openRTS):
+- the login, the wait for a train, the snapshot over the network (it
+  writes back byte for byte and fits Kuban whole), a reconnect under the
+  same nick (the server sends the assignment again by itself);
+- junctions and signals as the route assembly and its cancelling set them:
+  the exit signal white on a route given by hand, green on one from the
+  assembler, as in RTS;
+- the ED9M moving, smooth since the curve and the clock.
+
+**The look of remote trains** (as RTS draws another player's train: its
+own light conditions and pantograph rules are not worked out, `0x4F07D4`):
+- when a train comes on the track the observer asks its owner for its
+  whole look, `state_request` 2 (as `rts1.exe`, `0x4D0228`);
+- `car_light` switches a light of the car's `Lights`, by its index;
+- `car_state` gives the raised pantographs and, for a diesel, whether its
+  engine runs (`TrainView::set_remote_light` / `set_remote_look`).
+
+**The observer's place:** it sends the camera's tile and position as
+`player_pos` four times a second while the camera moves and every 5 s
+anyway, as `rts1.exe` does. The server relays a train's lights, look and
+sounds only to players within 3 km of it, and the dispatcher's map shows
+the person; its players table's "Отклик" (seconds since the server last
+heard the player) no longer grows.
+
+**Not yet:** the assigned train is not driven (stage 2, "own train"); a
+coupling or a split is not repeated, so a train whose car count changed
+stays where it was (RTS drops such a position too); the sounds of remote
+trains (`sound_values`, `sound_trigger`, `sound_state`); electrification;
+the server's pause does not stop the clock.
 
 ## Tests
 

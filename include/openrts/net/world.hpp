@@ -74,22 +74,32 @@ private:
                                                    const simulation::TrackLocation& to, double limit);
 
 // Where a train another client drives stands, drawn from its positions
-// (0x4603) one package interval in the past and interpolated along the
-// track between them, as docs/reverse/multiplayer.md asks of openRTS
-// ("Remote trains"); RTS extrapolates instead. Past the last position it
-// keeps on at the last speed for at most one more interval.
+// (0x4603) one package interval and a margin in the past, along the track
+// between them on a curve that keeps the speeds the packages give (so the
+// speed does not jump at each package), as docs/reverse/multiplayer.md asks
+// of openRTS ("Remote trains"); RTS extrapolates instead. Past the last
+// position it keeps on at the last speed for at most one more interval.
 class RemoteMotion {
 public:
     // A position at `time` (seconds, any steady clock): car 0's front.
     void add(simulation::TrackNetwork& network, double time, const simulation::TrackLocation& front, float speed);
     // The train stands (0x4606): no extrapolation past the last position.
     void stand(double time);
-    // Where car 0's front is drawn at `time`.
-    [[nodiscard]] std::optional<simulation::TrackLocation> at(simulation::TrackNetwork& network, double time) const;
+    // Moves the drawing clock to `now` (each frame). The time drawn trails
+    // `now` by delay(); when the delay changes (the interval is measured
+    // anew at each package) the clock runs at most 10 % faster or slower
+    // until it trails by the new delay, instead of jumping, which would
+    // jerk the train at each package. More than half a second off: it jumps.
+    void tick(double now);
+    // Where car 0's front is drawn at `now`: at the ticked clock when `now`
+    // is the last tick, else exactly delay() behind.
+    [[nodiscard]] std::optional<simulation::TrackLocation> at(simulation::TrackNetwork& network, double now) const;
     // The speed drawn then (m/s, towards the train front).
-    [[nodiscard]] float speed_at(double time) const;
-    // The delay: one package interval, measured.
-    [[nodiscard]] double delay() const noexcept { return interval_; }
+    [[nodiscard]] float speed_at(double now) const;
+    // The delay: one package interval, measured, and a margin for a package
+    // that comes a little late.
+    static constexpr double margin = 0.25;
+    [[nodiscard]] double delay() const noexcept { return interval_ + margin; }
     [[nodiscard]] bool empty() const noexcept { return samples_.empty(); }
 
 private:
@@ -101,9 +111,16 @@ private:
         // them; otherwise the train is put straight there.
         std::optional<double> from_previous;
     };
+    [[nodiscard]] double drawn(double now) const noexcept {
+        return ticked_ && now == tick_now_ ? drawn_ : now - delay();
+    }
+
     std::vector<Sample> samples_; // a few, oldest first
     double interval_ = 1.5;       // RTS players send every 1.5 s
     bool standing_ = false;
+    bool ticked_ = false;
+    double tick_now_{};           // the last tick's `now`
+    double drawn_{};              // the time drawn at it
 };
 
 } // namespace openrts::net

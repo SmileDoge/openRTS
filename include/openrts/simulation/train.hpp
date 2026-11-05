@@ -334,7 +334,8 @@ public:
     // A car has derailed (it tips over or slides off; placing the train
     // again puts everything back on the rails).
     [[nodiscard]] bool derailed() const noexcept;
-    // Moves the whole train along the track by `metres` towards its front.
+    // Moves the whole train along the track by `metres` towards its front;
+    // the cars roll that far (CarState::travelled, the wheels turn).
     void shift(double metres);
     // Adds `change` (m/s, towards the train front) to every car's velocity.
     void add_velocity(float change);

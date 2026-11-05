@@ -271,6 +271,26 @@ void play_packages() {
     const Bytes pause_bytes{1};
     check(decode_pause(pause_bytes) == true, "pause");
     check(!decode_time(Bytes{1, 2, 3}), "a short time does not parse");
+
+    // A light and a car's look as an rts1.exe sent them (live capture).
+    const Bytes light_bytes{0x02, 0, 0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0, 0x01, 0, 0, 0xc8, 0x42, 0xff, 0xff, 0xff, 0x50, 0, 0, 0,
+                            0x80, 0xcd, 0xcc, 0x8c, 0x40, 0xcd, 0xcc, 0xbe, 0x41};
+    const auto light = decode_car_light(light_bytes);
+    check(light && light->train == 2 && light->car == 0 && light->light == 1 && light->lit, "a car light");
+    const Bytes look_bytes{0x02, 0, 0, 0, 0, 0, 0, 0, 0x01, 0x0e, 0xff, 0x03, 0, 0, 0, 0, 0, 0, 0x01, 0};
+    const auto look = decode_car_state(look_bytes);
+    check(look && look->train == 2 && look->kind == 1 && look->flags == 0x0003ff0e && look->pantographs == 1 &&
+              !look->running,
+          "a car's look: pantograph 1 up");
+    const auto request = encode_state_request(2, 3);
+    check(request == Bytes({2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}), "the look request as rts1.exe sends it");
+    PlayerPosition at;
+    at.tile_x = -4549;
+    at.tile_z = 14591;
+    at.x = -765.08f;
+    const auto place = encode_player_pos(at);
+    check(place.size() == 44 && place[12] == 0x3b && place[13] == 0xee && place[14] == 0xff && place[15] == 0x38,
+          "a player's place: 44 bytes, the tile at 12");
 }
 
 // A fake RTS server on the loopback: the login and its reply, an

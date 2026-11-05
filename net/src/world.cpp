@@ -177,8 +177,11 @@ void RemoteMotion::add(simulation::TrackNetwork& network, const double time, con
     if (!samples_.empty()) {
         const auto& last = samples_.back();
         const double gap = time - last.time;
-        // The interval: what the sender keeps to, smoothed.
-        if (gap > 0.05 && gap < 10.0) interval_ = std::clamp(0.7 * interval_ + 0.3 * gap, 0.2, 3.0);
+        // The interval: what the sender keeps to, smoothed. RTS also sends a
+        // position out of turn (stopping, starting: 0.06 s after the last in
+        // the live capture); those gaps say nothing of the interval. A
+        // server driving TRAFFIC every 0.5 s still counts.
+        if (gap > 0.45 && gap < 10.0) interval_ = std::clamp(0.7 * interval_ + 0.3 * gap, 0.4, 3.0);
         // As far as the train can go in twice the gap at 400 km/h, with room.
         const double limit = 50.0 + 2.0 * std::max(gap, 0.0) * 112.0;
         sample.from_previous = track_distance(network, last.front, front, limit);
@@ -200,19 +203,64 @@ void RemoteMotion::stand(const double time) {
     }
 }
 
+namespace {
+
+// The way between two positions `span` s apart, `distance` m, left at
+// `speed_a` and reached at `speed_b` (m/s): a cubic (Hermite) curve, so the
+// speed runs on smoothly from one package to the next instead of jumping at
+// each. Speeds that do not fit the way (the other sign) give a straight
+// line. Metres from the first position and the speed at `share` 0..1.
+std::pair<double, double> between(const double distance, const double speed_a, const double speed_b, const double span,
+                                   const double share) {
+    const double s = std::clamp(share, 0.0, 1.0);
+    if (span <= 1e-6) return {distance, speed_b};
+    const bool fits = std::abs(distance) < 0.05 || (distance * speed_a >= 0.0 && distance * speed_b >= 0.0);
+    if (!fits) return {distance * s, distance / span};
+    const double s2 = s * s;
+    const double s3 = s2 * s;
+    const double h10 = s3 - 2.0 * s2 + s;
+    const double h01 = -2.0 * s3 + 3.0 * s2;
+    const double h11 = s3 - s2;
+    const double way = h10 * span * speed_a + h01 * distance + h11 * span * speed_b;
+    const double d10 = 3.0 * s2 - 4.0 * s + 1.0;
+    const double d01 = -6.0 * s2 + 6.0 * s;
+    const double d11 = 3.0 * s2 - 2.0 * s;
+    const double speed = d10 * speed_a + d01 * distance / span + d11 * speed_b;
+    return {way, speed};
+}
+
+} // namespace
+
+void RemoteMotion::tick(const double now) {
+    const double target = now - delay();
+    if (!ticked_ || now < tick_now_) {
+        drawn_ = target;
+    } else {
+        const double step = now - tick_now_;
+        const double off = target - (drawn_ + step);
+        if (std::abs(off) > 0.5) {
+            drawn_ = target;
+        } else {
+            const double rate = std::clamp(1.0 + off / std::max(step, 1e-3), 0.9, 1.1);
+            drawn_ += step * rate;
+        }
+    }
+    ticked_ = true;
+    tick_now_ = now;
+}
+
 std::optional<simulation::TrackLocation> RemoteMotion::at(simulation::TrackNetwork& network, const double time) const {
     if (samples_.empty()) return std::nullopt;
-    const double drawn = time - interval_;
+    const double drawn = this->drawn(time);
     if (drawn <= samples_.front().time) return samples_.front().front;
     for (std::size_t i = 1; i < samples_.size(); ++i) {
         const auto& a = samples_[i - 1];
         const auto& b = samples_[i];
         if (drawn >= b.time) continue;
         if (!b.from_previous) return a.front; // not joined: wait for b and jump there
-        const double span = b.time - a.time;
-        const double share = span > 1e-6 ? (drawn - a.time) / span : 1.0;
+        const auto [way, speed] = between(*b.from_previous, a.speed, b.speed, b.time - a.time, (drawn - a.time) / (b.time - a.time));
         simulation::TrackTraveller t(network, a.front.node, a.front.offset, a.front.forward);
-        t.move(*b.from_previous * share);
+        t.move(way);
         return simulation::TrackLocation{t.node(), t.offset(), t.forward()};
     }
     // Past the last position: on at its speed for one more interval.
@@ -226,15 +274,15 @@ std::optional<simulation::TrackLocation> RemoteMotion::at(simulation::TrackNetwo
 
 float RemoteMotion::speed_at(const double time) const {
     if (samples_.empty()) return 0.0f;
-    const double drawn = time - interval_;
+    const double drawn = this->drawn(time);
     for (std::size_t i = 1; i < samples_.size(); ++i) {
-        if (drawn < samples_[i].time) {
-            const auto& a = samples_[i - 1];
-            const auto& b = samples_[i];
-            const double span = b.time - a.time;
-            const double share = span > 1e-6 ? std::clamp((drawn - a.time) / span, 0.0, 1.0) : 1.0;
-            return static_cast<float>(a.speed + (b.speed - a.speed) * share);
-        }
+        const auto& a = samples_[i - 1];
+        const auto& b = samples_[i];
+        if (drawn >= b.time) continue;
+        if (drawn <= a.time || !b.from_previous) return a.speed;
+        const auto [way, speed] = between(*b.from_previous, a.speed, b.speed, b.time - a.time, (drawn - a.time) / (b.time - a.time));
+        static_cast<void>(way);
+        return static_cast<float>(speed);
     }
     return standing_ ? 0.0f : samples_.back().speed;
 }

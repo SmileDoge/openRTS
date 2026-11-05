@@ -49,24 +49,61 @@ double NetSession::now() const {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
 }
 
-void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSystem* signals, TrainView& trains) {
+void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSystem* signals, TrainView& trains,
+                        const std::optional<formats::RoutePosition>& camera) {
     const double t = now();
+    // The camera's place, as rts1.exe sends it: four times a second while it
+    // moves, every 5 s anyway. The server relays a train's lights, look and
+    // sounds only to players within 3 km (audience 4).
+    if (connection_ && camera && t >= position_at_) {
+        const auto moved = [&] {
+            if (!sent_camera_) return true;
+            const auto& a = *sent_camera_;
+            const double dx = (camera->tile_x - a.tile_x) * 2048.0 + camera->x - a.x;
+            const double dz = (camera->tile_z - a.tile_z) * 2048.0 + camera->z - a.z;
+            return dx * dx + dz * dz + (camera->y - a.y) * (camera->y - a.y) > 0.25;
+        }();
+        if (moved || t >= position_at_ + 4.75) {
+            net::PlayerPosition p;
+            p.tile_x = static_cast<std::int16_t>(camera->tile_x);
+            p.tile_z = static_cast<std::int16_t>(camera->tile_z);
+            p.x = static_cast<float>(camera->x);
+            p.y = static_cast<float>(camera->y);
+            p.z = static_cast<float>(camera->z);
+            connection_->send(net::id(net::Package::player_pos), net::encode_player_pos(p));
+            sent_camera_ = camera;
+            position_at_ = t + 0.25;
+        }
+    }
     if (!started_) {
         started_ = true;
         std::size_t junctions = 0;
         for (const auto& j : snapshot_.junctions) junctions += net::set_junction(network, j) ? 1 : 0;
         waiting_heads_ = snapshot_.signals;
         std::size_t placed = 0;
+        std::uint64_t own = 0;
         for (const auto& train : snapshot_.trains) {
             auto& remote = remotes_[train.id];
             remote.record = train;
             remote.record.pos.reset();
+            std::cout << "net: train " << train.id << " \"" << net::train_name(train) << "\": kind " << train.kind << ", "
+                      << train.cars.size() << " cars ("
+                      << (train.cars.empty() ? std::string("none") : net::to_utf8(train.cars.front().file)) << " first)"
+                      << (train.mine() ? ", ours" : "");
+            if (train.pos) {
+                std::cout << ", rear at node " << train.pos->node << " offset " << train.pos->offset
+                          << (train.pos->forward() ? " along" : " against");
+            }
+            std::cout << std::endl;
             if (train.pos) {
                 position(remote, *train.pos, network, trains, t);
                 if (train.stands) remote.motion.stand(t);
                 placed += remote.train != 0 ? 1 : 0;
+                if (train.mine() && remote.train != 0 && own == 0) own = remote.train;
             }
         }
+        // The camera goes to the train the server gave us.
+        if (own != 0) trains.follow_train(own);
         std::cout << "net: " << junctions << " of " << snapshot_.junctions.size() << " junctions set, " << placed << " of "
                   << snapshot_.trains.size() << " trains on the track" << std::endl;
         for (const auto& package : std::exchange(early_, {})) apply(package, network, signals, trains, t);
@@ -79,17 +116,25 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
         waiting_heads_.clear();
     }
     if (connection_) {
-        for (const auto& package : connection_->receive()) apply(package, network, signals, trains, t);
+        for (const auto& package : connection_->receive()) {
+            ++received_[package.id];
+            apply(package, network, signals, trains, t);
+        }
     }
     move_trains(network, trains, t);
-    if (t >= report_at_ && !not_handled_.empty()) {
-        report_at_ = t + 60.0;
-        std::cout << "net: not handled yet:";
-        for (const auto& [id, count] : not_handled_) {
+    // What came from the server, every 10 s while anything comes; the ids
+    // the observer leaves are marked.
+    if (t >= report_at_ && !received_.empty()) {
+        report_at_ = t + 10.0;
+        std::cout << "net: received:";
+        for (const auto& [id, count] : received_) {
             const auto name = net::package_name(id);
-            std::cout << ' ' << (name.empty() ? std::to_string(id) : std::string(name)) << " x" << count;
+            std::cout << ' ' << (name.empty() ? std::to_string(id) : std::string(name)) << " x" << count
+                      << (not_handled_.contains(id) ? " (left)" : "");
         }
         std::cout << std::endl;
+        received_.clear();
+        not_handled_.clear();
     }
 }
 
@@ -123,6 +168,11 @@ void NetSession::position(Remote& remote, const net::TrainPos& pos, simulation::
             return;
         }
         remote.motion = {};
+        // Its lights, sound and look come from its owner on request, as
+        // rts1.exe asks when it loads another player's train (0x4D0228).
+        if (connection_) {
+            connection_->send(net::id(net::Package::state_request), net::encode_state_request(2, remote.record.id));
+        }
     }
     remote.motion.add(network, now, *front, pos.speed);
 }
@@ -135,12 +185,14 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         if (const auto time = net::decode_time(body)) time_of_day_ = *time;
         return;
     case P(net::Package::junction):
-        if (const auto j = net::decode_junction(body)) net::set_junction(network, *j);
+        if (const auto j = net::decode_junction(body); j && !net::set_junction(network, *j)) {
+            std::cout << "net: junction " << j->node() << " branch " << j->branch << " does not fit" << std::endl;
+        }
         return;
     case P(net::Package::signal_head):
         if (const auto head = net::decode_signal_head(body)) {
             if (heads_ && signals) {
-                heads_->apply(*signals, *head);
+                if (!heads_->apply(*signals, *head)) std::cout << "net: signal item " << head->item << " has no head" << std::endl;
             } else {
                 waiting_heads_.push_back(*head);
             }
@@ -198,6 +250,30 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
                       << " (the observer does not drive)" << std::endl;
         }
         return;
+    case P(net::Package::car_light):
+        if (const auto light = net::decode_car_light(body)) {
+            const auto it = remotes_.find(light->train);
+            if (it != remotes_.end() && it->second.train != 0) {
+                trains.set_remote_light(it->second.train, light->car, light->light, light->lit);
+            }
+        }
+        return;
+    case P(net::Package::car_state):
+        if (const auto look = net::decode_car_state(body)) {
+            const auto it = remotes_.find(look->train);
+            if (it != remotes_.end() && it->second.train != 0) {
+                trains.set_remote_look(it->second.train, look->car, look->pantographs, look->running);
+                auto& seen = it->second.pantographs;
+                if (look->car >= seen.size()) seen.resize(look->car + 1, 0xFF);
+                if (seen[look->car] != look->pantographs) {
+                    seen[look->car] = look->pantographs;
+                    std::cout << "net: train " << look->train << " car " << look->car << ": pantographs 0x" << std::hex
+                              << int(look->pantographs) << std::dec << ", kind " << int(look->kind) << ", flags 0x"
+                              << std::hex << look->flags << std::dec << std::endl;
+                }
+            }
+        }
+        return;
     case P(net::Package::message):
         if (const auto text = net::decode_message(body)) std::cout << "net: message: " << net::to_utf8(*text) << std::endl;
         return;
@@ -222,6 +298,7 @@ void NetSession::move_trains(simulation::TrackNetwork& network, TrainView& train
             remote.train = 0;
             continue;
         }
+        remote.motion.tick(now);
         const auto target = remote.motion.at(network, now);
         const auto front = train->front_end();
         if (!target || !front) continue;

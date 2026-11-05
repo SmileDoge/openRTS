@@ -125,23 +125,61 @@ void motion() {
     m.add(*net, 0.0, {1, 10.0, true}, 10.0f);
     m.add(*net, 1.5, {1, 25.0, true}, 10.0f);
     m.add(*net, 3.0, {1, 40.0, true}, 10.0f);
-    check(near(m.delay(), 1.5), "the interval is the senders' 1.5 s");
-    // Drawn 1.5 s behind: at 3.75 s the train is where it was at 2.25 s.
-    const auto at = m.at(*net, 3.75);
+    check(near(m.delay(), 1.5 + net::RemoteMotion::margin), "the interval is the senders' 1.5 s, with a margin");
+    // Drawn one delay behind: at 2.25 s + delay the train is where it was at 2.25 s.
+    const auto at = m.at(*net, 2.25 + m.delay());
     check(at && near(at->offset, 32.5), "interpolated between two positions");
-    check(near(m.speed_at(3.75), 10.0f), "the speed between them");
+    check(near(m.speed_at(2.25 + m.delay()), 10.0f), "the speed between them");
     // Past the last position: on for at most one interval.
-    const auto later = m.at(*net, 6.0);
+    const auto later = m.at(*net, 4.5 + m.delay());
     check(later && near(later->offset, 55.0), "on at the last speed for one interval");
     m.stand(6.0);
     const auto stood = m.at(*net, 9.0);
     check(stood && near(stood->offset, 40.0), "a standing train stays where it was last");
+    // Starting off: 0 m/s at the first position, 10 m/s 7.5 m on, 1.5 s
+    // later. The speed rises from 0 without a jump.
+    net::RemoteMotion start;
+    start.add(*net, 0.0, {1, 10.0, true}, 0.0f);
+    start.add(*net, 1.5, {1, 17.5, true}, 10.0f);
+    const auto first = start.speed_at(0.01 + start.delay());
+    const auto half = start.speed_at(0.75 + start.delay());
+    check(first < 0.5f, "a train starting off keeps its speed near 0 at first");
+    check(half > first && half < 10.0f, "and gains it smoothly");
+    const auto between = start.at(*net, 0.75 + start.delay());
+    check(between && between->offset > 10.0 && between->offset < 17.5, "between the two positions");
+    // The drawing clock: a delay that changes (a package 0.3 s late moves
+    // the measured interval) is caught up gradually, not jumped to.
+    net::RemoteMotion clock;
+    clock.add(*net, 0.0, {1, 10.0, true}, 10.0f);
+    clock.add(*net, 1.5, {1, 25.0, true}, 10.0f);
+    clock.tick(5.0);
+    const double before_late = clock.delay();
+    clock.add(*net, 3.3, {1, 43.0, true}, 10.0f);
+    const double grown = clock.delay() - before_late;
+    clock.tick(5.02);
+    const auto drawn_a = clock.at(*net, 5.02);
+    clock.tick(5.04);
+    const auto drawn_b = clock.at(*net, 5.04);
+    check(grown > 0.05, "a late package lengthens the delay");
+    check(drawn_a && drawn_b && drawn_b->offset > drawn_a->offset, "the train still moves on");
+    check(drawn_a && drawn_b && drawn_b->offset - drawn_a->offset > 0.02 * 10.0 * 0.85,
+          "at no less than 90 % of its speed while the clock catches up");
+    // A position out of turn (RTS sends one as a train stops) leaves the
+    // interval alone; a server's TRAFFIC every 0.5 s sets it.
+    net::RemoteMotion extra;
+    extra.add(*net, 0.0, {1, 10.0, true}, 10.0f);
+    extra.add(*net, 1.5, {1, 25.0, true}, 10.0f);
+    extra.add(*net, 1.56, {1, 25.3, true}, 0.0f);
+    check(near(extra.delay(), 1.5 + net::RemoteMotion::margin), "a position 0.06 s after the last keeps the interval");
+    net::RemoteMotion traffic;
+    for (int i = 0; i < 12; ++i) traffic.add(*net, 0.5 * i, {1, 10.0 + 2.0 * i, true}, 4.0f);
+    check(traffic.delay() < 0.6 + net::RemoteMotion::margin, "TRAFFIC every 0.5 s: half a second behind");
     // A jump that the track does not join: put there once it is due.
     net::RemoteMotion jump;
     jump.add(*net, 0.0, {1, 10.0, true}, 0.0f);
     jump.add(*net, 1.5, {3, 50.0, true}, 0.0f);
-    const auto before = jump.at(*net, 2.0);
-    const auto after = jump.at(*net, 3.1);
+    const auto before = jump.at(*net, 0.5 + jump.delay());
+    const auto after = jump.at(*net, 1.6 + jump.delay());
     check(before && before->node == 1 && after && after->node == 3, "a jump waits, then puts the train there");
 }
 

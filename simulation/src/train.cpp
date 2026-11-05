@@ -669,6 +669,8 @@ void Train::add_velocity(const float change) {
 
 void Train::shift(const double metres) {
     if (!network_ || !impl_->head || metres == 0.0) return;
+    // The cars roll the way they are moved: their wheels turn.
+    for (auto& car : cars_) car.travelled += metres;
     move_and_update(metres, metres);
 }
 

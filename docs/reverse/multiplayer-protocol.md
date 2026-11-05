@@ -962,6 +962,25 @@ position" and "Restore train state" ticked):
   at 14223.94 s, 480 and 1 200 s after it stopped. Nobody pressed
   anything.
 
+**Seen from openRTS's observer (2026-11-06, `net.md`).**
+- **A route given by hand and an assembled one open the exit signal
+  differently.** "Задать маршрут" opened it white, the assembler
+  ("Собрать маршрут..") green; the observer showed the same as RTS.
+  PROBABLE: the hand route is only the length laid from the train along
+  the junctions (`0x4619`), its signals get states 1 to 3 (state 1
+  `STOP_AND_PROCEED`: the white invitation), while an assembled station
+  route is set by the interlocking with a full aspect.
+- Cancelling a route sent 5 `signal_head` (closed) and `route_left` −1, no
+  junction: they stay as they were. Assembling one sent 9 `junction` and
+  39 `signal_head`.
+- `route_left` reaches the players too, every 0.5 s while it changes.
+- A player's client sends `train_pos` about every 1.5 s, and one out of
+  turn when the train stops or starts (0.06 s after the last).
+- The ТЧД's players table: "Отклик" is the seconds since the server last
+  heard the user (`0x41D114`: now − the user's `+104`, set on every
+  package received); no code was found that drops a user for it. "Вход"
+  is the user's `+144`, whose writer was not found; PROBABLE packages in.
+
 ## Still UNKNOWN
 
 - The first optional block of `0x4638` (`+196`) and three values of a

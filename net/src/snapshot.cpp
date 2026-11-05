@@ -766,6 +766,58 @@ std::optional<bool> decode_pause(const ByteView body) {
     return value != 0;
 }
 
+std::optional<CarLight> decode_car_light(const ByteView body) {
+    // train, car, light, lit; then radius, colour, position (left).
+    WireReader r(body);
+    CarLight x;
+    x.train = r.u32();
+    x.car = r.u32();
+    x.light = r.u32();
+    x.lit = r.u8() != 0;
+    if (!r.ok()) return std::nullopt;
+    return x;
+}
+
+std::optional<CarLook> decode_car_state(const ByteView body) {
+    CarLook x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.train = r.u32();
+            x.car = r.u32();
+            x.kind = r.u8();
+            x.flags = r.u32();
+            x.value_32 = r.u32();
+            x.value_14 = r.u8();
+            x.pantographs = r.u8();
+            x.running = r.u8() != 0;
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+Bytes encode_state_request(const std::uint32_t mode, const std::uint32_t train) {
+    WireWriter w;
+    w.u32(mode);
+    w.u32(train);
+    w.u32(0);
+    w.u32(0);
+    return w.take();
+}
+
+Bytes encode_player_pos(const PlayerPosition& p) {
+    WireWriter w;
+    w.u32(p.train);
+    w.u32(p.value_4);
+    w.u32(p.value_8);
+    w.i16(p.tile_x);
+    w.i16(p.tile_z);
+    w.f32(p.x);
+    w.f32(p.y);
+    w.f32(p.z);
+    for (const auto v : p.view) w.f32(v);
+    return w.take();
+}
+
 double front_distance(const SnapshotTrain& train) {
     if (train.cars.empty()) return 0.0;
     if (train.pos && !train.pos->cars.empty()) {

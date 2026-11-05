@@ -137,6 +137,10 @@ struct TrainView::Car {
     std::vector<simulation::LightRunner> lights; // by LightID: fading and the States shown
     bool cold = false;      // an engine started cold (the consist's Cold; RTS LocoFlags bit 3)
     std::uint8_t pantographs_heard{}; // the raised pantographs the sounds last knew (non-DLL)
+    // A remote train's car (Unit::remote): its lights and pantographs as the
+    // owner sends them (set_remote_light / set_remote_look).
+    std::vector<std::uint8_t> remote_lights;
+    std::uint8_t remote_pantographs{};
     // FreightAnim of its consist entry: objects fastened to the car and the cargo.
     std::vector<formats::ConsistFreight> freight;
     std::vector<core::VirtualPath> freight_shapes; // resolved, empty when missing
@@ -555,9 +559,14 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
                 lowest_axle = lowest_axle ? (std::min)(*lowest_axle, y) : y;
             }
             if (name.starts_with("pantograph")) {
-                // The pantograph's number is the last digit of the node name.
-                const char last = name.empty() ? '0' : name.back();
-                const auto n = static_cast<std::uint8_t>(last >= '1' && last <= '4' ? last - '0' : 1);
+                // RTS 0x4F0BC8: PANTOGRAPHTOP / MIDDLE / BOTTOM, the number,
+                // then an optional A or B (the ED9M's PANTOGRAPHBOTTOM1A).
+                std::size_t end = name.size();
+                if (end > 0 && (name[end - 1] == 'a' || name[end - 1] == 'b')) --end;
+                std::size_t start = end;
+                while (start > 0 && name[start - 1] >= '0' && name[start - 1] <= '9') --start;
+                const int number = start < end ? std::atoi(name.substr(start, end - start).c_str()) : 1;
+                const auto n = static_cast<std::uint8_t>(number >= 1 && number <= 4 ? number : 1);
                 car.pantograph_nodes.emplace_back(static_cast<std::int32_t>(m), n);
                 if (name.find("bottom") != std::string::npos || car.pantograph_z[n - 1] == 0.0f) {
                     car.pantograph_z[n - 1] = rig.matrices[m].values[11];
@@ -577,6 +586,26 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
         }
         for (auto& [matrix, front] : car.bogies) {
             front = rig.matrices[static_cast<std::size_t>(matrix)].values[11] >= (front_z + rear_z) * 0.5f;
+        }
+        // RTS numbers pantographs 1 and 2 by where they stand, not by their
+        // names (0x4F0BC8): towards the shape's rear (z < 0) is 1, towards its
+        // front 2. So the ED9M's motor car, one pantograph named 1 in its
+        // front half, has pantograph 2, and the same car turned (_MR) has 1;
+        // its DLL raises them by these numbers. RTS takes each part's own z;
+        // here the pantograph's base (its BOTTOM node) decides for all its
+        // parts, so a middle arm with a z of its own stays with them.
+        {
+            std::array<std::uint8_t, 4> renumber{1, 2, 3, 4};
+            std::array<float, 4> z = car.pantograph_z;
+            for (std::uint8_t named = 1; named <= 2; ++named) {
+                const bool used = std::any_of(car.pantograph_nodes.begin(), car.pantograph_nodes.end(),
+                                              [named](const auto& node) { return node.second == named; });
+                if (used) renumber[named - 1] = car.pantograph_z[named - 1] < 0.0f ? 1 : 2;
+            }
+            for (auto& node : car.pantograph_nodes) node.second = renumber[node.second - 1];
+            for (std::uint8_t named = 1; named <= 2; ++named) {
+                if (renumber[named - 1] != named) car.pantograph_z[renumber[named - 1] - 1] = z[named - 1];
+            }
         }
         if (!car.pantograph_nodes.empty()) car.pantograph_frames = model->animation().frame_count;
         if (const auto bytes = vfs_->read(formats::shape_description(*vfs_, car.shape))) {
@@ -1622,6 +1651,26 @@ std::uint64_t TrainView::add_remote(const PlacedTrain& placed, std::string* erro
     const auto id = unit.train->id();
     units_.push_back(std::move(unit));
     return id;
+}
+
+void TrainView::set_remote_light(const std::uint64_t id, const std::size_t car, const std::size_t light, const bool on) {
+    for (auto& unit : units_) {
+        if (unit.train->id() != id || !unit.remote || car >= unit.cars.size()) continue;
+        auto& lights = unit.cars[car].remote_lights;
+        if (light >= lights.size()) lights.resize(light + 1, 0);
+        lights[light] = on ? 1 : 0;
+    }
+}
+
+void TrainView::set_remote_look(const std::uint64_t id, const std::size_t car, const std::uint8_t pantographs,
+                                const bool running) {
+    for (auto& unit : units_) {
+        if (unit.train->id() != id || !unit.remote || car >= unit.cars.size()) continue;
+        auto& c = unit.cars[car];
+        c.remote_pantographs = pantographs;
+        // A diesel runs or stands cold (RTS: LocoFlags bit 3, 0x4C3DE0).
+        if (c.definition && c.definition->engine && c.definition->engine->kind == formats::EngineKind::diesel) c.cold = !running;
+    }
 }
 
 simulation::Train* TrainView::find_train(const std::uint64_t id) {
@@ -3802,7 +3851,13 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
         if (u != 0 && i < each.current.size() && glm::distance(local(each.current[i].front), eye) > 3000.0f) continue;
         const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr;
         const bool engine = car.definition->engine.has_value();
-        const auto wanted = out ? std::vector<bool>{} : simulation::car_lights(*car.definition, i, each.cars.size(), kind, reversed, engine && car.cold, light_world);
+        // A remote train's lights are only what its owner sent.
+        std::vector<bool> wanted;
+        if (each.remote) {
+            for (const auto lit : car.remote_lights) wanted.push_back(lit != 0);
+        } else if (!out) {
+            wanted = simulation::car_lights(*car.definition, i, each.cars.size(), kind, reversed, engine && car.cold, light_world);
+        }
         car.lights.resize(lights.size());
         const auto body = body_pose(each, i, !(u == 0 && engineer_.inside() && i == engineer_car_));
         for (std::size_t k = 0; k < lights.size(); ++k) {
@@ -3935,7 +3990,9 @@ void TrainView::update_pantographs(const float elapsed) {
             const auto* engine = car.definition->engine ? &*car.definition->engine : nullptr;
             const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr;
             const bool plugin = u == 0 && native_ && i == native_car_;
-            if (out) {
+            if (unit.remote) {
+                car.pantograph_raised = car.remote_pantographs;
+            } else if (out) {
                 car.pantograph_raised = out->panto_raised;
             } else if (plugin) {
                 car.pantograph_raised = static_cast<std::uint8_t>(native_->outputs().pantographs);

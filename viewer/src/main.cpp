@@ -248,6 +248,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     std::filesystem::path mp_snapshot; // --mp-snapshot
     std::string mp_connect;          // --mp-connect host:port
     std::string mp_nick = "openRTS"; // --mp-nick
+    std::filesystem::path mp_save;   // --mp-save-snapshot: the snapshot the server sent
     bool time_given = false;         // --time wins over a snapshot's time
     for (std::size_t i = 0; i < flags.size(); ++i) {
         const bool has_value = i + 1 < flags.size();
@@ -274,6 +275,9 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             situation = std::filesystem::path(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--mp-connect" && has_value) {
             mp_connect = std::string(flags[++i]);
+        } else if (flags[i] == "--mp-save-snapshot" && has_value) {
+            const auto value = flags[++i];
+            mp_save = std::filesystem::path(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--mp-nick" && has_value) {
             mp_nick = std::string(flags[++i]);
         } else if (flags[i] == "--mp-snapshot" && has_value) {
@@ -437,6 +441,11 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         snapshot_bytes = join_server(*connection, mp_connect, mp_nick, target->path.filename(), early);
         if (!snapshot_bytes) return exit_code::content_failed;
         snapshot_source = mp_connect;
+        if (!mp_save.empty()) {
+            std::ofstream(mp_save, std::ios::binary)
+                .write(reinterpret_cast<const char*>(snapshot_bytes->data()), static_cast<std::streamsize>(snapshot_bytes->size()));
+            std::cout << "net: snapshot saved to " << mp_save.string() << std::endl;
+        }
     } else if (!mp_snapshot.empty()) {
         std::ifstream in(mp_snapshot, std::ios::binary);
         if (!in) {
