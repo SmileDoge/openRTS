@@ -120,6 +120,7 @@ add_subdirectory(trainplugin)
 add_subdirectory(sdk)
 add_subdirectory(audio)
 add_subdirectory(compat)
+add_subdirectory(net)
 
 if(OPENRTS_BUILD_VIEWER)
     if(OPENRTS_ENABLE_GLFW)

@@ -23,7 +23,7 @@ add_library(openrts_viewer_core STATIC
     src/window_viewer.cpp)
 openrts_configure_target(openrts_viewer_core)
 target_include_directories(openrts_viewer_core PUBLIC src)
-target_link_libraries(openrts_viewer_core PUBLIC openrts_assets openrts_formats openrts_renderer openrts_platform openrts_simulation openrts_audio openrts_trainplugin)
+target_link_libraries(openrts_viewer_core PUBLIC openrts_assets openrts_formats openrts_renderer openrts_platform openrts_simulation openrts_audio openrts_trainplugin openrts_net_world)
 
 if(OPENRTS_ENABLE_GLFW)
     target_link_libraries(openrts_viewer_core PUBLIC glfw)

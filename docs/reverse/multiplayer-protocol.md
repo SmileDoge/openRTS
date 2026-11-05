@@ -29,6 +29,161 @@ CONFIRMED unless marked.
 - In the client's `0x45xx` hits there is no package code: the same numbers
   are used elsewhere.
 
+## Package names
+
+Short names for the packages, for talk, notes and the code of
+`openrts_net` (the enum names there). RTS has none; these are openRTS's.
+A name says what the package is about; the rows below hold the details.
+
+- **Pairs.** `train_pos` and `train_pos_forced` carry the same thing; the
+  second is also taken for the receiver's own trains.
+- **The same id, two names.** `0x460E` and `0x460F` are `uncouple` and
+  `couple` on their own, `train_cars` and `train_car` inside `train_add`.
+- **The recovery file** has ids of its own (the saved game's): the same
+  numbers mean other things there ("The player's recovery file").
+
+**Session and service**
+
+| Id | Name | What it is |
+|---|---|---|
+| `0x4600` | `login` | a player's login and the server's reply |
+| `0x4500` | `console_login` | a console's login |
+| `0x4501` | `console_login_reply` | the reply to a console's login |
+| `0x4502` | `console_wait_admin` | "Waiting for admin…" |
+| `0x4503` | `console_loading` | "Loading startup data…" |
+| `0x4608` | `snapshot` | asks for the world; the server ends the snapshot with it |
+| `0x4701` | `nick_busy` | refused: the nickname is in use |
+| `0x4702` | `not_admitted` | refused: no new players or dispatchers, or not in the list |
+| `0x4703` | `snapshot_again` | refused: the snapshot was sent already |
+| `0x4704` | `not_a_login` | refused: the first package is no login |
+| `0x4705` | `bad_version` | refused: not protocol 101 |
+| `0x4706` | `flooding` | too many packages: a warning, then a disconnect |
+| `0x47FD` | `drop_receive` | disconnected: a receive error |
+| `0x47FE` | `drop_short` | disconnected: a body cut short |
+| `0x47FF` | `drop_bad` | disconnected: a bad length or a refused package |
+| `0x4611` | `message` | a dispatcher's message |
+| `0x4612` | `server_down` | the connection is gone (queued by the receiver itself) |
+| `0x4616` | `pause` | pause on or off |
+| `0x4643` | `server_message` | a numbered server message |
+| `0x4630` | `host_mark` | a mark in a mini-server host's snapshot |
+| `0x462E` | `user` | a user record (in the snapshot) |
+| `0x462D` | `player_pos` | where a player is: the map's person icon |
+| `0x1700` | `node_hello` | the helper node's hello |
+| `0x1701` | `node_text` | a text between nodes |
+
+**World**
+
+| Id | Name | What it is |
+|---|---|---|
+| `0x460D` | `time` | the time of day |
+| `0x4609` | `junctions` | all junctions (snapshot) or a list of changes |
+| `0x460A` | `junction` | one junction's position and lock |
+| `0x4642` | `junction_request` | a player asks to throw a junction |
+| `0x460B` | `signals` | all signal heads (snapshot) |
+| `0x460C` | `signal_head` | one signal head's state |
+| `0x4618` | `signal_control` | the dispatcher's control of a signal |
+| `0x4634` | `weather_area` | a weather area made, changed or removed |
+| `0x4635` | `weather_values` | a weather area's values |
+| `0x461D` | `object_state` | a world object's state |
+| `0x463F` | `object_sound` | a sound trigger on a world object |
+| `0x464B` | `track_object_value` | a track object: a value by index |
+| `0x464C` | `track_object_byte` | a track object: a byte |
+| `0x464D` | `track_object_word` | a track object: a `u16` |
+| `0x464E` | `track_object_list` | a track object's list |
+
+**Electrification**
+
+| Id | Name | What it is |
+|---|---|---|
+| `0x4645` | `piece_supply` | a piece of track's own supply ("Отдельные пути") |
+| `0x4646` | `substation` | a substation's state and voltage |
+| `0x4647` | `section_source` | a sectioning section's source |
+| `0x4648` | `phase_voltages` | the substations' phase voltages |
+| `0x4649` | `substation_load` | a train's load on a substation |
+
+**Trains**
+
+| Id | Name | What it is |
+|---|---|---|
+| `0x4607` | `train_add` | a train with its cars |
+| `0x460E` | `train_cars` | inside `train_add`: the car list |
+| `0x460F` | `train_car` | inside `train_cars`: one car |
+| `0x4603` | `train_pos` | where a train is and how it moves; a client ignores it for its own trains |
+| `0x4604` | `car_pos` | inside `train_pos`: one car |
+| `0x462F` | `train_pos_forced` | the same, taken for the client's own trains too |
+| `0x4605` | `train_info` | kind, category, number, state |
+| `0x4606` | `train_stands` | the train stands; also puts it back in play |
+| `0x4602` | `train_remove` | off the track (0) or deleted (1) |
+| `0x4601` | `train_assign` | this train is (not) yours |
+| `0x461E` | `helper_assign` | the train you help on |
+| `0x4610` | `train_id` | a train's id changed |
+| `0x4613` | `train_brakes` | the "Тормоза" form: pressures for every car |
+| `0x4508` | `train_speed` | speed, top speed, acceleration, deceleration |
+| `0x4619` | `route_left` | the distance left to the end of the route |
+| `0x461A` | `train_names` | the name and the notes |
+| `0x4641` | `train_wake` | a standing STATIC or LOOSE train set moving |
+| `0x4636` | `derail` | derailed cars |
+| `0x4638` | `derailed_car` | inside `derail`: one car's placement |
+| `0x4637` | `rerail` | back on the rails (nobody sends it) |
+| `0x461C` | `car_cargo` | cargo on a car |
+| `0x460E` | `uncouple` | an uncoupling |
+| `0x460F` | `couple` | a coupling |
+| `0x461B` | `joint_action` | a car menu action between two cars |
+| `0x4640` | `car_action` | a car menu action on one car |
+| `0x4633` | `seat_player` | put the player in that car (mini-server host) |
+
+**Other players' trains**
+
+| Id | Name | What it is |
+|---|---|---|
+| `0x4617` | `car_light` | one car light |
+| `0x463C` | `car_state` | a car's look: flags, pantographs |
+| `0x4639` | `sound_trigger` | a discrete sound trigger |
+| `0x463D` | `sound_values` | a sound's variables |
+| `0x463A` | `sound_state` | a car sound's whole state |
+| `0x463B` | `sound_stream` | inside `sound_state`: one stream |
+| `0x4623` | `state_request` | asks for a cab (1) or a train's look (2) |
+
+**Helpers**
+
+| Id | Name | What it is |
+|---|---|---|
+| `0x461F` | `helper_link` | setting up and dropping the helper link |
+| `0x4620` | `train_stream` | engineer → helper: the train, twice a second |
+| `0x4621` | `car_stream` | inside `train_stream`: a car |
+| `0x4628` | `engine_stream` | inside `car_stream`: an engine |
+| `0x4629` | `electric_stream` | inside `engine_stream`: electric values |
+| `0x462A` | `diesel_stream` | inside `engine_stream`: diesel values |
+| `0x4622` | `cab_control` | a cab control moved |
+| `0x4624` | `cab_state` | the whole cab |
+| `0x4625` | `dll_state` | inside `cab_state`: the DLL's state |
+| `0x4626` | `cab_controls` | inside `cab_state`: the controls |
+| `0x4631` | `cab_display` | inside `cab_controls`: a display's values |
+| `0x463E` | `aux_library_state` | inside `cab_state`: an auxiliary library |
+| `0x4632` | `cab_drag` | a cab item dragged |
+
+**Consoles**
+
+| Id | Name | What it is |
+|---|---|---|
+| `0x4504` | `console_pause` | the pause button |
+| `0x4505` | `train_go` | "Начать движение" / "Остановить" |
+| `0x4506` | `train_reverse` | "Изменить направление" |
+| `0x4509` | `train_allow_coupling` | "Разрешить прицепку" |
+| `0x4507` | `train_add_reply` | the server's id for a console's new train |
+| `0x450A` | `event_line` | a line of the event log |
+| `0x450B` | `route_segment` | a segment of a train's route |
+| `0x450C` | `route_segment_reply` | accepted or refused, with the text |
+| `0x450D` | `route_segment_cancel` | cancel a segment |
+| `0x450E` | `route_segment_state` | a segment's state |
+
+**Situation files**
+
+| Id | Name | What it is |
+|---|---|---|
+| `0x4614` | `situation_user` | a user record |
+| `0x4615` | `situation_route` | the route |
+
 ## Programs, links and handlers
 
 | Link | Sent by | Received by |
@@ -104,10 +259,10 @@ CONFIRMED unless marked.
 |---|---|---|---|
 | `0x460D` | server → player, console | `f32` time of day | |
 | `0x4609` | snapshot; player → server | container | in the snapshot it holds the `0x460A` entries; from a player, a list of nested `0x460A` changes (`0x40C52C` each) |
-| `0x460A` | both ways | junction index, branch `u32`, lock `u8` | a junction's state; from a player, a change the server decides at once (`0x40C52C`) |
+| `0x460A` | both ways | junction index (the TDB node number − 1: the client reads its node table at the index, CONFIRMED against Kuban, `net.md`), branch `u32`, lock `u8` | a junction's state; from a player, a change the server decides at once (`0x40C52C`) |
 | `0x4642` | player → server or host | junction index, `u32` | a junction request, done when the junction is neither locked nor reserved (`0x40C5A4`) |
 | `0x460B` | snapshot | container | holds the `0x460C` entries |
-| `0x460C` | server → player | signal head index, `u16` (`+78`: the semaphore arm's position, the drawing state's `SemaphorePos`; 0 on colour lights, as on Kuban; client `0x479AFC`), state `f32` (`+84`), drawing `f32` (`+88`), `f32` `+92`, mode `f32` (`+96`), speed limit `f32` (`+100`, m/s, −1 none) | a signal head's state ("Live capture"); the client skips `+92` / `+96` |
+| `0x460C` | server → player | the head's TDB `SignalItem` (`TrItemId`: the client reads its track item table at it, CONFIRMED against Kuban), `u16` (`+78`: the semaphore arm's position, the drawing state's `SemaphorePos`; 0 on colour lights, as on Kuban; client `0x479AFC`), state `f32` (`+84`), drawing `f32` (`+88`), `f32` `+92`, mode `f32` (`+96`), speed limit `f32` (`+100`, m/s, −1 none) | a signal head's state ("Live capture"); the client skips `+92` / `+96` |
 | `0x4634` | server → player | area id, remove `u8`, `u32 n` + data | a weather area made, changed or removed (network thread only) |
 | `0x4635` | server → player | area id, `u32` (`+32`), 8 bytes (`+12`) | a weather area's values |
 | `0x461D` | player → server → others | object (`u32`, 3 × `f32` position, `u32` id), then `u8` `+65`, `u8` `+64`, `f32` | a world object found within 50 m (`0x4E0E4C`) gets two bytes and, unless the float is −1, a value at its `+40 → +44`. PROBABLE: crossings and animated objects |
@@ -141,8 +296,8 @@ CONFIRMED unless marked.
 | `0x4607` | server → player; console or host → server | the train: id, kind `u16`, subtype `u16`, `f32` (`+80`, PROBABLE top speed m/s), start state `u8`, 4 bytes, the cars (`0x460E`), then `f32` `+84`, `f32` `+88` (PROBABLE acceleration and deceleration; 1.0 by default) | a new train. Another player's PLAYER train becomes kind 2 with `0x10000`. When it comes in, the server assigns the id, checks the train, answers `0x4507` to the sender and sends `0x4607` to the others. A player's is dropped (below) |
 | `0x460E` inside `0x4607` | | `u32` car count, then a `0x460F` per car | the car list |
 | `0x460F` inside `0x460E` | | kind `u16` (0 wagon, 1 electric, 2 diesel), `u32 n` + UTF-16 file name, uid `u32` (number `<< 18` + car index), flags `u32`, mass `f32` (`+36`, kg), width, length, height (3 × `f32`), optional handbrake `f32` (`+112`, 0..1) and `MaxHandbrakeForce` `f32` (N; the client skips it) | a car. Flags: 1 flipped, 2 cold (`LocoFlags` `\|= 8`), `0x100` a chock at the head of the train, `0x200` one at the tail (car `Flags` `0x1000000` / `0x2000000`) |
-| `0x4603` | player → server → others | train id, speed `f32`, acceleration `f32`, track node `u32` (1-based, a section), offset `f32`, direction `u8`, car count `u32`, then a `0x4604` per car | a moving train (below) |
-| `0x4604` inside `0x4603` | | offset in the train `f64`, speed `f32`, acceleration `f32` | a car |
+| `0x4603` | player → server → others | train id, speed `f32`, acceleration `f32`, track node `u32` (the TDB number), offset `f32`, direction `u8` (0 facing along the node, 1 against it), car count `u32`, then a `0x4604` per car | where a train is: its **rear** end (RTS train `+232`); a moving train (below) |
+| `0x4604` inside `0x4603` | | offset in the train `f64` (the car's middle, metres ahead of the rear end; car 0 has the largest), speed `f32`, acceleration `f32` | a car |
 | `0x462F` | server → player | as `0x4603` | the same, forced: it also moves the client's own train. The snapshot replays every `0x4603` as `0x462F` |
 | `0x4605` | both ways | train id, kind `u16`, subtype `u16` (the console's category: 0 "Прочий", 1 "Пассажирский", 2 "Грузовой", the train form's list), number `u32`, state `u8` (the console's: 0 "Холодный", 1 "Включен", 2 "Движется"), path id `u32` | a train's kind and number. The server also sends it by itself when it lowers a standing train's state (live capture): "Включен" 480 s after the stop, "Холодный" 1 200 s after (`0x40DCDC`). The client sets kind 2 + `0x10000` for another player's PLAYER train, and the car numbers (`number << 18`) |
 | `0x4606` | both ways | train id | the train stands: no extrapolation on clients (`+4 \|= 0x10`); the server sets `+79` bit 0 and sends `0x4606` and `0x4603` to everyone |

@@ -264,7 +264,8 @@ and capture tooling do not depend on the simulation and can start earlier.
 **Order (2026-11-04).** Steps 1–5 are done, and there is no network code
 yet. Each stage ends with something that runs and is checked:
 
-1. **The RTS protocol without a network.**
+1. **The RTS protocol without a network** — done (2026-11-05, `net.md`):
+   `openrts_net`, `openrts-net-dump`, the viewer's `--mp-snapshot`.
    - What: a library `openrts_net`: the framing (`u16` id, `u32` length,
      nested packages), a reader and writer, and the packages of the startup
      snapshot. Then the snapshot itself: time, junctions, signals,

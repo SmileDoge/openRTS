@@ -89,6 +89,15 @@ if(OPENRTS_TEST_ROOT)
     add_test(NAME openrts.content.night_textures COMMAND openrts_alternative_texture_test "${OPENRTS_TEST_ROOT}")
 endif()
 
+# The RTS wire format, package names and the startup snapshot (openrts_net).
+add_executable(openrts_net_test net_test.cpp)
+openrts_configure_target(openrts_net_test)
+target_link_libraries(openrts_net_test PRIVATE openrts_net)
+add_test(NAME openrts.net COMMAND openrts_net_test)
+if(OPENRTS_TEST_ROOT)
+    add_test(NAME openrts.content.net_multdata COMMAND openrts_net_test "${OPENRTS_TEST_ROOT}")
+endif()
+
 add_executable(openrts_path_test path_test.cpp)
 openrts_configure_target(openrts_path_test)
 target_link_libraries(openrts_path_test PRIVATE openrts_simulation openrts_formats)

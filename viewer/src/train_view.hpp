@@ -189,6 +189,21 @@ public:
     // Puts a saved situation back at the next update (the trains there now
     // and their sounds go first).
     void request_situation(std::filesystem::path file) { pending_situation_ = std::move(file); }
+    // A train to put on the track: a situation's, or one from an RTS
+    // snapshot (--mp-snapshot): its name, role, where car 0's front stands
+    // and its cars front to back.
+    struct PlacedTrain {
+        std::string name;
+        Role role = Role::standing;
+        std::optional<simulation::TrackLocation> front;
+        std::vector<formats::ConsistEntry> cars;
+    };
+    // Puts these trains back at the next update, as a situation does;
+    // `source` names them in the messages.
+    void request_trains(std::vector<PlacedTrain> trains, std::string source) {
+        pending_trains_ = std::move(trains);
+        pending_trains_source_ = std::move(source);
+    }
     // Saves the situation as `name` once the driven train stands on the
     // track (--save-situation, for scripted checks).
     void save_situation_when_placed(std::string name) { save_when_placed_ = std::move(name); }
@@ -365,9 +380,12 @@ private:
     [[nodiscard]] std::string make_unit_from(std::string name, const std::vector<formats::ConsistEntry>& entries, Unit& unit,
                                              std::vector<std::unique_ptr<formats::WagonDefinition>>& stock) const;
     [[nodiscard]] std::string load_situation(const std::filesystem::path& file);
+    [[nodiscard]] std::string put_back(std::vector<PlacedTrain> saved, const std::string& source);
     void apply_start_view(ViewerCamera& camera);
     StartView start_view_ = StartView::none;
     std::filesystem::path pending_situation_;
+    std::vector<PlacedTrain> pending_trains_;
+    std::string pending_trains_source_;
     std::string save_when_placed_;
     std::array<char, 64> situation_name_{}; // the Train window's name for a situation to save
     int situation_choice_ = -1;

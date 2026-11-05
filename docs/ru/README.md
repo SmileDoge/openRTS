@@ -22,6 +22,7 @@
 | [paths.md](paths.md) | маршруты поездов, бронирование стрелок, трек-контроль |
 | [sound.md](sound.md) | звук: скрипты `.sms`, звуки мира, поездов и кабины |
 | [electrification.md](electrification.md) | электрификация: секции, подстанции, напряжение |
+| [net.md](net.md) | сетевой протокол RTS в openRTS: формат, снимок мира, `openrts-net-dump`, `--mp-snapshot` |
 | [world-objects.md](world-objects.md) | леса, переезды, автомобили, вода, осадки и дым |
 | [experimental-effects.md](experimental-effects.md) | новый рендер: что делает и сколько стоит |
 | [vfs.md](vfs.md) | виртуальная файловая система, паки и моды |

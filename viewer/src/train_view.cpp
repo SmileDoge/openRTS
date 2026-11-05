@@ -1543,13 +1543,7 @@ std::string TrainView::save_situation(const std::string& name) const {
 std::string TrainView::load_situation(const std::filesystem::path& file) {
     std::ifstream input(file, std::ios::binary);
     if (!input) return "cannot read " + file.string();
-    struct Saved {
-        std::string name;
-        Role role = Role::standing;
-        std::optional<simulation::TrackLocation> front;
-        std::vector<formats::ConsistEntry> cars;
-    };
-    std::vector<Saved> saved;
+    std::vector<PlacedTrain> saved;
     std::string line;
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -1593,10 +1587,16 @@ std::string TrainView::load_situation(const std::filesystem::path& file) {
             train.cars.push_back(std::move(entry));
         }
     }
-    std::erase_if(saved, [](const Saved& train) { return !train.front || train.cars.empty(); });
+    std::erase_if(saved, [](const PlacedTrain& train) { return !train.front || train.cars.empty(); });
     if (saved.empty()) return trf("no trains in %s", file.filename().string().c_str());
+    return put_back(std::move(saved), "situation");
+}
+
+std::string TrainView::put_back(std::vector<PlacedTrain> saved, const std::string& source) {
+    std::erase_if(saved, [](const PlacedTrain& train) { return !train.front || train.cars.empty(); });
+    if (saved.empty()) return tr("no trains to put on the track");
     // The driven train first; one at most.
-    std::stable_partition(saved.begin(), saved.end(), [](const Saved& train) { return train.role == Role::driven; });
+    std::stable_partition(saved.begin(), saved.end(), [](const PlacedTrain& train) { return train.role == Role::driven; });
     for (std::size_t i = 1; i < saved.size(); ++i) {
         if (saved[i].role == Role::driven) saved[i].role = Role::standing;
     }
@@ -1623,7 +1623,7 @@ std::string TrainView::load_situation(const std::filesystem::path& file) {
         const auto& where = *saved[i].front;
         std::string error;
         if (!unit.train->place(*network_, where.node, where.offset, where.forward, &error)) {
-            std::cout << "situation: " << unit.name << ": " << error << '\n';
+            std::cout << source << ": " << unit.name << ": " << error << '\n';
             ++skipped;
             continue;
         }
@@ -1645,7 +1645,7 @@ std::string TrainView::load_situation(const std::filesystem::path& file) {
     accumulator_ = 0.0;
     joints_ = junctions_ = coupler_breaks_ = derailments_ = 0;
     end_of_track_ = false;
-    std::cout << "situation: " << units_.size() << " trains put back, the first " << role_key(units_.front().role) << " ("
+    std::cout << source << ": " << units_.size() << " trains put back, the first " << role_key(units_.front().role) << " ("
               << units_.front().name << ")" << std::endl;
     if (skipped > 0) return trf("%zu of the saved trains did not fit on the track", skipped);
     return {};
@@ -2197,6 +2197,14 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         const auto stem = file.stem().u8string();
         message_ = error.empty() ? trf("situation %s put back", std::string(stem.begin(), stem.end()).c_str()) : error;
         if (!error.empty()) std::cout << "situation: " << error << std::endl;
+    }
+    if (!pending_trains_.empty()) {
+        if (sound) stop_sound(*sound);
+        auto trains = std::exchange(pending_trains_, {});
+        const auto source = std::exchange(pending_trains_source_, {});
+        const auto error = put_back(std::move(trains), source);
+        message_ = error.empty() ? trf("%s: trains put on the track", source.c_str()) : error;
+        if (!error.empty()) std::cout << source << ": " << error << std::endl;
     }
     if (!loaded()) return;
     request_models(library);

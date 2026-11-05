@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -160,6 +162,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     std::filesystem::path situation; // --situation
     int start_view = 0;              // --spawn
     std::string save_situation;      // --save-situation
+    std::filesystem::path mp_snapshot; // --mp-snapshot
+    bool time_given = false;         // --time wins over a snapshot's time
     for (std::size_t i = 0; i < flags.size(); ++i) {
         const bool has_value = i + 1 < flags.size();
         if (flags[i] == "--view" && has_value) {
@@ -183,6 +187,9 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         } else if (flags[i] == "--situation" && has_value) {
             const auto value = flags[++i];
             situation = std::filesystem::path(std::u8string(value.begin(), value.end()));
+        } else if (flags[i] == "--mp-snapshot" && has_value) {
+            const auto value = flags[++i];
+            mp_snapshot = std::filesystem::path(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--save-situation" && has_value) {
             save_situation = std::string(flags[++i]);
         } else if (flags[i] == "--spawn" && has_value) {
@@ -261,6 +268,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.shading = openrts::renderer::ShadingPath::experimental;
         } else if (flags[i] == "--time" && has_value) {
             options.time_of_day = openrts::formats::parse_time_of_day(std::string(flags[++i]));
+            time_given = true;
         } else if (flags[i] == "--speed" && has_value) {
             options.time_speed = std::stof(std::string(flags[++i]));
         } else if (flags[i] == "--season" && has_value) {
@@ -327,10 +335,33 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         vfs->start_watching({.reconcile_interval = std::chrono::seconds(config.reconcile_seconds)});
     }
 
+    // An RTS startup snapshot (docs/net.md): its time of day here, the rest
+    // when the route scene is up.
+    std::shared_ptr<const openrts::net::Snapshot> snapshot;
+    if (!mp_snapshot.empty()) {
+        std::ifstream in(mp_snapshot, std::ios::binary);
+        if (!in) {
+            std::cerr << "Cannot read " << mp_snapshot.string() << '\n';
+            return exit_code::content_failed;
+        }
+        const openrts::net::Bytes bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        auto read = openrts::net::read_snapshot(bytes);
+        for (const auto& problem : read.problems) std::cout << "snapshot: " << problem << '\n';
+        std::cout << "snapshot: " << mp_snapshot.string() << ": " << read.snapshot.junctions.size() << " junctions, "
+                  << read.snapshot.signals.size() << " signal heads, " << read.snapshot.trains.size() << " trains"
+                  << std::endl;
+        if (read.snapshot.time && !time_given) {
+            options.time_of_day = static_cast<std::int32_t>(*read.snapshot.time);
+            std::cout << "snapshot: time of day " << options.time_of_day / 3600 << ':' << options.time_of_day / 60 % 60 / 10
+                      << options.time_of_day / 60 % 10 << std::endl;
+        }
+        snapshot = std::make_shared<const openrts::net::Snapshot>(std::move(read.snapshot));
+    }
+
     const openrts::viewer::SceneContent content{
         .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control,
         .start_state = start_state, .situation = situation, .start_view = start_view,
-        .save_situation = save_situation, .root = target->root};
+        .save_situation = save_situation, .root = target->root, .snapshot = snapshot};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)
                                     : openrts::viewer::load_route_scene(content, target->path);
 

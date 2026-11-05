@@ -35,6 +35,7 @@
 #include <openrts/renderer/task_pool.hpp>
 #include <openrts/renderer/screen_quads.hpp>
 #include <openrts/renderer/wide_lines.hpp>
+#include <openrts/net/world.hpp>
 #include <openrts/simulation/track_network.hpp>
 
 #include "track_view.hpp"
@@ -56,6 +57,53 @@ namespace {
 using renderer::ModelRenderer;
 using renderer::RenderModel;
 
+void report_snapshot(const char* what, const net::WorldApplied& applied) {
+    std::cout << "snapshot: " << applied.applied << ' ' << what;
+    if (!applied.problems.empty()) {
+        std::cout << ", " << applied.problems.size() << " do not fit (" << applied.problems.front() << ")";
+    }
+    std::cout << std::endl;
+}
+
+// An RTS startup snapshot (--mp-snapshot, docs/net.md): the junctions as it
+// has them and its trains, put on the track at the next update. The
+// client's own train (assigned "mine") is driven; the rest stand. The
+// heads' aspects follow once the signals have loaded (the scene's update).
+void apply_snapshot(const net::Snapshot& snapshot, simulation::TrackNetwork& network, TrainView& trains) {
+    report_snapshot("junctions set", net::apply_junctions(network, snapshot));
+    std::vector<TrainView::PlacedTrain> placed;
+    bool driven = false;
+    for (const auto& train : snapshot.trains) {
+        TrainView::PlacedTrain p;
+        p.name = net::train_name(train);
+        std::string why;
+        p.front = net::train_front(network, train, &why);
+        if (!p.front) {
+            std::cout << "snapshot: train " << train.id << ": " << why << '\n';
+            continue;
+        }
+        if (train.mine() && !driven) {
+            p.role = TrainView::Role::driven;
+            driven = true;
+        }
+        for (const auto& car : train.cars) {
+            const auto file = net::car_file(car);
+            formats::ConsistEntry entry;
+            entry.engine = file.engine;
+            entry.uid = car.uid;
+            entry.name = file.name;
+            entry.folder = file.folder;
+            entry.flipped = car.flipped();
+            entry.cold = (car.flags & 2u) != 0;
+            if (car.handbrake) entry.handbrake = *car.handbrake * 100.0f;
+            p.cars.push_back(std::move(entry));
+        }
+        placed.push_back(std::move(p));
+    }
+    std::cout << "snapshot: " << placed.size() << " of " << snapshot.trains.size() << " trains to put on the track" << std::endl;
+    if (!placed.empty()) trains.request_trains(std::move(placed), "snapshot");
+}
+
 [[nodiscard]] core::VirtualPath child(const core::VirtualPath& directory, const std::string_view name) {
     return directory.resolve(name).value_or(directory);
 }
@@ -72,6 +120,7 @@ public:
     [[nodiscard]] const std::filesystem::path& situation() const noexcept { return content_.situation; }
     [[nodiscard]] int start_view() const noexcept { return content_.start_view; }
     [[nodiscard]] const std::string& save_situation() const noexcept { return content_.save_situation; }
+    [[nodiscard]] const std::shared_ptr<const net::Snapshot>& snapshot() const noexcept { return content_.snapshot; }
     [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
     [[nodiscard]] bool track_control() const noexcept { return content_.track_control; }
     // RTS's config.ini text (read once from the installation folder).
@@ -281,6 +330,10 @@ public:
                 train_->request_situation(file);
             }
             if (!content_.save_situation().empty()) train_->save_situation_when_placed(content_.save_situation());
+            if (const auto& snapshot = content_.snapshot()) {
+                apply_snapshot(*snapshot, track_->network(), *train_);
+                snapshot_signals_ = true;
+            }
             if (!content_.consist().empty()) {
                 if (const auto error = train_->load(content_.consist()); !error.empty()) {
                     std::cout << "train: " << error << '\n';
@@ -404,6 +457,10 @@ public:
         if (signals_) {
             const auto trains = train_ ? train_->trains() : std::vector<const simulation::Train*>{};
             signals_->update(clock.elapsed, train_ ? train_->train() : nullptr, trains, camera.eye());
+            if (snapshot_signals_ && signals_->system() && content_.snapshot()) {
+                snapshot_signals_ = false;
+                report_snapshot("signal heads set", net::apply_signals(*signals_->system(), *content_.snapshot()));
+            }
         }
         const auto camera_position = renderer::route_position(camera.eye(), origin_);
         apply_conditions(clock.season, clock.weather);
@@ -1316,6 +1373,7 @@ private:
     mutable bool place_names_ = false;  // F7
     mutable bool cab_labels_ = false;   // Alt held in the 3-D cab
     std::unique_ptr<SignalView> signals_;
+    bool snapshot_signals_ = false; // the snapshot's aspects wait for the signals to load
     std::unique_ptr<CrossingView> crossings_;
     std::unique_ptr<RoadTraffic> roads_;
     std::unique_ptr<PrecipitationView> precipitation_;

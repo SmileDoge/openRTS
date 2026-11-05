@@ -286,6 +286,8 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"none of the saved trains fits on the track", "ни один сохранённый поезд не встаёт на путь"},
         {"%zu of the saved trains did not fit on the track", "не встали на путь сохранённых поездов: %zu"},
         {"no trains in %s", "в %s нет поездов"},
+        {"no trains to put on the track", "нет поездов, которые можно поставить на путь"},
+        {"%s: trains put on the track", "%s: поезда поставлены на путь"},
         {"The game is running", "Игра запущена"},
         {"Graphics", "Графика"},
         {"Renderer (R)", "Рендер (R)"},

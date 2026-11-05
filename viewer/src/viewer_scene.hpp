@@ -17,6 +17,7 @@
 #include <openrts/audio/audio_engine.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/route_world.hpp>
+#include <openrts/net/snapshot.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/rts_sky.hpp>
 #include <openrts/renderer/scene_effects.hpp>
@@ -259,6 +260,9 @@ struct SceneContent {
     std::string save_situation;
     // The installation folder: RTS's own files (RTS\config.ini) are not in the VFS.
     std::filesystem::path root;
+    // Route scenes: an RTS startup snapshot to set the world from
+    // (--mp-snapshot, docs/net.md): junctions, signal aspects, trains.
+    std::shared_ptr<const net::Snapshot> snapshot;
 };
 
 [[nodiscard]] SceneLoadResult load_shape_scene(SceneContent content, const core::VirtualPath& shape);

@@ -1,0 +1,4 @@
+add_executable(openrts_net_dump src/main.cpp)
+set_target_properties(openrts_net_dump PROPERTIES OUTPUT_NAME openrts-net-dump)
+openrts_configure_target(openrts_net_dump)
+target_link_libraries(openrts_net_dump PRIVATE openrts_net_world openrts_net openrts_simulation openrts_formats openrts_core)
