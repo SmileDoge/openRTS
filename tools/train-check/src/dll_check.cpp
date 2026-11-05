@@ -319,10 +319,21 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     // cut / couple: the part cut off stands behind until coupled back.
     std::unique_ptr<simulation::Train> cut_train;
     std::vector<trainplugin::LegacyCar> cut_cars;
+    // The host's trains: the player's, and the part cut off while it stands
+    // apart (its DLLs go on, RTS 0x424488).
+    const auto host_trains = [&] {
+        std::vector<const simulation::Train*> trains{&train};
+        if (cut_train) trains.push_back(cut_train.get());
+        return trains;
+    };
     const auto reconsisted = [&](const char* what) {
-        const bool ok = consist->reconsist(vfs, legacy, train);
+        std::vector<std::vector<trainplugin::LegacyCar>> parts{legacy};
+        if (cut_train) parts.push_back(cut_cars);
+        const bool ok = consist->reconsist(vfs, parts, host_trains());
         for (std::size_t i = 0; i < legacy.size(); ++i)
             if (consist->has_dll(i)) train.set_controller(i, consist->controller(i));
+        for (std::size_t i = 0; cut_train && i < cut_cars.size(); ++i)
+            if (consist->has_dll(1, i)) cut_train->set_controller(i, consist->controller(1, i));
         player = consist->player();
         cab = consist->cab(player);
         std::printf("%6.1f %s: %zu cars, %s, the player in car %zu\n", time, what, legacy.size(),
@@ -423,9 +434,33 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 cut_train.reset();
                 legacy.insert(legacy.end(), cut_cars.begin(), cut_cars.end());
                 cut_cars.clear();
+                // (the part's DLLs come back with it: one train again)
                 train.set_car_flags(joint, Flags::cables, simulation::cable_sme_rear, true);
                 train.set_car_flags(joint + 1, Flags::cables, simulation::cable_sme_front, true);
                 reconsisted("coupled");
+            } else if (c.verb == "expect_cut" && c.args.size() >= 4 && cut_train) {
+                // expect_cut <car> <field> <op> <value>: a car of the part cut off
+                const auto car_index = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
+                double value = std::nan("");
+                if (car_index < cut_cars.size()) {
+                    const auto* out = consist->output(1, car_index);
+                    const auto& s = cut_train->cars()[car_index];
+                    const auto& f = c.args[1];
+                    if (f == "bound") value = out && (out->loco_flags & 0x20) ? 1.0 : 0.0;
+                    else if (f == "master") value = out && (out->loco_flags & 1) ? 1.0 : 0.0;
+                    else if (f == "join") value = out && (out->loco_flags & 4) ? 1.0 : 0.0;
+                    else if (f == "mr") value = s.main_reservoir;
+                    else if (f == "pipe") value = s.pipe;
+                    else if (out && f == "mr_rate") value = out->engine.main_reservoir_rate;
+                    else if (out && f == "panto") value = out->engine.panto;
+                    else if (out && f == "main_switch") value = out->engine.main_switch;
+                    else if (out && f == "force") value = out->engine.force;
+                }
+                const double want = std::atof(c.args[3].c_str());
+                const bool ok = compare(value, c.args[2], want);
+                std::printf("%6.1f expect cut car %zu %s %s %g: %g %s\n", time, car_index, c.args[1].c_str(), c.args[2].c_str(), want, value,
+                            ok ? "ok" : "FAILED");
+                if (!ok) ++failures;
             } else if (c.verb == "expect_car" && c.args.size() >= 4) {
                 // expect_car <car> <field> <op> <value>
                 const auto car_index = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
@@ -444,7 +479,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 if (!ok) ++failures;
             }
         }
-        if (!consist->step(simulation::train_step, train, world)) {
+        if (!consist->step(simulation::train_step, host_trains(), world)) {
             std::printf("%6.1f host failed: %s\n", time, consist->error().c_str());
             ++failures;
             break;
@@ -476,6 +511,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         }
         if (const auto text = consist->take_messages(); !text.empty()) std::printf("%s", text.c_str());
         train.step();
+        if (cut_train) cut_train->step();
         // The world clock runs with the simulation (RTS_VAR_TIME).
         world.day_time = std::fmod(world.day_time + simulation::train_step, 24.0 * 3600.0);
         if (time >= next_print - 1e-9) {

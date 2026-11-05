@@ -496,11 +496,10 @@ openRTS (x64)                                    openrts-dllhost32.exe (x86, sta
   a multiple unit.
 - Doors by name, close-up screens. (Track items for `RTSGetTrackItems`,
   named SMS triggers and trigger pairs, `RTSSignalData` for `ALSN`: done
-  2026-11-04, `reverse/train-dll.md` §19.)
-- An engine cut off from the player's train: RTS keeps running its DLL,
-  openRTS keeps its state but does not run it until it is coupled again.
-  (Coupling and uncoupling keep the DLLs' state since 2026-11-04,
-  `reverse/train-dll.md` §3, "Regrouping".)
+  2026-11-04, `reverse/train-dll.md` §19. Coupling and uncoupling keep the
+  DLLs' state since 2026-11-04; a part cut off runs its DLLs and its
+  library sounds and can be taken over since 2026-11-05, §3,
+  "Regrouping".)
 
 ## Order
 

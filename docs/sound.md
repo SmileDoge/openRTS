@@ -21,6 +21,9 @@ what the DLLs post play in the viewer (the sections below).
   graph, without touching the runner.
 - **Viewer:**
   - flags `--no-sound` and `--volume <0..1>` (default 0.5);
+    `--sound-offline` runs the sounds without a device (nothing is heard,
+    voices do not advance): with `OPENRTS_SOUND_TRACE` it shows which groups
+    go on;
   - a volume slider and a voice count in the panel;
   - world-sound counters in the route section.
   - Automated runs use `--no-sound`.
@@ -440,9 +443,39 @@ first match in file order, not by number:
   `AuxLibrarySoundExternal` fades with distance (else heard as at the
   listener); `AuxLibrarySoundOwnStack` keeps its own Var1..8 (else the
   engine's); `AuxLibrarySoundSingleWagon` plays only while the player is in
-  that car. The runtime was not traced (PROBABLE as described).
+  that car.
+
 - `openrts-train-check --triggers` prints every trigger a DLL posts, per
   car and SMS (ext, cab, aux n).
+
+### Library sounds (CONFIRMED, 2026-11-05)
+
+- **Made once,** when the engine's DLL is bound (`0x5026FC` → `0x56DC3C`):
+  - a sound object of the kind `AuxLibrarySoundType` gives (`0x4D4B08`,
+    `0x4AA540`): WAGON 5 (also when absent: group 7, else the first),
+    AMBIENT 8, ROUTEFORWAGON 9, anything else 6;
+  - put on the list of all sound objects (`0x44A9DC`) with its engine, its
+    `AuxLibrarySoundPosition` and flags: 0x40 placed in the car (WAGON,
+    ROUTEFORWAGON), 0x20 `External`, 0x100 `OwnStack`, 0x200
+    `SingleWagon`.
+- **Updated every frame whatever its train** (`0x44AB7C`):
+  - its point is the car's place × the position; the distance from it to
+    the camera opens and closes the group and drives the curves;
+  - Var1..8 are the engine's DLL ones unless `OwnStack`;
+  - the camera rules see the train (`car's train == 0x61D680`): in the cab
+    or the salon, CabCam and PassengerCam groups need the car in the
+    player's train, ExternalCam ones a car out of it; outside cameras
+    ExternalCam groups only;
+  - `SingleWagon`: only the player's current engine, any other stops;
+  - the room: the current engine's libraries pass from their room to the
+    listener's; others play at what passes to the open air.
+- So a part cut off from the player's train keeps its libraries' sounds:
+  `Usavp.sms` (`Activation ( ExternalCam () PassengerCam () CabCam () )`,
+  200 m) speaks, `Brakes.sms` (`CabCam` only, `SingleWagon`) is silent.
+- openRTS (`TrainView::update_aux_sounds`): the same for every train of the
+  DLL host; the other trains take the external camera, as their exterior
+  sounds. `SingleWagon` waits for the engineer in the cab car (RTS: the
+  current engine, then the camera rules).
 
 ## Rooms and sound proofing (2026-11-04)
 

@@ -260,8 +260,8 @@ int main(int argc, char** argv) {
 
     // Coupling and cutting (RTS 0x469ED8 / 0x469858 -> 0x4F995C): the DLLs
     // keep their state, an engine coupled on joins the group as a slave
-    // (bound and initialised), one cut off keeps its state until it is
-    // coupled again.
+    // (bound and initialised), one cut off goes on running in its own train
+    // (RTS: the cut train keeps flag 4, 0x4EEC50) and comes back as it is.
     {
         check(host->step(step, reply) && reply.cars.size() == 3, "step before the coupling");
         const auto switch0 = reply.cars.empty() ? 0u : reply.cars[0].switches[0].state;
@@ -270,7 +270,7 @@ int main(int argc, char** argv) {
         auto added = loco(module);
         added.key = 4;
         ReconsistRequest r;
-        r.cars = {{reconsist_new, added}, {0, {}}, {1, {}}, {2, {}}};
+        r.trains = {{1, {{reconsist_new, added}, {0, {}}, {1, {}}, {2, {}}}}};
         r.inputs = {input(0x20000), input(0x30000), input(0x10000 | 1), input(0)};
         check(host->reconsist(r, reply), "reconsist: an engine coupled on ahead");
         check(reply.cars.size() == 4, "four cars after the coupling");
@@ -288,29 +288,51 @@ int main(int argc, char** argv) {
         check(host->step(s, reply), "step after the coupling");
         check(reply.cars.size() == 4 && reply.cars[0].engine.throttle == throttle, "the master drives the new slave");
 
-        // The old slave (key 2) is cut off: LostMaster, kept aside.
+        // The old slave (key 2) is cut off: LostMaster, and it goes on in a
+        // train of its own (the player's train first, then the cut part).
         ReconsistRequest cut;
-        cut.cars = {{0, {}}, {1, {}}, {3, {}}};
-        cut.inputs = {input(0x20000), input(0x10000), input(0)};
-        check(host->reconsist(cut, reply), "reconsist: a slave cut off");
-        check(reply.cars.size() == 3 && reply.cars[1].engine.throttle == throttle, "three cars, the player's engine unchanged");
+        cut.trains = {{1, {{0, {}}, {1, {}}, {3, {}}}}, {3, {{2, {}}}}};
+        cut.inputs = {input(0x20000), input(0x10000), input(0), input(0)};
+        cut.inputs[3].velocity = 3.0f;
+        check(host->reconsist(cut, reply), "reconsist: a slave cut off into its own train");
+        check(reply.cars.size() == 4 && reply.cars[1].engine.throttle == throttle, "the player's engine unchanged");
+        if (reply.cars.size() == 4) {
+            check(reply.cars[3].engine.auxiliary_rate == 7.0f, "the cut engine got LostMaster");
+            check((reply.cars[3].loco_flags & 4) == 0, "it is no longer in the player's join");
+        }
         s.cars = cut.inputs;
         check(host->step(s, reply), "step after the cut");
+        check(reply.cars.size() == 4 && std::abs(reply.cars[3].engine.brake_force - 3.0f) < 1e-6f,
+              "the cut engine's DLL still runs (Run saw its own train's velocity)");
+        check(reply.cars.size() == 4 && std::abs(reply.cars[0].engine.brake_force - 2.0f) > 0.5f,
+              "the player's train saw its own inputs");
 
-        // And coupled back behind the player's engine.
+        // And coupled back behind the player's engine: from the cut train.
         ReconsistRequest back;
-        CarSpec parked;
-        parked.key = 2;
-        back.cars = {{0, {}}, {1, {}}, {reconsist_parked, parked}, {2, {}}};
+        back.trains = {{1, {{0, {}}, {1, {}}, {3, {}}, {2, {}}}}};
         back.inputs = {input(0x20000), input(0x30000), input(0x10000), input(0)};
         check(host->reconsist(back, reply), "reconsist: the cut engine coupled again");
         if (reply.cars.size() == 4) {
             check(reply.cars[2].has_engine && (reply.cars[2].loco_flags & 0x21) == 0x20, "it is a slave again");
-            check(reply.cars[2].engine.auxiliary_rate == 7.0f, "with the state it had (its mirror was kept)");
+            check(reply.cars[2].engine.auxiliary_rate == 7.0f && std::abs(reply.cars[2].engine.brake_force - 3.0f) < 1e-6f,
+                  "with the state its own train left it in");
         } else {
             check(false, "four cars after coupling back");
         }
-        step.cars = back.inputs;
+
+        // A car in no train is kept aside and comes back as it was.
+        ReconsistRequest gone;
+        gone.trains = {{1, {{0, {}}, {1, {}}, {3, {}}}}};
+        gone.inputs = {input(0x20000), input(0x10000), input(0)};
+        check(host->reconsist(gone, reply) && reply.cars.size() == 3, "reconsist: the engine leaves every train");
+        ReconsistRequest again;
+        CarSpec parked;
+        parked.key = 2;
+        again.trains = {{1, {{0, {}}, {1, {}}, {reconsist_parked, parked}, {2, {}}}}};
+        again.inputs = back.inputs;
+        check(host->reconsist(again, reply) && reply.cars.size() == 4 && reply.cars[2].engine.auxiliary_rate == 7.0f,
+              "and comes back with its state");
+        step.cars = again.inputs;
     }
 
     const auto messages = host->take_messages();

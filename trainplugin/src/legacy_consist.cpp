@@ -527,6 +527,7 @@ std::unique_ptr<LegacyConsist> LegacyConsist::create(const core::Vfs& vfs, const
         setup.cars.push_back(std::move(built.spec));
     }
     consist->sound_count_ = static_cast<std::int32_t>(setup.sound_tables.size());
+    consist->train_first_ = {0, cars.size()};
     consist->cache_root_ = cache_root;
     if (route) consist->route_ = *route;
     if (!any) {
@@ -553,13 +554,16 @@ LegacyConsist::~LegacyConsist() {
     outputs_->cars.clear();
 }
 
-std::vector<CarInput> LegacyConsist::inputs(const simulation::Train& train, const LegacyWorld* world) const {
-    const auto& cars = train.cars();
+std::vector<CarInput> LegacyConsist::inputs(const std::vector<const simulation::Train*>& trains,
+                                            const LegacyWorld* world) const {
     std::vector<CarInput> out(cars_.size());
-    const std::size_t n = (std::min)(cars.size(), cars_.size());
+    for (std::size_t t = 0; t < trains.size() && t < this->trains(); ++t) {
+    if (!trains[t]) continue;
+    const auto& cars = trains[t]->cars();
+    const std::size_t n = (std::min)(cars.size(), train_first_[t + 1] - train_first_[t]);
     for (std::size_t i = 0; i < n; ++i) {
         const auto& c = cars[i];
-        CarInput& in = out[i];
+        CarInput& in = out[train_first_[t] + i];
         std::uint32_t flags = c.flipped ? 1u : 0u;
         flags |= static_cast<std::uint32_t>(c.pipe_ends) << 8;
         // Byte 3, WagonData::Cables: SMECable 0x10000 front / 0x20000 rear,
@@ -597,6 +601,7 @@ std::vector<CarInput> LegacyConsist::inputs(const simulation::Train& train, cons
             }
         }
     }
+    }
     return out;
 }
 
@@ -618,7 +623,7 @@ bool LegacyConsist::enter(std::size_t car, const simulation::Train& train, bool 
     return true;
 }
 
-bool LegacyConsist::step(double dt, const simulation::Train& train, const LegacyWorld& world) {
+bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>& trains, const LegacyWorld& world) {
     if (!host_ || !host_->alive()) {
         outputs_->valid = false;
         return false;
@@ -629,7 +634,7 @@ bool LegacyConsist::step(double dt, const simulation::Train& train, const Legacy
     request.air_temperature = world.air_temperature;
     request.night = world.night ? 1 : 0;
     request.train_direction = 1;
-    request.cars = inputs(train, &world);
+    request.cars = inputs(trains, &world);
     request.route = world.route;
     request.signal = world.signal;
     request.event = world.event;
@@ -691,23 +696,41 @@ bool LegacyConsist::step(double dt, const simulation::Train& train, const Legacy
 }
 
 bool LegacyConsist::reconsist(const core::Vfs& vfs, std::vector<LegacyCar> cars, const simulation::Train& train) {
-    if (!host_ || !host_->alive() || player_ >= cars_.size()) return false;
+    if (player_ >= cars_.size()) return false;
     const auto player_key = cars_[player_].key;
-    std::size_t player = SIZE_MAX;
-    for (std::size_t i = 0; i < cars.size() && player_key; ++i)
-        if (cars[i].key == player_key) player = i;
-    if (player == SIZE_MAX) return false;
+    if (!player_key || std::none_of(cars.begin(), cars.end(), [&](const LegacyCar& c) { return c.key == player_key; })) return false;
+    std::vector<std::vector<LegacyCar>> trains;
+    trains.push_back(std::move(cars));
+    return reconsist(vfs, std::move(trains), {&train});
+}
+
+bool LegacyConsist::reconsist(const core::Vfs& vfs, std::vector<std::vector<LegacyCar>> trains,
+                              const std::vector<const simulation::Train*>& sims) {
+    if (!host_ || !host_->alive() || trains.empty()) return false;
+    const auto player_key = player_ < cars_.size() ? cars_[player_].key : 0u;
     std::unordered_map<std::uint32_t, std::size_t> before;
     for (std::size_t i = 0; i < cars_.size(); ++i)
         if (cars_[i].key) before.emplace(cars_[i].key, i);
     ReconsistRequest request;
     std::string problems;
     SoundTables tables{request.sound_tables, sound_paths_, sound_count_};
+    std::vector<LegacyCar> cars;
+    std::vector<std::size_t> first{0};
+    for (auto& train : trains) {
+        for (auto& car : train) cars.push_back(std::move(car));
+        first.push_back(cars.size());
+    }
+    std::size_t player = SIZE_MAX;
+    for (std::size_t i = 0; i < first[1] && player_key; ++i)
+        if (cars[i].key == player_key) player = i;
     std::vector<formats::CabDescription> cabs(cars.size());
     std::vector<bool> dll(cars.size(), false);
     std::vector<std::vector<std::int16_t>> aux(cars.size());
     std::vector<bool> kept(cars_.size(), false);
+    request.trains.resize(trains.size());
+    for (std::size_t t = 0; t < trains.size(); ++t) request.trains[t].type = t == 0 ? 1 : 3; // the player's, LOOSE
     for (std::size_t i = 0; i < cars.size(); ++i) {
+        const auto t = static_cast<std::size_t>(std::upper_bound(first.begin(), first.end(), i) - first.begin()) - 1;
         ReconsistCar entry;
         entry.spec.uid = cars[i].uid;
         entry.spec.key = cars[i].key;
@@ -731,7 +754,7 @@ bool LegacyConsist::reconsist(const core::Vfs& vfs, std::vector<LegacyCar> cars,
             dll[i] = built.dll;
             aux[i] = std::move(built.aux_index);
         }
-        request.cars.push_back(std::move(entry));
+        request.trains[t].cars.push_back(std::move(entry));
     }
     // What left waits, as the host keeps its mirror.
     for (std::size_t i = 0; i < cars_.size(); ++i) {
@@ -743,8 +766,9 @@ bool LegacyConsist::reconsist(const core::Vfs& vfs, std::vector<LegacyCar> cars,
     cabs_ = std::move(cabs);
     dll_ = std::move(dll);
     aux_index_ = std::move(aux);
-    request.running = std::abs(train.speed()) > 0.01;
-    request.inputs = inputs(train, nullptr);
+    train_first_ = std::move(first);
+    request.running = !sims.empty() && sims[0] && std::abs(sims[0]->speed()) > 0.01;
+    request.inputs = inputs(sims, nullptr);
     StepReply reply;
     const bool ok = host_->reconsist(request, reply);
     messages_ += problems + host_->take_messages();
@@ -779,15 +803,24 @@ bool LegacyConsist::drag(std::size_t car, std::uint32_t id, float delta, bool re
     return ok && moved;
 }
 
-const CarOutput* LegacyConsist::output(std::size_t car) const {
-    return outputs_->valid && car < outputs_->cars.size() ? &outputs_->cars[car] : nullptr;
+const CarOutput* LegacyConsist::output(std::size_t car) const { return output(0, car); }
+
+const CarOutput* LegacyConsist::output(std::size_t train, std::size_t car) const {
+    const auto at = flat(train, car);
+    return outputs_->valid && at < outputs_->cars.size() ? &outputs_->cars[at] : nullptr;
 }
 
 const formats::CabDescription* LegacyConsist::cab(std::size_t car) const {
-    return car < cabs_.size() && !cabs_[car].switches.empty() ? &cabs_[car] : nullptr;
+    const auto at = flat(0, car);
+    return at < cabs_.size() && !cabs_[at].switches.empty() ? &cabs_[at] : nullptr;
 }
 
-bool LegacyConsist::has_dll(std::size_t car) const { return car < dll_.size() && dll_[car]; }
+bool LegacyConsist::has_dll(std::size_t car) const { return has_dll(0, car); }
+
+bool LegacyConsist::has_dll(std::size_t train, std::size_t car) const {
+    const auto at = flat(train, car);
+    return at < dll_.size() && dll_[at];
+}
 
 bool LegacyConsist::alive() const { return host_ && host_->alive(); }
 
@@ -795,8 +828,10 @@ std::string LegacyConsist::error() const { return host_ ? host_->error() : std::
 
 std::string LegacyConsist::take_messages() { return std::exchange(messages_, {}); }
 
-std::unique_ptr<simulation::LocomotiveController> LegacyConsist::controller(std::size_t car) const {
-    return std::make_unique<LegacyController>(outputs_, car);
+std::unique_ptr<simulation::LocomotiveController> LegacyConsist::controller(std::size_t car) const { return controller(0, car); }
+
+std::unique_ptr<simulation::LocomotiveController> LegacyConsist::controller(std::size_t train, std::size_t car) const {
+    return std::make_unique<LegacyController>(outputs_, flat(train, car));
 }
 
 } // namespace openrts::trainplugin

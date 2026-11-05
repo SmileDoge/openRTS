@@ -144,8 +144,9 @@ void LegacyCab::bind_keys(const std::size_t car) {
     }
 }
 
-bool LegacyCab::reconsist(const core::Vfs& vfs, const std::vector<LegacyCarRef>& cars, simulation::Train& train) {
-    if (!consist_) return false;
+namespace {
+
+std::vector<trainplugin::LegacyCar> legacy_cars(const std::vector<LegacyCarRef>& cars) {
     std::vector<trainplugin::LegacyCar> legacy;
     for (const auto& c : cars) {
         trainplugin::LegacyCar l;
@@ -155,10 +156,23 @@ bool LegacyCab::reconsist(const core::Vfs& vfs, const std::vector<LegacyCarRef>&
         if (c.definition) l.file = formats::wagon_path(c.folder, c.definition->name, c.definition->engine.has_value());
         legacy.push_back(std::move(l));
     }
+    return legacy;
+}
+
+} // namespace
+
+bool LegacyCab::reconsist(const core::Vfs& vfs, const std::vector<std::vector<LegacyCarRef>>& trains,
+                          const std::vector<simulation::Train*>& sims) {
+    if (!consist_ || trains.empty() || sims.size() != trains.size() || !sims[0]) return false;
+    std::vector<std::vector<trainplugin::LegacyCar>> legacy;
+    for (const auto& cars : trains) legacy.push_back(legacy_cars(cars));
+    std::vector<const simulation::Train*> views(sims.begin(), sims.end());
     const auto before = consist_->player();
-    const bool ok = consist_->reconsist(vfs, std::move(legacy), train);
+    const bool ok = consist_->reconsist(vfs, std::move(legacy), views);
     log(consist_->take_messages());
     if (!ok) return false;
+    auto& train = *sims[0];
+    const auto& cars = trains[0];
     // What the mouse holds in the player's cab stays held (at its car's new
     // place); in another car it is let go.
     const auto player = consist_->player();
@@ -170,7 +184,7 @@ bool LegacyCab::reconsist(const core::Vfs& vfs, const std::vector<LegacyCarRef>&
     going_down_ = std::move(going_down);
     for (std::size_t i = 0; i < cars.size(); ++i)
         if (consist_->has_dll(i)) train.set_controller(i, consist_->controller(i));
-    bind_keys(consist_->player());
+    if (player < cars.size()) bind_keys(player);
     return true;
 }
 
@@ -204,8 +218,53 @@ const std::array<float, 8>* LegacyCab::cab_sound_variables(std::size_t car) cons
 }
 
 const std::array<float, 8>* LegacyCab::aux_sound_variables(std::size_t car, std::size_t library) const {
-    const auto* out = consist_ ? consist_->output(car) : nullptr;
+    return aux_sound_variables(0, car, library);
+}
+
+const std::array<float, 8>* LegacyCab::sound_variables(std::size_t train, std::size_t car) const {
+    const auto* out = consist_ ? consist_->output(train, car) : nullptr;
+    return out && out->has_engine ? &out->sms_ext : nullptr;
+}
+
+const std::array<float, 8>* LegacyCab::aux_sound_variables(std::size_t train, std::size_t car, std::size_t library) const {
+    const auto* out = consist_ ? consist_->output(train, car) : nullptr;
     return out && library < out->aux_sound.size() ? &out->aux_sound[library].vars : nullptr;
+}
+
+void LegacyCab::step(const std::vector<const simulation::Train*>& trains, std::vector<Triggers>& posted) {
+    posted.assign(trains.size(), {});
+    if (!consist_) return;
+    if (!consist_->step(simulation::train_step, trains, world_)) {
+        log(consist_->take_messages());
+        log(tr("the DLL host stopped: ") + consist_->error());
+        return;
+    }
+    for (std::size_t t = 0; t < trains.size(); ++t) {
+        if (!trains[t]) continue;
+        auto& p = posted[t];
+        const auto n = trains[t]->cars().size();
+        p.exterior.resize(n);
+        p.cab.resize(n);
+        p.aux.resize(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto* out = consist_->output(t, i);
+            if (!out) continue;
+            for (const auto code : out->sound_ext) p.exterior[i].push_back(code);
+            for (const auto code : out->sound_cab) p.cab[i].push_back(code);
+            if (p.aux[i].size() < out->aux_sound.size()) p.aux[i].resize(out->aux_sound.size());
+            for (std::size_t k = 0; k < out->aux_sound.size(); ++k)
+                for (const auto code : out->aux_sound[k].triggers) p.aux[i][k].push_back(code);
+            for (const auto& m : out->messages) {
+                if (!m.text.empty()) log(trainplugin::utf16_to_utf8(m.text));
+                // GM_SMS_POST id: that trigger in the sound of every car of the
+                // train (RTS 0x424488 -> 0x46AF1C).
+                constexpr std::uint16_t gm_sms_post = 5;
+                if (m.action == gm_sms_post && m.id != 0)
+                    for (auto& each : p.exterior) each.push_back(m.id);
+            }
+        }
+    }
+    log(consist_->take_messages());
 }
 
 void LegacyCab::step(const simulation::Train& train, std::vector<std::vector<std::uint32_t>>& triggers,

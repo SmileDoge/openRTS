@@ -47,6 +47,9 @@ struct WindowOptions {
     bool batching = true;
     std::uint32_t msaa = 4; // samples (--msaa 1|4); 4 as RTS's "4x MSAA +Alpha"
     bool sound = true;
+    // --sound-offline: the sounds run without a device, nothing is heard
+    // (automated checks with OPENRTS_SOUND_TRACE).
+    bool sound_offline = false;
     float sound_volume = 0.5f; // master volume, 0..1
     // What is open (root, mode, content), recorded in saved debug views.
     DebugView identity;
@@ -87,6 +90,10 @@ struct WindowOptions {
     // --capture-uncouple <index>: at 0.6 of capture_at the driven train is
     // uncoupled before car `index` (from 0), as the Train window's button does.
     std::optional<std::size_t> capture_uncouple;
+    // --capture-drive <index>: at 0.8 of capture_at train `index` (in the
+    // trains' order, from 0) becomes the driven one, as the Train window's
+    // "drive" does.
+    std::optional<std::size_t> capture_drive;
 };
 
 [[nodiscard]] int run_window_viewer(ViewerScene& scene, const WindowOptions& options);

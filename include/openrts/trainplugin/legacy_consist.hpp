@@ -88,15 +88,29 @@ public:
     // `state`: Init's start state as an activity's TrainState (0 cold, 1 on,
     // 2 / 3 running), -1 from the train (`running`).
     bool enter(std::size_t car, const simulation::Train& train, bool running = true, int state = -1);
-    // One round trip: the train's state in, the DLLs' outputs out.
-    bool step(double dt, const simulation::Train& train, const LegacyWorld& world);
-    // Cars were coupled on or cut off: `cars` is the consist now, `train`
-    // its train (cars matched by key). The DLLs of the cars that stay keep
-    // their state, as in RTS; new engines join the groups (bound and
-    // initialised as slaves); a cut-off car keeps its state until it is
-    // coupled again. False (nothing changed) when the player's engine is
-    // not among `cars`, or the host failed: then start again with create().
+    // One round trip: the trains' state in (the player's first, as the
+    // last reconsist ordered them), the DLLs' outputs out.
+    bool step(double dt, const std::vector<const simulation::Train*>& trains, const LegacyWorld& world);
+    bool step(double dt, const simulation::Train& train, const LegacyWorld& world) { return step(dt, {&train}, world); }
+    // Cars were coupled on or cut off: `trains` are the host's trains now,
+    // the player's first, then the parts cut off from it, whose DLLs keep
+    // running as in RTS (cars matched by key); `sims` their trains. The DLLs
+    // of the cars that stay keep their state; new engines join the groups
+    // (bound and initialised as slaves); a car in no train keeps its state
+    // until it comes back. When the player's engine is no longer in the
+    // first train, player() is none until enter(). False: the host failed
+    // (start again with create()).
+    bool reconsist(const core::Vfs& vfs, std::vector<std::vector<LegacyCar>> trains,
+                   const std::vector<const simulation::Train*>& sims);
     bool reconsist(const core::Vfs& vfs, std::vector<LegacyCar> cars, const simulation::Train& train);
+    [[nodiscard]] std::size_t trains() const noexcept { return train_first_.size() - 1; }
+    [[nodiscard]] std::size_t train_size(std::size_t train) const noexcept {
+        return train + 1 < train_first_.size() ? train_first_[train + 1] - train_first_[train] : 0;
+    }
+    // Train `train`'s car `car` (train 0: the player's, as output(car)).
+    [[nodiscard]] const dllhost::CarOutput* output(std::size_t train, std::size_t car) const;
+    [[nodiscard]] bool has_dll(std::size_t train, std::size_t car) const;
+    [[nodiscard]] std::unique_ptr<simulation::LocomotiveController> controller(std::size_t train, std::size_t car) const;
     // The player moves a cab switch of `car` to `state`: CanSwitch, then the
     // host moves it (Switched fires when it gets there). False if refused.
     bool operate(std::size_t car, std::uint32_t id, std::uint32_t state);
@@ -118,7 +132,15 @@ public:
 
 private:
     LegacyConsist() = default;
-    std::vector<dllhost::CarInput> inputs(const simulation::Train& train, const LegacyWorld* world) const;
+    std::vector<dllhost::CarInput> inputs(const std::vector<const simulation::Train*>& trains, const LegacyWorld* world) const;
+    std::vector<dllhost::CarInput> inputs(const simulation::Train& train, const LegacyWorld* world) const {
+        return inputs(std::vector<const simulation::Train*>{&train}, world);
+    }
+    // Where each train's cars begin in cars_ (and the end): [0] = 0.
+    std::vector<std::size_t> train_first_{0, 0};
+    [[nodiscard]] std::size_t flat(std::size_t train, std::size_t car) const {
+        return train + 1 < train_first_.size() && car < train_first_[train + 1] - train_first_[train] ? train_first_[train] + car : SIZE_MAX;
+    }
 
     std::unique_ptr<LegacyHost> host_;
     std::vector<LegacyCar> cars_;

@@ -394,8 +394,6 @@ None of it blocks multiplayer.
   the `…Diff` shaders;
 - `DisplayFade`: lamps and displays switch, RTS fades them;
 - doors by name for the DLLs;
-- an engine cut off from the player's train: RTS keeps running its DLL,
-  openRTS keeps its state without running it;
 - native plugins only on the driven engine, not on the other engines of a
   multiple unit; the VL10k example has one section, no regenerative
   braking, no КЛУБ / САУТ;

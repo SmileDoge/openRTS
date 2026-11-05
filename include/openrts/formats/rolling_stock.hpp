@@ -188,6 +188,7 @@ struct EngineDefinition {
     std::uint32_t throttle_notches{};
     std::string library_module; // EngExtended LibraryModule (legacy DLL), relative to the .eng folder
     std::uint32_t library_param{}; // its second value (Locomotive::LibParam)
+    bool cab_view = false;      // CabView ( .cvf ): a driving cab (a motor car's Cabin may be a salon)
     std::string cabin;          // EngExtended Cabin: the cab shape
     std::uint32_t cabin_param{};
     // EngExtended DoNotHideExtInCabin ( n ) & 3 (RTS 0x44247C): non-zero

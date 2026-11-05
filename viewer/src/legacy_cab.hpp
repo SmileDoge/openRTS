@@ -46,6 +46,14 @@ public:
     // car are added to `triggers` (exterior SMS), messages to the log.
     // `aux_triggers[car][library]`: what each AuxLibrary posted to its own
     // SMS (AuxLibrarySound).
+    // Several trains: the player's first, then the parts cut off from it
+    // (as the last reconsist ordered them); per train what its cars' DLLs
+    // posted.
+    struct Triggers {
+        std::vector<std::vector<std::uint32_t>> exterior, cab;
+        std::vector<std::vector<std::vector<std::uint32_t>>> aux;
+    };
+    void step(const std::vector<const simulation::Train*>& trains, std::vector<Triggers>& posted);
     void step(const simulation::Train& train, std::vector<std::vector<std::uint32_t>>& triggers,
               std::vector<std::vector<std::uint32_t>>& cab_triggers,
               std::vector<std::vector<std::vector<std::uint32_t>>>& aux_triggers);
@@ -87,10 +95,27 @@ public:
     // `extra`: more of the window, drawn under the cab keys checkbox.
     void draw_window(const std::function<void()>& extra = {});
 
-    // Cars coupled on or cut off (`cars` and `train` as they are now): the
-    // DLLs keep their state and regroup (LegacyConsist::reconsist), the
-    // controllers go on the DLL engines' new places. False: attach again.
-    bool reconsist(const core::Vfs& vfs, const std::vector<LegacyCarRef>& cars, simulation::Train& train);
+    // Cars coupled on or cut off: the host's trains as they are now (the
+    // player's first, then the parts cut off from it, whose DLLs go on
+    // running). The DLLs keep their state and regroup
+    // (LegacyConsist::reconsist); the player's train's DLL engines get
+    // their controllers (the other trains' are the caller's to set). When
+    // the player's engine is not in the first train, player() is none
+    // until enter(). False: the host failed (attach again).
+    bool reconsist(const core::Vfs& vfs, const std::vector<std::vector<LegacyCarRef>>& trains,
+                   const std::vector<simulation::Train*>& sims);
+    [[nodiscard]] std::size_t trains() const { return consist_ ? consist_->trains() : 0; }
+    [[nodiscard]] std::size_t train_size(std::size_t train) const { return consist_ ? consist_->train_size(train) : 0; }
+    // Train `train`'s car `car` (0: the player's train).
+    [[nodiscard]] const dllhost::CarOutput* output(std::size_t train, std::size_t car) const {
+        return consist_ ? consist_->output(train, car) : nullptr;
+    }
+    [[nodiscard]] bool has_dll(std::size_t train, std::size_t car) const { return consist_ && consist_->has_dll(train, car); }
+    [[nodiscard]] std::unique_ptr<simulation::LocomotiveController> controller(std::size_t train, std::size_t car) const {
+        return consist_ ? consist_->controller(train, car) : nullptr;
+    }
+    [[nodiscard]] const std::array<float, 8>* sound_variables(std::size_t train, std::size_t car) const;
+    [[nodiscard]] const std::array<float, 8>* aux_sound_variables(std::size_t train, std::size_t car, std::size_t library) const;
     // The player takes locomotive `car` (the engineer walked into its cab):
     // the host enters it (Init, ChangeLoco, the multiple-unit groups) and its
     // cab's keys are bound. False when it has no DLL or the host refuses.

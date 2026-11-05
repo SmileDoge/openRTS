@@ -262,6 +262,8 @@ public:
     // --capture-uncouple: the Train window's "uncouple here" before car `index`
     // of the driven train (done in update(), the train standing).
     void uncouple_driven(std::size_t index) { pending_uncouple_ = index; }
+    // --capture-drive: train `index` (in the trains' order) becomes the driven one.
+    void drive_unit(std::size_t index);
     [[nodiscard]] std::string car_menu_report() const;
     // For the capture report: lights, pantographs, the line, cables, the
     // native plugin, of every train.
@@ -326,6 +328,23 @@ private:
     // as RTS keeps them (0x469ED8 / 0x469858); else they start again.
     void reattach_driver(const DrivenKeys* keep = nullptr);
     bool keep_attached(const DrivenKeys& keep);
+    // The DLL host's trains (RTS: every train the player has been in keeps
+    // its DLLs running, 0x424488): the driven unit first, then the parts cut
+    // off from it (Unit::host), in units_ order. Made again after every
+    // change; the step checks it is still so. Their DLL engines get their
+    // controllers (the standing ones: an AI unit keeps its driver).
+    bool reconsist_host();
+    [[nodiscard]] bool host_current() const;
+    std::vector<std::vector<std::uint32_t>> host_keys_; // each host train's car keys at the last reconsist
+    // What car `i` of unit `u` gets from its DLL (none: not in the host).
+    [[nodiscard]] const dllhost::CarOutput* dll_output(std::size_t u, std::size_t i) const;
+    [[nodiscard]] bool dll_car(std::size_t u, std::size_t i) const;
+    [[nodiscard]] const std::array<float, 8>* dll_sound_variables(std::size_t u, std::size_t i) const;
+    // The driven unit is one the host already runs (a part cut off): the
+    // player takes it over without a new Init (RTS 0x468C74 binds once).
+    bool take_over_host_unit();
+    // The 3-D cab of car `player` of the driven unit (none: the first engine).
+    void attach_cab(std::size_t player);
     [[nodiscard]] simulation::Train& driven();
     [[nodiscard]] const simulation::Train& driven() const;
     void update_listener(const ViewerCamera& camera);

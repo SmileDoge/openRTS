@@ -341,12 +341,16 @@ bool Host::setup(const SetupRequest& request, std::vector<ModuleReport>& modules
     by_object_.clear();
     by_cabin_.clear();
     by_aux_.clear();
-    train_cars_.clear();
     strings_.clear();
     player_ = UINT32_MAX;
-    train_type_ = request.train_type;
-    train_object_.fill(0);
-    train_object_[0] = train_type_;
+    // One train: the player's.
+    if (trains_.empty()) trains_.push_back(std::make_unique<TrainMirror>());
+    train_count_ = 1;
+    trains_[0]->object.fill(0);
+    trains_[0]->type = request.train_type;
+    trains_[0]->object[0] = request.train_type;
+    trains_[0]->first = 0;
+    trains_[0]->count = request.cars.size();
     rts_root_ = from_u16(request.rts_root);
     if (!rts_root_.empty()) SetDllDirectoryW(rts_root_.c_str()); // bass.dll, CC3260MT.DLL
     items_.clear();
@@ -403,24 +407,34 @@ bool Host::reconsist(const ReconsistRequest& request, StepReply& reply) {
     const CarMirror* player = player_ < cars_.size() ? cars_[player_].get() : nullptr;
     auto old = std::move(cars_);
     cars_.clear();
-    for (const auto& entry : request.cars) {
-        std::unique_ptr<CarMirror> car;
-        if (entry.from >= 0 && static_cast<std::size_t>(entry.from) < old.size()) {
-            car = std::move(old[static_cast<std::size_t>(entry.from)]);
-        } else if (entry.from == reconsist_parked) {
-            if (const auto it = parked_.find(entry.spec.key); it != parked_.end() && entry.spec.key) {
-                car = std::move(it->second);
-                parked_.erase(it);
+    while (trains_.size() < request.trains.size()) trains_.push_back(std::make_unique<TrainMirror>());
+    train_count_ = request.trains.size();
+    for (std::size_t t = 0; t < request.trains.size(); ++t) {
+        auto& train = *trains_[t];
+        train.type = request.trains[t].type;
+        train.object[0] = train.type;
+        train.first = cars_.size();
+        train.count = request.trains[t].cars.size();
+        for (const auto& entry : request.trains[t].cars) {
+            std::unique_ptr<CarMirror> car;
+            if (entry.from >= 0 && static_cast<std::size_t>(entry.from) < old.size()) {
+                car = std::move(old[static_cast<std::size_t>(entry.from)]);
+            } else if (entry.from == reconsist_parked) {
+                if (const auto it = parked_.find(entry.spec.key); it != parked_.end() && entry.spec.key) {
+                    car = std::move(it->second);
+                    parked_.erase(it);
+                }
             }
+            if (!car) {
+                // A car not seen before (or named twice): a new mirror.
+                car = std::make_unique<CarMirror>();
+                car->spec = entry.spec;
+                build_car(*car);
+            }
+            car->index = static_cast<std::uint32_t>(cars_.size());
+            car->train = static_cast<std::uint32_t>(t);
+            cars_.push_back(std::move(car));
         }
-        if (!car) {
-            // A car not seen before (or named twice): a new mirror.
-            car = std::make_unique<CarMirror>();
-            car->spec = entry.spec;
-            build_car(*car);
-        }
-        car->index = static_cast<std::uint32_t>(cars_.size());
-        cars_.push_back(std::move(car));
     }
     // The cars that left keep their mirrors (and stay known to the host
     // functions: a lost slave's LostMaster names them).
@@ -441,7 +455,7 @@ bool Host::reconsist(const ReconsistRequest& request, StepReply& reply) {
     start_running_ = request.running;
     cables_.assign(cars_.size(), 0);
     for (std::size_t i = 0; i < cars_.size(); ++i) cables_[i] = cars_[i]->wagon()->flags & 0x30000u;
-    if (player_ < cars_.size()) regroup();
+    regroup();
     collect(reply);
     return true;
 }
@@ -451,7 +465,6 @@ void Host::build_car(CarMirror& car) {
     abi::Wagon* w = car.wagon();
     w->is_locomotive = spec.kind;
     w->uid = spec.uid;
-    w->train_in = train_object_.data();
     w->durability = 1.0f;
     w->mass = spec.mass;
     w->ept_value = -1.0f;
@@ -597,9 +610,11 @@ void Host::build_car(CarMirror& car) {
 }
 
 void Host::link_cars() {
-    train_cars_.clear();
+    for (std::size_t t = 0; t < train_count_; ++t) trains_[t]->wagons.clear();
     for (auto& car : cars_) {
-        train_cars_.push_back(car->wagon());
+        auto& train = train_of(*car);
+        train.wagons.push_back(car->wagon());
+        car->wagon()->train_in = train.object.data();
         by_object_[car->object.data()] = car.get();
         by_object_[car->engine.data()] = car.get();
         if (car->spec.cab.present) by_cabin_[&car->cabin] = car.get();
@@ -610,9 +625,10 @@ void Host::link_cars() {
     }
     for (std::size_t i = 0; i < cars_.size(); ++i) {
         if (!cars_[i]->is_loco()) continue;
+        auto& train = train_of(*cars_[i]);
         abi::Locomotive* l = cars_[i]->loco();
-        l->first_in_group = &train_cars_[i];
-        l->last_in_group = &train_cars_[i];
+        l->first_in_group = &train.wagons[i - train.first];
+        l->last_in_group = &train.wagons[i - train.first];
     }
 }
 
@@ -734,26 +750,27 @@ bool Host::bind(CarMirror& car) {
 }
 
 std::uint32_t Host::init_state(const CarMirror& car, bool player) const {
-    (void)car;
     std::uint32_t state = 0;
     // Bit 0: the train has cars (a wagon or a cold engine); bit 1: it starts running.
     for (const auto& c : cars_) {
-        if (!c->is_loco() || (c->loco()->loco_flags & 8)) state |= 1;
+        if (c->train == car.train && (!c->is_loco() || (c->loco()->loco_flags & 8))) state |= 1;
     }
     if (start_running_) state |= 2;
     // An activity's TrainState replaces both bits (RTS 0x5026FC: train +0x14 -> +0x48).
     if (start_state_ >= 0) state = static_cast<std::uint32_t>(start_state_) & 0xFFu;
     if (player) state |= 0x100;
-    if (train_type_ == 4) state |= 0x200;
-    if (train_type_ == 5) state |= 0x400;
+    const auto type = train_of(car).type;
+    if (type == 4) state |= 0x200;
+    if (type == 5) state |= 0x400;
     return state;
 }
 
 std::uint32_t Host::run_state(const CarMirror& car) const {
     std::uint32_t state = 0;
     if (const_cast<CarMirror&>(car).wagon()->flags & 4) state |= 0x100;
-    if (train_type_ == 4) state |= 0x200;
-    if (train_type_ == 5) state |= 0x400;
+    const auto type = train_of(car).type;
+    if (type == 4) state |= 0x200;
+    if (type == 5) state |= 0x400;
     return state;
 }
 
@@ -856,8 +873,9 @@ bool Host::enter(const EnterRequest& request, const std::vector<CarInput>& input
     return true;
 }
 
-void Host::group(CarMirror& player) {
-    const std::size_t n = cars_.size();
+void Host::group(CarMirror& player, const bool players) {
+    const auto& train = train_of(player);
+    const std::size_t n = train.first + train.count;
     const std::size_t at = player.index;
     std::size_t first = at, last = at;
     // The group: cars joined by control cables (Flags byte 3: 0x10000 front, 0x20000 rear).
@@ -869,8 +887,8 @@ void Host::group(CarMirror& player) {
             if (!(f & 0x20000)) break;
         }
     }
-    if ((player.wagon()->flags & 0x10000) && at > 0) {
-        for (std::size_t k = at; k-- > 0;) {
+    if ((player.wagon()->flags & 0x10000) && at > train.first) {
+        for (std::size_t k = at; k-- > train.first;) {
             const auto f = cars_[k]->wagon()->flags;
             if (!(f & 0x20000)) break;
             first = k;
@@ -885,8 +903,8 @@ void Host::group(CarMirror& player) {
     for (std::size_t m = first; m <= last; ++m) {
         CarMirror& c = *cars_[m];
         if (c.is_loco()) {
-            c.loco()->first_in_group = &train_cars_[first];
-            c.loco()->last_in_group = &train_cars_[last];
+            c.loco()->first_in_group = const_cast<abi::Wagon**>(&train.wagons[first - train.first]);
+            c.loco()->last_in_group = const_cast<abi::Wagon**>(&train.wagons[last - train.first]);
         }
         if (slaves && (!c.is_loco() || (c.loco()->loco_flags & 0x88))) {
             --slaves;
@@ -908,7 +926,9 @@ void Host::group(CarMirror& player) {
                 continue;
             }
         }
-        sl->loco_flags |= 0x10 | 4;
+        // In the player's join only in his group (0x468C74); the regroup of a
+        // train the player left loads the cabs alone (0x4F995C).
+        sl->loco_flags |= players ? 0x10u | 4u : 0x10u;
         if (slaves) {
             sl->loco_flags &= ~1u;
             c.slaves.clear();
@@ -968,11 +988,18 @@ void Host::write_inputs(const std::vector<CarInput>& inputs) {
 }
 
 void Host::regroup() {
-    if (player_ >= cars_.size()) return;
-    CarMirror& player = *cars_[player_];
-    if (!player.is_loco()) return;
+    // RTS 0x4F995C, train by train: the player's group, and in the trains
+    // he left every master (LocoFlags 0x21) of a group.
+    if (player_ < cars_.size() && cars_[player_]->is_loco()) regroup(*cars_[player_], true);
+    for (auto& c : cars_) {
+        if (c->train == 0 || !c->is_loco() || (c->loco()->loco_flags & 0x21) != 0x21) continue;
+        regroup(*c, false);
+    }
+}
+
+void Host::regroup(CarMirror& player, const bool players) {
     const std::vector<abi::Locomotive*> before = player.slaves;
-    group(player);
+    group(player, players);
     abi::Locomotive* master = player.loco();
     for (auto* slave : before) {
         if (std::find(player.slaves.begin(), player.slaves.end(), slave) != player.slaves.end()) continue;
@@ -1049,7 +1076,7 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
             if (bits != cables_[i]) changed = true;
             cables_[i] = bits;
         }
-        if (changed && player_ < cars_.size()) regroup();
+        if (changed) regroup();
     }
     signals(request);
     for (auto& car : cars_) {
@@ -1179,9 +1206,11 @@ void Host::signals(const StepRequest& request) {
     // (distance, aspect, its speed limit), the cab at the other end
     // BLOCK_OBSTRUCTED (8) at 0 m; the DLLs read it, the cab's locomotive
     // signal lights show its aspect.
-    if (!cars_.empty()) {
-        const std::size_t leading = train_reversed_ ? cars_.size() - 1 : 0;
-        for (std::size_t i = 0; i < cars_.size(); ++i) {
+    if (train_count_ > 0 && trains_[0]->count > 0) {
+        // The player's train: the signal pass runs for train types 1, 2 and 4.
+        const auto& train = *trains_[0];
+        const std::size_t leading = train_reversed_ ? train.first + train.count - 1 : train.first;
+        for (std::size_t i = train.first; i < train.first + train.count; ++i) {
             CarMirror& car = *cars_[i];
             if (!car.spec.cab.present) continue;
             auto& s = car.cabin.signal;
@@ -1203,7 +1232,7 @@ void Host::signals(const StepRequest& request) {
     prepare_fpu();
     for (auto& carp : cars_) {
         CarMirror& car = *carp;
-        if (!car.is_loco() || !car.initialised || !car.module || car.module->failed) continue;
+        if (car.train != 0 || !car.is_loco() || !car.initialised || !car.module || car.module->failed) continue;
         if (car.module->speed_limit) {
             auto* fn = reinterpret_cast<abi::SpeedLimitFn>(car.module->speed_limit);
             abi::Locomotive* v = view(car, car.module);
@@ -1863,6 +1892,7 @@ int Host::get_integer(const abi::Locomotive* loco, std::uint32_t code, int index
         if (!car) return 0;
         int count = 0;
         for (std::size_t i = 0; i < cars_.size(); ++i) {
+            if (cars_[i]->train != car->train) continue;
             if (code == 2 && cars_[i]->is_loco()) continue;
             if (index < 0 && i >= car->index) continue;
             if (index > 0 && i <= car->index) continue;
@@ -1888,7 +1918,7 @@ int Host::set_integer(const abi::Locomotive* loco, std::uint32_t code, int value
     CarMirror* car = loco ? car_of(loco) : nullptr;
     if (code == 6 && car) { // set the train's direction (only a lone engine, 0x43939C)
         if (car->wagon()->flags & 1) value = -value;
-        if (value && cars_.size() == 1) {
+        if (value && train_of(*car).count == 1) {
             set_direction_ = value;
             return 2;
         }
@@ -2147,6 +2177,11 @@ int Host::track_items(const abi::Locomotive* loco, std::uint32_t code, float dis
         return 0;
     }
     if (distance <= 0.0f) distance = 5000.0f;
+    if (car->train != 0) {
+        // Only the player's train has its list here (RTS keeps one per train, +392).
+        items = nullptr;
+        return 0;
+    }
     items_wanted_ = (std::max)(items_wanted_, distance);
     trace_once(L"items" + std::to_wstring(code), L"RTSGetTrackItems code " + std::to_wstring(code) + L" distance "
                                                      + std::to_wstring(static_cast<int>(distance)) + L", "

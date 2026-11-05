@@ -181,6 +181,10 @@ struct TrainView::Unit {
     float still = 0.0f;      // s standing still (RTS: a LOOSE train becomes STATIC after 30 s)
     std::vector<simulation::CarPlacement> previous, current;
     std::vector<double> previous_travelled, current_travelled;
+    // Its cars are in the DLL host (the driven train, or a part cut off from
+    // it): host_train is its train there (0: the driven one).
+    bool host = false;
+    std::size_t host_train = SIZE_MAX;
 
     // Both interpolation ends at the train's present state.
     void settle() {
@@ -693,9 +697,8 @@ bool TrainView::keep_attached(const DrivenKeys& keep) {
     const auto cab = find(keep.cab);
     if (cab == SIZE_MAX || !cab_) return false;
     if (legacy_) {
-        std::vector<LegacyCarRef> cars;
-        for (const auto& car : unit.cars) cars.push_back({car.definition, car.folder, car.uid, car.key});
-        if (!legacy_->reconsist(*vfs_, cars, *unit.train)) {
+        unit.host = true;
+        if (!reconsist_host()) {
             std::fprintf(stderr, "locomotive DLLs: the consist changed, starting them again\n");
             return false;
         }
@@ -727,6 +730,30 @@ void TrainView::attach_legacy() {
     std::vector<LegacyCarRef> cars;
     for (const auto& car : unit.cars) cars.push_back({car.definition, car.folder, car.uid, car.key});
     legacy_ = LegacyCab::attach(*vfs_, cars, *unit.train, legacy_status_, start_state_, &route_);
+    // A new host: the driven train alone (the parts cut off before went with
+    // the old one; their controllers turn inert).
+    for (auto& each : units_) {
+        each.host = false;
+        each.host_train = SIZE_MAX;
+    }
+    host_keys_.clear();
+    if (legacy_) {
+        unit.host = true;
+        unit.host_train = 0;
+        host_keys_.emplace_back();
+        for (const auto& car : unit.cars) host_keys_.back().push_back(car.key);
+    }
+    attach_cab(legacy_ ? legacy_->player() : SIZE_MAX);
+    if (!legacy_status_.empty()) {
+        message_ = tr("locomotive DLLs: ") + legacy_status_;
+        std::fprintf(stderr, "locomotive DLLs: %s\n", legacy_status_.c_str());
+    }
+    if (legacy_) std::fprintf(stderr, "locomotive DLLs: running, the player is in car %zu\n", legacy_->player() + 1);
+    attach_native();
+}
+
+void TrainView::attach_cab(std::size_t player) {
+    auto& unit = units_.front();
     // The 3-D cab of the engine the player drives: the DLL's one, else the first engine.
     engineer_.off();
     visit_cab_.reset();
@@ -734,24 +761,101 @@ void TrainView::attach_legacy() {
     cab_car_ = SIZE_MAX;
     engineer_car_ = SIZE_MAX;
     cab_requested_ = false;
-    std::size_t player = legacy_ ? legacy_->player() : SIZE_MAX;
     // A native plugin's engine next (EngExtended ORTSTrainPlugin), else the first engine.
     for (std::size_t i = 0; player == SIZE_MAX && i < unit.cars.size(); ++i)
         if (unit.cars[i].definition && unit.cars[i].definition->engine && !unit.cars[i].definition->engine->train_plugin.empty()) player = i;
     for (std::size_t i = 0; player == SIZE_MAX && i < unit.cars.size(); ++i)
         if (unit.cars[i].definition && unit.cars[i].definition->engine) player = i;
-    if (player != SIZE_MAX) {
+    if (player < unit.cars.size()) {
         const auto& car = unit.cars[player];
         cab_ = CabView::create(*vfs_, *car.definition,
                                formats::wagon_path(car.folder, car.definition->name, car.definition->engine.has_value()));
         if (cab_) cab_car_ = player;
     }
-    if (!legacy_status_.empty()) {
-        message_ = tr("locomotive DLLs: ") + legacy_status_;
-        std::fprintf(stderr, "locomotive DLLs: %s\n", legacy_status_.c_str());
+}
+
+bool TrainView::reconsist_host() {
+    if (!legacy_ || units_.empty()) return false;
+    std::vector<std::vector<LegacyCarRef>> trains;
+    std::vector<simulation::Train*> sims;
+    std::vector<std::size_t> which;
+    units_.front().host = true;
+    for (std::size_t u = 0; u < units_.size(); ++u) {
+        auto& unit = units_[u];
+        unit.host_train = SIZE_MAX;
+        if (!unit.host) continue;
+        trains.emplace_back();
+        for (const auto& car : unit.cars) trains.back().push_back({car.definition, car.folder, car.uid, car.key});
+        sims.push_back(unit.train.get());
+        which.push_back(u);
     }
-    if (legacy_) std::fprintf(stderr, "locomotive DLLs: running, the player is in car %zu\n", legacy_->player() + 1);
+    if (!legacy_->reconsist(*vfs_, trains, sims)) return false;
+    host_keys_.clear();
+    for (std::size_t t = 0; t < which.size(); ++t) {
+        auto& unit = units_[which[t]];
+        unit.host_train = t;
+        host_keys_.emplace_back();
+        for (const auto& car : unit.cars) host_keys_.back().push_back(car.key);
+        // A part cut off moves by its own DLLs (RTS runs them, 0x424488);
+        // one sent off with a path keeps its driver.
+        if (t == 0 || unit.role != Role::standing) continue;
+        for (std::size_t i = 0; i < unit.cars.size(); ++i)
+            if (legacy_->has_dll(t, i)) unit.train->set_controller(i, legacy_->controller(t, i));
+    }
+    return true;
+}
+
+bool TrainView::host_current() const {
+    if (!legacy_) return true;
+    std::size_t t = 0;
+    for (const auto& unit : units_) {
+        if (!unit.host) continue;
+        if (t >= host_keys_.size() || unit.host_train != t || unit.cars.size() != host_keys_[t].size()) return false;
+        for (std::size_t i = 0; i < unit.cars.size(); ++i)
+            if (unit.cars[i].key != host_keys_[t][i]) return false;
+        ++t;
+    }
+    return t == host_keys_.size() && t == legacy_->trains();
+}
+
+const dllhost::CarOutput* TrainView::dll_output(const std::size_t u, const std::size_t i) const {
+    if (!legacy_ || u >= units_.size() || units_[u].host_train == SIZE_MAX) return nullptr;
+    return legacy_->output(units_[u].host_train, i);
+}
+
+bool TrainView::dll_car(const std::size_t u, const std::size_t i) const {
+    return legacy_ && u < units_.size() && units_[u].host_train != SIZE_MAX && legacy_->has_dll(units_[u].host_train, i);
+}
+
+const std::array<float, 8>* TrainView::dll_sound_variables(const std::size_t u, const std::size_t i) const {
+    if (!legacy_ || u >= units_.size() || units_[u].host_train == SIZE_MAX) return nullptr;
+    return legacy_->sound_variables(units_[u].host_train, i);
+}
+
+bool TrainView::take_over_host_unit() {
+    if (!legacy_ || units_.empty() || !units_.front().host) return false;
+    auto& unit = units_.front();
+    // The player's engine there: the first with a DLL and a driving cab (a
+    // part cut off from a multiple unit may start with a motor car, whose
+    // Cabin is its salon), else the first with a DLL.
+    std::size_t player = SIZE_MAX, first = SIZE_MAX;
+    for (std::size_t i = 0; i < unit.cars.size() && player == SIZE_MAX; ++i) {
+        if (!legacy_->has_dll(unit.host_train, i)) continue;
+        if (first == SIZE_MAX) first = i;
+        const auto& engine = *unit.cars[i].definition->engine;
+        if (engine.cab_view && !engine.cabin.empty()) player = i;
+    }
+    if (player == SIZE_MAX) player = first;
+    if (player == SIZE_MAX) return false;
+    auto& train = *unit.train;
+    for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_controller(i, nullptr);
+    driver_ = simulation::attach_keyboard_driver(train, player);
+    if (!reconsist_host()) return false;
+    if (legacy_->player() != player && !legacy_->enter(player, train)) return false;
+    attach_cab(legacy_->player());
+    std::fprintf(stderr, "locomotive DLLs: the player takes car %zu of a train they had left\n", legacy_->player() + 1);
     attach_native();
+    return true;
 }
 
 // A native openRTS plugin (include/openrts/plugin/train_plugin.h) on the
@@ -922,16 +1026,21 @@ void TrainView::split(const std::size_t unit_index, const std::size_t index, con
     // The driver goes with the master engine.
     if (unit_index == 0 && master && *master >= index) std::swap(unit, cut);
     for (std::size_t i = 0; i < cut.train->cars().size(); ++i) cut.train->set_controller(i, nullptr);
+    cut.name = unit.name + " (cut)";
+    cut.freight = unit.freight;
+    // RTS: the part cut off keeps the train's flag 4 and its DLLs run on
+    // (0x4EEC50, 0x424488).
+    cut.host = unit.host && legacy_ != nullptr;
+    unit.settle();
+    cut.settle();
+    const bool host = unit.host && legacy_ != nullptr;
+    units_.push_back(std::move(cut));
     if (unit_index == 0) {
         reattach_driver(&keys);
     } else {
-        attach_role(unit);
+        attach_role(units_[unit_index]);
+        if (host) reconsist_host();
     }
-    cut.name = unit.name + " (cut)";
-    cut.freight = unit.freight;
-    unit.settle();
-    cut.settle();
-    units_.push_back(std::move(cut));
 }
 
 std::size_t TrainView::merge_units(const simulation::Train* survivor_train, const simulation::Train* absorbed_train,
@@ -945,6 +1054,7 @@ std::size_t TrainView::merge_units(const simulation::Train* survivor_train, cons
     const auto s = find(survivor_train);
     const auto a = find(absorbed_train);
     if (s >= units_.size() || a >= units_.size() || s == a) return units_.size();
+    const bool host = units_[s].host || units_[a].host;
     auto absorbed_cars = std::move(units_[a].cars);
     if (absorbed_turned) {
         std::reverse(absorbed_cars.begin(), absorbed_cars.end());
@@ -959,10 +1069,12 @@ std::size_t TrainView::merge_units(const simulation::Train* survivor_train, cons
     }
     units_.erase(units_.begin() + static_cast<std::ptrdiff_t>(a));
     const auto survivor = s > a ? s - 1 : s;
+    units_[survivor].host = host && legacy_ != nullptr;
     if (survivor == 0) {
         reattach_driver(&keys);
     } else {
         attach_role(units_[survivor]);
+        if (units_[survivor].host) reconsist_host();
     }
     units_[survivor].settle();
     return survivor;
@@ -1159,6 +1271,7 @@ std::string TrainView::set_role(const std::uint64_t id, const Role role) {
     if (!unit) return "no such train";
     if (role == Role::driven) {
         const auto index = static_cast<std::size_t>(unit - units_.data());
+        const bool host = legacy_ && index != 0 && unit->host;
         if (index != 0) {
             units_.front().role = Role::standing;
             attach_role(units_.front());
@@ -1171,7 +1284,8 @@ std::string TrainView::set_role(const std::uint64_t id, const Role role) {
             driver_->throttle = 0;
             driver_->reverser = 0;
         }
-        reattach_driver();
+        // A part the host runs: its DLLs go on as they are.
+        if (!(host && take_over_host_unit())) reattach_driver();
         follow_id_ = 0;
         consist_ = units_.front().name;
         return {};
@@ -1182,13 +1296,22 @@ std::string TrainView::set_role(const std::uint64_t id, const Role role) {
     return {};
 }
 
+void TrainView::drive_unit(const std::size_t index) {
+    if (index < units_.size()) {
+        const auto error = set_role(units_[index].train->id(), Role::driven);
+        if (!error.empty()) std::fprintf(stderr, "drive train %zu: %s\n", index + 1, error.c_str());
+    }
+}
+
 std::string TrainView::remove(const std::uint64_t id) {
     auto* unit = find_unit(id);
     if (!unit) return "no such train";
     if (unit == &units_.front()) return "make another train the driven one first";
     dispatcher_->clear(id);
     unit->train->vacate();
+    const bool host = unit->host;
     units_.erase(units_.begin() + (unit - units_.data()));
+    if (host) reconsist_host();
     if (follow_id_ == id) follow_id_ = 0;
     return {};
 }
@@ -1310,7 +1433,7 @@ void TrainView::collect_exhausts(std::vector<ExhaustSource>& out) const {
             if (!engine || engine->kind != formats::EngineKind::diesel || engine->exhausts.empty()) continue;
             const auto body = body_pose(unit, i);
             if (!body) continue;
-            const auto* out_state = u == 0 && legacy_ ? legacy_->output(i) : nullptr;
+            const auto* out_state = dll_output(u, i);
             float load = 0.1f;
             if (u == 0 && unit.role == Role::driven && !legacy_ && driver_ && driver_->notches > 0) {
                 load = static_cast<float>(driver_->throttle) / static_cast<float>(driver_->notches);
@@ -2158,24 +2281,40 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         }
         feed_line();
         if (legacy_ && !units_.empty() && units_.front().role == Role::driven) {
-            auto& unit = units_.front();
-            feed_world(unit);
-            std::vector<std::vector<std::uint32_t>> triggers, cab_triggers;
-            std::vector<std::vector<std::vector<std::uint32_t>>> aux_triggers;
-            legacy_->step(*unit.train, triggers, cab_triggers, aux_triggers);
-            for (std::size_t i = 0; i < aux_triggers.size() && i < unit.cars.size(); ++i) {
-                auto& pending = unit.cars[i].pending_aux_triggers;
-                if (pending.size() < aux_triggers[i].size()) pending.resize(aux_triggers[i].size());
-                for (std::size_t k = 0; k < aux_triggers[i].size(); ++k)
-                    pending[k].insert(pending[k].end(), aux_triggers[i][k].begin(), aux_triggers[i][k].end());
+            // The host's trains as the units are now (a change missed: again).
+            if (!host_current()) reconsist_host();
+            feed_world(units_.front());
+            std::vector<const simulation::Train*> trains;
+            std::vector<Unit*> host_units;
+            for (auto& each : units_) {
+                if (each.host_train == SIZE_MAX) continue;
+                if (trains.size() <= each.host_train) {
+                    trains.resize(each.host_train + 1, nullptr);
+                    host_units.resize(each.host_train + 1, nullptr);
+                }
+                trains[each.host_train] = each.train.get();
+                host_units[each.host_train] = &each;
             }
-            for (std::size_t i = 0; i < triggers.size() && i < unit.cars.size(); ++i) {
-                auto& pending = unit.cars[i].pending_triggers;
-                pending.insert(pending.end(), triggers[i].begin(), triggers[i].end());
-            }
-            for (std::size_t i = 0; i < cab_triggers.size() && i < unit.cars.size(); ++i) {
-                auto& pending = unit.cars[i].pending_cab_triggers;
-                pending.insert(pending.end(), cab_triggers[i].begin(), cab_triggers[i].end());
+            std::vector<LegacyCab::Triggers> posted;
+            legacy_->step(trains, posted);
+            for (std::size_t t = 0; t < posted.size() && t < host_units.size(); ++t) {
+                if (!host_units[t]) continue;
+                auto& unit = *host_units[t];
+                const auto& p = posted[t];
+                for (std::size_t i = 0; i < p.aux.size() && i < unit.cars.size(); ++i) {
+                    auto& pending = unit.cars[i].pending_aux_triggers;
+                    if (pending.size() < p.aux[i].size()) pending.resize(p.aux[i].size());
+                    for (std::size_t k = 0; k < p.aux[i].size(); ++k)
+                        pending[k].insert(pending[k].end(), p.aux[i][k].begin(), p.aux[i][k].end());
+                }
+                for (std::size_t i = 0; i < p.exterior.size() && i < unit.cars.size(); ++i) {
+                    auto& pending = unit.cars[i].pending_triggers;
+                    pending.insert(pending.end(), p.exterior[i].begin(), p.exterior[i].end());
+                }
+                for (std::size_t i = 0; i < p.cab.size() && i < unit.cars.size(); ++i) {
+                    auto& pending = unit.cars[i].pending_cab_triggers;
+                    pending.insert(pending.end(), p.cab[i].begin(), p.cab[i].end());
+                }
             }
         }
         step_trains();
@@ -2731,6 +2870,19 @@ std::string TrainView::systems_report() const {
         std::snprintf(line, sizeof line, "; dll player car %zu, cab car %zu, engineer %s in car %zu", legacy_->player() + 1, cab_car_ + 1,
                       mode, engineer_car_ + 1);
         text += line;
+        // The host's trains: the driven one, then the parts cut off from it.
+        text += "; dll host trains " + std::to_string(legacy_->trains()) + " (";
+        for (std::size_t t = 0; t < legacy_->trains(); ++t) {
+            std::size_t engines = 0, bound = 0;
+            for (std::size_t i = 0; i < legacy_->train_size(t); ++i) {
+                if (!legacy_->has_dll(t, i)) continue;
+                ++engines;
+                if (const auto* out = legacy_->output(t, i); out && (out->loco_flags & 0x20)) ++bound;
+            }
+            text += (t ? ", " : "") + std::to_string(legacy_->train_size(t)) + " cars " + std::to_string(bound) + "/"
+                + std::to_string(engines) + " DLLs bound";
+        }
+        text += ")";
     }
     // The engineer's room and the share of the outside heard there (docs/sound.md).
     if (listener_cab_) {
@@ -3424,7 +3576,7 @@ void TrainView::feed_line() {
                 for (const auto& [node, number] : car.pantograph_nodes) {
                     if (car.pantograph_frame[number - 1u] >= top) raised[i] |= static_cast<std::uint8_t>(1u << (number - 1u));
                 }
-            } else if (const auto* out = u == 0 && legacy_ && legacy_->has_dll(i) ? legacy_->output(i) : nullptr) {
+            } else if (const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr) {
                 raised[i] = out->panto_raised;
             } else if (u == 0 && native_ && i == native_car_) {
                 raised[i] = static_cast<std::uint8_t>(native_->outputs().pantographs);
@@ -3591,7 +3743,7 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
         if (lights.empty()) continue;
         // Far trains' lights are not worked out (RTS: only cars in sight).
         if (u != 0 && i < each.current.size() && glm::distance(local(each.current[i].front), eye) > 3000.0f) continue;
-        const auto* out = u == 0 && legacy_ && legacy_->has_dll(i) ? legacy_->output(i) : nullptr;
+        const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr;
         const bool engine = car.definition->engine.has_value();
         const auto wanted = out ? std::vector<bool>{} : simulation::car_lights(*car.definition, i, each.cars.size(), kind, reversed, engine && car.cold, light_world);
         car.lights.resize(lights.size());
@@ -3667,7 +3819,7 @@ void TrainView::update_exterior_doors(const float elapsed) {
         for (std::size_t i = 0; i < unit.cars.size(); ++i) {
             auto& car = unit.cars[i];
             if (car.exterior_doors.empty()) continue;
-            const auto* out = u == 0 && legacy_ ? legacy_->output(i) : nullptr;
+            const auto* out = dll_output(u, i);
             CabView* cab = u == 0 && i == cab_car_ ? cab_.get() : u == 0 && i == engineer_car_ ? visit_cab_.get() : nullptr;
             // The train's doors of a GlobalID in this car (GM_DOOR_OPEN / CLOSE).
             const auto group_open = [&](const std::uint32_t group) {
@@ -3724,7 +3876,7 @@ void TrainView::update_pantographs(const float elapsed) {
             auto& car = unit.cars[i];
             if (car.pantograph_nodes.empty() || car.pantograph_frames < 2) continue;
             const auto* engine = car.definition->engine ? &*car.definition->engine : nullptr;
-            const auto* out = u == 0 && legacy_ && legacy_->has_dll(i) ? legacy_->output(i) : nullptr;
+            const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr;
             const bool plugin = u == 0 && native_ && i == native_car_;
             if (out) {
                 car.pantograph_raised = out->panto_raised;
@@ -3888,7 +4040,7 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
         inputs[formats::SoundVariable::distance_travelled] = static_cast<float>(std::abs(state.travelled));
         inputs[formats::SoundVariable::acceleration] = state.acceleration * direction;
         inputs[formats::SoundVariable::radius] = state.radius;
-        const auto* dll_vars = u == 0 && legacy_ ? legacy_->sound_variables(i) : nullptr;
+        const auto* dll_vars = dll_sound_variables(u, i);
         if (dll_vars) {
             // The DLL sets the engine variables itself (SMSObject Var1..Var8).
             for (int k = 0; k < 8; ++k)
@@ -3935,8 +4087,16 @@ void TrainView::stop_sound(audio::AudioEngine& sound) {
 void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::size_t i, const audio::SoundInputs& exterior,
                                   const float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound) {
     auto& car = unit.cars[i];
-    const bool player_train = u == 0 && unit.role == Role::driven && legacy_ && car.definition->engine;
-    if (!player_train) {
+    // The libraries of every train the DLL host runs: the player's, and the
+    // parts cut off from it. RTS makes a library's sound object once, when
+    // the library is bound (0x56DC3C), of the kind AuxLibrarySoundType says
+    // (WAGON, the default: 5, group 7; 0x4D4B08, 0x4AA540), and updates it
+    // every frame whatever its train (0x44AB7C). Only the camera rules see
+    // the train: CabCam and PassengerCam need the car in the player's train,
+    // ExternalCam a car out of it, SingleWagon the player's own engine.
+    const bool player_train = u == 0 && unit.role == Role::driven;
+    const bool host = legacy_ && unit.host_train != SIZE_MAX && car.definition->engine;
+    if (!host) {
         for (auto& aux : car.aux_sounds) {
             if (aux.instance) aux.instance->stop(sound);
             aux.instance.reset();
@@ -3971,8 +4131,9 @@ void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::si
             }
         }
     }
-    const bool in_car = engineer_.inside() && i == cab_car_;
+    const bool in_car = player_train && engineer_.inside() && i == cab_car_;
     static const std::vector<std::uint32_t> none;
+    const auto owner = formats::SoundOwner::player_train;
     for (auto& aux : car.aux_sounds) {
         const auto& library = libraries[aux.library];
         auto* pending = aux.library < car.pending_aux_triggers.size() ? &car.pending_aux_triggers[aux.library] : nullptr;
@@ -3982,9 +4143,11 @@ void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::si
             continue;
         }
         if (!aux.instance) {
-            const auto owner = formats::SoundOwner::player_train;
             const auto* group = aux.script->select_group(owner);
-            if (!group) continue;
+            if (!group) {
+                if (pending) pending->clear();
+                continue;
+            }
             auto lookup = [this, path = aux.path](const std::string& name) -> std::shared_ptr<const audio::AudioClip> {
                 const auto file = audio::find_sound_file(*vfs_, path, name);
                 return file ? bank_->get(*file) : nullptr;
@@ -3992,11 +4155,12 @@ void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::si
             aux.instance = std::make_unique<audio::SoundInstance>(aux.script, *group, owner, std::move(lookup),
                                                                   static_cast<std::uint32_t>(7907u * (i + 1) + aux.library));
             aux.instance->preload();
-            if (sound_trace() && u == 0)
-                aux.instance->set_trace("car " + std::to_string(i + 1) + " " + car.definition->name + " library " + library.name);
+            if (sound_trace())
+                aux.instance->set_trace((u == 0 ? std::string() : "train " + std::to_string(u + 1) + " ") + "car " + std::to_string(i + 1)
+                                        + " " + car.definition->name + " library " + library.name);
         }
         audio::SoundInputs inputs = exterior;
-        inputs.camera = sound_camera();
+        inputs.camera = player_train ? sound_camera() : audio::SoundCamera::external;
         const auto here = pose(unit, i);
         const glm::vec3 centre = (here.front + here.rear) * 0.5f;
         glm::vec3 forward = here.front - here.rear;
@@ -4009,8 +4173,10 @@ void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::si
         const float distance = glm::distance(camera.eye(), at);
         inputs[formats::SoundVariable::distance] = library.sound_type == formats::AuxSoundType::ambient ? 0.0f : distance;
         // No fading: heard at the listener (the distance still activates it).
-        inputs.position = library.sound_type == formats::AuxSoundType::ambient || !library.sound_external ? camera.eye() : at;
+        // RTS places no sound: one that is not external does not fade with
+        // distance, in any train.
         inputs.at_listener = library.sound_type == formats::AuxSoundType::ambient || !library.sound_external;
+        inputs.position = inputs.at_listener ? camera.eye() : at;
         // A library sound placed in the car the engineer is in passes from
         // its own room to his (0x44AB7C: objects with a place in the car,
         // 0x56DC3C flag 0x40); the others as anything outside.
@@ -4020,7 +4186,8 @@ void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::si
             const int room = listener_cab_->acoustics().room_at(x, z);
             if (room != audio::InteriorAcoustics::outside) inputs.gain = listener_cab_->sound_transmission(room, listener_room_);
         }
-        const auto* vars = library.sound_own_stack ? legacy_->aux_sound_variables(i, aux.library) : legacy_->sound_variables(i);
+        const auto t = unit.host_train;
+        const auto* vars = library.sound_own_stack ? legacy_->aux_sound_variables(t, i, aux.library) : legacy_->sound_variables(t, i);
         if (vars) {
             for (int k = 0; k < 8; ++k)
                 inputs.variables[static_cast<std::size_t>(formats::SoundVariable::variable1) + static_cast<std::size_t>(k)] =

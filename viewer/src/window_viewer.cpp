@@ -1592,7 +1592,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // Sound is optional: without a device the viewer runs silent.
     std::unique_ptr<audio::AudioEngine> sound;
     if (options.sound) {
-        sound = std::make_unique<audio::AudioEngine>();
+        sound = std::make_unique<audio::AudioEngine>(audio::AudioEngineOptions{.device = !options.sound_offline});
         if (!sound->ok()) {
             std::cout << "sound: " << sound->error() << ", running silent\n";
             sound.reset();
@@ -1628,6 +1628,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     std::size_t capture_menu_next = 0; // of capture_menu_more: the next to open and pick
     bool capture_menu_open = false;
     bool capture_uncoupled = false;
+    bool capture_driven = false;
 
     ClockControls clock{
         .time_of_day = static_cast<double>(options.time_of_day),
@@ -1796,6 +1797,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (capture && options.capture_uncouple && !capture_uncoupled && glfwGetTime() - capture_start >= options.capture_at * 0.6) {
             scene.uncouple_driven(*options.capture_uncouple);
             capture_uncoupled = true;
+        }
+        if (capture && options.capture_drive && !capture_driven && glfwGetTime() - capture_start >= options.capture_at * 0.8) {
+            scene.drive_unit(*options.capture_drive);
+            capture_driven = true;
         }
         // The switches one after another, half a second apart, as a hand
         // would (a DLL checks the others' State, which follows SetState

@@ -73,6 +73,7 @@ struct CarMirror {
     alignas(4) std::array<std::uint8_t, sizeof(abi::DieselEngine)> engine{};
     CarSpec spec;
     std::uint32_t index{};
+    std::uint32_t train{};        // which of the host's trains (0: the player's)
     bool has_engine = false;      // a DLL module is bound
     bool initialised = false;     // Init returned true
     Module* module = nullptr;
@@ -194,10 +195,14 @@ private:
     bool init_car(CarMirror& car, std::uint32_t state);
     std::uint32_t init_state(const CarMirror& car, bool player) const;
     std::uint32_t run_state(const CarMirror& car) const;
-    void group(CarMirror& player);
-    // RTS 0x4F995C after a cable changed: the groups again; a slave left out
-    // of its master's group gets LostMaster.
+    // The group around `master` (cars joined by control cables, within its
+    // train); `player`: the player's group (its slaves are in his join).
+    void group(CarMirror& master, bool player = true);
+    // RTS 0x4F995C after a cable changed or the trains changed: for every
+    // master of every train the groups again; a slave left out of its
+    // master's group gets LostMaster.
     void regroup();
+    void regroup(CarMirror& master, bool player);
     void write_inputs(const std::vector<CarInput>& inputs);
     void write_cabs(const StepRequest& request);
     void run_car(CarMirror& car, float dt, float air_temperature);
@@ -225,19 +230,28 @@ private:
 
     std::vector<std::unique_ptr<Module>> modules_;
     std::vector<std::unique_ptr<CarMirror>> cars_;
+    // The trains whose DLLs run: [0] the player's, then the parts cut off
+    // from it. Their cars are consecutive in cars_ (first, count). The
+    // objects stay where they are (a DLL may keep Wagon::TrainIn).
+    struct TrainMirror {
+        alignas(4) std::array<std::uint8_t, 1024> object{};
+        std::vector<abi::Wagon*> wagons; // FirstInGroup / LastInGroup point into it
+        std::size_t first = 0, count = 0;
+        std::uint8_t type = 1;
+    };
+    std::vector<std::unique_ptr<TrainMirror>> trains_;
+    std::size_t train_count_ = 0;
+    TrainMirror& train_of(const CarMirror& car) const { return *trains_[car.train]; }
     // Cars cut off from the consist, by key, with their DLLs' state, until
     // they are coupled again (RTS keeps the Engine with the car).
     std::unordered_map<std::uint32_t, std::unique_ptr<CarMirror>> parked_;
     void add_sound_tables(const std::vector<SoundTableSpec>& tables);
-    std::vector<abi::Wagon*> train_cars_; // the train's car list (FirstInGroup / LastInGroup point into it)
     std::unordered_map<const void*, CarMirror*> by_object_;
     std::unordered_map<const void*, CarMirror*> by_cabin_;
     std::unordered_map<const void*, CarMirror*> by_aux_;
     std::deque<std::wstring> strings_; // names and texts the mirrors point to
-    alignas(4) std::array<std::uint8_t, 1024> train_object_{};
     std::wstring rts_root_;
     std::wstring log_;
-    std::uint8_t train_type_ = 1;
     double day_time_{};
     bool night_ = false;
     bool train_reversed_ = false;

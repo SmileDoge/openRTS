@@ -225,6 +225,8 @@ public:
     virtual void choose_car_menu_item(int) {}
     // --capture-uncouple: uncouple the driven train before car `index` (from 0).
     virtual void uncouple_driven(std::size_t) {}
+    // --capture-drive: train `index` (from 0, in order) becomes the driven one.
+    virtual void drive_unit(std::size_t) {}
     [[nodiscard]] virtual std::string car_menu_report() const { return {}; }
     // What the shadows look at most closely this frame (after submit): the
     // cab the engineer is in.

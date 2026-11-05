@@ -1,6 +1,7 @@
-# VL10k, sections a + b: section b is cut off and coupled back while the
-# train stands. The DLLs keep their state through it, as in RTS (a DLL is
-# bound to its car once, 0x5026FC; 0x4F995C makes the groups again):
+# VL10k, sections a + b: section b is cut off (its DLL goes on in a train
+# of its own in the host) and coupled back while the train stands. The
+# DLLs keep their state through it, as in RTS (a DLL is bound to its car
+# once, 0x5026FC; 0x4F995C makes the groups again):
 # section a keeps its reverser, section b comes back as a's slave.
 #
 #   openrts-train-check <RTS root> --dll tsrLoco_VL10k-1461 vl10k-1461a vl10k-1461b --script tests/data/vl10k_couple.script
@@ -10,9 +11,14 @@
 3    expect reverse == 1
 3    expect_car 1 bound == 1    # section b: its DLL bound and initialised
 3    expect_car 1 master == 0   # as a's slave
-4    cut 1                      # b uncoupled (cocks closed)
+4    cut 1                      # b uncoupled (cocks closed): a train of its own in the host
 4.5  expect reverse == 1        # a kept its state: no second Init
 4.5  expect alive == 1
+4.5  expect_cut 0 bound == 1    # b's DLL goes on in its own train (RTS: the cut part keeps flag 4)
+4.5  expect_cut 0 master == 0
+4.5  expect_cut 0 join == 0     # no longer in the player's join (LostMaster)
+5    expect_cut 0 panto == 3    # its pantographs and breaker as they were
+5    expect_cut 0 main_switch == 1
 6    couple                     # b back on, its control cable connected
 6.5  expect reverse == 1
 6.5  expect key38 == 2

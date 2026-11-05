@@ -206,14 +206,28 @@ after (event 8).
   the cars that stay move with them, new cars get new mirrors, and the
   groups are made again as above (new slaves bound and initialised with the
   train's state of the moment, lost ones `LostMaster`);
-- a cut-off car's mirror is kept aside with its DLL's state and comes back
-  when the car is coupled again. It is not run meanwhile: RTS runs it;
+- the host runs several trains (2026-11-05): the player's first, then the
+  parts cut off from it, each with its own train object, car list and
+  groups. Their DLLs run every step as RTS runs them (State without
+  `0x100`); the signal pass (`SpeedLimit`, `ALSN`, `Cabin::Signal`) and the
+  track item list are the player's train's only (types 1, 2, 4 in RTS; a
+  cut part is LOOSE). A part cut off moves by its DLLs' outputs while it
+  stands; coupled back it is one train again. The player can take a part
+  over (the Train window's "drive"): the host makes it the first train and
+  enters its engine without a second `Init`. A car in no train (its unit
+  removed) is kept aside with its mirror until it comes back;
+- the sounds of a part cut off (its exterior `.sms` and its libraries')
+  get its DLLs' triggers and variables; the library sounds follow RTS's
+  camera rules for a train that is not the player's (`sound.md`, "Library
+  sounds"). Taking a part over enters its first DLL engine with a driving
+  cab (`CabView`; an ED9M motor car's `Cabin` is its salon);
 - the game follows cars by a key of its own, since the `.con` UiD repeats
   between consists;
 - the viewer keeps the cab, the engineer (seated stays seated) and a
   native plugin;
-- tests: `openrts.dllhost` (fake DLL), `openrts.content.dll_vl10k_couple`
-  (section b of the VL10k cut off and coupled back).
+- tests: `openrts.dllhost` (fake DLL: the cut engine's `Run` sees its own
+  train's inputs), `openrts.content.dll_vl10k_couple` (section b of the
+  VL10k cut off, in a train of its own, and coupled back).
 
 ### Masters writing into slaves
 

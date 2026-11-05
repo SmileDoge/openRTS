@@ -415,6 +415,7 @@ void read_exhausts(std::string_view text, TextRange block, EngineDefinition& eng
         : type == "diesel"           ? EngineKind::diesel
         : type == "steam"            ? EngineKind::steam
                                      : EngineKind::unknown;
+    engine.cab_view = values(text, "cabview").found();
     engine.max_power = static_cast<float>(values(text, "maxpower").quantity());
     engine.max_force = static_cast<float>(values(text, "maxforce").quantity());
     engine.max_continuous_force = static_cast<float>(values(text, "maxcontinuousforce").quantity());

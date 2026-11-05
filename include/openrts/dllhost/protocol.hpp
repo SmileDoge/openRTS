@@ -22,7 +22,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 6;
+inline constexpr std::uint32_t protocol_version = 7;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -399,11 +399,14 @@ struct EnterRequest {
     std::vector<CarInput> cars;   // the consist as it stands (flags: cables, player)
 };
 
-// The consist after a coupling or a cut (RTS 0x469ED8 / 0x469858): every
+// The trains after a coupling or a cut (RTS 0x469ED8 / 0x469858): every
 // car says where its mirror comes from. The mirrors of the cars that stay
-// keep their DLLs' state (RTS binds a DLL to the car once, 0x5026FC); a car
-// that leaves is kept aside until it is coupled again; the groups are made
-// again (0x4F995C: new slaves bound and initialised, lost ones LostMaster).
+// keep their DLLs' state (RTS binds a DLL to the car once, 0x5026FC). The
+// host runs several trains: the player's first, then the parts cut off
+// from it, whose DLLs RTS keeps running (the cut train keeps the train's
+// flag 4, 0x4EEC50; Run goes to every such train, 0x424488). A car in no
+// train is kept aside until it comes back. The groups are made again
+// (0x4F995C: new slaves bound and initialised, lost ones LostMaster).
 inline constexpr std::int32_t reconsist_new = -1;    // built from `spec`
 inline constexpr std::int32_t reconsist_parked = -2; // the car cut off earlier with `spec.key`
 struct ReconsistCar {
@@ -411,11 +414,16 @@ struct ReconsistCar {
     CarSpec spec;                      // for a new car (a parked one: only its key)
 };
 
+struct ReconsistTrain {
+    std::uint8_t type = 3;            // RTS train type: 1 the player's, 3 a part cut off (LOOSE)
+    std::vector<ReconsistCar> cars;
+};
+
 struct ReconsistRequest {
     std::vector<SoundTableSpec> sound_tables; // the new cars' scripts, numbered after the setup's
-    std::vector<ReconsistCar> cars;
+    std::vector<ReconsistTrain> trains;       // [0] the player's
     bool running = false;                     // Init's State bit 1 for engines bound now (the train moves)
-    std::vector<CarInput> inputs;             // the new consist (its cables decide the groups)
+    std::vector<CarInput> inputs;             // every train's cars in order (their cables decide the groups)
 };
 
 struct StepRequest {
@@ -722,11 +730,14 @@ inline void read(Reader& r, StepRequest& s) {
 inline void write(Writer& w, const ReconsistCar& c) { w.put(c.from); write(w, c.spec); }
 inline void read(Reader& r, ReconsistCar& c) { c.from = r.get<std::int32_t>(); read(r, c.spec); }
 
+inline void write(Writer& w, const ReconsistTrain& t) { w.put(t.type); write_list(w, t.cars); }
+inline void read(Reader& r, ReconsistTrain& t) { t.type = r.get<std::uint8_t>(); read_list(r, t.cars, 2000); }
+
 inline void write(Writer& w, const ReconsistRequest& q) {
-    write_list(w, q.sound_tables); write_list(w, q.cars); w.put(static_cast<std::uint8_t>(q.running)); write_pod_list(w, q.inputs);
+    write_list(w, q.sound_tables); write_list(w, q.trains); w.put(static_cast<std::uint8_t>(q.running)); write_pod_list(w, q.inputs);
 }
 inline void read(Reader& r, ReconsistRequest& q) {
-    read_list(r, q.sound_tables, 4096); read_list(r, q.cars, 2000); q.running = r.get<std::uint8_t>() != 0;
+    read_list(r, q.sound_tables, 4096); read_list(r, q.trains, 256); q.running = r.get<std::uint8_t>() != 0;
     read_pod_list(r, q.inputs, 2000);
 }
 

@@ -108,7 +108,7 @@ struct ContentTarget {
 // extra mod-layer source), `--no-hot-reload`, `--consist <name>` and `--path <name>` (a train to drive, on a
 // route path start; C puts it on the track nearest to the camera), `--track-control` (open the
 // Track control window at start), (
-// the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|4` (default 4), `--no-sound`, `--volume <0..1>` (default 0.5),
+// the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|4` (default 4), `--no-sound`, `--sound-offline`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
 int run_window(std::string_view mode, std::string_view path, const std::vector<std::string_view>& flags) {
@@ -192,6 +192,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             track_control = true;
         } else if (flags[i] == "--no-sound") {
             options.sound = false;
+        } else if (flags[i] == "--sound-offline") {
+            options.sound_offline = true;
         } else if (flags[i] == "--capture" && has_value) {
             options.capture_path = std::string(flags[++i]);
         } else if (flags[i] == "--capture-at" && has_value) {
@@ -209,6 +211,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             }
         } else if (flags[i] == "--capture-uncouple" && has_value) {
             options.capture_uncouple = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--capture-drive" && has_value) {
+            options.capture_drive = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--capture-cab") {
             options.capture_cab = true;
         } else if (flags[i] == "--capture-car" && has_value) {
