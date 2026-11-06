@@ -772,6 +772,20 @@ without compliance and RTS refuses it too.
   shows the caption of the control under the cursor (states 2..4). **Num3**
   works the object picked near the engineer (`0x415A34`: types 15..17,
   Ctrl for type 15) — not in openRTS.
+- **CONFIRMED** Doors, the same keys at every door and from either side
+  (`0x4121BC`, modes 1 outside, 2 in a cab, 6 in the train; the door is
+  the object `0x414D24` picks near the engineer, type 1):
+  - Enter: the door opens or shuts (`0x438708` with -1). A door the player
+    may not open (flags `& 4` clear) shows a message (`off_5E04F0`)
+    instead.
+  - Ctrl+Enter: through it (`0x438708` with 1 opens it, then the passage
+    `0x4310B0`; in a cab `0x431270` out, `0x4313FC` to the next car). A
+    shut door he may not open stops him with the same message.
+  - The passage ends by the door's other side (`0x435654`, the word at
+    `+64`): -3 a cab (loaded, `0x436734` makes its engine the player's,
+    mode 2; "Failed to load cabin" when it does not), -2 the train
+    (mode 6), -1 outside (mode 1), -7 a second space of the car
+    (`+372`; UNKNOWN which).
 - **CONFIRMED** `InteriorWindows` (`0x51CD88`): 100 bytes, type 6 (chairs
   are type 5); `Position` +16, `Radius` +28, `CanBeOpened` +60,
   `HeadOutPosition` +64, `AnimTime` +76, `SMSTriggers` +96/+98.
@@ -783,7 +797,21 @@ without compliance and RTS refuses it too.
   outside, on the ground and (optionally) the world's objects. Walking
   into the face of an open outer door (its plane, inside its width) gets
   him off; before 2026-11-06 only where the wall stopped him dead, so
-  sliding along it he had to search the doorway. Head out:
+  sliding along it he had to search the doorway. Getting on, RTS's keys
+  at every outer door (since 2026-11-06; before, Enter climbed in at a
+  door without a leaf or of a cab only stood at): Enter opens or shuts it,
+  Ctrl+Enter climbs in, a passenger door only when the train has opened
+  it. A way in is an outer door the player opens or one with its
+  doorway's floor (`InteriorPlane`). The cab of any car of the driven
+  train or of another own train takes him; his car and its DLL follow
+  (`TrainView::walk_up_to_cab`, `board`). A cab only stood at reads its
+  doors as the `.sd` leaves them until its shape is read. A cab he leaves
+  stays with its doors, inner and outer, as RTS keeps each car's cabin
+  (wagon `+556`, which `0x435654` takes back), and the car's outer doors
+  follow it; before 2026-11-06 it was dropped and its doors shut. The
+  switches and the DLL's state are the DLL host's, per car (`Init` once,
+  `loco_flags & 0x20`): a cab left and entered again finds them as they
+  were. Head out:
   the eye at `HeadOutPosition` (RTSFileReference: "the camera when the
   player looks out of the window"). The mouse picks a control by the cab
   shape's triangles (the node it meets, or the switch's `.sd` Position on

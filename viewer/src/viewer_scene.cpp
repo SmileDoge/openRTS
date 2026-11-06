@@ -781,6 +781,9 @@ public:
     void drive_unit(const std::size_t index) override {
         if (train_) train_->drive_unit(index);
     }
+    void stand_at_cab_door(const std::size_t index) override {
+        if (train_) train_->stand_at_cab_door(index);
+    }
     [[nodiscard]] std::string car_menu_report() const override { return train_ ? train_->car_menu_report() : std::string{}; }
     [[nodiscard]] std::optional<renderer::ShadowFocus> shadow_focus() const override {
         return train_ ? train_->cab_shadow_focus() : std::nullopt;

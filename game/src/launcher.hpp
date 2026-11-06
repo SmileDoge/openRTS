@@ -1,10 +1,15 @@
 #pragma once
 
-// The start menu of openrts_game: the RTS folder, a route, a consist and its
-// path, the time of day, season, weather and how the train starts, and the
-// settings (language, keys, sound, volume, anti-aliasing, VSync), kept in
-// viewer_state.ini. "Start" runs the game (openrts_viewer) as a process of
-// its own; the menu waits for it and comes back.
+// The start menu of openrts_game, in tabs:
+// - Single player: a route, a consist and its path, the time of day, season,
+//   weather and how the train starts;
+// - Network game: a server's address and the nick (the route, the time and
+//   the train are the server's); the place for an own server, not there yet;
+// - Settings: the RTS folder, language, keys, sound, graphics.
+// All kept in viewer_state.ini. "Start" / "Connect" runs the game
+// (openrts_viewer) as a process of its own; the menu waits for it and comes
+// back. A network game's steps (connecting, waiting for a train, loading)
+// are read from its "status:" lines in openrts.log and shown here.
 
 #include <filesystem>
 #include <memory>
@@ -28,10 +33,14 @@ public:
     [[nodiscard]] viewer::SceneEnvironment environment() const override;
     void submit(renderer::ModelRenderer&, const viewer::FrameView&) override {}
     void draw_overlay(const viewer::ViewerCamera&) const override;
-    // The game's command line for the current choice (empty: nothing chosen),
-    // and what the menu read (for --print-command).
+    // The game's command line for the single player choice and for joining
+    // the server (empty: not ready), and what the menu read (for
+    // --print-command).
     [[nodiscard]] std::string command() const;
+    [[nodiscard]] std::string network_command() const;
     [[nodiscard]] std::string summary() const;
+    // Opens a tab by its key: single, network, settings.
+    void show_tab(std::string_view key);
 
 private:
     struct State;

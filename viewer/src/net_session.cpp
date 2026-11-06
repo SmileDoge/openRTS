@@ -18,8 +18,14 @@ namespace {
 
 constexpr std::uint16_t P(const net::Package package) noexcept { return net::id(package); }
 
-TrainView::PlacedTrain placed_train(const net::SnapshotTrain& train, const simulation::TrackLocation& front) {
+// The record's cars get their keys here once (TrainView::PlacedTrain::keys):
+// a car keeps its key, and its DLL, through couplings and cuts.
+TrainView::PlacedTrain placed_train(net::SnapshotTrain& train, const simulation::TrackLocation& front) {
     TrainView::PlacedTrain p;
+    for (auto& car : train.cars) {
+        if (car.key == 0) car.key = TrainView::new_car_key();
+        p.keys.push_back(car.key);
+    }
     p.name = net::train_name(train);
     p.role = TrainView::Role::standing;
     p.front = front;
@@ -125,7 +131,7 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
             // Its DLLs start as the server keeps the train: "Холодный" cold,
             // "Включен" on, "Движется" running.
             trains.set_start_state(train.state == 0 ? 0 : train.state == 1 ? 1 : -1);
-            if (const auto error = trains.place_driven(placed_train(train, *front)); !error.empty()) {
+            if (const auto error = trains.place_driven(placed_train(o.record, *front)); !error.empty()) {
                 std::cout << "net: our train " << train.id << ": " << error << std::endl;
                 continue;
             }

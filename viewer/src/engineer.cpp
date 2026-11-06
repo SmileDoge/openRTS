@@ -59,6 +59,14 @@ glm::vec3 door_point(const formats::CabDoor& door) {
 
 bool has_point(const formats::CabDoor& door) { return door.has_position || has_plane(door); }
 
+// A way in from outside: an outer door the player opens himself, or one
+// whose doorway's floor is given (InteriorPlane). A passenger door of the
+// train without it is not: its Position may be anywhere in the car (the
+// ED9M's lie by the car's middle, their planes at the doors).
+bool get_on_door(const formats::CabDoor& door) {
+    return is_exterior(door) && has_point(door) && (door.can_be_opened || has_plane(door));
+}
+
 // Out of the car through a door: across the side for a side door, along the
 // car for an end door.
 glm::vec3 outward(const formats::CabDoor& door) {
@@ -107,19 +115,21 @@ std::vector<std::pair<std::size_t, glm::vec3>> Engineer::get_on_points(const Cab
     const auto& doors = cab.description().doors;
     for (std::size_t i = 0; i < doors.size(); ++i) {
         const auto& door = doors[i];
-        if (!has_point(door) || !is_exterior(door)) continue;
+        if (!get_on_door(door)) continue;
         const auto at = door_point(door);
         out.emplace_back(i, glm::vec3{at.x, 0.0f, at.z} + outward(door) * 0.9f);
     }
     return out;
 }
 
+// The keys are RTS's at every door (0x4121BC): Enter works the door,
+// Ctrl+Enter goes in through it.
 std::string Engineer::get_on_prompt(const CabView& cab, const std::size_t door) {
     if (door >= cab.description().doors.size()) return {};
     if (!cab.description().doors[door].can_be_opened) {
-        return cab.door_open(door) ? tr("Enter: climb in") : tr("The passenger doors are opened from the driver's cab.");
+        return cab.door_open(door) ? tr("Ctrl+Enter: climb in") : tr("The passenger doors are opened from the driver's cab.");
     }
-    if (!cab.door_animated(door)) return tr("Enter: climb into the cab");
+    if (cab.doorway(door)) return tr("Ctrl+Enter: climb in");
     return cab.door_open(door) ? tr("Enter: close the door, Ctrl+Enter: climb in")
                                : tr("Enter: open the door, Ctrl+Enter: climb in");
 }
@@ -336,7 +346,7 @@ Engineer::Choice Engineer::choose(const CabView& cab, const glm::mat4& car) cons
     }
     if (mode_ == Mode::outside) {
         for (std::size_t i = 0; i < sd.doors.size(); ++i) {
-            if (!has_point(sd.doors[i]) || !is_exterior(sd.doors[i])) continue;
+            if (!get_on_door(sd.doors[i])) continue;
             const glm::vec3 local = glm::vec3{door_point(sd.doors[i]).x, 0.0f, door_point(sd.doors[i]).z} + outward(sd.doors[i]) * 0.9f;
             const glm::vec3 scene = glm::vec3(car * glm::vec4(local, 1.0f));
             const float d = distance_xz(feet_, scene);
@@ -447,11 +457,12 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
             cab.toggle_door(choice.index);
             break;
         case Target::get_on: {
-            // At a door that opens: Enter opens or closes it, Ctrl+Enter
-            // (or Shift+Enter) climbs in.
+            // RTS (0x4121BC), the same at every door: Enter opens or closes
+            // it (0x438708; a passenger door is the train's), Ctrl+Enter
+            // (or Shift+Enter) goes in, opening it (0x4310B0).
             const bool by_hand = cab.description().doors[choice.index].can_be_opened;
-            if (by_hand && cab.door_animated(choice.index) && !controls.action_ctrl && !controls.run) {
-                cab.toggle_door(choice.index);
+            if (!controls.action_ctrl && !controls.run) {
+                if (by_hand && !cab.doorway(choice.index)) cab.toggle_door(choice.index);
                 break;
             }
             if (!by_hand && !cab.door_open(choice.index)) break; // shut: the driver opens it

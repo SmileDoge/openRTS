@@ -635,8 +635,11 @@ float CabView::switch_frames_per_state(const std::size_t index) const noexcept {
 }
 
 bool CabView::door_open(const std::size_t door) const noexcept {
+    if (door >= doors_.size()) return false;
+    // Not read yet (the cab of a car he only stands at): as it was left.
+    if (!geometry_) return doors_[door].target;
     // A door without a node of its own (DUMMY) is a doorway that is always open.
-    return door < doors_.size() && (doors_[door].node < 0 || doors_[door].open >= 0.6f);
+    return doors_[door].node < 0 || doors_[door].open >= 0.6f;
 }
 
 bool CabView::door_moving(const std::size_t door) const noexcept {

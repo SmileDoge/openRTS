@@ -108,8 +108,37 @@ track objects, weather. The snapshot reads them; the viewer leaves them.
 ## Watching a game: `--mp-connect` (stage 2, the observer)
 
 ```text
-openrts_viewer --window --route Kuban_RTS --root <game folder> --mp-connect 127.0.0.1:800 --mp-nick openRTS
+openrts_viewer --window --mp-connect 127.0.0.1:800 --mp-nick openRTS --root <game folder>
 ```
+
+Or from the start menu, the "Network game" tab: the server's address and
+the nick, then "Connect". `--spawn cab` (the tab's "Start at: In the cab")
+seats the player at the desk when the dispatcher assigns the train;
+without it the camera follows the train from above.
+
+- **The route is the server's.** The login reply names it (in lower case;
+  the folder's own spelling is taken from the installation), with its
+  season and weather. `--route` is not needed; one that names another
+  route is overridden, `--season` / `--weather` win over the server's. A
+  route the installation does not have stops the game before the wait.
+- **The start menu follows the join.** The game writes one line
+  `status: <word> [detail]` to its console (`openrts.log` when the menu
+  runs it) at each step, and the menu shows it:
+
+  | Line | Step |
+  |---|---|
+  | `connecting <address>` | the connection and the login |
+  | `waiting <route>` | logged in, waiting for a train from the dispatcher |
+  | `loading` | a train assigned: the world, then the route |
+  | `playing` | the window opens |
+  | `unreachable` | no connection |
+  | `refused nick` / `full` / `version` / `<code>` | the server refused the login (`0x4701` / `0x4702` / `0x4705` / another) |
+  | `closed`, `no-world`, `timeout` | the server closed, would not send the world (`0x4703`), no train in 30 minutes |
+  | `no-route <route>` | the server's route is not installed |
+
+  A failed join ends the game with code 9 (`no-route`: 2, a content
+  problem). While the game connects or waits, the menu's "Cancel" ends
+  it; the server sees the connection close.
 
 **The connection** (`openrts/net/connection.hpp`, `RtsConnection`):
 - TCP to "host:port" (port 800 when none is given); the login `0x4600` with
@@ -127,7 +156,8 @@ openrts_viewer --window --route Kuban_RTS --root <game folder> --mp-connect 127.
   viewer on closing until 2026-11-06.
 
 **Joining:**
-1. The viewer logs in and says on the console that it waits for a train.
+1. The viewer logs in, opens the server's route and says on the console
+   that it waits for a train.
 2. **The dispatcher assigns it one** on the console (ТЧД). The server sends
    the world only to a player with a train (reverse: `0x44ECAC` sets the
    user's `+41`; without it `0x4608` gets `0x4703`).
@@ -274,6 +304,13 @@ trains' streams the same way.
   `rts1.exe` `0x424488`), and it goes on where it stopped when given back
   (`TrainView::give_away` / `take_back`). Own trains placed before the
   player had a DLL host join it when he gets one.
+- **A DLL stays with its car**, as RTS binds it once per car (`0x5026FC`):
+  every car of a network record has a key of openRTS's own
+  (`net::TrainCar::key`, never on the wire) that couplings and cuts carry
+  along. A car of ours that goes into another client's train leaves the
+  DLL host, which keeps it parked by its key with its DLL's state; when it
+  comes back (that train cut and the part given to us, or the whole train)
+  its DLL goes on as it left it, without a new `Init`.
 
 **The rest of the server's world:**
 - **Pause** (`0x4616`): time and trains stand; nothing is sent, as RTS.
@@ -293,13 +330,13 @@ traction, brake shoes and couplers sound in openRTS.
 
 **Checked offline** with a fake server replaying the saved snapshot: a
 train taken away and frozen, another client's coupling it in (9 cars) and
-cutting it off again (a train of its own). Our own couplings and cuts on a
-live server are not checked yet.
+cutting it off again (a train of its own), and the part given back to us:
+its car came back with its DLL. Our own couplings and cuts on a live server
+are not checked yet.
 
-**Not yet:** a train merged into another client's loses its frozen DLL state
-(RTS keeps it bound in the cars); a piece of track's `0x4645` `u8` is read and
-left (PROBABLE: kept for the server's list); the console's dispatcher packages
-(stage 3 and 5).
+**Not yet:** a piece of track's `0x4645` `u8` is read and left (PROBABLE:
+kept for the server's list); the console's dispatcher packages (stage 3 and
+5).
 
 ## Tests
 

@@ -106,6 +106,9 @@ public:
     // player's, 1, the rest LOOSE, 3); 2 (another player's) keeps a train's
     // DLLs bound without running them.
     void set_train_types(std::vector<std::uint32_t> types) { train_types_ = std::move(types); }
+    // Cars with a DLL that came back from the parked ones (by their keys)
+    // since the last call: their DLLs as they left them.
+    [[nodiscard]] std::size_t take_restored() { return std::exchange(restored_, std::size_t{0}); }
     bool reconsist(const core::Vfs& vfs, std::vector<LegacyCar> cars, const simulation::Train& train);
     [[nodiscard]] std::size_t trains() const noexcept { return train_first_.size() - 1; }
     [[nodiscard]] std::size_t train_size(std::size_t train) const noexcept {
@@ -154,6 +157,7 @@ private:
     std::shared_ptr<Outputs> outputs_ = std::make_shared<Outputs>();
     std::size_t player_ = SIZE_MAX;
     std::vector<std::uint32_t> train_types_;
+    std::size_t restored_ = 0;
     std::string messages_;
     // Per car: each AuxLibrary of the .eng as the host numbers them (only
     // the ones whose module was found), -1 missing.

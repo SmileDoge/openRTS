@@ -3,7 +3,9 @@
 
 #include <filesystem>
 #include <iostream>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #if defined(OPENRTS_HAS_IMGUI) && defined(OPENRTS_HAS_WGPU)
 #ifdef _WIN32
@@ -35,9 +37,10 @@ std::filesystem::path executable_folder(const char* argv0) {
 
 int main(int argc, char* argv[]) {
     openrts::game::Launcher menu(executable_folder(argv[0]));
-    // --print-command: what Start would run, without a window.
-    if (argc > 1 && std::string_view(argv[1]) == "--print-command") {
-        std::cout << menu.summary() << '\n' << menu.command() << '\n';
+    const std::vector<std::string_view> args(argv + 1, argv + argc);
+    // --print-command: what Start and Connect would run, without a window.
+    if (!args.empty() && args[0] == "--print-command") {
+        std::cout << menu.summary() << '\n' << menu.command() << '\n' << menu.network_command() << '\n';
         return 0;
     }
     openrts::viewer::WindowOptions options;
@@ -45,6 +48,16 @@ int main(int argc, char* argv[]) {
     options.title = "openRTS";
     options.sound = false;
     options.msaa = 1;
+    // --tab single|network|settings opens that tab; --capture <file> draws
+    // the menu into a file after a second and exits (a smoke test).
+    for (std::size_t i = 0; i + 1 < args.size(); ++i) {
+        if (args[i] == "--tab") {
+            menu.show_tab(args[++i]);
+        } else if (args[i] == "--capture") {
+            options.capture_path = std::string(args[++i]);
+            options.capture_at = 1.0f;
+        }
+    }
     return openrts::viewer::run_window_viewer(menu, options);
 }
 

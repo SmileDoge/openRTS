@@ -12,7 +12,7 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.4.0](../../releases/tag/v0.4.0):
+> Work in progress. The latest version is [v0.4.1](../../releases/tag/v0.4.1):
 > a nearly playable game. Driving from a 3-D cab with RTS's locomotive
 > DLLs, signalling, a dispatcher window, a living route (forests, level
 > crossings, road traffic, water, rain and snow, smoke), sound by the cab's
@@ -21,9 +21,11 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
 
 ## What works
 
-- **The start menu** `openrts_game.exe`: the RTS folder, route, consist,
-  path, time, season, weather, how the train starts, and the settings; the
-  game runs as a process of its own.
+- **The start menu** `openrts_game.exe` in tabs: "Single player" (route,
+  consist, path, time, season, weather, how the train starts), "Network
+  game" (the server's address and the nick; the menu follows the login and
+  the wait for a train) and "Settings" (the RTS folder, language, keys,
+  sound, graphics); the game runs as a process of its own.
 - **Content:** a virtual file system (installation folders, zip packs,
   patches, mods, hot reload); ACE, `.s` / `.sd` shapes, `.w` world files,
   terrain, environment, `.trk`, the `.tdb` / `.tsection` track database,
@@ -86,9 +88,24 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
     lamps; the cab signal (ALSN); the cab lamps;
   - the cab sound; the sound follows where the engineer is;
   - the "Cab (locomotive DLL)" window: switches, gauges, DLL messages.
-- **The engineer on foot:** stand up at the desk, open the window and lean
-  out, walk through the cab and into the next section, get down onto the
-  ground and climb back.
+- **On foot:** walking is the player's (the panel's "On foot", with a train
+  or without): stand up at the desk, open the window and lean out, walk
+  through the cab and into the next section, get down onto the ground by a
+  door and climb back into any cab of his train (the far cab of a multiple
+  unit too, its DLL going along) or of another train of his.
+- **Network play on an RTS server** (`rts_server.exe`, together with
+  `rts1.exe`, [more](docs/net.md)):
+  - login by nick and the wait for a train from the dispatcher, as
+    `rts1.exe`; the world from the server: time, junctions, signals, the
+    line, the pause;
+  - other players' trains move smoothly, with their lights, pantographs and
+    sound;
+  - own trains (several may be) with their DLLs and cab; `rts1.exe` sees
+    and hears them;
+  - couplings and cuts, trains taken off the track, deleted and reassigned
+    by the dispatcher (a train taken away stands still with its DLLs);
+  - speed posts by the train's category from the server, electric trains'
+    load on the substations to the dispatchers.
 - **Signalling:**
   - `sigscr.dat` scripts compiled exactly as RTS compiles them;
   - blocks, routes, occupancy by the whole train;
@@ -106,7 +123,7 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
   - beside the car, as RTS does;
   - above the train;
   - with no train (a flight over the route; trains through Track control).
-- **Track control (Ctrl+Alt+F7):**
+- **Track control (Ctrl+Alt+F7, not in a network game):**
   - the track map from above: trains, junctions, signals, platforms, station
     names, the player's figure with the way the camera looks; "Teleport
     here" from the right-click menu;
@@ -129,10 +146,14 @@ In the order of the plan (`docs/roadmap.md`):
 1. The rest of the cab and consist: ALSN from the route's signals, native
    plugins from the `.eng`, the SME cable and high-voltage bus in the car
    menu. There will be no 2-D cabs.
-2. Multiplayer (an RTS-compatible Legacy mode and an own protocol) and the
-   dispatcher console (Пульт ДСП).
-3. Activities and full AI traffic.
-4. PBR materials.
+2. An openRTS server (an RTS-compatible Legacy mode and an own protocol,
+   plugins), helpers and the dispatcher console (Пульт ДСП). The client for
+   an RTS server is there.
+3. Cars as entities with their own logic (the cab is the car's) and
+   standard car classes: freight, passenger (compartments and so on),
+   multiple-unit cars.
+4. Activities and full AI traffic.
+5. PBR materials.
 
 ## Prebuilt binaries
 
@@ -184,13 +205,22 @@ You need an RTS installation with content: openRTS changes nothing in it and
 ships no content of its own. A computer without Visual Studio needs the
 Visual C++ Redistributable (x64), see "Prebuilt binaries".
 
-The easiest way is the start menu. It picks the RTS folder, route, consist,
-path, time, season, weather and how the train starts (running, switched on,
-cold), and the settings: language, key layout, sound and volume,
-anti-aliasing, VSync, experimental renderer, HDR. All of it is remembered in
-`%LOCALAPPDATA%\openRTS\viewer_state.ini`. "Start" runs the game as a
-process of its own (its output goes to `openrts.log` there too); the menu
-comes back when the game is closed.
+The easiest way is the start menu. It has three tabs:
+- **Single player:** route, consist, path, time, season, weather and how
+  the train starts (running, switched on, cold); "Start".
+- **Network game:** an RTS server's address and the nick, the servers
+  joined before, where to start (in the cab or above the train);
+  "Connect". The server gives the route, season, weather and
+  time, the dispatcher the train. Until there is one the menu shows the
+  wait, which can be cancelled. The place for an own openRTS server is
+  there; the server itself is in the works.
+- **Settings:** the RTS folder, language, key layout, sound and volume,
+  graphics API, anti-aliasing, VSync, the FPS limit (30 to 500 or none;
+  the in-game openRTS panel has it too), experimental renderer, HDR.
+
+All of it is remembered in `%LOCALAPPDATA%\openRTS\viewer_state.ini`. The
+game runs as a process of its own (its output goes to `openrts.log` there
+too); the menu comes back when the game is closed.
 
 ```powershell
 .\build\game\Release\openrts_game.exe
@@ -219,12 +249,15 @@ The game can also be started directly:
 | `--weather clear\|snow\|rain` | weather |
 | `--no-sound`, `--volume 0..1` | no sound, volume |
 | `--msaa 1`, `--no-vsync`, `--no-batching` | graphics settings |
+| `--fps-limit <30..500 \| 0>` | the FPS limit for this run (0: none), not remembered |
 | `--hdr` | an HDR frame with tone mapping |
 | `--backend auto\|vulkan\|dx12\|opengl` | the graphics API (OpenGL: the RTS renderer only) |
 | `--reshade-depth on\|off` | depth for ReShade ([INSTALL_EN.md](INSTALL_EN.md#reshade)) |
 | `--experimental` | experimental renderer instead of RTS's |
 | `--effects shadows,clusters,ao,aerial\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | experimental renderer settings for one run ([details](docs/experimental-effects.md)) |
 | `--capture <file.ppm>` | take one frame and exit; `--capture-at <s>`, `--capture-car <n>`, `--capture-camera ex ey ez tx ty tz`, `--capture-cab` say when and from where |
+| `--mp-connect <address>[:port]`, `--mp-nick <nick>` | join an RTS server (port 800 by default); the route, season and weather are the server's, no `--route` needed |
+| `--mp-snapshot <file>`, `--mp-save-snapshot <file>` | open a saved server snapshot offline; save the one received |
 | `--mount <folder or zip>` | mount a mod over the installation |
 | `--no-hot-reload` | do not watch files for changes |
 
@@ -304,6 +337,7 @@ the Train window)
 | `openrts-train-check` | load every consist and drive it on a test track; `--dll` runs a locomotive DLL by a script (with `--screens` the cab screens, `--triggers` its sound triggers), `--cab` shows how a cab binds, `--brake ... --realistic` brakes |
 | `openrts-dllhost32 --probe <folder>` | versions and layouts of every locomotive DLL |
 | `openrts_asset_dump` | resolve assets the way RTS looks them up; `--lights <route\|all>` counts the placed shapes' lamps by kind |
+| `openrts-net-dump` | an RTS server's snapshot package by package; `--root`/`--route` check it against the route |
 
 ## Layout
 
@@ -318,6 +352,7 @@ the Train window)
 | `trainplugin` | locomotive logic: the bridge to RTS's DLLs and native plugins |
 | `dllhost` | `openrts-dllhost32.exe`: the 32-bit process RTS's DLLs run in |
 | `sdk` | a sample native plugin (the API is `include/openrts/plugin/train_plugin.h`) |
+| `net` | the RTS protocol: packages, the world snapshot, the server connection |
 | `viewer` | the game: window, input, camera, cab, panels |
 | `game` | the start menu |
 | `tools` | command-line checks |
@@ -331,6 +366,8 @@ RTS's DLLs.
 - [INSTALL_EN.md](INSTALL_EN.md) — installing and the first start;
 - `CHANGELOG.md` — changes by version (in Russian);
 - `docs/roadmap.md` — the plan and the current state;
+- `docs/car-architecture.md` — a design: cars as entities, components,
+  modules, standard classes;
 - `docs/train.md`, `docs/track.md`, `docs/signals.md`, `docs/paths.md`,
   `docs/sound.md`, `docs/electrification.md` — how the subsystems work;
 - `docs/train-dll.md` — the locomotive DLL bridge and the native plugin API;
@@ -338,6 +375,8 @@ RTS's DLLs.
   and what it costs;
 - `docs/world-objects.md` — forests, level crossings, road traffic, water,
   rain and snow and smoke, as RTS builds and runs them;
+- `docs/net.md` — playing on an RTS server: the protocol, own and other
+  players' trains, couplings, sound, the line;
 - `docs/train-systems.md` — lights, pantographs, horn and doors without a
   DLL, the cab's displays and lamps, cables and coupler repair, taking
   another cab, native plugins, the line current and wire burning, ALSN;

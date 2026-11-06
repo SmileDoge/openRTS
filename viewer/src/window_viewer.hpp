@@ -44,6 +44,9 @@ struct WindowOptions {
     renderer::rts::Season season = renderer::rts::Season::summer;
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
     bool vsync = true;
+    // The FPS limit: 30..500 frames per second, 0 none (--fps-limit; else
+    // the remembered "fps_limit", the start menu's and the panel's setting).
+    int fps_limit = 0;
     bool batching = true;
     std::uint32_t msaa = 4; // samples (--msaa 1|4); 4 as RTS's "4x MSAA +Alpha"
     bool sound = true;
@@ -94,6 +97,12 @@ struct WindowOptions {
     // trains' order, from 0) becomes the driven one, as the Train window's
     // "drive" does.
     std::optional<std::size_t> capture_drive;
+    // --capture-board <index> (repeatable): from 0.3 of capture_at, one
+    // after another, the engineer stands on the ground at a cab door of car
+    // `index` (from 0) of the driven train, then Enter (to that cab, its door
+    // opened) and Ctrl+Enter (up the steps) are pressed; each takes 0.6 of
+    // capture_at shared out.
+    std::vector<std::size_t> capture_board;
 };
 
 [[nodiscard]] int run_window_viewer(ViewerScene& scene, const WindowOptions& options);

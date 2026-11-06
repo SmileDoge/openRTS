@@ -13,7 +13,10 @@ The menu texture is `menug.ace`; the menu object lives in `0x61D6C4`.
 
 - **Opening.** `VK_NUMPAD3` calls `0x415A34(99)`. The result's type byte
   `+32` decides what opens:
-  - 15 — a door / get-on action (`0x4210FC`; with Ctrl, mode 5);
+  - 15 — a power pickup (`0x4210FC`: "Pickup ready", "Pickup activated",
+    "Power source ready, now choose the locomotive"; with Ctrl, mode 5).
+    Before 2026-11-06 this read "a door / get-on action": doors are type 1
+    of `0x414D24` (`train-dll.md`, section 13);
   - 16 — a coupling: menu type 1;
   - 17 — a bogie: menu type 2.
 

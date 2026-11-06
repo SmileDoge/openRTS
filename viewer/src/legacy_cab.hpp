@@ -105,6 +105,7 @@ public:
     void set_train_types(std::vector<std::uint32_t> types) {
         if (consist_) consist_->set_train_types(std::move(types));
     }
+    [[nodiscard]] std::size_t take_restored() { return consist_ ? consist_->take_restored() : 0; }
     bool reconsist(const core::Vfs& vfs, const std::vector<std::vector<LegacyCarRef>>& trains,
                    const std::vector<simulation::Train*>& sims);
     [[nodiscard]] std::size_t trains() const { return consist_ ? consist_->trains() : 0; }

@@ -233,6 +233,9 @@ public:
     virtual void uncouple_driven(std::size_t) {}
     // --capture-drive: train `index` (from 0, in order) becomes the driven one.
     virtual void drive_unit(std::size_t) {}
+    // --capture-board: the engineer on the ground at a cab door of car
+    // `index` (from 0) of the driven train.
+    virtual void stand_at_cab_door(std::size_t) {}
     [[nodiscard]] virtual std::string car_menu_report() const { return {}; }
     // What the shadows look at most closely this frame (after submit): the
     // cab the engineer is in.

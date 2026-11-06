@@ -73,6 +73,9 @@ struct TrainCar {
     std::optional<float> handbrake;     // 0..1
     std::optional<float> max_handbrake; // N (the client skips it)
     Bytes extra;                 // anything after them
+    // openRTS's own, never on the wire: the car's key in the game, kept
+    // through couplings and cuts so its locomotive DLL stays with it.
+    std::uint32_t key{};
     [[nodiscard]] bool flipped() const noexcept { return (flags & 1u) != 0; }
 };
 

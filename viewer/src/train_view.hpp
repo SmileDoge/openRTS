@@ -203,7 +203,14 @@ public:
         Role role = Role::standing;
         std::optional<simulation::TrackLocation> front;
         std::vector<formats::ConsistEntry> cars;
+        // The cars' keys (0 or none: new ones). A car keeps its key through
+        // couplings and cuts, and the DLL host its DLL by it: a car that
+        // comes back finds its DLL as it left it (RTS binds a DLL to its car
+        // once, 0x5026FC).
+        std::vector<std::uint32_t> keys;
     };
+    // A new car key (unique in this program).
+    [[nodiscard]] static std::uint32_t new_car_key();
     // Puts these trains back at the next update, as a situation does;
     // `source` names them in the messages.
     void request_trains(std::vector<PlacedTrain> trains, std::string source) {
@@ -395,6 +402,9 @@ public:
     void uncouple_driven(std::size_t index) { pending_uncouple_ = index; }
     // --capture-drive: train `index` (in the trains' order) becomes the driven one.
     void drive_unit(std::size_t index);
+    // A test (--capture-board): the engineer on the ground at a cab door of
+    // car `car` of the driven train.
+    void stand_at_cab_door(std::size_t car);
     [[nodiscard]] std::string car_menu_report() const;
     // For the capture report: lights, pantographs, the line, cables, the
     // native plugin, of every train.
@@ -494,6 +504,9 @@ private:
                                         std::vector<std::unique_ptr<formats::WagonDefinition>>& stock) const;
     // The same from its cars, front to back.
     [[nodiscard]] std::string make_unit_from(std::string name, const std::vector<formats::ConsistEntry>& entries, Unit& unit,
+                                             std::vector<std::unique_ptr<formats::WagonDefinition>>& stock,
+                                             const std::vector<std::uint32_t>& keys) const;
+    [[nodiscard]] std::string make_unit_from(std::string name, const std::vector<formats::ConsistEntry>& entries, Unit& unit,
                                              std::vector<std::unique_ptr<formats::WagonDefinition>>& stock) const;
     [[nodiscard]] std::string load_situation(const std::filesystem::path& file);
     [[nodiscard]] std::string put_back(std::vector<PlacedTrain> saved, const std::string& source);
@@ -507,15 +520,29 @@ private:
     bool network_game_ = false;            // set_network
     std::vector<Coupling> couplings_;      // take_couplings
     std::vector<Cut> cuts_;                // take_cuts
-    std::string board_prompt_;             // Enter at another train's cab door
-    // The cabs of boardable trains' engines (their doors), by car key.
+    std::string board_prompt_;             // Enter at another cab's door (his other trains, the far end of his own)
+    // The cabs of engines he is not in, by car key: the ones he stood at
+    // (their doors for boarding) and the ones he left, kept with their
+    // doors as he left them (RTS keeps each car's cabin, wagon +556); a car's
+    // outer doors follow its cab's.
     std::map<std::uint32_t, std::unique_ptr<CabView>> board_cabs_;
     struct BoardTarget {
         std::uint64_t train{};
         std::size_t car{};
         std::size_t door{};
     };
+    // The cab door nearest to his feet: of another car of the driven train
+    // (the far end of a multiple unit), or of another train of his.
     [[nodiscard]] std::optional<BoardTarget> board_target(const glm::vec3& feet);
+    // On the ground at the door of car `car` of the driven train: that car is
+    // his, its cab driven from as when he walks into it; the same Enter then
+    // climbs in.
+    void walk_up_to_cab(std::size_t car, const glm::vec3& feet);
+    // Car `car` of the driven train's cab, as he found it at its door (the
+    // one board_target read, taken), else a new one.
+    [[nodiscard]] std::unique_ptr<CabView> take_cab(std::size_t car);
+    // The cab of car `car` of the driven train, which he leaves, kept.
+    void keep_cab(std::size_t car, std::unique_ptr<CabView> cab);
     // Sounds of trains taken away: stopped at the next sound update (a
     // sound object dropped while it plays leaves its loops running).
     std::vector<std::unique_ptr<audio::SoundInstance>> retired_sounds_;

@@ -448,8 +448,9 @@ None of it blocks multiplayer.
 - Dyntrack, deer (`Hazard`), the pickup animation, car sounds, drawing the
   wires from the catenary types.
 
-**Later, planned:** Lua plugins and replaceable train systems (below),
-activities and full AI traffic (step 7), PBR (step 8).
+**Later, planned:** Lua plugins and replaceable train systems, cars as
+entities (both below), activities and full AI traffic (step 7), PBR
+(step 8).
 
 ## Train plugins in Lua and replaceable train systems (plan, 2026-11-04)
 
@@ -601,6 +602,79 @@ What follows from it:
     behind any engine. This extends the first row; the user's decision.
 - **Multiplayer:** the owner computes, the others see the outputs. Whether
   authors' modules are allowed under Legacy is a server setting.
+
+## Cars as entities (a step of its own; plan, 2026-11-06)
+
+Not started: the user's plan for a proper simulation, to be done as a step
+of its own. The design under discussion: `car-architecture.md`. It comes before activities. The Lua plugins and the replaceable
+train systems (above) build on it: their modules are a car's.
+
+**Why.** A car's state lives in many places today, and every fix has to tie
+them together by hand:
+- the physics: `simulation::Train`, by index;
+- lights, pantographs, outer doors, sound: `TrainView::Car`;
+- the cab: `CabView`, which until 2026-11-06 lived only while the engineer
+  was in it, so its doors shut behind him. Now cabs are kept by car key in
+  `board_cabs_`, a patch.
+- switches and the DLL's state: the DLL host's car mirrors;
+- the car key and the network's look: `NetSession`'s records, the key
+  carried through couplings by hand;
+- getting on: decided in two places (the engineer's own cab, other cabs).
+
+**What:**
+- **A car is an entity.** It has a stable id (today's car key) and is made
+  once with the car. Couplings, cuts, giving a train away and taking it
+  back keep it. It owns its state and its logic:
+  - body and running gear (the link to the physics);
+  - doors (one state, seen from inside and outside), windows;
+  - lights, pantographs, couplers and hoses, sounds;
+  - the interior.
+- **The cab is the car's.** Its switches, doors, windows, chairs and lamps
+  are the entity's state. `CabView` only draws them and picks in them. The
+  engineer is in a car, in one of its spaces.
+- **Spaces and doors as RTS has them.** The `.sd` `Connects` areas (CAB,
+  TAMBUR, SALON, EXTERIOR, WAGON_FRONT / WAGON_BACK) are a car's spaces. A
+  door joins two of them. Passing it moves the engineer between spaces and
+  cars, as RTS's passages to a cab, the train or outside
+  (`reverse/train-dll.md` §13).
+- **Logic as the entity's modules:**
+  - the RTS DLL (the host keeps its state, the entity plugs it in);
+  - a native plugin, later Lua;
+  - the default logic.
+
+  The replaceable train systems (brakes, traction) are such modules.
+- **Standard classes** with default logic. The car's kind picks one
+  (`.wag` / `.eng` type, RTS type); a plugin may replace or extend it:
+  - freight car: brakes, handbrake, load and cargo, doors and hatches;
+  - passenger coach: compartments (купе, плацкарт, seated), interior light,
+    heating, doors; later passengers;
+  - multiple-unit cars: head, motor, trailer (in the ED9M the whole car's
+    interior is one cab shape);
+  - locomotive: cab(s), traction, auxiliaries;
+  - tender and the rest.
+- **The train** is an ordered list of entities plus what belongs to the
+  whole train: the coupler solver, the brake pipe, the train wires (СМЕ).
+  Couplings and cuts move entities from one train to another.
+- **Network.** An entity's state is what goes per car (look, sound,
+  doors). Its owner computes it.
+- **Content stays as it is.** The entities are openRTS's inside, not a new
+  content format:
+  - `.eng` / `.wag` / `.sd` / `.con` are read as now; a car's class comes
+    from what they already say (its kind, RTS type, a cab or none);
+  - RTS DLLs run through the same host and ABI (`ts.h`);
+  - an author does something only to use what goes beyond RTS: an own
+    module, a compartment class with its own logic.
+
+  Under Legacy everything behaves as RTS's, which `rts1.exe` on the same
+  server needs anyway.
+
+**Work, roughly:**
+1. The entity type and where the entities live.
+2. `TrainView::Car`'s state and the cabs move into it.
+3. The train as a list of entities.
+4. The standard classes.
+
+At each step, parity with today's behaviour: DLLs, sound, the network.
 
 ## Multiplayer: feasibility
 

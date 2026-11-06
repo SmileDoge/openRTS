@@ -748,6 +748,7 @@ bool LegacyConsist::reconsist(const core::Vfs& vfs, std::vector<std::vector<Lega
             cabs[i] = std::move(p->second.cab);
             dll[i] = p->second.dll;
             aux[i] = std::move(p->second.aux_index);
+            if (dll[i]) ++restored_;
             parked_.erase(p);
         } else {
             auto built = build_spec(vfs, cache_root_, cars[i], route_ ? &*route_ : nullptr, tables, problems);

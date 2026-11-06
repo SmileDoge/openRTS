@@ -136,10 +136,17 @@ public:
     // the doors, and where a control is (its .sd Position, else its node).
     void poll();
     [[nodiscard]] const CabCollision* collision() const noexcept { return geometry_ ? &geometry_->collision : nullptr; }
+    // Open: a doorway always; a door as it stands (before the shape's nodes
+    // are read: as the .sd and the hand left it).
     [[nodiscard]] bool door_open(std::size_t door) const noexcept;
     // The door has a node of its own (it opens and closes; else an open doorway).
     [[nodiscard]] bool door_animated(std::size_t door) const noexcept {
         return door < doors_.size() && doors_[door].node >= 0;
+    }
+    // A doorway without a door (no node of its own in the shape, once its
+    // nodes are read).
+    [[nodiscard]] bool doorway(std::size_t door) const noexcept {
+        return door < doors_.size() && geometry_ && doors_[door].node < 0;
     }
     [[nodiscard]] bool door_moving(std::size_t door) const noexcept;
     void toggle_door(std::size_t door);

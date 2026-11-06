@@ -5,6 +5,7 @@
 //
 //   openrts_engineer_test <RTS root>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -19,6 +20,7 @@
 
 #include "../viewer/src/cab_view.hpp"
 #include "../viewer/src/engineer.hpp"
+#include "../viewer/src/ui_text.hpp"
 
 using namespace openrts;
 using viewer::Engineer;
@@ -68,6 +70,47 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     check(cab->collision() != nullptr && !cab->collision()->empty(), "the cab shape's surfaces are read");
+
+    // Getting on, the same at every door (RTS 0x4121BC): Enter works the
+    // door, Ctrl+Enter goes in. A cab only stood at, its shape not read yet,
+    // has its doors as the .sd leaves them (it read them all open before).
+    {
+        const auto& doors = cab->description().doors;
+        std::size_t side = doors.size();
+        for (std::size_t i = 0; i < doors.size(); ++i)
+            if (doors[i].can_be_opened && !doors[i].opened && (doors[i].from == "EXTERIOR" || doors[i].to == "EXTERIOR")) side = i;
+        check(side < doors.size(), "the VL10k has a side door to get on by");
+        const auto fresh = viewer::CabView::create(vfs, definition, formats::wagon_path("ev_VL10k-1654", "vl10k-1654a", true));
+        check(fresh && side < doors.size() && !fresh->door_open(side), "a cab not read yet: its shut door is shut");
+        check(fresh && side < doors.size()
+                  && Engineer::get_on_prompt(*fresh, side) == std::string(viewer::tr("Enter: open the door, Ctrl+Enter: climb in")),
+              "a cab not read yet: the same prompt as one's own");
+        check(side < doors.size() && Engineer::get_on_prompt(*cab, side) == std::string(viewer::tr("Enter: open the door, Ctrl+Enter: climb in")),
+              "one's own cab: Enter opens, Ctrl+Enter climbs in");
+    }
+    // The ED9M's head car (its cab not read yet, as at its door): in by the
+    // crew's side doors (DOOR_1 / DOOR_2); its passenger doors (the train's,
+    // shut) let nobody in. Before 2026-11-06 a cab not read had every door
+    // open, and Enter by a passenger door put him in its closed vestibule.
+    if (const auto ed9m = formats::load_wagon(vfs, "mdd_ED9M-0032", "mdd_ED9M-0032_G", true); ed9m.ok()) {
+        if (const auto head = viewer::CabView::create(vfs, ed9m, formats::wagon_path("mdd_ED9M-0032", "mdd_ED9M-0032_G", true))) {
+            std::vector<std::string> names;
+            std::size_t passenger = SIZE_MAX;
+            for (const auto& [door, spot] : Engineer::get_on_points(*head)) {
+                names.push_back(head->description().doors[door].name);
+                if (names.back() == "DOOR_D") passenger = door;
+            }
+            const auto has = [&](const char* name) { return std::find(names.begin(), names.end(), name) != names.end(); };
+            check(has("DOOR_1") && has("DOOR_2"), "ED9M: in by the crew's side doors");
+            check(passenger != SIZE_MAX && !head->door_open(passenger)
+                      && Engineer::get_on_prompt(*head, passenger) == std::string(viewer::tr("The passenger doors are opened from the driver's cab.")),
+                  "ED9M: a shut passenger door lets nobody in");
+        } else {
+            check(false, "ED9M: the head car's cab");
+        }
+    } else {
+        std::printf("no ED9M-0032 here: its doors not checked\n");
+    }
     // The locomotive signal lights (КЛУБ): Aspect ( n lights.. ) as RTS reads it.
     {
         const auto& sig = cab->description().signalization;

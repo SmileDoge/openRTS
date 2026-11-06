@@ -316,8 +316,19 @@ std::string TrainView::make_unit(const std::string_view consist_name, Unit& unit
     return make_unit_from(consist.name, consist.entries, unit, stock);
 }
 
+std::uint32_t TrainView::new_car_key() {
+    static std::atomic<std::uint32_t> next_key{0};
+    return ++next_key;
+}
+
 std::string TrainView::make_unit_from(std::string name, const std::vector<formats::ConsistEntry>& entries, Unit& unit,
                                       std::vector<std::unique_ptr<formats::WagonDefinition>>& stock) const {
+    return make_unit_from(std::move(name), entries, unit, stock, {});
+}
+
+std::string TrainView::make_unit_from(std::string name, const std::vector<formats::ConsistEntry>& entries, Unit& unit,
+                                      std::vector<std::unique_ptr<formats::WagonDefinition>>& stock,
+                                      const std::vector<std::uint32_t>& keys) const {
     std::vector<Car> cars;
     std::vector<simulation::CarSetup> setups;
     bool passenger = false;
@@ -330,8 +341,8 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
         for (const auto& f : entry.freight) wagon->mass += (std::max)(f.mass, 0.0f);
         Car car;
         car.definition = wagon.get();
-        static std::atomic<std::uint32_t> next_key{0};
-        car.key = ++next_key;
+        const auto index = cars.size();
+        car.key = index < keys.size() && keys[index] != 0 ? keys[index] : new_car_key();
         car.uid = entry.uid;
         car.folder = entry.folder;
         car.file = entry.name;
@@ -1032,10 +1043,21 @@ void TrainView::change_cab(const std::size_t car) {
     if (units_.empty() || units_.front().role != Role::driven || car == cab_car_) return;
     auto& unit = units_.front();
     if (car >= unit.cars.size() || !unit.cars[car].definition || !unit.cars[car].definition->engine) return;
+    // The cab he walked into is swapped in; one he is not in (boarding
+    // another train at its door) is made here.
+    std::unique_ptr<CabView> made;
+    if (car != engineer_car_ || !visit_cab_) {
+        made = take_cab(car);
+        if (!made) return;
+    }
     if (legacy_ && legacy_->has_dll(car)) {
         if (!legacy_->enter(car, *unit.train)) return;
     } else if (legacy_ && legacy_->has_dll(cab_car_)) {
         return; // a DLL train's other engines without a DLL are not driven from
+    }
+    if (made) {
+        visit_cab_ = std::move(made);
+        visit_requested_ = false;
     }
     // The cab he walked into is the one driven now.
     std::swap(cab_, visit_cab_);
@@ -1044,8 +1066,8 @@ void TrainView::change_cab(const std::size_t car) {
     const auto old = cab_car_;
     cab_car_ = car;
     engineer_car_ = car;
-    visit_cab_.reset();
-    (void)old;
+    // The cab driven from before stays in its car with its doors.
+    keep_cab(old, std::move(visit_cab_));
     if (!legacy_) {
         // The keyboard driver: the new engine is master; its handles start
         // where a cab not driven from stands.
@@ -1724,7 +1746,7 @@ std::uint64_t TrainView::add_unit(const PlacedTrain& placed, const bool remote, 
     }
     Unit unit;
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
-    if (auto problem = make_unit_from(placed.name, placed.cars, unit, stock); !problem.empty()) {
+    if (auto problem = make_unit_from(placed.name, placed.cars, unit, stock, placed.keys); !problem.empty()) {
         if (error) *error = std::move(problem);
         return 0;
     }
@@ -1876,7 +1898,11 @@ bool TrainView::remove_train(const std::uint64_t id) {
     it->train->vacate();
     if (follow_id_ == id) follow_id_ = 0;
     retire_sounds(*it);
+    const bool host = it->host && legacy_ != nullptr;
     units_.erase(it);
+    // Its cars leave the DLL host, which keeps them by their keys with their
+    // DLLs' state, for when they come back (another train's cut, given back).
+    if (host && !units_.empty()) reconsist_host();
     return true;
 }
 
@@ -1966,6 +1992,10 @@ bool TrainView::take_back(const std::uint64_t id) {
     if (legacy_) {
         unit->host = true;
         reconsist_host();
+        if (const auto back = legacy_->take_restored()) {
+            std::cout << "locomotive DLLs: " << back << " cars of " << unit->name << " back with their DLLs as they left them"
+                      << std::endl;
+        }
     }
     return true;
 }
@@ -1995,7 +2025,7 @@ std::string TrainView::put_back(std::vector<PlacedTrain> saved, const std::strin
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
     for (const auto& train : saved) {
         Unit unit;
-        if (auto error = make_unit_from(train.name, train.cars, unit, stock); !error.empty()) return error;
+        if (auto error = make_unit_from(train.name, train.cars, unit, stock, train.keys); !error.empty()) return error;
         unit.role = train.role;
         built.push_back(std::move(unit));
     }
@@ -2950,11 +2980,13 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
         .floor = [this](const glm::vec3& p) { return walk_floor(p); },
         .blocked = [this](const glm::vec3& from, const glm::vec3& to) { return walk_blocked(from, to); },
     };
-    // At a cab door of another train of his (the network's own trains):
-    // the same prompt as at his own; Enter makes it the driven train, and
-    // the same Enter then opens the door or climbs in as into any cab.
+    // At the door of another cab: of the driven train (the far end of a
+    // multiple unit) or of another train of his (the network's own). The
+    // same prompt as at his own cab; Enter makes that cab his (and the train
+    // the driven one), and the same Enter then opens the door or climbs in
+    // as into any cab.
     board_prompt_.clear();
-    if (engineer_.mode() == Engineer::Mode::outside && !boardable_.empty()) {
+    if (engineer_.mode() == Engineer::Mode::outside) {
         if (const auto target = board_target(engineer_.feet())) {
             if (const auto* unit = find_unit(target->train); unit && target->car < unit->cars.size()) {
                 if (const auto it = board_cabs_.find(unit->cars[target->car].key); it != board_cabs_.end() && it->second) {
@@ -2962,7 +2994,9 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
                 }
             }
             if (input.engineer_action) {
-                if (const auto problem = board(target->train, target->car, false); !problem.empty()) {
+                if (is_player(target->train)) {
+                    walk_up_to_cab(target->car, engineer_.feet());
+                } else if (const auto problem = board(target->train, target->car, false); !problem.empty()) {
                     message_ = tr(problem.c_str());
                     return;
                 }
@@ -3007,10 +3041,15 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
 std::optional<TrainView::BoardTarget> TrainView::board_target(const glm::vec3& feet) {
     std::optional<BoardTarget> best;
     float nearest = 2.5f; // as the engineer's own get-on spots
-    for (std::size_t u = 1; u < units_.size(); ++u) {
+    for (std::size_t u = 0; u < units_.size(); ++u) {
         const auto& unit = units_[u];
-        if (unit.remote || !boardable_.contains(unit.train->id()) || unit.current.empty()) continue;
+        if (unit.remote || unit.current.empty()) continue;
+        // The driven train's cabs but the one he is at (its doors are the
+        // engineer's own spots); his other trains' cabs.
+        const bool driven = u == 0 && unit.role == Role::driven;
+        if (!driven && (u == 0 || !boardable_.contains(unit.train->id()))) continue;
         for (std::size_t i = 0; i < unit.cars.size(); ++i) {
+            if (driven && i == engineer_car_) continue;
             const auto& car = unit.cars[i];
             const auto* engine = car.definition && car.definition->engine ? &*car.definition->engine : nullptr;
             if (!engine || !engine->cab_view || engine->cabin.empty()) continue;
@@ -3024,6 +3063,8 @@ std::optional<TrainView::BoardTarget> TrainView::board_target(const glm::vec3& f
                                       formats::wagon_path(car.folder, car.definition->name, true));
                 if (!cab) continue;
             }
+            // Its doors as they are (the shape's nodes read: a door or a doorway).
+            cab->poll();
             const auto to_scene = body->transform * cab->placement();
             for (const auto& [door, spot] : Engineer::get_on_points(*cab)) {
                 const glm::vec3 at{to_scene * glm::vec4(spot, 1.0f)};
@@ -3125,8 +3166,7 @@ void TrainView::pass_to_next_car(const std::size_t door) {
     if (j == cab_car_) {
         to = cab_.get();
     } else if (const auto& car = unit.cars[j]; car.definition && car.definition->engine) {
-        created = CabView::create(*vfs_, *car.definition,
-                                  formats::wagon_path(car.folder, car.definition->name, car.definition->engine.has_value()));
+        created = take_cab(j);
         to = created.get();
     }
     if (!to) {
@@ -3144,21 +3184,91 @@ void TrainView::pass_to_next_car(const std::size_t door) {
         arrival = k;
     }
     if (!arrival) {
+        keep_cab(j, std::move(created));
         message_ = tr("The next car has no door at this end.");
         return;
     }
     if (created) {
+        keep_cab(i, std::move(visit_cab_));
         visit_cab_ = std::move(created);
         visit_requested_ = false;
     }
     engineer_car_ = j;
-    if (j == cab_car_) visit_cab_.reset();
+    if (j == cab_car_) keep_cab(i, std::move(visit_cab_));
     to->poll();
     engineer_.arrive(*to, *arrival);
     hovered_.reset();
     // Into another engine's cab with a desk: RTS makes it the player's at
     // once (0x435654 -> 0x436734 -> 0x468C74: Init, ChangeLoco, the groups).
     if (j != cab_car_ && !to->description().switches.empty()) change_cab(j);
+}
+
+void TrainView::keep_cab(const std::size_t car, std::unique_ptr<CabView> cab) {
+    if (!cab || units_.empty() || car >= units_.front().cars.size()) return;
+    board_cabs_[units_.front().cars[car].key] = std::move(cab);
+}
+
+std::unique_ptr<CabView> TrainView::take_cab(const std::size_t car) {
+    if (units_.empty() || car >= units_.front().cars.size()) return nullptr;
+    const auto& c = units_.front().cars[car];
+    if (!c.definition) return nullptr;
+    if (const auto it = board_cabs_.find(c.key); it != board_cabs_.end() && it->second) {
+        auto cab = std::move(it->second);
+        board_cabs_.erase(it);
+        return cab;
+    }
+    return CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, true));
+}
+
+void TrainView::stand_at_cab_door(const std::size_t car) {
+    if (!loaded() || units_.front().role != Role::driven || car >= units_.front().cars.size()) return;
+    const auto& unit = units_.front();
+    const auto& c = unit.cars[car];
+    if (!c.definition || !c.definition->engine) return;
+    auto& cab = board_cabs_[c.key];
+    if (!cab) cab = CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, true));
+    const auto body = body_pose(unit, car, false);
+    if (!cab || !body) return;
+    const auto points = Engineer::get_on_points(*cab);
+    if (points.empty()) return;
+    const glm::vec3 at{body->transform * cab->placement() * glm::vec4(points.front().second, 1.0f)};
+    const auto mode = engineer_.mode();
+    std::cout << "test: the engineer was " << (mode == Engineer::Mode::outside ? "outside" : mode == Engineer::Mode::seated ? "seated" : engineer_.inside() ? "inside" : "off")
+              << " in car " << engineer_car_ + 1 << ", the cab of car " << cab_car_ + 1 << " driven; outer doors open:";
+    for (std::size_t i = 0; i < unit.cars.size(); ++i) {
+        std::size_t open = 0;
+        for (const auto& door : unit.cars[i].exterior_doors) open += door.open > 0.5f ? 1 : 0;
+        std::cout << " car " << i + 1 << " " << open;
+    }
+    // Each DLL car's switches as its DLL holds them.
+    for (std::size_t i = 0; legacy_ && i < unit.cars.size(); ++i) {
+        const auto* out = legacy_->output(i);
+        if (!out || out->switches.empty()) continue;
+        std::cout << "; car " << i + 1 << " switches";
+        for (std::size_t k = 0; k < out->switches.size() && k < 12; ++k) std::cout << ' ' << out->switches[k].state;
+    }
+    std::cout << std::endl;
+    engineer_.stand_outside(at);
+    std::cout << "test: on foot at the door of the cab of car " << car + 1 << std::endl;
+}
+
+void TrainView::walk_up_to_cab(const std::size_t car, const glm::vec3& feet) {
+    if (units_.empty() || car >= units_.front().cars.size()) return;
+    if (car == cab_car_) {
+        keep_cab(engineer_car_, std::move(visit_cab_));
+    } else if (car != engineer_car_ || !visit_cab_) {
+        auto taken = take_cab(car);
+        if (!taken) return;
+        keep_cab(engineer_car_, std::move(visit_cab_));
+        visit_cab_ = std::move(taken);
+        visit_requested_ = false;
+    }
+    engineer_car_ = car;
+    // A cab with a desk is driven from at once, as when he walks into it
+    // (pass_to_next_car; RTS 0x435654 -> 0x468C74).
+    if (car != cab_car_ && visit_cab_ && !visit_cab_->description().switches.empty()) change_cab(car);
+    engineer_.stand_outside(feet);
+    std::cout << "the player goes to the cab of car " << car + 1 << std::endl;
 }
 
 void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& direction, const bool click, const bool shift,
@@ -4346,6 +4456,14 @@ void TrainView::update_exterior_doors(const float elapsed) {
             if (car.exterior_doors.empty()) continue;
             const auto* out = dll_output(u, i);
             CabView* cab = u == 0 && i == cab_car_ ? cab_.get() : u == 0 && i == engineer_car_ ? visit_cab_.get() : nullptr;
+            // A cab he left (or stood at) keeps its doors; they move on here.
+            if (!cab) {
+                if (const auto kept = board_cabs_.find(car.key); kept != board_cabs_.end() && kept->second) {
+                    cab = kept->second.get();
+                    cab->poll();
+                    cab->step_doors(elapsed);
+                }
+            }
             // The train's doors of a GlobalID in this car (GM_DOOR_OPEN / CLOSE).
             const auto group_open = [&](const std::uint32_t group) {
                 if (!out || group == 0) return false;

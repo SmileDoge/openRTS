@@ -25,6 +25,7 @@
 #include <openrts/renderer/scene_effects.hpp>
 #include <openrts/renderer/webgpu_context.hpp>
 
+#include "frame_limiter.hpp"
 #include "gpu_timer.hpp"
 #include "key_layout.hpp"
 #include "ui_fonts.hpp"
@@ -491,6 +492,7 @@ struct PanelState {
     const char* present_mode = "Fifo";
     bool vsync = true;
     bool vsync_optional = false;
+    int fps_limit = 0; // 0: none, else 30..500
     bool gpu_timing = false;
     audio::AudioEngine* sound = nullptr;
     bool save_view = false;
@@ -666,6 +668,16 @@ public:
             const auto vsync_label = std::string(tr("VSync")) + " (" + panel.present_mode + ")###vsync";
             ImGui::Checkbox(vsync_label.c_str(), &panel.vsync);
             ImGui::EndDisabled();
+            {
+                // One slider: 30..500, its right end "no limit".
+                int shown = panel.fps_limit == 0 ? max_fps_limit + 1 : panel.fps_limit;
+                const std::string format = shown > max_fps_limit ? std::string(tr("no limit")) : std::string(tr("%d frames/s"));
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::SliderInt(tr("FPS limit"), &shown, min_fps_limit, max_fps_limit + 1, format.c_str(), ImGuiSliderFlags_AlwaysClamp)) {
+                    panel.fps_limit = shown > max_fps_limit ? 0 : shown;
+                    remember("fps_limit", std::to_string(panel.fps_limit));
+                }
+            }
             ImGui::SetNextItemWidth(220.0f);
             if (ImGui::SliderFloat(tr("Field of view"), &panel.fov, 30.0f, 100.0f, tr("%.0f degrees")))
                 remember("fov", std::to_string(panel.fov));
@@ -1629,6 +1641,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     bool capture_menu_open = false;
     bool capture_uncoupled = false;
     bool capture_driven = false;
+    int capture_board_step = 0; // --capture-board: 1 at the door, then the presses of Enter
+    FrameLimiter limiter;
 
     ClockControls clock{
         .time_of_day = static_cast<double>(options.time_of_day),
@@ -1643,6 +1657,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     PanelState panel{
         .vsync = surface.vsync(), .vsync_optional = surface.vsync_optional(), .gpu_timing = gpu_timer.available()};
     panel.menu = options.menu;
+    panel.fps_limit = clamp_fps_limit(options.fps_limit);
     panel.hdr = renderer::scene_hdr();
     panel.backend_now = renderer::adapter_backend_name(context.context.adapter());
     panel.reshade_depth = options.reshade_depth.value_or(remembered("reshade_depth").value_or("0") == "1");
@@ -1737,6 +1752,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     StageTimes stages{};
     double last_time = glfwGetTime();
     while (!glfwWindowShouldClose(window.get())) {
+        // The FPS limit: the wait comes before the input is read.
+        limiter.set(panel.fps_limit);
+        limiter.wait();
         stage_clock.start();
         glfwPollEvents();
         const double now = glfwGetTime();
@@ -1797,6 +1815,23 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (capture && options.capture_uncouple && !capture_uncoupled && glfwGetTime() - capture_start >= options.capture_at * 0.6) {
             scene.uncouple_driven(*options.capture_uncouple);
             capture_uncoupled = true;
+        }
+        if (capture && !options.capture_board.empty()) {
+            const double since = glfwGetTime() - capture_start;
+            const auto boards = options.capture_board.size();
+            const auto board = static_cast<std::size_t>(capture_board_step / 3);
+            const int phase = capture_board_step % 3;
+            const double slot = 0.6 / static_cast<double>(boards);
+            if (board < boards && since >= options.capture_at * (0.3 + slot * (static_cast<double>(board) + phase / 3.0))) {
+                if (phase == 0) {
+                    scene.stand_at_cab_door(options.capture_board[board]);
+                } else {
+                    // Enter (to that cab, its door opened), then Ctrl+Enter (up the steps).
+                    frame_input.engineer_action = true;
+                    frame_input.engineer_action_ctrl = phase == 2;
+                }
+                ++capture_board_step;
+            }
         }
         if (capture && options.capture_drive && !capture_driven && glfwGetTime() - capture_start >= options.capture_at * 0.8) {
             scene.drive_unit(*options.capture_drive);
