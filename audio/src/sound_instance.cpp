@@ -208,7 +208,9 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
     // Weather and environment sounds have no position; rolling stock fades
     // with distance.
     const auto space = owner_ == formats::SoundOwner::environment || inputs.at_listener ? VoiceSpace::flat
-        : owner_ == formats::SoundOwner::train || owner_ == formats::SoundOwner::player_train ? VoiceSpace::positional
+        : owner_ == formats::SoundOwner::train || owner_ == formats::SoundOwner::player_train ||
+                owner_ == formats::SoundOwner::car
+            ? VoiceSpace::positional
                                                                                              : VoiceSpace::panned;
     const auto start = [&](const formats::SoundAction& action, const VoicePlayback playback) -> Stream::Voice {
         if (action.files.empty()) return {};

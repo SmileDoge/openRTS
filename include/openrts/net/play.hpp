@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -26,6 +27,24 @@ struct TrainPosUpdate {
 [[nodiscard]] std::optional<TrainPosUpdate> decode_train_pos(ByteView body);
 // 0x4606 train_stands: the train id alone.
 [[nodiscard]] std::optional<std::uint32_t> decode_train_id(ByteView body);
+
+// What a client sends of its own train (docs/net.md, "Own train").
+// 0x4603 train_pos: the rear end, the cars (0x4604 each).
+[[nodiscard]] Bytes encode_train_pos(std::uint32_t train, const TrainPos& pos);
+// A body of the train id alone: 0x4606 train_stands.
+[[nodiscard]] Bytes encode_train_id(std::uint32_t train);
+// 0x4617 car_light, as rts1.exe sends it: the receiver takes the radius,
+// colour and position too (0x4C3DE0).
+struct CarLightState {
+    std::uint32_t train{};
+    std::uint32_t car{};
+    std::uint32_t light{};
+    bool lit = false;
+    float radius{};
+    std::uint32_t colour{}; // the .eng's LightColour, AARRGGBB
+    std::array<float, 3> position{};
+};
+[[nodiscard]] Bytes encode_car_light(const CarLightState& light);
 
 // 0x4602 train_remove: 0 off the track (kept), 1 deleted.
 struct TrainRemove {
@@ -74,6 +93,31 @@ struct CarLook {
     bool running = false;       // a diesel's engine runs (else it is cold)
 };
 [[nodiscard]] std::optional<CarLook> decode_car_state(ByteView body);
+[[nodiscard]] Bytes encode_car_state(const CarLook& look);
+
+// A car's sound as its owner sends it (docs/reverse/multiplayer.md, "Who
+// sends"). The slot is 3, the exterior .sms, as rts1.exe sends it.
+// 0x4639 sound_trigger (20 bytes): one discrete trigger.
+struct SoundTrigger {
+    std::uint32_t train{};
+    std::uint32_t car{};
+    std::uint16_t slot = 3;
+    std::uint32_t code{};
+};
+[[nodiscard]] std::optional<SoundTrigger> decode_sound_trigger(ByteView body);
+[[nodiscard]] Bytes encode_sound_trigger(const SoundTrigger& trigger);
+// 0x463D sound_values (50 bytes): the sound's Var1..Var8, the distance
+// travelled and its volume (SMSObject +284, +308).
+struct SoundValues {
+    std::uint32_t train{};
+    std::uint32_t car{};
+    std::uint16_t slot = 3;
+    std::array<float, 8> vars{};
+    float travelled{};
+    float volume = 1.0f;
+};
+[[nodiscard]] std::optional<SoundValues> decode_sound_values(ByteView body);
+[[nodiscard]] Bytes encode_sound_values(const SoundValues& values);
 
 // 0x4623 state_request: mode 2 asks a train's owner for its whole look
 // (lights, sound, car state), as rts1.exe does when it loads another

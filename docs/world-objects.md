@@ -103,6 +103,11 @@ the road database `<route>.rdb` (the track database format).
   gone past the second item.
 - Not done: the cars' own sounds (`CarSoundFile`, none on the installed routes).
 
+- **Facing:** a road vehicle's shape faces its −z, the reverse of rolling
+  stock (PROBABLE: Open Rails builds the car's matrix from the point behind
+  towards the one ahead, a wagon's the other way; openRTS placed them like
+  wagons and they drove backwards until 2026-11-06).
+
 openRTS: `viewer/src/road_traffic.cpp`.
 
 ## Water

@@ -217,6 +217,17 @@ first match in file order, not by number:
 | weather and environment | 8 | the first group; activation distances 0 (none) |
 | the player's train | 5 | group 7, else the first group |
 | other trains | 7 | the first group numbered 5 or 0 |
+| a car's own script, as its `.eng` / `.wag` loads it | 0 | group 0 only |
+
+**Another player's train in a network game** (`0x4F0BC8`, the car load:
+a train of kind 2 with flag `0x10000` while playing through the network;
+static, PROBABLE: a branch for an unknown mode, `dword_61D31C+4`, is left
+out): an engine neither cold nor AI (`LocoFlags & 0x88` = 0) gets kind 5,
+like the player's own; any other engine that is not cold kind 7; a cold
+engine and a wagon keep their script as loaded, kind 0. So another
+player's ED9M sounds its horn and whistle, which only its head cars'
+group 7 has. openRTS does the same for remote trains, deciding when the
+car's sound is made.
 
 ### Activation
 

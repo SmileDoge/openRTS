@@ -341,6 +341,11 @@ const SoundGroup* SoundScript::select_group(const SoundOwner owner) const {
             if (group.level == 5 || group.level == 0) return &group;
         }
         return nullptr;
+    case SoundOwner::car:
+        for (const auto& group : groups) {
+            if (group.level == 0) return &group;
+        }
+        return nullptr;
     }
     return nullptr;
 }

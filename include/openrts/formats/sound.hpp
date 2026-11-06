@@ -156,6 +156,7 @@ enum class SoundOwner : std::uint8_t {
     environment,  // weather and environment sounds (kind 8): the first group, no distances
     player_train, // the player's train (kind 5): group 7, else the first group
     train,        // other trains (kind 7): the first group numbered 5 or 0
+    car,          // a car's own script as its file loads it (kind 0): group 0 only
 };
 
 struct SoundScript {

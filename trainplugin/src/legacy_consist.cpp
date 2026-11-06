@@ -187,6 +187,7 @@ void apply_engine_output(const EngineOutput& out, simulation::EngineDemands& dem
     demands.charging_rate = out.charging_rate;
     demands.ep_value = out.ep_value;
     demands.handbrake = out.handbrake_percent;
+    demands.sets_handbrake = true; // RTS: HandbrakeValue = HandbrakePercent / 100, negative 0
     demands.systems = out.systems;
     demands.release_train_brake = (out.engine_flags & 1) != 0;
     demands.release_independent_brake = (out.engine_flags & 2) != 0;

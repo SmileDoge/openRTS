@@ -795,6 +795,108 @@ std::optional<CarLook> decode_car_state(const ByteView body) {
     return x;
 }
 
+Bytes encode_train_pos(const std::uint32_t train, const TrainPos& pos) {
+    WireWriter w;
+    w.u32(train);
+    w.f32(pos.speed);
+    w.f32(pos.acceleration);
+    w.u32(pos.node);
+    w.f32(pos.offset);
+    w.u8(pos.direction);
+    w.u32(static_cast<std::uint32_t>(pos.cars.size()));
+    for (const auto& car : pos.cars) {
+        w.begin(id(Package::car_pos));
+        w.f64(car.offset);
+        w.f32(car.speed);
+        w.f32(car.acceleration);
+        w.end();
+    }
+    return w.take();
+}
+
+Bytes encode_train_id(const std::uint32_t train) {
+    WireWriter w;
+    w.u32(train);
+    return w.take();
+}
+
+Bytes encode_car_light(const CarLightState& light) {
+    WireWriter w;
+    w.u32(light.train);
+    w.u32(light.car);
+    w.u32(light.light);
+    w.u8(light.lit ? 1 : 0);
+    w.f32(light.radius);
+    w.u32(light.colour);
+    for (const auto v : light.position) w.f32(v);
+    return w.take();
+}
+
+Bytes encode_car_state(const CarLook& look) {
+    WireWriter w;
+    w.u32(look.train);
+    w.u32(look.car);
+    w.u8(look.kind);
+    w.u32(look.flags);
+    w.u32(look.value_32);
+    w.u8(look.value_14);
+    w.u8(look.pantographs);
+    w.u8(look.running ? 1 : 0);
+    return w.take();
+}
+
+std::optional<SoundTrigger> decode_sound_trigger(const ByteView body) {
+    SoundTrigger x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.train = r.u32();
+            x.car = r.u32();
+            x.slot = r.u16();
+            static_cast<void>(r.u16()); // 1
+            x.code = r.u32();
+            static_cast<void>(r.u32()); // 0, not read
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+Bytes encode_sound_trigger(const SoundTrigger& trigger) {
+    WireWriter w;
+    w.u32(trigger.train);
+    w.u32(trigger.car);
+    w.u16(trigger.slot);
+    w.u16(1);
+    w.u32(trigger.code);
+    w.u32(0);
+    return w.take();
+}
+
+std::optional<SoundValues> decode_sound_values(const ByteView body) {
+    SoundValues x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.train = r.u32();
+            x.car = r.u32();
+            x.slot = r.u16();
+            for (auto& v : x.vars) v = r.f32();
+            x.travelled = r.f32();
+            x.volume = r.f32();
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+Bytes encode_sound_values(const SoundValues& values) {
+    WireWriter w;
+    w.u32(values.train);
+    w.u32(values.car);
+    w.u16(values.slot);
+    for (const auto v : values.vars) w.f32(v);
+    w.f32(values.travelled);
+    w.f32(values.volume);
+    return w.take();
+}
+
 Bytes encode_state_request(const std::uint32_t mode, const std::uint32_t train) {
     WireWriter w;
     w.u32(mode);

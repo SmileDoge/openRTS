@@ -337,6 +337,11 @@ std::optional<glm::mat4> RoadTraffic::place(const Spawner& spawner, const Car& c
         const auto heading = front.pose().heading;
         axis = glm::vec3{std::sin(heading), 0.0f, std::cos(heading)};
     }
+    // Road vehicle shapes face their -z, unlike rolling stock: Open Rails
+    // builds a car's matrix from the point behind towards the one ahead
+    // (RoadCars.cs, "FrontTraveller" at 0.15 of the length), the reverse of
+    // a wagon's. Placed like wagons they drove backwards (seen 2026-11-06).
+    axis = -axis;
     const float heading = std::atan2(axis.x, axis.z);
     const float up = std::atan2(axis.y, std::hypot(axis.x, axis.z));
     glm::mat4 transform = glm::translate(glm::mat4{1.0f}, (a + b) * 0.5f);

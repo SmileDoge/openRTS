@@ -140,6 +140,14 @@ struct TrainView::Car {
     // A remote train's car (Unit::remote): its lights and pantographs as the
     // owner sends them (set_remote_light / set_remote_look).
     std::vector<std::uint8_t> remote_lights;
+    // A remote car's Var1..Var8 as its owner sends them (0x463D).
+    std::optional<std::array<float, 8>> remote_sound_vars;
+    // The driven train's sound for the network (take_driven_sound).
+    std::vector<std::uint32_t> net_triggers;
+    std::array<float, 8> net_vars{};
+    float net_travelled{};
+    // Each light's wanted state the last update (update_lights), for the network.
+    std::vector<std::uint8_t> lit_now;
     std::uint8_t remote_pantographs{};
     // FreightAnim of its consist entry: objects fastened to the car and the cargo.
     std::vector<formats::ConsistFreight> freight;
@@ -603,11 +611,32 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
                 if (used) renumber[named - 1] = car.pantograph_z[named - 1] < 0.0f ? 1 : 2;
             }
             for (auto& node : car.pantograph_nodes) node.second = renumber[node.second - 1];
+            if (renumber[0] != 1 || renumber[1] != 2) {
+                std::cout << "pantographs of " << car.shape.str() << ": named 1 is " << int(renumber[0]) << ", named 2 is "
+                          << int(renumber[1]) << " (by where they stand, as RTS)" << std::endl;
+            }
             for (std::uint8_t named = 1; named <= 2; ++named) {
                 if (renumber[named - 1] != named) car.pantograph_z[renumber[named - 1] - 1] = z[named - 1];
             }
         }
-        if (!car.pantograph_nodes.empty()) car.pantograph_frames = model->animation().frame_count;
+        if (!car.pantograph_nodes.empty()) {
+            // The pantographs' own key frames, not the animation's header: the
+            // ChS4z's keys run 0..1 in a shape whose animation says 1 frame
+            // (frames - 1 gave 0 and they never moved); the ED9M's run in a
+            // 250-frame one.
+            float last_key = 0.0f;
+            for (const auto& animation : rig.animations) {
+                for (const auto& node : animation.nodes) {
+                    const bool pantograph = std::any_of(car.pantograph_nodes.begin(), car.pantograph_nodes.end(),
+                                                        [&](const auto& p) { return p.first == node.matrix_index; });
+                    if (!pantograph) continue;
+                    for (const auto& key : node.positions) last_key = (std::max)(last_key, static_cast<float>(key.frame));
+                    for (const auto& key : node.rotations) last_key = (std::max)(last_key, static_cast<float>(key.frame));
+                }
+            }
+            car.pantograph_frames = last_key > 0.0f ? static_cast<std::uint32_t>(std::lround(last_key)) + 1u
+                                                    : model->animation().frame_count;
+        }
         if (const auto bytes = vfs_->read(formats::shape_description(*vfs_, car.shape))) {
             const auto details = formats::parse_exterior_details(*bytes);
             // A node's own key frames: the ED9M's doors move over frames
@@ -1302,6 +1331,8 @@ void TrainView::clear_path(const std::uint64_t id) {
 std::string TrainView::set_role(const std::uint64_t id, const Role role) {
     auto* unit = find_unit(id);
     if (!unit) return "no such train";
+    // Another client's train (the network) moves by its owner's packages.
+    if (unit->remote) return "another player drives this train";
     if (role == Role::driven) {
         const auto index = static_cast<std::size_t>(unit - units_.data());
         const bool host = legacy_ && index != 0 && unit->host;
@@ -1343,6 +1374,7 @@ std::string TrainView::remove(const std::uint64_t id) {
     dispatcher_->clear(id);
     unit->train->vacate();
     const bool host = unit->host;
+    retire_sounds(*unit);
     units_.erase(units_.begin() + (unit - units_.data()));
     if (host) reconsist_host();
     if (follow_id_ == id) follow_id_ = 0;
@@ -1626,6 +1658,26 @@ std::string TrainView::load_situation(const std::filesystem::path& file) {
 }
 
 std::uint64_t TrainView::add_remote(const PlacedTrain& placed, std::string* error) {
+    return add_unit(placed, true, error);
+}
+
+std::uint64_t TrainView::add_local(const PlacedTrain& placed, std::string* error) {
+    const auto id = add_unit(placed, false, error);
+    // With the player's DLLs running it joins their host, as a part cut off
+    // does: its DLLs are bound when the player gets in, and go on when he
+    // leaves (RTS binds a DLL to its car once, 0x5026FC).
+    if (auto* unit = id != 0 && legacy_ ? find_unit(id) : nullptr) {
+        unit->host = true;
+        if (!reconsist_host()) {
+            std::fprintf(stderr, "locomotive DLLs: train %s not taken in\n", unit->name.c_str());
+            if (auto* again = find_unit(id)) again->host = false;
+            reconsist_host();
+        }
+    }
+    return id;
+}
+
+std::uint64_t TrainView::add_unit(const PlacedTrain& placed, const bool remote, std::string* error) {
     if (!placed.front || placed.cars.empty()) {
         if (error) *error = "no place or no cars";
         return 0;
@@ -1644,7 +1696,7 @@ std::uint64_t TrainView::add_remote(const PlacedTrain& placed, std::string* erro
     }
     for (auto& definition : stock) stock_.push_back(std::move(definition));
     unit.role = Role::standing;
-    unit.remote = true;
+    unit.remote = remote;
     unit.train->set_asleep(true);
     number_cars(unit);
     unit.settle();
@@ -1673,6 +1725,73 @@ void TrainView::set_remote_look(const std::uint64_t id, const std::size_t car, c
     }
 }
 
+std::vector<TrainView::CarSound> TrainView::take_sound(const std::uint64_t id) {
+    std::vector<CarSound> out;
+    auto* unit = find_unit(id);
+    if (!unit || unit->remote) return out;
+    for (auto& car : unit->cars) {
+        CarSound s;
+        s.triggers = std::move(car.net_triggers);
+        car.net_triggers.clear();
+        s.vars = car.net_vars;
+        s.travelled = car.net_travelled;
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+void TrainView::remote_sound_trigger(const std::uint64_t id, const std::size_t car, const std::uint32_t code) {
+    for (auto& unit : units_) {
+        if (unit.train->id() != id || !unit.remote || car >= unit.cars.size()) continue;
+        auto& pending = unit.cars[car].pending_triggers;
+        if (pending.size() < 96) pending.push_back(code);
+    }
+}
+
+void TrainView::set_remote_sound(const std::uint64_t id, const std::size_t car, const std::array<float, 8>& vars) {
+    for (auto& unit : units_) {
+        if (unit.train->id() != id || !unit.remote || car >= unit.cars.size()) continue;
+        unit.cars[car].remote_sound_vars = vars;
+    }
+}
+
+std::string TrainView::place_driven(PlacedTrain train) {
+    train.role = Role::driven;
+    std::vector<PlacedTrain> trains;
+    trains.push_back(std::move(train));
+    return put_back(std::move(trains), "server");
+}
+
+std::vector<TrainView::CarLook> TrainView::look_of(const std::uint64_t id) const {
+    std::vector<CarLook> out;
+    const auto* unit = find_unit(id);
+    if (!unit || unit->remote) return out;
+    for (const auto& car : unit->cars) {
+        CarLook look;
+        if (car.definition && car.definition->engine) {
+            look.kind = car.definition->engine->kind == formats::EngineKind::electric ? 1
+                      : car.definition->engine->kind == formats::EngineKind::diesel   ? 2
+                                                                                       : 0;
+        }
+        look.pantographs = car.pantograph_raised;
+        look.running = !car.cold;
+        if (car.definition) {
+            const auto& lights = car.definition->lights;
+            for (std::size_t k = 0; k < lights.size(); ++k) {
+                LightLook l;
+                l.on = k < car.lit_now.size() && car.lit_now[k] != 0;
+                if (!lights[k].states.empty()) {
+                    const auto shown = k < car.lights.size() ? car.lights[k].state : 0;
+                    l.state = &lights[k].states[(std::min)(shown, lights[k].states.size() - 1)];
+                }
+                look.lights.push_back(l);
+            }
+        }
+        out.push_back(std::move(look));
+    }
+    return out;
+}
+
 simulation::Train* TrainView::find_train(const std::uint64_t id) {
     for (auto& unit : units_) {
         if (unit.train->id() == id) return unit.train.get();
@@ -1686,8 +1805,62 @@ bool TrainView::remove_train(const std::uint64_t id) {
     dispatcher_->clear(id);
     it->train->vacate();
     if (follow_id_ == id) follow_id_ = 0;
+    retire_sounds(*it);
     units_.erase(it);
     return true;
+}
+
+bool TrainView::drop(const std::uint64_t id) {
+    auto* unit = find_unit(id);
+    if (!unit) return false;
+    if (unit != &units_.front() || unit->role != Role::driven) {
+        if (unit != &units_.front()) return remove(id).empty();
+        // The front without a driver (another client's, or one standing).
+        dispatcher_->clear(id);
+        unit->train->vacate();
+        retire_sounds(*unit);
+        units_.erase(units_.begin());
+        if (follow_id_ == id) follow_id_ = 0;
+        return true;
+    }
+    // The driven train: the player leaves it where he is; its DLLs, cab and
+    // keyboard go with it (RTS: the train out of play, 0x4C3DE0).
+    set_engineer(false);
+    native_.reset();
+    legacy_.reset();
+    legacy_status_.clear();
+    for (auto& each : units_) {
+        each.host = false;
+        each.host_train = SIZE_MAX;
+    }
+    host_keys_.clear();
+    driver_.reset();
+    cab_.reset();
+    visit_cab_.reset();
+    cab_requested_ = false;
+    visit_requested_ = false;
+    cab_car_ = SIZE_MAX;
+    engineer_car_ = SIZE_MAX;
+    dispatcher_->clear(id);
+    unit->train->vacate();
+    retire_sounds(*unit);
+    units_.erase(units_.begin());
+    if (follow_id_ == id) follow_id_ = 0;
+    follow_ = false;
+    std::cout << "the driven train is gone: the player is out where he was" << std::endl;
+    return true;
+}
+
+void TrainView::retire_sounds(Unit& unit) {
+    shared_sound_.erase(unit.train->id());
+    boardable_.erase(unit.train->id());
+    for (auto& car : unit.cars) {
+        board_cabs_.erase(car.key);
+        if (car.sound) retired_sounds_.push_back(std::move(car.sound));
+        if (car.cab_sound) retired_sounds_.push_back(std::move(car.cab_sound));
+        for (auto& aux : car.aux_sounds)
+            if (aux.instance) retired_sounds_.push_back(std::move(aux.instance));
+    }
 }
 
 std::string TrainView::put_back(std::vector<PlacedTrain> saved, const std::string& source) {
@@ -2381,6 +2554,15 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     accumulator_ += (std::min)(elapsed, 0.25f);
     while (accumulator_ >= simulation::train_step) {
         accumulator_ -= simulation::train_step;
+        // The cab as it stands before the step, to draw between (CabView::Blend).
+        cab_before_car_ = SIZE_MAX;
+        if (const auto* before = cab_car_ != SIZE_MAX ? cab_state(cab_car_) : nullptr) {
+            cab_switch_frames_before_.resize(before->switches.size());
+            for (std::size_t s = 0; s < before->switches.size(); ++s) cab_switch_frames_before_[s] = before->switches[s].current_frame;
+            cab_display_values_before_.resize(before->displays.size());
+            for (std::size_t d = 0; d < before->displays.size(); ++d) cab_display_values_before_[d] = before->displays[d].value;
+            cab_before_car_ = cab_car_;
+        }
         for (auto& unit : units_) {
             unit.previous = std::move(unit.current);
             unit.previous_travelled = std::move(unit.current_travelled);
@@ -2486,6 +2668,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         update_sound(elapsed, camera, *sound);
     } else {
         // Silent (--no-sound): what the DLLs post must not pile up.
+        retired_sounds_.clear();
         for (auto& unit : units_) {
             for (auto& car : unit.cars) {
                 car.pending_events.clear();
@@ -2662,12 +2845,69 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
         .floor = [this](const glm::vec3& p) { return walk_floor(p); },
         .blocked = [this](const glm::vec3& from, const glm::vec3& to) { return walk_blocked(from, to); },
     };
+    // On foot at an exterior door of another train of his (the network's
+    // own trains): Enter takes it, and he is in its cab.
+    board_prompt_.clear();
+    if (engineer_.mode() == Engineer::Mode::outside && !boardable_.empty()) {
+        if (const auto target = board_target(engineer_.feet())) {
+            board_prompt_ = tr("Enter: climb into the cab of this train");
+            if (input.engineer_action && !input.engineer_action_ctrl) {
+                if (const auto problem = board(target->train, target->car); !problem.empty()) message_ = tr(problem.c_str());
+                return;
+            }
+        }
+    }
     engineer_.update(*cab, controls, body->transform * cab->placement(), outdoors, elapsed, camera);
     // RTS moves the cab camera by the body's offsets on its springs and draws
     // the cab without them (0x424488): the cab sways around the driver.
     if (engineer_.inside()) camera.position += sway_offset(unit, engineer_car_);
     if (const auto door = engineer_.take_pass()) pass_to_next_car(*door);
     look_ = camera.forward();
+}
+
+std::optional<TrainView::BoardTarget> TrainView::board_target(const glm::vec3& feet) {
+    std::optional<BoardTarget> best;
+    float nearest = 2.5f; // as the engineer's own get-on spots
+    for (std::size_t u = 1; u < units_.size(); ++u) {
+        const auto& unit = units_[u];
+        if (unit.remote || !boardable_.contains(unit.train->id()) || unit.current.empty()) continue;
+        for (std::size_t i = 0; i < unit.cars.size(); ++i) {
+            const auto& car = unit.cars[i];
+            const auto* engine = car.definition && car.definition->engine ? &*car.definition->engine : nullptr;
+            if (!engine || !engine->cab_view || engine->cabin.empty()) continue;
+            const auto body = body_pose(unit, i, false);
+            if (!body) continue;
+            const glm::vec3 centre{body->transform[3]};
+            if (std::hypot(centre.x - feet.x, centre.z - feet.z) > car.definition->length * 0.5f + 10.0f) continue;
+            auto& cab = board_cabs_[car.key];
+            if (!cab) {
+                cab = CabView::create(*vfs_, *car.definition,
+                                      formats::wagon_path(car.folder, car.definition->name, true));
+                if (!cab) continue;
+            }
+            const auto to_scene = body->transform * cab->placement();
+            for (const auto& spot : Engineer::get_on_points(*cab)) {
+                const glm::vec3 at{to_scene * glm::vec4(spot, 1.0f)};
+                const float d = std::hypot(at.x - feet.x, at.z - feet.z);
+                if (d <= nearest) {
+                    nearest = d;
+                    best = BoardTarget{unit.train->id(), i};
+                }
+            }
+        }
+    }
+    return best;
+}
+
+std::string TrainView::board(const std::uint64_t id, const std::size_t car) {
+    if (is_player(id)) return {};
+    if (auto problem = set_role(id, Role::driven); !problem.empty()) return problem;
+    // Into the engine he climbed into, when its DLL can take him there.
+    if (car != SIZE_MAX && car != cab_car_ && !units_.empty() && car < units_.front().cars.size()) change_cab(car);
+    if (cab_) set_engineer(true);
+    follow_train(id);
+    std::cout << "the player takes train " << units_.front().name << std::endl;
+    return {};
 }
 
 void TrainView::set_engineer(const bool on) {
@@ -3866,6 +4106,8 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
             const bool on = !light.states.empty() && (out ? (flags & 9u) != 0 : (k < wanted.size() && wanted[k]));
             auto& runner = car.lights[k];
             runner.step(light, on, elapsed);
+            if (car.lit_now.size() != lights.size()) car.lit_now.assign(lights.size(), 0);
+            car.lit_now[k] = on ? 1 : 0;
             const float level = runner.level;
             if (level <= 0.0f || !body) continue;
             const auto& s = light.states[(std::min)(runner.state, light.states.size() - 1)];
@@ -3986,7 +4228,9 @@ void TrainView::update_pantographs(const float elapsed) {
             reversed = lead->node() != front->node() || std::abs(lead->offset() - front->offset()) > 1e-3;
         for (std::size_t i = 0; i < unit.cars.size() && i < states.size(); ++i) {
             auto& car = unit.cars[i];
-            if (car.pantograph_nodes.empty() || car.pantograph_frames < 2) continue;
+            // The wanted pantographs are worked out for every car, a shape
+            // without their animation too: the network sends them.
+            if (!car.definition) continue;
             const auto* engine = car.definition->engine ? &*car.definition->engine : nullptr;
             const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr;
             const bool plugin = u == 0 && native_ && i == native_car_;
@@ -4046,6 +4290,7 @@ void TrainView::update_pantographs(const float elapsed) {
                 }
                 car.pantographs_heard = car.pantograph_raised;
             }
+            if (car.pantograph_nodes.empty() || car.pantograph_frames < 2) continue;
             const float last = static_cast<float>(car.pantograph_frames - 1u);
             // PantographRaiseTime (default 3 s).
             const float step = last * elapsed / (std::max)(car.definition->pantograph_raise_time, 0.1f);
@@ -4085,6 +4330,8 @@ void TrainView::update_listener(const ViewerCamera& camera) {
 }
 
 void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound) {
+    for (auto& gone : retired_sounds_) gone->stop(sound);
+    retired_sounds_.clear();
     if (!bank_) bank_ = std::make_unique<audio::SoundBank>(vfs_);
     // First every car's script, group and clips, then the updates: a car
     // loading its clips must not delay the cars after it while the ones
@@ -4096,9 +4343,19 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
     const auto& states = unit.train->cars();
     // RTS: the player's train plays group 7 of each script, other trains
     // the first group numbered 5 or 0 (none: that car is silent).
-    const auto owner = u == 0 && unit.role == Role::driven ? formats::SoundOwner::player_train : formats::SoundOwner::train;
+    const auto unit_owner = u == 0 && unit.role == Role::driven ? formats::SoundOwner::player_train : formats::SoundOwner::train;
     for (std::size_t i = 0; i < unit.cars.size() && i < states.size() && i < unit.current.size(); ++i, ++seed) {
         auto& car = unit.cars[i];
+        // Another player's train (network): RTS gives its cars their sound
+        // when it loads them (0x4F0BC8, train kind 2 + 0x10000): an engine
+        // neither cold nor AI as the player's own (group 7, else the first),
+        // a cold one and a wagon their file's own (group 0 only).
+        auto owner = unit_owner;
+        if (unit.remote) {
+            const bool engine = car.definition && car.definition->engine;
+            owner = car.sound_owner.value_or(engine && !car.cold ? formats::SoundOwner::player_train
+                                                                 : formats::SoundOwner::car);
+        }
         if (!car.script_tried && !car.definition->sound.empty()) {
             car.script_tried = true;
             // Wagon sounds: <wagon folder>/SOUND/<file>, then the global SOUND.
@@ -4160,6 +4417,11 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
             for (int k = 0; k < 8; ++k)
                 inputs.variables[static_cast<std::size_t>(formats::SoundVariable::variable1) + static_cast<std::size_t>(k)] =
                     (*dll_vars)[static_cast<std::size_t>(k)];
+        } else if (unit.remote && car.remote_sound_vars) {
+            // Another client's train: its owner sends the variables.
+            for (int k = 0; k < 8; ++k)
+                inputs.variables[static_cast<std::size_t>(formats::SoundVariable::variable1) + static_cast<std::size_t>(k)] =
+                    (*car.remote_sound_vars)[static_cast<std::size_t>(k)];
         } else if (car.definition->engine && driver_ && u == 0) {
             // MSTS meaning of the engine variables (a DLL sets them in RTS).
             inputs[formats::SoundVariable::variable1] =
@@ -4167,6 +4429,20 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
             const float limit = (std::max)(car.definition->mass * 10.0f * (std::max)(car.definition->adhesion[1], 0.1f), 1.0f);
             inputs[formats::SoundVariable::variable2] = std::abs(state.force) / limit;
             inputs[formats::SoundVariable::variable3] = state.cylinder / 5.0f;
+        }
+        if (!unit.remote && shared_sound_.contains(unit.train->id())) {
+            for (int k = 0; k < 8; ++k)
+                car.net_vars[static_cast<std::size_t>(k)] =
+                    inputs.variables[static_cast<std::size_t>(formats::SoundVariable::variable1) + static_cast<std::size_t>(k)];
+            car.net_travelled = inputs[formats::SoundVariable::distance_travelled];
+            const auto* group = car.sound ? &car.sound->group() : nullptr;
+            for (const auto code : car.pending_triggers) {
+                // NonDistributableTriggers: not sent over the network (RTS).
+                if (group && std::find(group->non_distributable.begin(), group->non_distributable.end(), code) !=
+                                 group->non_distributable.end())
+                    continue;
+                if (car.net_triggers.size() < 96) car.net_triggers.push_back(code); // RTS's queue holds 96
+            }
         }
         if (car.sound) {
             inputs.events = car.pending_events;
@@ -4452,7 +4728,9 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
             // until the cab shape is there.
             if (auto* cab_model = library.find(inside->shape()); cab_model && inside->bound()) {
                 adjustments.clear();
-                inside->adjustments(&unit == &units_.front() ? cab_state(i) : nullptr, adjustments, signal_aspect(unit));
+                const CabView::Blend blend{&cab_switch_frames_before_, &cab_display_values_before_, alpha()};
+                inside->adjustments(&unit == &units_.front() ? cab_state(i) : nullptr, adjustments, signal_aspect(unit),
+                                    i == cab_before_car_ ? &blend : nullptr);
                 const glm::mat4 to_scene = transform * inside->placement();
                 // TextureChanges a DLL switched on (TexChange SetState): the
                 // cab's image TexID drawn as the change's file.
@@ -4663,9 +4941,9 @@ void TrainView::draw_overlay() {
     };
     if (legacy_) legacy_->draw_window(cab_controls);
     // What Enter does where the engineer stands.
-    if (engineer_.active() && !engineer_.prompt().empty()) {
+    if (engineer_.active() && (!board_prompt_.empty() || !engineer_.prompt().empty())) {
         const auto size = ImGui::GetIO().DisplaySize;
-        const char* text = engineer_.prompt().c_str();
+        const char* text = !board_prompt_.empty() ? board_prompt_.c_str() : engineer_.prompt().c_str();
         const auto text_size = ImGui::CalcTextSize(text);
         const ImVec2 corner{(size.x - text_size.x) * 0.5f, size.y * 0.78f};
         auto* list = ImGui::GetForegroundDrawList();
@@ -4674,6 +4952,23 @@ void TrainView::draw_overlay() {
         list->AddText(corner, 0xffffffffu, text);
     }
     if (!ImGui::CollapsingHeader(tr("Train"), ImGuiTreeNodeFlags_DefaultOpen)) return;
+    // The network's own trains: walk to a cab door, or as a reserve "Drive".
+    if (!boardable_.empty()) {
+        ImGui::TextUnformatted(tr("Your trains (network): on foot, Enter at a cab door takes one"));
+        for (const auto& unit : units_) {
+            const auto id = unit.train->id();
+            if (!boardable_.contains(id)) continue;
+            ImGui::PushID(static_cast<int>(id));
+            ImGui::BulletText("%s", unit.name.c_str());
+            ImGui::SameLine();
+            if (is_player(id)) {
+                ImGui::TextDisabled("(%s)", tr("driven"));
+            } else if (ImGui::SmallButton(tr("Drive"))) {
+                if (const auto problem = board(id); !problem.empty()) message_ = tr(problem.c_str());
+            }
+            ImGui::PopID();
+        }
+    }
     cab_controls();
     if (legacy_) {
         bool keys = legacy_->keyboard();

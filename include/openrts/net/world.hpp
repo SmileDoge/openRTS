@@ -11,6 +11,7 @@
 namespace openrts::simulation {
 class SignalSystem;
 class TrackNetwork;
+class Train;
 } // namespace openrts::simulation
 
 // An RTS snapshot in openRTS terms (docs/net.md): junction positions on the
@@ -37,6 +38,13 @@ WorldApplied apply_signals(simulation::SignalSystem& signals, const Snapshot& sn
 [[nodiscard]] std::optional<simulation::TrackLocation> train_front(simulation::TrackNetwork& network,
                                                                   const SnapshotTrain& train,
                                                                   std::string* error = nullptr);
+
+// The other way: where a train stands in RTS's terms, for its train_pos
+// (docs/net.md, "Own train"): its rear end (the last car's rear, facing the
+// train front), the direction 0 along the node or 1 against it, its speed
+// and acceleration (car 0's), and each car's middle as metres ahead of the
+// rear end. Nothing while the train is off the track.
+[[nodiscard]] std::optional<TrainPos> position_of(const simulation::Train& train);
 
 // A car's file as a consist names it: the folder under TRAINS/TRAINSET and
 // the file name without its extension.

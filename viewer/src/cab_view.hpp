@@ -101,8 +101,17 @@ public:
     // initial states; and the doors as they are open.
     // `aspect`: the aspect the locomotive signal lights show without a DLL
     // (with one, its Cabin::Signal and ALSNOn decide).
+    // The state one simulation step before `state`, to draw the switches'
+    // frames and the arrows' values between the two (the DLL runs every
+    // 0.05 s; drawn as they are, needles and levers move at 20 frames a
+    // second). `alpha`: how far into the step the frame is drawn.
+    struct Blend {
+        const std::vector<float>* switch_frames = nullptr; // by switch id
+        const std::vector<float>* display_values = nullptr; // by display id
+        float alpha = 1.0f;
+    };
     void adjustments(const dllhost::CarOutput* state, std::vector<renderer::NodeAdjustment>& out,
-                     std::uint32_t aspect = 0) const;
+                     std::uint32_t aspect = 0, const Blend* blend = nullptr) const;
     // The displays' blinking (DisplayFade's second value) over `elapsed` s.
     void step_displays(float elapsed);
     // The driver's seat (Pos1 of the first chair), in the engine's shape coordinates.

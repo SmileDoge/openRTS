@@ -50,6 +50,11 @@ pantograph's base (`BOTTOM`) decide for all its parts. Before 2026-11-06
 openRTS took the last character of the name, so the ED9M's front motor
 cars never raised theirs.
 
+The raised pose is the last key frame of the pantograph's own nodes, not
+the shape animation's frame count: the ChS4z's keys run 0..1 in an
+animation that says 1 frame, and until 2026-11-06 its pantographs stayed
+down in openRTS (the line still worked, it took the DLL's mask).
+
 ## Pantographs without a DLL
 
 RTS's AI trains (`0x424488`): the main pantograph is 1, or 2 when the car

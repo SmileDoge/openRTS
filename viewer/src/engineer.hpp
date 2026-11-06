@@ -55,6 +55,9 @@ public:
 
     // engineer.Height / Height1 from RTS's config.ini (UTF-16 or ANSI text).
     void configure(std::string_view config);
+    // Where one stands outside to climb in through each exterior door of
+    // `cab`, in cab coordinates (Mode::outside's get-on spots).
+    [[nodiscard]] static std::vector<glm::vec3> get_on_points(const CabView& cab);
     [[nodiscard]] Mode mode() const noexcept { return mode_; }
     [[nodiscard]] bool active() const noexcept { return mode_ != Mode::off; }
     [[nodiscard]] bool inside() const noexcept { return mode_ == Mode::seated || mode_ == Mode::standing; }

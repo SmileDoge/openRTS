@@ -156,6 +156,10 @@ void test_parsing() {
     const auto* player = script.select_group(formats::SoundOwner::player_train);
     check(player && player->level == 7, "the player's train prefers group 7");
     check(!script.select_group(formats::SoundOwner::train), "other trains need group 5 or 0");
+    check(!script.select_group(formats::SoundOwner::car), "a car's own script needs group 0 (RTS kind 0)");
+    const auto two = formats::parse_sound_script("Tr_SMS ( ScalabiltyGroup ( 5 ) ScalabiltyGroup ( 0 ) )");
+    const auto* own = two.select_group(formats::SoundOwner::car);
+    check(own && own->level == 0, "kind 0 skips group 5 for group 0");
     if (!group) return;
     check(group->activation.external_camera && !group->activation.cab_camera, "activation cameras");
     check(group->activation.distance && near(*group->activation.distance, 550), "activation distance");

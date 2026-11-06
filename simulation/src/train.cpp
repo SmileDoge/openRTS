@@ -956,7 +956,8 @@ void Train::step() {
         if (car.wheelslip) force *= 0.25f;
         car.force = force * direction;
         car.power = demands.power >= 0.0f ? demands.power : std::abs(force * car.velocity);
-        car.handbrake = (std::max)(car.handbrake, 0.01f * demands.handbrake);
+        car.handbrake = demands.sets_handbrake ? std::clamp(0.01f * demands.handbrake, 0.0f, 1.0f)
+                                               : (std::max)(car.handbrake, 0.01f * demands.handbrake);
     }
 
     // EPT: an engine's EPTvalue spreads to the neighbouring cars with EP

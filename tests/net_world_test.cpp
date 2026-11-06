@@ -9,7 +9,9 @@
 #include <openrts/formats/track_database.hpp>
 #include <openrts/formats/track_sections.hpp>
 #include <openrts/net/world.hpp>
+#include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/track_network.hpp>
+#include <openrts/simulation/train.hpp>
 
 namespace {
 
@@ -183,12 +185,40 @@ void motion() {
     check(before && before->node == 1 && after && after->node == 3, "a jump waits, then puts the train there");
 }
 
+// Our own train the other way: where it stands in RTS's terms, and back.
+void own_position() {
+    auto net = switch_track();
+    formats::WagonDefinition car;
+    car.length = 16.0f;
+    car.mass = 50000.0f;
+    simulation::Train train({{.definition = &car}, {.definition = &car}});
+    check(train.place(*net, 1, 80.0, true), "a two-car train on the track");
+    const auto pos = net::position_of(train);
+    check(pos.has_value(), "its position in RTS's terms");
+    if (!pos) return;
+    check(pos->node == 1 && near(pos->offset, 80.0 - train.length()) && pos->direction == 0, "the rear end, facing along");
+    check(pos->cars.size() == 2 && near(pos->cars[1].offset, 8.0) && pos->cars[0].offset > pos->cars[1].offset,
+          "car middles counted from the rear end");
+    net::SnapshotTrain record;
+    net::TrainCar setup;
+    setup.length = 16.0f;
+    record.cars = {setup, setup};
+    record.pos = *pos;
+    const auto front = net::train_front(*net, record);
+    check(front && front->node == 1 && near(front->offset, 80.0) && front->forward, "and back to the same front");
+    // Turned: facing against the node.
+    check(train.place(*net, 1, 30.0, false), "the train turned");
+    const auto against = net::position_of(train);
+    check(against && against->direction == 1 && near(against->offset, 30.0 + train.length()), "the rear end, facing against");
+}
+
 } // namespace
 
 int main() {
     distances();
     front();
     motion();
+    own_position();
     if (failures == 0) std::cout << "net world tests passed\n";
     return failures == 0 ? 0 : 1;
 }

@@ -184,18 +184,81 @@ sounds only to players within 3 km of it, and the dispatcher's map shows
 the person; its players table's "Отклик" (seconds since the server last
 heard the player) no longer grows.
 
-**Not yet:** the assigned train is not driven (stage 2, "own train"); a
-coupling or a split is not repeated, so a train whose car count changed
-stays where it was (RTS drops such a position too); the sounds of remote
-trains (`sound_values`, `sound_trigger`, `sound_state`); electrification;
-the server's pause does not stop the clock.
+**Own trains** (stage 2, step 2): the trains the dispatcher assigned are
+simulated here, one of them driven with its DLLs, cab and keyboard, and the
+others see them:
+- **Several trains can be ours.** The first in the snapshot is placed as the
+  driven train (`TrainView::place_driven`), the other ones after it as
+  trains standing here (`TrainView::add_local`), then the remote trains. On
+  foot, Enter at an exterior cab door of another own train takes it
+  (`TrainView::board`); the Train panel lists them with "Drive" as a
+  reserve. Own trains placed while the player's DLLs run join their host, as
+  a part cut off does: a DLL is bound when the player first gets in and goes
+  on after he leaves. Track control is not there in a network game: the
+  server and its dispatchers own the track. Each own train sends its
+  position, look and sound by itself. Its DLLs start in the snapshot's
+  state: "Холодный" 0 (cold, the handbrake on), "Включен" 1, "Движется"
+  running, as `rts1.exe` (`0x5026FC` reads the train byte `+2`). The server
+  changes the state by itself: a train left "Движется" comes back running.
+- **Its position** (`train_pos`, from the rear end as the snapshot gives
+  it, `net::position_of`): at once when it starts, every 1.5 s while it
+  moves, and a last one with `train_stands` when it stops. The server keeps
+  it: the next login puts the train where it stopped.
+- **Its look:** a light's `car_light` when it switches; `car_state` (the
+  raised pantographs, "running") at most every 250 ms when it changed. A
+  client that loads the train asks with `state_request` 2; the answer is
+  the lit lights (every light starts off there; `rts1.exe` sends all of
+  them, 275 a car on an ED9M) and every car's `car_state`.
+- **Its sound:** every discrete trigger of the exterior `.sms`
+  (`sound_trigger`, slot 3), except the group's
+  `NonDistributableTriggers`; Var1..Var8 and the distance travelled
+  (`sound_values`) at most every 200 ms when they changed. The volume is
+  sent as 1: it is the DLL's `SMSObject` volume (`+308`), which the DLL host
+  does not read yet.
+- `player_pos` carries the driven train's id (0 on foot); `train_pos` for
+  an own train is ignored (`rts1.exe` keeps its own trains' position),
+  `train_pos_forced` puts it there.
+- **Taken off the track** (`train_remove` 0, the console's "Удалить из
+  мира"): the train leaves the track here and stays ours; if the player
+  drove it, he is let out where he was (`TrainView::drop`: no train, the free
+  camera). The server puts it back with its position and `train_stands`
+  (`rts1.exe` takes `0x4603` for a train out of play, then `0x4606` puts it
+  in play, `0x4C3DE0`); the player takes it again when he has no train.
+  RTS crashed its owner here (`reverse/multiplayer-protocol.md`).
+- **Deleted** (`train_remove` 1): gone, the player let out as above.
+- **Assigned during play** (`train_assign`): a train given to us becomes
+  ours where it stands (driven when the player has no train, else
+  standing); one taken away is drawn as another client's from where it
+  stood.
+- A train taken away leaves its sounds stopped (`TrainView` stops a removed
+  train's voices at the next sound update; before, its loops played on).
+
+**Remote sound:** `sound_trigger` and `sound_values` for slot 3 play the
+car's exterior sound with the owner's triggers and variables
+(`TrainView::remote_sound_trigger` / `set_remote_sound`). Its cars get the
+group `rts1.exe` gives another player's train in a network game
+(`docs/sound.md`, "Groups by owner"): the ED9M's head cars have only group
+7 and were silent before.
+
+**Checked against a live server** (2026-11-06, the ChS4z "1337" driven in
+openRTS, an ED9M in `rts1.exe`): the ChS4z moves, stops, raises its
+pantographs and lights up the same in both; the ED9M's horn, whistle,
+traction, brake shoes and couplers sound in openRTS.
+
+**Not yet:** a coupling or a split is not repeated, so a train whose car
+count changed stays where it was (RTS drops such a position too); the whole
+sound state (`sound_state`): a client that loads the train hears a loop that
+already runs only from its next trigger; an own train put on the track while
+the player has no DLL host runs its DLLs only once driven; substation loads;
+electrification; the server's pause does not stop the clock.
 
 ## Tests
 
 - `openrts.net`: fields and strings both ways, nested packages, broken
   lengths, package names, a snapshot with every modelled package written,
   read and written again byte for byte, a stray position; the packages of
-  play; a connection to a fake server on the loopback (the login, its reply
+  play, the own train's (a sound trigger as `rts1.exe` sent it, read and
+  written back); a connection to a fake server on the loopback (the login, its reply
   without a length, an assignment, the snapshot, the hang-up).
 - `openrts.net_world`: on a synthetic switch, distances along the track,
   junctions set the server's way, a train's front from its rear end, a

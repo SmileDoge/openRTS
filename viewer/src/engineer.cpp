@@ -77,6 +77,16 @@ glm::vec3 vec(const std::array<float, 3>& a) {
 
 } // namespace
 
+std::vector<glm::vec3> Engineer::get_on_points(const CabView& cab) {
+    std::vector<glm::vec3> out;
+    for (const auto& door : cab.description().doors) {
+        if (!has_point(door) || !is_exterior(door)) continue;
+        const auto at = door_point(door);
+        out.push_back(glm::vec3{at.x, 0.0f, at.z} + outward(door) * 0.9f);
+    }
+    return out;
+}
+
 void Engineer::configure(const std::string_view config) {
     const auto value = [&](const std::string& key) { return rts_config_value(config, key); };
     if (const auto h = value("engineer.height")) height_ = std::clamp(*h, 1.2f, 2.3f);

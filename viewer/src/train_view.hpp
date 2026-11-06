@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <future>
 #include <map>
+#include <set>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -208,6 +209,27 @@ public:
     // track now, never simulated and never woken; the network moves it
     // (find_train()->shift / place). Its id, 0 when it does not fit.
     std::uint64_t add_remote(const PlacedTrain& train, std::string* error = nullptr);
+    // One of this client's own trains beside the ones there (the network: a
+    // second train of the player, one assigned or put back during play):
+    // simulated, standing until driven (set_role). Its id, 0 when it does
+    // not fit.
+    std::uint64_t add_local(const PlacedTrain& train, std::string* error = nullptr);
+    // Takes train `id` off the track, the driven one too: the player is let
+    // out where he was (no train, the free camera). False: no such train.
+    bool drop(std::uint64_t id);
+    // Trains the player may take (the network: his own). On foot, Enter at
+    // an exterior door of one of their cabs makes it the driven train; the
+    // Train panel lists them with "Drive".
+    void set_boardable(std::uint64_t id, bool on) {
+        if (on) {
+            boardable_.insert(id);
+        } else {
+            boardable_.erase(id);
+        }
+    }
+    // Train `id` becomes the driven one with the player in its cab (`car`:
+    // the engine he climbed into; SIZE_MAX the DLL's own). An error, or empty.
+    [[nodiscard]] std::string board(std::uint64_t id, std::size_t car = SIZE_MAX);
     [[nodiscard]] simulation::Train* find_train(std::uint64_t id);
     bool remove_train(std::uint64_t id);
     // A remote train's look as its owner sends it (car_light, car_state):
@@ -215,6 +237,45 @@ public:
     // conditions and pantograph rules are not worked out (0x4F07D4).
     void set_remote_light(std::uint64_t id, std::size_t car, std::size_t light, bool on);
     void set_remote_look(std::uint64_t id, std::size_t car, std::uint8_t pantographs, bool running);
+    // The train the server gives this client (docs/net.md, "Own train"):
+    // put on the track now as the driven train, every train there now gone;
+    // its DLLs, cab and keyboard as with --situation. An error, or empty.
+    [[nodiscard]] std::string place_driven(PlacedTrain train);
+    // A train's look as the network sends it (a train simulated here): per
+    // car its kind (0 wagon, 1 electric, 2 diesel), raised pantographs,
+    // whether it runs, and each light's wanted state with the State it shows.
+    struct LightLook {
+        bool on = false;
+        const formats::LightState* state = nullptr;
+    };
+    struct CarLook {
+        std::uint8_t kind{};
+        std::uint8_t pantographs{};
+        bool running = false;
+        std::vector<LightLook> lights;
+    };
+    [[nodiscard]] std::vector<CarLook> look_of(std::uint64_t id) const;
+    // A train's exterior sound for the network (0x4639, 0x463D): per car the
+    // discrete triggers it played since the last call (the group's
+    // NonDistributableTriggers left out) and its Var1..Var8 and distance
+    // travelled. Collected only for the trains given to share_sound.
+    struct CarSound {
+        std::vector<std::uint32_t> triggers;
+        std::array<float, 8> vars{};
+        float travelled{};
+    };
+    void share_sound(std::uint64_t id, bool on) {
+        if (on) {
+            shared_sound_.insert(id);
+        } else {
+            shared_sound_.erase(id);
+        }
+    }
+    [[nodiscard]] std::vector<CarSound> take_sound(std::uint64_t id);
+    // A remote train's sound as its owner sends it: a discrete trigger, and
+    // the variables its sound curves read.
+    void remote_sound_trigger(std::uint64_t id, std::size_t car, std::uint32_t code);
+    void set_remote_sound(std::uint64_t id, std::size_t car, const std::array<float, 8>& vars);
     // Saves the situation as `name` once the driven train stands on the
     // track (--save-situation, for scripted checks).
     void save_situation_when_placed(std::string name) { save_when_placed_ = std::move(name); }
@@ -397,6 +458,24 @@ private:
     std::filesystem::path pending_situation_;
     std::vector<PlacedTrain> pending_trains_;
     std::string pending_trains_source_;
+    std::set<std::uint64_t> shared_sound_; // take_sound
+    std::set<std::uint64_t> boardable_;    // set_boardable
+    std::string board_prompt_;             // Enter at another train's cab door
+    // The cabs of boardable trains' engines (their doors), by car key.
+    std::map<std::uint32_t, std::unique_ptr<CabView>> board_cabs_;
+    struct BoardTarget {
+        std::uint64_t train{};
+        std::size_t car{};
+    };
+    [[nodiscard]] std::optional<BoardTarget> board_target(const glm::vec3& feet);
+    // Sounds of trains taken away: stopped at the next sound update (a
+    // sound object dropped while it plays leaves its loops running).
+    std::vector<std::unique_ptr<audio::SoundInstance>> retired_sounds_;
+    void retire_sounds(Unit& unit);
+    std::uint64_t add_unit(const PlacedTrain& train, bool remote, std::string* error);
+    // The cab's switch frames and display values one step back (CabView::Blend).
+    std::vector<float> cab_switch_frames_before_, cab_display_values_before_;
+    std::size_t cab_before_car_ = SIZE_MAX;
     std::string save_when_placed_;
     std::array<char, 64> situation_name_{}; // the Train window's name for a situation to save
     int situation_choice_ = -1;

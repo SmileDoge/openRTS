@@ -7,6 +7,7 @@
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/track_traveller.hpp>
+#include <openrts/simulation/train.hpp>
 
 namespace openrts::net {
 
@@ -79,6 +80,23 @@ std::optional<simulation::TrackLocation> train_front(simulation::TrackNetwork& n
         return std::nullopt;
     }
     return simulation::TrackLocation{traveller.node(), traveller.offset(), traveller.forward()};
+}
+
+std::optional<TrainPos> position_of(const simulation::Train& train) {
+    const auto rear = train.rear_end();
+    const auto& cars = train.cars();
+    if (!rear || cars.empty() || !cars.back().definition) return std::nullopt;
+    TrainPos pos;
+    pos.node = rear->node();
+    pos.offset = static_cast<float>(rear->offset());
+    pos.direction = rear->forward() ? 0 : 1;
+    pos.speed = cars.front().velocity;
+    pos.acceleration = cars.front().acceleration;
+    // openRTS counts car middles from the last car's middle; RTS from the
+    // rear end, half the last car further back.
+    const double half_last = 0.5 * cars.back().definition->length;
+    for (const auto& car : cars) pos.cars.push_back({car.offset + half_last, car.velocity, car.acceleration});
+    return pos;
 }
 
 CarFile car_file(const TrainCar& car) {

@@ -53,6 +53,10 @@ struct EngineDemands {
     float charging_rate{};       // second pipe (ChargingRate)
     float ep_value = -1.0f;      // EP brake target, <0: none (EPTvalue)
     float handbrake{};           // percent (HandbrakePercent)
+    // The controller works the handbrake (a DLL: RTS sets HandbrakeValue =
+    // HandbrakePercent / 100 every step, so the cab releases it); otherwise
+    // `handbrake` only applies it on top of the car menu's.
+    bool sets_handbrake = false;
     std::uint16_t systems = 1;   // BrakeSystemsEngaged: 1 pipe, 2 EP, 4 charging pipe
     bool release_train_brake = false;       // EngineFlags 1
     bool release_independent_brake = false; // EngineFlags 2

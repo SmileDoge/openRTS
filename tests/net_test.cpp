@@ -291,6 +291,54 @@ void play_packages() {
     const auto place = encode_player_pos(at);
     check(place.size() == 44 && place[12] == 0x3b && place[13] == 0xee && place[14] == 0xff && place[15] == 0x38,
           "a player's place: 44 bytes, the tile at 12");
+
+    // Our own train out and back in.
+    TrainPos own;
+    own.speed = 12.5f;
+    own.node = 1585;
+    own.offset = 750.44f;
+    own.direction = 0;
+    own.cars = {{9.85, 12.5f, 0.2f}};
+    const auto own_bytes = encode_train_pos(2, own);
+    const auto own_back = decode_train_pos(own_bytes);
+    check(own_back && own_back->train == 2 && own_back->pos.node == 1585 && own_back->pos.cars.size() == 1 &&
+              own_back->pos.cars[0].offset == 9.85,
+          "our train's position reads back");
+    CarLightState lamp;
+    lamp.train = 2;
+    lamp.light = 7;
+    lamp.lit = true;
+    lamp.radius = 0.95f;
+    lamp.colour = 0xa0ffffffu;
+    const auto lamp_bytes = encode_car_light(lamp);
+    const auto lamp_back = decode_car_light(lamp_bytes);
+    check(lamp_bytes.size() == 33 && lamp_back && lamp_back->light == 7 && lamp_back->lit, "our light: 33 bytes as RTS's");
+    CarLook ours;
+    ours.train = 2;
+    ours.kind = 1;
+    ours.pantographs = 2;
+    const auto ours_bytes = encode_car_state(ours);
+    const auto ours_back = decode_car_state(ours_bytes);
+    check(ours_bytes.size() == 20 && ours_back && ours_back->pantographs == 2 && ours_back->kind == 1,
+          "our car's look: 20 bytes as RTS's");
+    check(encode_train_id(2) == Bytes({2, 0, 0, 0}), "train_stands");
+    // A sound trigger as rts1.exe sent it (the ED9M, car 1, code 45).
+    const Bytes trigger_bytes{3, 0, 0, 0, 1, 0, 0, 0, 3, 0, 1, 0, 45, 0, 0, 0, 0, 0, 0, 0};
+    const auto trigger = decode_sound_trigger(trigger_bytes);
+    check(trigger && trigger->train == 3 && trigger->car == 1 && trigger->slot == 3 && trigger->code == 45,
+          "sound_trigger: train, car, slot 3, code");
+    check(trigger && encode_sound_trigger(*trigger) == trigger_bytes, "sound_trigger: written back the same");
+    SoundValues values;
+    values.train = 2;
+    values.car = 0;
+    values.vars[2] = 0.03f;
+    values.travelled = 12.5f;
+    values.volume = 0.7f;
+    const auto values_bytes = encode_sound_values(values);
+    const auto values_back = decode_sound_values(values_bytes);
+    check(values_bytes.size() == 50 && values_back && values_back->slot == 3 && values_back->vars[2] == 0.03f &&
+              values_back->travelled == 12.5f && values_back->volume == 0.7f,
+          "sound_values: 50 bytes as RTS's");
 }
 
 // A fake RTS server on the loopback: the login and its reply, an

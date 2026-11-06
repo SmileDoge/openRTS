@@ -705,7 +705,12 @@ std::optional<glm::vec3> CabView::display_point(const std::size_t display_index)
 }
 
 void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer::NodeAdjustment>& out,
-                          const std::uint32_t aspect) const {
+                          const std::uint32_t aspect, const Blend* blend) const {
+    const auto between = [&](const std::vector<float>* before, const std::uint32_t id, const float now) {
+        if (!blend || !before || id >= before->size()) return now;
+        const float was = (*before)[id];
+        return was + (now - was) * std::clamp(blend->alpha, 0.0f, 1.0f);
+    };
     if (!bound_) return;
     switch_frames_.assign(cab_.switches.size(), -1.0f);
     for (std::size_t i = 0; i < cab_.switches.size() && i < switches_.size(); ++i) {
@@ -717,7 +722,13 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
         float position = key ? 0.0f : static_cast<float>(s.initial_state);
         std::uint32_t whole = key ? 0u : s.initial_state;
         if (state && s.id < state->switches.size()) {
-            position = state->switches[s.id].current_frame;
+            // Between the steps only a move of up to one position: a DLL that
+            // throws a lever over many (C_MAIN 12 -> 1 on the ChS4z) has it
+            // there at once, as RTS draws it, not swept through the others.
+            const float now = state->switches[s.id].current_frame;
+            const auto* before = blend ? blend->switch_frames : nullptr;
+            const bool near = before && s.id < before->size() && std::abs((*before)[s.id] - now) <= 1.001f;
+            position = near ? between(before, s.id, now) : now;
             whole = state->switches[s.id].state;
         }
         if (key) {
@@ -740,6 +751,7 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
         std::uint32_t lit = d.initial_state;
         if (state && d.id < state->displays.size()) {
             value = state->displays[d.id].value;
+            if (d.type == formats::CabDisplayType::arrow) value = between(blend ? blend->display_values : nullptr, d.id, value);
             lit = state->displays[d.id].state;
         }
         // RTS 0x525DB0: with a blink the display is hidden for the second

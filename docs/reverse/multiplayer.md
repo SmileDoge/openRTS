@@ -333,6 +333,10 @@ its own train and the parts cut off from it. Per car:
   count (`sound.md`).
 - The remote car's sound takes its speed and acceleration from `0x4604`.
   The step sets the object's `+204` / `+292` from the car.
+- Which group of its `.sms` it plays is decided when the car loads
+  (`0x4F0BC8`): an engine neither cold nor AI plays as the player's own
+  (group 7, else the first), a cold one and a wagon group 0 only
+  (`../sound.md`, "Groups by owner"; static, PROBABLE).
 
 **Slots on the receiving side** (`0x4C3DE0`):
 - 1, the cab sound (`car+444+16`): for `0x463A` only, and only on a kind-4

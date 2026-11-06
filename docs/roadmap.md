@@ -294,9 +294,23 @@ yet. Each stage ends with something that runs and is checked:
      rules, the agreed settings for everyone.
    - Coupling of two players' trains decided by the server in one step
      (Legacy off).
+   - **Server plugins in LuaJIT** (planned, 2026-11-06): the server's admin
+     installs them by hand, a folder each (`plugins/<name>/`), as Minecraft
+     servers take theirs; full access, no sandbox, as a Java plugin has
+     there. Events (a player joins or leaves, a train assigned, coupled or
+     split, a message, a timer) and actions (messages, assigning trains,
+     junctions and signals, pause, kick). What they do goes out as the
+     packages already reversed, so `rts1.exe` clients see it too.
 4. **Helpers** through the relay (the scheme tested on 2026-11-03), and
    for openRTS clients over the normal connection.
 5. **The dispatcher console** as an HTML client.
+6. **Panels and forms** (planned, 2026-11-06): RmlUi (HTML/CSS-like
+   markup, MIT) drawn by the renderer, with the logic in Lua; Luau is the
+   candidate for client scripts and UI (built for a sandbox). Players and
+   servers make their own panels with simple logic, as Garry's Mod's VGUI:
+   a server plugin can send one to a player and get its buttons back as
+   events, e.g. role play forms. Client scripts only ever run in a sandbox:
+   no files, no network, never driving the train.
 
 **Still to reverse for it.** Every package is catalogued with its payload
 (2026-11-05, `reverse/multiplayer-protocol.md`). Left UNKNOWN:

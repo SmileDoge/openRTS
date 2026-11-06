@@ -112,8 +112,10 @@ void print_world(const net::Snapshot& s) {
                         t.forced ? " (forced)" : "");
         }
         for (const auto& car : t.cars) {
-            std::printf("  %s uid %u%s%s\n", net::to_utf8(car.file).c_str(), car.uid, car.flipped() ? " flipped" : "",
-                        (car.flags & 0x300u) ? " chocked" : "");
+            std::printf("  %s uid %u%s%s%s", net::to_utf8(car.file).c_str(), car.uid, car.flipped() ? " flipped" : "",
+                        (car.flags & 2u) ? " cold" : "", (car.flags & 0x300u) ? " chocked" : "");
+            if (car.handbrake && *car.handbrake > 0.0f) std::printf(" handbrake %.0f%%", *car.handbrake * 100.0f);
+            std::printf("\n");
         }
         if (t.names && !(*t.names)[1].empty()) std::printf("  notes: %s\n", net::to_utf8((*t.names)[1]).c_str());
         if (t.brakes) {

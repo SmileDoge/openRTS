@@ -309,9 +309,13 @@ public:
         if (track_) {
             train_ = std::make_unique<TrainView>(content_.vfs(), route_, origin_, track_->network());
             train_->set_rts_config(content_.rts_config());
-            track_control_ = std::make_unique<TrackControl>(track_->network(), origin_);
-            if (content_.track_control()) track_control_->toggle();
-            if (signals_) {
+            // Not in a network game: there the server and its dispatchers
+            // own the trains and the track (docs/net.md).
+            if (!content_.connection()) {
+                track_control_ = std::make_unique<TrackControl>(track_->network(), origin_);
+                if (content_.track_control()) track_control_->toggle();
+            }
+            if (signals_ && track_control_) {
                 track_control_->set_signal_names([signals = signals_.get()](const std::uint32_t object) {
                     return signals->object_name(object);
                 });
@@ -821,10 +825,10 @@ public:
             bool open = track_control_->is_open();
             if (ImGui::Checkbox(tr("Track control (Ctrl+Alt+F7)"), &open)) track_control_->toggle();
             ImGui::SameLine();
-            ImGui::Checkbox(tr("Names (F7)"), &place_names_);
-            ImGui::SameLine();
-            ImGui::Checkbox(tr("Signal names (Ctrl+F7)"), &signal_names_);
         }
+        ImGui::Checkbox(tr("Names (F7)"), &place_names_);
+        ImGui::SameLine();
+        ImGui::Checkbox(tr("Signal names (Ctrl+F7)"), &signal_names_);
         if (track_) track_->draw_overlay();
         if (train_) train_->draw_overlay();
         if (signals_) signals_->draw_overlay();
