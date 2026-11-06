@@ -30,6 +30,17 @@
 #include <openrts/renderer/webgpu_texture.hpp>
 
 #include "crash_report.hpp"
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shellapi.h>
+#endif
 #include "debug_view.hpp"
 #include "viewer_scene.hpp"
 #include "viewer_state.hpp"
@@ -290,10 +301,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         } else if (flags[i] == "--no-hot-reload") {
             hot_reload = false;
         } else if (flags[i] == "--consist" && has_value) {
-            // The command line is in the system code page; TrainView takes
-            // UTF-8 (a Cyrillic consist name threw on the path conversion).
-            const auto name = std::filesystem::path(std::string(flags[++i])).u8string();
-            consist.assign(name.begin(), name.end());
+            consist = std::string(flags[++i]);
         } else if (flags[i] == "--path" && has_value) {
             train_path = flags[++i];
         } else if (flags[i] == "--start" && has_value) {
@@ -309,9 +317,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             const auto value = flags[++i];
             mp_save = std::filesystem::path(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--mp-nick" && has_value) {
-            // The system code page, as --consist: the server takes UTF-16.
-            const auto name = std::filesystem::path(std::string(flags[++i])).u8string();
-            mp_nick.assign(name.begin(), name.end());
+            mp_nick = std::string(flags[++i]);
         } else if (flags[i] == "--mp-snapshot" && has_value) {
             const auto value = flags[++i];
             mp_snapshot = std::filesystem::path(std::u8string(value.begin(), value.end()));
@@ -380,6 +386,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.cab_shadows = std::string(flags[++i]) != "off";
         } else if (flags[i] == "--parallel-recording" && has_value) {
             options.parallel_recording = std::string(flags[++i]) != "off";
+        } else if (flags[i] == "--multi-draw" && has_value) {
+            options.multi_draw = std::string(flags[++i]) != "off";
         } else if (flags[i] == "--shadow-settings" && has_value) {
             options.shadow_settings = std::string(flags[++i]);
         } else if (flags[i] == "--headlight-reach" && has_value) {
@@ -515,10 +523,15 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         snapshot_bytes = wait_for_world(*connection, mp_connect, mp_nick, server_route, early);
         if (!snapshot_bytes) return exit_code::network_failed;
         snapshot_source = mp_connect;
-        if (!mp_save.empty()) {
-            std::ofstream(mp_save, std::ios::binary)
+        // The world as the server sent it, kept for opening it again without
+        // the network (--mp-snapshot): the last one in the settings folder
+        // always, and where --mp-save-snapshot says.
+        const auto last = openrts::viewer::user_data_directory() / "last_server_snapshot.bin";
+        for (const auto& file : {last, mp_save}) {
+            if (file.empty()) continue;
+            std::ofstream(file, std::ios::binary)
                 .write(reinterpret_cast<const char*>(snapshot_bytes->data()), static_cast<std::streamsize>(snapshot_bytes->size()));
-            std::cout << "net: snapshot saved to " << mp_save.string() << std::endl;
+            std::cout << "net: snapshot saved to " << file.string() << std::endl;
         }
     } else if (!mp_snapshot.empty()) {
         std::ifstream in(mp_snapshot, std::ios::binary);
@@ -573,7 +586,32 @@ int main(const int argc, char* argv[]) {
     print_banner();
 
 #ifdef OPENRTS_HAS_WGPU
+#ifdef _WIN32
+    // Every argument as UTF-8, as the rest of the program takes text. The C
+    // runtime's argv is in the system code page: a Cyrillic path name, consist,
+    // nick or folder did not match the content (only --consist and --mp-nick
+    // were converted before 2026-11-06; the menu's paths of Kuban_RTS were
+    // not found).
+    std::vector<std::string> utf8_args;
+    {
+        int count = 0;
+        if (wchar_t** wide = CommandLineToArgvW(GetCommandLineW(), &count)) {
+            for (int i = 1; i < count; ++i) {
+                const int length = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, nullptr, 0, nullptr, nullptr);
+                std::string text(static_cast<std::size_t>((std::max)(length, 1)), '\0');
+                WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, text.data(), length, nullptr, nullptr);
+                text.resize(text.empty() ? 0 : text.size() - 1);
+                utf8_args.push_back(std::move(text));
+            }
+            LocalFree(wide);
+        }
+    }
+    static_cast<void>(argc);
+    static_cast<void>(argv);
+    const std::vector<std::string_view> args(utf8_args.begin(), utf8_args.end());
+#else
     const std::vector<std::string_view> args(argv + 1, argv + argc);
+#endif
     if (args.size() == 2 && args[0] == "--ace") return run_ace_upload_check(args[1]);
     // `--window --view <file|name|last>` reopens a saved debug view.
     if (args.size() >= 3 && args[0] == "--window" && args[1] == "--view") {

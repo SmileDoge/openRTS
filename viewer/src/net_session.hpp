@@ -77,6 +77,7 @@ private:
         std::vector<std::array<float, 9>> sound_sent;          // by car: Var1..8, travelled
         std::vector<std::vector<std::uint8_t>> lights_sent;    // by car, by light
         std::vector<std::pair<std::uint8_t, bool>> looks_sent; // by car: pantographs, running
+        std::size_t derailed_sent = 0; // derailed cars the last 0x4636 named
     };
     // Puts an own train on the track at record.pos; `drive`: the player
     // takes it (its DLLs start in the server's state).

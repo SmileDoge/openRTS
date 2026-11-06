@@ -174,6 +174,39 @@ Then (2026-11-02):
   0.11 ms, posing and submitting 0.16 ms; the gondolas drawn as instances
   (120 cars, 56 draw calls). Frames unchanged.
 
+- **Many kinds of cars** (2026-11-07, a player's station on a server: 8
+  trains, about 500 cars, 1550 instances in view; `perf:` lines, the capture's
+  draw report, the same view and server snapshot opened offline):
+  - The frame was CPU-bound: 6.5 ms of work, the GPU pass 2.6 ms. Most of
+    it: `finish` (wgpu closing the pass) 2.24 ms, `prepare` 1.58, `cull`
+    1.0, `models` 0.52.
+  - **Not a matter of instancing.** Cars of a kind were already one call per
+    part. The 4400 calls came from 200 to 290 kinds of models of some 20
+    parts each, nearly every part with a material of its own (3211 parts,
+    3001 materials at the nearest level): no merging by material is left.
+  - **The cost was a bind group per part.** Each part had its own group (its
+    texture and a uniform slice of its constants), set before every call.
+    Now a model's part constants are a storage buffer (`array<Draw>`, 144
+    bytes a part) and a group is per model, texture, filter and unlit
+    (`RenderModel::Impl::bindings`). Each instance id is a pair (instance,
+    part slot): the vertex shader reads the part, the fragment shader gets
+    its slot as a flat input.
+  - **Multi-draw indirect** («Multi-draw indirect» in Performance,
+    `--multi-draw on|off`, the remembered `multi_draw`; needs the device's
+    `IndirectFirstInstance`, asked for at start): a model's consecutive
+    parts with one group are one `MultiDrawIndexedIndirect`, in their order
+    (an opaque decal after its body). The main pass's arguments are written
+    in `prepare`, each depth slot's in its own region in `render_depth`.
+    4419 calls become 1793 commands.
+  - Measured: `finish` 2.24 -> 1.2 ms, `models` 0.52 -> 0.34, the node
+    matrices of animated instances (8950 a frame) once per node from the
+    parent's and the normal matrix from the 3 x 3 part: `cull` 1.0 -> 0.85.
+    About 1.5 ms less a frame. Multi-draw on or off made no difference
+    there: the calls are cheap, the groups were not.
+  - Frames unchanged: pixel for pixel within the run-to-run noise (Vulkan,
+    both paths, day and night; DirectX 12 identical byte for byte, OpenGL
+    4 pixels).
+
 At 1280 x 720 the frame with four 4096 cascades is now near what the GPU
 needs; the RTS path takes about 2.3 ms.
 
@@ -220,26 +253,44 @@ mean change of the frame +14.4 -> +7.0; at night unchanged.
 
 ### Lamp shadows
 
-Up to four lamps throw shadows (`lamp_shadows`,
-«Тени от фонарей», `--lamp-shadows 0..4`, 3), chosen in
-`SceneEffects::set_focus` after the scene's submit. The focus is the cab
-sphere, else 20 m around a point 12 m ahead of the camera. Each lamp is
+Up to eight lamps throw shadows (`lamp_shadows`,
+«Тени от фонарей», `--lamp-shadows 0..8`, 3; four until 2026-11-07), chosen
+in `SceneEffects::set_focus` after the scene's submit. The place they are
+for:
+- in the cab: the cab sphere;
+- in flight (`ViewerScene::lamp_shadow_focus`): along the view to the
+  ground (the terrain, up to 200 m; looking up or level, 40 m), the sphere
+  over that stretch from the camera: its middle at 0.6 of the reach, its
+  radius half the reach + 15 m, at least 25 m. Low over a station it takes
+  the near lamps and the far ones; from above it lies on the ground. Until
+  2026-11-07 it was 20 m around a point 12 m ahead, so in flight the
+  shadows ended in a ring just ahead;
+- otherwise 20 m around a point 12 m ahead of the camera. Each lamp is
 scored by its RTS light shape (lights.glsl: cone or box, spot exponent,
 attenuation, no surface) at the focus's middle and 0.4 of its radius each
 way, the best of the seven times its brightness: a weak lamp right above
 the cab and a strong floodlight far away pointed at it both count, one
-pointed elsewhere does not. A lamp kept from the last frame counts half as
-much again, so two alike do not take turns. Its map (a layer of a
+pointed elsewhere does not. Where its beam falls (half its reach, at most
+40 m, along its axis) counts too when inside the sphere, less towards its
+edge: in a big sphere the seven points may all miss a lamp lighting the
+ground between them. A lamp kept from the last frame counts half as much
+again, so two alike do not take turns. Its map (a layer of a
 separate depth array, half the cascades' size, at least 1024):
 - outside the sphere: a perspective from the lamp just around the sphere
   (near plane up to 1 m, past the lamp's own housing);
 - inside it: along its own cone, at most 120 degrees (a sphere lamp there
   is left out, it would need six maps);
 - a parallel (box) lamp: orthographic along its axis over the sphere.
-Drawn in depth slots 6..9 (both renderers now have 12) with the shadow
+Drawn in depth slots 6..13 (both renderers now have 14) with the shadow
 casters, out of view ones within 80 m too. In the lamp loops of the model
 and terrain shaders a lamp in that list is multiplied by
-`effects_lamp_shadow` (8 filtered compares; outside its map: lit).
+`effects_lamp_shadow` (8 filtered compares; outside its map: lit). The
+shadow fades out over the last 6 % towards a map's edge and, in flight,
+from 0.75 of the sphere's radius to its edge: no hard line where the
+shadows end.
+
+At Krasnodar-1 at night from above the train: five lamps light the 33 m
+sphere, all five throw shadows (four before).
 
 ED9M at night in the cab: a lamp 8 m above the cab shining down and a
 floodlight 99 m away high up pointed at it were chosen; the cab no longer

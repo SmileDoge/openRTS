@@ -45,7 +45,8 @@ add_executable(openrts_viewer src/main.cpp src/crash_report.cpp)
 openrts_configure_target(openrts_viewer)
 target_link_libraries(openrts_viewer PRIVATE openrts_viewer_core)
 if(WIN32)
-    target_link_libraries(openrts_viewer PRIVATE dbghelp)
+    # dbghelp: the crash report; shell32: the command line as UTF-16.
+    target_link_libraries(openrts_viewer PRIVATE dbghelp shell32)
 endif()
 if(MSVC)
     # A .pdb beside the exe in every configuration: the crash report names

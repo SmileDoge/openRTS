@@ -334,6 +334,25 @@ cutting it off again (a train of its own), and the part given back to us:
 its car came back with its DLL. Our own couplings and cuts on a live server
 are not checked yet.
 
+**Derailments** (2026-11-07, as `rts1.exe` in the live capture):
+- **Sent.** When a car of an own train comes off, and with each `0x4603`
+  while the train still moves, `0x4636` goes to the server: a `u8` per car,
+  then a `0x4638` per derailed car (`net::encode_derail`, the capture's
+  layout byte for byte; the meanings PROBABLE): its heading, its place in
+  the tile, its roll now and at rest, m·g, a state 0 as it comes off and 4
+  once it rolls. Every client lets the cars fall itself from it; the server
+  marks them.
+- **The train stays one.** RTS damages the coupler between an overturned
+  car and a neighbour that stays up (`0x581694`, flags 16/32); openRTS cut
+  the train there until 2026-11-07, and its coupler-force check cut it
+  between derailed cars too (an ED9M fell apart in three on a curve, three
+  trains on the console). Now neither cuts.
+- **Back on the rails** only by the dispatcher, as RTS: "Удалить из мира"
+  and placing it again. C does nothing in a network game (it put the
+  driven train at the camera, which the others never saw).
+- **Not yet:** another client's `0x4636` is read and left: its cars show on
+  the rails.
+
 **Not yet:** a piece of track's `0x4645` `u8` is read and left (PROBABLE:
 kept for the server's list); the console's dispatcher packages (stage 3 and
 5).

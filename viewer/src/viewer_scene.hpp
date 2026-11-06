@@ -240,6 +240,9 @@ public:
     // What the shadows look at most closely this frame (after submit): the
     // cab the engineer is in.
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> shadow_focus() const { return std::nullopt; }
+    // In flight: the sphere the lamps' shadows cover, where the camera looks
+    // (nullopt: the shadow focus, or around the view).
+    [[nodiscard]] virtual std::optional<renderer::ShadowFocus> lamp_shadow_focus(const ViewerCamera&) const { return std::nullopt; }
 };
 
 struct SceneLoadResult {

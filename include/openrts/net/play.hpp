@@ -33,6 +33,26 @@ struct TrainPosUpdate {
 [[nodiscard]] Bytes encode_train_pos(std::uint32_t train, const TrainPos& pos);
 // A body of the train id alone: 0x4606 train_stands.
 [[nodiscard]] Bytes encode_train_id(std::uint32_t train);
+// 0x4636 derail, as rts1.exe sends it of its own train: a u8 per car (1
+// derailed), then a 0x4638 per derailed car. The block's layout is the live
+// capture's of 2026-11-05 byte for byte (reverse/multiplayer-protocol.md;
+// the meanings PROBABLE). Every client runs the falling itself from it.
+struct DerailedCar {
+    std::uint32_t car{};
+    std::array<float, 3> heading{};  // a unit vector along the car, level
+    std::array<float, 3> position{}; // in its tile (x, y, z)
+    float tip{};                     // the roll now, rad
+    float tip_rest{};                // the roll it comes to rest at
+    float tip_third{};               // UNKNOWN: about 0.7 of the rest in the capture
+    float weight{};                  // m * g, N
+    std::uint32_t state{};           // 0 as it comes off, 4 once it rolls (the capture)
+};
+struct Derail {
+    std::uint32_t train{};
+    std::vector<std::uint8_t> derailed; // by car
+    std::vector<DerailedCar> cars;
+};
+[[nodiscard]] Bytes encode_derail(const Derail& derail);
 // 0x4617 car_light, as rts1.exe sends it: the receiver takes the radius,
 // colour and position too (0x4C3DE0).
 struct CarLightState {

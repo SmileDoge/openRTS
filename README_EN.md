@@ -250,6 +250,7 @@ The game can also be started directly:
 | `--no-sound`, `--volume 0..1` | no sound, volume |
 | `--msaa 1`, `--no-vsync`, `--no-batching` | graphics settings |
 | `--fps-limit <30..500 \| 0>` | the FPS limit for this run (0: none), not remembered |
+| `--multi-draw on\|off` | multi-draw indirect for models this run (on by default where the GPU has it) |
 | `--hdr` | an HDR frame with tone mapping |
 | `--backend auto\|vulkan\|dx12\|opengl` | the graphics API (OpenGL: the RTS renderer only) |
 | `--reshade-depth on\|off` | depth for ReShade ([INSTALL_EN.md](INSTALL_EN.md#reshade)) |

@@ -244,11 +244,15 @@ void test_overturn(const Stock& stock) {
     check(train.place(*network, 1, 960.0, true, &error), "placed before the curve: " + error);
     train.add_velocity(25.0f);
     bool derailed = false;
+    bool broke = false;
     float most = 0.0f;
     bool fallen = false;
     for (int i = 0; i < static_cast<int>(8.0 / simulation::train_step); ++i) {
         train.step();
-        for (const auto& event : train.take_events()) derailed = derailed || event.kind == simulation::TrainEventKind::derailment;
+        for (const auto& event : train.take_events()) {
+            derailed = derailed || event.kind == simulation::TrainEventKind::derailment;
+            broke = broke || event.kind == simulation::TrainEventKind::coupler_break;
+        }
         for (const auto& car : train.cars()) {
             most = (std::max)(most, std::abs(car.tilt));
             fallen = fallen || car.fallen;
@@ -256,6 +260,9 @@ void test_overturn(const Stock& stock) {
     }
     std::cerr << "  overturn: most roll " << most << " rad, speed " << train.speed() << '\n';
     check(derailed, "overspeed in a tight curve derails");
+    // RTS 0x581694: past 0.9 rad a coupler is damaged, the train stays one
+    // (a derailed VL80 stayed one train in the live capture).
+    check(!broke, "a derailment cuts no coupler: the train stays one");
     check(most > 0.8f && fallen, "the car rolls past 0.8 rad and lies down");
     bool torn = false;
     for (const auto& car : train.cars()) torn = torn || (car.fallen && (car.pipe_ends & simulation::pipe_hose_front) != 0);

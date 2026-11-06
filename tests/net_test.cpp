@@ -326,6 +326,42 @@ void play_packages() {
     check(ours_bytes.size() == 20 && ours_back && ours_back->pantographs == 2 && ours_back->kind == 1,
           "our car's look: 20 bytes as RTS's");
     check(encode_train_id(2) == Bytes({2, 0, 0, 0}), "train_stands");
+    {
+        // 0x4636 as the live capture's VL80 (train 4, two sections, the first
+        // off): 87 bytes, one 0x4638 of 77 (2026-11-05).
+        Derail d;
+        d.train = 4;
+        d.derailed = {1, 0};
+        DerailedCar c;
+        c.car = 0;
+        c.heading = {-0.420f, 0.0f, -0.908f};
+        c.position = {-917.887f, 1.225f, 569.601f};
+        c.tip_rest = 1.313f;
+        c.tip_third = 0.919f;
+        c.weight = 802665.3f;
+        d.cars.push_back(c);
+        const auto body = encode_derail(d);
+        check(body.size() == 87, "derail: the capture's length");
+        WireReader r(body);
+        const auto train = r.u32();
+        const auto cars = r.u32();
+        const auto first = r.u8();
+        const auto second = r.u8();
+        check(train == 4 && cars == 2 && first == 1 && second == 0, "derail: train, cars, flags");
+        const auto block = r.frame();
+        check(r.ok() && block.id == id(Package::derailed_car) && block.body.size() == 71, "derail: one 0x4638 of 77 bytes");
+        WireReader b(block.body);
+        const auto car = b.u32();
+        const float hx = b.f32(), hy = b.f32(), hz = b.f32();
+        const float zero = b.f32(), x = b.f32(), y = b.f32(), z = b.f32();
+        const float tip = b.f32(), rest = b.f32(), third = b.f32();
+        b.f32();
+        b.f32();
+        const float weight = b.f32();
+        check(car == 0 && hx == -0.420f && hy == 0.0f && hz == -0.908f && zero == 0.0f && x == -917.887f && y == 1.225f && z == 569.601f,
+              "derail: car, heading, place");
+        check(tip == 0.0f && rest == 1.313f && third == 0.919f && weight == 802665.3f, "derail: rolls and weight");
+    }
     // A sound trigger as rts1.exe sent it (the ED9M, car 1, code 45).
     const Bytes trigger_bytes{3, 0, 0, 0, 1, 0, 0, 0, 3, 0, 1, 0, 45, 0, 0, 0, 0, 0, 0, 0};
     const auto trigger = decode_sound_trigger(trigger_bytes);

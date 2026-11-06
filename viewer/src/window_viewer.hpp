@@ -29,12 +29,15 @@ struct WindowOptions {
     std::optional<float> lamps_daylight;
     // --ground-bounce <0..0.5>: the ground's reflectance for this run.
     std::optional<float> ground_bounce;
-    // --lamp-shadows <0..4>: lamps throwing shadows for this run.
+    // --lamp-shadows <0..8>: lamps throwing shadows for this run.
     std::optional<int> lamp_shadows;
     // --shadow-settings distance,size,cascades,softness: this run's shadows.
     std::optional<std::string> shadow_settings;
     // --parallel-recording on|off: this run's choice.
     std::optional<bool> parallel_recording;
+    // --multi-draw on|off: this run's multi-draw indirect (the remembered
+    // "multi_draw" otherwise, on by default).
+    std::optional<bool> multi_draw;
     // --shadow-cache on|off: this run's far-cascade caching.
     std::optional<bool> shadow_cache;
     // --cab-shadows on|off: this run's shadow map around the cab.

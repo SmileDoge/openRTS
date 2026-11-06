@@ -297,6 +297,22 @@ public:
         std::vector<LightLook> lights;
     };
     [[nodiscard]] std::vector<CarLook> look_of(std::uint64_t id) const;
+    // A train's derailed cars as the network sends them (0x4636): a flag per
+    // car and each derailed car's place, heading and roll. Empty while none is.
+    struct CarDerail {
+        std::size_t car{};
+        glm::vec3 heading{0.0f, 0.0f, 1.0f};
+        formats::RoutePosition position;
+        float tilt{}, tilt_target{};
+        float weight{}; // m * g, N
+    };
+    struct DerailLook {
+        std::vector<std::uint8_t> derailed; // by car
+        std::vector<CarDerail> cars;
+    };
+    [[nodiscard]] DerailLook derail_of(std::uint64_t id) const;
+    // A line for the player (the message strip).
+    void say(std::string text) { message_ = std::move(text); }
     // A train's exterior sound for the network (0x4639, 0x463D): per car the
     // discrete triggers it played since the last call (the group's
     // NonDistributableTriggers left out) and its Var1..Var8 and distance

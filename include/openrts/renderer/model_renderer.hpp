@@ -176,7 +176,8 @@ struct ModelRendererStats {
     // Last rendered frame.
     std::size_t instances{};  // submitted model instances
     std::size_t primitives{}; // instance primitives drawn
-    std::size_t draw_calls{};
+    std::size_t draw_calls{};    // primitives drawn, each with its instances
+    std::size_t draw_commands{}; // calls issued in the main pass (a multi-draw counts once)
 };
 
 #ifdef OPENRTS_HAS_WGPU
@@ -237,6 +238,13 @@ public:
     // comparison.
     void set_batching(bool enabled) noexcept;
     [[nodiscard]] bool batching() const noexcept;
+    // Multi-draw indirect (on by default where the device takes a first
+    // instance in indirect arguments, IndirectFirstInstance): a model's
+    // consecutive primitives with the same texture are drawn by one call.
+    // Off: a call per primitive, as before.
+    void set_multi_draw(bool enabled) noexcept;
+    [[nodiscard]] bool multi_draw() const noexcept;
+    [[nodiscard]] bool multi_draw_supported() const noexcept;
     // Uploads a model; textures already uploaded for the same virtual path are
     // shared.
     [[nodiscard]] RenderModel create_model(StreamedModelAsset&& asset);
@@ -255,6 +263,9 @@ public:
     void frame_submitted(WGPUQueue queue);
     std::size_t collect_retired();
     [[nodiscard]] ModelRendererStats stats() const;
+    // The last frame's draw calls by model, the most first (`top` lines):
+    // calls, instances drawn, calls of one instance (not merged), the shape.
+    [[nodiscard]] std::string draw_report(std::size_t top) const;
 
     // A frame is assembled first and then emitted the way RTS draws statics:
     // opaque pass, then translucent pass, each in submission order (RTS does not

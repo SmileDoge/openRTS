@@ -1289,9 +1289,14 @@ void Train::step() {
             }
         }
     }
-    // Coupler break: the first sub-step force against the weaker end.
+    // Coupler break: the first sub-step force against the weaker end. Not
+    // between derailed cars: their forces come from the stand-in for RTS's
+    // derailed solver, not from RTS's coupler model (PROBABLE: a derailed
+    // VL80 stayed one train in the live capture of 2026-11-05; ours cut an
+    // ED9M in three on a curve).
     if (settings_.coupler_break) {
         for (std::size_t i = 0; i + 1 < n; ++i) {
+            if (cars_[i].derailed || cars_[i + 1].derailed) continue;
             const auto& a = coupling_behind(cars_[i]);
             const auto& b = coupling_ahead(cars_[i + 1]);
             const float force = cars_[i].coupler_force;
@@ -1338,7 +1343,7 @@ void Train::start_tipping(const std::size_t index, const CarState* neighbour) {
 //   neighbours' ends facing it), so the pipe vents and the train brakes;
 // - it pulls its neighbours with 0.637 * |roll| * m: above a neighbour's
 //   DerailBufferForce the neighbour overturns too; past 0.9 rad the coupler
-//   breaks;
+//   between them is damaged (flags 16 / 32), the train stays one;
 // - a sliding car slides on along its heading, slowing by its friction.
 void Train::derailment() {
     const auto dt = static_cast<float>(train_step);
@@ -1381,7 +1386,9 @@ void Train::derailment() {
             if (pull > cars_[k].definition->derail_buffer_force) {
                 start_tipping(k, &cars_[i]);
             } else if (std::abs(car.tilt) > 0.9f) {
-                impl_->events.push_back({.kind = TrainEventKind::coupler_break, .car = static_cast<std::uint32_t>((std::min)(i, k))});
+                // RTS 0x581694: the coupler is damaged, not uncoupled.
+                cars_[(std::min)(i, k)].coupler_open |= coupler_broken_rear;
+                cars_[(std::max)(i, k)].coupler_open |= coupler_broken_front;
             }
         }
     }

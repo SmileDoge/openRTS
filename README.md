@@ -241,6 +241,7 @@ Redistributable (x64), см. «Готовая сборка».
 | `--no-sound`, `--volume 0..1` | без звука, громкость |
 | `--msaa 1`, `--no-vsync`, `--no-batching` | настройки графики |
 | `--fps-limit <30..500 \| 0>` | ограничение FPS на этот запуск (0 — без ограничения), не запоминается |
+| `--multi-draw on\|off` | multi-draw indirect для моделей на этот запуск (по умолчанию включён, если видеокарта умеет) |
 | `--hdr` | HDR-кадр с тональной компрессией |
 | `--backend auto\|vulkan\|dx12\|opengl` | графический API (на OpenGL — только рендер RTS) |
 | `--reshade-depth on\|off` | глубина для ReShade ([INSTALL.md](INSTALL.md#reshade)) |

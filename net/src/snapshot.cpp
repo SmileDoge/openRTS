@@ -794,6 +794,37 @@ Bytes encode_train_id(const std::uint32_t train) {
     return w.take();
 }
 
+Bytes encode_derail(const Derail& derail) {
+    WireWriter w;
+    w.u32(derail.train);
+    w.u32(static_cast<std::uint32_t>(derail.derailed.size()));
+    for (const auto flag : derail.derailed) w.u8(flag);
+    for (const auto& car : derail.cars) {
+        // 0x4638: car, heading (3), 0 and the place in the tile (4), the
+        // rolls (3), five forces (m * g the third), a u8, the state, and no
+        // optional blocks (two u8 0).
+        w.begin(id(Package::derailed_car));
+        w.u32(car.car);
+        for (const float v : car.heading) w.f32(v);
+        w.f32(0.0f);
+        for (const float v : car.position) w.f32(v);
+        w.f32(car.tip);
+        w.f32(car.tip_rest);
+        w.f32(car.tip_third);
+        w.f32(0.0f);
+        w.f32(0.0f);
+        w.f32(car.weight);
+        w.f32(0.0f);
+        w.f32(0.0f);
+        w.u8(0);
+        w.u32(car.state);
+        w.u8(0);
+        w.u8(0);
+        w.end();
+    }
+    return w.take();
+}
+
 Bytes encode_car_light(const CarLightState& light) {
     WireWriter w;
     w.u32(light.train);

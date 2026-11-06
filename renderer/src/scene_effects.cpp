@@ -55,12 +55,15 @@ struct EffectsUniform {
     glm::vec4 focus_params{0.0f};
     glm::vec4 lamps{0.0f};
     glm::mat4 lamp_shadows[SceneEffects::max_lamp_shadows]{};
-    std::uint32_t lamp_shadow_ids[4]{}; // the lamp's index in the light list + 1
-    glm::vec4 lamp_shadow_texel{0.0f};  // a texel's size a metre from the lamp (or in metres, parallel)
+    std::uint32_t lamp_shadow_ids[SceneEffects::max_lamp_shadows]{}; // the lamp's index in the light list + 1
+    float lamp_shadow_texel[SceneEffects::max_lamp_shadows]{};        // a texel's size a metre from the lamp (or in metres, parallel)
     glm::vec4 lamp_shadow_params{0.0f}; // x: lamps, y: map size, z: filter radius (texels)
     // Each one's to_light translation: finds the lamp among the RTS light
     // rings when the clustered list is off.
     glm::vec4 lamp_shadow_keys[SceneEffects::max_lamp_shadows]{};
+    // The sphere the lamps' shadows cover in flight (xyz its middle, w its
+    // radius; 0: none): they fade out towards its edge.
+    glm::vec4 lamp_focus{0.0f};
 };
 static_assert(sizeof(EffectsUniform) % 16 == 0);
 
@@ -474,10 +477,12 @@ struct SceneEffects::Impl {
     std::vector<ModelExtraLight> packed_lights; // as the light list holds them
     bool lamp_shadows_wanted = false;
     std::uint32_t lamp_shadow_count = 0;
+    std::uint32_t lamps_lighting = 0;
+    float lamp_radius = 0.0f;
     std::array<glm::mat4, max_lamp_shadows> lamp_matrices{};
     std::vector<glm::vec3> lamp_shadow_kept; // last frame's lamps, by position
     void fit_focus(const std::optional<ShadowFocus>& focus);
-    void choose_lamp_shadows(const std::optional<ShadowFocus>& focus);
+    void choose_lamp_shadows(const std::optional<ShadowFocus>& focus, bool fade);
     [[nodiscard]] std::uint32_t lamp_map_size() const noexcept { return (std::max)(1024u, map_size() / 2); }
     void record_depth(WGPUCommandEncoder encoder, WGPUTextureView target, const glm::mat4& matrix, std::uint32_t slot,
                       const DepthDraw& draw) const;
@@ -1023,11 +1028,14 @@ void SceneEffects::Impl::fit_focus(const std::optional<ShadowFocus>& focus) {
 // sphere when the lamp is outside it; from inside, along its own cone (a
 // sphere lamp there is left out: it would need six maps); a parallel
 // (box) lamp orthographically along its axis.
-void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& focus) {
+void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& focus, const bool fade) {
     lamp_shadow_count = 0;
+    lamps_lighting = 0;
+    lamp_radius = 0.0f;
     std::fill(std::begin(frame.lamp_shadow_ids), std::end(frame.lamp_shadow_ids), 0u);
     std::fill(std::begin(frame.lamp_shadow_keys), std::end(frame.lamp_shadow_keys), glm::vec4{0.0f});
     frame.lamp_shadow_params = glm::vec4{0.0f};
+    frame.lamp_focus = glm::vec4{0.0f};
     if (!lamp_shadows_wanted) {
         lamp_shadow_kept.clear();
         return;
@@ -1065,6 +1073,15 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
         if (kind == 2 && inside) continue;
         float strength = 0.0f;
         for (const auto& sample : samples) strength = (std::max)(strength, lamp_strength_at(light, sample));
+        // Where its beam falls: a big sphere's seven points may all miss a
+        // lamp lighting the ground between them. Nearer the middle counts more.
+        {
+            const glm::vec3 along = glm::length(light.direction) > 1e-4f ? glm::normalize(light.direction) : glm::vec3{0.0f, -1.0f, 0.0f};
+            const float reach = (std::max)(light.size.z * (light.attenuation.y + light.attenuation.z), 1.0f);
+            const glm::vec3 beam = position + along * (std::min)(reach * 0.5f, 40.0f);
+            const float off = glm::distance(beam, centre);
+            if (off < radius) strength = (std::max)(strength, lamp_strength_at(light, beam) * (1.0f - 0.5f * off / radius));
+        }
         float score = strength * glm::dot(glm::vec3(light.diffuse), luma);
         if (score < 0.01f) continue;
         for (const auto& kept : lamp_shadow_kept) {
@@ -1123,13 +1140,17 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
         lamp_shadow_kept.push_back(position);
     }
     lamp_shadow_count = wanted;
+    lamps_lighting = static_cast<std::uint32_t>(picks.size());
+    lamp_radius = radius;
     frame.lamp_shadow_params = glm::vec4{static_cast<float>(wanted), size, std::clamp(settings.shadow_softness, 0.5f, 4.0f) * 1.5f, 0.0f};
+    if (fade && wanted > 0) frame.lamp_focus = glm::vec4{centre, radius};
 }
 
-void SceneEffects::set_focus(const std::optional<ShadowFocus>& focus) {
+void SceneEffects::set_focus(const std::optional<ShadowFocus>& focus, const std::optional<ShadowFocus>& lamps) {
     auto& impl = *impl_;
     impl.fit_focus(focus);
-    impl.choose_lamp_shadows(focus);
+    const bool flight = lamps && lamps->radius > 0.0f;
+    impl.choose_lamp_shadows(flight ? lamps : focus, flight);
     const auto queue = wgpuDeviceGetQueue(impl.device);
     wgpuQueueWriteBuffer(queue, impl.uniform, 0, &impl.frame, sizeof(impl.frame));
     wgpuQueueRelease(queue);
@@ -1286,7 +1307,9 @@ SceneEffectStats SceneEffects::stats() const noexcept {
             .near_texel = impl_->cascade_count > 0 ? impl_->frame.texel.x : 0.0f,
             .daylight = impl_->daylight,
             .lamp_strength = 1.0f - impl_->frame.lamps.x,
-            .lamp_shadows = impl_->lamp_shadow_count};
+            .lamp_shadows = impl_->lamp_shadow_count,
+            .lamps_lighting = impl_->lamps_lighting,
+            .lamp_radius = impl_->lamp_radius};
 }
 
 } // namespace openrts::renderer

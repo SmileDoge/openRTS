@@ -14,6 +14,9 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <set>
+#include <span>
+#include <sstream>
 #include <unordered_map>
 #include <vector>
 
@@ -71,8 +74,28 @@ struct MaterialUniform {
     std::int32_t matrix_index; // into an animated instance's locals, -1: none
     float lod_bias;
 };
-constexpr std::uint64_t material_uniform_stride = 256; // minUniformBufferOffsetAlignment
-static_assert(sizeof(MaterialUniform) <= material_uniform_stride);
+// The model's draws one after another in a storage buffer (WGSL array<Draw>,
+// stride 144): a binding serves every draw of the model with its texture.
+constexpr std::uint64_t material_stride = sizeof(MaterialUniform);
+static_assert(sizeof(MaterialUniform) == 144);
+
+// One instance of one draw call: the instance and the primitive it draws (its
+// slot in the model's draws). A multi-draw call covers several primitives of
+// a model, so each id names its own.
+struct IdEntry {
+    std::uint32_t instance;
+    std::uint32_t draw;
+};
+
+// DrawIndexedIndirect arguments (the indirect buffer, one per primitive drawn).
+struct IndirectDraw {
+    std::uint32_t index_count;
+    std::uint32_t instance_count;
+    std::uint32_t first_index;
+    std::int32_t base_vertex;
+    std::uint32_t first_instance;
+};
+static_assert(sizeof(IndirectDraw) == 20);
 
 // One drawn model instance per frame. The normal matrix is
 // transpose(inverse(transform)), as the RTS shader computes it; the shader
@@ -165,13 +188,16 @@ fn coverage_alpha(alpha: f32, cutoff: f32, width: f32, mip: f32) -> f32 {
 
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
 @group(0) @binding(1) var source_sampler: sampler;
-@group(0) @binding(2) var<uniform> draw: Draw;
+// The model's primitives, by slot; each id says which one it draws.
+@group(0) @binding(2) var<storage, read> draws: array<Draw>;
 @group(1) @binding(0) var<uniform> frame: Frame;
 @group(1) @binding(1) var<storage, read> instances: array<Instance>;
-// Per draw call a contiguous run of instance indices, starting at the draw's
-// first instance.
-@group(1) @binding(2) var<storage, read> instance_ids: array<u32>;
+// Per draw call a contiguous run of (instance, primitive) entries, starting at
+// the draw's first instance; a multi-draw call has a run per primitive.
+@group(1) @binding(2) var<storage, read> instance_ids: array<vec2<u32>>;
 @group(1) @binding(3) var<storage, read> locals: array<Local>;
+// The primitive being drawn: set first thing in each entry point.
+var<private> draw: Draw;
 
 struct Placement {
     model: mat4x4<f32>,
@@ -181,7 +207,7 @@ struct Placement {
 // World and normal matrix of this primitive for one instance:
 // instance transform times the primitive's (possibly animated) local matrix.
 fn placement(instance_index: u32) -> Placement {
-    let instance = instances[instance_ids[instance_index]];
+    let instance = instances[instance_ids[instance_index].x];
     var local = draw.local;
     var local_normal = draw.local_normal;
     if (instance.locals >= 0 && draw.matrix_index >= 0) {
@@ -209,6 +235,7 @@ struct VertexOut {
     @location(3) colour: vec4<f32>,
     @location(4) fog: vec4<f32>,
     @location(5) @interpolate(flat) ring: u32, // the instance's ring of further lights
+    @location(6) @interpolate(flat) draw_slot: u32, // the primitive (draws[])
 };
 
 fn ring_count(ring: u32) -> i32 {
@@ -243,11 +270,13 @@ fn transformed_normal(normal_matrix: mat4x4<f32>, input_normal: vec3<f32>) -> ve
 @vertex
 fn vs_main(input: VertexIn) -> VertexOut {
     var out: VertexOut;
+    out.draw_slot = instance_ids[input.instance].y;
+    draw = draws[out.draw_slot];
     let place = placement(input.instance);
     out.world = place.model * vec4<f32>(input.position, 1.0);
     out.clip = frame.view_projection * out.world;
     out.uv = input.uv;
-    out.ring = u32(clamp(instances[instance_ids[input.instance]].ring, 0, 9));
+    out.ring = u32(clamp(instances[instance_ids[input.instance].x].ring, 0, 9));
     out.normal = vec3<f32>(0.0);
 
     let shader = draw.named_shader;
@@ -297,6 +326,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
 // Port of RTS shape.frag.
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
+    draw = draws[input.draw_slot];
     let texel = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
     let alpha_width = fwidth(texel.w);
     let texels = input.uv * vec2<f32>(textureDimensions(source_texture));
@@ -379,11 +409,13 @@ constexpr char experimental_shader_body[] = R"(
 @vertex
 fn vs_main(input: VertexIn) -> VertexOut {
     var out: VertexOut;
+    out.draw_slot = instance_ids[input.instance].y;
+    draw = draws[out.draw_slot];
     let place = placement(input.instance);
     out.world = place.model * vec4<f32>(input.position, 1.0);
     out.clip = frame.view_projection * out.world;
     out.uv = input.uv;
-    out.ring = u32(clamp(instances[instance_ids[input.instance]].ring, 0, 9));
+    out.ring = u32(clamp(instances[instance_ids[input.instance].x].ring, 0, 9));
     out.normal = (place.normal_matrix * vec4<f32>(input.normal, 0.0)).xyz;
     if (draw.light_material == -9) { // Circumference
         out.normal = vec3<f32>(0.0, 1.0, 0.0);
@@ -435,6 +467,7 @@ fn shoulder(c: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
+    draw = draws[input.draw_slot];
     let texel = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
     let alpha_width = fwidth(texel.w);
     let texels = input.uv * vec2<f32>(textureDimensions(source_texture));
@@ -656,7 +689,7 @@ void copy_vec4(float (&target)[4], const glm::vec4& value) {
     entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
     entries[2].binding = 2;
     entries[2].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-    entries[2].buffer.type = WGPUBufferBindingType_Uniform;
+    entries[2].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
     entries[2].buffer.minBindingSize = sizeof(MaterialUniform);
 
     const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
@@ -669,7 +702,7 @@ void copy_vec4(float (&target)[4], const glm::vec4& value) {
     entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     entries[0].buffer.type = WGPUBufferBindingType_Uniform;
     entries[0].buffer.minBindingSize = sizeof(FrameUniform);
-    const std::array<std::uint64_t, 3> storage_sizes{sizeof(GpuInstance), sizeof(std::uint32_t), sizeof(GpuLocal)};
+    const std::array<std::uint64_t, 3> storage_sizes{sizeof(GpuInstance), sizeof(IdEntry), sizeof(GpuLocal)};
     for (std::uint32_t i = 0; i < storage_sizes.size(); ++i) {
         entries[i + 1].binding = i + 1;
         entries[i + 1].visibility = WGPUShaderStage_Vertex;
@@ -768,10 +801,10 @@ struct Local {
 };
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
 @group(0) @binding(1) var source_sampler: sampler;
-@group(0) @binding(2) var<uniform> draw: Draw;
+@group(0) @binding(2) var<storage, read> draws: array<Draw>;
 @group(1) @binding(0) var<uniform> depth_frame: DepthFrame;
 @group(1) @binding(1) var<storage, read> instances: array<Instance>;
-@group(1) @binding(2) var<storage, read> instance_ids: array<u32>;
+@group(1) @binding(2) var<storage, read> instance_ids: array<vec2<u32>>;
 @group(1) @binding(3) var<storage, read> locals: array<Local>;
 
 struct DepthOut {
@@ -781,7 +814,9 @@ struct DepthOut {
 
 @vertex
 fn vs_depth(@location(0) position: vec3<f32>, @location(2) uv: vec2<f32>, @builtin(instance_index) index: u32) -> DepthOut {
-    let instance = instances[instance_ids[index]];
+    let entry = instance_ids[index];
+    let instance = instances[entry.x];
+    let draw = draws[entry.y];
     var local = draw.local;
     if (instance.locals >= 0 && draw.matrix_index >= 0) {
         local = locals[u32(instance.locals + draw.matrix_index)].matrix;
@@ -1045,12 +1080,13 @@ struct RenderModel::Impl {
         glm::mat4 world{1.0f};
         glm::vec3 center{};
         std::uint32_t image = UINT32_MAX; // the shape image it samples
-        std::uint32_t slot{};             // its MaterialUniform slot
+        std::uint32_t slot{};             // its MaterialUniform slot (draws[] in the shaders)
     };
-    // Bindings of a draw with another texture (TextureOverride) and/or
-    // unlit (NodeAdjustment::unlit), made when first asked for; the textures
-    // stay alive with the generation.
-    mutable std::map<std::tuple<std::uint32_t, const GpuTexture*, bool>, WGPUBindGroup> variants;
+    // The model's bindings, one per texture, sampler filter and unlit (the
+    // draws' own, a TextureOverride's, an unlit node's), made when first
+    // asked for; each Draw::binding is one of them. The textures of the
+    // overrides stay alive with the generation.
+    mutable std::map<std::tuple<WGPUTextureView, int, bool>, WGPUBindGroup> bindings;
     mutable std::vector<std::shared_ptr<const GpuTexture>> variant_textures;
     // The draws' MaterialUniforms with the unlit light material, made for the
     // first unlit node.
@@ -1075,8 +1111,19 @@ struct RenderModel::Impl {
     std::vector<std::shared_ptr<const GpuTexture>> textures; // by shape image index
     std::vector<TextureAvailability> availability;
     std::vector<Draw> draws;
-    // MaterialUniform slots of the draws, in draw order.
+    // The draws of each distance level, by index into `draws`: a frame walks
+    // an instance's level only (a car has three or four levels; walking all
+    // of them for some 1500 instances, three times a frame, was most of
+    // prepare()).
+    std::vector<std::vector<std::uint32_t>> level_draws;
+    [[nodiscard]] std::span<const std::uint32_t> draws_at(const std::size_t level) const noexcept {
+        if (level >= level_draws.size()) return {};
+        return level_draws[level];
+    }
+    // The draws' MaterialUniforms by slot (a storage buffer), and how many
+    // slots: a draw keeps its slot when one before it is dropped.
     WGPUBuffer materials = nullptr;
+    std::uint32_t slot_count = 0;
     std::uint16_t model_flags = 0;
     ModelBounds bounds{};
     // Distance levels (ShapeModel::level_distances); empty: one level.
@@ -1087,10 +1134,7 @@ struct RenderModel::Impl {
     Impl& operator=(const Impl&) = delete;
 
     ~Impl() {
-        for (auto& draw : draws) {
-            if (draw.binding) wgpuBindGroupRelease(draw.binding);
-        }
-        for (auto& [_, binding] : variants) {
+        for (auto& [_, binding] : bindings) {
             if (binding) wgpuBindGroupRelease(binding);
         }
         if (materials) wgpuBufferRelease(materials);
@@ -1195,6 +1239,16 @@ struct ModelRenderer::Impl {
     std::uint64_t id_capacity = 0;
     std::uint64_t local_capacity = 0;
     WGPUBindGroup frame_binding = nullptr;
+    // Multi-draw indirect: the arguments of every primitive drawn (the main
+    // pass's first, then a region per depth slot), and whether the device
+    // takes a first instance in them (IndirectFirstInstance) and it is on.
+    WGPUBuffer indirect_buffer = nullptr;
+    std::uint64_t indirect_capacity = 0;
+    std::size_t depth_indirect_base = 0;
+    bool multi_draw_supported = false;
+    bool multi_draw = true;
+    [[nodiscard]] bool use_multi_draw() const noexcept { return multi_draw && multi_draw_supported && indirect_buffer; }
+    std::size_t last_commands = 0;
 
     // The frame's prepared draws (prepare()).
     struct Batch {
@@ -1231,7 +1285,7 @@ struct ModelRenderer::Impl {
     TaskPool* pool = nullptr;
 
     // Depth-only passes: a view-projection per slot (dynamic offset).
-    static constexpr std::uint32_t depth_slots = 12;
+    static constexpr std::uint32_t depth_slots = 14; // cascades, the focus, 8 lamps
     static constexpr std::uint64_t depth_stride = 256;
     WGPUBindGroupLayout depth_layout = nullptr;
     WGPUBuffer depth_buffer = nullptr;
@@ -1307,32 +1361,41 @@ struct ModelRenderer::Impl {
         }
         if (!texture && !unlit) return draw.binding;
         const auto& model = *queued.model;
-        const auto key = std::tuple{draw.slot, texture, unlit};
-        if (const auto it = model.variants.find(key); it != model.variants.end()) return it->second;
         if (unlit && !model.unlit_materials) {
-            std::vector<std::byte> materials(model.draws.size() * material_uniform_stride);
-            for (std::size_t i = 0; i < model.draws.size(); ++i) {
-                const auto uniform = material_uniform(model.draws[i], night_texture_material);
-                std::memcpy(materials.data() + i * material_uniform_stride, &uniform, sizeof(uniform));
+            std::vector<std::byte> materials(std::size_t{model.slot_count} * material_stride);
+            for (const auto& each : model.draws) {
+                const auto uniform = material_uniform(each, night_texture_material);
+                std::memcpy(materials.data() + std::size_t{each.slot} * material_stride, &uniform, sizeof(uniform));
             }
-            model.unlit_materials = create_buffer(device, WGPUBufferUsage_Uniform, materials.size(), materials.data());
+            model.unlit_materials = create_buffer(device, WGPUBufferUsage_Storage, materials.size(), materials.data());
             if (!model.unlit_materials) return draw.binding;
         }
-        std::array<WGPUBindGroupEntry, 3> entries{};
-        entries[0].binding = 0;
-        entries[0].textureView = texture ? texture->view : draw.view;
-        entries[1].binding = 1;
-        entries[1].sampler = sampler(draw.material.filter);
-        entries[2].binding = 2;
-        entries[2].buffer = unlit ? model.unlit_materials : model.materials;
-        entries[2].offset = draw.slot * material_uniform_stride;
-        entries[2].size = sizeof(MaterialUniform);
-        const WGPUBindGroupDescriptor descriptor{.layout = material_layout, .entryCount = entries.size(), .entries = entries.data()};
-        const auto binding = wgpuDeviceCreateBindGroup(device, &descriptor);
-        model.variants.emplace(key, binding);
+        const auto binding = model_binding(model, texture ? texture->view : draw.view, draw.material.filter, unlit);
         if (held && std::find(model.variant_textures.begin(), model.variant_textures.end(), held) == model.variant_textures.end())
             model.variant_textures.push_back(held);
         return binding ? binding : draw.binding;
+    }
+    // A model's binding for a texture, filter and unlit: every draw of the
+    // model with them shares it (made when first asked for).
+    [[nodiscard]] WGPUBindGroup model_binding(const RenderModel::Impl& model, const WGPUTextureView view,
+                                              const rts::TextureFilter filter, const bool unlit) {
+        const auto key = std::tuple{view, static_cast<int>(filter), unlit};
+        if (const auto it = model.bindings.find(key); it != model.bindings.end()) return it->second;
+        const auto buffer = unlit ? model.unlit_materials : model.materials;
+        if (!buffer || !view) return nullptr;
+        std::array<WGPUBindGroupEntry, 3> entries{};
+        entries[0].binding = 0;
+        entries[0].textureView = view;
+        entries[1].binding = 1;
+        entries[1].sampler = sampler(filter);
+        entries[2].binding = 2;
+        entries[2].buffer = buffer;
+        entries[2].offset = 0;
+        entries[2].size = std::uint64_t{model.slot_count} * material_stride;
+        const WGPUBindGroupDescriptor descriptor{.layout = material_layout, .entryCount = entries.size(), .entries = entries.data()};
+        const auto binding = wgpuDeviceCreateBindGroup(device, &descriptor);
+        model.bindings.emplace(key, binding);
+        return binding;
     }
     GpuRetireQueue retired;
 
@@ -1354,7 +1417,7 @@ struct ModelRenderer::Impl {
         }
         if (depth_layout) wgpuBindGroupLayoutRelease(depth_layout);
         if (effects_layout) wgpuBindGroupLayoutRelease(effects_layout);
-        for (const auto buffer : {instance_buffer, id_buffer, local_buffer}) {
+        for (const auto buffer : {instance_buffer, id_buffer, local_buffer, indirect_buffer}) {
             if (buffer) wgpuBufferRelease(buffer);
         }
         if (black_view) wgpuTextureViewRelease(black_view);
@@ -1386,7 +1449,7 @@ struct ModelRenderer::Impl {
     }
 
     // Grows the per-frame storage buffers (and rebuilds the frame binding).
-    void ensure_capacity(std::uint64_t instances, std::uint64_t ids, std::uint64_t locals);
+    void ensure_capacity(std::uint64_t instances, std::uint64_t ids, std::uint64_t locals, std::uint64_t indirect_draws);
 
     [[nodiscard]] std::shared_ptr<const GpuTexture> upload(const core::VirtualPath& path, const formats::AceRgbaImage& image) const;
     // Texture of one shape image: the cached generation, or a fresh upload.
@@ -1401,7 +1464,15 @@ struct ModelRenderer::Impl {
 
 void ModelRenderer::Impl::ensure_capacity(const std::uint64_t instances,
                                           const std::uint64_t ids,
-                                          const std::uint64_t locals) {
+                                          const std::uint64_t locals,
+                                          const std::uint64_t indirect_draws) {
+    if (multi_draw_supported && (!indirect_buffer || indirect_draws > indirect_capacity)) {
+        auto size = (std::max)(indirect_capacity, std::uint64_t{1024});
+        while (size < indirect_draws) size *= 2;
+        if (indirect_buffer) wgpuBufferRelease(indirect_buffer);
+        indirect_buffer = create_buffer(device, WGPUBufferUsage_Indirect, size * sizeof(IndirectDraw));
+        indirect_capacity = indirect_buffer ? size : 0;
+    }
     bool grown = false;
     const auto grow = [&](WGPUBuffer& buffer, std::uint64_t& capacity, const std::uint64_t needed,
                           const std::uint64_t stride) {
@@ -1414,7 +1485,7 @@ void ModelRenderer::Impl::ensure_capacity(const std::uint64_t instances,
         grown = true;
     };
     grow(instance_buffer, instance_capacity, instances, sizeof(GpuInstance));
-    grow(id_buffer, id_capacity, ids, sizeof(std::uint32_t));
+    grow(id_buffer, id_capacity, ids, sizeof(IdEntry));
     grow(local_buffer, local_capacity, locals, sizeof(GpuLocal));
     if (!grown && frame_binding) return;
 
@@ -1430,7 +1501,7 @@ void ModelRenderer::Impl::ensure_capacity(const std::uint64_t instances,
     entries[1].size = instance_capacity * sizeof(GpuInstance);
     entries[2].binding = 2;
     entries[2].buffer = id_buffer;
-    entries[2].size = id_capacity * sizeof(std::uint32_t);
+    entries[2].size = id_capacity * sizeof(IdEntry);
     entries[3].binding = 3;
     entries[3].buffer = local_buffer;
     entries[3].size = local_capacity * sizeof(GpuLocal);
@@ -1544,7 +1615,7 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const formats::Sh
     gpu.bounds = bounds.sphere();
     if (gpu.draws.empty()) return;
 
-    std::vector<std::byte> materials(gpu.draws.size() * material_uniform_stride);
+    std::vector<std::byte> materials(gpu.draws.size() * material_stride);
     for (std::size_t i = 0; i < gpu.draws.size(); ++i) {
         const auto& draw = gpu.draws[i];
         // At night a shape with the night bit is drawn unlit (RTS 0x4B042C:
@@ -1552,40 +1623,36 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const formats::Sh
         const auto uniform = material_uniform(draw, gpu.night_unlit && !(gpu.fullbright_day && draw.material.light_material == -8)
                                                         ? night_texture_material
                                                         : draw.material.light_material);
-        std::memcpy(materials.data() + i * material_uniform_stride, &uniform, sizeof(uniform));
+        std::memcpy(materials.data() + i * material_stride, &uniform, sizeof(uniform));
     }
-    gpu.materials = create_buffer(device, WGPUBufferUsage_Uniform, materials.size(), materials.data());
+    gpu.materials = create_buffer(device, WGPUBufferUsage_Storage, materials.size(), materials.data());
+    gpu.slot_count = static_cast<std::uint32_t>(gpu.draws.size());
     if (!gpu.materials) {
         gpu.draws.clear();
         return;
     }
 
+    // A binding per texture and filter (a draw's slot comes with each id):
+    // the draws sharing them are drawn by one multi-draw call. A draw keeps
+    // its slot even when one before it is dropped (the buffer is in slots).
     for (std::size_t i = 0; i < gpu.draws.size(); ++i) {
         auto& draw = gpu.draws[i];
         draw.slot = static_cast<std::uint32_t>(i);
         draw.view = views[i];
-        std::array<WGPUBindGroupEntry, 3> entries{};
-        entries[0].binding = 0;
-        entries[0].textureView = views[i];
-        entries[1].binding = 1;
-        entries[1].sampler = sampler(draw.material.filter);
-        entries[2].binding = 2;
-        entries[2].buffer = gpu.materials;
-        entries[2].offset = i * material_uniform_stride;
-        entries[2].size = sizeof(MaterialUniform);
-        const WGPUBindGroupDescriptor descriptor{
-            .layout = material_layout,
-            .entryCount = entries.size(),
-            .entries = entries.data(),
-        };
-        draw.binding = wgpuDeviceCreateBindGroup(device, &descriptor);
+        draw.binding = model_binding(gpu, views[i], draw.material.filter, false);
     }
     std::erase_if(gpu.draws, [](const auto& draw) { return draw.binding == nullptr; });
+    for (std::uint32_t i = 0; i < gpu.draws.size(); ++i) {
+        const std::size_t level = gpu.draws[i].range.level;
+        if (gpu.level_draws.size() <= level) gpu.level_draws.resize(level + 1);
+        gpu.level_draws[level].push_back(i);
+    }
 }
 
 ModelRenderer::ModelRenderer(const WGPUDevice device, const WGPUTextureFormat target_format)
     : impl_(std::make_unique<Impl>()) {
     impl_->device = device;
+    impl_->multi_draw_supported = wgpuDeviceHasFeature(device, WGPUFeatureName_IndirectFirstInstance);
     impl_->material_layout = create_material_layout(device);
     impl_->frame_layout = create_frame_layout(device);
     impl_->frame_buffer = create_buffer(device, WGPUBufferUsage_Uniform, sizeof(FrameUniform));
@@ -1629,7 +1696,7 @@ ModelRenderer::ModelRenderer(const WGPUDevice device, const WGPUTextureFormat ta
         entries[0].buffer.type = WGPUBufferBindingType_Uniform;
         entries[0].buffer.hasDynamicOffset = true;
         entries[0].buffer.minBindingSize = sizeof(glm::mat4);
-        const std::array<std::uint64_t, 3> storage_sizes{sizeof(GpuInstance), sizeof(std::uint32_t), sizeof(GpuLocal)};
+        const std::array<std::uint64_t, 3> storage_sizes{sizeof(GpuInstance), sizeof(IdEntry), sizeof(GpuLocal)};
         for (std::uint32_t i = 0; i < storage_sizes.size(); ++i) {
             entries[i + 1].binding = i + 1;
             entries[i + 1].visibility = WGPUShaderStage_Vertex;
@@ -1679,6 +1746,18 @@ void ModelRenderer::set_face_culling(const bool enabled) noexcept {
 
 bool ModelRenderer::face_culling() const noexcept {
     return impl_ ? impl_->face_culling : true;
+}
+
+void ModelRenderer::set_multi_draw(const bool enabled) noexcept {
+    if (impl_) impl_->multi_draw = enabled;
+}
+
+bool ModelRenderer::multi_draw() const noexcept {
+    return impl_ && impl_->multi_draw && impl_->multi_draw_supported;
+}
+
+bool ModelRenderer::multi_draw_supported() const noexcept {
+    return impl_ && impl_->multi_draw_supported;
 }
 
 void ModelRenderer::set_batching(const bool enabled) noexcept {
@@ -1798,6 +1877,92 @@ std::size_t ModelRenderer::collect_retired() {
     return impl_->retired.collect();
 }
 
+std::string ModelRenderer::draw_report(const std::size_t top) const {
+    if (!impl_) return {};
+    struct Row {
+        const RenderModel::Impl* model = nullptr;
+        std::size_t calls = 0, instances = 0, singles = 0, translucent = 0;
+    };
+    std::unordered_map<const RenderModel::Impl*, Row> rows;
+    std::size_t singles = 0;
+    for (const auto& batch : impl_->batches) {
+        auto& row = rows[batch.model];
+        row.model = batch.model;
+        ++row.calls;
+        row.instances += batch.count;
+        if (batch.count == 1) {
+            ++row.singles;
+            ++singles;
+        }
+        if (batch.translucent) ++row.translucent;
+    }
+    std::vector<Row> sorted;
+    sorted.reserve(rows.size());
+    for (const auto& [_, row] : rows) sorted.push_back(row);
+    std::sort(sorted.begin(), sorted.end(), [](const Row& a, const Row& b) { return a.calls > b.calls; });
+    std::ostringstream out;
+    out << "draw calls: " << impl_->batches.size() << " from " << rows.size() << " models, " << singles
+        << " of one instance; " << impl_->last_commands << " commands (multi-draw " << (impl_->use_multi_draw() ? "on" : "off")
+        << ")\n";
+    // What changes between calls as they are recorded (render()): the
+    // pipeline, the model (vertex and index buffers), the draw's binding
+    // (texture and the draw's uniform); and how often the texture alone
+    // would change if a model's draws shared a binding per texture.
+    {
+        std::size_t pipelines = 0, models = 0, bindings = 0, textures = 0, translucent = 0;
+        std::size_t last_pipeline = SIZE_MAX;
+        const void* last_model = nullptr;
+        const void* last_binding = nullptr;
+        std::pair<const void*, const void*> last_texture{nullptr, nullptr};
+        for (const auto& batch : impl_->batches) {
+            if (batch.pipeline.index() != last_pipeline) ++pipelines;
+            if (batch.model != last_model) ++models;
+            if (batch.binding != last_binding) ++bindings;
+            const std::pair<const void*, const void*> texture{batch.model, batch.draw ? static_cast<const void*>(batch.draw->view) : nullptr};
+            if (texture != last_texture || batch.pipeline.index() != last_pipeline) ++textures;
+            last_pipeline = batch.pipeline.index();
+            last_model = batch.model;
+            last_binding = batch.binding;
+            last_texture = texture;
+            if (batch.translucent) ++translucent;
+        }
+        out << "  switches: " << pipelines << " pipelines, " << models << " models, " << bindings << " bindings; "
+            << textures << " if a binding were per model and texture; " << translucent << " translucent calls; "
+            << impl_->frame_locals.size() << " node matrices of animated instances ("
+            << impl_->frame_locals.size() * sizeof(impl_->frame_locals[0]) / 1024 << " KB a frame)\n";
+    }
+    // At the nearest level: the shape's parts, and how few draws one per
+    // material (primitive state) would leave, the most merging could do.
+    std::size_t all_parts = 0, all_states = 0;
+    for (const auto& [model, _] : rows) {
+        if (!model) continue;
+        std::set<std::uint32_t> states;
+        for (const auto& draw : model->draws) {
+            if (draw.range.level != 0) continue;
+            ++all_parts;
+            states.insert(draw.range.primitive_state_index);
+        }
+        all_states += states.size();
+    }
+    out << "  nearest level: " << all_parts << " parts in these models, " << all_states << " materials\n";
+    for (std::size_t i = 0; i < sorted.size() && i < top; ++i) {
+        const auto& row = sorted[i];
+        std::size_t parts = 0;
+        std::set<std::uint32_t> states;
+        if (row.model) {
+            for (const auto& draw : row.model->draws) {
+                if (draw.range.level != 0) continue;
+                ++parts;
+                states.insert(draw.range.primitive_state_index);
+            }
+        }
+        out << "  " << row.calls << " calls, " << row.instances << " instances, " << row.singles << " single, " << row.translucent
+            << " translucent; nearest level " << parts << " parts, " << states.size()
+            << " materials: " << (row.model ? row.model->source.str() : std::string("?")) << '\n';
+    }
+    return out.str();
+}
+
 ModelRendererStats ModelRenderer::stats() const {
     if (!impl_) return {};
     std::size_t live = 0;
@@ -1809,6 +1974,7 @@ ModelRendererStats ModelRenderer::stats() const {
         .instances = impl_->last_instances,
         .primitives = impl_->last_primitives,
         .draw_calls = impl_->last_draw_calls,
+        .draw_commands = impl_->last_commands,
     };
 }
 
@@ -1847,6 +2013,46 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) 
     impl_->queue.push_back({.model = model.impl_.get(), .transform = transform, .level = level});
 }
 
+namespace {
+
+// The world matrix of every node (its local times its parents', up to the
+// root) and its normal matrix, appended to `out` in node order. Each node
+// takes its parent's world once it is known: an animated instance's palette
+// (a car: some 20 nodes, 500 cars a frame at a big station) was walked up to
+// the root for every node, and its normal matrix was a full 4 x 4 inverse;
+// the shaders take only the normal matrix's xyz rows (as the instance's).
+void append_locals(std::vector<GpuLocal>& out, const std::vector<glm::mat4>& local, const std::vector<std::int32_t>& hierarchy) {
+    const auto count = local.size();
+    const auto first = out.size();
+    out.resize(first + count);
+    std::vector<std::uint8_t> known(count, 0);
+    std::vector<std::size_t> chain;
+    const auto parent = [&](const std::size_t index) -> std::int64_t {
+        return index < hierarchy.size() ? hierarchy[index] : -1;
+    };
+    for (std::size_t start = 0; start < count; ++start) {
+        if (known[start]) continue;
+        // Up to a node already known, or the root (a loop stops at count).
+        chain.clear();
+        std::int64_t current = static_cast<std::int64_t>(start);
+        while (current >= 0 && static_cast<std::size_t>(current) < count && !known[static_cast<std::size_t>(current)]
+               && chain.size() <= count) {
+            chain.push_back(static_cast<std::size_t>(current));
+            current = parent(static_cast<std::size_t>(current));
+        }
+        glm::mat4 world = current >= 0 && static_cast<std::size_t>(current) < count && known[static_cast<std::size_t>(current)]
+                              ? out[first + static_cast<std::size_t>(current)].matrix
+                              : glm::mat4{1.0f};
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            world = world * local[*it];
+            out[first + *it] = {.matrix = world, .normal = glm::mat4{glm::inverseTranspose(glm::mat3{world})}};
+            known[*it] = 1;
+        }
+    }
+}
+
+} // namespace
+
 void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform, const float frame) {
     if (!impl_ || !model.impl_) return;
     const auto& rig = model.impl_->rig;
@@ -1855,18 +2061,11 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform, 
         return;
     }
     // World matrices of every node at this frame, through the hierarchy.
-    const auto local = formats::animate_matrices(*rig, 0, frame);
+    const auto animated = formats::animate_matrices(*rig, 0, frame);
+    std::vector<glm::mat4> local(animated.size());
+    for (std::size_t index = 0; index < animated.size(); ++index) local[index] = shape_matrix(animated[index]);
     const auto first = static_cast<std::ptrdiff_t>(impl_->frame_locals.size());
-    for (std::size_t index = 0; index < local.size(); ++index) {
-        glm::mat4 world{1.0f};
-        auto current = static_cast<std::int32_t>(index);
-        for (std::size_t guard = 0; current >= 0 && static_cast<std::size_t>(current) < local.size() && guard <= local.size();
-             ++guard) {
-            world = shape_matrix(local[static_cast<std::size_t>(current)]) * world;
-            current = rig->hierarchy[static_cast<std::size_t>(current)];
-        }
-        impl_->frame_locals.push_back({.matrix = world, .normal = glm::transpose(glm::inverse(world))});
-    }
+    append_locals(impl_->frame_locals, local, rig->hierarchy);
     submit(model, transform);
     impl_->queue.back().matrices = first;
 }
@@ -1939,15 +2138,7 @@ void ModelRenderer::submit_posed(RenderModel& model, const ModelTransform& trans
         local[m] *= adjustment.local;
     }
     const auto first = static_cast<std::ptrdiff_t>(impl_->frame_locals.size());
-    for (std::size_t index = 0; index < count; ++index) {
-        glm::mat4 world{1.0f};
-        auto current = static_cast<std::int32_t>(index);
-        for (std::size_t guard = 0; current >= 0 && static_cast<std::size_t>(current) < count && guard <= count; ++guard) {
-            world = local[static_cast<std::size_t>(current)] * world;
-            current = static_cast<std::size_t>(current) < rig->hierarchy.size() ? rig->hierarchy[static_cast<std::size_t>(current)] : -1;
-        }
-        impl_->frame_locals.push_back({.matrix = world, .normal = glm::transpose(glm::inverse(world))});
-    }
+    append_locals(impl_->frame_locals, local, rig->hierarchy);
     submit(model, transform);
     impl_->queue.back().matrices = first;
 }
@@ -2013,8 +2204,9 @@ void ModelRenderer::prepare() {
         depth_group_of.reserve(impl_->queue.size() * 4);
         for (std::size_t instance = 0; instance < impl_->queue.size(); ++instance) {
             const auto& queued = impl_->queue[instance];
-            for (const auto& draw : queued.model->draws) {
-                if (draw.range.level != queued.level || impl_->hides(queued, draw)) continue;
+            for (const auto index : queued.model->draws_at(queued.level)) {
+                const auto& draw = queued.model->draws[index];
+                if (impl_->hides(queued, draw)) continue;
                 const auto& material = draw.material;
                 const bool blend_shader = material.shader == rts::NamedShader::blend_a_tex || material.shader == rts::NamedShader::blend_a_tex_diff;
                 if ((blend_shader && !material.alpha_test_mode) || !material.depth_write) continue;
@@ -2079,9 +2271,9 @@ void ModelRenderer::prepare() {
                 if (queued.shadow_only || queued.last_pass != (object_pass_number == rts::last_pass)) continue;
                 const auto& model = *queued.model;
                 const auto object_pass = queued.transfer ? rts::transfer_pass : rts::object_pass(model.model_flags, queued.static_flags);
-                const auto level = queued.level;
-                for (const auto& draw : model.draws) {
-                    if (draw.range.level != level || impl_->hides(queued, draw)) continue;
+                for (const auto index : model.draws_at(queued.level)) {
+                    const auto& draw = model.draws[index];
+                    if (impl_->hides(queued, draw)) continue;
                     if (object_pass_number != rts::last_pass
                         && !rts::draws_in_pass(object_pass_number, object_pass, model.model_flags, draw.material.flags,
                                                queued.static_flags)) {
@@ -2107,8 +2299,9 @@ void ModelRenderer::prepare() {
             for (std::size_t instance = 0; instance < impl_->queue.size(); ++instance) {
                 const auto& submitted = impl_->queue[instance];
                 if (submitted.last_pass || submitted.shadow_only) continue;
-                for (const auto& draw : submitted.model->draws) {
-                    if (draw.range.level != submitted.level || impl_->hides(submitted, draw)) continue;
+                for (const auto index : submitted.model->draws_at(submitted.level)) {
+                    const auto& draw = submitted.model->draws[index];
+                    if (impl_->hides(submitted, draw)) continue;
                     const auto& material = draw.material;
                     const bool blend_shader = material.shader == rts::NamedShader::blend_a_tex
                         || material.shader == rts::NamedShader::blend_a_tex_diff;
@@ -2140,8 +2333,9 @@ void ModelRenderer::prepare() {
         for (std::size_t instance = 0; instance < impl_->queue.size(); ++instance) {
             const auto& submitted = impl_->queue[instance];
             if (!submitted.last_pass || submitted.shadow_only) continue;
-            for (const auto& draw : submitted.model->draws) {
-                if (draw.range.level != submitted.level || impl_->hides(submitted, draw)) continue;
+            for (const auto index : submitted.model->draws_at(submitted.level)) {
+                const auto& draw = submitted.model->draws[index];
+                if (impl_->hides(submitted, draw)) continue;
                 const auto& material = draw.material;
                 const bool blend_shader = material.shader == rts::NamedShader::blend_a_tex
                     || material.shader == rts::NamedShader::blend_a_tex_diff;
@@ -2159,14 +2353,26 @@ void ModelRenderer::prepare() {
     // Merge into batches: runs of instance ids per (primitive, pipeline).
     const int translucent_phase = impl_->shading == ShadingPath::rts_compatible ? rts::translucent_pass : 2;
     auto& batches = impl_->batches;
-    std::vector<std::uint32_t> ids;
+    std::vector<IdEntry> ids;
     ids.reserve(items.size());
     struct Group {
         const Item* head;
         std::vector<std::uint32_t> instances;
     };
     std::vector<Group> groups;
-    std::unordered_map<const void*, std::array<std::int32_t, pipeline_variant_count>> group_of;
+    // By primitive and binding (a model's binding is shared by its draws with
+    // the same texture).
+    struct GroupKey {
+        const void* draw;
+        const void* binding;
+        bool operator==(const GroupKey&) const = default;
+    };
+    struct GroupKeyHash {
+        std::size_t operator()(const GroupKey& key) const noexcept {
+            return std::hash<const void*>{}(key.draw) ^ (std::hash<const void*>{}(key.binding) * 0x9E3779B97F4A7C15ull);
+        }
+    };
+    std::unordered_map<GroupKey, std::array<std::int32_t, pipeline_variant_count>, GroupKeyHash> group_of;
     std::vector<const Item*> blended;
     const auto flush_phase = [&] {
         std::stable_sort(groups.begin(), groups.end(), [](const Group& a, const Group& b) {
@@ -2179,7 +2385,7 @@ void ModelRenderer::prepare() {
             batches.push_back({group.head->draw, group.head->model, group.head->pipeline,
                                static_cast<std::uint32_t>(ids.size()), static_cast<std::uint32_t>(group.instances.size()),
                                group.head->phase >= translucent_phase, group.head->binding, group.head->phase == rts::last_pass});
-            ids.insert(ids.end(), group.instances.begin(), group.instances.end());
+            for (const auto instance : group.instances) ids.push_back({instance, group.head->draw->slot});
         }
         for (const auto* item : blended) {
             auto* last = batches.empty() ? nullptr : &batches.back();
@@ -2193,7 +2399,7 @@ void ModelRenderer::prepare() {
                 batches.push_back({item->draw, item->model, item->pipeline, static_cast<std::uint32_t>(ids.size()), 1,
                                    item->phase >= translucent_phase, item->binding, item->phase == rts::last_pass});
             }
-            ids.push_back(item->instance);
+            ids.push_back({item->instance, item->draw->slot});
         }
         groups.clear();
         group_of.clear();
@@ -2211,7 +2417,7 @@ void ModelRenderer::prepare() {
             continue;
         }
         // Grouped by binding: a draw with an overridden texture is a group of its own.
-        auto [slot, inserted] = group_of.try_emplace(item.binding);
+        auto [slot, inserted] = group_of.try_emplace(GroupKey{item.draw, item.binding});
         if (inserted) slot->second.fill(-1);
         auto& index = slot->second[item.pipeline.index()];
         if (index < 0) {
@@ -2222,6 +2428,15 @@ void ModelRenderer::prepare() {
     }
     flush_phase();
     impl_->last_draw_calls = batches.size();
+    // The main pass's indirect arguments: one per primitive drawn, in order;
+    // the depth slots' regions follow (render_depth).
+    std::vector<IndirectDraw> indirect;
+    if (impl_->multi_draw_supported) {
+        indirect.reserve(batches.size());
+        for (const auto& batch : batches) {
+            indirect.push_back({batch.draw->range.index_count, batch.count, batch.draw->range.first_index, 0, batch.first});
+        }
+    }
 
 
     // Depth-only draws for SceneEffects (the experimental path): every
@@ -2263,8 +2478,10 @@ void ModelRenderer::prepare() {
     } else {
         fill(0, count);
     }
+    impl_->depth_indirect_base = indirect.size();
     impl_->ensure_capacity(instances.size(), (std::max)(ids.size() + Impl::depth_slots * impl_->depth_id_total, std::size_t{1}),
-                           (std::max)(impl_->frame_locals.size(), std::size_t{1}));
+                           (std::max)(impl_->frame_locals.size(), std::size_t{1}),
+                           indirect.size() + Impl::depth_slots * impl_->depth_batches.size());
     if (!impl_->frame_binding) return;
     impl_->uploaded = true;
 
@@ -2272,7 +2489,9 @@ void ModelRenderer::prepare() {
     const auto queue = wgpuDeviceGetQueue(impl_->device);
     wgpuQueueWriteBuffer(queue, impl_->frame_buffer, 0, &lighting, sizeof(lighting));
     if (!instances.empty()) wgpuQueueWriteBuffer(queue, impl_->instance_buffer, 0, instances.data(), instances.size() * sizeof(GpuInstance));
-    if (!ids.empty()) wgpuQueueWriteBuffer(queue, impl_->id_buffer, 0, ids.data(), ids.size() * sizeof(std::uint32_t));
+    if (!ids.empty()) wgpuQueueWriteBuffer(queue, impl_->id_buffer, 0, ids.data(), ids.size() * sizeof(IdEntry));
+    if (!indirect.empty() && impl_->indirect_buffer)
+        wgpuQueueWriteBuffer(queue, impl_->indirect_buffer, 0, indirect.data(), indirect.size() * sizeof(IndirectDraw));
     if (!impl_->frame_locals.empty()) {
         wgpuQueueWriteBuffer(queue, impl_->local_buffer, 0, impl_->frame_locals.data(),
                              impl_->frame_locals.size() * sizeof(GpuLocal));
@@ -2314,8 +2533,33 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function
     std::optional<std::size_t> bound_pipeline;
     const RenderModel::Impl* bound_model = nullptr;
     WGPUBindGroup bound_draw = nullptr;
-    for (const auto& batch : impl_->batches) {
+    // The primitives waiting to be drawn with the bound state: one multi-draw
+    // call for several (the order kept: a decal after its body), a plain call
+    // for one.
+    const bool multi = impl_->use_multi_draw();
+    std::size_t run_first = 0;
+    std::size_t run_count = 0;
+    std::size_t commands = 0;
+    const auto& batches = impl_->batches;
+    const auto flush = [&] {
+        if (run_count == 0) return;
+        if (multi && run_count > 1) {
+            wgpuRenderPassEncoderMultiDrawIndexedIndirect(pass, impl_->indirect_buffer, run_first * sizeof(IndirectDraw),
+                                                          static_cast<std::uint32_t>(run_count));
+            ++commands;
+        } else {
+            for (std::size_t k = run_first; k < run_first + run_count; ++k) {
+                const auto& b = batches[k];
+                wgpuRenderPassEncoderDrawIndexed(pass, b.draw->range.index_count, b.count, b.draw->range.first_index, 0, b.first);
+                ++commands;
+            }
+        }
+        run_count = 0;
+    };
+    for (std::size_t i = 0; i < batches.size(); ++i) {
+        const auto& batch = batches[i];
         if ((batch.translucent && !called) || (batch.last && !called_last)) {
+            flush();
             if (batch.last) {
                 call_last();
             } else {
@@ -2328,23 +2572,28 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function
             bind_frame();
         }
         if (bound_pipeline != batch.pipeline.index()) {
+            flush();
             bound_pipeline = batch.pipeline.index();
             const auto& set = impl_->face_culling ? impl_->pipelines : impl_->pipelines_two_sided;
             wgpuRenderPassEncoderSetPipeline(pass, set[path_index(impl_->shading)][*bound_pipeline]);
         }
         if (bound_model != batch.model) {
+            flush();
             bound_model = batch.model;
             wgpuRenderPassEncoderSetVertexBuffer(pass, 0, bound_model->geometry->vertices, 0, WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderSetIndexBuffer(pass, bound_model->geometry->indices, WGPUIndexFormat_Uint32, 0,
                                                 WGPU_WHOLE_SIZE);
         }
         if (bound_draw != batch.binding) {
+            flush();
             bound_draw = batch.binding;
             wgpuRenderPassEncoderSetBindGroup(pass, 0, batch.binding, 0, nullptr);
         }
-        wgpuRenderPassEncoderDrawIndexed(pass, batch.draw->range.index_count, batch.count, batch.draw->range.first_index, 0,
-                                         batch.first);
+        if (run_count == 0) run_first = i;
+        ++run_count;
     }
+    flush();
+    impl_->last_commands = commands;
 }
 
 void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::uint32_t slot, const glm::mat4& view_projection,
@@ -2367,23 +2616,34 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
         std::uint32_t count;
     };
     std::vector<Run> runs;
-    std::vector<std::uint32_t> ids;
+    std::vector<IdEntry> ids;
     ids.reserve(impl.depth_id_total);
     for (const auto& batch : impl.depth_batches) {
         if (batch.shadow_only && !shadow) continue;
         const auto first = ids.size();
         for (const auto instance : batch.instances) {
             const auto& sphere = impl.instance_spheres[instance];
-            if (frustum.intersects_sphere(glm::vec3{sphere}, sphere.w)) ids.push_back(instance);
+            if (frustum.intersects_sphere(glm::vec3{sphere}, sphere.w)) ids.push_back({instance, batch.draw->slot});
         }
         if (ids.size() > first) {
             runs.push_back({&batch, static_cast<std::uint32_t>(base + first), static_cast<std::uint32_t>(ids.size() - first)});
         }
     }
     if (runs.empty()) return;
+    // The slot's indirect arguments, a region of its own (the passes may be
+    // recorded on several threads at once).
+    const bool multi = impl.use_multi_draw() && runs.size() <= impl.depth_batches.size();
+    const auto indirect_base = impl.depth_indirect_base + static_cast<std::size_t>(slot) * impl.depth_batches.size();
     {
         const auto ids_queue = wgpuDeviceGetQueue(impl.device);
-        wgpuQueueWriteBuffer(ids_queue, impl.id_buffer, base * sizeof(std::uint32_t), ids.data(), ids.size() * sizeof(std::uint32_t));
+        wgpuQueueWriteBuffer(ids_queue, impl.id_buffer, base * sizeof(IdEntry), ids.data(), ids.size() * sizeof(IdEntry));
+        if (multi) {
+            std::vector<IndirectDraw> indirect;
+            indirect.reserve(runs.size());
+            for (const auto& run : runs) indirect.push_back({run.batch->draw->range.index_count, run.count, run.batch->draw->range.first_index, 0, run.first});
+            wgpuQueueWriteBuffer(ids_queue, impl.indirect_buffer, indirect_base * sizeof(IndirectDraw), indirect.data(),
+                                 indirect.size() * sizeof(IndirectDraw));
+        }
         if (ids_queue) wgpuQueueRelease(ids_queue);
     }
     const auto offset = static_cast<std::uint32_t>(slot * Impl::depth_stride);
@@ -2391,25 +2651,49 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
     WGPURenderPipeline bound = nullptr;
     const RenderModel::Impl* bound_model = nullptr;
     WGPUBindGroup bound_draw = nullptr;
-    for (const auto& run : runs) {
-        const auto& batch = *run.batch;
+    std::size_t run_first = 0;
+    std::size_t run_count = 0;
+    const auto flush = [&] {
+        if (run_count == 0) return;
+        if (multi && run_count > 1) {
+            wgpuRenderPassEncoderMultiDrawIndexedIndirect(pass, impl.indirect_buffer, (indirect_base + run_first) * sizeof(IndirectDraw),
+                                                          static_cast<std::uint32_t>(run_count));
+        } else {
+            for (std::size_t k = run_first; k < run_first + run_count; ++k) {
+                const auto& run = runs[k];
+                wgpuRenderPassEncoderDrawIndexed(pass, run.batch->draw->range.index_count, run.count, run.batch->draw->range.first_index,
+                                                 0, run.first);
+            }
+        }
+        run_count = 0;
+    };
+    for (std::size_t i = 0; i < runs.size(); ++i) {
+        const auto& batch = *runs[i].batch;
         const auto pipeline = impl.depth_pipeline(shadow, batch.alpha_test);
-        if (!pipeline) continue;
+        if (!pipeline) {
+            flush();
+            continue;
+        }
         if (pipeline != bound) {
+            flush();
             bound = pipeline;
             wgpuRenderPassEncoderSetPipeline(pass, pipeline);
         }
         if (bound_model != batch.model) {
+            flush();
             bound_model = batch.model;
             wgpuRenderPassEncoderSetVertexBuffer(pass, 0, bound_model->geometry->vertices, 0, WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderSetIndexBuffer(pass, bound_model->geometry->indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
         }
         if (bound_draw != batch.binding) {
+            flush();
             bound_draw = batch.binding;
             wgpuRenderPassEncoderSetBindGroup(pass, 0, batch.binding, 0, nullptr);
         }
-        wgpuRenderPassEncoderDrawIndexed(pass, batch.draw->range.index_count, run.count, batch.draw->range.first_index, 0, run.first);
+        if (run_count == 0) run_first = i;
+        ++run_count;
     }
+    flush();
 }
 
 void ModelRenderer::submit_shadow_caster(RenderModel& model, const ModelTransform& transform) {

@@ -379,7 +379,10 @@ never above the rails, at most 6 m down), lowers an overturning car onto
 lower ground beside the track, and stops a sliding car at a world object
 with CollideFlags (bit 2 clear) ahead within half its bounding radius.
 openRTS: the overturn and sliding rules above; a fallen car's hoses are
-torn (the pipe vents); past 0.9 rad the coupler breaks (the viewer uncouples
-there); a sliding car slows at 5 m/s² (its drag over its mass); the viewer
+torn (the pipe vents); past 0.9 rad the coupler is damaged (flags 16/32) and
+the train stays one, as RTS (until 2026-11-07 it was cut there); the
+coupler-force break skips derailed cars, whose forces come from the
+stand-in solver (PROBABLE: a derailed VL80 stayed one train in the live
+capture); a sliding car slows at 5 m/s² (its drag over its mass); the viewer
 rolls an overturning body about the rail on its falling side and moves a
 sliding one along the line it left by, 0.3 m down.

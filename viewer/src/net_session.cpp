@@ -778,6 +778,7 @@ void NetSession::send_own(TrainView& trains, const double now) {
         // Standing: once when it is placed here too, so the server forgets a
         // speed it kept from before.
         const bool stopped = !moving && (own.moving || !own.announced);
+        bool position_sent = false;
         if ((moving && (!own.moving || now >= own.next_position)) || stopped) {
             if (auto pos = net::position_of(*train)) {
                 // A train that stands sends speed 0 exactly: the server keeps
@@ -791,6 +792,37 @@ void NetSession::send_own(TrainView& trains, const double now) {
                 }
                 connection_->send(net::id(net::Package::train_pos), net::encode_train_pos(id, *pos));
                 own.next_position = now + 1.5;
+                position_sent = moving;
+            }
+        }
+        // Derailed cars (0x4636, as rts1.exe): when a car comes off, and with
+        // each position while the train still moves. Every client lets them
+        // fall itself; the server marks them (car +32 0x20, train +4 0x1000).
+        {
+            const auto derail = trains.derail_of(own.train);
+            const auto off = static_cast<std::size_t>(std::count(derail.derailed.begin(), derail.derailed.end(), std::uint8_t{1}));
+            if (off == 0) {
+                own.derailed_sent = 0;
+            } else if (off > own.derailed_sent || position_sent) {
+                net::Derail d;
+                d.train = id;
+                d.derailed = derail.derailed;
+                for (const auto& car : derail.cars) {
+                    net::DerailedCar c;
+                    c.car = static_cast<std::uint32_t>(car.car);
+                    c.heading = {car.heading.x, car.heading.y, car.heading.z};
+                    c.position = {static_cast<float>(car.position.x), static_cast<float>(car.position.y),
+                                  static_cast<float>(car.position.z)};
+                    c.tip = car.tilt;
+                    c.tip_rest = car.tilt_target;
+                    c.tip_third = car.tilt_target * 0.7f;
+                    c.weight = car.weight;
+                    c.state = car.tilt != 0.0f ? 4u : 0u;
+                    d.cars.push_back(c);
+                }
+                connection_->send(net::id(net::Package::derail), net::encode_derail(d));
+                std::cout << "net: our train " << id << ": " << off << " cars derailed, sent" << std::endl;
+                own.derailed_sent = off;
             }
         }
         if (stopped) connection_->send(net::id(net::Package::train_stands), net::encode_train_id(id));

@@ -592,7 +592,7 @@ struct TerrainRenderer::Impl {
     WGPUBindGroupLayout effects_layout = nullptr;
     std::unique_ptr<SceneEffects> fallback_effects;
     // Depth only: a view-projection per slot and tile (dynamic offset).
-    static constexpr std::uint32_t depth_slots = 12;
+    static constexpr std::uint32_t depth_slots = 14; // cascades, the focus, 8 lamps
     WGPUBindGroupLayout depth_layout = nullptr;
     WGPURenderPipeline shadow_pipeline = nullptr;
     WGPURenderPipeline camera_depth_pipeline = nullptr;

@@ -467,7 +467,15 @@ public:
         }
         if (train_) {
             train_->set_signals(signals_ ? signals_->system() : nullptr);
-            if (input.place_train && train_->loaded()) place_train(camera);
+            if (input.place_train && train_->loaded()) {
+                // In a network game the server places trains (RTS: a derailed
+                // train goes back by the dispatcher's remove and place).
+                if (net_) {
+                    train_->say(tr("In a network game the dispatcher places trains: C does not."));
+                } else {
+                    place_train(camera);
+                }
+            }
             train_->set_obstacles(streamer_ ? &streamer_->visible_instances() : nullptr);
             train_->set_world_clock(clock.time_of_day, sky_state_ && sky_state_->night);
             train_->set_world_light(sky_state_ ? sky_state_->world_lit : 1.0f, static_cast<std::uint8_t>(clock.weather));
@@ -787,6 +795,31 @@ public:
     [[nodiscard]] std::string car_menu_report() const override { return train_ ? train_->car_menu_report() : std::string{}; }
     [[nodiscard]] std::optional<renderer::ShadowFocus> shadow_focus() const override {
         return train_ ? train_->cab_shadow_focus() : std::nullopt;
+    }
+    // In flight the lamps' shadows go where the camera looks: along the view
+    // to the ground (up to 200 m; looking up or level, 40 m), the sphere over
+    // that stretch from the camera, bigger the farther. Low over a station it
+    // takes the near lamps and the far ones; from above it lies on the ground.
+    // In the cab: the cab's own focus.
+    [[nodiscard]] std::optional<renderer::ShadowFocus> lamp_shadow_focus(const ViewerCamera& camera) const override {
+        if (!train_ || train_->cab_shadow_focus()) return std::nullopt;
+        const glm::vec3 eye = camera.eye();
+        const glm::vec3 forward = camera.forward();
+        float reach = 40.0f;
+        if (forward.y < -0.01f) {
+            reach = 200.0f;
+            for (float t = 2.0f; t <= 200.0f; t += (std::max)(2.0f, t * 0.03f)) {
+                const glm::vec3 at = eye + forward * t;
+                if (const auto ground = train_->ground_at(at); ground && at.y <= *ground) {
+                    reach = t;
+                    break;
+                }
+            }
+        }
+        renderer::ShadowFocus focus;
+        focus.centre = eye + forward * (0.6f * reach);
+        focus.radius = (std::max)(25.0f, 0.5f * reach + 15.0f);
+        return focus;
     }
 
     void draw_overlay([[maybe_unused]] const ViewerCamera& camera) const override {

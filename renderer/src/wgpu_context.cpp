@@ -188,12 +188,16 @@ WgpuDeviceContextResult create_wgpu_device(const GraphicsBackend backend) {
             .userdata1 = &device_request,
             .userdata2 = nullptr,
         };
-        // Timestamp queries are optional (GPU frame time in the viewer).
-        const WGPUFeatureName timestamps = WGPUFeatureName_TimestampQuery;
-        const bool has_timestamps = wgpuAdapterHasFeature(context.adapter_, timestamps);
+        // Optional features: timestamp queries (GPU frame time in the
+        // viewer), a first instance in indirect draws (the model renderer's
+        // multi-draw calls).
+        std::vector<WGPUFeatureName> features;
+        for (const auto feature : {WGPUFeatureName_TimestampQuery, WGPUFeatureName_IndirectFirstInstance}) {
+            if (wgpuAdapterHasFeature(context.adapter_, feature)) features.push_back(feature);
+        }
         const WGPUDeviceDescriptor device_descriptor{
-            .requiredFeatureCount = has_timestamps ? 1u : 0u,
-            .requiredFeatures = has_timestamps ? &timestamps : nullptr,
+            .requiredFeatureCount = features.size(),
+            .requiredFeatures = features.empty() ? nullptr : features.data(),
             .uncapturedErrorCallbackInfo = {.callback = on_uncaptured_error},
         };
         wgpuAdapterRequestDevice(context.adapter_, &device_descriptor, device_callback);

@@ -1,6 +1,8 @@
 #ifdef OPENRTS_HAS_WGPU
 #include "train_view.hpp"
 
+#include <openrts/renderer/route_space.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -1277,8 +1279,14 @@ void TrainView::step_trains() {
                 break;
             case simulation::TrainEventKind::derailment:
                 ++derailments_;
-                message_ = u == 0 ? trf("derailed: car %u; C or \"Put on the path start\" puts the train back", event.car + 1)
-                                  : trf("derailed: car %u of a cut", event.car + 1);
+                if (u == 0 && network_game_) {
+                    // RTS: only the dispatcher puts a train back on the rails.
+                    message_ = trf("derailed: car %u; the dispatcher puts the train back (removes it from the world and places it again)",
+                                   event.car + 1);
+                } else {
+                    message_ = u == 0 ? trf("derailed: car %u; C or \"Put on the path start\" puts the train back", event.car + 1)
+                                      : trf("derailed: car %u of a cut", event.car + 1);
+                }
                 break;
             }
         }
@@ -1852,6 +1860,31 @@ std::string TrainView::place_driven(PlacedTrain train) {
     std::vector<PlacedTrain> trains;
     trains.push_back(std::move(train));
     return put_back(std::move(trains), "server");
+}
+
+TrainView::DerailLook TrainView::derail_of(const std::uint64_t id) const {
+    DerailLook out;
+    const auto* unit = find_unit(id);
+    if (!unit || unit->remote || !unit->train->derailed()) return out;
+    const auto& states = unit->train->cars();
+    out.derailed.assign(states.size(), 0);
+    for (std::size_t i = 0; i < states.size(); ++i) {
+        if (!states[i].derailed) continue;
+        out.derailed[i] = 1;
+        const auto body = body_pose(*unit, i, false);
+        if (!body) continue;
+        CarDerail d;
+        d.car = i;
+        glm::vec3 along{body->transform[2]};
+        along.y = 0.0f;
+        if (glm::length(along) > 1e-4f) d.heading = glm::normalize(along);
+        d.position = renderer::route_position(glm::vec3{body->transform[3]}, origin_);
+        d.tilt = states[i].tilt;
+        d.tilt_target = states[i].tilt_target;
+        d.weight = (states[i].definition ? states[i].definition->mass : 0.0f) * 9.81f;
+        out.cars.push_back(d);
+    }
+    return out;
 }
 
 std::vector<TrainView::CarLook> TrainView::look_of(const std::uint64_t id) const {

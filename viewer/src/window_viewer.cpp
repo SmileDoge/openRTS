@@ -524,6 +524,7 @@ struct PanelState {
     renderer::SceneEffectSettings effects;
     // Shadow cascades and the depth pre-pass recorded on worker threads.
     bool parallel_recording = true;
+    bool multi_draw = true;
 };
 
 // World clock: time of day advanced by real frame time times `speed`.
@@ -768,7 +769,7 @@ public:
             {
                 int lamp_shadows = static_cast<int>(panel.effects.lamp_shadows);
                 ImGui::SetNextItemWidth(200.0f);
-                if (ImGui::SliderInt(tr("Lamp shadows"), &lamp_shadows, 0, 4)) {
+                if (ImGui::SliderInt(tr("Lamp shadows"), &lamp_shadows, 0, static_cast<int>(renderer::SceneEffects::max_lamp_shadows))) {
                     panel.effects.lamp_shadows = static_cast<std::uint32_t>(lamp_shadows);
                     remember("lamp_shadows", std::to_string(lamp_shadows));
                 }
@@ -861,6 +862,12 @@ public:
             ImGui::Text(tr("GPU: %zu textures, %zu retired waiting, frame %llu done"), gpu.cached_textures, gpu.retired_pending,
                         static_cast<unsigned long long>(gpu.completed_frame));
             ImGui::Text(tr("Models: %zu instances, %zu primitives, %zu draw calls"), gpu.instances, gpu.primitives, gpu.draw_calls);
+            ImGui::Text(tr("Commands in the main pass: %zu"), gpu.draw_commands);
+            ImGui::BeginDisabled(!renderer.multi_draw_supported());
+            const auto multi_label = std::string(tr("Multi-draw indirect: a model's parts with one texture in one call"))
+                + (renderer.multi_draw_supported() ? "" : std::string(tr(" (not on this device)")));
+            if (ImGui::Checkbox(multi_label.c_str(), &panel.multi_draw)) remember("multi_draw", panel.multi_draw ? "1" : "0");
+            ImGui::EndDisabled();
             if (ImGui::Checkbox(tr("Parallel recording"), &panel.parallel_recording))
                 remember("parallel_recording", panel.parallel_recording ? "1" : "0");
             if (ImGui::IsItemHovered())
@@ -1684,8 +1691,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto bounce = remembered("ground_bounce"))
         panel.effects.ground_bounce = std::clamp(static_cast<float>(std::atof(bounce->c_str())), 0.0f, 0.5f);
     if (options.ground_bounce) panel.effects.ground_bounce = std::clamp(*options.ground_bounce, 0.0f, 0.5f);
-    if (const auto count = remembered("lamp_shadows")) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(std::atoi(count->c_str()), 0, 4));
-    if (options.lamp_shadows) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(*options.lamp_shadows, 0, 4));
+    constexpr int most_lamp_shadows = static_cast<int>(renderer::SceneEffects::max_lamp_shadows);
+    if (const auto count = remembered("lamp_shadows")) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(std::atoi(count->c_str()), 0, most_lamp_shadows));
+    if (options.lamp_shadows) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(*options.lamp_shadows, 0, most_lamp_shadows));
     if (const auto saturation = remembered("saturation"))
         panel.saturation = std::clamp(static_cast<float>(std::atof(saturation->c_str())), 0.5f, 1.8f);
     if (const auto exposure = remembered("night_exposure"))
@@ -1701,6 +1709,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto on = remembered("shadow_cab")) panel.effects.cab_shadows = *on == "1";
     if (options.cab_shadows) panel.effects.cab_shadows = *options.cab_shadows;
     if (options.parallel_recording) panel.parallel_recording = *options.parallel_recording;
+    if (const auto on = remembered("multi_draw")) panel.multi_draw = *on == "1";
+    if (options.multi_draw) panel.multi_draw = *options.multi_draw;
     if (const auto value = remembered("shadow_distance"))
         panel.effects.shadow_distance = std::clamp(static_cast<float>(std::atof(value->c_str())), 100.0f, 1000.0f);
     if (const auto value = remembered("shadow_quality")) {
@@ -1751,6 +1761,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     StageClock stage_clock;
     StageTimes stages{};
     double last_time = glfwGetTime();
+    // Every 10 s the frame's breakdown goes to the console (openrts.log when
+    // the menu runs the game): what a frame waits on, without the panel.
+    double perf_at = last_time + 10.0;
     while (!glfwWindowShouldClose(window.get())) {
         // The FPS limit: the wait comes before the input is read.
         limiter.set(panel.fps_limit);
@@ -1935,7 +1948,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             .lighting = environment.lighting,
         });
         scene.submit(renderer, frame);
-        effects.set_focus(scene.shadow_focus());
+        effects.set_focus(scene.shadow_focus(), scene.lamp_shadow_focus(camera));
         stage_clock.mark(FrameStage::cull, stages);
         renderer.prepare();
         stage_clock.mark(FrameStage::prepare, stages);
@@ -1947,6 +1960,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         scene.prepare_depth();
         // In parallel the workers record and finish a command buffer each
         // (the cascades, the pre-pass) while this thread records the main pass.
+        renderer.set_multi_draw(panel.multi_draw);
         const bool parallel = panel.parallel_recording && experimental;
         if (parallel) {
             effects.record_parallel(device, recording_pool, depth_draw);
@@ -2044,6 +2058,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             std::cout << (written ? "captured: " : "capture failed: ") << options.capture_path << std::endl;
             // The frame times before it, for comparing settings (--no-vsync).
             std::cout << "frame times: " << panel.stats.average_ms() << " ms avg, " << panel.stats.worst_ms() << " ms worst" << std::endl;
+            std::cout << renderer.draw_report(25) << std::flush;
             for (const auto& [id, asked] : options.capture_switches) {
                 if (const auto where = scene.cab_switch_state(id)) {
                     std::cout << "cab switch " << id << ": asked " << asked << ", State " << where->first << ", SetState " << where->second << std::endl;
@@ -2058,7 +2073,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                       << effect_stats.near_texel * 1000.0f << " mm), cab map " << (effect_stats.focus ? "on" : "off");
             if (effect_stats.focus) std::cout << " (texel " << effect_stats.focus_texel * 1000.0f << " mm)";
             std::cout << ", daylight " << effect_stats.daylight << ", lamps x" << effect_stats.lamp_strength << ", " << effect_stats.lamp_shadows
-                      << " lamp shadows";
+                      << " lamp shadows (of " << effect_stats.lamps_lighting << " lamps lighting " << effect_stats.lamp_radius << " m around)";
             std::cout << ", " << effect_stats.lights << " lights" << std::endl;
             std::cout << "cpu stages (ms):";
             for (std::size_t i = 0; i < frame_stage_count; ++i) std::cout << ' ' << frame_stage_names[i] << ' ' << panel.stats.stage_ms()[i];
@@ -2074,6 +2089,24 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         wgpuTextureRelease(frame_texture);
         renderer.collect_retired();
         stage_clock.mark(FrameStage::submit, stages);
+        if (!capture && !options.menu && now >= perf_at) {
+            perf_at = now + 10.0;
+            const auto& times = panel.stats.stage_ms();
+            double work = 0.0;
+            for (std::size_t i = 0; i < frame_stage_count; ++i)
+                if (static_cast<FrameStage>(i) != FrameStage::wait) work += times[i];
+            const auto gpu = renderer.stats();
+            const auto effect_stats = effects.stats();
+            std::cout << "perf: " << static_cast<int>(panel.stats.fps() + 0.5) << " fps, " << panel.stats.average_ms() << " ms avg, "
+                      << panel.stats.worst_ms() << " ms worst; cpu work " << work << " ms:";
+            for (std::size_t i = 0; i < frame_stage_count; ++i) std::cout << ' ' << frame_stage_names[i] << ' ' << times[i];
+            std::cout << "; gpu main pass " << (panel.gpu_timing ? panel.stats.gpu_ms() : -1.0) << " ms; " << gpu.instances
+                      << " instances, " << gpu.draw_calls << " draw calls in " << gpu.draw_commands << " commands (multi-draw "
+                      << (renderer.multi_draw() ? "on" : "off") << "), " << gpu.primitives << " primitives; "
+                      << effect_stats.cascades << " cascades (" << effect_stats.cascades_drawn << " drawn), "
+                      << effect_stats.lamp_shadows << " lamp shadows, " << effect_stats.lights << " lights; renderer "
+                      << (renderer.shading_path() == renderer::ShadingPath::experimental ? "experimental" : "RTS") << std::endl;
+        }
     }
     return exit_code::success;
 }

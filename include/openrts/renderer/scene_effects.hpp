@@ -91,6 +91,8 @@ struct SceneEffectStats {
     float daylight = 0.0f;    // 0 night .. 1 full day, for the lamps
     float lamp_strength = 1.0f; // the lamps' strength this frame
     std::uint32_t lamp_shadows = 0; // lamps throwing shadows this frame
+    std::uint32_t lamps_lighting = 0; // lamps lighting the place they are for (the ones chosen from)
+    float lamp_radius = 0.0f;         // that place's radius (m)
 };
 
 // The bind group layout of the effects (group 2), for pipelines that read them.
@@ -100,7 +102,7 @@ class SceneEffects {
 public:
     static constexpr std::uint32_t max_cascades = 4;
     static constexpr std::uint32_t max_lights = 512;
-    static constexpr std::uint32_t max_lamp_shadows = 4;
+    static constexpr std::uint32_t max_lamp_shadows = 8;
 
     explicit SceneEffects(WGPUDevice device);
     ~SceneEffects();
@@ -117,9 +119,11 @@ public:
     void begin_frame(const SceneEffectView& view, const ModelLighting& lighting, bool active);
     // After begin_frame(), before recording: this frame's shadow focus
     // (nullopt: none). Its map is drawn in depth slot max_cascades + 1. It
-    // also picks the lamps throwing shadows (onto it, or around the view
-    // without it), drawn in depth slots max_cascades + 2 on.
-    void set_focus(const std::optional<ShadowFocus>& focus);
+    // also picks the lamps throwing shadows, drawn in depth slots
+    // max_cascades + 2 on: onto `lamps` when given (in flight: where the
+    // camera looks; their shadows fade out towards its edge), else onto the
+    // focus, else around the view.
+    void set_focus(const std::optional<ShadowFocus>& focus, const std::optional<ShadowFocus>& lamps = std::nullopt);
     // Records the passes before the main pass: each shadow cascade and the
     // camera's depth pre-pass through `draw` (which draws every depth-writing
     // surface for that pass), then GTAO and the light clusters.

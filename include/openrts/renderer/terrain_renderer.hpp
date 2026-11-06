@@ -105,7 +105,7 @@ public:
     void render(WGPURenderPassEncoder pass, const glm::mat4& view_projection, const ModelLighting& lighting,
                 WGPUBindGroup effects = nullptr);
     // Depth only, for SceneEffects: every loaded tile from `view_projection`
-    // in depth slot `slot` (< 12).
+    // in depth slot `slot` (< 14).
     void render_depth(WGPURenderPassEncoder pass, std::uint32_t slot, const glm::mat4& view_projection, DepthPassKind kind);
     // Sizes what the depth passes use; call before them (they may run on
     // several threads at once and change nothing shared).
