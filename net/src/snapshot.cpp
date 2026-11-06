@@ -315,58 +315,32 @@ SnapshotRead read_snapshot(const ByteView data) {
             break;
         }
         case P(Package::substation): {
-            Substation x;
-            if (parse_body(body, [&](WireReader& r) {
-                    x.id = r.u32();
-                    x.flags = r.u32();
-                    x.voltage = r.f32();
-                    x.tail = r.u32();
-                })) {
-                s.substations.push_back(x);
+            if (const auto x = decode_substation(body)) {
+                s.substations.push_back(*x);
             } else {
                 keep(f, "not a substation");
             }
             break;
         }
         case P(Package::phase_voltages): {
-            std::vector<SubstationPhases> phases;
-            if (parse_body(body, [&](WireReader& r) {
-                    const auto count = r.u32();
-                    for (std::uint32_t i = 0; i < count && r.ok(); ++i) {
-                        SubstationPhases p;
-                        p.id = r.u32();
-                        const auto n = r.u16();
-                        for (std::uint16_t k = 0; k < n && r.ok(); ++k) p.voltages.push_back(r.f32());
-                        phases.push_back(std::move(p));
-                    }
-                }) && s.phases.empty()) {
-                s.phases = std::move(phases);
+            if (auto phases = decode_phase_voltages(body); phases && s.phases.empty()) {
+                s.phases = std::move(*phases);
             } else {
                 keep(f, "not phase voltages, or a second list");
             }
             break;
         }
         case P(Package::section_source): {
-            SectionSource x;
-            if (parse_body(body, [&](WireReader& r) {
-                    x.section = r.u32();
-                    x.source = r.i16();
-                })) {
-                s.sections.push_back(x);
+            if (const auto x = decode_section_source(body)) {
+                s.sections.push_back(*x);
             } else {
                 keep(f, "not a section source");
             }
             break;
         }
         case P(Package::piece_supply): {
-            PieceSupply x;
-            if (parse_body(body, [&](WireReader& r) {
-                    x.node = r.u32();
-                    x.piece = r.u32();
-                    x.source = r.i16();
-                    x.keep = r.u8();
-                })) {
-                s.pieces.push_back(x);
+            if (const auto x = decode_piece_supply(body)) {
+                s.pieces.push_back(*x);
             } else {
                 keep(f, "not a piece supply");
             }
@@ -897,6 +871,209 @@ Bytes encode_sound_values(const SoundValues& values) {
     return w.take();
 }
 
+std::optional<Substation> decode_substation(const ByteView body) {
+    Substation x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.id = r.u32();
+            x.flags = r.u32();
+            x.voltage = r.f32();
+            x.tail = r.u32();
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+std::optional<std::vector<SubstationPhases>> decode_phase_voltages(const ByteView body) {
+    std::vector<SubstationPhases> phases;
+    if (!parse_body(body, [&](WireReader& r) {
+            const auto count = r.u32();
+            for (std::uint32_t i = 0; i < count && r.ok(); ++i) {
+                SubstationPhases p;
+                p.id = r.u32();
+                const auto n = r.u16();
+                for (std::uint16_t k = 0; k < n && r.ok(); ++k) p.voltages.push_back(r.f32());
+                phases.push_back(std::move(p));
+            }
+        })) {
+        return std::nullopt;
+    }
+    return phases;
+}
+
+std::optional<SectionSource> decode_section_source(const ByteView body) {
+    SectionSource x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.section = r.u32();
+            x.source = r.i16();
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+std::optional<PieceSupply> decode_piece_supply(const ByteView body) {
+    PieceSupply x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.node = r.u32();
+            x.piece = r.u32();
+            x.source = r.i16();
+            x.keep = r.u8();
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+Bytes encode_substation_load(const SubstationLoadReport& load) {
+    WireWriter w;
+    w.u32(load.substation);
+    w.u16(load.phase);
+    w.f32(load.energy);
+    w.f32(load.window);
+    return w.take();
+}
+
+std::optional<SoundState> decode_sound_state(const ByteView body) {
+    SoundState x;
+    WireReader r(body);
+    x.values.train = r.u32();
+    x.values.car = r.u32();
+    x.values.slot = r.u16();
+    for (auto& v : x.values.vars) v = r.f32();
+    x.values.travelled = r.f32();
+    x.values.volume = r.f32();
+    const auto count = r.u32();
+    for (std::uint32_t i = 0; i < count && r.ok(); ++i) {
+        const auto frame = r.frame();
+        if (!r.ok() || frame.id != id(Package::sound_stream)) return std::nullopt;
+        SoundStreamState s;
+        if (!parse_body(frame.body, [&](WireReader& f) {
+                s.flags = f.u32();
+                s.current = f.u32();
+                s.start = f.u32();
+                s.stream_flags = f.u32();
+                s.position = f.u32();
+                s.volume = f.f32();
+                s.value = f.f32();
+                const auto n = f.u32();
+                for (std::uint32_t k = 0; k < n && f.ok(); ++k) s.triggers.push_back(f.u32());
+            })) {
+            return std::nullopt;
+        }
+        x.streams.push_back(std::move(s));
+    }
+    if (!r.ok() || !r.at_end()) return std::nullopt;
+    return x;
+}
+
+Bytes encode_sound_state(const SoundState& state) {
+    WireWriter w;
+    w.u32(state.values.train);
+    w.u32(state.values.car);
+    w.u16(state.values.slot);
+    for (const auto v : state.values.vars) w.f32(v);
+    w.f32(state.values.travelled);
+    w.f32(state.values.volume);
+    w.u32(static_cast<std::uint32_t>(state.streams.size()));
+    for (const auto& s : state.streams) {
+        w.begin(id(Package::sound_stream));
+        w.u32(s.flags);
+        w.u32(s.current);
+        w.u32(s.start);
+        w.u32(s.stream_flags);
+        w.u32(s.position);
+        w.f32(s.volume);
+        w.f32(s.value);
+        w.u32(static_cast<std::uint32_t>(s.triggers.size()));
+        for (const auto t : s.triggers) w.u32(t);
+        w.end();
+    }
+    return w.take();
+}
+
+std::optional<Coupling> decode_couple(const ByteView body) {
+    Coupling x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.a = r.u32();
+            x.b = r.u32();
+            x.end_a = r.u8();
+            x.end_b = r.u8();
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+Bytes encode_couple(const Coupling& coupling) {
+    WireWriter w;
+    w.u32(coupling.a);
+    w.u32(coupling.b);
+    w.u8(coupling.end_a);
+    w.u8(coupling.end_b);
+    return w.take();
+}
+
+std::optional<Uncoupling> decode_uncouple(const ByteView body) {
+    Uncoupling x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.train = r.u32();
+            x.car = r.u32();
+            x.part = r.u32();
+            x.side = r.u8();
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+Bytes encode_uncouple(const Uncoupling& cut) {
+    WireWriter w;
+    w.u32(cut.train);
+    w.u32(cut.car);
+    w.u32(cut.part);
+    w.u8(cut.side);
+    return w.take();
+}
+
+std::optional<std::pair<std::uint32_t, std::uint32_t>> decode_train_id_change(const ByteView body) {
+    std::pair<std::uint32_t, std::uint32_t> x;
+    if (!parse_body(body, [&](WireReader& r) {
+            x.first = r.u32();
+            x.second = r.u32();
+        })) {
+        return std::nullopt;
+    }
+    return x;
+}
+
+std::vector<TrainCar> coupled_cars(const std::vector<TrainCar>& a, const std::vector<TrainCar>& b, const std::uint8_t end_a,
+                                   const std::uint8_t end_b) {
+    // B turned when the same ends meet (rear to rear, front to front).
+    auto other = b;
+    if (end_a == end_b) {
+        std::reverse(other.begin(), other.end());
+        for (auto& car : other) car.flags ^= 1u;
+    }
+    std::vector<TrainCar> out;
+    if (end_a == 0) {
+        out = a; // A's rear: B behind it
+        out.insert(out.end(), other.begin(), other.end());
+    } else {
+        out = std::move(other); // A's front: B ahead of it
+        out.insert(out.end(), a.begin(), a.end());
+    }
+    return out;
+}
+
+std::pair<std::vector<TrainCar>, std::vector<TrainCar>> cut_cars(const std::vector<TrainCar>& cars, const std::size_t car,
+                                                                 const std::uint8_t side) {
+    const auto at = cars.begin() + static_cast<std::ptrdiff_t>((std::min)(car, cars.size()));
+    std::vector<TrainCar> front(cars.begin(), at), rear(at, cars.end());
+    if (side == 0) return {std::move(front), std::move(rear)};
+    return {std::move(rear), std::move(front)};
+}
+
 Bytes encode_state_request(const std::uint32_t mode, const std::uint32_t train) {
     WireWriter w;
     w.u32(mode);
@@ -908,8 +1085,8 @@ Bytes encode_state_request(const std::uint32_t mode, const std::uint32_t train) 
 
 Bytes encode_player_pos(const PlayerPosition& p) {
     WireWriter w;
+    w.u32(p.value_0);
     w.u32(p.train);
-    w.u32(p.value_4);
     w.u32(p.value_8);
     w.i16(p.tile_x);
     w.i16(p.tile_z);

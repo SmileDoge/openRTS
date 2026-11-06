@@ -780,7 +780,10 @@ without compliance and RTS refuses it too.
   `DOOR3` "WAGON_BACK" then faces section a).
 - openRTS: walks on the cab shape's own surfaces (floor, walls, desks, doors
   by their animated nodes), the eye 0.85 `Height` over his feet (1.54);
-  outside, on the ground and (optionally) the world's objects. Head out:
+  outside, on the ground and (optionally) the world's objects. Walking
+  into the face of an open outer door (its plane, inside its width) gets
+  him off; before 2026-11-06 only where the wall stopped him dead, so
+  sliding along it he had to search the doorway. Head out:
   the eye at `HeadOutPosition` (RTSFileReference: "the camera when the
   player looks out of the window"). The mouse picks a control by the cab
   shape's triangles (the node it meets, or the switch's `.sd` Position on

@@ -298,12 +298,12 @@ int main(int argc, char** argv) {
             for (auto& r : runners) {
                 auto& train = *r->train;
                 const auto* progress = dispatcher.progress(train.id());
-                const auto orders = simulation::path_orders(train, dispatcher, &signals, limits, r->freight, r->wait_left);
+                const auto orders = simulation::path_orders(train, dispatcher, &signals, limits, simulation::category_from_cars(r->freight), r->wait_left);
                 if (progress && progress->on_route && !progress->finished && !train.derailed()) {
                     all_done = false;
                     const double speed = std::abs(train.speed());
                     r->top_speed = (std::max)(r->top_speed, speed);
-                    const auto track = limits.evaluate(train, r->freight);
+                    const auto track = limits.evaluate(train, simulation::category_from_cars(r->freight));
                     if (track.current > 0.0f) r->over_limit = (std::max)(r->over_limit, speed - track.current);
                 }
                 r->driver->step(simulation::train_step, train, orders);

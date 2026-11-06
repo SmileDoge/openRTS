@@ -12,12 +12,12 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.3.1](../../releases/tag/v0.3.1):
-> a nearly playable single-player game. Driving from a 3-D cab with RTS's
-> locomotive DLLs, signalling, a dispatcher window, a living route (forests,
-> level crossings, road traffic, water, rain and snow, smoke), sound by the
-> cab's rooms, coupling and uncoupling with the DLLs are there; multiplayer
-> and activities are not yet.
+> Work in progress. The latest version is [v0.4.0](../../releases/tag/v0.4.0):
+> a nearly playable game. Driving from a 3-D cab with RTS's locomotive
+> DLLs, signalling, a dispatcher window, a living route (forests, level
+> crossings, road traffic, water, rain and snow, smoke), sound by the cab's
+> rooms, coupling and uncoupling with the DLLs, and now network play on an
+> RTS server together with `rts1.exe`; activities are not yet.
 
 ## What works
 

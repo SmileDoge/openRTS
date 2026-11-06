@@ -56,8 +56,10 @@ public:
     // engineer.Height / Height1 from RTS's config.ini (UTF-16 or ANSI text).
     void configure(std::string_view config);
     // Where one stands outside to climb in through each exterior door of
-    // `cab`, in cab coordinates (Mode::outside's get-on spots).
-    [[nodiscard]] static std::vector<glm::vec3> get_on_points(const CabView& cab);
+    // `cab`, in cab coordinates (Mode::outside's get-on spots), by door.
+    [[nodiscard]] static std::vector<std::pair<std::size_t, glm::vec3>> get_on_points(const CabView& cab);
+    // What Enter does at that door from outside.
+    [[nodiscard]] static std::string get_on_prompt(const CabView& cab, std::size_t door);
     [[nodiscard]] Mode mode() const noexcept { return mode_; }
     [[nodiscard]] bool active() const noexcept { return mode_ != Mode::off; }
     [[nodiscard]] bool inside() const noexcept { return mode_ == Mode::seated || mode_ == Mode::standing; }
@@ -70,6 +72,9 @@ public:
 
     // `car`: the cab car's body this frame (cab shape -> scene). Moves the
     // engineer and puts the camera at his eye; the mouse turns his head.
+    // On foot with no cab to go with (no train of his): the same walk
+    // outside, the arrows along the ground where the head looks.
+    void update_on_foot(const EngineerControls& controls, const Outdoors& outdoors, float elapsed, ViewerCamera& camera);
     void update(CabView& cab, const EngineerControls& controls, const glm::mat4& car, const Outdoors& outdoors,
                 float elapsed, ViewerCamera& camera);
     // The scene's origin moved by `delta` (scene coordinates of a fixed point grew by it).
@@ -98,7 +103,7 @@ private:
     [[nodiscard]] Choice choose(const CabView& cab, const glm::mat4& car) const;
     void walk_inside(const CabView& cab, const glm::vec3& step);
     [[nodiscard]] bool passable(const CabView& cab, const glm::vec3& from, glm::vec3& to) const;
-    [[nodiscard]] std::optional<std::size_t> open_door_near(const CabView& cab, bool exterior) const;
+    [[nodiscard]] std::optional<std::size_t> open_door_near(const CabView& cab, bool exterior, float reach = 1.4f) const;
     [[nodiscard]] std::optional<std::size_t> chair_window(const CabView& cab) const;
     void get_off(const CabView& cab, std::size_t door, const glm::mat4& car, const Outdoors& outdoors);
     void walk_outside(const glm::vec3& step, const Outdoors& outdoors);

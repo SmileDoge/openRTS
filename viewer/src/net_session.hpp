@@ -45,6 +45,8 @@ public:
     // The server's time of day, once after it came.
     [[nodiscard]] std::optional<double> take_time_of_day() { return std::exchange(time_of_day_, std::nullopt); }
     [[nodiscard]] bool down() const noexcept { return down_; }
+    // The dispatcher paused the game (0x4616): time and trains stand.
+    [[nodiscard]] bool paused() const noexcept { return paused_; }
 
 private:
     struct Remote {
@@ -67,6 +69,8 @@ private:
         std::uint64_t train = 0;              // in TrainView; 0 while off the track
         std::optional<net::TrainPos> back_at; // the server's place for it while off the track
         bool moving = false;
+        bool announced = false;     // stood still once since it was placed here
+        bool waiting = false;       // a part cut off: no server id yet (0x4610 brings it)
         double next_position = 0.0; // train_pos due while it moves
         double next_look = 0.0;     // car_state at most every 250 ms
         double next_sound = 0.0;    // sound_values at most every 200 ms
@@ -80,6 +84,12 @@ private:
     // Off the track here (`keep`: it stays ours, to be put back).
     void take_off(std::uint32_t id, Owned& own, TrainView& trains);
     void assigned(const net::TrainAssignUpdate& a, simulation::TrackNetwork& network, TrainView& trains, double now);
+    // Couplings and cuts: ours to the server, the others' from it.
+    void send_couplings(TrainView& trains);
+    void coupled(const net::Coupling& c, TrainView& trains);
+    void uncoupled(const net::Uncoupling& u, TrainView& trains);
+    void renamed(std::uint32_t from, std::uint32_t to);
+    std::uint32_t next_local_ = 100000; // ids of parts we cut off, until the server's (rts1.exe: 100244, ...)
     [[nodiscard]] std::uint32_t driven_id(const TrainView& trains) const;
     void send_own(TrainView& trains, double now);
     void send_look(std::uint32_t id, Owned& own, TrainView& trains, bool all);
@@ -91,6 +101,7 @@ private:
     std::vector<net::ReceivedPackage> early_;
     bool started_ = false;
     bool down_ = false;
+    bool paused_ = false;
     std::map<std::uint32_t, Remote> remotes_;
     std::optional<net::SignalHeads> heads_;
     std::vector<net::SignalHeadState> waiting_heads_; // until the signals have loaded

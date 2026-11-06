@@ -71,20 +71,57 @@ float distance_xz(const glm::vec3& a, const glm::vec3& b) {
     return std::hypot(a.x - b.x, a.z - b.z);
 }
 
+// The open outer door whose face a step out reaches: from `feet` by `going`
+// (cab coordinates) his front comes to the door's plane, inside its width.
+std::optional<std::size_t> doorway_reached(const CabView& cab, const glm::vec3& feet, const glm::vec3& going) {
+    const glm::vec2 g{going.x, going.z};
+    if (glm::length(g) < 1e-6f) return std::nullopt;
+    const auto& doors = cab.description().doors;
+    for (std::size_t i = 0; i < doors.size(); ++i) {
+        const auto& d = doors[i];
+        if (!is_exterior(d) || !has_point(d) || !cab.door_open(i)) continue;
+        const glm::vec3 out3 = outward(d);
+        const glm::vec2 out{out3.x, out3.z};
+        if (glm::dot(glm::normalize(g), out) <= 0.2f) continue; // not walking out
+        const glm::vec3 mid3 = door_point(d);
+        const glm::vec2 from_mid = glm::vec2{feet.x + going.x, feet.z + going.z} - glm::vec2{mid3.x, mid3.z};
+        const float ahead = glm::dot(from_mid, out); // < 0: inside the face
+        if (ahead < -(radius + 0.05f) || ahead > 1.0f) continue;
+        const glm::vec2 across{-out.y, out.x};
+        float half = 0.45f; // a door with only a point: about a doorway
+        if (has_plane(d)) half = std::abs(glm::dot(glm::vec2{d.plane.a[0] - d.plane.b[0], d.plane.a[2] - d.plane.b[2]}, across)) * 0.5f;
+        if (std::abs(glm::dot(from_mid, across)) > half + 0.1f) continue;
+        return i;
+    }
+    return std::nullopt;
+}
+
 glm::vec3 vec(const std::array<float, 3>& a) {
     return {a[0], a[1], a[2]};
 }
 
 } // namespace
 
-std::vector<glm::vec3> Engineer::get_on_points(const CabView& cab) {
-    std::vector<glm::vec3> out;
-    for (const auto& door : cab.description().doors) {
+std::vector<std::pair<std::size_t, glm::vec3>> Engineer::get_on_points(const CabView& cab) {
+    std::vector<std::pair<std::size_t, glm::vec3>> out;
+    const auto& doors = cab.description().doors;
+    for (std::size_t i = 0; i < doors.size(); ++i) {
+        const auto& door = doors[i];
         if (!has_point(door) || !is_exterior(door)) continue;
         const auto at = door_point(door);
-        out.push_back(glm::vec3{at.x, 0.0f, at.z} + outward(door) * 0.9f);
+        out.emplace_back(i, glm::vec3{at.x, 0.0f, at.z} + outward(door) * 0.9f);
     }
     return out;
+}
+
+std::string Engineer::get_on_prompt(const CabView& cab, const std::size_t door) {
+    if (door >= cab.description().doors.size()) return {};
+    if (!cab.description().doors[door].can_be_opened) {
+        return cab.door_open(door) ? tr("Enter: climb in") : tr("The passenger doors are opened from the driver's cab.");
+    }
+    if (!cab.door_animated(door)) return tr("Enter: climb into the cab");
+    return cab.door_open(door) ? tr("Enter: close the door, Ctrl+Enter: climb in")
+                               : tr("Enter: open the door, Ctrl+Enter: climb in");
 }
 
 void Engineer::configure(const std::string_view config) {
@@ -183,10 +220,10 @@ void Engineer::walk_inside(const CabView& cab, const glm::vec3& step) {
     blocked_ = true;
 }
 
-std::optional<std::size_t> Engineer::open_door_near(const CabView& cab, const bool exterior) const {
+std::optional<std::size_t> Engineer::open_door_near(const CabView& cab, const bool exterior, const float reach) const {
     const auto& doors = cab.description().doors;
     std::optional<std::size_t> best;
-    float nearest = 1.4f; // the doorway reaches past the door to the car end
+    float nearest = reach; // 1.4: the doorway reaches past the door to the car end
     for (std::size_t i = 0; i < doors.size(); ++i) {
         if (!has_point(doors[i]) || !cab.door_open(i)) continue;
         if (exterior ? !is_exterior(doors[i]) : !is_passage(doors[i])) continue;
@@ -312,6 +349,29 @@ Engineer::Choice Engineer::choose(const CabView& cab, const glm::mat4& car) cons
     return best;
 }
 
+void Engineer::update_on_foot(const EngineerControls& controls, const Outdoors& outdoors, const float elapsed,
+                              ViewerCamera& camera) {
+    prompt_.clear();
+    if (mode_ != Mode::outside) return;
+    look_pitch_ = camera.pitch;
+    const float sign_forward = (controls.forward ? 1.0f : 0.0f) - (controls.back ? 1.0f : 0.0f);
+    const float sign_right = (controls.right ? 1.0f : 0.0f) - (controls.left ? 1.0f : 0.0f);
+    if (sign_forward != 0.0f || sign_right != 0.0f) {
+        const glm::vec3 forward{-std::sin(camera.yaw), 0.0f, -std::cos(camera.yaw)};
+        const glm::vec3 right{forward.z, 0.0f, -forward.x};
+        // RTS 0x4121BC: Shift runs, End alone a fifth of the walk, Shift+End twice the run.
+        const float pace = controls.run ? run_speed_ * (controls.slow ? 2.0f : 1.0f)
+                                        : walk_speed_ * (controls.slow ? 0.2f : 1.0f);
+        walk_outside(glm::normalize(forward * sign_forward + right * sign_right) * pace * std::min(elapsed, 0.1f), outdoors);
+    }
+    blend_ = 1.0f;
+    camera.fly = true;
+    camera.position = feet_ + glm::vec3{0.0f, eye_share * height_, 0.0f};
+    camera.pitch = std::clamp(look_pitch_, -1.4f, 1.4f);
+    last_yaw_ = camera.yaw;
+    camera_set_ = true;
+}
+
 void Engineer::update(CabView& cab, const EngineerControls& controls, const glm::mat4& car, const Outdoors& outdoors,
                       const float elapsed, ViewerCamera& camera) {
     prompt_.clear();
@@ -415,8 +475,15 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
         const float pace = controls.run ? run_speed_ * (controls.slow ? 2.0f : 1.0f)
                                         : walk_speed_ * (controls.slow ? 0.2f : 1.0f);
         step = glm::normalize(step) * pace * std::min(elapsed, 0.1f);
-        if (mode_ == Mode::standing) {
-            const glm::vec3 local = glm::vec3(to_car * glm::vec4(step, 0.0f));
+        const glm::vec3 local_step = glm::vec3(to_car * glm::vec4(step, 0.0f));
+        const auto at_door = mode_ == Mode::standing ? doorway_reached(cab, feet_, local_step) : std::nullopt;
+        if (at_door) {
+            // Out as soon as he walks into the face of an open outer door;
+            // before, only where the wall stopped him dead (sliding along
+            // it he could not get out, and had to search the doorway).
+            get_off(cab, *at_door, car, outdoors);
+        } else if (mode_ == Mode::standing) {
+            const glm::vec3 local = local_step;
             const float length = glm::length(local);
             const int pieces = (std::max)(1, static_cast<int>(std::ceil(length / inside_piece)));
             for (int p = 0; p < pieces; ++p) {
@@ -463,18 +530,9 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
                                          : tr("Enter: open the door");
         break;
     }
-    case Target::get_on: {
-        const auto c = choose(cab, car);
-        if (!cab.description().doors[c.index].can_be_opened) {
-            prompt_ = cab.door_open(c.index) ? tr("Enter: climb in") : tr("The passenger doors are opened from the driver's cab.");
-        } else if (!cab.door_animated(c.index)) {
-            prompt_ = tr("Enter: climb into the cab");
-        } else {
-            prompt_ = cab.door_open(c.index) ? tr("Enter: close the door, Ctrl+Enter: climb in")
-                                             : tr("Enter: open the door, Ctrl+Enter: climb in");
-        }
+    case Target::get_on:
+        prompt_ = get_on_prompt(cab, choose(cab, car).index);
         break;
-    }
     default: break;
     }
 

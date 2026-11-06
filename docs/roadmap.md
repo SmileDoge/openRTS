@@ -241,7 +241,11 @@ playable game. Order (the user's decisions, 2026-11-01):
   state nodes and the displays' blink, cab lamps without a DLL by their
   Flags, `ALSN` with RTS's three arrays, taking another cab by walking
   into it (`ChangeLoco`), the car menu's cables, coupling repair and
-  cargo, the line current, wire burning and substation load.
+  cargo, the line current, wire burning and substation load. Walking is
+  the player's since 2026-11-06, not the train's: the main panel's "On
+  foot" puts him on the ground under the camera with a train or without
+  one; Enter at a cab door of his train gets in (in a network game, of
+  any of his trains).
 - 4 done: `RTSCabinSound` of the player's engine with the DLL's cab
   triggers and Var1..8; the camera kind for SMS activation.
 - 5 done: `BrakeModel::realistic` (Train window, off by default; trains
@@ -289,6 +293,10 @@ yet. Each stage ends with something that runs and is checked:
        `reverse/multiplayer.md`), messages, pause, "Server down".
    - Check: on one PC with `rts_server.exe`, an `rts1.exe` and openRTS see
      each other's trains, as the test of 2026-11-03 did with two `rts1.exe`.
+   - Done (2026-11-06, `docs/net.md`): the observer, own trains with their
+     DLLs, look and sound both ways, couplings and cuts, taken-away trains
+     frozen, the pause, speed post categories and the line from the server.
+     Checked live with an `rts1.exe`, the couplings offline.
 3. **The openRTS server.**
    - One program for players and dispatchers, the Legacy switch and its
      rules, the agreed settings for everyone.

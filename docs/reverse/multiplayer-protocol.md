@@ -249,7 +249,7 @@ A name says what the package is about; the rows below hold the details.
 | `0x4643` | server → player, console | `u32` message | `0x4706` shows the flood warning, anything else a numbered "Server message" |
 | `0x4630` | mini-server host → player | `u8` 1 | in the host's snapshot only: sets `dword_61D31C+37` |
 | `0x462E` | server → player | user id, train id, `u32`, `u32` + 3 × `f32`, `u32` + 3 × `f32`, name (32 bytes) | a user record, in the snapshot; the client takes the train id as its own train (`+48`) |
-| `0x462D` | player → server → others | the client's position fields (as `0x462E` from the train id on) | the server stores them in the user record and relays them to everyone else (audience 2), with the sender's id in front and its name (32 bytes) after: the map's person icon |
+| `0x462D` | player → server → others | the client's position fields (as `0x462E` from the train id on): `u32` 0 (`rts1.exe` always sends 0 in the record's train field), the train the player is in `u32` (0 none), `u32` (UNKNOWN, 0 or 1), tile x, z (`i16`), x, y, z, four `f32` (live capture 2026-11-05) | the server stores them in the user record and relays them to everyone else (audience 2), with the sender's id in front and its name (32 bytes) after: the map's person icon |
 | `0x1700` | helper → engineer | node id, session | the NetworkNode hello (`multiplayer.md`, "Helpers") |
 | `0x1701` | node → node | text | shown as a "Multiplayer" message (`0x52DE78`) |
 
@@ -283,7 +283,7 @@ A name says what the package is about; the rows below hold the details.
 | `0x4646` | console → server → players | substation id (the `.electrotype`'s `ID`), flags `u32` (`+44`), voltage `f32` (`+52`, V), `u32` 0 | a substation's state. Live capture: bit 0 is "отключена" (ТПС Староминская off 1, on 0); 4 came after the dispatcher set ТПС Краснодар's voltage (PROBABLE: a set voltage); the voltage was 27 500, then the set 10 500 |
 | `0x4647` | console or player → server → others | section id, source `i16` | a sectioning section's source (`0x455270` / `0x5B5E5C`): −1 its own, −2 "отключено" (live capture: the train in it lost line voltage and its `0x4649` stopped); PROBABLE another value names a source |
 | `0x4648` | server → player | substation count, then per substation id, `u16` phases, `f32` per phase | the phases' voltages (27 500 V on Kuban), sent again a few seconds after a sectioning change. The client checks the order: "Substation order or phase num do not match the one on server" |
-| `0x4649` | player → dispatchers | substation, phase `u16`, energy, window length | `multiplayer.md` |
+| `0x4649` | player → dispatchers | substation `u32`, phase `u16`, energy `f32` (the power summed x s), window length `f32` (s); 14 bytes (live capture: 3, 1, 41.8, 2.016) | `multiplayer.md` |
 
 - From a user whose role (`+32`) is not 1 (PROBABLE: a dispatcher),
   `0x4645`..`0x4647`, `0x464A` and `0x464B` are dropped.
@@ -334,8 +334,8 @@ A name says what the package is about; the rows below hold the details.
 
 | Id | Direction | Payload | What happens |
 |---|---|---|---|
-| `0x460E` | player → server → others | train id, car index, the player's local id for the new part `u32`, side `u8` | an uncoupling (below) |
-| `0x460F` | player → server → others | train A, train B, ends `u8`, `u8` | a coupling: `multiplayer.md`, "Coupling in play" |
+| `0x460E` | player → server → others | train id, car index, the player's local id for the new part `u32`, side `u8` | an uncoupling (below). Side 0: the part is the cars from the index on (the live cut: 19 cars cut at 1 left 1 and made an 18-car train); PROBABLE 1: the cars before it |
+| `0x460F` | player → server → others | train A, train B, ends `u8`, `u8` | a coupling: `multiplayer.md`, "Coupling in play". PROBABLE: an end is 0 the rear, 1 the front: both live couplings (ends 0, 1) gave A's cars then B's in their order (the car spacings of the merged `0x4603`) |
 | `0x461B` | player → server → others | train, car, train 2, car 2, action `u32` | a car menu action between two cars. Every client carries it out; actions 1 and 16 are not |
 | `0x4640` | player → server → others | train, car, `u32`, action `u32`, `u32` | a car menu action on one car. Clients carry out `action \| 0x1000000`; the server keeps flags `0x100` / `0x200` on its car and the last `u32` (`+84`) |
 

@@ -102,6 +102,10 @@ public:
     // (start again with create()).
     bool reconsist(const core::Vfs& vfs, std::vector<std::vector<LegacyCar>> trains,
                    const std::vector<const simulation::Train*>& sims);
+    // The trains' RTS kinds for the next reconsist (default: the first the
+    // player's, 1, the rest LOOSE, 3); 2 (another player's) keeps a train's
+    // DLLs bound without running them.
+    void set_train_types(std::vector<std::uint32_t> types) { train_types_ = std::move(types); }
     bool reconsist(const core::Vfs& vfs, std::vector<LegacyCar> cars, const simulation::Train& train);
     [[nodiscard]] std::size_t trains() const noexcept { return train_first_.size() - 1; }
     [[nodiscard]] std::size_t train_size(std::size_t train) const noexcept {
@@ -149,6 +153,7 @@ private:
     std::vector<dllhost::ModuleReport> modules_;
     std::shared_ptr<Outputs> outputs_ = std::make_shared<Outputs>();
     std::size_t player_ = SIZE_MAX;
+    std::vector<std::uint32_t> train_types_;
     std::string messages_;
     // Per car: each AuxLibrary of the .eng as the host numbers them (only
     // the ones whose module was found), -1 missing.

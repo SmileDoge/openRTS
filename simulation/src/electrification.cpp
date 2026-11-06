@@ -73,7 +73,17 @@ float Electrification::source_frequency(const formats::ElectroPowerSource& sourc
 float Electrification::source_voltage(const formats::ElectroPowerSource& source, const TrackPoint& where) const {
     const auto* sub = substation(source.substation);
     if (!sub) return 0.0f;
-    float voltage = source.feeder_q * 0.01f * sub->voltage;
+    float base = sub->voltage;
+    if (const auto* state = state_of(source.substation)) {
+        if (state->off) return 0.0f;
+        if (state->voltage >= 0.0f) base = state->voltage;
+        // PROBABLE: phases count from 1 in the sources (Kuban's are all 27.5 kV).
+        if (!state->phases.empty()) {
+            const std::size_t k = source.phase >= 1 ? source.phase - 1u : 0u;
+            base = state->phases[(std::min)(k, state->phases.size() - 1)];
+        }
+    }
+    float voltage = source.feeder_q * 0.01f * base;
     const auto* type = type_of(source);
     // The drop per km from the substation (UseSubstationPos) or the feeder.
     const formats::RoutePosition* from = source.use_substation_position ? &sub->position
@@ -158,6 +168,22 @@ LinePoint Electrification::at(const std::uint32_t node, const double offset, con
             if (p.length > 0.0f && p.start <= offset && p.start + p.length >= offset) burn_of(p);
     }
     const auto* piece = piece_at(*data, offset);
+    // The piece's own supply from the server (0x4645).
+    int piece_source = -1;
+    if (piece && !piece_supply_.empty()) {
+        const auto k = static_cast<std::uint32_t>(piece - data->electricity.data());
+        if (const auto it = piece_supply_.find(static_cast<std::uint64_t>(node) << 32 | k); it != piece_supply_.end()) {
+            if (piece->section == 0) {
+                // A dead piece fed from a neighbour: 1 the piece before, 2 the one after.
+                if (it->second == 1 && k > 0) piece = &data->electricity[k - 1];
+                if (it->second == 2 && k + 1 < data->electricity.size()) piece = &data->electricity[k + 1];
+            } else if (it->second <= -2) {
+                return out; // no source: dead
+            } else {
+                piece_source = it->second;
+            }
+        }
+    }
     if (!piece || piece->section == 0 || piece->section >= section_by_id_.size() || section_by_id_[piece->section] < 0) {
         return out;
     }
@@ -186,6 +212,13 @@ LinePoint Electrification::at(const std::uint32_t node, const double offset, con
             if (out.supply.voltage <= 0.0f) out.state = LineState::dead;
             return out;
         }
+    }
+    if (piece_source >= 0 && piece_source < static_cast<int>(sources.size())) {
+        const auto& source = sources[static_cast<std::size_t>(piece_source)];
+        out.source = piece_source;
+        out.supply = {source_voltage(source, where), source_frequency(source)};
+        if (out.supply.voltage > 0.0f) out.state = LineState::live;
+        return out;
     }
     if (sources.size() == 1) {
         chosen = 0;
@@ -324,6 +357,8 @@ LineSupply Electrification::apply(Train& train, const std::vector<std::uint8_t>&
                 const auto& section = data_.database.sections[static_cast<std::size_t>(point.section)];
                 const auto& source = section.sources[static_cast<std::size_t>(point.source)];
                 const float share = power * static_cast<float>(own) / static_cast<float>(raised_total);
+                const auto* state = state_of(source.substation);
+                if (state && state->off) continue; // RTS 0x5B6030: an off substation sums nothing
                 auto& load = loads_[static_cast<std::uint64_t>(source.substation) << 32 | source.phase];
                 load.substation = source.substation;
                 load.phase = source.phase;
@@ -338,6 +373,7 @@ void Electrification::advance_loads(const double dt) {
     for (auto& [key, load] : loads_) {
         load.window += static_cast<float>(dt);
         if (load.window < 2.0f) continue;
+        if (load.energy > 0.0f) closed_.push_back({load.substation, load.phase, load.energy, load.window});
         load.power = load.energy / load.window;
         load.energy = 0.0f;
         load.window = 0.0f;
@@ -348,6 +384,43 @@ std::vector<SubstationLoad> Electrification::substation_loads() const {
     std::vector<SubstationLoad> out;
     for (const auto& [key, load] : loads_) out.push_back(load);
     return out;
+}
+
+void Electrification::set_substation(const std::uint32_t id, const bool off, const float voltage) {
+    auto& state = substation_state_[id];
+    state.off = off;
+    state.voltage = voltage;
+}
+
+void Electrification::set_phase_voltages(const std::uint32_t id, std::vector<float> voltages) {
+    substation_state_[id].phases = std::move(voltages);
+}
+
+void Electrification::set_section_source(const std::uint32_t section_id, const int source) {
+    if (section_id >= section_by_id_.size() || section_by_id_[section_id] < 0) return;
+    const auto index = static_cast<std::size_t>(section_by_id_[section_id]);
+    if (file_current_.empty()) {
+        file_current_ = current_;
+        file_active_ = active_;
+    }
+    if (source >= 0) {
+        set_current_source(index, source);
+    } else if (source == -1) {
+        current_[index] = file_current_[index]; // its own, as the route file has it
+        active_[index] = file_active_[index];
+    } else {
+        current_[index] = -1; // "отключено": every source out
+        for (auto& flags : active_[index]) flags = 0;
+    }
+}
+
+void Electrification::set_piece_supply(const std::uint32_t node, const std::uint32_t piece, const int source) {
+    const auto key = static_cast<std::uint64_t>(node) << 32 | piece;
+    if (source == -1) {
+        piece_supply_.erase(key); // the section's choice
+    } else {
+        piece_supply_[key] = source;
+    }
 }
 
 int Electrification::current_source(const std::size_t section) const {

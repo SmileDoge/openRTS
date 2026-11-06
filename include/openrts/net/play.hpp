@@ -118,6 +118,73 @@ struct SoundValues {
 };
 [[nodiscard]] std::optional<SoundValues> decode_sound_values(ByteView body);
 [[nodiscard]] Bytes encode_sound_values(const SoundValues& values);
+// 0x463A sound_state: a car sound's whole state, the owner's answer to
+// state_request 2 (rts1.exe 0x4CE290): the 0x463D fields, the number of
+// streams, then a 0x463B per stream (0x4CEA38). Read from 3 232 packages of
+// the live capture of 2026-11-05.
+struct SoundStreamState {
+    std::uint32_t flags{};
+    std::uint32_t current{};      // the trigger that plays (its loop) + 1; 0 none
+    std::uint32_t start{};        // UNKNOWN, 0 in the capture
+    std::uint32_t stream_flags{}; // UNKNOWN, 0 in the capture
+    std::uint32_t position{};     // PROBABLE the loop's play position (samples)
+    float volume = 1.0f;          // the stream's Volume
+    float value = 1.0f;           // UNKNOWN, 1.0 in the capture
+    std::vector<std::uint32_t> triggers; // per trigger: 1 the current one
+};
+struct SoundState {
+    SoundValues values;
+    std::vector<SoundStreamState> streams;
+};
+[[nodiscard]] std::optional<SoundState> decode_sound_state(ByteView body);
+[[nodiscard]] Bytes encode_sound_state(const SoundState& state);
+
+// The line from the server (the console's "Электроснабжение"), as in the
+// snapshot: 0x4646 a substation's state, 0x4648 its phases' voltages,
+// 0x4647 a section's source, 0x4645 a piece of track's own supply.
+[[nodiscard]] std::optional<Substation> decode_substation(ByteView body);
+[[nodiscard]] std::optional<std::vector<SubstationPhases>> decode_phase_voltages(ByteView body);
+[[nodiscard]] std::optional<SectionSource> decode_section_source(ByteView body);
+[[nodiscard]] std::optional<PieceSupply> decode_piece_supply(ByteView body);
+
+// 0x4649 substation_load (14 bytes), to the dispatchers: what a train drew
+// from a substation phase over a window of about 2 s (rts1.exe 0x5B6030).
+struct SubstationLoadReport {
+    std::uint32_t substation{};
+    std::uint16_t phase{};
+    float energy{}; // the power (PowerConsuming) summed over the window x s
+    float window{}; // s
+};
+[[nodiscard]] Bytes encode_substation_load(const SubstationLoadReport& load);
+
+// Couplings in play (docs/reverse/multiplayer.md, "Coupling in play").
+// 0x460F couple: train A took train B in; the ends, 0 the rear (the last
+// car's), 1 the front: A's rear to B's front makes A's cars then B's in their
+// order (PROBABLE, both live couplings of 2026-11-05).
+struct Coupling {
+    std::uint32_t a{}, b{};
+    std::uint8_t end_a{}, end_b{};
+};
+[[nodiscard]] std::optional<Coupling> decode_couple(ByteView body);
+[[nodiscard]] Bytes encode_couple(const Coupling& coupling);
+// 0x460E uncouple: train cut before car `car`; the part gets `part` (the
+// sender's local id, the server's id to the others); side 0: the part is
+// the cars from `car` on (the live capture), PROBABLE 1: the cars before.
+struct Uncoupling {
+    std::uint32_t train{}, car{}, part{};
+    std::uint8_t side{};
+};
+[[nodiscard]] std::optional<Uncoupling> decode_uncouple(ByteView body);
+[[nodiscard]] Bytes encode_uncouple(const Uncoupling& cut);
+// 0x4610 train_id: a train's id changed (old, new).
+[[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>> decode_train_id_change(ByteView body);
+// The record's cars after a coupling or a cut (the snapshot's car flags,
+// bit 0 flipped).
+[[nodiscard]] std::vector<TrainCar> coupled_cars(const std::vector<TrainCar>& a, const std::vector<TrainCar>& b,
+                                                 std::uint8_t end_a, std::uint8_t end_b);
+// {the cars that stay, the part's}.
+[[nodiscard]] std::pair<std::vector<TrainCar>, std::vector<TrainCar>> cut_cars(const std::vector<TrainCar>& cars,
+                                                                             std::size_t car, std::uint8_t side);
 
 // 0x4623 state_request: mode 2 asks a train's owner for its whole look
 // (lights, sound, car state), as rts1.exe does when it loads another
@@ -128,9 +195,12 @@ struct SoundValues {
 // and draws the person on the consoles' map; it relays a train's lights,
 // look and sounds only to players within 3 km of it.
 struct PlayerPosition {
-    std::uint32_t train{}; // the train the player is in, 0 none
-    std::uint32_t value_4{};
-    std::uint32_t value_8{};
+    // The user record's train field (0x462E +4, the train the client takes
+    // as its own): rts1.exe always sends 0 here (live capture 2026-11-05);
+    // openRTS sent its train in it until 2026-11-06.
+    std::uint32_t value_0{};
+    std::uint32_t train{};   // the train the player is in, 0 none (rts1.exe: 2, 3, 4 driving)
+    std::uint32_t value_8{}; // UNKNOWN: 0, sometimes 1
     std::int16_t tile_x{}, tile_z{};
     float x{}, y{}, z{};             // in the tile
     std::array<float, 4> view{};     // UNKNOWN: the camera's (rts1.exe sends headings and the like)

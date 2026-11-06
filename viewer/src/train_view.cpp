@@ -142,6 +142,8 @@ struct TrainView::Car {
     std::vector<std::uint8_t> remote_lights;
     // A remote car's Var1..Var8 as its owner sends them (0x463D).
     std::optional<std::array<float, 8>> remote_sound_vars;
+    // Its owner's whole sound state (0x463A) until its sound object is made.
+    std::vector<std::uint32_t> remote_sound_restore;
     // The driven train's sound for the network (take_driven_sound).
     std::vector<std::uint32_t> net_triggers;
     std::array<float, 8> net_vars{};
@@ -188,6 +190,12 @@ struct TrainView::Unit {
     Role role = Role::standing;
     std::string name;
     bool freight = true; // no passenger cars: freight speed limits
+    // The server's category in a network game (0x4607 / 0x4605); without
+    // one, from the cars (`freight`).
+    std::optional<simulation::TrainCategory> category;
+    [[nodiscard]] simulation::TrainCategory speed_category() const noexcept {
+        return category.value_or(simulation::category_from_cars(freight));
+    }
     std::unique_ptr<simulation::AutoDriver> ai;
     float wait_left = -1.0f; // s still to wait at a waiting point
     float still = 0.0f;      // s standing still (RTS: a LOOSE train becomes STATIC after 30 s)
@@ -802,6 +810,15 @@ void TrainView::attach_legacy() {
         unit.host_train = 0;
         host_keys_.emplace_back();
         for (const auto& car : unit.cars) host_keys_.back().push_back(car.key);
+        // The player's other trains (the network's own) join the new host, to
+        // be bound when he gets in and to go on when he leaves.
+        bool more = false;
+        for (std::size_t u = 1; u < units_.size(); ++u) {
+            if (units_[u].remote || !boardable_.contains(units_[u].train->id())) continue;
+            units_[u].host = true;
+            more = true;
+        }
+        if (more && !reconsist_host()) std::fprintf(stderr, "locomotive DLLs: the player's other trains not taken in\n");
     }
     attach_cab(legacy_ ? legacy_->player() : SIZE_MAX);
     if (!legacy_status_.empty()) {
@@ -839,16 +856,21 @@ bool TrainView::reconsist_host() {
     std::vector<std::vector<LegacyCarRef>> trains;
     std::vector<simulation::Train*> sims;
     std::vector<std::size_t> which;
+    std::vector<std::uint32_t> types;
     units_.front().host = true;
     for (std::size_t u = 0; u < units_.size(); ++u) {
         auto& unit = units_[u];
         unit.host_train = SIZE_MAX;
         if (!unit.host) continue;
+        // Another client's now (a train taken away, the network): its DLLs
+        // stay bound and keep their state, but do not run (RTS kind 2).
+        types.push_back(unit.remote ? 2u : u == 0 ? 1u : 3u);
         trains.emplace_back();
         for (const auto& car : unit.cars) trains.back().push_back({car.definition, car.folder, car.uid, car.key});
         sims.push_back(unit.train.get());
         which.push_back(u);
     }
+    legacy_->set_train_types(std::move(types));
     if (!legacy_->reconsist(*vfs_, trains, sims)) return false;
     host_keys_.clear();
     for (std::size_t t = 0; t < which.size(); ++t) {
@@ -858,7 +880,7 @@ bool TrainView::reconsist_host() {
         for (const auto& car : unit.cars) host_keys_.back().push_back(car.key);
         // A part cut off moves by its own DLLs (RTS runs them, 0x424488);
         // one sent off with a path keeps its driver.
-        if (t == 0 || unit.role != Role::standing) continue;
+        if (t == 0 || unit.role != Role::standing || unit.remote) continue;
         for (std::size_t i = 0; i < unit.cars.size(); ++i)
             if (legacy_->has_dll(t, i)) unit.train->set_controller(i, legacy_->controller(t, i));
     }
@@ -1045,6 +1067,7 @@ void TrainView::change_cab(const std::size_t car) {
 }
 
 bool TrainView::keyboard_captured() const noexcept {
+    if (!units_.empty() && units_.front().remote) return false; // not his train
     return ((legacy_ && legacy_->keyboard()) || native_) && cab_keys_live();
 }
 
@@ -1076,6 +1099,7 @@ void TrainView::split(const std::size_t unit_index, const std::size_t index, con
             break;
         }
     }
+    const auto from = unit.train->id();
     auto cut_train = unit.train->uncouple(index, close_cocks, keep_open);
     if (!cut_train) return;
     Unit cut;
@@ -1084,10 +1108,14 @@ void TrainView::split(const std::size_t unit_index, const std::size_t index, con
     cut.cars.assign(std::make_move_iterator(split_at), std::make_move_iterator(unit.cars.end()));
     unit.cars.erase(split_at, unit.cars.end());
     // The driver goes with the master engine.
-    if (unit_index == 0 && master && *master >= index) std::swap(unit, cut);
+    const bool swapped = unit_index == 0 && master && *master >= index;
+    if (swapped) std::swap(unit, cut);
+    cuts_.push_back({from, unit.train->id(), cut.train->id(), index, swapped});
+    if (cuts_.size() > 16) cuts_.erase(cuts_.begin());
     for (std::size_t i = 0; i < cut.train->cars().size(); ++i) cut.train->set_controller(i, nullptr);
     cut.name = unit.name + " (cut)";
     cut.freight = unit.freight;
+    cut.category = unit.category; // a part keeps its train's (RTS: the new train takes its kind)
     // RTS: the part cut off keeps the train's flag 4 and its DLLs run on
     // (0x4EEC50, 0x424488).
     cut.host = unit.host && legacy_ != nullptr;
@@ -1114,6 +1142,8 @@ std::size_t TrainView::merge_units(const simulation::Train* survivor_train, cons
     const auto s = find(survivor_train);
     const auto a = find(absorbed_train);
     if (s >= units_.size() || a >= units_.size() || s == a) return units_.size();
+    couplings_.push_back({units_[s].train->id(), units_[a].train->id(), absorbed_ahead, absorbed_turned});
+    if (couplings_.size() > 16) couplings_.erase(couplings_.begin());
     const bool host = units_[s].host || units_[a].host;
     auto absorbed_cars = std::move(units_[a].cars);
     if (absorbed_turned) {
@@ -1143,9 +1173,19 @@ std::size_t TrainView::merge_units(const simulation::Train* survivor_train, cons
 void TrainView::step_trains() {
     // Meetings first, on the positions the step starts from (the earlier
     // unit survives a coupling, so the driven train keeps its place).
+    // Trains of this program first: in a meeting the earlier survives, and
+    // our train takes another client's in (RTS: its own train always takes
+    // the other); two remote trains never meet here.
     std::vector<simulation::Train*> trains;
-    for (auto& unit : units_) trains.push_back(unit.train.get());
-    for (const auto& result : simulation::resolve_contacts(trains)) {
+    std::vector<std::uint8_t> remote;
+    for (const bool pass : {false, true}) {
+        for (auto& unit : units_) {
+            if (unit.remote != pass) continue;
+            trains.push_back(unit.train.get());
+            remote.push_back(unit.remote ? 1 : 0);
+        }
+    }
+    for (const auto& result : simulation::resolve_contacts(trains, remote)) {
         if (result.outcome != simulation::ContactOutcome::coupled) {
             message_ = result.outcome == simulation::ContactOutcome::collision
                 ? "collision: " + std::to_string(static_cast<int>(result.force / 1000.0)) + " kN, over DerailBufferForce"
@@ -1234,7 +1274,7 @@ void TrainView::step_trains() {
 }
 
 simulation::DriveOrders TrainView::drive_orders(Unit& unit) {
-    return simulation::path_orders(*unit.train, *dispatcher_, signals_, *limits_, unit.freight, unit.wait_left);
+    return simulation::path_orders(*unit.train, *dispatcher_, signals_, *limits_, unit.speed_category(), unit.wait_left);
 }
 
 void TrainView::attach_role(Unit& unit) {
@@ -1748,11 +1788,41 @@ void TrainView::remote_sound_trigger(const std::uint64_t id, const std::size_t c
     }
 }
 
+std::vector<TrainView::CarSoundState> TrainView::sound_state_of(const std::uint64_t id) const {
+    std::vector<CarSoundState> out;
+    const auto* unit = find_unit(id);
+    if (!unit || unit->remote) return out;
+    for (const auto& car : unit->cars) {
+        CarSoundState s;
+        s.vars = car.net_vars;
+        s.travelled = car.net_travelled;
+        if (car.sound) s.streams = car.sound->stream_states();
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+void TrainView::restore_remote_sound(const std::uint64_t id, const std::size_t car, const std::vector<std::uint32_t>& current) {
+    for (auto& unit : units_) {
+        if (unit.train->id() != id || !unit.remote || car >= unit.cars.size()) continue;
+        auto& c = unit.cars[car];
+        if (c.sound) {
+            c.sound->restore(current);
+        } else {
+            c.remote_sound_restore = current;
+        }
+    }
+}
+
 void TrainView::set_remote_sound(const std::uint64_t id, const std::size_t car, const std::array<float, 8>& vars) {
     for (auto& unit : units_) {
         if (unit.train->id() != id || !unit.remote || car >= unit.cars.size()) continue;
         unit.cars[car].remote_sound_vars = vars;
     }
+}
+
+void TrainView::set_category(const std::uint64_t id, const simulation::TrainCategory category) {
+    if (auto* unit = find_unit(id)) unit->category = category;
 }
 
 std::string TrainView::place_driven(PlacedTrain train) {
@@ -1847,7 +1917,56 @@ bool TrainView::drop(const std::uint64_t id) {
     units_.erase(units_.begin());
     if (follow_id_ == id) follow_id_ = 0;
     follow_ = false;
+    consist_.clear();
     std::cout << "the driven train is gone: the player is out where he was" << std::endl;
+    return true;
+}
+
+bool TrainView::give_away(const std::uint64_t id) {
+    auto* unit = find_unit(id);
+    if (!unit || unit->remote) return false;
+    if (unit == &units_.front() && unit->role == Role::driven) {
+        // The player leaves it where he is; its DLLs stay with the host.
+        set_engineer(false);
+        native_.reset();
+        driver_.reset();
+        cab_.reset();
+        visit_cab_.reset();
+        cab_requested_ = false;
+        visit_requested_ = false;
+        cab_car_ = SIZE_MAX;
+        engineer_car_ = SIZE_MAX;
+        follow_ = false;
+        consist_.clear();
+        std::cout << "the driven train is another player's now: the player is out where he was" << std::endl;
+    }
+    unit->role = Role::standing;
+    unit->remote = true;
+    unit->ai.reset();
+    for (std::size_t i = 0; i < unit->train->cars().size(); ++i) unit->train->set_controller(i, nullptr);
+    unit->train->set_asleep(true);
+    dispatcher_->clear(id);
+    shared_sound_.erase(id);
+    boardable_.erase(id);
+    if (legacy_ && unit->host) reconsist_host();
+    return true;
+}
+
+bool TrainView::take_back(const std::uint64_t id) {
+    auto* unit = find_unit(id);
+    if (!unit || !unit->remote) return false;
+    unit->remote = false;
+    unit->role = Role::standing;
+    for (auto& car : unit->cars) {
+        car.remote_lights.clear();
+        car.remote_sound_vars.reset();
+    }
+    // Its DLLs, bound while it was ours, go on where they stopped; a train
+    // never ours joins the player's host, to be bound when he gets in.
+    if (legacy_) {
+        unit->host = true;
+        reconsist_host();
+    }
     return true;
 }
 
@@ -2176,7 +2295,7 @@ void TrainView::draw_hud() {
     // Default places: 10 px from the side, 60 px from the top.
     const float margin_x = display.x > 0.0f ? 10.0f / display.x : 0.0f;
     const float margin_y = display.y > 0.0f ? 60.0f / display.y : 0.0f;
-    const auto limit = limits_->evaluate(train, unit->freight);
+    const auto limit = limits_->evaluate(train, unit->speed_category());
     const auto ordinate = limits_->ordinate(train);
     if (car_info_) {
         if (begin_panel("##car_info", car_info_place_, margin_x, margin_y)) {
@@ -2226,7 +2345,7 @@ void TrainView::draw_hud() {
             }
             ImGui::Text(tr("Limit %.0f km/h"), limit.current * 3.6f);
             ImGui::Separator();
-            const auto ahead = limits_->limits_ahead(train, unit->freight, 10000.0, 6);
+            const auto ahead = limits_->limits_ahead(train, unit->speed_category(), 10000.0, 6);
             if (!ahead.empty() && ImGui::BeginTable("##limits_ahead", 2, ImGuiTableFlags_SizingFixedFit)) {
                 for (const auto& [speed, distance] : ahead) {
                     ImGui::TableNextRow();
@@ -2477,7 +2596,10 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         message_ = error.empty() ? trf("%s: trains put on the track", source.c_str()) : error;
         if (!error.empty()) std::cout << source << ": " << error << std::endl;
     }
-    if (!loaded()) return;
+    if (!loaded()) {
+        update_engineer(input, camera, elapsed, library); // on foot with no trains at all
+        return;
+    }
     request_models(library);
     fit_shapes(library);
     if (pending_path_) {
@@ -2800,11 +2922,6 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
                                 renderer::ModelLibrary& library) {
     look_ = camera.forward();
     if (!engineer_.active()) return;
-    auto* cab = engineer_cab();
-    if (!cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) {
-        set_engineer(false);
-        return;
-    }
     if (!engineer_configured_) {
         engineer_configured_ = true;
         if (!rts_config_.empty()) {
@@ -2819,11 +2936,6 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
             }
         }
     }
-    const auto& unit = units_.front();
-    if (unit.current.empty()) return;
-    const auto body = body_pose(unit, engineer_car_, false);
-    if (!body) return;
-    follow_ = false;
     const EngineerControls controls{.forward = input.walk_forward,
                                     .back = input.walk_back,
                                     .left = input.walk_left,
@@ -2834,28 +2946,55 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
                                     .action_ctrl = input.engineer_action_ctrl,
                                     .window = input.cab_window,
                                     .head_out = input.head_out};
+    const Outdoors outdoors{
+        .floor = [this](const glm::vec3& p) { return walk_floor(p); },
+        .blocked = [this](const glm::vec3& from, const glm::vec3& to) { return walk_blocked(from, to); },
+    };
+    // At a cab door of another train of his (the network's own trains):
+    // the same prompt as at his own; Enter makes it the driven train, and
+    // the same Enter then opens the door or climbs in as into any cab.
+    board_prompt_.clear();
+    if (engineer_.mode() == Engineer::Mode::outside && !boardable_.empty()) {
+        if (const auto target = board_target(engineer_.feet())) {
+            if (const auto* unit = find_unit(target->train); unit && target->car < unit->cars.size()) {
+                if (const auto it = board_cabs_.find(unit->cars[target->car].key); it != board_cabs_.end() && it->second) {
+                    board_prompt_ = Engineer::get_on_prompt(*it->second, target->door);
+                }
+            }
+            if (input.engineer_action) {
+                if (const auto problem = board(target->train, target->car, false); !problem.empty()) {
+                    message_ = tr(problem.c_str());
+                    return;
+                }
+                board_prompt_.clear();
+            }
+        }
+    }
+    auto* cab = engineer_cab();
+    if (!cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) {
+        // No cab of his: walking goes on outside (the player's, not the
+        // train's); inside a cab that went away he is out of it.
+        if (engineer_.mode() != Engineer::Mode::outside) {
+            set_engineer(false);
+            return;
+        }
+        follow_ = false;
+        gather_walk_world(engineer_.feet(), library);
+        engineer_.update_on_foot(controls, outdoors, elapsed, camera);
+        look_ = camera.forward();
+        return;
+    }
+    const auto& unit = units_.front();
+    if (unit.current.empty()) return;
+    const auto body = body_pose(unit, engineer_car_, false);
+    if (!body) return;
+    follow_ = false;
     // On his feet only (seated, the passing world needs no surfaces read).
     if (engineer_.mode() == Engineer::Mode::seated) {
         walk_cars_.clear();
         walk_objects_near_.clear();
     } else {
         gather_walk_world(engineer_.mode() == Engineer::Mode::outside ? engineer_.feet() : camera.eye(), library);
-    }
-    const Outdoors outdoors{
-        .floor = [this](const glm::vec3& p) { return walk_floor(p); },
-        .blocked = [this](const glm::vec3& from, const glm::vec3& to) { return walk_blocked(from, to); },
-    };
-    // On foot at an exterior door of another train of his (the network's
-    // own trains): Enter takes it, and he is in its cab.
-    board_prompt_.clear();
-    if (engineer_.mode() == Engineer::Mode::outside && !boardable_.empty()) {
-        if (const auto target = board_target(engineer_.feet())) {
-            board_prompt_ = tr("Enter: climb into the cab of this train");
-            if (input.engineer_action && !input.engineer_action_ctrl) {
-                if (const auto problem = board(target->train, target->car); !problem.empty()) message_ = tr(problem.c_str());
-                return;
-            }
-        }
     }
     engineer_.update(*cab, controls, body->transform * cab->placement(), outdoors, elapsed, camera);
     // RTS moves the cab camera by the body's offsets on its springs and draws
@@ -2886,12 +3025,12 @@ std::optional<TrainView::BoardTarget> TrainView::board_target(const glm::vec3& f
                 if (!cab) continue;
             }
             const auto to_scene = body->transform * cab->placement();
-            for (const auto& spot : Engineer::get_on_points(*cab)) {
+            for (const auto& [door, spot] : Engineer::get_on_points(*cab)) {
                 const glm::vec3 at{to_scene * glm::vec4(spot, 1.0f)};
                 const float d = std::hypot(at.x - feet.x, at.z - feet.z);
                 if (d <= nearest) {
                     nearest = d;
-                    best = BoardTarget{unit.train->id(), i};
+                    best = BoardTarget{unit.train->id(), i, door};
                 }
             }
         }
@@ -2899,15 +3038,42 @@ std::optional<TrainView::BoardTarget> TrainView::board_target(const glm::vec3& f
     return best;
 }
 
-std::string TrainView::board(const std::uint64_t id, const std::size_t car) {
+std::string TrainView::board(const std::uint64_t id, const std::size_t car, const bool seat) {
     if (is_player(id)) return {};
+    const bool outside = engineer_.mode() == Engineer::Mode::outside;
+    const auto feet = engineer_.feet();
     if (auto problem = set_role(id, Role::driven); !problem.empty()) return problem;
-    // Into the engine he climbed into, when its DLL can take him there.
+    // Into the engine he walked up to, when its DLL can take him there.
     if (car != SIZE_MAX && car != cab_car_ && !units_.empty() && car < units_.front().cars.size()) change_cab(car);
-    if (cab_) set_engineer(true);
+    if (seat || !outside) {
+        if (cab_) set_engineer(true);
+    } else {
+        // Still on the ground at its door (attaching the cab let him go).
+        visit_cab_.reset();
+        engineer_car_ = cab_car_;
+        engineer_.stand_outside(feet);
+    }
     follow_train(id);
     std::cout << "the player takes train " << units_.front().name << std::endl;
     return {};
+}
+
+void TrainView::set_walking(const bool on, const glm::vec3& eye) {
+    visit_cab_.reset();
+    visit_requested_ = false;
+    engineer_car_ = cab_car_;
+    hovered_.reset();
+    if (!on) {
+        engineer_.off();
+        return;
+    }
+    glm::vec3 feet = eye;
+    if (const auto ground = ground_height(feet)) {
+        feet.y = *ground;
+    } else {
+        feet.y -= 1.7f;
+    }
+    engineer_.stand_outside(feet);
 }
 
 void TrainView::set_engineer(const bool on) {
@@ -3603,7 +3769,12 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
         // The earlier unit survives (the driven train keeps its place).
         const auto other_unit = static_cast<std::size_t>(
             std::find_if(units_.begin(), units_.end(), [&](const Unit& u) { return u.train.get() == other; }) - units_.begin());
-        const bool keep_this = unit_index < other_unit;
+        if (other_unit < units_.size() && units_[other_unit].remote && units_[unit_index].remote) break;
+        // Ours takes another client's train in (RTS: its own train always
+        // takes the other); else the earlier unit survives.
+        const bool keep_this = other_unit < units_.size() && units_[other_unit].remote ? true
+                             : units_[unit_index].remote                             ? false
+                                                                                     : unit_index < other_unit;
         auto* survivor = keep_this ? &train : other;
         auto* absorbed = keep_this ? other : &train;
         const bool survivor_front = keep_this ? front : contact->other_front;
@@ -3844,7 +4015,7 @@ void TrainView::feed_world(const Unit& unit) {
     world.signal = {};
     world.event = {};
     const auto& train = *unit.train;
-    const auto limit = limits_->evaluate(train, unit.freight);
+    const auto limit = limits_->evaluate(train, unit.speed_category());
     world.route = {.limit = limit.current,
                    .next_limit = limit.ahead,
                    .distance = limit.ahead >= 0.0f ? static_cast<float>(limit.ahead_distance) : -1.0f};
@@ -4386,6 +4557,7 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
                 };
                 car.sound = std::make_unique<audio::SoundInstance>(car.script, *group, owner, std::move(lookup), seed * 7919u + 17u);
                 car.sound->preload();
+                if (!car.remote_sound_restore.empty()) car.sound->restore(std::exchange(car.remote_sound_restore, {}));
                 // OPENRTS_SOUND_TRACE: the player's train's cars too.
                 if (sound_trace() && u == 0) car.sound->set_trace("car " + std::to_string(i + 1) + " " + car.definition->name);
             }
@@ -4977,87 +5149,97 @@ void TrainView::draw_overlay() {
         ImGui::TextWrapped("%s %s", tr("Locomotive DLLs do not run:"), legacy_status_.c_str());
     }
 
-    if (!paths_.empty()) {
-        path_choice_ = std::clamp(path_choice_, 0, static_cast<int>(paths_.size()) - 1);
-        const auto label = [](const formats::TrainPath& path) {
-            return path.file + (path.name.empty() ? "" : ": " + path.name);
-        };
-        if (ImGui::BeginCombo(tr("Path"), label(paths_[static_cast<std::size_t>(path_choice_)]).c_str())) {
-            for (int i = 0; i < static_cast<int>(paths_.size()); ++i) {
-                if (ImGui::Selectable(label(paths_[static_cast<std::size_t>(i)]).c_str(), i == path_choice_)) path_choice_ = i;
+    // Paths, consists and situations put and replace trains here: not in a
+    // network game, where the server and its dispatchers own them.
+    if (!network_game_) {
+        if (!paths_.empty()) {
+            path_choice_ = std::clamp(path_choice_, 0, static_cast<int>(paths_.size()) - 1);
+            const auto label = [](const formats::TrainPath& path) {
+                return path.file + (path.name.empty() ? "" : ": " + path.name);
+            };
+            if (ImGui::BeginCombo(tr("Path"), label(paths_[static_cast<std::size_t>(path_choice_)]).c_str())) {
+                for (int i = 0; i < static_cast<int>(paths_.size()); ++i) {
+                    if (ImGui::Selectable(label(paths_[static_cast<std::size_t>(i)]).c_str(), i == path_choice_)) path_choice_ = i;
+                }
+                ImGui::EndCombo();
             }
-            ImGui::EndCombo();
-        }
-        if (loaded() && ImGui::Button(tr("Put on the path start"))) pending_path_ = true;
-    } else {
-        ImGui::TextDisabled(tr("The route has no paths (PATHS/*.pat)."));
-    }
-    if (ImGui::TreeNode(tr("Consist"))) {
-        if (!consists_listed_) list_consists();
-        ImGui::InputText(tr("Filter"), filter_, sizeof(filter_));
-        const auto filter = lower(filter_);
-        if (ImGui::BeginListBox("##consists", ImVec2(-1.0f, 160.0f))) {
-            int shown = 0;
-            for (int i = 0; i < static_cast<int>(consists_.size()) && shown < 300; ++i) {
-                const auto& path = consists_[static_cast<std::size_t>(i)];
-                const auto name = path.substr(path.find_last_of('/') + 1);
-                if (!filter.empty() && lower(name).find(filter) == std::string::npos) continue;
-                ++shown;
-                if (ImGui::Selectable(name.c_str(), i == consist_choice_)) consist_choice_ = i;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", path.c_str());
-            }
-            ImGui::EndListBox();
-        }
-        // The DLLs' start: cold (everything off), on (standing ready), running.
-        int start = start_state_ == 0 ? 1 : start_state_ == 1 ? 2 : 0;
-        const char* starts[] = {tr("running"), tr("cold"), tr("on, standing")};
-        ImGui::SetNextItemWidth(160.0f);
-        if (ImGui::Combo(tr("Start state##consist"), &start, starts, 3)) start_state_ = start == 1 ? 0 : start == 2 ? 1 : -1;
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", tr("(at the next load)"));
-        if (consist_choice_ >= 0 && consist_choice_ < static_cast<int>(consists_.size()) && ImGui::Button(tr("Load on the path"))) {
-            pending_load_ = consists_[static_cast<std::size_t>(consist_choice_)];
-        }
-        ImGui::TreePop();
-    }
-    // The trains as they stand: saved, and put back (here or from the start menu).
-    if (ImGui::TreeNode(tr("Situations"))) {
-        ImGui::SetNextItemWidth(220.0f);
-        ImGui::InputTextWithHint("##situation_name", tr("name"), situation_name_.data(), situation_name_.size());
-        ImGui::SameLine();
-        if (ImGui::Button(tr("Save the trains"))) {
-            const std::string name(situation_name_.data());
-            const auto error = save_situation(name);
-            message_ = error.empty() ? trf("situation %s saved", name.c_str()) : error;
-        }
-        const auto saved = situations();
-        if (saved.empty()) {
-            ImGui::TextDisabled("%s", tr("No saved situations on this route yet."));
+            if (loaded() && ImGui::Button(tr("Put on the path start"))) pending_path_ = true;
         } else {
-            situation_choice_ = std::clamp(situation_choice_, 0, static_cast<int>(saved.size()) - 1);
-            if (ImGui::BeginListBox("##situations", ImVec2(-1.0f, 110.0f))) {
-                for (int i = 0; i < static_cast<int>(saved.size()); ++i) {
-                    if (ImGui::Selectable(saved[static_cast<std::size_t>(i)].c_str(), i == situation_choice_)) situation_choice_ = i;
+            ImGui::TextDisabled(tr("The route has no paths (PATHS/*.pat)."));
+        }
+        if (ImGui::TreeNode(tr("Consist"))) {
+            if (!consists_listed_) list_consists();
+            ImGui::InputText(tr("Filter"), filter_, sizeof(filter_));
+            const auto filter = lower(filter_);
+            if (ImGui::BeginListBox("##consists", ImVec2(-1.0f, 160.0f))) {
+                int shown = 0;
+                for (int i = 0; i < static_cast<int>(consists_.size()) && shown < 300; ++i) {
+                    const auto& path = consists_[static_cast<std::size_t>(i)];
+                    const auto name = path.substr(path.find_last_of('/') + 1);
+                    if (!filter.empty() && lower(name).find(filter) == std::string::npos) continue;
+                    ++shown;
+                    if (ImGui::Selectable(name.c_str(), i == consist_choice_)) consist_choice_ = i;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", path.c_str());
                 }
                 ImGui::EndListBox();
             }
-            const auto& chosen = saved[static_cast<std::size_t>(situation_choice_)];
-            const auto file = situation_folder() / std::filesystem::path(std::u8string(chosen.begin(), chosen.end())).replace_extension(".situation");
-            if (ImGui::Button(tr("Put the trains back"))) request_situation(file);
+            // The DLLs' start: cold (everything off), on (standing ready), running.
+            int start = start_state_ == 0 ? 1 : start_state_ == 1 ? 2 : 0;
+            const char* starts[] = {tr("running"), tr("cold"), tr("on, standing")};
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::Combo(tr("Start state##consist"), &start, starts, 3)) start_state_ = start == 1 ? 0 : start == 2 ? 1 : -1;
             ImGui::SameLine();
-            if (ImGui::Button(tr("Delete"))) {
-                std::error_code fs_error;
-                std::filesystem::remove(file, fs_error);
-                message_ = trf("situation %s deleted", chosen.c_str());
+            ImGui::TextDisabled("%s", tr("(at the next load)"));
+            if (consist_choice_ >= 0 && consist_choice_ < static_cast<int>(consists_.size()) && ImGui::Button(tr("Load on the path"))) {
+                pending_load_ = consists_[static_cast<std::size_t>(consist_choice_)];
             }
+            ImGui::TreePop();
         }
-        ImGui::TreePop();
+        // The trains as they stand: saved, and put back (here or from the start menu).
+        if (ImGui::TreeNode(tr("Situations"))) {
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::InputTextWithHint("##situation_name", tr("name"), situation_name_.data(), situation_name_.size());
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Save the trains"))) {
+                const std::string name(situation_name_.data());
+                const auto error = save_situation(name);
+                message_ = error.empty() ? trf("situation %s saved", name.c_str()) : error;
+            }
+            const auto saved = situations();
+            if (saved.empty()) {
+                ImGui::TextDisabled("%s", tr("No saved situations on this route yet."));
+            } else {
+                situation_choice_ = std::clamp(situation_choice_, 0, static_cast<int>(saved.size()) - 1);
+                if (ImGui::BeginListBox("##situations", ImVec2(-1.0f, 110.0f))) {
+                    for (int i = 0; i < static_cast<int>(saved.size()); ++i) {
+                        if (ImGui::Selectable(saved[static_cast<std::size_t>(i)].c_str(), i == situation_choice_)) situation_choice_ = i;
+                    }
+                    ImGui::EndListBox();
+                }
+                const auto& chosen = saved[static_cast<std::size_t>(situation_choice_)];
+                const auto file = situation_folder() / std::filesystem::path(std::u8string(chosen.begin(), chosen.end())).replace_extension(".situation");
+                if (ImGui::Button(tr("Put the trains back"))) request_situation(file);
+                ImGui::SameLine();
+                if (ImGui::Button(tr("Delete"))) {
+                    std::error_code fs_error;
+                    std::filesystem::remove(file, fs_error);
+                    message_ = trf("situation %s deleted", chosen.c_str());
+                }
+            }
+            ImGui::TreePop();
+        }
     }
     if (!message_.empty()) ImGui::TextUnformatted(message_.c_str());
     if (!loaded()) return;
+    // The network: the player's train was taken away or taken off the
+    // track and another client's is first now; nothing below is his.
+    if (units_.front().remote) {
+        ImGui::TextUnformatted(tr("You have no train: the free camera (the dispatcher assigns one)"));
+        return;
+    }
     const auto& train = driven();
 
-    ImGui::Text(tr("%s: %zu cars, %.0f m, %.0f t"), consist_.c_str(), units_.front().cars.size(), train.length(),
+    ImGui::Text(tr("%s: %zu cars, %.0f m, %.0f t"), units_.front().name.c_str(), units_.front().cars.size(), train.length(),
                 train.mass() / 1000.0);
     if (!placed()) {
         ImGui::TextUnformatted(tr("Not on the track: C puts it on the track nearest to the camera."));

@@ -137,6 +137,19 @@ public:
     void set_trace(std::string label) { trace_ = std::move(label); }
 
     [[nodiscard]] bool active() const noexcept { return active_; }
+    // The whole state as a network sends it (RTS 0x463A): per stream the
+    // trigger whose loop plays, + 1 (0 none), with the stream's Volume and
+    // trigger count.
+    struct StreamState {
+        std::uint32_t current{};
+        float volume = 1.0f;
+        std::uint32_t triggers{};
+    };
+    [[nodiscard]] std::vector<StreamState> stream_states() const;
+    // Another client's whole state: a stream with a current trigger plays
+    // it at the next active update (RTS 0x4A8C00 restarts the stream on it;
+    // an inactive object keeps it for when it wakes).
+    void restore(const std::vector<std::uint32_t>& current);
     // The trigger pairs' states; none before the object's first pair code
     // (RTS allocates PairedFlags then).
     [[nodiscard]] std::optional<TriggerPairState> trigger_pairs() const;
@@ -167,6 +180,7 @@ private:
     // Discrete codes that came while inactive: RTS keeps them in the object's
     // 96-entry queue and runs them at its next active update.
     std::vector<std::uint32_t> queued_;
+    std::vector<std::uint32_t> restore_; // restore(): per stream, trigger + 1
     bool random_loop_phase_ = false;
     std::string trace_; // set_trace: empty, none
     float clock_ = 0.0f; // s of updates, for the trace

@@ -66,6 +66,6 @@ struct CurveAhead {
 // keep to the speed limit, the next limit, the next signal's speed and the
 // curves ahead.
 [[nodiscard]] DriveOrders path_orders(const Train& train, Dispatcher& dispatcher, const SignalSystem* signals,
-                                      const SpeedLimits& limits, bool freight, float& wait_left);
+                                      const SpeedLimits& limits, TrainCategory category, float& wait_left);
 
 } // namespace openrts::simulation

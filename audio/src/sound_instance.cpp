@@ -95,6 +95,23 @@ SoundInstance::SoundInstance(SoundInstance&&) noexcept = default;
 SoundInstance& SoundInstance::operator=(SoundInstance&&) noexcept = default;
 SoundInstance::~SoundInstance() = default;
 
+std::vector<SoundInstance::StreamState> SoundInstance::stream_states() const {
+    std::vector<StreamState> out;
+    out.reserve(streams_.size());
+    for (const auto& stream : streams_) {
+        StreamState s;
+        s.current = stream.current ? static_cast<std::uint32_t>(*stream.current) + 1u : 0u;
+        s.volume = stream.definition->volume;
+        s.triggers = static_cast<std::uint32_t>(stream.definition->triggers.size());
+        out.push_back(s);
+    }
+    return out;
+}
+
+void SoundInstance::restore(const std::vector<std::uint32_t>& current) {
+    restore_ = current;
+}
+
 std::size_t SoundInstance::voices() const noexcept {
     std::size_t count = 0;
     for (const auto& stream : streams_) count += stream.one_shots.size() + (stream.loop.id ? 1 : 0);
@@ -449,6 +466,18 @@ void SoundInstance::update(const float dt, const SoundInputs& raw_inputs, VoiceS
         }
         stop(sink);
         return;
+    }
+
+    // A whole state from the network: each stream on its current trigger.
+    if (!restore_.empty()) {
+        for (std::size_t s = 0; s < streams_.size() && s < restore_.size(); ++s) {
+            auto& stream = streams_[s];
+            const auto current = restore_[s];
+            if (current == 0 || current > stream.definition->triggers.size()) continue;
+            if (stream.current && *stream.current == current - 1u && stream.loop.id && sink.playing(stream.loop.id)) continue;
+            fire(stream, current - 1u, 1.0f, inputs, sink);
+        }
+        restore_.clear();
     }
 
     // Discrete codes through the trigger pairs (RTS 0x4A87C8): an On code

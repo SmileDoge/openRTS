@@ -180,6 +180,8 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"the train has no engine to drive", "у поезда нет локомотива"},
         {"another player drives this train", "этим поездом управляет другой игрок"},
         {"Enter: climb into the cab of this train", "Enter: сесть в кабину этого поезда"},
+        {"You have no train: the free camera (the dispatcher assigns one)", "У вас нет поезда: свободная камера (поезд назначает диспетчер)"},
+        {"On foot (arrows walk, Enter at a cab door gets in)", "Пешком (стрелки — идти, Enter у двери кабины — войти)"},
         {"Your trains (network): on foot, Enter at a cab door takes one", "Свои поезда (сеть): пешком — Enter у двери кабины, чтобы сесть"},
         {"make another train the driven one first", "сначала сделайте ведомым другой поезд"},
         {"no coupling there", "там нет сцепки"},

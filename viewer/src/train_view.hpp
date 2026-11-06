@@ -111,6 +111,11 @@ public:
     void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view = {});
     // The engineer into the driving cab's seat (--capture-cab).
     void enter_cab() { set_engineer(true); }
+    // Walking is the player's, not a train's (the main panel's "On foot"):
+    // on, he stands on the ground under `eye` and walks, into a cab of his
+    // train by its door; off, the free camera.
+    void set_walking(bool on, const glm::vec3& eye);
+    [[nodiscard]] bool walking() const noexcept { return engineer_.active(); }
     // The cab the engineer is in as the last submit() drew it: a sphere
     // around his place in it, fixed to the cab, and its forward, for the
     // cab's own shadow map.
@@ -217,9 +222,37 @@ public:
     // Takes train `id` off the track, the driven one too: the player is let
     // out where he was (no train, the free camera). False: no such train.
     bool drop(std::uint64_t id);
+    // A train of this client becomes another's (the network: taken away,
+    // RTS kind 2): drawn by the network from now, its DLLs bound but not run
+    // (RTS 0x424488); the player leaves it if he drove it. take_back: ours
+    // again, its DLLs going on where they stopped.
+    bool give_away(std::uint64_t id);
+    bool take_back(std::uint64_t id);
+    // Couplings and cuts since the last call, for the network (0x460F,
+    // 0x460E). A coupling: `survivor` took `absorbed` in, its cars in front
+    // or behind, turned or not. A cut: train `from` was cut before car
+    // `index`; `kept` holds the part the player stays with (it may be a new
+    // train object), `part` the other; `front_part`: the part is the cars
+    // before `index`.
+    struct Coupling {
+        std::uint64_t survivor{}, absorbed{};
+        bool absorbed_ahead = false, absorbed_turned = false;
+    };
+    struct Cut {
+        std::uint64_t from{}, kept{}, part{};
+        std::size_t index{};
+        bool front_part = false;
+    };
+    [[nodiscard]] std::vector<Coupling> take_couplings() { return std::exchange(couplings_, {}); }
+    [[nodiscard]] std::vector<Cut> take_cuts() { return std::exchange(cuts_, {}); }
     // Trains the player may take (the network: his own). On foot, Enter at
     // an exterior door of one of their cabs makes it the driven train; the
     // Train panel lists them with "Drive".
+    // A network game (--mp-connect): the panel leaves out what puts trains
+    // on the track (paths, consists, situations).
+    void set_network(bool on) noexcept { network_game_ = on; }
+    // A train's category for speed posts as the server says (network).
+    void set_category(std::uint64_t id, simulation::TrainCategory category);
     void set_boardable(std::uint64_t id, bool on) {
         if (on) {
             boardable_.insert(id);
@@ -227,9 +260,11 @@ public:
             boardable_.erase(id);
         }
     }
-    // Train `id` becomes the driven one with the player in its cab (`car`:
-    // the engine he climbed into; SIZE_MAX the DLL's own). An error, or empty.
-    [[nodiscard]] std::string board(std::uint64_t id, std::size_t car = SIZE_MAX);
+    // Train `id` becomes the driven one, its cab that of `car` (the engine
+    // he walked up to; SIZE_MAX the DLL's own). `seat`: the player is put in
+    // its chair (the reserve "Drive"); else he stays where he stands, to
+    // get in by the door as into any cab of his. An error, or empty.
+    [[nodiscard]] std::string board(std::uint64_t id, std::size_t car = SIZE_MAX, bool seat = true);
     [[nodiscard]] simulation::Train* find_train(std::uint64_t id);
     bool remove_train(std::uint64_t id);
     // A remote train's look as its owner sends it (car_light, car_state):
@@ -276,6 +311,15 @@ public:
     // the variables its sound curves read.
     void remote_sound_trigger(std::uint64_t id, std::size_t car, std::uint32_t code);
     void set_remote_sound(std::uint64_t id, std::size_t car, const std::array<float, 8>& vars);
+    // The whole exterior sound of a train simulated here, per car (the
+    // answer to state_request 2, 0x463A), and another client's applied.
+    struct CarSoundState {
+        std::array<float, 8> vars{};
+        float travelled{};
+        std::vector<audio::SoundInstance::StreamState> streams;
+    };
+    [[nodiscard]] std::vector<CarSoundState> sound_state_of(std::uint64_t id) const;
+    void restore_remote_sound(std::uint64_t id, std::size_t car, const std::vector<std::uint32_t>& current);
     // Saves the situation as `name` once the driven train stands on the
     // track (--save-situation, for scripted checks).
     void save_situation_when_placed(std::string name) { save_when_placed_ = std::move(name); }
@@ -460,12 +504,16 @@ private:
     std::string pending_trains_source_;
     std::set<std::uint64_t> shared_sound_; // take_sound
     std::set<std::uint64_t> boardable_;    // set_boardable
+    bool network_game_ = false;            // set_network
+    std::vector<Coupling> couplings_;      // take_couplings
+    std::vector<Cut> cuts_;                // take_cuts
     std::string board_prompt_;             // Enter at another train's cab door
     // The cabs of boardable trains' engines (their doors), by car key.
     std::map<std::uint32_t, std::unique_ptr<CabView>> board_cabs_;
     struct BoardTarget {
         std::uint64_t train{};
         std::size_t car{};
+        std::size_t door{};
     };
     [[nodiscard]] std::optional<BoardTarget> board_target(const glm::vec3& feet);
     // Sounds of trains taken away: stopped at the next sound update (a

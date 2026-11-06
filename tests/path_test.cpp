@@ -343,12 +343,25 @@ void test_speed_limits() {
     auto net = station();
     simulation::SpeedLimits limits(*net, 25.0f);
     check(limits.posts().size() == 1, "the limit post is on node 4");
-    check(near(limits.limit_at(4, 300.0, true, false), 40.0 / 3.6, 1e-3), "eastbound beyond the post: 40 km/h");
-    check(near(limits.limit_at(4, 100.0, true, false), 25.0, 1e-3), "before the post: the route's limit");
-    check(near(limits.limit_at(4, 300.0, false, false), 25.0, 1e-3), "the post is not for westbound trains");
-    check(near(limits.limit_at(1, 500.0, true, false), 25.0, 1e-3), "elsewhere: the route's limit");
+    check(near(limits.limit_at(4, 300.0, true, simulation::TrainCategory::passenger), 40.0 / 3.6, 1e-3), "eastbound beyond the post: 40 km/h");
+    check(near(limits.limit_at(4, 100.0, true, simulation::TrainCategory::passenger), 25.0, 1e-3), "before the post: the route's limit");
+    check(near(limits.limit_at(4, 300.0, false, simulation::TrainCategory::passenger), 25.0, 1e-3), "the post is not for westbound trains");
+    check(near(limits.limit_at(1, 500.0, true, simulation::TrainCategory::passenger), 25.0, 1e-3), "elsewhere: the route's limit");
     const auto post = formats::speed_post(net->database().items[0]);
     check(post && post->limit && !post->resume && near(post->speed, 40.0 / 3.6, 1e-4), "speed post data as RTS reads it");
+
+    // Which posts a train obeys by its category (rts1.exe 0x47F7B4).
+    using C = simulation::TrainCategory;
+    const auto obeys = [](const std::uint32_t flags, const C category) {
+        simulation::SpeedPostOnTrack p;
+        p.post.flags = flags;
+        return simulation::SpeedLimits::applies(p, true, category);
+    };
+    check(obeys(0x20, C::other) && obeys(0x40, C::other) && obeys(0x60, C::other), "\"Прочий\" obeys every post");
+    check(obeys(0x20, C::passenger) && !obeys(0x40, C::passenger) && obeys(0x80, C::passenger) && obeys(0, C::passenger),
+          "a passenger train: passenger posts and those for all");
+    check(!obeys(0x20, C::freight) && obeys(0x40, C::freight) && obeys(0x80, C::freight), "a freight train: freight posts and those for all");
+    check(!obeys(0x60, C::passenger) && !obeys(0x60, C::freight), "a post marked both passenger and freight: only \"Прочий\" (as RTS)");
 }
 
 } // namespace

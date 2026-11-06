@@ -729,7 +729,8 @@ bool LegacyConsist::reconsist(const core::Vfs& vfs, std::vector<std::vector<Lega
     std::vector<std::vector<std::int16_t>> aux(cars.size());
     std::vector<bool> kept(cars_.size(), false);
     request.trains.resize(trains.size());
-    for (std::size_t t = 0; t < trains.size(); ++t) request.trains[t].type = t == 0 ? 1 : 3; // the player's, LOOSE
+    for (std::size_t t = 0; t < trains.size(); ++t)
+        request.trains[t].type = static_cast<std::uint8_t>(t < train_types_.size() ? train_types_[t] : t == 0 ? 1u : 3u); // the player's, LOOSE
     for (std::size_t i = 0; i < cars.size(); ++i) {
         const auto t = static_cast<std::size_t>(std::upper_bound(first.begin(), first.end(), i) - first.begin()) - 1;
         ReconsistCar entry;

@@ -441,7 +441,9 @@ struct ContactResult {
 // meeting once: couples them when both couplers are automatic and not left
 // open and the impact is at most both cars' DerailBufferForce (the earlier
 // train in `trains` survives), otherwise exchanges momentum inelastically.
-std::vector<ContactResult> resolve_contacts(std::span<Train* const> trains);
+// `passive` (by train, optional): trains another program moves (the
+// network's remote trains); two of them never meet here.
+std::vector<ContactResult> resolve_contacts(std::span<Train* const> trains, std::span<const std::uint8_t> passive = {});
 
 // The nearest end of another train in `trains` facing `train`'s front (or
 // rear) end along the track within `reach` metres: that train, which of its

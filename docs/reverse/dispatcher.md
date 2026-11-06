@@ -128,6 +128,28 @@ cut from the start handler; making one needs the world fed in another way
   dispatcher route, a static consist pushed without coupling becoming LOOSE,
   per-player packet limits.
 
+## The train form ("Редактирование поезда", `rts_server.exe`) — CONFIRMED (static, 2026-11-06)
+
+`TfTrains::btEditClick` (`0x44019C`) fills `TfTrainEdit` from the train
+(`0x4140A0`), shows it, and applies it on OK (`0x41448C`). The form's
+published fields: `cbType` `+0x30C`, `edName` `+0x310`, `cbPlayer`
+`+0x314`, `mmNotes` `+0x328`, `edNumber` `+0x330`, `cbService` `+0x334`,
+`cbTrainState` `+0x338`, `panRestr` `+0x33C`, `cbEType` `+0x364`.
+What the server's train record decides (kind `+296`, state `+300`, the
+player `+328`, the speed `+332` as the owner's `0x4603` gave it, flags
+`+316`):
+- **State:** the train's; a PLAYER train whose speed is not exactly 0
+  shows "Движется" and the box is disabled.
+- **Player:** enabled only for a PLAYER train with flag `+316` bit 0 that
+  stands (speed 0) or has no player.
+- **Type:** disabled for a PLAYER train with a player, and for any train
+  whose speed is not 0.
+
+So a client that stops but sends a last position with a few mm/s left
+keeps its train "moving" for the console: openRTS did until 2026-11-06
+(the snapshot held 0.01 m/s), and the ChS4z's state and player could not
+be changed. `rts1.exe` and now openRTS send 0 for a train that stands.
+
 ## How the map is drawn: `rts1.exe` vs the console (2026-11-01)
 
 Both draw the **real track geometry from above**, not a schematic — the

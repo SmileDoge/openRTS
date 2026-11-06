@@ -38,6 +38,14 @@ TrainView::PlacedTrain placed_train(const net::SnapshotTrain& train, const simul
     return p;
 }
 
+// The console's category ("Прочий" 0 / "Пассажирский" 1 / "Грузовой" 2) as
+// the train's for speed posts (rts1.exe train byte +1).
+simulation::TrainCategory category_of(const std::uint16_t subtype) {
+    return subtype == 1 ? simulation::TrainCategory::passenger
+         : subtype == 2 ? simulation::TrainCategory::freight
+                        : simulation::TrainCategory::other;
+}
+
 } // namespace
 
 NetSession::NetSession(std::shared_ptr<net::RtsConnection> connection, net::Snapshot snapshot,
@@ -56,7 +64,8 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
     // The camera's place, as rts1.exe sends it: four times a second while it
     // moves, every 5 s anyway. The server relays a train's lights, look and
     // sounds only to players within 3 km (audience 4).
-    if (connection_ && camera && t >= position_at_) {
+    // RTS sends nothing at all while the server pauses (live capture).
+    if (connection_ && camera && t >= position_at_ && !paused_) {
         const auto moved = [&] {
             if (!sent_camera_) return true;
             const auto& a = *sent_camera_;
@@ -71,7 +80,7 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
             p.x = static_cast<float>(camera->x);
             p.y = static_cast<float>(camera->y);
             p.z = static_cast<float>(camera->z);
-            p.train = driven_id(trains); // the train the player is in (rts1.exe: 0 on foot)
+            p.train = driven_id(trains); // the train the player is in, the second field (as rts1.exe)
             connection_->send(net::id(net::Package::player_pos), net::encode_player_pos(p));
             sent_camera_ = camera;
             position_at_ = t + 0.25;
@@ -81,6 +90,16 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
         started_ = true;
         std::size_t junctions = 0;
         for (const auto& j : snapshot_.junctions) junctions += net::set_junction(network, j) ? 1 : 0;
+        // The line as the server keeps it (the console's "Электроснабжение").
+        auto& line = trains.electrification();
+        for (const auto& s : snapshot_.substations) line.set_substation(s.id, (s.flags & 1u) != 0, s.voltage);
+        for (const auto& p : snapshot_.phases) line.set_phase_voltages(p.id, p.voltages);
+        for (const auto& s : snapshot_.sections) line.set_section_source(s.section, s.source);
+        for (const auto& p : snapshot_.pieces) line.set_piece_supply(p.node, p.piece, p.source);
+        if (!snapshot_.substations.empty()) {
+            std::cout << "net: line: " << snapshot_.substations.size() << " substations, " << snapshot_.sections.size()
+                      << " section sources, " << snapshot_.pieces.size() << " pieces of track from the server" << std::endl;
+        }
         waiting_heads_ = snapshot_.signals;
         std::size_t placed = 0;
         std::uint64_t own = 0;
@@ -112,6 +131,7 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
             }
             if (const auto* driven = trains.train()) {
                 o.train = driven->id();
+                trains.set_category(o.train, category_of(train.subtype));
                 trains.share_sound(o.train, true);
                 trains.set_boardable(o.train, true);
                 own = o.train;
@@ -160,7 +180,19 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
         }
     }
     move_trains(network, trains, t);
-    send_own(trains, t);
+    send_couplings(trains);
+    if (!paused_) send_own(trains, t);
+    // What our electric trains drew, to the dispatchers (0x4649, every 2 s
+    // window, as rts1.exe 0x5B6030).
+    for (const auto& load : trains.electrification().take_closed_loads()) {
+        if (!connection_ || paused_) continue;
+        net::SubstationLoadReport report;
+        report.substation = load.substation;
+        report.phase = static_cast<std::uint16_t>(load.phase);
+        report.energy = load.energy;
+        report.window = load.window;
+        connection_->send(net::id(net::Package::substation_load), net::encode_substation_load(report));
+    }
     // What came from the server, every 10 s while anything comes; the ids
     // the observer leaves are marked.
     if (t >= report_at_ && !received_.empty()) {
@@ -211,6 +243,7 @@ void NetSession::position(Remote& remote, const net::TrainPos& pos, simulation::
             return;
         }
         remote.motion = {};
+        trains.set_category(remote.train, category_of(remote.record.subtype));
         // Its lights, sound and look come from its owner on request, as
         // rts1.exe asks when it loads another player's train (0x4D0228).
         if (connection_) {
@@ -333,6 +366,7 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
                 r.kind = info->kind;
                 r.subtype = info->subtype;
                 r.state = info->state;
+                if (mine->second.train != 0) trains.set_category(mine->second.train, category_of(info->subtype));
             }
             const auto it = remotes_.find(info->train);
             if (it != remotes_.end()) {
@@ -340,6 +374,7 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
                 r.kind = info->kind;
                 r.subtype = info->subtype;
                 r.state = info->state;
+                if (it->second.train != 0) trains.set_category(it->second.train, category_of(info->subtype));
             }
         }
         return;
@@ -358,6 +393,17 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         if (const auto t = net::decode_sound_trigger(body); t && t->slot == 3) {
             const auto it = remotes_.find(t->train);
             if (it != remotes_.end() && it->second.train != 0) trains.remote_sound_trigger(it->second.train, t->car, t->code);
+        }
+        return;
+    case P(net::Package::sound_state):
+        if (const auto s = net::decode_sound_state(body); s && s->values.slot == 3) {
+            const auto it = remotes_.find(s->values.train);
+            if (it != remotes_.end() && it->second.train != 0) {
+                trains.set_remote_sound(it->second.train, s->values.car, s->values.vars);
+                std::vector<std::uint32_t> current;
+                for (const auto& stream : s->streams) current.push_back(stream.current);
+                trains.restore_remote_sound(it->second.train, s->values.car, current);
+            }
         }
         return;
     case P(net::Package::sound_values):
@@ -389,14 +435,64 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         const auto train = r.u32();
         if (const auto mine = owned_.find(train); r.ok() && mode == 2 && mine != owned_.end() && mine->second.train != 0) {
             send_look(train, mine->second, trains, true);
+            // Every car's exterior sound as a whole (rts1.exe 0x4CE290).
+            const auto sound = trains.sound_state_of(mine->second.train);
+            for (std::size_t car = 0; car < sound.size() && connection_; ++car) {
+                net::SoundState state;
+                state.values.train = train;
+                state.values.car = static_cast<std::uint32_t>(car);
+                state.values.vars = sound[car].vars;
+                state.values.travelled = sound[car].travelled;
+                for (const auto& s : sound[car].streams) {
+                    net::SoundStreamState stream;
+                    stream.current = s.current;
+                    stream.volume = s.volume;
+                    stream.triggers.assign(s.triggers, 0u);
+                    if (s.current > 0 && s.current <= s.triggers) stream.triggers[s.current - 1] = 1u;
+                    state.streams.push_back(std::move(stream));
+                }
+                connection_->send(net::id(net::Package::sound_state), net::encode_sound_state(state));
+            }
         }
         return;
     }
     case P(net::Package::message):
         if (const auto text = net::decode_message(body)) std::cout << "net: message: " << net::to_utf8(*text) << std::endl;
         return;
+    case P(net::Package::couple):
+        if (const auto c = net::decode_couple(body)) coupled(*c, trains);
+        return;
+    case P(net::Package::uncouple):
+        if (const auto u = net::decode_uncouple(body)) uncoupled(*u, trains);
+        return;
+    case P(net::Package::train_id):
+        if (const auto r = net::decode_train_id_change(body)) renamed(r->first, r->second);
+        return;
+    case P(net::Package::substation):
+        if (const auto s = net::decode_substation(body)) {
+            trains.electrification().set_substation(s->id, (s->flags & 1u) != 0, s->voltage);
+            std::cout << "net: substation " << s->id << (s->flags & 1u ? " off" : " on") << ", " << s->voltage << " V" << std::endl;
+        }
+        return;
+    case P(net::Package::phase_voltages):
+        if (const auto phases = net::decode_phase_voltages(body)) {
+            for (const auto& p : *phases) trains.electrification().set_phase_voltages(p.id, p.voltages);
+        }
+        return;
+    case P(net::Package::section_source):
+        if (const auto s = net::decode_section_source(body)) {
+            trains.electrification().set_section_source(s->section, s->source);
+            std::cout << "net: section " << s->section << " source " << s->source << std::endl;
+        }
+        return;
+    case P(net::Package::piece_supply):
+        if (const auto p = net::decode_piece_supply(body)) trains.electrification().set_piece_supply(p->node, p->piece, p->source);
+        return;
     case P(net::Package::pause):
-        if (const auto paused = net::decode_pause(body)) std::cout << "net: " << (*paused ? "paused" : "running") << std::endl;
+        if (const auto paused = net::decode_pause(body)) {
+            paused_ = *paused;
+            std::cout << "net: " << (*paused ? "paused" : "running") << std::endl;
+        }
         return;
     case P(net::Package::server_down):
         if (!down_) std::cout << "net: the server is gone" << std::endl;
@@ -405,6 +501,145 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
     default:
         ++not_handled_[package.id];
         return;
+    }
+}
+
+void NetSession::send_couplings(TrainView& trains) {
+    const auto owned_by = [&](const std::uint64_t train) -> std::pair<std::uint32_t, Owned*> {
+        for (auto& [id, own] : owned_)
+            if (own.train == train) return {id, &own};
+        return {0, nullptr};
+    };
+    for (const auto& cut : trains.take_cuts()) {
+        const auto [id, own] = owned_by(cut.from);
+        if (!own) continue;
+        const std::uint8_t side = cut.front_part ? 1 : 0;
+        auto [stay, part_cars] = net::cut_cars(own->record.cars, cut.index, side);
+        own->record.cars = std::move(stay);
+        own->train = cut.kept;
+        own->announced = false;
+        // The part is ours under a local id until the server names it
+        // (0x4610); the server keeps its kind and owner (0x44FE34).
+        const auto local = next_local_++;
+        Owned part;
+        part.record = own->record;
+        part.record.id = local;
+        part.record.cars = std::move(part_cars);
+        part.record.pos.reset();
+        part.train = cut.part;
+        part.waiting = true;
+        trains.share_sound(cut.part, true);
+        trains.set_boardable(cut.part, true);
+        trains.set_category(cut.part, category_of(part.record.subtype));
+        net::Uncoupling u;
+        u.train = id;
+        u.car = static_cast<std::uint32_t>(cut.index);
+        u.part = local;
+        u.side = side;
+        const auto parent = id;
+        owned_[local] = std::move(part);
+        if (connection_) connection_->send(net::id(net::Package::uncouple), net::encode_uncouple(u));
+        std::cout << "net: our train " << parent << " cut before car " << cut.index << ": the part waits for its id ("
+                  << local << ")" << std::endl;
+    }
+    for (const auto& c : trains.take_couplings()) {
+        const auto [a, own] = owned_by(c.survivor);
+        if (!own) continue;
+        // The other train: ours, another client's or the server's.
+        std::uint32_t b = 0;
+        net::SnapshotTrain other;
+        if (const auto [id, mine] = owned_by(c.absorbed); mine) {
+            b = id;
+            other = mine->record;
+            owned_.erase(id);
+        } else {
+            for (auto it = remotes_.begin(); it != remotes_.end(); ++it) {
+                if (it->second.train != c.absorbed) continue;
+                b = it->first;
+                other = it->second.record;
+                remotes_.erase(it);
+                break;
+            }
+        }
+        if (b == 0) continue;
+        // The ends: 1 the front, 0 the rear (A's cars, then B's, is A's rear
+        // to B's front).
+        net::Coupling out;
+        out.a = a;
+        out.b = b;
+        out.end_a = c.absorbed_ahead ? 1 : 0;
+        out.end_b = c.absorbed_ahead ? (c.absorbed_turned ? 1 : 0) : (c.absorbed_turned ? 0 : 1);
+        own->record.cars = net::coupled_cars(own->record.cars, other.cars, out.end_a, out.end_b);
+        own->announced = false;
+        if (connection_) connection_->send(net::id(net::Package::couple), net::encode_couple(out));
+        std::cout << "net: our train " << a << " took train " << b << " in: " << own->record.cars.size() << " cars" << std::endl;
+    }
+}
+
+void NetSession::coupled(const net::Coupling& c, TrainView& trains) {
+    // Another client coupled: A took B in. A's next position has every car.
+    const auto a = remotes_.find(c.a);
+    if (a == remotes_.end()) return;
+    std::vector<net::TrainCar> b_cars;
+    if (const auto b = remotes_.find(c.b); b != remotes_.end()) {
+        b_cars = b->second.record.cars;
+        if (b->second.train != 0) trains.remove_train(b->second.train);
+        remotes_.erase(b);
+    } else if (const auto mine = owned_.find(c.b); mine != owned_.end()) {
+        b_cars = mine->second.record.cars; // ours, though the server took it first (0x4601)
+        take_off(c.b, mine->second, trains);
+        owned_.erase(mine);
+    } else {
+        return;
+    }
+    auto& remote = a->second;
+    remote.record.cars = net::coupled_cars(remote.record.cars, b_cars, c.end_a, c.end_b);
+    if (remote.train != 0) trains.remove_train(remote.train);
+    remote.train = 0;
+    remote.motion = {};
+    remote.warned = false;
+    remote.pantographs.clear();
+    remote.record.pos.reset();
+    std::cout << "net: train " << c.a << " took train " << c.b << " in: " << remote.record.cars.size() << " cars" << std::endl;
+}
+
+void NetSession::uncoupled(const net::Uncoupling& u, TrainView& trains) {
+    // Another client cut its train: the part is a train of its own (kind and
+    // owner as the train's, 0x44FE34); both come back with their positions.
+    const auto t = remotes_.find(u.train);
+    if (t == remotes_.end()) return;
+    auto [stay, part_cars] = net::cut_cars(t->second.record.cars, u.car, u.side);
+    auto& remote = t->second;
+    Remote part;
+    part.record = remote.record;
+    part.record.id = u.part;
+    part.record.cars = std::move(part_cars);
+    part.record.pos.reset();
+    remote.record.cars = std::move(stay);
+    if (remote.train != 0) trains.remove_train(remote.train);
+    remote.train = 0;
+    remote.motion = {};
+    remote.warned = false;
+    remote.record.pos.reset();
+    std::cout << "net: train " << u.train << " cut before car " << u.car << ": the part is train " << u.part << " ("
+              << part.record.cars.size() << " cars)" << std::endl;
+    remotes_[u.part] = std::move(part);
+}
+
+void NetSession::renamed(const std::uint32_t from, const std::uint32_t to) {
+    if (const auto mine = owned_.find(from); mine != owned_.end()) {
+        auto own = std::move(mine->second);
+        owned_.erase(mine);
+        own.record.id = to;
+        own.waiting = false;
+        own.announced = false;
+        owned_[to] = std::move(own);
+        std::cout << "net: our train " << from << " is train " << to << " on the server" << std::endl;
+    } else if (const auto it = remotes_.find(from); it != remotes_.end()) {
+        auto remote = std::move(it->second);
+        remotes_.erase(it);
+        remote.record.id = to;
+        remotes_[to] = std::move(remote);
     }
 }
 
@@ -432,7 +667,9 @@ bool NetSession::place_owned(const std::uint32_t id, Owned& own, simulation::Tra
     }
     trains.share_sound(own.train, true);
     trains.set_boardable(own.train, true);
+    trains.set_category(own.train, category_of(own.record.subtype));
     own.moving = false;
+    own.announced = false;
     own.lights_sent.clear();
     own.looks_sent.clear();
     own.sound_sent.clear();
@@ -465,15 +702,17 @@ void NetSession::take_off(const std::uint32_t id, Owned& own, TrainView& trains)
 // it where it is (kind 1 or kind 2 + 0x10000, 0x4C3DE0).
 void NetSession::assigned(const net::TrainAssignUpdate& a, simulation::TrackNetwork& network, TrainView& trains,
                           const double now) {
+    static_cast<void>(now);
     if (a.assign.mine) {
         if (owned_.contains(a.train)) return;
         Owned own;
         const auto it = remotes_.find(a.train);
+        std::uint64_t kept = 0; // the train on the track here, taken back as it is
         if (it != remotes_.end()) {
             own.record = it->second.record;
             if (auto* train = it->second.train != 0 ? trains.find_train(it->second.train) : nullptr) {
                 if (const auto pos = net::position_of(*train)) own.record.pos = *pos;
-                trains.remove_train(it->second.train);
+                if (trains.take_back(it->second.train)) kept = it->second.train;
             }
             remotes_.erase(it);
         } else {
@@ -483,45 +722,74 @@ void NetSession::assigned(const net::TrainAssignUpdate& a, simulation::TrackNetw
         own.record.kind = a.assign.kind;
         auto& placed = owned_[a.train] = std::move(own);
         std::cout << "net: the server gives us train " << a.train << std::endl;
-        if (placed.record.pos && !placed.record.cars.empty()) {
+        if (kept != 0) {
+            // Ours where it stands; its DLLs, if they ran here before, go on.
+            placed.train = kept;
+            placed.moving = false;
+            placed.announced = false;
+            trains.share_sound(kept, true);
+            trains.set_boardable(kept, true);
+            trains.set_category(kept, category_of(placed.record.subtype));
+            if (driven_id(trains) == 0) {
+                trains.set_start_state(placed.record.state == 0 ? 0 : placed.record.state == 1 ? 1 : -1);
+                if (const auto problem = trains.board(kept); !problem.empty()) std::cout << "net: " << problem << std::endl;
+            }
+        } else if (placed.record.pos && !placed.record.cars.empty()) {
             place_owned(a.train, placed, network, trains, driven_id(trains) == 0);
         }
         return;
     }
     const auto mine = owned_.find(a.train);
     if (mine == owned_.end()) return;
-    std::cout << "net: the server takes train " << a.train << " away from us" << std::endl;
+    std::cout << "net: the server takes train " << a.train << " away from us: its DLLs stop where they are" << std::endl;
     auto own = std::move(mine->second);
     owned_.erase(mine);
-    take_off(a.train, own, trains);
-    // Another client's now: drawn as theirs.
+    // Another client's now (RTS kind 2): the same train here, drawn by the
+    // network; its DLLs bound but not run, as rts1.exe (0x424488).
     auto& remote = remotes_[a.train];
     remote = {};
     remote.record = std::move(own.record);
     remote.record.assign = a.assign;
-    const auto pos = remote.record.pos;
-    remote.record.pos.reset();
-    if (pos) position(remote, *pos, network, trains, now);
+    if (own.train != 0) {
+        if (const auto* train = trains.find_train(own.train)) {
+            if (const auto pos = net::position_of(*train)) remote.record.pos = *pos;
+        }
+        trains.give_away(own.train);
+        remote.train = own.train;
+        if (connection_) connection_->send(net::id(net::Package::state_request), net::encode_state_request(2, a.train));
+    }
 }
 
 void NetSession::send_own(TrainView& trains, const double now) {
     if (!connection_) return;
     for (auto& [id, own] : owned_) {
-        if (own.train == 0) continue;
+        if (own.train == 0 || own.waiting) continue;
         const auto* train = trains.find_train(own.train);
         if (!train || !train->placed()) continue;
         // The position: every 1.5 s while it moves, at once when it starts,
         // and a last one with train_stands when it stops (as rts1.exe).
         const bool moving = std::abs(train->speed()) > 0.01;
-        const bool stopped = !moving && own.moving;
+        // Standing: once when it is placed here too, so the server forgets a
+        // speed it kept from before.
+        const bool stopped = !moving && (own.moving || !own.announced);
         if ((moving && (!own.moving || now >= own.next_position)) || stopped) {
-            if (const auto pos = net::position_of(*train)) {
+            if (auto pos = net::position_of(*train)) {
+                // A train that stands sends speed 0 exactly: the server keeps
+                // the last speed (train +332), and the ТЧД console holds a
+                // PLAYER train with any other as "Движется", its state and
+                // player locked (0x4140A0). Physics leaves a few mm/s.
+                if (!moving) {
+                    pos->speed = 0.0f;
+                    pos->acceleration = 0.0f;
+                    for (auto& car : pos->cars) car.speed = car.acceleration = 0.0f;
+                }
                 connection_->send(net::id(net::Package::train_pos), net::encode_train_pos(id, *pos));
                 own.next_position = now + 1.5;
             }
         }
         if (stopped) connection_->send(net::id(net::Package::train_stands), net::encode_train_id(id));
         own.moving = moving;
+        own.announced = true;
         send_look(id, own, trains, false);
         send_sound(id, own, trains, now);
     }

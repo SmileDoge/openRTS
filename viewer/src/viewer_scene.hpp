@@ -221,6 +221,8 @@ public:
     [[nodiscard]] virtual std::string world_report() const { return {}; }
     // A time of day the scene sets (an RTS server's clock), taken once.
     [[nodiscard]] virtual std::optional<double> take_time_of_day() { return std::nullopt; }
+    // The game is paused from outside (a network server): no time passes.
+    [[nodiscard]] virtual bool paused() const { return false; }
     // Car `car` of the driven train, shape space to world (--capture-camera).
     [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
     // The engineer into the driven train's cab (--capture-cab).

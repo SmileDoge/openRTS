@@ -1080,6 +1080,10 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
     }
     signals(request);
     for (auto& car : cars_) {
+        // RTS 0x424488: no Run for another player's train (kind 2) or the
+        // engineer's on a helper (4); their DLLs keep their state.
+        const auto type = train_of(*car).type;
+        if (type == 2 || type == 4) continue;
         if (car->is_loco() && car->initialised && car->module && !car->module->failed)
             run_car(*car, request.dt, request.air_temperature);
     }

@@ -1722,7 +1722,7 @@ double mean_velocity(const Train& train) {
 
 } // namespace
 
-std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains) {
+std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains, const std::span<const std::uint8_t> passive) {
     std::vector<ContactResult> results;
     std::vector<bool> gone(trains.size(), false);
     const auto index_of = [&](const Train* train) {
@@ -1740,6 +1740,7 @@ std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains
             if (!meeting) continue;
             const auto b = index_of(meeting->other);
             if (b >= trains.size() || gone[b]) continue;
+            if (a < passive.size() && b < passive.size() && passive[a] != 0 && passive[b] != 0) continue;
             auto* other = meeting->other;
             // Speeds along the line from this train towards the other.
             const double side_a = front ? 1.0 : -1.0;

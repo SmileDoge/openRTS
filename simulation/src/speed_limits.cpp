@@ -54,12 +54,15 @@ const SpeedPostOnTrack* SpeedLimits::post(const std::uint32_t item) const {
     return it == by_item_.end() ? nullptr : &posts_[it->second];
 }
 
-bool SpeedLimits::applies(const SpeedPostOnTrack& post, const bool forward, const bool freight) {
+bool SpeedLimits::applies(const SpeedPostOnTrack& post, const bool forward, const TrainCategory category) {
     if (forward ? !post.along : !post.against) return false;
-    return freight ? post.post.freight : post.post.passenger;
+    if (category == TrainCategory::other) return true;
+    const auto flags = post.post.flags;
+    if ((flags & 0x20u) != 0 && category != TrainCategory::passenger) return false;
+    return (flags & 0x40u) == 0 || category == TrainCategory::freight;
 }
 
-float SpeedLimits::limit_at(const std::uint32_t node, const double offset, const bool forward, const bool freight) const {
+float SpeedLimits::limit_at(const std::uint32_t node, const double offset, const bool forward, const TrainCategory category) const {
     // Walk back from the point: the first post that applies to this travel.
     const auto behind = look_ahead(*network_, node, offset, !forward, 20000.0, [&](const formats::TrackItem& item) {
         return by_item_.contains(item.id);
@@ -67,13 +70,13 @@ float SpeedLimits::limit_at(const std::uint32_t node, const double offset, const
     for (const auto& found : behind.items) {
         const auto* on = post(found.item);
         // The walk goes the other way: travel on that node is the opposite.
-        if (!on || !applies(*on, !found.facing_forward, freight)) continue;
+        if (!on || !applies(*on, !found.facing_forward, category)) continue;
         return on->post.resume ? route_limit_ : on->post.speed;
     }
     return route_limit_;
 }
 
-std::vector<std::pair<float, double>> SpeedLimits::limits_ahead(const Train& train, const bool freight, const double distance,
+std::vector<std::pair<float, double>> SpeedLimits::limits_ahead(const Train& train, const TrainCategory category, const double distance,
                                                                 const std::size_t count) const {
     std::vector<std::pair<float, double>> result;
     const auto lead = train.leading_end();
@@ -82,7 +85,7 @@ std::vector<std::pair<float, double>> SpeedLimits::limits_ahead(const Train& tra
                                   [&](const formats::TrackItem& item) { return by_item_.contains(item.id); });
     for (const auto& found : ahead.items) {
         const auto* on = post(found.item);
-        if (!on || !applies(*on, found.facing_forward, freight)) continue;
+        if (!on || !applies(*on, found.facing_forward, category)) continue;
         result.emplace_back(on->post.resume ? route_limit_ : on->post.speed, found.distance);
         if (result.size() >= count) break;
     }
@@ -109,7 +112,7 @@ std::optional<double> SpeedLimits::ordinate(const Train& train) const {
     return last + direction * from_last / 1000.0;
 }
 
-SpeedLimit SpeedLimits::evaluate(const Train& train, const bool freight, const double distance) const {
+SpeedLimit SpeedLimits::evaluate(const Train& train, const TrainCategory category, const double distance) const {
     SpeedLimit result;
     const auto lead = train.leading_end();
     if (!lead) return result;
@@ -122,10 +125,10 @@ SpeedLimit SpeedLimits::evaluate(const Train& train, const bool freight, const d
         trail = front_leads ? *rear : *front;
         if (!front_leads) trail->reverse();
     }
-    const float at_head = limit_at(lead->node(), lead->offset(), lead->forward(), freight);
+    const float at_head = limit_at(lead->node(), lead->offset(), lead->forward(), category);
     float current = at_head;
     if (trail) {
-        const float at_tail = limit_at(trail->node(), trail->offset(), trail->forward(), freight);
+        const float at_tail = limit_at(trail->node(), trail->offset(), trail->forward(), category);
         if (at_tail > 0.0f && (current < 0.0f || at_tail < current)) current = at_tail;
     }
     result.current = current;
@@ -133,7 +136,7 @@ SpeedLimit SpeedLimits::evaluate(const Train& train, const bool freight, const d
                                   [&](const formats::TrackItem& item) { return by_item_.contains(item.id); });
     for (const auto& found : ahead.items) {
         const auto* on = post(found.item);
-        if (!on || !applies(*on, found.facing_forward, freight)) continue;
+        if (!on || !applies(*on, found.facing_forward, category)) continue;
         result.ahead = on->post.resume ? route_limit_ : on->post.speed;
         result.ahead_distance = found.distance;
         break;

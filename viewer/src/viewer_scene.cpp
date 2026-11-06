@@ -342,6 +342,7 @@ public:
                     // Watching a live game: the session puts the trains on
                     // the track and keeps the world as the server says.
                     net_ = std::make_unique<NetSession>(content_.connection(), *snapshot, content_.take_early());
+                    train_->set_network(true);
                 } else {
                     apply_snapshot(*snapshot, track_->network(), *train_);
                     snapshot_signals_ = true;
@@ -363,6 +364,11 @@ public:
     }
 
     void detach() override {
+        // Off the server first, while the GPU is still up: the reader thread
+        // waits in recv, and a graphics layer that hooks it (ReShade) is
+        // unloaded with the device; returning into it crashed the viewer on
+        // closing (seen 2026-11-06).
+        if (content_.connection()) content_.connection()->close();
         if (world_sounds_ && audio_) world_sounds_->stop(*audio_);
         if (train_ && audio_) train_->stop_sound(*audio_);
         if (crossings_ && audio_) crossings_->stop_sound(*audio_);
@@ -733,6 +739,7 @@ public:
     [[nodiscard]] std::optional<double> take_time_of_day() override {
         return net_ ? net_->take_time_of_day() : std::nullopt;
     }
+    [[nodiscard]] bool paused() const override { return net_ && net_->paused(); }
 
     [[nodiscard]] std::string world_report() const override {
         std::string report = "water " + std::to_string(terrain_ ? terrain_->water_quads() : 0) + " quads";
@@ -820,6 +827,14 @@ public:
         ImGui::Text(tr("Models: %zu GPU, %zu CPU queued, %zu pending"), models.models, models.queued_uploads,
                     stream.pending_model_assets);
         ImGui::Checkbox(tr("Labels: junctions and signals (L)"), &labels_);
+        // Walking is the player's (with a train or without): on foot from
+        // where the camera is; off, the free camera.
+        if (train_) {
+            bool walking = train_->walking();
+            if (ImGui::Checkbox(tr("On foot (arrows walk, Enter at a cab door gets in)"), &walking)) {
+                train_->set_walking(walking, last_eye_);
+            }
+        }
         draw_scene_marks();
         if (track_control_) {
             bool open = track_control_->is_open();

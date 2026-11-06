@@ -26,6 +26,7 @@
 #include <openrts/renderer/webgpu_context.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
 
+#include "crash_report.hpp"
 #include "debug_view.hpp"
 #include "viewer_scene.hpp"
 #include "viewer_state.hpp"
@@ -263,7 +264,10 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         } else if (flags[i] == "--no-hot-reload") {
             hot_reload = false;
         } else if (flags[i] == "--consist" && has_value) {
-            consist = flags[++i];
+            // The command line is in the system code page; TrainView takes
+            // UTF-8 (a Cyrillic consist name threw on the path conversion).
+            const auto name = std::filesystem::path(std::string(flags[++i])).u8string();
+            consist.assign(name.begin(), name.end());
         } else if (flags[i] == "--path" && has_value) {
             train_path = flags[++i];
         } else if (flags[i] == "--start" && has_value) {
@@ -494,6 +498,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
 } // namespace
 
 int main(const int argc, char* argv[]) {
+    openrts::viewer::install_crash_report();
     print_banner();
 
 #ifdef OPENRTS_HAS_WGPU

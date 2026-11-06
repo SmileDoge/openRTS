@@ -170,7 +170,17 @@ int main(int argc, char** argv) {
     check(engineer.mode() == Engineer::Mode::standing && camera.position.x > -1.5f, "the closed side door stops him");
 
     run({.action = true}, 1.3f);
-    run({.forward = true}, 2.0f);
+    // Walking out at an angle: sliding along the wall used to keep him in
+    // until he found the one spot that stopped him dead. Now the door's
+    // face lets him out where he reaches it.
+    camera.yaw = 3.14159265f * 0.5f + 0.6f;
+    run({}, 0.05f);
+    run({.forward = true}, 0.5f);
+    where("out at an angle");
+    check(engineer.mode() == Engineer::Mode::outside, "walking into the open side door at an angle gets him off");
+    camera.yaw = 3.14159265f * 0.5f;
+    run({}, 0.05f);
+    run({.forward = true}, 1.9f);
     where("got off");
     check(engineer.mode() == Engineer::Mode::outside, "out through the open side door");
     check(std::abs(camera.position.y - (-0.3f + eye)) < 0.01f, "outside: on the ground");

@@ -117,7 +117,7 @@ std::optional<CurveAhead> tightest_curve(const TrackNetwork& network, const Rout
 }
 
 DriveOrders path_orders(const Train& train, Dispatcher& dispatcher, const SignalSystem* signals, const SpeedLimits& limits,
-                        const bool freight, float& wait_left) {
+                        const TrainCategory category, float& wait_left) {
     DriveOrders orders;
     const auto id = train.id();
     const auto* progress = dispatcher.progress(id);
@@ -148,7 +148,7 @@ DriveOrders path_orders(const Train& train, Dispatcher& dispatcher, const Signal
     }
     // The limits ahead: the speed posts', the next signal's, the curves';
     // the one with the lowest braking curve is the one to plan for.
-    const auto track = limits.evaluate(train, freight);
+    const auto track = limits.evaluate(train, category);
     float limit = track.current;
     struct Ahead {
         float speed;

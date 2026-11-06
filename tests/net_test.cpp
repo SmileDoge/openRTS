@@ -291,6 +291,10 @@ void play_packages() {
     const auto place = encode_player_pos(at);
     check(place.size() == 44 && place[12] == 0x3b && place[13] == 0xee && place[14] == 0xff && place[15] == 0x38,
           "a player's place: 44 bytes, the tile at 12");
+    // In a train: its id second, the first field 0 (rts1.exe driving: 0, 2, 0).
+    at.train = 2;
+    const auto inside = encode_player_pos(at);
+    check(inside[0] == 0 && inside[4] == 2, "a player's place: the train he is in is the second field");
 
     // Our own train out and back in.
     TrainPos own;
@@ -336,6 +340,62 @@ void play_packages() {
     values.volume = 0.7f;
     const auto values_bytes = encode_sound_values(values);
     const auto values_back = decode_sound_values(values_bytes);
+    // A substation's load as rts1.exe sent it (substation 3, phase 1).
+    SubstationLoadReport load;
+    load.substation = 3;
+    load.phase = 1;
+    std::memcpy(&load.energy, "\x7e\x34\x27\x42", 4);
+    std::memcpy(&load.window, "\x25\x06\x01\x40", 4);
+    check(encode_substation_load(load) == Bytes({3, 0, 0, 0, 1, 0, 0x7e, 0x34, 0x27, 0x42, 0x25, 0x06, 0x01, 0x40}),
+          "substation_load: 14 bytes as rts1.exe sends them");
+    // A car sound's whole state as the capture has it: a looping stream
+    // (its first trigger, + 1) and a quiet one.
+    SoundState sound;
+    sound.values.train = 2;
+    sound.values.volume = 0.7f;
+    SoundStreamState looping;
+    looping.current = 1;
+    looping.triggers = {1, 0};
+    SoundStreamState quiet;
+    quiet.volume = 0.7f;
+    quiet.triggers = {0, 0, 0};
+    sound.streams = {looping, quiet};
+    const auto sound_bytes = encode_sound_state(sound);
+    const auto sound_back = decode_sound_state(sound_bytes);
+    check(sound_bytes.size() == 54 + 46 + 50 && sound_bytes[50] == 2 && sound_bytes[54] == 0x3B && sound_bytes[55] == 0x46,
+          "sound_state: the values, the stream count at 50, a 0x463B per stream from 54 (as rts1.exe)");
+    check(sound_back && sound_back->streams.size() == 2 && sound_back->streams[0].current == 1 &&
+              sound_back->streams[1].triggers.size() == 3 && sound_back->values.volume == 0.7f,
+          "sound_state: read back");
+
+    // Couplings and cuts as the live capture has them.
+    check(encode_couple({2, 4, 0, 1}) == Bytes({2, 0, 0, 0, 4, 0, 0, 0, 0, 1}), "couple: A, B, the two ends");
+    const auto cut_back = decode_uncouple(Bytes({2, 0, 0, 0, 1, 0, 0, 0, 0x94, 0x87, 0x01, 0x00, 0}));
+    check(cut_back && cut_back->train == 2 && cut_back->car == 1 && cut_back->part == 100244 && cut_back->side == 0,
+          "uncouple: train, car, the local id of the part, side");
+    const auto renamed = decode_train_id_change(Bytes({0x94, 0x87, 0x01, 0x00, 1, 0, 0, 0}));
+    check(renamed && renamed->first == 100244 && renamed->second == 1, "train_id: the local id becomes the server's");
+    const auto car = [](const std::uint32_t uid, const std::uint32_t flags = 0) {
+        TrainCar c;
+        c.uid = uid;
+        c.flags = flags;
+        return c;
+    };
+    const std::vector<TrainCar> engine{car(1)}, wagons{car(10), car(11), car(12)};
+    const auto uids = [](const std::vector<TrainCar>& cars) {
+        std::vector<std::uint32_t> out;
+        for (const auto& c : cars) out.push_back(c.uid);
+        return out;
+    };
+    check(uids(coupled_cars(engine, wagons, 0, 1)) == std::vector<std::uint32_t>{1, 10, 11, 12},
+          "A's rear to B's front: A, then B in order (the capture's 9 and 19 cars)");
+    const auto turned = coupled_cars(engine, wagons, 0, 0);
+    check(uids(turned) == std::vector<std::uint32_t>{1, 12, 11, 10} && turned[1].flipped() && !turned[0].flipped(),
+          "rear to rear: B turned, its cars flipped");
+    check(uids(coupled_cars(engine, wagons, 1, 0)) == std::vector<std::uint32_t>{10, 11, 12, 1}, "A's front to B's rear: B ahead");
+    const auto [stay, part] = cut_cars(coupled_cars(engine, wagons, 0, 1), 1, 0);
+    check(uids(stay) == std::vector<std::uint32_t>{1} && uids(part) == std::vector<std::uint32_t>{10, 11, 12},
+          "cut before car 1, side 0: the part is the cars from it on (the capture's 18-car part)");
     check(values_bytes.size() == 50 && values_back && values_back->slot == 3 && values_back->vars[2] == 0.03f &&
               values_back->travelled == 12.5f && values_back->volume == 0.7f,
           "sound_values: 50 bytes as RTS's");

@@ -362,7 +362,12 @@ its own train and the parts cut off from it. Per car:
     stream flags, three values (UNKNOWN, PROBABLE volumes), the trigger
     count and a `u32` per trigger. A client whose sound is active restarts
     the stream on that trigger (`0x4A8C00`); an inactive one keeps them
-    for when it wakes;
+    for when it wakes. The live capture (3 232 of them, 2026-11-05): the
+    seven fields are `u32` flags, `u32` current + 1, `u32`, `u32`, a `u32`
+    (non-zero only on a playing cab loop, PROBABLE its position in
+    samples), `f32` the stream's Volume (0.5 .. 2.8), `f32` 1.0; the per
+    trigger `u32` is 1 for the current one; a stream with a running loop
+    (fans, a compressor) has current 1;
   - the car state (`0x463C`).
 - Mode 1 comes from a helper that loads the engineer's train (kind 4). The
   engineer answers with its whole cab (`0x4D03E4`: `0x4624`…, the cab sound

@@ -205,6 +205,20 @@ or mph (flag 0x100), passenger / freight / both (0x20 / 0x40 / 0x80).
   that facing. Warning boards come before the limit of their speed 11 times
   of 11, restriction ends after a limit for the same direction 193 times of
   209; the three other readings of the angle fail one test or both.
+- **Which posts a train obeys** (CONFIRMED, static, 2026-11-06, `0x47F7B4`
+  called by `0x47F7F0` from the look-ahead `0x508520` and others): by the
+  train's category, train byte `+1`, the console's "Прочий" 0 /
+  "Пассажирский" 1 / "Грузовой" 2. Category 0 obeys every post; a post for
+  passenger trains (0x20) only category 1, one for freight (0x40) only
+  category 2; a post for both, both. In a network game the client sets
+  the category from the server only (`0x4607`, `0x4605`, `0x4C3DE0`); a
+  player's `rts1.exe` sends `0x4605` only as a mini-server host (role 2,
+  `0x4D249C`, after a split and a type change), so on a dedicated server
+  the dispatcher sets it in "Редактирование поезда", traffic and players
+  alike. Where single player takes it from is not traced yet. openRTS
+  does the same with the server's category in a network game
+  (`simulation::TrainCategory`, `SpeedLimits::applies`); in single player
+  a train with no passenger cars is freight and any other passenger.
 - **In force:** the nearest applicable post behind the train's front; a
   higher limit only once the rear has passed its post too.
 - **Ahead:** the next applicable post within 3 km.

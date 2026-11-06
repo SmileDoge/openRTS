@@ -293,6 +293,25 @@ void test_load() {
         check(burnt && seconds > 7.0f && seconds < 12.0f, "with a burn time it burns after the heat builds up: " + std::to_string(seconds) + " s");
         const auto loads = line.substation_loads();
         check(loads.size() == 1 && loads[0].substation == 1 && near(loads[0].power, 2.5e6, 1e3), "the DC substation carries 2.5 MW");
+        const auto closed = line.take_closed_loads();
+        check(!closed.empty() && closed.front().substation == 1 && near(closed.front().energy / closed.front().window, 2.5e6, 1e3) &&
+                  closed.front().window >= 2.0f,
+              "each closed 2 s window is kept for the network (0x4649)");
+    }
+    // The line as a network server keeps it (docs/net.md).
+    {
+        Electrification served(route(true, true, true), *network);
+        const auto where = point_at(*network, 100.0);
+        const auto dc = formats::parse_wagon(engine_text("WorksOnLineVoltages ( 1 LineVoltage ( 2500 4000 0 0 ) )"));
+        served.set_substation(1, true, 3300.0f);
+        check(served.at(1, 100.0, where, &*dc.engine).state == LineState::dead, "server: a substation switched off gives no line");
+        served.set_substation(1, false, 3000.0f);
+        check(near(served.at(1, 100.0, where, &*dc.engine).supply.voltage, 3000.0 - 20.0 * 0.1, 0.5),
+              "server: the substation's voltage as the server sets it");
+        served.set_section_source(1, -2);
+        check(served.at(1, 100.0, where, &*dc.engine).state == LineState::dead, "server: a section \"отключено\" is dead");
+        served.set_section_source(1, -1);
+        check(served.at(1, 100.0, where, &*dc.engine).state == LineState::live, "server: back to its own source");
     }
     // Two sections: the HV bus shares the line, without it each its own.
     {

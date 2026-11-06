@@ -1362,7 +1362,7 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
         }
         ImGui::TextWrapped("%s", tr(trains.path_status(selected->id).c_str()));
         if (const auto* train = trains.train_by_id(selected->id); train && train->placed()) {
-            const auto limit = trains.speed_limits().evaluate(*train, false);
+            const auto limit = trains.speed_limits().evaluate(*train, simulation::TrainCategory::passenger);
             if (limit.current > 0.0f) {
                 if (limit.ahead > 0.0f) {
                     ImGui::Text(tr("Speed limit %.0f km/h, next %.0f km/h in %.0f m"), limit.current * 3.6f, limit.ahead * 3.6f, limit.ahead_distance);

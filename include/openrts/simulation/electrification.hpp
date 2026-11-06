@@ -98,6 +98,30 @@ public:
     [[nodiscard]] std::vector<SubstationLoad> substation_loads() const;
     // Once a step before the trains: closes the 2 s windows (RTS 0x5B6030).
     void advance_loads(double dt);
+    // The windows closed since the last call, with what they summed (what
+    // rts1.exe sends the dispatchers as 0x4649).
+    struct ClosedLoad {
+        std::uint32_t substation{};
+        std::uint32_t phase{};
+        float energy{}; // power x s
+        float window{}; // s
+    };
+    [[nodiscard]] std::vector<ClosedLoad> take_closed_loads() { return std::exchange(closed_, {}); }
+
+    // The line as a network server keeps it (the console's
+    // "Электроснабжение", docs/net.md):
+    // a substation switched off (0x4646 flags bit 0) gives no voltage; its
+    // voltage as the server gives it, by phase when it gives phases (0x4648).
+    void set_substation(std::uint32_t id, bool off, float voltage);
+    void set_phase_voltages(std::uint32_t id, std::vector<float> voltages);
+    // A section's source by its id (0x4647): >= 0 that one, -1 its own (as
+    // the route file has it), -2 / -3 none ("отключено").
+    void set_section_source(std::uint32_t section_id, int source);
+    // A piece of track's own supply (0x4645, "Отдельные пути"): node and
+    // the piece's index in its Electricity list; >= 0 that source of its
+    // section, -1 the section's choice, -2 / -3 none; a dead piece fed from
+    // a neighbour, 1 the piece before, 2 the piece after.
+    void set_piece_supply(std::uint32_t node, std::uint32_t piece, int source);
     // Off: pantographs never burn the wire (an openRTS option; on as RTS).
     bool wire_burning = true;
 
@@ -148,6 +172,20 @@ private:
     std::vector<const formats::NodeElectrification*> nodes_;  // by TDB node index
     std::vector<int> section_by_id_;                           // electrosection id -> index
     std::vector<int> current_;                                 // per section
+    std::vector<int> file_current_;                            // per section, as the route file has it
+    std::vector<std::vector<std::uint32_t>> file_active_;      // per section, per source
+    struct SubstationState {
+        bool off = false;
+        float voltage = -1.0f; // < 0: the file's
+        std::vector<float> phases;
+    };
+    std::map<std::uint32_t, SubstationState> substation_state_;
+    std::map<std::uint64_t, int> piece_supply_;                // node << 32 | piece -> source
+    std::vector<ClosedLoad> closed_;
+    [[nodiscard]] const SubstationState* state_of(std::uint32_t substation) const {
+        const auto it = substation_state_.find(substation);
+        return it == substation_state_.end() ? nullptr : &it->second;
+    }
     std::vector<std::vector<std::uint32_t>> active_;           // per section, per source (Active flags)
     std::vector<LineBurn> burns_;
     std::map<std::uint64_t, SubstationLoad> loads_;            // substation << 32 | phase

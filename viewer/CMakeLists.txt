@@ -40,9 +40,17 @@ if(WIN32)
     target_link_libraries(openrts_viewer_core PUBLIC comdlg32)
 endif()
 
-add_executable(openrts_viewer src/main.cpp)
+add_executable(openrts_viewer src/main.cpp src/crash_report.cpp)
 openrts_configure_target(openrts_viewer)
 target_link_libraries(openrts_viewer PRIVATE openrts_viewer_core)
+if(WIN32)
+    target_link_libraries(openrts_viewer PRIVATE dbghelp)
+endif()
+if(MSVC)
+    # A .pdb beside the exe in every configuration: the crash report names
+    # the functions of a crash from it (crash_report.cpp).
+    target_link_options(openrts_viewer PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+endif()
 
 openrts_copy_wgpu_runtime(openrts_viewer)
 openrts_copy_dllhost(openrts_viewer)

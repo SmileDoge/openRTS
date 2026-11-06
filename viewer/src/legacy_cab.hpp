@@ -102,6 +102,9 @@ public:
     // their controllers (the other trains' are the caller's to set). When
     // the player's engine is not in the first train, player() is none
     // until enter(). False: the host failed (attach again).
+    void set_train_types(std::vector<std::uint32_t> types) {
+        if (consist_) consist_->set_train_types(std::move(types));
+    }
     bool reconsist(const core::Vfs& vfs, const std::vector<std::vector<LegacyCarRef>>& trains,
                    const std::vector<simulation::Train*>& sims);
     [[nodiscard]] std::size_t trains() const { return consist_ ? consist_->trains() : 0; }
