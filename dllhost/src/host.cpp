@@ -256,7 +256,10 @@ std::wstring choose_adapters(Module& module) {
     }
 }
 
-Host::Host() { g_host = this; }
+Host::Host() {
+    g_host = this;
+    name_check_ = GetEnvironmentVariableW(L"OPENRTS_DLLHOST_NAME_CHECK", nullptr, 0) != 0;
+}
 
 Host::~Host() {
     if (g_host == this) g_host = nullptr;
@@ -335,6 +338,7 @@ bool Host::init_rts_library(Module& module) {
 // --- setup -------------------------------------------------------------------
 
 bool Host::setup(const SetupRequest& request, std::vector<ModuleReport>& modules) {
+    names_changed();
     cars_.clear();
     parked_.clear();
     cables_.clear();
@@ -403,6 +407,7 @@ void Host::add_sound_tables(const std::vector<SoundTableSpec>& tables) {
 // --- coupling and cutting (0x469ED8, 0x469858) ------------------------------------
 
 bool Host::reconsist(const ReconsistRequest& request, StepReply& reply) {
+    names_changed();
     add_sound_tables(request.sound_tables);
     const CarMirror* player = player_ < cars_.size() ? cars_[player_].get() : nullptr;
     auto old = std::move(cars_);
@@ -461,6 +466,7 @@ bool Host::reconsist(const ReconsistRequest& request, StepReply& reply) {
 }
 
 void Host::build_car(CarMirror& car) {
+    names_changed();
     const auto& spec = car.spec;
     abi::Wagon* w = car.wagon();
     w->is_locomotive = spec.kind;
@@ -610,6 +616,7 @@ void Host::build_car(CarMirror& car) {
 }
 
 void Host::link_cars() {
+    names_changed();
     for (std::size_t t = 0; t < train_count_; ++t) trains_[t]->wagons.clear();
     for (auto& car : cars_) {
         auto& train = train_of(*car);
@@ -637,6 +644,7 @@ void Host::link_cars() {
 bool Host::bind(CarMirror& car) {
     if (car.has_engine) return car.module && !car.module->failed;
     if (car.spec.module.empty()) return false;
+    names_changed(); // its parameters and aux libraries are made now
     Module* m = module_for(from_u16(car.spec.module));
     if (!m) return false;
     car.module = m;
@@ -1136,6 +1144,7 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
     collect(reply);
     reply.set_direction = set_direction_;
     reply.items_wanted = items_wanted_;
+    if (name_check_ && ++name_check_steps_ % 200 == 0) report_names();
     return true;
 }
 
@@ -1972,8 +1981,10 @@ void* Host::loco_object(const Module* caller, const abi::Locomotive* loco, int c
 }
 
 void* Host::loco_object_by_name(const Module* caller, const abi::Locomotive* loco, int code, const wchar_t* name, int sub) {
-    (void)caller;
-    (void)sub;
+    return named(abi::at_loco, loco, caller, code, name, sub, [&] { return scan_loco_by_name(loco, code, name); });
+}
+
+void* Host::scan_loco_by_name(const abi::Locomotive* loco, const int code, const wchar_t* name) {
     CarMirror* car = loco ? car_of(loco) : nullptr;
     if (!car || !name) return nullptr;
     switch (code) {
@@ -2035,8 +2046,10 @@ void* Host::cab_object(const Module* caller, const abi::Cabin* cab, int code, in
 }
 
 void* Host::cab_object_by_name(const Module* caller, const abi::Cabin* cab, int code, const wchar_t* name, int sub) {
-    (void)caller;
-    (void)sub;
+    return named(abi::at_cabin, cab, caller, code, name, sub, [&] { return scan_cab_by_name(cab, code, name); });
+}
+
+void* Host::scan_cab_by_name(const abi::Cabin* cab, const int code, const wchar_t* name) {
     CarMirror* car = cab ? car_of_cabin(cab) : nullptr;
     if (!car || !name) return nullptr;
     switch (code) {
@@ -2076,13 +2089,92 @@ void* Host::aux_object(const abi::AuxLibrary* aux, int code, int index, int sub)
 }
 
 void* Host::aux_object_by_name(const abi::AuxLibrary* aux, int code, const wchar_t* name, int sub) {
-    (void)sub;
+    return named(abi::at_auxlib, aux, nullptr, code, name, sub, [&] { return scan_aux_by_name(aux, code, name); });
+}
+
+void* Host::scan_aux_by_name(const abi::AuxLibrary* aux, const int code, const wchar_t* name) {
     if (!aux || !name || !car_of_aux(aux)) return nullptr;
     if (code == abi::ot_eng_param) {
         for (std::uint32_t i = 0; i < aux->num_params; ++i)
             if (same_name(aux->params[i].name, name)) return &aux->params[i];
     }
     return nullptr;
+}
+
+// --- the by-name lookups' cache (host.hpp) -------------------------------------------
+
+std::size_t Host::NameKeyHash::operator()(const NameKey& key) const noexcept {
+    std::size_t h = std::hash<std::wstring>{}(key.name);
+    const auto mix = [&h](const std::size_t v) { h ^= v + 0x9E3779B9u + (h << 6) + (h >> 2); };
+    mix(reinterpret_cast<std::size_t>(key.owner));
+    mix(reinterpret_cast<std::size_t>(key.caller));
+    mix(static_cast<std::size_t>(key.where) * 64u + static_cast<std::size_t>(key.code));
+    mix(static_cast<std::size_t>(key.sub));
+    return h;
+}
+
+void Host::names_changed() {
+    if (names_.empty()) return;
+    names_.clear();
+    ++name_stats_.cleared;
+}
+
+template <class Scan>
+void* Host::named(const std::int32_t where, const void* owner, const Module* caller, const int code, const wchar_t* name, const int sub,
+                  Scan&& scan) {
+    // No name: nothing to keep (the scan answers none).
+    if (!name) return scan();
+    name_probe_.owner = owner;
+    name_probe_.caller = caller;
+    name_probe_.where = where;
+    name_probe_.code = code;
+    name_probe_.sub = sub;
+    name_probe_.name.assign(name);
+    if (const auto it = names_.find(name_probe_); it != names_.end()) {
+        ++name_stats_.hits;
+        if (name_check_) {
+            ++name_stats_.checked;
+            void* const scanned = scan();
+            if (scanned != it->second && ++name_stats_.differed <= 5) {
+                wchar_t b[96];
+                swprintf_s(b, L"name cache: %d/%d '%ls' of %p: kept %p, the scan %p", where, code, name, owner, it->second, scanned);
+                log(b);
+            }
+        }
+        return it->second;
+    }
+    ++name_stats_.misses;
+    void* const found = scan();
+    names_.emplace(name_probe_, found);
+    return found;
+}
+
+// OPENRTS_DLLHOST_NAME_CHECK: the counts, and whether names asked by several
+// owners (the same parameter in each car) resolved to objects of their own.
+void Host::report_names() {
+    struct Shared {
+        std::vector<const void*> owners;
+        std::vector<void*> found;
+    };
+    std::unordered_map<std::wstring, Shared> by_name;
+    for (const auto& [key, found] : names_) {
+        auto& s = by_name[std::to_wstring(key.where) + L"/" + std::to_wstring(key.code) + L"/" + key.name];
+        s.owners.push_back(key.owner);
+        if (found) s.found.push_back(found);
+    }
+    std::size_t shared = 0, most = 0, own = 0;
+    for (auto& [_, s] : by_name) {
+        if (s.owners.size() < 2) continue;
+        ++shared;
+        most = (std::max)(most, s.owners.size());
+        std::sort(s.found.begin(), s.found.end());
+        if (std::adjacent_find(s.found.begin(), s.found.end()) == s.found.end()) ++own;
+    }
+    const auto& st = name_stats_;
+    log(L"name cache: " + std::to_wstring(st.hits) + L" hits, " + std::to_wstring(st.misses) + L" misses, " + std::to_wstring(names_.size()) +
+        L" entries, emptied " + std::to_wstring(st.cleared) + L" times; checked " + std::to_wstring(st.checked) + L", " +
+        std::to_wstring(st.differed) + L" differed; " + std::to_wstring(shared) + L" names asked by several owners (up to " +
+        std::to_wstring(most) + L"), " + std::to_wstring(own) + L" of them an object of its own for each");
 }
 
 void Host::trace_once(const std::wstring& key, const std::wstring& line) const {

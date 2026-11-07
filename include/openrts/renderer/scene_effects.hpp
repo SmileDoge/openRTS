@@ -93,6 +93,14 @@ struct SceneEffectStats {
     std::uint32_t lamp_shadows = 0; // lamps throwing shadows this frame
     std::uint32_t lamps_lighting = 0; // lamps lighting the place they are for (the ones chosen from)
     float lamp_radius = 0.0f;         // that place's radius (m)
+    // The workers' passes (record_parallel) of the last frame, each from its
+    // start to its command buffer finished (ms; 0: not drawn): the cascades
+    // drawn again, the focus, the lamps together, the camera's depth pre-pass
+    // with GTAO and the clusters.
+    std::array<float, 4> record_cascade_ms{};
+    float record_focus_ms = 0.0f;
+    float record_lamps_ms = 0.0f;
+    float record_camera_ms = 0.0f;
 };
 
 // The bind group layout of the effects (group 2), for pipelines that read them.

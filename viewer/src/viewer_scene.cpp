@@ -1,4 +1,6 @@
 #include "viewer_scene.hpp"
+
+#include <openrts/core/profile.hpp>
 #include "rts_config.hpp"
 
 #include "ui_text.hpp"
@@ -399,6 +401,7 @@ public:
     }
 
     void update(ModelRenderer&, ViewerCamera& camera, const SceneClock& clock, const SceneInput& input) override {
+        OPENRTS_ZONE("scene: update");
         if (input.toggle_labels) labels_ = !labels_;
         rebase_near(camera);
         // Track control's "Teleport here": the camera at eye height over the
@@ -487,6 +490,7 @@ public:
         }
         if (signals_) {
             const auto trains = train_ ? train_->trains() : std::vector<const simulation::Train*>{};
+            OPENRTS_ZONE("signals");
             signals_->update(clock.elapsed, train_ ? train_->train() : nullptr, trains, camera.eye());
             if (snapshot_signals_ && signals_->system() && content_.snapshot()) {
                 snapshot_signals_ = false;
@@ -588,6 +592,7 @@ public:
     }
 
     void submit(ModelRenderer& renderer, const FrameView& frame) override {
+        OPENRTS_ZONE("scene: submit");
         // The terrain is drawn before (draw_background): it takes the path from the next frame.
         if (terrain_) terrain_->set_shading_path(renderer.shading_path());
         experimental_ = renderer.shading_path() == renderer::ShadingPath::experimental;

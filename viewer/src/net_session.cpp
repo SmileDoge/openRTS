@@ -1,5 +1,7 @@
 #include "net_session.hpp"
 
+#include <openrts/core/profile.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -66,6 +68,7 @@ double NetSession::now() const {
 
 void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSystem* signals, TrainView& trains,
                         const std::optional<formats::RoutePosition>& camera) {
+    OPENRTS_ZONE("network");
     const double t = now();
     // The camera's place, as rts1.exe sends it: four times a second while it
     // moves, every 5 s anyway. The server relays a train's lights, look and

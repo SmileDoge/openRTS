@@ -1,5 +1,7 @@
 #include <openrts/renderer/terrain_renderer.hpp>
 
+#include <openrts/core/profile.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <optional>
@@ -1160,6 +1162,7 @@ void TerrainRenderer::prepare_depth() {
 
 void TerrainRenderer::render_depth(const WGPURenderPassEncoder pass, const std::uint32_t slot, const glm::mat4& view_projection,
                                    const DepthPassKind kind) {
+    OPENRTS_ZONE("terrain: depth pass");
     if (!ready() || impl_->tiles.empty() || slot >= Impl::depth_slots) return;
     auto& impl = *impl_;
     // Depth passes may run on several threads: nothing shared is changed here
@@ -1231,6 +1234,7 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
                              const glm::mat4& view_projection,
                              const ModelLighting& lighting,
                              WGPUBindGroup effects) {
+    OPENRTS_ZONE("terrain: main pass");
     if (!ready() || impl_->tiles.empty()) return;
     auto& impl = *impl_;
     if (!effects) {

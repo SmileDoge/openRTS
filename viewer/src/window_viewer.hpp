@@ -35,6 +35,10 @@ struct WindowOptions {
     std::optional<std::string> shadow_settings;
     // --parallel-recording on|off: this run's choice.
     std::optional<bool> parallel_recording;
+    // --paused: the world starts paused (Pause resumes it): nothing moves,
+    // not even a flashing signal, so once the scene has loaded (a big
+    // station: some 45 s) captures repeat pixel for pixel.
+    bool start_paused = false;
     // --multi-draw on|off: this run's multi-draw indirect (the remembered
     // "multi_draw" otherwise, on by default).
     std::optional<bool> multi_draw;

@@ -12,7 +12,7 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.4.1](../../releases/tag/v0.4.1):
+> Work in progress. The latest version is [v0.4.2](../../releases/tag/v0.4.2):
 > a nearly playable game. Driving from a 3-D cab with RTS's locomotive
 > DLLs, signalling, a dispatcher window, a living route (forests, level
 > crossings, road traffic, water, rain and snow, smoke), sound by the cab's
@@ -193,7 +193,8 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 Without `OPENRTS_ENABLE_WGPU` only the libraries, tools and tests are built,
-with no window.
+with no window. `-DOPENRTS_ENABLE_TRACY=ON` builds the Tracy profiler's
+client in ([profiling](docs/profiling.md)).
 
 ## Running
 
@@ -251,6 +252,7 @@ The game can also be started directly:
 | `--msaa 1`, `--no-vsync`, `--no-batching` | graphics settings |
 | `--fps-limit <30..500 \| 0>` | the FPS limit for this run (0: none), not remembered |
 | `--multi-draw on\|off` | multi-draw indirect for models this run (on by default where the GPU has it) |
+| `--paused` | start paused (Pause resumes): nothing moves, not even a flashing signal; once the scene has loaded, captures repeat pixel for pixel |
 | `--hdr` | an HDR frame with tone mapping |
 | `--backend auto\|vulkan\|dx12\|opengl` | the graphics API (OpenGL: the RTS renderer only) |
 | `--reshade-depth on\|off` | depth for ReShade ([INSTALL_EN.md](INSTALL_EN.md#reshade)) |
@@ -374,6 +376,7 @@ RTS's DLLs.
 - `docs/train-dll.md` — the locomotive DLL bridge and the native plugin API;
 - `docs/experimental-effects.md` — the experimental renderer: what it does
   and what it costs;
+- `docs/profiling.md` — building with Tracy, what is marked, adding a zone;
 - `docs/world-objects.md` — forests, level crossings, road traffic, water,
   rain and snow and smoke, as RTS builds and runs them;
 - `docs/net.md` — playing on an RTS server: the protocol, own and other

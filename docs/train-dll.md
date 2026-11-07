@@ -456,6 +456,20 @@ openRTS (x64)                                    openrts-dllhost32.exe (x86, sta
   off and the log names the module, the offset and the bad address
   (`ep2d.dll+0x7624, reading 0x0000002C`). A host that ends or hangs is
   reported; the game keeps running.
+- **By-name lookups are kept**: `RTSGetObjectByName` and the loco and cab
+  `ByName` lookups scan as RTS does (`lstrcmpiW`, the first match, none)
+  the first time; the answer is then kept by owner (the pointer the DLL
+  passed), kind, code, sub, caller and the name as written (each spelling
+  is its own entry). It is the object that is kept, not a value: the DLL
+  reads and writes the object itself. `Brakes.dll` looks its parameters up
+  every `Run` (some 700 calls a step on an 8-car ED9M): scanning, 1.2 ms a
+  step; kept, 0.06 (the first step after emptying 0.8). The objects are in
+  the mirrors' vectors, and everything that makes, binds or relinks them
+  (`setup`, `reconsist`, `build_car`, `link_cars`, `bind`) empties the
+  kept answers first. `OPENRTS_DLLHOST_NAME_CHECK=1` scans every kept
+  answer again: a difference, and every 200 steps a summary (hits, misses,
+  entries, names asked by several owners and whether each got an object of
+  its own), go to the DLL log.
 - **Paths**: DLLs are loaded from their real files (`Vfs::real_path`, so
   packs are extracted to the cache); the RTS program folder is the DLL
   directory (for `bass.dll` and `CC3260MT.DLL`).
@@ -467,7 +481,9 @@ openRTS (x64)                                    openrts-dllhost32.exe (x86, sta
   the `.sd` binds to the cab shape).
 - **Tests**: `openrts.dllhost` (the fake DLL `dllhost/test/fake_loco.cpp`,
   no content needed: Init, master / slave, CanSwitch, Switched, sounds,
-  messages, the flip), `openrts.plugin_parity` (the same logic as a legacy
+  messages, the flip, parameters by name: any case, the first match, none,
+  each car its own, kept, after a coupling, with the check on),
+  `openrts.plugin_parity` (the same logic as a legacy
   DLL and as a native plugin), and with `-DOPENRTS_TEST_ROOT=<RTS>`:
   `openrts.content.dll_probe`, `openrts.content.dll_vl10k`
   (`tests/data/vl10k.script`).

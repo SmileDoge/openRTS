@@ -20,6 +20,7 @@ using GetTrackItemsFn = int (*)(void* dll, const Locomotive* loco, unsigned code
                                 unsigned& count);
 using GetNamedIntegerFn = int (*)(const void* obj, unsigned code, const wchar_t* name);
 using IsTriggerOnFn = int (*)(const SMSObject* sound, unsigned short code);
+using GetObjectByNameFn = void* (*)(void* dll, const void* obj, short where, int code, const wchar_t* name, int sub);
 
 void* g_dll = nullptr;
 GetLocoObjectFn g_loco_object = nullptr;
@@ -28,6 +29,7 @@ GetIntegerFn g_integer = nullptr;
 GetTrackItemsFn g_track_items = nullptr;
 GetNamedIntegerFn g_named = nullptr;
 IsTriggerOnFn g_trigger_on = nullptr;
+GetObjectByNameFn g_by_name = nullptr;
 wchar_t g_text[] = L"fake: init done";
 
 ActSwitch* sw(const Locomotive* loco, unsigned id) {
@@ -56,6 +58,7 @@ bool __cdecl InitRTSLibrary(HINSTANCE module, void* dll) {
     g_track_items = reinterpret_cast<GetTrackItemsFn>(GetProcAddress(module, "_RTSGetTrackItems"));
     g_named = reinterpret_cast<GetNamedIntegerFn>(GetProcAddress(module, "_RTSGetNamedInteger"));
     g_trigger_on = reinterpret_cast<IsTriggerOnFn>(GetProcAddress(module, "_RTSIsSMSTriggerOn"));
+    g_by_name = reinterpret_cast<GetObjectByNameFn>(GetProcAddress(module, "_RTSGetObjectByName"));
     return g_loco_object && g_cab_object && g_integer;
 }
 
@@ -149,6 +152,15 @@ void __cdecl Run(ElectricEngine* eng, ElectricLocomotive* loco, unsigned state, 
                 break;
             }
         }
+    }
+    // Parameters by name every Run, as Brakes.dll asks (RTSGetObjectByName):
+    // "alpha" and "ALPHA" are both the first match, "Alpha" (its value), and
+    // the same object; "missing" is none: value + 0.5 + 0.25.
+    if (g_by_name) {
+        const auto* first = static_cast<const EngineParam*>(g_by_name(g_dll, loco, at_loco, ot_eng_param, L"alpha", 0));
+        const auto* upper = static_cast<const EngineParam*>(g_by_name(g_dll, loco, at_loco, ot_eng_param, L"ALPHA", 0));
+        const void* missing = g_by_name(g_dll, loco, at_loco, ot_eng_param, L"missing", 0);
+        eng->train_pipe_rate = (first ? first->value : -100.0f) + (first && first == upper ? 0.5f : 0.0f) + (missing ? 0.0f : 0.25f);
     }
     // The cab script's named trigger "Aux On" x 100 + whether its pair is on + 10.
     if (g_named && g_trigger_on && eng->sound)

@@ -1,5 +1,7 @@
 #include <openrts/trainplugin/legacy_consist.hpp>
 
+#include <openrts/core/profile.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -629,6 +631,8 @@ bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>&
         outputs_->valid = false;
         return false;
     }
+    core::SequentialZone part;
+    part.open("DLL: request");
     StepRequest request;
     request.day_time = world.day_time;
     request.dt = static_cast<float>(dt);
@@ -683,6 +687,7 @@ bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>&
             }
         }
     }
+    part.close(nullptr);
     StepReply reply;
     const bool ok = host_->step(request, reply);
     messages_ += host_->take_messages();

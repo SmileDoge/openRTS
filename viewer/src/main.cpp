@@ -130,7 +130,7 @@ struct ContentTarget {
 // route path start; C puts it on the track nearest to the camera), `--track-control` (open the
 // Track control window at start), (
 // the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|4` (default 4), `--no-sound`, `--sound-offline`, `--volume <0..1>` (default 0.5),
-// `--time HH:MM[:SS]`, `--speed <multiplier>`,
+// `--time HH:MM[:SS]`, `--speed <multiplier>`, `--paused` (start paused),
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
 // A step of joining a server for the start menu (game/src/launcher.cpp reads
 // openrts.log): one line "status: <word> [detail]".
@@ -386,6 +386,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.cab_shadows = std::string(flags[++i]) != "off";
         } else if (flags[i] == "--parallel-recording" && has_value) {
             options.parallel_recording = std::string(flags[++i]) != "off";
+        } else if (flags[i] == "--paused") {
+            options.start_paused = true;
         } else if (flags[i] == "--multi-draw" && has_value) {
             options.multi_draw = std::string(flags[++i]) != "off";
         } else if (flags[i] == "--shadow-settings" && has_value) {

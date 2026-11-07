@@ -1,7 +1,10 @@
 #include <openrts/renderer/scene_effects.hpp>
 
+#include <openrts/core/profile.hpp>
+
 #ifdef OPENRTS_HAS_WGPU
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -502,6 +505,7 @@ struct SceneEffects::Impl {
     std::uint64_t shadow_generation = 1; // grows when the shadow array is made again
     // record_parallel(): a command buffer a task, in submission order.
     std::vector<WGPUCommandBuffer> parallel_buffers;
+    std::vector<float> parallel_ms; // by parallel_buffers' index: the pass's recording time
 
     void record_shadow(WGPUCommandEncoder encoder, std::uint32_t layer, std::uint32_t slot, const DepthDraw& draw) const;
     void record_camera(WGPUCommandEncoder encoder, const DepthDraw& draw) const;
@@ -869,6 +873,7 @@ const SceneEffectSettings& SceneEffects::settings() const noexcept {
 }
 
 void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting& lighting, const bool active) {
+    OPENRTS_ZONE("effects: begin frame");
     auto& impl = *impl_;
     impl.view = view;
     impl.active = active;
@@ -1147,6 +1152,7 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
 }
 
 void SceneEffects::set_focus(const std::optional<ShadowFocus>& focus, const std::optional<ShadowFocus>& lamps) {
+    OPENRTS_ZONE("effects: focus and lamps");
     auto& impl = *impl_;
     impl.fit_focus(focus);
     const bool flight = lamps && lamps->radius > 0.0f;
@@ -1239,35 +1245,53 @@ void SceneEffects::record(const WGPUCommandEncoder encoder, const DepthDraw& dra
 void SceneEffects::record_parallel(const WGPUDevice device, TaskPool& pool, const DepthDraw& draw) {
     auto& impl = *impl_;
     impl.parallel_buffers.assign(impl.active ? impl.cascade_count + 2 + max_lamp_shadows : 0, nullptr);
+    impl.parallel_ms.assign(impl.parallel_buffers.size(), 0.0f);
     if (!impl.active) return;
     std::vector<std::function<void()>> tasks;
-    const auto encode = [device, &impl](const std::size_t index, auto&& record) {
+    const auto encode = [device, &impl](const std::size_t index, const char* name, auto&& record) {
+        OPENRTS_ZONE("effects: pass");
+        OPENRTS_ZONE_TEXT(name, std::strlen(name));
+        const auto start = std::chrono::steady_clock::now();
         const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
-        record(encoder);
-        impl.parallel_buffers[index] = wgpuCommandEncoderFinish(encoder, nullptr);
+        {
+            OPENRTS_ZONE("effects: record");
+            record(encoder);
+        }
+        {
+            // wgpu checks and encodes the pass's commands here.
+            OPENRTS_ZONE("effects: finish");
+            impl.parallel_buffers[index] = wgpuCommandEncoderFinish(encoder, nullptr);
+        }
         wgpuCommandEncoderRelease(encoder);
+        impl.parallel_ms[index] = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
     };
+    // The longest first: the camera's passes, then the shadows (the pool
+    // takes them in order; their buffers are submitted by index).
+    tasks.emplace_back([encode, &impl, draw] {
+        encode(impl.cascade_count + 1 + max_lamp_shadows, "camera depth, GTAO, clusters",
+               [&](const WGPUCommandEncoder encoder) { impl.record_camera(encoder, draw); });
+    });
     for (std::uint32_t i = 0; i < impl.cascade_count; ++i) {
         if (!impl.redraw[i]) continue;
-        tasks.emplace_back([encode, &impl, i, draw] { encode(i, [&](const WGPUCommandEncoder encoder) { impl.record_shadow(encoder, i, i, draw); }); });
+        tasks.emplace_back([encode, &impl, i, draw] {
+            static constexpr const char* names[] = {"sun cascade 1", "sun cascade 2", "sun cascade 3", "sun cascade 4"};
+            encode(i, names[i % 4], [&](const WGPUCommandEncoder encoder) { impl.record_shadow(encoder, i, i, draw); });
+        });
     }
     if (impl.focus_active) {
         tasks.emplace_back([encode, &impl, draw] {
-            encode(impl.cascade_count, [&](const WGPUCommandEncoder encoder) {
+            encode(impl.cascade_count, "cab focus", [&](const WGPUCommandEncoder encoder) {
                 impl.record_shadow(encoder, impl.focus_layer, Impl::focus_slot, draw);
             });
         });
     }
     for (std::uint32_t k = 0; k < impl.lamp_shadow_count; ++k) {
         tasks.emplace_back([encode, &impl, k, draw] {
-            encode(impl.cascade_count + 1 + k, [&](const WGPUCommandEncoder encoder) {
+            encode(impl.cascade_count + 1 + k, "lamp shadow", [&](const WGPUCommandEncoder encoder) {
                 impl.record_depth(encoder, impl.lamp_layers[k], impl.lamp_matrices[k], Impl::lamp_slot + k, draw);
             });
         });
     }
-    tasks.emplace_back([encode, &impl, draw] {
-        encode(impl.cascade_count + 1 + max_lamp_shadows, [&](const WGPUCommandEncoder encoder) { impl.record_camera(encoder, draw); });
-    });
     pool.start(std::move(tasks));
 }
 
@@ -1299,6 +1323,15 @@ bool SceneEffects::wants_depth() const noexcept {
 SceneEffectStats SceneEffects::stats() const noexcept {
     std::uint32_t drawn = 0;
     for (std::uint32_t i = 0; i < impl_->cascade_count; ++i) drawn += impl_->redraw[i] ? 1u : 0u;
+    // The workers' passes: cascades first, the focus, the lamps, the camera last.
+    std::array<float, 4> cascade_ms{};
+    float lamps_ms = 0.0f;
+    const auto& ms = impl_->parallel_ms;
+    for (std::size_t i = 0; i < impl_->cascade_count && i < cascade_ms.size() && i < ms.size(); ++i) cascade_ms[i] = ms[i];
+    for (std::size_t k = 0; k < impl_->lamp_shadow_count; ++k) {
+        const auto index = impl_->cascade_count + 1 + k;
+        if (index < ms.size()) lamps_ms += ms[index];
+    }
     return {.cascades = impl_->cascade_count,
             .cascades_drawn = drawn,
             .lights = impl_->light_count,
@@ -1309,7 +1342,11 @@ SceneEffectStats SceneEffects::stats() const noexcept {
             .lamp_strength = 1.0f - impl_->frame.lamps.x,
             .lamp_shadows = impl_->lamp_shadow_count,
             .lamps_lighting = impl_->lamps_lighting,
-            .lamp_radius = impl_->lamp_radius};
+            .lamp_radius = impl_->lamp_radius,
+            .record_cascade_ms = cascade_ms,
+            .record_focus_ms = impl_->parallel_ms.size() > impl_->cascade_count ? impl_->parallel_ms[impl_->cascade_count] : 0.0f,
+            .record_lamps_ms = lamps_ms,
+            .record_camera_ms = impl_->parallel_ms.empty() ? 0.0f : impl_->parallel_ms.back()};
 }
 
 } // namespace openrts::renderer

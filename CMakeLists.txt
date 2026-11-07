@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(openRTS
-    VERSION 0.4.1
+    VERSION 0.4.2
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
 
@@ -16,6 +16,7 @@ option(OPENRTS_ENABLE_WGPU "Enable the wgpu-native WebGPU backend" OFF)
 set(OPENRTS_WGPU_ROOT "" CACHE PATH "Root of an extracted wgpu-native SDK")
 option(OPENRTS_FETCH_ZLIB "Fetch zlib when a system package is unavailable" ON)
 option(OPENRTS_FETCH_ZSTD "Fetch Zstandard when a system package is unavailable" ON)
+option(OPENRTS_ENABLE_TRACY "Build the Tracy profiler client in (docs/profiling.md)" OFF)
 
 find_package(ZLIB QUIET)
 if(NOT ZLIB_FOUND)
@@ -108,6 +109,27 @@ if(WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_GENERATOR MATCHES "V
 else()
     function(openrts_copy_dllhost target)
     endfunction()
+endif()
+
+# The Tracy profiler's client, optional (docs/profiling.md): the zones of
+# include/openrts/core/profile.hpp. Off, they compile to nothing. On demand
+# (nothing kept until the Tracy program connects) and on localhost only.
+add_library(openrts_profile INTERFACE)
+if(OPENRTS_ENABLE_TRACY)
+    FetchContent_Declare(tracy
+        GIT_REPOSITORY https://github.com/wolfpld/tracy.git
+        GIT_TAG v0.14.1
+        GIT_SHALLOW TRUE)
+    set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
+    set(TRACY_ON_DEMAND ON CACHE BOOL "" FORCE)
+    set(TRACY_ONLY_LOCALHOST ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(tracy)
+    # Its headers as system ones: our warnings are not theirs.
+    get_target_property(OPENRTS_TRACY_INCLUDES TracyClient INTERFACE_INCLUDE_DIRECTORIES)
+    set_target_properties(TracyClient PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${OPENRTS_TRACY_INCLUDES}")
+    target_link_libraries(openrts_profile INTERFACE TracyClient)
+    target_compile_definitions(openrts_profile INTERFACE OPENRTS_TRACY=1)
+    message(STATUS "openRTS: Tracy profiler client v0.14.1 built in (connect Tracy 0.14.1)")
 endif()
 
 add_subdirectory(core)

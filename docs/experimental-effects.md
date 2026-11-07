@@ -206,6 +206,22 @@ Then (2026-11-02):
   - Frames unchanged: pixel for pixel within the run-to-run noise (Vulkan,
     both paths, day and night; DirectX 12 identical byte for byte, OpenGL
     4 pixels).
+- **What `finish` was** (2026-11-07): the stage is now four, `end` (the
+  main pass ended), `post` (the depth copy for ReShade, the HDR tone pass
+  and the panel), `encode` (`wgpuCommandEncoderFinish`) and `join` (waiting
+  for the workers' passes); each worker's pass is timed too (`perf:`, the
+  capture's effects line). On the station: `end` 0.001 ms, `post` 0.02,
+  `encode` 1.2-1.5, `join` 0.001. The workers are done long before (the
+  cascades 0.3-0.8 ms each, the camera's pre-pass 1.4-1.6): nothing waits
+  for the shadows. wgpu takes the main pass's commands when the command
+  buffer is finished, on the render thread: that is the cost, some 1800
+  commands with their state changes.
+- **Render bundles for the main pass: not done.** The opaque draws in four
+  bundles (three on a pool of their own, one on the render thread): `encode`
+  1.2 -> 1.0 ms but `models` 0.35 -> 0.65 (waiting for them), about 0.2 ms
+  in all, and a run hung (wgpu: bundles finished beside the shadow passes
+  and their buffer writes on other threads). Fewer state changes (models'
+  geometry in shared buffers, textures in arrays) would be the way.
 
 At 1280 x 720 the frame with four 4096 cascades is now near what the GPU
 needs; the RTS path takes about 2.3 ms.

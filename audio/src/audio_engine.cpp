@@ -1,5 +1,7 @@
 #include <openrts/audio/audio_engine.hpp>
 
+#include <openrts/core/profile.hpp>
+
 #include <unordered_map>
 
 #include "miniaudio_config.hpp"
@@ -82,6 +84,7 @@ float AudioEngine::volume() const noexcept {
 }
 
 void AudioEngine::update() {
+    OPENRTS_ZONE("audio");
     for (auto it = impl_->voices.begin(); it != impl_->voices.end();) {
         if (ma_sound_at_end(&it->second->sound)) {
             impl_->destroy(*it->second);

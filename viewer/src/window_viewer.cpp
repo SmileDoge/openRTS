@@ -1,5 +1,7 @@
 #include "window_viewer.hpp"
 
+#include <openrts/core/profile.hpp>
+
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
 #include <openrts/renderer/tone_map.hpp>
@@ -408,7 +410,7 @@ private:
 };
 
 // CPU stages of one frame, in loop order.
-enum class FrameStage { update, panel, wait, begin, background, cull, prepare, effects, models, foreground, finish, submit, count };
+enum class FrameStage { update, panel, wait, begin, background, cull, prepare, effects, models, foreground, end, post, encode, join, submit, count };
 constexpr std::size_t frame_stage_count = static_cast<std::size_t>(FrameStage::count);
 constexpr std::array<const char*, frame_stage_count> frame_stage_names{
     "update",  // input, camera, scene update (streaming, track, later simulation)
@@ -421,23 +423,47 @@ constexpr std::array<const char*, frame_stage_count> frame_stage_names{
     "effects", // recording the shadow cascades, the depth pre-pass, GTAO and the clusters
     "models",  // model batching and draw recording
     "foregr",  // scene overlays (track lines) and the panel
-    "finish",  // end of pass and command buffer
+    "end",     // the main pass ended (wgpu takes its commands)
+    "post",    // after it: the depth copy for ReShade, the HDR tone pass and the panel, the GPU timer
+    "encode",  // the command buffer finished
+    "join",    // waiting for the workers' passes (the shadows, the depth pre-pass)
     "submit",  // queue submit, present, retired resource collection
 };
 using StageTimes = std::array<double, frame_stage_count>;
 
 // Splits the frame into stages on the CPU clock.
+// Each stage is a Tracy zone too (core/profile.hpp), opened under the
+// stage that came next the frame before; between frames: the FPS limit's
+// wait (and the perf line).
 class StageClock {
 public:
-    void start() { last_ = std::chrono::steady_clock::now(); }
+    StageClock() { next_.fill(between); }
+    void start() {
+        zone(between);
+        last_ = std::chrono::steady_clock::now();
+    }
     void mark(const FrameStage stage, StageTimes& times) {
         const auto now = std::chrono::steady_clock::now();
         times[static_cast<std::size_t>(stage)] += std::chrono::duration<double>(now - last_).count();
         last_ = now;
+        zone(static_cast<std::size_t>(stage));
     }
 
 private:
+    static constexpr std::size_t between = frame_stage_count;
+    static const char* name(const std::size_t stage) { return stage < frame_stage_count ? frame_stage_names[stage] : "FPS limit"; }
+    // The open zone was `done`: closed under it, and the next is opened.
+    void zone(const std::size_t done) {
+        zone_.close(name(done));
+        next_[previous_] = done;
+        previous_ = done;
+        zone_.open(name(next_[done]));
+    }
+
     std::chrono::steady_clock::time_point last_;
+    core::SequentialZone zone_;
+    std::array<std::size_t, frame_stage_count + 1> next_{};
+    std::size_t previous_ = between;
 };
 
 // Frame rate over the last half second: average FPS and frame time, the
@@ -1709,6 +1735,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto on = remembered("shadow_cab")) panel.effects.cab_shadows = *on == "1";
     if (options.cab_shadows) panel.effects.cab_shadows = *options.cab_shadows;
     if (options.parallel_recording) panel.parallel_recording = *options.parallel_recording;
+    if (options.start_paused) panel.paused = true;
     if (const auto on = remembered("multi_draw")) panel.multi_draw = *on == "1";
     if (options.multi_draw) panel.multi_draw = *options.multi_draw;
     if (const auto value = remembered("shadow_distance"))
@@ -1987,6 +2014,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
 #endif
         stage_clock.mark(FrameStage::foreground, stages);
         wgpuRenderPassEncoderEnd(pass);
+        stage_clock.mark(FrameStage::end, stages);
         // The depth for ReShade: a single-sample copy of a multisampled one
         // (a single-sample depth is kept as it is, keep_depth above).
         const bool depth_copy = reshade_depth && renderer::render_sample_count() > 1;
@@ -2036,11 +2064,13 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (capture_now && depth_copy && depth_export->texture())
             depth_shot = begin_capture(device, encoder, depth_export->texture(), static_cast<std::uint32_t>(width),
                                        static_cast<std::uint32_t>(height));
+        stage_clock.mark(FrameStage::post, stages);
         const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
+        stage_clock.mark(FrameStage::encode, stages);
         // The workers' command buffers first: the shadows and the occlusion
         // the main pass reads.
         auto submitted = parallel ? effects.finish_parallel(recording_pool) : std::vector<WGPUCommandBuffer>{};
-        stage_clock.mark(FrameStage::finish, stages);
+        stage_clock.mark(FrameStage::join, stages);
         submitted.push_back(commands);
         const auto queue = wgpuDeviceGetQueue(device);
         wgpuQueueSubmit(queue, submitted.size(), submitted.data());
@@ -2074,7 +2104,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             if (effect_stats.focus) std::cout << " (texel " << effect_stats.focus_texel * 1000.0f << " mm)";
             std::cout << ", daylight " << effect_stats.daylight << ", lamps x" << effect_stats.lamp_strength << ", " << effect_stats.lamp_shadows
                       << " lamp shadows (of " << effect_stats.lamps_lighting << " lamps lighting " << effect_stats.lamp_radius << " m around)";
-            std::cout << ", " << effect_stats.lights << " lights" << std::endl;
+            std::cout << ", " << effect_stats.lights << " lights; workers' passes (ms):";
+            for (std::uint32_t i = 0; i < effect_stats.cascades; ++i) std::cout << " cascade" << i << ' ' << effect_stats.record_cascade_ms[i];
+            std::cout << " focus " << effect_stats.record_focus_ms << " lamps " << effect_stats.record_lamps_ms << " camera "
+                      << effect_stats.record_camera_ms << std::endl;
             std::cout << "cpu stages (ms):";
             for (std::size_t i = 0; i < frame_stage_count; ++i) std::cout << ' ' << frame_stage_names[i] << ' ' << panel.stats.stage_ms()[i];
             std::cout << "; gpu main pass " << panel.stats.gpu_ms() << " ms" << std::endl;
@@ -2089,6 +2122,13 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         wgpuTextureRelease(frame_texture);
         renderer.collect_retired();
         stage_clock.mark(FrameStage::submit, stages);
+        OPENRTS_FRAME();
+        {
+            const auto models = renderer.stats();
+            OPENRTS_PLOT("draw calls", static_cast<std::int64_t>(models.draw_calls));
+            OPENRTS_PLOT("draw commands", static_cast<std::int64_t>(models.draw_commands));
+            OPENRTS_PLOT("model instances", static_cast<std::int64_t>(models.instances));
+        }
         if (!capture && !options.menu && now >= perf_at) {
             perf_at = now + 10.0;
             const auto& times = panel.stats.stage_ms();
@@ -2104,7 +2144,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                       << " instances, " << gpu.draw_calls << " draw calls in " << gpu.draw_commands << " commands (multi-draw "
                       << (renderer.multi_draw() ? "on" : "off") << "), " << gpu.primitives << " primitives; "
                       << effect_stats.cascades << " cascades (" << effect_stats.cascades_drawn << " drawn), "
-                      << effect_stats.lamp_shadows << " lamp shadows, " << effect_stats.lights << " lights; renderer "
+                      << effect_stats.lamp_shadows << " lamp shadows, " << effect_stats.lights << " lights; workers' passes (ms):";
+            for (std::uint32_t i = 0; i < effect_stats.cascades; ++i) std::cout << " cascade" << i << ' ' << effect_stats.record_cascade_ms[i];
+            std::cout << " focus " << effect_stats.record_focus_ms << " lamps " << effect_stats.record_lamps_ms << " camera "
+                      << effect_stats.record_camera_ms << "; renderer "
                       << (renderer.shading_path() == renderer::ShadingPath::experimental ? "experimental" : "RTS") << std::endl;
         }
     }

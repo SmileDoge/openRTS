@@ -4,6 +4,7 @@
 // Usage: openrts_dllhost_test <openrts-dllhost32.exe> <openrts_fake_loco.dll>
 
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <string>
 
@@ -23,8 +24,11 @@ void check(bool ok, const char* what) {
     }
 }
 
-CarSpec loco(const std::u16string& module) {
+// `base`: the value of its parameter "Alpha" (and "ALPHA", a later one of
+// the same name in other case, base + 2: the first match is "Alpha").
+CarSpec loco(const std::u16string& module, float base = 10.0f) {
     CarSpec c;
+    c.parameters = {{u"Alpha", base, {}}, {u"Beta", base + 1.0f, {}}, {u"ALPHA", base + 2.0f, {}}};
     c.kind = car_electric;
     c.mass = 92000.0f;
     c.series = u"fake";
@@ -63,6 +67,9 @@ int main(int argc, char** argv) {
         std::printf("usage: openrts_dllhost_test <openrts-dllhost32.exe> <fake_loco.dll>\n");
         return 2;
     }
+    // Every by-name answer the host gives from its cache is scanned again;
+    // a difference is logged ("the scan"), checked at the end.
+    _putenv_s("OPENRTS_DLLHOST_NAME_CHECK", "1");
     std::string error;
     auto host = trainplugin::LegacyHost::start(&error, argv[1]);
     if (!host) {
@@ -73,7 +80,7 @@ int main(int argc, char** argv) {
 
     // Two engines joined by control cables, then a wagon.
     SetupRequest setup;
-    setup.cars = {loco(module), loco(module), CarSpec{}};
+    setup.cars = {loco(module, 10.0f), loco(module, 20.0f), CarSpec{}};
     for (std::uint32_t i = 0; i < 3; ++i) setup.cars[i].key = i + 1; // the game's keys of the cars
     // The first engine's cab script: a NamedTriggersTable and one trigger
     // pair (vl80k_aux.sms has these two names).
@@ -117,6 +124,13 @@ int main(int argc, char** argv) {
     check(std::abs(reply.cars[1].engine.equalising - 4.25f) < 1e-6f, "the master wrote into the slave's Engine");
     check(std::abs(reply.cars[0].engine.brake_force - 2.0f) < 1e-6f, "Run saw the velocity");
     check(std::abs(reply.cars[0].engine.power - 1.0f) < 1e-6f, "RTSGetInteger(TRAINDIR) answered 1");
+    // Parameters by name (the host keeps the answers): each car its own
+    // object for the same names; case aside, the first match; none missing.
+    for (int again = 0; again < 3; ++again) {
+        if (again) check(host->step(step, reply), "step again for the names");
+        check(reply.cars.size() == 3 && reply.cars[0].engine.train_pipe_rate == 10.75f && reply.cars[1].engine.train_pipe_rate == 20.75f,
+              again ? "by name again (kept): the same answers" : "by name: each car's own \"Alpha\", any case, \"missing\" none");
+    }
 
     bool allowed = true;
     check(host->can_switch({0, 1, 2}, allowed) && !allowed, "CanSwitch refusal is honoured");
@@ -267,7 +281,7 @@ int main(int argc, char** argv) {
         const auto switch0 = reply.cars.empty() ? 0u : reply.cars[0].switches[0].state;
         const auto throttle = reply.cars.empty() ? 0u : reply.cars[0].engine.throttle;
         std::printf("before the coupling: switch 0 at %u, throttle %u\n", switch0, throttle);
-        auto added = loco(module);
+        auto added = loco(module, 30.0f);
         added.key = 4;
         ReconsistRequest r;
         r.trains = {{1, {{reconsist_new, added}, {0, {}}, {1, {}}, {2, {}}}}};
@@ -287,6 +301,9 @@ int main(int argc, char** argv) {
         s.cars = r.inputs;
         check(host->step(s, reply), "step after the coupling");
         check(reply.cars.size() == 4 && reply.cars[0].engine.throttle == throttle, "the master drives the new slave");
+        check(reply.cars.size() == 4 && reply.cars[0].engine.train_pipe_rate == 30.75f && reply.cars[1].engine.train_pipe_rate == 10.75f
+                  && reply.cars[2].engine.train_pipe_rate == 20.75f,
+              "by name after the coupling: the new engine's own, the others' as they were");
 
         // The old slave (key 2) is cut off: LostMaster, and it goes on in a
         // train of its own (the player's train first, then the cut part).
@@ -337,6 +354,7 @@ int main(int argc, char** argv) {
 
     const auto messages = host->take_messages();
     if (!messages.empty()) std::printf("host said:\n%s", messages.c_str());
+    check(messages.find("the scan") == std::string::npos, "every by-name answer kept was the scan's");
     host.reset(); // shutdown
     if (failures) {
         std::printf("%d check(s) failed\n", failures);

@@ -1,13 +1,22 @@
 #include <openrts/renderer/task_pool.hpp>
 
+#include <openrts/core/profile.hpp>
+
 #include <algorithm>
+#include <string>
 
 namespace openrts::renderer {
 
 TaskPool::TaskPool(const std::size_t threads) {
     const auto count = (std::max)(threads, std::size_t{1});
     workers_.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) workers_.emplace_back([this] { work(); });
+    for (std::size_t i = 0; i < count; ++i) {
+        workers_.emplace_back([this, i] {
+            const auto name = "worker " + std::to_string(i + 1);
+            OPENRTS_THREAD_NAME(name.c_str());
+            work();
+        });
+    }
 }
 
 TaskPool::~TaskPool() {

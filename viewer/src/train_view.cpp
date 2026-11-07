@@ -1,6 +1,8 @@
 #ifdef OPENRTS_HAS_WGPU
 #include "train_view.hpp"
 
+#include <openrts/core/profile.hpp>
+
 #include <openrts/renderer/route_space.hpp>
 
 #include <algorithm>
@@ -1195,6 +1197,7 @@ std::size_t TrainView::merge_units(const simulation::Train* survivor_train, cons
 }
 
 void TrainView::step_trains() {
+    OPENRTS_ZONE("trains: physics step");
     // Meetings first, on the positions the step starts from (the earlier
     // unit survives a coupling, so the driven train keeps its place).
     // Trains of this program first: in a meeting the earlier survives, and
@@ -2627,6 +2630,7 @@ TrainView::Pose TrainView::pose(const Unit& unit, const std::size_t car) const {
 
 void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, const float elapsed,
                        renderer::ModelLibrary& library, audio::AudioEngine* sound) {
+    OPENRTS_ZONE("trains: update");
     // While the car menu is open its window has the arrows and Enter.
     SceneInput menu_input;
     if (car_menu_) {
@@ -2756,7 +2760,10 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         if (legacy_ && !units_.empty() && units_.front().role == Role::driven) {
             // The host's trains as the units are now (a change missed: again).
             if (!host_current()) reconsist_host();
-            feed_world(units_.front());
+            {
+                OPENRTS_ZONE("trains: DLL world feed");
+                feed_world(units_.front());
+            }
             std::vector<const simulation::Train*> trains;
             std::vector<Unit*> host_units;
             for (auto& each : units_) {
@@ -2769,7 +2776,10 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
                 host_units[each.host_train] = &each;
             }
             std::vector<LegacyCab::Triggers> posted;
-            legacy_->step(trains, posted);
+            {
+                OPENRTS_ZONE("trains: DLL host step");
+                legacy_->step(trains, posted);
+            }
             for (std::size_t t = 0; t < posted.size() && t < host_units.size(); ++t) {
                 if (!host_units[t]) continue;
                 auto& unit = *host_units[t];
@@ -4652,6 +4662,7 @@ void TrainView::update_listener(const ViewerCamera& camera) {
 }
 
 void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound) {
+    OPENRTS_ZONE("trains: sound");
     for (auto& gone : retired_sounds_) gone->stop(sound);
     retired_sounds_.clear();
     if (!bank_) bank_ = std::make_unique<audio::SoundBank>(vfs_);
@@ -5007,6 +5018,7 @@ void TrainView::update_cab_sound(Unit& unit, const std::size_t u, const std::siz
 }
 
 void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view) {
+    OPENRTS_ZONE("trains: submit");
     screen_batches_.clear();
     cab_to_scene_.reset();
     cab_focus_.reset();

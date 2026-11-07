@@ -1,5 +1,7 @@
 #include <openrts/renderer/model_renderer.hpp>
 
+#include <openrts/core/profile.hpp>
+
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
 #include <algorithm>
@@ -11,6 +13,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <utility>
@@ -1039,6 +1042,80 @@ enum class TextureAvailability {
     unsupported, // openRTS could not decode it: the primitive is not drawn
 };
 
+// Group ids by a key of two pointers and a small tag, for batching: open
+// addressing over a table kept between frames, emptied by a new generation
+// at no cost and grown when half full. A frame that saw no more groups than
+// the frames before allocates nothing.
+class GroupTable {
+public:
+    // Empty, ready for about `keys` keys.
+    void reset(const std::size_t keys) {
+        used_ = 0;
+        if (++generation_ == 0 || slots_.size() < 2 * keys) resize(keys);
+    }
+    // The key's group: the one stored for it, else `fresh`, stored then.
+    [[nodiscard]] std::uint32_t find_or_add(const void* a, const void* b, const std::uint32_t tag, const std::uint32_t fresh) {
+        if (2 * (used_ + 1) > slots_.size()) resize(2 * (used_ + 1));
+        for (auto i = home(a, b, tag);; i = (i + 1) & mask_) {
+            auto& slot = slots_[i];
+            if (slot.generation != generation_) {
+                slot = {a, b, tag, fresh, generation_};
+                ++used_;
+                return fresh;
+            }
+            if (slot.a == a && slot.b == b && slot.tag == tag) return slot.value;
+        }
+    }
+
+private:
+    struct Slot {
+        const void* a = nullptr;
+        const void* b = nullptr;
+        std::uint32_t tag = 0;
+        std::uint32_t value = 0;
+        std::uint32_t generation = 0; // stored in this generation, else empty
+    };
+    // Fibonacci hashing: the product's high bits.
+    [[nodiscard]] std::size_t home(const void* a, const void* b, const std::uint32_t tag) const noexcept {
+        auto key = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(a));
+        key ^= static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(b)) * 0xC2B2AE3D27D4EB4Full;
+        key ^= std::uint64_t{tag} * 0x165667B19E3779F9ull;
+        return static_cast<std::size_t>((key * 0x9E3779B97F4A7C15ull) >> shift_);
+    }
+    // A table for `keys` keys at most half full; this generation's keys move in.
+    void resize(const std::size_t keys) {
+        std::size_t size = 64;
+        unsigned bits = 6;
+        while (size < 2 * keys) {
+            size *= 2;
+            ++bits;
+        }
+        std::vector<Slot> old(size);
+        old.swap(slots_);
+        const auto live = generation_;
+        mask_ = size - 1;
+        shift_ = 64 - bits;
+        generation_ = 1;
+        used_ = 0;
+        if (live == 0) return;
+        for (const auto& slot : old) {
+            if (slot.generation != live) continue;
+            for (auto i = home(slot.a, slot.b, slot.tag);; i = (i + 1) & mask_) {
+                if (slots_[i].generation == generation_) continue;
+                slots_[i] = {slot.a, slot.b, slot.tag, slot.value, generation_};
+                ++used_;
+                break;
+            }
+        }
+    }
+
+    std::vector<Slot> slots_;
+    std::size_t mask_ = 0;
+    unsigned shift_ = 64;
+    std::size_t used_ = 0;
+    std::uint32_t generation_ = 0;
+};
+
 } // namespace
 
 // Vertex and index buffers of one model generation.
@@ -1267,7 +1344,10 @@ struct ModelRenderer::Impl {
         WGPUBindGroup binding = nullptr;
         bool alpha_test = false;
         bool shadow_only = false; // a caster out of view: shadow passes only
-        std::vector<std::uint32_t> instances; // culled per depth pass (render_depth)
+        // Its instances: depth_instances[first, first + count), culled per
+        // depth pass (render_depth).
+        std::uint32_t first = 0;
+        std::uint32_t count = 0;
     };
     // Each queued instance's bounding sphere in world space (centre, radius).
     std::vector<glm::vec4> instance_spheres;
@@ -1313,6 +1393,48 @@ struct ModelRenderer::Impl {
     // Generations drawn this frame stay alive until the next begin_frame().
     std::vector<std::shared_ptr<const RenderModel::Impl>> frame_models;
     std::vector<GpuLocal> frame_locals;
+    // prepare()'s arrays, kept between frames for their capacity: once a
+    // scene has been seen, a frame allocates nothing for them.
+    struct Item {
+        const RenderModel::Impl::Draw* draw;
+        const RenderModel::Impl* model;
+        PipelineKey pipeline;
+        std::uint32_t instance;
+        int phase;
+        WGPUBindGroup binding;
+    };
+    struct Translucent {
+        std::size_t instance;
+        const RenderModel::Impl::Draw* draw;
+        float distance2;
+    };
+    std::vector<Item> frame_items;
+    std::vector<Translucent> frame_translucent;
+    std::vector<IdEntry> frame_ids;
+    std::vector<IndirectDraw> frame_indirect;
+    std::vector<GpuInstance> frame_instances;
+    // Batching the main draws (this thread): per item its group (or none);
+    // per group its first item, its instance count, the next id it fills;
+    // the groups in draw order; the items drawn in their own order.
+    struct BatchScratch {
+        GroupTable table;
+        std::vector<std::uint32_t> item_group;
+        std::vector<std::uint32_t> head;
+        std::vector<std::uint32_t> count;
+        std::vector<std::uint32_t> cursor;
+        std::vector<std::uint32_t> order;
+        std::vector<std::uint32_t> blended;
+    } batch_scratch;
+    // Batching the depth draws (on a worker, at the same time): each depth
+    // primitive's instance and group, in order; per group the next one.
+    struct DepthScratch {
+        GroupTable table;
+        std::vector<std::uint32_t> instance;
+        std::vector<std::uint32_t> group;
+        std::vector<std::uint32_t> cursor;
+    } depth_scratch;
+    // The depth batches' instances, a range per batch.
+    std::vector<std::uint32_t> depth_instances;
     std::size_t last_primitives = 0;
     std::size_t last_draw_calls = 0;
     std::size_t last_instances = 0;
@@ -2165,6 +2287,7 @@ void ModelRenderer::set_world_object(const std::uint32_t static_flags, const boo
 // consecutive identical ones are merged, so their result is unchanged.
 void ModelRenderer::prepare() {
     if (!impl_ || impl_->prepared) return;
+    OPENRTS_ZONE("models: prepare");
     impl_->prepared = true;
     impl_->uploaded = false;
     impl_->batches.clear();
@@ -2181,27 +2304,12 @@ void ModelRenderer::prepare() {
     // cut-out's shadow.
     const bool build_depth_batches = impl_->shading == ShadingPath::experimental && impl_->depth_passes;
     const auto build_depth = [this] {
-        struct DepthGroup {
-            Impl::DepthBatch head;
-            std::vector<std::uint32_t> instances;
-        };
-        std::vector<DepthGroup> depth_groups;
-        struct DepthKey {
-            const void* draw;
-            WGPUBindGroup binding;
-            bool alpha_test;
-            bool shadow_only;
-            bool operator==(const DepthKey&) const = default;
-        };
-        struct DepthKeyHash {
-            std::size_t operator()(const DepthKey& key) const noexcept {
-                const auto a = reinterpret_cast<std::uintptr_t>(key.draw);
-                const auto b = reinterpret_cast<std::uintptr_t>(key.binding);
-                return std::hash<std::uintptr_t>{}(a * 0x9E3779B97F4A7C15ull ^ (b + (key.alpha_test ? 1u : 0u) + (key.shadow_only ? 2u : 0u)));
-            }
-        };
-        std::unordered_map<DepthKey, std::size_t, DepthKeyHash> depth_group_of;
-        depth_group_of.reserve(impl_->queue.size() * 4);
+        OPENRTS_ZONE("models: depth draws");
+        auto& scratch = impl_->depth_scratch;
+        auto& batches = impl_->depth_batches;
+        scratch.instance.clear();
+        scratch.group.clear();
+        scratch.table.reset(batches.capacity());
         for (std::size_t instance = 0; instance < impl_->queue.size(); ++instance) {
             const auto& queued = impl_->queue[instance];
             for (const auto index : queued.model->draws_at(queued.level)) {
@@ -2212,25 +2320,36 @@ void ModelRenderer::prepare() {
                 if ((blend_shader && !material.alpha_test_mode) || !material.depth_write) continue;
                 const bool alpha_test = blend_shader && material.alpha_test_mode;
                 const auto binding = draw.binding;
-                const DepthKey key{&draw, binding, alpha_test, queued.shadow_only};
-                auto [it, inserted] = depth_group_of.try_emplace(key, depth_groups.size());
-                if (inserted) {
+                // By primitive, binding, alpha test and whether only the shadows take it.
+                const auto fresh = static_cast<std::uint32_t>(batches.size());
+                const auto group = scratch.table.find_or_add(&draw, binding, (alpha_test ? 1u : 0u) | (queued.shadow_only ? 2u : 0u), fresh);
+                if (group == fresh) {
                     Impl::DepthBatch head;
                     head.draw = &draw;
                     head.model = queued.model;
                     head.binding = binding;
                     head.alpha_test = alpha_test;
                     head.shadow_only = queued.shadow_only;
-                    depth_groups.push_back({std::move(head), {}});
+                    batches.push_back(head);
                 }
-                depth_groups[it->second].instances.push_back(static_cast<std::uint32_t>(instance));
+                ++batches[group].count;
+                scratch.instance.push_back(static_cast<std::uint32_t>(instance));
+                scratch.group.push_back(group);
             }
         }
-        for (auto& group : depth_groups) {
-            group.head.instances = std::move(group.instances);
-            impl_->depth_id_total += group.head.instances.size();
-            impl_->depth_batches.push_back(std::move(group.head));
+        // Each batch's instances together, in the order they came.
+        std::uint32_t next = 0;
+        scratch.cursor.resize(batches.size());
+        for (std::size_t g = 0; g < batches.size(); ++g) {
+            batches[g].first = next;
+            scratch.cursor[g] = next;
+            next += batches[g].count;
         }
+        impl_->depth_instances.resize(next);
+        for (std::size_t e = 0; e < scratch.instance.size(); ++e) {
+            impl_->depth_instances[scratch.cursor[scratch.group[e]]++] = scratch.instance[e];
+        }
+        impl_->depth_id_total = next;
     };
     bool depth_on_worker = false;
     if (build_depth_batches) {
@@ -2242,15 +2361,11 @@ void ModelRenderer::prepare() {
         }
     }
 
-    struct Item {
-        const RenderModel::Impl::Draw* draw;
-        const RenderModel::Impl* model;
-        PipelineKey pipeline;
-        std::uint32_t instance;
-        int phase;
-        WGPUBindGroup binding;
-    };
-    std::vector<Item> items;
+    core::SequentialZone part;
+    part.open("models: primitives");
+    using Item = Impl::Item;
+    auto& items = impl_->frame_items;
+    items.clear();
     const auto emit = [&](const std::size_t instance, const RenderModel::Impl::Draw& draw, const PipelineKey pipeline,
                           const int phase) {
         const auto& queued = impl_->queue[instance];
@@ -2289,12 +2404,8 @@ void ModelRenderer::prepare() {
     } else {
         // Experimental: explicit per-material state, every primitive drawn,
         // opaque and alpha-tested first, blended geometry back to front.
-        struct Translucent {
-            std::size_t instance;
-            const RenderModel::Impl::Draw* draw;
-            float distance2;
-        };
-        std::vector<Translucent> translucent;
+        auto& translucent = impl_->frame_translucent;
+        translucent.clear();
         for (const bool masked_pass : {false, true}) {
             for (std::size_t instance = 0; instance < impl_->queue.size(); ++instance) {
                 const auto& submitted = impl_->queue[instance];
@@ -2350,87 +2461,94 @@ void ModelRenderer::prepare() {
     impl_->last_primitives = items.size();
     impl_->last_draw_calls = 0;
 
+    part.open("models: batches");
     // Merge into batches: runs of instance ids per (primitive, pipeline).
     const int translucent_phase = impl_->shading == ShadingPath::rts_compatible ? rts::translucent_pass : 2;
     auto& batches = impl_->batches;
-    std::vector<IdEntry> ids;
+    auto& ids = impl_->frame_ids;
+    ids.clear();
     ids.reserve(items.size());
-    struct Group {
-        const Item* head;
-        std::vector<std::uint32_t> instances;
+    // Phase by phase, in flat arrays kept between frames: the groupable items
+    // get a group by primitive, binding and pipeline (a draw with an
+    // overridden texture is a group of its own); the groups go by pipeline
+    // and model, else as they came (a stable sort's order); each group's ids
+    // follow the items' order. Then the others, in their own order.
+    auto& scratch = impl_->batch_scratch;
+    scratch.item_group.resize(items.size());
+    constexpr std::uint32_t ungrouped = UINT32_MAX;
+    const auto batch_of = [&](const Item& item, const std::uint32_t first, const std::uint32_t count) {
+        return Impl::Batch{item.draw, item.model, item.pipeline, first, count, item.phase >= translucent_phase, item.binding,
+                           item.phase == rts::last_pass};
     };
-    std::vector<Group> groups;
-    // By primitive and binding (a model's binding is shared by its draws with
-    // the same texture).
-    struct GroupKey {
-        const void* draw;
-        const void* binding;
-        bool operator==(const GroupKey&) const = default;
-    };
-    struct GroupKeyHash {
-        std::size_t operator()(const GroupKey& key) const noexcept {
-            return std::hash<const void*>{}(key.draw) ^ (std::hash<const void*>{}(key.binding) * 0x9E3779B97F4A7C15ull);
+    for (std::size_t from = 0; from < items.size();) {
+        const int phase = items[from].phase;
+        std::size_t to = from + 1;
+        while (to < items.size() && items[to].phase == phase) ++to;
+        scratch.table.reset(scratch.head.capacity());
+        scratch.head.clear();
+        scratch.count.clear();
+        scratch.blended.clear();
+        for (std::size_t k = from; k < to; ++k) {
+            const auto& item = items[k];
+            // Pass 3 keeps the shape's order: opaque and blended primitives interleave.
+            if (item.pipeline.blend || !item.pipeline.depth_write || !impl_->batching || item.phase == rts::last_pass) {
+                scratch.item_group[k] = ungrouped;
+                scratch.blended.push_back(static_cast<std::uint32_t>(k));
+                continue;
+            }
+            const auto fresh = static_cast<std::uint32_t>(scratch.head.size());
+            const auto group = scratch.table.find_or_add(item.draw, item.binding, static_cast<std::uint32_t>(item.pipeline.index()), fresh);
+            if (group == fresh) {
+                scratch.head.push_back(static_cast<std::uint32_t>(k));
+                scratch.count.push_back(0);
+            }
+            ++scratch.count[group];
+            scratch.item_group[k] = group;
         }
-    };
-    std::unordered_map<GroupKey, std::array<std::int32_t, pipeline_variant_count>, GroupKeyHash> group_of;
-    std::vector<const Item*> blended;
-    const auto flush_phase = [&] {
-        std::stable_sort(groups.begin(), groups.end(), [](const Group& a, const Group& b) {
-            const auto pa = a.head->pipeline.index();
-            const auto pb = b.head->pipeline.index();
-            if (pa != pb) return pa < pb;
-            return std::less<const void*>{}(a.head->model, b.head->model);
+        scratch.order.resize(scratch.head.size());
+        std::iota(scratch.order.begin(), scratch.order.end(), std::uint32_t{0});
+        std::sort(scratch.order.begin(), scratch.order.end(), [&](const std::uint32_t a, const std::uint32_t b) {
+            const auto& x = items[scratch.head[a]];
+            const auto& y = items[scratch.head[b]];
+            const auto px = x.pipeline.index();
+            const auto py = y.pipeline.index();
+            if (px != py) return px < py;
+            if (x.model != y.model) return std::less<const void*>{}(x.model, y.model);
+            return a < b;
         });
-        for (const auto& group : groups) {
-            batches.push_back({group.head->draw, group.head->model, group.head->pipeline,
-                               static_cast<std::uint32_t>(ids.size()), static_cast<std::uint32_t>(group.instances.size()),
-                               group.head->phase >= translucent_phase, group.head->binding, group.head->phase == rts::last_pass});
-            for (const auto instance : group.instances) ids.push_back({instance, group.head->draw->slot});
+        scratch.cursor.resize(scratch.head.size());
+        auto next = static_cast<std::uint32_t>(ids.size());
+        for (const auto group : scratch.order) {
+            scratch.cursor[group] = next;
+            batches.push_back(batch_of(items[scratch.head[group]], next, scratch.count[group]));
+            next += scratch.count[group];
         }
-        for (const auto* item : blended) {
+        ids.resize(next);
+        for (std::size_t k = from; k < to; ++k) {
+            const auto group = scratch.item_group[k];
+            if (group != ungrouped) ids[scratch.cursor[group]++] = {items[k].instance, items[k].draw->slot};
+        }
+        for (const auto k : scratch.blended) {
+            const auto& item = items[k];
             auto* last = batches.empty() ? nullptr : &batches.back();
-            const bool same = impl_->batching && last && last->draw == item->draw && last->binding == item->binding &&
-                last->pipeline.index() == item->pipeline.index()
-                && last->first + last->count == ids.size() && last->translucent == (item->phase >= translucent_phase)
-                && last->last == (item->phase == rts::last_pass);
+            const bool same = impl_->batching && last && last->draw == item.draw && last->binding == item.binding &&
+                last->pipeline.index() == item.pipeline.index()
+                && last->first + last->count == ids.size() && last->translucent == (item.phase >= translucent_phase)
+                && last->last == (item.phase == rts::last_pass);
             if (same) {
                 ++last->count;
             } else {
-                batches.push_back({item->draw, item->model, item->pipeline, static_cast<std::uint32_t>(ids.size()), 1,
-                                   item->phase >= translucent_phase, item->binding, item->phase == rts::last_pass});
+                batches.push_back(batch_of(item, static_cast<std::uint32_t>(ids.size()), 1));
             }
-            ids.push_back({item->instance, item->draw->slot});
+            ids.push_back({item.instance, item.draw->slot});
         }
-        groups.clear();
-        group_of.clear();
-        blended.clear();
-    };
-    int phase = items.empty() ? 0 : items.front().phase;
-    for (const auto& item : items) {
-        if (item.phase != phase) {
-            flush_phase();
-            phase = item.phase;
-        }
-        // Pass 3 keeps the shape's order: opaque and blended primitives interleave.
-        if (item.pipeline.blend || !item.pipeline.depth_write || !impl_->batching || item.phase == rts::last_pass) {
-            blended.push_back(&item);
-            continue;
-        }
-        // Grouped by binding: a draw with an overridden texture is a group of its own.
-        auto [slot, inserted] = group_of.try_emplace(GroupKey{item.draw, item.binding});
-        if (inserted) slot->second.fill(-1);
-        auto& index = slot->second[item.pipeline.index()];
-        if (index < 0) {
-            index = static_cast<std::int32_t>(groups.size());
-            groups.push_back({&item, {}});
-        }
-        groups[static_cast<std::size_t>(index)].instances.push_back(item.instance);
+        from = to;
     }
-    flush_phase();
     impl_->last_draw_calls = batches.size();
     // The main pass's indirect arguments: one per primitive drawn, in order;
     // the depth slots' regions follow (render_depth).
-    std::vector<IndirectDraw> indirect;
+    auto& indirect = impl_->frame_indirect;
+    indirect.clear();
     if (impl_->multi_draw_supported) {
         indirect.reserve(batches.size());
         for (const auto& batch : batches) {
@@ -2443,11 +2561,14 @@ void ModelRenderer::prepare() {
     // depth-writing primitive that is not blended, the cab's too, instanced
     // by primitive, binding and alpha test; shadow casters out of view
     // (submit_shadow_caster) apart, for the shadow passes only.
+    part.open("models: waiting for the depth draws");
     impl_->depth_id_base = ids.size();
     if (depth_on_worker) impl_->pool->wait();
+    part.open("models: instances");
 
     const auto count = impl_->queue.size();
-    std::vector<GpuInstance> instances(count);
+    auto& instances = impl_->frame_instances;
+    instances.resize(count);
     impl_->instance_spheres.resize(count);
     const auto& rings = impl_->frame.lighting.light_rings;
     const auto fill = [&](const std::size_t from, const std::size_t to) {
@@ -2478,6 +2599,7 @@ void ModelRenderer::prepare() {
     } else {
         fill(0, count);
     }
+    part.open("models: uploads");
     impl_->depth_indirect_base = indirect.size();
     impl_->ensure_capacity(instances.size(), (std::max)(ids.size() + Impl::depth_slots * impl_->depth_id_total, std::size_t{1}),
                            (std::max)(impl_->frame_locals.size(), std::size_t{1}),
@@ -2497,7 +2619,7 @@ void ModelRenderer::prepare() {
                              impl_->frame_locals.size() * sizeof(GpuLocal));
     }
     if (queue) wgpuQueueRelease(queue);
-
+    part.close(nullptr);
 }
 
 void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function<void()>& before_translucent,
@@ -2520,6 +2642,7 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function
     } at_exit{call_last};
     if (!ready()) return;
     prepare();
+    OPENRTS_ZONE("models: main pass");
     if (!impl_->uploaded || impl_->batches.empty()) return;
 
     const bool experimental = impl_->shading == ShadingPath::experimental;
@@ -2600,6 +2723,7 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
                                  const DepthPassKind kind) {
     if (!ready() || slot >= Impl::depth_slots) return;
     prepare();
+    OPENRTS_ZONE("models: depth pass");
     if (!impl_->uploaded || impl_->depth_batches.empty() || !impl_->depth_binding) return;
     auto& impl = *impl_;
     const auto queue = wgpuDeviceGetQueue(impl.device);
@@ -2621,7 +2745,8 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
     for (const auto& batch : impl.depth_batches) {
         if (batch.shadow_only && !shadow) continue;
         const auto first = ids.size();
-        for (const auto instance : batch.instances) {
+        for (std::uint32_t k = batch.first; k < batch.first + batch.count; ++k) {
+            const auto instance = impl.depth_instances[k];
             const auto& sphere = impl.instance_spheres[instance];
             if (frustum.intersects_sphere(glm::vec3{sphere}, sphere.w)) ids.push_back({instance, batch.draw->slot});
         }

@@ -1,5 +1,7 @@
 #include <openrts/trainplugin/legacy_host.hpp>
 
+#include <openrts/core/profile.hpp>
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -163,6 +165,8 @@ void LegacyHost::kill(const std::string& reason) {
 template <class Write, class Read>
 bool LegacyHost::call(Command command, Write&& write, Read&& read, std::uint32_t timeout_ms) {
     if (!alive_) return false;
+    core::SequentialZone part;
+    part.open("DLL: write the request");
     auto* header = reinterpret_cast<Header*>(view_);
     std::uint8_t* payload = view_ + payload_offset;
     Writer w(payload, payload_capacity);
@@ -179,9 +183,12 @@ bool LegacyHost::call(Command command, Write&& write, Read&& read, std::uint32_t
     header->reply_size = 0;
     header->sequence = ++sequence_;
     header->message[0] = 0;
+    // The host's own time (the DLLs' calls) and two thread switches.
+    part.open("DLL: waiting for the host");
     SetEvent(request_);
     HANDLE waits[2] = {reply_, process_};
     const DWORD r = WaitForMultipleObjects(2, waits, FALSE, timeout_ms);
+    part.open("DLL: read the reply");
     if (r == WAIT_OBJECT_0 + 1) {
         DWORD code = 0;
         GetExitCodeProcess(process_, &code);

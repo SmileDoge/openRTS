@@ -179,6 +179,17 @@ public:
     Module* module_of(const void* dll);
     void* aux_object(const abi::AuxLibrary* aux, int code, int index, int sub);
     void* aux_object_by_name(const abi::AuxLibrary* aux, int code, const wchar_t* name, int sub);
+    // The by-name lookups' cache (above): answers given from it and found
+    // by a scan; how often it was emptied; with OPENRTS_DLLHOST_NAME_CHECK,
+    // the answers scanned again and how many of them differed.
+    struct NameCacheStats {
+        std::uint64_t hits = 0;
+        std::uint64_t misses = 0;
+        std::uint64_t cleared = 0;
+        std::uint64_t checked = 0;
+        std::uint64_t differed = 0;
+    };
+    [[nodiscard]] const NameCacheStats& name_cache_stats() const noexcept { return name_stats_; }
     int track_items(const abi::Locomotive* loco, std::uint32_t code, float distance, abi::TrackItemsItem*& items,
                     std::uint32_t& count);
     // RTSGetNamedInteger(sms, RTS_TRIGGERID, name) and RTSIsSMSTriggerOn
@@ -283,6 +294,43 @@ private:
     // OPENRTS_DLLHOST_TRACE: each kind of these calls is logged once.
     mutable std::vector<std::wstring> traced_;
     void trace_once(const std::wstring& key, const std::wstring& line) const;
+
+    // By-name lookups (RTSGetObjectByName and the loco and cab ones; RTS
+    // scans the lists the same way). A DLL may ask every Run: Brakes.dll
+    // looks its parameters up, some 85 a car each step. The scan's answer is
+    // kept by owner (the Locomotive, Cabin or AuxLibrary pointer the DLL
+    // passed), kind, code, sub, caller and the name as written: the scan
+    // ignores case, so each spelling is an entry of its own with the scan's
+    // answer, the first match; no object is an answer too. The objects are
+    // the mirrors', in vectors only setup, reconsist, build_car, link_cars
+    // and bind change, and each of them empties the cache first
+    // (names_changed); the names are the host's (strings_), the DLLs read
+    // them. OPENRTS_DLLHOST_NAME_CHECK scans every answer given from the
+    // cache again and logs a summary every 200 steps.
+    struct NameKey {
+        const void* owner = nullptr;
+        const void* caller = nullptr;
+        std::int32_t where = 0; // RTSOAL_*: 1 loco, 2 cabin, 4 aux library
+        std::int32_t code = 0;
+        std::int32_t sub = 0;
+        std::wstring name;
+        bool operator==(const NameKey&) const = default;
+    };
+    struct NameKeyHash {
+        std::size_t operator()(const NameKey& key) const noexcept;
+    };
+    std::unordered_map<NameKey, void*, NameKeyHash> names_;
+    NameKey name_probe_; // the key being looked up (its string's buffer reused)
+    NameCacheStats name_stats_;
+    bool name_check_ = false;
+    std::uint32_t name_check_steps_ = 0;
+    void names_changed();
+    template <class Scan>
+    void* named(std::int32_t where, const void* owner, const Module* caller, int code, const wchar_t* name, int sub, Scan&& scan);
+    void* scan_loco_by_name(const abi::Locomotive* loco, int code, const wchar_t* name);
+    void* scan_cab_by_name(const abi::Cabin* cab, int code, const wchar_t* name);
+    void* scan_aux_by_name(const abi::AuxLibrary* aux, int code, const wchar_t* name);
+    void report_names();
 };
 
 const wchar_t* keep(std::deque<std::wstring>& strings, std::u16string_view text);

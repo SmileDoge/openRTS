@@ -1,5 +1,7 @@
 #include <openrts/renderer/route_streamer.hpp>
 
+#include <openrts/core/profile.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <deque>
@@ -217,6 +219,7 @@ void RouteStreamer::set_origin(const formats::RoutePosition& origin) {
 }
 
 void RouteStreamer::update(const formats::RoutePosition& camera) {
+    OPENRTS_ZONE("route streaming");
     for (auto& [_, state] : impl_->tiles) state.desired = false;
 
     for (int z = -impl_->radius; z <= impl_->radius; ++z) {
