@@ -261,7 +261,7 @@ std::vector<renderer::NodeAdjustment> SignalView::hidden_parts(const renderer::S
 
 void SignalView::collect_lights(const std::span<const renderer::StreamedInstance> instances,
                                 renderer::ModelLibrary& library,
-                                const glm::vec3& eye, const float draw_distance) {
+                                const glm::vec3& eye, const float draw_distance, const float zoom) {
     sprites_.clear();
     if (!system_ || !lights_) return;
     const auto& config = system_->config();
@@ -297,6 +297,13 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
             }
             // A negative draw state lights nothing (RTS: a FAILED head with no
             // override, 0x499948).
+            // openRTS: the far size is an angle (distance times the scale),
+            // so a zoomed view (Ctrl and the wheel) made the lights that many
+            // times bigger on the screen; it is divided by the zoom, and the
+            // lights keep the size they have unzoomed. Near, the lens's own
+            // Radius (a real size) is seen zoomed like the signal itself.
+            // Only signals: the trains' lights stay as they are.
+            far_scale /= (std::max)(zoom, 1.0f);
             if (head.draw_state < 0.0f) continue;
             const auto draw = static_cast<std::uint32_t>(head.draw_state);
             const formats::SignalDrawState* state = nullptr;

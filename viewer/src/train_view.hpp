@@ -453,6 +453,11 @@ public:
     void pointer(const glm::vec3& eye, const std::optional<glm::vec3>& direction, bool click, bool shift, float scroll,
                  bool release = false, const glm::vec2& cursor = {}, bool held = false);
     [[nodiscard]] bool engineer_inside() const noexcept { return engineer_.inside(); }
+    // The view from inside his cab or salon: not while the car view has the
+    // camera (F3).
+    [[nodiscard]] bool viewing_inside() const noexcept { return engineer_.inside() && car_view_ == CarView::off; }
+    // F3: the camera orbits the train's first car, then its last, then back.
+    void car_view_key(ViewerCamera& camera);
     // F7: car numbers on the side of each car facing `eye`, within `range`.
     void collect_car_numbers(std::vector<WorldLabel>& labels, const glm::vec3& eye, float range) const;
     // Gives train `id` this path (built on the network); an error text on failure.
@@ -477,6 +482,7 @@ public:
     // train's cars (again: the next page; with Shift: the train as a whole),
     // Ctrl+F5 the speed limits and the kilometre, F6 the stations ahead.
     void car_info_key(bool shift);
+    void update_car_view(ViewerCamera& camera);
     void toggle_limits_panel() noexcept { limits_panel_ = !limits_panel_; }
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
     void draw_hud();
@@ -633,6 +639,19 @@ private:
     void number_cars(Unit& unit);
     float overspeed_time_ = 0.0f;
     bool car_info_ = false;
+    // The car view (F3) and the camera the engineer keeps meanwhile.
+    enum class CarView : std::uint8_t { off, head, tail };
+    CarView car_view_ = CarView::off;
+    ViewerCamera person_camera_{};
+    // Each car's view as it was left (by Car::key): the angle from the
+    // car's heading, so the same side of it is seen again.
+    struct CarViewMemory {
+        float yaw_from_heading{};
+        float pitch{};
+        float distance{};
+        float zoom = 1.0f;
+    };
+    std::unordered_map<std::uint32_t, CarViewMemory> car_view_memory_;
     bool car_info_overall_ = false;
     std::size_t car_page_ = 0;
     static constexpr std::size_t car_page_size = 15;

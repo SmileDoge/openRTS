@@ -40,7 +40,8 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
   - shape animation, signal and train lights, route lamps, cab and saloon
     lights, instancing of identical shapes;
   - forests, level crossings with gates, pickups, road traffic, water,
-    rain and snow, diesel smoke, as RTS has them;
+    rain and snow, diesel smoke, as RTS has them; trees can be kept off
+    tracks and roads (a Graphics setting);
   - an HDR frame with tone mapping (`--hdr`);
   - Vulkan, DirectX 12 or OpenGL to choose from; depth for ReShade;
   - experimental renderer (R): sun shadows (cascades and a map of the cab's
@@ -145,7 +146,13 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
     turned before it is placed.
 - **Sound:** `.sms` scripts (activation, triggers, curves, loops); route,
   train, cab and auxiliary library sounds (КЛУБ, САУТ); positional audio
-  (miniaudio).
+  (miniaudio); level crossings and route sounds fade with distance as in RTS.
+- **Camera:** the view from the first or the last car (F3, an orbit round
+  it, the train still driven with the cab keys; the distance, zoom and
+  angle kept for each car), the wheel nearer and farther, Ctrl+wheel zoom
+  (signal lights do not swell with it), the mouse sensitivity (the start
+  menu and the game's panel); the picture fades in after the loading
+  screen.
 - **Interface:** RTS's information panels (F5, Ctrl+F5, F6, F7, Ctrl+F7),
   pause, Russian and English.
 - **For rolling stock authors:** an SDK for native 64-bit locomotive
@@ -227,7 +234,8 @@ The easiest way is the start menu. It has four tabs:
   wait, which can be cancelled. The place for an own openRTS server is
   there; the server itself is in the works.
 - **Settings:** the RTS folder, language, key layout, the key hints at the
-  bottom of the screen (they can be turned off; the game's panel too), sound and volume,
+  bottom of the screen (they can be turned off; the game's panel too), the
+  mouse sensitivity (the game's panel too), sound and volume,
   graphics API, anti-aliasing, VSync, the FPS limit (30 to 500 or none;
   the in-game openRTS panel has it too), the window mode (in a window, a
   borderless window, full screen; the game's panel has it too, and
@@ -296,6 +304,8 @@ default. The keys at hand: the
 | RMB + mouse, WASD, Q/E, Shift | free camera |
 | F | free / orbit camera |
 | V | camera follows the train |
+| F3 | view from the first car (an orbit round it), again from the last, again back; the train is still driven with the cab keys |
+| Wheel / Ctrl+wheel | outside the cab: nearer and farther / zoom (the field of view) |
 | C | put the consist on the track near the camera |
 | J | throw the junction ahead |
 | T | the track diagram (yellow lines; off by default, remembered) |

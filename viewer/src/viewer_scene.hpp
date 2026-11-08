@@ -32,6 +32,7 @@ struct FrameView {
     glm::mat4 view{1.0f};
     glm::mat4 projection{1.0f};
     float vertical_fov = 0.0f;
+    float view_zoom = 1.0f; // ViewerCamera::view_zoom (Ctrl and the wheel)
     float aspect = 1.0f;
     float viewport_height = 720.0f; // pixels
     // The experimental path's effects (SceneEffects::bind_group) for the
@@ -131,6 +132,7 @@ struct SceneInput {
     bool car_info_shift = false;  // Shift held with F5: the train as a whole
     bool limits_panel = false;    // Ctrl+F5: speed limits and the kilometre
     bool stations_panel = false;  // F6: the stations ahead
+    bool car_view = false;        // F3: orbit the train's first car, then its last, then back
     bool signal_names = false;    // Ctrl+F7: signal names near the camera
     // The engineer on foot (engineer.hpp), with the cab keys or without.
     bool walk_forward = false, walk_back = false, walk_left = false, walk_right = false; // arrows held

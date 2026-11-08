@@ -554,6 +554,13 @@ set. Near it is the lens's size, far it keeps a constant angular size -
 CONFIRMED. The fov is RTS's camera field of view, config.ini `FOV` (65 in
 this installation).
 
+openRTS's view zoom (Ctrl and the wheel, outside the cab; not RTS): the far
+term is divided by the zoom for signal lights (`SignalView::collect_lights`),
+so a far light keeps the size it has unzoomed on the screen; zoomed in, it
+was as many times bigger, a red light at a kilometre filling the view. Near,
+the lens's Radius (a real size) is seen zoomed like the signal. The trains'
+lights keep the rule as it is (2026-11-08).
+
 **Quirk — a light's size follows the field of view.** The factor fov/45 is
 computed by `rts1.exe` and handed to `lamp.vert.shader` in `Size` (the
 shader only draws a quad of `Size.x * Size.y` around the light). It keeps a

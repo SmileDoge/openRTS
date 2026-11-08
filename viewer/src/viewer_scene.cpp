@@ -514,6 +514,7 @@ public:
             if (input.car_info) train_->car_info_key(input.car_info_shift);
             if (input.limits_panel) train_->toggle_limits_panel();
             if (input.stations_panel) train_->toggle_stations_panel();
+            if (input.car_view) train_->car_view_key(camera);
         }
         if (train_) {
             train_->set_signals(signals_ ? signals_->system() : nullptr);
@@ -784,7 +785,7 @@ public:
                             .shadow_range = frame.shadow_range});
         }
         if (roads_ && effects_.traffic) roads_->submit(renderer, *library_, culling_ ? &frustum : nullptr, frame.eye, culling_ ? draw_distance : 0.0f);
-        if (signals_) signals_->collect_lights(streamer_->visible_instances(), *library_, frame.eye, draw_distance);
+        if (signals_) signals_->collect_lights(streamer_->visible_instances(), *library_, frame.eye, draw_distance, frame.view_zoom);
     }
 
     [[nodiscard]] std::optional<formats::RoutePosition> origin() const override { return origin_; }
@@ -857,7 +858,7 @@ public:
     }
 
     [[nodiscard]] bool keyboard_captured() const override { return train_ && train_->keyboard_captured(); }
-    [[nodiscard]] bool takes_scroll() const override { return train_ && train_->engineer_inside(); }
+    [[nodiscard]] bool takes_scroll() const override { return train_ && train_->viewing_inside(); }
     [[nodiscard]] std::optional<double> take_time_of_day() override {
         return net_ ? net_->take_time_of_day() : std::nullopt;
     }

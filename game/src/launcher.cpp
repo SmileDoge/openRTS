@@ -353,6 +353,7 @@ struct Launcher::State {
         start = std::clamp(remembered_int("launcher_start", 0), 0, 2);
         sound = remembered_int("launcher_sound", 1) != 0;
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
+        viewer::set_mouse_sensitivity(remembered_float("mouse_sensitivity", 1.0f));
         msaa = remembered_int("launcher_msaa", 1) != 0;
         vsync = remembered_int("launcher_vsync", 1) != 0;
         experimental = remembered_int("launcher_experimental", 0) != 0;
@@ -1014,6 +1015,13 @@ void Launcher::State::draw_settings(const float height) {
             if (ImGui::Checkbox("##key_hints", &hints)) {
                 viewer::set_key_hints(hints);
                 remember("key_hints", hints ? "1" : "0");
+            }
+            form_row(tr("Mouse sensitivity"));
+            float sensitivity = viewer::mouse_sensitivity();
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::SliderFloat("##mouse_sensitivity", &sensitivity, viewer::min_mouse_sensitivity, viewer::max_mouse_sensitivity, "%.2f")) {
+                viewer::set_mouse_sensitivity(sensitivity);
+                remember("mouse_sensitivity", std::to_string(viewer::mouse_sensitivity()));
             }
             ImGui::EndTable();
         }

@@ -623,6 +623,7 @@ struct PanelState {
     float headlight_reach = 1.0f; // the trains' headlights reach this many times the .eng's (experimental renderer)
     bool light_fullbright = false; // FullBright surfaces lit as ordinary ones (experimental renderer)
     bool lamp_own_model = true;    // a scenery lamp throws no shadow of its own model (experimental)
+    double loaded_at = -1.0;       // ImGui time the loading screen went (its fade); -1 while it shows
     // Forests keep their trees off tracks and roads (openRTS; RTS plants them
     // over the whole area): the crown this far from the way's edge, m.
     bool forest_clearance = true;
@@ -717,8 +718,21 @@ public:
         }
         if (const auto loading = scene.loading(); !loading.done) {
             draw_loading_screen(loading);
+            panel.loaded_at = -1.0;
             ImGui::Render();
             return;
+        }
+        {
+            // After the loading screen its colour fades away (0.5 s,
+            // smoothly) instead of the scene cutting in.
+            constexpr double fade_time = 0.5;
+            if (panel.loaded_at < 0.0) panel.loaded_at = ImGui::GetTime();
+            const float left = 1.0f - static_cast<float>(std::clamp((ImGui::GetTime() - panel.loaded_at) / fade_time, 0.0, 1.0));
+            if (left > 0.0f) {
+                const float alpha = left * left * (3.0f - 2.0f * left);
+                ImGui::GetForegroundDrawList()->AddRectFilled({0.0f, 0.0f}, ImGui::GetIO().DisplaySize,
+                                                              IM_COL32(22, 24, 29, static_cast<int>(alpha * 255.0f)));
+            }
         }
         if (panel.paused) {
             // As RTS writes it over the picture.
@@ -778,6 +792,12 @@ public:
             if (ImGui::Checkbox(tr("Key hints at the bottom of the screen"), &hints)) {
                 set_key_hints(hints);
                 remember("key_hints", hints ? "1" : "0");
+            }
+            float sensitivity = mouse_sensitivity();
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::SliderFloat(tr("Mouse sensitivity"), &sensitivity, min_mouse_sensitivity, max_mouse_sensitivity, "%.2f")) {
+                set_mouse_sensitivity(sensitivity);
+                remember("mouse_sensitivity", std::to_string(mouse_sensitivity()));
             }
             ImGui::Checkbox(tr("Pause (Pause)"), &panel.paused);
         }
@@ -1171,6 +1191,9 @@ struct CameraInput {
     ViewerCamera* camera = nullptr;
     bool orbit_dragging = false;
     bool fly_looking = false;
+    // Which buttons turn the orbit: orbit_dragging is either.
+    bool orbit_left = false;
+    bool orbit_right = false;
     bool toggle_key_down = false;
     bool shading_key_down = false;
     bool pause_key_down = false;
@@ -1182,6 +1205,7 @@ struct CameraInput {
     bool track_control_key_down = false;
     bool info_key_down = false;
     bool stations_key_down = false;
+    bool car_view_key_down = false;
     bool save_key_down = false;
     bool window_mode_key_down = false; // Alt+Enter
     bool enter_key_down = false;
@@ -1233,12 +1257,28 @@ void on_mouse_button(GLFWwindow* window, const int button, const int action, [[m
     if (!input) return;
 
     const bool pressed = action == GLFW_PRESS;
-    if (button == GLFW_MOUSE_BUTTON_LEFT && !input->camera->fly) input->orbit_dragging = pressed;
-    if (button == GLFW_MOUSE_BUTTON_LEFT && input->camera->fly && pressed) ++input->clicks;
-    if (button == GLFW_MOUSE_BUTTON_RIGHT && input->camera->fly) {
-        input->fly_looking = pressed;
-        set_cursor_captured(window, pressed);
+    // A press starts the look of the camera as it is; a release ends
+    // whatever its press started, though the camera changed meanwhile (F3 or
+    // F with the button held left the look on for good).
+    if (button == GLFW_MOUSE_BUTTON_LEFT) {
+        if (pressed && input->camera->fly) ++input->clicks;
+        input->orbit_left = pressed && !input->camera->fly;
     }
+    if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+        if (pressed) {
+            // The orbit (the car view too) turns with the right button as
+            // well, as the look does elsewhere.
+            input->fly_looking = input->camera->fly;
+            input->orbit_right = !input->camera->fly;
+            set_cursor_captured(window, true);
+        } else if (action == GLFW_RELEASE) {
+            const bool held = input->fly_looking || input->orbit_right;
+            input->fly_looking = false;
+            input->orbit_right = false;
+            if (held) set_cursor_captured(window, false);
+        }
+    }
+    input->orbit_dragging = input->orbit_left || input->orbit_right;
     glfwGetCursorPos(window, &input->cursor_x, &input->cursor_y);
 }
 
@@ -1264,7 +1304,15 @@ void on_scroll(GLFWwindow* window, [[maybe_unused]] const double x, const double
     if (overlay_wants_mouse()) return;
     if (auto* input = camera_input(window)) {
         input->scroll += y;
-        if (!input->scene_takes_scroll) input->camera->zoom(static_cast<float>(y));
+        // Outside the cab: the wheel brings the camera nearer, Ctrl and the
+        // wheel zoom the view (the field of view).
+        const bool ctrl = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+        if (!input->scene_takes_scroll) {
+            if (ctrl)
+                input->camera->zoom_view(static_cast<float>(y));
+            else
+                input->camera->zoom(static_cast<float>(y));
+        }
     }
 }
 
@@ -1403,6 +1451,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .car_info_shift = shift,
             .limits_panel = f5 && ctrl,
             .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+            .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
             .signal_names = f7 && ctrl && !alt,
         };
         engineer(captured);
@@ -1439,6 +1488,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .car_info_shift = shift,
         .limits_panel = f5 && ctrl,
         .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+        .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
         .signal_names = f7 && ctrl && !alt,
     };
     engineer(result);
@@ -1548,7 +1598,7 @@ void report_adapter(const WGPUAdapter adapter) {
     // 20 km), which made the near plane 2 m and cut the cab's walls and floor
     // away. Reversed Z on Depth32Float keeps the far precision anyway.
     const auto near_plane = std::clamp(camera.distance * 0.002f, 0.01f, 0.05f);
-    return renderer::reversed_z_perspective(vertical_fov, aspect, near_plane, camera.distance * 20.0f);
+    return renderer::reversed_z_perspective(vertical_fov, aspect, near_plane, camera.far_plane());
 }
 
 struct FrameTargets {
@@ -1828,6 +1878,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // The keys chosen last time (openRTS's, without the keypad, by default).
     set_key_layout(remembered("key_layout").value_or("openrts") == "rts" ? KeyLayout::rts : KeyLayout::openrts);
     set_key_hints(remembered("key_hints").value_or("1") != "0");
+    set_mouse_sensitivity(parse_mouse_sensitivity(remembered("mouse_sensitivity").value_or("1").c_str()));
     // Sound is optional: without a device the viewer runs silent.
     std::unique_ptr<audio::AudioEngine> sound;
     if (options.sound) {
@@ -2195,8 +2246,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         FrameView frame{
             .eye = camera.eye(),
             .view = camera.view(),
-            .projection = projection(camera, aspect, glm::radians(panel.fov)),
-            .vertical_fov = glm::radians(panel.fov),
+            .projection = projection(camera, aspect, camera.vertical_fov(glm::radians(panel.fov))),
+            .vertical_fov = camera.vertical_fov(glm::radians(panel.fov)),
+            .view_zoom = camera.view_zoom,
             .aspect = aspect,
             .viewport_height = static_cast<float>(height),
         };
@@ -2211,7 +2263,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                              .vertical_fov = frame.vertical_fov,
                              .aspect = aspect,
                              .near_plane = std::clamp(camera.distance * 0.002f, 0.01f, 0.05f),
-                             .far_plane = camera.distance * 20.0f,
+                             .far_plane = camera.far_plane(),
                              .width = static_cast<std::uint32_t>(width),
                              .height = static_cast<std::uint32_t>(height)},
                             environment.lighting, experimental);
@@ -2366,7 +2418,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             std::cout << "; gpu main pass " << panel.stats.gpu_ms() << " ms" << std::endl;
             if (depth_shot.buffer) {
                 const auto near_plane = std::clamp(camera.distance * 0.002f, 0.01f, 0.05f);
-                report_reshade_depth(context.context, depth_shot, near_plane, camera.distance * 20.0f);
+                report_reshade_depth(context.context, depth_shot, near_plane, camera.far_plane());
             }
             wgpuTextureRelease(frame_texture);
             return written ? exit_code::success : exit_code::device_failed;

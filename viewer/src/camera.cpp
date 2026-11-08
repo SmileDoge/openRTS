@@ -5,6 +5,8 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "key_layout.hpp"
+
 namespace openrts::viewer {
 namespace {
 
@@ -45,8 +47,24 @@ glm::mat4 ViewerCamera::view() const {
 }
 
 void ViewerCamera::rotate(const float pixels_x, const float pixels_y) {
-    yaw += pixels_x * rotate_radians_per_pixel;
-    pitch = std::clamp(pitch + pixels_y * rotate_radians_per_pixel, -max_pitch, max_pitch);
+    // The player's sensitivity, and narrower with the zoom: a pixel turned
+    // the same angle in a view zoomed ten times, a tenth of its width, and
+    // the view jumped.
+    const float step = rotate_radians_per_pixel * mouse_sensitivity() / (std::max)(view_zoom, 1.0f);
+    yaw += pixels_x * step;
+    pitch = std::clamp(pitch + pixels_y * step, -max_pitch, max_pitch);
+}
+
+float ViewerCamera::far_plane() const {
+    return (std::max)(distance * 20.0f, min_far);
+}
+
+float ViewerCamera::vertical_fov(const float set) const {
+    return 2.0f * std::atan(std::tan(set * 0.5f) / (std::max)(view_zoom, 1.0f));
+}
+
+void ViewerCamera::zoom_view(const float scroll_steps) {
+    view_zoom = std::clamp(view_zoom * std::exp(scroll_steps * 0.15f), 1.0f, 10.0f);
 }
 
 void ViewerCamera::zoom(const float scroll_steps) {

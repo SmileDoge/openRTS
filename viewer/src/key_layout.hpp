@@ -29,4 +29,15 @@ void set_key_layout(KeyLayout layout) noexcept;
 [[nodiscard]] bool key_hints() noexcept;
 void set_key_hints(bool shown) noexcept;
 
+// How fast the mouse turns the view (the right button's look, the orbit): a
+// factor on the usual step, 0.2..3, set in the start menu's Settings or the
+// panel's General (remembered as mouse_sensitivity). The step also narrows
+// with the view's zoom (ViewerCamera::rotate).
+inline constexpr float min_mouse_sensitivity = 0.2f;
+inline constexpr float max_mouse_sensitivity = 3.0f;
+[[nodiscard]] float mouse_sensitivity() noexcept;
+void set_mouse_sensitivity(float factor) noexcept;
+// The remembered value as a factor (1 when none or unreadable).
+[[nodiscard]] float parse_mouse_sensitivity(const char* text) noexcept;
+
 } // namespace openrts::viewer

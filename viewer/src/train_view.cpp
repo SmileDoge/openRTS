@@ -1174,7 +1174,7 @@ audio::SoundCamera TrainView::sound_camera() const noexcept {
     // outside camera, the head out of a window - the ExternalCam groups; in
     // the driven car the CabCam ones; in another car of the train the
     // PassengerCam ones.
-    if (!engineer_.inside() || engineer_.heading_out()) return audio::SoundCamera::external;
+    if (!viewing_inside() || engineer_.heading_out()) return audio::SoundCamera::external;
     return engineer_car_ == cab_car_ ? audio::SoundCamera::cab : audio::SoundCamera::passenger;
 }
 
@@ -2295,6 +2295,76 @@ std::string TrainView::save_path(const std::uint64_t id, const std::string& name
     return {};
 }
 
+// The car view (openRTS, not RTS: RTS's camera is the engineer's): F3
+// orbits the shown train's first car, again its last, again back to the
+// camera as it was. The wheel brings the camera nearer, Ctrl and the wheel
+// zoom; the train goes on being driven from the cab's keys.
+void TrainView::car_view_key(ViewerCamera& camera) {
+    const Unit* unit = follow_id_ != 0 ? find_unit(follow_id_) : nullptr;
+    if (!unit && !units_.empty()) unit = &units_.front();
+    if (!unit || unit->current.empty() || unit->cars.empty()) return;
+    const auto heading_of = [&](const std::size_t i) {
+        const auto here = pose(*unit, i);
+        const glm::vec3 along = here.front - here.rear;
+        return std::atan2(along.x, along.z);
+    };
+    const auto before = car_view_;
+    if (before != CarView::off) {
+        // The car left: its distance, zoom and angle kept for next time.
+        const std::size_t i = before == CarView::head ? 0 : unit->cars.size() - 1;
+        car_view_memory_[unit->cars[i].key] = {.yaw_from_heading = camera.yaw - heading_of(i),
+                                               .pitch = camera.pitch,
+                                               .distance = camera.distance,
+                                               .zoom = camera.view_zoom};
+    }
+    car_view_ = before == CarView::off ? CarView::head : before == CarView::head ? CarView::tail : CarView::off;
+    if (car_view_ == CarView::tail && unit->cars.size() < 2) car_view_ = CarView::off;
+    if (before == CarView::off) {
+        person_camera_ = camera;
+        follow_ = false;
+    }
+    if (car_view_ == CarView::off) {
+        camera = person_camera_;
+        camera.view_zoom = 1.0f;
+        say(tr("normal view"));
+        return;
+    }
+    const std::size_t i = car_view_ == CarView::head ? 0 : unit->cars.size() - 1;
+    const auto here = pose(*unit, i);
+    glm::vec3 forward = here.front - here.rear;
+    forward.y = 0.0f;
+    forward = glm::length(forward) > 0.01f ? glm::normalize(forward) : glm::vec3{0.0f, 0.0f, 1.0f};
+    const glm::vec3 side{forward.z, 0.0f, -forward.x};
+    // The first car seen from ahead and aside, the last from behind.
+    const glm::vec3 towards_eye = glm::normalize((car_view_ == CarView::head ? forward : -forward) + side * 0.6f);
+    const float length = unit->cars[i].definition ? unit->cars[i].definition->length : 20.0f;
+    camera.yaw = std::atan2(towards_eye.x, towards_eye.z);
+    camera.pitch = 0.2f;
+    camera.distance = std::clamp(length * 1.2f, 15.0f, 50.0f);
+    camera.view_zoom = 1.0f;
+    if (const auto kept = car_view_memory_.find(unit->cars[i].key); kept != car_view_memory_.end()) {
+        camera.yaw = heading_of(i) + kept->second.yaw_from_heading;
+        camera.pitch = kept->second.pitch;
+        camera.distance = kept->second.distance;
+        camera.view_zoom = kept->second.zoom;
+    }
+    update_car_view(camera);
+    say(car_view_ == CarView::head ? tr("view from the first car") : tr("view from the last car"));
+}
+
+void TrainView::update_car_view(ViewerCamera& camera) {
+    const Unit* unit = follow_id_ != 0 ? find_unit(follow_id_) : nullptr;
+    if (!unit && !units_.empty()) unit = &units_.front();
+    if (!unit || unit->current.empty() || unit->cars.empty()) return;
+    const std::size_t i = car_view_ == CarView::head ? 0 : unit->cars.size() - 1;
+    const auto body = body_pose(*unit, i, true);
+    if (!body) return;
+    camera.fly = false;
+    camera.min_far = 20000.0f;
+    // About the middle of the body's height.
+    camera.target = glm::vec3{body->transform[3]} + glm::vec3{0.0f, 2.2f, 0.0f};
+}
+
 void TrainView::car_info_key(const bool shift) {
     // As RTS (0x402C88): the first press shows the page (the train as a
     // whole with Shift); then F5 turns the page, Shift+F5 switches to the
@@ -2742,7 +2812,7 @@ TrainView::Pose TrainView::pose(const Unit& unit, const std::size_t car) const {
 
 std::optional<glm::vec3> TrainView::eye_in_cab(const glm::vec3& eye) const {
     const auto* cab = engineer_cab();
-    if (!engineer_.inside() || !cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return std::nullopt;
+    if (!viewing_inside() || !cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return std::nullopt;
     const auto body = body_pose(units_.front(), engineer_car_, false);
     if (!body) return std::nullopt;
     const glm::mat4 to_cab = glm::inverse(cab_to_scene_ ? *cab_to_scene_ : body->transform * cab->placement());
@@ -2953,7 +3023,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
 
     const Unit* followed = follow_id_ != 0 ? find_unit(follow_id_) : nullptr;
     if (!followed) followed = &units_.front();
-    if (follow_ && !followed->current.empty()) {
+    if (follow_ && car_view_ == CarView::off && !followed->current.empty()) {
         // From the interpolated head car, as it is drawn.
         const auto head = pose(*followed, 0);
         glm::vec3 forward = head.front - head.rear;
@@ -2964,7 +3034,18 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         camera.yaw = std::atan2(forward.x, forward.z) + pi;
         camera.pitch = 0.12f;
     }
-    update_engineer(input, camera, elapsed, library);
+    if (car_view_ != CarView::off) {
+        // The car view (F3): the engineer stays where he is, with his own
+        // camera, not walking or opening anything; the camera orbits the car.
+        SceneInput still = input;
+        still.walk_forward = still.walk_back = still.walk_left = still.walk_right = false;
+        still.engineer_action = still.engineer_action_ctrl = false;
+        still.cab_window = still.head_out = false;
+        update_engineer(still, person_camera_, elapsed, library);
+        update_car_view(camera);
+    } else {
+        update_engineer(input, camera, elapsed, library);
+    }
     if (native_) {
         // The native cab as the 3-D cab reads a DLL's: switches by .sd ID,
         // displays' values and states.
@@ -3481,7 +3562,7 @@ void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& di
     if (release && legacy_) legacy_->release();
     hovered_.reset();
     const auto* cab = engineer_cab();
-    if (!direction || !engineer_.inside() || !cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return;
+    if (!direction || !viewing_inside() || !cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return;
     const auto body = body_pose(units_.front(), engineer_car_, false);
     if (!body) return;
     const glm::mat4 to_cab = glm::inverse(cab_to_scene_ ? *cab_to_scene_ : body->transform * cab->placement());
@@ -3550,7 +3631,7 @@ void TrainView::car_menu_key(const glm::vec3& eye, const glm::mat4& view_project
     }
     // RTS picks only off the cab (rts1.exe 0x415A34: no current locomotive,
     // or the engineer on foot).
-    if (engineer_.inside() || !placed()) return;
+    if (viewing_inside() || !placed()) return;
     // On the screen: how far from the aim it shows (clip x / y), else none.
     const auto off_aim = [&](const glm::vec3& p) -> std::optional<float> {
         const glm::vec4 clip = view_projection * glm::vec4{p, 1.0f};
@@ -3876,7 +3957,7 @@ void TrainView::update_car_menu(const glm::vec3& eye) {
             far = glm::distance(glm::vec3{body->transform[3]}, eye) > length * 0.5f + 5.0f;
         }
     }
-    if (gone || far || engineer_.inside()) {
+    if (gone || far || viewing_inside()) {
         car_menu_.reset();
         car_menu_choice_.reset();
         return;
@@ -4168,7 +4249,7 @@ void TrainView::draw_car_menu() {
 
 void TrainView::collect_cab_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, const bool all) const {
     const auto* cab = engineer_cab();
-    if (!engineer_.inside() || !cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return;
+    if (!viewing_inside() || !cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return;
     if (!all && !hovered_) return;
     const auto body = body_pose(units_.front(), engineer_car_, false);
     if (!body) return;
@@ -4498,7 +4579,7 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
     auto& unit = units_.front();
     // The lamps of the cab or salon the engineer is in (InternalLight State:
     // the DLL's SwitchLight or GM_LIGHT_ON by GlobalID), RTS's LightsInt.
-    if (const auto* cab = engineer_.inside() ? engineer_cab() : nullptr; cab && engineer_car_ < unit.cars.size()) {
+    if (const auto* cab = viewing_inside() ? engineer_cab() : nullptr; cab && engineer_car_ < unit.cars.size()) {
         const auto& lamps = cab->description().lights;
         const auto* out = legacy_ && legacy_->has_dll(engineer_car_) ? legacy_->output(engineer_car_) : nullptr;
         const auto body = body_pose(unit, engineer_car_, false);
@@ -4590,7 +4671,7 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
             wanted = simulation::car_lights(*car.definition, i, each.cars.size(), kind, reversed, engine && car.cold, light_world);
         }
         car.lights.resize(lights.size());
-        const auto body = body_pose(each, i, !(u == 0 && engineer_.inside() && i == engineer_car_));
+        const auto body = body_pose(each, i, !(u == 0 && viewing_inside() && i == engineer_car_));
         for (std::size_t k = 0; k < lights.size(); ++k) {
             const auto& light = lights[k];
             const std::uint32_t flags = out && k < out->light_flags.size() ? out->light_flags[k] : 0u;
@@ -4817,7 +4898,7 @@ void TrainView::update_listener(const ViewerCamera& camera) {
     listener_cab_ = nullptr;
     listener_room_ = audio::InteriorAcoustics::outside;
     outside_gain_ = 1.0f;
-    if (engineer_.inside() && !units_.empty() && engineer_car_ < units_.front().cars.size()) {
+    if (viewing_inside() && !units_.empty() && engineer_car_ < units_.front().cars.size()) {
         const auto* cab = engineer_cab();
         if (cab && !cab->acoustics().empty()) {
             if (const auto body = body_pose(units_.front(), engineer_car_, false)) {
@@ -5065,7 +5146,7 @@ void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::si
             }
         }
     }
-    const bool in_car = player_train && engineer_.inside() && i == cab_car_;
+    const bool in_car = player_train && viewing_inside() && i == cab_car_;
     static const std::vector<std::uint32_t> none;
     const auto owner = formats::SoundOwner::player_train;
     for (auto& aux : car.aux_sounds) {
@@ -5241,7 +5322,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
     for (std::size_t i = 0; i < unit.cars.size() && i < unit.current.size() && i < states.size(); ++i) {
         auto& car = unit.cars[i];
         auto* model = library.find(car.shape);
-        const bool engineer_here = engineer_.inside() && &unit == &units_.front() && i == engineer_car_;
+        const bool engineer_here = viewing_inside() && &unit == &units_.front() && i == engineer_car_;
         // The cab is drawn even when the car's own shape is missing.
         if (!model && !engineer_here) continue;
         const auto body = body_pose(unit, i, !engineer_here);
@@ -5266,7 +5347,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 continue;
             }
         }
-        const auto* inside = engineer_.inside() && &unit == &units_.front() && i == engineer_car_ ? engineer_cab() : nullptr;
+        const auto* inside = viewing_inside() && &unit == &units_.front() && i == engineer_car_ ? engineer_cab() : nullptr;
         if (inside) {
             // In the cab: the cab shape instead of the body (RTS hides the
             // exterior unless the engine says DoNotHideExtInCabin); the body
@@ -5519,7 +5600,7 @@ void TrainView::draw_overlay() {
     };
     if (legacy_) legacy_->draw_window(cab_controls);
     // What Enter does where the engineer stands (unless the hints are off).
-    if (key_hints() && engineer_.active() && (!board_prompt_.empty() || !engineer_.prompt().empty())) {
+    if (key_hints() && engineer_.active() && car_view_ == CarView::off && (!board_prompt_.empty() || !engineer_.prompt().empty())) {
         const auto size = ImGui::GetIO().DisplaySize;
         const char* text = !board_prompt_.empty() ? board_prompt_.c_str() : engineer_.prompt().c_str();
         const auto text_size = ImGui::CalcTextSize(text);

@@ -43,9 +43,11 @@ public:
     // on the track, for occupancy and the signal chains.
     void update(float elapsed, const simulation::Train* train, std::span<const simulation::Train* const> trains,
                 const glm::vec3& eye);
-    // Lights of the signal instances drawn this frame.
+    // Lights of the signal instances drawn this frame. `zoom`: the view's
+    // zoom (ViewerCamera::view_zoom); a light far off keeps its size on the
+    // screen through it.
     void collect_lights(std::span<const renderer::StreamedInstance> instances, renderer::ModelLibrary& library,
-                        const glm::vec3& eye, float draw_distance);
+                        const glm::vec3& eye, float draw_distance, float zoom = 1.0f);
     // The signal lights (where RTS draws its lights: after the glass, before the cab).
     void draw_lights(WGPURenderPassEncoder pass, const FrameView& frame, float viewport_height, renderer::GlowBlend blend);
     // The helper markers (posts by aspect), before the glass.
