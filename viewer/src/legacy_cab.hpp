@@ -22,7 +22,19 @@
 
 #include "viewer_scene.hpp"
 
+namespace openrts::formats {
+struct CabSwitch;
+}
+
 namespace openrts::viewer {
+
+// RTS (docs/reverse/train-dll.md section 11): a key works a switch flagged
+// CHECKDISTANCEONPRESS only with the engineer within its Radius of its
+// Position. A cab of two ends in one shape (the VL60's: both desks, the
+// same AssignKey at each) answers at the desk he is at. The eye is taken,
+// in cab coordinates and the .sd's Position as it is, as a click's pick
+// does (0x528EA0); no eye (no 3-D cab): the key works it.
+[[nodiscard]] bool key_reaches(const formats::CabSwitch& control, const std::optional<glm::vec3>& eye);
 
 struct LegacyCarRef {
     const formats::WagonDefinition* definition = nullptr;
@@ -61,8 +73,10 @@ public:
     [[nodiscard]] const std::array<float, 8>* cab_sound_variables(std::size_t car) const;
     // Var1..Var8 of AuxLibrary `library`'s own SMS on car `car`, if any.
     [[nodiscard]] const std::array<float, 8>* aux_sound_variables(std::size_t car, std::size_t library) const;
-    // Cab key presses and releases (when keyboard() is on).
-    void key(const KeyEvent& event);
+    // Cab key presses and releases (when keyboard() is on). `eye`: the
+    // engineer's eye in cab coordinates, when he is in the 3-D cab
+    // (key_reaches).
+    void key(const KeyEvent& event, const std::optional<glm::vec3>& eye);
     // The keys no longer reach the cab (the engineer left the car): the
     // buttons a key holds (NONFIXED) go back to their FixedState, as if let go.
     void release_keys();

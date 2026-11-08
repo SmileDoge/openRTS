@@ -291,10 +291,23 @@ struct ExteriorDoor {
     bool can_be_opened = true;
 };
 
+// A car's object shown by its state (an RTS .sd's ESD_Exterior_Details
+// WagonObjects): DragA / DragB, the wheel chocks; EndValveA, BrakePipeA,
+// ChargingPipeA and their B: the end cocks and hoses.
+struct WagonObject {
+    std::string kind;               // lower case: "draga", "dragb", "endvalvea", ...
+    std::vector<std::string> nodes; // ChildNodes
+    std::uint32_t num_states = 2;
+    bool first_state_invisible = false; // state 0: the nodes are not drawn
+    std::vector<float> state_key_frames; // StateKeyFrames, after its count
+    float anim_time{};
+};
+
 struct ExteriorDetails {
     std::vector<CabAnimation> animations;
     std::vector<std::string> doors;
     std::vector<ExteriorDoor> door_details; // in the same order
+    std::vector<WagonObject> wagon_objects;
 };
 [[nodiscard]] ExteriorDetails parse_exterior_details(std::string_view bytes);
 

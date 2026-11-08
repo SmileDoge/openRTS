@@ -22,6 +22,8 @@ add_library(openrts_viewer_core STATIC
     src/engineer.cpp
     src/key_layout.cpp
     src/frame_limiter.cpp
+    src/controls_help.cpp
+    src/window_mode.cpp
     src/window_viewer.cpp)
 openrts_configure_target(openrts_viewer_core)
 target_include_directories(openrts_viewer_core PUBLIC src)

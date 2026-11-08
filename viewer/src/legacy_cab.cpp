@@ -1,5 +1,6 @@
 #include "legacy_cab.hpp"
 
+#include <glm/geometric.hpp>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -454,7 +455,13 @@ void LegacyCab::release_keys() {
     log(consist_->take_messages());
 }
 
-void LegacyCab::key(const KeyEvent& event) {
+bool key_reaches(const formats::CabSwitch& control, const std::optional<glm::vec3>& eye) {
+    if (!eye || (control.flags & formats::cab_check_distance) == 0 || control.radius <= 0.0f) return true;
+    const glm::vec3 at{control.position[0], control.position[1], control.position[2]};
+    return glm::distance(*eye, at) <= control.radius;
+}
+
+void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) {
     if (!consist_ || !keyboard_) return;
     const auto* out = consist_->output(consist_->player());
     for (const auto& b : bindings_) {
@@ -467,6 +474,9 @@ void LegacyCab::key(const KeyEvent& event) {
         if (!spec || !out || b.id >= out->switches.size()) continue;
         const bool non_fixed = (spec->flags & formats::cab_non_fixed) != 0;
         const auto& sw = out->switches[b.id];
+        // A press works only the switches within reach (a release lets go
+        // of what a press took, wherever he is).
+        if (event.down && !key_reaches(*spec, eye)) continue;
         if (!event.down) {
             // RTS 0x414340: a NONFIXED switch returns to its FixedState when
             // its key is let go (RTS steps there one position per key delay).

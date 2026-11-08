@@ -62,7 +62,8 @@ private:
     std::unique_ptr<simulation::TrackNetwork> network_;
     formats::RoutePosition origin_;
     std::unique_ptr<renderer::DebugLineRenderer> lines_;
-    bool visible_ = true;
+    // The track diagram (yellow lines): off unless shown before (T, remembered).
+    bool visible_ = false;
     std::string message_;
     std::map<std::uint32_t, float> switch_frames_; // junction -> current blade frame
     simulation::JointStatistics joints_;

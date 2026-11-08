@@ -18,6 +18,7 @@
 #include "frame_limiter.hpp"
 
 #ifdef OPENRTS_HAS_WGPU
+#include <openrts/core/core.hpp>
 #include <openrts/core/installation.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/core/virtual_path.hpp>
@@ -131,6 +132,7 @@ struct ContentTarget {
 // Track control window at start), (
 // the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|4` (default 4), `--no-sound`, `--sound-offline`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`, `--paused` (start paused),
+// `--window-mode windowed|borderless|fullscreen`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
 // A step of joining a server for the start menu (game/src/launcher.cpp reads
 // openrts.log): one line "status: <word> [detail]".
@@ -240,7 +242,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         } catch (...) {
         }
     }
-    options.title = "openRTS";
+    options.title = "openRTS " + std::string(openrts::core::version());
     // --view first: it sets what to open and the conditions; later flags win.
     std::string view_mode;
     std::string view_content;
@@ -384,6 +386,10 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.shadow_cache = std::string(flags[++i]) != "off";
         } else if (flags[i] == "--cab-shadows" && has_value) {
             options.cab_shadows = std::string(flags[++i]) != "off";
+        } else if (flags[i] == "--window-mode" && has_value) {
+            const auto value = std::string(flags[++i]);
+            options.window_mode = openrts::viewer::parse_window_mode(value);
+            if (!options.window_mode) std::cerr << "Unknown --window-mode " << value << " (windowed, borderless, fullscreen)." << std::endl;
         } else if (flags[i] == "--parallel-recording" && has_value) {
             options.parallel_recording = std::string(flags[++i]) != "off";
         } else if (flags[i] == "--paused") {
@@ -460,6 +466,10 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
 
     if (!fps_given) {
         if (const auto fps = openrts::viewer::remembered("fps_limit")) options.fps_limit = openrts::viewer::clamp_fps_limit(std::atoi(fps->c_str()));
+    }
+    if (!options.window_mode) {
+        if (const auto remembered_mode = openrts::viewer::remembered("window_mode"))
+            options.window_mode = openrts::viewer::parse_window_mode(*remembered_mode);
     }
 
     if (mode != "--shape" && mode != "--route") return exit_code::success;

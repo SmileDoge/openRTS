@@ -18,6 +18,8 @@
 #include <windows.h>
 #endif
 
+#include <openrts/core/core.hpp>
+
 #include "launcher.hpp"
 #include "window_viewer.hpp"
 
@@ -45,10 +47,10 @@ int main(int argc, char* argv[]) {
     }
     openrts::viewer::WindowOptions options;
     options.menu = true;
-    options.title = "openRTS";
+    options.title = "openRTS " + std::string(openrts::core::version());
     options.sound = false;
     options.msaa = 1;
-    // --tab single|network|settings opens that tab; --capture <file> draws
+    // --tab single|network|settings|controls opens that tab; --capture <file> draws
     // the menu into a file after a second and exits (a smoke test).
     for (std::size_t i = 0; i + 1 < args.size(); ++i) {
         if (args[i] == "--tab") {

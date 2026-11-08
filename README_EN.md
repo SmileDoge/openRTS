@@ -12,7 +12,7 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.4.2](../../releases/tag/v0.4.2):
+> Work in progress. The latest version is [v0.4.3](../../releases/tag/v0.4.3):
 > a nearly playable game. Driving from a 3-D cab with RTS's locomotive
 > DLLs, signalling, a dispatcher window, a living route (forests, level
 > crossings, road traffic, water, rain and snow, smoke), sound by the cab's
@@ -24,8 +24,9 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
 - **The start menu** `openrts_game.exe` in tabs: "Single player" (route,
   consist, path, time, season, weather, how the train starts), "Network
   game" (the server's address and the nick; the menu follows the login and
-  the wait for a train) and "Settings" (the RTS folder, language, keys,
-  sound, graphics); the game runs as a process of its own.
+  the wait for a train), "Settings" (the RTS folder, language, keys,
+  sound, graphics, the window mode) and "Controls" (the hotkeys, also a tab
+  of the game's panel); the game runs as a process of its own.
 - **Content:** a virtual file system (installation folders, zip packs,
   patches, mods, hot reload); ACE, `.s` / `.sd` shapes, `.w` world files,
   terrain, environment, `.trk`, the `.tdb` / `.tsection` track database,
@@ -206,7 +207,7 @@ You need an RTS installation with content: openRTS changes nothing in it and
 ships no content of its own. A computer without Visual Studio needs the
 Visual C++ Redistributable (x64), see "Prebuilt binaries".
 
-The easiest way is the start menu. It has three tabs:
+The easiest way is the start menu. It has four tabs:
 - **Single player:** route, consist, path, time, season, weather and how
   the train starts (running, switched on, cold); "Start".
 - **Network game:** an RTS server's address and the nick, the servers
@@ -217,7 +218,11 @@ The easiest way is the start menu. It has three tabs:
   there; the server itself is in the works.
 - **Settings:** the RTS folder, language, key layout, sound and volume,
   graphics API, anti-aliasing, VSync, the FPS limit (30 to 500 or none;
-  the in-game openRTS panel has it too), experimental renderer, HDR.
+  the in-game openRTS panel has it too), the window mode (in a window, a
+  borderless window, full screen; the game's panel has it too, and
+  Alt+Enter), experimental renderer, HDR.
+- **Controls:** the simulator's hotkeys (as in "Controls" below); the
+  in-game openRTS panel has the same tab.
 
 All of it is remembered in `%LOCALAPPDATA%\openRTS\viewer_state.ini`. The
 game runs as a process of its own (its output goes to `openrts.log` there
@@ -252,6 +257,7 @@ The game can also be started directly:
 | `--msaa 1`, `--no-vsync`, `--no-batching` | graphics settings |
 | `--fps-limit <30..500 \| 0>` | the FPS limit for this run (0: none), not remembered |
 | `--multi-draw on\|off` | multi-draw indirect for models this run (on by default where the GPU has it) |
+| `--window-mode windowed\|borderless\|fullscreen` | the window for this run: in a window, borderless, full screen (else as in the settings) |
 | `--paused` | start paused (Pause resumes): nothing moves, not even a flashing signal; once the scene has loaded, captures repeat pixel for pixel |
 | `--hdr` | an HDR frame with tone mapping |
 | `--backend auto\|vulkan\|dx12\|opengl` | the graphics API (OpenGL: the RTS renderer only) |
@@ -268,7 +274,8 @@ The game can also be started directly:
 
 Two key layouts (the start menu or the openRTS panel → Keys): RTS, with the
 numeric keypad (Num0, Num1, Num3), and openRTS, without it, for laptops
-(`-`, `=`, the key left of `1`); openRTS by default.
+(`-`, `=`, the key left of `1`); openRTS by default. The keys at hand: the
+"Controls" tab of the start menu and of the game's panel.
 
 **Camera and world**
 
@@ -279,9 +286,11 @@ numeric keypad (Num0, Num1, Num3), and openRTS, without it, for laptops
 | V | camera follows the train |
 | C | put the consist on the track near the camera |
 | J | throw the junction ahead |
-| T, L | track overlay, junction and signal labels |
+| T | the track diagram (yellow lines; off by default, remembered) |
+| L | junction and signal labels |
 | R | RTS / experimental renderer |
 | Pause | pause |
+| Alt+Enter | full screen / window |
 
 **A train without a DLL**
 

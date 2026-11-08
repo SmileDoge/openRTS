@@ -1,6 +1,7 @@
 #include "track_view.hpp"
 
 #include "ui_text.hpp"
+#include "viewer_state.hpp"
 
 #ifdef OPENRTS_HAS_WGPU
 #include <algorithm>
@@ -52,6 +53,7 @@ void vertical(std::vector<DebugVertex>& out, const glm::vec3& base, const float 
 TrackView::TrackView(std::unique_ptr<simulation::TrackNetwork> network, const formats::RoutePosition origin)
     : network_(std::move(network)), origin_(origin) {
     joints_ = network_->measure_joints(3);
+    visible_ = remembered("track_lines").value_or("0") == "1";
 }
 
 glm::vec3 TrackView::local(const simulation::TrackPoint& point, const float lift) const {
@@ -197,7 +199,10 @@ void TrackView::advance_switches(const float elapsed) {
 }
 
 void TrackView::update(const SceneInput& input, const float elapsed) {
-    if (input.toggle_track) visible_ = !visible_;
+    if (input.toggle_track) {
+        visible_ = !visible_;
+        remember("track_lines", visible_ ? "1" : "0");
+    }
     advance_switches(elapsed);
 }
 

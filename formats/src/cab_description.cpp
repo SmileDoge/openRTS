@@ -436,7 +436,7 @@ ExteriorDetails parse_exterior_details(std::string_view bytes) {
     const auto source = decode(bytes, error);
     if (!source) return out;
     TextNode root;
-    detail::read_text_tree(*source, root);
+    detail::read_text_tree(*source, root, true);
     const TextNode* exterior = find(root, "esd_exterior_details");
     if (!exterior) return out;
     if (const auto* animations = exterior->child("animations"))
@@ -455,6 +455,23 @@ ExteriorDetails parse_exterior_details(std::string_view bytes) {
                 out.doors.push_back(door.name);
                 out.door_details.push_back(std::move(door));
             }
+    if (const auto* objects = exterior->child("wagonobjects")) {
+        for (const auto& node : objects->children) {
+            WagonObject object;
+            object.kind = node.name;
+            // ChildNodes ( n name... ), StateKeyFrames ( n frame... ): the count first.
+            if (const auto* children = node.child("childnodes")) {
+                for (std::size_t k = 1; k < children->values.size(); ++k) object.nodes.push_back(children->values[k]);
+            }
+            object.num_states = static_cast<std::uint32_t>(number(node.child("numstates"), 0, 2.0f));
+            object.first_state_invisible = number(node.child("firststateinvisible"), 0, 0.0f) != 0.0f;
+            if (const auto* frames = node.child("statekeyframes")) {
+                for (std::size_t k = 1; k < frames->values.size(); ++k) object.state_key_frames.push_back(static_cast<float>(frames->number(k)));
+            }
+            object.anim_time = number(node.child("animtime"), 0, 0.0f);
+            out.wagon_objects.push_back(std::move(object));
+        }
+    }
     return out;
 }
 
@@ -498,7 +515,8 @@ CabDescription parse_cab_description(std::string_view bytes) {
     }
     const std::string source = utf16 ? std::move(*decoded) : ansi_to_utf8(*decoded);
     TextNode root;
-    detail::read_text_tree(source, root);
+    // A `}` for a `)` (a content typo RTS reads through) closes its block.
+    detail::read_text_tree(source, root, true);
     const TextNode* interior = find(root, "esd_interior");
     if (!interior) {
         cab.error = "no ESD_Interior block";

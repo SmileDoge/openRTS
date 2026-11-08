@@ -31,11 +31,13 @@
 #include <openrts/formats/train_path.hpp>
 #include <openrts/renderer/webgpu_context.hpp>
 
+#include "controls_help.hpp"
 #include "frame_limiter.hpp"
 #include "key_layout.hpp"
 #include "ui_fonts.hpp"
 #include "ui_text.hpp"
 #include "viewer_state.hpp"
+#include "window_mode.hpp"
 
 namespace openrts::game {
 namespace {
@@ -152,8 +154,9 @@ constexpr int beside_the_car = 1;
 constexpr int no_train = 3;
 
 // The menu's tabs, remembered by their keys.
-enum class Tab { single, network, settings };
-constexpr const char* tab_keys[] = {"single", "network", "settings"};
+enum class Tab { single, network, settings, controls };
+constexpr const char* tab_keys[] = {"single", "network", "settings", "controls"};
+constexpr int tab_count = static_cast<int>(std::size(tab_keys));
 
 // How far the running game got in joining a server: its "status:" lines in
 // openrts.log (viewer/src/main.cpp, report_status).
@@ -283,6 +286,7 @@ struct Launcher::State {
     bool msaa = true, vsync = true;
     bool experimental = false, hdr = false;
     int fps_limit = 0; // the game's FPS limit, shared with its panel ("fps_limit"): 0 none, 30..500
+    viewer::WindowMode window_mode = viewer::WindowMode::windowed; // the game's window ("window_mode"), shared with its panel
     std::string status;
     Tab tab = Tab::single;
     bool select_tab = true; // the tab bar is told to show `tab` on the next frame
@@ -355,8 +359,9 @@ struct Launcher::State {
         hdr = remembered_int("launcher_hdr", 0) != 0;
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
+        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);
         if (const auto value = remembered("launcher_tab")) {
-            for (int i = 0; i < 3; ++i)
+            for (int i = 0; i < tab_count; ++i)
                 if (*value == tab_keys[i]) tab = static_cast<Tab>(i);
         }
         set_text(address, remembered("mp_address").value_or("127.0.0.1"));
@@ -716,6 +721,7 @@ struct Launcher::State {
         process = nullptr;
         // The game's panel may have changed it.
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
+        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);
         if (cancelled) {
             net_step = NetStep::none;
             status = tr("The connection was cancelled.");
@@ -734,6 +740,7 @@ struct Launcher::State {
     void draw_single(float height);
     void draw_network(float height);
     void draw_settings(float height);
+    void draw_controls(float height);
     void draw_bar(float button_width, float button_height, float status_height);
 #endif
 };
@@ -750,8 +757,8 @@ void Launcher::State::draw_tabs() {
     select_tab = false;
     if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTooltip)) {
         const std::string labels[] = {std::string(tr("Single player")) + "###single", std::string(tr("Network game")) + "###network",
-                                      std::string(tr("Settings")) + "###settings"};
-        for (int i = 0; i < 3; ++i) {
+                                      std::string(tr("Settings")) + "###settings", std::string(tr("Controls")) + "###controls"};
+        for (int i = 0; i < tab_count; ++i) {
             const auto which = static_cast<Tab>(i);
             const ImGuiTabItemFlags flags = forcing && tab == which ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
             if (!ImGui::BeginTabItem(labels[i].c_str(), nullptr, flags)) continue;
@@ -1058,6 +1065,18 @@ void Launcher::State::draw_settings(const float height) {
                     remember("fps_limit", std::to_string(fps_limit));
                 }
             }
+            {
+                // The game's window (this menu stays a window).
+                int mode = static_cast<int>(window_mode);
+                const char* modes[] = {viewer::window_mode_name(viewer::WindowMode::windowed),
+                                       viewer::window_mode_name(viewer::WindowMode::borderless),
+                                       viewer::window_mode_name(viewer::WindowMode::fullscreen)};
+                form_row(tr("Window mode"));
+                if (ImGui::Combo("##window_mode", &mode, modes, viewer::window_mode_count)) {
+                    window_mode = static_cast<viewer::WindowMode>(mode);
+                    remember("window_mode", viewer::window_mode_key(window_mode));
+                }
+            }
             form_row(tr("Experimental renderer"));
             ImGui::Checkbox("##experimental", &experimental);
             form_row("HDR");
@@ -1069,7 +1088,14 @@ void Launcher::State::draw_settings(const float height) {
         ImGui::Spacing();
         hint(tr("Automatic: Vulkan, else DirectX 12. Try DirectX 12 if the game does not start or the screen stays black; OpenGL is for old cards, the experimental renderer may not work there."));
         hint(tr("The menu itself takes the graphics API from its next start."));
+        hint(tr("Window mode: full screen takes the monitor in its own mode; a borderless window covers it and Alt+Tab is quicker. In the game Alt+Enter switches between the window and full screen."));
     }
+    ImGui::EndChild();
+}
+
+// The simulator's keys and mouse (the game's panel has the same tab).
+void Launcher::State::draw_controls(const float height) {
+    if (ImGui::BeginChild("##controls", {0.0f, height}, panel_flags)) viewer::draw_controls_help();
     ImGui::EndChild();
 }
 
@@ -1141,7 +1167,7 @@ std::string Launcher::command() const { return state_->command_line(Tab::single)
 std::string Launcher::network_command() const { return state_->command_line(Tab::network); }
 
 void Launcher::show_tab(const std::string_view key) {
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < tab_count; ++i) {
         if (key != tab_keys[i]) continue;
         state_->tab = static_cast<Tab>(i);
         state_->select_tab = true;
@@ -1197,7 +1223,7 @@ void Launcher::draw_overlay(const viewer::ViewerCamera&) const {
     // The bottom keeps its height (the separator with its spacing, on a game
     // tab the button, a status line or two); the tab's panels take the rest.
     constexpr float button_width = 240.0f, button_height = 46.0f;
-    const bool game_tab = s.tab != Tab::settings;
+    const bool game_tab = s.tab == Tab::single || s.tab == Tab::network;
     const auto& style_now = ImGui::GetStyle();
     const float status_height = s.status.empty() ? 0.0f : ImGui::GetTextLineHeightWithSpacing() * 2.0f;
     const float bar = (game_tab ? button_height + style_now.ItemSpacing.y * 4.0f : style_now.ItemSpacing.y * 2.0f) + 6.0f;
@@ -1208,6 +1234,7 @@ void Launcher::draw_overlay(const viewer::ViewerCamera&) const {
     case Tab::single: s.draw_single(middle); break;
     case Tab::network: s.draw_network(middle); break;
     case Tab::settings: s.draw_settings(middle); break;
+    case Tab::controls: s.draw_controls(middle); break;
     }
     ImGui::EndDisabled();
 

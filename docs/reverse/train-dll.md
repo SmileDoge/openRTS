@@ -503,6 +503,14 @@ without compliance and RTS refuses it too.
   `LOOP` wraps instead; `DISABLED` ignores; `CHECKDISTANCEONPRESS` needs the
   driver within `Radius`. A step down / up (two keys, `AssignKey ( "up"
   "down" )`) goes one way only.
+  - This is how one cab shape with two desks works (the VL60's
+    `cabin.sd`: switches 0.. at one end, 100.. at the other, the same
+    `AssignKey` at each, all `CHECKDISTANCEONPRESS` with `Radius` 2..4): a
+    key works the desk the driver is at. openRTS measures from his eye in
+    cab coordinates to the `.sd` `Position` as it is, as a click's pick
+    does (`0x528EA0`); PROBABLE that RTS takes the same point for a key.
+    Before 2026-11-08 a key worked every switch bound to it, both desks
+    at once.
 - **`CanSwitch` order:** RTS writes the new state into `SetState` (`+48`)
   first, then calls `CanSwitch`, and a refusal restores the old state.
   Anything the DLL writes into `SetState` during the call stays.
@@ -734,6 +742,23 @@ without compliance and RTS refuses it too.
   (`ESD_Exterior_Details`): DLLs find them by name (`FindAnim("KONTR")` in
   the draisine) or index (`Door(4)` of every car in the EP2D) and use the
   result unchecked.
+- **`WagonObjects`** of the car shape's `.sd` (`ESD_Exterior_Details`):
+  `DragA` / `DragB` (the wheel chocks: `ChildNodes`, `FirstStateInvisible`,
+  `NumStates`), `EndValveA` / `B`, `BrakePipeA` / `B`, `ChargingPipeA` / `B`
+  (`StateKeyFrames`). openRTS draws a chock's nodes only while a chock lies
+  at that end (by the node's place in the shape); the cocks and hoses are
+  not posed yet.
+- **A `}` for a `)`**: `mdd_VL80-Alias/CABT/CabTEPT.sd` closes its
+  `Animations` with `}`; RTS still reads the `InteriorGeometryInfo` after it
+  (the VL80T's chairs, doors, windows). openRTS reads a bare `}` in an `.sd`
+  as `)` (before 2026-11-08 the engineer sat at the cab shape's origin, in
+  the middle of the section).
+- **The VL60PK's brakes** (`Brakes.dll`, `mdd_vl60pk-*.eng`): one cab shape,
+  two desks; the working one is where the brake valve's block key (`BR_367ID1`
+  50 / `BR_367ID2` 150) is in. Started on or running, the EPK whistles at
+  once and only the RBS (`PB_RBS*`, key M) stops it; the RB does not. The
+  `.eng` gives `PB_RB1 ( 107 )` for the desk whose RB is switch 7 (a typo
+  for 7): there the RB never counts.
 
 ## 13. The engineer on foot (`0x41B230`, `0x43778C`, `0x51CD88`)
 

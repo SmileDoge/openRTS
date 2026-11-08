@@ -161,6 +161,11 @@ struct TrainView::Car {
     std::vector<std::future<renderer::StreamedModelAsset>> freight_loading;
     bool freight_requested = false;
     std::vector<std::pair<std::int32_t, bool>> bogies; // matrix, is front bogie (in the shape)
+    // The wheel chocks drawn on the car's shape (.sd WagonObjects DragA /
+    // DragB with FirstStateInvisible: the BASH nodes of the MaDaDev cars):
+    // a node (and those under it) and whether it is at the shape's front
+    // end (its z), shown only while a chock is at that end.
+    std::vector<std::pair<std::int32_t, bool>> chock_nodes;
     std::shared_ptr<const formats::SoundScript> script;
     core::VirtualPath script_path;
     std::unique_ptr<audio::SoundInstance> sound;
@@ -675,6 +680,41 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
                 }
                 return last;
             };
+            // Wheel chocks (WagonObjects DragA / DragB): which end each node
+            // is at by its place in the shape, z > 0 the front.
+            const auto node_z = [&](std::size_t m) {
+                float z = 0.0f;
+                for (std::size_t guard = 0; m < rig.matrices.size() && guard <= rig.matrices.size(); ++guard) {
+                    z += rig.matrices[m].values[11];
+                    const auto parent = m < rig.hierarchy.size() ? rig.hierarchy[m] : -1;
+                    if (parent < 0) break;
+                    m = static_cast<std::size_t>(parent);
+                }
+                return z;
+            };
+            const auto under = [&](std::size_t m, const std::size_t top) {
+                for (std::size_t guard = 0; m < rig.matrices.size() && guard <= rig.matrices.size(); ++guard) {
+                    if (m == top) return true;
+                    const auto parent = m < rig.hierarchy.size() ? rig.hierarchy[m] : -1;
+                    if (parent < 0) return false;
+                    m = static_cast<std::size_t>(parent);
+                }
+                return false;
+            };
+            for (const auto& object : details.wagon_objects) {
+                if ((object.kind != "draga" && object.kind != "dragb") || !object.first_state_invisible) continue;
+                for (const auto& name : object.nodes) {
+                    for (std::size_t m = 0; m < rig.matrices.size(); ++m) {
+                        if (lower(rig.matrices[m].name) != lower(name)) continue;
+                        const float z = node_z(m);
+                        const bool shape_front = z != 0.0f ? z > 0.0f : object.kind == "draga";
+                        for (std::size_t c = 0; c < rig.matrices.size(); ++c) {
+                            if (under(c, m)) car.chock_nodes.push_back({static_cast<std::int32_t>(c), shape_front});
+                        }
+                        break;
+                    }
+                }
+            }
             for (std::size_t k = 0; k < details.door_details.size(); ++k) {
                 const auto& door = details.door_details[k];
                 car.door_groups.push_back(door.global_id);
@@ -2628,6 +2668,15 @@ TrainView::Pose TrainView::pose(const Unit& unit, const std::size_t car) const {
     };
 }
 
+std::optional<glm::vec3> TrainView::eye_in_cab(const glm::vec3& eye) const {
+    const auto* cab = engineer_cab();
+    if (!engineer_.inside() || !cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return std::nullopt;
+    const auto body = body_pose(units_.front(), engineer_car_, false);
+    if (!body) return std::nullopt;
+    const glm::mat4 to_cab = glm::inverse(cab_to_scene_ ? *cab_to_scene_ : body->transform * cab->placement());
+    return glm::vec3{to_cab * glm::vec4{eye, 1.0f}};
+}
+
 void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, const float elapsed,
                        renderer::ModelLibrary& library, audio::AudioEngine* sound) {
     OPENRTS_ZONE("trains: update");
@@ -2708,9 +2757,12 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     } else {
         apply_handles(SceneInput{}); // a held handle position still springs back
     }
+    // Where the engineer's eye is in his cab: a key works a CHECKDISTANCEONPRESS
+    // switch within its Radius only (key_reaches: the desk he is at).
+    const auto key_eye = eye_in_cab(camera.eye());
     if (legacy_) {
         if (keys_live) {
-            for (const auto& key : input.keys) legacy_->key(key);
+            for (const auto& key : input.keys) legacy_->key(key, key_eye);
         } else if (keys_were_live_) {
             legacy_->release_keys();
         }
@@ -2719,8 +2771,12 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         // The native cab's AssignKey keys (presses only).
         for (const auto& key : input.keys) {
             if (!key.down) continue;
+            const auto* cab = engineer_cab();
             for (const auto& b : native_bindings_) {
-                if (b.key == key.key && b.shift == key.shift && b.ctrl == key.ctrl) native_operate(b.id, b.direction);
+                if (b.key != key.key || b.shift != key.shift || b.ctrl != key.ctrl) continue;
+                const auto* spec = cab ? cab->description().find_switch(b.id) : nullptr;
+                if (spec && !key_reaches(*spec, key_eye)) continue;
+                native_operate(b.id, b.direction);
             }
         }
     }
@@ -5131,6 +5187,13 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
         }
         for (const auto& door : car.exterior_doors) {
             if (door.last_frame > 0.0f) adjustments.push_back({.matrix = door.node, .frame = door.open * door.last_frame});
+        }
+        // A wheel chock is drawn only while it lies at its end of the car
+        // (the chock flags go by the train's front: a turned car's shape
+        // front is the train's rear).
+        for (const auto& [node, shape_front] : car.chock_nodes) {
+            const auto chock = shape_front != car.flipped ? simulation::chock_front : simulation::chock_rear;
+            if ((state.chocks & chock) == 0) adjustments.push_back({.matrix = node, .hidden = true});
         }
         for (const auto& [matrix, shape_front] : car.bogies) {
             // A bogie follows the track heading at its own position.

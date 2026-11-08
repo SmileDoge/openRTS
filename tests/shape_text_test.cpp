@@ -204,6 +204,36 @@ int main() {
         }
     }
 
+    // A block closed with `}` for `)` (VL80T's CabTEPT.sd Animations): what
+    // follows is still read where it belongs (its chairs).
+    {
+        const auto cab = parse_cab_description(utf16_file(
+            "SIMISA@@@@@@@@@@JINX0t1t______\nShape ( cab.s\n ESD_Interior ( Switches ( 1 Switch ( ID ( 0 ) Name ( C_MAIN ) ) )\n"
+            " Animations ( 1 AnimNode ( Name ( \"WIPERS\" ) ) }\n"
+            " InteriorGeometryInfo ( InteriorChairs ( 1 Chair ( Position ( 0.8 2.6 6.2 ) Pos1 ( 0.8 2.4 6.2 ) ) ) ) ) )"));
+        check(cab.ok() && cab.switches.size() == 1, "a cab with a } for a ) parses");
+        check(cab.chairs.size() == 1 && cab.chairs[0].seated[2] > 6.0f, "its chair after the } is read");
+    }
+
+    // A car's WagonObjects (the VL60's .sd): the wheel chocks shown by their
+    // state, the end cocks by key frames.
+    {
+        const auto details = parse_exterior_details(utf16_file(
+            "SIMISA@@@@@@@@@@JINX0t1t______\nShape ( vl60.s\n ESD_Exterior_Details ( WagonObjects (\n"
+            " DragB ( ChildNodes ( 1 BASH1 ) FirstStateInvisible ( 1 ) NumStates ( 2 ) AnimTime ( 0.001 ) )\n"
+            " DragA ( ChildNodes ( 1 BASH2 ) FirstStateInvisible ( 1 ) NumStates ( 2 ) )\n"
+            " EndValveA ( ChildNodes ( 2 KR_PMA KR_TMA ) NumStates ( 2 ) StateKeyFrames ( 1 0 ) ) ) ) )"));
+        check(details.wagon_objects.size() == 3, "three wagon objects");
+        if (details.wagon_objects.size() == 3) {
+            const auto& b = details.wagon_objects[0];
+            check(b.kind == "dragb" && b.nodes == std::vector<std::string>{"BASH1"} && b.first_state_invisible && b.num_states == 2,
+                  "DragB: its node, hidden in state 0");
+            const auto& valve = details.wagon_objects[2];
+            check(valve.kind == "endvalvea" && valve.nodes.size() == 2 && !valve.first_state_invisible && valve.state_key_frames.size() == 1,
+                  "EndValveA: two nodes, a key frame");
+        }
+    }
+
     if (failures == 0) std::cout << "shape text: all checks passed\n";
     return failures == 0 ? 0 : 1;
 }

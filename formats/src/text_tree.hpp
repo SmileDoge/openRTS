@@ -41,7 +41,10 @@ struct TextNode {
 
 // Reads every top-level block of `text` into `root.children`. Unbalanced
 // trailing text is tolerated; returns false only when nothing was read.
-inline bool read_text_tree(std::string_view text, TextNode& root) {
+// `brace_closes`: a bare `}` closes a block as `)` does (the cab .sd files:
+// mdd_VL80-Alias/CABT/CabTEPT.sd closes its Animations with one, and RTS
+// reads its InteriorGeometryInfo after it).
+inline bool read_text_tree(std::string_view text, TextNode& root, const bool brace_closes = false) {
     Tokenizer tokenizer(text);
     std::vector<std::string> tokens;
     while (auto token = tokenizer.next()) tokens.push_back(std::move(*token));
@@ -50,7 +53,7 @@ inline bool read_text_tree(std::string_view text, TextNode& root) {
     std::vector<bool> dropped{false};
     for (std::size_t i = 0; i < tokens.size(); ++i) {
         const auto& token = tokens[i];
-        if (token == ")") {
+        if (token == ")" || (brace_closes && token == "}")) {
             if (stack.size() > 1) {
                 const bool drop = dropped.back();
                 stack.pop_back();

@@ -1923,6 +1923,7 @@ int Host::get_integer(const abi::Locomotive* loco, std::uint32_t code, int index
     case 7: // RTS_TAPEROLL: not recording
         return 0;
     default:
+        trace_once(L"integer" + std::to_wstring(code), L"RTSGetInteger code " + std::to_wstring(code) + L": 0 (not answered)");
         return 0;
     }
 }
@@ -1976,6 +1977,8 @@ void* Host::loco_object(const Module* caller, const abi::Locomotive* loco, int c
         return slave ? view(*slave, caller) : car->slaves[i];
     }
     default:
+        trace_once(L"loco_object" + std::to_wstring(code),
+                   L"RTSGetLocoObject code " + std::to_wstring(code) + L" index " + std::to_wstring(index) + L": none (not mirrored)");
         return nullptr;
     }
 }
@@ -2041,6 +2044,8 @@ void* Host::cab_object(const Module* caller, const abi::Cabin* cab, int code, in
     case abi::ot_tex_change:
         return i < car->tex_changes.size() ? &car->tex_changes[i] : nullptr;
     default: // close-up scenes, screens, areas, windows, chairs, seats: none yet
+        trace_once(L"cab_object" + std::to_wstring(code),
+                   L"RTSGetCabObject code " + std::to_wstring(code) + L" index " + std::to_wstring(index) + L": none (not mirrored)");
         return nullptr;
     }
 }

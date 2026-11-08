@@ -11,6 +11,7 @@
 
 #include "debug_view.hpp"
 #include "viewer_scene.hpp"
+#include "window_mode.hpp"
 
 namespace openrts::viewer {
 
@@ -54,6 +55,10 @@ struct WindowOptions {
     // The FPS limit: 30..500 frames per second, 0 none (--fps-limit; else
     // the remembered "fps_limit", the start menu's and the panel's setting).
     int fps_limit = 0;
+    // The window: in a window, borderless or full screen (--window-mode;
+    // else the remembered "window_mode"; window_mode.hpp). A capture and the
+    // start menu are always a window.
+    std::optional<WindowMode> window_mode;
     bool batching = true;
     std::uint32_t msaa = 4; // samples (--msaa 1|4); 4 as RTS's "4x MSAA +Alpha"
     bool sound = true;

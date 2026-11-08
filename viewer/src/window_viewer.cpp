@@ -27,6 +27,7 @@
 #include <openrts/renderer/scene_effects.hpp>
 #include <openrts/renderer/webgpu_context.hpp>
 
+#include "controls_help.hpp"
 #include "frame_limiter.hpp"
 #include "gpu_timer.hpp"
 #include "key_layout.hpp"
@@ -119,6 +120,73 @@ struct WindowPlacement {
     }
     return false;
 }
+
+// The monitor the window is on: its own when full screen, else the one that
+// holds the window's centre, else the primary.
+[[nodiscard]] GLFWmonitor* monitor_of(GLFWwindow* window) {
+    if (auto* own = glfwGetWindowMonitor(window)) return own;
+    int x = 0, y = 0, width = 0, height = 0;
+    glfwGetWindowPos(window, &x, &y);
+    glfwGetWindowSize(window, &width, &height);
+    const int cx = x + width / 2;
+    const int cy = y + height / 2;
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    for (int i = 0; i < count; ++i) {
+        const GLFWvidmode* video = glfwGetVideoMode(monitors[i]);
+        int mx = 0, my = 0;
+        glfwGetMonitorPos(monitors[i], &mx, &my);
+        if (video && cx >= mx && cx < mx + video->width && cy >= my && cy < my + video->height) return monitors[i];
+    }
+    return glfwGetPrimaryMonitor();
+}
+
+// Shows the window as the window mode asks (window_mode.hpp): full screen in
+// the monitor's own mode, borderless over the monitor, or back in the window
+// at the place it had.
+class WindowModeKeeper {
+public:
+    [[nodiscard]] WindowMode applied() const noexcept { return applied_; }
+
+    void apply(GLFWwindow* window, const WindowMode mode) {
+        if (mode == applied_) return;
+        if (applied_ == WindowMode::windowed) {
+            maximized_ = glfwGetWindowAttrib(window, GLFW_MAXIMIZED) != 0;
+            if (maximized_) glfwRestoreWindow(window); // the place to come back to
+            glfwGetWindowPos(window, &x_, &y_);
+            glfwGetWindowSize(window, &width_, &height_);
+        }
+        GLFWmonitor* monitor = monitor_of(window);
+        const GLFWvidmode* video = monitor ? glfwGetVideoMode(monitor) : nullptr;
+        if (mode != WindowMode::windowed && !video) return;
+        int mx = 0, my = 0;
+        if (monitor) glfwGetMonitorPos(monitor, &mx, &my);
+        switch (mode) {
+        case WindowMode::fullscreen:
+            glfwSetWindowMonitor(window, monitor, 0, 0, video->width, video->height, video->refreshRate);
+            break;
+        case WindowMode::borderless:
+            // Out of full screen first (if it was), then without its frame
+            // over the whole monitor.
+            glfwSetWindowMonitor(window, nullptr, mx, my, video->width, video->height, GLFW_DONT_CARE);
+            glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_FALSE);
+            glfwSetWindowPos(window, mx, my);
+            glfwSetWindowSize(window, video->width, video->height);
+            break;
+        case WindowMode::windowed:
+            glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_TRUE);
+            glfwSetWindowMonitor(window, nullptr, x_, y_, width_, height_, GLFW_DONT_CARE);
+            if (maximized_) glfwMaximizeWindow(window);
+            break;
+        }
+        applied_ = mode;
+    }
+
+private:
+    WindowMode applied_ = WindowMode::windowed;
+    int x_ = 100, y_ = 100, width_ = 1280, height_ = 720;
+    bool maximized_ = false;
+};
 
 // Follows the window's place and size and writes them a second after they
 // settle, and when the window goes (a crash later keeps them too).
@@ -525,6 +593,13 @@ struct PanelState {
     std::string save_status;
     // RTS's Pause key (0x402FC3): the world stands still, the camera moves.
     bool paused = false;
+    bool controls_tab = false; // the panel shows the keys (its "Controls" tab), not the settings
+    // The window (window_mode.hpp): the mode wanted, which the main loop
+    // applies; the full screen kind Alt+Enter goes to; fixed: always a
+    // window (a capture, the start menu).
+    WindowMode window_mode = WindowMode::windowed;
+    WindowMode full_mode = WindowMode::fullscreen;
+    bool window_mode_fixed = false;
     bool menu = false; // the scene draws the whole interface
     bool hdr = false;  // the frame is HDR: the tone curve and exposure apply
     std::string_view backend_now = "-"; // the graphics API this run draws through
@@ -649,6 +724,25 @@ public:
         ImGui::TextUnformatted(tr(scene.title().data()));
         ImGui::Text(tr("FPS %.0f  |  %.2f ms avg, %.2f ms worst"), panel.stats.fps(), panel.stats.average_ms(),
                     panel.stats.worst_ms());
+        // Two tabs: the settings, and the keys (the start menu has the same).
+        if (ImGui::BeginTabBar("##panel_tabs")) {
+            if (ImGui::BeginTabItem(tr("Settings"))) {
+                panel.controls_tab = false;
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(tr("Controls"))) {
+                panel.controls_tab = true;
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+        if (panel.controls_tab) {
+            draw_controls_help();
+            draw_scene_unseen(scene, camera);
+            ImGui::End();
+            ImGui::Render();
+            return;
+        }
 
         if (ImGui::CollapsingHeader(tr("General"), ImGuiTreeNodeFlags_DefaultOpen)) {
             // Language of the interface (Russian by default), remembered.
@@ -703,6 +797,19 @@ public:
                 if (ImGui::SliderInt(tr("FPS limit"), &shown, min_fps_limit, max_fps_limit + 1, format.c_str(), ImGuiSliderFlags_AlwaysClamp)) {
                     panel.fps_limit = shown > max_fps_limit ? 0 : shown;
                     remember("fps_limit", std::to_string(panel.fps_limit));
+                }
+            }
+            if (!panel.window_mode_fixed) {
+                // In a window, borderless or full screen (Alt+Enter: the window
+                // or the full screen kind chosen last).
+                int mode = static_cast<int>(panel.window_mode);
+                const char* modes[] = {window_mode_name(WindowMode::windowed), window_mode_name(WindowMode::borderless),
+                                       window_mode_name(WindowMode::fullscreen)};
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::Combo(tr("Window (Alt+Enter)"), &mode, modes, window_mode_count)) {
+                    panel.window_mode = static_cast<WindowMode>(mode);
+                    if (panel.window_mode != WindowMode::windowed) panel.full_mode = panel.window_mode;
+                    remember("window_mode", window_mode_key(panel.window_mode));
                 }
             }
             ImGui::SetNextItemWidth(220.0f);
@@ -868,6 +975,8 @@ public:
             scene.draw_overlay(camera);
             if (ImGui::Button(tr("Save debug view (Ctrl+F6)"))) panel.save_view = true;
             if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
+        } else {
+            draw_scene_unseen(scene, camera);
         }
 
         if (ImGui::CollapsingHeader(tr("Performance"))) {
@@ -900,10 +1009,6 @@ public:
                 ImGui::SetTooltip("%s", tr("The shadow cascades and the depth pre-pass are recorded on worker threads while the main pass is."));
         }
 
-        ImGui::Separator();
-        ImGui::TextUnformatted(tr("RMB: look  WASD: move  Q/E: vertical"));
-        ImGui::TextUnformatted(tr("Shift: boost  F: fly/orbit"));
-        ImGui::TextUnformatted(tr("T: track  C: train here  J: switch ahead  V: follow  K: EP brake"));
         ImGui::End();
 
         ImGui::Render();
@@ -912,6 +1017,16 @@ public:
     void render(const WGPURenderPassEncoder pass) const { ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass); }
 
 private:
+    // The scene's own windows (the train, Track control) and its HUD stay
+    // whatever the panel shows; its lines for the panel go to a region no
+    // one sees (the Controls tab, the Scene section folded).
+    static void draw_scene_unseen(const ViewerScene& scene, const ViewerCamera& camera) {
+        ImGui::BeginChild("##scene_unseen", {1.0f, 1.0f}, ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground);
+        scene.draw_overlay(camera);
+        ImGui::EndChild();
+    }
+
     static void draw_clock(ClockControls& clock, const bool time_of_day_applies) {
         auto hours = static_cast<float>(clock.time_of_day / 3600.0);
         const auto seconds = static_cast<int>(clock.time_of_day);
@@ -1011,6 +1126,7 @@ struct CameraInput {
     bool info_key_down = false;
     bool stations_key_down = false;
     bool save_key_down = false;
+    bool window_mode_key_down = false; // Alt+Enter
     bool enter_key_down = false;
     bool kp0_down = false;
     bool kp1_down = false;
@@ -1197,8 +1313,9 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.walk_right = down(GLFW_KEY_RIGHT);
         in.walk_run = shift;
         in.walk_slow = down(GLFW_KEY_END);
-        in.engineer_action = enter;
-        in.engineer_action_ctrl = enter && ctrl;
+        // Alt+Enter is the window's (full screen / window), not a door.
+        in.engineer_action = enter && !alt;
+        in.engineer_action_ctrl = enter && ctrl && !alt;
         in.cab_labels = alt;
     };
     if (input.keyboard_captured) {
@@ -1691,6 +1808,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         .vsync = surface.vsync(), .vsync_optional = surface.vsync_optional(), .gpu_timing = gpu_timer.available()};
     panel.menu = options.menu;
     panel.fps_limit = clamp_fps_limit(options.fps_limit);
+    WindowModeKeeper window_mode;
+    panel.window_mode_fixed = capture || options.menu;
+    if (!panel.window_mode_fixed) {
+        panel.window_mode = options.window_mode.value_or(WindowMode::windowed);
+        if (panel.window_mode != WindowMode::windowed) panel.full_mode = panel.window_mode;
+    }
     panel.hdr = renderer::scene_hdr();
     panel.backend_now = renderer::adapter_backend_name(context.context.adapter());
     panel.reshade_depth = options.reshade_depth.value_or(remembered("reshade_depth").value_or("0") == "1");
@@ -1798,7 +1921,19 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         stage_clock.start();
         glfwPollEvents();
         const double now = glfwGetTime();
-        if (placement_keeper) placement_keeper->update(window.get(), now);
+        if (!panel.window_mode_fixed) {
+            // Alt+Enter: the window, or the full screen kind chosen last.
+            const auto down = [&window](const int key) { return glfwGetKey(window.get(), key) == GLFW_PRESS; };
+            const bool switch_keys = (down(GLFW_KEY_LEFT_ALT) || down(GLFW_KEY_RIGHT_ALT)) && (down(GLFW_KEY_ENTER) || down(GLFW_KEY_KP_ENTER));
+            if (switch_keys && !input.window_mode_key_down) {
+                panel.window_mode = panel.window_mode == WindowMode::windowed ? panel.full_mode : WindowMode::windowed;
+                remember("window_mode", window_mode_key(panel.window_mode));
+            }
+            input.window_mode_key_down = switch_keys;
+            window_mode.apply(window.get(), panel.window_mode);
+        }
+        // The place and size in a window only (not the monitor's when full).
+        if (placement_keeper && window_mode.applied() == WindowMode::windowed) placement_keeper->update(window.get(), now);
         int gpu_count = 0;
         const double gpu_sum = gpu_timer.take_sum_ms(gpu_count);
         panel.stats.add(now - last_time, stages, gpu_sum, gpu_count);

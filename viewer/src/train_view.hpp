@@ -667,6 +667,8 @@ private:
     // `sway` off: on its springs at rest (the cab the player is in: RTS sways
     // the camera instead, 0x424488).
     [[nodiscard]] std::optional<BodyPose> body_pose(const Unit& unit, std::size_t i, bool sway = true) const;
+    // `eye` (scene) in the coordinates of the cab the engineer is in, if he is.
+    [[nodiscard]] std::optional<glm::vec3> eye_in_cab(const glm::vec3& eye) const;
     // The body's offset on its springs in the scene (times the sway slider).
     [[nodiscard]] glm::vec3 sway_offset(const Unit& unit, std::size_t i) const;
     // The 3-D cab (cab_view.hpp) of car cab_car_ of the driven train.

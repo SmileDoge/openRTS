@@ -128,6 +128,9 @@ offers:
   car's mass, shown for 30 s. The consist's `FreightAnim` shapes are drawn
   on the car at `FreightAnimPosition` (found in the car's folder,
   `TRAINS/OBJECTS` or `GLOBAL/SHAPES`) and their mass adds to the car's.
+- **Wheel chocks**: placed and removed per bogie; a car whose `.sd` has
+  `WagonObjects` `DragA` / `DragB` (the MaDaDev cars' `BASH` nodes) shows
+  its chock only while one lies at that end.
 
 ## The line, the current and the wire
 
