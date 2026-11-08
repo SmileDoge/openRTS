@@ -17,6 +17,7 @@
 
 #include <glm/common.hpp>
 #include <glm/vec4.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <openrts/formats/environment.hpp>
 #include <openrts/formats/route_world.hpp>
@@ -25,6 +26,7 @@
 #include <deque>
 #include <unordered_set>
 #include <openrts/renderer/depth.hpp>
+#include <openrts/renderer/forest_clearance.hpp>
 #include <openrts/renderer/occlusion_probe.hpp>
 #include <openrts/renderer/frustum.hpp>
 #include <openrts/renderer/model_assets.hpp>
@@ -48,6 +50,7 @@
 #include "signal_view.hpp"
 #include "viewer_state.hpp"
 #include "track_control.hpp"
+#include "inspector.hpp"
 #include "net_session.hpp"
 #include "train_view.hpp"
 
@@ -128,6 +131,7 @@ public:
     [[nodiscard]] const std::shared_ptr<net::RtsConnection>& connection() const noexcept { return content_.connection; }
     [[nodiscard]] std::vector<net::ReceivedPackage> take_early() { return std::exchange(content_.early, {}); }
     [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
+    [[nodiscard]] const std::filesystem::path& root() const noexcept { return content_.root; }
     [[nodiscard]] bool track_control() const noexcept { return content_.track_control; }
     // RTS's config.ini text (read once from the installation folder).
     [[nodiscard]] const std::string& rts_config() const {
@@ -268,6 +272,17 @@ public:
     [[nodiscard]] std::string_view title() const override { return "Route props"; }
 
     [[nodiscard]] std::string attach(const SceneGpu& gpu, ViewerCamera& camera) override {
+        // The tracks' and roads' axes the forests keep their trees from (an
+        // openRTS option), before any forest is built.
+        {
+            const auto started = std::chrono::steady_clock::now();
+            auto axes = route_way_axes(*content_.vfs(), route_, track_ ? &track_->network() : nullptr);
+            std::cout << "forest clearance: " << axes->size() << " pieces of track and road, "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count() << " ms"
+                      << std::endl;
+            renderer::set_forest_clearance_axes(std::move(axes));
+            forest_distance_ = renderer::forest_clearance_distance();
+        }
         streamer_ = std::make_unique<renderer::RouteStreamer>(content_.vfs(), route_, origin_, tile_radius);
         streamer_->update(origin_);
         library_ = std::make_unique<renderer::ModelLibrary>(gpu.models, content_.vfs(), streamer_->texture_directories());
@@ -455,20 +470,39 @@ public:
         if (input.signal_names) signal_names_ = !signal_names_;
         if (input.place_names) place_names_ = !place_names_;
         cab_labels_ = input.cab_labels;
-        if (train_) {
-            // The ray under the mouse, from the last frame's camera.
-            std::optional<glm::vec3> direction;
-            if (input.pointer) {
-                const auto inverse = glm::inverse(last_view_projection_);
-                const glm::vec4 far = inverse * glm::vec4{input.pointer_x, input.pointer_y, 0.5f, 1.0f};
-                if (std::abs(far.w) > 1e-9f) {
-                    const glm::vec3 to = glm::vec3(far) / far.w - last_eye_;
-                    if (glm::length(to) > 1e-6f) direction = glm::normalize(to);
-                }
+        if (input.inspector) inspector_.toggle();
+        // The ray under the mouse, from the last frame's camera.
+        std::optional<glm::vec3> direction;
+        if (input.pointer) {
+            const auto inverse = glm::inverse(last_view_projection_);
+            const glm::vec4 far = inverse * glm::vec4{input.pointer_x, input.pointer_y, 0.5f, 1.0f};
+            if (std::abs(far.w) > 1e-9f) {
+                const glm::vec3 to = glm::vec3(far) / far.w - last_eye_;
+                if (glm::length(to) > 1e-6f) direction = glm::normalize(to);
             }
+        }
+        // The inspector choosing with a click: the click is its, not a control's.
+        bool click = input.click;
+        if (click && direction && inspector_.picking()) {
+            inspector_.pick(last_eye_, *direction, inspector_world());
+            click = false;
+        }
+        if (const auto fly = inspector_.take_fly_to()) {
+            if (train_) {
+                if (train_->walking()) train_->set_walking(false, last_eye_);
+                train_->stop_following();
+            }
+            const glm::vec3 look = glm::normalize(fly->second - fly->first);
+            camera.fly = true;
+            camera.position = fly->first;
+            camera.yaw = std::atan2(-look.x, -look.z);
+            camera.pitch = std::asin(std::clamp(-look.y, -1.0f, 1.0f));
+            camera.target = fly->second;
+        }
+        if (train_) {
             // The cursor in RTS's pixels (a dragged control moves as in RTS).
             const float scale = rts_pixels_per_pixel();
-            train_->pointer(last_eye_, direction, input.click, input.click_shift, input.scroll, input.release,
+            train_->pointer(last_eye_, direction, click, input.click_shift, input.scroll, input.release,
                             {input.cursor_x * scale, input.cursor_y * scale}, input.held);
             if (input.car_menu) {
                 // Aimed with the cursor when it is over the scene, else the screen's middle.
@@ -517,7 +551,7 @@ public:
             terrain_->update_water(clock.elapsed, camera.eye());
         }
         if (sky_simulation_) {
-            sky_state_ = sky_simulation_->update(clock.time_of_day, clock.elapsed, camera_position.tile_z, clock.season);
+            sky_state_ = sky_simulation_->update(clock.time_of_day_exact, clock.elapsed, camera_position.tile_z, clock.season);
         }
 
         streamer_->update(camera_position);
@@ -537,6 +571,11 @@ public:
                                                .fullbright_lit = experimental_ && renderer::light_fullbright()};
         library_->set_texture_variant(variant);
         streamer_->set_texture_variant(variant);
+        // The forests' clearance changed: the loaded forests are built again.
+        if (const float distance = renderer::forest_clearance_distance(); distance != forest_distance_) {
+            forest_distance_ = distance;
+            library_->reload_extension(".forest");
+        }
         content_.forward_changes(*library_);
         // Behind the loading screen uploads for up to 20 ms a frame: nobody
         // watches it.
@@ -714,9 +753,12 @@ public:
             if (pick.kind == Pick::skip) continue;
             const auto& instance = visible[k];
             auto* model = pick.model;
+            // Its tag (the instance's place + 1): its lamps carry it (collect_lights).
+            const auto owner = static_cast<std::uint32_t>(k + 1);
             if (pick.kind == Pick::shadow) {
                 renderer.submit_shadow_caster(*model, instance.transform);
                 renderer.set_world_object(instance.static_flags, instance.kind == formats::WorldObjectKind::transfer);
+                renderer.set_owner(owner);
                 continue;
             }
 
@@ -733,6 +775,7 @@ public:
                 renderer.submit(*model, instance.transform);
             }
             renderer.set_world_object(instance.static_flags, instance.kind == formats::WorldObjectKind::transfer);
+            renderer.set_owner(owner);
             ++drawn_instances_;
         }
         if (train_) {
@@ -829,7 +872,9 @@ public:
             crossings += instance.kind == formats::WorldObjectKind::level_crossing ? 1 : 0;
             pickups += instance.kind == formats::WorldObjectKind::pickup ? 1 : 0;
         }
-        report += ", forests " + std::to_string(forests) + ", level crossings " + std::to_string(crossings) + " ("
+        const auto trees = renderer::forest_tree_counts();
+        report += ", forests " + std::to_string(forests) + " (trees " + std::to_string(trees.planted) + ", kept off tracks and roads "
+            + std::to_string(trees.cleared) + "), level crossings " + std::to_string(crossings) + " ("
             + std::to_string(crossings_ ? crossings_->closed() : 0) + " closed), pickups " + std::to_string(pickups) + ", car spawners "
             + std::to_string(roads_ ? roads_->spawners() : 0) + ", cars " + std::to_string(roads_ ? roads_->cars() : 0) + ", "
             + (precipitation_ && precipitation_->snow() ? "snowflakes " : "raindrops ") + std::to_string(precipitation_ ? precipitation_->drops() : 0)
@@ -865,6 +910,7 @@ public:
         if (train_) train_->stand_at_cab_door(index);
     }
     [[nodiscard]] std::string car_menu_report() const override { return train_ ? train_->car_menu_report() : std::string{}; }
+    [[nodiscard]] std::string inspector_report() const override { return inspector_.report(inspector_world()); }
     [[nodiscard]] std::optional<renderer::ShadowFocus> shadow_focus() const override {
         return train_ ? train_->cab_shadow_focus() : std::nullopt;
     }
@@ -944,6 +990,11 @@ public:
             }
         }
         draw_scene_marks();
+        {
+            const auto world = inspector_world();
+            inspector_.draw(world);
+            inspector_.add_selection_lines(world, pending_lines_);
+        }
         if (track_control_) {
             bool open = track_control_->is_open();
             if (ImGui::Checkbox(tr("Track control (Ctrl+Alt+F7)"), &open)) track_control_->toggle();
@@ -1317,11 +1368,19 @@ private:
         const float step_ms = std::clamp(elapsed * 1000.0f, 8.0f, 1000.0f);
         std::size_t lamps = 0;
         if (streamer_ && library_) {
-            for (const auto& instance : streamer_->visible_instances()) {
+            const auto& visible = streamer_->visible_instances();
+            for (std::size_t index = 0; index < visible.size(); ++index) {
+                const auto& instance = visible[index];
                 const auto* model = library_->find(instance.source_path);
                 if (!model || model->lights().empty()) continue;
                 const auto centre = glm::vec3{instance.transform * glm::vec4{model->bounds().center, 1.0f}};
-                const float object_distance = glm::distance(eye, centre);
+                // The experimental path from the shape's near side, not its
+                // middle: a platform 200 m long keeps its far lamps (each
+                // lamp's Distance is then its own, below).
+                const float scale = glm::length(glm::vec3{instance.transform[0]});
+                const float object_distance = experimental_
+                    ? (std::max)(glm::distance(eye, centre) - model->bounds().radius * scale, 0.0f)
+                    : glm::distance(eye, centre);
                 if (object_distance > object_limit) continue;
                 auto& fades = lamp_fades_[instance.source_path.key()];
                 fades.resize(model->lights().size());
@@ -1335,8 +1394,22 @@ private:
                     if (!lit && (fade.state & 3u) == 0) continue;
                     const glm::vec3 at{instance.transform * glm::vec4{lamp.position[0], lamp.position[1], lamp.position[2], 1.0f}};
                     const float reach = scenery_lamp_reach(lamp);
-                    if (!frustum.intersects_sphere(at, reach)) continue;
+                    // A row of lamps (LightArray): the RTS path takes it as
+                    // one light whose nearest lamp lights each point, as RTS's
+                    // shader does; its ring by the row's middle and length.
+                    // The experimental path takes every lamp as a light of its
+                    // own: its clusters and its shadows are each lamp's.
+                    // Seen or not by the whole row (a platform's 200 m: from
+                    // its far end the first lamp is out of view while the
+                    // others light the platform), each lamp on its own on the
+                    // experimental path, its Distance by its own place too.
+                    const glm::vec3 step{instance.transform * glm::vec4{lamp.array_step[0], lamp.array_step[1], lamp.array_step[2], 0.0f}};
+                    const auto row = lamp.array_count >= 2 ? lamp.array_count : 1u;
+                    const float half_row = glm::length(step) * static_cast<float>(row - 1) * 0.5f;
+                    const glm::vec3 middle = at + step * (static_cast<float>(row - 1) * 0.5f);
+                    if (!frustum.intersects_sphere(middle, reach + half_row)) continue;
                     auto light = scenery_light(lamp, instance.transform);
+                    light.owner = static_cast<std::uint32_t>(index + 1); // its instance's tag (submit)
                     if (fade.level < 1.0f) {
                         // RTS's packing (0x4AEBEC) scales red and alpha by the
                         // level, green by it twice and blue not at all; the
@@ -1350,7 +1423,24 @@ private:
                             d.a *= fade.level;
                         }
                     }
-                    light_rings_.add(light, at, reach);
+                    if (row == 1) {
+                        light_rings_.add(light, at, reach);
+                    } else if (!experimental_) {
+                        const glm::vec3 local_step{light.to_light * glm::vec4{step, 0.0f}};
+                        light.array_count = row;
+                        light.array_step = glm::vec4{local_step, glm::dot(local_step, local_step)};
+                        light_rings_.add(light, middle, reach + half_row);
+                    } else {
+                        for (std::uint32_t n = 0; n < row; ++n) {
+                            const glm::vec3 shift = step * static_cast<float>(n);
+                            const glm::vec3 place = at + shift;
+                            if (lamp.distance > 0.0f && glm::distance(eye, place) > lamp.distance * distance_scale) continue;
+                            if (!frustum.intersects_sphere(place, reach)) continue;
+                            auto one = light;
+                            one.to_light = light.to_light * glm::translate(glm::mat4{1.0f}, -shift);
+                            light_rings_.add(one, place, reach);
+                        }
+                    }
                     ++lamps;
                 }
             }
@@ -1533,9 +1623,20 @@ private:
     std::unique_ptr<renderer::SkyRenderer> sky_renderer_;
     std::unique_ptr<renderer::RouteStreamer> streamer_;
     std::unique_ptr<renderer::ModelLibrary> library_;
+    float forest_distance_ = 0.0f; // the forests' clearance they were built with
     // RTS's flashlight (Num2 / Shift+`): off at the start, as RTS's (0x4044B9).
     bool flashlight_ = false;
     glm::vec3 flashlight_forward_{0.0f, 0.0f, -1.0f};
+    // F12: the map's objects and their properties.
+    mutable Inspector inspector_;
+    [[nodiscard]] InspectorWorld inspector_world() const {
+        return {.instances = streamer_ ? &streamer_->visible_instances() : nullptr,
+                .library = library_.get(),
+                .vfs = content_.vfs().get(),
+                .origin = origin_,
+                .trains = train_.get(),
+                .root = content_.root()};
+    }
     // The start's loading screen (update_loading).
     static constexpr double loading_limit = 120.0;
     SceneLoading loading_;

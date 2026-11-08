@@ -4,6 +4,7 @@
 
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
+#include <openrts/renderer/forest_clearance.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/depth_export.hpp>
 #include <algorithm>
@@ -621,6 +622,11 @@ struct PanelState {
     float light_range = 0.0f;    // lamps lit within this distance, m; 0: RTS's MaxLightDistance (experimental renderer)
     float headlight_reach = 1.0f; // the trains' headlights reach this many times the .eng's (experimental renderer)
     bool light_fullbright = false; // FullBright surfaces lit as ordinary ones (experimental renderer)
+    bool lamp_own_model = true;    // a scenery lamp throws no shadow of its own model (experimental)
+    // Forests keep their trees off tracks and roads (openRTS; RTS plants them
+    // over the whole area): the crown this far from the way's edge, m.
+    bool forest_clearance = true;
+    float forest_clearance_distance = 3.0f;
     float fov = default_fov_degrees; // vertical field of view, degrees
     // The experimental path's effects (renderer::SceneEffects).
     renderer::SceneEffectSettings effects;
@@ -642,6 +648,7 @@ struct ClockControls {
         if (time_of_day < 0.0) time_of_day += day;
         return {
             .time_of_day = static_cast<std::int32_t>(time_of_day),
+            .time_of_day_exact = time_of_day,
             .elapsed = elapsed,
             .season = static_cast<renderer::rts::Season>(season),
             .weather = static_cast<renderer::rts::Weather>(weather),
@@ -834,6 +841,13 @@ public:
                 ImGui::SetTooltip("%s", tr("Not available on OpenGL: choose Vulkan or DirectX 12 (Graphics API) and restart."));
             else if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("Keeps the scene depth to the end of the frame and, with anti-aliasing, adds a copy ReShade can take. In ReShade: RESHADE_DEPTH_INPUT_IS_REVERSED 1, RESHADE_DEPTH_MULTIPLIER 20 (see INSTALL.md)."));
+            if (ImGui::Checkbox(tr("Keep trees off tracks and roads (not as in RTS)"), &panel.forest_clearance))
+                remember("forest_clearance", panel.forest_clearance ? "1" : "0");
+            ImGui::BeginDisabled(!panel.forest_clearance);
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::SliderFloat(tr("Trees from the track's or road's edge"), &panel.forest_clearance_distance, 0.5f, 20.0f, tr("%.1f m")))
+                remember("forest_clearance_distance", std::to_string(panel.forest_clearance_distance));
+            ImGui::EndDisabled();
             bool batching = renderer.batching();
             if (ImGui::Checkbox(tr("Merge identical primitives (instancing)"), &batching)) renderer.set_batching(batching);
             bool culling = renderer.face_culling();
@@ -960,6 +974,8 @@ public:
                 ImGui::SetTooltip("%s", tr("Light the sunlit ground throws back onto bogies and the underframe, as the ground's reflectance (ballast and grass about 0.2). 0: none."));
             if (ImGui::Checkbox(tr("Light FullBright as ordinary surfaces"), &panel.light_fullbright))
                 remember("light_fullbright", panel.light_fullbright ? "1" : "0");
+            if (ImGui::Checkbox(tr("A lamp throws no shadow of its own model"), &panel.lamp_own_model))
+                remember("lamp_own_model", panel.lamp_own_model ? "1" : "0");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("MSTS FullBright surfaces (platforms, signs) take sun, sky and lamps; their darkened night textures are left out."));
             ImGui::EndDisabled();
@@ -1173,6 +1189,7 @@ struct CameraInput {
     bool kp1_down = false;
     bool kp3_down = false;
     bool kp2_down = false;
+    bool inspector_key_down = false;
     int clicks = 0;            // left clicks in fly mode since the last scene_input()
     int releases = 0;          // left button let go (anywhere, over a panel too)
     double scroll = 0.0;       // wheel since the last scene_input()
@@ -1182,14 +1199,25 @@ struct CameraInput {
     bool keyboard_captured = false;   // the scene takes the keyboard (cab keys)
     double cursor_x = 0.0;
     double cursor_y = 0.0;
+    // The cursor was captured or let go in this poll: its moves do not turn
+    // the camera till the next (set_cursor_captured).
+    bool skip_motion = false;
 };
 
 [[nodiscard]] CameraInput* camera_input(GLFWwindow* window) {
     return static_cast<CameraInput*>(glfwGetWindowUserPointer(window));
 }
 
+// The right button's look: the cursor hidden and held in the window, the
+// mouse's raw motion where the system gives it. Without it GLFW turns the
+// cursor's moves into steps from the window's middle, where it puts the
+// cursor on capturing: a move still queued from before (the mouse moving
+// as the button went down) became a step from the middle to where the
+// button was pressed, and the camera turned at random.
 void set_cursor_captured(GLFWwindow* window, const bool captured) {
+    if (captured && glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     glfwSetInputMode(window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    if (auto* input = static_cast<CameraInput*>(glfwGetWindowUserPointer(window))) input->skip_motion = true;
 }
 
 void on_mouse_button(GLFWwindow* window, const int button, const int action, [[maybe_unused]] const int mods) {
@@ -1222,7 +1250,7 @@ void on_cursor_moved(GLFWwindow* window, const double x, const double y) {
     auto* input = camera_input(window);
     if (!input) return;
 
-    if (input->orbit_dragging || input->fly_looking) {
+    if ((input->orbit_dragging || input->fly_looking) && !input->skip_motion) {
         input->camera->rotate(static_cast<float>(x - input->cursor_x), static_cast<float>(y - input->cursor_y));
     }
     input->cursor_x = x;
@@ -1319,6 +1347,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool alt = down(GLFW_KEY_LEFT_ALT) || down(GLFW_KEY_RIGHT_ALT);
     const bool f5 = pressed(GLFW_KEY_F5, input.info_key_down);
     const bool f7 = pressed(GLFW_KEY_F7, input.track_control_key_down);
+    const bool f12 = pressed(GLFW_KEY_F12, input.inspector_key_down);
     const bool enter_now = down(GLFW_KEY_ENTER) || down(GLFW_KEY_KP_ENTER);
     const bool enter = enter_now && !input.enter_key_down;
     input.enter_key_down = enter_now;
@@ -1343,6 +1372,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.head_out = kp1;
         in.car_menu = kp3;
         in.flashlight = kp2;
+        in.inspector = f12;
         in.pointer = pointer;
         in.pointer_x = static_cast<float>(input.cursor_x / width * 2.0 - 1.0);
         in.pointer_y = static_cast<float>(1.0 - input.cursor_y / height * 2.0);
@@ -1840,6 +1870,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     std::size_t capture_menu_next = 0; // of capture_menu_more: the next to open and pick
     bool capture_menu_open = false;
     bool capture_uncoupled = false;
+    int capture_inspect_step = 0; // --capture-inspect: 1 opened, 2 clicked
     bool capture_driven = false;
     int capture_board_step = 0; // --capture-board: 1 at the door, then the presses of Enter
     FrameLimiter limiter;
@@ -1876,6 +1907,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto curve = remembered("tone_mode")) panel.tone_curve = std::clamp(std::atoi(curve->c_str()), 0, 4);
     if (const auto falloff = remembered("light_falloff")) panel.physical_light = *falloff == "physical";
     if (const auto fullbright = remembered("light_fullbright")) panel.light_fullbright = *fullbright == "1";
+    if (const auto own = remembered("lamp_own_model")) panel.lamp_own_model = *own != "0";
+    if (const auto clear = remembered("forest_clearance")) panel.forest_clearance = *clear != "0";
+    if (const auto distance = remembered("forest_clearance_distance")) {
+        try {
+            panel.forest_clearance_distance = std::clamp(std::stof(*distance), 0.5f, 20.0f);
+        } catch (...) {
+        }
+    }
+    renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
     if (const auto range = remembered("light_range"))
         panel.light_range = std::clamp(static_cast<float>(std::atof(range->c_str())), 0.0f, 3000.0f);
     if (options.light_range) panel.light_range = std::clamp(*options.light_range, 0.0f, 3000.0f);
@@ -1974,6 +2014,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         limiter.wait();
         stage_clock.start();
         glfwPollEvents();
+        input.skip_motion = false;
         const double now = glfwGetTime();
         if (!panel.window_mode_fixed) {
             // Alt+Enter: the window, or the full screen kind chosen last.
@@ -2012,6 +2053,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::light_range() = panel.light_range;
         renderer::headlight_reach() = panel.headlight_reach;
         renderer::light_fullbright() = panel.light_fullbright;
+        renderer::lamp_skips_own_model() = panel.lamp_own_model;
+        renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
         auto frame_input = scene_input(window.get(), input);
         if (!loading.done) {
             // The keys were read (their edges stay right) and are dropped;
@@ -2047,6 +2090,17 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 scene.choose_car_menu_item(options.capture_menu_more[capture_menu_next++]);
                 capture_menu_open = false;
             }
+        }
+        if (capture && options.capture_inspect && capture_inspect_step < 2 && glfwGetTime() - capture_start >= options.capture_at * 0.5) {
+            if (capture_inspect_step == 0) {
+                frame_input.inspector = true;
+            } else {
+                frame_input.pointer = true;
+                frame_input.pointer_x = 0.0f;
+                frame_input.pointer_y = 0.0f;
+                frame_input.click = true;
+            }
+            ++capture_inspect_step;
         }
         if (capture && options.capture_uncouple && !capture_uncoupled && glfwGetTime() - capture_start >= options.capture_at * 0.6) {
             scene.uncouple_driven(*options.capture_uncouple);
@@ -2179,7 +2233,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const renderer::SceneEffects::DepthDraw depth_draw = [&](const WGPURenderPassEncoder depth_pass, const std::uint32_t slot,
                                                                   const glm::mat4& view_projection, const renderer::DepthPassKind kind) {
             scene.draw_depth(depth_pass, slot, view_projection, kind);
-            renderer.render_depth(depth_pass, slot, view_projection, kind);
+            renderer.render_depth(depth_pass, slot, view_projection, kind,
+                                  renderer::lamp_skips_own_model() ? effects.depth_slot_owner(slot) : 0u);
         };
         scene.prepare_depth();
         // In parallel the workers record and finish a command buffer each
@@ -2295,6 +2350,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             std::cout << "models: " << model_stats.instances << " instances, " << model_stats.draw_calls << " draw calls" << std::endl;
             if (const auto world = scene.world_report(); !world.empty()) std::cout << "world: " << world << std::endl;
             if (options.capture_menu) std::cout << "car menu: " << scene.car_menu_report() << std::endl;
+            if (options.capture_inspect) std::cout << "inspector: " << scene.inspector_report() << std::endl;
             const auto effect_stats = effects.stats();
             std::cout << "effects: " << effect_stats.cascades << " cascades (" << effect_stats.cascades_drawn << " drawn, nearest texel "
                       << effect_stats.near_texel * 1000.0f << " mm), cab map " << (effect_stats.focus ? "on" : "off");

@@ -346,6 +346,16 @@ car's sound is made.
   `WagonOnAnyJoint` events from the train.
 - **Indices:** `EnableTrigger` / `DisableTrigger` count from 1, as
   `ingame.sms` numbers them.
+- **CONFIRMED the cab's doors and windows** (`0x438708`, `0x46AF1C`): an
+  `InteriorDoor`'s or `InteriorWindow`'s `SMSTriggers ( open shut )` (door
+  `+0x74` / `+0x76`, window `+0x60` / `+0x62`; 0 none) is posted when it
+  starts to open (the first) or to shut (the second), to every sound of
+  its car: the exterior script (Wagon `+0x178`), `+0x174`'s `+0xCC`, an
+  engine's cab script (`+0x1BC`'s `+0x10`) and each library's. The VL80's
+  cab scripts play `door_open.wav` / `door_close.wav` on 48 / 49 and
+  `win_open.wav` / `win_close.wav` on 200 / 201. openRTS
+  (`CabView::take_sounds`, `TrainView::post_cab_sounds`) did not read them
+  before 2026-11-08: the cab doors and windows were silent.
 
 ### Actions
 
@@ -391,13 +401,25 @@ car's sound is made.
     1–2 km/h), they were panned by turns and lost up to half their power:
     miniaudio pans a source farther than 1 mm, and one straight ahead gets
     0.5 per channel. RTS places no sound at all (above).
-- **CONFIRMED, not ported (2026-11-04):**
-  - `0x4A78A0` sets DirectSound's volume to 3000 × log10(v) hundredths of
-    a dB: 30 dB a decade, an amplitude of v^1.5 (openRTS: v);
-  - objects with flag 0x20 (`.ws` sources, `0x41B6D0`;
-    `AuxLibrarySoundExternal`, `0x56DC3C`) fade with distance by the
-    `Attenuation` rule (`0x4A7764`, below) unless their volume curve is
-    distance controlled. Rolling stock has no such flag.
+- **CONFIRMED, not ported (2026-11-04):** `0x4A78A0` sets DirectSound's
+  volume to 3000 × log10(v) hundredths of a dB: 30 dB a decade, an
+  amplitude of v^1.5 (openRTS: v).
+- **CONFIRMED, ported (2026-11-08): objects with flag 0x20 fade with
+  distance** by the `Attenuation` rule (`0x4A7764`, below), the default rule
+  for a stream without one, unless the stream's volume curve is distance
+  controlled (`0x4A78A0`). Rolling stock has no such flag.
+  - **Which objects:** `.ws` sources (`0x41B6D0`); level crossings
+    (`0x4210D9` gives crossing.sms's object 0x22); `AuxLibrarySoundExternal`
+    (`0x56DC3C`, not yet in openRTS).
+  - **openRTS:** `SoundInputs::fades_with_distance`, by the distance
+    variable. Before, a crossing's bell (Novokuznetsk's crossing.sms has no
+    curves) was as loud at 300 m as beside it.
+- **Stereo files in space (openRTS, 2026-11-08):** a voice placed in space
+  (panned or positional) plays a stereo file as its mono mix.
+  - **Why:** miniaudio pans a stereo source's channels only weakly.
+    Novokuznetsk's crossing bell (`sig_us_d.wav`, stereo 44.1 kHz) sounded
+    as if inside the head.
+  - **Not RTS:** RTS places no sound at all.
 - **UNKNOWN:**
   - whether RTS adds DirectSound 3D rolloff on top of the curves;
   - how RTS applies `Granularity`, `Priority` and the voice limits;

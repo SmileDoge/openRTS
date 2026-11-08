@@ -416,6 +416,50 @@ glTF replacements of whole `.s` shapes with the same node names. The RTS
 path always draws the MSTS version; the choice is visual only and never
 affects simulation or multiplayer.
 
+### 9. openRTS's own tier (the final step, after RTS; plan, 2026-11-08)
+
+The user's direction once RTS compatibility is as complete as it gets (it
+is close: going further means rules `rts1.exe` never had). One engine, two
+tiers of content:
+
+- **The MSTS/RTS tier.** RTS routes and stock run by MSTS/RTS rules,
+  faithful to `rts1.exe` (reverse engineering, as everything above). It
+  stays as it is; nothing of the tier below changes it.
+- **The openRTS tier.** Closer to Train Sim World or Trainz 2022 (not a
+  copy): better models and graphics, track development, infrastructure. An
+  RTS route is described almost entirely by MSTS/RTS rules; an openRTS
+  route has the improved models, graphics, track and infrastructure.
+
+Both run on the same core: the track network, signals, the dispatcher, the
+physics, the network game. The core already works on an abstract track
+network, not on the TDB, so an openRTS route only builds the same network
+from its own files.
+
+What the openRTS tier means:
+
+| Area | MSTS/RTS | openRTS |
+|---|---|---|
+| Models | `.s`, textures with light painted in | glTF from Blender, PBR materials, proper levels of detail |
+| Track | `tsection.dat` sections, the track written twice (`.w` + TDB) | splines with transition curves and cant; the track graph the one source, rails, sleepers and ballast built from it |
+| Infrastructure | mast and wire shapes placed by hand | data tied to the track: catenary generated along electrified sections, signals on the graph with their logic |
+| Terrain | a coarse grid, a texture per patch | finer heights, blended materials, procedural grass and trees (GPU grass instead of 2-4 BlendATexDiff quads), roads as splines |
+| Rolling stock | `.eng` / `.wag` + DLL | the car as an entity with modules (`## Cars as entities`), PBR models |
+
+- **The track is the big gain.** The hardest part of an MSTS-style route
+  editor, keeping `.w` and the TDB in step, goes away: an openRTS route
+  editor (on the inspector, `docs/inspector.md`) is far simpler than a
+  clone of the MSTS one. Train and cab editors build on the same base.
+- **Hybrid on the way:** an RTS route plus an openRTS layer in a mod
+  (grass masks, PBR maps beside its textures, replaced models, the
+  inspector's `.openrts` overrides): existing routes improve step by step
+  without being rebuilt. Step 8's PBR is this layer for models.
+- **Multiplayer:** openRTS-tier content is for openRTS clients only, the
+  server's Legacy-off mode (`net.md`).
+- **Order, when it starts:** the glTF + PBR model pipeline in the
+  experimental renderer first (stock, scenery and infrastructure all need
+  it); GPU grass at any time (it needs no new content); then the openRTS
+  track and infrastructure on splines with the route editor.
+
 ## Left to do outside multiplayer (2026-11-04)
 
 None of it blocks multiplayer.

@@ -97,6 +97,11 @@ struct SoundInputs {
     // frame's travel away from it while the train moves, would be panned
     // and lose up to half its power by turns (miniaudio's spatializer).
     bool at_listener = false;
+    // RTS sound object flag 0x20 (.ws sources and level crossings, 0x41B6D0
+    // and 0x4210D9): every stream fades with the distance variable by its
+    // Attenuation, the default rule when it has none (0x4A7764), unless its
+    // volume curve is controlled by the distance (0x4A78A0).
+    bool fades_with_distance = false;
 
     [[nodiscard]] float& operator[](formats::SoundVariable variable) {
         return variables[static_cast<std::size_t>(variable)];

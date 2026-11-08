@@ -62,9 +62,11 @@ class SkySimulation {
 public:
     explicit SkySimulation(const formats::EnvironmentDefinition& environment);
 
-    // `time_of_day` in seconds, `elapsed` frame time in seconds, `camera_tile_z`
-    // the camera's MSTS tile Z (RTS derives the sun's culmination from it).
-    [[nodiscard]] SkyState update(std::int32_t time_of_day, float elapsed, std::int32_t camera_tile_z, Season season);
+    // `time_of_day` in seconds (with their fraction: RTS steps whole seconds,
+    // and the sun and its shadows moved in jumps once a second), `elapsed`
+    // frame time in seconds, `camera_tile_z` the camera's MSTS tile Z (RTS
+    // derives the sun's culmination from it).
+    [[nodiscard]] SkyState update(double time_of_day, float elapsed, std::int32_t camera_tile_z, Season season);
 
 private:
     const formats::EnvironmentDefinition* environment_;
@@ -73,9 +75,9 @@ private:
 
 // Pure parts, exposed for tests.
 [[nodiscard]] SatelliteState evaluate_satellite(const formats::SkySatellite& satellite,
-                                                std::int32_t time_of_day,
+                                                double time_of_day,
                                                 std::int32_t camera_tile_z,
                                                 Season season);
-[[nodiscard]] SkyLayerState evaluate_layer_fade(const formats::SkyLayer& layer, std::int32_t time_of_day);
+[[nodiscard]] SkyLayerState evaluate_layer_fade(const formats::SkyLayer& layer, double time_of_day);
 
 } // namespace openrts::renderer::rts

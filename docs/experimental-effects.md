@@ -273,7 +273,14 @@ Up to eight lamps throw shadows (`lamp_shadows`,
 «Тени от фонарей», `--lamp-shadows 0..8`, 3; four until 2026-11-07), chosen
 in `SceneEffects::set_focus` after the scene's submit. The place they are
 for:
-- in the cab: the cab sphere;
+- at the desk (in the chair, or risen at it): the cab sphere (4.5 m round
+  the eye, moved on when he moves a metre away);
+- on foot anywhere in a cab or salon shape (since 2026-11-08; a salon of
+  another car, the ED9M head car's own salon, the cab away from the desk):
+  the shape's box, at most 16 m, fixed while he walks. With the desk's
+  sphere a 25 m car was shadowed 4.5 m round the eye only, the outside
+  lamps lit the rest through its walls, and their shadows came in steps as
+  he walked;
 - in flight (`ViewerScene::lamp_shadow_focus`): along the view to the
   ground (the terrain, up to 200 m; looking up or level, 40 m), the sphere
   over that stretch from the camera: its middle at 0.6 of the reach, its
@@ -325,6 +332,25 @@ four times larger offset off the surface). Two maps cost about 0.1 ms.
 - So the six-map cube a sphere lamp inside the cab sphere would need is left out:
   - about 0.3 ms;
   - 24 MB at 1024².
+
+**A lamp's own model (2026-11-08).** «Фонарь не отбрасывает тень от своей
+модели» (`lamp_own_model`, on): a scenery lamp's shadow map leaves out the
+instance the lamp belongs to; the lamp still lights it. Some shapes put the
+light's place inside the lamp's body, which then threw its own shadow
+over everything round. The scene tags each world instance
+(`ModelRenderer::set_owner`, its place in the visible list + 1) and its
+lamps with the same (`ModelExtraLight::owner`); `SceneEffects` keeps each
+shadow's lamp's owner (`depth_slot_owner`), and `render_depth` skips the
+instances so tagged in that slot.
+
+**Rows of lamps.** A `LightArray` row (`reverse/shape-rendering.md`) is a
+light per lamp on this path: each is clustered and chosen for shadows on
+its own; before, the one row-light's map was taken from its first lamp for
+every lamp of the row. A row is seen or not by its whole length (the RTS
+path: one sphere over the row; here each lamp by its own place, and its
+`Distance` too), and a shape's distance on this path is from its near
+side: from the far end of `platf_fonar_9.s` (200 m) the row was dropped
+with its first lamp out of view.
 
 ### Ground bounce
 

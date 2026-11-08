@@ -11,6 +11,7 @@ add_library(openrts_renderer STATIC
     src/model_assets.cpp
     src/transfer_shape.cpp
     src/forest_shape.cpp
+    src/forest_clearance.cpp
     src/scene_effects.cpp
     src/task_pool.cpp
     src/model_library.cpp

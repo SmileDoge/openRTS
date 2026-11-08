@@ -1031,7 +1031,7 @@ struct BoundsAccumulator {
     [[nodiscard]] ModelBounds sphere() const {
         if (empty) return {};
         const auto center = (min + max) * 0.5f;
-        return {.center = center, .radius = glm::length(max - center)};
+        return {.center = center, .radius = glm::length(max - center), .min = min, .max = max};
     }
 };
 
@@ -1181,6 +1181,7 @@ struct RenderModel::Impl {
     bool night_unlit = false;
     bool fullbright_day = false;
     std::vector<formats::ShapeLight> lights;
+    std::vector<ModelPrimitive> primitives;
     // Matrices, hierarchy and animations, kept when the shape is animated so
     // instances can be drawn at their own frame.
     std::shared_ptr<const formats::ShapeModel> rig;
@@ -1249,6 +1250,16 @@ std::uint32_t RenderModel::alternative_texture() const noexcept { return impl_ ?
 
 bool RenderModel::fullbright_images() const noexcept { return impl_ && impl_->fullbright_images; }
 
+const std::vector<ModelPrimitive>& RenderModel::primitives() const noexcept {
+    static const std::vector<ModelPrimitive> none;
+    return impl_ ? impl_->primitives : none;
+}
+
+const std::vector<float>& RenderModel::level_distances() const noexcept {
+    static const std::vector<float> none;
+    return impl_ ? impl_->level_distances : none;
+}
+
 const std::vector<std::string>& RenderModel::texture_key() const noexcept {
     static const std::vector<std::string> none;
     return impl_ ? impl_->texture_key : none;
@@ -1289,6 +1300,7 @@ struct ModelRenderer::Impl {
         // RTS object pass (rts::object_pass, 0x4E0BFC).
         std::uint32_t static_flags = 0;
         bool transfer = false;
+        std::uint32_t owner = 0; // set_owner
         // First of this instance's animated local matrices in
         // `frame_locals`, or -1 for the model's rest pose.
         std::ptrdiff_t matrices = -1;
@@ -1351,6 +1363,7 @@ struct ModelRenderer::Impl {
     };
     // Each queued instance's bounding sphere in world space (centre, radius).
     std::vector<glm::vec4> instance_spheres;
+    std::vector<std::uint32_t> instance_owners; // set_owner, by instance
     // Instance ids of the depth passes: after the main draws' ids, a region
     // of `depth_id_total` per slot.
     std::size_t depth_id_base = 0;
@@ -1904,6 +1917,18 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     gpu->texture_key = asset.texture_key;
     gpu->lights = asset.lights;
     gpu->dependencies = asset.dependency_keys();
+    gpu->primitives.reserve(model.primitive_states.size());
+    for (std::size_t i = 0; i < model.primitive_states.size(); ++i) {
+        const auto& state = model.primitive_states[i];
+        ModelPrimitive p{.index = static_cast<std::uint32_t>(i), .image = formats::primitive_image(model, static_cast<std::uint32_t>(i))};
+        if (state.shader_index < model.shader_names.size()) p.shader = model.shader_names[state.shader_index];
+        if (state.vertex_state_index >= 0 && static_cast<std::size_t>(state.vertex_state_index) < model.vertex_states.size())
+            p.light_material = model.vertex_states[static_cast<std::size_t>(state.vertex_state_index)].light_material_index;
+        p.shape_light_material = i < asset.original_light.size() ? asset.original_light[i] : p.light_material;
+        for (const auto& draw : model.draws)
+            if (draw.primitive_state_index == i) ++p.draws;
+        gpu->primitives.push_back(std::move(p));
+    }
     {
         // Kept for every model: animations, and posing named nodes (bogies,
         // wheels) of rolling stock.
@@ -2275,6 +2300,11 @@ void ModelRenderer::set_world_object(const std::uint32_t static_flags, const boo
     impl_->queue.back().transfer = transfer;
 }
 
+void ModelRenderer::set_owner(const std::uint32_t owner) {
+    if (!impl_ || impl_->queue.empty()) return;
+    impl_->queue.back().owner = owner;
+}
+
 // Builds the frame's primitive list for the active shading path, merges
 // identical primitives of different instances into instanced draw calls,
 // uploads the frame data at once and records the draws.
@@ -2570,6 +2600,7 @@ void ModelRenderer::prepare() {
     auto& instances = impl_->frame_instances;
     instances.resize(count);
     impl_->instance_spheres.resize(count);
+    impl_->instance_owners.resize(count);
     const auto& rings = impl_->frame.lighting.light_rings;
     const auto fill = [&](const std::size_t from, const std::size_t to) {
         for (std::size_t k = from; k < to; ++k) {
@@ -2588,6 +2619,7 @@ void ModelRenderer::prepare() {
                 .ring = static_cast<std::int32_t>(rings.ring_for(centre, bounds.radius * scale)),
             };
             impl_->instance_spheres[k] = glm::vec4{centre, bounds.radius * scale};
+            impl_->instance_owners[k] = submitted.owner;
         }
     };
     constexpr std::size_t chunk = 1024;
@@ -2720,7 +2752,7 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function
 }
 
 void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::uint32_t slot, const glm::mat4& view_projection,
-                                 const DepthPassKind kind) {
+                                 const DepthPassKind kind, const std::uint32_t skip_owner) {
     if (!ready() || slot >= Impl::depth_slots) return;
     prepare();
     OPENRTS_ZONE("models: depth pass");
@@ -2747,6 +2779,7 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
         const auto first = ids.size();
         for (std::uint32_t k = batch.first; k < batch.first + batch.count; ++k) {
             const auto instance = impl.depth_instances[k];
+            if (skip_owner != 0 && instance < impl.instance_owners.size() && impl.instance_owners[instance] == skip_owner) continue;
             const auto& sphere = impl.instance_spheres[instance];
             if (frustum.intersects_sphere(glm::vec3{sphere}, sphere.w)) ids.push_back({instance, batch.draw->slot});
         }

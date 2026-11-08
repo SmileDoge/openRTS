@@ -349,6 +349,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             } else {
                 options.capture_menu = item;
             }
+        } else if (flags[i] == "--capture-inspect") {
+            options.capture_inspect = true;
         } else if (flags[i] == "--capture-uncouple" && has_value) {
             options.capture_uncouple = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--capture-board" && has_value) {

@@ -83,7 +83,7 @@ endif()
 # Night and seasonal textures, scenery lamps (ESD_Alternative_Texture, ESD_LightSources).
 add_executable(openrts_alternative_texture_test alternative_texture_test.cpp)
 openrts_configure_target(openrts_alternative_texture_test)
-target_link_libraries(openrts_alternative_texture_test PRIVATE openrts_renderer openrts_formats openrts_core)
+target_link_libraries(openrts_alternative_texture_test PRIVATE openrts_renderer openrts_simulation openrts_formats openrts_core)
 add_test(NAME openrts.alternative_texture COMMAND openrts_alternative_texture_test)
 if(OPENRTS_TEST_ROOT)
     add_test(NAME openrts.content.night_textures COMMAND openrts_alternative_texture_test "${OPENRTS_TEST_ROOT}")

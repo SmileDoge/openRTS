@@ -848,6 +848,13 @@ without compliance and RTS refuses it too.
   foot (`byte_61D394 = 2`); **Num0** opens / closes the chair's
   `HeadOutWindow` when it `CanBeOpened` and the head is in; **Num1** puts
   the head out (action 4, bit 1 of +44) when that window is open, and back.
+  openRTS (2026-11-08, `Engineer::risen`): the same; before, Enter got him
+  up on foot at `Pos2`. Risen he stands on the floor at `Pos2`, still in
+  the chair's mode: the arrows do not walk him. openRTS's own addition, not
+  RTS's: the wheel at the chair, off the controls, moves the head nearer to
+  what the cursor points at (up to 0.6 m) or back (`Engineer::lean`); the
+  `.sd` `CloseUps` scenes (`CameraPosition`, `CameraDirection`, a few cabs
+  such as the ER2t's timetable) are another thing, not done.
 - **CONFIRMED** Moving (`0x4121BC`, `GetAsyncKeyState`): the arrows walk
   (Up / Down along the view, Left / Right sideways) outside (`byte_61D394`
   1) and in the train (2, 6) at `player_speed`; Shift at

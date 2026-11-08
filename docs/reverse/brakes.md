@@ -201,10 +201,60 @@ BrakeForce = max(BrakeCylinderPressure, IndependentBrakePressure)
 - This force joins the dissipative force of the coupler solver
   (`runtime-overview.md`). It reduces speed only, as static friction.
 
+## Initial pressures — CONFIRMED (2026-11-08)
+
+- **A new car has no air.** The Wagon constructor (`0x4FD65C`, called by
+  `0x4FE470`; the cars of a consist at `0x4C462D`, `new` of 0x208 bytes)
+  clears its first 0x184 bytes: the auxiliary reservoir `+0x38`, the
+  control chamber `+0x40`, the cylinder `+0x60`, the pipe `+0x64`, the
+  charging pipe `+0x6C` start at 0. No code puts a fixed charge in the pipe
+  or takes one from the wagon type. The main reservoir (`+0x194`, past the
+  cleared part, `HeapAlloc` without zeroing) has no initialiser either
+  (PROBABLE 0 in a fresh heap).
+- **The DLL's `Init` writes what its start wants**, straight into the
+  Wagon. Read back after `Init` in openRTS's host (2026-11-08): the MaDaDev
+  VL80T and EP1M (Brakes.dll among their libraries) leave the pipe and the
+  main reservoir at 0 cold, 5.0 and 7.0 on, 5.2 and 8.5 running, and the
+  auxiliary reservoir at 0 in every state. The VL10k source does the same
+  (`train-dll.md`).
+- **After `Init`** (`0x503004`): the engine's control chamber is its pipe
+  less 0.2, not below 0.
+- **On entering** (`0x468C74`, the copy at `0x46955C`, once a train: train
+  `+4` bit 4): every car of the train takes the player's engine's pipe,
+  charging pipe, cylinder, auxiliary reservoir and control chamber.
+- So a cold MaDaDev locomotive starts with an empty pipe (its 367 lock can
+  be turned at once, Brakes.dll wanting the pipe below 0.2), and a train
+  started on charges its cars' empty auxiliary reservoirs from the pipe:
+  the VL80T's pipe dips to about 1.6 and is back at 4.6 in 20 s, an ED9M of
+  five cars at 4.2 in 18 s.
+- openRTS (`trainplugin::enter_new_train`, the first entering of a train
+  just loaded or put back; the host's `collect_air`): the same. Before
+  2026-11-08 every train started charged (pipe 5.0, auxiliary 4.8, main
+  reservoir 8.5) and the host never read back what `Init` wrote, so a cold
+  VL80T or EP1M had 5 atm in its pipe and its 367 key could only go in
+  after the combined valve's emergency position emptied it. What a DLL
+  writes into a Wagon's pressures in `Run` is still not read back.
+- **A running start, PROBABLE (2026-11-08):** the cars start with empty
+  auxiliary reservoirs and no train brake for about 80 s (the VL80T).
+  - **Why:** its `Init` leaves the pipe at 5.2 and the auxiliary reservoir
+    at 0. The 395's stabiliser then lowers the pipe a little every step
+    (5.2 to about 5.1 in a minute). The triple valve charges only while the
+    pipe is not falling (step 6), so it waits. A service application (V)
+    meanwhile fills no cylinder.
+  - **The independent brake** fills from the DLL's demand (step 7), without
+    the auxiliary reservoir.
+  - **The DLL writes no pressure in `Run`:** traced in the host for 30 s of
+    a running VL80T: no car's pipe, auxiliary reservoir, cylinder, control
+    chamber or charging pipe changed in `Run`. RTS runs the same `Init`, the
+    same copy on entering and the same triple valve, so it does the same by
+    its code; not seen in RTS itself.
+  - **Other trains:** an ED9M started running charges in about 20 s (its
+    pipe rises, so the valve charges).
+  - openRTS keeps this as RTS does (the RTS tier).
+
 ## Not traced
 
-- **Initial pressures** when a train is created: charged or empty, and per
-  `Init` state.
+- **The main reservoir's start** (`+0x194`): see above.
 - **Where flags1 `0x10`** (emergency) is set: train separation, the
   passenger alarm, the DLL?
 - **`TrainPipeLeakRate`:** its use.

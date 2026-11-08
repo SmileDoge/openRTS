@@ -81,15 +81,17 @@ void draw_controls_help() {
     note("A locomotive with a DLL is driven from its cab with the mouse and the cab keys of its .sd, as in RTS: \"Cab keys of the locomotive DLL\" in the Train window gives them the keyboard (the camera keys are off then, the F keys work).");
 
     if (begin_section("Engineer and cab", "##controls_cab")) {
-        row("Enter", "stand at the desk / sit / open a door / climb up");
-        row("Ctrl+Enter", "step into the gangway; at a door outside: climb up");
+        row("Enter", "in the chair: rise at the desk and sit back / sit down / open a door / climb up");
+        row("Ctrl+Enter", "get up from the chair, step into the gangway; at a door outside: climb up");
         row("Arrows, Shift, End", "walk, run, slower");
         row(window_key_name(), "open the window");
         row(head_out_key_name(), "lean out");
         row(car_menu_key_name(), "the car menu at the coupling or bogie under the cursor (outside)");
         row(flashlight_key_name(), "the flashlight on / off");
+        row("F12", "the inspector: the map's objects and their properties");
         row("RMB + mouse", "look around");
         row("Mouse", "click: a control; wheel: one position; drag: handles and blinds");
+        row("Wheel at the chair", "off the controls: the head nearer to what the cursor points at, or back");
         row("Alt", "captions of the cab's controls");
         ImGui::EndTable();
     }

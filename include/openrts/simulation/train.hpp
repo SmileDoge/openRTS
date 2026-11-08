@@ -335,6 +335,11 @@ public:
     void set_car_flags(std::size_t car, CarFlags which, std::uint8_t mask, bool on);
     // Car `car`'s handbrake, 0..1.
     void set_handbrake(std::size_t car, float value);
+    // Car `car`'s air, atm (a DLL's Init sets it; RTS's cars start empty).
+    struct Air {
+        float pipe{}, charging_pipe{}, cylinder{}, auxiliary{}, control{}, main_reservoir{};
+    };
+    void set_air(std::size_t car, const Air& air);
     // A car has derailed (it tips over or slides off; placing the train
     // again puts everything back on the rails).
     [[nodiscard]] bool derailed() const noexcept;

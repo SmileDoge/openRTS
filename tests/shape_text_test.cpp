@@ -9,6 +9,8 @@
 #include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/formats/shape_file.hpp>
+#include <openrts/formats/shape_override.hpp>
+#include <openrts/formats/shape_description.hpp>
 
 namespace {
 
@@ -137,7 +139,66 @@ bool near(const double a, const double b) { return std::abs(a - b) < 1e-5; }
 
 } // namespace
 
+// The inspector's override (formats/shape_override.hpp): written and read
+// back; applied, a primitive state gets a vertex state of its own, the one
+// sharing the old keeps it; a shape whose image changed is left alone.
+void override_checks() {
+    using namespace openrts::formats;
+    ShapeOverride data;
+    data.set_light_material(1, "TEXTURES/Platform.ACE", -5);
+    data.set_light_material(0, "sign.ace", -5);
+    data.set_light_material(0, "sign.ace", std::nullopt); // taken back
+    check(data.prim_states.size() == 1 && data.prim_states[0].index == 1 && data.prim_states[0].image == "platform.ace",
+          "an override keeps the changed state, its image's name in lower case");
+    const auto again = parse_shape_override(write_shape_override(data));
+    check(again.prim_states.size() == 1 && again.prim_states[0].index == 1 && again.prim_states[0].image == "platform.ace"
+              && again.prim_states[0].light_material == -5,
+          "an override written and read back");
+
+    ShapeModel model;
+    model.images = {"sign.ace", "platform.ace"};
+    model.textures = {{.image_index = 0}, {.image_index = 1}};
+    model.vertex_states = {{.light_material_index = -8}};
+    model.primitive_states = {{.texture_index = 0, .texture_count = 1, .vertex_state_index = 0},
+                              {.texture_index = 1, .texture_count = 1, .vertex_state_index = 0}};
+    const auto before = apply_shape_override(model, data);
+    check(before.size() == 2 && before[0] == -8 && before[1] == -8, "the light materials before the override");
+    check(model.vertex_states.size() == 2 && model.primitive_states[1].vertex_state_index == 1
+              && model.vertex_states[1].light_material_index == -5 && model.primitive_states[0].vertex_state_index == 0
+              && model.vertex_states[0].light_material_index == -8,
+          "the overridden state lit as ordinary, the other still FullBright");
+
+    ShapeModel changed;
+    changed.images = {"sign.ace", "other.ace"};
+    changed.textures = {{.image_index = 0}, {.image_index = 1}};
+    changed.vertex_states = {{.light_material_index = -8}};
+    changed.primitive_states = {{.texture_index = 0, .texture_count = 1, .vertex_state_index = 0},
+                                {.texture_index = 1, .texture_count = 1, .vertex_state_index = 0}};
+    apply_shape_override(changed, data);
+    check(changed.vertex_states.size() == 1 && changed.primitive_states[1].vertex_state_index == 0,
+          "an override whose image no longer matches is skipped");
+}
+
+// LightArray ( n dx dy dz ) of an ESD_LightSources lamp: the Novokuznetsk
+// platform's platf_fonar_9.sd has two rows, 4 and 5 lamps 50.118 m apart.
+void light_array_checks() {
+    using namespace openrts::formats;
+    const auto result = parse_shape_description(
+        "SIMISA@@@@@@@@@@JINX0t1t______\nShape ( platf_fonar_9.s\n ESD_LightSources ( 2\n"
+        "  LightSource ( Position ( -75.323 7.339 -0.903 ) PointsTo ( -75.323 -1.428 -3.207 ) Radius ( 20 20 )\n"
+        "   Flags ( NIGHT_AUTO LIGHT_CONE ) LightArray ( 4 50.118 0.0 0.0 ) )\n"
+        "  LightSource ( Position ( -100.238 7.339 0.89 ) PointsTo ( -100.238 -1.428 3.207 ) Radius ( 20 20 ) ) ) )");
+    check(result.ok() && result.value->lights.size() == 2, "two light sources");
+    if (!result.ok() || result.value->lights.size() != 2) return;
+    const auto& row = result.value->lights[0];
+    check(row.array_count == 4 && std::abs(row.array_step[0] - 50.118f) < 1e-4f && row.array_step[1] == 0.0f,
+          "LightArray: four lamps 50.118 m apart along x");
+    check(result.value->lights[1].array_count == 0, "a lamp without LightArray is one lamp");
+}
+
 int main() {
+    override_checks();
+    light_array_checks();
     using namespace openrts::formats;
     const auto bytes = utf16_file(quad_shape);
     const std::string_view file = bytes;
@@ -246,6 +307,21 @@ int main() {
         check(cab.doors.size() == 1, "the open block's door");
         check(cab.windows.size() == 1 && cab.chairs.size() == 1 && cab.chairs[0].seated[2] > 9.0f,
               "the window and the chair inside the open block");
+    }
+
+    // SMSTriggers of a door and a window (the VL80T's DOOR_A: 48 49): the
+    // codes for the car's sounds as it opens and shuts.
+    {
+        const auto cab = parse_cab_description(utf16_file(
+            "SIMISA@@@@@@@@@@JINX0t1t______\nShape ( cab.s\n ESD_Interior ( Switches ( 1 Switch ( ID ( 0 ) Name ( C_MAIN ) ) )\n"
+            " InteriorGeometryInfo ( InteriorDoors ( 2 InteriorDoor ( Name ( DOOR_A ) Connects ( MACHINE EXTERIOR ) SMSTriggers ( 48 49 ) )\n"
+            " InteriorDoor ( Name ( DOOR_A1 ) ParentObject ( 0 ) ) )\n"
+            " InteriorWindows ( 1 InteriorWindow ( Name ( W1 ) CanBeOpened ( 1 ) SMSTriggers ( 200 201 ) ) ) ) ) )"));
+        check(cab.doors.size() == 2 && cab.doors[0].sms_triggers[0] == 48 && cab.doors[0].sms_triggers[1] == 49
+                  && cab.doors[1].sms_triggers[0] == 0,
+              "a door's SMSTriggers, none on its child");
+        check(cab.windows.size() == 1 && cab.windows[0].sms_triggers[0] == 200 && cab.windows[0].sms_triggers[1] == 201,
+              "a window's SMSTriggers");
     }
 
     // ParentObject: the EP1M's blind pieces follow shtora8_1 (and through it

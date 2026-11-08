@@ -55,7 +55,7 @@ glm::vec4 colour_from_argb(const std::uint32_t argb) {
 }
 
 SatelliteState evaluate_satellite(const formats::SkySatellite& satellite,
-                                  const std::int32_t time_of_day,
+                                  const double time_of_day,
                                   const std::int32_t camera_tile_z,
                                   const Season season) {
     SatelliteState state;
@@ -120,7 +120,7 @@ SatelliteState evaluate_satellite(const formats::SkySatellite& satellite,
     return state;
 }
 
-SkyLayerState evaluate_layer_fade(const formats::SkyLayer& layer, const std::int32_t time_of_day) {
+SkyLayerState evaluate_layer_fade(const formats::SkyLayer& layer, const double time_of_day) {
     SkyLayerState state;
     auto now = time_of_day;
     if (layer.fade_in_start < 0 && layer.fade_in_start + seconds_per_day < now) now -= seconds_per_day;
@@ -146,7 +146,7 @@ SkyLayerState evaluate_layer_fade(const formats::SkyLayer& layer, const std::int
 SkySimulation::SkySimulation(const formats::EnvironmentDefinition& environment)
     : environment_(&environment), uv_offsets_(environment.sky_layers.size(), {0.0f, 0.0f}) {}
 
-SkyState SkySimulation::update(const std::int32_t time_of_day,
+SkyState SkySimulation::update(const double time_of_day,
                                const float elapsed,
                                const std::int32_t camera_tile_z,
                                const Season season) {

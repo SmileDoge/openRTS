@@ -65,6 +65,13 @@ public:
     [[nodiscard]] bool inside() const noexcept { return mode_ == Mode::seated || mode_ == Mode::standing; }
     // The chair he sits in or stands by (the start's, the last one taken).
     [[nodiscard]] std::size_t chair() const noexcept { return chair_; }
+    // At the chair, risen to its Pos2 (Enter in the chair, RTS's chair action
+    // 3): still bound to it, the arrows do not walk; Enter sits him back down.
+    [[nodiscard]] bool risen() const noexcept { return mode_ == Mode::seated && up_; }
+    // The wheel at the chair, off the controls: the head nearer (`notches` >
+    // 0) along `along` (cab space, where the cursor points) or back, at most
+    // 0.6 m from where it is, smoothly.
+    void lean(const glm::vec3& along, float notches);
     // Into the cab, seated in chair `chair` (0: the driver).
     void sit(std::size_t chair);
     // On foot outside at `feet` (scene coordinates), as RTS starts an
@@ -132,6 +139,9 @@ private:
     float blend_ = 1.0f;
     bool blocked_ = false;        // the last step ran into something
     bool head_out_ = false;       // seated, the head out of the chair's window
+    bool up_ = false;             // seated: risen at the chair (Pos2), risen()
+    glm::vec3 up_feet_{};         // where he stands then (Pos2 on the floor)
+    glm::vec3 lean_{}, lean_goal_{}; // the wheel's offset of the head at the chair, cab space
     bool rebase_ = false;         // keep the camera's heading on entering a car
     std::optional<std::size_t> pass_;
     std::string prompt_;

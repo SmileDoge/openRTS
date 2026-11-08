@@ -210,6 +210,9 @@ struct TrainView::Unit {
     float still = 0.0f;      // s standing still (RTS: a LOOSE train becomes STATIC after 30 s)
     std::vector<simulation::CarPlacement> previous, current;
     std::vector<double> previous_travelled, current_travelled;
+    // The bodies on their springs (CarState::body) at the last two steps:
+    // drawn between them like the placements, not stepping at 20 Hz.
+    std::vector<glm::vec3> previous_body, current_body;
     // Its cars are in the DLL host (the driven train, or a part cut off from
     // it): host_train is its train there (0: the driven one).
     bool host = false;
@@ -223,6 +226,15 @@ struct TrainView::Unit {
         current_travelled.resize(train->cars().size());
         for (std::size_t i = 0; i < current_travelled.size(); ++i) current_travelled[i] = train->cars()[i].travelled;
         previous_travelled = current_travelled;
+        take_body();
+        previous_body = current_body;
+    }
+    void take_body() {
+        current_body.resize(train->cars().size());
+        for (std::size_t i = 0; i < current_body.size(); ++i) {
+            const auto& body = train->cars()[i].body;
+            current_body[i] = glm::vec3{body[0], body[1], body[2]};
+        }
     }
 };
 
@@ -418,6 +430,7 @@ std::string TrainView::load(const std::string_view consist_name) {
     unit.role = Role::driven;
     driver_ = simulation::attach_keyboard_driver(*unit.train);
     units_.push_back(std::move(unit));
+    fresh_train_ = true;
     attach_legacy();
     follow_id_ = 0;
     joints_ = junctions_ = coupler_breaks_ = derailments_ = 0;
@@ -871,7 +884,7 @@ void TrainView::attach_legacy() {
     auto& unit = units_.front();
     std::vector<LegacyCarRef> cars;
     for (const auto& car : unit.cars) cars.push_back({car.definition, car.folder, car.uid, car.key});
-    legacy_ = LegacyCab::attach(*vfs_, cars, *unit.train, legacy_status_, start_state_, &route_);
+    legacy_ = LegacyCab::attach(*vfs_, cars, *unit.train, legacy_status_, start_state_, &route_, std::exchange(fresh_train_, false));
     // A new host: the driven train alone (the parts cut off before went with
     // the old one; their controllers turn inert).
     for (auto& each : units_) {
@@ -1397,6 +1410,33 @@ const TrainView::Unit* TrainView::find_unit(const std::uint64_t id) const {
         if (unit.train && unit.train->id() == id) return &unit;
     }
     return nullptr;
+}
+
+std::vector<TrainView::InspectedCar> TrainView::inspected_cars(const std::uint64_t train) const {
+    std::vector<InspectedCar> result;
+    for (const auto& unit : units_) {
+        if (!unit.train || unit.train->id() != train) continue;
+        for (std::size_t i = 0; i < unit.cars.size(); ++i) {
+            const auto& car = unit.cars[i];
+            InspectedCar c{.index = i, .shape = car.shape, .engine = car.engine};
+            if (car.definition) {
+                c.name = car.definition->name;
+                c.mass = car.definition->mass;
+                c.length = car.definition->length;
+                c.width = car.definition->width;
+                c.height = car.definition->height;
+                if (car.definition->engine) c.library = car.definition->engine->library_module;
+            }
+            if (c.name.empty()) c.name = car.file;
+            c.file = "TRAINS/TRAINSET/" + car.folder + "/" + car.file + (car.engine ? ".eng" : ".wag");
+            if (i < unit.current.size()) {
+                if (const auto body = body_pose(unit, i, false)) c.transform = body->transform;
+            }
+            result.push_back(std::move(c));
+        }
+        break;
+    }
+    return result;
 }
 
 std::vector<TrainView::Summary> TrainView::summaries() const {
@@ -2153,6 +2193,7 @@ std::string TrainView::put_back(std::vector<PlacedTrain> saved, const std::strin
         driver_ = simulation::attach_keyboard_driver(*units_.front().train);
         consist_ = units_.front().name;
     }
+    fresh_train_ = true;
     attach_legacy();
     if (units_.front().role != Role::driven) attach_role(units_.front());
     pending_path_ = false;
@@ -2435,6 +2476,10 @@ void TrainView::draw_hud() {
                 }
                 ImGui::Text(tr("Overall: mass %.1f t, length %.0f m, units %zu (passenger %zu, freight %zu, engines %zu)"),
                             train.mass() / 1000.0, train.length(), unit->cars.size(), passenger, freight, engines);
+                std::size_t chocked = 0;
+                for (const auto& state : train.cars())
+                    if (state.chocks != 0) ++chocked;
+                if (chocked > 0) ImGui::Text(tr("Chocks under %zu cars"), chocked);
             } else {
                 char next[64];
                 std::snprintf(next, sizeof next, "%s", tr("none"));
@@ -2449,11 +2494,18 @@ void TrainView::draw_hud() {
                     const auto& state = states[i];
                     ImGui::Text(tr("%02zu - %s. Mass %.1f t"), i + 1, car.definition ? car.definition->name.c_str() : "?",
                                 car.definition ? car.definition->mass / 1000.0f : 0.0f);
+                    // Marks: the handbrake, the chocks (by the car's own
+                    // ends, as the car menu puts them), a derailment.
+                    std::string marks;
+                    if (state.handbrake > 0.0f) marks += trf(" [HANDBRAKE %d%%]", static_cast<int>(state.handbrake * 100.0f));
+                    if (state.chocks != 0) {
+                        const bool front = (state.chocks & simulation::chock_front) != 0, rear = (state.chocks & simulation::chock_rear) != 0;
+                        marks += front && rear ? tr(" [CHOCKS front and rear]") : front ? tr(" [CHOCK front]") : tr(" [CHOCK rear]");
+                    }
                     ImGui::Text(tr("     Pipe %.3f Aux %.3f Cylinder %.3f  Velocity %.2f Acceleration %.3f  Force %.1f kN BF %.1f kN CF %.0f kN%s%s"),
                                 state.pipe, state.auxiliary, state.cylinder, state.velocity, state.acceleration, state.force / 1000.0f,
-                                state.brake_force / 1000.0f, state.coupler_force / 1000.0f,
-                                state.handbrake > 0.0f ? (" [HANDBRAKE " + std::to_string(static_cast<int>(state.handbrake * 100.0f)) + "%]").c_str() : "",
-                                state.derailed ? " [DERAILED]" : "");
+                                state.brake_force / 1000.0f, state.coupler_force / 1000.0f, marks.c_str(),
+                                state.derailed ? tr(" [DERAILED]") : "");
                 }
                 ImGui::TextDisabled(tr("F5: next page (%zu-%zu of %zu)  Shift+F5: the whole train"), car_page_ + 1, last, unit->cars.size());
             }
@@ -2831,6 +2883,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         for (auto& unit : units_) {
             unit.previous = std::move(unit.current);
             unit.previous_travelled = std::move(unit.current_travelled);
+            unit.previous_body = std::move(unit.current_body);
         }
         feed_line();
         if (legacy_ && !units_.empty() && units_.front().role == Role::driven) {
@@ -2893,6 +2946,8 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
             }
             if (unit.previous.size() != unit.current.size()) unit.previous = unit.current;
             if (unit.previous_travelled.size() != unit.current_travelled.size()) unit.previous_travelled = unit.current_travelled;
+            unit.take_body();
+            if (unit.previous_body.size() != unit.current_body.size()) unit.previous_body = unit.current_body;
         }
     }
 
@@ -2935,6 +2990,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     update_exterior_doors(elapsed);
     update_lights(elapsed, input.light_eye.value_or(camera.eye()));
     update_listener(camera);
+    post_cab_sounds();
     if (sound) {
         update_sound(elapsed, camera, *sound);
     } else {
@@ -3433,6 +3489,12 @@ void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& di
     const glm::vec3 along = glm::normalize(glm::vec3{to_cab * glm::vec4{*direction, 0.0f}});
     // The reach is each control's Radius (RTS); the ray goes as far as any.
     hovered_ = cab->pick(origin, along, 4.0f);
+    // The wheel off the controls at the chair: the head nearer to what the
+    // cursor points at, or back.
+    if (scroll != 0.0f && (!hovered_ || !hovered_->control) && engineer_.mode() == Engineer::Mode::seated) {
+        engineer_.lean(along, scroll);
+        return;
+    }
     if (!hovered_ || !hovered_->control || (!click && scroll == 0.0f)) return;
     if (native_ && engineer_car_ == native_car_) {
         // A native plugin's cab: RTS's click step, the wheel one way.
@@ -4774,6 +4836,37 @@ void TrainView::update_listener(const ViewerCamera& camera) {
     }
 }
 
+// The cabs' door and window sounds (CabView::take_sounds) to every sound of
+// their car, as RTS's 0x46AF1C: the exterior script, the cab script and each
+// library's.
+void TrainView::post_cab_sounds() {
+    const auto post = [](Car& car, const std::vector<std::uint32_t>& codes) {
+        if (codes.empty()) return;
+        car.pending_triggers.insert(car.pending_triggers.end(), codes.begin(), codes.end());
+        car.pending_cab_triggers.insert(car.pending_cab_triggers.end(), codes.begin(), codes.end());
+        std::size_t libraries = 0;
+        for (const auto& aux : car.aux_sounds) libraries = (std::max)(libraries, aux.library + 1);
+        if (car.pending_aux_triggers.size() < libraries) car.pending_aux_triggers.resize(libraries);
+        for (auto& pending : car.pending_aux_triggers) pending.insert(pending.end(), codes.begin(), codes.end());
+    };
+    const auto find_car = [&](const std::uint32_t key) -> Car* {
+        for (auto& unit : units_)
+            for (auto& car : unit.cars)
+                if (car.key == key) return &car;
+        return nullptr;
+    };
+    if (!units_.empty()) {
+        auto& cars = units_.front().cars;
+        if (cab_ && cab_car_ < cars.size()) post(cars[cab_car_], cab_->take_sounds());
+        if (visit_cab_ && engineer_car_ < cars.size()) post(cars[engineer_car_], visit_cab_->take_sounds());
+    }
+    for (auto& [key, cab] : board_cabs_) {
+        if (!cab) continue;
+        auto codes = cab->take_sounds();
+        if (auto* car = find_car(key)) post(*car, codes);
+    }
+}
+
 void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound) {
     OPENRTS_ZONE("trains: sound");
     for (auto& gone : retired_sounds_) gone->stop(sound);
@@ -5202,7 +5295,21 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 // RTS draws the cab in object pass 3 (0x438D50).
                 renderer.submit(*cab_model, to_scene, adjustments, textures, renderer::ObjectPass::last);
                 cab_to_scene_ = to_scene;
-                {
+                if (engineer_.mode() != Engineer::Mode::seated) {
+                    // On foot (in a salon, the ED9M's head car's too, or the
+                    // cab away from the desk): the whole room, the shape's
+                    // box, fixed while he walks. The desk's 4.5 m round the
+                    // eye left the rest of a 25 m car to lamps shining
+                    // through its walls, and the sphere moving on every
+                    // metre made their shadows come in steps.
+                    const auto box = cab_model->bounds();
+                    cab_focus_ = renderer::ShadowFocus{
+                        .centre = glm::vec3{to_scene * glm::vec4{box.center, 1.0f}},
+                        .radius = std::clamp(box.radius, 4.5f, 16.0f),
+                        .axis = glm::vec3{to_scene[2]},
+                    };
+                    cab_focus_anchor_.reset();
+                } else {
                     // 4.5 m around the eye: the desk, the windows and the
                     // seat; the rest of the cab is left to the cascades.
                     constexpr float focus_radius = 4.5f;
@@ -5278,16 +5385,26 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
     }
 }
 
+glm::vec3 TrainView::body_sway(const Unit& unit, const std::size_t i) const {
+    if (i < unit.current_body.size()) {
+        const auto& now = unit.current_body[i];
+        return glm::mix(i < unit.previous_body.size() ? unit.previous_body[i] : now, now, alpha());
+    }
+    if (i >= unit.train->cars().size()) return {};
+    const auto& body = unit.train->cars()[i].body;
+    return {body[0], body[1], body[2]};
+}
+
 glm::vec3 TrainView::sway_offset(const Unit& unit, const std::size_t i) const {
     if (sway_scale_ <= 0.0f || i >= unit.cars.size() || i >= unit.train->cars().size()) return {};
-    const auto& state = unit.train->cars()[i];
+    const auto body = body_sway(unit, i);
     const auto here = pose(unit, i);
     const auto axis = here.front - here.rear;
     const float span = glm::length(axis);
     if (span < 0.01f) return {};
     const float heading = std::atan2(axis.x, axis.z);
     const glm::vec3 turning{std::cos(heading), 0.0f, -std::sin(heading)};
-    return (turning * state.body[0] + glm::vec3{0.0f, state.body[1], 0.0f} + axis / span * state.body[2]) * sway_scale_;
+    return (turning * body.x + glm::vec3{0.0f, body.y, 0.0f} + axis / span * body.z) * sway_scale_;
 }
 
 std::optional<glm::mat4> TrainView::car_transform(const std::size_t car) const {
@@ -5314,7 +5431,8 @@ std::optional<TrainView::BodyPose> TrainView::body_pose(const Unit& unit, const 
         // towards the side the car turns to, vertical, along the train.
         const glm::vec3 turning{std::cos(body_heading), 0.0f, -std::sin(body_heading)};
         const auto along = axis / span;
-        centre += (turning * state.body[0] + glm::vec3{0.0f, state.body[1], 0.0f} + along * state.body[2]) * sway_scale_;
+        const auto body = body_sway(unit, i);
+        centre += (turning * body.x + glm::vec3{0.0f, body.y, 0.0f} + along * body.z) * sway_scale_;
     }
     float heading = body_heading;
     float up = std::asin(std::clamp(axis.y / span, -1.0f, 1.0f));

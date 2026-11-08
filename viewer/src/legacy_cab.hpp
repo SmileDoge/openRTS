@@ -50,9 +50,13 @@ public:
     // `start_state`: the DLLs' Init state as an activity's TrainState (0 cold,
     // 1 on, 3 running), -1 running (the default).
     // `route`: for the library sounds RTS finds in the route's SOUND first (ROUTEFORWAGON).
+    // `fresh`: a train just made (loaded, put back): its air as RTS's
+    // (empty cars, the pressures Init writes, then every car the player's
+    // engine's); else the train keeps its own (the DLLs again after a
+    // consist change).
     [[nodiscard]] static std::unique_ptr<LegacyCab> attach(const core::Vfs& vfs, const std::vector<LegacyCarRef>& cars,
                                                            simulation::Train& train, std::string& status, int start_state = -1,
-                                                           const core::VirtualPath* route = nullptr);
+                                                           const core::VirtualPath* route = nullptr, bool fresh = false);
 
     // Before train.step(): one round trip with the host. Sound triggers per
     // car are added to `triggers` (exterior SMS), messages to the log.

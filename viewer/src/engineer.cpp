@@ -149,9 +149,23 @@ void Engineer::set_speeds(const float walk, const float run) noexcept {
     run_speed_ = std::clamp(run, 0.1f, 300.0f);
 }
 
+void Engineer::lean(const glm::vec3& along, const float notches) {
+    if (mode_ != Mode::seated || head_out_ || notches == 0.0f) return;
+    constexpr float step = 0.08f, most = 0.6f;
+    if (notches > 0.0f) {
+        if (glm::length(along) < 1e-4f) return;
+        lean_goal_ += glm::normalize(along) * step * notches;
+        if (const float length = glm::length(lean_goal_); length > most) lean_goal_ *= most / length;
+    } else if (const float length = glm::length(lean_goal_); length > 1e-4f) {
+        lean_goal_ *= (std::max)(length + step * notches, 0.0f) / length;
+    }
+}
+
 void Engineer::sit(const std::size_t chair) {
     mode_ = Mode::seated;
     chair_ = chair;
+    up_ = false;
+    lean_ = lean_goal_ = glm::vec3{0.0f};
     blend_ = 1.0f;
     camera_set_ = false;
     head_out_ = false;
@@ -203,10 +217,11 @@ glm::vec3 Engineer::local_eye(const CabView& cab) const {
     if (mode_ == Mode::seated && head_out_) {
         if (const auto window = chair_window(cab)) return vec(cab.description().windows[*window].head_out);
     }
+    if (mode_ == Mode::seated && up_) return up_feet_ + glm::vec3{0.0f, eye_share * height_, 0.0f} + lean_;
     if (mode_ == Mode::seated) {
         const auto& chairs = cab.description().chairs;
         const glm::vec3 seat = chair_ < chairs.size() ? vec(chairs[chair_].seated) : cab.eye();
-        return seat + glm::vec3{0.0f, seated_eye_, 0.0f};
+        return seat + glm::vec3{0.0f, seated_eye_, 0.0f} + lean_;
     }
     return feet_ + glm::vec3{0.0f, eye_share * height_, 0.0f};
 }
@@ -453,8 +468,27 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
         case Target::stand: {
             const auto& chairs = sd.chairs;
             const glm::vec3 eye = local_eye(cab);
-            glm::vec3 spot = chair_ < chairs.size() ? vec(controls.action_ctrl ? chairs[chair_].window : chairs[chair_].standing)
-                                                    : cab.eye();
+            lean_ = lean_goal_ = glm::vec3{0.0f};
+            if (!controls.action_ctrl) {
+                // RTS 0x4121BC, chair action 3 (0x436CA8): Enter rises to
+                // the chair's Pos2 and sits back down, at the chair all the
+                // time; only Ctrl+Enter (action 2) leaves it, to Pos3.
+                if (!up_) {
+                    glm::vec3 spot = chair_ < chairs.size() ? vec(chairs[chair_].standing) : cab.eye();
+                    if (const auto* surfaces = cab.collision()) {
+                        auto floor = surfaces->floor(spot.x, spot.z, spot.y - 1.0f, spot.y + 0.5f, cab.skip());
+                        if (!floor) floor = surfaces->floor(spot.x, spot.z, spot.y - 1.0f, spot.y + 1.0f, cab.skip());
+                        if (floor) spot.y = *floor;
+                    }
+                    up_feet_ = spot;
+                }
+                up_ = !up_;
+                blend_from_ = eye;
+                blend_ = 0.0f;
+                break;
+            }
+            up_ = false;
+            glm::vec3 spot = chair_ < chairs.size() ? vec(chairs[chair_].window) : cab.eye();
             if (const auto* surfaces = cab.collision()) {
                 auto floor = surfaces->floor(spot.x, spot.z, spot.y - 1.0f, spot.y + 0.5f, cab.skip());
                 if (!floor) floor = surfaces->floor(spot.x, spot.z, spot.y - 1.0f, spot.y + 1.0f, cab.skip());
@@ -538,7 +572,7 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
     // What Enter would do now.
     switch (choose(cab, car).target) {
     case Target::stand: {
-        prompt_ = tr("Enter: stand up at the desk, Ctrl+Enter: step out to walk");
+        prompt_ = up_ ? tr("Enter: sit down, Ctrl+Enter: step out to walk") : tr("Enter: stand up at the desk, Ctrl+Enter: step out to walk");
         if (const auto window = chair_window(cab)) {
             prompt_ += "   ";
             if (head_out_) {
@@ -565,6 +599,12 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
         prompt_ = get_on_prompt(cab, choose(cab, car).index);
         break;
     default: break;
+    }
+
+    // The wheel's lean, eased in (2.5 m/s).
+    if (const glm::vec3 to = lean_goal_ - lean_; glm::length(to) > 1e-5f) {
+        const float most = 2.5f * (std::min)(elapsed, 0.1f);
+        lean_ = glm::length(to) <= most ? lean_goal_ : lean_ + glm::normalize(to) * most;
     }
 
     // The eye.

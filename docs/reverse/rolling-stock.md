@@ -192,7 +192,9 @@ applies them to the car bodies too (viewer slider, 1 = this size); in the cab
 the player is in, the cab shape stays at rest and the camera takes the
 offsets, so the cab sways around the driver as in RTS. (The 0.0055 factor was
 not found again as a constant: UNKNOWN; openRTS moves the camera by the
-offsets times the slider.)
+offsets times the slider.) openRTS draws the offsets between the last two
+0.05 s steps, like the cars' places (2026-11-08); before, the cab jerked at
+20 Hz however high the frame rate.
 
 ## The exterior in the cab (`0x438D50`, parser `0x44247C`)
 

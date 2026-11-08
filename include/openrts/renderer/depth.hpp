@@ -81,6 +81,16 @@ inline bool& light_fullbright() {
     return on;
 }
 
+// The experimental path's lamp shadows: a scenery lamp (ESD_Light_Sources)
+// throws no shadow of the model it belongs to (its own pole, head and
+// glass; it still lights them). Some shapes have the light's place inside
+// the lamp's body, which then threw its own shadow over everything round.
+// Read each frame.
+inline bool& lamp_skips_own_model() {
+    static bool on = true;
+    return on;
+}
+
 // Multisample state for a scene pipeline; alpha-to-coverage (for the blend
 // shaders' surfaces, alpha-tested or blended) when multisampled.
 [[nodiscard]] inline WGPUMultisampleState scene_multisample(bool alpha_to_coverage = false) {

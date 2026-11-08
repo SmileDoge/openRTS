@@ -11,6 +11,7 @@
 #include <openrts/formats/ace_file.hpp>
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/formats/shape_description.hpp>
+#include <openrts/formats/shape_override.hpp>
 #include <openrts/renderer/rts_season.hpp>
 
 namespace openrts::renderer {
@@ -63,6 +64,9 @@ struct StreamedModelAsset {
     bool fullbright_images = false;       // some image is drawn only on FullBright surfaces
     std::vector<std::string> texture_key; // texture_variant_key it was loaded with
     std::vector<formats::ShapeLight> lights;
+    // The light material each primitive state has in the shape itself,
+    // before its `<shape>.openrts` (the inspector's override) changed some.
+    std::vector<std::int32_t> original_light;
     // For an RTS .repaint (source_path): the shape and .sd it names.
     std::vector<core::VirtualPath> sources;
     std::string error;
@@ -83,6 +87,16 @@ using TextureDecodeCache = std::unordered_map<std::string, std::shared_ptr<const
 [[nodiscard]] std::vector<core::VirtualPath> shape_texture_candidates(const core::VirtualPath& shape,
                                                                       std::string_view image_name,
                                                                       const std::vector<core::VirtualPath>& preferred);
+
+// openRTS's override of a shape (formats/shape_override.hpp): the file
+// beside it, `<shape file>.openrts`.
+[[nodiscard]] core::VirtualPath shape_override_path(const core::VirtualPath& shape);
+// The inspector's overrides held for this run: they win over the file (it
+// is written to a mod that may only be mounted at the next start).
+// std::nullopt drops the one held.
+void hold_shape_override(const core::VirtualPath& shape, std::optional<formats::ShapeOverride> data);
+// The override for `shape`: the one held, else its file, else none.
+[[nodiscard]] formats::ShapeOverride find_shape_override(const core::Vfs& vfs, const core::VirtualPath& shape);
 
 // Worker-thread job: parses the shape and decodes every texture it uses.
 // `shape` may be an RTS .repaint: the Shape and ShapeDescription it names,

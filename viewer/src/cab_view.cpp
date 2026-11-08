@@ -525,7 +525,9 @@ float CabView::sound_transmission(const int from, const int to) const {
 }
 
 void CabView::toggle_window(const std::size_t window) {
-    if (window < windows_.size()) windows_[window].target = !windows_[window].target;
+    if (window >= windows_.size()) return;
+    windows_[window].target = !windows_[window].target;
+    if (window < cab_.windows.size()) sound(cab_.windows[window].sms_triggers, windows_[window].target);
 }
 
 std::optional<CabView::Picked> CabView::pick(const glm::vec3& origin, const glm::vec3& direction, const float reach) const {
@@ -649,11 +651,14 @@ bool CabView::door_moving(const std::size_t door) const noexcept {
 }
 
 void CabView::toggle_door(const std::size_t door) {
-    if (door < doors_.size()) doors_[door].target = !doors_[door].target;
+    if (door >= doors_.size()) return;
+    doors_[door].target = !doors_[door].target;
+    if (door < cab_.doors.size()) sound(cab_.doors[door].sms_triggers, doors_[door].target);
 }
 
 void CabView::open_door(const std::size_t door) {
     if (door >= doors_.size()) return;
+    if (!doors_[door].target && door < cab_.doors.size()) sound(cab_.doors[door].sms_triggers, true);
     doors_[door].target = true;
     doors_[door].open = 1.0f;
     rebuild_skip();

@@ -185,9 +185,20 @@ int main(int argc, char** argv) {
     check(!engineer.heading_out() && std::abs(camera.position.y - (2.5f + 0.81f)) < 0.01f, "Num1 again: back in the seat");
     run({.window = true}, 1.2f);
 
+    // RTS 0x4121BC: Enter in the chair rises at the desk (Pos2) and sits back
+    // down, at the chair all the time; Ctrl+Enter gets him up (Pos3).
     run({.action = true}, 1.0f);
+    where("risen at the desk");
+    check(engineer.risen() && engineer.mode() == Engineer::Mode::seated, "Enter rises at the desk, still at the chair");
+    check(std::abs(camera.position.y - (2.04f + eye)) < 0.05f, "risen: standing on the cab floor (2.04)");
+    const auto risen_at = camera.position;
+    run({.forward = true}, 0.5f);
+    check(engineer.risen() && glm::distance(camera.position, risen_at) < 0.01f, "risen, the arrows do not walk him off");
+    run({.action = true}, 1.0f);
+    check(!engineer.risen() && std::abs(camera.position.y - (2.5f + 0.81f)) < 0.01f, "Enter again: back in the seat");
+    run({.action = true, .action_ctrl = true}, 1.0f);
     where("stood up");
-    check(engineer.mode() == Engineer::Mode::standing, "Enter stands him up");
+    check(engineer.mode() == Engineer::Mode::standing, "Ctrl+Enter gets him up");
     check(std::abs(camera.position.y - (2.04f + eye)) < 0.05f, "standing on the cab floor (2.04)");
 
     // Face the back of the cab (-Z), step to the middle, walk to the door.

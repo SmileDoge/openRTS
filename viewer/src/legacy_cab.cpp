@@ -89,7 +89,7 @@ CabKey parse_cab_key(std::string_view text) {
 
 std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::vector<LegacyCarRef>& cars,
                                              simulation::Train& train, std::string& status, const int start_state,
-                                             const core::VirtualPath* route) {
+                                             const core::VirtualPath* route, const bool fresh) {
     status.clear();
     bool any = false;
     for (const auto& c : cars)
@@ -118,7 +118,10 @@ std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::ve
         train.set_controller(i, consist->controller(i));
         if (player == SIZE_MAX) player = i;
     }
-    if (!consist->enter(player, train, true, start_state)) {
+    // A train just made takes its air from Init, as in RTS.
+    const bool entered = fresh ? trainplugin::enter_new_train(*consist, player, train, true, start_state)
+                               : consist->enter(player, train, true, start_state);
+    if (!entered) {
         status = "enter: " + consist->error() + "\n" + consist->take_messages();
         return nullptr;
     }

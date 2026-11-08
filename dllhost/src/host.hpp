@@ -219,6 +219,8 @@ private:
     void run_car(CarMirror& car, float dt, float air_temperature);
     void signals(const StepRequest& request);
     void collect(StepReply& reply);
+    // Every car's air as the Wagons hold it (enter: what Init wrote).
+    void collect_air(StepReply& reply);
     void collect_car(CarMirror& car, CarOutput& out);
     void build_screens(CarMirror& car, const CabSpec& cab);
     void switched(CarMirror& car, std::uint32_t id, std::uint32_t previous);

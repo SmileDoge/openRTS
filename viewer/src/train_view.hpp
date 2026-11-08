@@ -184,6 +184,18 @@ public:
 
     // Track control (docs/paths.md): every train, paths, roles.
     [[nodiscard]] std::vector<Summary> summaries() const;
+    // A train's cars for the inspector: what they are and where drawn.
+    struct InspectedCar {
+        std::size_t index{};
+        std::string name;    // the definition's Name
+        std::string file;    // TRAINS/TRAINSET/<folder>/<file>.eng or .wag
+        core::VirtualPath shape;
+        bool engine = false;
+        float mass{}, length{}, width{}, height{};
+        std::string library; // the .eng's LibraryModule
+        std::optional<glm::mat4> transform; // shape space to the scene, when drawn
+    };
+    [[nodiscard]] std::vector<InspectedCar> inspected_cars(std::uint64_t train) const;
     [[nodiscard]] const simulation::Train* train_by_id(std::uint64_t id) const;
     [[nodiscard]] simulation::Dispatcher& dispatcher() noexcept { return *dispatcher_; }
     [[nodiscard]] const simulation::Dispatcher& dispatcher() const noexcept { return *dispatcher_; }
@@ -542,6 +554,9 @@ private:
     void apply_start_view(ViewerCamera& camera);
     StartView start_view_ = StartView::none;
     bool starts_in_cab_ = false; // the start view asked for (start_view_ is cleared once applied)
+    // The driven train was just made (load, put_back): its DLLs' Init gives
+    // it its air (LegacyCab::attach `fresh`).
+    bool fresh_train_ = false;
     std::filesystem::path pending_situation_;
     std::vector<PlacedTrain> pending_trains_;
     std::string pending_trains_source_;
@@ -668,6 +683,7 @@ private:
     void gather_walk_world(const glm::vec3& around, renderer::ModelLibrary& library);
     [[nodiscard]] std::optional<float> walk_floor(const glm::vec3& at) const;
     [[nodiscard]] bool walk_blocked(const glm::vec3& from, const glm::vec3& to) const;
+    void post_cab_sounds();
     void update_aux_sounds(Unit& unit, std::size_t u, std::size_t i, const audio::SoundInputs& exterior, float elapsed,
                            const ViewerCamera& camera, audio::AudioEngine& sound);
     void update_cab_sound(Unit& unit, std::size_t u, std::size_t i, const audio::SoundInputs& exterior, float elapsed,
@@ -684,6 +700,8 @@ private:
     // `eye` (scene) in the coordinates of the cab the engineer is in, if he is.
     [[nodiscard]] std::optional<glm::vec3> eye_in_cab(const glm::vec3& eye) const;
     // The body's offset on its springs in the scene (times the sway slider).
+    // A car's body on its springs, between the last two steps (render time).
+    [[nodiscard]] glm::vec3 body_sway(const Unit& unit, std::size_t i) const;
     [[nodiscard]] glm::vec3 sway_offset(const Unit& unit, std::size_t i) const;
     // The 3-D cab (cab_view.hpp) of car cab_car_ of the driven train.
     std::unique_ptr<CabView> cab_;

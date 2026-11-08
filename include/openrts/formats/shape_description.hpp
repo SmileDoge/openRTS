@@ -39,6 +39,11 @@ struct ShapeLight {
     // SkyState::world_lit), else lit at night.
     float auto_when_world_lit{};
     float light_fade{}; // LightFade's first value, s
+    // LightArray ( n dx dy dz ): n lamps, each the one before moved by
+    // (dx, dy, dz) in the shape's space (a platform's row of lamps); 0 or 1:
+    // one lamp.
+    std::uint32_t array_count{};
+    std::array<float, 3> array_step{};
 };
 
 struct ShapeDescription {

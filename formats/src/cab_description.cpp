@@ -699,6 +699,9 @@ CabDescription parse_cab_description(std::string_view bytes) {
                     d.sound_closed = number(proof, 0);
                     d.sound_open = number(proof, 1);
                 }
+                if (const auto* sms = node.child("smstriggers")) {
+                    d.sms_triggers = {static_cast<std::uint16_t>(number(sms, 0)), static_cast<std::uint16_t>(number(sms, 1))};
+                }
                 cab.doors.push_back(std::move(d));
             }
         }
@@ -716,6 +719,9 @@ CabDescription parse_cab_description(std::string_view bytes) {
                 if (const auto* proof = node.child("soundproof")) {
                     w.sound_closed = number(proof, 0);
                     w.sound_open = number(proof, 1);
+                }
+                if (const auto* sms = node.child("smstriggers")) {
+                    w.sms_triggers = {static_cast<std::uint16_t>(number(sms, 0)), static_cast<std::uint16_t>(number(sms, 1))};
                 }
                 cab.windows.push_back(std::move(w));
             }

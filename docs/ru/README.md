@@ -28,6 +28,7 @@
 | [experimental-effects.md](experimental-effects.md) | новый рендер: что делает и сколько стоит |
 | [profiling.md](profiling.md) | профилирование с Tracy: сборка, что размечено, как добавить зону |
 | [vfs.md](vfs.md) | виртуальная файловая система, паки и моды |
+| [inspector.md](inspector.md) | инспектор (F12): объекты карты, свойства, переопределения моделей |
 
 Пошаговое руководство по пакам и модам изначально написано по-русски:
 [`docs/vfs-tutorial-ru.md`](../vfs-tutorial-ru.md).

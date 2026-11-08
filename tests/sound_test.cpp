@@ -403,6 +403,42 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCa
 // Codes that came while the group was off are taken as states only: a horn
 // blown in the cab does not sound outside when the engineer steps out; a
 // loop started there is on, one started and released is not.
+// RTS object flag 0x20 (crossings, .ws sources): streams fade with distance
+// by their Attenuation, the default rule without one (0x4A7764), unless the
+// volume curve is distance controlled.
+void test_world_fade() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 3 Activation ( ExternalCam ( ) Distance ( 350 ) ) Deactivation ( Distance ( 350 ) ) Streams ( 3
+    Stream ( Triggers ( 1 Discrete_Trigger ( 3 StartLoop ( 1 File ( "bell.wav" -1 ) ) ) ) )
+    Stream ( Triggers ( 1 Discrete_Trigger ( 3 StartLoop ( 1 File ( "gate.wav" -1 ) ) ) )
+             VolumeCurve ( DistanceControlled CurvePoints ( 2 0 1 1000 1 ) Granularity ( 0.1 ) ) )
+    Stream ( Triggers ( 1 Discrete_Trigger ( 3 StartLoop ( 1 File ( "horn.wav" -1 ) ) ) )
+             Attenuation ( 1 200 2 ) ) ) ) ))"));
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips;
+    for (const char* name : {"bell.wav", "gate.wav", "horn.wav"}) clips[name] = test_clip(1000);
+    const auto volumes = [&](const float distance, const bool fades) {
+        audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::world,
+                                   [&](const std::string& name) { return clips.at(name); }, 5);
+        RecordingSink sink;
+        audio::SoundInputs inputs;
+        inputs[SoundVariable::distance] = distance;
+        inputs.fades_with_distance = fades;
+        const std::uint32_t close[] = {3};
+        inputs.discrete = std::span(close);
+        sound.update(0.05f, inputs, sink);
+        inputs.discrete = {};
+        sound.update(0.05f, inputs, sink);
+        std::map<std::shared_ptr<const audio::AudioClip>, float> by_clip;
+        for (const auto& [id, voice] : sink.voices) by_clip[voice.clip] = voice.volume;
+        return std::array<float, 3>{by_clip[clips["bell.wav"]], by_clip[clips["gate.wav"]], by_clip[clips["horn.wav"]]};
+    };
+    const auto near = volumes(0.0f, true), far = volumes(100.0f, true), flat = volumes(100.0f, false);
+    check(std::fabs(near[0] - 1.0f) < 1e-4f && std::fabs(far[0] - 0.25f) < 1e-4f, "world fade: the default rule halves at 50 m, 0.25 at 100 m");
+    check(std::fabs(far[1] - 1.0f) < 1e-4f, "world fade: a distance-controlled volume curve is not faded again");
+    check(std::fabs(far[2] - 0.5f) < 1e-4f, "world fade: the stream's own Attenuation (type 2: 1 - 100 / 200)");
+    check(std::fabs(flat[0] - 1.0f) < 1e-4f, "world fade: off for objects without flag 0x20 (rolling stock)");
+}
+
 void test_past_codes() {
     auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
 Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCam ( ) ) Streams ( 3
@@ -922,6 +958,7 @@ int main(int argc, char** argv) {
     test_loop_phase();
     test_cab_round_trip();
     test_past_codes();
+    test_world_fade();
     test_trigger_pairs();
     test_stream_rules();
     test_rooms();

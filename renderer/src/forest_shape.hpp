@@ -28,7 +28,9 @@ struct ForestShape {
 // Population trees, each two crossed quads of TreeSize standing on the
 // terrain, placed by RTS's fixed pattern over Area (no random numbers;
 // ScaleRange is not used), BlendATexDiff alpha-tested, lit as Circumference
-// (-9: the normal up), the texture's mip bias -3, nothing past 1500 m.
+// (-9: the normal up), the texture's mip bias -3, nothing past 1500 m. With
+// openRTS's clearance on (forest_clearance.hpp), trees too near a track or
+// road are left out.
 [[nodiscard]] ForestShape build_forest_shape(const core::Vfs& vfs, const core::VirtualPath& path);
 
 } // namespace openrts::renderer

@@ -28,10 +28,24 @@
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/route_streamer.hpp>
 #include <openrts/simulation/track_network.hpp>
+
+namespace openrts::renderer {
+class ForestClearance;
+}
 #include <openrts/simulation/track_geometry.hpp>
 #include <openrts/simulation/track_traveller.hpp>
 
 namespace openrts::viewer {
+
+// The route's road database, <route>.rdb (else the only .rdb in the route
+// folder), as RTS reads it (0x492BE4).
+[[nodiscard]] std::optional<std::string> read_road_database(const core::Vfs& vfs, const core::VirtualPath& route);
+
+// The axes of the route's tracks (`tracks`, its .tdb) and roads (its .rdb)
+// for the forests' clearance (renderer/forest_clearance.hpp): curves in
+// pieces of about 4 m.
+[[nodiscard]] std::shared_ptr<renderer::ForestClearance> route_way_axes(const core::Vfs& vfs, const core::VirtualPath& route,
+                                                                        const simulation::TrackNetwork* tracks);
 
 class CrossingView;
 

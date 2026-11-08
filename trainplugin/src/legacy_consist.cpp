@@ -657,8 +657,27 @@ bool LegacyConsist::enter(std::size_t car, const simulation::Train& train, bool 
     messages_ += host_->take_messages();
     if (!ok) return false;
     player_ = car;
+    entered_air_ = std::move(reply.air);
     outputs_->cars = std::move(reply.cars);
     outputs_->valid = true;
+    return true;
+}
+
+bool enter_new_train(LegacyConsist& consist, const std::size_t car, simulation::Train& train, const bool running, const int state) {
+    const std::size_t count = train.cars().size();
+    for (std::size_t i = 0; i < count; ++i) train.set_air(i, {});
+    if (!consist.enter(car, train, running, state)) return false;
+    const auto& air = consist.entered_air();
+    if (car >= air.size() || air.size() != count) return true;
+    const auto& from = air[car];
+    for (std::size_t i = 0; i < count; ++i) {
+        train.set_air(i, {.pipe = from.pipe,
+                          .charging_pipe = from.charging_pipe,
+                          .cylinder = from.cylinder,
+                          .auxiliary = from.auxiliary,
+                          .control = from.control,
+                          .main_reservoir = air[i].main_reservoir});
+    }
     return true;
 }
 

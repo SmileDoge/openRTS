@@ -49,6 +49,22 @@ all present. `0x4B3C40` builds it as a shape of its own:
 openRTS: `renderer/src/forest_shape.cpp`, loaded as `<world>.<UiD>.forest`
 like transfers, so seasons and hot reload work.
 
+**openRTS: trees kept off tracks and roads** (2026-11-08, not RTS; Graphics,
+"Keep trees off tracks and roads", on by default, 3 m). RTS plants over the
+whole area without looking at the track, so a forest drawn across a line
+stands on the rails (Novokuznetsk's 4054, 300 x 600 m, 500 trees 10 m wide).
+- **The rule:** a tree is left out when its crown (half its width round its
+  place) comes nearer than the distance to a track's edge (1.5 m from the
+  axis, the route's `.tdb`) or a road's (3.5 m, the `.rdb`). The other trees
+  stand where RTS puts them: the placement pattern goes on unchanged.
+- **Axes:** curves in pieces of about 4 m, found through a 32 m grid
+  (`renderer/forest_clearance.hpp`; the viewer's `route_way_axes` makes them
+  when the route loads, before any forest is built).
+- **A change** of the setting rebuilds the loaded forests.
+- **Checked:** forest 4054 keeps 463 of its 500 trees, none with its crown
+  within 3 m of a track's edge (`openrts_alternative_texture_test`). The
+  capture report's world line gives the trees planted and kept off.
+
 ## Level crossings
 
 `LevelCr` (`0x41B6D0`): `LevelCrParameters ( time distance )` (25 s, 50 m),

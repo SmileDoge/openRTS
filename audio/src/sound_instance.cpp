@@ -661,6 +661,13 @@ void SoundInstance::update(const float dt, const SoundInputs& raw_inputs, VoiceS
         if (definition.volume_curve) volume *= evaluate_curve(*definition.volume_curve, curve_input(*definition.volume_curve));
         // The head out of a window silences the streams not allowed there.
         if (inputs.window && !definition.allow_on_window_camera) volume = 0.0f;
+        // World objects fade with distance (object flag 0x20, 0x4A78A0); a
+        // stream without Attenuation takes the default rule (type 0).
+        if (inputs.fades_with_distance
+            && !(definition.volume_curve && definition.volume_curve->control == SoundVariable::distance)) {
+            const auto rule = definition.attenuation.value_or(formats::SoundAttenuation{.type = 0});
+            volume *= attenuation_gain(rule, inputs.variables[static_cast<std::size_t>(SoundVariable::distance)], deactivate_beyond);
+        }
         // Sources: the loudest of the stream's points as heard (0x44B6B4). A
         // stream naming a point the group lacks has none (0x4DD0EC throws
         // while reading it, docs/sound.md).

@@ -22,7 +22,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 8;
+inline constexpr std::uint32_t protocol_version = 9;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -518,10 +518,17 @@ struct CarOutput {
     std::vector<ExhaustOutput> exhausts;
 };
 
+// A car's air as the DLLs left it in its Wagon (enter only: Init writes
+// the pressures itself, which RTS keeps, the wagon being its own).
+struct CarAir {
+    float pipe{}, charging_pipe{}, cylinder{}, auxiliary{}, control{}, main_reservoir{};
+};
+
 struct StepReply {
     std::vector<CarOutput> cars;
     std::int32_t set_direction{}; // RTSSetIntegerG(6): -1 / 1 requested, 0 none
     float items_wanted{};         // the farthest RTSGetTrackItems asked for this step, m
+    std::vector<CarAir> air;      // enter: every car's, after Init
 };
 
 struct CanSwitchRequest {
@@ -788,9 +795,12 @@ inline void read(Reader& r, CarOutput& c) {
     read_pod_list(r, c.exhausts, 16);
 }
 
-inline void write(Writer& w, const StepReply& s) { write_list(w, s.cars); w.put(s.set_direction); w.put(s.items_wanted); }
+inline void write(Writer& w, const StepReply& s) {
+    write_list(w, s.cars); w.put(s.set_direction); w.put(s.items_wanted); write_pod_list(w, s.air);
+}
 inline void read(Reader& r, StepReply& s) {
     read_list(r, s.cars, 2000); s.set_direction = r.get<std::int32_t>(); s.items_wanted = r.get<float>();
+    read_pod_list(r, s.air, 2000);
 }
 
 } // namespace openrts::dllhost

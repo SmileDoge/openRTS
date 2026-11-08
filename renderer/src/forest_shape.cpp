@@ -9,6 +9,7 @@
 
 #include <openrts/formats/route_world.hpp>
 
+#include "forest_clearance_internal.hpp"
 #include "terrain_heights.hpp"
 
 namespace openrts::renderer {
@@ -79,6 +80,14 @@ ForestShape build_forest_shape(const core::Vfs& vfs, const core::VirtualPath& pa
     const auto& q = object->rotation;
     const glm::quat rotation{q[3], -q[0], -q[1], -q[2]}; // as placement_transform
     TerrainHeights terrain(vfs, route.resolve(std::string_view("TILES")).value_or(route));
+    // openRTS's clearance (forest_clearance.hpp): a tree whose crown would
+    // come nearer than the distance to a track's or road's edge is left out;
+    // the others stand where RTS puts them (the pattern goes on unchanged).
+    const auto clearance = forest_clearance_use();
+    const double crown_reach = clearance.axes ? static_cast<double>(clearance.distance) + half_tree : 0.0;
+    const double tile_origin_x = static_cast<double>(tile.tile_x) * 2048.0 + object->position.x;
+    const double tile_origin_z = static_cast<double>(tile.tile_z) * 2048.0 + object->position.z;
+    std::uint64_t cleared = 0;
     auto& model = result.model;
     model.vertices.reserve(static_cast<std::size_t>(count) * 8);
     model.indices.reserve(static_cast<std::size_t>(count) * 24);
@@ -96,6 +105,15 @@ ForestShape build_forest_shape(const core::Vfs& vfs, const core::VirtualPath& pa
         const float local_x = static_cast<float>(static_cast<double>(x) - half_width);
         const float local_z = static_cast<float>(static_cast<double>(z) - half_depth);
         const glm::vec3 offset = rotation * glm::vec3{local_x, 0.0f, local_z};
+        if (clearance.axes
+            && clearance.axes->nearest(tile_origin_x + offset.x, tile_origin_z + offset.z, crown_reach + 1.0) < crown_reach) {
+            ++cleared;
+            ++i;
+            const double sign = (i & 1u) != 0 ? -1.0 : 1.0;
+            x = static_cast<float>(static_cast<double>(i) * step + sign * half_tree + x);
+            z = static_cast<float>(sign * half_tree + step + z);
+            continue;
+        }
         float ground = 0.0f;
         if (const auto height = terrain.at(tile.tile_x, tile.tile_z, object->position.x + offset.x, object->position.z + offset.z)) {
             ground = *height - static_cast<float>(object->position.y);
@@ -131,6 +149,19 @@ ForestShape build_forest_shape(const core::Vfs& vfs, const core::VirtualPath& pa
         const double sign = (i & 1u) != 0 ? -1.0 : 1.0;
         x = static_cast<float>(static_cast<double>(i) * step + sign * half_tree + x);
         z = static_cast<float>(sign * half_tree + step + z);
+    }
+
+    count_forest_trees(count - cleared, cleared);
+    if (model.indices.empty()) {
+        // Every tree cleared: one collapsed tree at the origin keeps the
+        // model valid (a model of nothing is not made, and a reload would
+        // keep the old trees then).
+        formats::ShapeMeshVertex vertex;
+        vertex.normal[1] = 1.0f;
+        vertex.colour1 = 0xFFFFFFFFu;
+        vertex.colour2 = 0xFF000000u;
+        model.vertices.assign(3, vertex);
+        model.indices = {0u, 1u, 2u};
     }
 
     formats::ShapeMatrix identity;

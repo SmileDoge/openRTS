@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
@@ -47,6 +48,9 @@ public:
     // (RTS reloads the route's textures when night falls); models loaded
     // under another variant are reloaded when they arrive.
     void set_texture_variant(const TextureVariant& variant);
+    // Reloads every model whose path has this extension (".forest" when the
+    // forests' clearance changes), on the worker thread.
+    void reload_extension(std::string_view extension);
     // Publishes a finished reload batch, starts the next one and uploads up
     // to `uploads` queued models. Call once per frame on the render thread.
     void update(std::size_t uploads = 1);

@@ -184,6 +184,14 @@ void ModelLibrary::set_texture_variant(const TextureVariant& variant) {
               << static_cast<int>(variant.weather) << ": " << impl.variant_reloads.size() - before << " model(s) to reload" << std::endl;
 }
 
+void ModelLibrary::reload_extension(const std::string_view extension) {
+    auto& impl = *impl_;
+    const auto wanted = core::fold_case(extension);
+    for (const auto& [_, model] : impl.models) {
+        if (core::fold_case(model.source().extension()) == wanted) impl.variant_reloads.push_back(model.source());
+    }
+}
+
 void ModelLibrary::update(const std::size_t uploads) {
     auto& impl = *impl_;
     using namespace std::chrono_literals;

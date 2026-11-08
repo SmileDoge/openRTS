@@ -55,6 +55,7 @@ struct SceneGpu {
 // World clock driven by the viewer.
 struct SceneClock {
     std::int32_t time_of_day = 12 * 3600; // seconds
+    double time_of_day_exact = 12 * 3600.0; // the same with its fraction (the sky)
     float elapsed = 0.0f;                  // frame time in seconds
     renderer::rts::Season season = renderer::rts::Season::summer;
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
@@ -103,6 +104,7 @@ struct SceneInput {
     bool toggle_labels = false;  // L: junction and signal labels
     bool car_menu = false;       // Num3 / `: the car menu at a coupling or bogie (edge)
     bool flashlight = false;     // Num2 / Shift+`: RTS's flashlight on or off (edge)
+    bool inspector = false;      // F12: the inspector open or shut (edge)
     // Train driving (edges).
     bool place_train = false;      // C
     bool throttle_up = false;      // Home
@@ -252,6 +254,8 @@ public:
     // `index` (from 0) of the driven train.
     virtual void stand_at_cab_door(std::size_t) {}
     [[nodiscard]] virtual std::string car_menu_report() const { return {}; }
+    // The inspector's choice as text (--capture-inspect).
+    [[nodiscard]] virtual std::string inspector_report() const { return {}; }
     // What the shadows look at most closely this frame (after submit): the
     // cab the engineer is in.
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> shadow_focus() const { return std::nullopt; }

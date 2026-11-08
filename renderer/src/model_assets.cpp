@@ -1,6 +1,8 @@
 #include <openrts/renderer/model_assets.hpp>
 
 #include <algorithm>
+#include <map>
+#include <mutex>
 
 #include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/shape_file.hpp>
@@ -107,8 +109,48 @@ namespace {
 
 } // namespace
 
+core::VirtualPath shape_override_path(const core::VirtualPath& shape) {
+    return core::VirtualPath::parse(shape.str() + ".openrts").value_or(shape);
+}
+
+namespace {
+
+struct HeldOverrides {
+    std::mutex mutex;
+    std::map<std::string, formats::ShapeOverride> by_shape; // by shape key
+};
+
+HeldOverrides& held_overrides() {
+    static HeldOverrides held;
+    return held;
+}
+
+} // namespace
+
+void hold_shape_override(const core::VirtualPath& shape, std::optional<formats::ShapeOverride> data) {
+    auto& held = held_overrides();
+    const std::lock_guard lock(held.mutex);
+    if (data) {
+        held.by_shape[shape.key()] = std::move(*data);
+    } else {
+        held.by_shape.erase(shape.key());
+    }
+}
+
+formats::ShapeOverride find_shape_override(const core::Vfs& vfs, const core::VirtualPath& shape) {
+    {
+        auto& held = held_overrides();
+        const std::lock_guard lock(held.mutex);
+        if (const auto it = held.by_shape.find(shape.key()); it != held.by_shape.end()) return it->second;
+    }
+    const auto file = shape_override_path(shape);
+    if (!vfs.exists(file)) return {};
+    if (const auto text = vfs.read(file)) return formats::parse_shape_override(*text);
+    return {};
+}
+
 std::vector<std::string> StreamedModelAsset::dependency_keys() const {
-    std::vector<std::string> keys{source_path.key(), source_path.with_extension(".sd").key()};
+    std::vector<std::string> keys{source_path.key(), source_path.with_extension(".sd").key(), shape_override_path(source_path).key()};
     for (const auto& source : sources) keys.push_back(source.key());
     for (const auto& texture : textures) {
         for (const auto& candidate : texture.candidates) keys.push_back(candidate.key());
@@ -212,6 +254,8 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
         result.error = result.model.error;
         return result;
     }
+    // openRTS's own changes to it (the inspector's, from a mod).
+    result.original_light = formats::apply_shape_override(result.model, find_shape_override(vfs, shape));
 
     // Images drawn only on FullBright surfaces (light material -8).
     std::vector<int> fullbright_use(result.model.images.size(), 0); // 1 FullBright only, 2 also other

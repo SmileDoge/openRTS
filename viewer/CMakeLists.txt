@@ -13,6 +13,7 @@ add_library(openrts_viewer_core STATIC
     src/train_view.cpp
     src/signal_view.cpp
     src/track_control.cpp
+    src/inspector.cpp
     src/file_dialog.cpp
     src/viewer_state.cpp
     src/ui_text.cpp

@@ -129,6 +129,11 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
 
   At the start a loading screen stays until the train (and its cab), the
   world around and the terrain are in.
+- **The inspector (F12):** a tree of the map's objects (by tile) and the
+  trains (by car), the chosen one's properties in a window of their own,
+  choosing with a click in the world, "Go to"; the shape's materials, a
+  FullBright one lit as ordinary for that shape only, saved into a mod
+  (`docs/inspector.md`).
 - **Track control (Ctrl+Alt+F7, not in a network game):**
   - the track map from above: trains, junctions, signals, platforms, station
     names, the player's figure with the way the camera looks; "Teleport
@@ -324,15 +329,17 @@ the Train window)
 
 | Keys | Action |
 |---|---|
-| Enter | stand up at the desk / sit down / open a door / climb in |
-| Ctrl+Enter | step out into the passage; outside at a door, climb in |
+| Enter | in the chair, rise at the desk and sit back (as RTS) / sit down / open a door / climb in |
+| Ctrl+Enter | get up from the chair, step out into the passage; outside at a door, climb in |
 | Arrows, Shift, End | walk, run, slower |
 | Num0 / `-` | open the window |
 | Num1 / `=` | lean out |
 | Num3 / the key left of `1` | the car menu at the coupling or bogie under the cursor (outside) |
 | Num2 / Shift + the key left of `1` | the flashlight, as in RTS: a beam from the eyes along the view, 50 m |
+| F12 | the inspector: a tree of the map's objects and trains, the chosen one's properties, the shape's materials (FullBright as ordinary, into a mod), `docs/inspector.md` |
 | RMB + mouse | look round |
 | Mouse | click works a control, the wheel moves it a step, dragging moves handles and blinds |
+| Wheel at the chair | off the controls, the head nearer to what the cursor points at, or back |
 | Alt | captions of the controls |
 
 **Information**

@@ -159,6 +159,13 @@ void read_extensions(const std::string_view text, ShapeDescription& description)
         light.source_radius = value(node.child("sourceradius"), 0);
         light.auto_when_world_lit = value(node.child("autowhenworldlit"), 0);
         light.light_fade = value(node.child("lightfade"), 0);
+        if (const auto* array = node.child("lightarray")) {
+            const float count = value(array, 0);
+            if (count >= 2.0f) {
+                light.array_count = static_cast<std::uint32_t>(count);
+                light.array_step = {value(array, 1), value(array, 2), value(array, 3)};
+            }
+        }
         if (const auto* attenuation = node.child("attenuation")) {
             // Attenuation ( D1 D2 Type ): the start and length shares, then the kind.
             const float start = value(attenuation, 0), length = value(attenuation, 1), kind = value(attenuation, 2);

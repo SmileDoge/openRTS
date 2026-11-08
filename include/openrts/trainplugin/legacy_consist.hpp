@@ -96,6 +96,9 @@ public:
     // `state`: Init's start state as an activity's TrainState (0 cold, 1 on,
     // 2 / 3 running), -1 from the train (`running`).
     bool enter(std::size_t car, const simulation::Train& train, bool running = true, int state = -1);
+    // Every car's air as the last enter() left it (Init writes the
+    // pressures itself: RTS keeps them, LegacyCab::attach puts them in).
+    [[nodiscard]] const std::vector<dllhost::CarAir>& entered_air() const noexcept { return entered_air_; }
     // One round trip: the trains' state in (the player's first, as the
     // last reconsist ordered them), the DLLs' outputs out.
     bool step(double dt, const std::vector<const simulation::Train*>& trains, const LegacyWorld& world);
@@ -164,6 +167,7 @@ private:
     std::vector<dllhost::ModuleReport> modules_;
     std::shared_ptr<Outputs> outputs_ = std::make_shared<Outputs>();
     std::size_t player_ = SIZE_MAX;
+    std::vector<dllhost::CarAir> entered_air_;
     std::vector<std::uint32_t> train_types_;
     std::size_t restored_ = 0;
     std::string messages_;
@@ -190,5 +194,14 @@ private:
 
 // Engine outputs of a legacy DLL as the simulation's demands.
 void apply_engine_output(const dllhost::EngineOutput& out, simulation::EngineDemands& demands);
+
+// The player's first entering of a train just made, as RTS does it: the
+// cars start with no air (the Wagon constructor 0x4FD65C clears its first
+// 0x184 bytes, every pressure), Init writes what its start wants (the
+// MaDaDev VL80T and EP1M: cold pipe and main reservoir 0, on 5.0 / 7.0,
+// running 5.2 / 8.5), then (0x46955C, once a train) every car takes the
+// player's engine's pipe, charging pipe, cylinder, auxiliary reservoir and
+// control chamber; main reservoirs stay each engine's. enter()'s result.
+bool enter_new_train(LegacyConsist& consist, std::size_t car, simulation::Train& train, bool running = true, int state = -1);
 
 } // namespace openrts::trainplugin

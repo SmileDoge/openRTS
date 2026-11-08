@@ -102,6 +102,10 @@ struct WindowOptions {
     // after another before the capture (an uncoupling, then a coupling).
     std::optional<int> capture_menu;
     std::vector<int> capture_menu_more;
+    // --capture-inspect: at 0.5 of capture_at the inspector (F12) opens and
+    // a click at the picture's middle chooses what is there; the capture
+    // prints the inspector's choice.
+    bool capture_inspect = false;
     // --capture-uncouple <index>: at 0.6 of capture_at the driven train is
     // uncoupled before car `index` (from 0), as the Train window's button does.
     std::optional<std::size_t> capture_uncouple;

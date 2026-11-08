@@ -393,6 +393,14 @@ terrain).
   of the shaders (lights.glsl; models and terrain): light space z towards
   PointsTo, a cone spreading rX / rZ at the PointsTo plane (`Size` =
   rX / reach), a sphere or a box taking them as half sizes - **PROBABLE**.
+  `LightArray ( n dx dy dz )`: a row of n lamps, each the one before moved
+  by (dx, dy, dz) in the shape's space; RTS's lights.glsl lights each point
+  by the row's nearest lamp (the light's array count and step). The
+  Novokuznetsk platform `platf_fonar_9.s` has two rows, 4 and 5 lamps
+  50.118 m apart: nine lamps. openRTS read no `LightArray` until 2026-11-08,
+  so a row lit with its first lamp only (two of nine there); now the RTS
+  path packs the row as one light as RTS does, the experimental path every
+  lamp as a light of its own (its clusters and shadows each lamp's).
   `NIGHT_AUTO` / `NIGHT_ONLY` lamps burn at night only (the RTS file
   reference), within `Distance` and RTS's config `MaxLightDistance` (400) of
   the camera (superseded: see "Light rings"). Which of many lights RTS gives each object is **UNKNOWN**

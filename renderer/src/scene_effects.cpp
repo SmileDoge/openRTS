@@ -483,6 +483,7 @@ struct SceneEffects::Impl {
     std::uint32_t lamps_lighting = 0;
     float lamp_radius = 0.0f;
     std::array<glm::mat4, max_lamp_shadows> lamp_matrices{};
+    std::array<std::uint32_t, max_lamp_shadows> lamp_owners{}; // each shadow's lamp's owner
     std::vector<glm::vec3> lamp_shadow_kept; // last frame's lamps, by position
     void fit_focus(const std::optional<ShadowFocus>& focus);
     void choose_lamp_shadows(const std::optional<ShadowFocus>& focus, bool fade);
@@ -1103,6 +1104,7 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
     const auto size = static_cast<float>(lamp_map_size());
     for (std::uint32_t k = 0; k < wanted; ++k) {
         const auto& light = packed_lights[picks[k].index];
+        lamp_owners[k] = light.owner;
         const glm::mat4 to_world = glm::inverse(light.to_light);
         const glm::vec3 position{to_world[3]};
         glm::vec3 axis = glm::length(light.direction) > 1e-4f ? glm::normalize(light.direction) : glm::vec3{0.0f, -1.0f, 0.0f};
@@ -1227,6 +1229,12 @@ void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const D
         wgpuComputePassEncoderEnd(compute);
         wgpuComputePassEncoderRelease(compute);
     }
+}
+
+std::uint32_t SceneEffects::depth_slot_owner(const std::uint32_t slot) const noexcept {
+    const auto& impl = *impl_;
+    if (slot < Impl::lamp_slot || slot >= Impl::lamp_slot + impl.lamp_shadow_count) return 0;
+    return impl.lamp_owners[slot - Impl::lamp_slot];
 }
 
 void SceneEffects::record(const WGPUCommandEncoder encoder, const DepthDraw& draw) {

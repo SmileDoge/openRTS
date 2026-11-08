@@ -10,6 +10,7 @@
 // surfaces (CabCollision) and its interior doors, which open by their node's
 // animation (InteriorDoors).
 
+#include <array>
 #include <cstdint>
 #include <chrono>
 #include <future>
@@ -18,6 +19,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -179,6 +181,10 @@ public:
     [[nodiscard]] std::optional<std::size_t> find_window(std::string_view name) const;
     [[nodiscard]] bool window_open(std::size_t window) const noexcept;
     void toggle_window(std::size_t window);
+    // The SMSTriggers codes of the doors and windows that began to open or
+    // shut since the last call: RTS (0x438708 -> 0x46AF1C) posts each to
+    // every sound of the car (its exterior and cab scripts, its libraries').
+    [[nodiscard]] std::vector<std::uint32_t> take_sounds() { return std::exchange(sounds_, {}); }
     // The rooms (InteriorAreas) and how much sound passes between them
     // through the doors and windows as they are open now (docs/sound.md,
     // "Rooms and sound proofing"). Rooms: audio::InteriorAcoustics indices.
@@ -230,6 +236,10 @@ private:
     std::vector<std::int32_t> lamp_nodes_;    // LightSources' nodes, by the lamp's Name
     glm::vec3 eye_{0.0f, 2.5f, 0.0f};
     bool bound_ = false;
+    std::vector<std::uint32_t> sounds_; // take_sounds()
+    void sound(const std::array<std::uint16_t, 2>& codes, bool opening) {
+        if (const auto code = codes[opening ? 0 : 1]; code != 0) sounds_.push_back(code);
+    }
     std::size_t switch_nodes_ = 0;
     std::future<std::shared_ptr<Geometry>> loading_;
     std::shared_ptr<Geometry> geometry_;

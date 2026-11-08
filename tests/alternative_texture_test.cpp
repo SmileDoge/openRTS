@@ -17,7 +17,12 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/formats/environment.hpp>
 #include <openrts/formats/car_spawn.hpp>
+#include <openrts/renderer/forest_clearance.hpp>
 #include <openrts/renderer/model_assets.hpp>
+#include <openrts/simulation/track_geometry.hpp>
+#include <openrts/simulation/track_network.hpp>
+
+#include <glm/gtc/quaternion.hpp>
 #include "../renderer/src/forest_shape.hpp"
 #include "../renderer/src/transfer_shape.hpp"
 
@@ -35,6 +40,17 @@ void check(const bool condition, const std::string& what) {
         std::cerr << "FAIL: " << what << '\n';
         ++failures;
     }
+}
+
+// The clearance's axes: the distance to a piece's edge, the grid's reach.
+void test_clearance() {
+    renderer::ForestClearance axes;
+    axes.add(0.0, 0.0, 10.0, 0.0, 1.5f);
+    check(std::fabs(axes.nearest(5.0, 4.0, 20.0) - 2.5) < 1e-9, "clearance: 4 m beside a 1.5 m half-wide way is 2.5 m from its edge");
+    check(std::fabs(axes.nearest(13.0, 4.0, 20.0) - 3.5) < 1e-9, "clearance: past the end, from the end");
+    check(axes.nearest(100.0, 100.0, 20.0) == 20.0, "clearance: nothing within reach");
+    axes.add(-40.0, -70.0, -33.0, -70.0, 0.0f);
+    check(std::fabs(axes.nearest(-35.0, -66.0, 10.0) - 4.0) < 1e-9, "clearance: negative cells");
 }
 
 void test_folders() {
@@ -221,6 +237,64 @@ void test_content(const std::filesystem::path& root) {
             check(std::fabs(first.position[2] - (2.14062f - 8.5703f + 2.5f)) < 0.01f, "first tree z as RTS places it");
         }
     }
+    // openRTS's clearance (renderer/forest_clearance.hpp): Novokuznetsk's
+    // forest 4054 (300 x 600 m, 500 trees 10 m wide) lies across the line.
+    if (const auto file = core::VirtualPath::parse("ROUTES/Novokuznetsk/WORLD/w-002971+015037.w"); vfs.exists(*file)) {
+        const auto path = renderer::forest_shape_path(*file, 4054);
+        const auto all = renderer::build_forest_shape(vfs, *path);
+        const auto planted = all.model.vertices.size() / 8;
+        check(all.error.empty() && planted == 500, "Novokuznetsk forest 4054: 500 trees as RTS plants them: " + all.error);
+        auto network = simulation::TrackNetwork::load(vfs, *core::VirtualPath::parse("ROUTES/Novokuznetsk"), nullptr);
+        check(network != nullptr, "Novokuznetsk track network");
+        if (network) {
+            // The tracks' axes as the viewer's route_way_axes makes them.
+            auto axes = std::make_shared<renderer::ForestClearance>();
+            for (const auto& node : network->database().nodes) {
+                if (node.kind != formats::TrackNodeKind::vector) continue;
+                for (const auto& placement : node.sections) {
+                    const auto* section = network->sections().section(placement.section);
+                    if (!section || section->length <= 0.0f) continue;
+                    const int pieces = section->curved || section->skewed ? (std::max)(1, static_cast<int>(std::ceil(section->length / 4.0f))) : 1;
+                    auto from = simulation::evaluate_section(placement, *section, 0.0);
+                    for (int k = 1; k <= pieces; ++k) {
+                        const auto to = simulation::evaluate_section(placement, *section, section->length * k / pieces);
+                        axes->add(from.tile_x * simulation::tile_size + from.x, from.tile_z * simulation::tile_size + from.z,
+                                  to.tile_x * simulation::tile_size + to.x, to.tile_z * simulation::tile_size + to.z, 1.5f);
+                        from = to;
+                    }
+                }
+            }
+            renderer::set_forest_clearance_axes(axes);
+            renderer::set_forest_clearance_distance(3.0f);
+            const auto before = renderer::forest_tree_counts();
+            const auto kept = renderer::build_forest_shape(vfs, *path);
+            const auto counts = renderer::forest_tree_counts();
+            renderer::set_forest_clearance_distance(0.0f);
+            renderer::set_forest_clearance_axes(nullptr);
+            const auto left = kept.model.vertices.size() / 8;
+            std::cout << "forest 4054: " << left << " of " << planted << " trees kept off the track" << std::endl;
+            check(kept.error.empty() && left > 0 && left < planted, "forest 4054: some trees left out near the track, the rest kept");
+            check(counts.planted - before.planted == left && counts.cleared - before.cleared == planted - left, "forest tree counts");
+            // Every kept tree's crown (5 m round its middle) is 3 m or more
+            // from a track's edge.
+            const auto tile = formats::load_world_tile(vfs, *file);
+            for (const auto& object : tile.objects) {
+                if (object.kind != formats::WorldObjectKind::forest || object.uid != 4054) continue;
+                const auto& q = object.rotation;
+                const glm::quat rotation{q[3], -q[0], -q[1], -q[2]};
+                std::size_t near = 0;
+                for (std::size_t t = 0; t < left; ++t) {
+                    const auto& v = kept.model.vertices;
+                    const glm::vec3 local{v[t * 8].position[0], 0.0f, v[t * 8 + 4].position[2]};
+                    const auto offset = rotation * local;
+                    const double x = tile.tile_x * simulation::tile_size + object.position.x + offset.x;
+                    const double z = tile.tile_z * simulation::tile_size + object.position.z + offset.z;
+                    if (axes->nearest(x, z, 20.0) < 8.0 - 1e-3) ++near;
+                }
+                check(near == 0, "forest 4054: no kept tree's crown within 3 m of a track's edge");
+            }
+        }
+    }
     if (vfs.exists(*core::VirtualPath::parse("ROUTES/Kuban_RTS/WORLD/w-004494+014579.w"))) {
         const auto tile = world("w-004494+014579.w");
         std::size_t crossings = 0;
@@ -277,6 +351,7 @@ void test_content(const std::filesystem::path& root) {
 
 int main(int argc, char** argv) {
     test_folders();
+    test_clearance();
     test_description();
     if (argc > 1) test_content(argv[1]);
     std::cout << (failures ? "FAILED" : "passed") << '\n';

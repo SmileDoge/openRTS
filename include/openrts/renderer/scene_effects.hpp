@@ -152,6 +152,9 @@ public:
     [[nodiscard]] float shadow_range() const noexcept;
     // Whether this frame has depth passes (shadows or the occlusion's pre-pass).
     [[nodiscard]] bool wants_depth() const noexcept;
+    // The owner (ModelExtraLight::owner) of the lamp a depth slot draws the
+    // shadow of, 0 for the other slots: its own model is left out.
+    [[nodiscard]] std::uint32_t depth_slot_owner(std::uint32_t slot) const noexcept;
     [[nodiscard]] SceneEffectStats stats() const noexcept;
 
 private:

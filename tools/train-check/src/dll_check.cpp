@@ -305,7 +305,8 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             if (player == SIZE_MAX) player = i;
         }
     }
-    if (!consist->enter(player, train, true, start_state)) {
+    // Its air from Init, as the game's first entering (RTS's).
+    if (!trainplugin::enter_new_train(*consist, player, train, true, start_state)) {
         std::fprintf(stderr, "enter failed: %s\n%s", consist->error().c_str(), consist->take_messages().c_str());
         return 2;
     }

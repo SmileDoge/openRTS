@@ -224,6 +224,9 @@ void CrossingView::update(const float elapsed, const std::vector<renderer::Strea
         audio::SoundInputs inputs{.camera = audio::SoundCamera::external, .position = crossing.position};
         inputs.gain = gain;
         inputs[formats::SoundVariable::distance] = hearing;
+        // RTS gives the crossing's sound object flags 0x22 (0x4210D9): it
+        // fades with distance by the Attenuation rule.
+        inputs.fades_with_distance = true;
         inputs.discrete = crossing.triggers;
         crossing.sound->update(elapsed, inputs, *sink);
         crossing.triggers.clear();

@@ -20,8 +20,11 @@
 5    voltage 25000 50
 6    switch 0 6
 8    switch 0 7
+# The train starts with the air its Init leaves (RTS: the cars' auxiliary
+# reservoirs empty, enter_new_train), so the pipe dips on charging them and
+# comes back: about 4.2 at 18 s.
 18   expect speed > 1
-18   expect pipe > 4.5
+18   expect pipe > 4
 # The cab screens the DLLs fill (КЛУБ display 180, САВПЭ 499): the speed
 # limit and the clock as labels (the world clock, RTS_VAR_TIME, runs from
 # 12:00 with the simulation), the white aspect shown.

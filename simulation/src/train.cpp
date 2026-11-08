@@ -514,6 +514,18 @@ void Train::set_handbrake(const std::size_t car, const float value) {
     asleep_ = false;
 }
 
+void Train::set_air(const std::size_t car, const Air& air) {
+    if (car >= cars_.size()) return;
+    auto& c = cars_[car];
+    c.pipe = (std::max)(air.pipe, 0.0f);
+    c.charging_pipe = (std::max)(air.charging_pipe, 0.0f);
+    c.cylinder = (std::max)(air.cylinder, 0.0f);
+    c.auxiliary = (std::max)(air.auxiliary, 0.0f);
+    c.control = (std::max)(air.control, 0.0f);
+    if (c.definition && c.definition->engine) c.main_reservoir = (std::max)(air.main_reservoir, 0.0f);
+    asleep_ = false;
+}
+
 void Train::set_bogies(const std::size_t car, const float ahead, const float behind) {
     if (car >= cars_.size()) return;
     cars_[car].bogie_ahead = (std::max)(ahead, 0.0f);

@@ -229,6 +229,9 @@ struct CabDoor {
     // SoundProof ( closed open ): the share of a sound that passes the door
     // shut and open; without it everything passes (RTS 0x51CD88: 1, 1).
     float sound_closed = 1.0f, sound_open = 1.0f;
+    // SMSTriggers ( open shut ): the codes for the car's sounds as it starts
+    // to open and to shut (RTS +0x74 / +0x76, 0x438708); 0 none.
+    std::array<std::uint16_t, 2> sms_triggers{};
 };
 struct CabWindow {
     std::string name;
@@ -241,6 +244,8 @@ struct CabWindow {
     // SoundProof ( closed open ) towards the outside of the room the window's
     // Position is in; without it nothing passes (RTS 0x51CD88: 0, 0).
     float sound_closed = 0.0f, sound_open = 0.0f;
+    // SMSTriggers ( open shut ), as a door's (RTS +0x60 / +0x62).
+    std::array<std::uint16_t, 2> sms_triggers{};
 };
 
 // ESD_Extended_Animation AnimationNode ( Name ( "x" ) Shortcut ( n f1 .. fn )

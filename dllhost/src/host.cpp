@@ -849,16 +849,22 @@ bool Host::enter(const EnterRequest& request, const std::vector<CarInput>& input
     l->loco_flags |= 0x10 | 0x40;
     if (l->loco_flags & 0x88) { // cold or AI: no DLL
         collect(reply);
+        collect_air(reply);
         return true;
     }
     if (!bind(car)) {
         collect(reply);
+        collect_air(reply);
         return !car.spec.module.empty() ? false : true;
     }
     if (!init_car(car, init_state(car, true))) {
         collect(reply);
+        collect_air(reply);
         return false;
     }
+    // RTS after Init (0x503004): the engine's control chamber (PTValue) at
+    // its pipe less 0.2, not below 0.
+    car.wagon()->pt_value = (std::max)(car.wagon()->train_pipe_pressure - 0.2f, 0.0f);
     // ChangeLoco: the previous master is a locomotive that had this one as a slave.
     const abi::Locomotive* previous = nullptr;
     for (auto& c : cars_) {
@@ -882,6 +888,7 @@ bool Host::enter(const EnterRequest& request, const std::vector<CarInput>& input
     }
     group(car);
     collect(reply);
+        collect_air(reply);
     return true;
 }
 
@@ -1599,6 +1606,20 @@ Module* Host::module_of(const void* dll) {
 void Host::collect(StepReply& reply) {
     reply.cars.resize(cars_.size());
     for (std::size_t i = 0; i < cars_.size(); ++i) collect_car(*cars_[i], reply.cars[i]);
+}
+
+void Host::collect_air(StepReply& reply) {
+    reply.air.resize(cars_.size());
+    for (std::size_t i = 0; i < cars_.size(); ++i) {
+        auto& c = *cars_[i];
+        const abi::Wagon* w = c.wagon();
+        reply.air[i] = {.pipe = w->train_pipe_pressure,
+                        .charging_pipe = w->charging_pipe_pressure,
+                        .cylinder = w->brake_cylinder_pressure,
+                        .auxiliary = w->auxiliary_pressure,
+                        .control = w->pt_value,
+                        .main_reservoir = c.is_loco() ? c.loco()->main_res_pressure : 0.0f};
+    }
 }
 
 namespace {

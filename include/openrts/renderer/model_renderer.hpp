@@ -38,6 +38,14 @@ struct ModelExtraLight {
     float kind = 1.0f;
     float spot_exponent = 64.0f;           // x 128, as RTS keeps it
     glm::vec4 attenuation{2.0f, 0.6f, 0.4f, 0.0f};
+    // A light array (LightArray): `array_count` lamps (0: one), each the one
+    // before moved by array_step.xyz in the light's space; array_step.w its
+    // length squared. The shaders light each point by the nearest lamp.
+    std::uint32_t array_count{};
+    glm::vec4 array_step{0.0f};
+    // The instance it belongs to (ModelRenderer::set_owner), 0 none: with
+    // lamp_skips_own_model() that instance is left out of its shadow.
+    std::uint32_t owner{};
 };
 
 // RTS's further lights, in rings around the camera (rts1.exe, CONFIRMED).
@@ -124,6 +132,17 @@ using ModelTransform = glm::mat4;
 struct ModelBounds {
     glm::vec3 center{};
     float radius{};
+    glm::vec3 min{}, max{}; // the box round every drawn vertex, in the shape's space
+};
+
+// A primitive state of a model as the inspector shows it.
+struct ModelPrimitive {
+    std::uint32_t index{};      // in the shape
+    std::string image;          // its texture's image (file name)
+    std::string shader;         // the shape's shader name
+    std::int32_t light_material = -5;
+    std::int32_t shape_light_material = -5; // before the override (openRTS's <shape>.openrts)
+    std::uint32_t draws{};      // primitives drawing it, over every distance level
 };
 
 // A pose change of one shape node: `local` is applied in the node's own frame
@@ -209,6 +228,10 @@ public:
     [[nodiscard]] const std::vector<std::string>& texture_key() const noexcept;
     // ESD_Light_Sources of the shape (scenery lamps), in its space.
     [[nodiscard]] const std::vector<formats::ShapeLight>& lights() const noexcept;
+    // Its primitive states, in the shape's order (the inspector).
+    [[nodiscard]] const std::vector<ModelPrimitive>& primitives() const noexcept;
+    // Its distance levels (m), nearest first; empty for one level.
+    [[nodiscard]] const std::vector<float>& level_distances() const noexcept;
 
 private:
     struct Impl;
@@ -289,6 +312,9 @@ public:
     // (.w) and whether it is a transfer, which decide its RTS object pass
     // (rts::object_pass; Terrain -1, Global 0, a transfer -2).
     void set_world_object(std::uint32_t static_flags, bool transfer);
+    // A tag of the instance submitted last (0: none), the one its lamps carry
+    // as ModelExtraLight::owner.
+    void set_owner(std::uint32_t owner);
     // Records the frame's draws. `before_translucent` is called once in the
     // pass after the opaque and alpha-tested geometry and before the
     // translucent pass (glass), for helpers that must show through glass but
@@ -303,7 +329,10 @@ public:
     // Depth only, for SceneEffects (the experimental path): every surface
     // that writes depth and is not blended, from `view_projection`, in depth
     // slot `slot` (< 12); a shadow pass takes the casters out of view too.
-    void render_depth(WGPURenderPassEncoder pass, std::uint32_t slot, const glm::mat4& view_projection, DepthPassKind kind);
+    // `skip_owner`: the instances tagged so are left out (a lamp's own model
+    // in its shadow map; 0 none).
+    void render_depth(WGPURenderPassEncoder pass, std::uint32_t slot, const glm::mat4& view_projection, DepthPassKind kind,
+                      std::uint32_t skip_owner = 0);
     // An instance out of view that casts a shadow into it: shadow passes only.
     void submit_shadow_caster(RenderModel& model, const ModelTransform& transform);
     // Group 2 of the experimental path (SceneEffects::bind_group); nullptr: a

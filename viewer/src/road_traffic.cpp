@@ -10,6 +10,8 @@
 
 #include <openrts/formats/track_database.hpp>
 #include <openrts/formats/track_sections.hpp>
+#include <openrts/renderer/forest_clearance.hpp>
+#include <openrts/simulation/track_geometry.hpp>
 
 #include "crossing_view.hpp"
 
@@ -34,25 +36,59 @@ namespace {
 
 } // namespace
 
+std::optional<std::string> read_road_database(const core::Vfs& vfs, const core::VirtualPath& route) {
+    const std::string name(route.filename());
+    if (const auto file = route.resolve(name + ".rdb")) {
+        if (auto bytes = vfs.read(*file)) return bytes;
+    }
+    for (const auto& entry : vfs.list(route)) {
+        if (entry.directory) continue;
+        std::string file(entry.path.filename());
+        for (auto& c : file) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (file.size() > 4 && file.ends_with(".rdb")) return vfs.read(entry.path);
+    }
+    return std::nullopt;
+}
+
+std::shared_ptr<renderer::ForestClearance> route_way_axes(const core::Vfs& vfs, const core::VirtualPath& route,
+                                                          const simulation::TrackNetwork* tracks) {
+    auto axes = std::make_shared<renderer::ForestClearance>();
+    // A track reaches 1.5 m from its axis (the sleepers' ends, the
+    // ballast's shoulder), a road 3.5 m (two lanes).
+    const auto add_ways = [&](const formats::TrackDatabase& database, const formats::TrackSectionLibrary& sections, const float half_width) {
+        for (const auto& node : database.nodes) {
+            if (node.kind != formats::TrackNodeKind::vector) continue;
+            for (const auto& placement : node.sections) {
+                const auto* section = sections.section(placement.section);
+                if (!section || section->length <= 0.0f) continue;
+                const int pieces = section->curved || section->skewed ? (std::max)(1, static_cast<int>(std::ceil(section->length / 4.0f))) : 1;
+                auto from = simulation::evaluate_section(placement, *section, 0.0);
+                for (int k = 1; k <= pieces; ++k) {
+                    const auto to = simulation::evaluate_section(placement, *section, section->length * k / pieces);
+                    axes->add(from.tile_x * simulation::tile_size + from.x, from.tile_z * simulation::tile_size + from.z,
+                              to.tile_x * simulation::tile_size + to.x, to.tile_z * simulation::tile_size + to.z, half_width);
+                    from = to;
+                }
+            }
+        }
+    };
+    if (tracks) add_ways(tracks->database(), tracks->sections(), 1.5f);
+    if (const auto bytes = read_road_database(vfs, route)) {
+        const auto roads = formats::parse_track_database(*bytes);
+        if (roads.ok()) {
+            if (tracks) add_ways(roads, tracks->sections(), 3.5f);
+            else if (const auto sections = formats::load_track_sections(vfs, route); sections.ok()) add_ways(roads, sections, 3.5f);
+        }
+    }
+    return axes;
+}
+
 RoadTraffic::RoadTraffic(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath route, const formats::RoutePosition origin)
     : vfs_(std::move(vfs)), route_(std::move(route)), origin_(origin) {
     types_ = formats::load_car_spawn_list(*vfs_, route_);
     if (types_.types.empty()) return;
-    // The road database: <route>.rdb (RTS 0x492BE4), on the route's track sections.
-    const std::string name(route_.filename());
-    std::optional<std::string> bytes;
-    if (const auto file = route_.resolve(name + ".rdb")) bytes = vfs_->read(*file);
-    if (!bytes) {
-        for (const auto& entry : vfs_->list(route_)) {
-            if (entry.directory) continue;
-            std::string file(entry.path.filename());
-            for (auto& c : file) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            if (file.size() > 4 && file.ends_with(".rdb")) {
-                bytes = vfs_->read(entry.path);
-                break;
-            }
-        }
-    }
+    // The road database, on the route's track sections.
+    const auto bytes = read_road_database(*vfs_, route_);
     if (!bytes) return;
     auto database = formats::parse_track_database(*bytes);
     auto sections = formats::load_track_sections(*vfs_, route_);

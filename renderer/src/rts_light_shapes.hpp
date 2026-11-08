@@ -34,7 +34,8 @@ inline void pack_light(GpuLight& to, const ModelExtraLight& from) {
     to.direction[2] = from.direction.z;
     std::memcpy(to.size, &from.size[0], sizeof(to.size));
     to.type[0] = from.kind;
-    to.type[1] = 0.0f;
+    to.type[1] = from.array_count >= 2 ? static_cast<float>(from.array_count) : 0.0f;
+    std::memcpy(to.array_step, &from.array_step[0], sizeof(to.array_step));
     to.type[2] = from.spot_exponent;
     std::memcpy(to.attenuation, &from.attenuation[0], sizeof(to.attenuation));
 }

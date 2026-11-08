@@ -127,6 +127,7 @@ void WorldSounds::update(const float dt, const glm::vec3& listener, const SoundC
             SoundInputs inputs{.camera = camera, .position = source.position};
             inputs.gain = gain;
             inputs[formats::SoundVariable::distance] = glm::distance(listener, source.position);
+            inputs.fades_with_distance = true; // object flag 0x20 (0x41B6D0)
             source.instance->update(dt, inputs, sink);
         }
     }

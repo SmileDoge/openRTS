@@ -2,6 +2,7 @@
 
 #include <openrts/core/profile.hpp>
 
+#include <map>
 #include <unordered_map>
 
 #include "miniaudio_config.hpp"
@@ -21,6 +22,31 @@ struct AudioEngine::Impl {
     std::uint32_t max_voices = 256;
     VoiceId next_id = 1;
     std::unordered_map<VoiceId, std::unique_ptr<Voice>> voices;
+    // Mono copies of stereo clips for the voices placed in space, by clip.
+    std::map<const AudioClip*, std::pair<std::weak_ptr<const AudioClip>, std::shared_ptr<const AudioClip>>> mono;
+
+    std::shared_ptr<const AudioClip> mono_of(const std::shared_ptr<const AudioClip>& clip) {
+        if (!clip || clip->channels <= 1) return clip;
+        auto& entry = mono[clip.get()];
+        if (entry.second && !entry.first.expired()) return entry.second;
+        auto copy = std::make_shared<AudioClip>();
+        copy->channels = 1;
+        copy->sample_rate = clip->sample_rate;
+        copy->frames = clip->frames;
+        copy->loop_start = clip->loop_start;
+        copy->loop_end = clip->loop_end;
+        copy->samples.resize(static_cast<std::size_t>(clip->frames));
+        const auto channels = clip->channels;
+        for (std::size_t f = 0; f < copy->samples.size(); ++f) {
+            float sum = 0.0f;
+            for (std::uint32_t c = 0; c < channels; ++c) sum += clip->samples[f * channels + c];
+            copy->samples[f] = sum / static_cast<float>(channels);
+        }
+        entry = {clip, copy};
+        // Forget the copies of clips no longer held.
+        std::erase_if(mono, [](const auto& item) { return item.second.first.expired(); });
+        return copy;
+    }
 
     void destroy(Voice& voice) {
         ma_sound_uninit(&voice.sound);
@@ -106,7 +132,11 @@ std::size_t AudioEngine::active_voices() const noexcept {
 VoiceId AudioEngine::play(std::shared_ptr<const AudioClip> clip, const VoicePlayback playback, const VoiceSpace space) {
     if (!ok() || !clip || clip->frames == 0 || impl_->voices.size() >= impl_->max_voices) return 0;
     auto voice = std::make_unique<Impl::Voice>();
-    voice->clip = std::move(clip);
+    // A voice placed in space plays a stereo file as mono (openRTS: RTS
+    // places no sound at all, docs/sound.md); miniaudio pans a stereo
+    // source's channels only weakly, and a crossing's stereo bell sounded
+    // as if inside the head.
+    voice->clip = space == VoiceSpace::flat ? std::move(clip) : impl_->mono_of(clip);
     const auto& data = *voice->clip;
     auto config = ma_audio_buffer_config_init(ma_format_f32, data.channels, data.frames, data.samples.data(), nullptr);
     config.sampleRate = data.sample_rate;
