@@ -21,7 +21,7 @@ struct Effects {
     flags: vec4<u32>,          // x: clustered lights, y: ambient occlusion, z: aerial perspective, w: lights
     sun: vec4<f32>,            // xyz: towards the sun
     aerial: vec4<f32>,         // x: extinction per metre at the eye, y: its fall-off with height (1/m), z: Mie g, w: sun glow
-    haze: vec4<f32>,           // linear in-scattered colour (the horizon's)
+    haze: vec4<f32>,           // xyz: linear in-scattered colour (the horizon's), w: RTS's fog strength (its fog colour's alpha)
     sun_colour: vec4<f32>,     // linear
     texel: vec4<f32>,          // a shadow texel's size in metres, per cascade
     view: mat4x4<f32>,         // world -> view
@@ -179,7 +179,9 @@ fn effects_cluster(frag: vec4<f32>, world: vec3<f32>) -> u32 {
 // Aerial perspective on a linear colour: extinction by distance through a
 // haze thinning with height, the sky's colour scattered in, brighter
 // towards the sun (Henyey-Greenstein); over the last quarter of RTS's fog
-// distance it turns into RTS's fog colour, so the land's end stays hidden.
+// distance it turns into RTS's fog colour, so the land's end stays hidden,
+// as strongly as RTS fogs (the colour's alpha: none after sunset, where the
+// colour is black and had turned the far land black behind a light haze).
 fn effects_aerial(colour: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let ray = world - effects.eye.xyz;
     let distance = length(ray);
@@ -197,7 +199,7 @@ fn effects_aerial(colour: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let inscatter = effects.haze.xyz + effects.sun_colour.xyz * phase * effects.aerial.w;
     let hazy = colour * transmittance + inscatter * (1.0 - transmittance);
     if (effects.horizon.w <= 0.0) { return hazy; }
-    let edge = smoothstep(0.75 * effects.horizon.w, effects.horizon.w, distance);
+    let edge = smoothstep(0.75 * effects.horizon.w, effects.horizon.w, distance) * clamp(effects.haze.w, 0.0, 1.0);
     return mix(hazy, effects.horizon.xyz, edge);
 }
 )";

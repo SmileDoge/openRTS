@@ -305,7 +305,8 @@ default. The keys at hand: the
 | F | free / orbit camera |
 | V | camera follows the train |
 | F3 | view from the first car (an orbit round it), again from the last, again back; the train is still driven with the cab keys |
-| Wheel / Ctrl+wheel | outside the cab: nearer and farther / zoom (the field of view) |
+| Wheel / Ctrl+wheel | outside the cab: nearer and farther / zoom (the field of view; Ctrl+wheel in the cab too) |
+| Num+ / Num− | field of view narrower / wider, as RTS (15–90°) |
 | C | put the consist on the track near the camera |
 | J | throw the junction ahead |
 | T | the track diagram (yellow lines; off by default, remembered) |

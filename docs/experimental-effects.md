@@ -93,7 +93,11 @@ with height (scale height 1.5 km), a third of the light left at RTS's fog
 end (the sky dome's edge); the sky's light (the environment's ambient
 colour) scattered in, a Henyey-Greenstein (g 0.76) glow towards the sun;
 over the last quarter of that distance it turns into RTS's fog colour so the
-end of the land stays hidden.
+end of the land stays hidden, as strongly as RTS fogs: by the alpha of its
+fog colour (`Effects.haze.w`). The sky makes that alpha 0 once the sun is
+2 degrees below the horizon, and the colour black. Until 2026-11-09 the
+alpha was left out, and after sunset the far land turned black behind a
+light haze (Novokuznetsk at Luzhba, 22:38 in summer).
 
 ## Settings
 
@@ -370,3 +374,41 @@ extra pass: a few instructions a pixel.
 ED9M side on at the bogies, 12:00, mean luma 0..255: the band of the car
 side and the bogies 73.0 -> 79.5 (0.2) -> 83.1 (0.35), the darkest tenth of
 it (deep under the body) 14.9 -> 16.1 -> 17.0, the ground unchanged.
+
+## openRTS sky (atmosphere, volumetric clouds)
+
+Not RTS: a Graphics setting, «Небо openRTS: атмосфера, объёмные облака
+(не как в RTS)», on by default (`native_sky`). When on it replaces RTS's
+dome of textured layers and its sun sprite. The other satellites of the
+environment (the moon) are still drawn over it. Works on both paths
+(`renderer/src/native_sky.cpp`).
+
+- **Atmosphere:** single scattering, Rayleigh (5.8, 13.6, 33.1 per
+  10^6 m, scale height 8 km) and Mie (4.0 / 4.4, 1.2 km, g 0.8), ozone, a
+  round planet (6360 km, air to 100 km). The sun's light is 20 in the scene's
+  units, so a sunlit white surface is about 1; noon zenith (0.08, 0.17,
+  0.36) linear. 16 samples a view (crowded near the eye), 8 towards the sun.
+  It is drawn into a 256 x 128 table round the sky after each frame's main
+  pass (`render_table`, rows crowded at the horizon), and read the next
+  frame. The sun is RTS's lighting satellite: the same direction lights the
+  scene; while RTS hides it, it is 30 degrees down.
+- **Night:** a faint glow (0.004, 0.006, 0.012) and stars, fading in
+  between the sun 7 and 1 degrees below the horizon.
+- **Clouds:** cumulus in a layer from 1.5 km above sea, or 600 m over the
+  eye where the route lies high, 2.2 km thick, on the round planet, out to
+  60 km and fading into the haze past 40 km. Their shapes come from 3D noise
+  made at start: gradient and cellular noise, 64^3 tiling every 16 km. Their
+  edges are eaten by a finer cellular 32^3 every 2 km. A 2D map every 65 km
+  varies where they gather. Cover by the weather: clear 0.42, snow 0.85,
+  rain 0.92. They drift with the environment's lowest wind times 3, at
+  least 4 m/s. Ray marched, 24 to 64 steps, the start jittered per pixel.
+  Light: the sun through the air (its colour at sunset), six steps towards
+  it, multiple scattering as three octaves (Wrenninge); the sky's average
+  from above, a little from the ground below.
+- **Where it is drawn:** after the opaque objects, where the depth is still
+  the far plane's (depth test equal), so only the sky's pixels pay for the
+  clouds; before the translucent ones and the openRTS water. The water's
+  sky probe draws this sky too.
+- **Fog:** RTS's fog colour becomes the average horizon of this sky (its
+  alpha, RTS's fog strength, kept), so the land's end meets the sky on both
+  paths.

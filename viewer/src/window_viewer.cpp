@@ -5,6 +5,8 @@
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
 #include <openrts/renderer/forest_clearance.hpp>
+#include <openrts/renderer/native_sky.hpp>
+#include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/depth_export.hpp>
 #include <algorithm>
@@ -628,6 +630,8 @@ struct PanelState {
     // over the whole area): the crown this far from the way's edge, m.
     bool forest_clearance = true;
     float forest_clearance_distance = 3.0f;
+    bool native_water = true; // the openRTS water instead of the environment's layers
+    bool native_sky = true;   // openRTS's own sky (atmosphere, volumetric clouds) instead of RTS's dome
     float fov = default_fov_degrees; // vertical field of view, degrees
     // The experimental path's effects (renderer::SceneEffects).
     renderer::SceneEffectSettings effects;
@@ -851,7 +855,7 @@ public:
                 }
             }
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::SliderFloat(tr("Field of view"), &panel.fov, 30.0f, 100.0f, tr("%.0f degrees")))
+            if (ImGui::SliderFloat(tr("Field of view (Num+ / Num-)"), &panel.fov, 15.0f, 100.0f, tr("%.1f degrees")))
                 remember("fov", std::to_string(panel.fov));
             ImGui::BeginDisabled(!panel.experimental_supported);
             if (ImGui::Checkbox(tr("Depth for ReShade"), &panel.reshade_depth))
@@ -868,6 +872,10 @@ public:
             if (ImGui::SliderFloat(tr("Trees from the track's or road's edge"), &panel.forest_clearance_distance, 0.5f, 20.0f, tr("%.1f m")))
                 remember("forest_clearance_distance", std::to_string(panel.forest_clearance_distance));
             ImGui::EndDisabled();
+            if (ImGui::Checkbox(tr("openRTS water: waves, sky reflection, soft shores (not as in RTS)"), &panel.native_water))
+                remember("native_water", panel.native_water ? "1" : "0");
+            if (ImGui::Checkbox(tr("openRTS sky: atmosphere, volumetric clouds (not as in RTS)"), &panel.native_sky))
+                remember("native_sky", panel.native_sky ? "1" : "0");
             bool batching = renderer.batching();
             if (ImGui::Checkbox(tr("Merge identical primitives (instancing)"), &batching)) renderer.set_batching(batching);
             bool culling = renderer.face_culling();
@@ -1303,15 +1311,15 @@ void on_scroll(GLFWwindow* window, [[maybe_unused]] const double x, const double
 #endif
     if (overlay_wants_mouse()) return;
     if (auto* input = camera_input(window)) {
-        input->scroll += y;
-        // Outside the cab: the wheel brings the camera nearer, Ctrl and the
-        // wheel zoom the view (the field of view).
+        // Ctrl and the wheel zoom the view (the field of view), in the cab
+        // too (its controls then keep still); else outside the cab the wheel
+        // brings the camera nearer, in it the cab has it.
         const bool ctrl = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
-        if (!input->scene_takes_scroll) {
-            if (ctrl)
-                input->camera->zoom_view(static_cast<float>(y));
-            else
-                input->camera->zoom(static_cast<float>(y));
+        if (ctrl) {
+            input->camera->zoom_view(static_cast<float>(y));
+        } else {
+            input->scroll += y;
+            if (!input->scene_takes_scroll) input->camera->zoom(static_cast<float>(y));
         }
     }
 }
@@ -1348,6 +1356,46 @@ void install_input_callbacks(GLFWwindow* window, CameraInput& input) {
     glfwSetScrollCallback(window, on_scroll);
     glfwSetKeyCallback(window, on_key);
     glfwSetCharCallback(window, on_char);
+}
+
+// RTS's field of view keys (rts1.exe 0x403715, WM_KEYDOWN): Num+ narrows it
+// by half a degree while above 15, Num- widens it while below 90, on the
+// press and on each of the key's repeats (here: after 0.5 s, 30 a second);
+// with Ctrl RTS does something else with them, so they do nothing here.
+struct FovKeys {
+    int key = 0;        // 1 narrower, -1 wider, 0 none
+    double held = 0.0;  // s since the press
+    double next = 0.0;  // s at the next repeat
+    bool changed = false;
+};
+
+// True when the key that changed the field of view was let go (remember it).
+[[nodiscard]] bool update_fov_keys(GLFWwindow* window, FovKeys& state, float& fov, const float seconds, const bool keyboard_free) {
+    const auto down = [window](const int key) { return glfwGetKey(window, key) == GLFW_PRESS; };
+    const bool ctrl = down(GLFW_KEY_LEFT_CONTROL) || down(GLFW_KEY_RIGHT_CONTROL);
+    int key = 0;
+    if (keyboard_free && !ctrl) key = down(GLFW_KEY_KP_ADD) ? 1 : down(GLFW_KEY_KP_SUBTRACT) ? -1 : 0;
+    if (key == 0) {
+        const bool let_go = state.changed;
+        state = {};
+        return let_go;
+    }
+    int steps = 0;
+    if (key != state.key) {
+        state.key = key;
+        state.held = 0.0;
+        state.next = 0.5;
+        steps = 1;
+    } else {
+        state.held += seconds;
+        for (; state.held >= state.next && steps < 64; state.next += 1.0 / 30.0) ++steps;
+    }
+    for (int k = 0; k < steps; ++k) {
+        if (key > 0 && fov > 15.0f) fov -= 0.5f;
+        if (key < 0 && fov < 90.0f) fov += 0.5f;
+        state.changed = true;
+    }
+    return false;
 }
 
 // Polled keyboard handling: F toggles fly/orbit on key press, WASD/QE move.
@@ -1960,6 +2008,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto fullbright = remembered("light_fullbright")) panel.light_fullbright = *fullbright == "1";
     if (const auto own = remembered("lamp_own_model")) panel.lamp_own_model = *own != "0";
     if (const auto clear = remembered("forest_clearance")) panel.forest_clearance = *clear != "0";
+    if (const auto water = remembered("native_water")) panel.native_water = *water != "0";
+    if (const auto sky = remembered("native_sky")) panel.native_sky = *sky != "0";
     if (const auto distance = remembered("forest_clearance_distance")) {
         try {
             panel.forest_clearance_distance = std::clamp(std::stof(*distance), 0.5f, 20.0f);
@@ -2045,12 +2095,13 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     }
     // The field of view: the panel's, else RTS's (config.ini FOV, vertical, degrees).
     if (const auto fov = remembered("fov")) {
-        panel.fov = std::clamp(static_cast<float>(std::atof(fov->c_str())), 30.0f, 100.0f);
+        panel.fov = std::clamp(static_cast<float>(std::atof(fov->c_str())), 15.0f, 100.0f);
     } else if (const auto rts = rts_config_value(read_rts_config(options.identity.root), "fov")) {
-        panel.fov = std::clamp(*rts, 30.0f, 100.0f);
+        panel.fov = std::clamp(*rts, 15.0f, 100.0f);
     }
     StageClock stage_clock;
     StageTimes stages{};
+    FovKeys fov_keys;
     double last_time = glfwGetTime();
     // Every 10 s the frame's breakdown goes to the console (openrts.log when
     // the menu runs the game): what a frame waits on, without the panel.
@@ -2088,6 +2139,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         input.keyboard_captured = scene.keyboard_captured();
         input.scene_takes_scroll = scene.takes_scroll();
         update_camera_from_keyboard(window.get(), input, elapsed);
+#ifdef OPENRTS_HAS_IMGUI
+        const bool fov_keyboard_free = !ImGui::GetIO().WantCaptureKeyboard;
+#else
+        const bool fov_keyboard_free = true;
+#endif
+        if (update_fov_keys(window.get(), fov_keys, panel.fov, elapsed, fov_keyboard_free)) remember("fov", std::to_string(panel.fov));
         last_time = now;
 
         toggle_shading_from_keyboard(window.get(), input, renderer);
@@ -2100,6 +2157,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
         if (sound) sound->set_paused(panel.paused || !loading.done);
         renderer::physical_light_falloff() = panel.physical_light;
+        renderer::native_water() = panel.native_water;
+        renderer::native_sky() = panel.native_sky;
         renderer::night_ambient_scale() = panel.night_ambient;
         renderer::light_range() = panel.light_range;
         renderer::headlight_reach() = panel.headlight_reach;

@@ -24,6 +24,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 #include "../renderer/src/forest_shape.hpp"
+#include "../renderer/src/terrain_heights.hpp"
 #include "../renderer/src/transfer_shape.hpp"
 
 namespace {
@@ -178,9 +179,11 @@ void test_content(const std::filesystem::path& root) {
     }
 
     // A transfer (rts1.exe 0x4B4E60): Kuban's UiD 325, 80 x 80 m of
-    // zemlya5.ace: a 20 x 20 grid of 4 m cells on the terrain, the far level
-    // a quad, BlendATexDiff with the mip bias -3, its texture from TEXTURES
-    // (SNOW in winter).
+    // zemlya5.ace, BlendATexDiff with the mip bias -3, its texture from
+    // TEXTURES (SNOW in winter). openRTS cuts it by the terrain's own
+    // triangles (RTS: a 4 m grid of its own, which flickers against the
+    // ground): every corner on the ground, the whole 80 x 80 m covered, the
+    // faces clockwise from above, one level to 2000 m.
     if (const auto world = core::VirtualPath::parse("ROUTES/Kuban_RTS/WORLD/w-004493+014583.w"); world && vfs.exists(*world)) {
         const auto tile = formats::load_world_tile(vfs, *world);
         const formats::WorldObjectPlacement* transfer = nullptr;
@@ -198,10 +201,36 @@ void test_content(const std::filesystem::path& root) {
         if (path) {
             const auto asset = renderer::load_model_asset(vfs, *path, {*textures}, nullptr, {});
             check(asset.ok(), "transfer builds: " + asset.error);
-            check(asset.model.vertices.size() == 21u * 21u, "transfer grid: 21 x 21 vertices");
-            check(asset.model.draws.size() == 2 && asset.model.draws[0].index_count == 20u * 20u * 6u
-                      && asset.model.draws[1].index_count == 6u && asset.model.level_distances.size() == 2,
-                  "transfer levels: the grid, then a quad");
+            check(asset.model.draws.size() == 1 && asset.model.level_distances == std::vector<float>{2000.0f},
+                  "transfer: one level to 2000 m");
+            if (transfer && asset.ok()) {
+                const auto& q = transfer->rotation;
+                const glm::quat rotation{q[3], -q[0], -q[1], -q[2]};
+                renderer::TerrainHeights terrain(vfs, *core::VirtualPath::parse("ROUTES/Kuban_RTS/TILES"));
+                double area = 0.0;
+                bool clockwise = true, on_terrain = true, in_texture = true;
+                const auto& vertices = asset.model.vertices;
+                const auto& indices = asset.model.indices;
+                for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
+                    const auto& a = vertices[indices[i]].position;
+                    const auto& b = vertices[indices[i + 1]].position;
+                    const auto& c = vertices[indices[i + 2]].position;
+                    const double cross = (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2]);
+                    clockwise = clockwise && cross < 0.0;
+                    area += -cross * 0.5;
+                }
+                for (const auto& vertex : vertices) {
+                    const glm::vec3 offset = rotation * glm::vec3{vertex.position[0], 0.0f, vertex.position[2]};
+                    const auto ground = terrain.at(tile.tile_x, tile.tile_z, transfer->position.x + offset.x, transfer->position.z + offset.z);
+                    on_terrain = on_terrain && ground
+                                 && std::abs(static_cast<double>(*ground) - (vertex.position[1] + transfer->position.y)) < 0.005;
+                    in_texture = in_texture && vertex.uv[0] > -1e-4f && vertex.uv[0] < 1.0001f && vertex.uv[1] > -1e-4f && vertex.uv[1] < 1.0001f;
+                }
+                check(on_terrain, "transfer: every corner on the terrain's surface");
+                check(std::abs(area - 6400.0) < 6400.0 * 0.001, "transfer covers 80 x 80 m, got " + std::to_string(area));
+                check(clockwise, "transfer faces clockwise from above");
+                check(in_texture, "transfer UVs within the texture");
+            }
             check(asset.model.textures.size() == 1 && asset.model.textures[0].mipmap_lod_bias == -3.0f, "transfer mip bias -3");
             check(asset.textures.size() == 1 && asset.textures[0].image.has_value(), "transfer texture decodes");
             bool on_ground = !asset.model.vertices.empty();

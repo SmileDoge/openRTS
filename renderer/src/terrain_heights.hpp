@@ -55,6 +55,25 @@ public:
         return *d + (*c - *d) * (1.0f - fc) + (*b - *d) * (1.0f - fr);
     }
 
+    // A tile's samples: their spacing (m) and count a side.
+    struct Grid {
+        double size = 0.0;
+        std::int64_t count = 0;
+    };
+    [[nodiscard]] std::optional<Grid> grid(const std::int32_t tile_x, const std::int32_t tile_z) {
+        const auto* tile = load(tile_x, tile_z);
+        if (!tile) return std::nullopt;
+        return Grid{.size = tile->sample_size, .count = static_cast<std::int64_t>(tile->sample_count)};
+    }
+
+    // Sample (row, column) counted from tile (tile_x, tile_z)'s first, rows
+    // growing south, past its edges into the neighbours' (the mesh's
+    // corners: row r, column c at x = c * size - half, z = half - r * size).
+    [[nodiscard]] std::optional<float> corner(const std::int32_t tile_x, const std::int32_t tile_z, const std::int64_t row,
+                                              const std::int64_t column) {
+        return sample(tile_x, tile_z, row, column);
+    }
+
 private:
     [[nodiscard]] const formats::TerrainTile* load(const std::int32_t tile_x, const std::int32_t tile_z) {
         const auto key = std::pair{tile_x, tile_z};

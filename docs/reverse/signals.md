@@ -604,3 +604,25 @@ loop does not. The one-sided light quad is therefore invisible from behind
 the lens plane — CONFIRMED. openRTS skips a light whose lens faces away from
 the camera, which also hides the far-grown quad around a head seen from
 behind.
+
+### A light behind its lens's glass (openRTS)
+
+RTS draws the quad at the light's Position, depth tested against the
+signal: the depth test stays on from `0x409A0D`, and the light loop only
+turns depth writes off (`glDepthMask(0)` at `0x40C097`). It changes neither
+the depth function nor the polygon offset — CONFIRMED (code). Where a
+Position lies inside the lens, the lens's glass hides the quad. Then only
+the glow's edge past the housing shows, and only far off, where the quad has
+grown.
+
+On Novokuznetsk this is so for every `-new` head: 219 lights, 43–49 mm
+behind the glass. Other heads there have 425 lights 3–10 mm behind a surface
+(`openrts-signal-check <root> --lenses <route>`). By its code RTS shows these
+lenses unlit as well. UNKNOWN whether it does in practice; not compared at
+runtime.
+
+openRTS casts a ray from the light along the way its lens faces (shape
+space, the nearest distance level) and finds the frontmost surface it meets
+within 15 cm. The quad goes 1 cm in front of that surface, or 1 cm in front
+of Position if nothing is met (`SignalView::lens_front`, once per shape,
+type and light). Since 2026-11-08; before, the quad was only lifted 1 cm.

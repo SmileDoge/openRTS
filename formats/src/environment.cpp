@@ -84,6 +84,21 @@ void read_node_contents(Tokenizer& tokens, TextNode& node) {
     return parse_integer<std::uint32_t>(node->value(), 16).value_or(0);
 }
 
+// The anim shader's world_shader. RTS (0x55BF50) finds it by a text search
+// (0x4578C0) from the end of the last frame it read to the end of the anim
+// shader, so it is found at any depth, not only as a direct child: some
+// environments close the frames block after it (Novokuznetsk's last water
+// layer, dots14.ace), and RTS draws that layer with its shader. The frames
+// themselves are not searched.
+[[nodiscard]] const TextNode* find_world_shader(const TextNode& node) {
+    for (const auto& child : node.children) {
+        if (equals_ignore_case(child.name, "world_shader")) return &child;
+        if (equals_ignore_case(child.name, "world_anim_shader_frame")) continue;
+        if (const auto* found = find_world_shader(child)) return found;
+    }
+    return nullptr;
+}
+
 [[nodiscard]] EnvShader read_anim_shader(const TextNode* anim) {
     EnvShader result;
     if (!anim) return result;
@@ -110,7 +125,7 @@ void read_node_contents(Tokenizer& tokens, TextNode& node) {
         }
     }
 
-    if (const auto* shader = anim->child("world_shader")) {
+    if (const auto* shader = find_world_shader(*anim)) {
         result.shader_name = shader->value();
         if (const auto* slots = shader->child("terrain_texslots")) {
             if (const auto* slot = slots->child("terrain_texslot")) {

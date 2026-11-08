@@ -22,6 +22,7 @@ add_library(openrts_renderer STATIC
     src/route_space.cpp
     src/route_streamer.cpp
     src/sky_renderer.cpp
+    src/native_sky.cpp
     src/terrain_renderer.cpp)
 openrts_configure_target(openrts_renderer)
 # Public renderer headers expose formats types (ShapeModel, RoutePosition).

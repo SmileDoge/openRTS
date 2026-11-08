@@ -7,6 +7,7 @@
 #include <optional>
 
 #include <glm/geometric.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 #include <openrts/formats/terrain.hpp>
@@ -175,6 +176,55 @@ TerrainTileMesh build_terrain_tile_mesh(const core::Vfs& vfs,
             for (const int k : {0, 1, 2, 0, 2, 3}) mesh.water.push_back(corners[k]);
         }
     }
+
+    // openRTS water: the same patches with a corner at each terrain sample,
+    // its depth the water's height above the ground there; the triangles
+    // follow the terrain's, so the shore (depth 0) lies where the ground
+    // meets the water. Patches whose ground stands above the water all over
+    // are left out.
+    const auto spp = static_cast<float>(samples_per_patch);
+    for (std::uint32_t patch_row = 0; patch_row < tile.patches_per_side; ++patch_row) {
+        for (std::uint32_t patch_column = 0; patch_column < tile.patches_per_side; ++patch_column) {
+            const auto& patch = tile.patches[static_cast<std::size_t>(patch_row) * tile.patches_per_side + patch_column];
+            if ((patch.flags & 0xC0u) == 0) continue;
+            const auto base = static_cast<std::uint32_t>(mesh.water_surface.size());
+            float deepest = -1e30f;
+            for (std::uint32_t i = 0; i <= samples_per_patch; ++i) {
+                for (std::uint32_t j = 0; j <= samples_per_patch; ++j) {
+                    const auto row = static_cast<std::int64_t>(patch_row * samples_per_patch + i);
+                    const auto column = static_cast<std::int64_t>(patch_column * samples_per_patch + j);
+                    const float height = water_height(static_cast<float>(patch_column) + static_cast<float>(j) / spp,
+                                                      static_cast<float>(patch_row) + static_cast<float>(i) / spp);
+                    const float depth = height - heights.at(row, column);
+                    deepest = (std::max)(deepest, depth);
+                    mesh.water_surface.push_back({
+                        .position = {static_cast<float>(column) * size - half_extent, height, half_extent - static_cast<float>(row) * size},
+                        .depth = depth,
+                    });
+                }
+            }
+            if (deepest <= 0.0f) {
+                mesh.water_surface.resize(base);
+                continue;
+            }
+            const auto stride = samples_per_patch + 1;
+            for (std::uint32_t i = 0; i < samples_per_patch; ++i) {
+                for (std::uint32_t j = 0; j < samples_per_patch; ++j) {
+                    const auto a = base + i * stride + j;
+                    const auto b = a + 1;
+                    const auto c = a + stride;
+                    const auto d = c + 1;
+                    const auto row = patch_row * samples_per_patch + i;
+                    const auto column = patch_column * samples_per_patch + j;
+                    if (row % 2 == column % 2) {
+                        mesh.water_surface_indices.insert(mesh.water_surface_indices.end(), {a, c, d, a, d, b});
+                    } else {
+                        mesh.water_surface_indices.insert(mesh.water_surface_indices.end(), {a, c, b, b, c, d});
+                    }
+                }
+            }
+        }
+    }
     return mesh;
 }
 
@@ -221,6 +271,8 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 #include <future>
 #include <iostream>
 #include <map>
+#include <numbers>
+#include <random>
 #include <string>
 #include <utility>
 
@@ -501,6 +553,161 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 }
 )";
 
+// The openRTS water (RTS had nothing of it): waves from three octaves of a
+// wave map, the sky reflected by Fresnel (Schlick, water's 0.02), the sun's
+// highlight (normalised Blinn-Phong, wider where the far map averages its
+// ripples out: Toksvig), the water's own colour lit by the sun and the sky,
+// the ground seen through by the light left along the view's path under the
+// surface, and a soft shore. Laid over what is drawn by alpha.
+constexpr char water_surface_shader[] = R"(
+struct Draw {
+    mvp: mat4x4<f32>,
+    offset: vec4<f32>,
+    eye: vec4<f32>,    // xyz: the camera, w: the water's clock (s, wraps at 600)
+    params: vec4<f32>, // x: the sky probe is there, y: the surface above the water level (m), z: wave strength
+};
+
+struct Frame {
+    light_diffuse: vec4<f32>,
+    light_ambient: vec4<f32>,
+    light_direction: vec4<f32>,
+    fog_colour: vec4<f32>,
+    fog_distance: vec4<f32>,
+};
+
+override experimental: bool = false;
+override hdr_output: bool = false;
+
+@group(0) @binding(0) var wave_texture: texture_2d<f32>;
+@group(0) @binding(1) var sky_probe: texture_cube<f32>;
+@group(0) @binding(2) var water_sampler: sampler;
+@group(1) @binding(0) var<uniform> draw: Draw;
+@group(1) @binding(1) var<uniform> frame: Frame;
+
+struct SurfaceIn {
+    @location(0) position: vec3<f32>,
+    @location(1) depth: f32,
+};
+
+struct SurfaceOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) world: vec3<f32>,
+    @location(1) depth: f32,
+    @location(2) fog: vec4<f32>,
+};
+
+@vertex
+fn vs_surface(input: SurfaceIn) -> SurfaceOut {
+    var out: SurfaceOut;
+    out.clip = draw.mvp * vec4<f32>(input.position, 1.0);
+    out.world = input.position + draw.offset.xyz;
+    out.depth = input.depth + draw.params.y;
+    // The terrain's fog (its RTS-compatible path), so the water and the
+    // ground under it fog alike.
+    let fog_start = frame.fog_distance.x;
+    let fog_end = frame.fog_distance.y;
+    if (fog_end <= 0.0) {
+        out.fog = vec4<f32>(0.0);
+    } else if (fog_end > fog_start) {
+        let amount = clamp(frame.fog_colour.w * ((out.clip.z - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
+        out.fog = vec4<f32>(frame.fog_colour.xyz, amount);
+    } else {
+        out.fog = frame.fog_colour;
+    }
+    return out;
+}
+
+fn water_linear(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+
+fn water_display(c: vec3<f32>) -> vec3<f32> {
+    return pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+}
+
+// As the terrain's and the models' experimental path.
+fn water_shoulder(c: vec3<f32>) -> vec3<f32> {
+    let knee = 0.6;
+    let room = 1.0 - knee;
+    let over = max(c - vec3<f32>(knee), vec3<f32>(0.0));
+    let rolled = vec3<f32>(knee) + room * (vec3<f32>(1.0) - exp(-over / room));
+    return select(c, rolled, c > vec3<f32>(knee));
+}
+
+// A wave map's normal (z up), shorter where its mipmap averages ripples.
+fn wave(uv: vec2<f32>) -> vec3<f32> {
+    return textureSample(wave_texture, water_sampler, uv).xyz * 2.0 - 1.0;
+}
+
+// The sky towards a direction (linear): the probe, else a gradient from
+// RTS's fog colour at the horizon to a deeper blue overhead.
+fn sky_towards(direction: vec3<f32>) -> vec3<f32> {
+    if (draw.params.x > 0.5) {
+        return water_linear(textureSampleLevel(sky_probe, water_sampler, direction, 0.0).xyz);
+    }
+    let horizon = water_linear(frame.fog_colour.xyz);
+    let zenith = horizon * vec3<f32>(0.45, 0.62, 1.0);
+    return mix(horizon, zenith, sqrt(clamp(direction.y, 0.0, 1.0)));
+}
+
+@fragment
+fn fs_surface(input: SurfaceOut) -> @location(0) vec4<f32> {
+    let time = draw.eye.w;
+    let p = input.world.xz;
+    // Three octaves, each its own size, way and speed (map tiles a second,
+    // whole sixhundredths, so the clock's wrap is not seen); the middle one
+    // turned to hide the map's repeat, its slopes turned back.
+    let turned = vec2<f32>(p.x * 0.8 - p.y * 0.6, p.x * 0.6 + p.y * 0.8);
+    let a = wave(p / 37.0 + vec2<f32>(0.010, 0.005) * time);
+    let b = wave(turned / 13.0 + vec2<f32>(-0.015, 0.010) * time);
+    let c = wave(p / 4.3 + vec2<f32>(0.025, -0.030) * time);
+    let b_slope = vec2<f32>(b.x * 0.8 + b.y * 0.6, -b.x * 0.6 + b.y * 0.8);
+    let slope = (a.xy + b_slope + c.xy * 0.7) * draw.params.z;
+    let n = normalize(vec3<f32>(slope.x, 1.0, slope.y));
+    let toksvig = clamp((length(a) + length(b) + length(c)) / 3.0, 0.05, 1.0);
+
+    let to_eye = draw.eye.xyz - input.world;
+    let v = to_eye / max(length(to_eye), 1e-3);
+    let ndv = clamp(dot(n, v), 1e-3, 1.0);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
+    var r = reflect(-v, n);
+    r.y = max(r.y, 0.01); // a steep ripple turned below the horizon: the horizon
+    let reflected = sky_towards(normalize(r));
+
+    let sun_colour = water_linear(frame.light_diffuse.xyz);
+    let sky_light = water_linear(frame.light_ambient.xyz);
+    let l = -normalize(frame.light_direction.xyz);
+    let shadow = effects_shadow(input.world, vec3<f32>(0.0, 1.0, 0.0), input.clip);
+    let h = normalize(l + v);
+    let gloss = 1500.0;
+    let power = toksvig * gloss / (toksvig + gloss * (1.0 - toksvig));
+    let highlight = pow(max(dot(n, h), 0.0), power) * (power + 8.0) / 25.132741;
+    let fresnel_h = 0.02 + 0.98 * pow(1.0 - clamp(dot(v, h), 0.0, 1.0), 5.0);
+    let glint = sun_colour * highlight * fresnel_h * smoothstep(-0.02, 0.06, l.y) * shadow;
+
+    // The water's own colour: light scattered back from inside it.
+    let body = vec3<f32>(0.035, 0.060, 0.055) * (sky_light + sun_colour * max(l.y, 0.0) * shadow);
+    // The ground under it, through the light left along the view's path.
+    let path = max(input.depth, 0.0) / max(v.y, 0.1);
+    let through = exp(-path * 0.8);
+
+    let alpha = 1.0 - (1.0 - fresnel) * through;
+    var colour = (reflected * fresnel + body * (1.0 - fresnel) * (1.0 - through) + glint) / max(alpha, 0.02);
+    colour = min(colour, vec3<f32>(32.0));
+    let aerial = experimental && effects.flags.z != 0u;
+    if (aerial) {
+        colour = effects_aerial(colour, input.world);
+    }
+    var display = water_display(select(water_shoulder(colour), max(colour, vec3<f32>(0.0)), hdr_output));
+    if (!aerial && input.fog.w > 0.0) {
+        display = mix(display, input.fog.xyz, input.fog.w);
+    }
+    // The shore: none of it where the ground meets the water.
+    let shore = smoothstep(0.0, 0.35, input.depth);
+    return vec4<f32>(display, clamp(alpha, 0.0, 1.0) * shore);
+}
+)";
+
 // Depth only (SceneEffects): each tile's whole mesh in one draw.
 constexpr char terrain_depth_shader[] = R"(
 struct Draw {
@@ -540,6 +747,83 @@ void copy_vec4(float (&target)[4], const glm::vec4& value) {
     target[3] = value.w;
 }
 
+// The openRTS water's wave map: a field of ripples that tiles (waves of
+// whole cycles across the map, wavenumbers 2..20, amplitudes falling as
+// k^-1.6, random phases), as normals (z up, xyz * 0.5 + 0.5). The mipmaps
+// average the normals without making them whole again, so far off the water
+// turns flatter and its highlight wider instead of sparkling.
+struct WaveMap {
+    std::uint32_t size = 0;
+    std::vector<std::uint8_t> pixels;
+    std::vector<std::vector<std::uint8_t>> mips;
+};
+
+[[nodiscard]] WaveMap make_wave_map() {
+    constexpr std::uint32_t size = 256;
+    constexpr std::size_t wave_count = 56;
+    constexpr float two_pi = 2.0f * std::numbers::pi_v<float>;
+    struct Wave {
+        float kx, ky, amplitude, phase;
+    };
+    std::mt19937 random(0x5EA5u); // the same map every run
+    std::uniform_int_distribution<int> wavenumber(-20, 20);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    std::vector<Wave> waves;
+    while (waves.size() < wave_count) {
+        const int kx = wavenumber(random);
+        const int ky = wavenumber(random);
+        const float k = std::sqrt(static_cast<float>(kx * kx + ky * ky));
+        if (k < 2.0f || k > 20.0f) continue;
+        waves.push_back({static_cast<float>(kx), static_cast<float>(ky), std::pow(k, -1.6f), unit(random) * two_pi});
+    }
+    std::vector<glm::vec2> slopes(static_cast<std::size_t>(size) * size);
+    double square_sum = 0.0;
+    for (std::uint32_t y = 0; y < size; ++y) {
+        for (std::uint32_t x = 0; x < size; ++x) {
+            const float u = static_cast<float>(x) / static_cast<float>(size);
+            const float v = static_cast<float>(y) / static_cast<float>(size);
+            glm::vec2 slope{0.0f};
+            for (const auto& wave : waves) {
+                const float c = std::cos(two_pi * (wave.kx * u + wave.ky * v) + wave.phase) * wave.amplitude * two_pi;
+                slope += glm::vec2{wave.kx * c, wave.ky * c};
+            }
+            slopes[static_cast<std::size_t>(y) * size + x] = slope;
+            square_sum += static_cast<double>(glm::dot(slope, slope));
+        }
+    }
+    // The slopes scaled to 0.35 (root mean square); the shader's strength
+    // scales them further.
+    const float scale = 0.35f / static_cast<float>(std::sqrt(square_sum / static_cast<double>(slopes.size())) + 1e-9);
+    std::vector<glm::vec3> level(slopes.size());
+    for (std::size_t i = 0; i < slopes.size(); ++i) level[i] = glm::normalize(glm::vec3{-slopes[i].x * scale, -slopes[i].y * scale, 1.0f});
+
+    const auto encode = [](const std::vector<glm::vec3>& normals) {
+        std::vector<std::uint8_t> pixels(normals.size() * 4);
+        for (std::size_t i = 0; i < normals.size(); ++i) {
+            for (int k = 0; k < 3; ++k) {
+                pixels[i * 4 + k] = static_cast<std::uint8_t>(std::clamp(std::lround((normals[i][k] * 0.5f + 0.5f) * 255.0f), 0L, 255L));
+            }
+            pixels[i * 4 + 3] = 255;
+        }
+        return pixels;
+    };
+    WaveMap map{.size = size, .pixels = encode(level)};
+    for (std::uint32_t width = size / 2; width >= 1; width /= 2) {
+        std::vector<glm::vec3> smaller(static_cast<std::size_t>(width) * width);
+        const auto previous = width * 2;
+        for (std::uint32_t y = 0; y < width; ++y) {
+            for (std::uint32_t x = 0; x < width; ++x) {
+                const auto at = [&](const std::uint32_t px, const std::uint32_t py) { return level[static_cast<std::size_t>(py) * previous + px]; };
+                smaller[static_cast<std::size_t>(y) * width + x] =
+                    (at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1)) * 0.25f;
+            }
+        }
+        level = std::move(smaller);
+        map.mips.push_back(encode(level));
+    }
+    return map;
+}
+
 template <typename T>
 [[nodiscard]] bool is_ready(const std::future<T>& task) {
     using namespace std::chrono_literals;
@@ -555,6 +839,18 @@ struct TerrainRenderer::Impl {
         std::vector<TerrainPatchMesh> patches;
         WGPUBuffer water = nullptr;
         std::uint32_t water_vertices = 0;
+        WGPUBuffer surface_vertices = nullptr; // the openRTS water
+        WGPUBuffer surface_indices = nullptr;
+        std::uint32_t surface_index_count = 0;
+    };
+
+    // An openRTS water draw render() prepared for render_water().
+    struct SurfaceDraw {
+        WGPUBuffer vertices = nullptr;
+        WGPUBuffer indices = nullptr;
+        std::uint32_t index_count = 0;
+        std::uint32_t uniform_offset = 0;
+        std::uint32_t ring = 0;
     };
 
     // An environment water layer and where its animation is (0x4A2144):
@@ -588,6 +884,25 @@ struct TerrainRenderer::Impl {
     WGPURenderPipeline water_pipelines[2][2]{}; // [experimental][blended]
     std::vector<WaterLayer> water_layers;
     glm::vec3 eye{};
+    // The openRTS water: its pipelines ([experimental]), the wave map, the
+    // sky probe (a black cube standing in until one is given), the clock,
+    // the surface's height above the water level (the environment's topmost
+    // layer, where RTS shows the water), this frame's draws.
+    WGPUBindGroupLayout surface_layout = nullptr;
+    WGPURenderPipeline surface_pipelines[2]{};
+    WgpuTextureUploadResult waves;
+    WGPUTextureView waves_view = nullptr;
+    WGPUTexture blank_cube = nullptr;
+    WGPUTextureView blank_cube_view = nullptr;
+    WGPUTextureView sky_probe = nullptr;
+    WGPUBindGroup surface_binding = nullptr;
+    WGPUTextureView surface_binding_probe = nullptr;
+    double water_clock = 0.0;
+    float surface_height = 0.0f;
+    std::vector<SurfaceDraw> surface_draws;
+    WGPUBindGroup frame_effects = nullptr; // render()'s, for render_water()
+    bool native_this_frame = false;
+    std::size_t last_surface_draws = 0;
     ShadingPath shading = ShadingPath::rts_compatible;
     // Group 2 (SceneEffects), read by the experimental pipeline; a built-in
     // one with every effect off when none is given.
@@ -650,6 +965,14 @@ struct TerrainRenderer::Impl {
                 if (water_pipeline) wgpuRenderPipelineRelease(water_pipeline);
             }
         }
+        for (auto& surface_pipeline : surface_pipelines) {
+            if (surface_pipeline) wgpuRenderPipelineRelease(surface_pipeline);
+        }
+        if (surface_binding) wgpuBindGroupRelease(surface_binding);
+        if (waves_view) wgpuTextureViewRelease(waves_view);
+        if (blank_cube_view) wgpuTextureViewRelease(blank_cube_view);
+        if (blank_cube) wgpuTextureRelease(blank_cube);
+        if (surface_layout) wgpuBindGroupLayoutRelease(surface_layout);
         fallback_effects.reset();
         if (depth_binding) wgpuBindGroupRelease(depth_binding);
         if (depth_buffer) wgpuBufferRelease(depth_buffer);
@@ -662,6 +985,8 @@ struct TerrainRenderer::Impl {
     }
 
     static void release_tile(GpuTile& tile) {
+        if (tile.surface_indices) wgpuBufferRelease(tile.surface_indices);
+        if (tile.surface_vertices) wgpuBufferRelease(tile.surface_vertices);
         if (tile.water) wgpuBufferRelease(tile.water);
         if (tile.indices) wgpuBufferRelease(tile.indices);
         if (tile.vertices) wgpuBufferRelease(tile.vertices);
@@ -809,7 +1134,41 @@ struct TerrainRenderer::Impl {
             tile.water = create_buffer(device, WGPUBufferUsage_Vertex, mesh.water.size() * sizeof(TerrainWaterVertex), mesh.water.data());
             tile.water_vertices = static_cast<std::uint32_t>(mesh.water.size());
         }
+        if (!mesh.water_surface_indices.empty()) {
+            tile.surface_vertices = create_buffer(device, WGPUBufferUsage_Vertex,
+                                                  mesh.water_surface.size() * sizeof(TerrainWaterSurfaceVertex), mesh.water_surface.data());
+            tile.surface_indices = create_buffer(device, WGPUBufferUsage_Index, mesh.water_surface_indices.size() * sizeof(std::uint32_t),
+                                                 mesh.water_surface_indices.data());
+            tile.surface_index_count = static_cast<std::uint32_t>(mesh.water_surface_indices.size());
+        }
         tiles[key] = std::move(tile);
+    }
+
+    // The openRTS water's group 0: the wave map, the sky probe (or the
+    // blank cube), the sampler; made again when the probe changes.
+    [[nodiscard]] WGPUBindGroup water_surface_binding() {
+        const auto probe = sky_probe ? sky_probe : blank_cube_view;
+        if (surface_binding && surface_binding_probe == probe) return surface_binding;
+        if (surface_binding) wgpuBindGroupRelease(surface_binding);
+        surface_binding = nullptr;
+        if (!surface_layout || !waves_view || !probe) return nullptr;
+        std::array<WGPUBindGroupEntry, 3> entries{};
+        entries[0].binding = 0;
+        entries[0].textureView = waves_view;
+        entries[1].binding = 1;
+        entries[1].textureView = probe;
+        entries[2].binding = 2;
+        entries[2].sampler = sampler;
+        const WGPUBindGroupDescriptor descriptor{.layout = surface_layout, .entryCount = entries.size(), .entries = entries.data()};
+        surface_binding = wgpuDeviceCreateBindGroup(device, &descriptor);
+        surface_binding_probe = probe;
+        return surface_binding;
+    }
+
+    // The openRTS water is drawn this frame instead of the layers.
+    [[nodiscard]] bool native_active() const {
+        return native_water() && season != rts::Season::winter && surface_pipelines[0] && surface_pipelines[1] && waves_view
+               && blank_cube_view;
     }
 };
 
@@ -833,7 +1192,7 @@ namespace {
 [[nodiscard]] WGPUBindGroupLayout create_frame_layout(const WGPUDevice device) {
     std::array<WGPUBindGroupLayoutEntry, 2> entries{};
     entries[0].binding = 0;
-    entries[0].visibility = WGPUShaderStage_Vertex;
+    entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment; // the openRTS water reads it in both
     entries[0].buffer.type = WGPUBufferBindingType_Uniform;
     entries[0].buffer.hasDynamicOffset = true;
     entries[0].buffer.minBindingSize = sizeof(DrawUniform);
@@ -1001,6 +1360,83 @@ namespace {
     return wgpuDeviceCreateRenderPipeline(device, &descriptor);
 }
 
+// The openRTS water: laid over by alpha, depth tested and written (what is
+// translucent and drawn later stays behind it), both faces.
+[[nodiscard]] WGPURenderPipeline create_water_surface_pipeline(const WGPUDevice device, const WGPUPipelineLayout layout,
+                                                               const WGPUShaderModule shader, const WGPUTextureFormat target_format,
+                                                               const bool experimental) {
+    const std::array<WGPUVertexAttribute, 2> attributes{{
+        {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(TerrainWaterSurfaceVertex, position), .shaderLocation = 0},
+        {.format = WGPUVertexFormat_Float32, .offset = offsetof(TerrainWaterSurfaceVertex, depth), .shaderLocation = 1},
+    }};
+    const WGPUVertexBufferLayout vertex_layout{
+        .stepMode = WGPUVertexStepMode_Vertex,
+        .arrayStride = sizeof(TerrainWaterSurfaceVertex),
+        .attributeCount = attributes.size(),
+        .attributes = attributes.data(),
+    };
+    constexpr WGPUStencilFaceState keep_stencil{
+        .compare = WGPUCompareFunction_Always,
+        .failOp = WGPUStencilOperation_Keep,
+        .depthFailOp = WGPUStencilOperation_Keep,
+        .passOp = WGPUStencilOperation_Keep,
+    };
+    const WGPUDepthStencilState depth{
+        .format = depth_format,
+        .depthWriteEnabled = WGPUOptionalBool_True,
+        .depthCompare = depth_nearer_or_equal,
+        .stencilFront = keep_stencil,
+        .stencilBack = keep_stencil,
+        .stencilReadMask = ~0u,
+        .stencilWriteMask = ~0u,
+    };
+    const WGPUBlendState over{
+        .color = {.operation = WGPUBlendOperation_Add, .srcFactor = WGPUBlendFactor_SrcAlpha, .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha},
+        .alpha = {.operation = WGPUBlendOperation_Add, .srcFactor = WGPUBlendFactor_One, .dstFactor = WGPUBlendFactor_OneMinusSrcAlpha},
+    };
+    const WGPUColorTargetState target{.format = target_format, .blend = &over, .writeMask = WGPUColorWriteMask_All};
+    const std::array<WGPUConstantEntry, 2> constants{{
+        {.key = wgsl_name("experimental"), .value = experimental ? 1.0 : 0.0},
+        {.key = wgsl_name("hdr_output"), .value = scene_hdr() ? 1.0 : 0.0},
+    }};
+    const WGPUFragmentState fragment{
+        .module = shader,
+        .entryPoint = wgsl_name("fs_surface"),
+        .constantCount = constants.size(),
+        .constants = constants.data(),
+        .targetCount = 1,
+        .targets = &target,
+    };
+    const WGPURenderPipelineDescriptor descriptor{
+        .layout = layout,
+        .vertex = {.module = shader, .entryPoint = wgsl_name("vs_surface"), .bufferCount = 1, .buffers = &vertex_layout},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+        .depthStencil = &depth,
+        .multisample = scene_multisample(),
+        .fragment = &fragment,
+    };
+    return wgpuDeviceCreateRenderPipeline(device, &descriptor);
+}
+
+// The openRTS water's group 0: the wave map (2D), the sky probe (cube), a
+// filtering sampler.
+[[nodiscard]] WGPUBindGroupLayout create_water_surface_layout(const WGPUDevice device) {
+    std::array<WGPUBindGroupLayoutEntry, 3> entries{};
+    entries[0].binding = 0;
+    entries[0].visibility = WGPUShaderStage_Fragment;
+    entries[0].texture.sampleType = WGPUTextureSampleType_Float;
+    entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
+    entries[1].binding = 1;
+    entries[1].visibility = WGPUShaderStage_Fragment;
+    entries[1].texture.sampleType = WGPUTextureSampleType_Float;
+    entries[1].texture.viewDimension = WGPUTextureViewDimension_Cube;
+    entries[2].binding = 2;
+    entries[2].visibility = WGPUShaderStage_Fragment;
+    entries[2].sampler.type = WGPUSamplerBindingType_Filtering;
+    const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
+    return wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+}
+
 } // namespace
 
 TerrainRenderer::TerrainRenderer(const WGPUDevice device,
@@ -1064,6 +1500,59 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
     }
     wgpuPipelineLayoutRelease(pipeline_layout);
     wgpuShaderModuleRelease(shader);
+
+    // The openRTS water: its own module and group 0, the terrain's frame
+    // uniforms and the effects.
+    {
+        const auto water_code =
+            std::string(detail::light_shapes_wgsl) + detail::effects_struct_wgsl + detail::effects_main_wgsl + water_surface_shader;
+        const WGPUShaderSourceWGSL water_source{
+            .chain = {.sType = WGPUSType_ShaderSourceWGSL},
+            .code = {.data = water_code.data(), .length = water_code.size()},
+        };
+        const WGPUShaderModuleDescriptor water_descriptor{.nextInChain = &water_source.chain};
+        const auto water_shader = wgpuDeviceCreateShaderModule(device, &water_descriptor);
+        impl_->surface_layout = create_water_surface_layout(device);
+        const std::array<WGPUBindGroupLayout, 3> water_layouts{impl_->surface_layout, impl_->frame_layout, impl_->effects_layout};
+        const WGPUPipelineLayoutDescriptor water_layout_descriptor{
+            .bindGroupLayoutCount = water_layouts.size(),
+            .bindGroupLayouts = water_layouts.data(),
+        };
+        const auto water_pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &water_layout_descriptor);
+        for (int experimental = 0; experimental < 2; ++experimental) {
+            impl_->surface_pipelines[experimental] =
+                create_water_surface_pipeline(device, water_pipeline_layout, water_shader, target_format, experimental != 0);
+        }
+        wgpuPipelineLayoutRelease(water_pipeline_layout);
+        wgpuShaderModuleRelease(water_shader);
+
+        const auto map = make_wave_map();
+        impl_->waves = upload_rgba8_texture(device, {.width = map.size, .height = map.size, .pixels = &map.pixels, .mips = &map.mips},
+                                            "water-waves");
+        if (impl_->waves.ok()) impl_->waves_view = wgpuTextureCreateView(impl_->waves.texture.get(), nullptr);
+        const WGPUTextureDescriptor cube{
+            .label = {.data = "water-blank-sky", .length = WGPU_STRLEN},
+            .usage = WGPUTextureUsage_TextureBinding,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {.width = 1, .height = 1, .depthOrArrayLayers = 6},
+            .format = WGPUTextureFormat_RGBA8Unorm,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+        };
+        impl_->blank_cube = wgpuDeviceCreateTexture(device, &cube);
+        if (impl_->blank_cube) {
+            const WGPUTextureViewDescriptor view{
+                .format = WGPUTextureFormat_RGBA8Unorm,
+                .dimension = WGPUTextureViewDimension_Cube,
+                .baseMipLevel = 0,
+                .mipLevelCount = 1,
+                .baseArrayLayer = 0,
+                .arrayLayerCount = 6,
+                .aspect = WGPUTextureAspect_All,
+            };
+            impl_->blank_cube_view = wgpuTextureCreateView(impl_->blank_cube, &view);
+        }
+    }
 
     {
         WGPUBindGroupLayoutEntry entry{};
@@ -1243,10 +1732,19 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
     }
     if (!effects) return;
 
-    // A draw for each tile, then one for each tile with water and each layer.
+    // A draw for each tile, then one for each tile with water and each layer
+    // (or, the openRTS water, one for each tile with water above the ground).
+    const bool native = impl.native_active();
+    impl.native_this_frame = false;
+    impl.surface_draws.clear();
+    impl.frame_effects = effects;
     std::size_t water_tiles = 0;
-    for (const auto& [_, tile] : impl.tiles) water_tiles += tile.water_vertices > 0 ? 1 : 0;
-    const std::size_t draws = impl.tiles.size() + water_tiles * impl.water_layers.size();
+    std::size_t surface_tiles = 0;
+    for (const auto& [_, tile] : impl.tiles) {
+        water_tiles += tile.water_vertices > 0 ? 1 : 0;
+        surface_tiles += tile.surface_index_count > 0 ? 1 : 0;
+    }
+    const std::size_t draws = impl.tiles.size() + (native ? surface_tiles : water_tiles * impl.water_layers.size());
     impl.ensure_draw_capacity(draws);
     if (!impl.frame_binding) return;
 
@@ -1267,7 +1765,44 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
         ++index;
     }
     const std::size_t first_water_draw = index;
+    if (native) {
+        const auto view_frustum = Frustum::from_view_projection(view_projection);
+        for (const auto& [key, tile] : impl.tiles) {
+            if (tile.surface_index_count == 0) continue;
+            const auto tile_offset = glm::vec3{
+                static_cast<float>((key.first - impl.origin.tile_x) * tile_size - impl.origin.x),
+                static_cast<float>(-impl.origin.y),
+                static_cast<float>((key.second - impl.origin.tile_z) * tile_size - impl.origin.z),
+            };
+            const auto offset = tile_offset + glm::vec3{0.0f, impl.surface_height, 0.0f};
+            glm::mat4 model{1.0f};
+            model[3] = glm::vec4{offset, 1.0f};
+            // uv_rect: the eye and the clock; uv_mode: the probe, the
+            // surface's height, the waves' strength (water_surface_shader).
+            DrawUniform uniform{.mvp = view_projection * model, .offset = {offset.x, offset.y, offset.z, 0.0f}};
+            uniform.uv_rect[0] = impl.eye.x;
+            uniform.uv_rect[1] = impl.eye.y;
+            uniform.uv_rect[2] = impl.eye.z;
+            uniform.uv_rect[3] = static_cast<float>(impl.water_clock);
+            uniform.uv_mode[0] = impl.sky_probe ? 1.0f : 0.0f;
+            uniform.uv_mode[1] = impl.surface_height;
+            uniform.uv_mode[2] = 0.22f;
+            uniform.uv_mode[3] = 0.0f;
+            std::memcpy(uniforms.data() + index * draw_uniform_stride, &uniform, sizeof(uniform));
+            const auto uniform_offset = static_cast<std::uint32_t>(index * draw_uniform_stride);
+            ++index;
+            const auto radius = static_cast<float>(tile_size * 0.75);
+            if (!view_frustum.intersects_sphere(tile_offset, radius)) continue;
+            impl.surface_draws.push_back({.vertices = tile.surface_vertices,
+                                          .indices = tile.surface_indices,
+                                          .index_count = tile.surface_index_count,
+                                          .uniform_offset = uniform_offset,
+                                          .ring = lighting.light_rings.ring_for(tile_offset, radius)});
+        }
+        impl.native_this_frame = true;
+    }
     for (const auto& [key, tile] : impl.tiles) {
+        if (native) break;
         if (tile.water_vertices == 0) continue;
         for (const auto& layer : impl.water_layers) {
             // RTS 0x4A2144: the layer's height above the water, its UVs a
@@ -1355,8 +1890,9 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
         }
     }
 
-    // The water layers in order over the water patches (RTS: right after the terrain).
-    if (impl.water_layers.empty() || water_tiles == 0) return;
+    // The water layers in order over the water patches (RTS: right after the
+    // terrain); the openRTS water is drawn later (render_water).
+    if (native || impl.water_layers.empty() || water_tiles == 0) return;
     const int path = impl.shading == ShadingPath::experimental ? 1 : 0;
     index = first_water_draw;
     for (auto& [key, tile] : impl.tiles) {
@@ -1386,7 +1922,13 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
 void TerrainRenderer::set_water(const formats::EnvWater* water, std::vector<core::VirtualPath> texture_folders) {
     auto& impl = *impl_;
     impl.water_layers.clear();
+    impl.surface_height = 0.0f;
     if (!water) return;
+    // The openRTS water lies where RTS shows the water: the topmost layer.
+    if (!water->layers.empty()) {
+        impl.surface_height = -1e30f;
+        for (const auto& source : water->layers) impl.surface_height = (std::max)(impl.surface_height, source.height);
+    }
     for (const auto& source : water->layers) {
         Impl::WaterLayer layer;
         layer.height = source.height;
@@ -1425,9 +1967,46 @@ void TerrainRenderer::set_water(const formats::EnvWater* water, std::vector<core
     }
 }
 
+void TerrainRenderer::render_water(const WGPURenderPassEncoder pass) {
+    OPENRTS_ZONE("terrain: openRTS water");
+    if (!ready()) return;
+    auto& impl = *impl_;
+    const auto draws = std::move(impl.surface_draws);
+    impl.surface_draws.clear();
+    impl.last_surface_draws = 0;
+    if (draws.empty() || !impl.frame_effects || !impl.frame_binding) return;
+    const auto binding = impl.water_surface_binding();
+    const auto pipeline = impl.surface_pipelines[impl.shading == ShadingPath::experimental ? 1 : 0];
+    if (!binding || !pipeline) return;
+    wgpuRenderPassEncoderSetPipeline(pass, pipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, binding, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(pass, 2, impl.frame_effects, 0, nullptr);
+    for (const auto& draw : draws) {
+        wgpuRenderPassEncoderSetBindGroup(pass, 1, impl.frame_binding, 1, &draw.uniform_offset);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, draw.vertices, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderSetIndexBuffer(pass, draw.indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+        wgpuRenderPassEncoderDrawIndexed(pass, draw.index_count, 1, 0, 0, draw.ring);
+    }
+    impl.last_surface_draws = draws.size();
+}
+
+void TerrainRenderer::set_sky_probe(const WGPUTextureView cube) {
+    if (impl_) impl_->sky_probe = cube;
+}
+
+bool TerrainRenderer::draws_native_water() const noexcept {
+    return impl_ && impl_->native_this_frame;
+}
+
+std::size_t TerrainRenderer::water_surface_draws() const noexcept {
+    return impl_ ? impl_->last_surface_draws : 0;
+}
+
 void TerrainRenderer::update_water(const float elapsed, const glm::vec3& eye) {
     auto& impl = *impl_;
     impl.eye = eye;
+    // The openRTS water's clock, wrapping where its waves' offsets are whole.
+    impl.water_clock = std::fmod(impl.water_clock + static_cast<double>(elapsed), 600.0);
     for (auto& layer : impl.water_layers) {
         // 0x4A2144: the scroll wraps past 1, the frames over their count.
         if ((layer.flags & 2u) != 0) {

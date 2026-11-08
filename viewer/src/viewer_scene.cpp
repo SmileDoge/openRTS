@@ -33,6 +33,7 @@
 #include <openrts/renderer/model_library.hpp>
 #include <openrts/renderer/route_space.hpp>
 #include <openrts/renderer/route_streamer.hpp>
+#include <openrts/renderer/native_sky.hpp>
 #include <openrts/renderer/sky_renderer.hpp>
 #include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/formats/ace_file.hpp>
@@ -291,6 +292,8 @@ public:
 
         sky_renderer_ = std::make_unique<renderer::SkyRenderer>(gpu.device, gpu.target_format);
         if (!sky_renderer_->ready()) sky_renderer_.reset();
+        native_sky_ = std::make_unique<renderer::NativeSky>(gpu.device, gpu.target_format);
+        if (!native_sky_->ready()) native_sky_.reset();
         terrain_ = std::make_unique<renderer::TerrainRenderer>(gpu.device, gpu.target_format, content_.vfs(), route_,
                                                                origin_, terrain_radius);
         if (!terrain_->ready()) terrain_.reset();
@@ -416,6 +419,7 @@ public:
         if (track_) track_->detach();
         terrain_.reset();
         sky_renderer_.reset();
+        native_sky_.reset();
         wide_lines_.reset();
         screens_.reset();
         screen_textures_.clear();
@@ -554,6 +558,28 @@ public:
         if (sky_simulation_) {
             sky_state_ = sky_simulation_->update(clock.time_of_day_exact, clock.elapsed, camera_position.tile_z, clock.season);
         }
+        if (native_sky_ && sky_state_) {
+            // openRTS's own sky: RTS's lighting satellite as its sun (well
+            // below the horizon while RTS hides it), the eye's place, the
+            // weather's cover, the environment's lowest wind three times as
+            // strong up at the clouds.
+            renderer::NativeSkyFrame sky;
+            const auto sun = sky_state_->satellites.empty() ? renderer::rts::SatelliteState{} : sky_state_->satellites.front();
+            sky.to_sun = -renderer::rts_sun_direction(sun.azimuth_degrees, sun.visible ? sun.elevation_degrees : -30.0f);
+            sky.altitude = static_cast<float>(camera_position.y);
+            sky.eye_route = {static_cast<double>(camera_position.tile_x) * formats::route_tile_size + camera_position.x,
+                             static_cast<double>(camera_position.tile_z) * formats::route_tile_size + camera_position.z};
+            sky.coverage = clock.weather == renderer::rts::Weather::rain ? 0.92f : clock.weather == renderer::rts::Weather::snow ? 0.85f : 0.42f;
+            glm::vec2 wind{0.0f};
+            if (environment_ && !environment_->wind.empty()) {
+                const auto& lowest = environment_->wind.front();
+                wind = glm::vec2{lowest.direction[0], lowest.direction[2]} * lowest.speed * 3.0f;
+            }
+            if (glm::length(wind) < 3.0f) wind = glm::vec2{4.0f, 1.5f};
+            sky.wind = wind;
+            sky.elapsed = clock.elapsed;
+            native_sky_->update(sky);
+        }
 
         streamer_->update(camera_position);
         // Behind the loading screen the models load on most of the cores.
@@ -675,17 +701,30 @@ public:
         lighting.fog_colour = sky_state_->fog_colour;
         lighting.fog_start = sky_state_->fog_start;
         lighting.fog_end = sky_state_->fog_end;
+        glm::vec4 clear{glm::vec3{sky_state_->clear_colour}, 1.0f};
+        if (native_sky_on()) {
+            // The land's end fogs into openRTS's sky's horizon (RTS's fog
+            // strength kept: its colour's alpha).
+            const auto horizon = native_sky_->horizon_colour();
+            lighting.fog_colour = glm::vec4{horizon, lighting.fog_colour.w};
+            clear = glm::vec4{horizon, 1.0f};
+        }
         return {
             .lighting = lighting,
-            .clear_colour = glm::vec4{glm::vec3{sky_state_->clear_colour}, 1.0f},
+            .clear_colour = clear,
             .time_of_day_applies = true,
         };
     }
 
     // Sky first (no depth test), then terrain; models follow.
     void draw_background(const WGPURenderPassEncoder pass, const FrameView& frame) override {
-        if (sky_renderer_ && sky_state_) sky_renderer_->render(pass, frame.projection, frame.view, *sky_state_);
-        if (terrain_) terrain_->render(pass, frame.projection * frame.view, environment().lighting, frame.effects);
+        // openRTS's own sky is drawn after the opaque objects instead
+        // (draw_before_translucent), where only the sky is left.
+        if (sky_renderer_ && sky_state_ && !native_sky_on()) sky_renderer_->render(pass, frame.projection, frame.view, *sky_state_);
+        if (terrain_) {
+            terrain_->set_sky_probe(sky_renderer_ ? sky_renderer_->reflection_probe() : nullptr);
+            terrain_->render(pass, frame.projection * frame.view, environment().lighting, frame.effects);
+        }
     }
 
     void draw_depth(const WGPURenderPassEncoder pass, const std::uint32_t slot, const glm::mat4& view_projection,
@@ -817,6 +856,14 @@ public:
     // after the solid models, before the glass (which writes depth: anything
     // drawn after it vanished behind the windows).
     void draw_before_translucent(const WGPURenderPassEncoder pass, const FrameView& frame) override {
+        // openRTS's own sky where the opaque objects left the far plane, the
+        // RTS moon over it; then the openRTS water over the opaque models
+        // (what stands in it shows through), before the translucent ones.
+        if (native_sky_on()) {
+            native_sky_->render(pass, frame.projection, frame.view, renderer::NativeSky::frame_slot);
+            if (sky_renderer_) sky_renderer_->render_satellites(pass, frame.projection, frame.view, *sky_state_, 0);
+        }
+        if (terrain_) terrain_->render_water(pass);
         if (signals_) signals_->draw(pass, frame, frame.viewport_height);
         if (track_) track_->draw(pass, frame.projection * frame.view, train_ && train_->placed() ? train_->head_position() : frame.eye);
         if (wide_lines_) {
@@ -851,6 +898,21 @@ public:
 
     void after_main_pass(const WGPUCommandEncoder encoder) override {
         if (probe_) probe_->resolve(encoder);
+        // openRTS's own sky's atmosphere, for the next frame.
+        if (native_sky_on()) native_sky_->render_table(encoder);
+        // The sky the openRTS water reflects, for the next frame.
+        if (sky_renderer_ && sky_state_ && terrain_ && terrain_->draws_native_water()) {
+            if (native_sky_on()) {
+                sky_renderer_->render_reflection_probe(
+                    encoder, *sky_state_,
+                    [&](const WGPURenderPassEncoder face, const glm::mat4& projection, const glm::mat4& view, const std::uint32_t slot) {
+                        native_sky_->render(face, projection, view, slot);
+                        sky_renderer_->render_satellites(face, projection, view, *sky_state_, slot);
+                    });
+            } else {
+                sky_renderer_->render_reflection_probe(encoder, *sky_state_);
+            }
+        }
     }
 
     void frame_submitted() override {
@@ -867,6 +929,10 @@ public:
 
     [[nodiscard]] std::string world_report() const override {
         std::string report = "water " + std::to_string(terrain_ ? terrain_->water_quads() : 0) + " quads";
+        if (terrain_ && terrain_->draws_native_water()) {
+            report += " (openRTS water: " + std::to_string(terrain_->water_surface_draws()) + " tiles drawn, sky probe "
+                + (sky_renderer_ && sky_renderer_->reflection_probe() ? "on" : "off") + ")";
+        }
         std::size_t forests = 0, crossings = 0, pickups = 0;
         for (const auto& instance : streamer_->visible_instances()) {
             forests += instance.kind == formats::WorldObjectKind::forest ? 1 : 0;
@@ -1622,6 +1688,8 @@ private:
     std::optional<renderer::rts::SkySimulation> sky_simulation_;
     std::optional<renderer::rts::SkyState> sky_state_;
     std::unique_ptr<renderer::SkyRenderer> sky_renderer_;
+    std::unique_ptr<renderer::NativeSky> native_sky_; // openRTS's own sky (renderer::native_sky())
+    [[nodiscard]] bool native_sky_on() const { return native_sky_ && sky_state_ && renderer::native_sky(); }
     std::unique_ptr<renderer::RouteStreamer> streamer_;
     std::unique_ptr<renderer::ModelLibrary> library_;
     float forest_distance_ = 0.0f; // the forests' clearance they were built with

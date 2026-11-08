@@ -1,0 +1,968 @@
+#include <openrts/renderer/native_sky.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <future>
+#include <string>
+#include <vector>
+
+#include <glm/common.hpp>
+#include <glm/geometric.hpp>
+#include <glm/mat3x3.hpp>
+#include <glm/matrix.hpp>
+#include <glm/trigonometric.hpp>
+
+namespace openrts::renderer {
+namespace {
+
+// The planet and its atmosphere (m, 1/m), as the shader has them.
+constexpr double planet = 6360000.0;
+constexpr double atmosphere_top = 6460000.0;
+constexpr double rayleigh[3]{5.802e-6, 13.558e-6, 33.1e-6};
+constexpr double mie_scattering = 3.996e-6;
+constexpr double mie_extinction = 4.40e-6;
+constexpr double ozone[3]{0.650e-6, 1.881e-6, 0.085e-6};
+constexpr double pi = 3.14159265358979323846;
+constexpr int view_steps = 16;
+constexpr int light_steps = 8;
+
+struct DVec3 {
+    double x, y, z;
+};
+DVec3 add(const DVec3& a, const DVec3& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+DVec3 scale(const DVec3& a, const double s) { return {a.x * s, a.y * s, a.z * s}; }
+double dot(const DVec3& a, const DVec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+double length(const DVec3& a) { return std::sqrt(dot(a, a)); }
+
+// Where a ray meets a sphere round the planet's centre (near, far; -1 none).
+std::array<double, 2> ray_sphere(const DVec3& origin, const DVec3& direction, const double radius) {
+    const double b = dot(origin, direction);
+    const double r = length(origin);
+    const double c = (r - radius) * (r + radius);
+    const double d = b * b - c;
+    if (d < 0.0) return {-1.0, -1.0};
+    const double s = std::sqrt(d);
+    return {-b - s, -b + s};
+}
+
+std::array<double, 3> densities(const double height) {
+    const double h = (std::max)(height, 0.0);
+    return {std::exp(-h / 8000.0), std::exp(-h / 1200.0), (std::max)(0.0, 1.0 - std::abs(h - 25000.0) / 15000.0)};
+}
+
+std::array<double, 3> extinction(const double height) {
+    const auto d = densities(height);
+    return {rayleigh[0] * d[0] + mie_extinction * d[1] + ozone[0] * d[2], rayleigh[1] * d[0] + mie_extinction * d[1] + ozone[1] * d[2],
+            rayleigh[2] * d[0] + mie_extinction * d[1] + ozone[2] * d[2]};
+}
+
+std::array<double, 3> transmittance_from(const DVec3& point, const DVec3& to_sun) {
+    if (const auto ground = ray_sphere(point, to_sun, planet); ground[0] > 0.0) return {0.0, 0.0, 0.0};
+    const double top = ray_sphere(point, to_sun, atmosphere_top)[1];
+    const double dt = top / light_steps;
+    std::array<double, 3> depth{};
+    for (int k = 0; k < light_steps; ++k) {
+        const auto q = add(point, scale(to_sun, (k + 0.5) * dt));
+        const auto e = extinction(length(q) - planet);
+        for (int i = 0; i < 3; ++i) depth[i] += e[i] * dt;
+    }
+    return {std::exp(-depth[0]), std::exp(-depth[1]), std::exp(-depth[2])};
+}
+
+DVec3 unit(const glm::vec3& v) {
+    const auto n = glm::normalize(v);
+    return {n.x, n.y, n.z};
+}
+
+// Smooth roll-off above 0.6 towards 1, as the scene's (water, terrain).
+float shoulder(const float c) {
+    constexpr float knee = 0.6f;
+    constexpr float room = 1.0f - knee;
+    return c > knee ? knee + room * (1.0f - std::exp(-(c - knee) / room)) : c;
+}
+
+} // namespace
+
+glm::vec3 atmosphere_transmittance(const float altitude, const glm::vec3& to_sun) {
+    const auto t = transmittance_from({0.0, planet + (std::max)(altitude, 1.0f), 0.0}, unit(to_sun));
+    return {static_cast<float>(t[0]), static_cast<float>(t[1]), static_cast<float>(t[2])};
+}
+
+glm::vec3 atmosphere_radiance(const float altitude, const glm::vec3& view_direction, const glm::vec3& to_sun_direction) {
+    const DVec3 origin{0.0, planet + (std::max)(altitude, 1.0f), 0.0};
+    const auto view = unit(view_direction);
+    const auto sun = unit(to_sun_direction);
+    double end = ray_sphere(origin, view, atmosphere_top)[1];
+    if (const auto ground = ray_sphere(origin, view, planet); ground[0] > 0.0) end = ground[0];
+    end = (std::min)(end, 300000.0);
+    const double mu = dot(view, sun);
+    const double phase_r = 3.0 / (16.0 * pi) * (1.0 + mu * mu);
+    constexpr double g = 0.8;
+    const double phase_m = 3.0 / (8.0 * pi) * ((1.0 - g * g) * (1.0 + mu * mu)) / ((2.0 + g * g) * std::pow(1.0 + g * g - 2.0 * g * mu, 1.5));
+    std::array<double, 3> light{}, through{1.0, 1.0, 1.0};
+    // Samples crowded near the eye, where the air is densest: t = end * s^2.
+    for (int k = 0; k < view_steps; ++k) {
+        const double s0 = static_cast<double>(k) / view_steps;
+        const double s1 = static_cast<double>(k + 1) / view_steps;
+        const double t = end * 0.5 * (s0 * s0 + s1 * s1);
+        const double dt = end * (s1 * s1 - s0 * s0);
+        const auto q = add(origin, scale(view, t));
+        const double h = length(q) - planet;
+        const auto d = densities(h);
+        const auto e = extinction(h);
+        const auto sun_t = transmittance_from(q, sun);
+        for (int i = 0; i < 3; ++i) {
+            const double scatter = rayleigh[i] * d[0] * phase_r + mie_scattering * d[1] * phase_m;
+            const double step = std::exp(-e[i] * dt);
+            light[i] += through[i] * sun_t[i] * scatter * (1.0 - step) / (std::max)(e[i], 1e-12);
+            through[i] *= step;
+        }
+    }
+    return glm::vec3{static_cast<float>(light[0]), static_cast<float>(light[1]), static_cast<float>(light[2])} * native_sky_sun;
+}
+
+} // namespace openrts::renderer
+
+#ifdef OPENRTS_HAS_WGPU
+#include <openrts/renderer/depth.hpp>
+
+namespace openrts::renderer {
+namespace {
+
+constexpr std::uint64_t uniform_stride = 256;
+constexpr std::uint32_t uniform_slots = 8; // the frame, six probe faces, the table
+constexpr std::uint32_t table_slot = 7;
+constexpr std::uint32_t table_width = 256;
+constexpr std::uint32_t table_height = 128;
+constexpr WGPUTextureFormat table_format = WGPUTextureFormat_RGBA16Float;
+constexpr std::uint32_t shape_size = 64;  // the clouds' shapes, tiling every 16384 m
+constexpr std::uint32_t detail_size = 32; // their edges, every 2048 m
+constexpr std::uint32_t weather_size = 128; // where they gather, every 65536 m
+
+struct SkyUniform {
+    glm::mat4 inverse_view_projection{1.0f};
+    float sun[4]{};            // xyz: towards the sun
+    float eye[4]{};            // x: altitude (m), y: night (0..1), z: -, w: the sun's light (native_sky_sun)
+    float clouds[4]{};         // x: cover, y: base (m above sea), z: top, w: -
+    float field[4]{};          // xy: the eye in the clouds' field (m, wraps at 65536)
+    float sun_at_clouds[4]{};  // rgb: sunlight at the clouds (linear, scaled)
+    float ambient_top[4]{};    // rgb: sky light on their tops
+    float ambient_bottom[4]{}; // rgb: light from below
+};
+static_assert(sizeof(SkyUniform) <= uniform_stride);
+
+constexpr char sky_shader[] = R"(
+struct Sky {
+    inverse_view_projection: mat4x4<f32>,
+    sun: vec4<f32>,
+    eye: vec4<f32>,
+    clouds: vec4<f32>,
+    field: vec4<f32>,
+    sun_at_clouds: vec4<f32>,
+    ambient_top: vec4<f32>,
+    ambient_bottom: vec4<f32>,
+};
+
+override hdr_output: bool = false;
+
+@group(0) @binding(0) var<uniform> sky: Sky;
+@group(0) @binding(1) var shape_noise: texture_3d<f32>;
+@group(0) @binding(2) var detail_noise: texture_3d<f32>;
+@group(0) @binding(3) var weather_map: texture_2d<f32>;
+@group(0) @binding(4) var noise_sampler: sampler;
+@group(0) @binding(5) var sky_table: texture_2d<f32>;
+@group(0) @binding(6) var table_sampler: sampler;
+
+const planet: f32 = 6360000.0;
+const atmosphere_top: f32 = 6460000.0;
+const rayleigh: vec3<f32> = vec3<f32>(5.802e-6, 13.558e-6, 33.1e-6);
+const mie_scattering: f32 = 3.996e-6;
+const mie_extinction: f32 = 4.40e-6;
+const ozone: vec3<f32> = vec3<f32>(0.650e-6, 1.881e-6, 0.085e-6);
+const pi: f32 = 3.14159265;
+
+struct VertexOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
+};
+
+// A triangle over the whole target, on the far plane (reversed Z: 0).
+fn fullscreen(index: u32) -> VertexOut {
+    let corner = vec2<f32>(f32((index << 1u) & 2u) * 2.0 - 1.0, f32(index & 2u) * 2.0 - 1.0);
+    var out: VertexOut;
+    out.clip = vec4<f32>(corner, 0.0, 1.0);
+    out.ndc = corner;
+    return out;
+}
+
+@vertex
+fn vs_sky(@builtin(vertex_index) index: u32) -> VertexOut {
+    return fullscreen(index);
+}
+
+fn ray_sphere(origin: vec3<f32>, direction: vec3<f32>, radius: f32) -> vec2<f32> {
+    let b = dot(origin, direction);
+    let r = length(origin);
+    let c = (r - radius) * (r + radius);
+    let d = b * b - c;
+    if (d < 0.0) {
+        return vec2<f32>(-1.0, -1.0);
+    }
+    let s = sqrt(d);
+    return vec2<f32>(-b - s, -b + s);
+}
+
+fn densities(height: f32) -> vec3<f32> {
+    let h = max(height, 0.0);
+    return vec3<f32>(exp(-h / 8000.0), exp(-h / 1200.0), max(0.0, 1.0 - abs(h - 25000.0) / 15000.0));
+}
+
+fn extinction_at(height: f32) -> vec3<f32> {
+    let d = densities(height);
+    return rayleigh * d.x + vec3<f32>(mie_extinction * d.y) + ozone * d.z;
+}
+
+fn transmittance_from(point: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
+    if (ray_sphere(point, to_sun, planet).x > 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let top = ray_sphere(point, to_sun, atmosphere_top).y;
+    let dt = top / 8.0;
+    var depth = vec3<f32>(0.0);
+    for (var k = 0; k < 8; k = k + 1) {
+        let q = point + to_sun * ((f32(k) + 0.5) * dt);
+        depth = depth + extinction_at(length(q) - planet) * dt;
+    }
+    return exp(-depth);
+}
+
+// Single scattering along the view, samples crowded near the eye (t = s^2).
+fn atmosphere(view: vec3<f32>) -> vec3<f32> {
+    let origin = vec3<f32>(0.0, planet + max(sky.eye.x, 1.0), 0.0);
+    var end = ray_sphere(origin, view, atmosphere_top).y;
+    let ground = ray_sphere(origin, view, planet);
+    if (ground.x > 0.0) {
+        end = ground.x;
+    }
+    end = min(end, 300000.0);
+    let to_sun = sky.sun.xyz;
+    let mu = dot(view, to_sun);
+    let phase_r = 3.0 / (16.0 * pi) * (1.0 + mu * mu);
+    let g = 0.8;
+    let phase_m = 3.0 / (8.0 * pi) * ((1.0 - g * g) * (1.0 + mu * mu)) / ((2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
+    var light = vec3<f32>(0.0);
+    var through = vec3<f32>(1.0);
+    for (var k = 0; k < 16; k = k + 1) {
+        let s0 = f32(k) / 16.0;
+        let s1 = f32(k + 1) / 16.0;
+        let t = end * 0.5 * (s0 * s0 + s1 * s1);
+        let dt = end * (s1 * s1 - s0 * s0);
+        let q = origin + view * t;
+        let h = length(q) - planet;
+        let d = densities(h);
+        let e = extinction_at(h);
+        let scatter = rayleigh * d.x * phase_r + vec3<f32>(mie_scattering * d.y * phase_m);
+        let segment = exp(-e * dt);
+        light = light + through * transmittance_from(q, to_sun) * scatter * (vec3<f32>(1.0) - segment) / max(e, vec3<f32>(1e-12));
+        through = through * segment;
+    }
+    return light * sky.eye.w;
+}
+
+// The table (texture coordinates, its first row on top): longitude across,
+// the zenith on top, the nadir at the bottom, rows crowded at the horizon.
+fn table_direction(uv: vec2<f32>) -> vec3<f32> {
+    let azimuth = (uv.x - 0.5) * 2.0 * pi;
+    let s = 1.0 - 2.0 * uv.y; // 1 at the zenith
+    let elevation = sign(s) * s * s * 0.5 * pi;
+    return vec3<f32>(cos(elevation) * sin(azimuth), sin(elevation), cos(elevation) * cos(azimuth));
+}
+
+fn table_uv(view: vec3<f32>) -> vec2<f32> {
+    let azimuth = atan2(view.x, view.z);
+    let elevation = asin(clamp(view.y, -1.0, 1.0));
+    let s = sign(elevation) * sqrt(abs(elevation) / (0.5 * pi));
+    return vec2<f32>(azimuth / (2.0 * pi) + 0.5, 0.5 - 0.5 * s);
+}
+
+@vertex
+fn vs_table(@builtin(vertex_index) index: u32) -> VertexOut {
+    return fullscreen(index);
+}
+
+@fragment
+fn fs_table(input: VertexOut) -> @location(0) vec4<f32> {
+    // NDC y up is the target's first row.
+    let uv = vec2<f32>(input.ndc.x * 0.5 + 0.5, 0.5 - input.ndc.y * 0.5);
+    return vec4<f32>(atmosphere(table_direction(uv)), 1.0);
+}
+
+fn remap(value: f32, low: f32, high: f32, to_low: f32, to_high: f32) -> f32 {
+    return to_low + (value - low) / max(high - low, 1e-5) * (to_high - to_low);
+}
+
+// The clouds' density at a point (planet-centred, m): a layer between base
+// and top, cumulus-shaped (a rounded base, the top narrowing), the cover
+// varying over tens of kilometres, the edges eaten by finer noise.
+fn cloud_density(p: vec3<f32>, detailed: bool) -> f32 {
+    let height = length(p) - planet;
+    let fraction = (height - sky.clouds.y) / (sky.clouds.z - sky.clouds.y);
+    if (fraction <= 0.0 || fraction >= 1.0) {
+        return 0.0;
+    }
+    let at = sky.field.xy + vec2<f32>(p.x, p.z);
+    let weather = textureSampleLevel(weather_map, noise_sampler, at / 65536.0, 0.0).r;
+    let cover = clamp(sky.clouds.x + (weather - 0.5) * 0.6, 0.0, 1.0);
+    let profile = smoothstep(0.0, 0.12, fraction) * (1.0 - smoothstep(0.5, 1.0, fraction));
+    let shape = textureSampleLevel(shape_noise, noise_sampler, vec3<f32>(at.x / 16384.0, height / 4096.0, at.y / 16384.0), 0.0).r;
+    var density = remap(shape * profile, 1.0 - cover, 1.0, 0.0, 1.0);
+    if (density <= 0.0) {
+        return 0.0;
+    }
+    if (detailed) {
+        let erosion = textureSampleLevel(detail_noise, noise_sampler, vec3<f32>(at.x, height, at.y) / 2048.0, 0.0).r;
+        density = remap(density, erosion * 0.4, 1.0, 0.0, 1.0);
+    }
+    return clamp(density, 0.0, 1.0);
+}
+
+fn henyey_greenstein(mu: f32, g: f32) -> f32 {
+    return (1.0 - g * g) / (4.0 * pi * pow(max(1.0 + g * g - 2.0 * g * mu, 1e-4), 1.5));
+}
+
+// Extinction per metre of the densest cloud.
+const cloud_sigma: f32 = 0.03;
+
+// The sunlight's way out of the clouds towards the sun: optical depth.
+fn sun_depth(p: vec3<f32>) -> f32 {
+    var depth = 0.0;
+    var stride = 80.0;
+    var q = p;
+    for (var j = 0; j < 6; j = j + 1) {
+        q = q + sky.sun.xyz * stride;
+        depth = depth + cloud_density(q, false) * stride;
+        stride = stride * 1.7;
+    }
+    return depth * cloud_sigma;
+}
+
+// Rgb: the clouds' light along the view; a: the light let through.
+fn clouds(view: vec3<f32>, pixel: vec2<f32>) -> vec4<f32> {
+    let altitude = sky.eye.x;
+    let origin = vec3<f32>(0.0, planet + altitude, 0.0);
+    let base = planet + sky.clouds.y;
+    let top = planet + sky.clouds.z;
+    let inner = ray_sphere(origin, view, base);
+    let outer = ray_sphere(origin, view, top);
+    var t0 = 0.0;
+    var t1 = 0.0;
+    if (altitude < sky.clouds.y) {
+        if (ray_sphere(origin, view, planet).x > 0.0) {
+            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
+        t0 = inner.y;
+        t1 = outer.y;
+    } else if (altitude < sky.clouds.z) {
+        t1 = outer.y;
+        if (inner.x > 0.0) {
+            t1 = inner.x;
+        }
+    } else {
+        if (outer.x < 0.0) {
+            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
+        t0 = outer.x;
+        t1 = outer.y;
+        if (inner.x > 0.0) {
+            t1 = inner.x;
+        }
+    }
+    let far = 60000.0;
+    t0 = max(t0, 0.0);
+    if (t0 >= far || t1 <= t0) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    t1 = min(t1, far);
+    let span = t1 - t0;
+    let steps = i32(clamp(span / 100.0, 24.0, 64.0));
+    let dt = span / f32(steps);
+    let jitter = fract(52.9829189 * fract(dot(floor(pixel), vec2<f32>(0.06711056, 0.00583715))));
+    let mu = dot(view, sky.sun.xyz);
+    var through = 1.0;
+    var light = vec3<f32>(0.0);
+    var t = t0 + dt * jitter;
+    for (var i = 0; i < steps; i = i + 1) {
+        let p = origin + view * t;
+        let density = cloud_density(p, true);
+        if (density > 0.0) {
+            let depth = sun_depth(p);
+            // Multiple scattering as octaves (Wrenninge): each half as
+            // strong, its phase flatter, the light going twice as far.
+            var sun_part = 0.0;
+            var a = 1.0;
+            var b = 1.0;
+            var c = 1.0;
+            for (var n = 0; n < 3; n = n + 1) {
+                let phase = mix(henyey_greenstein(mu, 0.8 * b), henyey_greenstein(mu, -0.25 * b), 0.35);
+                sun_part = sun_part + a * phase * exp(-depth * c);
+                a = a * 0.5;
+                b = b * 0.5;
+                c = c * 0.5;
+            }
+            let fraction = clamp((length(p) - base) / (top - base), 0.0, 1.0);
+            let ambient = mix(sky.ambient_bottom.xyz, sky.ambient_top.xyz, fraction);
+            let source = sky.sun_at_clouds.xyz * sun_part + ambient;
+            let step_through = exp(-density * cloud_sigma * dt);
+            light = light + through * source * (1.0 - step_through);
+            through = through * step_through;
+            if (through < 0.01) {
+                break;
+            }
+        }
+        t = t + dt;
+    }
+    // Far clouds sink into the haze behind them.
+    let fade = exp(-t0 / 40000.0);
+    return vec4<f32>(light * fade, mix(1.0, through, fade));
+}
+
+fn stars(view: vec3<f32>) -> vec3<f32> {
+    if (sky.eye.y <= 0.0 || view.y < -0.05) {
+        return vec3<f32>(0.0);
+    }
+    let c = view * 220.0;
+    let cell = floor(c);
+    let h = fract(sin(dot(cell, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453);
+    if (h < 0.996) {
+        return vec3<f32>(0.0);
+    }
+    let centre = cell + vec3<f32>(0.5) + (vec3<f32>(fract(h * 13.1), fract(h * 71.7), fract(h * 37.3)) - vec3<f32>(0.5)) * 0.5;
+    let shine = 1.0 - smoothstep(0.0, 0.45, length(c - centre));
+    return vec3<f32>(0.9, 0.95, 1.0) * shine * (0.02 + 0.1 * fract(h * 157.3)) * sky.eye.y;
+}
+
+fn sun_disc(view: vec3<f32>) -> vec3<f32> {
+    let size = 0.0093; // radians, twice the real sun's radius
+    let mu = dot(view, sky.sun.xyz);
+    let edge = cos(size);
+    if (mu < edge) {
+        return vec3<f32>(0.0);
+    }
+    let across = clamp((mu - edge) / (1.0 - edge), 0.0, 1.0);
+    let origin = vec3<f32>(0.0, planet + max(sky.eye.x, 1.0), 0.0);
+    return transmittance_from(origin, sky.sun.xyz) * sky.eye.w * 30.0 * smoothstep(0.0, 0.3, across);
+}
+
+fn shoulder(c: vec3<f32>) -> vec3<f32> {
+    let knee = 0.6;
+    let room = 1.0 - knee;
+    let over = max(c - vec3<f32>(knee), vec3<f32>(0.0));
+    let rolled = vec3<f32>(knee) + room * (vec3<f32>(1.0) - exp(-over / room));
+    return select(c, rolled, c > vec3<f32>(knee));
+}
+
+@fragment
+fn fs_sky(input: VertexOut) -> @location(0) vec4<f32> {
+    let far = sky.inverse_view_projection * vec4<f32>(input.ndc, 0.5, 1.0);
+    let view = normalize(far.xyz / far.w);
+    var colour = textureSampleLevel(sky_table, table_sampler, table_uv(view), 0.0).xyz;
+    // The night's own faint light (airglow, starlight) and the stars.
+    colour = colour + vec3<f32>(0.004, 0.006, 0.012) * sky.eye.y + stars(view) + sun_disc(view);
+    let cloud = clouds(view, input.clip.xy);
+    colour = colour * cloud.a + cloud.xyz;
+    let shaped = select(shoulder(colour), max(colour, vec3<f32>(0.0)), hdr_output);
+    return vec4<f32>(pow(shaped, vec3<f32>(1.0 / 2.2)), 1.0);
+}
+)";
+
+[[nodiscard]] WGPUStringView wgsl_name(const char* name) {
+    return {.data = name, .length = WGPU_STRLEN};
+}
+
+// Integer hashes for the noise (any good mix will do; fixed, so the sky is
+// the same every run).
+[[nodiscard]] std::uint32_t mix_bits(std::uint32_t x) {
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return x;
+}
+
+[[nodiscard]] float hash01(const int x, const int y, const int z, const std::uint32_t seed) {
+    const auto h = mix_bits(static_cast<std::uint32_t>(x) * 0x8DA6B343u ^ static_cast<std::uint32_t>(y) * 0xD8163841u
+                            ^ static_cast<std::uint32_t>(z) * 0xCB1AB31Fu ^ seed);
+    return static_cast<float>(h & 0xFFFFFFu) / 16777216.0f;
+}
+
+[[nodiscard]] int wrap(const int v, const int period) {
+    const int m = v % period;
+    return m < 0 ? m + period : m;
+}
+
+// Gradient noise tiling every `period` lattice cells, about -1..1.
+[[nodiscard]] float perlin(const float x, const float y, const float z, const int period, const std::uint32_t seed) {
+    const int x0 = static_cast<int>(std::floor(x));
+    const int y0 = static_cast<int>(std::floor(y));
+    const int z0 = static_cast<int>(std::floor(z));
+    const float fx = x - static_cast<float>(x0);
+    const float fy = y - static_cast<float>(y0);
+    const float fz = z - static_cast<float>(z0);
+    const auto fade = [](const float t) { return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f); };
+    const auto corner = [&](const int dx, const int dy, const int dz) {
+        const int cx = wrap(x0 + dx, period);
+        const int cy = wrap(y0 + dy, period);
+        const int cz = wrap(z0 + dz, period);
+        // A gradient on the unit sphere from two hashes.
+        const float u = hash01(cx, cy, cz, seed) * 2.0f - 1.0f;
+        const float a = hash01(cx, cy, cz, seed ^ 0x9E3779B9u) * 6.2831853f;
+        const float s = std::sqrt((std::max)(0.0f, 1.0f - u * u));
+        return s * std::cos(a) * (fx - static_cast<float>(dx)) + s * std::sin(a) * (fy - static_cast<float>(dy)) + u * (fz - static_cast<float>(dz));
+    };
+    const float u = fade(fx), v = fade(fy), w = fade(fz);
+    const auto lerp = [](const float a, const float b, const float t) { return a + (b - a) * t; };
+    const float x00 = lerp(corner(0, 0, 0), corner(1, 0, 0), u);
+    const float x10 = lerp(corner(0, 1, 0), corner(1, 1, 0), u);
+    const float x01 = lerp(corner(0, 0, 1), corner(1, 0, 1), u);
+    const float x11 = lerp(corner(0, 1, 1), corner(1, 1, 1), u);
+    return lerp(lerp(x00, x10, v), lerp(x01, x11, v), w) * 1.6f;
+}
+
+// Cellular noise tiling every `cells`: 1 at a feature point, 0 a cell away.
+[[nodiscard]] float worley(const float x, const float y, const float z, const int cells, const std::uint32_t seed) {
+    const int x0 = static_cast<int>(std::floor(x));
+    const int y0 = static_cast<int>(std::floor(y));
+    const int z0 = static_cast<int>(std::floor(z));
+    float nearest = 4.0f;
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                const int cx = x0 + dx, cy = y0 + dy, cz = z0 + dz;
+                const int hx = wrap(cx, cells), hy = wrap(cy, cells), hz = wrap(cz, cells);
+                const float px = static_cast<float>(cx) + hash01(hx, hy, hz, seed);
+                const float py = static_cast<float>(cy) + hash01(hx, hy, hz, seed ^ 0x68E31DA4u);
+                const float pz = static_cast<float>(cz) + hash01(hx, hy, hz, seed ^ 0xB5297A4Du);
+                const float d = (px - x) * (px - x) + (py - y) * (py - y) + (pz - z) * (pz - z);
+                nearest = (std::min)(nearest, d);
+            }
+        }
+    }
+    return 1.0f - (std::min)(std::sqrt(nearest), 1.0f);
+}
+
+// Fills `size`^3 bytes, z slices on several threads.
+template <typename Value>
+[[nodiscard]] std::vector<std::uint8_t> volume(const std::uint32_t size, Value value) {
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size) * size * size);
+    std::vector<std::future<void>> jobs;
+    constexpr std::uint32_t parts = 8;
+    for (std::uint32_t part = 0; part < parts; ++part) {
+        jobs.push_back(std::async(std::launch::async, [&, part] {
+            for (std::uint32_t z = part; z < size; z += parts) {
+                for (std::uint32_t y = 0; y < size; ++y) {
+                    for (std::uint32_t x = 0; x < size; ++x) {
+                        const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size);
+                        const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size);
+                        const float w = (static_cast<float>(z) + 0.5f) / static_cast<float>(size);
+                        const float result = std::clamp(value(u, v, w), 0.0f, 1.0f);
+                        bytes[(static_cast<std::size_t>(z) * size + y) * size + x] = static_cast<std::uint8_t>(std::lround(result * 255.0f));
+                    }
+                }
+            }
+        }));
+    }
+    for (auto& job : jobs) job.wait();
+    return bytes;
+}
+
+// The clouds' shapes: billowing cells (Worley, three octaves) over a larger
+// gradient noise, their contrast raised; about half above 0.5.
+[[nodiscard]] float shape_value(const float u, const float v, const float w) {
+    float fbm = 0.0f;
+    float amplitude = 0.5f;
+    for (int octave = 0; octave < 4; ++octave) {
+        const int period = 4 << octave;
+        fbm += amplitude * perlin(u * static_cast<float>(period), v * static_cast<float>(period), w * static_cast<float>(period), period, 0x1234u + octave);
+        amplitude *= 0.5f;
+    }
+    const float smooth = fbm * 0.5f + 0.5f;
+    const float cells = worley(u * 4.0f, v * 4.0f, w * 4.0f, 4, 0xA11u) * 0.625f + worley(u * 8.0f, v * 8.0f, w * 8.0f, 8, 0xB22u) * 0.25f
+                        + worley(u * 16.0f, v * 16.0f, w * 16.0f, 16, 0xC33u) * 0.125f;
+    const float shape = smooth * 0.55f + cells * 0.45f;
+    return (shape - 0.5f) * 1.8f + 0.5f;
+}
+
+[[nodiscard]] float detail_value(const float u, const float v, const float w) {
+    return worley(u * 4.0f, v * 4.0f, w * 4.0f, 4, 0xD44u) * 0.625f + worley(u * 8.0f, v * 8.0f, w * 8.0f, 8, 0xE55u) * 0.25f
+           + worley(u * 16.0f, v * 16.0f, w * 16.0f, 16, 0xF66u) * 0.125f;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> weather_bytes() {
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(weather_size) * weather_size);
+    for (std::uint32_t y = 0; y < weather_size; ++y) {
+        for (std::uint32_t x = 0; x < weather_size; ++x) {
+            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(weather_size);
+            const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(weather_size);
+            float fbm = 0.0f, amplitude = 0.5f;
+            for (int octave = 0; octave < 3; ++octave) {
+                const int period = 4 << octave;
+                fbm += amplitude * perlin(u * static_cast<float>(period), v * static_cast<float>(period), 0.5f, period, 0x5EA7u + octave);
+                amplitude *= 0.5f;
+            }
+            bytes[static_cast<std::size_t>(y) * weather_size + x] = static_cast<std::uint8_t>(std::lround(std::clamp(fbm * 0.7f + 0.5f, 0.0f, 1.0f) * 255.0f));
+        }
+    }
+    return bytes;
+}
+
+[[nodiscard]] WGPUTexture make_texture(const WGPUDevice device, const WGPUTextureDimension dimension, const std::uint32_t size,
+                                       const std::uint32_t depth, const WGPUTextureFormat format, const WGPUTextureUsage usage,
+                                       const char* label) {
+    const WGPUTextureDescriptor descriptor{
+        .label = {.data = label, .length = WGPU_STRLEN},
+        .usage = usage,
+        .dimension = dimension,
+        .size = {.width = size, .height = dimension == WGPUTextureDimension_3D ? size : depth, .depthOrArrayLayers = dimension == WGPUTextureDimension_3D ? depth : 1},
+        .format = format,
+        .mipLevelCount = 1,
+        .sampleCount = 1,
+    };
+    return wgpuDeviceCreateTexture(device, &descriptor);
+}
+
+void write_bytes(const WGPUDevice device, const WGPUTexture texture, const std::vector<std::uint8_t>& bytes, const std::uint32_t width,
+                 const std::uint32_t height, const std::uint32_t depth) {
+    const auto queue = wgpuDeviceGetQueue(device);
+    const WGPUTexelCopyTextureInfo target{.texture = texture, .mipLevel = 0, .origin = {}, .aspect = WGPUTextureAspect_All};
+    const WGPUTexelCopyBufferLayout layout{.offset = 0, .bytesPerRow = width, .rowsPerImage = height};
+    const WGPUExtent3D extent{.width = width, .height = height, .depthOrArrayLayers = depth};
+    wgpuQueueWriteTexture(queue, &target, bytes.data(), bytes.size(), &layout, &extent);
+    wgpuQueueRelease(queue);
+}
+
+} // namespace
+
+struct NativeSky::Impl {
+    WGPUDevice device = nullptr;
+    WGPUBindGroupLayout table_layout = nullptr;
+    WGPUBindGroupLayout sky_layout = nullptr;
+    WGPURenderPipeline table_pipeline = nullptr;
+    WGPURenderPipeline sky_pipeline = nullptr;
+    WGPUBuffer uniforms = nullptr;
+    WGPUTexture shape = nullptr, detail = nullptr, weather = nullptr, table = nullptr;
+    WGPUTextureView shape_view = nullptr, detail_view = nullptr, weather_view = nullptr, table_view = nullptr;
+    WGPUSampler noise_sampler = nullptr, table_sampler = nullptr;
+    WGPUBindGroup table_binding = nullptr, sky_binding = nullptr;
+
+    SkyUniform frame{};
+    glm::dvec2 drift{0.0};
+    glm::vec3 horizon{0.6f};
+
+    ~Impl() {
+        for (auto* group : {table_binding, sky_binding}) {
+            if (group) wgpuBindGroupRelease(group);
+        }
+        for (auto* view : {shape_view, detail_view, weather_view, table_view}) {
+            if (view) wgpuTextureViewRelease(view);
+        }
+        for (auto* texture : {shape, detail, weather, table}) {
+            if (texture) wgpuTextureRelease(texture);
+        }
+        for (auto* sampler : {noise_sampler, table_sampler}) {
+            if (sampler) wgpuSamplerRelease(sampler);
+        }
+        if (uniforms) wgpuBufferRelease(uniforms);
+        for (auto* pipeline : {table_pipeline, sky_pipeline}) {
+            if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        }
+        for (auto* layout : {table_layout, sky_layout}) {
+            if (layout) wgpuBindGroupLayoutRelease(layout);
+        }
+    }
+
+    void write_slot(const std::uint32_t slot) const {
+        const auto queue = wgpuDeviceGetQueue(device);
+        wgpuQueueWriteBuffer(queue, uniforms, slot * uniform_stride, &frame, sizeof(frame));
+        wgpuQueueRelease(queue);
+    }
+};
+
+NativeSky::NativeSky(const WGPUDevice device, const WGPUTextureFormat target_format) : impl_(std::make_unique<Impl>()) {
+    auto& impl = *impl_;
+    impl.device = device;
+
+    // The noise, made once (a few tenths of a second, on several threads).
+    const auto shape_bytes = volume(shape_size, shape_value);
+    const auto detail_bytes = volume(detail_size, detail_value);
+    const auto weather = weather_bytes();
+    constexpr auto sampled = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    impl.shape = make_texture(device, WGPUTextureDimension_3D, shape_size, shape_size, WGPUTextureFormat_R8Unorm, sampled, "sky-cloud-shapes");
+    impl.detail = make_texture(device, WGPUTextureDimension_3D, detail_size, detail_size, WGPUTextureFormat_R8Unorm, sampled, "sky-cloud-detail");
+    impl.weather = make_texture(device, WGPUTextureDimension_2D, weather_size, weather_size, WGPUTextureFormat_R8Unorm, sampled, "sky-cloud-cover");
+    impl.table = make_texture(device, WGPUTextureDimension_2D, table_width, table_height, table_format,
+                              WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment, "sky-atmosphere");
+    if (!impl.shape || !impl.detail || !impl.weather || !impl.table) return;
+    write_bytes(device, impl.shape, shape_bytes, shape_size, shape_size, shape_size);
+    write_bytes(device, impl.detail, detail_bytes, detail_size, detail_size, detail_size);
+    write_bytes(device, impl.weather, weather, weather_size, weather_size, 1);
+    impl.shape_view = wgpuTextureCreateView(impl.shape, nullptr);
+    impl.detail_view = wgpuTextureCreateView(impl.detail, nullptr);
+    impl.weather_view = wgpuTextureCreateView(impl.weather, nullptr);
+    impl.table_view = wgpuTextureCreateView(impl.table, nullptr);
+
+    const WGPUSamplerDescriptor noise_sampler{
+        .addressModeU = WGPUAddressMode_Repeat,
+        .addressModeV = WGPUAddressMode_Repeat,
+        .addressModeW = WGPUAddressMode_Repeat,
+        .magFilter = WGPUFilterMode_Linear,
+        .minFilter = WGPUFilterMode_Linear,
+        .mipmapFilter = WGPUMipmapFilterMode_Nearest,
+        .lodMaxClamp = 1.0f,
+        .maxAnisotropy = 1,
+    };
+    impl.noise_sampler = wgpuDeviceCreateSampler(device, &noise_sampler);
+    const WGPUSamplerDescriptor table_sampler{
+        .addressModeU = WGPUAddressMode_Repeat,
+        .addressModeV = WGPUAddressMode_ClampToEdge,
+        .addressModeW = WGPUAddressMode_ClampToEdge,
+        .magFilter = WGPUFilterMode_Linear,
+        .minFilter = WGPUFilterMode_Linear,
+        .mipmapFilter = WGPUMipmapFilterMode_Nearest,
+        .lodMaxClamp = 1.0f,
+        .maxAnisotropy = 1,
+    };
+    impl.table_sampler = wgpuDeviceCreateSampler(device, &table_sampler);
+
+    const WGPUBufferDescriptor buffer{.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, .size = uniform_stride * uniform_slots};
+    impl.uniforms = wgpuDeviceCreateBuffer(device, &buffer);
+
+    // Layouts: the table reads the uniform only; the sky the noise and the table too.
+    WGPUBindGroupLayoutEntry uniform_entry{};
+    uniform_entry.binding = 0;
+    uniform_entry.visibility = WGPUShaderStage_Fragment;
+    uniform_entry.buffer.type = WGPUBufferBindingType_Uniform;
+    uniform_entry.buffer.hasDynamicOffset = true;
+    uniform_entry.buffer.minBindingSize = sizeof(SkyUniform);
+    {
+        const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = 1, .entries = &uniform_entry};
+        impl.table_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    }
+    {
+        std::array<WGPUBindGroupLayoutEntry, 7> entries{};
+        entries[0] = uniform_entry;
+        const auto texture = [&](const std::uint32_t binding, const WGPUTextureViewDimension dimension) {
+            entries[binding].binding = binding;
+            entries[binding].visibility = WGPUShaderStage_Fragment;
+            entries[binding].texture.sampleType = WGPUTextureSampleType_Float;
+            entries[binding].texture.viewDimension = dimension;
+        };
+        texture(1, WGPUTextureViewDimension_3D);
+        texture(2, WGPUTextureViewDimension_3D);
+        texture(3, WGPUTextureViewDimension_2D);
+        entries[4].binding = 4;
+        entries[4].visibility = WGPUShaderStage_Fragment;
+        entries[4].sampler.type = WGPUSamplerBindingType_Filtering;
+        texture(5, WGPUTextureViewDimension_2D);
+        entries[6].binding = 6;
+        entries[6].visibility = WGPUShaderStage_Fragment;
+        entries[6].sampler.type = WGPUSamplerBindingType_Filtering;
+        const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
+        impl.sky_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    }
+    {
+        const WGPUBindGroupEntry entry{.binding = 0, .buffer = impl.uniforms, .offset = 0, .size = sizeof(SkyUniform)};
+        const WGPUBindGroupDescriptor descriptor{.layout = impl.table_layout, .entryCount = 1, .entries = &entry};
+        impl.table_binding = wgpuDeviceCreateBindGroup(device, &descriptor);
+    }
+    {
+        std::array<WGPUBindGroupEntry, 7> entries{};
+        entries[0] = {.binding = 0, .buffer = impl.uniforms, .offset = 0, .size = sizeof(SkyUniform)};
+        entries[1].binding = 1;
+        entries[1].textureView = impl.shape_view;
+        entries[2].binding = 2;
+        entries[2].textureView = impl.detail_view;
+        entries[3].binding = 3;
+        entries[3].textureView = impl.weather_view;
+        entries[4].binding = 4;
+        entries[4].sampler = impl.noise_sampler;
+        entries[5].binding = 5;
+        entries[5].textureView = impl.table_view;
+        entries[6].binding = 6;
+        entries[6].sampler = impl.table_sampler;
+        const WGPUBindGroupDescriptor descriptor{.layout = impl.sky_layout, .entryCount = entries.size(), .entries = entries.data()};
+        impl.sky_binding = wgpuDeviceCreateBindGroup(device, &descriptor);
+    }
+
+    const WGPUShaderSourceWGSL source{.chain = {.sType = WGPUSType_ShaderSourceWGSL}, .code = wgsl_name(sky_shader)};
+    const WGPUShaderModuleDescriptor module_descriptor{.nextInChain = &source.chain};
+    const auto shader = wgpuDeviceCreateShaderModule(device, &module_descriptor);
+
+    // The table: one triangle over it, no depth, single sample.
+    {
+        const WGPUPipelineLayoutDescriptor layout_descriptor{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl.table_layout};
+        const auto layout = wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+        const WGPUColorTargetState target{.format = table_format, .writeMask = WGPUColorWriteMask_All};
+        const WGPUFragmentState fragment{.module = shader, .entryPoint = wgsl_name("fs_table"), .targetCount = 1, .targets = &target};
+        const WGPURenderPipelineDescriptor descriptor{
+            .layout = layout,
+            .vertex = {.module = shader, .entryPoint = wgsl_name("vs_table")},
+            .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+            .multisample = {.count = 1, .mask = ~0u, .alphaToCoverageEnabled = false},
+            .fragment = &fragment,
+        };
+        impl.table_pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
+        wgpuPipelineLayoutRelease(layout);
+    }
+    // The sky: where the depth is still the far plane's (reversed Z: 0), no writes.
+    {
+        const WGPUPipelineLayoutDescriptor layout_descriptor{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl.sky_layout};
+        const auto layout = wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+        constexpr WGPUStencilFaceState keep{
+            .compare = WGPUCompareFunction_Always,
+            .failOp = WGPUStencilOperation_Keep,
+            .depthFailOp = WGPUStencilOperation_Keep,
+            .passOp = WGPUStencilOperation_Keep,
+        };
+        const WGPUDepthStencilState depth{
+            .format = depth_format,
+            .depthWriteEnabled = WGPUOptionalBool_False,
+            .depthCompare = WGPUCompareFunction_Equal,
+            .stencilFront = keep,
+            .stencilBack = keep,
+            .stencilReadMask = ~0u,
+            .stencilWriteMask = ~0u,
+        };
+        const WGPUColorTargetState target{.format = target_format, .writeMask = WGPUColorWriteMask_All};
+        const WGPUConstantEntry hdr{.key = wgsl_name("hdr_output"), .value = scene_hdr() ? 1.0 : 0.0};
+        const WGPUFragmentState fragment{.module = shader,
+                                         .entryPoint = wgsl_name("fs_sky"),
+                                         .constantCount = 1,
+                                         .constants = &hdr,
+                                         .targetCount = 1,
+                                         .targets = &target};
+        const WGPURenderPipelineDescriptor descriptor{
+            .layout = layout,
+            .vertex = {.module = shader, .entryPoint = wgsl_name("vs_sky")},
+            .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+            .depthStencil = &depth,
+            .multisample = scene_multisample(),
+            .fragment = &fragment,
+        };
+        impl.sky_pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
+        wgpuPipelineLayoutRelease(layout);
+    }
+    wgpuShaderModuleRelease(shader);
+}
+
+NativeSky::~NativeSky() = default;
+
+bool NativeSky::ready() const noexcept {
+    return impl_ && impl_->table_pipeline && impl_->sky_pipeline && impl_->sky_binding && impl_->table_binding && impl_->uniforms;
+}
+
+void NativeSky::update(const NativeSkyFrame& input) {
+    auto& impl = *impl_;
+    const auto to_sun = glm::normalize(input.to_sun);
+    const float altitude = (std::max)(input.altitude, 1.0f);
+    impl.drift += glm::dvec2{input.wind} * static_cast<double>(input.elapsed);
+    // The clouds' field wraps at 65536 m (every noise tiles within it).
+    const auto field = glm::mod(input.eye_route + impl.drift, glm::dvec2{65536.0});
+    // The layer: cumulus from 1.5 km above sea, or 1 km above the eye's
+    // ground where the route lies high.
+    const float base = (std::max)(1500.0f, altitude + 600.0f);
+    const float top = base + 2200.0f;
+    const float night = 1.0f - glm::smoothstep(-0.12f, 0.02f, to_sun.y);
+
+    auto& f = impl.frame;
+    f.sun[0] = to_sun.x;
+    f.sun[1] = to_sun.y;
+    f.sun[2] = to_sun.z;
+    f.eye[0] = altitude;
+    f.eye[1] = night;
+    f.eye[3] = native_sky_sun;
+    f.clouds[0] = std::clamp(input.coverage, 0.0f, 1.0f);
+    f.clouds[1] = base;
+    f.clouds[2] = top;
+    f.field[0] = static_cast<float>(field.x);
+    f.field[1] = static_cast<float>(field.y);
+
+    // The clouds' light: the sun through the air above their middle, the
+    // sky above them (its average over the upper half), the ground below
+    // (a fifth of the sun on it, lit by the sky too); the night's own glow.
+    const float middle = (base + top) * 0.5f;
+    const auto sun_light = atmosphere_transmittance(middle, to_sun) * native_sky_sun;
+    glm::vec3 above{0.0f};
+    int count = 0;
+    for (const float elevation : {15.0f, 45.0f, 80.0f}) {
+        for (int k = 0; k < 4; ++k) {
+            const float a = glm::radians(45.0f + 90.0f * static_cast<float>(k));
+            const float e = glm::radians(elevation);
+            above += atmosphere_radiance(middle, {std::cos(e) * std::sin(a), std::sin(e), std::cos(e) * std::cos(a)}, to_sun);
+            ++count;
+        }
+    }
+    above /= static_cast<float>(count);
+    const glm::vec3 night_glow = glm::vec3{0.004f, 0.006f, 0.012f} * night;
+    const auto ground_sun = atmosphere_transmittance(altitude, to_sun) * native_sky_sun * (std::max)(to_sun.y, 0.0f);
+    const auto below = (ground_sun * 0.2f / 3.14159265f + above * 0.3f) * 0.5f;
+    for (int i = 0; i < 3; ++i) {
+        f.sun_at_clouds[i] = sun_light[i];
+        f.ambient_top[i] = above[i] + night_glow[i];
+        f.ambient_bottom[i] = below[i] + night_glow[i];
+    }
+
+    // The horizon's average colour (display): RTS's fog colour while this
+    // sky is drawn, so the land's end meets it.
+    glm::vec3 horizon{0.0f};
+    for (int k = 0; k < 8; ++k) {
+        const float a = glm::radians(22.5f + 45.0f * static_cast<float>(k));
+        const float e = glm::radians(2.0f);
+        horizon += atmosphere_radiance(altitude, {std::cos(e) * std::sin(a), std::sin(e), std::cos(e) * std::cos(a)}, to_sun);
+    }
+    horizon = horizon / 8.0f + night_glow;
+    for (int i = 0; i < 3; ++i) impl.horizon[i] = std::pow(shoulder((std::max)(horizon[i], 0.0f)), 1.0f / 2.2f);
+}
+
+void NativeSky::render_table(const WGPUCommandEncoder encoder) {
+    if (!ready()) return;
+    auto& impl = *impl_;
+    impl.write_slot(table_slot);
+    const WGPURenderPassColorAttachment colour{
+        .view = impl.table_view,
+        .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+        .loadOp = WGPULoadOp_Clear,
+        .storeOp = WGPUStoreOp_Store,
+        .clearValue = {.r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0},
+    };
+    const WGPURenderPassDescriptor descriptor{.colorAttachmentCount = 1, .colorAttachments = &colour};
+    const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+    const std::uint32_t offset = table_slot * static_cast<std::uint32_t>(uniform_stride);
+    wgpuRenderPassEncoderSetPipeline(pass, impl.table_pipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.table_binding, 1, &offset);
+    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+}
+
+void NativeSky::render(const WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, const std::uint32_t slot) {
+    if (!ready() || slot >= table_slot) return;
+    auto& impl = *impl_;
+    // Directions only: the view's rotation.
+    impl.frame.inverse_view_projection = glm::inverse(projection * glm::mat4{glm::mat3{view}});
+    impl.write_slot(slot);
+    const std::uint32_t offset = slot * static_cast<std::uint32_t>(uniform_stride);
+    wgpuRenderPassEncoderSetPipeline(pass, impl.sky_pipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.sky_binding, 1, &offset);
+    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+}
+
+glm::vec3 NativeSky::horizon_colour() const noexcept {
+    return impl_ ? impl_->horizon : glm::vec3{0.6f};
+}
+
+} // namespace openrts::renderer
+#endif

@@ -4,6 +4,9 @@
 #include <fstream>
 
 #include <openrts/formats/environment.hpp>
+#include <glm/geometric.hpp>
+
+#include <openrts/renderer/native_sky.hpp>
 #include <openrts/renderer/rts_sky.hpp>
 
 namespace {
@@ -62,6 +65,26 @@ world (
             )
         )
     )
+    world_water (
+        world_water_layers ( 2
+            world_water_layer (
+                world_water_layer_height ( -.3 )
+                world_anim_shader (
+                    world_anim_shader_frames ( 1 world_anim_shader_frame ( world_anim_shader_frame_uvtiles ( 8 8 ) ) )
+                    world_shader ( TexDiff terrain_texslots ( 1 terrain_texslot ( watertop.ace 1 0 ) ) )
+                )
+            )
+            world_water_layer (
+                world_water_layer_height ( 0 )
+                world_anim_shader (
+                    world_anim_shader_frames ( 1
+                        world_anim_shader_frame ( world_anim_shader_frame_uvscroll ( 0 0.005 ) )
+                        world_shader ( BlendATex terrain_texslots ( 1 terrain_texslot ( dots14.ace 1 0 ) ) )
+                    )
+                )
+            )
+        )
+    )
 )
 )";
 
@@ -99,6 +122,17 @@ int main() {
     check(night.fade_in_start == 16 * 3600 - 86400 && night.fade_in_end == 18 * 3600 - 86400, "fade-in normalised");
     check(night.fade_out_start == 6 * 3600 && night.fade_out_end == 8 * 3600, "fade-out");
 
+    // Water layers; the second's world_shader sits inside its frames block
+    // (Novokuznetsk), where RTS's text search still finds it.
+    check(environment.water && environment.water->layers.size() == 2, "water layers");
+    if (environment.water && environment.water->layers.size() == 2) {
+        const auto& bottom = environment.water->layers[0].shader;
+        const auto& top = environment.water->layers[1].shader;
+        check(bottom.shader_name == "TexDiff" && bottom.texture == "watertop.ace", "water layer shader");
+        check(top.shader_name == "BlendATex" && top.texture == "dots14.ace", "shader inside the frames block");
+        check(top.frames.size() == 1 && top.frames[0].has_uv_scroll, "frames before the misplaced shader");
+    }
+
     // Night layer: invisible at noon, opaque at 3:00, half faded in at 17:00.
     check(!rts::evaluate_layer_fade(night, 12 * 3600).visible, "night layer hidden at noon");
     const auto night_3am = rts::evaluate_layer_fade(night, 3 * 3600);
@@ -126,6 +160,22 @@ int main() {
     check(midnight.night && near(midnight.lighting.sun_ambient.x, 0x15 / 255.0f), "night ambient floor");
     check(near(midnight.layers[0].uv_offset[1], 0.004f), "uv scroll accumulates");
     check(near(midnight.fog_end, 1700.0f), "fog end from visible layers");
+
+    // openRTS's own sky (native_sky.hpp): a blue zenith at noon, the
+    // horizon under a low sun red, the night dark, the air letting through
+    // less of the low sun's blue than of its red.
+    {
+        const glm::vec3 high_sun = glm::normalize(glm::vec3{0.0f, 0.77f, 0.64f});
+        const auto zenith = openrts::renderer::atmosphere_radiance(300.0f, {0.0f, 1.0f, 0.0f}, high_sun);
+        check(zenith.z > zenith.y && zenith.y > zenith.x && zenith.z > 0.1f && zenith.z < 2.0f, "native sky: blue zenith at noon");
+        const glm::vec3 low_sun = glm::normalize(glm::vec3{0.0f, 0.05f, 1.0f});
+        const auto towards = openrts::renderer::atmosphere_radiance(300.0f, glm::normalize(glm::vec3{0.0f, 0.03f, 1.0f}), low_sun);
+        check(towards.x > towards.z, "native sky: the horizon red under a low sun");
+        const auto dark = openrts::renderer::atmosphere_radiance(300.0f, {0.0f, 1.0f, 0.0f}, glm::normalize(glm::vec3{0.0f, -0.5f, 1.0f}));
+        check(dark.x + dark.y + dark.z < 0.001f, "native sky: dark at night");
+        const auto through = openrts::renderer::atmosphere_transmittance(300.0f, low_sun);
+        check(through.x > through.z && through.x <= 1.0f && through.z >= 0.0f, "native sky: the low sun reddened");
+    }
 
     if (failures == 0) std::printf("rts sky: all checks passed\n");
     return failures == 0 ? 0 : 1;

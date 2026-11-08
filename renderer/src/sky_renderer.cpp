@@ -142,6 +142,11 @@ fn vs_satellite(input: VertexIn) -> VertexOut {
         vertex.y * scale * angles.z + vertex.z * angles.w,
         (-vertex.x * scale * angles.y + vertex.z * angles.x) * angles.z);
     out.clip = draw.mvp * vec4<f32>(position, 1.0);
+    // openRTS's own sky drawn: the satellite on the far plane (reversed Z),
+    // where only the sky is (its pipeline tests the depth for equality).
+    if ((draw.draw_flags & 2) != 0) {
+        out.clip.z = 0.0;
+    }
     out.uv = input.uv;
     if (!unlit(draw.named_shader)) {
         out.colour = draw.colour;
@@ -296,6 +301,8 @@ struct SkyRenderer::Impl {
     WGPUBindGroupLayout frame_layout = nullptr;
     // [program][blend]
     std::array<std::array<WGPURenderPipeline, 2>, 2> pipelines{};
+    // Satellites behind the scene, over openRTS's own sky ([blend]).
+    std::array<WGPURenderPipeline, 2> behind_pipelines{};
     GpuMesh quad;
     WGPUBuffer frame_buffer = nullptr;
     WGPUBuffer draw_buffer = nullptr;
@@ -306,11 +313,37 @@ struct SkyRenderer::Impl {
     std::vector<Element> layers;
     std::vector<Element> satellites;
 
+    // The draw uniforms in slots of draw_capacity each: the frame's sky (0)
+    // and the reflection probe's faces (1..6), as every slot's writes reach
+    // the queue before the frame's commands run.
+    static constexpr std::uint64_t draw_slots = 7;
+
+    // The reflection probe (openRTS): a cube of the target format, drawn
+    // multisampled as the sky's pipelines are, resolved into each face.
+    static constexpr std::uint32_t probe_size = 128;
+    WGPUTexture probe_texture = nullptr;
+    WGPUTextureView probe_view = nullptr;
+    std::array<WGPUTextureView, 6> probe_faces{};
+    WGPUTexture probe_msaa = nullptr;
+    WGPUTextureView probe_msaa_view = nullptr;
+    WGPUTexture probe_depth = nullptr;
+    WGPUTextureView probe_depth_view = nullptr;
+    bool probe_drawn = false; // recorded once: it is the sky from the next frame on
+
     Impl() = default;
     Impl(const Impl&) = delete;
     Impl& operator=(const Impl&) = delete;
 
     ~Impl() {
+        for (const auto face : probe_faces) {
+            if (face) wgpuTextureViewRelease(face);
+        }
+        if (probe_view) wgpuTextureViewRelease(probe_view);
+        if (probe_texture) wgpuTextureRelease(probe_texture);
+        if (probe_msaa_view) wgpuTextureViewRelease(probe_msaa_view);
+        if (probe_msaa) wgpuTextureRelease(probe_msaa);
+        if (probe_depth_view) wgpuTextureViewRelease(probe_depth_view);
+        if (probe_depth) wgpuTextureRelease(probe_depth);
         release_elements(layers);
         release_elements(satellites);
         release_mesh(quad);
@@ -321,6 +354,9 @@ struct SkyRenderer::Impl {
             for (const auto pipeline : program) {
                 if (pipeline) wgpuRenderPipelineRelease(pipeline);
             }
+        }
+        for (const auto pipeline : behind_pipelines) {
+            if (pipeline) wgpuRenderPipelineRelease(pipeline);
         }
         if (frame_layout) wgpuBindGroupLayoutRelease(frame_layout);
         if (material_layout) wgpuBindGroupLayoutRelease(material_layout);
@@ -418,7 +454,7 @@ struct SkyRenderer::Impl {
 
         if (frame_binding) wgpuBindGroupRelease(frame_binding);
         if (draw_buffer) wgpuBufferRelease(draw_buffer);
-        draw_buffer = create_buffer(device, WGPUBufferUsage_Uniform, capacity * draw_uniform_stride);
+        draw_buffer = create_buffer(device, WGPUBufferUsage_Uniform, capacity * draw_slots * draw_uniform_stride);
         draw_capacity = capacity;
 
         std::array<WGPUBindGroupEntry, 2> entries{};
@@ -435,6 +471,73 @@ struct SkyRenderer::Impl {
         };
         frame_binding = wgpuDeviceCreateBindGroup(device, &descriptor);
     }
+
+    void create_probe(const WGPUTextureFormat format) {
+        const auto samples = render_sample_count();
+        const WGPUTextureDescriptor cube{
+            .label = {.data = "sky-reflection-probe", .length = WGPU_STRLEN},
+            .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {.width = probe_size, .height = probe_size, .depthOrArrayLayers = 6},
+            .format = format,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+        };
+        probe_texture = wgpuDeviceCreateTexture(device, &cube);
+        if (!probe_texture) return;
+        const WGPUTextureViewDescriptor cube_view{
+            .format = format,
+            .dimension = WGPUTextureViewDimension_Cube,
+            .baseMipLevel = 0,
+            .mipLevelCount = 1,
+            .baseArrayLayer = 0,
+            .arrayLayerCount = 6,
+            .aspect = WGPUTextureAspect_All,
+        };
+        probe_view = wgpuTextureCreateView(probe_texture, &cube_view);
+        for (std::uint32_t face = 0; face < 6; ++face) {
+            const WGPUTextureViewDescriptor face_view{
+                .format = format,
+                .dimension = WGPUTextureViewDimension_2D,
+                .baseMipLevel = 0,
+                .mipLevelCount = 1,
+                .baseArrayLayer = face,
+                .arrayLayerCount = 1,
+                .aspect = WGPUTextureAspect_All,
+            };
+            probe_faces[face] = wgpuTextureCreateView(probe_texture, &face_view);
+        }
+        if (samples > 1) {
+            const WGPUTextureDescriptor msaa{
+                .usage = WGPUTextureUsage_RenderAttachment,
+                .dimension = WGPUTextureDimension_2D,
+                .size = {.width = probe_size, .height = probe_size, .depthOrArrayLayers = 1},
+                .format = format,
+                .mipLevelCount = 1,
+                .sampleCount = samples,
+            };
+            probe_msaa = wgpuDeviceCreateTexture(device, &msaa);
+            if (probe_msaa) probe_msaa_view = wgpuTextureCreateView(probe_msaa, nullptr);
+        }
+        const WGPUTextureDescriptor depth{
+            .usage = WGPUTextureUsage_RenderAttachment,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {.width = probe_size, .height = probe_size, .depthOrArrayLayers = 1},
+            .format = depth_format,
+            .mipLevelCount = 1,
+            .sampleCount = samples,
+        };
+        probe_depth = wgpuDeviceCreateTexture(device, &depth);
+        if (probe_depth) probe_depth_view = wgpuTextureCreateView(probe_depth, nullptr);
+    }
+
+    // The sky through `mvp` (no translation) into a pass, its uniforms in `slot`.
+    void draw(WGPURenderPassEncoder pass, const glm::mat4& mvp, const rts::SkyState& state, std::uint64_t slot, bool moons_only = false);
+
+    [[nodiscard]] bool probe_ready() const noexcept {
+        return probe_view && probe_depth_view && (render_sample_count() == 1 || probe_msaa_view)
+               && std::all_of(probe_faces.begin(), probe_faces.end(), [](const auto face) { return face != nullptr; });
+    }
 };
 
 namespace {
@@ -444,7 +547,8 @@ namespace {
                                                  const WGPUShaderModule shader,
                                                  const WGPUTextureFormat target_format,
                                                  const SkyProgram program,
-                                                 const bool blend) {
+                                                 const bool blend,
+                                                 const WGPUCompareFunction compare = WGPUCompareFunction_Always) {
     const std::array<WGPUVertexAttribute, 2> attributes{{
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(SkyVertex, position), .shaderLocation = 0},
         {.format = WGPUVertexFormat_Float32x2, .offset = offsetof(SkyVertex, uv), .shaderLocation = 1},
@@ -466,7 +570,7 @@ namespace {
     const WGPUDepthStencilState depth{
         .format = depth_format,
         .depthWriteEnabled = WGPUOptionalBool_False,
-        .depthCompare = WGPUCompareFunction_Always,
+        .depthCompare = compare,
         .stencilFront = keep_stencil,
         .stencilBack = keep_stencil,
         .stencilReadMask = ~0u,
@@ -564,8 +668,13 @@ SkyRenderer::SkyRenderer(const WGPUDevice device, const WGPUTextureFormat target
                 create_pipeline(device, pipeline_layout, shader, target_format, program, blend);
         }
     }
+    for (const bool blend : {false, true}) {
+        impl_->behind_pipelines[blend ? 1 : 0] =
+            create_pipeline(device, pipeline_layout, shader, target_format, SkyProgram::satellite, blend, WGPUCompareFunction_Equal);
+    }
     wgpuPipelineLayoutRelease(pipeline_layout);
     wgpuShaderModuleRelease(shader);
+    impl_->create_probe(target_format);
 }
 
 SkyRenderer::~SkyRenderer() = default;
@@ -603,11 +712,9 @@ void SkyRenderer::load(const formats::EnvironmentDefinition& environment,
     }
 }
 
-void SkyRenderer::render(const WGPURenderPassEncoder pass,
-                         const glm::mat4& projection,
-                         const glm::mat4& view,
-                         const rts::SkyState& state) {
-    if (!ready() || !impl_->environment) return;
+void SkyRenderer::Impl::draw(const WGPURenderPassEncoder pass, const glm::mat4& mvp, const rts::SkyState& state,
+                             const std::uint64_t slot, const bool moons_only) {
+    auto* const self = this;
 
     struct EmittedDraw {
         const Impl::GpuMesh* mesh;
@@ -618,14 +725,13 @@ void SkyRenderer::render(const WGPURenderPassEncoder pass,
     };
     std::vector<EmittedDraw> emitted;
 
-    // The sky is centred on the camera: drop the view translation.
-    const auto mvp = projection * glm::mat4{glm::mat3{view}};
-
     const auto emit_satellites = [&] {
-        for (std::size_t i = 0; i < impl_->satellites.size() && i < state.satellites.size(); ++i) {
-            const auto& element = impl_->satellites[i];
+        for (std::size_t i = 0; i < self->satellites.size() && i < state.satellites.size(); ++i) {
+            const auto& element = self->satellites[i];
             const auto& satellite = state.satellites[i];
             if (!element.binding || !satellite.visible) continue;
+            // Over openRTS's sky the lighting satellite (the sun) is its own.
+            if (moons_only && i == 0) continue;
 
             DrawUniform uniform{.mvp = mvp};
             copy_vec4(uniform.colour, rts::colour_from_argb(satellite.direct_colour));
@@ -633,19 +739,20 @@ void SkyRenderer::render(const WGPURenderPassEncoder pass,
             uniform.azimuth[1] = glm::radians(satellite.elevation_degrees);
             uniform.half_size = 100.0f * satellite.scale * (i == 0 ? 1.5f : 1.0f);
             uniform.named_shader = static_cast<std::int32_t>(element.shader);
-            uniform.draw_flags = i == 0 ? 1 : 0;
-            emitted.push_back({&impl_->quad, element.binding, SkyProgram::satellite,
+            uniform.draw_flags = moons_only ? 2 : (i == 0 ? 1 : 0);
+            emitted.push_back({&self->quad, element.binding, SkyProgram::satellite,
                                rts::is_alpha_shader(element.shader), uniform});
         }
     };
 
-    const auto layer_count = impl_->layers.size();
-    const std::size_t satellites_after = impl_->environment->layers_behind_satellites + 1u;
-    for (std::size_t j = 0; j <= layer_count; ++j) {
+    const auto layer_count = self->layers.size();
+    const std::size_t satellites_after = self->environment->layers_behind_satellites + 1u;
+    if (moons_only) emit_satellites();
+    for (std::size_t j = 0; j <= layer_count && !moons_only; ++j) {
         if (j == satellites_after) emit_satellites();
         if (j == layer_count) break;
 
-        const auto& element = impl_->layers[j];
+        const auto& element = self->layers[j];
         if (!element.binding || !element.mesh.vertices || j >= state.layers.size()) continue;
         const auto& layer = state.layers[j];
         if (!layer.visible) continue;
@@ -662,9 +769,10 @@ void SkyRenderer::render(const WGPURenderPassEncoder pass,
     }
     if (emitted.empty()) return;
 
-    impl_->ensure_draw_capacity(emitted.size());
-    if (!impl_->frame_binding) return;
+    self->ensure_draw_capacity(emitted.size());
+    if (!self->frame_binding) return;
 
+    const auto base = slot * self->draw_capacity * draw_uniform_stride;
     std::vector<std::byte> uniforms(emitted.size() * draw_uniform_stride);
     for (std::size_t i = 0; i < emitted.size(); ++i) {
         std::memcpy(uniforms.data() + i * draw_uniform_stride, &emitted[i].uniform, sizeof(DrawUniform));
@@ -676,21 +784,103 @@ void SkyRenderer::render(const WGPURenderPassEncoder pass,
     frame.fog_distance[0] = state.fog_start;
     frame.fog_distance[1] = state.fog_end;
 
-    const auto queue = wgpuDeviceGetQueue(impl_->device);
-    wgpuQueueWriteBuffer(queue, impl_->draw_buffer, 0, uniforms.data(), uniforms.size());
-    wgpuQueueWriteBuffer(queue, impl_->frame_buffer, 0, &frame, sizeof(frame));
+    const auto queue = wgpuDeviceGetQueue(self->device);
+    wgpuQueueWriteBuffer(queue, self->draw_buffer, base, uniforms.data(), uniforms.size());
+    wgpuQueueWriteBuffer(queue, self->frame_buffer, 0, &frame, sizeof(frame));
     if (queue) wgpuQueueRelease(queue);
 
     for (std::size_t i = 0; i < emitted.size(); ++i) {
         const auto& item = emitted[i];
-        const auto offset = static_cast<std::uint32_t>(i * draw_uniform_stride);
-        wgpuRenderPassEncoderSetPipeline(pass, impl_->pipelines[static_cast<std::size_t>(item.program)][item.blend ? 1 : 0]);
+        const auto offset = static_cast<std::uint32_t>(base + i * draw_uniform_stride);
+        wgpuRenderPassEncoderSetPipeline(pass, moons_only ? self->behind_pipelines[item.blend ? 1 : 0]
+                                                          : self->pipelines[static_cast<std::size_t>(item.program)][item.blend ? 1 : 0]);
         wgpuRenderPassEncoderSetVertexBuffer(pass, 0, item.mesh->vertices, 0, WGPU_WHOLE_SIZE);
         wgpuRenderPassEncoderSetIndexBuffer(pass, item.mesh->indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
         wgpuRenderPassEncoderSetBindGroup(pass, 0, item.binding, 0, nullptr);
-        wgpuRenderPassEncoderSetBindGroup(pass, 1, impl_->frame_binding, 1, &offset);
+        wgpuRenderPassEncoderSetBindGroup(pass, 1, self->frame_binding, 1, &offset);
         wgpuRenderPassEncoderDrawIndexed(pass, item.mesh->index_count, 1, 0, 0, 0);
     }
+}
+
+void SkyRenderer::render(const WGPURenderPassEncoder pass,
+                         const glm::mat4& projection,
+                         const glm::mat4& view,
+                         const rts::SkyState& state) {
+    if (!ready() || !impl_->environment) return;
+    // The sky is centred on the camera: drop the view translation.
+    impl_->draw(pass, projection * glm::mat4{glm::mat3{view}}, state, 0);
+}
+
+void SkyRenderer::render_satellites(const WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view,
+                                    const rts::SkyState& state, const std::uint32_t slot) {
+    if (!ready() || !impl_->environment || slot >= Impl::draw_slots || !impl_->behind_pipelines[0] || !impl_->behind_pipelines[1]) return;
+    impl_->draw(pass, projection * glm::mat4{glm::mat3{view}}, state, slot, true);
+}
+
+void SkyRenderer::render_reflection_probe(const WGPUCommandEncoder encoder, const rts::SkyState& state, const ProbeDraw& draw) {
+    if (!ready() || !impl_->environment || !impl_->probe_ready()) return;
+    auto& impl = *impl_;
+    // Each face as a cube map lays it out (WebGPU, as Vulkan and D3D): the
+    // direction it looks along, and those its image's right and top show.
+    // A cube is left-handed, so the view is a mirror (rows: right, up, back).
+    struct Face {
+        glm::vec3 forward, right, up;
+    };
+    static constexpr std::array<Face, 6> faces{{
+        {{1, 0, 0}, {0, 0, -1}, {0, 1, 0}},
+        {{-1, 0, 0}, {0, 0, 1}, {0, 1, 0}},
+        {{0, 1, 0}, {1, 0, 0}, {0, 0, -1}},
+        {{0, -1, 0}, {1, 0, 0}, {0, 0, 1}},
+        {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}},
+        {{0, 0, -1}, {-1, 0, 0}, {0, 1, 0}},
+    }};
+    const auto projection = reversed_z_perspective(glm::radians(90.0f), 1.0f, 1.0f, 100000.0f);
+    const bool msaa = impl.probe_msaa_view != nullptr;
+    for (std::size_t f = 0; f < faces.size(); ++f) {
+        const auto& face = faces[f];
+        glm::mat4 view{1.0f};
+        for (int column = 0; column < 3; ++column) {
+            view[column][0] = face.right[column];
+            view[column][1] = face.up[column];
+            view[column][2] = -face.forward[column];
+        }
+        const WGPURenderPassColorAttachment colour{
+            .view = msaa ? impl.probe_msaa_view : impl.probe_faces[f],
+            .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+            .resolveTarget = msaa ? impl.probe_faces[f] : nullptr,
+            .loadOp = WGPULoadOp_Clear,
+            .storeOp = msaa ? WGPUStoreOp_Discard : WGPUStoreOp_Store,
+            .clearValue = {.r = state.clear_colour.r, .g = state.clear_colour.g, .b = state.clear_colour.b, .a = 1.0},
+        };
+        const WGPURenderPassDepthStencilAttachment depth{
+            .view = impl.probe_depth_view,
+            .depthLoadOp = WGPULoadOp_Clear,
+            .depthStoreOp = WGPUStoreOp_Discard,
+            .depthClearValue = depth_clear_value,
+            .depthReadOnly = false,
+            .stencilLoadOp = WGPULoadOp_Undefined,
+            .stencilStoreOp = WGPUStoreOp_Undefined,
+            .stencilReadOnly = true,
+        };
+        const WGPURenderPassDescriptor descriptor{
+            .colorAttachmentCount = 1,
+            .colorAttachments = &colour,
+            .depthStencilAttachment = &depth,
+        };
+        const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+        if (draw) {
+            draw(pass, projection, view, static_cast<std::uint32_t>(1 + f));
+        } else {
+            impl.draw(pass, projection * view, state, 1 + f);
+        }
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+    }
+    impl.probe_drawn = true;
+}
+
+WGPUTextureView SkyRenderer::reflection_probe() const noexcept {
+    return impl_ && impl_->probe_drawn ? impl_->probe_view : nullptr;
 }
 
 } // namespace openrts::renderer

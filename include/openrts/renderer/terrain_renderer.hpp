@@ -46,6 +46,14 @@ struct TerrainWaterVertex {
     float corner[2];
 };
 
+// A corner of the openRTS water's surface (not RTS): its place in the tile at
+// the water's height, and how deep the water is there (the surface above the
+// ground; below 0 where the ground rises out of it).
+struct TerrainWaterSurfaceVertex {
+    float position[3];
+    float depth;
+};
+
 struct TerrainTileMesh {
     std::int32_t tile_x{};
     std::int32_t tile_z{};
@@ -55,6 +63,11 @@ struct TerrainTileMesh {
     // The water patches (flag bits 0xC0), two triangles each, at the tile's
     // water heights (terrain_water_height_offset as 0x4A2A5C spreads them).
     std::vector<TerrainWaterVertex> water;
+    // The same patches for the openRTS water: a corner at each terrain
+    // sample, triangles as the terrain's, patches with no water above the
+    // ground left out.
+    std::vector<TerrainWaterSurfaceVertex> water_surface;
+    std::vector<std::uint32_t> water_surface_indices;
     std::string error;
 
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
@@ -74,6 +87,16 @@ struct TerrainTileMesh {
                                                                       const std::string& texture,
                                                                       rts::Season season,
                                                                       rts::Weather weather);
+
+// The openRTS water (not as in RTS): the water patches drawn as a surface of
+// their own, waves, the sky reflected (SkyRenderer::render_reflection_probe),
+// the sun's highlight, the ground seen through where the water is shallow and
+// a soft shore, instead of the environment's water layers. In winter the
+// layers stay (routes lay ice there). Read each frame.
+inline bool& native_water() {
+    static bool on = true;
+    return on;
+}
 
 #ifdef OPENRTS_HAS_WGPU
 // Streams and draws the terrain tiles around the camera.
@@ -119,6 +142,18 @@ public:
     // layers that follow the camera).
     void update_water(float elapsed, const glm::vec3& eye);
     [[nodiscard]] std::size_t water_quads() const noexcept;
+
+    // The openRTS water (native_water()): render() prepares it, this draws
+    // it in the same pass after the opaque models (it is see-through: what
+    // stands in the water shows) and before the translucent ones.
+    void render_water(WGPURenderPassEncoder pass);
+    // The sky's reflection probe the openRTS water reflects (a cube view,
+    // SkyRenderer::reflection_probe; nullptr: a gradient from the fog colour).
+    void set_sky_probe(WGPUTextureView cube);
+    // render() prepared the openRTS water this frame (the probe is wanted).
+    [[nodiscard]] bool draws_native_water() const noexcept;
+    // Tiles of it render_water() drew last (in view, water above the ground).
+    [[nodiscard]] std::size_t water_surface_draws() const noexcept;
 
     [[nodiscard]] std::size_t loaded_tiles() const noexcept;
     [[nodiscard]] std::size_t pending_jobs() const noexcept;

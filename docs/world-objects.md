@@ -138,6 +138,13 @@ openRTS: `viewer/src/road_traffic.cpp`.
   terrain (`0x408574`), depth test LEQUAL with writes; `BlendATex*` and
   `AddATex*` layers laid over by alpha, `Tex` / `TexDiff` opaque. RTS reads as
   many layers as the count says.
+- **A layer's shader (`0x55BF50`):** `world_shader` is found by the text
+  search (`0x4578C0`) from the end of the last frame read to the end of
+  `world_anim_shader`, so at any depth. Novokuznetsk's `SummerClear.env` and
+  `SummerSnow.env` close the frames block after the last layer's shader
+  (`dots14.ace`). RTS still finds it there. openRTS read only direct
+  children until 2026-11-08 and drew that layer as an opaque black quad over
+  the water.
 - **UVs (`0x4A2144`):** per patch, `uvtiles` repeats moved by `uvscroll` x time
   (wrapping past 1), or the frame's `uvstamp` with frames changing every
   `framelen`; a `world_water_layer_sky_reflection` layer's UVs follow the
@@ -146,6 +153,37 @@ openRTS: `viewer/src/road_traffic.cpp`.
 
 openRTS: in `renderer/src/terrain_renderer.cpp` (`vs_water`, the terrain's
 shading and effects).
+
+### openRTS water (not RTS)
+
+A Graphics setting, on by default (`native_water`); off, the layers above
+are drawn as RTS draws them. In winter the layers stay, since routes lay ice
+there.
+
+- **Surface:** the same water patches as a grid of the terrain's samples
+  (8 m), at the environment's topmost layer height, where RTS shows the
+  water. Each corner knows the depth there (the water's height above the
+  ground). The triangles are the terrain's, so the shore (depth 0) lies where
+  the ground meets the water. Patches with ground above the water all over
+  are left out.
+- **Waves:** a tiling wave map made at start: 56 waves of whole cycles across
+  it, wavenumbers 2–20, amplitude k^-1.6. Its mipmaps average the normals
+  without renormalising them. Three octaves of it are used (37, 13 and 4.3 m,
+  each moving its own way). Far off the water turns flat and its highlight
+  wider (Toksvig), instead of sparkling.
+- **Reflection:** the sky as RTS draws it, drawn again into a 128 px cube map
+  around the camera after each frame's main pass
+  (`SkyRenderer::render_reflection_probe`). The water reads it by Fresnel
+  (Schlick, 0.02). Without a sky, a gradient from the fog colour is used.
+- **Sun:** a normalised Blinn-Phong highlight in the sun's shadow.
+- **Colour:** the water's own colour, lit by the sun and the sky. The ground
+  shows through by the light left along the view's path under the surface
+  (0.8 per metre), and the water fades out over the last 0.35 m of depth
+  towards the shore.
+- **Order:** drawn after the opaque models, so what stands in the water shows
+  through, and before the translucent ones (`TerrainRenderer::render_water`).
+  Fog is the terrain's on the RTS path; aerial perspective is used on the
+  experimental one.
 
 ## Rain and snow
 

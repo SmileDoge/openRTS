@@ -172,9 +172,15 @@ So a non-blended `z_buf_mode 3` primitive of an ordinary static is never drawn.
 openRTS: `rts::object_pass` / `rts::visits` / `rts::draws_in_pass`, the
 instance's `StaticFlags` given by `ModelRenderer::set_world_object`; the RTS
 path draws passes -2..3 in that order. Transfers load as shapes named
-`<world file>.<UiD>.transfer` (`renderer/src/transfer_shape.cpp`, the same
-grid, sampled on openRTS's own terrain triangles so the texture lies on the
-drawn ground, across tile edges). Train and signal glows are drawn after the
+`<world file>.<UiD>.transfer` (`renderer/src/transfer_shape.cpp`). RTS's
+grid crosses the terrain's triangles, so between its vertices it sank under
+the ground or floated over it, and the two flickered: the ground's triangles
+showed through in patches (Novokuznetsk, 2026-11-09). openRTS instead cuts the
+rectangle by the terrain's own triangles (8 m samples, the checkerboard
+diagonals, across tile edges), so every piece lies in its triangle's plane.
+It draws the pieces at every distance to 2000 m and a ten-thousandth of the
+distance nearer (`GpuInstance::decal`, reversed Z), for what the two
+transforms' rounding leaves. Train and signal glows are drawn after the
 translucent pass and before the cab, laid over by their alpha
 (`GlowBlend::over`).
 

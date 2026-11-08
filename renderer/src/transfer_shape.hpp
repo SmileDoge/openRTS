@@ -24,10 +24,11 @@ struct TransferShape {
     std::string error;
 };
 
-// Reads the world file named by `path` and builds that transfer: a grid on
-// the terrain (4 m cells; 4 % of the width above 100 m wide), BlendATexDiff,
-// lit as an ordinary surface (-5), normals up, the texture's mip bias -3;
-// a single quad from 300 m, nothing past 2000 m.
+// Reads the world file named by `path` and builds that transfer: the
+// rectangle cut by the terrain's own triangles, each piece in its triangle's
+// plane (RTS: a 4 m grid of its own, which flickers against the ground),
+// BlendATexDiff, lit as an ordinary surface (-5), normals up, the texture's
+// mip bias -3; nothing past 2000 m.
 [[nodiscard]] TransferShape build_transfer_shape(const core::Vfs& vfs, const core::VirtualPath& path);
 
 } // namespace openrts::renderer

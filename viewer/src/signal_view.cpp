@@ -13,6 +13,8 @@
 #include <glm/vec4.hpp>
 
 #include <openrts/formats/ace_file.hpp>
+#include <openrts/formats/shape_binary.hpp>
+#include <openrts/formats/shape_file.hpp>
 #include <openrts/formats/signal_config.hpp>
 #include <openrts/formats/signal_script.hpp>
 #include <openrts/simulation/train.hpp>
@@ -347,11 +349,12 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
                 // RTS 0x449818: a quad of half size Radius in the signal's
                 // own XY plane (identity light rotation), so it lies on the
                 // lens: seen from the side it is edge-on, from behind the
-                // housing hides it. Lifted 1 cm off the lens to its front.
+                // housing hides it. openRTS puts it 1 cm in front of the
+                // lens's glass (lens_front).
                 const float z = offset.z - light->position[2];
-                const float lift = z < 0.0f ? -0.01f : 0.01f;
-                const auto world = glm::vec3{frame * glm::vec4{offset.x - light->position[0], light->position[1] + offset.y,
-                                                               z + lift, 1.0f}};
+                const glm::vec3 at{offset.x - light->position[0], light->position[1] + offset.y, z};
+                const float front = lens_front(instance.source_path, type.name, light->index, at);
+                const auto world = glm::vec3{frame * glm::vec4{at.x, at.y, front, 1.0f}};
                 const auto axis_x = glm::normalize(glm::vec3{frame[0]});
                 const auto axis_y = glm::normalize(glm::vec3{frame[1]});
                 // RTS keeps GL_CULL_FACE on (enabled in create_game_window,
@@ -372,6 +375,73 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
             }
         }
     }
+}
+
+float SignalView::lens_front(const core::VirtualPath& shape, const std::string& type, const std::uint32_t light, const glm::vec3& at) {
+    // The lens faces the side of its z (-Z for RTS's lights, see above).
+    const float toward = at.z < 0.0f ? -1.0f : 1.0f;
+    const auto key = std::tuple{shape.key(), type, light};
+    if (const auto it = lens_fronts_.find(key); it != lens_fronts_.end()) return it->second;
+
+    auto [geometry, inserted] = lens_shapes_.try_emplace(shape.key());
+    if (inserted && vfs_) {
+        // The shape's triangles in its root space (through the matrix
+        // hierarchy, row vectors), the nearest distance level only.
+        const auto body = formats::load_binary_shape_body(*vfs_, shape);
+        if (body.ok()) {
+            const auto model = formats::parse_binary_shape_model(*body.body);
+            const auto to_root = [&](std::int32_t m, glm::vec3 p) {
+                for (int guard = 0; m >= 0 && static_cast<std::size_t>(m) < model.matrices.size() && guard < 64; ++guard) {
+                    const auto& v = model.matrices[static_cast<std::size_t>(m)].values;
+                    p = {p.x * v[0] + p.y * v[3] + p.z * v[6] + v[9], p.x * v[1] + p.y * v[4] + p.z * v[7] + v[10],
+                         p.x * v[2] + p.y * v[5] + p.z * v[8] + v[11]};
+                    m = static_cast<std::size_t>(m) < model.hierarchy.size() ? model.hierarchy[static_cast<std::size_t>(m)] : -1;
+                }
+                return p;
+            };
+            for (const auto& draw : model.draws) {
+                if (draw.level != 0) continue;
+                for (std::uint32_t k = 0; k < draw.index_count; ++k) {
+                    const auto index = model.indices[draw.first_index + k];
+                    if (index >= model.vertices.size()) break;
+                    const auto& p = model.vertices[index].position;
+                    geometry->second.push_back(to_root(draw.matrix_index, {p[0], p[1], p[2]}));
+                }
+                geometry->second.resize(geometry->second.size() / 3 * 3);
+            }
+        }
+    }
+
+    // openRTS (RTS draws the quad at Position, depth tested against the
+    // signal, 0x40C097): a ray from the light towards where its lens faces;
+    // the frontmost surface it meets within 15 cm (the lens's glass, its
+    // rim) is what the quad goes 1 cm in front of. Some heads give a
+    // Position inside the lens (Novokuznetsk's -new heads: the glass 4.7 cm
+    // in front of it), where RTS's own rule leaves the lens unlit and only
+    // the glow's edge past the housing seen.
+    float front = at.z;
+    const auto& triangles = geometry->second;
+    for (std::size_t t = 0; t + 2 < triangles.size(); t += 3) {
+        const auto& a = triangles[t];
+        const auto& b = triangles[t + 1];
+        const auto& c = triangles[t + 2];
+        const float det = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+        if (std::fabs(det) < 1e-9f) continue;
+        const float wb = ((at.x - a.x) * (c.y - a.y) - (c.x - a.x) * (at.y - a.y)) / det;
+        const float wc = ((b.x - a.x) * (at.y - a.y) - (at.x - a.x) * (b.y - a.y)) / det;
+        const float wa = 1.0f - wb - wc;
+        if (wa < 0.0f || wb < 0.0f || wc < 0.0f) continue;
+        const float z = wa * a.z + wb * b.z + wc * c.z;
+        const float ahead = (z - at.z) * toward; // > 0: in front of the light
+        if (ahead > 0.0f && ahead <= 0.15f && (z - front) * toward > 0.0f) front = z;
+    }
+    if (front != at.z) {
+        std::cout << "signal light " << type << " " << light << " (" << shape.filename() << "): " << std::lround(std::fabs(front - at.z) * 1000.0f)
+                  << " mm behind its lens's glass, drawn in front of it" << std::endl;
+    }
+    front += 0.01f * toward;
+    lens_fronts_.emplace(key, front);
+    return front;
 }
 
 void SignalView::draw_lights(const WGPURenderPassEncoder pass, const FrameView& frame, const float viewport_height,

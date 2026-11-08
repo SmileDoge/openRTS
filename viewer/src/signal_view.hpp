@@ -96,6 +96,12 @@ private:
     bool textures_uploaded_ = false;
     bool show_markers_ = false;
     std::vector<renderer::GlowSprite> sprites_;
+    // openRTS: where a light's quad goes in front of its lens. A signal
+    // shape's triangles (shape root space, the nearest distance level),
+    // loaded once; each light's place once (shape, type, light index).
+    [[nodiscard]] float lens_front(const core::VirtualPath& shape, const std::string& type, std::uint32_t light, const glm::vec3& at);
+    std::map<std::string, std::vector<glm::vec3>> lens_shapes_;
+    std::map<std::tuple<std::string, std::string, std::uint32_t>, float> lens_fronts_;
     double accumulator_{};
     const simulation::Train* train_ = nullptr;
     glm::vec3 eye_{};

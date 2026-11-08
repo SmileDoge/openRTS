@@ -973,7 +973,10 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     // over the last quarter of that distance.
     const float fog_end = lighting.fog_end > 0.0f ? lighting.fog_end : 3000.0f;
     frame.aerial = glm::vec4{1.0f / fog_end, 1.0f / 1500.0f, 0.76f, 0.25f * glm::clamp(sun_luma, 0.0f, 1.0f) * sun_up};
-    frame.haze = glm::vec4{linear(lighting.sun_ambient), 1.0f};
+    // haze.w: RTS's fog strength, its fog colour's alpha (the fog shaders
+    // scale their fog by it; the sky makes it 0 once the sun is 2 degrees
+    // down, rts_sky.cpp): the land's end turns into the fog colour only so far.
+    frame.haze = glm::vec4{linear(lighting.sun_ambient), glm::clamp(lighting.fog_colour.w, 0.0f, 1.0f)};
     frame.horizon = glm::vec4{linear(lighting.fog_colour), lighting.fog_end};
 
     // Lamps by day: the brighter the sun or the sky (linear), the weaker,

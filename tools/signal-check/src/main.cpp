@@ -11,16 +11,19 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <openrts/core/installation.hpp>
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/ace_file.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/signal_config.hpp>
 #include <openrts/formats/signal_script.hpp>
@@ -247,6 +250,184 @@ int main(int argc, char** argv) {
         } else if (arg == "--run") {
             run = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') consist_name = argv[++i];
+        } else if (arg == "--lenses" && i + 1 < argc) {
+            // Every signal shape of a route: the lights whose Position lies
+            // behind a surface of the shape within 15 cm towards where the
+            // lens faces (the glass in front of the light quad, which the
+            // viewer then draws in front of it: SignalView::lens_front).
+            core::Vfs shape_vfs;
+            core::mount_installation(shape_vfs, root, core::load_installation_config(root));
+            shape_vfs.build_index();
+            const std::string route_name = argv[++i];
+            const auto route = *core::VirtualPath::parse("ROUTES/" + route_name);
+            const auto config = formats::load_signal_config(shape_vfs, route);
+            if (!config.ok()) {
+                std::printf("sigcfg: %s\n", config.error.c_str());
+                return 1;
+            }
+            const auto lower = [](std::string s) {
+                for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                return s;
+            };
+            std::size_t shapes_checked = 0, lights_checked = 0, lights_behind = 0;
+            for (const auto& shape : config.shapes) {
+                std::optional<core::VirtualPath> file;
+                for (const auto* folder : {"SHAPES", "../../GLOBAL/SHAPES"}) {
+                    const auto candidate = route.resolve(std::string(folder) + "/" + shape.file);
+                    if (candidate && shape_vfs.exists(*candidate)) {
+                        file = candidate;
+                        break;
+                    }
+                }
+                if (!file) continue;
+                const auto body = formats::load_binary_shape_body(shape_vfs, *file);
+                if (!body.ok()) continue;
+                const auto model = formats::parse_binary_shape_model(*body.body);
+                ++shapes_checked;
+                std::vector<std::array<float, 3>> triangles;
+                for (const auto& draw : model.draws) {
+                    if (draw.level != 0) continue;
+                    for (std::uint32_t k = 0; k < draw.index_count; ++k) {
+                        const auto index = model.indices[draw.first_index + k];
+                        if (index >= model.vertices.size()) break;
+                        std::array<float, 3> p{model.vertices[index].position[0], model.vertices[index].position[1], model.vertices[index].position[2]};
+                        for (std::int32_t m = draw.matrix_index, guard = 0; m >= 0 && static_cast<std::size_t>(m) < model.matrices.size() && guard < 64; ++guard) {
+                            const auto& v = model.matrices[static_cast<std::size_t>(m)].values;
+                            p = {p[0] * v[0] + p[1] * v[3] + p[2] * v[6] + v[9], p[0] * v[1] + p[1] * v[4] + p[2] * v[7] + v[10],
+                                 p[0] * v[2] + p[1] * v[5] + p[2] * v[8] + v[11]};
+                            m = static_cast<std::size_t>(m) < model.hierarchy.size() ? model.hierarchy[static_cast<std::size_t>(m)] : -1;
+                        }
+                        triangles.push_back(p);
+                    }
+                    triangles.resize(triangles.size() / 3 * 3);
+                }
+                std::set<std::string> done;
+                for (const auto& sub : shape.sub_objects) {
+                    if (sub.kind != formats::SignalSubObjectKind::signal_head) continue;
+                    const auto* type = config.find_type(sub.signal_type);
+                    if (!type) continue;
+                    std::array<float, 3> offset{};
+                    for (const auto& matrix : model.matrices) {
+                        if (lower(matrix.name) == lower(sub.name)) {
+                            offset = {matrix.values[9], matrix.values[10], matrix.values[11]};
+                            break;
+                        }
+                    }
+                    for (const auto& light : type->lights) {
+                        if (light.radius <= 0.02f) continue; // "No Light"
+                        const float x = offset[0] - light.position[0];
+                        const float y = light.position[1] + offset[1];
+                        const float z = offset[2] - light.position[2];
+                        const auto key = type->name + "/" + std::to_string(light.index) + "/" + std::to_string(x) + "/" + std::to_string(y);
+                        if (!done.insert(key).second) continue;
+                        ++lights_checked;
+                        const float toward = z < 0.0f ? -1.0f : 1.0f;
+                        float front = z;
+                        for (std::size_t t = 0; t + 2 < triangles.size(); t += 3) {
+                            const auto& a = triangles[t];
+                            const auto& b = triangles[t + 1];
+                            const auto& c = triangles[t + 2];
+                            const float det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+                            if (std::fabs(det) < 1e-9f) continue;
+                            const float wb = ((x - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (y - a[1])) / det;
+                            const float wc = ((b[0] - a[0]) * (y - a[1]) - (x - a[0]) * (b[1] - a[1])) / det;
+                            const float wa = 1.0f - wb - wc;
+                            if (wa < 0.0f || wb < 0.0f || wc < 0.0f) continue;
+                            const float hit = wa * a[2] + wb * b[2] + wc * c[2];
+                            const float ahead = (hit - z) * toward;
+                            if (ahead > 0.0f && ahead <= 0.15f && (hit - front) * toward > 0.0f) front = hit;
+                        }
+                        if (front != z) {
+                            ++lights_behind;
+                            std::printf("  %-40s %-28s light %u (%s): %3ld mm behind the glass\n", shape.file.c_str(), type->name.c_str(), light.index,
+                                        light.colour.c_str(), std::lround(std::fabs(front - z) * 1000.0f));
+                        }
+                    }
+                }
+            }
+            std::printf("%zu shapes, %zu lights, %zu behind a surface\n", shapes_checked, lights_checked, lights_behind);
+            return 0;
+        } else if (arg == "--rays" && i + 3 < argc) {
+            // Debug: rays along +Z through a shape at "x:y,x:y,..." (shape
+            // space, root): every surface met, its z, draw, shader, and the
+            // texture's alpha there (what stands in front of a light quad).
+            // --rays <shape> <texture folder> <points>
+            core::Vfs shape_vfs;
+            core::mount_installation(shape_vfs, root, core::load_installation_config(root));
+            shape_vfs.build_index();
+            const auto body = formats::load_binary_shape_body(shape_vfs, *core::VirtualPath::parse(argv[++i]));
+            const auto folder = *core::VirtualPath::parse(argv[++i]);
+            const std::string points = argv[++i];
+            if (!body.ok()) return 1;
+            const auto model = formats::parse_binary_shape_model(*body.body);
+            std::map<std::size_t, formats::AceDecodeResult> images;
+            const auto alpha_at = [&](const std::uint32_t prim_state, const float u, const float v) -> int {
+                if (prim_state >= model.primitive_states.size()) return -1;
+                const auto& state = model.primitive_states[prim_state];
+                if (state.texture_count == 0 || state.texture_index >= model.textures.size()) return -1;
+                const auto image = model.textures[state.texture_index].image_index;
+                if (image >= model.images.size()) return -1;
+                auto [it, inserted] = images.try_emplace(image);
+                if (inserted) {
+                    if (const auto file = folder.resolve(model.images[image].filename().string())) it->second = formats::decode_ace_rgba(shape_vfs, *file);
+                }
+                if (!it->second.ok()) return -2;
+                const auto& picture = *it->second.image;
+                const auto wrap = [](const float t) { return t - std::floor(t); };
+                const auto px = (std::min)(static_cast<std::uint32_t>(wrap(u) * static_cast<float>(picture.width)), picture.width - 1);
+                const auto py = (std::min)(static_cast<std::uint32_t>(wrap(v) * static_cast<float>(picture.height)), picture.height - 1);
+                return picture.pixels[(static_cast<std::size_t>(py) * picture.width + px) * 4 + 3];
+            };
+            const auto to_root = [&](std::int32_t m, std::array<float, 3> p) {
+                for (int guard = 0; m >= 0 && guard < 64; ++guard) {
+                    const auto& v = model.matrices[static_cast<std::size_t>(m)].values;
+                    p = {p[0] * v[0] + p[1] * v[3] + p[2] * v[6] + v[9], p[0] * v[1] + p[1] * v[4] + p[2] * v[7] + v[10],
+                         p[0] * v[2] + p[1] * v[5] + p[2] * v[8] + v[11]};
+                    m = static_cast<std::size_t>(m) < model.hierarchy.size() ? model.hierarchy[static_cast<std::size_t>(m)] : -1;
+                }
+                return p;
+            };
+            std::size_t start = 0;
+            while (start < points.size()) {
+                auto end = points.find(',', start);
+                if (end == std::string::npos) end = points.size();
+                const auto item = points.substr(start, end - start);
+                start = end + 1;
+                const auto colon = item.find(':');
+                if (colon == std::string::npos) continue;
+                const float x = std::stof(item.substr(0, colon));
+                const float y = std::stof(item.substr(colon + 1));
+                std::printf("ray x %.3f y %.3f:\n", x, y);
+                std::vector<std::tuple<float, std::size_t, std::uint32_t, float, float>> hits;
+                for (std::size_t d = 0; d < model.draws.size(); ++d) {
+                    const auto& draw = model.draws[d];
+                    if (draw.level != 0) continue;
+                    for (std::uint32_t k = 0; k + 2 < draw.index_count; k += 3) {
+                        const auto& a = model.vertices[model.indices[draw.first_index + k]];
+                        const auto& b = model.vertices[model.indices[draw.first_index + k + 1]];
+                        const auto& c = model.vertices[model.indices[draw.first_index + k + 2]];
+                        const auto pa = to_root(draw.matrix_index, {a.position[0], a.position[1], a.position[2]});
+                        const auto pb = to_root(draw.matrix_index, {b.position[0], b.position[1], b.position[2]});
+                        const auto pc = to_root(draw.matrix_index, {c.position[0], c.position[1], c.position[2]});
+                        const float det = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pc[0] - pa[0]) * (pb[1] - pa[1]);
+                        if (std::fabs(det) < 1e-9f) continue;
+                        const float wb = ((x - pa[0]) * (pc[1] - pa[1]) - (pc[0] - pa[0]) * (y - pa[1])) / det;
+                        const float wc = ((pb[0] - pa[0]) * (y - pa[1]) - (x - pa[0]) * (pb[1] - pa[1])) / det;
+                        const float wa = 1.0f - wb - wc;
+                        if (wa < 0.0f || wb < 0.0f || wc < 0.0f) continue;
+                        hits.emplace_back(wa * pa[2] + wb * pb[2] + wc * pc[2], d, draw.primitive_state_index,
+                                          wa * a.uv[0] + wb * b.uv[0] + wc * c.uv[0], wa * a.uv[1] + wb * b.uv[1] + wc * c.uv[1]);
+                    }
+                }
+                std::sort(hits.begin(), hits.end());
+                for (const auto& [z, d, prim, u, v] : hits) {
+                    const auto shader = prim < model.primitive_states.size() && model.primitive_states[prim].shader_index < model.shader_names.size()
+                                            ? model.shader_names[model.primitive_states[prim].shader_index]
+                                            : std::string("?");
+                    std::printf("  z %7.3f  draw %zu prim %u %-14s uv %.3f %.3f alpha %d\n", z, d, prim, shader.c_str(), u, v, alpha_at(prim, u, v));
+                }
+            }
+            return 0;
         } else if (arg == "--shape" && i + 1 < argc) {
             // Debug: a shape's matrices (names and translations).
             core::Vfs shape_vfs;

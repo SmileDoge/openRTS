@@ -93,6 +93,8 @@ void draw_controls_help() {
         row("Mouse", "click: a control; wheel: one position; drag: handles and blinds");
         row("F3", "view from the first car, again from the last, again back; the wheel nearer, Ctrl+wheel zoom");
         row("Wheel at the chair", "off the controls: the head nearer to what the cursor points at, or back");
+        row("Ctrl+wheel", "zoom (in the cab too)");
+        row("Num+ / Num-", "field of view narrower / wider, as RTS (15..90 degrees)");
         row("Alt", "captions of the cab's controls");
         ImGui::EndTable();
     }

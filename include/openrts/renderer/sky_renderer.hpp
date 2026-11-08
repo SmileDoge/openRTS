@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -40,6 +42,26 @@ public:
 
     // `view` is the scene view matrix; its translation is ignored.
     void render(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, const rts::SkyState& state);
+
+    // openRTS (RTS had none): the same sky drawn into a small cube map round
+    // the camera, which the openRTS water reflects. Records six passes, one
+    // a face, outside any pass, after render() in the same frame. The cube
+    // holds the target format's colours (display encoded, as the frame).
+    // `draw`, when given, draws each face instead of RTS's sky (openRTS's own
+    // sky: NativeSky::render and render_satellites), with the face's
+    // projection, view (no translation) and uniform slot (1..6).
+    using ProbeDraw = std::function<void(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, std::uint32_t slot)>;
+    void render_reflection_probe(WGPUCommandEncoder encoder, const rts::SkyState& state, const ProbeDraw& draw = {});
+    // The cube's view (texture_cube); nullptr until a render_reflection_probe()
+    // was recorded (its sky is there from the next frame on) or when it could
+    // not be made.
+    [[nodiscard]] WGPUTextureView reflection_probe() const noexcept;
+
+    // Over openRTS's own sky (NativeSky): the satellites but the lighting one
+    // (the moon), on the far plane, where only the sky is (after the opaque
+    // objects). `slot`: 0 the frame, 1..6 a probe face.
+    void render_satellites(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, const rts::SkyState& state,
+                           std::uint32_t slot = 0);
 
 private:
     struct Impl;

@@ -108,7 +108,9 @@ struct GpuInstance {
     glm::mat4 normal;
     std::int32_t locals; // first animated local of this instance, -1: rest pose
     std::int32_t ring;   // its ring of further lights (LightRings::ring_for)
-    std::int32_t padding[2];
+    // 1: a decal on the ground (a transfer), drawn a hair nearer (vs_main).
+    std::int32_t decal;
+    std::int32_t padding;
 };
 static_assert(sizeof(GpuInstance) == 144);
 
@@ -166,6 +168,7 @@ struct Instance {
     normal: mat4x4<f32>,
     locals: i32,
     ring: i32,
+    decal: i32,
 };
 
 struct Local {
@@ -278,6 +281,13 @@ fn vs_main(input: VertexIn) -> VertexOut {
     let place = placement(input.instance);
     out.world = place.model * vec4<f32>(input.position, 1.0);
     out.clip = frame.view_projection * out.world;
+    // openRTS: a transfer lies in the terrain's own triangles' planes
+    // (transfer_shape.cpp); the two transforms round apart by far less than
+    // a ten-thousandth of the distance, so it is drawn that much nearer
+    // (reversed Z: a larger depth) and does not flicker against the ground.
+    if (instances[instance_ids[input.instance].x].decal != 0) {
+        out.clip.z = out.clip.z * 1.0001;
+    }
     out.uv = input.uv;
     out.ring = u32(clamp(instances[instance_ids[input.instance].x].ring, 0, 9));
     out.normal = vec3<f32>(0.0);
@@ -417,6 +427,13 @@ fn vs_main(input: VertexIn) -> VertexOut {
     let place = placement(input.instance);
     out.world = place.model * vec4<f32>(input.position, 1.0);
     out.clip = frame.view_projection * out.world;
+    // openRTS: a transfer lies in the terrain's own triangles' planes
+    // (transfer_shape.cpp); the two transforms round apart by far less than
+    // a ten-thousandth of the distance, so it is drawn that much nearer
+    // (reversed Z: a larger depth) and does not flicker against the ground.
+    if (instances[instance_ids[input.instance].x].decal != 0) {
+        out.clip.z = out.clip.z * 1.0001;
+    }
     out.uv = input.uv;
     out.ring = u32(clamp(instances[instance_ids[input.instance].x].ring, 0, 9));
     out.normal = (place.normal_matrix * vec4<f32>(input.normal, 0.0)).xyz;
@@ -797,6 +814,7 @@ struct Instance {
     normal: mat4x4<f32>,
     locals: i32,
     ring: i32,
+    decal: i32,
 };
 struct Local {
     matrix: mat4x4<f32>,
@@ -2617,6 +2635,7 @@ void ModelRenderer::prepare() {
                 .normal = glm::mat4{glm::inverseTranspose(glm::mat3{submitted.transform})},
                 .locals = static_cast<std::int32_t>(submitted.matrices),
                 .ring = static_cast<std::int32_t>(rings.ring_for(centre, bounds.radius * scale)),
+                .decal = submitted.transfer ? 1 : 0,
             };
             impl_->instance_spheres[k] = glm::vec4{centre, bounds.radius * scale};
             impl_->instance_owners[k] = submitted.owner;
