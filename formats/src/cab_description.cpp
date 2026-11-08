@@ -104,6 +104,7 @@ CabSwitch read_switch(const TextNode& node) {
     }
     s.position = vec3(node.child("position"));
     s.radius = number(node.child("radius"), 0);
+    if (const auto* parent = node.child("parentobject")) s.parent = static_cast<std::int32_t>(number(parent, 0, -1.0f));
     if (const auto* states = node.child("states")) {
         s.num_states = static_cast<std::uint32_t>((std::max)(1.0f, number(states, 0, 2)));
         s.initial_state = static_cast<std::uint32_t>(number(states, 1, 0));
@@ -401,6 +402,15 @@ const CabSwitch* CabDescription::find_switch(std::uint32_t id) const {
     return nullptr;
 }
 
+std::uint32_t CabDescription::root_switch(std::uint32_t id) const {
+    for (int guard = 0; guard < 16; ++guard) {
+        const auto* s = find_switch(id);
+        if (!s || s->parent < 0 || static_cast<std::uint32_t>(s->parent) == id) break;
+        id = static_cast<std::uint32_t>(s->parent);
+    }
+    return id;
+}
+
 const CabSwitch* CabDescription::find_switch(std::string_view name) const {
     for (const auto& s : switches)
         if (lower(s.name) == lower(name)) return &s;
@@ -430,13 +440,34 @@ CabAnimation read_animation(const TextNode& node) {
 
 } // namespace
 
+// `node`'s child `key`, else the first one nested deeper (breadth first), as
+// RTS finds a block: its cab loader (0x51CD88) looks each keyword up in the
+// parent block's text (0x4578C0), at any depth, and counts only ( and )
+// (the pair at 0x5F9BA6) to find where the block ends. So a block left open
+// or closed with a } does not hide the ones after it: the VL80T's and
+// EP1M's .sd close Animations with } (26 cab files of MaDaDev and rz do),
+// the 2TE116's cabEDTKLUB.sd leaves InteriorDoors open over
+// InteriorWindows and InteriorChairs, the draisine's drezina_cab2.sd
+// LocomotiveSignalization over InteriorGeometryInfo.
+const TextNode* child_or_nested(const TextNode& node, const std::string_view key) {
+    if (const auto* direct = node.child(key)) return direct;
+    std::vector<const TextNode*> queue{&node};
+    for (std::size_t i = 0; i < queue.size(); ++i) {
+        for (const auto& child : queue[i]->children) {
+            if (child.name == key) return &child;
+            queue.push_back(&child);
+        }
+    }
+    return nullptr;
+}
+
 ExteriorDetails parse_exterior_details(std::string_view bytes) {
     ExteriorDetails out;
     std::string error;
     const auto source = decode(bytes, error);
     if (!source) return out;
     TextNode root;
-    detail::read_text_tree(*source, root, true);
+    detail::read_text_tree(*source, root);
     const TextNode* exterior = find(root, "esd_exterior_details");
     if (!exterior) return out;
     if (const auto* animations = exterior->child("animations"))
@@ -515,8 +546,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
     }
     const std::string source = utf16 ? std::move(*decoded) : ansi_to_utf8(*decoded);
     TextNode root;
-    // A `}` for a `)` (a content typo RTS reads through) closes its block.
-    detail::read_text_tree(source, root, true);
+    detail::read_text_tree(source, root);
     const TextNode* interior = find(root, "esd_interior");
     if (!interior) {
         cab.error = "no ESD_Interior block";
@@ -616,7 +646,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
         }
         s.scripted = number(signals->child("signalizationscripted"), 0) != 0.0f;
     }
-    if (const auto* geometry = interior->child("interiorgeometryinfo")) {
+    if (const auto* geometry = child_or_nested(*interior, "interiorgeometryinfo")) {
         // InteriorPlane ( [name] x1 y1 z1 x2 y2 z2 ): the name is there when
         // there are seven values.
         auto plane = [](const TextNode* node) {
@@ -630,7 +660,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
             }
             return p;
         };
-        if (const auto* areas = geometry->child("interiorareas")) {
+        if (const auto* areas = child_or_nested(*geometry, "interiorareas")) {
             for (const auto& node : areas->children) {
                 if (node.name != "interiorarea") continue;
                 CabArea a;
@@ -644,12 +674,12 @@ CabDescription parse_cab_description(std::string_view bytes) {
                 cab.areas.push_back(std::move(a));
             }
         }
-        if (const auto* nodes = geometry->child("exteriornodes"))
+        if (const auto* nodes = child_or_nested(*geometry, "exteriornodes"))
             for (std::size_t i = 1; i < nodes->values.size(); ++i) cab.exterior_nodes.push_back(nodes->values[i]);
-        if (const auto* planes = geometry->child("interiorplanes"))
+        if (const auto* planes = child_or_nested(*geometry, "interiorplanes"))
             for (const auto& node : planes->children)
                 if (node.name == "interiorplane") cab.planes.push_back(plane(&node));
-        if (const auto* doors = geometry->child("interiordoors")) {
+        if (const auto* doors = child_or_nested(*geometry, "interiordoors")) {
             for (const auto& node : doors->children) {
                 if (node.name != "interiordoor") continue;
                 ++cab.interior_doors;
@@ -672,7 +702,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
                 cab.doors.push_back(std::move(d));
             }
         }
-        if (const auto* windows = geometry->child("interiorwindows")) {
+        if (const auto* windows = child_or_nested(*geometry, "interiorwindows")) {
             for (const auto& node : windows->children) {
                 if (node.name != "interiorwindow") continue;
                 CabWindow w;
@@ -690,7 +720,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
                 cab.windows.push_back(std::move(w));
             }
         }
-        if (const auto* chairs = geometry->child("interiorchairs")) {
+        if (const auto* chairs = child_or_nested(*geometry, "interiorchairs")) {
             for (const auto& node : chairs->children) {
                 if (node.name != "chair") continue;
                 CabChair c;

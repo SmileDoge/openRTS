@@ -273,6 +273,25 @@ bool TrainView::placed() const noexcept {
     return loaded() && units_.front().train->placed();
 }
 
+TrainView::Loading TrainView::loading() const {
+    Loading result;
+    result.cab = starts_in_cab_;
+    if (!pending_load_.empty() || !pending_situation_.empty() || !pending_trains_.empty()) {
+        result.settled = false;
+        return result;
+    }
+    if (!loaded()) return result;
+    if (pending_path_ || (placed() && start_view_ != StartView::none && units_.front().role == Role::driven)) result.settled = false;
+    for (const auto& unit : units_) {
+        for (const auto& car : unit.cars) {
+            if (car.loading.valid()) ++result.pending;
+            result.pending += car.freight_loading.size();
+        }
+    }
+    if (starts_in_cab_ && cab_ && !cab_->loaded()) ++result.pending;
+    return result;
+}
+
 const simulation::Train* TrainView::train() const noexcept {
     return loaded() ? units_.front().train.get() : nullptr;
 }
@@ -2151,8 +2170,9 @@ void TrainView::apply_start_view(ViewerCamera& camera) {
     const auto view = std::exchange(start_view_, StartView::none);
     const auto& unit = units_.front();
     const auto report = [&] {
-        if (engineer_.mode() == Engineer::Mode::seated) {
-            std::cout << "start: cab, engineer seated in car " << engineer_car_ + 1 << std::endl;
+        if (engineer_.inside()) {
+            std::cout << "start: cab, engineer " << (engineer_.mode() == Engineer::Mode::seated ? "seated in" : "on foot by")
+                      << " chair " << engineer_.chair() << " of car " << engineer_car_ + 1 << std::endl;
             return;
         }
         const auto head = local(unit.current.front().front);
@@ -3222,7 +3242,26 @@ void TrainView::set_engineer(const bool on) {
     engineer_car_ = cab_car_;
     hovered_.reset();
     if (on) {
-        engineer_.sit(0);
+        // By the first chair of the leading cab: a locomotive with a cab at
+        // each end in one shape (the EP1M: chairs 0 and 1 at the rear, 2
+        // and 3 at the front; its DLLs make the front cab the working one)
+        // starts at the front, by the train's way (the car turned round in
+        // the train, the cab shape turned in its car). With all chairs at
+        // one end it is chair 0, as before. On foot by it, as RTS starts
+        // him; Enter sits him down.
+        std::size_t chair = 0;
+        if (cab_ && !units_.empty() && cab_car_ < units_.front().cars.size()) {
+            const auto& chairs = cab_->description().chairs;
+            const float way = (units_.front().cars[cab_car_].flipped ? -1.0f : 1.0f) * (cab_->turned() ? -1.0f : 1.0f);
+            for (std::size_t k = 1; k < chairs.size(); ++k) {
+                if (chairs[k].position[2] * way > chairs[chair].position[2] * way + 0.5f) chair = k;
+            }
+        }
+        if (cab_) {
+            engineer_.stand_by(*cab_, chair);
+        } else {
+            engineer_.sit(chair);
+        }
     } else {
         engineer_.off();
     }
@@ -3415,12 +3454,22 @@ void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& di
         return;
     }
     const auto car = driven ? SIZE_MAX : engineer_car_;
-    const auto id = cab->description().switches[hovered_->index].id;
+    // A piece that follows another (ParentObject: the EP1M's blind) is worked
+    // through the one it follows: taking any piece takes the whole blind.
+    const auto& switches = cab->description().switches;
+    const auto id = cab->description().root_switch(switches[hovered_->index].id);
+    std::size_t index = hovered_->index;
+    for (std::size_t k = 0; k < switches.size(); ++k) {
+        if (switches[k].id == id) {
+            index = k;
+            break;
+        }
+    }
     // A CONTROLLERX / CONTROLLERY control: a press takes hold of it and only
     // moving the mouse moves it (RTS 0x4121BC); a quick click (let go within
     // the frame) leaves it where it is, it does not toggle.
     (void)held;
-    if (click && legacy_->grab(id, cab->switch_frames_per_state(hovered_->index), car)) {
+    if (click && legacy_->grab(id, cab->switch_frames_per_state(index), car)) {
         drag_cursor_ = cursor;
     } else if (click) {
         legacy_->click(id, 0, shift, car);
@@ -4502,6 +4551,14 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
             glm::mat4 local = glm::translate(glm::mat4{1.0f}, glm::vec3{s.position[0], s.position[1], s.position[2]});
             local = glm::rotate(local, yaw, glm::vec3{0.0f, 1.0f, 0.0f});
             local = glm::rotate(local, pitch, glm::vec3{1.0f, 0.0f, 0.0f});
+            // RTS (the car's light objects, 0x4F11A7): a light source (Type 1)
+            // for the train's last car (Unit 3 or 5) is written as if at the
+            // front and turned round the car's middle (Position x and z
+            // negated, its angle + 180). The VL80T's rear section has its
+            // marker beams at +7.6 (the coupling end) and their glows, not
+            // turned, at -7.6 (its cab).
+            if (light.type != 0 && (light.unit == 3 || light.unit == 5))
+                local = glm::rotate(glm::mat4{1.0f}, pi, glm::vec3{0.0f, 1.0f, 0.0f}) * local;
             const glm::mat4 world = body->transform * local;
             const glm::vec3 at{world[3]};
             const glm::vec3 forward = glm::normalize(glm::vec3{world[2]});
@@ -5119,7 +5176,8 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
             // until the cab shape is there.
             if (auto* cab_model = library.find(inside->shape()); cab_model && inside->bound()) {
                 adjustments.clear();
-                const CabView::Blend blend{&cab_switch_frames_before_, &cab_display_values_before_, alpha()};
+                const CabView::Blend blend{&cab_switch_frames_before_, &cab_display_values_before_, alpha(),
+                                           legacy_ ? legacy_->dragged_switch() : std::nullopt};
                 inside->adjustments(&unit == &units_.front() ? cab_state(i) : nullptr, adjustments, signal_aspect(unit),
                                     i == cab_before_car_ ? &blend : nullptr);
                 const glm::mat4 to_scene = transform * inside->placement();
@@ -5338,8 +5396,8 @@ void TrainView::draw_overlay() {
         }
     };
     if (legacy_) legacy_->draw_window(cab_controls);
-    // What Enter does where the engineer stands.
-    if (engineer_.active() && (!board_prompt_.empty() || !engineer_.prompt().empty())) {
+    // What Enter does where the engineer stands (unless the hints are off).
+    if (key_hints() && engineer_.active() && (!board_prompt_.empty() || !engineer_.prompt().empty())) {
         const auto size = ImGui::GetIO().DisplaySize;
         const char* text = !board_prompt_.empty() ? board_prompt_.c_str() : engineer_.prompt().c_str();
         const auto text_size = ImGui::CalcTextSize(text);

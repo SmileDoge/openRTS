@@ -8,6 +8,7 @@
 #include <openrts/renderer/depth_export.hpp>
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -707,6 +708,11 @@ public:
             ImGui::Render();
             return;
         }
+        if (const auto loading = scene.loading(); !loading.done) {
+            draw_loading_screen(loading);
+            ImGui::Render();
+            return;
+        }
         if (panel.paused) {
             // As RTS writes it over the picture.
             const char* text = tr("PAUSE (Pause)");
@@ -760,6 +766,11 @@ public:
             if (ImGui::Combo(tr("Keys"), &layout, layouts, 2)) {
                 set_key_layout(layout == 0 ? KeyLayout::rts : KeyLayout::openrts);
                 remember("key_layout", layout == 0 ? "rts" : "openrts");
+            }
+            bool hints = key_hints();
+            if (ImGui::Checkbox(tr("Key hints at the bottom of the screen"), &hints)) {
+                set_key_hints(hints);
+                remember("key_hints", hints ? "1" : "0");
             }
             ImGui::Checkbox(tr("Pause (Pause)"), &panel.paused);
         }
@@ -1020,6 +1031,36 @@ private:
     // The scene's own windows (the train, Track control) and its HUD stay
     // whatever the panel shows; its lines for the panel go to a region no
     // one sees (the Controls tab, the Scene section folded).
+    // The start's loading screen over the whole window. The scene is drawn
+    // under it all the same: its models and textures go to the GPU and its
+    // pipelines are made meanwhile.
+    static void draw_loading_screen(const SceneLoading& loading) {
+        const auto display = ImGui::GetIO().DisplaySize;
+        auto* list = ImGui::GetForegroundDrawList();
+        list->AddRectFilled({0.0f, 0.0f}, display, IM_COL32(22, 24, 29, 255));
+        const auto centred = [&](ImFont* font, const float size, const float y, const ImU32 colour, const char* text) {
+            const auto extent = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+            list->AddText(font, size, {(display.x - extent.x) * 0.5f, y}, colour, text);
+        };
+        ImFont* normal = ImGui::GetFont();
+        const float normal_size = ImGui::GetFontSize();
+        ImFont* big = title_font() ? title_font() : normal;
+        const float big_size = title_font() ? title_font()->FontSize : normal_size * 2.0f;
+        ImFont* medium = large_font() ? large_font() : normal;
+        const float medium_size = large_font() ? large_font()->FontSize : normal_size * 1.3f;
+        const float middle = display.y * 0.5f;
+        centred(big, big_size, middle - big_size - 48.0f, IM_COL32(230, 235, 242, 255), tr("Loading"));
+        if (!loading.title.empty()) centred(medium, medium_size, middle - 36.0f, IM_COL32(200, 206, 216, 255), loading.title.c_str());
+        // The bar.
+        const float width = (std::min)(display.x * 0.5f, 640.0f);
+        const ImVec2 from{(display.x - width) * 0.5f, middle + 4.0f};
+        const ImVec2 to{from.x + width, from.y + 10.0f};
+        list->AddRectFilled(from, to, IM_COL32(43, 48, 59, 255), 5.0f);
+        const float share = std::clamp(loading.progress, 0.0f, 1.0f);
+        if (share > 0.0f) list->AddRectFilled(from, {from.x + width * share, to.y}, IM_COL32(92, 148, 230, 255), 5.0f);
+        if (loading.stage && *loading.stage) centred(normal, normal_size, to.y + 14.0f, IM_COL32(140, 148, 163, 255), tr(loading.stage));
+    }
+
     static void draw_scene_unseen(const ViewerScene& scene, const ViewerCamera& camera) {
         ImGui::BeginChild("##scene_unseen", {1.0f, 1.0f}, ImGuiChildFlags_None,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground);
@@ -1751,6 +1792,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     set_ui_language(remembered("language").value_or("ru") == "en" ? UiLanguage::english : UiLanguage::russian);
     // The keys chosen last time (openRTS's, without the keypad, by default).
     set_key_layout(remembered("key_layout").value_or("openrts") == "rts" ? KeyLayout::rts : KeyLayout::openrts);
+    set_key_hints(remembered("key_hints").value_or("1") != "0");
     // Sound is optional: without a device the viewer runs silent.
     std::unique_ptr<audio::AudioEngine> sound;
     if (options.sound) {
@@ -1772,7 +1814,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     }
 
     if (options.view) apply_view(*options.view, scene.origin(), camera);
-    const double capture_start = glfwGetTime();
+    // From the end of the start's loading (moved on while it lasts).
+    double capture_start = glfwGetTime();
+    // The camera as the scene left it while it loads: no input moves it.
+    ViewerCamera loading_camera = camera;
     // A capture from a saved view (--view, no --capture-camera) keeps that
     // camera: the scene's own (the engineer's cab) is put back after it,
     // from the view each frame, as the scene moves its origin along with a
@@ -1915,8 +1960,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // the menu runs the game): what a frame waits on, without the panel.
     double perf_at = last_time + 10.0;
     while (!glfwWindowShouldClose(window.get())) {
-        // The FPS limit: the wait comes before the input is read.
-        limiter.set(panel.fps_limit);
+        // The start's loading (as the last update left it): its screen, no
+        // input for the scene, and for a start in the cab no time passing.
+        const auto loading = scene.loading();
+        // The FPS limit: the wait comes before the input is read. None while
+        // the start loads: the world streams in a step a frame.
+        limiter.set(loading.done ? panel.fps_limit : 0);
         limiter.wait();
         stage_clock.start();
         glfwPollEvents();
@@ -1952,13 +2001,20 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             if (pause_key && !input.pause_key_down) panel.paused = !panel.paused;
             input.pause_key_down = pause_key;
         }
-        if (sound) sound->set_paused(panel.paused);
+        if (sound) sound->set_paused(panel.paused || !loading.done);
         renderer::physical_light_falloff() = panel.physical_light;
         renderer::night_ambient_scale() = panel.night_ambient;
         renderer::light_range() = panel.light_range;
         renderer::headlight_reach() = panel.headlight_reach;
         renderer::light_fullbright() = panel.light_fullbright;
         auto frame_input = scene_input(window.get(), input);
+        if (!loading.done) {
+            // The keys were read (their edges stay right) and are dropped;
+            // the camera stays where the scene put it.
+            frame_input = SceneInput{};
+            camera = loading_camera;
+            capture_start = glfwGetTime();
+        }
         if (capture && options.capture_camera) {
             if (const auto car = scene.train_car_transform(options.capture_car)) {
                 const auto& c = *options.capture_camera;
@@ -2021,7 +2077,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             scene.set_cab_switch(id, state);
         }
         if (const auto time = scene.take_time_of_day()) clock.time_of_day = *time;
-        scene.update(renderer, camera, clock.advance(panel.paused || scene.paused() ? 0.0f : elapsed), frame_input);
+        scene.update(renderer, camera, clock.advance(panel.paused || scene.paused() || loading.hold_time ? 0.0f : elapsed), frame_input);
+        if (!scene.loading().done) loading_camera = camera;
         if (capture && options.capture_camera) {
             if (const auto car = scene.train_car_transform(options.capture_car)) {
                 const auto& c = *options.capture_camera;

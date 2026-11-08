@@ -1459,5 +1459,14 @@ std::size_t TerrainRenderer::pending_jobs() const noexcept {
     return impl_ ? impl_->tile_jobs.size() : 0;
 }
 
+std::size_t TerrainRenderer::pending_textures() const noexcept {
+    if (!impl_) return 0;
+    std::size_t count = 0;
+    for (const auto& [_, texture] : impl_->textures) {
+        if (!texture.view && !texture.failed) ++count;
+    }
+    return count;
+}
+
 } // namespace openrts::renderer
 #endif

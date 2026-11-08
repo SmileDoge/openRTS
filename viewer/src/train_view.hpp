@@ -94,6 +94,16 @@ public:
     void select_path(const formats::TrainPath& path);
     [[nodiscard]] bool loaded() const noexcept;
     [[nodiscard]] bool placed() const noexcept;
+    // For the start's loading screen: `settled` once the train is on the
+    // track and the start view applied (or it cannot be put on the track);
+    // `pending` its shapes still loading, and for a start in the cab
+    // (`cab`) the cab.
+    struct Loading {
+        bool settled = true;
+        std::size_t pending = 0;
+        bool cab = false;
+    };
+    [[nodiscard]] Loading loading() const;
     [[nodiscard]] const std::string& consist_name() const noexcept { return consist_; }
 
     void update(const SceneInput& input, ViewerCamera& camera, float elapsed, renderer::ModelLibrary& library,
@@ -186,7 +196,10 @@ public:
     // activity by default (0x42F4A4: 2 m off the car's left side at its
     // front end); or the free camera above the train.
     enum class StartView : std::uint8_t { none, cab, car, above };
-    void set_start_view(StartView view) noexcept { start_view_ = view; }
+    void set_start_view(StartView view) noexcept {
+        start_view_ = view;
+        starts_in_cab_ = view == StartView::cab;
+    }
     // Situations: the trains on the route as they stand (roles, where each
     // front is, the cars in order), <situation_folder>/<name>.situation.
     [[nodiscard]] std::filesystem::path situation_folder() const;
@@ -528,6 +541,7 @@ private:
     [[nodiscard]] std::string put_back(std::vector<PlacedTrain> saved, const std::string& source);
     void apply_start_view(ViewerCamera& camera);
     StartView start_view_ = StartView::none;
+    bool starts_in_cab_ = false; // the start view asked for (start_view_ is cleared once applied)
     std::filesystem::path pending_situation_;
     std::vector<PlacedTrain> pending_trains_;
     std::string pending_trains_source_;

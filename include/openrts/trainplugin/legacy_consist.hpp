@@ -31,6 +31,14 @@
 
 namespace openrts::trainplugin {
 
+// A switch's AssignKey keys as RTS keeps them in ActSwitch::Key (+72, the
+// loader 0x45AE90): per key, two at most, its character in upper case
+// (Space 0x20) and its modifiers (1 Shift, 2 Ctrl or Control, 4 Alt), the
+// parts joined by '+'. DLLs read them: the MaDaDev Brakes.dll's Run springs
+// the 254 handle back from its unfixed positions unless GetAsyncKeyState of
+// its key, or of the left mouse button, is down.
+void switch_key_bytes(const std::vector<std::string>& keys, std::uint8_t (&out)[4]);
+
 struct LegacyCar {
     const formats::WagonDefinition* definition = nullptr;
     core::VirtualPath file; // its .eng / .wag (relative DLL and cab paths start here)

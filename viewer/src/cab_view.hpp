@@ -11,6 +11,7 @@
 // animation (InteriorDoors).
 
 #include <cstdint>
+#include <chrono>
 #include <future>
 #include <map>
 #include <memory>
@@ -97,6 +98,10 @@ public:
     // Finds the nodes once the cab model has loaded.
     void bind(const formats::ShapeModel& rig);
     [[nodiscard]] bool bound() const noexcept { return bound_; }
+    // Bound, and its own reading of the shape (doors, chairs' floors) done.
+    [[nodiscard]] bool loaded() const {
+        return bound_ && (geometry_ || !loading_.valid() || loading_.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+    }
     // Poses for the cab state: a legacy DLL's outputs, or (null) the .sd's
     // initial states; and the doors as they are open.
     // `aspect`: the aspect the locomotive signal lights show without a DLL
@@ -109,6 +114,9 @@ public:
         const std::vector<float>* switch_frames = nullptr; // by switch id
         const std::vector<float>* display_values = nullptr; // by display id
         float alpha = 1.0f;
+        // The switch the mouse holds: drawn where it is now, not between the
+        // steps (its frame changes every frame, not every 50 ms).
+        std::optional<std::uint32_t> live_switch;
     };
     void adjustments(const dllhost::CarOutput* state, std::vector<renderer::NodeAdjustment>& out,
                      std::uint32_t aspect = 0, const Blend* blend = nullptr) const;
@@ -214,6 +222,9 @@ private:
     formats::CabDescription cab_;
     audio::InteriorAcoustics acoustics_;
     std::vector<Bound> switches_; // by position in cab_.switches
+    // By position in cab_.switches: the id whose state it is drawn with, its
+    // root through ParentObject (itself when it follows none).
+    std::vector<std::uint32_t> switch_source_;
     std::vector<Bound> displays_;
     std::vector<std::int32_t> signal_lights_; // LocomotiveSignalization SignalLights' nodes
     std::vector<std::int32_t> lamp_nodes_;    // LightSources' nodes, by the lamp's Name

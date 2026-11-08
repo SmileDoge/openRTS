@@ -120,10 +120,15 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
 - **Situations:** all the trains on the route are saved (Train window →
   Situations) and stand where they stood when loaded, or from the start
   menu. You can start:
-  - in the cab;
+  - in the cab: on foot by the chair of the leading cab (Enter sits down),
+    as RTS does; time stands while the game loads, and the locomotive's
+    DLLs start once the cab is shown;
   - beside the car, as RTS does;
   - above the train;
   - with no train (a flight over the route; trains through Track control).
+
+  At the start a loading screen stays until the train (and its cab), the
+  world around and the terrain are in.
 - **Track control (Ctrl+Alt+F7, not in a network game):**
   - the track map from above: trains, junctions, signals, platforms, station
     names, the player's figure with the way the camera looks; "Teleport
@@ -216,7 +221,8 @@ The easiest way is the start menu. It has four tabs:
   time, the dispatcher the train. Until there is one the menu shows the
   wait, which can be cancelled. The place for an own openRTS server is
   there; the server itself is in the works.
-- **Settings:** the RTS folder, language, key layout, sound and volume,
+- **Settings:** the RTS folder, language, key layout, the key hints at the
+  bottom of the screen (they can be turned off; the game's panel too), sound and volume,
   graphics API, anti-aliasing, VSync, the FPS limit (30 to 500 or none;
   the in-game openRTS panel has it too), the window mode (in a window, a
   borderless window, full screen; the game's panel has it too, and

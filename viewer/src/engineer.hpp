@@ -63,11 +63,18 @@ public:
     [[nodiscard]] Mode mode() const noexcept { return mode_; }
     [[nodiscard]] bool active() const noexcept { return mode_ != Mode::off; }
     [[nodiscard]] bool inside() const noexcept { return mode_ == Mode::seated || mode_ == Mode::standing; }
+    // The chair he sits in or stands by (the start's, the last one taken).
+    [[nodiscard]] std::size_t chair() const noexcept { return chair_; }
     // Into the cab, seated in chair `chair` (0: the driver).
     void sit(std::size_t chair);
     // On foot outside at `feet` (scene coordinates), as RTS starts an
     // activity beside the player's car.
     void stand_outside(const glm::vec3& feet);
+    // On foot in `cab` by chair `chair`, at its Pos3 (where Ctrl+Enter stands
+    // him): how RTS starts the engineer in the cab (0x41B230: a current
+    // chair, not seated, at Pos3); Enter there sits him down. No chair: seated
+    // at the cab's eye, as before.
+    void stand_by(const CabView& cab, std::size_t chair);
     void off() noexcept;
 
     // `car`: the cab car's body this frame (cab shape -> scene). Moves the

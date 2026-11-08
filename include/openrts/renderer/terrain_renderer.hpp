@@ -122,6 +122,8 @@ public:
 
     [[nodiscard]] std::size_t loaded_tiles() const noexcept;
     [[nodiscard]] std::size_t pending_jobs() const noexcept;
+    // Ground textures asked for (a tile drawn) and not uploaded yet.
+    [[nodiscard]] std::size_t pending_textures() const noexcept;
 
 private:
     struct Impl;

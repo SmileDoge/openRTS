@@ -163,6 +163,18 @@ struct SceneEnvironment {
     bool time_of_day_applies = false;
 };
 
+// The start's loading screen: shown until the world around the camera and
+// the train (its cab, for a start in it) are loaded.
+struct SceneLoading {
+    bool done = true;
+    // No time passes meanwhile (a start in the cab: the locomotive's DLLs
+    // run from the moment the cab is shown, not while it loads).
+    bool hold_time = false;
+    float progress = 1.0f;  // 0..1, never going back
+    const char* stage = ""; // English, for tr()
+    std::string title;      // the route and the train
+};
+
 // What the viewer shows. A scene is loaded on the CPU first so that content
 // errors are reported before any window or GPU device is created.
 class ViewerScene {
@@ -223,6 +235,8 @@ public:
     [[nodiscard]] virtual std::optional<double> take_time_of_day() { return std::nullopt; }
     // The game is paused from outside (a network server): no time passes.
     [[nodiscard]] virtual bool paused() const { return false; }
+    // The start's loading, as the last update left it.
+    [[nodiscard]] virtual SceneLoading loading() const { return {}; }
     // Car `car` of the driven train, shape space to world (--capture-camera).
     [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
     // The engineer into the driven train's cab (--capture-cab).

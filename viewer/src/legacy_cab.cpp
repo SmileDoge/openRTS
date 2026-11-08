@@ -405,6 +405,10 @@ void LegacyCab::drag(const float dx, const float dy, const bool shift) {
     drag_.reset();
     // With Shift a KEY switch's key comes out at its insert position.
     click(d.id, along > 0.0f ? 1 : -1, shift, d.car);
+    // A NONFIXED one (the EP1M's windscreen blind joysticks) stays there
+    // while the button is down and goes back to its FixedState when it is
+    // let go (0x4121BC), as a button does.
+    if ((d.flags & formats::cab_non_fixed) != 0) held_ = std::pair{d.car, d.id};
 }
 
 void LegacyCab::drag_end() {

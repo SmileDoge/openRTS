@@ -27,6 +27,7 @@ struct StreamedInstance {
 struct RouteStreamerStats {
     std::size_t requested_tiles{};
     std::size_t loaded_tiles{};
+    std::size_t waiting_tiles{}; // wanted around the camera, not read yet
     std::size_t pending_model_assets{};
     std::size_t ready_model_assets{};
     std::size_t visible_instances{};
@@ -51,8 +52,13 @@ public:
     // from its route position (double precision), so float positions stay
     // precise near the camera on long routes.
     void set_origin(const formats::RoutePosition& origin);
-    // Collects completed worker jobs and schedules model/texture jobs.
+    // Collects completed worker jobs and schedules model/texture jobs. Models
+    // asked for by tiles no longer around the camera and not started yet are
+    // dropped (asked for again if such a tile comes back).
     void poll();
+    // Model jobs at once (4 by default: the frame stays smooth while a tile
+    // fills in; more behind a loading screen).
+    void set_task_limit(std::size_t tasks) noexcept;
     [[nodiscard]] std::vector<StreamedModelAsset> take_ready_models();
     // Instances of the loaded tiles around the camera. The list is rebuilt
     // only when that set of tiles changes; the reference stays valid until

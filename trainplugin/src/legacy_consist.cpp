@@ -1,3 +1,4 @@
+#include <cctype>
 #include <openrts/trainplugin/legacy_consist.hpp>
 
 #include <openrts/core/profile.hpp>
@@ -13,6 +14,39 @@
 #include <openrts/formats/shape_file.hpp>
 
 namespace openrts::trainplugin {
+
+void switch_key_bytes(const std::vector<std::string>& keys, std::uint8_t (&out)[4]) {
+    out[0] = out[1] = out[2] = out[3] = 0;
+    for (std::size_t k = 0; k < keys.size() && k < 2; ++k) {
+        std::uint8_t key = 0;
+        std::uint8_t modifiers = 0;
+        const std::string_view text = keys[k];
+        std::size_t start = 0;
+        for (;;) {
+            const auto plus = text.find('+', start);
+            auto part = text.substr(start, plus == std::string_view::npos ? std::string_view::npos : plus - start);
+            while (!part.empty() && static_cast<unsigned char>(part.front()) <= 0x20) part.remove_prefix(1);
+            while (!part.empty() && static_cast<unsigned char>(part.back()) <= 0x20) part.remove_suffix(1);
+            std::string lower(part);
+            for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (lower == "shift") {
+                modifiers |= 1;
+            } else if (lower == "ctrl" || lower == "control") {
+                modifiers |= 2;
+            } else if (lower == "alt") {
+                modifiers |= 4;
+            } else if (lower == "space") {
+                key = 0x20;
+            } else if (!part.empty()) {
+                key = static_cast<std::uint8_t>(std::toupper(static_cast<unsigned char>(part.front())));
+            }
+            if (plus == std::string_view::npos) break;
+            start = plus + 1;
+        }
+        out[2 * k] = key;
+        out[2 * k + 1] = modifiers;
+    }
+}
 
 using namespace dllhost;
 
@@ -421,6 +455,8 @@ BuiltCar build_spec(const core::Vfs& vfs, const std::filesystem::path& cache_roo
                             ss.name = u16(s.name);
                             ss.precision[0] = s.precision[0];
                             ss.precision[1] = s.precision[1];
+                            switch_key_bytes(s.keys, ss.keys);
+                            ss.parent = static_cast<std::int16_t>(s.parent);
                             c.switches.push_back(std::move(ss));
                         }
                         add_shortcuts(vfs, *cabin, cab, c.switches);

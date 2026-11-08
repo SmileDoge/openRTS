@@ -449,6 +449,10 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"When the dispatcher assigns your train, the camera follows it from above.", "Когда диспетчер назначит поезд, камера будет следить за ним сверху."},
         {"%d frames/s", "%d кадров/с"},
         {"PAUSE (Pause)", "ПАУЗА (Pause)"},
+        {"Loading", "Загрузка"},
+        {"Loading the route", "Загрузка маршрута"},
+        {"Loading the train", "Загрузка поезда"},
+        {"Loading the cab", "Загрузка кабины"},
         {"(1 = RTS model; RTS shows it in the cab only)", "(1 = модель RTS; RTS показывает её только в кабине)"},
         {"Car loops start at random points", "Петли звука вагонов со случайного места"},
         {"(openRTS: identical loops on many cars do not add up in phase; RTS starts them together)", "(openRTS: одинаковые петли на многих вагонах не складываются в фазе; RTS запускает их одновременно)"},
@@ -646,6 +650,7 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"Locomotive DLLs do not run:", "DLL локомотивов не запущены:"},
         {"3D cab view", "Вид из кабины (3D)"},
         // The Controls tab (controls_help.cpp) and the window mode.
+        {"Key hints at the bottom of the screen", "Подсказки клавиш внизу экрана"},
         {"Controls", "Управление"},
         {"Key layout: %s (Settings, \"Keys\").", "Раскладка клавиш: %s (в настройках, «Клавиши»)."},
         {"Camera and world", "Камера и мир"},

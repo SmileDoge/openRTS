@@ -1009,6 +1009,12 @@ void Launcher::State::draw_settings(const float height) {
                 viewer::set_key_layout(layout == 0 ? viewer::KeyLayout::rts : viewer::KeyLayout::openrts);
                 remember("key_layout", layout == 0 ? "rts" : "openrts");
             }
+            form_row(tr("Key hints at the bottom of the screen"));
+            bool hints = viewer::key_hints();
+            if (ImGui::Checkbox("##key_hints", &hints)) {
+                viewer::set_key_hints(hints);
+                remember("key_hints", hints ? "1" : "0");
+            }
             ImGui::EndTable();
         }
         if (vfs) {

@@ -3,11 +3,13 @@
 // group, steps, CanSwitch / Switched, sounds and DLL messages.
 // Usage: openrts_dllhost_test <openrts-dllhost32.exe> <openrts_fake_loco.dll>
 
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <string>
 
+#include <openrts/trainplugin/legacy_consist.hpp>
 #include <openrts/trainplugin/legacy_host.hpp>
 
 using namespace openrts;
@@ -62,7 +64,22 @@ CarInput input(std::uint32_t flags) {
 
 } // namespace
 
+// AssignKey as RTS keeps it in ActSwitch::Key (0x45AE90).
+void key_bytes_checks() {
+    const auto bytes = [](std::vector<std::string> keys) {
+        std::uint8_t out[4];
+        trainplugin::switch_key_bytes(keys, out);
+        return std::array<int, 4>{out[0], out[1], out[2], out[3]};
+    };
+    check(bytes({"P"}) == std::array<int, 4>{'P', 0, 0, 0}, "AssignKey ( P )");
+    check(bytes({"D", "A"}) == std::array<int, 4>{'D', 0, 'A', 0}, "AssignKey ( D A ): two keys");
+    check(bytes({"Shift+8"}) == std::array<int, 4>{'8', 1, 0, 0}, "Shift+8");
+    check(bytes({"ctrl+alt+z"}) == std::array<int, 4>{'Z', 6, 0, 0}, "Ctrl+Alt, upper case");
+    check(bytes({"Space"}) == std::array<int, 4>{0x20, 0, 0, 0}, "Space");
+}
+
 int main(int argc, char** argv) {
+    key_bytes_checks();
     if (argc < 3) {
         std::printf("usage: openrts_dllhost_test <openrts-dllhost32.exe> <fake_loco.dll>\n");
         return 2;

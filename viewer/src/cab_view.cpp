@@ -364,10 +364,12 @@ void CabView::bind(const formats::ShapeModel& rig) {
     };
     switches_.clear();
     displays_.clear();
+    switch_source_.clear();
     switch_nodes_ = 0;
     for (const auto& s : cab_.switches) {
         switches_.push_back(find(s.name));
         if (switches_.back().node >= 0) ++switch_nodes_;
+        switch_source_.push_back(cab_.root_switch(s.id));
     }
     for (const auto& d : cab_.displays) displays_.push_back(find(d.name));
     state_nodes_.clear();
@@ -724,15 +726,19 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
         // Without a DLL's state: as RTS loads it, a KEY switch with its key out.
         float position = key ? 0.0f : static_cast<float>(s.initial_state);
         std::uint32_t whole = key ? 0u : s.initial_state;
-        if (state && s.id < state->switches.size()) {
+        // A piece following another (ParentObject) is drawn where its root
+        // is, every frame (the host gives it the root's SetState per step).
+        const std::uint32_t source = i < switch_source_.size() ? switch_source_[i] : s.id;
+        if (state && source < state->switches.size()) {
             // Between the steps only a move of up to one position: a DLL that
             // throws a lever over many (C_MAIN 12 -> 1 on the ChS4z) has it
             // there at once, as RTS draws it, not swept through the others.
-            const float now = state->switches[s.id].current_frame;
-            const auto* before = blend ? blend->switch_frames : nullptr;
-            const bool near = before && s.id < before->size() && std::abs((*before)[s.id] - now) <= 1.001f;
-            position = near ? between(before, s.id, now) : now;
-            whole = state->switches[s.id].state;
+            // The switch in the mouse's hand: where it is now.
+            const float now = state->switches[source].current_frame;
+            const auto* before = blend && blend->live_switch != source ? blend->switch_frames : nullptr;
+            const bool near = before && source < before->size() && std::abs((*before)[source] - now) <= 1.001f;
+            position = near ? between(before, source, now) : now;
+            whole = state->switches[source].state;
         }
         if (key) {
             // State 0: the key is out; positions are the states 1..States.

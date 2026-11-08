@@ -8,6 +8,7 @@
 #include <future>
 #include <map>
 #include <set>
+#include <unordered_set>
 #include <utility>
 
 #include <openrts/assets/content_resolver.hpp>
@@ -58,6 +59,11 @@ struct RouteStreamer::Impl {
     std::set<std::string> requested_models;
     std::deque<core::VirtualPath> pending_models;
     std::vector<StreamedModelAsset> ready_models;
+    std::size_t task_limit = max_concurrent_model_tasks;
+    // The tiles around the camera at the last update; changed: the models
+    // queued for tiles left behind are dropped at the next poll.
+    std::vector<TileKey> desired_tiles;
+    bool prune_models = false;
     // visible_instances() cache and the tiles it was built from.
     mutable std::vector<StreamedInstance> visible;
     mutable std::vector<TileKey> visible_tiles;
@@ -167,8 +173,27 @@ struct RouteStreamer::Impl {
         }
     }
 
+    // Queued models (not started) that no tile around the camera places. A
+    // tile still being read asks for its models when it is in.
+    void drop_unwanted_models() {
+        if (pending_models.empty()) return;
+        std::unordered_set<std::string> wanted;
+        for (const auto& [_, state] : tiles) {
+            if (!state.desired || !state.loaded) continue;
+            for (const auto& instance : state.instances) {
+                if (!instance.source_path.empty()) wanted.insert(instance.source_path.key());
+            }
+        }
+        std::erase_if(pending_models, [&](const core::VirtualPath& path) {
+            auto key = path.key();
+            if (wanted.contains(key)) return false;
+            requested_models.erase(key);
+            return true;
+        });
+    }
+
     void start_model_tasks() {
-        while (model_tasks.size() < max_concurrent_model_tasks && !pending_models.empty()) {
+        while (model_tasks.size() < task_limit && !pending_models.empty()) {
             auto path = std::move(pending_models.front());
             pending_models.pop_front();
             auto key = path.key();
@@ -218,9 +243,14 @@ void RouteStreamer::set_origin(const formats::RoutePosition& origin) {
     impl_->visible_stale = true;
 }
 
+void RouteStreamer::set_task_limit(const std::size_t tasks) noexcept {
+    impl_->task_limit = (std::max)(tasks, std::size_t{1});
+}
+
 void RouteStreamer::update(const formats::RoutePosition& camera) {
     OPENRTS_ZONE("route streaming");
     for (auto& [_, state] : impl_->tiles) state.desired = false;
+    std::vector<TileKey> desired;
 
     for (int z = -impl_->radius; z <= impl_->radius; ++z) {
         for (int x = -impl_->radius; x <= impl_->radius; ++x) {
@@ -230,6 +260,7 @@ void RouteStreamer::update(const formats::RoutePosition& camera) {
 
             auto [tile, inserted] = impl_->tiles.try_emplace(key);
             tile->second.desired = true;
+            desired.push_back(key);
             if (inserted) {
                 tile->second.task = std::async(std::launch::async, [impl = impl_.get(), path = file->second] {
                     return impl->load_tile(path);
@@ -237,11 +268,19 @@ void RouteStreamer::update(const formats::RoutePosition& camera) {
             }
         }
     }
+    if (desired != impl_->desired_tiles) {
+        impl_->desired_tiles = std::move(desired);
+        impl_->prune_models = true;
+    }
 }
 
 void RouteStreamer::poll() {
     impl_->collect_loaded_tiles();
     impl_->collect_loaded_models();
+    if (impl_->prune_models) {
+        impl_->drop_unwanted_models();
+        impl_->prune_models = false;
+    }
     impl_->start_model_tasks();
     impl_->evict_unwanted_tiles();
 }
@@ -280,6 +319,7 @@ RouteStreamerStats RouteStreamer::stats() const {
     for (const auto& [_, state] : impl_->tiles) {
         if (state.desired) ++result.requested_tiles;
         if (state.loaded) ++result.loaded_tiles;
+        if (state.desired && !state.loaded) ++result.waiting_tiles;
         if (state.desired && state.loaded) result.visible_instances += state.instances.size();
     }
     return result;

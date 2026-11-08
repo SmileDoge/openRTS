@@ -511,6 +511,33 @@ without compliance and RTS refuses it too.
     does (`0x528EA0`); PROBABLE that RTS takes the same point for a key.
     Before 2026-11-08 a key worked every switch bound to it, both desks
     at once.
+- **CONFIRMED `ParentObject ( id )`** of a cab object goes to
+  `Activator +34` (the loaders at `0x516695`, `0x517291`, `0x517B9C`,
+  `0x51894F`; -1 none). The cab update (`0x52586C`) gives a switch with
+  one its parent's `SetState` each time, then it moves there with its own
+  `AnimTime` and gets its `Switched` as any switch. The EP1M's blind is
+  twelve pieces (`shtora8_1`, 601, the handle; `shtora8_2`.. 630.. with
+  `ParentObject ( 601 )`, `Radius ( 0 )`). openRTS: the host does the same
+  each step; the cab draws a piece where its root is every frame, and a
+  click or a drag on a piece works its root (before 2026-11-08 the pieces
+  were dragged one by one).
+- **CONFIRMED `ActSwitch::Key` (`+72`, 4 bytes)** holds the `AssignKey`
+  keys (`0x45AE90`, from the switch loader): per key, two at most, its
+  character in upper case (`Space` 0x20) and a byte of modifiers (1
+  `shift`, 2 `ctrl` or `control`, 4 `alt`), the parts joined by `+`; the
+  second key at `+74` / `+75`. The MaDaDev `Brakes.dll` reads them in its
+  `Run` (`0x416460`..`0x4168CF`): the auxiliary brake handle (`BR_254ID*`)
+  in one of its unfixed positions springs back (the DLL sets it to 1, or
+  from 5 to 4) unless `GetAsyncKeyState` of its `Key[2]` / `Key[0]` or of
+  the left mouse button (1) is down. openRTS left the bytes 0 before
+  2026-11-08, so the handle sprang back even while held. The DLL host is
+  another process; `GetAsyncKeyState` is the session's, so a key held in
+  the game counts.
+- **CONFIRMED the 367 brake lock** (`BR_367ID*`) in `Brakes.dll`'s
+  `CanSwitch` (`0x421A3C`): refused while another cab's lock has its key in
+  (state not 0), or while the train pipe (`Wagon +0x64`, `TrainPipePressure`)
+  is above 0.2: the pipe must be vented first (the 395 in VI), as on the
+  real locomotive. The same for a click, a key or the cab window's +.
 - **`CanSwitch` order:** RTS writes the new state into `SetState` (`+48`)
   first, then calls `CanSwitch`, and a refusal restores the old state.
   Anything the DLL writes into `SetState` during the call stays.
@@ -557,6 +584,16 @@ without compliance and RTS refuses it too.
   SourceRadius Angle ) )`, `Attenuation ( start length kind )` (default
   2 / 0.6 / 0.4), `SpotExponent` (x 128, default 64), `LightArray`. A DLL
   switches them with `SwitchLight` (LightObj Flags 8, by LightID).
+  **CONFIRMED** the car's light objects (`0x4F0BC8`, zeroed,
+  then filled by the definition's `Type`): Type 0 makes a glow (LightObj
+  Type 1), Type 1 a light source (LightObj Type 2), other Types nothing. A
+  Type 1 light with `Unit` 3 or 5 (the train's last car) is turned round
+  the car's middle (`0x4F11A7`: Position x and z negated, its Y angle +
+  180): such lights are written as if at the front. Glows are not turned.
+  The VL80T's rear section (`mdd_vl80t-1390b`) has its marker glows at
+  z -7.6 (its cab) and their beams (Unit 5) at +7.6 with no Azimuth; not
+  turned, openRTS lit the front section from the coupling until
+  2026-11-08.
   **CONFIRMED** angles (loader `0x50036C`): the X angle is −`Elevation`
   (first value), the Y angle is `Azimuth` (second value) + π, and the lamp
   faces its −Z (OpenGL). With +Z as forward, that is a turn by +`Elevation`
@@ -748,11 +785,25 @@ without compliance and RTS refuses it too.
   (`StateKeyFrames`). openRTS draws a chock's nodes only while a chock lies
   at that end (by the node's place in the shape); the cocks and hoses are
   not posed yet.
-- **A `}` for a `)`**: `mdd_VL80-Alias/CABT/CabTEPT.sd` closes its
-  `Animations` with `}`; RTS still reads the `InteriorGeometryInfo` after it
-  (the VL80T's chairs, doors, windows). openRTS reads a bare `}` in an `.sd`
-  as `)` (before 2026-11-08 the engineer sat at the cab shape's origin, in
-  the middle of the section).
+- **CONFIRMED How RTS finds a cab's blocks**: the cab loader (`0x51CD88`)
+  looks each keyword up in its parent block's text with `0x4578C0`, at any
+  depth (a match at a word boundary, case aside: the keywords are lower
+  case UTF-16), and counts only `(` and `)` (the pair at `0x5F9BA6`) to find
+  where the block found ends; quoted text is skipped. A `}` is no bracket.
+  So a block closed with `}` or left open only stretches its parent, and
+  the blocks after it are found all the same:
+  - 26 cab `.sd` files (MaDaDev's `mdd_VL80-Alias/CABT`, `EP1M`, `EP1`,
+    `EP20`, `EP2K`, `2ES4k`, `2TE10`, `VL80cm`, rz's `TEP70`) close
+    `Animations` with `}`;
+  - the 2TE116's `cabEDTKLUB.sd` leaves `InteriorDoors` open over
+    `InteriorWindows` and `InteriorChairs`; the draisine's
+    `drezina_cab2.sd`, `LocomotiveSignalization` over
+    `InteriorGeometryInfo`.
+
+  openRTS reads the tree strictly and looks such a block up nested in the
+  one left open (`child_or_nested`). Before 2026-11-08 these cabs had no
+  chairs, doors or windows, and the engineer sat at the cab shape's origin,
+  mid-section (VL80T, EP1M).
 - **The VL60PK's brakes** (`Brakes.dll`, `mdd_vl60pk-*.eng`): one cab shape,
   two desks; the working one is where the brake valve's block key (`BR_367ID1`
   50 / `BR_367ID2` 150) is in. Started on or running, the EPK whistles at
@@ -782,6 +833,15 @@ without compliance and RTS refuses it too.
   standing eye, `Height` above them, is 1.52 over the floor.
 - **CONFIRMED** Sitting down and standing up move the camera along a short
   path over 2 s (`sub_4352B0` with 2.0).
+- The current chair is `[0x61D6A8]` (set by `0x41B434`; a saved state's
+  or the server's chair by its index, `0x47BC69`, `0x579EDA`). Which chair a
+  new game starts by is not traced. openRTS starts the engineer on foot at
+  `Pos3` of the first chair of the leading cab, by the train's way (players
+  report that RTS starts him by a chair or by the train, not seated): the
+  EP1M has chairs 0 and 1 in its rear cab and 2 and 3 in the front one,
+  where its DLLs put the keys in (the 367 lock 206 and the control key 205
+  at 2 for a start with power); the VL60PK's chair 0 is at the front.
+  PROBABLE.
 - **CONFIRMED** Keys in a chair (`0x4121BC`): Enter without Ctrl — chair
   action 3 (`0x436CA8`): up to `Pos2` and back down again (bit 0 of the
   chair's +44), still at the chair; Ctrl+Enter — action 2: to `Pos3`, on

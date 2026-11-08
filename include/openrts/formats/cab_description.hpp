@@ -49,6 +49,10 @@ struct CabSwitch {
     // SwitchPrecision ( PrecX PrecY ): frames of the node's animation a pixel
     // of the cursor's move drags (RTS 0x437E64); both 0: not dragged smoothly.
     std::array<float, 2> precision{};
+    // ParentObject ( id ): the switch it follows (-1: none). RTS's cab update
+    // (0x52586C) gives it the parent's SetState: the EP1M's blind is twelve
+    // pieces, shtora8_2.. following shtora8_1.
+    std::int32_t parent = -1;
 };
 
 enum class CabDisplayType : std::uint8_t { lamp, arrow, display, screen };
@@ -271,6 +275,9 @@ struct CabDescription {
     std::string error;
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
     [[nodiscard]] const CabSwitch* find_switch(std::uint32_t id) const;
+    // The switch that one follows in the end (ParentObject over ParentObject;
+    // itself when it follows none).
+    [[nodiscard]] std::uint32_t root_switch(std::uint32_t id) const;
     [[nodiscard]] const CabSwitch* find_switch(std::string_view name) const;
 };
 

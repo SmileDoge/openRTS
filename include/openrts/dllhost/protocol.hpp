@@ -22,7 +22,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 7;
+inline constexpr std::uint32_t protocol_version = 8;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -183,6 +183,7 @@ struct SwitchSpec { // .sd Switch: what the mirror ActSwitch starts with
     std::uint8_t keys[4]{};
     std::u16string name;
     float precision[2]{}; // SwitchPrecision PrecX, PrecY (ActSwitch prec_dx / prec_dy)
+    std::int16_t parent = -1; // ParentObject: the switch it follows (Activator +34)
     // Its node's Shortcut sets (ESD_Extended_Animation), as positions of the
     // switch (a KEY switch's key-out state counted), each ascending.
     std::vector<std::vector<float>> shortcuts;
@@ -588,6 +589,7 @@ inline void read(Reader& r, AuxLibrarySpec& a) {
 inline void write(Writer& w, const SwitchSpec& s) {
     w.put(s.id); w.put(s.num_states); w.put(s.initial_state); w.put(s.flags); w.put(s.anim_time);
     w.bytes(s.keys, 4); w.text(s.name); w.put(s.fixed_state); w.put(s.precision[0]); w.put(s.precision[1]);
+    w.put(s.parent);
     w.put(static_cast<std::uint32_t>(s.shortcuts.size()));
     for (const auto& set : s.shortcuts) write_pod_list(w, set);
 }
@@ -595,6 +597,7 @@ inline void read(Reader& r, SwitchSpec& s) {
     s.id = r.get<std::uint32_t>(); s.num_states = r.get<std::uint32_t>(); s.initial_state = r.get<std::uint32_t>();
     s.flags = r.get<std::uint32_t>(); s.anim_time = r.get<float>(); r.bytes(s.keys, 4); s.name = r.text(); s.fixed_state = r.get<std::uint32_t>();
     s.precision[0] = r.get<float>(); s.precision[1] = r.get<float>();
+    s.parent = r.get<std::int16_t>();
     const auto sets = r.get<std::uint32_t>();
     if (sets > 64) return;
     s.shortcuts.resize(sets);

@@ -165,6 +165,26 @@ std::optional<std::size_t> Engineer::chair_window(const CabView& cab) const {
     return window;
 }
 
+void Engineer::stand_by(const CabView& cab, const std::size_t chair) {
+    const auto& chairs = cab.description().chairs;
+    if (chair >= chairs.size()) {
+        sit(chair);
+        return;
+    }
+    glm::vec3 spot = vec(chairs[chair].window);
+    if (const auto* surfaces = cab.collision()) {
+        auto floor = surfaces->floor(spot.x, spot.z, spot.y - 1.0f, spot.y + 0.5f, cab.skip());
+        if (!floor) floor = surfaces->floor(spot.x, spot.z, spot.y - 1.0f, spot.y + 1.0f, cab.skip());
+        if (floor) spot.y = *floor;
+    }
+    chair_ = chair;
+    feet_ = spot;
+    mode_ = Mode::standing;
+    blend_ = 1.0f;
+    camera_set_ = false;
+    head_out_ = false;
+}
+
 void Engineer::stand_outside(const glm::vec3& feet) {
     feet_ = feet;
     mode_ = Mode::outside;

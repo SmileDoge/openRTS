@@ -10,6 +10,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <thread>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -362,6 +363,18 @@ public:
         }
         std::cout << "route streaming: 3x3 tiles, async world/shape/ACE jobs\n";
         std::cout << "flycam: RMB look, WASD move, Q/E vertical, Shift boost, F toggle" << std::endl;
+        // The loading screen till the world around the start is in; time
+        // stands for a start in the cab (its DLLs start when it is shown).
+        loading_ = {};
+        loading_.done = false;
+        loading_.hold_time = track_ && !content_.consist().empty() && content_.start_view() == 1;
+        loading_.progress = 0.0f;
+        loading_.stage = "Loading the route";
+        loading_.title = std::string(route_.filename());
+        if (!content_.consist().empty()) loading_.title += "  \xE2\x80\x94  " + content_.consist();
+        loading_since_ = std::chrono::steady_clock::now();
+        loading_quiet_ = 0;
+        loading_peak_ = 0;
         return {};
     }
 
@@ -508,6 +521,8 @@ public:
         }
 
         streamer_->update(camera_position);
+        // Behind the loading screen the models load on most of the cores.
+        streamer_->set_task_limit(loading_.done ? 4 : (std::max)(4u, std::thread::hardware_concurrency() / 2 + 2));
         streamer_->poll();
         for (auto& asset : streamer_->take_ready_models()) library_->add(std::move(asset));
 
@@ -523,7 +538,13 @@ public:
         library_->set_texture_variant(variant);
         streamer_->set_texture_variant(variant);
         content_.forward_changes(*library_);
+        // Behind the loading screen uploads for up to 20 ms a frame: nobody
+        // watches it.
         library_->update();
+        if (!loading_.done) {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(20);
+            while (library_->stats().queued_uploads > 0 && std::chrono::steady_clock::now() < until) library_->update();
+        }
         collect_lights(camera.eye(), clock.elapsed);
 
         // The free camera is an external camera for sound activation; RTS
@@ -558,6 +579,46 @@ public:
             }
         }
         update_weather_sound(clock.elapsed, camera.eye(), outside_gain);
+        update_loading();
+    }
+
+    // The loading screen's end: the train on the track with its start view,
+    // its shapes (and the cab, for a start in it), the world tiles around
+    // the camera with their models on the GPU, the terrain with its
+    // textures; all of it for a few frames running (a tile asks for its
+    // ground textures when first drawn). Given up after loading_limit.
+    void update_loading() {
+        if (loading_.done) return;
+        TrainView::Loading train;
+        if (train_) train = train_->loading();
+        const auto streamed = streamer_->stats();
+        const auto library = library_->stats();
+        std::size_t world = streamed.waiting_tiles + streamed.pending_model_assets + streamed.ready_model_assets
+            + library.queued_uploads + (library.reloading ? 1 : 0);
+        if (terrain_) world += terrain_->pending_jobs() + terrain_->pending_textures();
+        const std::size_t pending = train.pending + world;
+        loading_.stage = !train.settled ? "Loading the train" : train.cab && train.pending > 0 ? "Loading the cab" : "Loading the route";
+        // The train put on the track is the first tenth; the rest by what is
+        // left to load against the most there was.
+        if (train.settled) {
+            loading_peak_ = (std::max)(loading_peak_, pending);
+            const float share = loading_peak_ ? 1.0f - static_cast<float>(pending) / static_cast<float>(loading_peak_) : 1.0f;
+            loading_.progress = (std::max)(loading_.progress, 0.1f + 0.9f * share);
+        }
+        loading_quiet_ = train.settled && pending == 0 ? loading_quiet_ + 1 : 0;
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - loading_since_).count();
+        if (loading_quiet_ < 5 && seconds < loading_limit) return;
+        loading_.done = true;
+        loading_.hold_time = false;
+        loading_.progress = 1.0f;
+        if (loading_quiet_ >= 5) {
+            std::cout << "loading: done in " << seconds << " s" << std::endl;
+        } else {
+            std::cout << "loading: given up after " << seconds << " s, " << pending << " still loading (train settled "
+                      << train.settled << ", " << train.pending << " of its shapes; tiles " << streamed.waiting_tiles << ", models "
+                      << streamed.pending_model_assets + streamed.ready_model_assets << ", uploads " << library.queued_uploads
+                      << ", terrain " << (terrain_ ? terrain_->pending_jobs() + terrain_->pending_textures() : 0) << ")" << std::endl;
+        }
     }
 
     [[nodiscard]] SceneEnvironment environment() const override {
@@ -753,6 +814,7 @@ public:
         return net_ ? net_->take_time_of_day() : std::nullopt;
     }
     [[nodiscard]] bool paused() const override { return net_ && net_->paused(); }
+    [[nodiscard]] SceneLoading loading() const override { return loading_; }
 
     [[nodiscard]] std::string world_report() const override {
         std::string report = "water " + std::to_string(terrain_ ? terrain_->water_quads() : 0) + " quads";
@@ -1443,6 +1505,12 @@ private:
     std::unique_ptr<renderer::SkyRenderer> sky_renderer_;
     std::unique_ptr<renderer::RouteStreamer> streamer_;
     std::unique_ptr<renderer::ModelLibrary> library_;
+    // The start's loading screen (update_loading).
+    static constexpr double loading_limit = 120.0;
+    SceneLoading loading_;
+    std::chrono::steady_clock::time_point loading_since_{};
+    int loading_quiet_ = 0;
+    std::size_t loading_peak_ = 0;
     std::optional<TrackView> track_;
     std::unique_ptr<TrainView> train_;
     std::unique_ptr<NetSession> net_; // --mp-connect: the server's game

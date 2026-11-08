@@ -97,6 +97,10 @@ public:
     // `frames_per_state`: CabView::switch_frames_per_state (0: no animated node).
     bool grab(std::uint32_t id, float frames_per_state, std::size_t car = SIZE_MAX);
     [[nodiscard]] bool dragging() const noexcept { return drag_.has_value(); }
+    // The switch the mouse holds, if any.
+    [[nodiscard]] std::optional<std::uint32_t> dragged_switch() const noexcept {
+        return drag_ ? std::optional<std::uint32_t>{drag_->id} : std::nullopt;
+    }
     // The cursor moved `dx`, `dy` pixels (y down) with the switch in hand:
     // with SwitchPrecision its frame follows (PrecX * dx + PrecY * dy frames,
     // 0x437E64); without, one step in the move's direction (right or up: +1)

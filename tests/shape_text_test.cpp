@@ -204,8 +204,9 @@ int main() {
         }
     }
 
-    // A block closed with `}` for `)` (VL80T's CabTEPT.sd Animations): what
-    // follows is still read where it belongs (its chairs).
+    // A block closed with `}` for `)` (VL80T's CabTEPT.sd Animations): RTS
+    // counts only ( and ), and finds InteriorGeometryInfo inside the block
+    // left open, at any depth; so does openRTS (its chairs).
     {
         const auto cab = parse_cab_description(utf16_file(
             "SIMISA@@@@@@@@@@JINX0t1t______\nShape ( cab.s\n ESD_Interior ( Switches ( 1 Switch ( ID ( 0 ) Name ( C_MAIN ) ) )\n"
@@ -232,6 +233,33 @@ int main() {
             check(valve.kind == "endvalvea" && valve.nodes.size() == 2 && !valve.first_state_invisible && valve.state_key_frames.size() == 1,
                   "EndValveA: two nodes, a key frame");
         }
+    }
+
+    // A block left open (the 2TE116's InteriorDoors, a ')' missing): the
+    // windows and chairs after it are still found.
+    {
+        const auto cab = parse_cab_description(utf16_file(
+            "SIMISA@@@@@@@@@@JINX0t1t______\nShape ( cab.s\n ESD_Interior ( Switches ( 1 Switch ( ID ( 0 ) Name ( C_MAIN ) ) )\n"
+            " InteriorGeometryInfo ( InteriorDoors ( 1 InteriorDoor ( Name ( D1 ) Connects ( CABIN EXTERIOR ) )\n"
+            " InteriorWindows ( 1 InteriorWindow ( Name ( W1 ) CanBeOpened ( 1 ) ) )\n"
+            " InteriorChairs ( 1 Chair ( Position ( 0.7 2.5 9.6 ) Pos1 ( 0.7 2.4 9.8 ) ) ) ) ) )"));
+        check(cab.doors.size() == 1, "the open block's door");
+        check(cab.windows.size() == 1 && cab.chairs.size() == 1 && cab.chairs[0].seated[2] > 9.0f,
+              "the window and the chair inside the open block");
+    }
+
+    // ParentObject: the EP1M's blind pieces follow shtora8_1 (and through it
+    // a root further up).
+    {
+        const auto cab = parse_cab_description(utf16_file(
+            "SIMISA@@@@@@@@@@JINX0t1t______\nShape ( cab.s\n ESD_Interior ( Switches ( 4\n"
+            " Switch ( ID ( 600 ) Name ( shtora_root ) )\n"
+            " Switch ( ID ( 601 ) Name ( shtora8_1 ) ParentObject ( 600 ) States ( 100 0 ) )\n"
+            " Switch ( ID ( 630 ) Name ( shtora8_2 ) ParentObject ( 601 ) States ( 100 0 ) )\n"
+            " Switch ( ID ( 5 ) Name ( other ) ) ) ) )"));
+        const auto* piece = cab.find_switch(630);
+        check(piece && piece->parent == 601, "ParentObject read");
+        check(cab.root_switch(630) == 600 && cab.root_switch(601) == 600 && cab.root_switch(5) == 5, "the root through the chain");
     }
 
     if (failures == 0) std::cout << "shape text: all checks passed\n";

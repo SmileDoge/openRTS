@@ -538,9 +538,13 @@ void Host::build_car(CarMirror& car) {
         car.switches.resize(n_switches);
         car.held_switches.assign(n_switches, 0);
         car.switch_shortcuts.assign(n_switches, {});
-        for (auto& s : car.switches) s.parent = w;
+        for (auto& s : car.switches) {
+            s.parent = w;
+            s.parent_obj = -1; // RTS: -1, none (0x52586C tests >= 0)
+        }
         for (const auto& s : cab.switches) {
             abi::ActSwitch& sw = car.switches[s.id];
+            sw.parent_obj = s.parent;
             sw.name = const_cast<wchar_t*>(keep(strings_, s.name));
             // As RTS's loader (0x51B98C): State and SetState start at the
             // States' second value; a KEY switch gets a "key out" state 0
@@ -1100,6 +1104,12 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
         if (!car->initialised) continue;
         for (std::uint32_t id = 0; id < car->switches.size(); ++id) {
             abi::ActSwitch& sw = car->switches[id];
+            // RTS 0x52586C: a ParentObject switch takes its parent's
+            // SetState, then moves there as any switch (the EP1M's blind).
+            if (sw.parent_obj >= 0 && static_cast<std::uint32_t>(sw.parent_obj) < car->switches.size()
+                && static_cast<std::uint32_t>(sw.parent_obj) != id) {
+                sw.set_state = car->switches[static_cast<std::uint32_t>(sw.parent_obj)].set_state;
+            }
             const float target = static_cast<float>(sw.set_state);
             if (id < car->held_switches.size() && car->held_switches[id]) {
                 // Dragged: the frame stays where the player put it, until
@@ -1371,6 +1381,10 @@ bool Host::aux_event(CarMirror& car, std::uint16_t event, bool after, std::uint3
                 const DWORD crash = guarded([&] { ok = fn(v, &car.aux[i], a, b); });
                 sync();
                 if (crash) fail(am, L"CanSwitch (aux)", crash);
+                if (!ok) {
+                    trace_once(L"refused" + std::to_wstring(a) + L"/" + std::to_wstring(b) + am.path,
+                               L"CanSwitch " + std::to_wstring(a) + L" to " + std::to_wstring(b) + L": refused by " + am.path);
+                }
                 result = result && ok;
             }
         }
@@ -1407,6 +1421,10 @@ bool Host::allows_switch(CarMirror& car, const std::uint32_t id, const std::uint
             const DWORD crash = guarded([&] { ok = fn(v, car.eng(), id, state); });
             sync();
             if (crash) fail(*car.module, L"CanSwitch", crash);
+            if (!ok) {
+                trace_once(L"refused" + std::to_wstring(id) + L"/" + std::to_wstring(state) + car.module->path,
+                           L"CanSwitch " + std::to_wstring(id) + L" to " + std::to_wstring(state) + L": refused by " + car.module->path);
+            }
             allowed = ok;
         }
         if (allowed) allowed = aux_event(car, aux_can_switch, true, id, state);

@@ -309,6 +309,14 @@ int cab_check(const core::Vfs& vfs, const std::vector<std::string>& args) {
         report("seat Pos1", chair.seated);
         report("standing Pos2", chair.standing);
     }
+    // The chairs (InteriorChairs): none, and the engineer sits at the cab
+    // shape's origin (a cab whose .sd lost its InteriorGeometryInfo).
+    std::printf("chairs: %zu\n", cab.chairs.size());
+    for (const auto& chair : cab.chairs) {
+        std::printf("chair at (%.2f %.2f %.2f), seated (%.2f %.2f %.2f), head out window %s\n", chair.position[0], chair.position[1],
+                    chair.position[2], chair.seated[0], chair.seated[1], chair.seated[2],
+                    chair.head_out_window.empty() ? "-" : chair.head_out_window.c_str());
+    }
     for (const auto& window : cab.windows) {
         const auto it = nodes.find(lower(window.name));
         bool animated = false;
