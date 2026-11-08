@@ -102,6 +102,7 @@ struct SceneInput {
     bool toggle_track = false;   // T
     bool toggle_labels = false;  // L: junction and signal labels
     bool car_menu = false;       // Num3 / `: the car menu at a coupling or bogie (edge)
+    bool flashlight = false;     // Num2 / Shift+`: RTS's flashlight on or off (edge)
     // Train driving (edges).
     bool place_train = false;      // C
     bool throttle_up = false;      // Home

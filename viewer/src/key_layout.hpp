@@ -18,6 +18,9 @@ void set_key_layout(KeyLayout layout) noexcept;
 [[nodiscard]] const char* head_out_key_name();
 // The car menu (RTS: Num3; openRTS: the ` key, left of 1).
 [[nodiscard]] const char* car_menu_key_name();
+// RTS's flashlight: Num2; openRTS's Shift+` (the backslash is the ED4M's and
+// ER2's cab key, the tilde no cab's).
+[[nodiscard]] const char* flashlight_key_name();
 
 // The key hints at the bottom of the screen (what Enter does where the
 // engineer stands, the window keys, a cab door's): shown unless turned off

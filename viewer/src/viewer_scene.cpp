@@ -545,6 +545,11 @@ public:
             const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(20);
             while (library_->stats().queued_uploads > 0 && std::chrono::steady_clock::now() < until) library_->update();
         }
+        if (input.flashlight) {
+            flashlight_ = !flashlight_;
+            if (train_) train_->say(flashlight_ ? tr("flashlight on") : tr("flashlight off"));
+        }
+        flashlight_forward_ = camera.forward();
         collect_lights(camera.eye(), clock.elapsed);
 
         // The free camera is an external camera for sound activation; RTS
@@ -1274,6 +1279,29 @@ private:
         const float distance_scale = wider ? renderer::light_range() / rts_limit : 1.0f;
         light_rings_.reset(eye, max_light_distance_, view_distance_);
         const auto frustum = renderer::Frustum::from_view_projection(last_view_projection_);
+        if (flashlight_) {
+            // RTS's flashlight (0x409A2C, Num2; its record 0x5E03D4, set at
+            // 0x405F15, flashlight.* settings at 0x4070FB): a spotlight at the
+            // eye along the view, the first light of the frame.
+            renderer::ModelExtraLight light;
+            light.diffuse = glm::vec4{0.643f, 0.4745f, 0.1725f, 1.0f};
+            glm::vec3 z = glm::length(flashlight_forward_) > 1e-4f ? glm::normalize(flashlight_forward_) : glm::vec3{0.0f, 0.0f, -1.0f};
+            glm::vec3 x = glm::cross(glm::vec3{0.0f, 1.0f, 0.0f}, z);
+            x = glm::length(x) > 1e-4f ? glm::normalize(x) : glm::vec3{1.0f, 0.0f, 0.0f};
+            const glm::vec3 y = glm::cross(z, x);
+            glm::mat4 world{1.0f};
+            world[0] = glm::vec4{x, 0.0f};
+            world[1] = glm::vec4{y, 0.0f};
+            world[2] = glm::vec4{z, 0.0f};
+            world[3] = glm::vec4{eye, 1.0f};
+            light.to_light = glm::inverse(world);
+            light.direction = z;
+            light.size = glm::vec4{0.436f, 0.233f, 50.0f, 0.0f};
+            light.kind = 1.0f;
+            light.spot_exponent = 90.0f;
+            light.attenuation = glm::vec4{2.0f, 0.2f, 0.8f, 0.0f};
+            light_rings_.add(light, eye, light.size.z);
+        }
         if (train_) {
             // The experimental path stretches their reach (panel); the shape
             // of the beam and its fall-off keep their proportions.
@@ -1505,6 +1533,9 @@ private:
     std::unique_ptr<renderer::SkyRenderer> sky_renderer_;
     std::unique_ptr<renderer::RouteStreamer> streamer_;
     std::unique_ptr<renderer::ModelLibrary> library_;
+    // RTS's flashlight (Num2 / Shift+`): off at the start, as RTS's (0x4044B9).
+    bool flashlight_ = false;
+    glm::vec3 flashlight_forward_{0.0f, 0.0f, -1.0f};
     // The start's loading screen (update_loading).
     static constexpr double loading_limit = 120.0;
     SceneLoading loading_;

@@ -160,6 +160,13 @@ private:
     struct Stream;
     void activate(const SoundInputs& inputs, VoiceSink& sink);
     void fire(Stream& stream, std::size_t trigger, float volume, const SoundInputs& inputs, VoiceSink& sink);
+    // The codes through the trigger pairs (their states kept): those that pass.
+    [[nodiscard]] std::vector<std::uint32_t> pass_pairs(const std::vector<std::uint32_t>& incoming);
+    // Each code to the running streams' enabled discrete triggers.
+    void run_codes(const std::vector<std::uint32_t>& codes, const SoundInputs& inputs, VoiceSink& sink);
+    // The codes queued while inactive, at the activation: as states only
+    // (catching_up_), then each stream's loop as they left it.
+    void catch_up(const SoundInputs& inputs, VoiceSink& sink);
     [[nodiscard]] bool camera_listed(const formats::SoundActivation& activation, SoundCamera camera) const;
 
     std::shared_ptr<const formats::SoundScript> script_;
@@ -178,8 +185,10 @@ private:
     bool active_ = false;
     bool activated_once_ = false; // Initial_Triggers fire on the first activation only
     // Discrete codes that came while inactive: RTS keeps them in the object's
-    // 96-entry queue and runs them at its next active update.
+    // 96-entry queue and runs them at its next active update; openRTS takes
+    // only the states they leave (catch_up).
     std::vector<std::uint32_t> queued_;
+    bool catching_up_ = false; // fire(): states only, no sound
     std::vector<std::uint32_t> restore_; // restore(): per stream, trigger + 1
     bool random_loop_phase_ = false;
     std::string trace_; // set_trace: empty, none

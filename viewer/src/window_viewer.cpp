@@ -1172,6 +1172,7 @@ struct CameraInput {
     bool kp0_down = false;
     bool kp1_down = false;
     bool kp3_down = false;
+    bool kp2_down = false;
     int clicks = 0;            // left clicks in fly mode since the last scene_input()
     int releases = 0;          // left button let go (anywhere, over a panel too)
     double scroll = 0.0;       // wheel since the last scene_input()
@@ -1326,7 +1327,10 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool rts_keys = key_layout() == KeyLayout::rts;
     const bool kp0 = pressed(rts_keys ? GLFW_KEY_KP_0 : GLFW_KEY_MINUS, input.kp0_down);
     const bool kp1 = pressed(rts_keys ? GLFW_KEY_KP_1 : GLFW_KEY_EQUAL, input.kp1_down);
-    const bool kp3 = pressed(rts_keys ? GLFW_KEY_KP_3 : GLFW_KEY_GRAVE_ACCENT, input.kp3_down);
+    // ` alone the car menu, Shift+` the flashlight (RTS: Num3 and Num2).
+    const bool grave = !rts_keys && pressed(GLFW_KEY_GRAVE_ACCENT, input.kp3_down);
+    const bool kp3 = rts_keys ? pressed(GLFW_KEY_KP_3, input.kp3_down) : grave && !shift;
+    const bool kp2 = rts_keys ? pressed(GLFW_KEY_KP_2, input.kp2_down) : grave && shift;
     int width = 0, height = 0;
     glfwGetWindowSize(window, &width, &height);
     const bool pointer = !input.fly_looking && width > 0 && height > 0 && !overlay_wants_mouse()
@@ -1338,6 +1342,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.cab_window = kp0;
         in.head_out = kp1;
         in.car_menu = kp3;
+        in.flashlight = kp2;
         in.pointer = pointer;
         in.pointer_x = static_cast<float>(input.cursor_x / width * 2.0 - 1.0);
         in.pointer_y = static_cast<float>(1.0 - input.cursor_y / height * 2.0);

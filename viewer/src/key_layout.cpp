@@ -24,4 +24,6 @@ const char* head_out_key_name() { return current == KeyLayout::rts ? "Num1" : tr
 
 const char* car_menu_key_name() { return current == KeyLayout::rts ? "Num3" : tr("'`'"); }
 
+const char* flashlight_key_name() { return current == KeyLayout::rts ? "Num2" : tr("Shift+'`'"); }
+
 } // namespace openrts::viewer

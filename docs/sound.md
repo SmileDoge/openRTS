@@ -92,6 +92,13 @@ what the DLLs post play in the viewer (the sections below).
   `_inc_past`. Curve controllers: `speedcontrolled`,
   `variable1controlled`…, `distancetravelledcontrolled`,
   `accelerationcontrolled`, `radiuscontrolled`.
+- **CONFIRMED `radius`** (`0x4F6DA9`, the car's step): the car's curve
+  radius (Wagon `+0xC4`) without its sign, the straight (0) as 10 000 000,
+  written to the car's sound objects (`+0x12C`). The VL80's cab curve
+  squeal (`vl80s-cabr.sms`: StartLoop at `Radius_Dec_Past 680`, release at
+  `Radius_Inc_Past 680`, volume by radius, 0 beyond 870) needs it: openRTS
+  gave 0 on the straight until 2026-11-08, and the squeal went on at full
+  volume after the curve, at a stop too.
 
 ### Actions
 
@@ -276,7 +283,13 @@ car's sound is made.
   - the first activation enables every trigger, runs the streams at volume
     1 and fires the `Initial_Trigger`s;
   - later ones resume the remembered loops (the position from the loop's
-    age), then run the codes queued meanwhile (up to 96);
+    age);
+  - the codes queued meanwhile (up to 96) count for their states only
+    (`catch_up`, since 2026-11-08): a loop they started plays, one they
+    released does not, triggers and streams are enabled or disabled,
+    volumes and variables set; a one-shot is not played. RTS runs them all,
+    so a horn blown in the cab sounded when the engineer stepped out or put
+    his head out of the window, however long after;
   - before (until 2026-11-01) every activation fired the initial triggers
     again and the loops a DLL had started were lost after a trip into the
     cab.

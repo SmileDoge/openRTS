@@ -244,6 +244,23 @@ openRTS: `renderer::LightRings`, the same rule for models and terrain
 patches, in both shading paths (the experimental path may get its own
 selection later).
 
+## The flashlight — CONFIRMED (2026-11-08)
+
+- Num2 (`WM_KEYDOWN` 0x62, `0x403068`) toggles `[0x61D55D]`; a new game
+  clears it (`0x4044B9`).
+- While it is on (and the GL lights work, `[0x5E04C6]`), every frame
+  (`0x409A2C`) the record at `0x5E03D4` (a 192-byte light, the shaders'
+  `GLLightObj`) is copied into the frame's lights first and into the rings
+  its reach covers, placed at the eye and turned by the camera's yaw and
+  pitch: a spotlight along the view.
+- The record (defaults `0x405F15`): colour 0.643 / 0.4745 / 0.1725 / 1,
+  size 0.436 / 0.233 / 50 (x, y, reach) and 0, type 1, spot exponent 90,
+  attenuation 2 / 0.2 / 0.8. `flashlight.type`, `.colour` (hex ARGB),
+  `.radx`, `.rady`, `.radz`, `.attenuation` (`0x4070FB`) override them;
+  no installed file has them.
+- openRTS: `RouteScene::collect_lights`, Num2 (RTS keys) or Shift+`
+  (openRTS keys).
+
 ## Lamp fades — CONFIRMED (2026-11-02, `0x4B0284`, `0x51C364`, `0x4AEBEC`)
 
 `LightFade ( a b )` is parsed into the lamp record (`+44` a, `+48` b); only

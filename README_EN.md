@@ -279,8 +279,9 @@ The game can also be started directly:
 ### Controls
 
 Two key layouts (the start menu or the openRTS panel → Keys): RTS, with the
-numeric keypad (Num0, Num1, Num3), and openRTS, without it, for laptops
-(`-`, `=`, the key left of `1`); openRTS by default. The keys at hand: the
+numeric keypad (Num0, Num1, Num2, Num3), and openRTS, without it, for
+laptops (`-`, `=`, Shift and the key left of `1`, that key); openRTS by
+default. The keys at hand: the
 "Controls" tab of the start menu and of the game's panel.
 
 **Camera and world**
@@ -329,6 +330,7 @@ the Train window)
 | Num0 / `-` | open the window |
 | Num1 / `=` | lean out |
 | Num3 / the key left of `1` | the car menu at the coupling or bogie under the cursor (outside) |
+| Num2 / Shift + the key left of `1` | the flashlight, as in RTS: a beam from the eyes along the view, 50 m |
 | RMB + mouse | look round |
 | Mouse | click works a control, the wheel moves it a step, dragging moves handles and blinds |
 | Alt | captions of the controls |

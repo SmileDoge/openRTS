@@ -176,6 +176,10 @@ void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
             for (std::size_t i = 0; i < triggers.size(); ++i) {
                 if (triggers[i].kind == SoundTriggerKind::random) stream.countdown[i] = triggers[i].minimum;
             }
+        }
+        catch_up(inputs, sink);
+        for (auto& stream : streams_) {
+            const auto& triggers = stream.definition->triggers;
             if (stream.current && *stream.current < triggers.size()) fire(stream, *stream.current, 1.0f, inputs, sink);
             stream.resume_frame.reset();
         }
@@ -196,6 +200,92 @@ void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
         const auto& triggers = stream.definition->triggers;
         for (std::size_t i = 0; i < triggers.size(); ++i) {
             if (triggers[i].kind == SoundTriggerKind::initial) fire(stream, i, 1.0f, inputs, sink);
+        }
+    }
+    // The codes that came before: an initial loop they released stops, one
+    // they started begins.
+    std::vector<std::optional<std::size_t>> started(streams_.size());
+    for (std::size_t s = 0; s < streams_.size(); ++s) started[s] = streams_[s].current;
+    catch_up(inputs, sink);
+    for (std::size_t s = 0; s < streams_.size(); ++s) {
+        auto& stream = streams_[s];
+        if (stream.current == started[s]) continue;
+        if (stream.loop.id) sink.stop(stream.loop.id);
+        stream.loop = {};
+        if (stream.current && *stream.current < stream.definition->triggers.size()) {
+            const auto index = *stream.current;
+            stream.current.reset();
+            fire(stream, index, 1.0f, inputs, sink);
+        }
+    }
+}
+
+// The codes that came while the object was off (the camera elsewhere, out
+// of reach): RTS runs them all at the next active update (0x4A8284), so a
+// horn blown in the cab sounded outside when the engineer stepped out,
+// however long after. openRTS takes their states only: a loop they
+// started is on, one they released off, triggers and streams enabled or
+// not, volumes and variables set; a one-shot is not played.
+void SoundInstance::catch_up(const SoundInputs& inputs, VoiceSink& sink) {
+    std::vector<std::uint32_t> incoming = std::move(queued_);
+    queued_.clear();
+    if (incoming.empty() && posted_.empty()) return;
+    if (!trace_.empty()) note(SIZE_MAX, std::to_string(incoming.size()) + " codes queued while off: their states only");
+    catching_up_ = true;
+    // PostTrigger codes they make follow, a few rounds at most.
+    for (int round = 0; round < 8 && (!incoming.empty() || !posted_.empty()); ++round) {
+        incoming.insert(incoming.end(), posted_.begin(), posted_.end());
+        posted_.clear();
+        run_codes(pass_pairs(incoming), inputs, sink);
+        incoming.clear();
+    }
+    catching_up_ = false;
+}
+
+std::vector<std::uint32_t> SoundInstance::pass_pairs(const std::vector<std::uint32_t>& incoming) {
+    std::vector<std::uint32_t> codes;
+    const auto listed = [](const std::vector<std::uint32_t>& list, const std::uint32_t code) {
+        return std::find(list.begin(), list.end(), code) != list.end();
+    };
+    for (const auto code : incoming) {
+        bool pass = true;
+        for (std::size_t p = 0; p < group_->trigger_pairs.size() && pass; ++p) {
+            const auto& pair = group_->trigger_pairs[p];
+            const bool kept = p < 128;
+            auto& state = pair_state_[p];
+            if (listed(pair.on, code)) {
+                if (kept && state == 1) {
+                    pass = false;
+                } else {
+                    if (kept) state = 1;
+                    pairs_seen_ = true;
+                }
+            } else if (listed(pair.off, code)) {
+                if (kept && state == 0) {
+                    pass = false;
+                } else {
+                    if (kept) state = 0;
+                    pairs_seen_ = true;
+                }
+            } else if (listed(pair.halt, code)) {
+                if (kept && pairs_seen_) state = 0;
+            }
+        }
+        if (pass) codes.push_back(code);
+    }
+    return codes;
+}
+
+void SoundInstance::run_codes(const std::vector<std::uint32_t>& codes, const SoundInputs& inputs, VoiceSink& sink) {
+    if (codes.empty()) return;
+    for (auto& stream : streams_) {
+        if (!stream.running) continue;
+        const auto& triggers = stream.definition->triggers;
+        for (std::size_t i = 0; i < triggers.size(); ++i) {
+            if (!stream.enabled[i] || triggers[i].kind != SoundTriggerKind::discrete) continue;
+            for (const auto code : codes) {
+                if (code == triggers[i].code) fire(stream, i, 1.0f, inputs, sink);
+            }
         }
     }
 }
@@ -274,6 +364,20 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
     };
 
     for (const auto& action : trigger.actions) {
+        if (catching_up_) {
+            // States only (catch_up): a one-shot is past, a loop is marked to
+            // start or not; the rest below has no sound of its own.
+            if (action.kind == SoundActionKind::play_one_shot) continue;
+            if (action.kind == SoundActionKind::start_loop || action.kind == SoundActionKind::start_loop_release) {
+                stream.current = index;
+                continue;
+            }
+            if (action.kind == SoundActionKind::release_loop_release
+                || action.kind == SoundActionKind::release_loop_release_with_jump) {
+                stream.current.reset();
+                continue;
+            }
+        }
         switch (action.kind) {
         case SoundActionKind::play_one_shot:
             // Not while the stream plays something.
@@ -490,36 +594,7 @@ void SoundInstance::update(const float dt, const SoundInputs& raw_inputs, VoiceS
     incoming.insert(incoming.end(), inputs.discrete.begin(), inputs.discrete.end());
     incoming.insert(incoming.end(), posted_.begin(), posted_.end());
     posted_.clear();
-    std::vector<std::uint32_t> codes;
-    const auto listed = [](const std::vector<std::uint32_t>& list, const std::uint32_t code) {
-        return std::find(list.begin(), list.end(), code) != list.end();
-    };
-    for (const auto code : incoming) {
-        bool pass = true;
-        for (std::size_t p = 0; p < group_->trigger_pairs.size() && pass; ++p) {
-            const auto& pair = group_->trigger_pairs[p];
-            const bool kept = p < 128;
-            auto& state = pair_state_[p];
-            if (listed(pair.on, code)) {
-                if (kept && state == 1) {
-                    pass = false;
-                } else {
-                    if (kept) state = 1;
-                    pairs_seen_ = true;
-                }
-            } else if (listed(pair.off, code)) {
-                if (kept && state == 0) {
-                    pass = false;
-                } else {
-                    if (kept) state = 0;
-                    pairs_seen_ = true;
-                }
-            } else if (listed(pair.halt, code)) {
-                if (kept && pairs_seen_) state = 0;
-            }
-        }
-        if (pass) codes.push_back(code);
-    }
+    const auto codes = pass_pairs(incoming);
 
     for (auto& stream : streams_) {
         if (!stream.running) continue;

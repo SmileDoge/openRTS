@@ -4857,7 +4857,11 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
         inputs[formats::SoundVariable::distance] = glm::distance(camera.eye(), position);
         inputs[formats::SoundVariable::distance_travelled] = static_cast<float>(std::abs(state.travelled));
         inputs[formats::SoundVariable::acceleration] = state.acceleration * direction;
-        inputs[formats::SoundVariable::radius] = state.radius;
+        // RTS (0x4F6DA9): the curve's radius without its sign, the straight
+        // (0) as 10 000 000 m. The VL80's curve squeal starts below 680 m and
+        // stops above it, its volume 0 beyond 870 m: with 0 on the straight
+        // it went on at full volume after the curve, standing too.
+        inputs[formats::SoundVariable::radius] = state.radius == 0.0f ? 1.0e7f : std::abs(state.radius);
         const auto* dll_vars = dll_sound_variables(u, i);
         if (dll_vars) {
             // The DLL sets the engine variables itself (SMSObject Var1..Var8).

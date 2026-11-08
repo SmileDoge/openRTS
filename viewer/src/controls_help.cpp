@@ -87,6 +87,7 @@ void draw_controls_help() {
         row(window_key_name(), "open the window");
         row(head_out_key_name(), "lean out");
         row(car_menu_key_name(), "the car menu at the coupling or bogie under the cursor (outside)");
+        row(flashlight_key_name(), "the flashlight on / off");
         row("RMB + mouse", "look around");
         row("Mouse", "click: a control; wheel: one position; drag: handles and blinds");
         row("Alt", "captions of the cab's controls");

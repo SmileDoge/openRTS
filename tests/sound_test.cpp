@@ -400,6 +400,62 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCa
     check(sink.seeks.contains(hum) && sink.seeks[hum] >= 30 && sink.seeks[hum] <= 50, "the hum resumes where it was");
 }
 
+// Codes that came while the group was off are taken as states only: a horn
+// blown in the cab does not sound outside when the engineer steps out; a
+// loop started there is on, one started and released is not.
+void test_past_codes() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCam ( ) ) Streams ( 3
+    Stream ( Triggers ( 1 Discrete_Trigger ( 10 PlayOneShot ( 1 File ( "horn.wav" -1 ) ) ) ) )
+    Stream ( Triggers ( 2
+        Discrete_Trigger ( 20 StartLoop ( 1 File ( "comp.wav" -1 ) ) )
+        Discrete_Trigger ( 21 ReleaseLoopRelease ( ) ) ) )
+    Stream ( Triggers ( 2
+        Discrete_Trigger ( 30 StartLoopRelease ( 1 File ( "whistle.wav" -1 ) ) )
+        Discrete_Trigger ( 31 ReleaseLoopRelease ( ) ) ) ) ) ) ))"));
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips;
+    for (const char* name : {"horn.wav", "comp.wav", "whistle.wav"}) clips[name] = test_clip(1000);
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string& name) { return clips.at(name); }, 5);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs[SoundVariable::distance] = 0;
+    const std::uint32_t in_cab[] = {10, 20, 30, 31};
+    // Started in the cab: the group has never been on.
+    inputs.camera = audio::SoundCamera::cab;
+    inputs.discrete = std::span(in_cab);
+    sound.update(0.01f, inputs, sink);
+    inputs.discrete = {};
+    sound.update(0.01f, inputs, sink);
+    inputs.camera = audio::SoundCamera::external;
+    sound.update(0.01f, inputs, sink);
+    const auto playing = [&] {
+        std::vector<std::shared_ptr<const audio::AudioClip>> clips_on;
+        for (const auto& [id, voice] : sink.voices)
+            if (sink.playing(id)) clips_on.push_back(voice.clip);
+        return clips_on;
+    };
+    auto on = playing();
+    check(on.size() == 1 && on[0] == clips["comp.wav"], "first time outside: the compressor runs, no horn, no whistle");
+    // Into the cab again: the horn, then the compressor off.
+    inputs.camera = audio::SoundCamera::cab;
+    sound.update(0.01f, inputs, sink);
+    const std::uint32_t later[] = {10, 21};
+    inputs.discrete = std::span(later);
+    sound.update(0.01f, inputs, sink);
+    inputs.discrete = {};
+    const auto before = sink.voices.size();
+    inputs.camera = audio::SoundCamera::external;
+    sound.update(0.01f, inputs, sink);
+    check(sink.voices.size() == before && playing().empty(), "outside again: the compressor stays off, the horn is not blown");
+    // A horn blown outside still sounds.
+    const std::uint32_t horn = 10;
+    inputs.discrete = std::span(&horn, 1);
+    sound.update(0.01f, inputs, sink);
+    on = playing();
+    check(on.size() == 1 && on[0] == clips["horn.wav"], "outside: the horn sounds at once");
+}
+
 // Trigger pairs as RTS keeps them (0x4A87C8) and the named triggers table
 // (0x4DD0EC), which a DLL reads through RTSIsSMSTriggerOn / RTSGetNamedInteger.
 void test_trigger_pairs() {
@@ -865,6 +921,7 @@ int main(int argc, char** argv) {
     test_crossed_distances();
     test_loop_phase();
     test_cab_round_trip();
+    test_past_codes();
     test_trigger_pairs();
     test_stream_rules();
     test_rooms();
