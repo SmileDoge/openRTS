@@ -72,17 +72,53 @@ What the archive holds:
    - **Situation:** trains saved in the game (Train window → Situations)
      stand where they stood, instead of the consist chosen. One saved
      while the menu is open shows up in the list by itself.
-4. **Settings:**
-   - language;
-   - keys: RTS, with the numeric keypad (Num0, Num1, Num3), or openRTS,
-     without it, for laptops (`-`, `=`, the key left of `1`);
-   - sound and volume, anti-aliasing, VSync;
-   - experimental renderer;
-   - the graphics API: Automatic (Vulkan, else DirectX 12), Vulkan,
-     DirectX 12, or OpenGL for old cards.
+4. **Settings:** language; keys: RTS, with the numeric keypad (Num0, Num1,
+   Num3), or openRTS, without it, for laptops (`-`, `=`, the key left of
+   `1`); sound and volume; the settings and log folder; updates.
+
+   **Graphics:** every graphics setting of the game's panel, in groups:
+   Screen, Renderer, Shadows, Ambient occlusion, Lamps, Sky and water,
+   World. Presets on top: Low (for weak cards, GTX 1050 / 1650 class),
+   Medium, High (as openRTS starts) and Ultra. A preset sets the costly
+   settings together: anti-aliasing, the shadows, the ambient occlusion,
+   the lamp and cloud shadows; it leaves the look (HDR, exposure, the sky,
+   the water) alone. A setting changed by hand makes it Custom. Each
+   setting shows its load on the processor (CPU) and the video card (GPU):
+   no effect, almost none, medium, above medium, high, very high, from grey
+   to violet. That is an estimate from openRTS's own frames and players'
+   reports, not a measure on your machine. In the game the preset is in
+   the panel, under Graphics.
 5. **Press Start.** The game opens in a window of its own while the menu
    waits; it comes back when the game is closed. Every choice is
    remembered.
+
+## Updating
+
+At its start the menu asks GitHub for the latest release (vX.Y.Z, not the
+nightly build). When it is newer than yours, a "A new version of openRTS"
+window shows the first paragraph of what is new in it, with buttons:
+
+- **Update**: the archive is downloaded and checked (size and SHA-256),
+  the game's files are replaced, and the menu starts again. The settings
+  and the log live in `%LOCALAPPDATA%\openRTS` and are not touched; files
+  in the game's folder that the archive does not have (`portable.txt`, for
+  one) stay as well;
+- **Release page**: the release in the browser;
+- **Later**: asked again at the next start;
+- **Skip this version**: not offered at the start any more.
+
+While updating, the old files are renamed to `*.old` (Windows does not let
+a running program be overwritten, but lets it be renamed) and deleted at
+the next start. If anything fails, the old files are put back.
+
+If the game's folder cannot be written to (`Program Files`, say), the menu
+offers the release's page, or starting the menu as administrator. No update
+while the game runs.
+
+Settings → Updates: this version, "Check for a new version at the start",
+and "Check now", which offers the update even for a skipped version.
+Without the window: `openrts_game.exe --check-update` prints the latest
+release; `--no-update-check` starts the menu without the check.
 
 ## Running without the menu
 

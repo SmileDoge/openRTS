@@ -146,6 +146,21 @@ openrts_configure_target(openrts_train_lights_test)
 target_link_libraries(openrts_train_lights_test PRIVATE openrts_simulation openrts_formats)
 add_test(NAME openrts.train_lights COMMAND openrts_train_lights_test)
 
+# The graphics settings the start menu and the game share: defaults, presets, what is written.
+add_executable(openrts_graphics_settings_test graphics_settings_test.cpp ../viewer/src/graphics_settings.cpp ../viewer/src/viewer_state.cpp)
+openrts_configure_target(openrts_graphics_settings_test)
+openrts_copy_wgpu_runtime(openrts_graphics_settings_test)
+target_link_libraries(openrts_graphics_settings_test PRIVATE openrts_renderer)
+add_test(NAME openrts.graphics_settings COMMAND openrts_graphics_settings_test)
+
+# The start menu's updates: versions, the release JSON, an archive laid over a folder.
+if(TARGET openrts_update)
+    add_executable(openrts_update_test update_test.cpp)
+    openrts_configure_target(openrts_update_test)
+    target_link_libraries(openrts_update_test PRIVATE openrts_update)
+    add_test(NAME openrts.update COMMAND openrts_update_test)
+endif()
+
 add_executable(openrts_ui_text_test ui_text_test.cpp ../viewer/src/ui_text.cpp)
 openrts_configure_target(openrts_ui_text_test)
 add_test(NAME openrts.ui_text COMMAND openrts_ui_text_test)

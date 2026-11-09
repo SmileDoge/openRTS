@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <set>
 #include <string>
 #include <system_error>
@@ -26,6 +27,7 @@
 #include <imgui.h>
 #endif
 
+#include <openrts/core/core.hpp>
 #include <openrts/core/installation.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/train_path.hpp>
@@ -33,9 +35,12 @@
 
 #include "controls_help.hpp"
 #include "frame_limiter.hpp"
+#include "graphics_settings.hpp"
 #include "key_layout.hpp"
+#include "rts_config.hpp"
 #include "ui_fonts.hpp"
 #include "ui_text.hpp"
+#include "update.hpp"
 #include "viewer_state.hpp"
 #include "window_mode.hpp"
 
@@ -154,8 +159,8 @@ constexpr int beside_the_car = 1;
 constexpr int no_train = 3;
 
 // The menu's tabs, remembered by their keys.
-enum class Tab { single, network, settings, controls };
-constexpr const char* tab_keys[] = {"single", "network", "settings", "controls"};
+enum class Tab { single, network, settings, graphics, controls };
+constexpr const char* tab_keys[] = {"single", "network", "settings", "graphics", "controls"};
 constexpr int tab_count = static_cast<int>(std::size(tab_keys));
 
 // How far the running game got in joining a server: its "status:" lines in
@@ -291,8 +296,11 @@ struct Launcher::State {
     int situation = -1;                     // -1: none
     bool sound = true;
     float volume = 0.5f;
-    bool msaa = true, vsync = true;
-    bool experimental = false, hdr = false;
+    bool vsync = true;
+    // The graphics settings, the game's panel's too (graphics_settings.hpp):
+    // each change written at once, only what changed.
+    viewer::GraphicsSettings graphics;
+    std::optional<float> fov; // "fov", else RTS's config.ini
     int fps_limit = 0; // the game's FPS limit, shared with its panel ("fps_limit"): 0 none, 30..500
     viewer::WindowMode window_mode = viewer::WindowMode::windowed; // the game's window ("window_mode"), shared with its panel
     std::string status;
@@ -325,6 +333,30 @@ struct Launcher::State {
 #ifdef _WIN32
     HANDLE process = nullptr;
 #endif
+    // Updates (update.hpp): a check at the start ("update_check"), the offer
+    // as a modal window; a version skipped there ("update_skip") is not
+    // offered at the start again.
+    update::Updater updater;
+    bool update_check = true;
+    bool update_started = false;  // the start's check asked
+    bool update_manual = false;   // "Check now": offered even when skipped
+    bool update_popup = false;    // the offer opens on the next frame
+    bool update_dev = false;      // a build folder of the sources: told, not replaced
+    bool update_writable = true;  // the game's folder can be written to
+    update::Updater::Stage update_seen = update::Updater::Stage::idle;
+    bool restart = false;         // installed: the menu closes and starts again
+    std::chrono::steady_clock::time_point old_files_again{}; // the last update's .old files deleted once more
+
+    [[nodiscard]] fs::path update_folder() const { return viewer::user_data_directory() / "update"; }
+    [[nodiscard]] fs::path old_files() const { return update_folder() / "old_files.txt"; }
+    void offer_update() {
+        update_dev = update::development_build(exe_dir);
+        update_writable = !update_dev && update::folder_writable(exe_dir);
+        update_popup = true;
+    }
+    void poll_update();
+    void draw_update_popup();
+    void draw_update_settings(float label_width);
 
     [[nodiscard]] bool running() const {
 #ifdef _WIN32
@@ -366,10 +398,8 @@ struct Launcher::State {
         sound = remembered_int("launcher_sound", 1) != 0;
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
         viewer::set_mouse_sensitivity(remembered_float("mouse_sensitivity", 1.0f));
-        msaa = remembered_int("launcher_msaa", 1) != 0;
         vsync = remembered_int("launcher_vsync", 1) != 0;
-        experimental = remembered_int("launcher_experimental", 0) != 0;
-        hdr = remembered_int("launcher_hdr", 0) != 0;
+        load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
         window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);
@@ -390,6 +420,33 @@ struct Launcher::State {
         }
     }
 
+    // The graphics settings as kept (at the start, and after the game, whose
+    // panel may have changed them).
+    void load_graphics() {
+        graphics = viewer::load_graphics_settings();
+        fov.reset();
+        if (const auto value = remembered("fov")) {
+            char* end = nullptr;
+            const float read = std::strtof(value->c_str(), &end);
+            if (end != value->c_str()) fov = std::clamp(read, 15.0f, 100.0f);
+        }
+    }
+
+    // The field of view the game takes: the remembered one, else RTS's
+    // (its config.ini read once a folder), else the game's own.
+    fs::path fov_root;
+    float rts_fov = 48.7f;
+    [[nodiscard]] float game_fov() {
+        if (fov) return *fov;
+        if (fov_root != root) {
+            fov_root = root;
+            rts_fov = 48.7f;
+            if (!root.empty())
+                if (const auto rts = viewer::rts_config_value(viewer::read_rts_config(root), "fov")) rts_fov = std::clamp(*rts, 15.0f, 100.0f);
+        }
+        return rts_fov;
+    }
+
     void save_settings() const {
         remember("root", utf8(root));
         if (route >= 0) remember("launcher_route", routes[static_cast<std::size_t>(route)]);
@@ -401,10 +458,7 @@ struct Launcher::State {
         remember("launcher_start", std::to_string(start));
         remember("launcher_sound", sound ? "1" : "0");
         remember("volume", std::to_string(volume));
-        remember("launcher_msaa", msaa ? "1" : "0");
         remember("launcher_vsync", vsync ? "1" : "0");
-        remember("launcher_experimental", experimental ? "1" : "0");
-        remember("launcher_hdr", hdr ? "1" : "0");
         remember("launcher_spawn", std::to_string(spawn));
         remember("launcher_situation", situation >= 0 ? situations[static_cast<std::size_t>(situation)] : std::string());
         remember("launcher_tab", tab_keys[static_cast<int>(tab)]);
@@ -591,10 +645,10 @@ struct Launcher::State {
         } else {
             args.push_back("--no-sound");
         }
-        if (!msaa) args.insert(args.end(), {"--msaa", "1"});
+        if (!graphics.msaa) args.insert(args.end(), {"--msaa", "1"});
         if (!vsync) args.push_back("--no-vsync");
-        if (experimental) args.push_back("--experimental");
-        if (hdr) args.push_back("--hdr");
+        if (graphics.experimental) args.push_back("--experimental");
+        if (graphics.hdr) args.push_back("--hdr");
         std::string command;
         for (const auto& a : args) command += (command.empty() ? "" : " ") + quoted(a);
         return command;
@@ -768,6 +822,7 @@ struct Launcher::State {
         // The game's panel may have changed it.
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
         window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);
+        load_graphics();
         if (cancelled) {
             net_step = NetStep::none;
             status = tr("The connection was cancelled.");
@@ -786,6 +841,7 @@ struct Launcher::State {
     void draw_single(float height);
     void draw_network(float height);
     void draw_settings(float height);
+    void draw_graphics(float height);
     void draw_controls(float height);
     void draw_bar(float button_width, float button_height, float status_height);
 #endif
@@ -803,7 +859,8 @@ void Launcher::State::draw_tabs() {
     select_tab = false;
     if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTooltip)) {
         const std::string labels[] = {std::string(tr("Single player")) + "###single", std::string(tr("Network game")) + "###network",
-                                      std::string(tr("Settings")) + "###settings", std::string(tr("Controls")) + "###controls"};
+                                      std::string(tr("Settings")) + "###settings", std::string(tr("Graphics")) + "###graphics",
+                                      std::string(tr("Controls")) + "###controls"};
         for (int i = 0; i < tab_count; ++i) {
             const auto which = static_cast<Tab>(i);
             const ImGuiTabItemFlags flags = forcing && tab == which ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
@@ -1099,70 +1156,359 @@ void Launcher::State::draw_settings(const float height) {
             ImGui::EndDisabled();
             ImGui::EndTable();
         }
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    if (ImGui::BeginChild("##settings_files", {0.0f, height}, panel_flags)) {
 #ifdef _WIN32
-        ImGui::Spacing();
         // The settings and the game's log (openrts.log, for a bug report).
         ImGui::SeparatorText(tr("Settings and log"));
         if (ImGui::Button(tr("Open the settings and log folder"), {-FLT_MIN, 0.0f}))
             ShellExecuteW(nullptr, L"open", viewer::user_data_directory().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         hint(utf8(viewer::user_data_directory()).c_str());
+        ImGui::Spacing();
 #endif
+        draw_update_settings(label_width);
     }
     ImGui::EndChild();
-    ImGui::SameLine();
+}
 
-    if (ImGui::BeginChild("##settings_graphics", {0.0f, height}, panel_flags)) {
-        ImGui::SeparatorText(tr("Graphics"));
-        if (begin_form("##graphics_form", label_width)) {
-            // The graphics API of the game (and of this menu from its next start).
+namespace {
+
+// What a setting costs the processor and the video card, beside it: from
+// openRTS's own frames and players' reports, roughly; coloured from grey
+// (nothing) through green, yellow, orange and red to violet.
+enum class Load { unknown, none, negligible, medium, above_medium, high, extreme };
+
+[[nodiscard]] const char* load_name(const Load load) {
+    switch (load) {
+    case Load::unknown: return "-";
+    case Load::none: return "no effect";
+    case Load::negligible: return "almost none";
+    case Load::medium: return "medium";
+    case Load::above_medium: return "above medium";
+    case Load::high: return "high";
+    case Load::extreme: return "very high";
+    }
+    return "";
+}
+
+[[nodiscard]] ImVec4 load_colour(const Load load) {
+    switch (load) {
+    case Load::negligible: return {0.45f, 0.80f, 0.50f, 1.0f};
+    case Load::medium: return {0.92f, 0.84f, 0.36f, 1.0f};
+    case Load::above_medium: return {1.00f, 0.64f, 0.28f, 1.0f};
+    case Load::high: return {1.00f, 0.40f, 0.32f, 1.0f};
+    case Load::extreme: return {0.90f, 0.40f, 0.95f, 1.0f};
+    default: return {0.55f, 0.58f, 0.64f, 1.0f};
+    }
+}
+
+constexpr float load_width = 128.0f;
+
+// A group's table: the setting, its control, CPU, GPU.
+[[nodiscard]] bool begin_group(const char* id, const float label_width) {
+    if (!ImGui::BeginTable(id, 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) return false;
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, label_width);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("CPU", ImGuiTableColumnFlags_WidthFixed, load_width);
+    ImGui::TableSetupColumn("GPU", ImGuiTableColumnFlags_WidthFixed, load_width);
+    ImGui::TableHeadersRow();
+    return true;
+}
+
+// A row: the label, its loads, then the control's cell, where the caller
+// draws the control (the whole width).
+void group_row(const char* label, const Load cpu, const Load gpu) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextWrapped("%s", label);
+    for (int i = 0; i < 2; ++i) {
+        const Load load = i == 0 ? cpu : gpu;
+        ImGui::TableSetColumnIndex(2 + i);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(load_colour(load), "%s", tr(load_name(load)));
+    }
+    ImGui::TableSetColumnIndex(1);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+}
+
+// What a row's setting does, under its control (dim, wrapped).
+void row_note(const char* text) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+}
+
+[[nodiscard]] Load by_steps(const float value, const float first, const float second, const Load low, const Load mid, const Load top) {
+    return value <= first ? low : value <= second ? mid : top;
+}
+
+} // namespace
+
+// Graphics: a preset, then every setting of the game's panel in groups, each
+// with its load on the processor (CPU) and the video card (GPU).
+void Launcher::State::draw_graphics(const float height) {
+    const auto before = graphics;
+    auto& g = graphics;
+    auto& e = g.effects;
+    if (ImGui::BeginChild("##graphics", {0.0f, height}, panel_flags)) {
+        const float label_width = std::clamp(ImGui::GetContentRegionAvail().x * 0.30f, 220.0f, 360.0f);
+
+        ImGui::SeparatorText(tr("Preset"));
+        const auto preset = viewer::matching_graphics_preset(g);
+        for (int i = 0; i < viewer::graphics_preset_count; ++i) {
+            const auto which = static_cast<viewer::GraphicsPreset>(i);
+            const bool chosen = preset && *preset == which;
+            if (chosen) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.16f, 0.52f, 0.30f, 1.0f});
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.20f, 0.62f, 0.36f, 1.0f});
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{0.14f, 0.45f, 0.26f, 1.0f});
+            }
+            if (ImGui::Button(tr(viewer::graphics_preset_name(which)), {140.0f, 0.0f})) viewer::apply_graphics_preset(g, which);
+            if (chosen) ImGui::PopStyleColor(3);
+            ImGui::SameLine();
+        }
+        ImGui::AlignTextToFramePadding();
+        if (preset) {
+            ImGui::TextUnformatted("");
+        } else {
+            ImGui::TextColored(ImVec4{0.95f, 0.80f, 0.45f, 1.0f}, "%s", tr("Custom (changed by hand)"));
+        }
+        hint(preset ? tr(viewer::graphics_preset_note(*preset))
+                    : tr("A preset sets the costly settings together: anti-aliasing, the shadows, the ambient occlusion, the lamp and cloud shadows. The look (HDR, exposure, the lamps' strength, the sky and the water) stays as it is."));
+        ImGui::Spacing();
+        // The load's scale, in its colours.
+        ImGui::TextDisabled("%s", tr("The load on the processor (CPU) and the video card (GPU):"));
+        for (const Load load : {Load::none, Load::negligible, Load::medium, Load::above_medium, Load::high, Load::extreme}) {
+            ImGui::SameLine();
+            ImGui::TextColored(load_colour(load), "%s", tr(load_name(load)));
+        }
+
+        ImGui::SeparatorText(tr("Screen"));
+        if (begin_group("##screen", label_width)) {
             int backend = 0;
             if (const auto key = remembered("backend"))
                 backend = static_cast<int>(renderer::parse_graphics_backend(*key).value_or(renderer::GraphicsBackend::automatic));
             const char* backends[] = {tr("Automatic"), "Vulkan", "DirectX 12", "OpenGL"};
-            form_row(tr("Graphics API"));
+            group_row(tr("Graphics API"), Load::unknown, Load::unknown);
             if (ImGui::Combo("##backend", &backend, backends, 4))
                 remember("backend", renderer::graphics_backend_key(static_cast<renderer::GraphicsBackend>(backend)));
-            form_row(tr("Anti-aliasing (MSAA 4x)"));
-            ImGui::Checkbox("##msaa", &msaa);
-            form_row(tr("VSync"));
+            row_note(tr("Automatic: Vulkan, else DirectX 12. Try DirectX 12 if the game does not start or the screen stays black; OpenGL is for old cards, the experimental renderer may not work there."));
+            {
+                int mode = static_cast<int>(window_mode);
+                const char* modes[] = {viewer::window_mode_name(viewer::WindowMode::windowed),
+                                       viewer::window_mode_name(viewer::WindowMode::borderless),
+                                       viewer::window_mode_name(viewer::WindowMode::fullscreen)};
+                group_row(tr("Window mode"), Load::none, Load::none);
+                if (ImGui::Combo("##window_mode", &mode, modes, viewer::window_mode_count)) {
+                    window_mode = static_cast<viewer::WindowMode>(mode);
+                    remember("window_mode", viewer::window_mode_key(window_mode));
+                }
+            }
+            group_row(tr("VSync"), Load::none, Load::none);
             ImGui::Checkbox("##vsync", &vsync);
             {
                 // One slider: 30..500, its right end "no limit".
                 int shown = fps_limit == 0 ? viewer::max_fps_limit + 1 : fps_limit;
                 const std::string format = shown > viewer::max_fps_limit ? std::string(tr("no limit")) : std::string(tr("%d frames/s"));
-                form_row(tr("FPS limit"));
+                group_row(tr("FPS limit"), Load::unknown, Load::unknown);
                 if (ImGui::SliderInt("##fps_limit", &shown, viewer::min_fps_limit, viewer::max_fps_limit + 1, format.c_str(),
                                      ImGuiSliderFlags_AlwaysClamp)) {
                     fps_limit = shown > viewer::max_fps_limit ? 0 : shown;
                     remember("fps_limit", std::to_string(fps_limit));
                 }
             }
+            group_row(tr("Anti-aliasing (MSAA 4x)"), Load::none, Load::above_medium);
+            ImGui::Checkbox("##msaa", &g.msaa);
+            if (!g.msaa)
+                row_note(tr("Without it RTS's content loses its alpha to coverage: glass and see-through overlays hide what is drawn behind them, thin wires break up."));
             {
-                // The game's window (this menu stays a window).
-                int mode = static_cast<int>(window_mode);
-                const char* modes[] = {viewer::window_mode_name(viewer::WindowMode::windowed),
-                                       viewer::window_mode_name(viewer::WindowMode::borderless),
-                                       viewer::window_mode_name(viewer::WindowMode::fullscreen)};
-                form_row(tr("Window mode"));
-                if (ImGui::Combo("##window_mode", &mode, modes, viewer::window_mode_count)) {
-                    window_mode = static_cast<viewer::WindowMode>(mode);
-                    remember("window_mode", viewer::window_mode_key(window_mode));
+                float shown = game_fov();
+                group_row(tr("Field of view"), Load::negligible, Load::negligible);
+                if (ImGui::SliderFloat("##fov", &shown, 15.0f, 100.0f, tr("%.1f degrees"))) {
+                    fov = shown;
+                    remember("fov", std::to_string(shown));
                 }
+                if (!fov) row_note(tr("RTS's, from its config.ini, until changed here or in the game (Num+ / Num-)."));
             }
-            form_row(tr("Experimental renderer"));
-            ImGui::Checkbox("##experimental", &experimental);
-            form_row("HDR");
-            ImGui::Checkbox("##hdr", &hdr);
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", tr("tone curve with the experimental renderer"));
             ImGui::EndTable();
         }
-        ImGui::Spacing();
-        hint(tr("Automatic: Vulkan, else DirectX 12. Try DirectX 12 if the game does not start or the screen stays black; OpenGL is for old cards, the experimental renderer may not work there."));
-        hint(tr("The menu itself takes the graphics API from its next start."));
         hint(tr("Window mode: full screen takes the monitor in its own mode; a borderless window covers it and Alt+Tab is quicker. In the game Alt+Enter switches between the window and full screen."));
+
+        ImGui::SeparatorText(tr("Renderer"));
+        if (begin_group("##renderer", label_width)) {
+            group_row(tr("Experimental renderer"), Load::negligible, Load::medium);
+            ImGui::Checkbox("##experimental", &g.experimental);
+            row_note(tr("openRTS's own lighting, with the shadows, the ambient occlusion and the lamps below. Off: as RTS draws."));
+            group_row("HDR", Load::none, Load::negligible);
+            ImGui::Checkbox("##hdr", &g.hdr);
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", tr("tone curve with the experimental renderer"));
+            if (g.hdr) {
+                const char* curves[] = {tr("none (as RTS)"), "Khronos PBR Neutral", "AgX (punchy)", "ACES", tr("auto: Khronos by day, AgX by night")};
+                group_row(tr("Tone curve"), Load::none, Load::none);
+                ImGui::Combo("##tone", &g.tone_curve, curves, 5);
+                group_row(tr("Exposure"), Load::none, Load::none);
+                ImGui::SliderFloat("##exposure", &g.exposure, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+                if (g.tone_curve == 4) {
+                    group_row(tr("Night exposure"), Load::none, Load::none);
+                    ImGui::SliderFloat("##night_exposure", &g.night_exposure, 0.5f, 6.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+                }
+                group_row(tr("Saturation"), Load::none, Load::none);
+                ImGui::SliderFloat("##saturation", &g.saturation, 0.5f, 1.8f, "%.2f");
+            }
+            ImGui::EndTable();
+        }
+
+        // The experimental renderer's own.
+        if (!g.experimental) warning(tr("The shadows, the ambient occlusion and the lamps below work with the experimental renderer only."));
+        ImGui::BeginDisabled(!g.experimental);
+        ImGui::SeparatorText(tr("Shadows"));
+        if (begin_group("##shadows", label_width)) {
+            group_row(tr("Sun shadows"), Load::above_medium, Load::high);
+            ImGui::Checkbox("##shadows", &e.shadows);
+            ImGui::BeginDisabled(!e.shadows);
+            group_row(tr("Shadow distance"), by_steps(e.shadow_distance, 250.0f, 500.0f, Load::medium, Load::above_medium, Load::high),
+                      by_steps(e.shadow_distance, 250.0f, 500.0f, Load::medium, Load::above_medium, Load::high));
+            ImGui::SliderFloat("##shadow_distance", &e.shadow_distance, 100.0f, 1000.0f, tr("%.0f m"));
+            {
+                const char* sizes[] = {"1024", "2048", "4096"};
+                int quality = e.shadow_map_size <= 1024 ? 0 : e.shadow_map_size >= 4096 ? 2 : 1;
+                const Load loads[] = {Load::medium, Load::above_medium, Load::high};
+                group_row(tr("Shadow quality"), Load::none, loads[quality]);
+                if (ImGui::Combo("##shadow_quality", &quality, sizes, 3)) e.shadow_map_size = 1024u << quality;
+                row_note(tr("Texels a side of each cascade's map: sharper shadows, more video memory (4096: 64 MB a cascade)."));
+            }
+            {
+                int cascades = static_cast<int>(e.shadow_cascades);
+                const Load load = cascades <= 2 ? Load::medium : cascades == 3 ? Load::above_medium : Load::high;
+                group_row(tr("Shadow cascades"), load, load);
+                if (ImGui::SliderInt("##shadow_cascades", &cascades, 2, 4)) e.shadow_cascades = static_cast<std::uint32_t>(cascades);
+                row_note(tr("Pieces the shadow distance is split into: more keeps the middle distance sharp, each one more pass."));
+            }
+            group_row(tr("Shadow softness"), Load::none, Load::negligible);
+            ImGui::SliderFloat("##shadow_softness", &e.shadow_softness, 0.5f, 4.0f, "%.1f");
+            group_row(tr("Keep the far cascades"), Load::negligible, Load::negligible);
+            ImGui::Checkbox("##shadow_cache", &e.cache_far_cascades);
+            row_note(tr("The far cascades are drawn every other frame, and at once when the view leaves them."));
+            group_row(tr("Sharp shadows in the cab"), Load::medium, Load::medium);
+            ImGui::Checkbox("##shadow_cab", &e.cab_shadows);
+            row_note(tr("A shadow map of its own around the cab: sharp edges on the desk, one more pass."));
+            ImGui::EndDisabled();
+            ImGui::EndTable();
+        }
+
+        ImGui::SeparatorText(tr("Ambient occlusion"));
+        if (begin_group("##occlusion", label_width)) {
+            group_row(tr("Ambient occlusion, GTAO"), Load::medium, e.occlusion_low ? Load::high : Load::extreme);
+            ImGui::Checkbox("##ao", &e.ambient_occlusion);
+            row_note(tr("Darkens the sky light in corners and creases, from the depth of the scene."));
+            ImGui::BeginDisabled(!e.ambient_occlusion);
+            group_row(tr("Occlusion quality"), Load::none, e.occlusion_low ? Load::high : Load::extreme);
+            if (ImGui::RadioButton(tr("low (half resolution, several times faster)"), e.occlusion_low)) e.occlusion_low = true;
+            ImGui::SameLine();
+            if (ImGui::RadioButton(tr("high##occlusion"), !e.occlusion_low)) e.occlusion_low = false;
+            ImGui::EndDisabled();
+            ImGui::EndTable();
+        }
+
+        ImGui::SeparatorText(tr("Lamps"));
+        if (begin_group("##lamps", label_width)) {
+            group_row(tr("Every lamp, clustered"), Load::negligible, Load::medium);
+            ImGui::Checkbox("##clusters", &e.clustered_lights);
+            row_note(tr("Every lamp and headlight near the camera lights the scene, not RTS's nine a ring."));
+            {
+                int count = static_cast<int>(e.lamp_shadows);
+                const Load load = count == 0 ? Load::none : count <= 2 ? Load::medium : count <= 4 ? Load::above_medium : Load::high;
+                group_row(tr("Lamp shadows"), load, load);
+                if (ImGui::SliderInt("##lamp_shadows", &count, 0, static_cast<int>(renderer::SceneEffects::max_lamp_shadows)))
+                    e.lamp_shadows = static_cast<std::uint32_t>(count);
+                row_note(tr("Lamps that throw shadows: those lighting the cab (or the view) most, by power, direction and reach, so a floodlight does not shine through the roof. Each is one more pass."));
+            }
+            {
+                const Load load = g.light_range < 1.0f ? Load::negligible : g.light_range <= 1000.0f ? Load::medium : Load::above_medium;
+                group_row(tr("Light range"), load, load);
+                ImGui::SliderFloat("##light_range", &g.light_range, 0.0f, 3000.0f, g.light_range < 1.0f ? tr("as RTS") : tr("%.0f m"));
+                row_note(tr("How far the scenery's lamps and floodlights still light the scene; at 0 as RTS's MaxLightDistance."));
+            }
+            group_row(tr("Headlight reach"), Load::none, Load::negligible);
+            ImGui::SliderFloat("##headlight_reach", &g.headlight_reach, 1.0f, 5.0f, "x%.1f");
+            row_note(tr("How far the trains' headlights and searchlights reach, as a factor of their .eng; 1 as RTS."));
+            group_row(tr("Physical light falloff"), Load::none, Load::none);
+            ImGui::Checkbox("##light_falloff", &g.physical_light);
+            row_note(tr("Headlights and lamps fall off as 1/distance squared with a soft cone edge; off: the RTS light shapes."));
+            group_row(tr("Lamps in daylight"), Load::none, Load::none);
+            ImGui::SliderFloat("##lamps_daylight", &e.lamps_in_daylight, 0.0f, 1.0f, "%.2f");
+            row_note(tr("How strong lamps are in full daylight against the night: an eye used to the sun hardly sees a cab lamp. 1: as at night."));
+            group_row(tr("Night sky light"), Load::none, Load::none);
+            ImGui::SliderFloat("##night_ambient", &g.night_ambient, 0.5f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+            row_note(tr("The environment's ambient light at night, as a factor: the unlit surroundings brighter, the lamps as they are. No effect by day."));
+            group_row(tr("Ground bounce"), Load::none, Load::negligible);
+            ImGui::SliderFloat("##ground_bounce", &e.ground_bounce, 0.0f, 0.5f, "%.2f");
+            row_note(tr("Light the sunlit ground throws back onto bogies and the underframe, as the ground's reflectance (ballast and grass about 0.2). 0: none."));
+            group_row(tr("Light FullBright as ordinary surfaces"), Load::none, Load::none);
+            ImGui::Checkbox("##fullbright", &g.light_fullbright);
+            row_note(tr("MSTS FullBright surfaces (platforms, signs) take sun, sky and lamps; their darkened night textures are left out."));
+            group_row(tr("A lamp throws no shadow of its own model"), Load::negligible, Load::none);
+            ImGui::Checkbox("##lamp_own_model", &g.lamp_own_model);
+            ImGui::EndTable();
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SeparatorText(tr("Sky and water"));
+        if (begin_group("##sky", label_width)) {
+            group_row(tr("openRTS sky: atmosphere, volumetric clouds (not as in RTS)"), Load::negligible, Load::above_medium);
+            ImGui::Checkbox("##native_sky", &g.native_sky);
+            ImGui::BeginDisabled(!g.native_sky);
+            group_row(tr("Cloud cover by the weather (clear 42 %, snow 85 %, rain 92 %)"), Load::none, Load::none);
+            ImGui::Checkbox("##cloud_cover_weather", &g.cloud_cover_weather);
+            ImGui::BeginDisabled(g.cloud_cover_weather);
+            group_row(tr("Cloud cover"), Load::none, Load::negligible);
+            ImGui::SliderFloat("##cloud_cover", &g.cloud_cover, 0.0f, 100.0f, "%.0f %%");
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled(!g.experimental);
+            group_row(tr("Cloud shadows on the ground (experimental renderer)"), Load::none, Load::medium);
+            ImGui::Checkbox("##cloud_shadows", &g.cloud_shadows);
+            ImGui::BeginDisabled(!g.cloud_shadows);
+            group_row(tr("Cloud shadow darkness (the sun a thick cloud takes)"), Load::none, Load::none);
+            ImGui::SliderFloat("##cloud_shadow_darkness", &g.cloud_shadow_darkness, 0.0f, 100.0f, "%.0f %%");
+            group_row(tr("Cloud shadow sharpness (1: soft, as the clouds)"), Load::none, Load::none);
+            ImGui::SliderFloat("##cloud_shadow_sharpness", &g.cloud_shadow_sharpness, 1.0f, 10.0f, "%.1f");
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled(!g.experimental);
+            group_row(tr("Aerial perspective"), Load::none, Load::negligible);
+            ImGui::Checkbox("##aerial", &e.aerial_perspective);
+            row_note(tr("Distance haze thinning with height and brighter towards the sun, instead of RTS's linear fog."));
+            ImGui::EndDisabled();
+            group_row(tr("openRTS water: waves, sky reflection, soft shores (not as in RTS)"), Load::none, Load::medium);
+            ImGui::Checkbox("##native_water", &g.native_water);
+            ImGui::EndTable();
+        }
+
+        ImGui::SeparatorText(tr("World"));
+        if (begin_group("##world", label_width)) {
+            group_row(tr("Keep trees off tracks and roads (not as in RTS)"), Load::negligible, Load::none);
+            ImGui::Checkbox("##forest_clearance", &g.forest_clearance);
+            ImGui::BeginDisabled(!g.forest_clearance);
+            group_row(tr("Trees from the track's or road's edge"), Load::none, Load::none);
+            ImGui::SliderFloat("##forest_clearance_distance", &g.forest_clearance_distance, 0.5f, 20.0f, tr("%.1f m"));
+            ImGui::EndDisabled();
+            group_row(tr("Signal lights at the lens's size, far off a dot (not as in RTS)"), Load::none, Load::none);
+            ImGui::Checkbox("##signal_lights", &g.signal_lights_real_size);
+            group_row(tr("Depth for ReShade"), Load::none, Load::negligible);
+            ImGui::Checkbox("##reshade_depth", &g.reshade_depth);
+            row_note(tr("Keeps the scene depth to the end of the frame and, with anti-aliasing, adds a copy ReShade can take. In ReShade: RESHADE_DEPTH_INPUT_IS_REVERSED 1, RESHADE_DEPTH_MULTIPLIER 20 (see INSTALL.md)."));
+            ImGui::EndTable();
+        }
+        hint(tr("The game reads these at its start; they are in the game's panel as well, and what is changed there shows here."));
     }
     ImGui::EndChild();
+    if (g != before) viewer::save_graphics_settings(g, before);
 }
 
 // The simulator's keys and mouse (the game's panel has the same tab).
@@ -1226,8 +1572,198 @@ void Launcher::State::draw_bar(const float button_width, const float button_heig
 }
 #endif
 
+// The check at the start, and what a finished one leads to.
+void Launcher::State::poll_update() {
+    using Stage = update::Updater::Stage;
+    if (!update_started && update_check) {
+        update_started = true;
+        updater.check(std::string(core::version()));
+    }
+    if (old_files_again != std::chrono::steady_clock::time_point{} && std::chrono::steady_clock::now() >= old_files_again) {
+        old_files_again = {};
+        update::remove_old_files(old_files());
+    }
+    const auto now = updater.status();
+    if (update_seen == Stage::checking && now.stage != Stage::checking) {
+        // Offered when newer, unless skipped (asked for by hand: anyway).
+        if (now.stage == Stage::available && now.release && (update_manual || remembered("update_skip").value_or("") != now.release->tag))
+            offer_update();
+        update_manual = false;
+    }
+    if (now.stage == Stage::installed) restart = true;
+    update_seen = now.stage;
+}
+
+#ifdef OPENRTS_HAS_IMGUI
+namespace {
+
+void open_page(const std::string& url) {
+#ifdef _WIN32
+    if (url.rfind("https://", 0) != 0) return;
+    const int size = MultiByteToWideChar(CP_UTF8, 0, url.data(), static_cast<int>(url.size()), nullptr, 0);
+    std::wstring wide(static_cast<std::size_t>(size), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, url.data(), static_cast<int>(url.size()), wide.data(), size);
+    ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    (void)url;
+#endif
+}
+
+[[nodiscard]] std::string failure_text(const update::Updater::Status& status) {
+    std::string text = tr(status.error.c_str());
+    if (!status.detail.empty()) text += ": " + status.detail;
+    return text;
+}
+
+} // namespace
+
+// The offer: what is new, then update / the release's page / later / skip;
+// the download's progress; a failure.
+void Launcher::State::draw_update_popup() {
+    using Stage = update::Updater::Stage;
+    if (update_popup) {
+        ImGui::OpenPopup("##update");
+        update_popup = false;
+    }
+    const auto& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos({io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f}, ImGuiCond_Always, {0.5f, 0.5f});
+    ImGui::SetNextWindowSize({(std::min)(620.0f, io.DisplaySize.x - 40.0f), 0.0f});
+    if (!ImGui::BeginPopupModal("##update", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
+        return;
+    const auto now = updater.status();
+    if (!now.release || (now.stage != Stage::available && now.stage != Stage::downloading && now.stage != Stage::installing &&
+                         now.stage != Stage::installed && now.stage != Stage::failed)) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    const auto& release = *now.release;
+    if (auto* large = viewer::large_font()) ImGui::PushFont(large);
+    ImGui::TextUnformatted(tr("A new version of openRTS"));
+    if (viewer::large_font()) ImGui::PopFont();
+    ImGui::TextUnformatted(trf("%s is out; you have %s.", release.tag.c_str(), std::string(core::version()).c_str()).c_str());
+    if (!release.summary.empty()) {
+        ImGui::Spacing();
+        ImGui::TextWrapped("%s", release.summary.c_str());
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    const float button_height = ImGui::GetFrameHeight() * 1.3f;
+    switch (now.stage) {
+    case Stage::available: {
+        const bool can_install = !update_dev && update_writable;
+        if (update_dev) {
+            hint(tr("This is a build folder of the sources: an update does not replace it. The release can be downloaded from its page."));
+        } else if (!update_writable) {
+            warning(trf("The game's folder cannot be written to (%s): download the release from its page, or start the menu as administrator.",
+                        utf8(exe_dir).c_str())
+                        .c_str());
+        } else if (running()) {
+            hint(tr("Close the game to update."));
+        } else {
+            hint(tr("The archive is downloaded and checked, the game's files are replaced, and the menu starts again. Your settings stay."));
+        }
+        ImGui::Spacing();
+        if (can_install) {
+            ImGui::BeginDisabled(running());
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.16f, 0.52f, 0.30f, 1.0f});
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.20f, 0.62f, 0.36f, 1.0f});
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{0.14f, 0.45f, 0.26f, 1.0f});
+            if (ImGui::Button(tr("Update"), {0.0f, button_height})) updater.install(exe_dir, update_folder(), old_files());
+            ImGui::PopStyleColor(3);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+        }
+        if (ImGui::Button(tr("Release page"), {0.0f, button_height})) open_page(release.page);
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Later"), {0.0f, button_height})) ImGui::CloseCurrentPopup();
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Skip this version"), {0.0f, button_height})) {
+            remember("update_skip", release.tag);
+            ImGui::CloseCurrentPopup();
+        }
+        break;
+    }
+    case Stage::downloading: {
+        const double total = static_cast<double>(now.total);
+        const float fraction = total > 0.0 ? static_cast<float>(static_cast<double>(now.done) / total) : 0.0f;
+        const auto label = trf("Downloading: %.1f of %.1f MB", static_cast<double>(now.done) / 1048576.0, total / 1048576.0);
+        ImGui::ProgressBar(fraction, {-FLT_MIN, 0.0f}, label.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button(tr("Cancel"), {0.0f, button_height})) updater.cancel();
+        break;
+    }
+    case Stage::installing: ImGui::TextUnformatted(tr("Checking the archive and installing...")); break;
+    case Stage::installed: ImGui::TextUnformatted(tr("Installed. The menu starts again.")); break;
+    case Stage::failed:
+        warning(failure_text(now).c_str());
+        ImGui::Spacing();
+        if (!update_dev && update_writable) {
+            ImGui::BeginDisabled(running());
+            if (ImGui::Button(tr("Try again"), {0.0f, button_height})) updater.install(exe_dir, update_folder(), old_files());
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+        }
+        if (ImGui::Button(tr("Release page"), {0.0f, button_height})) open_page(release.page);
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Close"), {0.0f, button_height})) ImGui::CloseCurrentPopup();
+        break;
+    default: break;
+    }
+    ImGui::EndPopup();
+}
+
+// Settings: this version, the check at the start, the last check's answer.
+void Launcher::State::draw_update_settings(const float label_width) {
+    using Stage = update::Updater::Stage;
+    ImGui::SeparatorText(tr("Updates"));
+    if (begin_form("##update_form", label_width)) {
+        form_row(tr("Version"));
+        ImGui::TextUnformatted(std::string(core::version()).c_str());
+        form_row(tr("Check for a new version at the start"));
+        if (ImGui::Checkbox("##update_check", &update_check)) remember("update_check", update_check ? "1" : "0");
+        ImGui::EndTable();
+    }
+    const auto now = updater.status();
+    switch (now.stage) {
+    case Stage::checking: hint(tr("Asking GitHub for the latest version...")); break;
+    case Stage::up_to_date:
+        hint(trf("This is the latest version (%s).", now.release ? now.release->tag.c_str() : "").c_str());
+        break;
+    case Stage::available:
+    case Stage::downloading:
+    case Stage::installing:
+    case Stage::installed:
+        if (now.release) {
+            ImGui::TextUnformatted(trf("Version %s is out.", now.release->tag.c_str()).c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton(tr("Update..."))) offer_update();
+        }
+        break;
+    case Stage::failed: warning(failure_text(now).c_str()); break;
+    default: break;
+    }
+    ImGui::BeginDisabled(updater.busy());
+    if (ImGui::Button(tr("Check now"))) {
+        update_manual = true;
+        updater.check(std::string(core::version()));
+    }
+    ImGui::EndDisabled();
+    hint(tr("The menu asks GitHub for the latest release (not the nightly build). An update downloads its archive, checks it and replaces the game's files; the settings stay."));
+}
+#else
+void Launcher::State::draw_update_popup() {}
+void Launcher::State::draw_update_settings(float) {}
+#endif
+
 Launcher::Launcher(std::filesystem::path exe_dir) : state_(std::make_unique<State>()) {
     state_->exe_dir = std::move(exe_dir);
+    // The last update's old files (the menu that ran it may still be closing:
+    // once more a few seconds on).
+    update::remove_old_files(state_->old_files());
+    state_->old_files_again = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    state_->update_check = remembered_int("update_check", 1) != 0;
     state_->load_settings();
     state_->scan();
     // No RTS folder yet: the settings first, where it is given.
@@ -1259,8 +1795,17 @@ Launcher::~Launcher() {
 #endif
 }
 
+void Launcher::set_update_check(const bool on) { state_->update_check = on && state_->update_check; }
+
+void Launcher::set_updated_from(std::string version) {
+    state_->status = trf("openRTS is updated: %s -> %s.", version.c_str(), std::string(core::version()).c_str());
+}
+
+bool Launcher::wants_close() const { return state_->restart; }
+
 void Launcher::update(renderer::ModelRenderer&, viewer::ViewerCamera&, const viewer::SceneClock&, const viewer::SceneInput&) {
     state_->poll();
+    state_->poll_update();
 }
 
 viewer::SceneEnvironment Launcher::environment() const {
@@ -1306,9 +1851,12 @@ void Launcher::draw_overlay(const viewer::ViewerCamera&) const {
     case Tab::single: s.draw_single(middle); break;
     case Tab::network: s.draw_network(middle); break;
     case Tab::settings: s.draw_settings(middle); break;
+    case Tab::graphics: s.draw_graphics(middle); break;
     case Tab::controls: s.draw_controls(middle); break;
     }
     ImGui::EndDisabled();
+
+    s.draw_update_popup();
 
     ImGui::Separator();
     if (game_tab) s.draw_bar(button_width, button_height, status_height);

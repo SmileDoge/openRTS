@@ -24,6 +24,7 @@ add_library(openrts_viewer_core STATIC
     src/engineer.cpp
     src/key_layout.cpp
     src/frame_limiter.cpp
+    src/graphics_settings.cpp
     src/controls_help.cpp
     src/window_mode.cpp
     src/window_viewer.cpp)

@@ -35,6 +35,7 @@
 #include "controls_help.hpp"
 #include "frame_limiter.hpp"
 #include "gpu_timer.hpp"
+#include "graphics_settings.hpp"
 #include "key_layout.hpp"
 #include "ui_fonts.hpp"
 #include "ui_text.hpp"
@@ -645,7 +646,67 @@ struct PanelState {
     // Shadow cascades and the depth pre-pass recorded on worker threads.
     bool parallel_recording = true;
     bool multi_draw = true;
+    // The graphics settings as kept when the game started (MSAA, the
+    // renderer and HDR are the start's), for the presets.
+    GraphicsSettings kept_graphics;
 };
+
+// The panel's graphics settings from and to the start menu's
+// (graphics_settings.hpp): at the start, and for a preset.
+void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
+    panel.tone_curve = g.tone_curve;
+    panel.exposure = g.exposure;
+    panel.night_exposure = g.night_exposure;
+    panel.saturation = g.saturation;
+    const bool show_occlusion = panel.effects.show_occlusion;
+    panel.effects = g.effects;
+    panel.effects.show_occlusion = show_occlusion;
+    panel.physical_light = g.physical_light;
+    panel.light_range = g.light_range;
+    panel.headlight_reach = g.headlight_reach;
+    panel.night_ambient = g.night_ambient;
+    panel.light_fullbright = g.light_fullbright;
+    panel.lamp_own_model = g.lamp_own_model;
+    panel.native_sky = g.native_sky;
+    panel.cloud_cover_weather = g.cloud_cover_weather;
+    panel.cloud_cover = g.cloud_cover;
+    panel.cloud_shadows = g.cloud_shadows;
+    panel.cloud_shadow_darkness = g.cloud_shadow_darkness;
+    panel.cloud_shadow_sharpness = g.cloud_shadow_sharpness;
+    panel.native_water = g.native_water;
+    panel.forest_clearance = g.forest_clearance;
+    panel.forest_clearance_distance = g.forest_clearance_distance;
+    panel.signal_lights_real_size = g.signal_lights_real_size;
+    panel.reshade_depth = g.reshade_depth;
+}
+
+[[nodiscard]] GraphicsSettings panel_graphics(const PanelState& panel) {
+    auto g = panel.kept_graphics;
+    g.tone_curve = panel.tone_curve;
+    g.exposure = panel.exposure;
+    g.night_exposure = panel.night_exposure;
+    g.saturation = panel.saturation;
+    g.effects = panel.effects;
+    g.effects.show_occlusion = false;
+    g.physical_light = panel.physical_light;
+    g.light_range = panel.light_range;
+    g.headlight_reach = panel.headlight_reach;
+    g.night_ambient = panel.night_ambient;
+    g.light_fullbright = panel.light_fullbright;
+    g.lamp_own_model = panel.lamp_own_model;
+    g.native_sky = panel.native_sky;
+    g.cloud_cover_weather = panel.cloud_cover_weather;
+    g.cloud_cover = panel.cloud_cover;
+    g.cloud_shadows = panel.cloud_shadows;
+    g.cloud_shadow_darkness = panel.cloud_shadow_darkness;
+    g.cloud_shadow_sharpness = panel.cloud_shadow_sharpness;
+    g.native_water = panel.native_water;
+    g.forest_clearance = panel.forest_clearance;
+    g.forest_clearance_distance = panel.forest_clearance_distance;
+    g.signal_lights_real_size = panel.signal_lights_real_size;
+    g.reshade_depth = panel.reshade_depth;
+    return g;
+}
 
 // World clock: time of day advanced by real frame time times `speed`.
 struct ClockControls {
@@ -815,6 +876,30 @@ public:
         }
 
         if (ImGui::CollapsingHeader(tr("Graphics"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            {
+                // A preset: the costly settings together, as in the start menu.
+                const auto current = panel_graphics(panel);
+                const auto preset = matching_graphics_preset(current);
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::BeginCombo(tr("Graphics preset"), preset ? tr(graphics_preset_name(*preset)) : tr("Custom"))) {
+                    for (int i = 0; i < graphics_preset_count; ++i) {
+                        const auto which = static_cast<GraphicsPreset>(i);
+                        if (ImGui::Selectable(tr(graphics_preset_name(which)), preset && *preset == which)) {
+                            auto now = current;
+                            apply_graphics_preset(now, which);
+                            save_graphics_settings(now, current);
+                            set_panel_graphics(panel, now);
+                            panel.kept_graphics = now;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::TextWrapped("%s", preset ? tr(graphics_preset_note(*preset)) : tr("Custom (changed by hand)"));
+                if (panel.kept_graphics.msaa && renderer::render_sample_count() <= 1)
+                    ImGui::TextWrapped("%s", tr("Anti-aliasing (MSAA 4x) from the next start."));
+                ImGui::PopStyleColor();
+            }
             // The lighting: RTS's or the experimental one (R); not on OpenGL.
             auto path = renderer.shading_path();
             int path_index = path == renderer::ShadingPath::experimental ? 1 : 0;
@@ -2055,94 +2140,31 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     }
     panel.hdr = renderer::scene_hdr();
     panel.backend_now = renderer::adapter_backend_name(context.context.adapter());
-    panel.reshade_depth = options.reshade_depth.value_or(remembered("reshade_depth").value_or("0") == "1");
     panel.experimental_supported = experimental_supported;
     if (!panel.experimental_supported)
         std::cout << "OpenGL: the experimental renderer and the depth copy for ReShade are not available "
                      "(wgpu cannot read depth textures with textureLoad in GLSL); the RTS path only." << std::endl;
     if (const auto key = remembered("backend"))
         panel.backend_choice = static_cast<int>(renderer::parse_graphics_backend(*key).value_or(renderer::GraphicsBackend::automatic));
-    if (const auto curve = remembered("tone_mode")) panel.tone_curve = std::clamp(std::atoi(curve->c_str()), 0, 4);
-    if (const auto falloff = remembered("light_falloff")) panel.physical_light = *falloff == "physical";
-    if (const auto fullbright = remembered("light_fullbright")) panel.light_fullbright = *fullbright == "1";
-    if (const auto own = remembered("lamp_own_model")) panel.lamp_own_model = *own != "0";
-    if (const auto clear = remembered("forest_clearance")) panel.forest_clearance = *clear != "0";
-    if (const auto water = remembered("native_water")) panel.native_water = *water != "0";
-    if (const auto sky = remembered("native_sky")) panel.native_sky = *sky != "0";
-    if (const auto by_weather = remembered("cloud_cover_weather")) panel.cloud_cover_weather = *by_weather != "0";
-    if (const auto real = remembered("signal_lights_real_size")) panel.signal_lights_real_size = *real != "0";
-    if (const auto cover = remembered("cloud_cover")) {
-        try {
-            panel.cloud_cover = std::clamp(std::stof(*cover), 0.0f, 100.0f);
-        } catch (...) {
-        }
-    }
-    if (const auto shadows = remembered("cloud_shadows")) panel.cloud_shadows = *shadows != "0";
-    if (const auto darkness = remembered("cloud_shadow_darkness")) {
-        try {
-            panel.cloud_shadow_darkness = std::clamp(std::stof(*darkness), 0.0f, 100.0f);
-        } catch (...) {
-        }
-    }
-    if (const auto sharpness = remembered("cloud_shadow_sharpness")) {
-        try {
-            panel.cloud_shadow_sharpness = std::clamp(std::stof(*sharpness), 1.0f, 10.0f);
-        } catch (...) {
-        }
-    }
-    if (const auto distance = remembered("forest_clearance_distance")) {
-        try {
-            panel.forest_clearance_distance = std::clamp(std::stof(*distance), 0.5f, 20.0f);
-        } catch (...) {
-        }
-    }
+    // The graphics settings as the start menu keeps them, its defaults
+    // (graphics_settings.hpp); the command line's options over them.
+    panel.kept_graphics = load_graphics_settings();
+    set_panel_graphics(panel, panel.kept_graphics);
+    if (options.reshade_depth) panel.reshade_depth = *options.reshade_depth;
     renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
-    if (const auto range = remembered("light_range"))
-        panel.light_range = std::clamp(static_cast<float>(std::atof(range->c_str())), 0.0f, 3000.0f);
     if (options.light_range) panel.light_range = std::clamp(*options.light_range, 0.0f, 3000.0f);
-    if (const auto reach = remembered("headlight_reach"))
-        panel.headlight_reach = std::clamp(static_cast<float>(std::atof(reach->c_str())), 1.0f, 5.0f);
     if (options.headlight_reach) panel.headlight_reach = std::clamp(*options.headlight_reach, 1.0f, 5.0f);
-    if (const auto ambient = remembered("night_ambient"))
-        panel.night_ambient = std::clamp(static_cast<float>(std::atof(ambient->c_str())), 0.5f, 8.0f);
-    if (const auto lamps = remembered("lamps_daylight"))
-        panel.effects.lamps_in_daylight = std::clamp(static_cast<float>(std::atof(lamps->c_str())), 0.0f, 1.0f);
     if (options.lamps_daylight) panel.effects.lamps_in_daylight = std::clamp(*options.lamps_daylight, 0.0f, 1.0f);
-    if (const auto bounce = remembered("ground_bounce"))
-        panel.effects.ground_bounce = std::clamp(static_cast<float>(std::atof(bounce->c_str())), 0.0f, 0.5f);
     if (options.ground_bounce) panel.effects.ground_bounce = std::clamp(*options.ground_bounce, 0.0f, 0.5f);
     constexpr int most_lamp_shadows = static_cast<int>(renderer::SceneEffects::max_lamp_shadows);
-    if (const auto count = remembered("lamp_shadows")) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(std::atoi(count->c_str()), 0, most_lamp_shadows));
     if (options.lamp_shadows) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(*options.lamp_shadows, 0, most_lamp_shadows));
-    if (const auto saturation = remembered("saturation"))
-        panel.saturation = std::clamp(static_cast<float>(std::atof(saturation->c_str())), 0.5f, 1.8f);
-    if (const auto exposure = remembered("night_exposure"))
-        panel.night_exposure = std::clamp(static_cast<float>(std::atof(exposure->c_str())), 0.5f, 6.0f);
-    if (const auto exposure = remembered("exposure")) panel.exposure = std::clamp(static_cast<float>(std::atof(exposure->c_str())), 0.25f, 4.0f);
-    if (const auto on = remembered("effect_shadows")) panel.effects.shadows = *on == "1";
-    if (const auto on = remembered("effect_clusters")) panel.effects.clustered_lights = *on == "1";
-    if (const auto on = remembered("effect_ao")) panel.effects.ambient_occlusion = *on == "1";
-    if (const auto quality = remembered("effect_ao_quality")) panel.effects.occlusion_low = *quality == "low";
-    if (const auto on = remembered("effect_aerial")) panel.effects.aerial_perspective = *on == "1";
     if (const auto on = remembered("parallel_recording")) panel.parallel_recording = *on == "1";
-    if (const auto on = remembered("shadow_cache")) panel.effects.cache_far_cascades = *on == "1";
     if (options.shadow_cache) panel.effects.cache_far_cascades = *options.shadow_cache;
-    if (const auto on = remembered("shadow_cab")) panel.effects.cab_shadows = *on == "1";
     if (options.cab_shadows) panel.effects.cab_shadows = *options.cab_shadows;
     if (options.parallel_recording) panel.parallel_recording = *options.parallel_recording;
     if (options.start_paused) panel.paused = true;
     if (const auto on = remembered("multi_draw")) panel.multi_draw = *on == "1";
     if (options.multi_draw) panel.multi_draw = *options.multi_draw;
-    if (const auto value = remembered("shadow_distance"))
-        panel.effects.shadow_distance = std::clamp(static_cast<float>(std::atof(value->c_str())), 100.0f, 1000.0f);
-    if (const auto value = remembered("shadow_quality")) {
-        const auto size = std::atoi(value->c_str());
-        panel.effects.shadow_map_size = size <= 1024 ? 1024u : size >= 4096 ? 4096u : 2048u;
-    }
-    if (const auto value = remembered("shadow_cascades"))
-        panel.effects.shadow_cascades = static_cast<std::uint32_t>(std::clamp(std::atoi(value->c_str()), 2, 4));
-    if (const auto value = remembered("shadow_softness"))
-        panel.effects.shadow_softness = std::clamp(static_cast<float>(std::atof(value->c_str())), 0.5f, 4.0f);
     if (options.shadow_settings) {
         // distance,size,cascades,softness
         std::array<double, 4> values{};
@@ -2218,6 +2240,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         stages = {};
         const auto elapsed = static_cast<float>((std::min)(now - last_time, max_frame_seconds));
         input.keyboard_captured = scene.keyboard_captured();
+        if (scene.wants_close()) glfwSetWindowShouldClose(window.get(), GLFW_TRUE);
         input.scene_takes_scroll = scene.takes_scroll();
         update_camera_from_keyboard(window.get(), input, elapsed);
 #ifdef OPENRTS_HAS_IMGUI

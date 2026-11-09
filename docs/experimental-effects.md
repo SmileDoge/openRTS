@@ -131,6 +131,27 @@ remembered in `viewer_state.ini` (`effect_shadows`, `effect_clusters`,
 `headlight_reach`) and the ground bounce (`ground_bounce`, see below).
 `--effects shadows,clusters,ao,aerial | none` sets them for one run; `show-ao` shows the occlusion itself as the colour.
 
+The start menu's Graphics tab shows every one of them too, grouped, with
+its load on the CPU and the GPU, and four presets (2026-11-09,
+`viewer/src/graphics_settings`; the game reads the same keys through it).
+A preset sets anti-aliasing, the sun shadows (on; distance, map size,
+cascades, the cab's map), the ambient occlusion and its quality, the lamp
+shadows and the cloud shadows; the rest is left:
+
+| | Low | Medium | High (the defaults) | Ultra |
+|---|---|---|---|---|
+| MSAA 4x | on | on | on | on |
+| shadow distance | 150 m | 250 m | 250 m | 500 m |
+| shadow map | 1024 | 2048 | 2048 | 4096 |
+| cascades | 2 | 3 | 3 | 4 |
+| cab shadow map | off | on | on | on |
+| ambient occlusion | off | low | high | high |
+| lamp shadows | 0 | 1 | 3 | 8 |
+| cloud shadows | off | on | on | on |
+
+A setting is saved only when it changes (a default not touched stays a
+default, and follows a later version's).
+
 ## Cost
 
 ED9M on Kuban, the camera outside, 1280 x 720, 4x MSAA, RTX 4070 Ti SUPER,

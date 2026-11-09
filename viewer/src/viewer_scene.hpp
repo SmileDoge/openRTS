@@ -233,6 +233,8 @@ public:
     // The scene takes the keyboard (a cab's own keys): the camera and the
     // default driving keys stay off.
     [[nodiscard]] virtual bool keyboard_captured() const { return false; }
+    // The scene is done: its window closes (the start menu, updated, starts again).
+    [[nodiscard]] virtual bool wants_close() const { return false; }
     // The mouse wheel works the scene (the 3-D cab) instead of zooming.
     [[nodiscard]] virtual bool takes_scroll() const { return false; }
     // Switch `id` of the driven train's cab to `state` (--capture-switch).

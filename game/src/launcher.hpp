@@ -3,9 +3,13 @@
 // The start menu of openrts_game, in tabs:
 // - Single player: a route, a consist and its path, the time of day, season,
 //   weather and how the train starts;
+// At its start it asks GitHub for the latest release (update.hpp) and offers
+// it: update, later, or skip that version.
 // - Network game: a server's address and the nick (the route, the time and
 //   the train are the server's); the place for an own server, not there yet;
-// - Settings: the RTS folder, language, keys, sound, graphics.
+// - Settings: the RTS folder, language, keys, sound, the log, updates;
+// - Graphics: presets, then every graphics setting of the game's panel in
+//   groups, each with its load on the processor and the video card.
 // All kept in viewer_state.ini. "Start" / "Connect" runs the game
 // (openrts_viewer) as a process of its own; the menu waits for it and comes
 // back. A network game's steps (connecting, waiting for a train, loading)
@@ -41,6 +45,12 @@ public:
     [[nodiscard]] std::string summary() const;
     // Opens a tab by its key: single, network, settings.
     void show_tab(std::string_view key);
+    // No check for a new version at the start (--capture, --no-update-check).
+    void set_update_check(bool on);
+    // Started again by an update from `version`: said in the status line.
+    void set_updated_from(std::string version);
+    // An update is installed: the window closes and the menu is started again.
+    [[nodiscard]] bool wants_close() const override;
 
 private:
     struct State;
