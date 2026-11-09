@@ -78,7 +78,7 @@ void draw_controls_help() {
         row("Y / U", "left / right doors (standing)");
         ImGui::EndTable();
     }
-    note("A locomotive with a DLL is driven from its cab with the mouse and the cab keys of its .sd, as in RTS: \"Cab keys of the locomotive DLL\" in the Train window gives them the keyboard (the camera keys are off then, the F keys work).");
+    note("A locomotive with a DLL is driven from its cab with the mouse and the cab keys of its .sd, as in RTS: on foot (the 3D cab) the keys work at once; with the free camera \"Cab keys of the locomotive DLL\" in the Train window gives them the keyboard (the camera keys are off then, the F keys work).");
 
     if (begin_section("Engineer and cab", "##controls_cab")) {
         row("Enter", "in the chair: rise at the desk and sit back / sit down / open a door / climb up");

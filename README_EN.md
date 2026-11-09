@@ -339,9 +339,10 @@ default. The keys at hand: the
 | Y / U | left / right doors (standing) |
 
 An engine with a DLL is driven from its cab with the mouse and the cab keys
-from the `.sd`, as in RTS: the "Cab keys of the locomotive DLL" checkbox in
-the Train window gives them the keyboard (the camera keys are off then; the
-F keys still work).
+from the `.sd`, as in RTS. On foot (the 3-D cab) the cab keys work at once;
+the arrows walk. With the free camera the "Cab keys of the locomotive DLL
+(on foot always on)" checkbox in the Train window gives them the keyboard
+(the camera keys are off then; the F keys still work).
 
 **The engineer and the cab** (the 3-D cab: the "3D cab view" checkbox in
 the Train window)

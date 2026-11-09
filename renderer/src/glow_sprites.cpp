@@ -15,7 +15,7 @@ namespace {
 constexpr const char* glow_shader = R"(
 struct Frame {
     view_projection: mat4x4<f32>,
-    right: vec4<f32>,  // xyz camera right
+    right: vec4<f32>,  // xyz camera right, w: a pixel's size a metre away (m)
     up: vec4<f32>,     // xyz camera up
     eye: vec4<f32>,    // xyz eye, w: field of view / 45 degrees
 };
@@ -32,13 +32,15 @@ struct VertexOut {
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32, @location(0) centre: vec3<f32>, @location(1) radius: f32,
            @location(2) uv_rect: vec4<f32>, @location(3) colour: vec4<f32>, @location(4) far_scale: f32,
-           @location(5) axis_x: vec3<f32>, @location(6) axis_y: vec3<f32>) -> VertexOut {
+           @location(5) axis_x: vec3<f32>, @location(6) axis_y: vec3<f32>, @location(7) min_pixels: f32,
+           @location(8) spread_light: f32) -> VertexOut {
     var corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
                                       vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
     let corner = corners[index];
     let to_eye = frame.eye.xyz - centre;
     let distance = length(to_eye);
-    let size = max(radius, distance * far_scale) * frame.eye.w;
+    let own = max(radius, distance * far_scale) * frame.eye.w;
+    let size = max(own, distance * min_pixels * frame.right.w);
     var x = axis_x;
     var y = axis_y;
     if (dot(x, x) < 0.5) {
@@ -49,6 +51,9 @@ fn vs_main(@builtin(vertex_index) index: u32, @location(0) centre: vec3<f32>, @l
     var out: VertexOut;
     out.position = frame.view_projection * vec4<f32>(world, 1.0);
     out.colour = colour;
+    // Made bigger than its own size: its light spread over the bigger quad.
+    let kept = own / max(size, 1e-6);
+    out.colour.a = colour.a * mix(1.0, kept * kept, clamp(spread_light, 0.0, 1.0));
     let t = corner * 0.5 + vec2(0.5, 0.5);
     out.uv = vec2(mix(uv_rect.x, uv_rect.z, t.x), mix(uv_rect.w, uv_rect.y, t.y));
     return out;
@@ -187,7 +192,7 @@ GlowSpriteRenderer::GlowSpriteRenderer(const WGPUDevice device, const WGPUTextur
     const auto shader = wgpuDeviceCreateShaderModule(device, &shader_descriptor);
     const WGPUPipelineLayoutDescriptor pipeline_layout_descriptor{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl.layout};
     const auto pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &pipeline_layout_descriptor);
-    const std::array<WGPUVertexAttribute, 7> attributes{{
+    const std::array<WGPUVertexAttribute, 9> attributes{{
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(GlowSprite, position), .shaderLocation = 0},
         {.format = WGPUVertexFormat_Float32, .offset = offsetof(GlowSprite, radius), .shaderLocation = 1},
         {.format = WGPUVertexFormat_Float32x4, .offset = offsetof(GlowSprite, uv), .shaderLocation = 2},
@@ -195,6 +200,8 @@ GlowSpriteRenderer::GlowSpriteRenderer(const WGPUDevice device, const WGPUTextur
         {.format = WGPUVertexFormat_Float32, .offset = offsetof(GlowSprite, far_scale), .shaderLocation = 4},
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(GlowSprite, axis_x), .shaderLocation = 5},
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(GlowSprite, axis_y), .shaderLocation = 6},
+        {.format = WGPUVertexFormat_Float32, .offset = offsetof(GlowSprite, min_pixels), .shaderLocation = 7},
+        {.format = WGPUVertexFormat_Float32, .offset = offsetof(GlowSprite, spread_light), .shaderLocation = 8},
     }};
     const WGPUVertexBufferLayout vertex_layout{
         .stepMode = WGPUVertexStepMode_Instance,
@@ -295,7 +302,9 @@ void GlowSpriteRenderer::render(const WGPURenderPassEncoder pass, const glm::mat
         .up = glm::vec4{view[0][1], view[1][1], view[2][1], 0.0f},
         .eye = glm::vec4{glm::vec3{inverse[3]}, 0.0f},
     };
-    (void)viewport_height;
+    // A pixel's size a metre away: the view's height over the pixels (the
+    // zoom included).
+    frame.right.w = 2.0f / ((std::max)(projection[1][1], 1e-4f) * (std::max)(viewport_height, 1.0f));
     // RTS's fov / 45 at its installed FOV of 65 degrees, fixed (see set_sprites).
     frame.eye.w = impl.size_factor;
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {

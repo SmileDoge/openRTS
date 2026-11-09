@@ -21,6 +21,7 @@
 #include <glm/vec3.hpp>
 #include <webgpu/webgpu.h>
 
+#include <openrts/renderer/cloud_shadow.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/task_pool.hpp>
 
@@ -30,6 +31,12 @@ struct SceneEffectSettings {
     bool shadows = true;
     bool clustered_lights = true;
     bool ambient_occlusion = true;
+    // The occlusion's quality. High: two slices of six steps each way at the
+    // frame's size, then a 5 x 5 blur. Low: a quarter of the pixels (half
+    // the size each way), one slice of four steps, joined back up to the
+    // frame's size by depth: several times cheaper (on a GTX 1650 in a cab
+    // high took 60 fps down to 10), coarser and softer.
+    bool occlusion_low = false;
     bool aerial_perspective = true;
     float shadow_distance = 250.0f; // m, the last cascade's end (100..1000)
     std::uint32_t shadow_map_size = 2048; // texels a side of each cascade (1024, 2048, 4096)
@@ -124,7 +131,9 @@ public:
     // The frame's camera, lights and sun: cascades, the uniform and the
     // light lists (uploaded now). `active` false leaves every effect off
     // (the RTS-compatible path).
-    void begin_frame(const SceneEffectView& view, const ModelLighting& lighting, bool active);
+    // `clouds`: openRTS's clouds' shadow (NativeSky::cloud_shadow), with the
+    // sun's.
+    void begin_frame(const SceneEffectView& view, const ModelLighting& lighting, bool active, const CloudShadow& clouds = {});
     // After begin_frame(), before recording: this frame's shadow focus
     // (nullopt: none). Its map is drawn in depth slot max_cascades + 1. It
     // also picks the lamps throwing shadows, drawn in depth slots

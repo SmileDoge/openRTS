@@ -59,6 +59,7 @@ struct SceneClock {
     std::int32_t time_of_day = 12 * 3600; // seconds
     double time_of_day_exact = 12 * 3600.0; // the same with its fraction (the sky)
     float elapsed = 0.0f;                  // frame time in seconds
+    float time_speed = 1.0f;               // the clock's speed (0: time stopped; elapsed still runs)
     renderer::rts::Season season = renderer::rts::Season::summer;
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
 };
@@ -167,6 +168,7 @@ struct SceneEnvironment {
     // Mid grey, so that black (missing-texture) materials stay visible.
     glm::vec4 clear_colour{0.35f, 0.35f, 0.35f, 1.0f};
     bool time_of_day_applies = false;
+    renderer::CloudShadow cloud_shadow; // openRTS's clouds on the ground (none: map null)
 };
 
 // The start's loading screen: shown until the world around the camera and

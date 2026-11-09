@@ -561,6 +561,17 @@ was as many times bigger, a red light at a kilometre filling the view. Near,
 the lens's Radius (a real size) is seen zoomed like the signal. The trains'
 lights keep the rule as it is (2026-11-08).
 
+openRTS's lens-sized signal lights (a Graphics setting, «Огни светофоров
+размером с линзу, вдали — точкой (не как в RTS)», on by default,
+2026-11-09): no far term at all. The quad is the lens's Radius however far,
+shrinking with the signal, down to a dot of 2 pixels (half size, the view's
+pixel at that distance with the zoom; `GlowSprite::min_pixels`), so a far
+signal is still seen, as a point. RTS's constant angle made a far light a
+blob many times the lens: at 0.012 rad a half size of about 15 pixels at
+1440 lines, wherever the signal stood. Off, RTS's rule as above. The
+trains' lights keep RTS's size, with a least size of their own
+(train-dll.md, exterior lights: 1.5 pixels, the light spread over it).
+
 **Quirk — a light's size follows the field of view.** The factor fov/45 is
 computed by `rts1.exe` and handed to `lamp.vert.shader` in `Size` (the
 shader only draws a quad of `Size.x * Size.y` around the light). It keeps a

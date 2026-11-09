@@ -14,6 +14,15 @@
 
 namespace openrts::renderer {
 
+// Signal lights at the lens's own size however far (not as in RTS): far
+// off they shrink with the signal, down to a dot of GlowSprite::min_pixels,
+// and no longer keep RTS's angle (far_scale), which made a far signal's
+// light a big blob. Read each frame (SignalView).
+inline bool& signal_lights_real_size() {
+    static bool on = true;
+    return on;
+}
+
 struct GlowSprite {
     glm::vec3 position{};
     float radius{};           // half size of the quad, m
@@ -27,6 +36,15 @@ struct GlowSprite {
     // Signal lights lie flat in the signal's XY plane, as in RTS 0x449818.
     glm::vec3 axis_x{};
     glm::vec3 axis_y{};
+    // At least this many pixels (half its size) on the screen, whatever the
+    // distance (0: no least size): a far light stays a dot.
+    float min_pixels{};
+    // 1: a quad min_pixels made bigger keeps its light, spread over it
+    // (dimmed by the sizes' ratio squared), as MSAA's samples would average
+    // a light smaller than a pixel; 0: as bright as near (signal lights).
+    // Without it a train's lamp far off fell between the pixels' centres
+    // and went out with MSAA off.
+    float spread_light{};
 };
 
 // How sprites meet the frame: added (rgb x alpha, an emissive light in the

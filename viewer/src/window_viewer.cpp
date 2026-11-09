@@ -5,6 +5,7 @@
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
 #include <openrts/renderer/forest_clearance.hpp>
+#include <openrts/renderer/glow_sprites.hpp>
 #include <openrts/renderer/native_sky.hpp>
 #include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/renderer/tone_map.hpp>
@@ -632,6 +633,12 @@ struct PanelState {
     float forest_clearance_distance = 3.0f;
     bool native_water = true; // the openRTS water instead of the environment's layers
     bool native_sky = true;   // openRTS's own sky (atmosphere, volumetric clouds) instead of RTS's dome
+    bool signal_lights_real_size = true; // signal lights at the lens's size however far (not RTS's far angle)
+    bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
+    float cloud_cover = 42.0f;       // %
+    bool cloud_shadows = true;       // its clouds' shadows on the ground (the experimental path)
+    float cloud_shadow_darkness = 85.0f; // % of the sun a thick cloud's shadow takes
+    float cloud_shadow_sharpness = 3.0f; // their edges: the clouds' density in them times this
     float fov = default_fov_degrees; // vertical field of view, degrees
     // The experimental path's effects (renderer::SceneEffects).
     renderer::SceneEffectSettings effects;
@@ -655,6 +662,7 @@ struct ClockControls {
             .time_of_day = static_cast<std::int32_t>(time_of_day),
             .time_of_day_exact = time_of_day,
             .elapsed = elapsed,
+            .time_speed = speed,
             .season = static_cast<renderer::rts::Season>(season),
             .weather = static_cast<renderer::rts::Weather>(weather),
         };
@@ -874,8 +882,31 @@ public:
             ImGui::EndDisabled();
             if (ImGui::Checkbox(tr("openRTS water: waves, sky reflection, soft shores (not as in RTS)"), &panel.native_water))
                 remember("native_water", panel.native_water ? "1" : "0");
+            if (ImGui::Checkbox(tr("Signal lights at the lens's size, far off a dot (not as in RTS)"), &panel.signal_lights_real_size))
+                remember("signal_lights_real_size", panel.signal_lights_real_size ? "1" : "0");
             if (ImGui::Checkbox(tr("openRTS sky: atmosphere, volumetric clouds (not as in RTS)"), &panel.native_sky))
                 remember("native_sky", panel.native_sky ? "1" : "0");
+            if (panel.native_sky) {
+                ImGui::Indent();
+                if (ImGui::Checkbox(tr("Cloud cover by the weather (clear 42 %, snow 85 %, rain 92 %)"), &panel.cloud_cover_weather))
+                    remember("cloud_cover_weather", panel.cloud_cover_weather ? "1" : "0");
+                ImGui::BeginDisabled(panel.cloud_cover_weather);
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::SliderFloat(tr("Cloud cover"), &panel.cloud_cover, 0.0f, 100.0f, "%.0f %%"))
+                    remember("cloud_cover", std::to_string(panel.cloud_cover));
+                ImGui::EndDisabled();
+                if (ImGui::Checkbox(tr("Cloud shadows on the ground (experimental renderer)"), &panel.cloud_shadows))
+                    remember("cloud_shadows", panel.cloud_shadows ? "1" : "0");
+                ImGui::BeginDisabled(!panel.cloud_shadows);
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::SliderFloat(tr("Cloud shadow darkness (the sun a thick cloud takes)"), &panel.cloud_shadow_darkness, 0.0f, 100.0f, "%.0f %%"))
+                    remember("cloud_shadow_darkness", std::to_string(panel.cloud_shadow_darkness));
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::SliderFloat(tr("Cloud shadow sharpness (1: soft, as the clouds)"), &panel.cloud_shadow_sharpness, 1.0f, 10.0f, "%.1f"))
+                    remember("cloud_shadow_sharpness", std::to_string(panel.cloud_shadow_sharpness));
+                ImGui::EndDisabled();
+                ImGui::Unindent();
+            }
             bool batching = renderer.batching();
             if (ImGui::Checkbox(tr("Merge identical primitives (instancing)"), &batching)) renderer.set_batching(batching);
             bool culling = renderer.face_culling();
@@ -986,6 +1017,21 @@ public:
             if (ImGui::Checkbox(tr("Ambient occlusion, GTAO"), &panel.effects.ambient_occlusion))
                 remember("effect_ao", panel.effects.ambient_occlusion ? "1" : "0");
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("Darkens the sky light in corners and creases, from the depth of the scene."));
+            if (panel.effects.ambient_occlusion) {
+                ImGui::Indent();
+                ImGui::TextUnformatted(tr("Occlusion quality:"));
+                ImGui::SameLine();
+                if (ImGui::RadioButton(tr("low (half resolution, several times faster)"), panel.effects.occlusion_low)) {
+                    panel.effects.occlusion_low = true;
+                    remember("effect_ao_quality", "low");
+                }
+                ImGui::SameLine();
+                if (ImGui::RadioButton(tr("high##occlusion"), !panel.effects.occlusion_low)) {
+                    panel.effects.occlusion_low = false;
+                    remember("effect_ao_quality", "high");
+                }
+                ImGui::Unindent();
+            }
             if (ImGui::Checkbox(tr("Aerial perspective"), &panel.effects.aerial_perspective))
                 remember("effect_aerial", panel.effects.aerial_perspective ? "1" : "0");
             if (ImGui::IsItemHovered())
@@ -2023,6 +2069,27 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto clear = remembered("forest_clearance")) panel.forest_clearance = *clear != "0";
     if (const auto water = remembered("native_water")) panel.native_water = *water != "0";
     if (const auto sky = remembered("native_sky")) panel.native_sky = *sky != "0";
+    if (const auto by_weather = remembered("cloud_cover_weather")) panel.cloud_cover_weather = *by_weather != "0";
+    if (const auto real = remembered("signal_lights_real_size")) panel.signal_lights_real_size = *real != "0";
+    if (const auto cover = remembered("cloud_cover")) {
+        try {
+            panel.cloud_cover = std::clamp(std::stof(*cover), 0.0f, 100.0f);
+        } catch (...) {
+        }
+    }
+    if (const auto shadows = remembered("cloud_shadows")) panel.cloud_shadows = *shadows != "0";
+    if (const auto darkness = remembered("cloud_shadow_darkness")) {
+        try {
+            panel.cloud_shadow_darkness = std::clamp(std::stof(*darkness), 0.0f, 100.0f);
+        } catch (...) {
+        }
+    }
+    if (const auto sharpness = remembered("cloud_shadow_sharpness")) {
+        try {
+            panel.cloud_shadow_sharpness = std::clamp(std::stof(*sharpness), 1.0f, 10.0f);
+        } catch (...) {
+        }
+    }
     if (const auto distance = remembered("forest_clearance_distance")) {
         try {
             panel.forest_clearance_distance = std::clamp(std::stof(*distance), 0.5f, 20.0f);
@@ -2055,6 +2122,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto on = remembered("effect_shadows")) panel.effects.shadows = *on == "1";
     if (const auto on = remembered("effect_clusters")) panel.effects.clustered_lights = *on == "1";
     if (const auto on = remembered("effect_ao")) panel.effects.ambient_occlusion = *on == "1";
+    if (const auto quality = remembered("effect_ao_quality")) panel.effects.occlusion_low = *quality == "low";
     if (const auto on = remembered("effect_aerial")) panel.effects.aerial_perspective = *on == "1";
     if (const auto on = remembered("parallel_recording")) panel.parallel_recording = *on == "1";
     if (const auto on = remembered("shadow_cache")) panel.effects.cache_far_cascades = *on == "1";
@@ -2172,6 +2240,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::physical_light_falloff() = panel.physical_light;
         renderer::native_water() = panel.native_water;
         renderer::native_sky() = panel.native_sky;
+        renderer::signal_lights_real_size() = panel.signal_lights_real_size;
+        renderer::cloud_cover() = panel.cloud_cover_weather ? -1.0f : panel.cloud_cover / 100.0f;
+        renderer::cloud_shadows() = panel.cloud_shadows;
+        renderer::cloud_shadow_darkness() = panel.cloud_shadow_darkness / 100.0f;
+        renderer::cloud_shadow_sharpness() = panel.cloud_shadow_sharpness;
         renderer::night_ambient_scale() = panel.night_ambient;
         renderer::light_range() = panel.light_range;
         renderer::headlight_reach() = panel.headlight_reach;
@@ -2339,7 +2412,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                              .far_plane = camera.far_plane(),
                              .width = static_cast<std::uint32_t>(width),
                              .height = static_cast<std::uint32_t>(height)},
-                            environment.lighting, experimental);
+                            environment.lighting, experimental, environment.cloud_shadow);
         frame.effects = effects.bind_group();
         frame.shadow_range = effects.shadow_range();
         frame.pool = &recording_pool;

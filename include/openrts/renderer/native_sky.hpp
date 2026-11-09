@@ -14,6 +14,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
+#include <openrts/renderer/cloud_shadow.hpp>
 #include <openrts/renderer/fog_ring.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
@@ -27,6 +28,34 @@ namespace openrts::renderer {
 inline bool& native_sky() {
     static bool on = true;
     return on;
+}
+
+// The clouds' cover the player chose (0..1); below 0: the weather's (clear
+// 0.42, snow 0.85, rain 0.92). Read each frame.
+inline float& cloud_cover() {
+    static float cover = -1.0f;
+    return cover;
+}
+
+// The clouds' shadows on the ground (NativeSky::cloud_shadow, read by the
+// experimental path). Read each frame.
+inline bool& cloud_shadows() {
+    static bool on = true;
+    return on;
+}
+
+// How much of the sun a thick cloud's shadow takes (0..1; the rest is what
+// it scatters forwards), and how sharp the shadows' edges are: the clouds'
+// density in them times this, and their edge band narrowed by its square
+// root (1..10; 1 as the sky shows them, their edges as soft as theirs).
+// Read each frame.
+inline float& cloud_shadow_darkness() {
+    static float darkness = 0.85f;
+    return darkness;
+}
+inline float& cloud_shadow_sharpness() {
+    static float sharpness = 3.0f;
+    return sharpness;
 }
 
 // The scene's light scale for the sky: the sun's light at the top of the
@@ -84,6 +113,11 @@ public:
     [[nodiscard]] glm::vec3 horizon_colour() const noexcept;
     // The horizon by direction, for the fog (FogRing).
     [[nodiscard]] FogRing fog_ring() const noexcept;
+    // The clouds' shadow on the ground: the map render_clouds() draws (1024 x
+    // 1024 texels over 16 km, every fourth frame), where it lies for this
+    // frame's eye and the sun; strength 0 before it is first drawn, with
+    // cloud_shadows() off or the sun down.
+    [[nodiscard]] CloudShadow cloud_shadow() const noexcept;
 
 private:
     struct Impl;

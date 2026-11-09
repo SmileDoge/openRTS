@@ -146,8 +146,14 @@ public:
     // the host enters it (Init, ChangeLoco, the multiple-unit groups) and its
     // cab's keys are bound. False when it has no DLL or the host refuses.
     bool enter(std::size_t car, const simulation::Train& train);
-    [[nodiscard]] bool keyboard() const noexcept { return keyboard_; }
+    // The cab keys have the keyboard: chosen (with the free camera, whose
+    // WASD they take), or always while the engineer is on foot (he walks
+    // with the arrows, as in RTS, where a cab's keys work at once).
+    [[nodiscard]] bool keyboard() const noexcept { return keyboard_ || on_foot_; }
     void set_keyboard(bool on) noexcept { keyboard_ = on; }
+    // The engineer on foot (in a chair, walking about, outside), each frame.
+    void set_on_foot(bool on) noexcept { on_foot_ = on; }
+    [[nodiscard]] bool on_foot() const noexcept { return on_foot_; }
     [[nodiscard]] bool alive() const { return consist_ && consist_->alive(); }
     [[nodiscard]] std::size_t player() const { return consist_ ? consist_->player() : SIZE_MAX; }
     // The farthest RTSGetTrackItems asked for in the last step, m.
@@ -193,6 +199,7 @@ public:
 private:
     trainplugin::LegacyWorld world_;
     bool keyboard_ = false;
+    bool on_foot_ = false;
     char filter_[64]{};
 };
 

@@ -1894,17 +1894,24 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
         // right after: the ED9M's door lamp went back on when it stayed 0.
         if (action == abi::gm_door_open || action == abi::gm_door_close) {
             const std::uint32_t open = action == abi::gm_door_open ? 1u : 0u;
+            // The sides (1 right, 2 left) are the sending car's: a car turned
+            // the other way in the train (Flags bit 0 not as the sender's)
+            // has that side's doors under the other GlobalID. openRTS: an
+            // ED4M's turned third car opened its doors on the far side.
+            const bool sender_flipped = (car.wagon()->flags & 1) != 0;
             for (auto& other : cars_) {
+                const bool turned = ((other->wagon()->flags & 1) != 0) != sender_flipped;
+                const std::uint32_t id = turned && (m.id == 1 || m.id == 2) ? 3u - m.id : m.id;
                 for (std::size_t k = 0; k < other->doors.size(); ++k) {
                     auto& door = other->doors[k];
-                    if (door.global_id != m.id || m.id == 0) continue;
+                    if (door.global_id != id || id == 0) continue;
                     door.state = door.set_state = open;
                     if (k < other->door_clock.size()) other->door_clock[k] = 0.0f;
                 }
                 // The same doors seen from inside: the cab's or salon's
                 // InteriorDoors with that GlobalID (the ED9M's DOOR_A .. E).
                 for (auto& door : other->cab_doors)
-                    if (door.global_id == m.id && m.id != 0) door.state = door.set_state = open;
+                    if (door.global_id == id && id != 0) door.state = door.set_state = open;
             }
         }
         out.messages.push_back(std::move(m));

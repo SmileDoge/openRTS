@@ -71,6 +71,10 @@ struct EffectsUniform {
     // the horizon at each fog_ring_angle, linear.
     glm::vec4 fog_sun{0.0f};
     glm::vec4 fog_ring[FogRing::count]{};
+    // openRTS's clouds' shadow (CloudShadow): where its map lies, the sun.
+    glm::vec4 cloud_area{0.0f};
+    glm::vec4 cloud_sun{0.0f};
+    glm::vec4 cloud_edge{0.0f, 1.0f, 0.0f, 0.0f}; // xy: the edge band (smoothstep)
 };
 static_assert(sizeof(EffectsUniform) % 16 == 0);
 
@@ -135,6 +139,14 @@ constexpr char gtao_wgsl[] = R"(
 @group(0) @binding(1) var depth_texture: texture_depth_2d;
 @group(0) @binding(2) var ao_out: texture_storage_2d<r32float, write>;
 
+// High: every pixel, two slices of six steps. Low: a texel for each 2 x 2
+// pixels (the depth pixel at twice its place), one slice of four steps,
+// the steps' reach capped nearer.
+override slices: i32 = 2;
+override steps: i32 = 6;
+override scale: i32 = 1;
+override max_radius: f32 = 96.0;
+
 fn view_position(pixel: vec2<i32>) -> vec3<f32> {
     let size = vec2<i32>(textureDimensions(depth_texture));
     let p = clamp(pixel, vec2<i32>(0), size - vec2<i32>(1));
@@ -147,11 +159,13 @@ fn view_position(pixel: vec2<i32>) -> vec3<f32> {
 @compute @workgroup_size(8, 8)
 fn gtao(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = vec2<i32>(textureDimensions(depth_texture));
-    let pixel = vec2<i32>(id.xy);
-    if (pixel.x >= size.x || pixel.y >= size.y) { return; }
+    let texel = vec2<i32>(id.xy);
+    let out_size = vec2<i32>(textureDimensions(ao_out));
+    if (texel.x >= out_size.x || texel.y >= out_size.y) { return; }
+    let pixel = min(texel * scale, size - vec2<i32>(1));
     let depth = textureLoad(depth_texture, pixel, 0);
     if (depth <= 0.0) { // the sky (reversed Z cleared to 0)
-        textureStore(ao_out, pixel, vec4<f32>(1.0));
+        textureStore(ao_out, texel, vec4<f32>(1.0));
         return;
     }
     let p = view_position(pixel);
@@ -168,23 +182,21 @@ fn gtao(@builtin(global_invocation_id) id: vec3<u32>) {
     let radius = effects.ao.x;
     // Pixels a metre covers at this depth.
     let pixels_per_metre = f32(size.y) * 0.5 / (effects.ao.z * max(-p.z, 0.01));
-    let radius_px = min(radius * pixels_per_metre, 96.0);
+    let radius_px = min(radius * pixels_per_metre, max_radius);
     if (radius_px < 1.0) {
-        textureStore(ao_out, pixel, vec4<f32>(1.0));
+        textureStore(ao_out, texel, vec4<f32>(1.0));
         return;
     }
-    let noise = fract(52.9829189 * fract(0.06711056 * f32(pixel.x) + 0.00583715 * f32(pixel.y)));
+    let noise = fract(52.9829189 * fract(0.06711056 * f32(texel.x) + 0.00583715 * f32(texel.y)));
     let noise2 = fract(noise * 7.13 + 0.37);
     let falloff_range = 0.615 * radius;
     let falloff_from = radius * (1.0 - 0.615);
     let falloff_mul = -1.0 / falloff_range;
     let falloff_add = falloff_from / falloff_range + 1.0;
     const PI = 3.14159265;
-    const SLICES = 2;
-    const STEPS = 6;
     var visibility = 0.0;
-    for (var slice = 0; slice < SLICES; slice = slice + 1) {
-        let phi = (f32(slice) + noise) * PI / f32(SLICES);
+    for (var slice = 0; slice < slices; slice = slice + 1) {
+        let phi = (f32(slice) + noise) * PI / f32(slices);
         let omega = vec2<f32>(cos(phi), -sin(phi)); // screen, y down
         let direction = vec3<f32>(omega.x, -omega.y, 0.0);
         let ortho = direction - dot(direction, v) * v;
@@ -199,8 +211,8 @@ fn gtao(@builtin(global_invocation_id) id: vec3<u32>) {
         let low1 = cos(angle_n - PI * 0.5);
         var horizon0 = low0;
         var horizon1 = low1;
-        for (var step = 0; step < STEPS; step = step + 1) {
-            var s = (f32(step) + noise2) / f32(STEPS);
+        for (var step = 0; step < steps; step = step + 1) {
+            var s = (f32(step) + noise2) / f32(steps);
             s = s * s;
             let offset = omega * max(s * radius_px, f32(step) + 1.0);
             let q0 = view_position(pixel + vec2<i32>(round(offset)));
@@ -226,8 +238,8 @@ fn gtao(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     // A slice of a tilted surface can see more than 1; the average over
     // slices (the blur) is 1 unoccluded, so it is clamped only after it (XeGTAO).
-    visibility = max(visibility / f32(SLICES), 0.0);
-    textureStore(ao_out, pixel, vec4<f32>(pow(visibility, effects.ao.y)));
+    visibility = max(visibility / f32(slices), 0.0);
+    textureStore(ao_out, texel, vec4<f32>(pow(visibility, effects.ao.y)));
 }
 )";
 
@@ -237,6 +249,13 @@ constexpr char blur_wgsl[] = R"(
 @group(0) @binding(2) var ao_in: texture_2d<f32>;
 @group(0) @binding(3) var ao_out: texture_storage_2d<r32float, write>;
 
+// High: 5 x 5 of the frame-sized occlusion. Low: 3 x 3 texels of the
+// half-sized one round the pixel (as far as high's 5 x 5), each weighed by
+// its depth pixel's (twice its place) against the pixel's, so a texel of
+// another surface does not bleed over an edge.
+override scale: i32 = 1;
+override reach: i32 = 2;
+
 fn linear_depth(pixel: vec2<i32>) -> f32 {
     let depth = textureLoad(depth_texture, pixel, 0);
     let v = effects.inv_projection * vec4<f32>(0.0, 0.0, depth, 1.0);
@@ -245,17 +264,23 @@ fn linear_depth(pixel: vec2<i32>) -> f32 {
 
 @compute @workgroup_size(8, 8)
 fn blur(@builtin(global_invocation_id) id: vec3<u32>) {
-    let size = vec2<i32>(textureDimensions(ao_in));
+    let size = vec2<i32>(textureDimensions(ao_out));
     let pixel = vec2<i32>(id.xy);
     if (pixel.x >= size.x || pixel.y >= size.y) { return; }
+    let in_size = vec2<i32>(textureDimensions(ao_in));
+    let depth_size = vec2<i32>(textureDimensions(depth_texture));
     let centre = linear_depth(pixel);
+    let at = pixel / scale;
+    // Joined up, no texel may be of the pixel's own surface (a thin pole):
+    // then they count alike rather than not at all.
+    let least = select(0.0, 0.001, scale > 1);
     var sum = 0.0;
     var weights = 0.0;
-    for (var y = -2; y <= 2; y = y + 1) {
-        for (var x = -2; x <= 2; x = x + 1) {
-            let q = clamp(pixel + vec2<i32>(x, y), vec2<i32>(0), size - vec2<i32>(1));
-            let depth = linear_depth(q);
-            let w = exp(-abs(depth - centre) / max(centre * 0.03, 0.02));
+    for (var y = -reach; y <= reach; y = y + 1) {
+        for (var x = -reach; x <= reach; x = x + 1) {
+            let q = clamp(at + vec2<i32>(x, y), vec2<i32>(0), in_size - vec2<i32>(1));
+            let depth = linear_depth(min(q * scale, depth_size - vec2<i32>(1)));
+            let w = max(exp(-abs(depth - centre) / max(centre * 0.03, 0.02)), least);
             sum = sum + textureLoad(ao_in, q, 0).r * w;
             weights = weights + w;
         }
@@ -324,11 +349,13 @@ fn assign(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 [[nodiscard]] WGPUComputePipeline make_compute(const WGPUDevice device, const WGPUBindGroupLayout layout, const std::string& code,
-                                               const char* entry) {
+                                               const char* entry, const std::vector<WGPUConstantEntry>& constants = {}) {
     const auto shader = make_shader(device, code);
     const WGPUPipelineLayoutDescriptor layout_descriptor{.bindGroupLayoutCount = 1, .bindGroupLayouts = &layout};
     const auto pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
-    const WGPUComputePipelineDescriptor descriptor{.layout = pipeline_layout, .compute = {.module = shader, .entryPoint = name(entry)}};
+    const WGPUComputePipelineDescriptor descriptor{
+        .layout = pipeline_layout,
+        .compute = {.module = shader, .entryPoint = name(entry), .constantCount = constants.size(), .constants = constants.data()}};
     const auto pipeline = wgpuDeviceCreateComputePipeline(device, &descriptor);
     wgpuPipelineLayoutRelease(pipeline_layout);
     wgpuShaderModuleRelease(shader);
@@ -402,7 +429,7 @@ struct Texture {
 } // namespace
 
 WGPUBindGroupLayout create_scene_effects_layout(const WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, 8> entries{};
+    std::array<WGPUBindGroupLayoutEntry, 10> entries{};
     entries[0].binding = 0;
     entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     entries[0].buffer.type = WGPUBufferBindingType_Uniform;
@@ -430,6 +457,13 @@ WGPUBindGroupLayout create_scene_effects_layout(const WGPUDevice device) {
     entries[7].visibility = WGPUShaderStage_Fragment;
     entries[7].texture.sampleType = WGPUTextureSampleType_Depth;
     entries[7].texture.viewDimension = WGPUTextureViewDimension_2DArray;
+    entries[8].binding = 8;
+    entries[8].visibility = WGPUShaderStage_Fragment;
+    entries[8].texture.sampleType = WGPUTextureSampleType_Float;
+    entries[8].texture.viewDimension = WGPUTextureViewDimension_2D;
+    entries[9].binding = 9;
+    entries[9].visibility = WGPUShaderStage_Fragment;
+    entries[9].sampler.type = WGPUSamplerBindingType_Filtering;
     const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
     return wgpuDeviceCreateBindGroupLayout(device, &descriptor);
 }
@@ -444,6 +478,9 @@ struct SceneEffects::Impl {
     WGPUBindGroupLayout cluster_layout = nullptr;
     WGPUComputePipeline gtao = nullptr;
     WGPUComputePipeline blur = nullptr;
+    // The low quality's (SceneEffectSettings::occlusion_low); without them high.
+    WGPUComputePipeline gtao_low = nullptr;
+    WGPUComputePipeline blur_low = nullptr;
     WGPUComputePipeline cluster = nullptr;
 
     WGPUBuffer uniform = nullptr;
@@ -452,15 +489,20 @@ struct SceneEffects::Impl {
     WGPUBuffer counts = nullptr;
     WGPUBuffer indices = nullptr;
     WGPUSampler compare_sampler = nullptr;
+    // openRTS's clouds' shadow: NativeSky's map (not ours), else a texel of 1.
+    Texture cloud_stand_in;
+    WGPUSampler cloud_sampler = nullptr;
+    WGPUTextureView cloud_view = nullptr;
 
     Texture shadow;          // the cascades, then the focus map (or a 1 x 1 stand-in)
     std::array<WGPUTextureView, max_cascades + 1> shadow_layers{};
     Texture lamp_shadow;     // a layer a lamp throwing shadows (or a 1 x 1 stand-in)
     std::array<WGPUTextureView, max_lamp_shadows> lamp_layers{};
     Texture depth;           // the camera's pre-pass
-    Texture ao_raw;
+    Texture ao_raw;          // the frame's size, or half of it (ao_half)
     Texture ao;              // blurred, read by the main pass (or a 1 x 1 stand-in)
     bool ao_is_real = false;
+    bool ao_half = false;    // ao_raw at half the size: the low quality's pipelines
 
     WGPUBindGroup main_group = nullptr;
     WGPUBindGroup gtao_group = nullptr;
@@ -528,11 +570,13 @@ struct SceneEffects::Impl {
         depth.release();
         ao_raw.release();
         ao.release();
+        cloud_stand_in.release();
+        if (cloud_sampler) wgpuSamplerRelease(cloud_sampler);
         for (const auto buffer : {uniform, lights, spheres, counts, indices}) {
             if (buffer) wgpuBufferRelease(buffer);
         }
         if (compare_sampler) wgpuSamplerRelease(compare_sampler);
-        for (const auto pipeline : {gtao, blur, cluster}) {
+        for (const auto pipeline : {gtao, blur, gtao_low, blur_low, cluster}) {
             if (pipeline) wgpuComputePipelineRelease(pipeline);
         }
         for (const auto layout : {main_layout, gtao_layout, blur_layout, cluster_layout}) {
@@ -611,7 +655,8 @@ struct SceneEffects::Impl {
 
     // The pre-pass depth and the occlusion at the frame's size while AO is
     // on; else a 1 x 1 occlusion of 1.
-    void ensure_ao(const bool wanted, const std::uint32_t width, const std::uint32_t height) {
+    void ensure_ao(const bool wanted, const std::uint32_t width, const std::uint32_t height, bool half = false) {
+        half = half && gtao_low && blur_low;
         if (!wanted) {
             if (ao.texture && !ao_is_real) return;
             depth.release();
@@ -632,14 +677,16 @@ struct SceneEffects::Impl {
             release_groups();
             return;
         }
-        if (ao_is_real && ao.width == width && ao.height == height) return;
+        if (ao_is_real && ao.width == width && ao.height == height && ao_half == half) return;
         depth.release();
         ao_raw.release();
         ao.release();
         depth = make_texture(device, depth_format, WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding, width, height, 1,
                              WGPUTextureViewDimension_2D);
         const auto usage = WGPUTextureUsage_StorageBinding | WGPUTextureUsage_TextureBinding;
-        ao_raw = make_texture(device, ao_format, usage, width, height, 1, WGPUTextureViewDimension_2D);
+        ao_half = half;
+        ao_raw = make_texture(device, ao_format, usage, half ? (width + 1) / 2 : width, half ? (height + 1) / 2 : height, 1,
+                              WGPUTextureViewDimension_2D);
         ao = make_texture(device, ao_format, usage, width, height, 1, WGPUTextureViewDimension_2D);
         ao_is_real = true;
         release_groups();
@@ -649,9 +696,11 @@ struct SceneEffects::Impl {
         if (!groups_stale) return;
         release_groups();
         {
-            std::array<WGPUBindGroupEntry, 8> entries{};
+            std::array<WGPUBindGroupEntry, 10> entries{};
             entries[0] = {.binding = 0, .buffer = uniform, .size = sizeof(EffectsUniform)};
             entries[1] = {.binding = 1, .textureView = shadow.view};
+            entries[8] = {.binding = 8, .textureView = cloud_view ? cloud_view : cloud_stand_in.view};
+            entries[9] = {.binding = 9, .sampler = cloud_sampler};
             entries[7] = {.binding = 7, .textureView = lamp_shadow.view};
             entries[2] = {.binding = 2, .sampler = compare_sampler};
             entries[3] = {.binding = 3, .textureView = ao.view};
@@ -836,6 +885,13 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
     const std::string header = detail::effects_struct_wgsl;
     impl.gtao = make_compute(device, impl.gtao_layout, header + gtao_wgsl, "gtao");
     impl.blur = make_compute(device, impl.blur_layout, header + blur_wgsl, "blur");
+    impl.gtao_low = make_compute(device, impl.gtao_layout, header + gtao_wgsl, "gtao",
+                                 {{.key = name("slices"), .value = 1.0},
+                                  {.key = name("steps"), .value = 4.0},
+                                  {.key = name("scale"), .value = 2.0},
+                                  {.key = name("max_radius"), .value = 64.0}});
+    impl.blur_low = make_compute(device, impl.blur_layout, header + blur_wgsl, "blur",
+                                 {{.key = name("scale"), .value = 2.0}, {.key = name("reach"), .value = 1.0}});
     impl.cluster = make_compute(device, impl.cluster_layout, header + cluster_wgsl, "assign");
 
     impl.uniform = make_buffer(device, WGPUBufferUsage_Uniform, sizeof(EffectsUniform));
@@ -855,6 +911,30 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
         .maxAnisotropy = 1,
     };
     impl.compare_sampler = wgpuDeviceCreateSampler(device, &sampler);
+    {
+        const WGPUSamplerDescriptor clouds{
+            .addressModeU = WGPUAddressMode_ClampToEdge,
+            .addressModeV = WGPUAddressMode_ClampToEdge,
+            .addressModeW = WGPUAddressMode_ClampToEdge,
+            .magFilter = WGPUFilterMode_Linear,
+            .minFilter = WGPUFilterMode_Linear,
+            .mipmapFilter = WGPUMipmapFilterMode_Nearest,
+            .lodMaxClamp = 1.0f,
+            .maxAnisotropy = 1,
+        };
+        impl.cloud_sampler = wgpuDeviceCreateSampler(device, &clouds);
+        impl.cloud_stand_in = make_texture(device, WGPUTextureFormat_R8Unorm, WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst, 1, 1,
+                                           1, WGPUTextureViewDimension_2D);
+        if (impl.cloud_stand_in.texture) {
+            const std::uint8_t lit = 255;
+            const auto queue = wgpuDeviceGetQueue(device);
+            const WGPUTexelCopyTextureInfo target{.texture = impl.cloud_stand_in.texture};
+            const WGPUTexelCopyBufferLayout layout{.bytesPerRow = 1, .rowsPerImage = 1};
+            const WGPUExtent3D extent{.width = 1, .height = 1, .depthOrArrayLayers = 1};
+            wgpuQueueWriteTexture(queue, &target, &lit, sizeof(lit), &layout, &extent);
+            wgpuQueueRelease(queue);
+        }
+    }
     impl.ensure_shadow(false);
     impl.ensure_lamp_shadow(false);
     impl.ensure_ao(false, 1, 1);
@@ -877,9 +957,13 @@ const SceneEffectSettings& SceneEffects::settings() const noexcept {
     return impl_->settings;
 }
 
-void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting& lighting, const bool active) {
+void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting& lighting, const bool active, const CloudShadow& clouds) {
     OPENRTS_ZONE("effects: begin frame");
     auto& impl = *impl_;
+    if (clouds.map != impl.cloud_view) {
+        impl.cloud_view = clouds.map;
+        impl.release_groups();
+    }
     impl.view = view;
     impl.active = active;
     impl.frame = {};
@@ -894,7 +978,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     const bool shadows = active && s.shadows && shadow_strength > 0.01f;
     impl.ensure_shadow(active && s.shadows);
     impl.ensure_lamp_shadow(active && s.lamp_shadows > 0);
-    impl.ensure_ao(active && s.ambient_occlusion, (std::max)(view.width, 1u), (std::max)(view.height, 1u));
+    impl.ensure_ao(active && s.ambient_occlusion, (std::max)(view.width, 1u), (std::max)(view.height, 1u), s.occlusion_low);
     impl.ensure_groups();
 
     const auto inverse_view = glm::inverse(view.view);
@@ -982,6 +1066,11 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     const auto& ring = lighting.fog_ring;
     frame.fog_sun = ring.on ? glm::vec4{ring.sun, 0.0f, 0.0f} : glm::vec4{0.0f};
     for (std::size_t i = 0; i < FogRing::count; ++i) frame.fog_ring[i] = glm::vec4{linear(glm::vec4{ring.colours[i], 1.0f}), 1.0f};
+    if (active && clouds.map) {
+        frame.cloud_area = clouds.area;
+        frame.cloud_sun = clouds.sun;
+        frame.cloud_edge = glm::vec4{clouds.edge, 0.0f, 0.0f};
+    }
     if (ring.on) frame.aerial.x = 0.6f / fog_end;
     // haze.w: RTS's fog strength, its fog colour's alpha (the fog shaders
     // scale their fog by it; the sky makes it 0 once the sun is 2 degrees
@@ -1223,14 +1312,14 @@ void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const D
         wgpuRenderPassEncoderRelease(pass);
 
         const auto compute = wgpuCommandEncoderBeginComputePass(encoder, nullptr);
-        const auto groups_x = (ao.width + 7) / 8;
-        const auto groups_y = (ao.height + 7) / 8;
-        wgpuComputePassEncoderSetPipeline(compute, gtao);
+        // The occlusion at ao_raw's size (half the frame's at low), the blur
+        // at the frame's.
+        wgpuComputePassEncoderSetPipeline(compute, ao_half ? gtao_low : gtao);
         wgpuComputePassEncoderSetBindGroup(compute, 0, gtao_group, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(compute, groups_x, groups_y, 1);
-        wgpuComputePassEncoderSetPipeline(compute, blur);
+        wgpuComputePassEncoderDispatchWorkgroups(compute, (ao_raw.width + 7) / 8, (ao_raw.height + 7) / 8, 1);
+        wgpuComputePassEncoderSetPipeline(compute, ao_half ? blur_low : blur);
         wgpuComputePassEncoderSetBindGroup(compute, 0, blur_group, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(compute, groups_x, groups_y, 1);
+        wgpuComputePassEncoderDispatchWorkgroups(compute, (ao.width + 7) / 8, (ao.height + 7) / 8, 1);
         wgpuComputePassEncoderEnd(compute);
         wgpuComputePassEncoderRelease(compute);
     }

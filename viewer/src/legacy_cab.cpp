@@ -469,7 +469,7 @@ bool key_reaches(const formats::CabSwitch& control, const std::optional<glm::vec
 }
 
 void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) {
-    if (!consist_ || !keyboard_) return;
+    if (!consist_ || !keyboard()) return;
     const auto* out = consist_->output(consist_->player());
     for (const auto& b : bindings_) {
         if (b.key != event.key || b.shift != event.shift || b.ctrl != event.ctrl) {
@@ -520,7 +520,11 @@ void LegacyCab::draw_window(const std::function<void()>& extra) {
         ImGui::TextDisabled("%s: %s, TS_VERSION %u", path.substr(slash == std::string::npos ? 0 : slash + 1).c_str(),
                             m.status == 0 ? tr("loaded") : tr("refused"), m.version[1]);
     }
-    ImGui::Checkbox(tr("Cab keys (as in RTS; the camera keys are off)"), &keyboard_);
+    // On foot they are on whatever is chosen (the box shows it, greyed).
+    bool keys_on = keyboard();
+    ImGui::BeginDisabled(on_foot_);
+    if (ImGui::Checkbox(tr("Cab keys (as in RTS; the camera keys are off; on foot always on)"), &keys_on)) keyboard_ = keys_on;
+    ImGui::EndDisabled();
     if (extra) extra();
     if (out) {
         const auto& e = out->engine;

@@ -39,6 +39,9 @@ struct Effects {
     lamp_focus: vec4<f32>,               // in flight: the sphere they cover (w: radius; 0 none), they fade out at its edge
     fog_sun: vec4<f32>,                  // xy: the sun's way along the ground (0: no ring, fog_ring.hpp)
     fog_ring: array<vec4<f32>, 12>,      // the horizon's colour at each fog_ring_angle (linear)
+    cloud_area: vec4<f32>,               // the clouds' shadow map: xy its middle from the eye, z its half width, w the layer's middle above the eye (m)
+    cloud_sun: vec4<f32>,                // xyz: towards the sun as the clouds are marched, w: strength (0: none)
+    cloud_edge: vec4<f32>,               // xy: the light read taken through smoothstep(x, y) (the edge band)
 };
 )";
 
@@ -51,6 +54,25 @@ inline constexpr char effects_main_wgsl[] = R"(
 @group(2) @binding(5) var<storage, read> cluster_counts: array<u32>;
 @group(2) @binding(6) var<storage, read> cluster_lights: array<u32>;
 @group(2) @binding(7) var lamp_shadow_map: texture_depth_2d_array;
+@group(2) @binding(8) var cloud_shadow_map: texture_2d<f32>;
+@group(2) @binding(9) var cloud_sampler: sampler;
+
+// The light openRTS's clouds let through to a point (cloud_shadow.hpp): the
+// point taken along the sun's way up to the layer's middle height, read
+// there; 1 without them.
+fn effects_cloud_shadow(world: vec3<f32>) -> f32 {
+    let strength = effects.cloud_sun.w;
+    if (strength <= 0.0) { return 1.0; }
+    let sun = effects.cloud_sun.xyz;
+    let d = world - effects.eye.xyz;
+    let q = d.xz + sun.xz * ((effects.cloud_area.w - d.y) / max(sun.y, 0.05));
+    let uv = (q - effects.cloud_area.xy) / (2.0 * effects.cloud_area.z) + vec2<f32>(0.5);
+    // A shadow dark through and its edge a narrow band: the map's soft
+    // fall-off through smoothstep, after the filtering, so the edge is
+    // finer than the map's texels.
+    let lit = smoothstep(effects.cloud_edge.x, effects.cloud_edge.y, textureSampleLevel(cloud_shadow_map, cloud_sampler, uv, 0.0).r);
+    return mix(1.0, lit, strength);
+}
 
 // A lamp's light reaching a point (`index`: the lamp in scene_lights): 1
 // unless it is one of the lamps throwing shadows and something stands
@@ -103,11 +125,17 @@ fn effects_lamp_shadow_slot(s: u32, world: vec3<f32>, normal: vec3<f32>, frag: v
     return mix(1.0, lit / 8.0, fade);
 }
 
-// The sun's light reaching a point: 1 lit, 0 in shadow (cascaded shadow
-// maps; 16 filtered compares on a disc of the softness's radius, turned per
-// pixel; the point pushed off its surface by a texel or more on slopes and
-// with the softness; fades out at the last cascade's end).
+// The sun's light reaching a point: what things nearby leave of it, and the
+// clouds (effects_cloud_shadow).
 fn effects_shadow(world: vec3<f32>, normal: vec3<f32>, frag: vec4<f32>) -> f32 {
+    return effects_cascade_shadow(world, normal, frag) * effects_cloud_shadow(world);
+}
+
+// What things nearby leave of the sun's light: 1 lit, 0 in shadow (cascaded
+// shadow maps; 16 filtered compares on a disc of the softness's radius,
+// turned per pixel; the point pushed off its surface by a texel or more on
+// slopes and with the softness; fades out at the last cascade's end).
+fn effects_cascade_shadow(world: vec3<f32>, normal: vec3<f32>, frag: vec4<f32>) -> f32 {
     let count = u32(effects.shadow.x);
     if (count == 0u) { return 1.0; }
     let depth = dot(world - effects.eye.xyz, effects.forward.xyz);

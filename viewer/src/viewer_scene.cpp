@@ -654,7 +654,11 @@ public:
             sky.altitude = static_cast<float>(camera_position.y);
             sky.eye_route = {static_cast<double>(camera_position.tile_x) * formats::route_tile_size + camera_position.x,
                              static_cast<double>(camera_position.tile_z) * formats::route_tile_size + camera_position.z};
-            sky.coverage = clock.weather == renderer::rts::Weather::rain ? 0.92f : clock.weather == renderer::rts::Weather::snow ? 0.85f : 0.42f;
+            // The cover the player chose, else the weather's.
+            sky.coverage = renderer::cloud_cover() >= 0.0f                    ? renderer::cloud_cover()
+                           : clock.weather == renderer::rts::Weather::rain ? 0.92f
+                           : clock.weather == renderer::rts::Weather::snow ? 0.85f
+                                                                           : 0.42f;
             glm::vec2 wind{0.0f};
             if (environment_ && !environment_->wind.empty()) {
                 const auto& lowest = environment_->wind.front();
@@ -662,7 +666,10 @@ public:
             }
             if (glm::length(wind) < 3.0f) wind = glm::vec2{4.0f, 1.5f};
             sky.wind = wind;
-            sky.elapsed = clock.elapsed;
+            // The clouds drift with the time of day: still while it is
+            // stopped, a time-lapse while it runs faster, up to 60 times (at
+            // 600 or 3600 they would jump hundreds of metres a frame).
+            sky.elapsed = clock.elapsed * std::clamp(clock.time_speed, 0.0f, 60.0f);
             native_sky_->update(sky);
         }
 
@@ -804,6 +811,7 @@ public:
             .lighting = lighting,
             .clear_colour = clear,
             .time_of_day_applies = true,
+            .cloud_shadow = native_sky_on() ? native_sky_->cloud_shadow() : renderer::CloudShadow{},
         };
     }
 

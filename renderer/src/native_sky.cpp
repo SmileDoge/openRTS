@@ -148,6 +148,13 @@ constexpr WGPUTextureFormat table_format = WGPUTextureFormat_RGBA16Float;
 constexpr std::uint32_t shape_size = 64;  // the clouds' shapes, tiling every 16384 m
 constexpr std::uint32_t detail_size = 32; // their edges, every 2048 m
 constexpr std::uint32_t weather_size = 128; // where they gather, every 65536 m
+// The clouds' shadow map: 1024 x 1024 texels over 16 km (16 m each), the
+// light let through; drawn every fourth frame (the clouds drift a few metres
+// meanwhile, the map is read where it was drawn).
+constexpr std::uint32_t cloud_shadow_size = 1024;
+constexpr std::uint64_t cloud_shadow_every = 4;
+constexpr float cloud_shadow_half = 8192.0f;
+constexpr WGPUTextureFormat cloud_shadow_format = WGPUTextureFormat_R8Unorm;
 
 struct SkyUniform {
     glm::mat4 inverse_view_projection{1.0f};
@@ -159,6 +166,7 @@ struct SkyUniform {
     float ambient_top[4]{};    // rgb: sky light on their tops
     float ambient_bottom[4]{}; // rgb: light from below
     glm::mat4 previous_view_projection{1.0f}; // the clouds' last frame: directions -> clip
+    float shadow[4]{}; // the clouds' shadow map: xy its middle from the eye (m), z its half width (m), w its sharpness
 };
 static_assert(sizeof(SkyUniform) <= uniform_stride);
 
@@ -173,6 +181,7 @@ struct Sky {
     ambient_top: vec4<f32>,
     ambient_bottom: vec4<f32>,
     previous_view_projection: mat4x4<f32>,
+    shadow: vec4<f32>,
 };
 
 override hdr_output: bool = false;
@@ -539,6 +548,31 @@ fn above_horizon(view: vec3<f32>) -> vec3<f32> {
 
 // The sky, its alpha what the clouds let through: the moon and the other
 // satellites drawn before it are kept by that much (the pipeline's blend).
+// The clouds' shadow on the ground (cloud_shadow.hpp): over a square at the
+// layer's middle height, the light the whole layer lets through along the
+// sun's way through each point, from its base to its top in steps of about
+// 100 m (16 to 40). The clouds as the sky shows them, their fine noise too,
+// their density times the sharpness (sky.shadow.w): the edges' soft fall-off
+// narrows. How dark under a thick one is SceneEffects' (the strength).
+@fragment
+fn fs_cloud_shadow(input: VertexOut) -> @location(0) vec4<f32> {
+    let uv = vec2<f32>(input.ndc.x * 0.5 + 0.5, 0.5 - input.ndc.y * 0.5);
+    let q = sky.shadow.xy + (uv * 2.0 - 1.0) * sky.shadow.z;
+    let sun = sky.sun.xyz;
+    let rise = max(sun.y, 0.05);
+    let middle = (sky.clouds.y + sky.clouds.z) * 0.5;
+    let first = (sky.clouds.y - middle) / rise;
+    let way = (sky.clouds.z - sky.clouds.y) / rise;
+    let steps = i32(clamp(ceil(way / 100.0), 16.0, 40.0));
+    let stride = way / f32(steps);
+    let origin = vec3<f32>(q.x, planet + middle, q.y);
+    var depth = 0.0;
+    for (var i = 0; i < steps; i = i + 1) {
+        depth = depth + cloud_density(origin + sun * (first + (f32(i) + 0.5) * stride), true) * stride;
+    }
+    return vec4<f32>(exp(-depth * cloud_sigma * sky.shadow.w), 0.0, 0.0, 1.0);
+}
+
 @fragment
 fn fs_sky(input: VertexOut) -> @location(0) vec4<f32> {
     let view = view_of(input.ndc);
@@ -737,6 +771,19 @@ struct NativeSky::Impl {
     WGPURenderPipeline table_pipeline = nullptr;
     WGPURenderPipeline sky_pipeline = nullptr;
     WGPURenderPipeline cloud_pipeline = nullptr;
+    WGPURenderPipeline shadow_pipeline = nullptr;
+    WGPUTexture shadow_map = nullptr;
+    WGPUTextureView shadow_view = nullptr;
+    bool shadow_drawn = false; // drawn, and still good to read
+    bool shadow_due = false;   // to be drawn this frame
+    std::uint64_t shadow_frame = 0;   // the update() it was (last) drawn for
+    glm::dvec2 eye_field{0.0};        // the eye in the clouds' field, not wrapped
+    glm::dvec2 shadow_field{0.0};     // that when it was drawn
+    glm::vec2 shadow_centre{0.0f};    // its middle from the eye then (m)
+    glm::vec3 shadow_sun{0.0f, 1.0f, 0.0f};
+    float shadow_sharpness = 0.0f;
+    float shadow_above = 0.0f;        // the layer's middle above the eye now (m)
+    float shadow_strength = 0.0f;
     WGPUBuffer uniforms = nullptr;
     WGPUTexture shape = nullptr, detail = nullptr, weather = nullptr, table = nullptr;
     WGPUTextureView shape_view = nullptr, detail_view = nullptr, weather_view = nullptr, table_view = nullptr;
@@ -785,6 +832,9 @@ struct NativeSky::Impl {
     ~Impl() {
         release_clouds();
         if (table_binding) wgpuBindGroupRelease(table_binding);
+        if (shadow_view) wgpuTextureViewRelease(shadow_view);
+        if (shadow_map) wgpuTextureRelease(shadow_map);
+        if (shadow_pipeline) wgpuRenderPipelineRelease(shadow_pipeline);
         for (auto* view : {shape_view, detail_view, weather_view, table_view}) {
             if (view) wgpuTextureViewRelease(view);
         }
@@ -1038,6 +1088,29 @@ NativeSky::NativeSky(const WGPUDevice device, const WGPUTextureFormat target_for
         impl.cloud_pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
         wgpuPipelineLayoutRelease(layout);
     }
+    // The clouds' shadow map: one triangle over it, no depth, single sample.
+    impl.shadow_map = make_texture(device, WGPUTextureDimension_2D, cloud_shadow_size, cloud_shadow_size, cloud_shadow_format,
+                                   WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopyDst,
+                                   "sky-cloud-shadow");
+    if (impl.shadow_map) {
+        // Lit until first drawn (a texture starts at 0: all in shadow).
+        write_bytes(device, impl.shadow_map, std::vector<std::uint8_t>(std::size_t{cloud_shadow_size} * cloud_shadow_size, 255),
+                    cloud_shadow_size, cloud_shadow_size, 1);
+        impl.shadow_view = wgpuTextureCreateView(impl.shadow_map, nullptr);
+        const WGPUPipelineLayoutDescriptor layout_descriptor{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl.sky_layout};
+        const auto layout = wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+        const WGPUColorTargetState target{.format = cloud_shadow_format, .writeMask = WGPUColorWriteMask_All};
+        const WGPUFragmentState fragment{.module = shader, .entryPoint = wgsl_name("fs_cloud_shadow"), .targetCount = 1, .targets = &target};
+        const WGPURenderPipelineDescriptor descriptor{
+            .layout = layout,
+            .vertex = {.module = shader, .entryPoint = wgsl_name("vs_table")},
+            .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+            .multisample = {.count = 1, .mask = ~0u, .alphaToCoverageEnabled = false},
+            .fragment = &fragment,
+        };
+        impl.shadow_pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
+        wgpuPipelineLayoutRelease(layout);
+    }
     wgpuShaderModuleRelease(shader);
 }
 
@@ -1074,6 +1147,34 @@ void NativeSky::update(const NativeSkyFrame& input) {
     f.clouds[0] = std::clamp(input.coverage, 0.0f, 1.0f);
     f.clouds[1] = base;
     f.clouds[2] = top;
+    // The shadow map's square: round the point where the sun's way from the
+    // eye's own ground meets the layer's middle, so the land round the eye
+    // falls near its middle at any sun height. Faded in as the sun rises.
+    // Drawn every fourth frame, at once when the sun turns, the eye jumps or
+    // the sharpness changes; read in between where it was drawn.
+    {
+        const float rise = (std::max)(to_sun.y, 0.05f);
+        const float above = (base + top) * 0.5f - altitude;
+        const float sharpness = std::clamp(cloud_shadow_sharpness(), 1.0f, 10.0f);
+        impl.eye_field = input.eye_route + impl.drift;
+        impl.shadow_above = above;
+        impl.shadow_strength = std::clamp((to_sun.y - 0.02f) / 0.10f, 0.0f, 1.0f);
+        if (!cloud_shadows() || impl.shadow_strength <= 0.0f) impl.shadow_drawn = false;
+        impl.shadow_due = !impl.shadow_drawn || impl.frames - impl.shadow_frame >= cloud_shadow_every
+                          || glm::dot(to_sun, impl.shadow_sun) < 0.99999f || glm::length(impl.eye_field - impl.shadow_field) > 300.0
+                          || sharpness != impl.shadow_sharpness;
+        if (impl.shadow_due) {
+            impl.shadow_frame = impl.frames;
+            impl.shadow_field = impl.eye_field;
+            impl.shadow_centre = glm::vec2{to_sun.x, to_sun.z} * (above / rise);
+            impl.shadow_sun = to_sun;
+            impl.shadow_sharpness = sharpness;
+        }
+        f.shadow[0] = impl.shadow_centre.x;
+        f.shadow[1] = impl.shadow_centre.y;
+        f.shadow[2] = cloud_shadow_half;
+        f.shadow[3] = impl.shadow_sharpness;
+    }
     f.field[0] = static_cast<float>(field.x);
     f.field[1] = static_cast<float>(field.y);
     // Each frame's samples shifted on by the golden ratio's fraction.
@@ -1208,6 +1309,26 @@ void NativeSky::render_clouds(const WGPUCommandEncoder encoder, const glm::mat4&
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
 
+    // The clouds' shadow on the ground, for this frame's main pass.
+    if (impl.shadow_pipeline && impl.shadow_due && cloud_shadows() && impl.shadow_strength > 0.0f) {
+        const WGPURenderPassColorAttachment target{
+            .view = impl.shadow_view,
+            .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+            .loadOp = WGPULoadOp_Clear,
+            .storeOp = WGPUStoreOp_Store,
+            .clearValue = {.r = 1.0, .g = 0.0, .b = 0.0, .a = 1.0},
+        };
+        const WGPURenderPassDescriptor shadow_descriptor{.colorAttachmentCount = 1, .colorAttachments = &target};
+        const auto shadow_pass = wgpuCommandEncoderBeginRenderPass(encoder, &shadow_descriptor);
+        wgpuRenderPassEncoderSetPipeline(shadow_pass, impl.shadow_pipeline);
+        wgpuRenderPassEncoderSetBindGroup(shadow_pass, 0, impl.sky_bindings[impl.cloud_current], 1, &offset);
+        wgpuRenderPassEncoderDraw(shadow_pass, 3, 1, 0, 0);
+        wgpuRenderPassEncoderEnd(shadow_pass);
+        wgpuRenderPassEncoderRelease(shadow_pass);
+        impl.shadow_drawn = true;
+        impl.shadow_due = false;
+    }
+
     impl.traced_at = impl.frames;
     impl.traced_directions = directions;
     impl.traced_sun = impl.to_sun;
@@ -1231,6 +1352,25 @@ void NativeSky::render(const WGPURenderPassEncoder pass, const glm::mat4& projec
     wgpuRenderPassEncoderSetPipeline(pass, impl.sky_pipeline);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.sky_bindings[impl.cloud_current], 1, &offset);
     wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+}
+
+CloudShadow NativeSky::cloud_shadow() const noexcept {
+    if (!impl_ || !impl_->shadow_view) return {};
+    const auto& impl = *impl_;
+    // Drawn this frame (it is due: render_clouds() draws it before the main
+    // pass), or before and read where it was drawn: the eye and the clouds
+    // have moved on in the field since.
+    const bool usable = impl.shadow_drawn || impl.shadow_due;
+    const float strength = usable && cloud_shadows() ? impl.shadow_strength * std::clamp(cloud_shadow_darkness(), 0.0f, 1.0f) : 0.0f;
+    const glm::dvec2 moved = impl.eye_field - impl.shadow_field;
+    // The edge band: half of 1 / sqrt(sharpness) either side of a half let
+    // through (sharpness 1: the whole range, 3: 0.21..0.79, 10: 0.34..0.66).
+    const float band = 0.5f / std::sqrt((std::max)(impl.shadow_sharpness, 1.0f));
+    return {.map = impl.shadow_view,
+            .area = {impl.shadow_centre.x - static_cast<float>(moved.x), impl.shadow_centre.y - static_cast<float>(moved.y), cloud_shadow_half,
+                     impl.shadow_above},
+            .sun = glm::vec4{impl.shadow_sun, strength},
+            .edge = {0.5f - band, 0.5f + band}};
 }
 
 FogRing NativeSky::fog_ring() const noexcept {

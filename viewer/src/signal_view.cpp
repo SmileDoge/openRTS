@@ -306,6 +306,13 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
             // Radius (a real size) is seen zoomed like the signal itself.
             // Only signals: the trains' lights stay as they are.
             far_scale /= (std::max)(zoom, 1.0f);
+            // openRTS (a setting, not as in RTS): the lens's own size however
+            // far, a dot of 2 pixels at least, as a far signal is seen.
+            float min_pixels = 0.0f;
+            if (renderer::signal_lights_real_size()) {
+                far_scale = 0.0f;
+                min_pixels = 2.0f;
+            }
             if (head.draw_state < 0.0f) continue;
             const auto draw = static_cast<std::uint32_t>(head.draw_state);
             const formats::SignalDrawState* state = nullptr;
@@ -371,7 +378,8 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
                                     .texture = texture,
                                     .far_scale = far_scale,
                                     .axis_x = axis_x,
-                                    .axis_y = axis_y});
+                                    .axis_y = axis_y,
+                                    .min_pixels = min_pixels});
             }
         }
     }

@@ -691,6 +691,9 @@ private:
     void apply_default_systems(const SceneInput& input);
     void update_pantographs(float elapsed);
     void update_exterior_doors(float elapsed);
+    // A car of the driven train turned against the cab the engineer drives
+    // from: its GlobalID 1 / 2 doors swapped for the Y / U keys' sides.
+    [[nodiscard]] bool door_side_turned(const Car& car) const;
     // Each train's line voltage at its electric engines, before the step.
     void feed_line();
     // The signals and limits ahead for the DLLs, before their step.

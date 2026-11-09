@@ -613,6 +613,13 @@ without compliance and RTS refuses it too.
   RTS's field of view (the quirk in signals.md, "Drawing a light"): at the
   installed FOV 65 the cone starts at the lamp (beam half angle `Angle`, reach `Radius`:
   PROBABLE readings).
+  openRTS (2026-11-09, not RTS): a glow is the light's own size near, but
+  never less than 1.5 pixels (half size, `GlowSprite::min_pixels`), its
+  light spread over the bigger quad (`spread_light`: dimmed by the sizes'
+  ratio squared), so on the whole as bright as it is. Far off a buffer
+  light or a route board's glyph is smaller than a pixel: MSAA's four
+  samples caught it now and then and averaged it, with MSAA off its one
+  sample a pixel missed it and the light went out.
 - **CONFIRMED** (decompiled copy of `mdd_Libraries\Usavp\Usavp.dll`, run in
   openrts-train-check and the viewer) the ED9M's route board (маршрутный
   указатель) is made of exterior lights, not a screen: `Lights ( 1100`,
@@ -651,6 +658,11 @@ without compliance and RTS refuses it too.
   salon's InteriorDoors with a `GlobalID` follow the train's doors (the
   engineer cannot open those by hand, as `CanBeOpened 0` says); the cab
   doors (`DOOR_1`, `DOOR_2`) follow the cab's doors of the same name.
+  openRTS (2026-11-09; RTS's handling of turned cars not traced): the sides
+  are the sending car's, so a car turned the other way in the train (its
+  Flags bit 0 not as the sender's) opens its other GlobalID, 1 for 2 and 2
+  for 1 (an ED4M's turned third car had opened its doors on the far side).
+  Without a DLL the Y / U keys are the driven cab's sides, swapped alike.
 - **CONFIRMED** cab and salon lamps (`LightSources`, `0x51C364`, 136-byte
   `InternalLight`): `Name` (its node), `GlobalID` (+84), `Position` and
   `PointsTo` (x negated; without `PointsTo` straight down), `Radius ( x z )`

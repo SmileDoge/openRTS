@@ -86,6 +86,24 @@ can see more than 1; the value is clamped only after the blur, where the
 slices average out (clamping before darkened flat ground by several
 percent). It darkens the sky (ambient) light only, not the sun or the lamps.
 
+Two qualities (2026-11-09), the panel's «Качество затенения: низкое /
+высокое», remembered as `effect_ao_quality` (`low` / `high`, high by
+default):
+
+- high: the above, at the frame's size;
+- low: a texel for each 2 x 2 pixels (a quarter of them, the depth pixel
+  at twice its place), one slice of four steps each way, the reach capped
+  at 64 pixels instead of 96; the blur becomes the way back to the frame's
+  size: 3 x 3 of those texels round each pixel (as far as high's 5 x 5),
+  each weighed by its depth against the pixel's, a floor of 0.001 so a
+  pixel no texel's surface covers (a thin pole) takes their mean.
+
+The cost is the pre-pass (the scene drawn once more), then about 29 depth
+reads a pixel scattered up to 96 pixels away and the blur's 50 reads, all
+at the frame's size: a GTX 1650 in a cab at Kuban ran 60 fps without GTAO
+and 10 with it (a player's report). Low reads about a ninth of that in the
+occlusion and a third in the blur; the pre-pass stays.
+
 ## Aerial perspective
 
 Instead of RTS's linear fog: extinction by distance through a haze thinning
@@ -109,7 +127,7 @@ end turns into, is that sky's horizon behind the point (`Effects.fog_ring`).
 The viewer panel (experimental renderer): «Тени от солнца», «Все источники
 света, кластеры», «Затенение углов, GTAO», «Атмосферная перспектива»,
 remembered in `viewer_state.ini` (`effect_shadows`, `effect_clusters`,
-`effect_ao`, `effect_aerial`), the two ranges above (`light_range`,
+`effect_ao`, `effect_aerial`; the occlusion's quality `effect_ao_quality`), the two ranges above (`light_range`,
 `headlight_reach`) and the ground bounce (`ground_bounce`, see below).
 `--effects shadows,clusters,ao,aerial | none` sets them for one run; `show-ao` shows the occlusion itself as the colour.
 
@@ -407,8 +425,15 @@ shone white on them at sunset). Works on both paths
   60 km and fading into the haze past 40 km. Their shapes come from 3D noise
   made at start: gradient and cellular noise, 64^3 tiling every 16 km. Their
   edges are eaten by a finer cellular 32^3 every 2 km. A 2D map every 65 km
-  varies where they gather. Cover by the weather: clear 0.42, snow 0.85,
-  rain 0.92. They drift with the environment's lowest wind times 3, at
+  varies where they gather, 0.3 either way round the cover, so the sky
+  over one place differs from another's tens of kilometres off. Cover by
+  the weather: clear 0.42, snow 0.85, rain 0.92; or the player's, «Облачность»
+  0..100 % with «Облачность по погоде» off (`cloud_cover()`, 2026-11-09).
+  The time of day does not change it, only their light. They drift with the
+  time of day (2026-11-09; until then with the frame's time, on through the
+  time panel's «пауза» and as slow at x3600 as at x1): still while it is
+  stopped, faster as it runs faster, up to 60 times. They drift with the
+  environment's lowest wind times 3, at
   least 4 m/s. Light: the sun through the air (its colour at sunset), six
   steps towards it, multiple scattering as three octaves (Wrenninge); the
   sky's average from above, a little from the ground below.
@@ -424,6 +449,34 @@ shone white on them at sunset). Works on both paths
   Until 2026-11-09 the clouds were marched in the sky's own pass for every
   sky pixel at full size, 24 to 64 steps with a fixed jitter, and their
   steps showed as bands at the edges; the pass now costs about a fifth.
+- **The clouds' shadows on the ground** (2026-11-09; the experimental
+  path, «Тени облаков на земле», on by default, `cloud_shadows()`): before
+  the main pass, every fourth frame (at once when the sun turns or the eye
+  jumps), a 1024 x 1024 map (R8, 16 m a texel) over 16 km at the layer's
+  middle height, round the point where the sun's way from the eye meets it;
+  in between it is read where it was drawn, the eye and the clouds' drift
+  since taken off. At each texel the light the whole layer lets through
+  along the sun's way, from its base to its top in steps of about 100 m (16
+  to 40), the clouds as the sky shows them (their fine noise too),
+  `exp(-0.03 x sharpness x density x m)`. Read, after the filtering, through
+  `smoothstep(0.5 - b, 0.5 + b)`, b = 0.5 / sqrt(sharpness): a shadow dark
+  through with its edge a narrow band, finer than the map's texels, as a
+  cumulus's shadow on the fields seen from a plane. Two settings: «Чёткость
+  тени облаков» (1..10, 3 by default) multiplies the density and narrows
+  that band (1 is as the clouds themselves: soft, hardly seen);
+  «Темнота тени облаков» (0..100 %, 85 by default) is how much of the sun a
+  thick cloud takes, the rest what it scatters forwards (the ground under
+  an overcast sky). Until the second version of 2026-11-09 it was 512 x 512
+  drawn every frame, sharpness 1 and 80 %, and the shadows were soft and
+  faint; the first had the coarse noise only, at a third of the density,
+  several clouds making one patch. `effects_shadow` multiplies the cascades' shadow by it:
+  a point is taken along the sun's way up to that height and read there,
+  so the land, the objects, the trains and the water's sun glint darken
+  where a cloud stands between them and the sun, the shadows long at low
+  sun and true to the land's height. The sky light stays. Faded in as the
+  sun rises from 1 to 7 degrees. 6 to 10 million density samples a frame
+  on average (25 to 40 every fourth frame, noon to low sun), most of them
+  outside the clouds and cheap.
 - **The sun behind the clouds:** its disc is thousands of times the sky's
   light; it is kept by the cube of what the clouds let through, not
   faded into the haze (a far cloud still hides it).

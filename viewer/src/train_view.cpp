@@ -2893,6 +2893,8 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
             message_ = trf("uncoupled before car %zu (end cocks closed)", static_cast<std::size_t>(index + 1));
         }
     }
+    // On foot the DLL's cab keys are on at once (the arrows walk him).
+    if (legacy_) legacy_->set_on_foot(engineer_.active());
     const bool keys_live = cab_keys_live();
     if (keys_live) {
         apply_handles(input);
@@ -4556,7 +4558,8 @@ void TrainView::apply_default_systems(const SceneInput& input) {
         }
         open = !open;
         for (auto& car : unit.cars) {
-            const std::uint32_t group = side == 0 ? 1u : 2u;
+            // The cab's side: a car turned the other way has it under the other GlobalID.
+            const std::uint32_t group = (side == 0) != door_side_turned(car) ? 1u : 2u;
             if (std::find(car.door_groups.begin(), car.door_groups.end(), group) == car.door_groups.end()) continue;
             car.pending_triggers.push_back(open ? 48u : 49u);
         }
@@ -4717,6 +4720,14 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
                 glow.sprite.colour = alpha << 24 | (argb & 0xFFu) << 16 | (argb & 0xFF00u) | ((argb >> 16) & 0xFFu);
                 glow.sprite.axis_x = glm::normalize(glm::vec3{world[0]});
                 glow.sprite.axis_y = glm::normalize(glm::vec3{world[1]});
+                // openRTS: far off a lamp (a buffer light, a route board's
+                // glyph) is smaller than a pixel. MSAA's four samples caught
+                // it now and then, averaged; with one sample a pixel it fell
+                // between the pixels' centres and went out. At least 1.5
+                // pixels (half size; 3 across, so seen at a slant too), its
+                // light spread over them: as bright on the whole as it is.
+                glow.sprite.min_pixels = 1.5f;
+                glow.sprite.spread_light = 1.0f;
                 // RTS's lamp quad (GLOBAL\SHADERS\lamp.vert) has u 0 at its +x:
                 // a quad turned along the beam (the ED9M's searchlight cone,
                 // lights 14..19, Azimuth +-90) is bright at the lamp, not at
@@ -4745,6 +4756,15 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
     }
     std::sort(beams.begin(), beams.end(), [](const Beam& x, const Beam& y) { return x.distance < y.distance; });
     for (std::size_t k = 0; k < beams.size() && k < 9; ++k) light_beams_.push_back(beams[k].light);
+}
+
+// A car of the driven train standing the other way round from the cab the
+// engineer drives from (its Flags' flip, and the cab's own facing): its
+// GlobalID 1 / 2 doors are on the cab's left / right.
+bool TrainView::door_side_turned(const Car& car) const {
+    if (units_.empty() || cab_car_ >= units_.front().cars.size()) return car.flipped;
+    const bool cab_facing = units_.front().cars[cab_car_].flipped != (cab_ && cab_->turned());
+    return car.flipped != cab_facing;
 }
 
 void TrainView::update_exterior_doors(const float elapsed) {
@@ -4793,9 +4813,11 @@ void TrainView::update_exterior_doors(const float elapsed) {
                     }
                 }
                 if (!decided && out && door.index < out->doors.size()) target = out->doors[door.index].set_state != 0;
-                // The driven train without a DLL: the Y / U keys (GlobalID 2 left, 1 right).
+                // The driven train without a DLL: the Y / U keys (GlobalID 2
+                // left, 1 right, as the cab sees them; a car turned the other
+                // way has them swapped).
                 if (!decided && !out && u == 0 && !legacy_ && !native_ && (door.group == 1 || door.group == 2))
-                    target = doors_open_[door.group == 1 ? 0 : 1];
+                    target = doors_open_[(door.group == 1) != door_side_turned(car) ? 0 : 1];
                 const float goal = target ? 1.0f : 0.0f;
                 const float step = elapsed / door.time;
                 door.open = goal > door.open ? (std::min)(goal, door.open + step) : (std::max)(goal, door.open - step);
@@ -5630,8 +5652,11 @@ void TrainView::draw_overlay() {
     }
     cab_controls();
     if (legacy_) {
+        // With the free camera a choice (they take its WASD); on foot always on.
         bool keys = legacy_->keyboard();
-        if (ImGui::Checkbox(tr("Cab keys of the locomotive DLL"), &keys)) legacy_->set_keyboard(keys);
+        ImGui::BeginDisabled(legacy_->on_foot());
+        if (ImGui::Checkbox(tr("Cab keys of the locomotive DLL (on foot always on)"), &keys)) legacy_->set_keyboard(keys);
+        ImGui::EndDisabled();
     } else if (!legacy_status_.empty()) {
         ImGui::TextWrapped("%s %s", tr("Locomotive DLLs do not run:"), legacy_status_.c_str());
     }
