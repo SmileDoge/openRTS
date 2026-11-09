@@ -282,6 +282,7 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 #include <openrts/renderer/frustum.hpp>
 #include <openrts/renderer/scene_effects.hpp>
 
+#include "fog_ring_wgsl.hpp"
 #include "rts_light_shapes.hpp"
 #include "scene_effects_wgsl.hpp"
 
@@ -315,6 +316,8 @@ struct FrameUniform {
     detail::GpuLight lights[ring_lights];
     std::int32_t ring_counts[12];
     float shading[4]; // x: night_ambient_scale()
+    float fog_sun[4];            // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
+    float fog_ring[FogRing::count][4]; // the horizon's colour at each fog_ring_angle (display)
 };
 
 // Port of RTS terrain.vert/frag, the additional light sources included.
@@ -335,6 +338,8 @@ struct Frame {
     lights: array<Light, 90>, // nine a ring
     ring_counts: array<vec4<i32>, 3>,
     shading: vec4<f32>, // x: the experimental path's night ambient factor
+    fog_sun: vec4<f32>,             // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
+    fog_ring: array<vec4<f32>, 12>, // the horizon's colour at each fog_ring_angle (fog_ring.hpp)
 };
 
 // The experimental path (openRTS's shading, as the models': linear light,
@@ -389,10 +394,10 @@ fn vs_main(input: VertexIn) -> VertexOut {
     if (fog_end <= 0.0) {
         out.fog = vec4<f32>(0.0);
     } else if (fog_end > fog_start) {
-        let amount = clamp(frame.fog_colour.w * ((out.clip.z - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
-        out.fog = vec4<f32>(frame.fog_colour.xyz, amount);
+        let amount = clamp(frame.fog_colour.w * ((out.clip.w - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
+        out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), amount);
     } else {
-        out.fog = frame.fog_colour;
+        out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), frame.fog_colour.w);
     }
     return out;
 }
@@ -428,10 +433,10 @@ fn vs_water(input: WaterIn) -> VertexOut {
     if (fog_end <= 0.0) {
         out.fog = vec4<f32>(0.0);
     } else if (fog_end > fog_start) {
-        let amount = clamp(frame.fog_colour.w * ((out.clip.z - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
-        out.fog = vec4<f32>(frame.fog_colour.xyz, amount);
+        let amount = clamp(frame.fog_colour.w * ((out.clip.w - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
+        out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), amount);
     } else {
-        out.fog = frame.fog_colour;
+        out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), frame.fog_colour.w);
     }
     return out;
 }
@@ -573,6 +578,11 @@ struct Frame {
     light_direction: vec4<f32>,
     fog_colour: vec4<f32>,
     fog_distance: vec4<f32>,
+    lights: array<Light, 90>,
+    ring_counts: array<vec4<i32>, 3>,
+    shading: vec4<f32>,
+    fog_sun: vec4<f32>,             // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
+    fog_ring: array<vec4<f32>, 12>, // the horizon's colour at each fog_ring_angle (fog_ring.hpp)
 };
 
 override experimental: bool = false;
@@ -609,10 +619,10 @@ fn vs_surface(input: SurfaceIn) -> SurfaceOut {
     if (fog_end <= 0.0) {
         out.fog = vec4<f32>(0.0);
     } else if (fog_end > fog_start) {
-        let amount = clamp(frame.fog_colour.w * ((out.clip.z - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
-        out.fog = vec4<f32>(frame.fog_colour.xyz, amount);
+        let amount = clamp(frame.fog_colour.w * ((out.clip.w - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
+        out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), amount);
     } else {
-        out.fog = frame.fog_colour;
+        out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), frame.fog_colour.w);
     }
     return out;
 }
@@ -1476,7 +1486,7 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
 
     // One module for both paths (the `experimental` override): both read
     // the effects (group 2), so both layouts have it.
-    const auto shader_code = std::string(detail::light_shapes_wgsl) + detail::effects_struct_wgsl + detail::effects_main_wgsl + terrain_shader;
+    const auto shader_code = std::string(detail::light_shapes_wgsl) + detail::effects_struct_wgsl + detail::effects_main_wgsl + detail::fog_ring_wgsl + terrain_shader;
     const WGPUShaderSourceWGSL source{
         .chain = {.sType = WGPUSType_ShaderSourceWGSL},
         .code = {.data = shader_code.data(), .length = shader_code.size()},
@@ -1505,7 +1515,7 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
     // uniforms and the effects.
     {
         const auto water_code =
-            std::string(detail::light_shapes_wgsl) + detail::effects_struct_wgsl + detail::effects_main_wgsl + water_surface_shader;
+            std::string(detail::light_shapes_wgsl) + detail::effects_struct_wgsl + detail::effects_main_wgsl + detail::fog_ring_wgsl + water_surface_shader;
         const WGPUShaderSourceWGSL water_source{
             .chain = {.sType = WGPUSType_ShaderSourceWGSL},
             .code = {.data = water_code.data(), .length = water_code.size()},
@@ -1852,6 +1862,13 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
     frame.fog_distance[1] = lighting.fog_end;
     frame.fog_distance[3] = physical_light_falloff() ? 1.0f : 0.0f;
     frame.shading[0] = night_ambient_scale();
+    frame.fog_sun[0] = lighting.fog_ring.on ? lighting.fog_ring.sun.x : 0.0f;
+    frame.fog_sun[1] = lighting.fog_ring.on ? lighting.fog_ring.sun.y : 0.0f;
+    frame.fog_sun[2] = impl.eye.x;
+    frame.fog_sun[3] = impl.eye.z;
+    for (std::size_t i = 0; i < FogRing::count; ++i) {
+        copy_vec4(frame.fog_ring[i], glm::vec4{lighting.fog_ring.colours[i], 1.0f});
+    }
     const auto& rings = lighting.light_rings;
     for (std::size_t k = 0; k < LightRings::count; ++k) {
         const auto n = (std::min)(rings.lights[k].size(), LightRings::capacity);

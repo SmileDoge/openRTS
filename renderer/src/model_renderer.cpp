@@ -43,6 +43,7 @@
 
 #include <glm/gtc/matrix_inverse.hpp>
 
+#include "fog_ring_wgsl.hpp"
 #include "rts_light_shapes.hpp"
 #include "scene_effects_wgsl.hpp"
 #include <webgpu/wgpu.h>
@@ -136,6 +137,8 @@ struct FrameUniform {
     glm::mat4 view_projection;
     float eye[4]; // camera position (experimental path: view vector)
     float shading[4]; // x: night_ambient_scale()
+    float fog_sun[4];            // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
+    float fog_ring[FogRing::count][4]; // the horizon's colour at each fog_ring_angle (display)
 };
 
 // Bindings and types shared by both shading paths.
@@ -151,6 +154,8 @@ struct Frame {
     view_projection: mat4x4<f32>,
     eye: vec4<f32>,
     shading: vec4<f32>, // x: the experimental path's night ambient factor
+    fog_sun: vec4<f32>,             // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
+    fog_ring: array<vec4<f32>, 12>, // the horizon's colour at each fog_ring_angle (fog_ring.hpp)
 };
 
 // One primitive of the shape (static per model generation).
@@ -248,18 +253,21 @@ fn ring_count(ring: u32) -> i32 {
     return min(frame.ring_counts[ring / 4u][ring % 4u], 9);
 }
 
-// RTS fog: linear in clip-space depth, scaled by the fog colour alpha.
-fn fog_for(clip_z: f32) -> vec4<f32> {
+// RTS fog: linear in the eye's depth (clip w: under reversed Z clip z is
+// not a distance, and the fog had stopped), scaled by the fog colour alpha;
+// its colour by direction under openRTS's sky (fog_ring_colour).
+fn fog_for(depth: f32, world: vec3<f32>) -> vec4<f32> {
     let fog_start = frame.fog_distance.x;
     let fog_end = frame.fog_distance.y;
     if (fog_end <= 0.0) {
         return vec4<f32>(0.0);
     }
+    let colour = fog_ring_colour(world, frame.fog_colour.xyz);
     if (fog_end > fog_start) {
-        let amount = clamp(frame.fog_colour.w * ((clip_z - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
-        return vec4<f32>(frame.fog_colour.xyz, amount);
+        let amount = clamp(frame.fog_colour.w * ((depth - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
+        return vec4<f32>(colour, amount);
     }
-    return frame.fog_colour;
+    return vec4<f32>(colour, frame.fog_colour.w);
 }
 )";
 
@@ -332,7 +340,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
         }
     }
     out.colour = max(ambient, luminance);
-    out.fog = fog_for(out.clip.z);
+    out.fog = fog_for(out.clip.w, out.world.xyz);
     return out;
 }
 
@@ -447,7 +455,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
     } else if (draw.light_material == -1) {
         out.colour = input.colour2;
     }
-    out.fog = fog_for(out.clip.z);
+    out.fog = fog_for(out.clip.w, out.world.xyz);
     return out;
 }
 
@@ -665,6 +673,21 @@ void copy_vec4(float (&target)[4], const glm::vec4& value) {
     target[3] = value.w;
 }
 
+// FogRing into a frame uniform's fog_sun and fog_ring (fog_ring_wgsl.hpp).
+template <class Uniform>
+void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) {
+    uniform.fog_sun[0] = ring.on ? ring.sun.x : 0.0f;
+    uniform.fog_sun[1] = ring.on ? ring.sun.y : 0.0f;
+    uniform.fog_sun[2] = eye.x;
+    uniform.fog_sun[3] = eye.z;
+    for (std::size_t i = 0; i < FogRing::count; ++i) {
+        uniform.fog_ring[i][0] = ring.colours[i].x;
+        uniform.fog_ring[i][1] = ring.colours[i].y;
+        uniform.fog_ring[i][2] = ring.colours[i].z;
+        uniform.fog_ring[i][3] = 1.0f;
+    }
+}
+
 [[nodiscard]] FrameUniform frame_uniform(const ModelLighting& lighting, const glm::mat4& view_projection,
                                          const glm::vec3& eye) {
     FrameUniform result{};
@@ -695,6 +718,7 @@ void copy_vec4(float (&target)[4], const glm::vec4& value) {
     result.fog_distance[3] = physical_light_falloff() ? 1.0f : 0.0f;
     result.shading[0] = night_ambient_scale();
     result.shading[1] = light_fullbright() ? 1.0f : 0.0f;
+    fill_fog_ring(result, lighting.fog_ring, eye);
     return result;
 }
 
@@ -783,7 +807,7 @@ void copy_vec4(float (&target)[4], const glm::vec4& value) {
 }
 
 [[nodiscard]] WGPUShaderModule create_shader_module(const WGPUDevice device, const char* body, const bool effects = false) {
-    auto code = std::string(detail::light_shapes_wgsl) + shader_interface;
+    auto code = std::string(detail::light_shapes_wgsl) + shader_interface + detail::fog_ring_wgsl;
     if (effects) code += std::string(detail::effects_struct_wgsl) + detail::effects_main_wgsl;
     code += body;
     const WGPUShaderSourceWGSL source{

@@ -329,6 +329,7 @@ struct SkyRenderer::Impl {
     WGPUTexture probe_depth = nullptr;
     WGPUTextureView probe_depth_view = nullptr;
     bool probe_drawn = false; // recorded once: it is the sky from the next frame on
+    std::size_t probe_next = 0; // the face drawn next (all six the first time)
 
     Impl() = default;
     Impl(const Impl&) = delete;
@@ -836,7 +837,15 @@ void SkyRenderer::render_reflection_probe(const WGPUCommandEncoder encoder, cons
     }};
     const auto projection = reversed_z_perspective(glm::radians(90.0f), 1.0f, 1.0f, 100000.0f);
     const bool msaa = impl.probe_msaa_view != nullptr;
-    for (std::size_t f = 0; f < faces.size(); ++f) {
+    // All six faces the first time, then one a frame (the sky changes
+    // slowly; openRTS's clouds cost a face as much as a sixth of the view).
+    const std::size_t first = impl.probe_drawn ? impl.probe_next : 0;
+    const std::size_t count = impl.probe_drawn ? 1 : faces.size();
+    impl.probe_next = (first + count) % faces.size();
+    // openRTS's sky draws itself over black (the satellites under it).
+    const glm::vec4 clear = draw ? glm::vec4{0.0f, 0.0f, 0.0f, 1.0f} : glm::vec4{state.clear_colour};
+    for (std::size_t n = 0; n < count; ++n) {
+        const std::size_t f = (first + n) % faces.size();
         const auto& face = faces[f];
         glm::mat4 view{1.0f};
         for (int column = 0; column < 3; ++column) {
@@ -850,7 +859,7 @@ void SkyRenderer::render_reflection_probe(const WGPUCommandEncoder encoder, cons
             .resolveTarget = msaa ? impl.probe_faces[f] : nullptr,
             .loadOp = WGPULoadOp_Clear,
             .storeOp = msaa ? WGPUStoreOp_Discard : WGPUStoreOp_Store,
-            .clearValue = {.r = state.clear_colour.r, .g = state.clear_colour.g, .b = state.clear_colour.b, .a = 1.0},
+            .clearValue = {.r = clear.r, .g = clear.g, .b = clear.b, .a = 1.0},
         };
         const WGPURenderPassDepthStencilAttachment depth{
             .view = impl.probe_depth_view,

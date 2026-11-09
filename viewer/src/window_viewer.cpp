@@ -2310,6 +2310,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             .view_zoom = camera.view_zoom,
             .aspect = aspect,
             .viewport_height = static_cast<float>(height),
+            .viewport_width = static_cast<float>(width),
         };
         // The experimental path's effects: shadow cascades, the depth
         // pre-pass with its occlusion and the lamp clusters, before the
@@ -2357,6 +2358,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         } else {
             effects.record(encoder, depth_draw);
         }
+        scene.before_main_pass(encoder, frame);
         stage_clock.mark(FrameStage::effects, stages);
         const auto pass =
             begin_main_pass(encoder,

@@ -35,6 +35,7 @@ struct FrameView {
     float view_zoom = 1.0f; // ViewerCamera::view_zoom (Ctrl and the wheel)
     float aspect = 1.0f;
     float viewport_height = 720.0f; // pixels
+    float viewport_width = 1280.0f;  // pixels
     // The experimental path's effects (SceneEffects::bind_group) for the
     // terrain; the distance within which shadow casters out of view are
     // wanted (0: none).
@@ -210,6 +211,9 @@ public:
                             renderer::DepthPassKind /*kind*/) {}
     // Called once before the depth passes, which may run on several threads.
     virtual void prepare_depth() {}
+    // Outside any pass, just before the main pass begins (after the
+    // experimental path's depth passes): what the main pass reads.
+    virtual void before_main_pass(WGPUCommandEncoder, const FrameView&) {}
     // After the translucent models (glass), before the cab: where RTS draws
     // its lights (0x408574's light loop between object passes 2 and 3).
     virtual void draw_after_translucent(WGPURenderPassEncoder, const FrameView&) {}

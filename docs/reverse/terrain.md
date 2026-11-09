@@ -54,7 +54,10 @@ per-sample table (not yet decoded; openRTS computes them from heights).
 ## Shader (`terrain.vert/frag`)
 
 `colour = max(diffuse · clamp(−2·N·L), ambient)`;
-`texel = texture(uv) · microtexture(uv · 16) · 2`; fog by clip-space depth;
+`texel = texture(uv) · microtexture(uv · 16) · 2`; fog by the eye's depth
+(GL's eye z; openRTS: clip w, since under its reversed Z clip z is no
+distance, and from the reversed-Z change until 2026-11-09 the RTS path's
+fog on the terrain, its water and the shapes never came on);
 `texel.a == 0` writes black. Depth `LEQUAL` with writes, no blend.
 
 ## Seasonal textures (`0x422648`)

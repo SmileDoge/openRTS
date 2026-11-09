@@ -44,11 +44,12 @@ public:
     void render(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, const rts::SkyState& state);
 
     // openRTS (RTS had none): the same sky drawn into a small cube map round
-    // the camera, which the openRTS water reflects. Records six passes, one
-    // a face, outside any pass, after render() in the same frame. The cube
-    // holds the target format's colours (display encoded, as the frame).
-    // `draw`, when given, draws each face instead of RTS's sky (openRTS's own
-    // sky: NativeSky::render and render_satellites), with the face's
+    // the camera, which the openRTS water reflects. Records a pass a face,
+    // outside any pass, after render() in the same frame: all six the first
+    // time, then one a call in turn. The cube holds the target format's
+    // colours (display encoded, as the frame). `draw`, when given, draws
+    // each face instead of RTS's sky, over black (openRTS's own sky:
+    // render_satellites, then NativeSky::render over them), with the face's
     // projection, view (no translation) and uniform slot (1..6).
     using ProbeDraw = std::function<void(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, std::uint32_t slot)>;
     void render_reflection_probe(WGPUCommandEncoder encoder, const rts::SkyState& state, const ProbeDraw& draw = {});
@@ -57,9 +58,10 @@ public:
     // not be made.
     [[nodiscard]] WGPUTextureView reflection_probe() const noexcept;
 
-    // Over openRTS's own sky (NativeSky): the satellites but the lighting one
-    // (the moon), on the far plane, where only the sky is (after the opaque
-    // objects). `slot`: 0 the frame, 1..6 a probe face.
+    // Under openRTS's own sky (NativeSky): the satellites but the lighting
+    // one (the moon), on the far plane (where only the sky will be), before
+    // NativeSky::render, which keeps of them what its clouds let through.
+    // `slot`: 0 the frame, 1..6 a probe face.
     void render_satellites(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, const rts::SkyState& state,
                            std::uint32_t slot = 0);
 

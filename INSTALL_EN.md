@@ -70,7 +70,8 @@ What the archive holds:
      - no train — just fly over the route. The first consist you put on
        the track in Track control (Ctrl+Alt+F7) is yours.
    - **Situation:** trains saved in the game (Train window → Situations)
-     stand where they stood, instead of the consist chosen.
+     stand where they stood, instead of the consist chosen. One saved
+     while the menu is open shows up in the list by itself.
 4. **Settings:**
    - language;
    - keys: RTS, with the numeric keypad (Num0, Num1, Num3), or openRTS,

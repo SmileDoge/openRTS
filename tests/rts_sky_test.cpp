@@ -175,6 +175,16 @@ int main() {
         check(dark.x + dark.y + dark.z < 0.001f, "native sky: dark at night");
         const auto through = openrts::renderer::atmosphere_transmittance(300.0f, low_sun);
         check(through.x > through.z && through.x <= 1.0f && through.z >= 0.0f, "native sky: the low sun reddened");
+        // The fog's ring: from the sun's way round to its back, crowded
+        // towards the sun; under a low sun its horizon brighter than away.
+        using openrts::renderer::fog_ring_angle;
+        using openrts::renderer::FogRing;
+        bool rising = fog_ring_angle(0) == 0.0f && near(fog_ring_angle(FogRing::count - 1), 3.14159265f);
+        for (std::size_t i = 1; i < FogRing::count; ++i) rising = rising && fog_ring_angle(i) > fog_ring_angle(i - 1);
+        check(rising && fog_ring_angle(1) < fog_ring_angle(FogRing::count - 1) - fog_ring_angle(FogRing::count - 2),
+              "fog ring: angles crowded towards the sun");
+        const auto behind = openrts::renderer::atmosphere_radiance(300.0f, glm::normalize(glm::vec3{0.0f, 0.03f, -1.0f}), low_sun);
+        check(towards.x + towards.y + towards.z > behind.x + behind.y + behind.z, "fog ring: the horizon towards a low sun brighter");
     }
 
     if (failures == 0) std::printf("rts sky: all checks passed\n");

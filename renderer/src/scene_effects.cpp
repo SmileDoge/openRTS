@@ -67,6 +67,10 @@ struct EffectsUniform {
     // The sphere the lamps' shadows cover in flight (xyz its middle, w its
     // radius; 0: none): they fade out towards its edge.
     glm::vec4 lamp_focus{0.0f};
+    // openRTS's sky (FogRing): xy the sun's way along the ground (0: off);
+    // the horizon at each fog_ring_angle, linear.
+    glm::vec4 fog_sun{0.0f};
+    glm::vec4 fog_ring[FogRing::count]{};
 };
 static_assert(sizeof(EffectsUniform) % 16 == 0);
 
@@ -973,6 +977,12 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     // over the last quarter of that distance.
     const float fog_end = lighting.fog_end > 0.0f ? lighting.fog_end : 3000.0f;
     frame.aerial = glm::vec4{1.0f / fog_end, 1.0f / 1500.0f, 0.76f, 0.25f * glm::clamp(sun_luma, 0.0f, 1.0f) * sun_up};
+    // Under openRTS's sky the fog ends at the land's end, not at RTS's dome
+    // (twice as far or more): a clearer air, the horizon behind as its colour.
+    const auto& ring = lighting.fog_ring;
+    frame.fog_sun = ring.on ? glm::vec4{ring.sun, 0.0f, 0.0f} : glm::vec4{0.0f};
+    for (std::size_t i = 0; i < FogRing::count; ++i) frame.fog_ring[i] = glm::vec4{linear(glm::vec4{ring.colours[i], 1.0f}), 1.0f};
+    if (ring.on) frame.aerial.x = 0.6f / fog_end;
     // haze.w: RTS's fog strength, its fog colour's alpha (the fog shaders
     // scale their fog by it; the sky makes it 0 once the sun is 2 degrees
     // down, rts_sky.cpp): the land's end turns into the fog colour only so far.

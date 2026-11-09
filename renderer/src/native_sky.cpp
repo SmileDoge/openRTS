@@ -133,8 +133,15 @@ namespace openrts::renderer {
 namespace {
 
 constexpr std::uint64_t uniform_stride = 256;
-constexpr std::uint32_t uniform_slots = 8; // the frame, six probe faces, the table
+constexpr std::uint32_t uniform_slots = 9; // the frame, six probe faces, the table, the clouds
 constexpr std::uint32_t table_slot = 7;
+constexpr std::uint32_t cloud_slot = 8;
+// The clouds' texture: half the view's size each way, rgb their light, a
+// the light they let through.
+constexpr WGPUTextureFormat cloud_format = WGPUTextureFormat_RGBA16Float;
+// A new frame's share of the clouds' texture: about the last eight frames,
+// each marched with its own jitter, so the steps' bands average out.
+constexpr float cloud_history_weight = 0.12f;
 constexpr std::uint32_t table_width = 256;
 constexpr std::uint32_t table_height = 128;
 constexpr WGPUTextureFormat table_format = WGPUTextureFormat_RGBA16Float;
@@ -146,11 +153,12 @@ struct SkyUniform {
     glm::mat4 inverse_view_projection{1.0f};
     float sun[4]{};            // xyz: towards the sun
     float eye[4]{};            // x: altitude (m), y: night (0..1), z: -, w: the sun's light (native_sky_sun)
-    float clouds[4]{};         // x: cover, y: base (m above sea), z: top, w: -
-    float field[4]{};          // xy: the eye in the clouds' field (m, wraps at 65536)
+    float clouds[4]{};         // x: cover, y: base (m above sea), z: top, w: 1: the sky reads the clouds' texture
+    float field[4]{};          // xy: the eye in the clouds' field (m, wraps at 65536), z: this frame's jitter (0..1), w: the clouds' history: the new frame's weight (1: none)
     float sun_at_clouds[4]{};  // rgb: sunlight at the clouds (linear, scaled)
     float ambient_top[4]{};    // rgb: sky light on their tops
     float ambient_bottom[4]{}; // rgb: light from below
+    glm::mat4 previous_view_projection{1.0f}; // the clouds' last frame: directions -> clip
 };
 static_assert(sizeof(SkyUniform) <= uniform_stride);
 
@@ -164,6 +172,7 @@ struct Sky {
     sun_at_clouds: vec4<f32>,
     ambient_top: vec4<f32>,
     ambient_bottom: vec4<f32>,
+    previous_view_projection: mat4x4<f32>,
 };
 
 override hdr_output: bool = false;
@@ -175,6 +184,8 @@ override hdr_output: bool = false;
 @group(0) @binding(4) var noise_sampler: sampler;
 @group(0) @binding(5) var sky_table: texture_2d<f32>;
 @group(0) @binding(6) var table_sampler: sampler;
+@group(0) @binding(7) var cloud_texture: texture_2d<f32>;
+@group(0) @binding(8) var clamp_sampler: sampler;
 
 const planet: f32 = 6360000.0;
 const atmosphere_top: f32 = 6460000.0;
@@ -336,11 +347,12 @@ fn henyey_greenstein(mu: f32, g: f32) -> f32 {
 // Extinction per metre of the densest cloud.
 const cloud_sigma: f32 = 0.03;
 
-// The sunlight's way out of the clouds towards the sun: optical depth.
-fn sun_depth(p: vec3<f32>) -> f32 {
+// The sunlight's way out of the clouds towards the sun: optical depth
+// (the first step shifted by the frame's jitter).
+fn sun_depth(p: vec3<f32>, jitter: f32) -> f32 {
     var depth = 0.0;
     var stride = 80.0;
-    var q = p;
+    var q = p + sky.sun.xyz * (stride * (jitter - 0.5));
     for (var j = 0; j < 6; j = j + 1) {
         q = q + sky.sun.xyz * stride;
         depth = depth + cloud_density(q, false) * stride;
@@ -349,19 +361,18 @@ fn sun_depth(p: vec3<f32>) -> f32 {
     return depth * cloud_sigma;
 }
 
-// Rgb: the clouds' light along the view; a: the light let through.
-fn clouds(view: vec3<f32>, pixel: vec2<f32>) -> vec4<f32> {
+// Where a view crosses the clouds' layer (m from the eye: in, out); out
+// not past in: nowhere (below the horizon under the layer). Out to 60 km.
+fn cloud_span(view: vec3<f32>) -> vec2<f32> {
     let altitude = sky.eye.x;
     let origin = vec3<f32>(0.0, planet + altitude, 0.0);
-    let base = planet + sky.clouds.y;
-    let top = planet + sky.clouds.z;
-    let inner = ray_sphere(origin, view, base);
-    let outer = ray_sphere(origin, view, top);
+    let inner = ray_sphere(origin, view, planet + sky.clouds.y);
+    let outer = ray_sphere(origin, view, planet + sky.clouds.z);
     var t0 = 0.0;
     var t1 = 0.0;
     if (altitude < sky.clouds.y) {
         if (ray_sphere(origin, view, planet).x > 0.0) {
-            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+            return vec2<f32>(0.0);
         }
         t0 = inner.y;
         t1 = outer.y;
@@ -372,7 +383,7 @@ fn clouds(view: vec3<f32>, pixel: vec2<f32>) -> vec4<f32> {
         }
     } else {
         if (outer.x < 0.0) {
-            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+            return vec2<f32>(0.0);
         }
         t0 = outer.x;
         t1 = outer.y;
@@ -380,38 +391,47 @@ fn clouds(view: vec3<f32>, pixel: vec2<f32>) -> vec4<f32> {
             t1 = inner.x;
         }
     }
-    let far = 60000.0;
     t0 = max(t0, 0.0);
-    if (t0 >= far || t1 <= t0) {
+    return vec2<f32>(t0, min(t1, 60000.0));
+}
+
+// How much of far clouds is seen: they sink into the haze behind them.
+fn cloud_fade(span: vec2<f32>) -> f32 {
+    return exp(-span.x / 40000.0);
+}
+
+// Rgb: the clouds' light along the view (faded into the haze); a: the light
+// they let through, not faded (the sun or the moon behind a far cloud is
+// hidden still). `jitter` (0..1) shifts the samples: each frame its own,
+// the frames averaged (the clouds' texture), so the steps leave no bands.
+fn clouds(view: vec3<f32>, jitter: f32) -> vec4<f32> {
+    let span = cloud_span(view);
+    if (span.y <= span.x) {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    t1 = min(t1, far);
-    let span = t1 - t0;
-    let steps = i32(clamp(span / 100.0, 24.0, 64.0));
-    let dt = span / f32(steps);
-    let jitter = fract(52.9829189 * fract(dot(floor(pixel), vec2<f32>(0.06711056, 0.00583715))));
+    let origin = vec3<f32>(0.0, planet + sky.eye.x, 0.0);
+    let base = planet + sky.clouds.y;
+    let top = planet + sky.clouds.z;
+    let size = span.y - span.x;
+    // Few steps a frame: the frames, each its own jitter, add up to many.
+    let steps = i32(clamp(size / 200.0, 12.0, 32.0));
+    let dt = size / f32(steps);
+    // Multiple scattering as octaves (Wrenninge): each half as strong, its
+    // phase flatter, the light going twice as far. The phases are the
+    // view's, the same at every step.
     let mu = dot(view, sky.sun.xyz);
+    let phase0 = mix(henyey_greenstein(mu, 0.8), henyey_greenstein(mu, -0.25), 0.35);
+    let phase1 = 0.5 * mix(henyey_greenstein(mu, 0.4), henyey_greenstein(mu, -0.125), 0.35);
+    let phase2 = 0.25 * mix(henyey_greenstein(mu, 0.2), henyey_greenstein(mu, -0.0625), 0.35);
     var through = 1.0;
     var light = vec3<f32>(0.0);
-    var t = t0 + dt * jitter;
+    var t = span.x + dt * jitter;
     for (var i = 0; i < steps; i = i + 1) {
         let p = origin + view * t;
         let density = cloud_density(p, true);
         if (density > 0.0) {
-            let depth = sun_depth(p);
-            // Multiple scattering as octaves (Wrenninge): each half as
-            // strong, its phase flatter, the light going twice as far.
-            var sun_part = 0.0;
-            var a = 1.0;
-            var b = 1.0;
-            var c = 1.0;
-            for (var n = 0; n < 3; n = n + 1) {
-                let phase = mix(henyey_greenstein(mu, 0.8 * b), henyey_greenstein(mu, -0.25 * b), 0.35);
-                sun_part = sun_part + a * phase * exp(-depth * c);
-                a = a * 0.5;
-                b = b * 0.5;
-                c = c * 0.5;
-            }
+            let depth = sun_depth(p, jitter);
+            let sun_part = phase0 * exp(-depth) + phase1 * exp(-depth * 0.5) + phase2 * exp(-depth * 0.25);
             let fraction = clamp((length(p) - base) / (top - base), 0.0, 1.0);
             let ambient = mix(sky.ambient_bottom.xyz, sky.ambient_top.xyz, fraction);
             let source = sky.sun_at_clouds.xyz * sun_part + ambient;
@@ -419,14 +439,13 @@ fn clouds(view: vec3<f32>, pixel: vec2<f32>) -> vec4<f32> {
             light = light + through * source * (1.0 - step_through);
             through = through * step_through;
             if (through < 0.01) {
+                through = 0.0;
                 break;
             }
         }
         t = t + dt;
     }
-    // Far clouds sink into the haze behind them.
-    let fade = exp(-t0 / 40000.0);
-    return vec4<f32>(light * fade, mix(1.0, through, fade));
+    return vec4<f32>(light * cloud_fade(span), through);
 }
 
 fn stars(view: vec3<f32>) -> vec3<f32> {
@@ -464,17 +483,82 @@ fn shoulder(c: vec3<f32>) -> vec3<f32> {
     return select(c, rolled, c > vec3<f32>(knee));
 }
 
+// The view through a pixel (NDC), from the eye.
+fn view_of(ndc: vec2<f32>) -> vec3<f32> {
+    let far = sky.inverse_view_projection * vec4<f32>(ndc, 0.5, 1.0);
+    return normalize(far.xyz / far.w);
+}
+
+// A pixel's jitter: interleaved gradient noise, moved on each frame.
+fn pixel_jitter(pixel: vec2<f32>) -> f32 {
+    let noise = fract(52.9829189 * fract(dot(floor(pixel), vec2<f32>(0.06711056, 0.00583715))));
+    return fract(noise + sky.field.z);
+}
+
+fn texture_uv(ndc: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+}
+
+// The clouds' texture (half the view's size): this frame's march blended
+// into the last frames' (found again by direction: the clouds are far).
+@fragment
+fn fs_clouds(input: VertexOut) -> @location(0) vec4<f32> {
+    let view = view_of(input.ndc);
+    let current = clouds(view, pixel_jitter(input.clip.xy));
+    let weight = sky.field.w;
+    if (weight >= 1.0) {
+        return current;
+    }
+    let before = sky.previous_view_projection * vec4<f32>(view, 1.0);
+    if (before.w <= 1e-6) {
+        return current;
+    }
+    let ndc = before.xy / before.w;
+    if (abs(ndc.x) > 1.0 || abs(ndc.y) > 1.0) {
+        return current;
+    }
+    let history = textureSampleLevel(cloud_texture, clamp_sampler, texture_uv(ndc), 0.0);
+    return mix(history, current, weight);
+}
+
+// The air's colour is looked up at least half a degree up: below it, where
+// the land has ended (past the loaded tiles, the eye high above them), the
+// far land would be lost in the haze, and the air towards the ground (a
+// short way, no ground lit) showed as a dark blue band. The horizon's own
+// colour there, as the fog turns the land's end into (FogRing, as high).
+fn above_horizon(view: vec3<f32>) -> vec3<f32> {
+    let low = 0.0087265; // sin(0.5 degrees)
+    if (view.y >= low) {
+        return view;
+    }
+    let flat = length(view.xz);
+    let across = select(vec2<f32>(0.0, 1.0), view.xz / max(flat, 1e-6), flat > 1e-5);
+    let c = sqrt(1.0 - low * low);
+    return vec3<f32>(across.x * c, low, across.y * c);
+}
+
+// The sky, its alpha what the clouds let through: the moon and the other
+// satellites drawn before it are kept by that much (the pipeline's blend).
 @fragment
 fn fs_sky(input: VertexOut) -> @location(0) vec4<f32> {
-    let far = sky.inverse_view_projection * vec4<f32>(input.ndc, 0.5, 1.0);
-    let view = normalize(far.xyz / far.w);
-    var colour = textureSampleLevel(sky_table, table_sampler, table_uv(view), 0.0).xyz;
+    let view = view_of(input.ndc);
+    var colour = textureSampleLevel(sky_table, table_sampler, table_uv(above_horizon(view)), 0.0).xyz;
     // The night's own faint light (airglow, starlight) and the stars.
-    colour = colour + vec3<f32>(0.004, 0.006, 0.012) * sky.eye.y + stars(view) + sun_disc(view);
-    let cloud = clouds(view, input.clip.xy);
-    colour = colour * cloud.a + cloud.xyz;
+    colour = colour + vec3<f32>(0.004, 0.006, 0.012) * sky.eye.y + stars(view);
+    var cloud: vec4<f32>;
+    if (sky.clouds.w > 0.5) {
+        cloud = textureSampleLevel(cloud_texture, clamp_sampler, texture_uv(input.ndc), 0.0);
+    } else {
+        cloud = clouds(view, pixel_jitter(input.clip.xy));
+    }
+    let through = clamp(cloud.a, 0.0, 1.0);
+    colour = colour * mix(1.0, through, cloud_fade(cloud_span(view))) + cloud.xyz;
+    // The sun's disc is thousands of times the sky's light: through a
+    // cloud that lets a hundredth through it still glared white, so it
+    // shows only through a thin veil.
+    colour = colour + sun_disc(view) * through * through * through;
     let shaped = select(shoulder(colour), max(colour, vec3<f32>(0.0)), hdr_output);
-    return vec4<f32>(pow(shaped, vec3<f32>(1.0 / 2.2)), 1.0);
+    return vec4<f32>(pow(shaped, vec3<f32>(1.0 / 2.2)), through);
 }
 )";
 
@@ -652,31 +736,66 @@ struct NativeSky::Impl {
     WGPUBindGroupLayout sky_layout = nullptr;
     WGPURenderPipeline table_pipeline = nullptr;
     WGPURenderPipeline sky_pipeline = nullptr;
+    WGPURenderPipeline cloud_pipeline = nullptr;
     WGPUBuffer uniforms = nullptr;
     WGPUTexture shape = nullptr, detail = nullptr, weather = nullptr, table = nullptr;
     WGPUTextureView shape_view = nullptr, detail_view = nullptr, weather_view = nullptr, table_view = nullptr;
-    WGPUSampler noise_sampler = nullptr, table_sampler = nullptr;
-    WGPUBindGroup table_binding = nullptr, sky_binding = nullptr;
+    WGPUSampler noise_sampler = nullptr, table_sampler = nullptr, clamp_sampler = nullptr;
+    WGPUBindGroup table_binding = nullptr;
+    // The clouds' texture, two: one drawn each frame from the other. The
+    // sky's bindings: [k] reads clouds[k].
+    std::array<WGPUTexture, 2> clouds{};
+    std::array<WGPUTextureView, 2> cloud_views{};
+    std::array<WGPUBindGroup, 2> sky_bindings{};
+    std::uint32_t cloud_width = 0, cloud_height = 0;
+    std::uint32_t cloud_current = 0;   // the one this frame's clouds are in
+    bool clouds_this_frame = false;    // render_clouds() ran for this frame's view
+    std::uint64_t frames = 0;          // update() calls
+    std::uint64_t traced_at = ~0ull;   // the frame render_clouds() last ran in
+    glm::mat4 traced_directions{1.0f}; // its view's directions -> clip
+    glm::vec3 traced_sun{0.0f};
+    glm::dvec2 traced_field{0.0};
 
     SkyUniform frame{};
     glm::dvec2 drift{0.0};
+    glm::dvec2 field{0.0};
+    glm::vec3 to_sun{0.0f, 1.0f, 0.0f};
     glm::vec3 horizon{0.6f};
+    FogRing fog_ring;
+
+    void release_clouds() {
+        for (auto*& group : sky_bindings) {
+            if (group) wgpuBindGroupRelease(group);
+            group = nullptr;
+        }
+        for (auto*& view : cloud_views) {
+            if (view) wgpuTextureViewRelease(view);
+            view = nullptr;
+        }
+        for (auto*& texture : clouds) {
+            if (texture) wgpuTextureRelease(texture);
+            texture = nullptr;
+        }
+        cloud_width = cloud_height = 0;
+    }
+
+    // The clouds' textures at a size, and the sky's bindings reading them.
+    [[nodiscard]] bool make_clouds(std::uint32_t width, std::uint32_t height);
 
     ~Impl() {
-        for (auto* group : {table_binding, sky_binding}) {
-            if (group) wgpuBindGroupRelease(group);
-        }
+        release_clouds();
+        if (table_binding) wgpuBindGroupRelease(table_binding);
         for (auto* view : {shape_view, detail_view, weather_view, table_view}) {
             if (view) wgpuTextureViewRelease(view);
         }
         for (auto* texture : {shape, detail, weather, table}) {
             if (texture) wgpuTextureRelease(texture);
         }
-        for (auto* sampler : {noise_sampler, table_sampler}) {
+        for (auto* sampler : {noise_sampler, table_sampler, clamp_sampler}) {
             if (sampler) wgpuSamplerRelease(sampler);
         }
         if (uniforms) wgpuBufferRelease(uniforms);
-        for (auto* pipeline : {table_pipeline, sky_pipeline}) {
+        for (auto* pipeline : {table_pipeline, sky_pipeline, cloud_pipeline}) {
             if (pipeline) wgpuRenderPipelineRelease(pipeline);
         }
         for (auto* layout : {table_layout, sky_layout}) {
@@ -690,6 +809,50 @@ struct NativeSky::Impl {
         wgpuQueueRelease(queue);
     }
 };
+
+bool NativeSky::Impl::make_clouds(const std::uint32_t width, const std::uint32_t height) {
+    release_clouds();
+    for (std::size_t k = 0; k < clouds.size(); ++k) {
+        const WGPUTextureDescriptor descriptor{
+            .label = {.data = "sky-clouds", .length = WGPU_STRLEN},
+            .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {.width = width, .height = height, .depthOrArrayLayers = 1},
+            .format = cloud_format,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+        };
+        clouds[k] = wgpuDeviceCreateTexture(device, &descriptor);
+        if (!clouds[k]) return false;
+        cloud_views[k] = wgpuTextureCreateView(clouds[k], nullptr);
+    }
+    for (std::size_t k = 0; k < sky_bindings.size(); ++k) {
+        std::array<WGPUBindGroupEntry, 9> entries{};
+        entries[0] = {.binding = 0, .buffer = uniforms, .offset = 0, .size = sizeof(SkyUniform)};
+        entries[1].binding = 1;
+        entries[1].textureView = shape_view;
+        entries[2].binding = 2;
+        entries[2].textureView = detail_view;
+        entries[3].binding = 3;
+        entries[3].textureView = weather_view;
+        entries[4].binding = 4;
+        entries[4].sampler = noise_sampler;
+        entries[5].binding = 5;
+        entries[5].textureView = table_view;
+        entries[6].binding = 6;
+        entries[6].sampler = table_sampler;
+        entries[7].binding = 7;
+        entries[7].textureView = cloud_views[k];
+        entries[8].binding = 8;
+        entries[8].sampler = clamp_sampler;
+        const WGPUBindGroupDescriptor descriptor{.layout = sky_layout, .entryCount = entries.size(), .entries = entries.data()};
+        sky_bindings[k] = wgpuDeviceCreateBindGroup(device, &descriptor);
+        if (!sky_bindings[k]) return false;
+    }
+    cloud_width = width;
+    cloud_height = height;
+    return true;
+}
 
 NativeSky::NativeSky(const WGPUDevice device, const WGPUTextureFormat target_format) : impl_(std::make_unique<Impl>()) {
     auto& impl = *impl_;
@@ -736,6 +899,17 @@ NativeSky::NativeSky(const WGPUDevice device, const WGPUTextureFormat target_for
         .maxAnisotropy = 1,
     };
     impl.table_sampler = wgpuDeviceCreateSampler(device, &table_sampler);
+    const WGPUSamplerDescriptor clamp_sampler{
+        .addressModeU = WGPUAddressMode_ClampToEdge,
+        .addressModeV = WGPUAddressMode_ClampToEdge,
+        .addressModeW = WGPUAddressMode_ClampToEdge,
+        .magFilter = WGPUFilterMode_Linear,
+        .minFilter = WGPUFilterMode_Linear,
+        .mipmapFilter = WGPUMipmapFilterMode_Nearest,
+        .lodMaxClamp = 1.0f,
+        .maxAnisotropy = 1,
+    };
+    impl.clamp_sampler = wgpuDeviceCreateSampler(device, &clamp_sampler);
 
     const WGPUBufferDescriptor buffer{.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, .size = uniform_stride * uniform_slots};
     impl.uniforms = wgpuDeviceCreateBuffer(device, &buffer);
@@ -752,7 +926,7 @@ NativeSky::NativeSky(const WGPUDevice device, const WGPUTextureFormat target_for
         impl.table_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
     }
     {
-        std::array<WGPUBindGroupLayoutEntry, 7> entries{};
+        std::array<WGPUBindGroupLayoutEntry, 9> entries{};
         entries[0] = uniform_entry;
         const auto texture = [&](const std::uint32_t binding, const WGPUTextureViewDimension dimension) {
             entries[binding].binding = binding;
@@ -770,6 +944,10 @@ NativeSky::NativeSky(const WGPUDevice device, const WGPUTextureFormat target_for
         entries[6].binding = 6;
         entries[6].visibility = WGPUShaderStage_Fragment;
         entries[6].sampler.type = WGPUSamplerBindingType_Filtering;
+        texture(7, WGPUTextureViewDimension_2D);
+        entries[8].binding = 8;
+        entries[8].visibility = WGPUShaderStage_Fragment;
+        entries[8].sampler.type = WGPUSamplerBindingType_Filtering;
         const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
         impl.sky_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
     }
@@ -778,24 +956,7 @@ NativeSky::NativeSky(const WGPUDevice device, const WGPUTextureFormat target_for
         const WGPUBindGroupDescriptor descriptor{.layout = impl.table_layout, .entryCount = 1, .entries = &entry};
         impl.table_binding = wgpuDeviceCreateBindGroup(device, &descriptor);
     }
-    {
-        std::array<WGPUBindGroupEntry, 7> entries{};
-        entries[0] = {.binding = 0, .buffer = impl.uniforms, .offset = 0, .size = sizeof(SkyUniform)};
-        entries[1].binding = 1;
-        entries[1].textureView = impl.shape_view;
-        entries[2].binding = 2;
-        entries[2].textureView = impl.detail_view;
-        entries[3].binding = 3;
-        entries[3].textureView = impl.weather_view;
-        entries[4].binding = 4;
-        entries[4].sampler = impl.noise_sampler;
-        entries[5].binding = 5;
-        entries[5].textureView = impl.table_view;
-        entries[6].binding = 6;
-        entries[6].sampler = impl.table_sampler;
-        const WGPUBindGroupDescriptor descriptor{.layout = impl.sky_layout, .entryCount = entries.size(), .entries = entries.data()};
-        impl.sky_binding = wgpuDeviceCreateBindGroup(device, &descriptor);
-    }
+    if (!impl.make_clouds(1, 1)) impl.release_clouds();
 
     const WGPUShaderSourceWGSL source{.chain = {.sType = WGPUSType_ShaderSourceWGSL}, .code = wgsl_name(sky_shader)};
     const WGPUShaderModuleDescriptor module_descriptor{.nextInChain = &source.chain};
@@ -836,7 +997,13 @@ NativeSky::NativeSky(const WGPUDevice device, const WGPUTextureFormat target_for
             .stencilReadMask = ~0u,
             .stencilWriteMask = ~0u,
         };
-        const WGPUColorTargetState target{.format = target_format, .writeMask = WGPUColorWriteMask_All};
+        // Over the satellites drawn before it (the moon): they keep what
+        // the clouds let through (the sky's alpha); their target's alpha kept.
+        const WGPUBlendState over_satellites{
+            .color = {.operation = WGPUBlendOperation_Add, .srcFactor = WGPUBlendFactor_One, .dstFactor = WGPUBlendFactor_SrcAlpha},
+            .alpha = {.operation = WGPUBlendOperation_Add, .srcFactor = WGPUBlendFactor_Zero, .dstFactor = WGPUBlendFactor_One},
+        };
+        const WGPUColorTargetState target{.format = target_format, .blend = &over_satellites, .writeMask = WGPUColorWriteMask_All};
         const WGPUConstantEntry hdr{.key = wgsl_name("hdr_output"), .value = scene_hdr() ? 1.0 : 0.0};
         const WGPUFragmentState fragment{.module = shader,
                                          .entryPoint = wgsl_name("fs_sky"),
@@ -855,13 +1022,30 @@ NativeSky::NativeSky(const WGPUDevice device, const WGPUTextureFormat target_for
         impl.sky_pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
         wgpuPipelineLayoutRelease(layout);
     }
+    // The clouds' texture: one triangle over it, no depth, single sample.
+    {
+        const WGPUPipelineLayoutDescriptor layout_descriptor{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl.sky_layout};
+        const auto layout = wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+        const WGPUColorTargetState target{.format = cloud_format, .writeMask = WGPUColorWriteMask_All};
+        const WGPUFragmentState fragment{.module = shader, .entryPoint = wgsl_name("fs_clouds"), .targetCount = 1, .targets = &target};
+        const WGPURenderPipelineDescriptor descriptor{
+            .layout = layout,
+            .vertex = {.module = shader, .entryPoint = wgsl_name("vs_sky")},
+            .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+            .multisample = {.count = 1, .mask = ~0u, .alphaToCoverageEnabled = false},
+            .fragment = &fragment,
+        };
+        impl.cloud_pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
+        wgpuPipelineLayoutRelease(layout);
+    }
     wgpuShaderModuleRelease(shader);
 }
 
 NativeSky::~NativeSky() = default;
 
 bool NativeSky::ready() const noexcept {
-    return impl_ && impl_->table_pipeline && impl_->sky_pipeline && impl_->sky_binding && impl_->table_binding && impl_->uniforms;
+    return impl_ && impl_->table_pipeline && impl_->sky_pipeline && impl_->cloud_pipeline && impl_->sky_bindings[0]
+        && impl_->sky_bindings[1] && impl_->table_binding && impl_->uniforms;
 }
 
 void NativeSky::update(const NativeSkyFrame& input) {
@@ -871,6 +1055,9 @@ void NativeSky::update(const NativeSkyFrame& input) {
     impl.drift += glm::dvec2{input.wind} * static_cast<double>(input.elapsed);
     // The clouds' field wraps at 65536 m (every noise tiles within it).
     const auto field = glm::mod(input.eye_route + impl.drift, glm::dvec2{65536.0});
+    impl.field = field;
+    impl.to_sun = to_sun;
+    ++impl.frames;
     // The layer: cumulus from 1.5 km above sea, or 1 km above the eye's
     // ground where the route lies high.
     const float base = (std::max)(1500.0f, altitude + 600.0f);
@@ -889,6 +1076,8 @@ void NativeSky::update(const NativeSkyFrame& input) {
     f.clouds[2] = top;
     f.field[0] = static_cast<float>(field.x);
     f.field[1] = static_cast<float>(field.y);
+    // Each frame's samples shifted on by the golden ratio's fraction.
+    f.field[2] = static_cast<float>(std::fmod(static_cast<double>(impl.frames) * 0.6180339887498949, 1.0));
 
     // The clouds' light: the sun through the air above their middle, the
     // sky above them (its average over the upper half), the ground below
@@ -915,16 +1104,41 @@ void NativeSky::update(const NativeSkyFrame& input) {
         f.ambient_bottom[i] = below[i] + night_glow[i];
     }
 
-    // The horizon's average colour (display): RTS's fog colour while this
-    // sky is drawn, so the land's end meets it.
+    // Display encoded as the sky is drawn (the HDR frame: no soft clip).
+    const bool hdr = scene_hdr();
+    const auto display = [hdr](const glm::vec3& linear) {
+        glm::vec3 result;
+        for (int i = 0; i < 3; ++i) {
+            const float c = (std::max)(linear[i], 0.0f);
+            result[i] = std::pow(hdr ? c : shoulder(c), 1.0f / 2.2f);
+        }
+        return result;
+    };
+
+    // The horizon's average colour: RTS's fog colour while this sky is
+    // drawn (what has no direction: the clear colour, the water's sky).
     glm::vec3 horizon{0.0f};
     for (int k = 0; k < 8; ++k) {
         const float a = glm::radians(22.5f + 45.0f * static_cast<float>(k));
         const float e = glm::radians(2.0f);
         horizon += atmosphere_radiance(altitude, {std::cos(e) * std::sin(a), std::sin(e), std::cos(e) * std::cos(a)}, to_sun);
     }
-    horizon = horizon / 8.0f + night_glow;
-    for (int i = 0; i < 3; ++i) impl.horizon[i] = std::pow(shoulder((std::max)(horizon[i], 0.0f)), 1.0f / 2.2f);
+    impl.horizon = display(horizon / 8.0f + night_glow);
+
+    // The fog's colour by direction (FogRing): the horizon half a degree up
+    // (what a long way through the air turns to; the sky below it is that
+    // too, fs_sky) at the ring's angles from the sun's way.
+    glm::vec2 way{to_sun.x, to_sun.z};
+    way = glm::length(way) > 1e-4f ? glm::normalize(way) : glm::vec2{0.0f, 1.0f};
+    impl.fog_ring.on = true;
+    impl.fog_ring.sun = way;
+    const float up = glm::radians(0.5f);
+    for (std::size_t i = 0; i < FogRing::count; ++i) {
+        const float a = fog_ring_angle(i);
+        const glm::vec2 d{way.x * std::cos(a) - way.y * std::sin(a), way.x * std::sin(a) + way.y * std::cos(a)};
+        const glm::vec3 view{std::cos(up) * d.x, std::sin(up), std::cos(up) * d.y};
+        impl.fog_ring.colours[i] = display(atmosphere_radiance(altitude, view, to_sun) + night_glow);
+    }
 }
 
 void NativeSky::render_table(const WGPUCommandEncoder encoder) {
@@ -948,16 +1162,79 @@ void NativeSky::render_table(const WGPUCommandEncoder encoder) {
     wgpuRenderPassEncoderRelease(pass);
 }
 
+void NativeSky::render_clouds(const WGPUCommandEncoder encoder, const glm::mat4& projection, const glm::mat4& view,
+                              const std::uint32_t width, const std::uint32_t height) {
+    if (!ready() || width == 0 || height == 0) return;
+    auto& impl = *impl_;
+    const std::uint32_t w = (width + 1) / 2;
+    const std::uint32_t h = (height + 1) / 2;
+    // The last frames' clouds count only when they were the frame just
+    // before, at this size, under nearly the same sun, the eye not jumped.
+    bool fresh = impl.traced_at + 1 != impl.frames;
+    if (w != impl.cloud_width || h != impl.cloud_height) {
+        if (!impl.make_clouds(w, h)) {
+            // Back to a size that works; the sky marches its clouds itself.
+            if (!impl.make_clouds(1, 1)) impl.release_clouds();
+            return;
+        }
+        fresh = true;
+    }
+    if (glm::dot(impl.to_sun, impl.traced_sun) < 0.99996f || glm::length(impl.field - impl.traced_field) > 300.0) fresh = true;
+
+    // Directions only: the view's rotation.
+    const auto directions = projection * glm::mat4{glm::mat3{view}};
+    impl.cloud_current ^= 1u;
+    impl.frame.inverse_view_projection = glm::inverse(directions);
+    impl.frame.previous_view_projection = impl.traced_directions;
+    impl.frame.field[3] = fresh ? 1.0f : cloud_history_weight;
+    impl.frame.clouds[3] = 0.0f;
+    impl.write_slot(cloud_slot);
+    impl.frame.field[3] = 1.0f;
+
+    const WGPURenderPassColorAttachment colour{
+        .view = impl.cloud_views[impl.cloud_current],
+        .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+        .loadOp = WGPULoadOp_Clear,
+        .storeOp = WGPUStoreOp_Store,
+        .clearValue = {.r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0},
+    };
+    const WGPURenderPassDescriptor descriptor{.colorAttachmentCount = 1, .colorAttachments = &colour};
+    const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+    const std::uint32_t offset = cloud_slot * static_cast<std::uint32_t>(uniform_stride);
+    wgpuRenderPassEncoderSetPipeline(pass, impl.cloud_pipeline);
+    // Reading the other texture: the last frames' clouds.
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.sky_bindings[impl.cloud_current ^ 1u], 1, &offset);
+    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+
+    impl.traced_at = impl.frames;
+    impl.traced_directions = directions;
+    impl.traced_sun = impl.to_sun;
+    impl.traced_field = impl.field;
+    impl.clouds_this_frame = true;
+}
+
 void NativeSky::render(const WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, const std::uint32_t slot) {
     if (!ready() || slot >= table_slot) return;
     auto& impl = *impl_;
     // Directions only: the view's rotation.
     impl.frame.inverse_view_projection = glm::inverse(projection * glm::mat4{glm::mat3{view}});
+    // The frame's view reads the clouds render_clouds() drew for it; the
+    // probe's faces march their own.
+    const bool from_texture = slot == frame_slot && impl.clouds_this_frame;
+    impl.frame.clouds[3] = from_texture ? 1.0f : 0.0f;
     impl.write_slot(slot);
+    impl.frame.clouds[3] = 0.0f;
+    if (slot == frame_slot) impl.clouds_this_frame = false;
     const std::uint32_t offset = slot * static_cast<std::uint32_t>(uniform_stride);
     wgpuRenderPassEncoderSetPipeline(pass, impl.sky_pipeline);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.sky_binding, 1, &offset);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.sky_bindings[impl.cloud_current], 1, &offset);
     wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+}
+
+FogRing NativeSky::fog_ring() const noexcept {
+    return impl_ ? impl_->fog_ring : FogRing{};
 }
 
 glm::vec3 NativeSky::horizon_colour() const noexcept {

@@ -310,6 +310,9 @@ struct Launcher::State {
     std::uint64_t log_read = 0;         // bytes of openrts.log read
     std::string log_line;               // its unfinished last line
     std::chrono::steady_clock::time_point next_log_check{};
+    // The route's situations are read again now and then: one saved in the
+    // game (its Train window) shows up without choosing the route again.
+    std::chrono::steady_clock::time_point next_situation_scan{};
 #ifdef _WIN32
     HANDLE process = nullptr;
 #endif
@@ -463,20 +466,38 @@ struct Launcher::State {
         return route < 0 ? fs::path{} : viewer::user_data_directory() / "situations" / routes[static_cast<std::size_t>(route)];
     }
 
-    // The route's saved situations, the remembered one chosen again.
-    void load_situations() {
-        situations.clear();
-        situation = -1;
-        if (route < 0) return;
+    // The chosen route's saved situations, by name.
+    [[nodiscard]] std::vector<std::string> scan_situations() const {
+        std::vector<std::string> found;
+        if (route < 0) return found;
         std::error_code error;
         for (const auto& entry : fs::directory_iterator(situation_folder(), error)) {
-            if (entry.path().extension() == ".situation") situations.push_back(utf8(entry.path().stem()));
+            if (entry.path().extension() == ".situation") found.push_back(utf8(entry.path().stem()));
         }
-        std::sort(situations.begin(), situations.end());
+        std::sort(found.begin(), found.end());
+        return found;
+    }
+
+    // The route's saved situations, the remembered one chosen again.
+    void load_situations() {
+        situations = scan_situations();
+        situation = -1;
         if (const auto wanted = remembered("launcher_situation"); wanted && !wanted->empty()) {
             for (std::size_t i = 0; i < situations.size(); ++i)
                 if (situations[i] == *wanted) situation = static_cast<int>(i);
         }
+    }
+
+    // The situations read again (saved or deleted meanwhile), the chosen
+    // one kept while it is there.
+    void refresh_situations() {
+        auto found = scan_situations();
+        if (found == situations) return;
+        const auto chosen = situation >= 0 ? situations[static_cast<std::size_t>(situation)] : std::string();
+        situations = std::move(found);
+        situation = -1;
+        for (std::size_t i = 0; i < situations.size() && !chosen.empty(); ++i)
+            if (situations[i] == chosen) situation = static_cast<int>(i);
     }
 
     // A consist is wanted: not when the trains come from a situation or there is no train.
@@ -707,6 +728,10 @@ struct Launcher::State {
     }
 
     void poll() {
+        if (const auto now = std::chrono::steady_clock::now(); now >= next_situation_scan) {
+            next_situation_scan = now + std::chrono::milliseconds(1500);
+            refresh_situations();
+        }
 #ifdef _WIN32
         if (!process) return;
         const bool ended = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
@@ -720,6 +745,8 @@ struct Launcher::State {
         GetExitCodeProcess(process, &code);
         CloseHandle(process);
         process = nullptr;
+        // Situations saved in the game are there at once.
+        refresh_situations();
         // The game's panel may have changed it.
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
         window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);

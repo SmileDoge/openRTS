@@ -14,6 +14,8 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
+#include <openrts/renderer/fog_ring.hpp>
+
 #ifdef OPENRTS_HAS_WGPU
 #include <webgpu/webgpu.h>
 #endif
@@ -66,11 +68,22 @@ public:
     // The atmosphere into its table (256 x 128 around the sky), outside any
     // pass; the sky drawn from the next frame on reads it.
     void render_table(WGPUCommandEncoder encoder);
+    // The clouds of the frame's view (`width` x `height` pixels) at half its
+    // size each way, before the main pass: each frame marched with its own
+    // jitter and blended into the last frames' (found again by direction),
+    // so the march's steps leave no bands. render(frame_slot) reads them.
+    void render_clouds(WGPUCommandEncoder encoder, const glm::mat4& projection, const glm::mat4& view, std::uint32_t width,
+                       std::uint32_t height);
     // The sky where nothing is drawn yet: depth still at the far plane (a
-    // pass with the scene's depth, after the opaque objects), or a probe face.
+    // pass with the scene's depth, after the opaque objects), or a probe face
+    // (its clouds marched there). Blended over what is drawn before it on
+    // that far plane (the moon, SkyRenderer::render_satellites, over black):
+    // it keeps what the clouds let through.
     void render(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, std::uint32_t slot);
     // The average horizon's colour (display encoded), for RTS's fog colour.
     [[nodiscard]] glm::vec3 horizon_colour() const noexcept;
+    // The horizon by direction, for the fog (FogRing).
+    [[nodiscard]] FogRing fog_ring() const noexcept;
 
 private:
     struct Impl;

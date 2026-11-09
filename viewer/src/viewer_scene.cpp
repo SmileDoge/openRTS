@@ -703,11 +703,17 @@ public:
         lighting.fog_end = sky_state_->fog_end;
         glm::vec4 clear{glm::vec3{sky_state_->clear_colour}, 1.0f};
         if (native_sky_on()) {
-            // The land's end fogs into openRTS's sky's horizon (RTS's fog
-            // strength kept: its colour's alpha).
-            const auto horizon = native_sky_->horizon_colour();
-            lighting.fog_colour = glm::vec4{horizon, lighting.fog_colour.w};
-            clear = glm::vec4{horizon, 1.0f};
+            // The land fogs into openRTS's sky's horizon behind it (FogRing;
+            // RTS's fog strength kept: its colour's alpha). RTS's fog ends at
+            // its dome's edge (Novokuznetsk: 2000 m), the land beyond the dome
+            // hidden; without the dome only the land's end is to hide, the
+            // terrain's loaded tiles round the eye.
+            lighting.fog_colour = glm::vec4{native_sky_->horizon_colour(), lighting.fog_colour.w};
+            lighting.fog_ring = native_sky_->fog_ring();
+            lighting.fog_end = land_end;
+            lighting.fog_start = 0.4f * land_end;
+            // Black under the sky: it adds itself over the moon drawn first.
+            clear = glm::vec4{0.0f, 0.0f, 0.0f, 1.0f};
         }
         return {
             .lighting = lighting,
@@ -719,8 +725,15 @@ public:
     // Sky first (no depth test), then terrain; models follow.
     void draw_background(const WGPURenderPassEncoder pass, const FrameView& frame) override {
         // openRTS's own sky is drawn after the opaque objects instead
-        // (draw_before_translucent), where only the sky is left.
-        if (sky_renderer_ && sky_state_ && !native_sky_on()) sky_renderer_->render(pass, frame.projection, frame.view, *sky_state_);
+        // (draw_before_translucent), where only the sky is left; the RTS
+        // moon goes first, on the far plane, the clouds then over it.
+        if (sky_renderer_ && sky_state_) {
+            if (native_sky_on()) {
+                sky_renderer_->render_satellites(pass, frame.projection, frame.view, *sky_state_, 0);
+            } else {
+                sky_renderer_->render(pass, frame.projection, frame.view, *sky_state_);
+            }
+        }
         if (terrain_) {
             terrain_->set_sky_probe(sky_renderer_ ? sky_renderer_->reflection_probe() : nullptr);
             terrain_->render(pass, frame.projection * frame.view, environment().lighting, frame.effects);
@@ -856,13 +869,11 @@ public:
     // after the solid models, before the glass (which writes depth: anything
     // drawn after it vanished behind the windows).
     void draw_before_translucent(const WGPURenderPassEncoder pass, const FrameView& frame) override {
-        // openRTS's own sky where the opaque objects left the far plane, the
-        // RTS moon over it; then the openRTS water over the opaque models
-        // (what stands in it shows through), before the translucent ones.
-        if (native_sky_on()) {
-            native_sky_->render(pass, frame.projection, frame.view, renderer::NativeSky::frame_slot);
-            if (sky_renderer_) sky_renderer_->render_satellites(pass, frame.projection, frame.view, *sky_state_, 0);
-        }
+        // openRTS's own sky where the opaque objects left the far plane
+        // (over the RTS moon, drawn there first); then the openRTS water over
+        // the opaque models (what stands in it shows through), before the
+        // translucent ones.
+        if (native_sky_on()) native_sky_->render(pass, frame.projection, frame.view, renderer::NativeSky::frame_slot);
         if (terrain_) terrain_->render_water(pass);
         if (signals_) signals_->draw(pass, frame, frame.viewport_height);
         if (track_) track_->draw(pass, frame.projection * frame.view, train_ && train_->placed() ? train_->head_position() : frame.eye);
@@ -896,6 +907,14 @@ public:
 
     [[nodiscard]] WGPUQuerySet occlusion_query_set() const override { return probe_ ? probe_->query_set() : nullptr; }
 
+    // openRTS's own sky's clouds for this frame's view (half its size).
+    void before_main_pass(const WGPUCommandEncoder encoder, const FrameView& frame) override {
+        if (native_sky_on()) {
+            native_sky_->render_clouds(encoder, frame.projection, frame.view, static_cast<std::uint32_t>(frame.viewport_width),
+                                       static_cast<std::uint32_t>(frame.viewport_height));
+        }
+    }
+
     void after_main_pass(const WGPUCommandEncoder encoder) override {
         if (probe_) probe_->resolve(encoder);
         // openRTS's own sky's atmosphere, for the next frame.
@@ -906,8 +925,8 @@ public:
                 sky_renderer_->render_reflection_probe(
                     encoder, *sky_state_,
                     [&](const WGPURenderPassEncoder face, const glm::mat4& projection, const glm::mat4& view, const std::uint32_t slot) {
-                        native_sky_->render(face, projection, view, slot);
                         sky_renderer_->render_satellites(face, projection, view, *sky_state_, slot);
+                        native_sky_->render(face, projection, view, slot);
                     });
             } else {
                 sky_renderer_->render_reflection_probe(encoder, *sky_state_);
@@ -1103,6 +1122,8 @@ private:
     }
 
     static constexpr int terrain_radius = 2;
+    // The nearest the loaded terrain ends (m): its tiles round the eye's.
+    static constexpr float land_end = static_cast<float>(terrain_radius) * 2048.0f;
 
     // Terrain height at the route start (the scene origin), 0 without terrain.
     [[nodiscard]] float start_ground_height() const {

@@ -99,6 +99,11 @@ fog colour (`Effects.haze.w`). The sky makes that alpha 0 once the sun is
 alpha was left out, and after sunset the far land turned black behind a
 light haze (Novokuznetsk at Luzhba, 22:38 in summer).
 
+Under the openRTS sky (below) the haze is clearer and has no single
+colour: its distance is the land's end (4096 m, see Fog there), 0.6 of
+the light lost there before the edge; what it scatters in, and the land's
+end turns into, is that sky's horizon behind the point (`Effects.fog_ring`).
+
 ## Settings
 
 The viewer panel (experimental renderer): «Тени от солнца», «Все источники
@@ -380,7 +385,10 @@ it (deep under the body) 14.9 -> 16.1 -> 17.0, the ground unchanged.
 Not RTS: a Graphics setting, «Небо openRTS: атмосфера, объёмные облака
 (не как в RTS)», on by default (`native_sky`). When on it replaces RTS's
 dome of textured layers and its sun sprite. The other satellites of the
-environment (the moon) are still drawn over it. Works on both paths
+environment (the moon) are drawn first, on the far plane, and the sky over
+them keeps of them what its clouds let through (until 2026-11-09 they
+were drawn over the clouds: Novokuznetsk's moon, up from 20:15 in summer,
+shone white on them at sunset). Works on both paths
 (`renderer/src/native_sky.cpp`).
 
 - **Atmosphere:** single scattering, Rayleigh (5.8, 13.6, 33.1 per
@@ -401,14 +409,39 @@ environment (the moon) are still drawn over it. Works on both paths
   edges are eaten by a finer cellular 32^3 every 2 km. A 2D map every 65 km
   varies where they gather. Cover by the weather: clear 0.42, snow 0.85,
   rain 0.92. They drift with the environment's lowest wind times 3, at
-  least 4 m/s. Ray marched, 24 to 64 steps, the start jittered per pixel.
-  Light: the sun through the air (its colour at sunset), six steps towards
-  it, multiple scattering as three octaves (Wrenninge); the sky's average
-  from above, a little from the ground below.
+  least 4 m/s. Light: the sun through the air (its colour at sunset), six
+  steps towards it, multiple scattering as three octaves (Wrenninge); the
+  sky's average from above, a little from the ground below.
+- **The clouds' march:** before the main pass, into a texture half the
+  view's size each way (`render_clouds`, RGBA16F: their light, and the
+  light they let through), 12 to 32 steps along each view, the start and
+  the first step towards the sun jittered per pixel and moved on each frame
+  (the golden ratio). Each frame is blended into the last frames' at 0.12,
+  found again by direction (the clouds are far, so the view's rotation
+  alone moves them); history is dropped when the view's size changes, the
+  sun turns more than half a degree or the eye jumps 300 m. One frame's
+  march leaves bands where its steps fall; the frames together do not.
+  Until 2026-11-09 the clouds were marched in the sky's own pass for every
+  sky pixel at full size, 24 to 64 steps with a fixed jitter, and their
+  steps showed as bands at the edges; the pass now costs about a fifth.
+- **The sun behind the clouds:** its disc is thousands of times the sky's
+  light; it is kept by the cube of what the clouds let through, not
+  faded into the haze (a far cloud still hides it).
 - **Where it is drawn:** after the opaque objects, where the depth is still
-  the far plane's (depth test equal), so only the sky's pixels pay for the
-  clouds; before the translucent ones and the openRTS water. The water's
-  sky probe draws this sky too.
-- **Fog:** RTS's fog colour becomes the average horizon of this sky (its
-  alpha, RTS's fog strength, kept), so the land's end meets the sky on both
-  paths.
+  the far plane's (depth test equal), reading the clouds' texture; before
+  the translucent ones and the openRTS water. The water's sky probe draws
+  this sky too, its clouds marched there, one face of the six a frame.
+- **Fog:** RTS fogs from 300 m to its dome's edge less 100 m (2000 m on
+  Novokuznetsk), in one colour made for the dome's lowest layer behind the
+  land. Under this sky that hid everything past 2 km in a flat orange or
+  yellow-green. So while it is on, the fog ends at the land's end, the
+  terrain's loaded tiles (2 round the eye's: 4096 m), from 40 % of that;
+  and its colour is the horizon behind each point (`FogRing`: the horizon
+  half a degree up at 12 angles from the sun's way, crowded towards it, as
+  the sky's own atmosphere), on both paths. Below half a degree the sky
+  shows that horizon too: where the land has ended (past the loaded tiles,
+  the eye high above them) the air towards the ground, a short way with no
+  ground lit, had shown as a dark blue band under the horizon (until
+  2026-11-09, a station seen from above). RTS's fog strength (its colour's
+  alpha) is kept. RTS's fog colour itself becomes the horizon's average
+  (what has no direction).

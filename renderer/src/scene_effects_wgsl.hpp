@@ -37,6 +37,8 @@ struct Effects {
     lamp_shadow_params: vec4<f32>,       // x: lamps, y: map size, z: filter radius (texels)
     lamp_shadow_keys: array<vec4<f32>, 8>, // each one's to_light translation (the lamp in the RTS rings)
     lamp_focus: vec4<f32>,               // in flight: the sphere they cover (w: radius; 0 none), they fade out at its edge
+    fog_sun: vec4<f32>,                  // xy: the sun's way along the ground (0: no ring, fog_ring.hpp)
+    fog_ring: array<vec4<f32>, 12>,      // the horizon's colour at each fog_ring_angle (linear)
 };
 )";
 
@@ -182,6 +184,19 @@ fn effects_cluster(frag: vec4<f32>, world: vec3<f32>) -> u32 {
 // distance it turns into RTS's fog colour, so the land's end stays hidden,
 // as strongly as RTS fogs (the colour's alpha: none after sunset, where the
 // colour is black and had turned the far land black behind a light haze).
+// The horizon behind `ray` (openRTS's sky, linear); `fallback` while the
+// ring is off.
+fn effects_fog_ring(ray: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    let way = effects.fog_sun.xy;
+    let size = length(ray.xz);
+    if (dot(way, way) < 0.5 || size < 1e-3) {
+        return fallback;
+    }
+    let s = sqrt(acos(clamp(dot(ray.xz / size, way), -1.0, 1.0)) / 3.14159265) * 11.0;
+    let i = min(u32(s), 10u);
+    return mix(effects.fog_ring[i].xyz, effects.fog_ring[i + 1u].xyz, clamp(s - f32(i), 0.0, 1.0));
+}
+
 fn effects_aerial(colour: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let ray = world - effects.eye.xyz;
     let distance = length(ray);
@@ -196,11 +211,17 @@ fn effects_aerial(colour: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let cos_theta = dot(ray / distance, effects.sun.xyz);
     let g = effects.aerial.z;
     let phase = (1.0 - g * g) / (12.566371 * pow(max(1.0 + g * g - 2.0 * g * cos_theta, 1e-4), 1.5));
-    let inscatter = effects.haze.xyz + effects.sun_colour.xyz * phase * effects.aerial.w;
+    var inscatter = effects.haze.xyz + effects.sun_colour.xyz * phase * effects.aerial.w;
+    // Under openRTS's sky the air scatters in what the horizon behind
+    // shows, its sun glow included, and the land's end turns into it.
+    let sky = effects_fog_ring(ray, effects.horizon.xyz);
+    if (effects.fog_sun.x != 0.0 || effects.fog_sun.y != 0.0) {
+        inscatter = sky;
+    }
     let hazy = colour * transmittance + inscatter * (1.0 - transmittance);
     if (effects.horizon.w <= 0.0) { return hazy; }
     let edge = smoothstep(0.75 * effects.horizon.w, effects.horizon.w, distance) * clamp(effects.haze.w, 0.0, 1.0);
-    return mix(hazy, effects.horizon.xyz, edge);
+    return mix(hazy, sky, edge);
 }
 )";
 

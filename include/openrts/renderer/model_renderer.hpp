@@ -17,6 +17,7 @@
 #include <openrts/formats/ace_file.hpp>
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/formats/shape_description.hpp>
+#include <openrts/renderer/fog_ring.hpp>
 #include <openrts/renderer/model_assets.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
@@ -99,6 +100,8 @@ struct ModelLighting {
     glm::vec4 fog_colour{0.0f};
     float fog_start = 0.0f;
     float fog_end = 0.0f; // <= 0 disables fog
+    // openRTS's sky: the fog's colour by direction (off: fog_colour everywhere).
+    FogRing fog_ring;
     LightRings light_rings; // the further lights (RTS Shader.NumLights 10, the sun first)
     // Lamps of the cab or salon the player is in (RTS LightsInt): kind 4 cone,
     // 2 sphere, 3 box; up to 8.
