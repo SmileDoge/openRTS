@@ -22,6 +22,50 @@ namespace {
 
 constexpr double tile = 2048.0;
 
+// A label running along a track on the screen, so that names of things on
+// tracks side by side (signals, platforms, sidings) lie on their own tracks
+// instead of over each other where the tracks run up the screen. `along`:
+// the track's direction on the screen; the text is turned so it never reads
+// upside down. `size`: its height in px. Its nearer edge goes `side` px off
+// the track (`towards`: the side, any point there; none: above the line as
+// it reads), starting at `anchor` (or centred on it).
+void text_along(ImDrawList* draw, const ImVec2 anchor, ImVec2 along, const ImU32 colour, const char* text, const float size,
+                const float side, const std::optional<ImVec2> towards, const bool centred) {
+    const float length = std::sqrt(along.x * along.x + along.y * along.y);
+    if (length < 1e-6f) {
+        along = ImVec2(1.0f, 0.0f);
+    } else {
+        along = ImVec2(along.x / length, along.y / length);
+    }
+    // Reading left to right (or downwards on a vertical track).
+    if (along.x < 0.0f || (along.x == 0.0f && along.y < 0.0f)) along = ImVec2(-along.x, -along.y);
+    // The glyphs' "up" follows the reading direction alone; the side only
+    // moves the text (flipping this "up" had mirrored the letters).
+    const ImVec2 up(along.y, -along.x);
+    float off = 1.0f;
+    if (towards) {
+        const float d = (towards->x - anchor.x) * up.x + (towards->y - anchor.y) * up.y;
+        if (d < 0.0f) off = -1.0f;
+    }
+    ImFont* font = ImGui::GetFont();
+    const ImVec2 box = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+    // Laid flat with its middle-left (or middle) at the anchor, then turned
+    // about it and moved `side` px off the line. It is laid at the anchor,
+    // inside the map: ImGui drops the glyphs of text laid outside the clip
+    // rectangle, and laid at the screen's corner the names had vanished.
+    const ImVec2 corner(centred ? -box.x * 0.5f : 0.0f, -box.y * 0.5f);
+    const int first = draw->VtxBuffer.Size;
+    draw->AddText(font, size, ImVec2(anchor.x + corner.x, anchor.y + corner.y), colour, text);
+    const float away = off * (side + box.y * 0.5f);
+    const ImVec2 shift(anchor.x + up.x * away, anchor.y + up.y * away);
+    for (int i = first; i < draw->VtxBuffer.Size; ++i) {
+        auto& v = draw->VtxBuffer[i].pos;
+        // Glyph y grows down; the text's down is -up.
+        const float x = v.x - anchor.x, y = v.y - anchor.y;
+        v = ImVec2(shift.x + x * along.x - y * up.x, shift.y + x * along.y - y * up.y);
+    }
+}
+
 [[nodiscard]] const char* role_name(const TrainView::Role role) {
     switch (role) {
     case TrainView::Role::driven: return tr("driven");
@@ -121,12 +165,102 @@ void TrackControl::build_places() {
             const double a = place.second, b = other->second.second;
             const int steps = (std::max)(1, static_cast<int>(std::abs(b - a) / 10.0));
             for (int k = 0; k <= steps; ++k) add(place.first, a + (b - a) * k / steps);
+            result.length = std::abs(b - a);
         } else {
             add(place.first, place.second);
             if (other != where.end()) add(other->second.first, other->second.second);
+            // Ends on two nodes: the straight distance between them.
+            if (result.x.size() == 2) result.length = std::hypot(result.x[1] - result.x[0], result.z[1] - result.z[0]);
         }
         if (!result.x.empty()) places_.push_back(std::move(result));
     }
+}
+
+void TrackControl::hover_tooltip(const float mouse_x, const float mouse_y, const simulation::SignalSystem* signals) const {
+    const double cx = canvas_x_ + canvas_w_ * 0.5, cy = canvas_y_ + canvas_h_ * 0.5;
+    const auto sx = [&](const double x) { return cx + (x - centre_x_) * scale_; };
+    const auto sy = [&](const double z) { return cy - (z - centre_z_) * scale_; };
+    // A signal within 8 px.
+    if (signals && show_signals_ && scale_ > 0.15) {
+        const auto& objects = signals->objects();
+        const auto& heads = signals->heads();
+        std::optional<std::uint32_t> nearest;
+        double best = 8.0;
+        for (std::uint32_t i = 0; i < objects.size(); ++i) {
+            const auto& p = objects[i].placement.position;
+            const simulation::TrackPoint where{.tile_x = p.tile_x, .tile_z = p.tile_z, .x = p.x, .y = p.y, .z = p.z};
+            const double d = std::hypot(sx(world_x(where)) - mouse_x, sy(world_z(where)) - mouse_y);
+            if (d < best) {
+                best = d;
+                nearest = i;
+            }
+        }
+        if (nearest) {
+            const auto name = signal_names_ ? signal_names_(*nearest) : std::string();
+            ImGui::BeginTooltip();
+            if (name.empty()) {
+                ImGui::Text(tr("Signal %u (no name)"), *nearest);
+            } else {
+                ImGui::Text(tr("Signal %s"), name.c_str());
+            }
+            for (const auto h : objects[*nearest].heads) {
+                const auto& head = heads[h];
+                const auto aspect = static_cast<formats::SignalAspect>(std::clamp(static_cast<int>(head.state), 0, 9));
+                if (head.speed >= 0.0f) {
+                    ImGui::TextDisabled(tr("%s: %s, %.0f km/h"), head.type ? head.type->name.c_str() : "?", formats::to_string(aspect), head.speed * 3.6);
+                } else {
+                    ImGui::TextDisabled(tr("%s: %s"), head.type ? head.type->name.c_str() : "?", formats::to_string(aspect));
+                }
+            }
+            ImGui::EndTooltip();
+            return;
+        }
+    }
+    // A platform or a siding within 6 px of its line.
+    if ((show_platforms_ || show_sidings_) && scale_ > 0.05) {
+        const Place* nearest = nullptr;
+        double best = 6.0;
+        for (const auto& place : places_) {
+            if (place.platform ? !show_platforms_ : !show_sidings_) continue;
+            for (std::size_t k = 0; k < place.x.size(); ++k) {
+                double d = 0.0;
+                if (k + 1 < place.x.size()) {
+                    double t = 0.0;
+                    d = segment_distance(mouse_x, mouse_y, sx(place.x[k]), sy(place.z[k]), sx(place.x[k + 1]), sy(place.z[k + 1]), t);
+                } else if (place.x.size() == 1) {
+                    d = std::hypot(sx(place.x[k]) - mouse_x, sy(place.z[k]) - mouse_y);
+                } else {
+                    continue;
+                }
+                if (d < best) {
+                    best = d;
+                    nearest = &place;
+                }
+            }
+        }
+        if (nearest) {
+            ImGui::BeginTooltip();
+            ImGui::Text("%s", nearest->name.empty() ? tr("(no name)") : nearest->name.c_str());
+            if (nearest->length > 0.0) {
+                ImGui::TextDisabled(nearest->platform ? tr("platform, %.0f m") : tr("siding, %.0f m"), nearest->length);
+            } else {
+                ImGui::TextDisabled("%s", nearest->platform ? tr("platform") : tr("siding"));
+            }
+            ImGui::EndTooltip();
+        }
+    }
+}
+
+void TrackControl::show_train(TrainView& trains, const std::uint64_t train) {
+    const auto* t = trains.train_by_id(train);
+    const auto front = t && t->placed() ? t->front_end() : std::nullopt;
+    if (!front) return;
+    const auto at = front->pose();
+    selected_ = train;
+    centre_x_ = world_x(at);
+    centre_z_ = world_z(at);
+    scale_ = (std::max)(scale_, 1.0);
+    open_ = true;
 }
 
 double TrackControl::map_x(const double scene_x) const {
@@ -412,6 +546,15 @@ void TrackControl::finish_placement(TrainView& trains) {
         message_ = tr("the consist does not fit here: not enough track");
         return;
     }
+    // A network game: the server places it (the console), nothing here.
+    if (network_actions_.throw_junction) {
+        if (network_actions_.place_consist) {
+            network_actions_.place_consist(placement_.consist, placement_.head);
+            message_ = trf("%s: asked the server to place it", placement_.layout.name.c_str());
+        }
+        placement_ = {};
+        return;
+    }
     const auto error = trains.spawn(placement_.consist, placement_.head, spawn_ai_ ? TrainView::Role::ai : TrainView::Role::standing);
     if (!error.empty()) {
         message_ = error;
@@ -559,6 +702,7 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
 
     const auto sx = [&](const double x) { return static_cast<float>(cx + (x - centre_x_) * scale_); };
     const auto sy = [&](const double z) { return static_cast<float>(cy - (z - centre_z_) * scale_); };
+    if (hovered && !active && !ImGui::IsPopupOpen("track_control_menu")) hover_tooltip(io.MousePos.x, io.MousePos.y, signals);
     const auto at = [&](const simulation::TrackPoint& p) { return ImVec2(sx(world_x(p)), sy(world_z(p))); };
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 far_corner(corner.x + size.x, corner.y + size.y);
@@ -742,9 +886,25 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
             draw->AddRectFilled(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r), colour);
             draw->AddRect(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r),
                           selected_signal_ == i ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 255));
-            if (show_signal_names_ && signal_names_ && scale_ > 0.6) {
+            // The names are sized to the map: 2.5 m tall, at most 16 px, and
+            // left out below 7 px (a fixed size made a mess zoomed out).
+            const float name_size = (std::min)(static_cast<float>(2.5 * scale_), 16.0f);
+            if (show_signal_names_ && signal_names_ && name_size >= 7.0f) {
                 const auto name = signal_names_(i);
-                if (!name.empty()) draw->AddText(ImVec2(p.x + 5.0f, p.y - 15.0f), IM_COL32(120, 60, 0, 255), name.c_str());
+                if (!name.empty()) {
+                    // Along the track its first head governs, beside it on
+                    // the signal's side; at the signal when it has no place.
+                    std::optional<simulation::TrackPoint> track;
+                    for (const auto h : objects[i].heads) {
+                        if (heads[h].placed && (track = network_->point(heads[h].node, heads[h].offset))) break;
+                    }
+                    if (track) {
+                        const ImVec2 along(std::sin(track->heading), -std::cos(track->heading));
+                        text_along(draw, at(*track), along, IM_COL32(120, 60, 0, 255), name.c_str(), name_size, name_size * 0.35f, p, false);
+                    } else {
+                        draw->AddText(ImVec2(p.x + 5.0f, p.y - 15.0f), IM_COL32(120, 60, 0, 255), name.c_str());
+                    }
+                }
             }
         }
     }
@@ -756,7 +916,16 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
             points.clear();
             for (std::size_t k = 0; k < place.x.size(); ++k) points.emplace_back(sx(place.x[k]), sy(place.z[k]));
             const auto& middle = points[points.size() / 2];
-            if (!visible(middle) && !visible(points.front()) && !visible(points.back())) continue;
+            // Drawn when its line's box meets the map: a long platform seen
+            // in part, its middle and ends off the screen, had vanished.
+            float min_x = points.front().x, max_x = min_x, min_y = points.front().y, max_y = min_y;
+            for (const auto& q : points) {
+                min_x = (std::min)(min_x, q.x);
+                max_x = (std::max)(max_x, q.x);
+                min_y = (std::min)(min_y, q.y);
+                max_y = (std::max)(max_y, q.y);
+            }
+            if (max_x < corner.x - 20 || min_x > far_corner.x + 20 || max_y < corner.y - 20 || min_y > far_corner.y + 20) continue;
             const ImU32 colour = place.platform ? IM_COL32(30, 90, 230, 255) : IM_COL32(230, 190, 0, 255);
             const float width = std::clamp(static_cast<float>(scale_ * 2.5) - 1.5f, 2.5f, 8.5f);
             if (points.size() > 1) {
@@ -764,10 +933,14 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
             } else {
                 draw->AddCircleFilled(points.front(), width * 0.6f, colour);
             }
-            if (scale_ > 0.3 && !place.name.empty()) {
-                const ImVec2 label(middle.x + 10.0f, middle.y - 22.0f);
-                draw->AddLine(middle, ImVec2(label.x, label.y + 14.0f), colour, 1.0f);
-                draw->AddText(label, place.platform ? IM_COL32(0, 0, 170, 255) : IM_COL32(130, 100, 0, 255), place.name.c_str());
+            // Names sized to the map: 3.5 m tall, at most 18 px, left out below 7 px.
+            const float name_size = (std::min)(static_cast<float>(3.5 * scale_), 18.0f);
+            if (name_size >= 7.0f && !place.name.empty()) {
+                // Along the line at its middle, just above it as it reads.
+                const auto& a = points[points.size() > 2 ? points.size() / 2 - 1 : 0];
+                const auto& b = points[(std::min)(points.size() / 2 + 1, points.size() - 1)];
+                text_along(draw, middle, ImVec2(b.x - a.x, b.y - a.y), place.platform ? IM_COL32(0, 0, 170, 255) : IM_COL32(130, 100, 0, 255),
+                           place.name.c_str(), name_size, width * 0.5f + 2.0f, std::nullopt, true);
             }
         }
     }
@@ -789,6 +962,28 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
                 if (!visible(base)) continue;
                 draw->AddText(font, font_size, ImVec2(base.x, base.y - font_size), IM_COL32(0, 0, 0, 255), station.name.c_str());
             }
+        }
+    }
+    // The routes the server holds (0x4619): green from each train's head
+    // (its rear, laid rear first) along the junctions as they stand.
+    if (network_actions_.route_left) {
+        for (const auto& summary : trains.summaries()) {
+            const auto route = network_actions_.route_left(summary.id);
+            const auto* train = trains.train_by_id(summary.id);
+            if (!route || route->first <= 0.0f || !train || !train->placed()) continue;
+            const auto end = route->second ? train->rear_end() : train->front_end();
+            if (!end) continue;
+            simulation::TrackTraveller walk(*network_, end->node(), end->offset(), route->second ? !end->forward() : end->forward());
+            points.clear();
+            points.push_back(at(walk.pose()));
+            const double step = (std::max)(2.0, 6.0 / scale_);
+            for (double done = 0.0; done < route->first;) {
+                const double move = (std::min)(step, route->first - done);
+                if (walk.move(move).moved <= 0.0) break;
+                done += move;
+                points.push_back(at(walk.pose()));
+            }
+            if (points.size() > 1) draw->AddPolyline(points.data(), static_cast<int>(points.size()), IM_COL32(0, 190, 0, 210), 0, 5.0f);
         }
     }
     // Trains: their cars, in the colour of their role; the selected one outlined.
@@ -930,6 +1125,22 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
         selected_ = id;
         ImGui::TextDisabled(tr("%s (%s, %zu cars)"), it->name.c_str(), role_name(it->role), it->cars);
         if (ImGui::MenuItem(tr("Jump to train"))) trains.follow_train(id);
+        // A network game: the server's train. Who drives it, its route and
+        // the rest are the console window's.
+        if (network_actions_.throw_junction) {
+            const bool routed = network_actions_.route_left && network_actions_.route_left(id).has_value();
+            if (network_actions_.cancel_route && ImGui::MenuItem(tr("Cancel the route"), nullptr, false, routed)) {
+                network_actions_.cancel_route(id);
+                message_ = tr("route cancelled");
+            }
+            if (network_actions_.route_to && !routed) ImGui::TextDisabled("%s", tr("a route: pick the train, then right-click the track"));
+            if (network_actions_.remove_train && ImGui::MenuItem(tr("Remove train"))) {
+                network_actions_.remove_train(id);
+                message_ = tr("asked the server to remove it");
+            }
+            ImGui::TextDisabled("%s", tr("a driver and a route: in the console's window"));
+            break;
+        }
         if (ImGui::MenuItem(tr("Drive it (keyboard)"), nullptr, it->role == TrainView::Role::driven)) message_ = trains.set_role(id, TrainView::Role::driven);
         if (ImGui::MenuItem(tr("Test driver follows its path"), nullptr, it->role == TrainView::Role::ai)) message_ = trains.set_role(id, TrainView::Role::ai);
         if (ImGui::MenuItem(tr("Standing"), nullptr, it->role == TrainView::Role::standing)) message_ = trains.set_role(id, TrainView::Role::standing);
@@ -1022,8 +1233,13 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
         }
         if (ImGui::MenuItem(tr("Throw"))) {
             const auto next = static_cast<std::uint32_t>((state->selected + 1) % (std::max<std::size_t>)(node->branch_count(), 1));
-            message_ = network_->throw_junction(n, next) ? trf("junction %u thrown", n)
-                                                          : std::string(tr("refused: the junction is occupied or held by a path"));
+            if (network_actions_.throw_junction) {
+                network_actions_.throw_junction(n, next);
+                message_ = trf("junction %u: asked the server", n);
+            } else {
+                message_ = network_->throw_junction(n, next) ? trf("junction %u thrown", n)
+                                                              : std::string(tr("refused: the junction is occupied or held by a path"));
+            }
         }
         // Switch it on the edited path: the next branch at that pass.
         if (editing_ && selected_ != 0) {
@@ -1052,6 +1268,29 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
         ImGui::TextDisabled(tr("Signal object %u"), menu_.signal);
         if (ImGui::MenuItem(tr("Signal info"))) signal_window_ = menu_.signal;
         if (signals && ImGui::MenuItem(tr("Run all heads every step"), nullptr, false)) signals->set_full_evaluation(true);
+        // A network game: the server's signals. The dispatcher's console
+        // holds a head at an aspect there, or gives it back to its script.
+        if (network_actions_.throw_junction) {
+            if (network_actions_.set_signal && signals && menu_.signal < signals->objects().size()) {
+                ImGui::Separator();
+                for (const auto h : signals->objects()[menu_.signal].heads) {
+                    const auto& head = signals->heads()[h];
+                    char label[160];
+                    std::snprintf(label, sizeof label, tr("Aspect of %s##server%u"), head.type ? head.type->name.c_str() : "?", h);
+                    if (!ImGui::BeginMenu(label)) continue;
+                    if (ImGui::MenuItem(tr("by the script"))) network_actions_.set_signal(head.track_item, std::nullopt);
+                    if (head.type) {
+                        for (std::size_t k = 0; k < head.type->aspects.size(); ++k) {
+                            const auto& entry = head.type->aspects[k];
+                            std::snprintf(label, sizeof label, tr("%s (%s)##serveraspect%zu"), formats::to_string(entry.aspect), entry.draw_state.c_str(), k);
+                            if (ImGui::MenuItem(label)) network_actions_.set_signal(head.track_item, entry.aspect);
+                        }
+                    }
+                    ImGui::EndMenu();
+                }
+            }
+            break;
+        }
         // RTS SignalOverride per head: a mode and / or an aspect in place of
         // what the script gives (an activity or the dispatcher sets these).
         if (signals && menu_.signal < signals->objects().size()) {
@@ -1135,6 +1374,10 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
     case PickKind::track:
         ImGui::TextDisabled(tr("Track node %u, %.0f m"), menu_.location.node, menu_.location.offset);
         if (placement_.active && ImGui::MenuItem(tr("Move the consist being placed here"))) move_placement(trains, menu_.location);
+        if (network_actions_.route_to && selected_ != 0 && ImGui::MenuItem(tr("Route for the selected train to here"))) {
+            network_actions_.route_to(selected_, menu_.location);
+            message_ = tr("route sent to the server");
+        }
         if (ImGui::MenuItem(tr("Teleport here"))) {
             if (const auto at = network_->point(menu_.location.node, menu_.location.offset)) {
                 request_teleport(world_x(*at), world_z(*at), &*at);
@@ -1161,7 +1404,7 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
             plan_.points.clear();
             add_point(simulation::PlanPointKind::end);
         }
-        if (ImGui::BeginMenu(tr("Put a consist here"))) {
+        if ((!network_actions_.throw_junction || network_actions_.place_consist) && ImGui::BeginMenu(tr("Put a consist here"))) {
             // Choosing a consist shows it here first (a preview to drag and
             // turn), it is placed on Enter / "Put it here".
             ImGui::InputText(tr("filter"), consist_filter_, sizeof consist_filter_);

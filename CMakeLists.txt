@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(openRTS
-    VERSION 0.4.8
+    VERSION 0.5.0
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
 
@@ -143,6 +143,7 @@ add_subdirectory(sdk)
 add_subdirectory(audio)
 add_subdirectory(compat)
 add_subdirectory(net)
+add_subdirectory(server)
 
 if(OPENRTS_BUILD_VIEWER)
     if(OPENRTS_ENABLE_GLFW)

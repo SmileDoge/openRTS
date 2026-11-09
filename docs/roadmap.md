@@ -297,7 +297,36 @@ yet. Each stage ends with something that runs and is checked:
      DLLs, look and sound both ways, couplings and cuts, taken-away trains
      frozen, the pause, speed post categories and the line from the server.
      Checked live with an `rts1.exe`, the couplings offline.
-3. **The openRTS server.**
+3. **The openRTS server.** Legacy on is done (2026-11-09, `server.md`):
+   `openrts-server` takes `rts1.exe` and openRTS clients as
+   `rts_server.exe` does, its login counts the live server's; it decides
+   junctions, runs the signals' scripts with every train on its copy of the
+   network, carries out couplings and cuts, and its console is the
+   dispatcher's (trains, assignments, junctions, signals, time, pause,
+   messages). Checked with two openRTS clients; `rts1.exe` on it not yet.
+   **Next (the user's call, 2026-11-09): the server as `rts_server.exe`,
+   Legacy first, no extras.** `rts_server.exe` is itself the dispatcher's:
+   its start form (route, season, weather, time, port), then its map
+   console (`TfPult`, `reverse/dispatcher.md`). The remote console
+   (`rts_server_DSP.exe`, `0x4500`, and openRTS's in the game, hidden until
+   then) comes after. In order:
+   1. What `rts_server.exe` does that openRTS's does not, read from it (on
+      a copy): the signals ahead of a train with no route (in RTS the route
+      the dispatcher gives, `0x4619`, looks like the train's authority:
+      openRTS opens them, a placed train's exit signal cleared by itself on
+      2026-11-09), who gets `0x4619`, what each console action sends, the
+      station routes (`0x450B`).
+   2. Track control as a module of its own (the map: track, junctions,
+      signals and their names, places, trains, routes; actions as
+      callbacks), for the viewer, the server's console and later the
+      remote one and the scenario editor.
+   3. The server's window: the start form and the map console on that
+      module, with `rts_server.exe`'s actions (trains: place, assign,
+      route, start / stop, remove; signals; junctions; players: message,
+      kick, admit; time, pause; the log). The text commands stay for runs
+      without a window (`--run`, `--command`).
+   4. `rts1.exe` on it, live.
+   Left after that:
    - One program for players and dispatchers, the Legacy switch and its
      rules, the agreed settings for everyone.
    - Coupling of two players' trains decided by the server in one step
@@ -311,7 +340,12 @@ yet. Each stage ends with something that runs and is checked:
      packages already reversed, so `rts1.exe` clients see it too.
 4. **Helpers** through the relay (the scheme tested on 2026-11-03), and
    for openRTS clients over the normal connection.
-5. **The dispatcher console** as an HTML client.
+5. **The dispatcher console** — in openRTS itself, on Track control (the
+   user's choice, 2026-11-09, in place of an HTML client); its first
+   version is there, hidden until the server (stage 3) is done
+   (`server.md`, "The dispatcher's console"). Left: the
+   station routes of the route database, signal modes (automatic block),
+   brakes and the other forms, RTS compatibility (`rts_server_DSP.exe`).
 6. **Panels and forms** (planned, 2026-11-06): RmlUi (HTML/CSS-like
    markup, MIT) drawn by the renderer, with the logic in Lua; Luau is the
    candidate for client scripts and UI (built for a sandbox). Players and

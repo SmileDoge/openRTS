@@ -142,17 +142,20 @@ void report_status(const std::string_view what) { std::cout << "status: " << wha
 // names the route, its season and weather. Nothing on failure, said on the
 // console and in a status line.
 std::optional<openrts::net::LoginReply> login_server(openrts::net::RtsConnection& connection, const std::string& address,
-                                                     const std::string& nick) {
+                                                     const std::string& nick, const bool console) {
     namespace net = openrts::net;
     report_status("connecting " + address);
-    const auto login = connection.connect(address, net::from_utf8(nick));
+    const auto login = connection.connect(address, net::from_utf8(nick), 10000, console);
     if (!login.ok()) {
         std::cerr << "Server " << address << ": " << login.error;
         std::string why = "unreachable";
         switch (login.refused) {
         case 0: break;
         case 0x4701: std::cerr << " (the nickname is in use)"; why = "refused nick"; break;
-        case 0x4702: std::cerr << " (the server takes no new players)"; why = "refused full"; break;
+        case 0x4702:
+            std::cerr << (console ? " (not a dispatcher on this server: --dispatcher <nick> there)" : " (the server takes no new players)");
+            why = console ? "refused console" : "refused full";
+            break;
         case 0x4705: std::cerr << " (not protocol 101)"; why = "refused version"; break;
         default: {
             std::cerr << " (code 0x" << std::hex << login.refused << std::dec << ")";
@@ -179,12 +182,20 @@ std::optional<openrts::net::LoginReply> login_server(openrts::net::RtsConnection
 // in a status line.
 std::optional<openrts::net::Bytes> wait_for_world(openrts::net::RtsConnection& connection, const std::string& address,
                                                   const std::string& nick, const std::string& route,
-                                                  std::vector<openrts::net::ReceivedPackage>& early) {
+                                                  std::vector<openrts::net::ReceivedPackage>& early, const bool console) {
     namespace net = openrts::net;
-    std::cout << "net: waiting for a train: assign one to " << nick << " on the dispatcher console" << std::endl;
-    report_status("waiting " + route);
-
     bool asked = false;
+    if (console) {
+        // The dispatcher's console needs no train: the world at once.
+        std::cout << "net: the dispatcher's console; asking for the world" << std::endl;
+        report_status("loading");
+        connection.send(net::id(net::Package::snapshot), {});
+        asked = true;
+    } else {
+        std::cout << "net: waiting for a train: assign one to " << nick << " on the dispatcher console" << std::endl;
+        report_status("waiting " + route);
+    }
+
     bool collecting = false;
     bool done = false;
     net::WireWriter world;
@@ -285,6 +296,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     std::filesystem::path mp_snapshot; // --mp-snapshot
     std::string mp_connect;          // --mp-connect host:port
     std::string mp_nick = "openRTS"; // --mp-nick
+    bool mp_console = false;         // --mp-console: as the dispatcher's console
     std::filesystem::path mp_save;   // --mp-save-snapshot: the snapshot the server sent
     bool time_given = false;         // --time wins over a snapshot's time
     bool fps_given = false;          // --fps-limit wins over the remembered one (not remembered)
@@ -320,6 +332,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             mp_save = std::filesystem::path(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--mp-nick" && has_value) {
             mp_nick = std::string(flags[++i]);
+        } else if (flags[i] == "--mp-console") {
+            mp_console = true;
         } else if (flags[i] == "--mp-snapshot" && has_value) {
             const auto value = flags[++i];
             mp_snapshot = std::filesystem::path(std::u8string(value.begin(), value.end()));
@@ -451,7 +465,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     std::string server_route;
     if (!mp_connect.empty()) {
         connection = std::make_shared<openrts::net::RtsConnection>();
-        const auto reply = login_server(*connection, mp_connect, mp_nick);
+        const auto reply = login_server(*connection, mp_connect, mp_nick, mp_console);
         if (!reply) return exit_code::network_failed;
         server_route = openrts::net::to_utf8(reply->route);
         if (!season_given && reply->season < 4) options.season = static_cast<openrts::renderer::rts::Season>(reply->season);
@@ -534,7 +548,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             report_status("no-route " + server_route);
             return exit_code::content_failed;
         }
-        snapshot_bytes = wait_for_world(*connection, mp_connect, mp_nick, server_route, early);
+        snapshot_bytes = wait_for_world(*connection, mp_connect, mp_nick, server_route, early, mp_console);
         if (!snapshot_bytes) return exit_code::network_failed;
         snapshot_source = mp_connect;
         // The world as the server sent it, kept for opening it again without
@@ -574,7 +588,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control,
         .start_state = start_state, .situation = situation, .start_view = start_view,
         .save_situation = save_situation, .root = target->root, .snapshot = snapshot, .connection = connection,
-        .early = std::move(early)};
+        .early = std::move(early), .console = mp_console};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)
                                     : openrts::viewer::load_route_scene(content, target->path);
 

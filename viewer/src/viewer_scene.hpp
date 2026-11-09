@@ -304,6 +304,9 @@ struct SceneContent {
     // after the snapshot's end.
     std::shared_ptr<net::RtsConnection> connection;
     std::vector<net::ReceivedPackage> early;
+    // Route scenes: logged in to an openRTS server as the dispatcher's
+    // console (--mp-console): Track control and the console's window.
+    bool console = false;
 };
 
 [[nodiscard]] SceneLoadResult load_shape_scene(SceneContent content, const core::VirtualPath& shape);

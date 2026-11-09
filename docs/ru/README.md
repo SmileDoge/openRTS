@@ -24,6 +24,7 @@
 | [sound.md](sound.md) | звук: скрипты `.sms`, звуки мира, поездов и кабины |
 | [electrification.md](electrification.md) | электрификация: секции, подстанции, напряжение |
 | [net.md](net.md) | сетевая игра на сервере RTS: протокол, снимок мира, свои и чужие поезда, сцепка, звук, электроснабжение, `openrts-net-dump` |
+| [server.md](server.md) | сервер openRTS (Legacy): запуск, команды диспетчера, что он решает и пересылает |
 | [world-objects.md](world-objects.md) | леса, переезды, автомобили, вода, осадки и дым |
 | [experimental-effects.md](experimental-effects.md) | новый рендер: что делает и сколько стоит |
 | [profiling.md](profiling.md) | профилирование с Tracy: сборка, что размечено, как добавить зону |

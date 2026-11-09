@@ -73,9 +73,12 @@ Server → client on success (`rts_server.exe` `0x4436C8`, the mini-server `0x4D
 | string | a description: route title, "Сценарий: …", "Сезон: …" |
 | `u8`, `u8` | season, weather |
 | string | route id |
-| `4 × u32` | route counts: junctions, signals and two more. PROBABLE: electrosections and substations (`rts1.exe`: "Route count of electrosections doesn't match server's") |
+| `4 × u32` | route counts, CONFIRMED (2026-11-09): the TDB's track nodes, its track items, the `.electrotype`'s substations, the `.electrodb`'s electrosections (0 without the files). Kuban: 1653 (921 vector + 555 junction + 177 end), 4074, 3, 3 in the live capture |
 
-The client checks the route and the counts (`0x47A1A0`). On a mismatch it shows "you don't have the required version of the route".
+The client checks the route and the counts (`0x47A1A0`, the four compares at
+`0x47AAEE`..`0x47AB42`, messages "Route count of tdb items / track items /
+electric substations / electrosections doesn't match server's"). On a
+mismatch it shows "you don't have the required version of the route".
 
 On an error the server sends only a `u16` code and closes the connection:
 

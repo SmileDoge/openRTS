@@ -1017,7 +1017,7 @@ public:
                     panel.sound->set_volume(volume);
                     remember("volume", std::to_string(volume)); // the next run starts with it
                 }
-                ImGui::TextDisabled(tr("%zu voices"), panel.sound->active_voices());
+                ImGui::TextDisabled(tr("%zu voices, %zu heard"), panel.sound->active_voices(), panel.sound->audible_voices());
             } else {
                 ImGui::TextDisabled("%s", tr("Sound: off"));
             }
@@ -1399,8 +1399,20 @@ struct FovKeys {
 }
 
 // Polled keyboard handling: F toggles fly/orbit on key press, WASD/QE move.
+// The keyboard is ImGui's while one of its text boxes takes it (the console's
+// message, a filter): the keys polled here stay out of the game then, as the
+// key callback's do (on_key).
+[[nodiscard]] bool imgui_has_keyboard() {
+#ifdef OPENRTS_HAS_IMGUI
+    return ImGui::GetIO().WantCaptureKeyboard;
+#else
+    return false;
+#endif
+}
+
 void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const float seconds) {
-    const auto down = [window](const int key) { return glfwGetKey(window, key) == GLFW_PRESS; };
+    const bool typing = imgui_has_keyboard();
+    const auto down = [window, typing](const int key) { return !typing && glfwGetKey(window, key) == GLFW_PRESS; };
     auto& camera = *input.camera;
 
     // F is a cab key when the cab has the keyboard.
@@ -1431,7 +1443,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
 // Probe and track keys: P place, Up/Down drive, J throw a junction, V follow,
 // T track overlay.
 [[nodiscard]] SceneInput scene_input(GLFWwindow* window, CameraInput& input) {
-    const auto down = [window](const int key) { return glfwGetKey(window, key) == GLFW_PRESS; };
+    const bool typing = imgui_has_keyboard();
+    const auto down = [window, typing](const int key) { return !typing && glfwGetKey(window, key) == GLFW_PRESS; };
     const auto pressed = [&](const int key, bool& was_down) {
         const bool now = down(key);
         const bool edge = now && !was_down;
@@ -2151,7 +2164,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (!panel.experimental_supported) renderer.set_shading_path(renderer::ShadingPath::rts_compatible);
         {
             // Pause: trains, DLLs, the clock and the sound stop; the free camera still flies.
-            const bool pause_key = glfwGetKey(window.get(), GLFW_KEY_PAUSE) == GLFW_PRESS;
+            const bool pause_key = !imgui_has_keyboard() && glfwGetKey(window.get(), GLFW_KEY_PAUSE) == GLFW_PRESS;
             if (pause_key && !input.pause_key_down) panel.paused = !panel.paused;
             input.pause_key_down = pause_key;
         }

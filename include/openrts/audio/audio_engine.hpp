@@ -19,7 +19,12 @@ namespace openrts::audio {
 // Volume follows the scripts' curves only: miniaudio distance attenuation is
 // off, spatialisation gives direction.
 struct AudioEngineOptions {
-    std::uint32_t max_voices = 256;
+    // Voices heard at once. The silent ones held (AudioEngine::set) take no
+    // place: a big station's standing cars hold hundreds of looping voices
+    // within their scripts' 500 m, unheard.
+    std::uint32_t max_voices = 1024;
+    // All voices, held ones too: only against voices never let go.
+    std::uint32_t max_held_voices = 8192;
     // Without a device the engine is rendered with render(): tests, offline mixing.
     bool device = true;
     std::uint32_t channels = 2;       // offline only
@@ -52,12 +57,18 @@ public:
     void seek(VoiceId voice, std::uint64_t frame) override;
     [[nodiscard]] std::optional<std::uint64_t> cursor(VoiceId voice) const override;
     [[nodiscard]] std::size_t active_voices() const noexcept;
+    // The voices the mixer plays (not held silent): max_voices of them.
+    [[nodiscard]] std::size_t audible_voices() const noexcept;
     // Offline engines: mixes `frames` interleaved float frames into `out`.
     void render(float* out, std::uint64_t frames);
 
     VoiceId play(std::shared_ptr<const AudioClip> clip, VoicePlayback playback, VoiceSpace space) override;
     void release(VoiceId voice) override;
     void stop(VoiceId voice) override;
+    // A looping voice set silent is held where it is (the mixer skips it:
+    // silent voices had cost as much as playing ones; nor does it take a
+    // place of max_voices) and goes on from there once it is heard again,
+    // when a place is free (else it waits, silent); a one-shot plays on.
     void set(VoiceId voice, float volume, float pitch, const glm::vec3& position) override;
     [[nodiscard]] bool playing(VoiceId voice) const override;
 

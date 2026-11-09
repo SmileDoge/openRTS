@@ -118,6 +118,12 @@ enum class Package : std::uint16_t {
     // Situation files.
     situation_user = 0x4614,
     situation_route = 0x4615,
+    // openRTS's own, between its server and its dispatcher console (no RTS
+    // program has them; docs/server.md, "The dispatcher console").
+    console_command = 0x45F0, // console -> server: a command line, as typed at the server
+    console_reply = 0x45F1,   // server -> console: what it printed
+    console_state = 0x45F2,   // server -> consoles: the players and the trains with their owners
+    console_place = 0x45F3,   // console -> server: a consist's cars to put on the track
 };
 
 [[nodiscard]] constexpr std::uint16_t id(const Package package) noexcept { return static_cast<std::uint16_t>(package); }

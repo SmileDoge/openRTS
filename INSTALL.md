@@ -95,6 +95,19 @@ openRTS — независимая реализация RTrainSim (RTS). Сво�
 `TRAINS\CONSISTS`. Остальные параметры (время, сезон, погода, звук,
 графика, моды) перечислены в [README](README.md#запуск).
 
+## Свой сервер
+
+`openrts-server.exe` лежит рядом с игрой: это сервер, совместимый с
+`rts_server.exe`. На него заходят и openRTS («Сетевая игра»), и `rts1.exe`.
+
+```powershell
+.\openrts-server.exe --route Kuban_RTS --root D:\Games\RTS --time 10:00
+```
+
+Поезда игрокам выдаёт диспетчер командами в окне сервера: `add`, `assign`,
+`route`, `junction`, `signal`, `time`, `pause`, `say` (список — `help`). Порт — 800, его нужно
+открыть игрокам из интернета. Подробности — [docs/ru/server.md](docs/ru/server.md).
+
 ## В игре: первые шаги
 
 - **Окна.** Слева вверху — панель «openRTS»: настройки графики, света и

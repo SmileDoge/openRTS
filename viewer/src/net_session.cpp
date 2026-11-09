@@ -57,9 +57,73 @@ simulation::TrainCategory category_of(const std::uint16_t subtype) {
 } // namespace
 
 NetSession::NetSession(std::shared_ptr<net::RtsConnection> connection, net::Snapshot snapshot,
-                       std::vector<net::ReceivedPackage> early)
-    : connection_(std::move(connection)), snapshot_(std::move(snapshot)), early_(std::move(early)) {
+                       std::vector<net::ReceivedPackage> early, const bool console)
+    : connection_(std::move(connection)), snapshot_(std::move(snapshot)), early_(std::move(early)), console_(console) {
     if (snapshot_.time) time_of_day_ = *snapshot_.time;
+    for (const auto& train : snapshot_.trains) {
+        if (train.route_left && train.route_left->first >= 0.0f) routes_[train.id] = {train.route_left->first, (train.route_left->second & 1) != 0};
+    }
+}
+
+void NetSession::send_command(const std::string_view line) {
+    if (!connection_ || line.empty()) return;
+    net::WireWriter w;
+    w.text_u32(net::from_utf8(line));
+    connection_->send(net::id(net::Package::console_command), w.data());
+    console_log_.push_back("> " + std::string(line));
+}
+
+void NetSession::send_place(const net::ConsolePlace& place) {
+    if (!connection_ || place.cars.empty()) return;
+    connection_->send(net::id(net::Package::console_place), net::encode_console_place(place));
+    console_log_.push_back("> " + net::to_utf8(place.consist) + ": " + std::to_string(place.cars.size()) + " cars");
+}
+
+void NetSession::send_route(const std::uint32_t server_train, const float length, const bool rear_first) {
+    if (!connection_ || server_train == 0) return;
+    net::WireWriter w;
+    w.u32(server_train);
+    w.f32(length);
+    w.u8(rear_first ? 1 : 0);
+    connection_->send(net::id(net::Package::route_left), w.data());
+    char text[96];
+    if (length < 0.0f) {
+        std::snprintf(text, sizeof text, "> train %u: route cancelled", server_train);
+    } else {
+        std::snprintf(text, sizeof text, "> train %u: route %.0f m%s", server_train, length, rear_first ? " (rear first)" : "");
+    }
+    console_log_.push_back(text);
+}
+
+std::optional<std::pair<float, bool>> NetSession::route_left(const std::uint32_t server_train) const {
+    if (const auto it = routes_.find(server_train); it != routes_.end()) return it->second;
+    return std::nullopt;
+}
+
+void NetSession::request_junction(const std::uint32_t node, const std::uint32_t branch) {
+    if (!connection_ || node == 0) return;
+    net::WireWriter w;
+    w.u32(node - 1);
+    w.u32(branch);
+    w.u8(0);
+    connection_->send(net::id(net::Package::junction), w.data());
+}
+
+std::uint32_t NetSession::server_train(const std::uint64_t view_train) const {
+    if (view_train == 0) return 0;
+    for (const auto& [id, remote] : remotes_) {
+        if (remote.train == view_train) return id;
+    }
+    for (const auto& [id, own] : owned_) {
+        if (own.train == view_train) return id;
+    }
+    return 0;
+}
+
+std::uint64_t NetSession::view_train(const std::uint32_t server_train) const {
+    if (const auto it = remotes_.find(server_train); it != remotes_.end()) return it->second.train;
+    if (const auto it = owned_.find(server_train); it != owned_.end()) return it->second.train;
+    return 0;
 }
 
 double NetSession::now() const {
@@ -93,6 +157,31 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
             connection_->send(net::id(net::Package::player_pos), net::encode_player_pos(p));
             sent_camera_ = camera;
             position_at_ = t + 0.25;
+        }
+    }
+    // A remote train the camera comes back to (within 3 km after being
+    // beyond): its owner is asked for its whole look again, as rts1.exe
+    // asks when it loads the train again (0x4D0228). Meanwhile the server
+    // sent its lights, looks and sounds only to cameras near it.
+    if (connection_ && sent_camera_ && t >= range_at_ && !paused_) {
+        range_at_ = t + 1.0;
+        const auto& c = *sent_camera_;
+        for (auto& [id, remote] : remotes_) {
+            const auto* train = remote.train ? trains.find_train(remote.train) : nullptr;
+            const auto front = train ? train->front_end() : std::nullopt;
+            if (!front) continue;
+            const auto at = front->pose();
+            const double dx = (at.tile_x - c.tile_x) * 2048.0 + at.x - c.x;
+            const double dz = (at.tile_z - c.tile_z) * 2048.0 + at.z - c.z;
+            const double distance = std::sqrt(dx * dx + dz * dz);
+            if (!remote.far && distance > 3000.0) {
+                remote.far = true;
+            } else if (remote.far && distance < 2900.0) {
+                remote.far = false;
+                connection_->send(net::id(net::Package::state_request), net::encode_state_request(2, id));
+                std::cout << "net: train " << id << " is near again (" << static_cast<int>(distance) << " m): its look asked for"
+                          << std::endl;
+            }
         }
     }
     if (!started_) {
@@ -466,7 +555,43 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         return;
     }
     case P(net::Package::message):
-        if (const auto text = net::decode_message(body)) std::cout << "net: message: " << net::to_utf8(*text) << std::endl;
+        if (const auto text = net::decode_message(body)) {
+            std::cout << "net: message: " << net::to_utf8(*text) << std::endl;
+            console_log_.push_back(net::to_utf8(*text));
+        }
+        return;
+    case P(net::Package::console_reply): {
+        net::WireReader r(body);
+        const auto text = net::to_utf8(r.text_u32());
+        if (!r.ok()) return;
+        std::size_t from = 0;
+        while (from < text.size()) {
+            const auto end = text.find('\n', from);
+            const auto line = text.substr(from, end == std::string::npos ? std::string::npos : end - from);
+            if (!line.empty()) console_log_.push_back(line);
+            if (end == std::string::npos) break;
+            from = end + 1;
+        }
+        if (console_log_.size() > 500) console_log_.erase(console_log_.begin(), console_log_.end() - 500);
+        return;
+    }
+    case P(net::Package::route_left): {
+        // The distance a train's route has left (RTS sends it to everyone,
+        // players too; -1: no route).
+        net::WireReader r(body);
+        const auto train = r.u32();
+        const auto left = r.f32();
+        const auto flag = r.u8();
+        if (!r.ok()) return;
+        if (left < 0.0f) {
+            routes_.erase(train);
+        } else {
+            routes_[train] = {left, (flag & 1) != 0};
+        }
+        return;
+    }
+    case P(net::Package::console_state):
+        if (auto state = net::decode_console_state(body)) console_state_ = std::move(*state);
         return;
     case P(net::Package::couple):
         if (const auto c = net::decode_couple(body)) coupled(*c, trains);

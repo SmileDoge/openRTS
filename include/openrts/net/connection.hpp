@@ -51,8 +51,9 @@ public:
 
     // Connects to "host:port" (port 800 when none is given), logs in with
     // the protocol version 101 and reads the reply; then starts reading.
-    // `timeout_ms` bounds the connect and the reply.
-    LoginResult connect(const std::string& address, std::u16string_view nick, int timeout_ms = 10000);
+    // `timeout_ms` bounds the connect and the reply. `console`: as a
+    // dispatcher console (0x4500; an openRTS server answers it as a player).
+    LoginResult connect(const std::string& address, std::u16string_view nick, int timeout_ms = 10000, bool console = false);
     // Sends one package (any thread).
     bool send(std::uint16_t id, ByteView body);
     // The packages the server sent since the last call, in order.

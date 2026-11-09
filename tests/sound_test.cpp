@@ -819,6 +819,39 @@ void test_engine() {
     engine.render(mix.data(), 22050);
     engine.update();
     check(!engine.playing(voice) && engine.active_voices() == 0, "released loop ends and is freed");
+
+    // A silent loop is held where it is (not mixed) and goes on from there.
+    const auto quiet = engine.play(clip, audio::VoicePlayback::loop, audio::VoiceSpace::panned);
+    engine.set(quiet, 1.0f, 1.0f, {0, 0, 10});
+    engine.render(mix.data(), 1000);
+    engine.set(quiet, 0.0f, 1.0f, {0, 0, 10});
+    const auto held_at = engine.cursor(quiet);
+    engine.render(mix.data(), 5000);
+    check(engine.audible_voices() == 0 && engine.active_voices() == 1 && engine.playing(quiet), "silent loop held, its voice kept");
+    check(held_at && engine.cursor(quiet) == held_at, "held loop does not advance");
+    engine.set(quiet, 1.0f, 1.0f, {0, 0, 10});
+    engine.render(mix.data(), 1000);
+    check(engine.audible_voices() == 1 && engine.cursor(quiet) != held_at, "heard again, the loop goes on");
+    engine.set(quiet, 0.0f, 1.0f, {0, 0, 10});
+    engine.release(quiet);
+    check(engine.active_voices() == 0, "a held loop released ends at once");
+
+    // The places are the heard voices': held ones take none; one heard
+    // again waits for a free place.
+    audio::AudioEngine two({.max_voices = 2, .device = false, .channels = 2, .sample_rate = 22050});
+    const auto a = two.play(clip, audio::VoicePlayback::loop, audio::VoiceSpace::panned);
+    const auto b = two.play(clip, audio::VoicePlayback::loop, audio::VoiceSpace::panned);
+    check(two.play(clip, audio::VoicePlayback::loop, audio::VoiceSpace::panned) == 0, "no place past max_voices heard");
+    two.set(a, 0.0f, 1.0f, {0, 0, 10});
+    two.set(b, 0.0f, 1.0f, {0, 0, 10});
+    const auto c = two.play(clip, audio::VoicePlayback::loop, audio::VoiceSpace::panned);
+    const auto d = two.play(clip, audio::VoicePlayback::loop, audio::VoiceSpace::panned);
+    check(c != 0 && d != 0 && two.active_voices() == 4 && two.audible_voices() == 2, "held voices take no place");
+    two.set(a, 1.0f, 1.0f, {0, 0, 10});
+    check(two.audible_voices() == 2 && two.playing(a), "heard again with no place free: it waits");
+    two.stop(c);
+    two.set(a, 1.0f, 1.0f, {0, 0, 10});
+    check(two.audible_voices() == 2 && two.active_voices() == 3, "a place freed: it goes on");
 }
 
 // The ED9M's cab script (MaDaDev): the DLL posts 16 for a controller step,

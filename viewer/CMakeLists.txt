@@ -6,6 +6,7 @@ add_library(openrts_viewer_core STATIC
     src/gpu_timer.cpp
     src/viewer_scene.cpp
     src/net_session.cpp
+    src/console_panel.cpp
     src/track_view.cpp
     src/crossing_view.cpp
     src/road_traffic.cpp

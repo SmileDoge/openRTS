@@ -34,8 +34,9 @@ class TrainView;
 class NetSession {
 public:
     // `early`: packages that came with the snapshot, after its end.
+    // `console`: logged in as the dispatcher's console (--mp-console).
     NetSession(std::shared_ptr<net::RtsConnection> connection, net::Snapshot snapshot,
-               std::vector<net::ReceivedPackage> early);
+               std::vector<net::ReceivedPackage> early, bool console = false);
 
     // The first call puts the snapshot's trains on the track; every call
     // applies what the server sent and moves the trains.
@@ -48,6 +49,34 @@ public:
     // The dispatcher paused the game (0x4616): time and trains stand.
     [[nodiscard]] bool paused() const noexcept { return paused_; }
 
+    // The dispatcher's console (openRTS's server, docs/server.md).
+    [[nodiscard]] bool console() const noexcept { return console_; }
+    // A command line for the server, as typed at its console.
+    void send_command(std::string_view line);
+    // A consist put on the track by its cars (console_place).
+    void send_place(const net::ConsolePlace& place);
+    // A line in the console's log (a problem found here).
+    void note(std::string line) { console_log_.push_back(std::move(line)); }
+    // The game as the server last told the console (every second).
+    [[nodiscard]] const std::optional<net::ConsoleState>& console_state() const noexcept { return console_state_; }
+    // The commands sent and what the server answered, the dispatchers'
+    // messages, oldest first.
+    [[nodiscard]] const std::vector<std::string>& console_log() const noexcept { return console_log_; }
+    // Asks the server to throw a junction (0x460A, as rts1.exe sends a
+    // player's switch): it decides and sends everyone the result.
+    void request_junction(std::uint32_t node, std::uint32_t branch);
+    // RTS's hand route (0x4619, the console's "Задать маршрут"): `length` m
+    // from the train's head along the junctions as they stand, from its rear
+    // when `rear_first`; below 0 cancels it. The junctions go first
+    // (request_junction), as RTS's console sends them.
+    void send_route(std::uint32_t server_train, float length, bool rear_first);
+    // The distance a train's route has left, as the server last sent it
+    // (0x4619), and whether it is laid from the rear; nothing: no route.
+    [[nodiscard]] std::optional<std::pair<float, bool>> route_left(std::uint32_t server_train) const;
+    // The TrainView train a server train is drawn as (0 none), and back.
+    [[nodiscard]] std::uint64_t view_train(std::uint32_t server_train) const;
+    [[nodiscard]] std::uint32_t server_train(std::uint64_t view_train) const;
+
 private:
     struct Remote {
         net::SnapshotTrain record;
@@ -55,6 +84,10 @@ private:
         net::RemoteMotion motion;
         bool warned = false;
         std::vector<std::uint8_t> pantographs; // the masks last logged, by car
+        // The camera was more than 3 km off: the server sent none of its
+        // lights, looks and sounds meanwhile (audience 4 goes by the
+        // player's place, which is the camera's).
+        bool far = false;
     };
 
     void apply(const net::ReceivedPackage& package, simulation::TrackNetwork& network, simulation::SignalSystem* signals,
@@ -114,7 +147,12 @@ private:
     std::map<std::uint32_t, Owned> owned_;
     std::size_t triggers_sent_ = 0, values_sent_ = 0; // for the log
     double position_at_ = 0.0;                           // the next player_pos due
+    double range_at_ = 0.0;                              // the next check of the remote trains' distance
     std::optional<formats::RoutePosition> sent_camera_; // the last one sent
+    bool console_ = false;
+    std::map<std::uint32_t, std::pair<float, bool>> routes_; // by server train: 0x4619
+    std::optional<net::ConsoleState> console_state_;
+    std::vector<std::string> console_log_;
 };
 
 } // namespace openrts::viewer

@@ -2,6 +2,7 @@
 
 #include <openrts/core/profile.hpp>
 
+#include <algorithm>
 #include <map>
 #include <unordered_map>
 
@@ -14,12 +15,16 @@ struct AudioEngine::Impl {
         std::shared_ptr<const AudioClip> clip;
         ma_audio_buffer buffer{};
         ma_sound sound{};
+        bool loops = false; // looping, not released
+        bool held = false;  // stopped while silent (set)
     };
 
     ma_engine engine{};
     bool initialized = false;
     std::string error;
-    std::uint32_t max_voices = 256;
+    std::uint32_t max_voices = 1024;
+    std::uint32_t max_held_voices = 8192;
+    std::size_t audible = 0; // voices not held
     VoiceId next_id = 1;
     std::unordered_map<VoiceId, std::unique_ptr<Voice>> voices;
     // Mono copies of stereo clips for the voices placed in space, by clip.
@@ -52,10 +57,18 @@ struct AudioEngine::Impl {
         ma_sound_uninit(&voice.sound);
         ma_audio_buffer_uninit(&voice.buffer);
     }
+
+    // Destroys a voice and frees its place.
+    std::unordered_map<VoiceId, std::unique_ptr<Voice>>::iterator remove(std::unordered_map<VoiceId, std::unique_ptr<Voice>>::iterator it) {
+        if (!it->second->held) --audible;
+        destroy(*it->second);
+        return voices.erase(it);
+    }
 };
 
 AudioEngine::AudioEngine(const AudioEngineOptions& options) : impl_(std::make_unique<Impl>()) {
     impl_->max_voices = options.max_voices;
+    impl_->max_held_voices = (std::max)(options.max_held_voices, options.max_voices);
     auto config = ma_engine_config_init();
     config.listenerCount = 1;
     if (!options.device) {
@@ -113,8 +126,7 @@ void AudioEngine::update() {
     OPENRTS_ZONE("audio");
     for (auto it = impl_->voices.begin(); it != impl_->voices.end();) {
         if (ma_sound_at_end(&it->second->sound)) {
-            impl_->destroy(*it->second);
-            it = impl_->voices.erase(it);
+            it = impl_->remove(it);
         } else {
             ++it;
         }
@@ -129,8 +141,15 @@ std::size_t AudioEngine::active_voices() const noexcept {
     return impl_->voices.size();
 }
 
+std::size_t AudioEngine::audible_voices() const noexcept {
+    return impl_->audible;
+}
+
 VoiceId AudioEngine::play(std::shared_ptr<const AudioClip> clip, const VoicePlayback playback, const VoiceSpace space) {
-    if (!ok() || !clip || clip->frames == 0 || impl_->voices.size() >= impl_->max_voices) return 0;
+    // The places are the heard voices' (held silent ones take none).
+    if (!ok() || !clip || clip->frames == 0 || impl_->audible >= impl_->max_voices || impl_->voices.size() >= impl_->max_held_voices) {
+        return 0;
+    }
     auto voice = std::make_unique<Impl::Voice>();
     // A voice placed in space plays a stereo file as mono (openRTS: RTS
     // places no sound at all, docs/sound.md); miniaudio pans a stereo
@@ -149,6 +168,7 @@ VoiceId AudioEngine::play(std::shared_ptr<const AudioClip> clip, const VoicePlay
         return 0;
     }
     ma_sound_set_looping(&voice->sound, playback != VoicePlayback::once);
+    voice->loops = playback != VoicePlayback::once;
     ma_sound_set_spatialization_enabled(&voice->sound, space != VoiceSpace::flat);
     // Panned voices: a model with zero rolloff, no distance attenuation (the
     // scripts' curves set the volume) but still panning;
@@ -165,26 +185,41 @@ VoiceId AudioEngine::play(std::shared_ptr<const AudioClip> clip, const VoicePlay
     ma_sound_start(&voice->sound);
     const auto id = impl_->next_id++;
     impl_->voices.emplace(id, std::move(voice));
+    ++impl_->audible;
     return id;
 }
 
 void AudioEngine::release(const VoiceId id) {
     if (const auto it = impl_->voices.find(id); it != impl_->voices.end()) {
+        // A held loop would wait for ever to play out, unheard: it ends now.
+        if (it->second->held) {
+            impl_->remove(it);
+            return;
+        }
         ma_sound_set_looping(&it->second->sound, false);
+        it->second->loops = false;
     }
 }
 
 void AudioEngine::stop(const VoiceId id) {
-    if (const auto it = impl_->voices.find(id); it != impl_->voices.end()) {
-        impl_->destroy(*it->second);
-        impl_->voices.erase(it);
-    }
+    if (const auto it = impl_->voices.find(id); it != impl_->voices.end()) impl_->remove(it);
 }
 
 void AudioEngine::set(const VoiceId id, const float volume, const float pitch, const glm::vec3& position) {
     const auto it = impl_->voices.find(id);
     if (it == impl_->voices.end()) return;
-    auto& sound = it->second->sound;
+    auto& voice = *it->second;
+    auto& sound = voice.sound;
+    const bool silent = volume <= 1e-4f;
+    if (voice.loops && silent && !voice.held) {
+        ma_sound_stop(&sound); // held at its frame, not rewound
+        voice.held = true;
+        --impl_->audible;
+    } else if (voice.held && !silent && impl_->audible < impl_->max_voices) {
+        ma_sound_start(&sound);
+        voice.held = false;
+        ++impl_->audible;
+    }
     ma_sound_set_volume(&sound, volume);
     ma_sound_set_pitch(&sound, pitch);
     ma_sound_set_position(&sound, -position.x, position.y, position.z);

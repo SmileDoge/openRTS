@@ -112,6 +112,10 @@ constexpr Named names[] = {
     {0x450E, "route_segment_state"},
     {0x4614, "situation_user"},
     {0x4615, "situation_route"},
+    {0x45F0, "console_command"},
+    {0x45F1, "console_reply"},
+    {0x45F2, "console_state"},
+    {0x45F3, "console_place"},
 };
 
 } // namespace

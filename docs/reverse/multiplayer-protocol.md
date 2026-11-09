@@ -249,7 +249,7 @@ A name says what the package is about; the rows below hold the details.
 | `0x4643` | server → player, console | `u32` message | `0x4706` shows the flood warning, anything else a numbered "Server message" |
 | `0x4630` | mini-server host → player | `u8` 1 | in the host's snapshot only: sets `dword_61D31C+37` |
 | `0x462E` | server → player | user id, train id, `u32`, `u32` + 3 × `f32`, `u32` + 3 × `f32`, name (32 bytes) | a user record, in the snapshot; the client takes the train id as its own train (`+48`) |
-| `0x462D` | player → server → others | the client's position fields (as `0x462E` from the train id on): `u32` 0 (`rts1.exe` always sends 0 in the record's train field), the train the player is in `u32` (0 none), `u32` (UNKNOWN, 0 or 1), tile x, z (`i16`), x, y, z, four `f32` (live capture 2026-11-05) | the server stores them in the user record and relays them to everyone else (audience 2), with the sender's id in front and its name (32 bytes) after: the map's person icon |
+| `0x462D` | player → server → others | the client's position fields (as `0x462E` from the train id on): `u32` 0 (`rts1.exe` always sends 0 in the record's train field), the train the player is in `u32` (0 none), `u32` (UNKNOWN, 0 or 1), tile x, z (`i16`), x, y, z, four `f32` (44 bytes; live capture 2026-11-05) | the server stores them in the user record and relays them to everyone else (audience 2): the 44 bytes with the sender's id in place of the first `u32`, then its name, UTF-16 padded with zeros to 84 bytes (128 in all; to 32 bytes, 76 in all, in the snapshot): the map's person icon |
 | `0x1700` | helper → engineer | node id, session | the NetworkNode hello (`multiplayer.md`, "Helpers") |
 | `0x1701` | node → node | text | shown as a "Multiplayer" message (`0x52DE78`) |
 
@@ -257,7 +257,7 @@ A name says what the package is about; the rows below hold the details.
 
 | Id | Direction | Payload | What happens |
 |---|---|---|---|
-| `0x460D` | server → player, console | `f32` time of day | |
+| `0x460D` | server → player, console | `f32` time of day | every 300 s (live capture 2026-11-05) |
 | `0x4609` | snapshot; player → server | container | in the snapshot it holds the `0x460A` entries; from a player, a list of nested `0x460A` changes (`0x40C52C` each) |
 | `0x460A` | both ways | junction index (the TDB node number − 1: the client reads its node table at the index, CONFIRMED against Kuban, `net.md`), branch `u32`, lock `u8` | a junction's state; from a player, a change the server decides at once (`0x40C52C`) |
 | `0x4642` | player → server or host | junction index, `u32` | a junction request, done when the junction is neither locked nor reserved (`0x40C5A4`) |

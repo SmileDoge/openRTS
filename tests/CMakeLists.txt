@@ -97,6 +97,16 @@ add_test(NAME openrts.net COMMAND openrts_net_test)
 
 # A snapshot in openRTS terms on a synthetic track: distances, junctions,
 # train fronts, remote trains' motion.
+# The openRTS server: the login, the snapshot, the relays, couplings, over
+# TCP with openRTS's client; with an installation, Kuban against rts_server.exe.
+add_executable(openrts_server_test server_test.cpp)
+openrts_configure_target(openrts_server_test)
+target_link_libraries(openrts_server_test PRIVATE openrts_server)
+add_test(NAME openrts.server COMMAND openrts_server_test)
+if(OPENRTS_TEST_ROOT)
+    add_test(NAME openrts.content.server_kuban COMMAND openrts_server_test "${OPENRTS_TEST_ROOT}")
+endif()
+
 add_executable(openrts_net_world_test net_world_test.cpp)
 openrts_configure_target(openrts_net_world_test)
 target_link_libraries(openrts_net_world_test PRIVATE openrts_net_world openrts_formats)

@@ -53,6 +53,7 @@
 #include "track_control.hpp"
 #include "inspector.hpp"
 #include "net_session.hpp"
+#include "console_panel.hpp"
 #include "train_view.hpp"
 
 #ifdef OPENRTS_HAS_IMGUI
@@ -134,6 +135,7 @@ public:
     [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
     [[nodiscard]] const std::filesystem::path& root() const noexcept { return content_.root; }
     [[nodiscard]] bool track_control() const noexcept { return content_.track_control; }
+    [[nodiscard]] bool console() const noexcept { return content_.console; }
     // RTS's config.ini text (read once from the installation folder).
     [[nodiscard]] const std::string& rts_config() const {
         if (!rts_config_read_) {
@@ -331,10 +333,11 @@ public:
             train_ = std::make_unique<TrainView>(content_.vfs(), route_, origin_, track_->network());
             train_->set_rts_config(content_.rts_config());
             // Not in a network game: there the server and its dispatchers
-            // own the trains and the track (docs/net.md).
-            if (!content_.connection()) {
+            // own the trains and the track (docs/net.md); but the
+            // dispatcher's console is the map.
+            if (!content_.connection() || content_.console()) {
                 track_control_ = std::make_unique<TrackControl>(track_->network(), origin_);
-                if (content_.track_control()) track_control_->toggle();
+                if (content_.track_control() || content_.console()) track_control_->open();
             }
             if (signals_ && track_control_) {
                 track_control_->set_signal_names([signals = signals_.get()](const std::uint32_t object) {
@@ -362,8 +365,78 @@ public:
                 if (content_.connection()) {
                     // Watching a live game: the session puts the trains on
                     // the track and keeps the world as the server says.
-                    net_ = std::make_unique<NetSession>(content_.connection(), *snapshot, content_.take_early());
+                    net_ = std::make_unique<NetSession>(content_.connection(), *snapshot, content_.take_early(), content_.console());
                     train_->set_network(true);
+                    if (track_control_) {
+                        // The console's map: junctions and signals are the server's.
+                        track_control_->set_network_actions({
+                            .throw_junction = [net = net_.get()](const std::uint32_t node, const std::uint32_t branch) {
+                                net->send_command("junction " + std::to_string(node) + " " + std::to_string(branch));
+                            },
+                            .set_signal = [net = net_.get()](const std::uint32_t item, const std::optional<formats::SignalAspect> aspect) {
+                                net->send_command("signal " + std::to_string(item) + " " +
+                                                  (aspect ? std::to_string(static_cast<int>(*aspect)) : std::string("auto")));
+                            },
+                            .place_consist = [net = net_.get(), vfs = content_.vfs()](const std::string& consist,
+                                                                                    const simulation::TrackLocation& front) {
+                                // By its cars, not its name: the consist is the
+                                // dispatcher's, the server needs only the cars' files.
+                                std::string error;
+                                if (auto place = consist_place(*vfs, consist, error)) {
+                                    place->node = front.node;
+                                    place->offset = front.offset;
+                                    place->forward = front.forward;
+                                    net->send_place(*place);
+                                } else {
+                                    net->note(consist + ": " + error);
+                                }
+                            },
+                            .remove_train = [net = net_.get()](const std::uint64_t train) {
+                                if (const auto id = net->server_train(train)) net->send_command("remove " + std::to_string(id));
+                            },
+                            // RTS's hand route: the way from the train's head
+                            // (or rear) to the place, its junctions thrown on the
+                            // server one by one, then the length (0x4619).
+                            .route_to = [net = net_.get(), trains = train_.get(), network = &track_->network()](
+                                            const std::uint64_t train, const simulation::TrackLocation& to) {
+                                const auto id = net->server_train(train);
+                                const auto* t = trains->train_by_id(train);
+                                if (!id || !t || !t->placed()) return;
+                                std::optional<simulation::TrainRoute> best;
+                                bool rear_first = false;
+                                for (const bool rear : {false, true}) {
+                                    const auto end = rear ? t->rear_end() : t->front_end();
+                                    if (!end) continue;
+                                    simulation::PathPlan plan;
+                                    plan.name = "route";
+                                    plan.start = {end->node(), end->offset(), rear ? !end->forward() : end->forward()};
+                                    plan.points.push_back({.kind = simulation::PlanPointKind::end, .node = to.node, .offset = to.offset});
+                                    auto route = simulation::build_route(*network, plan);
+                                    if (!route.ok() || route.legs.size() != 1) continue;
+                                    if (!best || route.legs[0].length() < best->legs[0].length()) {
+                                        best = std::move(route);
+                                        rear_first = rear;
+                                    }
+                                }
+                                if (!best) {
+                                    net->note(trf("train %u: no way to there", id));
+                                    return;
+                                }
+                                for (const auto& j : best->legs[0].junctions) {
+                                    const auto* state = network->junction(j.junction);
+                                    if (state && state->selected != j.branch) net->request_junction(j.junction, j.branch);
+                                }
+                                net->send_route(id, static_cast<float>(best->legs[0].length()), rear_first);
+                            },
+                            .cancel_route = [net = net_.get()](const std::uint64_t train) {
+                                if (const auto id = net->server_train(train)) net->send_route(id, -1.0f, false);
+                            },
+                            .route_left = [net = net_.get()](const std::uint64_t train) -> std::optional<std::pair<float, bool>> {
+                                const auto id = net->server_train(train);
+                                return id ? net->route_left(id) : std::nullopt;
+                            },
+                        });
+                    }
                 } else {
                     apply_snapshot(*snapshot, track_->network(), *train_);
                     snapshot_signals_ = true;
@@ -461,12 +534,24 @@ public:
         if (track_) {
             track_->update(input, clock.elapsed);
             if (input.throw_junction) {
+                // In a network game the server decides: what was thrown here
+                // goes to it as a request, and it sends back what stands.
+                std::vector<std::pair<std::uint32_t, std::uint32_t>> before;
+                auto& network = track_->network();
+                if (net_) {
+                    for (std::uint32_t n = 1; n < network.node_count(); ++n) {
+                        if (const auto* state = network.junction(n)) before.emplace_back(n, state->selected);
+                    }
+                }
                 // The first facing junction ahead of the train, else the
                 // junction nearest to the camera.
                 if (const auto ahead = train_ ? train_->ahead() : std::nullopt) {
                     track_->throw_junction_ahead(*ahead);
                 } else {
                     track_->throw_nearest_junction(camera.eye());
+                }
+                for (const auto& [n, selected] : before) {
+                    if (const auto* state = network.junction(n); state && state->selected != selected) net_->request_junction(n, state->selected);
                 }
             }
         }
@@ -1096,6 +1181,7 @@ public:
             track_control_->set_viewer(camera.eye(), camera.forward(), origin_);
             track_control_->draw(*train_, signals_ ? signals_->system() : nullptr);
         }
+        if (net_ && net_->console() && train_) console_panel_.draw(*net_, *train_, track_control_.get(), *content_.vfs());
         if (train_) train_->draw_hud();
         content_.draw_overlay(library_.get());
 #endif
@@ -1736,6 +1822,9 @@ private:
     std::optional<TrackView> track_;
     std::unique_ptr<TrainView> train_;
     std::unique_ptr<NetSession> net_; // --mp-connect: the server's game
+#ifdef OPENRTS_HAS_IMGUI
+    mutable ConsolePanel console_panel_; // --mp-console: the dispatcher's window
+#endif
     std::unique_ptr<TrackControl> track_control_;
     mutable bool signal_names_ = false; // Ctrl+F7
     mutable bool place_names_ = false;  // F7

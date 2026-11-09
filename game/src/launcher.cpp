@@ -165,6 +165,14 @@ enum class NetStep { none, connecting, waiting, loading, playing, failed };
 // Where the player is when the dispatcher assigns his train: in the cab
 // (--spawn cab), or as before (the camera follows the train from above).
 constexpr const char* net_spawn_names[] = {"In the cab", "Above the train"};
+// Who joins: a driver, or the dispatcher's console (an openRTS server).
+constexpr const char* net_role_names[] = {"Driver", "Dispatcher (console)"};
+constexpr const char* net_role_keys[] = {"driver", "dispatcher"};
+constexpr int net_role_dispatcher = 1;
+// The dispatcher's console in the game waits until the server is done, as
+// rts_server.exe with its own console (the user's call, 2026-11-09): the
+// choice is hidden, the viewer keeps --mp-console.
+constexpr bool console_role_shown = false;
 constexpr const char* net_spawn_keys[] = {"cab", "above"};
 constexpr int net_spawn_cab = 0;
 
@@ -296,6 +304,7 @@ struct Launcher::State {
     std::array<char, 64> nick{};
     std::vector<std::string> servers;
     int net_spawn = 1; // net_spawn_names
+    int net_role = 0;  // net_role_names
     // An own server: only its settings' place, the server is not there yet
     // (docs/roadmap.md, stage 3).
     int host_port = 800;
@@ -375,6 +384,10 @@ struct Launcher::State {
             for (int i = 0; i < 2; ++i)
                 if (*value == net_spawn_keys[i]) net_spawn = i;
         }
+        if (const auto value = remembered("mp_role"); value && console_role_shown) {
+            for (int i = 0; i < 2; ++i)
+                if (*value == net_role_keys[i]) net_role = i;
+        }
     }
 
     void save_settings() const {
@@ -399,6 +412,7 @@ struct Launcher::State {
         remember("mp_nick", nick_text());
         remember("mp_servers", join_list(servers));
         remember("mp_spawn", net_spawn_keys[net_spawn]);
+        remember("mp_role", net_role_keys[net_role]);
     }
 
     void scan() {
@@ -549,7 +563,11 @@ struct Launcher::State {
         if (which == Tab::network) {
             // The route, its season and weather, the time and the train are the server's.
             args.insert(args.end(), {"--mp-connect", address_text(), "--mp-nick", nick_text(), "--root", utf8(root)});
-            if (net_spawn == net_spawn_cab) args.insert(args.end(), {"--spawn", "cab"});
+            if (net_role == net_role_dispatcher) {
+                args.push_back("--mp-console");
+            } else if (net_spawn == net_spawn_cab) {
+                args.insert(args.end(), {"--spawn", "cab"});
+            }
         } else {
             args.insert(args.end(), {"--route", routes[static_cast<std::size_t>(route)], "--root", utf8(root)});
             if (situation >= 0) {
@@ -940,14 +958,27 @@ void Launcher::State::draw_network(const float height) {
             ImGui::InputTextWithHint("##address", "127.0.0.1:800", address.data(), address.size());
             form_row(tr("Nick"));
             ImGui::InputText("##nick", nick.data(), nick.size());
-            const char* spawns[2];
-            for (int i = 0; i < 2; ++i) spawns[i] = tr(net_spawn_names[i]);
-            form_row(tr("Start at"));
-            ImGui::Combo("##net_spawn", &net_spawn, spawns, 2);
+            if (console_role_shown) {
+                const char* roles[2];
+                for (int i = 0; i < 2; ++i) roles[i] = tr(net_role_names[i]);
+                form_row(tr("Join as"));
+                ImGui::Combo("##net_role", &net_role, roles, 2);
+            }
+            if (net_role != net_role_dispatcher) {
+                const char* spawns[2];
+                for (int i = 0; i < 2; ++i) spawns[i] = tr(net_spawn_names[i]);
+                form_row(tr("Start at"));
+                ImGui::Combo("##net_spawn", &net_spawn, spawns, 2);
+            }
             ImGui::EndTable();
         }
-        hint(net_spawn == net_spawn_cab ? tr("When the dispatcher assigns your train, you sit at its desk.")
-                                        : tr("When the dispatcher assigns your train, the camera follows it from above."));
+        if (net_role == net_role_dispatcher) {
+            hint(tr("The dispatcher's console of an openRTS server: the route's map and the console's window (trains, players, routes, signals, time). "
+                    "The server lets in a console from its own computer with any nick, from elsewhere the nicks given to it with --dispatcher."));
+        } else {
+            hint(net_spawn == net_spawn_cab ? tr("When the dispatcher assigns your train, you sit at its desk.")
+                                            : tr("When the dispatcher assigns your train, the camera follows it from above."));
+        }
         hint(tr("The port is 800 when none is given. The nick is how the other players and the dispatcher see you."));
         const auto length = characters(nick_text());
         if (length == 0) {

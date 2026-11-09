@@ -213,10 +213,14 @@ own light conditions and pantograph rules are not worked out, `0x4F07D4`):
 
 **The observer's place:** it sends the camera's tile and position as
 `player_pos` four times a second while the camera moves and every 5 s
-anyway, as `rts1.exe` does. The server relays a train's lights, look and
-sounds only to players within 3 km of it, and the dispatcher's map shows
-the person; its players table's "Отклик" (seconds since the server last
-heard the player) no longer grows.
+anyway, as `rts1.exe` does. The player's place is the camera's, not the
+train's. The server relays a train's lights, look and sounds only to
+players within 3 km of it, and the dispatcher's map shows the person; its
+players table's "Отклик" (seconds since the server last heard the player)
+no longer grows. A remote train the camera comes back to, within 2.9 km
+after being beyond 3 km, is asked for its whole look again
+(`state_request` 2, as `rts1.exe` when it loads the train again): the
+lights and looks it changed meanwhile never came.
 
 **Own trains** (stage 2, step 2): the trains the dispatcher assigned are
 simulated here, one of them driven with its DLLs, cab and keyboard, and the

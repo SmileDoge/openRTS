@@ -19,12 +19,23 @@ what the DLLs post play in the viewer (the sections below).
   renders the miniaudio graph into a buffer with no device.
 - **Later spatial audio** (Steam Audio) attaches as nodes in the miniaudio
   graph, without touching the runner.
+- **Voices:** up to 1024 heard at once (`AudioEngineOptions::max_voices`;
+  256 until 2026-11-09, all voices counted, which a big station's standing
+  cars filled with their silent loops within the scripts' 500 m). A looping
+  voice set to volume 0 is held where it is, stopped in the graph, and
+  takes no place; it goes on from that frame when it is heard again and a
+  place is free (until then it waits, silent). Released while held, it
+  ends at once. All voices, held ones too, stop at 8192
+  (`max_held_voices`), only against voices never let go. The mixer had
+  cost the same for a silent voice as for a playing one: 1024 looping
+  voices took a third of a core at 48 kHz (9800X3D), 256 a tenth; held,
+  1024 cost 0.3 %. One-shots play on.
 - **Viewer:**
   - flags `--no-sound` and `--volume <0..1>` (default 0.5);
     `--sound-offline` runs the sounds without a device (nothing is heard,
     voices do not advance): with `OPENRTS_SOUND_TRACE` it shows which groups
     go on;
-  - a volume slider and a voice count in the panel;
+  - a volume slider and a voice count in the panel (all, and those heard);
   - world-sound counters in the route section.
   - Automated runs use `--no-sound`.
 - **Check tool:** `openrts-sound-check` prints what RTS ignores in the

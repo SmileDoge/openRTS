@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <vector>
 #include <string>
 
 #include <openrts/net/snapshot.hpp>
@@ -226,6 +227,66 @@ struct PlayerPosition {
     std::array<float, 4> view{};     // UNKNOWN: the camera's (rts1.exe sends headings and the like)
 };
 [[nodiscard]] Bytes encode_player_pos(const PlayerPosition& position);
+
+// openRTS's dispatcher console (console_state, server -> consoles): the
+// game as the server holds it, which RTS's packages do not carry whole
+// (owners, routes).
+struct ConsoleUser {
+    std::uint32_t id{};
+    std::u16string nick;
+    bool connected = false;
+    bool playing = false;
+    bool console = false;
+    std::vector<std::uint32_t> trains;
+    float camera_x{}, camera_z{}; // route metres (tile * 2048 + x), when `placed`
+    bool placed = false;
+};
+struct ConsoleTrain {
+    std::uint32_t id{}, number{};
+    std::uint16_t kind{}, subtype{};
+    std::uint8_t state{};
+    std::uint32_t owner{};           // user id, 0 none
+    std::uint32_t route_junctions{}; // held for its route
+    float speed{};                   // m/s
+    bool stands = false;
+    std::uint32_t cars{};
+    std::u16string first_car;        // its first car's file
+};
+struct ConsoleState {
+    float time{}; // s of the day
+    bool paused = false;
+    bool admits = true;
+    std::vector<ConsoleUser> users;
+    std::vector<ConsoleTrain> trains;
+};
+[[nodiscard]] Bytes encode_console_state(const ConsoleState& state);
+[[nodiscard]] std::optional<ConsoleState> decode_console_state(ByteView body);
+
+// console_place: a consist the console puts on the track, by its cars, not
+// its name: the dispatcher's own consists need not be on the server, only
+// the cars' files. It stands there, nobody's, until given to a player.
+struct ConsoleCar {
+    std::u16string folder; // under TRAINS/TRAINSET
+    std::u16string name;   // the file's stem
+    bool engine = false;   // .eng, else .wag
+    bool flipped = false;
+    bool cold = false;
+    float handbrake = -1.0f; // percent; below 0 none given
+};
+struct ConsolePlace {
+    std::u16string consist;  // its name, for the log
+    float max_velocity{};    // the consist's MaxVelocity (m/s), 0 none
+    std::vector<ConsoleCar> cars;
+    std::uint32_t number{};  // 0: the server's lowest free
+    // Where: at a path's start (`path` not empty), else the front of its
+    // first car at (node, offset), facing along the node when `forward`.
+    std::u16string path;
+    std::uint32_t node{};
+    double offset{};
+    bool forward = true;
+};
+[[nodiscard]] Bytes encode_console_place(const ConsolePlace& place);
+[[nodiscard]] std::optional<ConsolePlace> decode_console_place(ByteView body);
 
 // 0x4611 message: the dispatcher's text.
 [[nodiscard]] std::optional<std::u16string> decode_message(ByteView body);

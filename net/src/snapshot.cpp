@@ -1114,6 +1114,127 @@ Bytes encode_state_request(const std::uint32_t mode, const std::uint32_t train) 
     return w.take();
 }
 
+Bytes encode_console_state(const ConsoleState& s) {
+    WireWriter w;
+    w.f32(s.time);
+    w.u8(s.paused ? 1 : 0);
+    w.u8(s.admits ? 1 : 0);
+    w.u32(static_cast<std::uint32_t>(s.users.size()));
+    for (const auto& u : s.users) {
+        w.u32(u.id);
+        w.text_u32(u.nick);
+        w.u8(static_cast<std::uint8_t>((u.connected ? 1 : 0) | (u.playing ? 2 : 0) | (u.console ? 4 : 0) | (u.placed ? 8 : 0)));
+        w.f32(u.camera_x);
+        w.f32(u.camera_z);
+        w.u32(static_cast<std::uint32_t>(u.trains.size()));
+        for (const auto t : u.trains) w.u32(t);
+    }
+    w.u32(static_cast<std::uint32_t>(s.trains.size()));
+    for (const auto& t : s.trains) {
+        w.u32(t.id);
+        w.u32(t.number);
+        w.u16(t.kind);
+        w.u16(t.subtype);
+        w.u8(t.state);
+        w.u32(t.owner);
+        w.u32(t.route_junctions);
+        w.f32(t.speed);
+        w.u8(t.stands ? 1 : 0);
+        w.u32(t.cars);
+        w.text_u32(t.first_car);
+    }
+    return w.take();
+}
+
+std::optional<ConsoleState> decode_console_state(const ByteView body) {
+    ConsoleState s;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        s.time = r.f32();
+        s.paused = r.u8() != 0;
+        s.admits = r.u8() != 0;
+        const auto users = r.u32();
+        for (std::uint32_t i = 0; i < users && r.ok() && i < 4096; ++i) {
+            ConsoleUser u;
+            u.id = r.u32();
+            u.nick = r.text_u32();
+            const auto flags = r.u8();
+            u.connected = (flags & 1) != 0;
+            u.playing = (flags & 2) != 0;
+            u.console = (flags & 4) != 0;
+            u.placed = (flags & 8) != 0;
+            u.camera_x = r.f32();
+            u.camera_z = r.f32();
+            const auto count = r.u32();
+            for (std::uint32_t k = 0; k < count && r.ok() && k < 4096; ++k) u.trains.push_back(r.u32());
+            s.users.push_back(std::move(u));
+        }
+        const auto trains = r.u32();
+        for (std::uint32_t i = 0; i < trains && r.ok() && i < 65536; ++i) {
+            ConsoleTrain t;
+            t.id = r.u32();
+            t.number = r.u32();
+            t.kind = r.u16();
+            t.subtype = r.u16();
+            t.state = r.u8();
+            t.owner = r.u32();
+            t.route_junctions = r.u32();
+            t.speed = r.f32();
+            t.stands = r.u8() != 0;
+            t.cars = r.u32();
+            t.first_car = r.text_u32();
+            s.trains.push_back(std::move(t));
+        }
+    });
+    if (!ok) return std::nullopt;
+    return s;
+}
+
+Bytes encode_console_place(const ConsolePlace& p) {
+    WireWriter w;
+    w.text_u32(p.consist);
+    w.f32(p.max_velocity);
+    w.u32(p.number);
+    w.text_u32(p.path);
+    w.u32(p.node);
+    w.f64(p.offset);
+    w.u8(p.forward ? 1 : 0);
+    w.u32(static_cast<std::uint32_t>(p.cars.size()));
+    for (const auto& car : p.cars) {
+        w.text_u32(car.folder);
+        w.text_u32(car.name);
+        w.u8(static_cast<std::uint8_t>((car.engine ? 1 : 0) | (car.flipped ? 2 : 0) | (car.cold ? 4 : 0)));
+        w.f32(car.handbrake);
+    }
+    return w.take();
+}
+
+std::optional<ConsolePlace> decode_console_place(const ByteView body) {
+    ConsolePlace p;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        p.consist = r.text_u32();
+        p.max_velocity = r.f32();
+        p.number = r.u32();
+        p.path = r.text_u32();
+        p.node = r.u32();
+        p.offset = r.f64();
+        p.forward = r.u8() != 0;
+        const auto count = r.u32();
+        for (std::uint32_t i = 0; i < count && r.ok() && i < 1024; ++i) {
+            ConsoleCar car;
+            car.folder = r.text_u32();
+            car.name = r.text_u32();
+            const auto flags = r.u8();
+            car.engine = (flags & 1) != 0;
+            car.flipped = (flags & 2) != 0;
+            car.cold = (flags & 4) != 0;
+            car.handbrake = r.f32();
+            p.cars.push_back(std::move(car));
+        }
+    });
+    if (!ok || p.cars.empty()) return std::nullopt;
+    return p;
+}
+
 Bytes encode_player_pos(const PlayerPosition& p) {
     WireWriter w;
     w.u32(p.value_0);

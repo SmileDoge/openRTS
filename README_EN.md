@@ -108,6 +108,13 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
     by the dispatcher (a train taken away stands still with its DLLs);
   - speed posts by the train's category from the server, electric trains'
     load on the substations to the dispatchers.
+- **Own server** `openrts-server` (RTS-compatible, Legacy mode,
+  [more](docs/server.md)): `rts1.exe` and openRTS log in to it as to
+  `rts_server.exe`. It decides junctions and runs the signals with every
+  train, carries out couplings and cuts; the dispatcher works at its
+  console: trains, assignments, routes, junctions, signals, time, pause,
+  messages. Next: the server with its own console map, as `rts_server.exe`;
+  the remote dispatcher's console after it.
 - **Signalling:**
   - `sigscr.dat` scripts compiled exactly as RTS compiles them;
   - blocks, routes, occupancy by the whole train;
@@ -164,9 +171,9 @@ In the order of the plan (`docs/roadmap.md`):
 1. The rest of the cab and consist: ALSN from the route's signals, native
    plugins from the `.eng`, the SME cable and high-voltage bus in the car
    menu. There will be no 2-D cabs.
-2. An openRTS server (an RTS-compatible Legacy mode and an own protocol,
-   plugins), helpers and the dispatcher console (Пульт ДСП). The client for
-   an RTS server is there.
+2. The openRTS server's own protocol (Legacy off) and plugins, helpers and
+   the dispatcher console (Пульт ДСП). The client for an RTS server and the
+   server in Legacy mode are there.
 3. Cars as entities with their own logic (the cab is the car's) and
    standard car classes: freight, passenger (compartments and so on),
    multiple-unit cars.
@@ -231,8 +238,9 @@ The easiest way is the start menu. It has four tabs:
   joined before, where to start (in the cab or above the train);
   "Connect". The server gives the route, season, weather and
   time, the dispatcher the train. Until there is one the menu shows the
-  wait, which can be cancelled. The place for an own openRTS server is
-  there; the server itself is in the works.
+  wait, which can be cancelled. An own server is `openrts-server`, next to
+  the game ([docs/server.md](docs/server.md)); the menu does not start it
+  yet.
 - **Settings:** the RTS folder, language, key layout, the key hints at the
   bottom of the screen (they can be turned off; the game's panel too), the
   mouse sensitivity (the game's panel too), sound and volume,
@@ -391,6 +399,7 @@ the Train window)
 | `dllhost` | `openrts-dllhost32.exe`: the 32-bit process RTS's DLLs run in |
 | `sdk` | a sample native plugin (the API is `include/openrts/plugin/train_plugin.h`) |
 | `net` | the RTS protocol: packages, the world snapshot, the server connection |
+| `server` | `openrts-server`: the openRTS server (Legacy), its copy of the route, the dispatcher's console |
 | `viewer` | the game: window, input, camera, cab, panels |
 | `game` | the start menu |
 | `tools` | command-line checks |
@@ -416,6 +425,8 @@ RTS's DLLs.
   rain and snow and smoke, as RTS builds and runs them;
 - `docs/net.md` — playing on an RTS server: the protocol, own and other
   players' trains, couplings, sound, the line;
+- `docs/server.md` — the openRTS server: running it, the dispatcher's
+  commands, what it decides and relays;
 - `docs/train-systems.md` — lights, pantographs, horn and doors without a
   DLL, the cab's displays and lamps, cables and coupler repair, taking
   another cab, native plugins, the line current and wire burning, ALSN;

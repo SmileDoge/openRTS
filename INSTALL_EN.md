@@ -97,6 +97,20 @@ path. The consist is a `.con` name from `TRAINS\CONSISTS_RTS` or
 `TRAINS\CONSISTS`. The other options (time, season, weather, sound,
 graphics, mods) are listed in the [README](README_EN.md#running).
 
+## An own server
+
+`openrts-server.exe` comes with the game: a server compatible with
+`rts_server.exe`. openRTS (Network game) and `rts1.exe` both join it.
+
+```powershell
+.\openrts-server.exe --route Kuban_RTS --root D:\Games\RTS --time 10:00
+```
+
+The dispatcher gives the players their trains with commands in the
+server's window: `add`, `assign`, `route`, `junction`, `signal`, `time`,
+`pause`, `say` (`help` lists them). The port is 800; open it for players from the internet. Details:
+[docs/server.md](docs/server.md).
+
 ## In the game: first steps
 
 - **Windows.** Top left is the openRTS panel: graphics, lighting and

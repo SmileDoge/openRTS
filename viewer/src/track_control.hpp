@@ -52,6 +52,31 @@ public:
     // Draws the window (ImGui builds) and acts on the trains and the network.
     void draw(TrainView& trains, simulation::SignalSystem* signals);
 
+    // In a network game the server decides junctions and signals: a throw
+    // and a signal's aspect go to it as requests (NetSession) instead of
+    // acting here. `set_signal` empty: no signal control (a player).
+    struct NetworkActions {
+        std::function<void(std::uint32_t node, std::uint32_t branch)> throw_junction;
+        std::function<void(std::uint32_t item, std::optional<formats::SignalAspect> aspect)> set_signal;
+        // The console: a consist placed on the map goes to the server (it
+        // stands there, nobody's, until given to a player); a train removed.
+        // Empty: a player, who cannot.
+        std::function<void(const std::string& consist, const simulation::TrackLocation& front)> place_consist;
+        std::function<void(std::uint64_t train)> remove_train; // the train as drawn here
+        // RTS's hand route from the console: the selected train to a place
+        // of the track (its junctions thrown, then 0x4619), cancelled; and
+        // the route a train has (the distance left, laid from its rear).
+        std::function<void(std::uint64_t train, const simulation::TrackLocation& to)> route_to;
+        std::function<void(std::uint64_t train)> cancel_route;
+        std::function<std::optional<std::pair<float, bool>>(std::uint64_t train)> route_left;
+    };
+    // The train picked on the map (as drawn here, 0 none).
+    [[nodiscard]] std::uint64_t selected() const noexcept { return selected_; }
+    void set_network_actions(NetworkActions actions) { network_actions_ = std::move(actions); }
+    void open() noexcept { open_ = true; }
+    // Selects a train and centres the map on it.
+    void show_train(TrainView& trains, std::uint64_t train);
+
 private:
     struct Line {
         std::uint32_t node{};
@@ -167,10 +192,15 @@ private:
         bool platform = true;
         std::string name;
         std::vector<double> x, z; // route metres along the track
+        double length{};          // m between its two ends
     };
     std::vector<Place> places_;
     void build_places();
     std::function<std::string(std::uint32_t)> signal_names_;
+    NetworkActions network_actions_;
+    // What is under the mouse: a tooltip with a signal's name and aspects,
+    // or a platform's or siding's name and length.
+    void hover_tooltip(float mouse_x, float mouse_y, const simulation::SignalSystem* signals) const;
 };
 
 } // namespace openrts::viewer
