@@ -1,5 +1,6 @@
 #include "inspector.hpp"
 
+#include <set>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -90,7 +91,7 @@ constexpr const char* default_mod = "openrts_edits";
 [[nodiscard]] const char* role_name(const TrainView::Role role) {
     switch (role) {
     case TrainView::Role::driven: return tr("driven");
-    case TrainView::Role::ai: return tr("test driver");
+    case TrainView::Role::ai: return tr("traffic (AI)");
     case TrainView::Role::standing: return tr("standing");
     }
     return "?";
@@ -550,39 +551,72 @@ void Inspector::draw_materials(const InspectorWorld& world, const core::VirtualP
     }
     auto& over = edited(world, shape);
     ImGui::TextWrapped("%s", tr("FullBright materials ignore the sun and the lamps; ticked, one is lit as an ordinary material (only this shape, kept in a mod)."));
+    // The parts (primitive states) with the same texture, shader and light
+    // are one row with their count: a shape of a hundred animated pieces
+    // (Novokuznetsk's mdd_ScBB1.s, 301 parts of 4 textures) read as 301
+    // textures, a row each.
+    struct Group {
+        const renderer::ModelPrimitive* first = nullptr;
+        std::int32_t light = 0; // as drawn now (the edit's, else the shape's)
+        std::vector<std::uint32_t> indices;
+    };
+    std::vector<Group> groups;
+    std::set<std::string> images;
+    for (const auto& primitive : model->primitives()) {
+        if (!primitive.image.empty()) images.insert(primitive.image);
+        const auto* entry = over.find(primitive.index);
+        const auto now = entry && entry->light_material ? *entry->light_material : primitive.shape_light_material;
+        const auto same = std::find_if(groups.begin(), groups.end(), [&](const Group& g) {
+            return g.first->image == primitive.image && g.first->shader == primitive.shader
+                && g.first->shape_light_material == primitive.shape_light_material && g.light == now;
+        });
+        if (same != groups.end()) {
+            same->indices.push_back(primitive.index);
+        } else {
+            groups.push_back({.first = &primitive, .light = now, .indices = {primitive.index}});
+        }
+    }
+    ImGui::TextUnformatted(trf("%zu textures, %zu parts (primitives)", images.size(), model->primitives().size()).c_str());
     const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY;
-    const float height = (std::min)(ImGui::GetTextLineHeightWithSpacing() * (static_cast<float>(model->primitives().size()) + 1.5f), 280.0f);
+    const float height = (std::min)(ImGui::GetTextLineHeightWithSpacing() * (static_cast<float>(groups.size()) + 1.5f), 280.0f);
     if (ImGui::BeginTable("##inspector_materials", 5, flags, {0.0f, height})) {
         ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 28.0f);
+        ImGui::TableSetupColumn(tr("Parts"), ImGuiTableColumnFlags_WidthFixed, 90.0f);
         ImGui::TableSetupColumn(tr("Texture"), ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn(tr("Shader"), ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn(tr("Light"), ImGuiTableColumnFlags_WidthFixed, 110.0f);
         ImGui::TableSetupColumn(tr("Lit as ordinary"), ImGuiTableColumnFlags_WidthFixed, 110.0f);
         ImGui::TableHeadersRow();
-        for (const auto& primitive : model->primitives()) {
+        for (const auto& group : groups) {
+            const auto& primitive = *group.first;
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            ImGui::Text("%u", primitive.index);
+            // One part: its number; several: how many, the first and the last.
+            if (group.indices.size() == 1) {
+                ImGui::Text("%u", primitive.index);
+            } else {
+                ImGui::Text("%zu (%u..%u)", group.indices.size(), group.indices.front(), group.indices.back());
+            }
             ImGui::TableSetColumnIndex(1);
             ImGui::TextUnformatted(primitive.image.empty() ? "-" : primitive.image.c_str());
             ImGui::TableSetColumnIndex(2);
             ImGui::TextUnformatted(primitive.shader.c_str());
             ImGui::TableSetColumnIndex(3);
-            const auto* entry = over.find(primitive.index);
-            const auto now = entry && entry->light_material ? *entry->light_material : primitive.shape_light_material;
-            std::string light = light_name(now);
-            if (now != primitive.shape_light_material) light += " (" + light_name(primitive.shape_light_material) + ")";
+            std::string light = light_name(group.light);
+            if (group.light != primitive.shape_light_material) light += " (" + light_name(primitive.shape_light_material) + ")";
             ImGui::TextUnformatted(light.c_str());
             ImGui::TableSetColumnIndex(4);
-            if (primitive.shape_light_material != -8 && !entry) {
+            const bool edited_now = group.light != primitive.shape_light_material;
+            if (primitive.shape_light_material != -8 && !edited_now) {
                 ImGui::TextDisabled("-");
                 continue;
             }
-            bool lit = entry && entry->light_material && *entry->light_material == -5;
+            // The whole group at once.
+            bool lit = group.light == -5;
             const std::string id = "##lit" + std::to_string(primitive.index);
             if (ImGui::Checkbox(id.c_str(), &lit)) {
-                over.set_light_material(primitive.index, primitive.image, lit ? std::optional<std::int32_t>{-5} : std::nullopt);
+                for (const auto index : group.indices)
+                    over.set_light_material(index, primitive.image, lit ? std::optional<std::int32_t>{-5} : std::nullopt);
                 dirty_ = true;
                 apply_edit(world, shape);
             }

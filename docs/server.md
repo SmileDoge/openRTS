@@ -230,8 +230,11 @@ and when the dispatcher sets it.
     flooding;
   - over TCP: openRTS's own client (`net::RtsConnection`) logs in, gets
     the train the dispatcher gives it, and the world;
-  - with an installation (`openrts.content.server_kuban`): Kuban's counts
-    1653 / 4074 / 3 / 3 and 1951 heads as the live server's, an ED9M at a
+  - with an installation (`openrts.content.server_kuban`): on the 2025
+    build's Kuban (TDB 1653 nodes) its counts 1653 / 4074 / 3 / 3 and
+    1951 heads as the live server's; on another (the 2026-11 build redrew
+    its track: 1647 / 4241 / 3 / 3, 1953 heads) the counts as its TDB writes
+    them and a snapshot with every junction and head; an ED9M at a
     path's start, a signal held at stop and a junction thrown from the
     console reaching the player; a route from the ED9M to the signal "1"
     (4 472 m, 11 junctions held) whose junction a player cannot throw.

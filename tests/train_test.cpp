@@ -328,6 +328,29 @@ void test_sway(const Stock& stock) {
     check(longitudinal > 0.0f && longitudinal < 0.2f, "acceleration nods the body");
 }
 
+// openRTS's rail joints on the 3000 m (welded) test node: a bogie's joint
+// events come in a span's bursts, 12.5 m apart, with a string between.
+void test_rail_joints(const Stock& stock) {
+    Run r(stock, {}, 1500.0);
+    r.network->set_rail_joint_layout(simulation::RailJointLayout::openrts);
+    r.driver->reverser = 1;
+    r.driver->throttle = r.driver->notches;
+    std::vector<double> at;
+    for (int i = 0; i < static_cast<int>(90.0 / simulation::train_step); ++i) {
+        r.train.step();
+        for (const auto& event : r.train.take_events()) {
+            if (event.kind == simulation::TrainEventKind::joint && event.car == 3 && event.bogie == 0) at.push_back(r.train.cars()[3].travelled);
+        }
+    }
+    bool spaced = !at.empty();
+    for (std::size_t k = 1; k < at.size(); ++k) {
+        const double gap = at[k] - at[k - 1];
+        spaced = spaced && (std::abs(gap - 12.5) < 1.5 || gap > 500.0);
+    }
+    std::cerr << "  openRTS joints: " << at.size() << " events of car 4's front bogie over " << r.train.cars()[3].travelled << " m\n";
+    check(spaced, "openRTS joints: a span's joints 12.5 m apart, strings between");
+}
+
 void test_turn_around(const Stock& stock) {
     Run r(stock, {}, 1500.0);
     const auto old_front = *r.train.front_end();
@@ -692,6 +715,7 @@ int main() {
     test_buffer_stop(stock);
     test_turn_around(stock);
     test_sway(stock);
+    test_rail_joints(stock);
     test_slide_off(stock);
     test_overturn(stock);
     test_hit(stock);

@@ -369,8 +369,11 @@ Engineer::Choice Engineer::choose(const CabView& cab, const glm::mat4& car) cons
         }
         for (std::size_t i = 0; i < sd.doors.size(); ++i) {
             // A passenger door (CanBeOpened 0) opens with the train's doors;
-            // open, he walks out through it.
-            if (!has_point(sd.doors[i]) || !sd.doors[i].can_be_opened) continue;
+            // open, he walks out through it. One that follows another
+            // (ParentObject: a leaf, a handle) is worked through that one:
+            // the EP2K's DOOR_CR1, nearer the doorway than DOOR_C's own
+            // point, was opened instead of the door.
+            if (!has_point(sd.doors[i]) || !sd.doors[i].can_be_opened || sd.doors[i].parent >= 0) continue;
             const float d = distance_xz(feet_, door_point(sd.doors[i]));
             if (d <= std::min(sd.doors[i].radius, 1.3f) && d < nearest) {
                 nearest = d;

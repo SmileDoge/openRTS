@@ -226,6 +226,11 @@ struct CabDoor {
     std::uint32_t global_id{};
     bool can_be_opened = true; // CanBeOpened: the player may open it by hand
     bool opened = false;       // Opened: open from the start (RTS: the keyword's presence)
+    // ParentObject ( n ): the door (its index in InteriorDoors) whose state
+    // it always has (RTSFileReference: "its state always equals the
+    // parent's"): a leaf or a handle that opens with the door, not by hand.
+    // -1: none. The EP2K's DOOR_CR1 / CR2 follow the cab door DOOR_C.
+    std::int32_t parent = -1;
     // SoundProof ( closed open ): the share of a sound that passes the door
     // shut and open; without it everything passes (RTS 0x51CD88: 1, 1).
     float sound_closed = 1.0f, sound_open = 1.0f;

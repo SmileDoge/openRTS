@@ -168,6 +168,37 @@ ED9M on Kuban, the camera outside, 1280 x 720, 4x MSAA, RTX 4070 Ti SUPER,
 The clusters and the haze cost next to nothing. GTAO scales with the
 resolution (four times the pixels at 2560 x 1440).
 
+### Each pass's GPU time
+
+The panel's Performance shows each pass's GPU time and its share of the
+GPU's frame (the first pass's start to the last one's end), coloured from
+10 % on; the log's `perf gpu:` line every 10 s has the same
+(`renderer::GpuPassTimer`, 2026-11-09). Every pass asks the timer for its
+timestamps as it begins, on whatever thread records it; a command buffer of
+the timer's own resolves them after the frame's others. A pass not drawn
+every frame (the far cascades, the cloud shadows) counts at its share of a
+frame. Before, only the main pass was timed, and the passes before it (the
+shadows, the pre-pass, GTAO, the clouds) were not seen at all.
+
+Kuban, the camera at the start, 1920 x 1080, 4x MSAA, defaults (High),
+RTX 4070 Ti SUPER held at 30 frames/s (its clocks low: the shares count,
+not the milliseconds), four 10 s averages:
+
+| pass | occlusion high, ms | occlusion low, ms |
+|---|---|---|
+| depth pre-pass | 0.47 .. 0.81 | 0.50 .. 0.70 |
+| GTAO | 0.89 .. 1.24 | 0.08 .. 0.14 |
+| GTAO blur | 0.68 .. 1.49 | 0.28 .. 0.51 |
+| main pass | 1.71 .. 2.69 | 1.96 .. 3.30 |
+| clouds | 0.31 .. 0.57 | 0.34 .. 0.57 |
+| cloud shadows | 0.15 .. 0.26 | 0.17 .. 0.27 |
+| sun shadows | 0.08 .. 0.14 | 0.09 .. 0.14 |
+| the GPU's frame | 5.3 .. 8.2 | 4.2 .. 7.5 |
+
+At high the occlusion with its pre-pass is about half of the GPU's frame,
+and the 5 x 5 blur costs as much as GTAO itself; low takes GTAO down about
+ten times and the blur three, and leaves the pre-pass.
+
 ## Threads
 
 The frame is limited by the CPU, not the GPU (the main pass takes about

@@ -1,5 +1,6 @@
 add_library(openrts_renderer STATIC
     src/renderer.cpp
+    src/gpu_pass_timer.cpp
     src/debug_lines.cpp
     src/occlusion_probe.cpp
     src/wide_lines.cpp

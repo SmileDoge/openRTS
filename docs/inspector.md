@@ -22,8 +22,10 @@ F12 opens two windows:
     folder, a pack or a mod) and where its override comes from, the shape's
     box and distance levels;
   - "Go to": the free camera beside it, looking at it;
-  - **Materials:** every primitive state of the shape: its texture, shader
-    and light material (normal, shiny, FullBright, half bright, ...).
+  - **Materials:** the shape's primitive states, those with the same
+    texture, shader and light material one row with their count and first
+    and last number (a hundred animated pieces of four textures read as 301
+    rows before); above them the textures and the parts counted.
 
 ## FullBright made ordinary, per shape
 

@@ -31,6 +31,12 @@ struct ViewerCamera {
     // The far plane at least this far, m (the car view's orbit is close but
     // looks along the line); 0: by the distance alone.
     float min_far = 0.0f;
+    // The driver's head on its neck in the cab (TrainView, head_motion.hpp):
+    // a nod (radians, + looks down) and a tilt (radians, + the head's top
+    // towards the screen's right) on top of yaw and pitch, in view() only:
+    // the mouse's look stays as set. Zeroed before each frame's update.
+    float head_nod = 0.0f;
+    float head_tilt = 0.0f;
 
     [[nodiscard]] glm::vec3 orbit_eye() const;
     [[nodiscard]] glm::vec3 forward() const;

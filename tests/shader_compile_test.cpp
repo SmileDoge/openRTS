@@ -6,6 +6,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <openrts/core/vfs.hpp>
 #include <openrts/renderer/depth.hpp>
@@ -14,6 +15,7 @@
 #include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/webgpu_context.hpp>
+#include <openrts/renderer/webgpu_texture.hpp>
 #include <webgpu/wgpu.h>
 
 namespace {
@@ -57,6 +59,18 @@ int main() {
     }
     const renderer::ToneMapper tone(device, WGPUTextureFormat_BGRA8Unorm);
     check(tone.ready(), "tone mapper");
+    // DXT1 ACE as BC1: an 8x8 chain to 4x4, and a 12x12 one whose levels are
+    // not whole blocks (6x6, 3x3: copied as their physical 8x8, 4x4).
+    if (wgpuDeviceHasFeature(device, WGPUFeatureName_TextureCompressionBC)) {
+        const std::vector<std::vector<std::uint8_t>> square{std::vector<std::uint8_t>(4 * 8, 0x5A), std::vector<std::uint8_t>(8, 0xA5)};
+        check(renderer::upload_bc1_texture(device, 8, 8, square, "bc1 8x8").ok(), "BC1 texture 8x8 with its 4x4 level");
+        const std::vector<std::vector<std::uint8_t>> odd{std::vector<std::uint8_t>(9 * 8, 1), std::vector<std::uint8_t>(4 * 8, 2),
+                                                         std::vector<std::uint8_t>(8, 3)};
+        check(renderer::upload_bc1_texture(device, 12, 12, odd, "bc1 12x12").ok(), "BC1 texture 12x12, levels 6x6 and 3x3");
+        check(!renderer::upload_bc1_texture(device, 10, 10, odd, "bc1 10x10").ok(), "BC1 refused: level 0 not in whole blocks");
+    } else {
+        std::cout << "no BC textures on this device: the BC1 upload skipped\n";
+    }
     // The depth copy for ReShade, with a draw: a 4x depth sampled into a single-sample one.
     {
         renderer::DepthExport depth_export(device);

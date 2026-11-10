@@ -28,6 +28,8 @@ struct Dispatcher::Follower {
     std::vector<std::pair<std::uint32_t, bool>> sections;
     double stood{}; // s standing still
     double speed{}; // m/s
+    std::vector<RouteBlock> blocks;
+    std::vector<bool> block_passed; // per block: the head went past it, or it was let through
 };
 
 Dispatcher::Dispatcher(TrackNetwork& network, DispatcherSettings settings) : network_(&network), settings_(settings) {}
@@ -99,12 +101,52 @@ bool Dispatcher::next_leg(const std::uint64_t id) {
     f.span_hint = 0;
     f.held.clear();
     f.stood = 0.0;
+    // The blocks of the legs left behind count as passed.
+    for (std::size_t b = 0; b < f.blocks.size(); ++b) {
+        if (f.blocks[b].leg < f.progress.leg) f.block_passed[b] = true;
+    }
     return true;
 }
 
 void Dispatcher::pass_mark(const std::uint64_t id) {
     const auto it = followers_.find(id);
     if (it != followers_.end()) ++it->second->progress.next_mark;
+}
+
+void Dispatcher::set_blocks(const std::uint64_t id, std::vector<RouteBlock> blocks) {
+    const auto it = followers_.find(id);
+    if (it == followers_.end()) return;
+    auto& f = *it->second;
+    std::sort(blocks.begin(), blocks.end(),
+              [](const RouteBlock& a, const RouteBlock& b) { return a.leg != b.leg ? a.leg < b.leg : a.distance < b.distance; });
+    f.blocks = std::move(blocks);
+    f.block_passed.assign(f.blocks.size(), false);
+}
+
+void Dispatcher::enable_block(const std::uint32_t key, const bool enabled, const double no_return) {
+    const bool was = block_enabled(key);
+    block_enabled_[key] = enabled;
+    if (!enabled || was) return;
+    // Trains whose way already runs past it and that are near it go on.
+    for (auto& [id, follower] : followers_) {
+        auto& f = *follower;
+        const auto& p = f.progress;
+        for (std::size_t b = 0; b < f.blocks.size(); ++b) {
+            const auto& block = f.blocks[b];
+            if (block.key != key || f.block_passed[b] || block.leg != p.leg || !p.on_route) continue;
+            if (p.authority > block.distance + 0.5 && block.distance - p.head < no_return) f.block_passed[b] = true;
+        }
+    }
+}
+
+bool Dispatcher::block_enabled(const std::uint32_t key) const {
+    const auto it = block_enabled_.find(key);
+    return it == block_enabled_.end() || it->second;
+}
+
+const std::vector<RouteBlock>* Dispatcher::blocks(const std::uint64_t id) const {
+    const auto it = followers_.find(id);
+    return it == followers_.end() ? nullptr : &it->second->blocks;
 }
 
 std::vector<std::uint64_t> Dispatcher::routed() const {
@@ -205,6 +247,23 @@ void Dispatcher::reserve(Follower& f, const Train& train, const std::span<const 
     p.authority = leg.length();
     p.blocked_at.reset();
     p.blocked_by = 0;
+    p.blocked_point.reset();
+    // The first enabled block point ahead on this leg ends the way there.
+    double block_limit = leg.length() + 1.0;
+    std::optional<std::uint32_t> block_key;
+    for (std::size_t b = 0; b < f.blocks.size(); ++b) {
+        const auto& block = f.blocks[b];
+        if (block.leg != p.leg || f.block_passed[b]) continue;
+        if (p.head > block.distance + 1.0) {
+            f.block_passed[b] = true;
+            continue;
+        }
+        if (!block_enabled(block.key)) continue;
+        if (block.distance < block_limit) {
+            block_limit = block.distance;
+            block_key = block.key;
+        }
+    }
     const double reach = p.head + settings_.horizon;
     const auto first = static_cast<std::size_t>(
         std::upper_bound(junctions.begin(), junctions.end(), p.head + 0.01,
@@ -261,6 +320,7 @@ void Dispatcher::reserve(Follower& f, const Train& train, const std::span<const 
     bool section_in_use = false; // blocked by a train on the way beyond: give the junction up
     for (std::size_t j = first; j < junctions.size(); ++j) {
         const auto& pass = junctions[j];
+        if (pass.distance > block_limit) break;
         if (pass.distance > reach) {
             p.authority = pass.distance;
             break;
@@ -356,6 +416,10 @@ void Dispatcher::reserve(Follower& f, const Train& train, const std::span<const 
     if (blocked && section_in_use) network_->cancel_reservation(junctions[*blocked].junction, f.id);
     f.held = std::move(now_held);
     if (blocked && !section_in_use && p.blocked_at == junctions[*blocked].junction) f.held.push_back(*blocked);
+    if (block_key && block_limit < p.authority) {
+        p.authority = block_limit;
+        p.blocked_point = block_key;
+    }
     f.sections = section(p.tail, p.authority);
     (void)train;
 }

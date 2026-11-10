@@ -151,6 +151,10 @@ public:
         std::uint32_t triggers{};
     };
     [[nodiscard]] std::vector<StreamState> stream_states() const;
+    // A stream's state as a scenario reads it (SMSStream, RTS's
+    // activity_WagonStateVariables): the trigger that last started a sound
+    // in it, + 1, while a sound of it plays (a one-shot too); 0 when silent.
+    [[nodiscard]] std::uint32_t stream_sounding(std::size_t stream) const;
     // Another client's whole state: a stream with a current trigger plays
     // it at the next active update (RTS 0x4A8C00 restarts the stream on it;
     // an inactive object keeps it for when it wakes).
@@ -163,6 +167,8 @@ public:
 
 private:
     struct Stream;
+    // update() without the streams' audible marks, set after it.
+    void update_streams(float dt, const SoundInputs& raw_inputs, VoiceSink& sink);
     void activate(const SoundInputs& inputs, VoiceSink& sink);
     void fire(Stream& stream, std::size_t trigger, float volume, const SoundInputs& inputs, VoiceSink& sink);
     // The codes through the trigger pairs (their states kept): those that pass.

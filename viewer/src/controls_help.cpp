@@ -108,6 +108,8 @@ void draw_controls_help() {
         row("F7", "platform and siding names");
         row("Ctrl+F7", "signal names");
         row("Ctrl+Alt+F7", "the Track control window");
+        row("F11", "the scenario's window: its messages");
+        row("F8", "the scenario's menu: reports");
         row("Ctrl+F6", "save the view for a bug report");
         ImGui::EndTable();
     }

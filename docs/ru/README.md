@@ -21,6 +21,8 @@
 | [track.md](track.md) | путевая сеть: геометрия, топология, стрелки |
 | [signals.md](signals.md) | сигналы и их скрипты |
 | [paths.md](paths.md) | маршруты поездов, бронирование стрелок, трек-контроль |
+| [activities.md](activities.md) | сценарии RTS (`RTS_ACT`): что читается, старт, события |
+| [traffic.md](traffic.md) | поезда трафика (ИИ) как в RTS, блок-точки |
 | [sound.md](sound.md) | звук: скрипты `.sms`, звуки мира, поездов и кабины |
 | [electrification.md](electrification.md) | электрификация: секции, подстанции, напряжение |
 | [net.md](net.md) | сетевая игра на сервере RTS: протокол, снимок мира, свои и чужие поезда, сцепка, звук, электроснабжение, `openrts-net-dump` |
@@ -53,5 +55,6 @@
 | [sky.md](reverse/sky.md) | небо и время суток |
 | [terrain.md](reverse/terrain.md) | рельеф и выбор окружения |
 | [dispatcher.md](reverse/dispatcher.md) | пульт диспетчера, трек-контроль, модуль маршрутов |
+| [traffic.md](reverse/traffic.md) | поезда трафика (ИИ): поля сценария, постановка, регулятор, блок-точки |
 | [multiplayer.md](reverse/multiplayer.md) | сетевая игра: клиент, мини-сервер, сервер диспетчера |
 | [multiplayer-protocol.md](reverse/multiplayer-protocol.md) | каталог сетевых пакетов: содержимое, направления, обработка |

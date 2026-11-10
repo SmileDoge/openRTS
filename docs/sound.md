@@ -314,7 +314,7 @@ car's sound is made.
 ### Rolling stock in the viewer
 
 - **Group by role:** the player's train (the driven one) plays group 7,
-  other trains (test driver, standing) the first group numbered 5 or 0, as
+  other trains (traffic, standing) the first group numbered 5 or 0, as
   RTS chooses for kinds 5 and 7. A car whose script has no such group is
   silent, e.g. the ED4M head cars on a train that is not the player's. A
   train that changes role gets its sounds rebuilt.

@@ -1,3 +1,4 @@
+#include <mutex>
 #include <openrts/renderer/model_renderer.hpp>
 
 #include <openrts/core/profile.hpp>
@@ -1178,6 +1179,8 @@ struct GpuGeometry {
 struct GpuTexture {
     WgpuTextureUploadResult texture;
     WGPUTextureView view = nullptr;
+    std::uint64_t bytes{}; // its levels on the GPU
+    bool train = false;    // a TRAINS/ texture
 
     GpuTexture() = default;
     GpuTexture(const GpuTexture&) = delete;
@@ -1357,6 +1360,9 @@ struct ModelRenderer::Impl {
     ShadingPath shading = ShadingPath::rts_compatible;
     bool batching = true;
     std::map<rts::TextureFilter, WGPUSampler> samplers;
+    // create_model() runs on loading threads too (ModelLibrary): the texture
+    // cache and the samplers made on first use are shared, under this lock.
+    mutable std::mutex shared_mutex;
     WgpuTextureUploadResult black_texture;
     WGPUTextureView black_view = nullptr;
 
@@ -1377,6 +1383,7 @@ struct ModelRenderer::Impl {
     std::uint64_t indirect_capacity = 0;
     std::size_t depth_indirect_base = 0;
     bool multi_draw_supported = false;
+    bool bc_textures = false; // the device takes BC1 (DXT1 ACE as they are)
     bool multi_draw = true;
     [[nodiscard]] bool use_multi_draw() const noexcept { return multi_draw && multi_draw_supported && indirect_buffer; }
     std::size_t last_commands = 0;
@@ -1620,6 +1627,7 @@ struct ModelRenderer::Impl {
     }
 
     [[nodiscard]] WGPUSampler sampler(const rts::TextureFilter filter) {
+        const std::lock_guard lock(shared_mutex);
         auto& sampler = samplers[filter];
         if (!sampler) sampler = create_sampler(device, filter);
         return sampler;
@@ -1702,31 +1710,57 @@ void ModelRenderer::Impl::ensure_capacity(const std::uint64_t instances,
 std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::VirtualPath& path,
                                                               const formats::AceRgbaImage& image) const {
     auto texture = std::make_shared<GpuTexture>();
-    texture->texture = upload_rgba8_texture(device,
-                                            {.width = image.width, .height = image.height, .pixels = &image.pixels,
-                                             .mips = &image.mips},
-                                            std::string(path.filename()));
+    // A DXT1 ACE as its blocks (8x less than RGBA8, RTS's own way), else RGBA8.
+    if (!image.bc1.empty() && bc_textures) {
+        texture->texture = upload_bc1_texture(device, image.width, image.height, image.bc1, std::string(path.filename()));
+        if (texture->texture.ok()) {
+            for (const auto& level : image.bc1) texture->bytes += level.size();
+        } else {
+            std::cout << "texture '" << path.str() << "': as BC1: " << texture->texture.error << "; as RGBA8\n";
+        }
+    }
+    if (!texture->texture.ok()) {
+        texture->texture = upload_rgba8_texture(device,
+                                                {.width = image.width, .height = image.height, .pixels = &image.pixels,
+                                                 .mips = &image.mips},
+                                                std::string(path.filename()));
+        texture->bytes = static_cast<std::uint64_t>(image.pixels.size());
+        for (const auto& level : image.mips) texture->bytes += level.size();
+    }
     if (!texture->texture.ok()) {
         std::cout << "texture '" << path.str() << "': upload failed (" << texture->texture.error << ")\n";
         return nullptr;
     }
     texture->view = wgpuTextureCreateView(texture->texture.texture.get(), nullptr);
+    const auto key = path.key();
+    texture->train = key.rfind("trains/", 0) == 0;
     return texture;
 }
 
 TextureAvailability ModelRenderer::Impl::texture_for(const StreamedTextureAsset& asset,
                                                      std::shared_ptr<const GpuTexture>& texture) {
     if (!asset.source_path) return TextureAvailability::missing;
-    if (const auto it = texture_cache.find(asset.source_path->key()); it != texture_cache.end()) {
-        if ((texture = it->second.lock())) return TextureAvailability::uploaded;
+    const auto key = asset.source_path->key();
+    {
+        const std::lock_guard lock(shared_mutex);
+        if (const auto it = texture_cache.find(key); it != texture_cache.end()) {
+            if ((texture = it->second.lock())) return TextureAvailability::uploaded;
+        }
     }
     if (!asset.image) {
         std::cout << "texture '" << asset.source_path->str() << "': " << asset.error << '\n';
         return TextureAvailability::unsupported;
     }
-    texture = upload(*asset.source_path, *asset.image);
-    if (!texture) return TextureAvailability::unsupported;
-    texture_cache[asset.source_path->key()] = texture;
+    // Uploaded without the lock (a loading thread's model may take a while);
+    // one another thread put in meanwhile is taken instead, this one dropped.
+    auto made = upload(*asset.source_path, *asset.image);
+    if (!made) return TextureAvailability::unsupported;
+    const std::lock_guard lock(shared_mutex);
+    if (const auto it = texture_cache.find(key); it != texture_cache.end()) {
+        if ((texture = it->second.lock())) return TextureAvailability::uploaded;
+    }
+    texture = std::move(made);
+    texture_cache[key] = texture;
     return TextureAvailability::uploaded;
 }
 
@@ -1830,6 +1864,7 @@ ModelRenderer::ModelRenderer(const WGPUDevice device, const WGPUTextureFormat ta
     : impl_(std::make_unique<Impl>()) {
     impl_->device = device;
     impl_->multi_draw_supported = wgpuDeviceHasFeature(device, WGPUFeatureName_IndirectFirstInstance);
+    impl_->bc_textures = wgpuDeviceHasFeature(device, WGPUFeatureName_TextureCompressionBC);
     impl_->material_layout = create_material_layout(device);
     impl_->frame_layout = create_frame_layout(device);
     impl_->frame_buffer = create_buffer(device, WGPUBufferUsage_Uniform, sizeof(FrameUniform));
@@ -2021,12 +2056,15 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
 std::shared_ptr<const void> ModelRenderer::replace_texture(const core::VirtualPath& path, const formats::AceRgbaImage& image) {
     if (!impl_) return nullptr;
     auto texture = impl_->upload(path, image);
+    const std::lock_guard lock(impl_->shared_mutex);
     if (texture) impl_->texture_cache[path.key()] = texture;
     return texture;
 }
 
 void ModelRenderer::forget_texture(const core::VirtualPath& path) {
-    if (impl_) impl_->texture_cache.erase(path.key());
+    if (!impl_) return;
+    const std::lock_guard lock(impl_->shared_mutex);
+    impl_->texture_cache.erase(path.key());
 }
 
 void ModelRenderer::replace(RenderModel& slot, RenderModel&& next) {
@@ -2155,9 +2193,21 @@ std::string ModelRenderer::draw_report(const std::size_t top) const {
 ModelRendererStats ModelRenderer::stats() const {
     if (!impl_) return {};
     std::size_t live = 0;
-    for (const auto& [_, texture] : impl_->texture_cache) live += texture.expired() ? 0 : 1;
+    std::uint64_t bytes = 0, train_bytes = 0;
+    {
+        const std::lock_guard lock(impl_->shared_mutex);
+        for (const auto& [_, weak] : impl_->texture_cache) {
+            const auto texture = weak.lock();
+            if (!texture) continue;
+            ++live;
+            bytes += texture->bytes;
+            if (texture->train) train_bytes += texture->bytes;
+        }
+    }
     return {
         .cached_textures = live,
+        .texture_bytes = bytes,
+        .train_texture_bytes = train_bytes,
         .retired_pending = impl_->retired.pending(),
         .completed_frame = impl_->retired.completed_frame(),
         .instances = impl_->last_instances,
@@ -2275,12 +2325,16 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform, 
 
 std::shared_ptr<const GpuTexture> ModelRenderer::texture(const core::Vfs& vfs, const core::VirtualPath& path) {
     if (!impl_) return nullptr;
-    if (const auto it = impl_->texture_cache.find(path.key()); it != impl_->texture_cache.end()) {
-        if (auto texture = it->second.lock()) return texture;
+    {
+        const std::lock_guard lock(impl_->shared_mutex);
+        if (const auto it = impl_->texture_cache.find(path.key()); it != impl_->texture_cache.end()) {
+            if (auto texture = it->second.lock()) return texture;
+        }
     }
     const auto decoded = formats::decode_ace_rgba(vfs, path);
     if (!decoded.ok()) return nullptr;
     auto texture = impl_->upload(path, *decoded.image);
+    const std::lock_guard lock(impl_->shared_mutex);
     if (texture) impl_->texture_cache[path.key()] = texture;
     return texture;
 }

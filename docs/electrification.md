@@ -96,8 +96,8 @@ As RTS (`0x503CE4`, `0x5B6030`; details in `docs/train-systems.md` and
 
 | Route | Line |
 |---|---|
-| Kuban | 27.5 kV 50 Hz |
-| Chernyshevsk | 3 kV DC |
+| Kuban | 27.5 kV 50 Hz (the 2026-11 build: its `.electrodb` is the 2025 one, its track redrawn; 5 of its 644 electrified nodes are no vector nodes now and 5 lie on other track, passed over) |
+| Chernyshevsk | 3 kV DC (the 2026-11 build: also 25 kV 50 Hz) |
 | Pavlovsk | 27.5 kV AC and 3.3 kV DC (a docking station) |
 | Novokuznetsk | 3.5 kV DC and 27.5 kV AC |
 | Kievskij hod, the test route | electrified without an `.electrodb` |
@@ -105,4 +105,6 @@ As RTS (`0x503CE4`, `0x5B6030`; details in `docs/train-systems.md` and
 
 Tests: `openrts.electrification` (a synthetic line with a dead stretch and a
 docking section, the fallbacks, the keyboard driver) and
-`openrts.content.electrification` (the installed routes).
+`openrts.content.electrification` (the installed routes: the kinds of
+current each `.electrotype` declares are live on it; a stale `.electrodb`'s
+nodes, 1 % at most, are reported).

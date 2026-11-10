@@ -269,6 +269,66 @@ int main(int argc, char** argv) {
     where("into the next section");
     check(passed && cab->description().doors[*passed].name == "DOOR3", "the open back door leads into the next section");
 
+    // The EP2K (mdd_EP2K-Alias cab.sd): its cab doors DOOR_C / DOOR_C1 have
+    // pieces that follow them (DOOR_CR1 / CR2, ParentObject 4). From the
+    // machine room a piece's point is nearer than the door's own: Enter
+    // opened the piece and the door stayed shut (2026-11-10).
+    if (const auto ep2k = formats::load_wagon(vfs, "mdd_ep2k-117", "mdd_EP2k-117", true); ep2k.ok()) {
+        auto cab2 = viewer::CabView::create(vfs, ep2k, formats::wagon_path("mdd_ep2k-117", "mdd_EP2k-117", true));
+        for (int i = 0; i < 600 && cab2 && !cab2->collision(); ++i) {
+            cab2->poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        std::size_t door_c = SIZE_MAX, piece = SIZE_MAX;
+        if (cab2) {
+            const auto& doors = cab2->description().doors;
+            for (std::size_t i = 0; i < doors.size(); ++i) {
+                if (doors[i].name == "DOOR_C") door_c = i;
+                if (doors[i].name == "DOOR_CR1") piece = i;
+            }
+        }
+        check(cab2 && cab2->collision() && door_c != SIZE_MAX && piece != SIZE_MAX
+                  && cab2->description().doors[piece].parent == static_cast<std::int32_t>(door_c),
+              "EP2K: DOOR_CR1 follows DOOR_C");
+        if (cab2 && cab2->collision() && door_c != SIZE_MAX && piece != SIZE_MAX) {
+            Engineer driver;
+            driver.configure("engineer.Height = 1.81\r\nengineer.Height1 = 0.81\r\n");
+            driver.sit(0);
+            viewer::ViewerCamera view;
+            view.fly = true;
+            auto go = [&](EngineerControls controls, const float seconds) {
+                for (float t = 0.0f; t < seconds; t += dt) {
+                    driver.update(*cab2, controls, car, ground, dt, view);
+                    controls.action = controls.window = controls.head_out = false;
+                }
+            };
+            go({}, 0.1f);
+            go({.action = true, .action_ctrl = true}, 1.0f);
+            view.yaw += 3.14159265f; // to the back of the cab, the door
+            go({}, 0.05f);
+            go({.forward = true}, 2.0f);
+            std::printf("  EP2K at the cab door        eye z %.2f\n", view.position.z);
+            check(!cab2->door_open(door_c) && view.position.z > 8.6f, "EP2K: the shut cab door stops him");
+            go({.action = true}, 1.3f);
+            check(cab2->door_open(door_c) && cab2->door_open(piece), "EP2K: Enter opens DOOR_C, its piece with it");
+            for (int i = 0; i < 300 && view.position.z > 8.0f; ++i) go({.forward = true}, dt);
+            std::printf("  EP2K in the machine room    eye z %.2f\n", view.position.z);
+            check(view.position.z <= 8.0f, "EP2K: through the open cab door to the machine room");
+            // From the machine room: shut it and open it again, back in.
+            view.yaw -= 3.14159265f;
+            go({}, 0.05f);
+            go({.action = true}, 1.3f);
+            check(!cab2->door_open(door_c) && !cab2->door_open(piece), "EP2K: from the machine room Enter shuts the door itself");
+            go({.action = true}, 1.3f);
+            check(cab2->door_open(door_c), "EP2K: and opens it");
+            go({.forward = true}, 1.0f);
+            std::printf("  EP2K back in the cab        eye z %.2f\n", view.position.z);
+            check(view.position.z > 8.8f, "EP2K: back into the cab");
+        }
+    } else {
+        std::printf("no EP2K-117 here: its cab doors not checked\n");
+    }
+
     std::printf("%s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;
 }

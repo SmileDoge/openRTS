@@ -520,7 +520,14 @@ without compliance and RTS refuses it too.
   `ParentObject ( 601 )`, `Radius ( 0 )`). openRTS: the host does the same
   each step; the cab draws a piece where its root is every frame, and a
   click or a drag on a piece works its root (before 2026-11-08 the pieces
-  were dragged one by one).
+  were dragged one by one). An `InteriorDoor` has it too (the reference
+  lists it for `ExteriorDoor`; the EP2K's `cab.sd` gives its cab doors
+  `DOOR_C` / `DOOR_C1` the pieces `DOOR_CR1` / `CR2` / `C1R1` / `C1R2`
+  with `ParentObject ( 4 )` / `( 5 )`, indices in `InteriorDoors`, and
+  its side doors theirs): openRTS keeps a following door in its root's
+  state, and Enter works the root, never the piece (2026-11-10; before,
+  from the machine room a piece's point was nearer than the door's own,
+  Enter opened the piece and the door stayed shut).
 - **CONFIRMED `ActSwitch::Key` (`+72`, 4 bytes)** holds the `AssignKey`
   keys (`0x45AE90`, from the switch loader): per key, two at most, its
   character in upper case (`Space` 0x20) and a byte of modifiers (1
@@ -1193,8 +1200,9 @@ per train (skipped when train byte `+5` bit 0 is set).
     every group gets it.
   - Its tokens are pairs, a name and its code (`_wtoi`). An empty name
     stops it with a message.
-  - Installed: `Usavp.sms` (7955 entries: a train's stops and their
-    announcements per route) and `vl80k_aux.sms`.
+  - Installed: `Usavp.sms` (7955 entries in the 2025 build, 9829 in the
+    2026-11 one: a train's stops and their announcements per route) and
+    `vl80k_aux.sms`.
 - **CONFIRMED** `RTSIsSMSTriggerOn(SMSObject*, code)`:
   - −3 without a script or without trigger pairs;
   - −2 before any pair code (no `PairedFlags`);

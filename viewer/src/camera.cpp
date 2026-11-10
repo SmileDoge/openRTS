@@ -40,10 +40,20 @@ glm::vec3 ViewerCamera::eye() const {
 
 glm::mat4 ViewerCamera::view() const {
     const auto from = eye();
-    const auto to = fly ? from + forward() : target;
+    auto to = fly ? from + forward() : target;
+    glm::vec3 up{0.0f, 1.0f, 0.0f};
+    if (fly && (head_nod != 0.0f || head_tilt != 0.0f)) {
+        // The head's nod on the look's pitch, its tilt about the look: the
+        // up leaning towards the screen's right (move()'s right).
+        const float nodded = std::clamp(pitch + head_nod, -max_pitch - 0.1f, max_pitch + 0.1f);
+        const auto cos_pitch = std::cos(nodded);
+        to = from + glm::vec3{-cos_pitch * std::sin(yaw), -std::sin(nodded), -cos_pitch * std::cos(yaw)};
+        const glm::vec3 right{-std::cos(yaw), 0.0f, std::sin(yaw)};
+        up = up * std::cos(head_tilt) + right * std::sin(head_tilt);
+    }
     // MSTS content is authored for a mirrored X axis.
     const auto mirror_x = glm::scale(glm::mat4{1.0f}, glm::vec3{-1.0f, 1.0f, 1.0f});
-    return mirror_x * glm::lookAtRH(from, to, glm::vec3{0.0f, 1.0f, 0.0f});
+    return mirror_x * glm::lookAtRH(from, to, up);
 }
 
 void ViewerCamera::rotate(const float pixels_x, const float pixels_y) {

@@ -1,4 +1,5 @@
 #include <openrts/renderer/model_library.hpp>
+#include <openrts/renderer/depth.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
 #include <algorithm>
@@ -17,6 +18,16 @@ struct ReloadBatch {
     std::unordered_set<std::string> changed_keys;
 };
 
+// A streamed model being made on a loading thread (its buffers, textures
+// and bindings: ModelRenderer::create_model is thread-safe).
+struct Making {
+    std::string key;
+    core::VirtualPath source;
+    std::vector<std::string> dependencies;
+    bool stale = false; // a file of it changed meanwhile: dropped, reloaded
+    std::future<RenderModel> model;
+};
+
 } // namespace
 
 struct ModelLibrary::Impl {
@@ -27,6 +38,10 @@ struct ModelLibrary::Impl {
     std::unordered_map<std::string, RenderModel> models;                         // shape key -> model
     std::unordered_map<std::string, std::unordered_set<std::string>> dependents; // file key -> shape keys
     std::deque<StreamedModelAsset> uploads;
+    std::vector<Making> making;                 // models_made_off_thread()
+    std::unordered_set<std::string> making_keys;
+    std::unordered_set<std::string> removed; // let go (remove): not taken back in by a reload
+    std::size_t making_limit = 2;
     std::vector<core::VirtualPath> pending_changes;
     TextureVariant variant;
     std::vector<core::VirtualPath> variant_reloads; // shapes whose texture folders changed
@@ -38,6 +53,8 @@ struct ModelLibrary::Impl {
 
     ~Impl() {
         if (job.valid()) job.wait();
+        for (auto& each : making)
+            if (each.model.valid()) each.model.wait();
     }
 
     void index(const RenderModel& model) {
@@ -63,7 +80,8 @@ struct ModelLibrary::Impl {
         const auto affect = [&](const core::VirtualPath& shape) {
             if (seen.insert(shape.key()).second) affected.push_back(shape);
         };
-        for (const auto& shape : variant_reloads) affect(shape);
+        for (const auto& shape : variant_reloads)
+            if (!removed.contains(shape.key())) affect(shape);
         variant_reloads.clear();
         for (const auto& key : changed) {
             if (const auto it = models.find(key); it != models.end()) affect(it->second.source());
@@ -71,6 +89,15 @@ struct ModelLibrary::Impl {
                 for (const auto& shape : it->second) {
                     if (const auto model = models.find(shape); model != models.end()) affect(model->second.source());
                 }
+            }
+        }
+        // Models being made were loaded before the change: dropped when made,
+        // reloaded.
+        for (auto& each : making) {
+            const bool stale = std::any_of(each.dependencies.begin(), each.dependencies.end(), [&](const auto& k) { return changed.contains(k); });
+            if (stale && !each.stale) {
+                each.stale = true;
+                affect(each.source);
             }
         }
         // Queued uploads were loaded before the change: reload them too.
@@ -122,6 +149,7 @@ struct ModelLibrary::Impl {
         std::vector<std::pair<std::string, RenderModel>> next;
         for (auto& asset : batch.assets) {
             const auto path = asset.source_path;
+            if (removed.contains(path.key())) continue;
             if (!asset.ok()) {
                 statistics.errors.push_back(path.str() + ": " + asset.error + " (previous kept)");
                 continue;
@@ -157,7 +185,23 @@ ModelLibrary::~ModelLibrary() {
 }
 
 void ModelLibrary::add(StreamedModelAsset&& asset) {
+    impl_->removed.erase(asset.source_path.key());
     impl_->uploads.push_back(std::move(asset));
+}
+
+void ModelLibrary::remove(const core::VirtualPath& shape) {
+    auto& impl = *impl_;
+    const auto key = shape.key();
+    impl.removed.insert(key);
+    if (const auto it = impl.models.find(key); it != impl.models.end()) {
+        impl.unindex(it->second);
+        impl.renderer.retire(std::move(it->second));
+        impl.models.erase(it);
+    }
+    std::erase_if(impl.uploads, [&](const StreamedModelAsset& asset) { return asset.source_path.key() == key; });
+    for (auto& each : impl.making)
+        if (each.key == key) each.stale = true; // retired when made
+    std::erase_if(impl.variant_reloads, [&](const core::VirtualPath& path) { return path.key() == key; });
 }
 
 RenderModel* ModelLibrary::find(const core::VirtualPath& shape) {
@@ -198,6 +242,42 @@ void ModelLibrary::update(const std::size_t uploads) {
     if (impl.job.valid() && impl.job.wait_for(0ms) == std::future_status::ready) impl.apply(impl.job.get());
     if (!impl.job.valid() && (!impl.pending_changes.empty() || !impl.variant_reloads.empty())) impl.start_batch();
 
+    if (models_made_off_thread()) {
+        // The made ones in (a stale one retired), then the next ones started.
+        for (auto it = impl.making.begin(); it != impl.making.end();) {
+            if (it->model.wait_for(0ms) != std::future_status::ready) {
+                ++it;
+                continue;
+            }
+            auto model = it->model.get();
+            impl.making_keys.erase(it->key);
+            if (model && !it->stale && !impl.models.contains(it->key)) {
+                impl.index(model);
+                impl.models.emplace(it->key, std::move(model));
+            } else if (model) {
+                impl.renderer.retire(std::move(model));
+            }
+            it = impl.making.erase(it);
+        }
+        while (impl.making.size() < impl.making_limit && !impl.uploads.empty()) {
+            auto asset = std::move(impl.uploads.front());
+            impl.uploads.pop_front();
+            auto key = asset.source_path.key();
+            if (impl.models.contains(key) || impl.making_keys.contains(key)) continue;
+            // Loaded under another night / season: shown now, reloaded for this one.
+            if (asset.alternative_texture != 0
+                && texture_variant_key(asset.alternative_texture, asset.fullbright_images, impl.variant) != asset.texture_key) {
+                impl.variant_reloads.push_back(asset.source_path);
+            }
+            Making each{.key = key, .source = asset.source_path, .dependencies = asset.dependency_keys()};
+            each.model = std::async(std::launch::async, [&renderer = impl.renderer, asset = std::move(asset)]() mutable {
+                return renderer.create_model(std::move(asset));
+            });
+            impl.making_keys.insert(std::move(key));
+            impl.making.push_back(std::move(each));
+        }
+        return;
+    }
     for (std::size_t i = 0; i < uploads && !impl.uploads.empty(); ++i) {
         auto asset = std::move(impl.uploads.front());
         impl.uploads.pop_front();
@@ -215,8 +295,18 @@ void ModelLibrary::update(const std::size_t uploads) {
     }
 }
 
+void ModelLibrary::set_making_limit(const std::size_t limit) noexcept {
+    impl_->making_limit = (std::max)(limit, std::size_t{1});
+}
+
 void ModelLibrary::clear() {
     if (impl_->job.valid()) impl_->job.wait();
+    for (auto& each : impl_->making) {
+        if (!each.model.valid()) continue;
+        if (auto model = each.model.get()) impl_->renderer.retire(std::move(model));
+    }
+    impl_->making.clear();
+    impl_->making_keys.clear();
     for (auto& [_, model] : impl_->models) impl_->renderer.retire(std::move(model));
     impl_->models.clear();
     impl_->dependents.clear();
@@ -226,7 +316,7 @@ void ModelLibrary::clear() {
 ModelLibraryStats ModelLibrary::stats() const {
     auto result = impl_->statistics;
     result.models = impl_->models.size();
-    result.queued_uploads = impl_->uploads.size();
+    result.queued_uploads = impl_->uploads.size() + impl_->making.size();
     return result;
 }
 

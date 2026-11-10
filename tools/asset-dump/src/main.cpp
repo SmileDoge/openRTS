@@ -288,5 +288,53 @@ int main(const int argc, char* argv[]) {
     std::cout << "requested: " << result.requested_path << '\n'
               << "kind: " << openrts::assets::to_string(result.kind) << '\n';
     print_resolution("asset", result);
-    return result.found() ? 0 : 2;
+    if (!result.found()) return 2;
+    if (*kind == AssetKind::shape) {
+        // The nodes (matrices: name, translation, the basis rows), their
+        // parents and the animations' keys: what a node's rest pose and its
+        // frames are (a crossing's gates, a turntable, a door).
+        const auto bytes = vfs.read(*result.resolved_path).value_or(std::string{});
+        const auto probe = openrts::formats::probe_shape_file(std::string_view(bytes));
+        std::string body = bytes;
+        if (probe.representation == openrts::formats::ShapeRepresentation::compressed_binary) {
+            const auto inflated = openrts::formats::inflate_narrow_compressed_shape(std::string_view(bytes));
+            if (!inflated.ok()) {
+                std::cout << "shape inflate error: " << inflated.error << '\n';
+                return 3;
+            }
+            body = *inflated.body;
+        }
+        const auto model = openrts::formats::parse_binary_shape_model(body);
+        // The images (each name once, with how many image entries carry it),
+        // the textures and the primitives that use them.
+        std::cout << "images: " << model.images.size() << ", textures: " << model.textures.size() << ", primitive states: "
+                  << model.primitive_states.size() << ", draws: " << model.draws.size() << '\n';
+        {
+            std::map<std::string, int> names;
+            for (const auto& image : model.images) ++names[image.generic_string()];
+            for (const auto& [name, count] : names) std::cout << "  image " << name << " x" << count << '\n';
+        }
+        std::cout << "matrices: " << model.matrices.size() << '\n';
+        for (std::size_t m = 0; m < model.matrices.size(); ++m) {
+            const auto& v = model.matrices[m].values;
+            std::cout << "  " << m << ' ' << model.matrices[m].name << " parent "
+                      << (m < model.hierarchy.size() ? model.hierarchy[m] : -2) << " at (" << v[9] << ", " << v[10] << ", " << v[11]
+                      << ") rows (" << v[0] << ' ' << v[1] << ' ' << v[2] << " | " << v[3] << ' ' << v[4] << ' ' << v[5] << " | " << v[6]
+                      << ' ' << v[7] << ' ' << v[8] << ")\n";
+        }
+        std::cout << "animations: " << model.animations.size() << '\n';
+        for (const auto& animation : model.animations) {
+            std::cout << "  frames " << animation.frame_count << ", rate " << animation.frame_rate << ", nodes with keys "
+                      << animation.nodes.size() << '\n';
+            for (const auto& node : animation.nodes) {
+                std::cout << "    " << node.name << " (matrix " << node.matrix_index << ")\n";
+                for (const auto& key : node.positions)
+                    std::cout << "      position @" << key.frame << ": " << key.value[0] << ' ' << key.value[1] << ' ' << key.value[2] << '\n';
+                for (const auto& key : node.rotations)
+                    std::cout << "      rotation @" << key.frame << ": " << key.value[0] << ' ' << key.value[1] << ' ' << key.value[2] << ' '
+                              << key.value[3] << '\n';
+            }
+        }
+    }
+    return 0;
 }

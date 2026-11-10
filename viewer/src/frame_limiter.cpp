@@ -24,6 +24,13 @@ int clamp_fps_limit(const int fps) noexcept {
     return (std::max)(fps, min_fps_limit);
 }
 
+int frame_limit(const int setting, const bool loading, const bool background) noexcept {
+    if (loading) return 0;
+    const int limit = clamp_fps_limit(setting);
+    if (!background) return limit;
+    return limit == 0 ? background_fps_limit : (std::min)(limit, background_fps_limit);
+}
+
 FrameLimiter::FrameLimiter() {
 #ifdef _WIN32
     // Windows 10 1803 and later; without it the wait is spun.

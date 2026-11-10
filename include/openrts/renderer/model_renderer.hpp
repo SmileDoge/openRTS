@@ -193,6 +193,8 @@ struct ModelAnimationInfo {
 
 struct ModelRendererStats {
     std::size_t cached_textures{};
+    std::uint64_t texture_bytes{};       // the cached textures' levels on the GPU
+    std::uint64_t train_texture_bytes{}; // of them, the stock's (TRAINS/)
     std::size_t retired_pending{}; // generations waiting for the GPU
     std::uint64_t completed_frame{};
     // Last rendered frame.

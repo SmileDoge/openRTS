@@ -320,6 +320,8 @@ int main() {
         check(cab.doors.size() == 2 && cab.doors[0].sms_triggers[0] == 48 && cab.doors[0].sms_triggers[1] == 49
                   && cab.doors[1].sms_triggers[0] == 0,
               "a door's SMSTriggers, none on its child");
+        check(cab.doors.size() == 2 && cab.doors[0].parent == -1 && cab.doors[1].parent == 0,
+              "a door following another (ParentObject)");
         check(cab.windows.size() == 1 && cab.windows[0].sms_triggers[0] == 200 && cab.windows[0].sms_triggers[1] == 201,
               "a window's SMSTriggers");
     }

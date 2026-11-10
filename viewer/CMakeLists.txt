@@ -3,7 +3,6 @@
 add_library(openrts_viewer_core STATIC
     src/camera.cpp
     src/debug_view.cpp
-    src/gpu_timer.cpp
     src/viewer_scene.cpp
     src/net_session.cpp
     src/console_panel.cpp
@@ -24,6 +23,8 @@ add_library(openrts_viewer_core STATIC
     src/engineer.cpp
     src/key_layout.cpp
     src/frame_limiter.cpp
+    src/head_motion.cpp
+    src/activity_view.cpp
     src/graphics_settings.cpp
     src/controls_help.cpp
     src/window_mode.cpp

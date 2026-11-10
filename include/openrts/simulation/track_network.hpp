@@ -11,6 +11,7 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/track_database.hpp>
 #include <openrts/formats/track_sections.hpp>
+#include <openrts/simulation/rail_joints.hpp>
 #include <openrts/simulation/track_geometry.hpp>
 
 // Track topology as a graph, joined with geometry for positions. See
@@ -134,6 +135,11 @@ public:
     // Measured, not enforced: real routes are hand-built and have gaps.
     [[nodiscard]] JointStatistics measure_joints(std::size_t worst = 10) const;
 
+    // The rail joints along the vector nodes (rail_joints.hpp): RTS's layout
+    // unless set otherwise.
+    [[nodiscard]] const RailJoints& rail_joints() const noexcept { return rail_joints_; }
+    void set_rail_joint_layout(RailJointLayout layout);
+
 private:
     formats::TrackDatabase database_;
     formats::TrackSectionLibrary sections_;
@@ -141,6 +147,7 @@ private:
     std::map<std::uint32_t, JunctionState> junctions_;
     std::map<std::tuple<std::int32_t, std::int32_t, std::uint32_t>, std::uint32_t> junction_objects_;
     std::vector<NetworkIssue> issues_;
+    RailJoints rail_joints_;
 };
 
 } // namespace openrts::simulation

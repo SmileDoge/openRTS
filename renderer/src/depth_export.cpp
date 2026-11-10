@@ -1,4 +1,5 @@
 #include <openrts/renderer/depth_export.hpp>
+#include <openrts/renderer/gpu_pass_timer.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
@@ -136,7 +137,9 @@ void DepthExport::record(const WGPUCommandEncoder encoder, const WGPUTextureView
         .stencilStoreOp = WGPUStoreOp_Undefined,
         .stencilReadOnly = true,
     };
-    const WGPURenderPassDescriptor pass_descriptor{.colorAttachmentCount = 0, .depthStencilAttachment = &depth};
+    const auto timestamps = render_pass_timestamps(GpuPass::depth_copy);
+    const WGPURenderPassDescriptor pass_descriptor{
+        .colorAttachmentCount = 0, .depthStencilAttachment = &depth, .timestampWrites = timestamps ? &*timestamps : nullptr};
     const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
     wgpuRenderPassEncoderSetPipeline(pass, impl.pipeline);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, nullptr);

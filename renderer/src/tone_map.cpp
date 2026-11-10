@@ -1,4 +1,5 @@
 #include <openrts/renderer/tone_map.hpp>
+#include <openrts/renderer/gpu_pass_timer.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
 #include <array>
@@ -69,14 +70,23 @@ fn aces(c: vec3<f32>) -> vec3<f32> {
     return output * (a / b);
 }
 
-// Khronos PBR Neutral: scene-linear in, display-linear out.
+// Khronos PBR Neutral: scene-linear in, display-linear out. Its toe is kept
+// for the brightest channel, but the colour is scaled down to it rather than
+// the offset taken off each channel: subtracting nearly all of the darkest
+// channel multiplied any tint of a dark colour. MSTS's DXT1 greys are never
+// quite grey (5:6:5 endpoints leave green a 6-bit step off), so a shadowed
+// grey went green: its 2 % surplus 18 % at a 0.4 shade, twice at 0.15. Greys
+// come out as Khronos has them, colours keep their hue.
 fn khronos_neutral(c_in: vec3<f32>) -> vec3<f32> {
     let start_compression = 0.8 - 0.04;
     let desaturation = 0.15;
     var c = c_in;
     let x = min(c.r, min(c.g, c.b));
     let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
-    c = c - offset;
+    let top = max(c.r, max(c.g, c.b));
+    if (top > 0.0) {
+        c = c * ((top - offset) / top);
+    }
     let peak = max(c.r, max(c.g, c.b));
     if (peak < start_compression) {
         return c;
@@ -225,7 +235,9 @@ void ToneMapper::render(const WGPUCommandEncoder encoder, const WGPUTextureView 
         .storeOp = WGPUStoreOp_Store,
         .clearValue = {0.0, 0.0, 0.0, 1.0},
     };
-    const WGPURenderPassDescriptor pass_descriptor{.colorAttachmentCount = 1, .colorAttachments = &colour};
+    const auto timestamps = render_pass_timestamps(GpuPass::tone);
+    const WGPURenderPassDescriptor pass_descriptor{
+        .colorAttachmentCount = 1, .colorAttachments = &colour, .timestampWrites = timestamps ? &*timestamps : nullptr};
     const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
     wgpuRenderPassEncoderSetPipeline(pass, impl.pipeline);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, nullptr);

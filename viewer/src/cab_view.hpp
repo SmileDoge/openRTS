@@ -159,11 +159,14 @@ public:
         return door < doors_.size() && geometry_ && doors_[door].node < 0;
     }
     [[nodiscard]] bool door_moving(std::size_t door) const noexcept;
+    // The door a door follows through ParentObject (itself when it follows
+    // none): working a following one works that one.
+    [[nodiscard]] std::size_t door_root(std::size_t door) const noexcept;
     void toggle_door(std::size_t door);
     // Sends a door open or shut (it moves over its AnimTime): the train's
     // passenger doors (InteriorDoors with a GlobalID).
     void set_door(std::size_t door, bool open) {
-        if (door < doors_.size()) doors_[door].target = open;
+        if (door < doors_.size()) doors_[door_root(door)].target = open;
     }
     void open_door(std::size_t door);
     void step_doors(float elapsed);
@@ -223,6 +226,8 @@ private:
     };
     void rebuild_skip();
     void build_owners();
+    // Doors that follow another (ParentObject) take its state.
+    void follow_doors();
     core::VirtualPath shape_;
     bool turned_ = false;
     formats::CabDescription cab_;

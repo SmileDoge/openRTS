@@ -77,12 +77,36 @@ void expect_chain(const core::Vfs& vfs, const std::string& path, const bool from
     }
 }
 
+// A DXT1 ACE with its own levels keeps their blocks for the GPU (BC1), level 0
+// down to 4x4; any other ACE keeps none.
+void expect_blocks(const core::Vfs& vfs, const std::string& path, const bool dxt1) {
+    const auto file = core::VirtualPath::parse(path);
+    if (!file || !vfs.exists(*file)) return;
+    const auto decoded = formats::decode_ace_rgba(vfs, *file);
+    if (!decoded.ok()) return;
+    const auto& image = *decoded.image;
+    if (!dxt1) {
+        check(image.bc1.empty(), path + ": no BC1 blocks");
+        return;
+    }
+    std::size_t expected = 0;
+    for (auto side = image.width; side >= 4; side /= 2) ++expected;
+    check(image.bc1.size() == expected, path + ": BC1 levels down to 4x4");
+    for (std::size_t k = 0; k < image.bc1.size(); ++k) {
+        const auto side = (std::max)(image.width >> k, 1u);
+        check(image.bc1[k].size() == static_cast<std::size_t>((side + 3) / 4) * ((side + 3) / 4) * 8,
+              path + ": BC1 level " + std::to_string(k) + " size");
+    }
+}
+
 void test_content(const std::filesystem::path& root) {
     core::Vfs vfs;
     core::mount_installation(vfs, root, core::load_installation_config(root));
     expect_chain(vfs, "TRAINS/TRAINSET/mdd_ED4m-Alias/CAB/cabnosv.ace", true); // raw, options 5, 2048x2048
     expect_chain(vfs, "TRAINS/TRAINSET/mdd_ED4m-Alias/CAB/cab_02.ace", false);  // options 0
     expect_chain(vfs, "GLOBAL/TEXTURES/7carfloat.ace", true);                   // DXT1, options 21
+    expect_blocks(vfs, "TRAINS/TRAINSET/mdd_ED4m-Alias/CAB/cabnosv.ace", false);
+    expect_blocks(vfs, "GLOBAL/TEXTURES/7carfloat.ace", true);
 }
 
 } // namespace

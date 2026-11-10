@@ -22,6 +22,7 @@
 #include <openrts/core/installation.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/core/virtual_path.hpp>
+#include <openrts/formats/activity.hpp>
 #include <openrts/formats/ace_file.hpp>
 #include <openrts/formats/environment.hpp>
 #include <openrts/net/connection.hpp>
@@ -302,6 +303,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     bool fps_given = false;          // --fps-limit wins over the remembered one (not remembered)
     bool season_given = false;       // --season / --weather win over the server's
     bool weather_given = false;
+    std::string activity_name;       // --activity: an RTS scenario of the route (RTS_ACT)
     for (std::size_t i = 0; i < flags.size(); ++i) {
         const bool has_value = i + 1 < flags.size();
         if (flags[i] == "--view" && has_value) {
@@ -322,6 +324,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             // The DLLs' start state, as an activity's TrainState.
             const auto& value = flags[++i];
             start_state = value == "cold" ? 0 : value == "on" ? 1 : -1;
+        } else if (flags[i] == "--activity" && has_value) {
+            activity_name = std::string(flags[++i]);
         } else if (flags[i] == "--situation" && has_value) {
             const auto value = flags[++i];
             situation = std::filesystem::path(std::u8string(value.begin(), value.end()));
@@ -365,6 +369,10 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             }
         } else if (flags[i] == "--capture-inspect") {
             options.capture_inspect = true;
+        } else if (flags[i] == "--capture-ok") {
+            options.capture_ok = true;
+        } else if (flags[i] == "--capture-report") {
+            options.capture_report = true;
         } else if (flags[i] == "--capture-uncouple" && has_value) {
             options.capture_uncouple = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--capture-board" && has_value) {
@@ -584,11 +592,40 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         snapshot = std::make_shared<const openrts::net::Snapshot>(std::move(read.snapshot));
     }
 
+    // An RTS scenario (docs/activities.md): its time, season and weather
+    // unless given; its trains and the player's start in the scene.
+    std::shared_ptr<const openrts::formats::Activity> activity;
+    openrts::core::VirtualPath activity_folder;
+    if (!activity_name.empty()) {
+        if (mode != "--route") {
+            std::cerr << "--activity needs a route\n";
+            return exit_code::content_failed;
+        }
+        auto file = openrts::formats::load_activity(*vfs, target->path, activity_name);
+        if (!file) {
+            std::cerr << "No scenario " << activity_name << " in " << target->path.str() << "/RTS_ACT\n";
+            return exit_code::content_failed;
+        }
+        if (!file->activity.ok()) {
+            std::cerr << file->path.str() << ": " << file->activity.error << '\n';
+            return exit_code::content_failed;
+        }
+        const auto& a = file->activity;
+        std::cout << "activity: " << file->path.str() << ": \"" << a.name << "\", " << a.services.size() << " services, "
+                  << a.event_count() << " events, starts " << a.start_time / 3600 << ':' << a.start_time / 60 % 60 / 10
+                  << a.start_time / 60 % 10 << std::endl;
+        if (!time_given) options.time_of_day = a.start_time;
+        if (!season_given) options.season = static_cast<openrts::renderer::rts::Season>(a.season);
+        if (!weather_given) options.weather = static_cast<openrts::renderer::rts::Weather>(a.weather);
+        activity_folder = openrts::formats::activity_folder(target->path, file->file).value_or(openrts::core::VirtualPath{});
+        activity = std::make_shared<const openrts::formats::Activity>(std::move(file->activity));
+    }
+
     const openrts::viewer::SceneContent content{
         .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control,
         .start_state = start_state, .situation = situation, .start_view = start_view,
         .save_situation = save_situation, .root = target->root, .snapshot = snapshot, .connection = connection,
-        .early = std::move(early), .console = mp_console};
+        .early = std::move(early), .console = mp_console, .activity = activity, .activity_folder = activity_folder};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)
                                     : openrts::viewer::load_route_scene(content, target->path);
 

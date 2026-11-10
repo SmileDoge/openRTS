@@ -2,6 +2,7 @@ add_library(openrts_simulation STATIC
     src/simulation.cpp
     src/track_geometry.cpp
     src/track_network.cpp
+    src/rail_joints.cpp
     src/track_traveller.cpp
     src/train.cpp
     src/realistic_air.cpp
@@ -10,6 +11,7 @@ add_library(openrts_simulation STATIC
     src/dispatcher.cpp
     src/speed_limits.cpp
     src/auto_driver.cpp
+    src/traffic.cpp
     src/electrification.cpp
     src/train_lights.cpp)
 openrts_configure_target(openrts_simulation)

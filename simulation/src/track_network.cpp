@@ -13,6 +13,15 @@ namespace {
 
 } // namespace
 
+void TrackNetwork::set_rail_joint_layout(const RailJointLayout layout) {
+    if (layout == rail_joints_.layout()) return;
+    std::vector<double> lengths(nodes_.size());
+    for (std::size_t n = 0; n < nodes_.size(); ++n) {
+        if (nodes_[n].kind == formats::TrackNodeKind::vector) lengths[n] = nodes_[n].length;
+    }
+    rail_joints_.set_layout(layout, lengths);
+}
+
 TrackNetwork::TrackNetwork(formats::TrackDatabase database, formats::TrackSectionLibrary sections)
     : database_(std::move(database)), sections_(std::move(sections)) {
     nodes_.resize(database_.nodes.size());

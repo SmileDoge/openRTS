@@ -437,6 +437,26 @@ Not planned yet; tested by the code reading only.
 Deferred until single-player driving and multiplayer work.
 
 - `.act`/`.srv`/`.trf`: services, timetables, player train placement.
+  Started 2026-11-10 with RTS's scenarios (`RTS_ACT/*.act`,
+  `docs/activities.md`): read whole; chosen in the start menu; the
+  player's and the standing trains put on the track, the player's start;
+  the events' engine after RTS's activity.pdf (messages, F8 reports,
+  signal overrides, service changes, wagon states, the scenario's sounds,
+  end valves).
+- Traffic trains after RTS's model (`docs/traffic.md`,
+  `docs/reverse/traffic.md`), done 2026-11-10: one rigid body on its path,
+  no per-car physics, RTS's speed controller (the least of the limits
+  times `TrainEfficiency`, `TrafficLimitsTable` curves with RTS's default
+  table, the braking curve to the strictest target); started at
+  `TrainStartTime`, removed at the path's end or `TrainRemoveTime`; block
+  points in the dispatcher (service and global, `ReleaseBlockPoint`,
+  `EnableBlockPoint`, `ReleaseOnTime` / `OnReach` / `OnApproach`); the
+  player's path reserved; Track control's AI trains run the same way.
+  Next: `SERIAL` starts, `SpawnTrain`, timetables and platform stops.
+- **Traffic on the server too** (the user, 2026-11-10): the traffic logic
+  lives in `simulation/` with no viewer types, stepped by one call the
+  server can make as well, so a multiplayer server runs the scenario's
+  traffic and the clients only show it.
 - Full AI: timetabled services, platform stops, activity events and outcomes
   (large RTS extension list in `RTSFileReference.html`).
 

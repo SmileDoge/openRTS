@@ -1,5 +1,7 @@
 add_library(openrts_formats STATIC
     src/ace_file.cpp
+    src/ace_writer.cpp
+    src/png_file.cpp
     src/formats.cpp
     src/shape_animation.cpp
     src/shape_binary.cpp
@@ -14,6 +16,7 @@ add_library(openrts_formats STATIC
     src/signal_config.cpp
     src/signal_script.cpp
     src/train_path.cpp
+    src/activity.cpp
     src/route_database.cpp
     src/route_world.cpp
     src/environment.cpp

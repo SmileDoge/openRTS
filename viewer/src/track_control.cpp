@@ -69,7 +69,7 @@ void text_along(ImDrawList* draw, const ImVec2 anchor, ImVec2 along, const ImU32
 [[nodiscard]] const char* role_name(const TrainView::Role role) {
     switch (role) {
     case TrainView::Role::driven: return tr("driven");
-    case TrainView::Role::ai: return tr("test driver");
+    case TrainView::Role::ai: return tr("traffic (AI)");
     case TrainView::Role::standing: return tr("standing");
     }
     return "?";
@@ -1428,7 +1428,7 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
                 }
                 ImGui::EndListBox();
             }
-            ImGui::Checkbox(tr("with a test driver"), &spawn_ai_);
+            ImGui::Checkbox(tr("as traffic (AI)"), &spawn_ai_);
             // A .con from anywhere: the system's dialog, starting in the
             // folder the last one came from.
             if (ImGui::Button(tr("Browse..."))) {
@@ -1451,7 +1451,7 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
         ImGui::TextDisabled(tr("%s, %zu cars"), placement_.layout.name.c_str(), placement_.layout.lengths.size());
         if (ImGui::MenuItem(tr("Put it here"), tr("Enter"), false, placement_.fits)) finish_placement(trains);
         if (ImGui::MenuItem(tr("Turn around"), tr("Space"))) turn_placement(trains);
-        ImGui::MenuItem(tr("With a test driver"), nullptr, &spawn_ai_);
+        ImGui::MenuItem(tr("As traffic (AI)"), nullptr, &spawn_ai_);
         if (ImGui::MenuItem(tr("Drop it"), tr("Esc"))) {
             placement_ = {};
             message_ = tr("placing dropped");
@@ -1566,7 +1566,7 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
         if (ImGui::Button(tr("1 m >"))) slide_placement(trains, 1.0);
         ImGui::SameLine();
         if (ImGui::Button(tr("10 m >>"))) slide_placement(trains, 10.0);
-        ImGui::Checkbox(tr("With a test driver"), &spawn_ai_);
+        ImGui::Checkbox(tr("As traffic (AI)"), &spawn_ai_);
         ImGui::SameLine();
         if (ImGui::Button(tr("Drop (Esc)"))) {
             placement_ = {};
@@ -1680,7 +1680,7 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
     ImGui::Separator();
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextDisabled(tr("Wheel: zoom. Right drag: move. Right click: menu.\nLeft click: select. Double click a train: follow it."));
-    ImGui::TextDisabled(tr("Trains: magenta driven, blue test driver, olive standing.\nJunctions: orange reserved, red occupied."));
+    ImGui::TextDisabled(tr("Trains: magenta driven, blue traffic (AI), olive standing.\nJunctions: orange reserved, red occupied."));
     ImGui::PopTextWrapPos();
 #else
     (void)trains;

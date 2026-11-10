@@ -29,6 +29,15 @@ inline std::uint32_t& render_sample_count() {
     return count;
 }
 
+// Streamed models made on loading threads (their buffers and textures
+// created and written there; ModelLibrary), not one a frame on the render
+// thread. Off on OpenGL, whose wgpu backend runs one context under a lock:
+// the window sets it when the device is made.
+inline bool& models_made_off_thread() {
+    static bool on = true;
+    return on;
+}
+
 // Anisotropic filtering for samplers with linear min, mag and mip filters
 // (WebGPU allows it only then). RTS config: Anisotropy = 16.
 inline constexpr std::uint16_t max_anisotropy = 16;

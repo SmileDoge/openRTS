@@ -16,6 +16,16 @@ inline constexpr int max_fps_limit = 500;
 // A remembered or given limit as the setting takes it: 0, or 30..500.
 [[nodiscard]] int clamp_fps_limit(int fps) noexcept;
 
+// Behind another window or minimised: at most this many frames a second
+// (the video card and its fans rest; the world, the sound and the network
+// go on, and the streaming of models and textures makes up for the fewer
+// frames: SceneClock::background). In front again: the setting.
+inline constexpr int background_fps_limit = 30;
+// The limit a frame takes: none while the start loads (the world streams in
+// a step a frame), at most background_fps_limit in the background, else the
+// setting (0: none).
+[[nodiscard]] int frame_limit(int setting, bool loading, bool background) noexcept;
+
 class FrameLimiter {
 public:
     FrameLimiter();

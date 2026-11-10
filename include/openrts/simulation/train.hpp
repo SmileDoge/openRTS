@@ -376,6 +376,16 @@ public:
     // the owner wakes it when something moves it (RTS: it becomes LOOSE).
     void set_asleep(bool asleep) noexcept;
     [[nodiscard]] bool asleep() const noexcept { return asleep_; }
+    // A traffic train (RTS train type TRAFFIC, 0x424488, docs/traffic.md):
+    // one rigid body on the track. Each step its speed changes by the
+    // acceleration its driver set (set_drive_acceleration), stopping at 0
+    // rather than turning back, and every car moves with it; no traction,
+    // brakes, air, couplers, resistance or derailment. A derailed train runs
+    // the full physics again.
+    void set_kinematic(bool kinematic) noexcept;
+    [[nodiscard]] bool kinematic() const noexcept { return kinematic_; }
+    // m/s^2 towards the train front, for the next steps (kinematic only).
+    void set_drive_acceleration(float acceleration) noexcept { drive_acceleration_ = acceleration; }
 
     [[nodiscard]] const std::vector<CarState>& cars() const noexcept { return cars_; }
     [[nodiscard]] std::vector<CarPlacement> placements() const;
@@ -416,6 +426,7 @@ private:
     void occupy_under();
     void advance_clearance(const MoveResult& leading, const MoveResult& trailing);
     void move_and_update(double front_moved, double rear_moved);
+    void step_kinematic();
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -424,6 +435,8 @@ private:
     TrackNetwork* network_ = nullptr;
     std::uint64_t id_;
     bool asleep_ = false;
+    bool kinematic_ = false;
+    float drive_acceleration_ = 0.0f;
 };
 
 // What happened where two trains meet (RTS train update 0x424488).

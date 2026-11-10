@@ -54,6 +54,7 @@
 #include "inspector.hpp"
 #include "net_session.hpp"
 #include "console_panel.hpp"
+#include "activity_view.hpp"
 #include "train_view.hpp"
 
 #ifdef OPENRTS_HAS_IMGUI
@@ -117,6 +118,84 @@ void apply_snapshot(const net::Snapshot& snapshot, simulation::TrackNetwork& net
     return directory.resolve(name).value_or(directory);
 }
 
+// The world a scenario's events see (ActivityView): the trains by their
+// scenario ids (TrainView), the signals by their world objects.
+class SceneActivityWorld final : public ActivityWorld {
+public:
+    SceneActivityWorld(TrainView& trains, simulation::SignalSystem* signals) : trains_(trains), signals_(signals) {}
+
+    [[nodiscard]] bool in_cab(const ActivityTrainId train) const override { return trains_.activity_in_cab({train.service, train.train}); }
+    [[nodiscard]] bool near(const ActivityTrainId train, const formats::ActivityPoint& at, const double radius,
+                            const std::string_view reach) const override {
+        return trains_.activity_near({train.service, train.train}, route(at), radius, reach);
+    }
+    [[nodiscard]] std::optional<double> car_value(const ActivityCarRef& car, const std::string_view area, const std::string_view name,
+                                                  const int idx, const int sub) const override {
+        return trains_.activity_car_value({car.train.service, car.train.train}, car.number, car.by_id, area, name, idx, sub);
+    }
+    void sound_trigger(const std::int32_t object, const std::uint32_t code, const ActivityCarRef& car) override {
+        trains_.activity_sound_trigger(object, code, {car.train.service, car.train.train}, car.number);
+    }
+    void end_valves(const ActivityTrainId train, const std::int32_t first, const std::int32_t last, const bool open) override {
+        trains_.activity_end_valves({train.service, train.train}, first, last, open);
+    }
+    [[nodiscard]] std::vector<std::pair<ActivityTrainId, ActivityTrainId>> take_couplings() override {
+        std::vector<std::pair<ActivityTrainId, ActivityTrainId>> out;
+        for (const auto& [a, b] : trains_.take_activity_couplings()) out.emplace_back(ActivityTrainId{a.first, a.second}, ActivityTrainId{b.first, b.second});
+        return out;
+    }
+    void reassign(const ActivityTrainId from, const ActivityTrainId to) override {
+        trains_.retag_activity({from.service, from.train}, {to.service, to.train});
+    }
+    [[nodiscard]] std::vector<ActivityTrainId> take_started() override {
+        std::vector<ActivityTrainId> out;
+        for (const auto& [service, train] : trains_.take_activity_started()) out.push_back({service, train});
+        return out;
+    }
+    void set_block_point(const std::uint32_t service, const std::int32_t point, const bool enabled, const double distance) override {
+        trains_.activity_block_point(service, point, enabled, distance);
+    }
+    void modify_velocity(const ActivityTrainId train, const float speed, const float acceleration, const float deceleration) override {
+        trains_.activity_modify_velocity({train.service, train.train}, speed, acceleration, deceleration);
+    }
+    void wait_here(const ActivityTrainId train, const double time) override {
+        trains_.activity_wait_here({train.service, train.train}, time);
+    }
+    bool override_signal(const formats::ActivityPoint& at, const std::optional<simulation::SignalOverride>& value) override {
+        if (!signals_) return false;
+        // The signal object standing there (within 10 m): all its heads.
+        const auto& objects = signals_->objects();
+        std::size_t best = objects.size();
+        double nearest = 10.0;
+        for (std::size_t i = 0; i < objects.size(); ++i) {
+            const auto& p = objects[i].placement.position;
+            const double dx = static_cast<double>(p.tile_x - at.tile_x) * 2048.0 + p.x - at.x;
+            const double dz = static_cast<double>(p.tile_z - at.tile_z) * 2048.0 + p.z - at.z;
+            const double d = std::hypot(dx, dz);
+            if (d < nearest) {
+                nearest = d;
+                best = i;
+            }
+        }
+        if (best >= objects.size()) return false;
+        for (const auto head : objects[best].heads) {
+            if (value) {
+                signals_->set_override(head, *value);
+            } else {
+                signals_->clear_override(head);
+            }
+        }
+        return true;
+    }
+
+private:
+    [[nodiscard]] static formats::RoutePosition route(const formats::ActivityPoint& p) {
+        return {.tile_x = p.tile_x, .tile_z = p.tile_z, .x = p.x, .y = p.y, .z = p.z};
+    }
+    TrainView& trains_;
+    simulation::SignalSystem* signals_;
+};
+
 // Content state shared by both scenes: VFS change polling for hot reload and
 // the overlay block describing sources, generations and reloads.
 class ContentView {
@@ -133,6 +212,8 @@ public:
     [[nodiscard]] const std::shared_ptr<net::RtsConnection>& connection() const noexcept { return content_.connection; }
     [[nodiscard]] std::vector<net::ReceivedPackage> take_early() { return std::exchange(content_.early, {}); }
     [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
+    [[nodiscard]] const std::shared_ptr<const formats::Activity>& activity() const noexcept { return content_.activity; }
+    [[nodiscard]] const core::VirtualPath& activity_folder() const noexcept { return content_.activity_folder; }
     [[nodiscard]] const std::filesystem::path& root() const noexcept { return content_.root; }
     [[nodiscard]] bool track_control() const noexcept { return content_.track_control; }
     [[nodiscard]] bool console() const noexcept { return content_.console; }
@@ -442,7 +523,12 @@ public:
                     snapshot_signals_ = true;
                 }
             }
-            if (!content_.consist().empty()) {
+            if (const auto& activity = content_.activity()) {
+                // A scenario: its trains and the player's start (TrainView),
+                // its messages (ActivityView) once they stand.
+                activity_ = std::make_unique<ActivityView>(activity);
+                train_->request_activity(activity, content_.activity_folder());
+            } else if (!content_.consist().empty()) {
                 if (const auto error = train_->load(content_.consist()); !error.empty()) {
                     std::cout << "train: " << error << '\n';
                 } else if (const auto* path = train_->find_path(content_.path())) {
@@ -458,14 +544,17 @@ public:
         // stands for a start in the cab (its DLLs start when it is shown).
         loading_ = {};
         loading_.done = false;
-        loading_.hold_time = track_ && !content_.consist().empty() && content_.start_view() == 1;
+        loading_.hold_time = track_ && ((!content_.consist().empty() && content_.start_view() == 1)
+                                        || (content_.activity() && content_.activity()->player_train));
         loading_.progress = 0.0f;
         loading_.stage = "Loading the route";
         loading_.title = std::string(route_.filename());
         if (!content_.consist().empty()) loading_.title += "  \xE2\x80\x94  " + content_.consist();
+        if (content_.activity()) loading_.title += "  \xE2\x80\x94  " + content_.activity()->name;
         loading_since_ = std::chrono::steady_clock::now();
         loading_quiet_ = 0;
         loading_peak_ = 0;
+        loading_report_ = 0.0;
         return {};
     }
 
@@ -603,6 +692,8 @@ public:
             if (input.car_info) train_->car_info_key(input.car_info_shift);
             if (input.limits_panel) train_->toggle_limits_panel();
             if (input.stations_panel) train_->toggle_stations_panel();
+            if (input.activity_journal && activity_) activity_->toggle_journal();
+            if (input.activity_menu && activity_) activity_->toggle_menu();
             if (input.car_view) train_->car_view_key(camera);
         }
         if (train_) {
@@ -624,6 +715,13 @@ public:
                              renderer::route_position(camera.eye(), origin_));
             }
             train_->update(input, camera, clock.elapsed, *library_, audio_);
+            if (activity_) {
+                // The start's events once the trains stand and the loading
+                // screen is gone; then the events every frame.
+                SceneActivityWorld world(*train_, signals_ ? signals_->system() : nullptr);
+                if (!activity_->started() && train_->activity_started() && loading_.done) activity_->start(clock.time_of_day_exact, world);
+                activity_->update(clock.elapsed, clock.time_of_day_exact, world);
+            }
         }
         if (signals_) {
             const auto trains = train_ ? train_->trains() : std::vector<const simulation::Train*>{};
@@ -674,8 +772,9 @@ public:
         }
 
         streamer_->update(camera_position);
-        // Behind the loading screen the models load on most of the cores.
-        streamer_->set_task_limit(loading_.done ? 4 : (std::max)(4u, std::thread::hardware_concurrency() / 2 + 2));
+        // Behind the loading screen the models load on most of the cores; in
+        // the background too, so its 30 frames/s do not slow the streaming.
+        streamer_->set_task_limit(loading_.done && !clock.background ? 4 : (std::max)(4u, std::thread::hardware_concurrency() / 2 + 2));
         streamer_->poll();
         for (auto& asset : streamer_->take_ready_models()) library_->add(std::move(asset));
 
@@ -698,10 +797,26 @@ public:
         content_.forward_changes(*library_);
         // Behind the loading screen uploads for up to 20 ms a frame: nobody
         // watches it.
+        // Made on loading threads: more at once when nobody watches.
+        library_->set_making_limit(loading_.done && !clock.background ? 2 : 4);
         library_->update();
-        if (!loading_.done) {
+        if (renderer::models_made_off_thread()) {
+            // Taken in as made, however many a frame.
+        } else if (!loading_.done) {
             const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(20);
             while (library_->stats().queued_uploads > 0 && std::chrono::steady_clock::now() < until) library_->update();
+        } else if (clock.background) {
+            // In the background a frame comes every 33 ms (frame_limiter.hpp),
+            // where in front it is one model uploaded and the tasks refilled
+            // each of many more frames: here they go on for up to 12 ms of
+            // it, so the models and their textures come in no slower.
+            const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(12);
+            while (std::chrono::steady_clock::now() < until) {
+                streamer_->poll();
+                for (auto& asset : streamer_->take_ready_models()) library_->add(std::move(asset));
+                if (library_->stats().queued_uploads == 0) break;
+                library_->update();
+            }
         }
         if (input.flashlight) {
             flashlight_ = !flashlight_;
@@ -770,6 +885,14 @@ public:
         }
         loading_quiet_ = train.settled && pending == 0 ? loading_quiet_ + 1 : 0;
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - loading_since_).count();
+        if (seconds >= loading_report_ + 5.0) {
+            // What the start still waits for, every 5 s (a slow start's log).
+            loading_report_ = seconds;
+            std::cout << "loading: " << static_cast<int>(seconds) << " s, train settled " << train.settled << ", " << train.pending
+                      << " of its shapes; tiles " << streamed.waiting_tiles << ", models "
+                      << streamed.pending_model_assets + streamed.ready_model_assets << ", uploads " << library.queued_uploads
+                      << ", terrain " << (terrain_ ? terrain_->pending_jobs() + terrain_->pending_textures() : 0) << std::endl;
+        }
         if (loading_quiet_ < 5 && seconds < loading_limit) return;
         loading_.done = true;
         loading_.hold_time = false;
@@ -1036,7 +1159,19 @@ public:
     [[nodiscard]] std::optional<double> take_time_of_day() override {
         return net_ ? net_->take_time_of_day() : std::nullopt;
     }
-    [[nodiscard]] bool paused() const override { return net_ && net_->paused(); }
+    void close_activity_message() override {
+        if (activity_) activity_->close_message();
+    }
+    void report_activity() override {
+        if (!activity_) return;
+        const auto* menu = activity_->activity().menu(activity_->main_menu());
+        if (!menu || menu->items.empty() || reported_.contains(menu->id)) return;
+        reported_.insert(menu->id);
+        std::cout << "activity: reported " << menu->name << ": " << menu->items.front().label << std::endl;
+        activity_->choose(menu->id, menu->items.front().id);
+    }
+    // A server's pause; a scenario's modal message, till its OK.
+    [[nodiscard]] bool paused() const override { return (net_ && net_->paused()) || (activity_ && activity_->holds()); }
     [[nodiscard]] SceneLoading loading() const override { return loading_; }
 
     [[nodiscard]] std::string world_report() const override {
@@ -1191,6 +1326,7 @@ public:
         }
         if (net_ && net_->console() && train_) console_panel_.draw(*net_, *train_, track_control_.get(), *content_.vfs());
         if (train_) train_->draw_hud();
+        if (activity_) activity_->draw();
         content_.draw_overlay(library_.get());
 #endif
     }
@@ -1827,8 +1963,11 @@ private:
     std::chrono::steady_clock::time_point loading_since_{};
     int loading_quiet_ = 0;
     std::size_t loading_peak_ = 0;
+    double loading_report_ = 0.0; // s into the loading of its last progress line
     std::optional<TrackView> track_;
     std::unique_ptr<TrainView> train_;
+    std::unique_ptr<ActivityView> activity_; // a scenario (--activity)
+    std::set<std::int32_t> reported_;        // --capture-report: the menus picked from
     std::unique_ptr<NetSession> net_; // --mp-connect: the server's game
 #ifdef OPENRTS_HAS_IMGUI
     mutable ConsolePanel console_panel_; // --mp-console: the dispatcher's window

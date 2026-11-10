@@ -672,7 +672,17 @@ fn fs_surface(input: SurfaceOut) -> @location(0) vec4<f32> {
     let b = wave(turned / 13.0 + vec2<f32>(-0.015, 0.010) * time);
     let c = wave(p / 4.3 + vec2<f32>(0.025, -0.030) * time);
     let b_slope = vec2<f32>(b.x * 0.8 + b.y * 0.6, -b.x * 0.6 + b.y * 0.8);
-    let slope = (a.xy + b_slope + c.xy * 0.7) * draw.params.z;
+    // The water a pixel covers (m, the longer way: at a slant, along the
+    // view). An octave whose ripples (about its map's size / 16) are under
+    // a few pixels there only flickers: at a grazing angle the reflection
+    // jumps between a cloud and the blue from frame to frame, the mipmaps
+    // keeping the ripples across the view. It fades out; far off the water
+    // is a calm mirror of the sky, as it is seen.
+    let footprint = max(length(dpdx(p)), length(dpdy(p)));
+    let keep_a = 1.0 - smoothstep(37.0 / 64.0, 37.0 / 16.0, footprint);
+    let keep_b = 1.0 - smoothstep(13.0 / 64.0, 13.0 / 16.0, footprint);
+    let keep_c = 1.0 - smoothstep(4.3 / 64.0, 4.3 / 16.0, footprint);
+    let slope = (a.xy * keep_a + b_slope * keep_b + c.xy * 0.7 * keep_c) * draw.params.z;
     let n = normalize(vec3<f32>(slope.x, 1.0, slope.y));
     let toksvig = clamp((length(a) + length(b) + length(c)) / 3.0, 0.05, 1.0);
 

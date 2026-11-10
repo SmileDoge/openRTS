@@ -16,6 +16,7 @@
 
 #include <openrts/audio/audio_engine.hpp>
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/activity.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/net/connection.hpp>
 #include <openrts/net/snapshot.hpp>
@@ -62,6 +63,9 @@ struct SceneClock {
     float time_speed = 1.0f;               // the clock's speed (0: time stopped; elapsed still runs)
     renderer::rts::Season season = renderer::rts::Season::summer;
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
+    // The window is in the background (frame_limiter.hpp: at most 30
+    // frames/s): the streaming makes up for the fewer frames.
+    bool background = false;
 };
 
 // A service label drawn over the 3D view at a point of the scene (junction
@@ -136,6 +140,8 @@ struct SceneInput {
     bool stations_panel = false;  // F6: the stations ahead
     bool car_view = false;        // F3: orbit the train's first car, then its last, then back
     bool signal_names = false;    // Ctrl+F7: signal names near the camera
+    bool activity_journal = false; // F11 (RTS): the scenario's messages
+    bool activity_menu = false;    // F8 (RTS): the scenario's menu (reports)
     // The engineer on foot (engineer.hpp), with the cab keys or without.
     bool walk_forward = false, walk_back = false, walk_left = false, walk_right = false; // arrows held
     bool walk_run = false;             // Shift held
@@ -264,6 +270,11 @@ public:
     // `index` (from 0) of the driven train.
     virtual void stand_at_cab_door(std::size_t) {}
     [[nodiscard]] virtual std::string car_menu_report() const { return {}; }
+    // --capture-ok: the scenario's open message closed (its OK).
+    virtual void close_activity_message() {}
+    // --capture-report: the first item of the scenario's report menu picked
+    // (each menu once).
+    virtual void report_activity() {}
     // The inspector's choice as text (--capture-inspect).
     [[nodiscard]] virtual std::string inspector_report() const { return {}; }
     // What the shadows look at most closely this frame (after submit): the
@@ -311,6 +322,10 @@ struct SceneContent {
     // Route scenes: logged in to an openRTS server as the dispatcher's
     // console (--mp-console): Track control and the console's window.
     bool console = false;
+    // Route scenes: an RTS scenario to start (--activity,
+    // docs/activities.md) and the folder of its own files (RTS_ACT/<name>).
+    std::shared_ptr<const formats::Activity> activity;
+    core::VirtualPath activity_folder;
 };
 
 [[nodiscard]] SceneLoadResult load_shape_scene(SceneContent content, const core::VirtualPath& shape);

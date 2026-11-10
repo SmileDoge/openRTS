@@ -51,8 +51,12 @@ like transfers, so seasons and hot reload work.
 
 **openRTS: trees kept off tracks and roads** (2026-11-08, not RTS; Graphics,
 "Keep trees off tracks and roads", on by default, 3 m). RTS plants over the
-whole area without looking at the track, so a forest drawn across a line
-stands on the rails (Novokuznetsk's 4054, 300 x 600 m, 500 trees 10 m wide).
+whole area without looking at the track, so a forest drawn over a line
+stands on the rails. Novokuznetsk's 4054 (300 x 600 m, 500 trees 10 m
+wide), the case this was made for, lay across the line only because the
+world reader lost forests' `QDirection` until 2026-11-09 (Level crossings
+below): turned its 113 degrees it lies beside the line. Its forests 20 and
+34 (`w-002941+015035`) do reach a track.
 - **The rule:** a tree is left out when its crown (half its width round its
   place) comes nearer than the distance to a track's edge (1.5 m from the
   axis, the route's `.tdb`) or a road's (3.5 m, the `.rdb`). The other trees
@@ -61,8 +65,9 @@ stands on the rails (Novokuznetsk's 4054, 300 x 600 m, 500 trees 10 m wide).
   (`renderer/forest_clearance.hpp`; the viewer's `route_way_axes` makes them
   when the route loads, before any forest is built).
 - **A change** of the setting rebuilds the loaded forests.
-- **Checked:** forest 4054 keeps 463 of its 500 trees, none with its crown
-  within 3 m of a track's edge (`openrts_alternative_texture_test`). The
+- **Checked:** forest 20 of `w-002941+015035` keeps 491 of its 500 trees,
+  none with its crown within 3 m of a track's edge
+  (`openrts_alternative_texture_test`). The
   capture report's world line gives the trees planted and kept off.
 
 ## Level crossings
@@ -90,6 +95,20 @@ serious anim )` (60, 60, 5 s), and `TrItemId ( 0 n )` for its track items,
   the crossing, trigger 3 when it closes or warns, 4 when it opens.
 
 openRTS: `viewer/src/crossing_view.cpp`.
+
+- **Gates by any name (openRTS, 2026-11-09):** a crossing's shape with
+  neither `gate*` nor `signal*` nodes swings every animated node as its
+  gates, as MSTS and Open Rails do. Pavlovsk uses `LevelCr` for depot gates,
+  `rm_vorota2.s` (nodes `Box`, `Box.1`: frame 0 across the track, frame 1
+  turned 85 degrees, open); they stood shut while trains went through them.
+  UNKNOWN whether RTS does: rts1.exe has the `gate` it compares names with
+  (UTF-16, `0x1E13FE` in the file), a fallback is not seen.
+- **Turned as placed (fixed 2026-11-09):** the world reader took every
+  field of a `LevelCr`, `Forest` or `CarSpawner` into the kind's own branch,
+  `QDirection` too, and lost it: every crossing, forest and car spawner
+  stood square to its tile (Pavlovsk's gates 20 degrees off the track, its
+  `R-rrcros_1track_with_bar.s` 90 degrees). `QDirection` is read with the
+  common fields now (`tests/world_parse_test.cpp`).
 
 ## Pickups
 
@@ -170,7 +189,11 @@ there.
   it, wavenumbers 2–20, amplitude k^-1.6. Its mipmaps average the normals
   without renormalising them. Three octaves of it are used (37, 13 and 4.3 m,
   each moving its own way). Far off the water turns flat and its highlight
-  wider (Toksvig), instead of sparkling.
+  wider (Toksvig), instead of sparkling. At a slant the mipmaps keep the
+  ripples across the view, and the reflection jumped between a cloud and
+  the blue from frame to frame at the horizon: an octave fades out as the
+  water a pixel covers (the longer way) grows from its map's size / 64 to
+  / 16, so the far water is a calm mirror of the sky (2026-11-09).
 - **Reflection:** the sky as RTS draws it, drawn again into a 128 px cube map
   around the camera after each frame's main pass
   (`SkyRenderer::render_reflection_probe`). The water reads it by Fresnel
@@ -218,9 +241,9 @@ openRTS: `viewer/src/particle_effects.cpp` (`PrecipitationView`).
 - **What drives it:** a DLL's `ExhaustContr` (`RTSGetLocoObject` ot_exhaust:
   rate, magnitude, dispersion, mass, colour) when the engine has a DLL; else
   the `.eng` values at the engine's load (0.1 idling; up to 0.11 the idle
-  values scaled down, then between idle and full). PROBABLE: openRTS takes the
-  throttle for the player's train without a DLL and idle for AI trains (RTS:
-  their pull against their maximum).
+  values scaled down, then between idle and full). openRTS takes the
+  throttle for the player's train without a DLL and, for traffic, RTS's
+  seeming throttle from its acceleration (`docs/traffic.md`).
 - **The puffs (`0x50D3B4`):** at the rate (more as the car runs and in the
   wind, so they keep together), pushed out along the nozzle, carried by the
   car's own speed that fades 8 % a second, rising as they thin, blown by the

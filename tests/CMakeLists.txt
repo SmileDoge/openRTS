@@ -146,6 +146,57 @@ openrts_configure_target(openrts_train_lights_test)
 target_link_libraries(openrts_train_lights_test PRIVATE openrts_simulation openrts_formats)
 add_test(NAME openrts.train_lights COMMAND openrts_train_lights_test)
 
+# openrts-ace's formats: PNG and ACE written and read back (a real DXT1 one with the content).
+add_executable(openrts_ace_png_test ace_png_test.cpp)
+openrts_configure_target(openrts_ace_png_test)
+target_link_libraries(openrts_ace_png_test PRIVATE openrts_formats ZLIB::ZLIB)
+add_test(NAME openrts.ace_png COMMAND openrts_ace_png_test)
+if(OPENRTS_TEST_ROOT)
+    add_test(NAME openrts.content.ace_png COMMAND openrts_ace_png_test "${OPENRTS_TEST_ROOT}")
+endif()
+
+# A world tile's objects: every kind keeps its QDirection.
+add_executable(openrts_world_parse_test world_parse_test.cpp)
+openrts_configure_target(openrts_world_parse_test)
+target_link_libraries(openrts_world_parse_test PRIVATE openrts_formats)
+add_test(NAME openrts.world_parse COMMAND openrts_world_parse_test)
+
+# RTS scenarios (.act): header, services, trains, events; Kuban's with the content.
+add_executable(openrts_activity_test activity_test.cpp)
+openrts_configure_target(openrts_activity_test)
+target_link_libraries(openrts_activity_test PRIVATE openrts_formats)
+add_test(NAME openrts.activity COMMAND openrts_activity_test)
+if(OPENRTS_TEST_ROOT)
+    add_test(NAME openrts.content.activity COMMAND openrts_activity_test "${OPENRTS_TEST_ROOT}")
+endif()
+
+# A scenario's events run on a made-up world; with the content, Novokuznetsk's
+# "Скорый поезд 77" played through when it is installed.
+add_executable(openrts_activity_run_test activity_run_test.cpp ../viewer/src/activity_view.cpp ../viewer/src/ui_text.cpp)
+openrts_configure_target(openrts_activity_run_test)
+target_link_libraries(openrts_activity_run_test PRIVATE openrts_formats openrts_simulation)
+add_test(NAME openrts.activity_run COMMAND openrts_activity_run_test)
+if(OPENRTS_TEST_ROOT)
+    add_test(NAME openrts.content.activity_run COMMAND openrts_activity_run_test "${OPENRTS_TEST_ROOT}")
+endif()
+
+# The frame limit: the setting in front, 30 frames/s in the background.
+add_executable(openrts_frame_limiter_test frame_limiter_test.cpp ../viewer/src/frame_limiter.cpp)
+openrts_configure_target(openrts_frame_limiter_test)
+add_test(NAME openrts.frame_limiter COMMAND openrts_frame_limiter_test)
+
+# The driver's head on its neck in the cab: braking, the stop, joints, frame rate.
+add_executable(openrts_head_motion_test head_motion_test.cpp ../viewer/src/head_motion.cpp)
+openrts_configure_target(openrts_head_motion_test)
+target_link_libraries(openrts_head_motion_test PRIVATE glm::glm)
+add_test(NAME openrts.head_motion COMMAND openrts_head_motion_test)
+
+# The rail joints along the track: RTS's layout and openRTS's.
+add_executable(openrts_rail_joints_test rail_joints_test.cpp)
+openrts_configure_target(openrts_rail_joints_test)
+target_link_libraries(openrts_rail_joints_test PRIVATE openrts_simulation)
+add_test(NAME openrts.rail_joints COMMAND openrts_rail_joints_test)
+
 # The graphics settings the start menu and the game share: defaults, presets, what is written.
 add_executable(openrts_graphics_settings_test graphics_settings_test.cpp ../viewer/src/graphics_settings.cpp ../viewer/src/viewer_state.cpp)
 openrts_configure_target(openrts_graphics_settings_test)

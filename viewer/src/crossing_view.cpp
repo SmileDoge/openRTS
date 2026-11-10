@@ -258,6 +258,19 @@ std::optional<std::vector<renderer::NodeAdjustment>> CrossingView::adjustments(c
         const float last = last_frame(*rig, static_cast<std::int32_t>(m));
         nodes.push_back({.matrix = static_cast<std::int32_t>(m), .frame = (gate ? found->second.gates : found->second.lights) * last});
     }
+    // openRTS, as MSTS and Open Rails: a crossing's shape with neither gate*
+    // nor signal* nodes swings every animated node as its gates. Pavlovsk's
+    // depot gates rm_vorota2.s (nodes Box, Box.1; frame 0 across the track,
+    // frame 1 open) stood shut while trains went through them. UNKNOWN
+    // whether RTS does: the "gate" it compares with is in rts1.exe
+    // (0x1E13FE, UTF-16), a fallback not seen.
+    if (nodes.empty() && !rig->animations.empty()) {
+        for (const auto& node : rig->animations.front().nodes) {
+            if (node.matrix_index < 0 || (node.positions.empty() && node.rotations.empty())) continue;
+            const float last = last_frame(*rig, node.matrix_index);
+            nodes.push_back({.matrix = node.matrix_index, .frame = found->second.gates * last});
+        }
+    }
     return nodes;
 }
 

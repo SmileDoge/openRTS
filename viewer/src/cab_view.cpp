@@ -322,7 +322,8 @@ std::unique_ptr<CabView> CabView::create(const core::Vfs& vfs, const formats::Wa
     view->windows_.resize(view->cab_.windows.size());
     // Opened: open from the start (RTS 0x51CD88 sets State and SetState).
     for (std::size_t i = 0; i < view->doors_.size(); ++i) {
-        view->doors_[i].target = view->cab_.doors[i].opened;
+        const auto root = view->door_root(i);
+        view->doors_[i].target = view->cab_.doors[root].opened;
         view->doors_[i].open = view->doors_[i].target ? 1.0f : 0.0f;
     }
     for (std::size_t i = 0; i < view->windows_.size(); ++i) {
@@ -650,18 +651,41 @@ bool CabView::door_moving(const std::size_t door) const noexcept {
     return door < doors_.size() && doors_[door].open != (doors_[door].target ? 1.0f : 0.0f);
 }
 
-void CabView::toggle_door(const std::size_t door) {
+std::size_t CabView::door_root(std::size_t door) const noexcept {
+    // A chain of parents, never round (a broken file: the door itself).
+    for (std::size_t hops = 0; door < cab_.doors.size() && hops < cab_.doors.size(); ++hops) {
+        const auto parent = cab_.doors[door].parent;
+        if (parent < 0 || static_cast<std::size_t>(parent) >= cab_.doors.size() || static_cast<std::size_t>(parent) == door) return door;
+        door = static_cast<std::size_t>(parent);
+    }
+    return door;
+}
+
+void CabView::toggle_door(std::size_t door) {
     if (door >= doors_.size()) return;
+    door = door_root(door);
     doors_[door].target = !doors_[door].target;
     if (door < cab_.doors.size()) sound(cab_.doors[door].sms_triggers, doors_[door].target);
 }
 
-void CabView::open_door(const std::size_t door) {
+void CabView::open_door(std::size_t door) {
     if (door >= doors_.size()) return;
+    door = door_root(door);
     if (!doors_[door].target && door < cab_.doors.size()) sound(cab_.doors[door].sms_triggers, true);
     doors_[door].target = true;
     doors_[door].open = 1.0f;
+    follow_doors();
     rebuild_skip();
+}
+
+void CabView::follow_doors() {
+    // ParentObject: a door's state is always its parent's.
+    for (std::size_t i = 0; i < doors_.size(); ++i) {
+        const auto root = door_root(i);
+        if (root == i || root >= doors_.size()) continue;
+        doors_[i].target = doors_[root].target;
+        doors_[i].open = doors_[root].open;
+    }
 }
 
 void CabView::step_doors(const float elapsed) {
@@ -673,6 +697,7 @@ void CabView::step_doors(const float elapsed) {
     }
     bool changed = false;
     for (std::size_t i = 0; i < doors_.size(); ++i) {
+        if (door_root(i) != i) continue; // moves with its parent
         auto& door = doors_[i];
         const float goal = door.target ? 1.0f : 0.0f;
         if (door.open == goal) continue;
@@ -681,6 +706,7 @@ void CabView::step_doors(const float elapsed) {
         door.open = goal > door.open ? std::min(goal, door.open + elapsed / time) : std::max(goal, door.open - elapsed / time);
         if ((was >= 0.6f) != (door.open >= 0.6f)) changed = true;
     }
+    follow_doors();
     if (changed) rebuild_skip();
 }
 

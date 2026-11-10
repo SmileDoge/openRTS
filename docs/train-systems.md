@@ -61,7 +61,7 @@ RTS's AI trains (`0x424488`): the main pantograph is 1, or 2 when the car
 is turned or the train runs reversed (RTS compares bit 0 with bit 0x80, so
 both together give 2 too); the second goes up below
 `RaiseSecondPantoWhenSpeedBelow`; `LowerPantoOnStop` lowers its mask at a
-stop (PROBABLE: openRTS takes the test driver's waiting point);
+stop (PROBABLE: openRTS takes a traffic train's waiting point);
 `AlwaysUsePanto` raises its mask; `ExcludePantograph` (repeated, 1..8)
 never. The driven train without a DLL raises the rear one by the
 direction of travel (an openRTS choice) and applies the same masks; `P`

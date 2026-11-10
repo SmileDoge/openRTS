@@ -41,6 +41,11 @@ public:
 
     // Queues a streamed model for upload.
     void add(StreamedModelAsset&& asset);
+    // Lets a model go: retired (its buffers and, once no other model holds
+    // them, its textures freed after the frames in flight); one still queued
+    // or being made is dropped, a reload batch does not bring it back. An
+    // add() of it later loads it again.
+    void remove(const core::VirtualPath& shape);
     [[nodiscard]] RenderModel* find(const core::VirtualPath& shape);
     void notify_changes(const std::vector<core::VirtualPath>& changed);
     // Night, season and weather for ESD_Alternative_Texture: every model whose
@@ -51,9 +56,16 @@ public:
     // Reloads every model whose path has this extension (".forest" when the
     // forests' clearance changes), on the worker thread.
     void reload_extension(std::string_view extension);
-    // Publishes a finished reload batch, starts the next one and uploads up
-    // to `uploads` queued models. Call once per frame on the render thread.
+    // Publishes a finished reload batch, starts the next one and takes the
+    // streamed models in. With models_made_off_thread() (depth.hpp) a model
+    // is made (buffers, textures, bindings) on a task of its own, up to
+    // set_making_limit() at once, and taken in when made, however many a
+    // frame; else up to `uploads` are made here. Call once per frame on the
+    // render thread.
     void update(std::size_t uploads = 1);
+    // Models made at once on loading threads (2 by default; more behind the
+    // loading screen and in the background).
+    void set_making_limit(std::size_t limit) noexcept;
     // Retires every model (scene teardown).
     void clear();
     [[nodiscard]] ModelLibraryStats stats() const;

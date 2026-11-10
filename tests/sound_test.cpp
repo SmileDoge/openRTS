@@ -868,7 +868,30 @@ void test_content_ed9m_cab(const std::filesystem::path& root) {
     // routes' trains the DLL reads through RTSGetNamedInteger (0x4DD0EC).
     if (const auto usavp = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_Libraries/Usavp/Usavp.sms"); usavp && vfs.exists(*usavp)) {
         const auto script = formats::load_sound_script(vfs, *usavp);
-        check(script.ok() && script.named_triggers.size() == 7955, "Usavp.sms: 7955 named triggers");
+        // Its entries counted in the text ("NAME" code pairs in the
+        // NamedTriggersTable): 7955 in the 2025 build, 9828 in 2026-11's.
+        std::size_t written = 0;
+        if (const auto bytes = vfs.read(*usavp)) {
+            std::string text;
+            const bool wide = bytes->size() >= 2 && static_cast<unsigned char>((*bytes)[0]) == 0xFF;
+            for (std::size_t i = wide ? 2 : 0; i < bytes->size(); i += wide ? 2 : 1) text.push_back((*bytes)[i]);
+            auto at = text.find("NamedTriggersTable");
+            int depth = 0;
+            bool quoted = false;
+            for (at = at == std::string::npos ? text.size() : text.find('(', at); at < text.size(); ++at) {
+                const char c = text[at];
+                if (c == '"') {
+                    if (!quoted && depth == 1) ++written;
+                    quoted = !quoted;
+                } else if (!quoted && c == '(') {
+                    ++depth;
+                } else if (!quoted && c == ')' && --depth == 0) {
+                    break;
+                }
+            }
+        }
+        std::cout << "  Usavp.sms: " << script.named_triggers.size() << " named triggers read, " << written << " written\n";
+        check(script.ok() && written > 1000 && script.named_triggers.size() == written, "Usavp.sms: every named trigger of its table");
         check(!script.named_triggers.empty() && script.named_triggers.front().first == "mdd_info_r20_7161_number"
                   && script.named_triggers.front().second == 7161,
               "Usavp.sms: the first entry, lower-cased, with its code");

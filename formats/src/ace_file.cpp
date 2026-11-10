@@ -79,6 +79,30 @@ void decode_dxt1_block(const std::string_view block, const bool punch_through, s
     }
 }
 
+// One DXT1 level's blocks as they are; nothing when truncated, or when a
+// maskless texture's three-colour block uses its fourth colour (a GPU's BC1
+// would make it transparent where the RGBA8 decode keeps it opaque black).
+[[nodiscard]] std::optional<std::vector<std::uint8_t>> dxt1_level_blocks(const std::string_view payload, const std::size_t offset,
+                                                                         const std::uint32_t width, const std::uint32_t height,
+                                                                         const bool punch_through) {
+    if (!range_fits(offset, 4, payload.size())) return std::nullopt;
+    const auto size = read_u32_le(payload, offset);
+    const auto expected = ((static_cast<std::size_t>(width) + 3) / 4) * ((static_cast<std::size_t>(height) + 3) / 4) * 8;
+    if (size < expected || !range_fits(offset + 4, expected, payload.size())) return std::nullopt;
+    const auto blocks = payload.substr(offset + 4, expected);
+    if (!punch_through) {
+        for (std::size_t b = 0; b < expected; b += 8) {
+            const auto c0 = static_cast<unsigned char>(blocks[b]) | (static_cast<unsigned char>(blocks[b + 1]) << 8);
+            const auto c1 = static_cast<unsigned char>(blocks[b + 2]) | (static_cast<unsigned char>(blocks[b + 3]) << 8);
+            if (c0 > c1) continue;
+            const auto indices = read_u32_le(blocks, b + 4);
+            for (int texel = 0; texel < 16; ++texel)
+                if (((indices >> (2 * texel)) & 3) == 3) return std::nullopt;
+        }
+    }
+    return std::vector<std::uint8_t>(blocks.begin(), blocks.end());
+}
+
 // One DXT1 level at `offset` of the raw ACE payload (a u32 byte count, then
 // the 8-byte blocks) as RGBA8.
 [[nodiscard]] std::optional<std::vector<std::uint8_t>> decode_dxt1_level(const std::string_view payload,
@@ -155,6 +179,19 @@ void decode_dxt1_block(const std::string_view block, const bool punch_through, s
             for (auto& each : rest) mips.push_back(std::move(each));
             image.mips = std::move(mips);
             image.mips_from_file = true;
+            // The same levels' blocks for the GPU (down to 4x4).
+            std::vector<std::vector<std::uint8_t>> bc1;
+            for (std::uint32_t k = 0; k < level; ++k) {
+                const auto side = (std::max)(header.width >> k, 1u);
+                const auto offset = level_offset(k);
+                auto blocks = offset ? dxt1_level_blocks(payload, *offset, side, side, has_mask_channel) : std::nullopt;
+                if (!blocks) {
+                    bc1.clear();
+                    break;
+                }
+                bc1.push_back(std::move(*blocks));
+            }
+            image.bc1 = std::move(bc1);
         }
     }
     if (!image.mips_from_file) image.mips = build_rgba_mipmaps(image.width, image.height, image.pixels);

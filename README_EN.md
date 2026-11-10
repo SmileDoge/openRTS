@@ -233,7 +233,10 @@ Visual C++ Redistributable (x64), see "Prebuilt binaries".
 
 The easiest way is the start menu. It has four tabs:
 - **Single player:** route, consist, path, time, season, weather and how
-  the train starts (running, switched on, cold); "Start".
+  the train starts (running, switched on, cold), or an RTS scenario of the
+  route (`RTS_ACT`: its trains and events — messages, F8 reports, signals,
+  sounds; its traffic trains run as RTS's, [docs/activities.md](docs/activities.md),
+  [docs/traffic.md](docs/traffic.md)); "Start".
 - **Network game:** an RTS server's address and the nick, the servers
   joined before, where to start (in the cab or above the train);
   "Connect". The server gives the route, season, weather and
@@ -243,11 +246,17 @@ The easiest way is the start menu. It has four tabs:
   yet.
 - **Settings:** the RTS folder, language, key layout, the key hints at the
   bottom of the screen (they can be turned off; the game's panel too), the
-  mouse sensitivity (the game's panel too), sound and volume,
-  graphics API, anti-aliasing, VSync, the FPS limit (30 to 500 or none;
-  the in-game openRTS panel has it too), the window mode (in a window, a
-  borderless window, full screen; the game's panel has it too, and
-  Alt+Enter), experimental renderer, HDR.
+  mouse sensitivity and the head motion in the cab (the game's panel too),
+  sound and volume, the rail joints (as RTS, or openRTS: 25 m rails, welded
+  strings with equalizing spans), the settings and log folder, updates.
+- **Graphics:** every graphics setting of the game's panel in groups
+  (screen, renderer, shadows, ambient occlusion, lamps, sky and water,
+  world), presets from Low to Ultra, and each setting's load on the CPU
+  and the GPU. The graphics API, the window mode (in a window, a borderless
+  window, full screen; Alt+Enter in the game), VSync and the FPS limit (30
+  to 500 or none) are there too. While the game's or the menu's window is
+  not in focus or is minimised, it draws at most 30 frames a second; the
+  streaming of models and textures is not slowed by it.
 - **Controls:** the simulator's hotkeys (as in "Controls" below); the
   in-game openRTS panel has the same tab.
 
@@ -376,6 +385,7 @@ the Train window)
 
 | Program | Purpose |
 |---|---|
+| `openrts-ace` | ACE textures to PNG and back (DXT1, RGB, RGB + mask, RGBA), a file or a folder; `--register`: a double click on an `.ace` shows it as PNG, PNG files and folders get "to ACE (openRTS)" (also a button in the menu's Settings; the format: `docs/reverse/ace.md`) |
 | `openrts-pack` | build and inspect content packs (`docs/vfs.md`) |
 | `openrts-track-check` | check the track network, `.pat` paths and speed posts |
 | `openrts-path-check` | drive test trains along paths: reservations, the planner |
@@ -417,7 +427,8 @@ RTS's DLLs.
 - `docs/car-architecture.md` — a design: cars as entities, components,
   modules, standard classes;
 - `docs/train.md`, `docs/track.md`, `docs/signals.md`, `docs/paths.md`,
-  `docs/sound.md`, `docs/electrification.md` — how the subsystems work;
+  `docs/activities.md`, `docs/traffic.md`, `docs/sound.md`,
+  `docs/electrification.md` — how the subsystems work;
 - `docs/train-dll.md` — the locomotive DLL bridge and the native plugin API;
 - `docs/experimental-effects.md` — the experimental renderer: what it does
   and what it costs;

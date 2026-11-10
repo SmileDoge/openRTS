@@ -695,6 +695,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
                 d.global_id = static_cast<std::uint32_t>(number(node.child("globalid"), 0, 0.0f));
                 d.can_be_opened = number(node.child("canbeopened"), 0, 1.0f) != 0.0f;
                 d.opened = node.child("opened") != nullptr;
+                if (const auto* parent = node.child("parentobject")) d.parent = static_cast<std::int32_t>(number(parent, 0, -1.0f));
                 if (const auto* proof = node.child("soundproof")) {
                     d.sound_closed = number(proof, 0);
                     d.sound_open = number(proof, 1);

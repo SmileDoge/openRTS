@@ -119,6 +119,11 @@ struct WindowOptions {
     // opened) and Ctrl+Enter (up the steps) are pressed; each takes 0.6 of
     // capture_at shared out.
     std::vector<std::size_t> capture_board;
+    // --capture-ok: a scenario's messages closed as they come (their OK).
+    bool capture_ok = false;
+    // --capture-report: from 0.5 of capture_at, every 2 s, the first item
+    // of the scenario's report menu (F8) picked, each menu once.
+    bool capture_report = false;
 };
 
 [[nodiscard]] int run_window_viewer(ViewerScene& scene, const WindowOptions& options);

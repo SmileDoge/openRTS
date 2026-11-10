@@ -1,4 +1,5 @@
 #include <openrts/renderer/native_sky.hpp>
+#include <openrts/renderer/gpu_pass_timer.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1253,7 +1254,9 @@ void NativeSky::render_table(const WGPUCommandEncoder encoder) {
         .storeOp = WGPUStoreOp_Store,
         .clearValue = {.r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0},
     };
-    const WGPURenderPassDescriptor descriptor{.colorAttachmentCount = 1, .colorAttachments = &colour};
+    const auto timestamps = render_pass_timestamps(GpuPass::sky_table);
+    const WGPURenderPassDescriptor descriptor{
+        .colorAttachmentCount = 1, .colorAttachments = &colour, .timestampWrites = timestamps ? &*timestamps : nullptr};
     const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
     const std::uint32_t offset = table_slot * static_cast<std::uint32_t>(uniform_stride);
     wgpuRenderPassEncoderSetPipeline(pass, impl.table_pipeline);
@@ -1299,7 +1302,9 @@ void NativeSky::render_clouds(const WGPUCommandEncoder encoder, const glm::mat4&
         .storeOp = WGPUStoreOp_Store,
         .clearValue = {.r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0},
     };
-    const WGPURenderPassDescriptor descriptor{.colorAttachmentCount = 1, .colorAttachments = &colour};
+    const auto timestamps = render_pass_timestamps(GpuPass::clouds);
+    const WGPURenderPassDescriptor descriptor{
+        .colorAttachmentCount = 1, .colorAttachments = &colour, .timestampWrites = timestamps ? &*timestamps : nullptr};
     const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
     const std::uint32_t offset = cloud_slot * static_cast<std::uint32_t>(uniform_stride);
     wgpuRenderPassEncoderSetPipeline(pass, impl.cloud_pipeline);
@@ -1318,7 +1323,9 @@ void NativeSky::render_clouds(const WGPUCommandEncoder encoder, const glm::mat4&
             .storeOp = WGPUStoreOp_Store,
             .clearValue = {.r = 1.0, .g = 0.0, .b = 0.0, .a = 1.0},
         };
-        const WGPURenderPassDescriptor shadow_descriptor{.colorAttachmentCount = 1, .colorAttachments = &target};
+        const auto shadow_timestamps = render_pass_timestamps(GpuPass::cloud_shadows);
+        const WGPURenderPassDescriptor shadow_descriptor{
+            .colorAttachmentCount = 1, .colorAttachments = &target, .timestampWrites = shadow_timestamps ? &*shadow_timestamps : nullptr};
         const auto shadow_pass = wgpuCommandEncoderBeginRenderPass(encoder, &shadow_descriptor);
         wgpuRenderPassEncoderSetPipeline(shadow_pass, impl.shadow_pipeline);
         wgpuRenderPassEncoderSetBindGroup(shadow_pass, 0, impl.sky_bindings[impl.cloud_current], 1, &offset);

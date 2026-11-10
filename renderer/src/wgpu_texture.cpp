@@ -106,4 +106,59 @@ WgpuTextureUploadResult upload_rgba8_texture(
     return {.texture = WgpuTexture(texture)};
 }
 
+WgpuTextureUploadResult upload_bc1_texture(const WGPUDevice device, const std::uint32_t width, const std::uint32_t height,
+                                           const std::vector<std::vector<std::uint8_t>>& levels, const std::string_view label) {
+    if (!device) return {.error = "Cannot upload a texture without a WebGPU device."};
+    if (!wgpuDeviceHasFeature(device, WGPUFeatureName_TextureCompressionBC)) return {.error = "The device has no BC textures."};
+    if (width == 0 || height == 0 || width % 4 != 0 || height % 4 != 0 || levels.empty())
+        return {.error = "BC1 level 0 must be whole 4x4 blocks."};
+    const auto blocks_of = [](const std::uint32_t side) { return (side + 3u) / 4u; };
+    std::size_t count = 0;
+    for (; count < levels.size(); ++count) {
+        const auto w = (std::max)(width >> count, 1u);
+        const auto h = (std::max)(height >> count, 1u);
+        if (levels[count].size() != static_cast<std::size_t>(blocks_of(w)) * blocks_of(h) * 8) break;
+        if (w == 1 && h == 1) {
+            ++count;
+            break;
+        }
+    }
+    if (count == 0) return {.error = "BC1 level 0 has the wrong number of blocks."};
+    const WGPUTextureDescriptor descriptor{
+        .nextInChain = nullptr,
+        .label = {.data = label.data(), .length = label.size()},
+        .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
+        .dimension = WGPUTextureDimension_2D,
+        .size = {.width = width, .height = height, .depthOrArrayLayers = 1},
+        .format = WGPUTextureFormat_BC1RGBAUnorm,
+        .mipLevelCount = static_cast<std::uint32_t>(count),
+        .sampleCount = 1,
+        .viewFormatCount = 0,
+        .viewFormats = nullptr,
+    };
+    WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
+    if (!texture) return {.error = "wgpuDeviceCreateTexture returned null."};
+    const WGPUQueue queue = wgpuDeviceGetQueue(device);
+    if (!queue) {
+        wgpuTextureRelease(texture);
+        return {.error = "wgpuDeviceGetQueue returned null."};
+    }
+    for (std::size_t k = 0; k < count; ++k) {
+        // A level's copy covers its whole blocks (its physical size).
+        const auto bx = blocks_of((std::max)(width >> k, 1u));
+        const auto by = blocks_of((std::max)(height >> k, 1u));
+        const WGPUTexelCopyTextureInfo destination{
+            .texture = texture,
+            .mipLevel = static_cast<std::uint32_t>(k),
+            .origin = {.x = 0, .y = 0, .z = 0},
+            .aspect = WGPUTextureAspect_All,
+        };
+        const WGPUTexelCopyBufferLayout layout{.offset = 0, .bytesPerRow = bx * 8, .rowsPerImage = by};
+        const WGPUExtent3D size{.width = bx * 4, .height = by * 4, .depthOrArrayLayers = 1};
+        wgpuQueueWriteTexture(queue, &destination, levels[k].data(), levels[k].size(), &layout, &size);
+    }
+    wgpuQueueRelease(queue);
+    return {.texture = WgpuTexture(texture)};
+}
+
 } // namespace openrts::renderer

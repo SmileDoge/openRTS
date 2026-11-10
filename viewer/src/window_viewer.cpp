@@ -34,8 +34,8 @@
 
 #include "controls_help.hpp"
 #include "frame_limiter.hpp"
-#include "gpu_timer.hpp"
 #include "graphics_settings.hpp"
+#include <openrts/renderer/gpu_pass_timer.hpp>
 #include "key_layout.hpp"
 #include "ui_fonts.hpp"
 #include "ui_text.hpp"
@@ -542,27 +542,35 @@ private:
 
 // Frame rate over the last half second: average FPS and frame time, the
 // slowest frame (stutter shows there first), the average of each CPU stage
-// and the GPU time of the main pass.
+// and the GPU time of each pass (renderer::GpuPassTimer; a pass drawn every
+// other frame or fourth counts at its share of a frame).
 class FrameStats {
 public:
-    void add(const double seconds, const StageTimes& stages, const double gpu_sum_ms, const int gpu_count) {
+    void add(const double seconds, const StageTimes& stages, const renderer::GpuPassTimes& gpu) {
         window_ += seconds;
         worst_ = (std::max)(worst_, seconds);
         for (std::size_t i = 0; i < frame_stage_count; ++i) stage_sum_[i] += stages[i];
-        gpu_sum_ += gpu_sum_ms;
-        gpu_count_ += gpu_count;
+        for (std::size_t i = 0; i < renderer::gpu_pass_count; ++i) {
+            gpu_sum_.ms[i] += gpu.ms[i];
+            gpu_sum_.seen[i] = gpu_sum_.seen[i] || gpu.seen[i];
+        }
+        gpu_sum_.frame_ms += gpu.frame_ms;
+        gpu_sum_.frames += gpu.frames;
         ++frames_;
         if (window_ < 0.5) return;
         fps_ = frames_ / window_;
         average_ms_ = window_ * 1000.0 / frames_;
         worst_ms_ = worst_ * 1000.0;
         for (std::size_t i = 0; i < frame_stage_count; ++i) stage_ms_[i] = stage_sum_[i] * 1000.0 / frames_;
-        if (gpu_count_ > 0) gpu_ms_ = gpu_sum_ / gpu_count_;
+        if (gpu_sum_.frames > 0) {
+            for (std::size_t i = 0; i < renderer::gpu_pass_count; ++i) gpu_pass_ms_[i] = gpu_sum_.ms[i] / gpu_sum_.frames;
+            gpu_seen_ = gpu_sum_.seen;
+            gpu_frame_ms_ = gpu_sum_.frame_ms / gpu_sum_.frames;
+        }
         window_ = 0.0;
         worst_ = 0.0;
         stage_sum_ = {};
-        gpu_sum_ = 0.0;
-        gpu_count_ = 0;
+        gpu_sum_ = {};
         frames_ = 0;
     }
 
@@ -570,20 +578,36 @@ public:
     [[nodiscard]] double average_ms() const noexcept { return average_ms_; }
     [[nodiscard]] double worst_ms() const noexcept { return worst_ms_; }
     [[nodiscard]] const StageTimes& stage_ms() const noexcept { return stage_ms_; }
-    [[nodiscard]] double gpu_ms() const noexcept { return gpu_ms_; }
+    // The main pass's GPU time (the log's "gpu main pass").
+    [[nodiscard]] double gpu_ms() const noexcept { return gpu_pass_ms_[static_cast<std::size_t>(renderer::GpuPass::main)]; }
+    [[nodiscard]] double gpu_frame_ms() const noexcept { return gpu_frame_ms_; }
+    [[nodiscard]] const std::array<double, renderer::gpu_pass_count>& gpu_pass_ms() const noexcept { return gpu_pass_ms_; }
+    [[nodiscard]] const std::array<bool, renderer::gpu_pass_count>& gpu_seen() const noexcept { return gpu_seen_; }
+    // "name ms, name ms ..." of the passes seen (the log).
+    [[nodiscard]] std::string gpu_report() const {
+        std::string text;
+        char number[32];
+        for (std::size_t i = 0; i < renderer::gpu_pass_count; ++i) {
+            if (!gpu_seen_[i]) continue;
+            std::snprintf(number, sizeof number, " %.3f", gpu_pass_ms_[i]);
+            text += (text.empty() ? "" : ", ") + std::string(renderer::gpu_pass_name(static_cast<renderer::GpuPass>(i))) + number;
+        }
+        return text;
+    }
 
 private:
     double window_{};
     double worst_{};
     int frames_{};
     StageTimes stage_sum_{};
-    double gpu_sum_{};
-    int gpu_count_{};
+    renderer::GpuPassTimes gpu_sum_{};
     double fps_{};
     double average_ms_{};
     double worst_ms_{};
     StageTimes stage_ms_{};
-    double gpu_ms_{};
+    std::array<double, renderer::gpu_pass_count> gpu_pass_ms_{};
+    std::array<bool, renderer::gpu_pass_count> gpu_seen_{};
+    double gpu_frame_ms_{};
 };
 
 // Panel controls that the main loop acts on after the panel is built.
@@ -872,6 +896,22 @@ public:
                 set_mouse_sensitivity(sensitivity);
                 remember("mouse_sensitivity", std::to_string(mouse_sensitivity()));
             }
+            float head = head_motion();
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::SliderFloat(tr("Head motion in the cab"), &head, 0.0f, max_head_motion, "%.1f")) {
+                set_head_motion(head);
+                remember("head_motion", std::to_string(head_motion()));
+            }
+            ImGui::TextDisabled("%s", tr("(the head nods with speeding up, braking and rail joints and leans in curves; 0: as RTS, the cab only sways)"));
+            int joints = rail_joint_layout() == simulation::RailJointLayout::rts ? 1 : 0;
+            const char* joint_layouts[] = {"openRTS", "RTS"};
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo(tr("Rail joints"), &joints, joint_layouts, 2)) {
+                set_rail_joint_layout(joints == 1 ? simulation::RailJointLayout::rts : simulation::RailJointLayout::openrts);
+                remember("rail_joints", joints == 1 ? "rts" : "openrts");
+            }
+            ImGui::TextDisabled("%s", joints == 1 ? tr("(as RTS: a joint every 50 m; on stretches over 2 km four joints 12.5 m apart every 600 m)")
+                                                  : tr("(25 m rails; on stretches of 1 km or more between switches welded strings of about 800 m with 3 or 4 joints 12.5 m apart between them)"));
             ImGui::Checkbox(tr("Pause (Pause)"), &panel.paused);
         }
 
@@ -933,6 +973,7 @@ public:
                     panel.fps_limit = shown > max_fps_limit ? 0 : shown;
                     remember("fps_limit", std::to_string(panel.fps_limit));
                 }
+                ImGui::TextDisabled("%s", tr("In the background (another window in front, or minimised): at most 30 frames/s."));
             }
             if (!panel.window_mode_fixed) {
                 // In a window, borderless or full screen (Alt+Enter: the window
@@ -1175,13 +1216,34 @@ public:
             }
             ImGui::Text(tr("CPU work %5.2f ms (without wait)"), cpu);
             if (panel.gpu_timing) {
-                ImGui::Text(tr("GPU pass %5.2f ms"), panel.stats.gpu_ms());
+                // Each pass's GPU time, coloured by its share of the GPU's frame.
+                const double frame = panel.stats.gpu_frame_ms();
+                ImGui::Text(tr("GPU frame %5.2f ms (the first pass's start to the last one's end)"), frame);
+                if (ImGui::BeginTable("##gpu_passes", 2, ImGuiTableFlags_SizingFixedFit)) {
+                    for (std::size_t i = 0; i < renderer::gpu_pass_count; ++i) {
+                        if (!panel.stats.gpu_seen()[i]) continue;
+                        const double ms = panel.stats.gpu_pass_ms()[i];
+                        const double share = frame > 0.0 ? ms / frame : 0.0;
+                        const ImVec4 colour = share >= 0.4   ? ImVec4{1.00f, 0.40f, 0.32f, 1.0f}
+                                              : share >= 0.2 ? ImVec4{1.00f, 0.64f, 0.28f, 1.0f}
+                                              : share >= 0.1 ? ImVec4{0.92f, 0.84f, 0.36f, 1.0f}
+                                                             : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(tr(renderer::gpu_pass_name(static_cast<renderer::GpuPass>(i))));
+                        ImGui::TableNextColumn();
+                        ImGui::TextColored(colour, "%6.2f ms  %3.0f %%", ms, share * 100.0);
+                    }
+                    ImGui::EndTable();
+                }
             } else {
                 ImGui::TextDisabled("%s", tr("GPU pass: no timestamp queries on this device"));
             }
             const auto gpu = renderer.stats();
             ImGui::Text(tr("GPU: %zu textures, %zu retired waiting, frame %llu done"), gpu.cached_textures, gpu.retired_pending,
                         static_cast<unsigned long long>(gpu.completed_frame));
+            ImGui::Text(tr("Textures on the GPU: %.0f MB, the trains' %.0f MB"), static_cast<double>(gpu.texture_bytes) / 1048576.0,
+                        static_cast<double>(gpu.train_texture_bytes) / 1048576.0);
             ImGui::Text(tr("Models: %zu instances, %zu primitives, %zu draw calls"), gpu.instances, gpu.primitives, gpu.draw_calls);
             ImGui::Text(tr("Commands in the main pass: %zu"), gpu.draw_commands);
             ImGui::BeginDisabled(!renderer.multi_draw_supported());
@@ -1344,6 +1406,8 @@ struct CameraInput {
     bool track_control_key_down = false;
     bool info_key_down = false;
     bool stations_key_down = false;
+    bool journal_key_down = false; // F11
+    bool menu_key_down = false;    // F8
     bool car_view_key_down = false;
     bool save_key_down = false;
     bool window_mode_key_down = false; // Alt+Enter
@@ -1645,6 +1709,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
             .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
             .signal_names = f7 && ctrl && !alt,
+            .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
+            .activity_menu = pressed(GLFW_KEY_F8, input.menu_key_down),
         };
         engineer(captured);
         captured.keys = std::exchange(input.key_events, {});
@@ -1682,6 +1748,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
         .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
         .signal_names = f7 && ctrl && !alt,
+        .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
+        .activity_menu = pressed(GLFW_KEY_F8, input.menu_key_down),
     };
     engineer(result);
     result.keys = std::exchange(input.key_events, {});
@@ -1803,7 +1871,7 @@ struct FrameTargets {
 [[nodiscard]] WGPURenderPassEncoder begin_main_pass(const WGPUCommandEncoder encoder,
                                                     const FrameTargets& targets,
                                                     const glm::vec4& clear_colour,
-                                                    const WGPURenderPassTimestampWrites* timestamps,
+                                                    const std::optional<WGPURenderPassTimestampWrites>& timestamps,
                                                     const WGPUQuerySet occlusion) {
     const WGPURenderPassColorAttachment color{
         .view = targets.msaa ? targets.msaa : targets.color,
@@ -1828,7 +1896,7 @@ struct FrameTargets {
         .colorAttachments = &color,
         .depthStencilAttachment = &depth,
         .occlusionQuerySet = occlusion,
-        .timestampWrites = timestamps,
+        .timestampWrites = timestamps ? &*timestamps : nullptr,
     };
     return wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
 }
@@ -2071,6 +2139,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     set_key_layout(remembered("key_layout").value_or("openrts") == "rts" ? KeyLayout::rts : KeyLayout::openrts);
     set_key_hints(remembered("key_hints").value_or("1") != "0");
     set_mouse_sensitivity(parse_mouse_sensitivity(remembered("mouse_sensitivity").value_or("1").c_str()));
+    set_head_motion(parse_head_motion(remembered("head_motion").value_or("1").c_str()));
+    set_rail_joint_layout(parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
     // Sound is optional: without a device the viewer runs silent.
     std::unique_ptr<audio::AudioEngine> sound;
     if (options.sound) {
@@ -2116,6 +2186,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     int capture_inspect_step = 0; // --capture-inspect: 1 opened, 2 clicked
     bool capture_driven = false;
     int capture_board_step = 0; // --capture-board: 1 at the door, then the presses of Enter
+    double capture_reported = 0.0; // --capture-report: the last pick
     FrameLimiter limiter;
 
     ClockControls clock{
@@ -2125,11 +2196,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         .weather = static_cast<int>(options.weather),
     };
     surface.set_vsync(options.vsync);
+    // Each pass's GPU time (renderer::GpuPassTimer): the renderer's passes
+    // ask it for their timestamps.
     const auto timer_queue = wgpuDeviceGetQueue(device);
-    GpuFrameTimer gpu_timer(device, timer_queue);
+    renderer::GpuPassTimer pass_timer(device, timer_queue);
     wgpuQueueRelease(timer_queue);
+    renderer::gpu_pass_timer() = pass_timer.available() ? &pass_timer : nullptr;
     PanelState panel{
-        .vsync = surface.vsync(), .vsync_optional = surface.vsync_optional(), .gpu_timing = gpu_timer.available()};
+        .vsync = surface.vsync(), .vsync_optional = surface.vsync_optional(), .gpu_timing = pass_timer.available()};
     panel.menu = options.menu;
     panel.fps_limit = clamp_fps_limit(options.fps_limit);
     WindowModeKeeper window_mode;
@@ -2141,6 +2215,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     panel.hdr = renderer::scene_hdr();
     panel.backend_now = renderer::adapter_backend_name(context.context.adapter());
     panel.experimental_supported = experimental_supported;
+    // Models made on loading threads; not on OpenGL (one context under a lock).
+    renderer::models_made_off_thread() = experimental_supported;
     if (!panel.experimental_supported)
         std::cout << "OpenGL: the experimental renderer and the depth copy for ReShade are not available "
                      "(wgpu cannot read depth textures with textureLoad in GLSL); the RTS path only." << std::endl;
@@ -2215,7 +2291,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const auto loading = scene.loading();
         // The FPS limit: the wait comes before the input is read. None while
         // the start loads: the world streams in a step a frame.
-        limiter.set(loading.done ? panel.fps_limit : 0);
+        // In the background (another window in front, or minimised): at most
+        // 30 frames/s; in front again, the setting.
+        const bool background = glfwGetWindowAttrib(window.get(), GLFW_FOCUSED) == GLFW_FALSE
+                                || glfwGetWindowAttrib(window.get(), GLFW_ICONIFIED) == GLFW_TRUE;
+        limiter.set(frame_limit(panel.fps_limit, !loading.done, background));
         limiter.wait();
         stage_clock.start();
         glfwPollEvents();
@@ -2234,9 +2314,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
         // The place and size in a window only (not the monitor's when full).
         if (placement_keeper && window_mode.applied() == WindowMode::windowed) placement_keeper->update(window.get(), now);
-        int gpu_count = 0;
-        const double gpu_sum = gpu_timer.take_sum_ms(gpu_count);
-        panel.stats.add(now - last_time, stages, gpu_sum, gpu_count);
+        panel.stats.add(now - last_time, stages, pass_timer.take());
         stages = {};
         const auto elapsed = static_cast<float>((std::min)(now - last_time, max_frame_seconds));
         input.keyboard_captured = scene.keyboard_captured();
@@ -2342,6 +2420,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 ++capture_board_step;
             }
         }
+        if (capture && options.capture_ok) scene.close_activity_message();
+        if (capture && options.capture_report && glfwGetTime() - capture_start >= options.capture_at * 0.5
+            && glfwGetTime() - capture_reported >= 2.0) {
+            capture_reported = glfwGetTime();
+            scene.report_activity();
+        }
         if (capture && options.capture_drive && !capture_driven && glfwGetTime() - capture_start >= options.capture_at * 0.8) {
             scene.drive_unit(*options.capture_drive);
             capture_driven = true;
@@ -2355,7 +2439,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             scene.set_cab_switch(id, state);
         }
         if (const auto time = scene.take_time_of_day()) clock.time_of_day = *time;
-        scene.update(renderer, camera, clock.advance(panel.paused || scene.paused() || loading.hold_time ? 0.0f : elapsed), frame_input);
+        auto scene_clock = clock.advance(panel.paused || scene.paused() || loading.hold_time ? 0.0f : elapsed);
+        scene_clock.background = background;
+        camera.head_nod = camera.head_tilt = 0.0f;
+        scene.update(renderer, camera, scene_clock, frame_input);
         if (!scene.loading().done) loading_camera = camera;
         if (capture && options.capture_camera) {
             if (const auto car = scene.train_car_transform(options.capture_car)) {
@@ -2406,6 +2493,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const auto frame_texture = surface.acquire();
         stage_clock.mark(FrameStage::wait, stages);
         if (!frame_texture) continue;
+        pass_timer.begin_frame();
         const auto frame_view = wgpuTextureCreateView(frame_texture, nullptr);
         const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
         const bool hdr = tone && surface.hdr_view();
@@ -2475,7 +2563,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                              .depth = surface.depth_view(),
                              .msaa = surface.msaa_view(),
                              .keep_depth = reshade_depth},
-                            environment.clear_colour, gpu_timer.begin_frame(), scene.occlusion_query_set());
+                            environment.clear_colour, renderer::render_pass_timestamps(renderer::GpuPass::main), scene.occlusion_query_set());
         stage_clock.mark(FrameStage::begin, stages);
         scene.draw_background(pass, frame);
         stage_clock.mark(FrameStage::background, stages);
@@ -2522,7 +2610,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 .loadOp = WGPULoadOp_Load,
                 .storeOp = WGPUStoreOp_Store,
             };
-            const WGPURenderPassDescriptor ui_descriptor{.colorAttachmentCount = 1, .colorAttachments = &ui_colour};
+            const auto ui_timestamps = renderer::render_pass_timestamps(renderer::GpuPass::overlay);
+            const WGPURenderPassDescriptor ui_descriptor{
+                .colorAttachmentCount = 1, .colorAttachments = &ui_colour, .timestampWrites = ui_timestamps ? &*ui_timestamps : nullptr};
             const auto ui = wgpuCommandEncoderBeginRenderPass(encoder, &ui_descriptor);
             if (!capture) overlay.render(ui);
             wgpuRenderPassEncoderEnd(ui);
@@ -2530,7 +2620,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
 #endif
         }
         scene.after_main_pass(encoder);
-        gpu_timer.resolve(encoder);
 
         FrameCapture shot;
         FrameCapture depth_shot;
@@ -2546,10 +2635,13 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         auto submitted = parallel ? effects.finish_parallel(recording_pool) : std::vector<WGPUCommandBuffer>{};
         stage_clock.mark(FrameStage::join, stages);
         submitted.push_back(commands);
+        // The passes' timestamps resolved last, the workers' passes with them.
+        if (const auto timing = pass_timer.finish()) submitted.push_back(timing);
         const auto queue = wgpuDeviceGetQueue(device);
         wgpuQueueSubmit(queue, submitted.size(), submitted.data());
-        for (std::size_t i = 0; i + 1 < submitted.size(); ++i) wgpuCommandBufferRelease(submitted[i]);
-        gpu_timer.submitted();
+        for (const auto buffer : submitted)
+            if (buffer != commands) wgpuCommandBufferRelease(buffer);
+        pass_timer.submitted();
         scene.frame_submitted();
         renderer.frame_submitted(queue);
         wgpuQueueRelease(queue);
@@ -2586,6 +2678,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             std::cout << "cpu stages (ms):";
             for (std::size_t i = 0; i < frame_stage_count; ++i) std::cout << ' ' << frame_stage_names[i] << ' ' << panel.stats.stage_ms()[i];
             std::cout << "; gpu main pass " << panel.stats.gpu_ms() << " ms" << std::endl;
+            std::cout << "gpu frame " << panel.stats.gpu_frame_ms() << " ms: " << panel.stats.gpu_report() << std::endl;
+            {
+                const auto gpu = renderer.stats();
+                std::cout << "textures on the GPU: " << gpu.cached_textures << ", " << gpu.texture_bytes / 1048576 << " MB, the trains' "
+                          << gpu.train_texture_bytes / 1048576 << " MB" << std::endl;
+            }
             if (depth_shot.buffer) {
                 const auto near_plane = std::clamp(camera.distance * 0.002f, 0.01f, 0.05f);
                 report_reshade_depth(context.context, depth_shot, near_plane, camera.far_plane());
@@ -2624,6 +2722,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             std::cout << " focus " << effect_stats.record_focus_ms << " lamps " << effect_stats.record_lamps_ms << " camera "
                       << effect_stats.record_camera_ms << "; renderer "
                       << (renderer.shading_path() == renderer::ShadingPath::experimental ? "experimental" : "RTS") << std::endl;
+            if (panel.gpu_timing)
+                std::cout << "perf gpu: frame " << panel.stats.gpu_frame_ms() << " ms; " << panel.stats.gpu_report() << std::endl;
         }
     }
     return exit_code::success;

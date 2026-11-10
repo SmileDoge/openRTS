@@ -75,6 +75,10 @@ struct SoundInstance::Stream {
     // after a deactivation, the frame to resume the loop at.
     std::optional<std::size_t> current;
     std::optional<std::uint64_t> resume_frame;
+    // The trigger that last fired, and whether a sound of the stream plays
+    // (stream_sounding: a scenario's SMSStream).
+    std::optional<std::size_t> sounding;
+    bool audible = false;
 };
 
 SoundInstance::SoundInstance(std::shared_ptr<const formats::SoundScript> script, const formats::SoundGroup& group,
@@ -94,6 +98,12 @@ SoundInstance::SoundInstance(std::shared_ptr<const formats::SoundScript> script,
 SoundInstance::SoundInstance(SoundInstance&&) noexcept = default;
 SoundInstance& SoundInstance::operator=(SoundInstance&&) noexcept = default;
 SoundInstance::~SoundInstance() = default;
+
+std::uint32_t SoundInstance::stream_sounding(const std::size_t stream) const {
+    if (stream >= streams_.size()) return 0;
+    const auto& s = streams_[stream];
+    return s.audible && s.sounding ? static_cast<std::uint32_t>(*s.sounding) + 1u : 0u;
+}
 
 std::vector<SoundInstance::StreamState> SoundInstance::stream_states() const {
     std::vector<StreamState> out;
@@ -312,6 +322,7 @@ void SoundInstance::preload() {
 void SoundInstance::fire(Stream& stream, const std::size_t index, const float volume, const SoundInputs& inputs,
                          VoiceSink& sink) {
     const auto& trigger = stream.definition->triggers[index];
+    stream.sounding = index;
     // Weather and environment sounds have no position; rolling stock fades
     // with distance.
     const auto space = owner_ == formats::SoundOwner::environment || inputs.at_listener ? VoiceSpace::flat
@@ -525,6 +536,15 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
 }
 
 void SoundInstance::update(const float dt, const SoundInputs& raw_inputs, VoiceSink& sink) {
+    update_streams(dt, raw_inputs, sink);
+    for (auto& stream : streams_) {
+        bool playing = stream.loop.id && sink.playing(stream.loop.id);
+        for (const auto& voice : stream.one_shots) playing = playing || (voice.id && sink.playing(voice.id));
+        stream.audible = playing;
+    }
+}
+
+void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs, VoiceSink& sink) {
     clock_ += dt;
     using formats::SoundVariable;
     auto inputs = raw_inputs;

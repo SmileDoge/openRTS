@@ -266,15 +266,23 @@ void test_content(const std::filesystem::path& root) {
             check(std::fabs(first.position[2] - (2.14062f - 8.5703f + 2.5f)) < 0.01f, "first tree z as RTS places it");
         }
     }
-    // openRTS's clearance (renderer/forest_clearance.hpp): Novokuznetsk's
-    // forest 4054 (300 x 600 m, 500 trees 10 m wide) lies across the line.
+    // Novokuznetsk's forests turned as placed (their QDirection, lost until
+    // 2026-11-09): forest 4054, 300 x 600 m turned 113 degrees, lay across
+    // the line then, and lies along it now.
     if (const auto file = core::VirtualPath::parse("ROUTES/Novokuznetsk/WORLD/w-002971+015037.w"); vfs.exists(*file)) {
-        const auto path = renderer::forest_shape_path(*file, 4054);
-        const auto all = renderer::build_forest_shape(vfs, *path);
-        const auto planted = all.model.vertices.size() / 8;
-        check(all.error.empty() && planted == 500, "Novokuznetsk forest 4054: 500 trees as RTS plants them: " + all.error);
+        const auto tile = formats::load_world_tile(vfs, *file);
+        bool turned = false;
+        for (const auto& object : tile.objects)
+            if (object.kind == formats::WorldObjectKind::forest && object.uid == 4054) turned = std::abs(object.rotation[1]) > 0.5f;
+        check(turned, "forest 4054 keeps its QDirection (113 degrees)");
+    }
+    // openRTS's clearance (renderer/forest_clearance.hpp) on Novokuznetsk's
+    // tile w-002941+015035, whose forests 20 and 34 reach a track: some
+    // trees left out, none of the kept ones near it.
+    if (const auto file = core::VirtualPath::parse("ROUTES/Novokuznetsk/WORLD/w-002941+015035.w"); vfs.exists(*file)) {
         auto network = simulation::TrackNetwork::load(vfs, *core::VirtualPath::parse("ROUTES/Novokuznetsk"), nullptr);
         check(network != nullptr, "Novokuznetsk track network");
+        const auto tile = formats::load_world_tile(vfs, *file);
         if (network) {
             // The tracks' axes as the viewer's route_way_axes makes them.
             auto axes = std::make_shared<renderer::ForestClearance>();
@@ -293,35 +301,43 @@ void test_content(const std::filesystem::path& root) {
                     }
                 }
             }
-            renderer::set_forest_clearance_axes(axes);
-            renderer::set_forest_clearance_distance(3.0f);
-            const auto before = renderer::forest_tree_counts();
-            const auto kept = renderer::build_forest_shape(vfs, *path);
-            const auto counts = renderer::forest_tree_counts();
-            renderer::set_forest_clearance_distance(0.0f);
-            renderer::set_forest_clearance_axes(nullptr);
-            const auto left = kept.model.vertices.size() / 8;
-            std::cout << "forest 4054: " << left << " of " << planted << " trees kept off the track" << std::endl;
-            check(kept.error.empty() && left > 0 && left < planted, "forest 4054: some trees left out near the track, the rest kept");
-            check(counts.planted - before.planted == left && counts.cleared - before.cleared == planted - left, "forest tree counts");
-            // Every kept tree's crown (5 m round its middle) is 3 m or more
-            // from a track's edge.
-            const auto tile = formats::load_world_tile(vfs, *file);
+            bool tested = false;
             for (const auto& object : tile.objects) {
-                if (object.kind != formats::WorldObjectKind::forest || object.uid != 4054) continue;
+                if (object.kind != formats::WorldObjectKind::forest || tested) continue;
+                const auto path = renderer::forest_shape_path(*file, object.uid);
+                const auto all = renderer::build_forest_shape(vfs, *path);
+                const auto planted = all.model.vertices.size() / 8;
+                if (!all.error.empty() || planted == 0) continue;
+                renderer::set_forest_clearance_axes(axes);
+                renderer::set_forest_clearance_distance(3.0f);
+                const auto before = renderer::forest_tree_counts();
+                const auto kept = renderer::build_forest_shape(vfs, *path);
+                const auto counts = renderer::forest_tree_counts();
+                renderer::set_forest_clearance_distance(0.0f);
+                renderer::set_forest_clearance_axes(nullptr);
+                const auto left = kept.model.vertices.size() / 8;
+                if (left == planted || left == 0) continue; // clear of the tracks (or a collapsed one)
+                tested = true;
+                std::cout << "forest " << object.uid << ": " << left << " of " << planted << " trees kept off the track" << std::endl;
+                check(counts.planted - before.planted == left && counts.cleared - before.cleared == planted - left, "forest tree counts");
+                // Every kept tree's crown (5 m round its middle) is 3 m or more
+                // from a track's edge.
                 const auto& q = object.rotation;
                 const glm::quat rotation{q[3], -q[0], -q[1], -q[2]};
                 std::size_t near = 0;
+                // The crown: half the tree's width (its first quad's two edges).
+                const float crown = std::abs(all.model.vertices[0].position[2] - all.model.vertices[1].position[2]) * 0.5f;
                 for (std::size_t t = 0; t < left; ++t) {
                     const auto& v = kept.model.vertices;
                     const glm::vec3 local{v[t * 8].position[0], 0.0f, v[t * 8 + 4].position[2]};
                     const auto offset = rotation * local;
                     const double x = tile.tile_x * simulation::tile_size + object.position.x + offset.x;
                     const double z = tile.tile_z * simulation::tile_size + object.position.z + offset.z;
-                    if (axes->nearest(x, z, 20.0) < 8.0 - 1e-3) ++near;
+                    if (axes->nearest(x, z, 40.0) < crown + 3.0f - 1e-3) ++near;
                 }
-                check(near == 0, "forest 4054: no kept tree's crown within 3 m of a track's edge");
+                check(near == 0, "a forest reaching a track: no kept tree's crown within 3 m of the track's edge");
             }
+            check(tested, "a forest on the tile reaches a track (some trees left out)");
         }
     }
     if (vfs.exists(*core::VirtualPath::parse("ROUTES/Kuban_RTS/WORLD/w-004494+014579.w"))) {

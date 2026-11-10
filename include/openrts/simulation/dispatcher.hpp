@@ -33,6 +33,15 @@ struct RouteProgress {
     std::uint64_t blocked_by{};               // the train holding it (0: a section in use)
     std::size_t next_mark{};                  // first mark of the leg not yet reached
     bool finished = false;                    // the last mark of the last leg is reached
+    std::optional<std::uint32_t> blocked_point; // the block point (its key) the reservation stopped at
+};
+
+// A block point on a train's route (RTS scenario block points, activity.pdf
+// ch. 3): while its key is enabled the train's way is not reserved past it.
+struct RouteBlock {
+    std::uint32_t key{}; // the owner's name for it (the scenario: service and point)
+    std::size_t leg{};
+    double distance{};   // along the leg
 };
 
 struct DispatcherSettings {
@@ -70,6 +79,16 @@ public:
     bool next_leg(std::uint64_t id);
     // Marks the leg's next mark as reached (a waiting point after the wait).
     void pass_mark(std::uint64_t id);
+    // Block points: where they lie on a train's route (replacing its list),
+    // and turning them on and off by key; a key never set is enabled. A
+    // point the train's head has passed no longer holds it. Enabling one
+    // whose train already has its way reserved past it holds the train only
+    // when it is farther than `no_return` m from it (RTS: the way beyond is
+    // cancelled unless the train is within its distance of no return).
+    void set_blocks(std::uint64_t id, std::vector<RouteBlock> blocks);
+    void enable_block(std::uint32_t key, bool enabled, double no_return = 0.0);
+    [[nodiscard]] bool block_enabled(std::uint32_t key) const;
+    [[nodiscard]] const std::vector<RouteBlock>* blocks(std::uint64_t id) const;
     // Every routed train.
     [[nodiscard]] std::vector<std::uint64_t> routed() const;
     [[nodiscard]] const DispatcherSettings& settings() const noexcept { return settings_; }
@@ -83,6 +102,7 @@ private:
     TrackNetwork* network_;
     DispatcherSettings settings_;
     std::map<std::uint64_t, std::unique_ptr<Follower>> followers_;
+    std::map<std::uint32_t, bool> block_enabled_;
 };
 
 } // namespace openrts::simulation

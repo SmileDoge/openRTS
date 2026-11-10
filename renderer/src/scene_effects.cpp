@@ -1,4 +1,5 @@
 #include <openrts/renderer/scene_effects.hpp>
+#include <openrts/renderer/gpu_pass_timer.hpp>
 
 #include <openrts/core/profile.hpp>
 
@@ -535,7 +536,7 @@ struct SceneEffects::Impl {
     void choose_lamp_shadows(const std::optional<ShadowFocus>& focus, bool fade);
     [[nodiscard]] std::uint32_t lamp_map_size() const noexcept { return (std::max)(1024u, map_size() / 2); }
     void record_depth(WGPUCommandEncoder encoder, WGPUTextureView target, const glm::mat4& matrix, std::uint32_t slot,
-                      const DepthDraw& draw) const;
+                      const DepthDraw& draw, GpuPass timed) const;
     // What each cascade's map holds: drawn for this sphere and sun, this
     // frame; redraw[] says which are drawn this frame.
     struct CascadeCache {
@@ -1269,12 +1270,13 @@ void SceneEffects::set_focus(const std::optional<ShadowFocus>& focus, const std:
 // One shadow map: a cascade or the focus.
 void SceneEffects::Impl::record_shadow(const WGPUCommandEncoder encoder, const std::uint32_t layer, const std::uint32_t slot,
                                        const DepthDraw& draw) const {
-    record_depth(encoder, shadow_layers[layer], cascade_matrices[layer], slot, draw);
+    record_depth(encoder, shadow_layers[layer], cascade_matrices[layer], slot, draw,
+                 slot == focus_slot ? GpuPass::cab_shadow : GpuPass::sun_shadows);
 }
 
 // A depth-only shadow pass into `target`.
 void SceneEffects::Impl::record_depth(const WGPUCommandEncoder encoder, const WGPUTextureView target, const glm::mat4& matrix,
-                                      const std::uint32_t slot, const DepthDraw& draw) const {
+                                      const std::uint32_t slot, const DepthDraw& draw, const GpuPass timed) const {
     const WGPURenderPassDepthStencilAttachment attachment{
         .view = target,
         .depthLoadOp = WGPULoadOp_Clear,
@@ -1285,7 +1287,8 @@ void SceneEffects::Impl::record_depth(const WGPUCommandEncoder encoder, const WG
         .stencilStoreOp = WGPUStoreOp_Undefined,
         .stencilReadOnly = true,
     };
-    const WGPURenderPassDescriptor descriptor{.depthStencilAttachment = &attachment};
+    const auto timestamps = render_pass_timestamps(timed);
+    const WGPURenderPassDescriptor descriptor{.depthStencilAttachment = &attachment, .timestampWrites = timestamps ? &*timestamps : nullptr};
     const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
     if (draw) draw(pass, slot, matrix, DepthPassKind::shadow);
     wgpuRenderPassEncoderEnd(pass);
@@ -1305,26 +1308,34 @@ void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const D
             .stencilStoreOp = WGPUStoreOp_Undefined,
             .stencilReadOnly = true,
         };
-        const WGPURenderPassDescriptor descriptor{.depthStencilAttachment = &depth_attachment};
+        const auto timestamps = render_pass_timestamps(GpuPass::depth_prepass);
+        const WGPURenderPassDescriptor descriptor{.depthStencilAttachment = &depth_attachment,
+                                                  .timestampWrites = timestamps ? &*timestamps : nullptr};
         const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
         if (draw) draw(pass, max_cascades, view.projection * view.view, DepthPassKind::camera);
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
 
-        const auto compute = wgpuCommandEncoderBeginComputePass(encoder, nullptr);
         // The occlusion at ao_raw's size (half the frame's at low), the blur
-        // at the frame's.
-        wgpuComputePassEncoderSetPipeline(compute, ao_half ? gtao_low : gtao);
-        wgpuComputePassEncoderSetBindGroup(compute, 0, gtao_group, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(compute, (ao_raw.width + 7) / 8, (ao_raw.height + 7) / 8, 1);
-        wgpuComputePassEncoderSetPipeline(compute, ao_half ? blur_low : blur);
-        wgpuComputePassEncoderSetBindGroup(compute, 0, blur_group, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(compute, (ao.width + 7) / 8, (ao.height + 7) / 8, 1);
-        wgpuComputePassEncoderEnd(compute);
-        wgpuComputePassEncoderRelease(compute);
+        // at the frame's: a compute pass each, so each has its GPU time.
+        const auto compute_one = [&](const GpuPass timed, const WGPUComputePipeline pipeline, const WGPUBindGroup group,
+                                     const std::uint32_t width, const std::uint32_t height) {
+            const auto writes = compute_pass_timestamps(timed);
+            const WGPUComputePassDescriptor compute_descriptor{.timestampWrites = writes ? &*writes : nullptr};
+            const auto compute = wgpuCommandEncoderBeginComputePass(encoder, &compute_descriptor);
+            wgpuComputePassEncoderSetPipeline(compute, pipeline);
+            wgpuComputePassEncoderSetBindGroup(compute, 0, group, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(compute, (width + 7) / 8, (height + 7) / 8, 1);
+            wgpuComputePassEncoderEnd(compute);
+            wgpuComputePassEncoderRelease(compute);
+        };
+        compute_one(GpuPass::occlusion, ao_half ? gtao_low : gtao, gtao_group, ao_raw.width, ao_raw.height);
+        compute_one(GpuPass::occlusion_blur, ao_half ? blur_low : blur, blur_group, ao.width, ao.height);
     }
     if (frame.flags[0] != 0 && cluster_group) {
-        const auto compute = wgpuCommandEncoderBeginComputePass(encoder, nullptr);
+        const auto writes = compute_pass_timestamps(GpuPass::light_clusters);
+        const WGPUComputePassDescriptor compute_descriptor{.timestampWrites = writes ? &*writes : nullptr};
+        const auto compute = wgpuCommandEncoderBeginComputePass(encoder, &compute_descriptor);
         wgpuComputePassEncoderSetPipeline(compute, cluster);
         wgpuComputePassEncoderSetBindGroup(compute, 0, cluster_group, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(compute, (cluster_count + 63) / 64, 1, 1);
@@ -1347,7 +1358,7 @@ void SceneEffects::record(const WGPUCommandEncoder encoder, const DepthDraw& dra
     }
     if (impl.focus_active) impl.record_shadow(encoder, impl.focus_layer, Impl::focus_slot, draw);
     for (std::uint32_t k = 0; k < impl.lamp_shadow_count; ++k) {
-        impl.record_depth(encoder, impl.lamp_layers[k], impl.lamp_matrices[k], Impl::lamp_slot + k, draw);
+        impl.record_depth(encoder, impl.lamp_layers[k], impl.lamp_matrices[k], Impl::lamp_slot + k, draw, GpuPass::lamp_shadows);
     }
     impl.record_camera(encoder, draw);
 }
@@ -1398,7 +1409,7 @@ void SceneEffects::record_parallel(const WGPUDevice device, TaskPool& pool, cons
     for (std::uint32_t k = 0; k < impl.lamp_shadow_count; ++k) {
         tasks.emplace_back([encode, &impl, k, draw] {
             encode(impl.cascade_count + 1 + k, "lamp shadow", [&](const WGPUCommandEncoder encoder) {
-                impl.record_depth(encoder, impl.lamp_layers[k], impl.lamp_matrices[k], Impl::lamp_slot + k, draw);
+                impl.record_depth(encoder, impl.lamp_layers[k], impl.lamp_matrices[k], Impl::lamp_slot + k, draw, GpuPass::lamp_shadows);
             });
         });
     }

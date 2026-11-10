@@ -268,6 +268,33 @@ std::optional<TrackLocation> RouteLeg::at(double distance) const {
     return std::nullopt;
 }
 
+std::vector<RouteCrossing> route_crossings(const TrackNetwork& network, const TrainRoute& route, const TrackPoint& point,
+                                           const double tolerance) {
+    std::vector<RouteCrossing> found;
+    for (std::size_t l = 0; l < route.legs.size(); ++l) {
+        const auto& leg = route.legs[l];
+        std::optional<RouteCrossing> best;
+        for (const auto& span : leg.spans) {
+            const double length = span.length();
+            // Spans whose start is farther than their length and the
+            // tolerance cannot come near it.
+            const auto start = network.point(span.node, span.from);
+            if (!start || distance(*start, point) > length + tolerance + 1.0) continue;
+            for (double along = 0.0;; along += 1.0) {
+                const double at = (std::min)(along, length);
+                const double offset = span.forward ? span.from + at : span.from - at;
+                if (const auto here = network.point(span.node, offset)) {
+                    const double off = distance(*here, point);
+                    if (off <= tolerance && (!best || off < best->off)) best = RouteCrossing{l, span.start + at, off};
+                }
+                if (at >= length) break;
+            }
+        }
+        if (best) found.push_back(*best);
+    }
+    return found;
+}
+
 TrainRoute build_route(const TrackNetwork& network, const PathPlan& plan) {
     TrainRoute route;
     route.name = plan.name;

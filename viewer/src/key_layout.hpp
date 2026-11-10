@@ -1,5 +1,7 @@
 #pragma once
 
+#include <openrts/simulation/rail_joints.hpp>
+
 // Which keys the viewer's own engineer actions use. RTS's put the cab
 // window and the head out on the numeric keypad (Num0 / Num1, rts1.exe
 // 0x4121BC); openRTS's take keys every keyboard has and no installed cab
@@ -39,5 +41,24 @@ inline constexpr float max_mouse_sensitivity = 3.0f;
 void set_mouse_sensitivity(float factor) noexcept;
 // The remembered value as a factor (1 when none or unreadable).
 [[nodiscard]] float parse_mouse_sensitivity(const char* text) noexcept;
+
+// The driver's head in the cab (openRTS, head_motion.hpp): how far it nods
+// with the train's acceleration, braking and the rail joints and leans in
+// curves; 0 as RTS (the camera carried by the body's sway alone), 1 as
+// tuned, up to 3. Set in the start menu's Settings or the panel's General
+// (remembered as head_motion).
+inline constexpr float max_head_motion = 3.0f;
+[[nodiscard]] float head_motion() noexcept;
+void set_head_motion(float amount) noexcept;
+// The remembered value (1 when none or unreadable).
+[[nodiscard]] float parse_head_motion(const char* text) noexcept;
+
+// The rail joints the wheels knock on (openrts/simulation/rail_joints.hpp):
+// openRTS's layout unless RTS's is chosen in the start menu's Settings or
+// the panel's General (remembered as rail_joints: "openrts" or "rts").
+[[nodiscard]] simulation::RailJointLayout rail_joint_layout() noexcept;
+void set_rail_joint_layout(simulation::RailJointLayout layout) noexcept;
+// The remembered value ("rts": RTS's, anything else openRTS's).
+[[nodiscard]] simulation::RailJointLayout parse_rail_joint_layout(const char* text) noexcept;
 
 } // namespace openrts::viewer

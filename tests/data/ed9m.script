@@ -36,8 +36,11 @@
 # the driver's left-door control on, the left doors (A_00) open; the
 # passenger doors of group 2 (DOOR_D, DOOR_E of the head car) open in
 # their AnimTime (5 s), the cab doors stay shut.
-19   switch 7 1
-20   switch 24 0
+# The 2026-11 build's cab9.sd swapped the left and right door switches'
+# numbers: A_02 (left doors, the driver) is 8, A_00 (the left doors) 25
+# (they were 7 and 24, now the right ones').
+19   switch 8 1
+20   switch 25 0
 # GM_DOOR_OPEN sets the doors' State at once (RTS 0x424488), the cab's own
 # passenger doors (DOOR_A .. E, GlobalID) too: the DLL reads those, and its
 # door lamp L_14 (display 7) came back on 2.5 s later when they stayed shut.

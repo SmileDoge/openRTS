@@ -118,6 +118,17 @@ struct TrainRoute {
 [[nodiscard]] formats::TrainPath path_from_route(const TrackNetwork& network, const PathPlan& plan,
                                                  const TrainRoute& route);
 
+// Where the route passes within `tolerance` m of a world point: per leg the
+// nearest place on it (leg, leg distance), in the route's order (a
+// scenario's block point lies on its NumPassed-th one).
+struct RouteCrossing {
+    std::size_t leg{};
+    double distance{};
+    double off{}; // m from the point
+};
+[[nodiscard]] std::vector<RouteCrossing> route_crossings(const TrackNetwork& network, const TrainRoute& route, const TrackPoint& point,
+                                                         double tolerance = 10.0);
+
 // The junction node whose world position is within `tolerance` metres of
 // `point` (RTS 0x47E700 matches .pat junction points this way).
 [[nodiscard]] std::optional<std::uint32_t> junction_near(const TrackNetwork& network, const TrackPoint& point,

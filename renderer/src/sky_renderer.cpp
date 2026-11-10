@@ -1,4 +1,5 @@
 #include <openrts/renderer/sky_renderer.hpp>
+#include <openrts/renderer/gpu_pass_timer.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
@@ -871,10 +872,12 @@ void SkyRenderer::render_reflection_probe(const WGPUCommandEncoder encoder, cons
             .stencilStoreOp = WGPUStoreOp_Undefined,
             .stencilReadOnly = true,
         };
+        const auto timestamps = render_pass_timestamps(GpuPass::reflection_probe);
         const WGPURenderPassDescriptor descriptor{
             .colorAttachmentCount = 1,
             .colorAttachments = &colour,
             .depthStencilAttachment = &depth,
+            .timestampWrites = timestamps ? &*timestamps : nullptr,
         };
         const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
         if (draw) {

@@ -2,7 +2,7 @@
 
 Roadmap step 4 (`roadmap.md`). Status: implemented, 2026-11-01. A train can
 follow a path: the dispatcher reserves and sets the junctions ahead of it,
-signals clear along the reserved way, a test driver can drive it, and the
+signals clear along the reserved way, it can run as traffic (AI), and the
 Track control window shows and edits all of this. Reverse notes:
 `reverse/dispatcher.md` (Track control, the path module and junction
 queues), `reverse/track.md` (junction release).
@@ -63,7 +63,7 @@ train, else the driven one):
 - the route's real track from above on a light green background, as RTS
   draws it; wheel zooms about the cursor, right drag moves, a right click
   opens the menu for what is under the cursor, a left click selects;
-- trains as their cars: magenta driven, blue test driver, olive standing,
+- trains as their cars: magenta driven, blue traffic (AI), olive standing,
   red derailed; the selected train outlined, its path drawn: the reserved
   way green, the rest of the leg blue, later legs pale; W / R / E mark
   waiting, reverse and end points;
@@ -84,7 +84,7 @@ train, else the driven one):
   "Stations" turns them off;
 - menus:
   - **train:** jump to it (the camera follows it), drive it with the
-    keyboard / give it the test driver / let it stand, create or edit its
+    keyboard / run it as traffic (AI) / let it stand, create or edit its
     path, cancel the path, load a route path, save the path, uncouple, remove;
     "Signals for this train": the mode its signals get (as they are, SHUNT,
     NORMAL — RTS's SetSignalMode) and whether it obeys shunting, distance and
@@ -111,8 +111,8 @@ train, else the driven one):
       another track moves its front there, facing the same way on the screen
       as far as the track allows; arrows nudge it 1 m (Shift: 10 m);
     - Space turns it around on the same stretch (the front car goes to the
-      other end); Enter or "Put it here" places it (with or without a test
-      driver), Escape drops it; a right click on the preview offers the same;
+      other end); Enter or "Put it here" places it (as traffic or
+      standing), Escape drops it; a right click on the preview offers the same;
     - a red outline: not enough track (it cannot be placed), or it runs into
       another train (within 1.6 m of one of its cars; it can still be
       placed);
@@ -223,11 +223,14 @@ or mph (flag 0x100), passenger / freight / both (0x20 / 0x40 / 0x80).
   higher limit only once the rear has passed its post too.
 - **Ahead:** the next applicable post within 3 km.
 
-## Test driver
+## AI trains
 
-`simulation/auto_driver` (`AutoDriver`, `path_orders`); not RTS's AI (RTS
-drives traffic by its own rules, `0x424488`), a stand-in that loads
-signals and blocks and will stand in for remote trains.
+Since 2026-11-10 an AI train runs as RTS's traffic (`docs/traffic.md`):
+one body along its path, RTS's controller (`simulation/traffic`), no
+per-car physics. What follows is the earlier test driver,
+`simulation/auto_driver` (`AutoDriver`, `path_orders`), kept in the code
+and its tests but no longer used by the game: a driver working the
+player's handles on the full physics.
 - It works the player's handles: throttle notch by notch, the reverser
   while standing, the 395 valve (V until the equalising reservoir is down
   by 0.4–1.6 atm for the braking it needs, then III; II to release), the
@@ -257,7 +260,8 @@ signals and blocks and will stand in for remote trains.
 | reservations, authority | `simulation/dispatcher`, `TrackNetwork::cancel_reservation` |
 | signals: authority, pass aspect | `simulation/signals` |
 | speed limits | `simulation/speed_limits` |
-| test driver and its orders | `simulation/auto_driver` |
+| traffic: its controller and its orders | `simulation/traffic` (`docs/traffic.md`) |
+| the earlier test driver | `simulation/auto_driver` |
 | trains in the viewer: roles, spawning, paths | `viewer/train_view` |
 | Track control | `viewer/track_control` |
 | checks | `tests/path_test.cpp`, `tools/path-check`, `tools/track-check` |
@@ -272,6 +276,6 @@ signals and blocks and will stand in for remote trains.
   console do not set them yet.
 - Track control: the cargo layer (no data model yet; the electrification
   layer exists, `electrification.md`), the editor's three buttons, `Release
-  block point` and activity events (step 7).
-- The test driver is not RTS's AI; RTS's traffic priorities (`0x424488`,
-  `0x48A0F8` time estimates) are only partly followed (the takeover rule).
+  block point` (the scenarios' block points run, `docs/traffic.md`).
+- RTS's traffic priorities in the reservations (`0x48A0F8` time estimates)
+  are only partly followed (the takeover rule).

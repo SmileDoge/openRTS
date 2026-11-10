@@ -6,7 +6,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <set>
@@ -667,6 +670,28 @@ void over_tcp() {
     tcp.stop();
 }
 
+// The numbers a TDB writes (TrackNodes ( n, TrItemTable ( n) and its
+// junction nodes, read from its text, not through formats.
+struct WrittenCounts {
+    std::uint32_t nodes{}, items{}, junctions{};
+};
+WrittenCounts written_counts(const std::filesystem::path& file) {
+    std::ifstream input(file, std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(input)), {});
+    std::string text; // UTF-16: its ASCII half is enough for keywords and digits
+    const bool wide = bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF;
+    for (std::size_t i = wide ? 2 : 0; i < bytes.size(); i += wide ? 2 : 1) text.push_back(bytes[i]);
+    const auto number_after = [&](const std::string& key) -> std::uint32_t {
+        const auto at = text.find(key);
+        if (at == std::string::npos) return 0;
+        const auto open = text.find('(', at);
+        return open == std::string::npos ? 0u : static_cast<std::uint32_t>(std::strtoul(text.c_str() + open + 1, nullptr, 10));
+    };
+    WrittenCounts counts{.nodes = number_after("TrackNodes"), .items = number_after("TrItemTable"), .junctions = 0};
+    for (auto at = text.find("TrJunctionNode"); at != std::string::npos; at = text.find("TrJunctionNode", at + 1)) ++counts.junctions;
+    return counts;
+}
+
 // Kuban as rts_server.exe plays it.
 void content(const std::filesystem::path& root) {
     std::string error;
@@ -676,10 +701,26 @@ void content(const std::filesystem::path& root) {
         return;
     }
     const auto& c = route->counts();
-    check(c.nodes == 1653 && c.items == 4074 && c.substations == 3 && c.sections == 3,
-          "Kuban's counts as rts_server.exe sent them (1653, 4074, 3, 3): " + std::to_string(c.nodes) + ", " + std::to_string(c.items) + ", " +
-              std::to_string(c.substations) + ", " + std::to_string(c.sections));
-    check(route->signals() && route->signals()->heads().size() == 1951, "1951 signal heads, as the live snapshot");
+    // rts_server.exe's numbers were taken on the 2025 build's Kuban (its
+    // TDB 1653 nodes). The 2026-11 build redrew its track: there the
+    // counts are checked against the numbers its own files write, and the
+    // snapshot against the route as read.
+    const auto tdb = written_counts(root / "ROUTES" / "Kuban_RTS" / "Kuban_RTS.tdb");
+    const bool recorded = c.nodes == 1653;
+    std::cout << "server content: Kuban " << c.nodes << " nodes, " << c.items << " items, " << c.substations << " substations, "
+              << c.sections << " sections, " << (route->signals() ? route->signals()->heads().size() : 0) << " signal heads; "
+              << (recorded ? "the Kuban rts_server.exe was recorded on" : "not the Kuban rts_server.exe was recorded on: checked against its files")
+              << '\n';
+    if (recorded) {
+        check(c.items == 4074 && c.substations == 3 && c.sections == 3,
+              "Kuban's counts as rts_server.exe sent them (1653, 4074, 3, 3): " + std::to_string(c.nodes) + ", " + std::to_string(c.items) +
+                  ", " + std::to_string(c.substations) + ", " + std::to_string(c.sections));
+        check(route->signals() && route->signals()->heads().size() == 1951, "1951 signal heads, as the live snapshot");
+    } else {
+        check(c.nodes == tdb.nodes && c.items == tdb.items && c.substations > 0 && c.sections > 0,
+              "Kuban's counts as its TDB writes them (" + std::to_string(tdb.nodes) + ", " + std::to_string(tdb.items) + "): " +
+                  std::to_string(c.nodes) + ", " + std::to_string(c.items));
+    }
     Recorder rec;
     server::ServerOptions options;
     options.route_id = "kuban_rts";
@@ -700,7 +741,14 @@ void content(const std::filesystem::path& root) {
     game.received(1, P(Package::snapshot), {});
     const auto read = net::read_snapshot(rec.out[1]);
     rec.out[1].clear();
-    check(read.ok() && read.snapshot.junctions.size() == 555 && read.snapshot.signals.size() == 1951, "the world: 555 junctions, 1951 heads");
+    if (recorded) {
+        check(read.ok() && read.snapshot.junctions.size() == 555 && read.snapshot.signals.size() == 1951, "the world: 555 junctions, 1951 heads");
+    } else {
+        check(read.ok() && read.snapshot.junctions.size() == tdb.junctions && route->signals()
+                  && read.snapshot.signals.size() == route->signals()->heads().size(),
+              "the world: every junction of the TDB (" + std::to_string(tdb.junctions) + ") and every signal head: " +
+                  std::to_string(read.snapshot.junctions.size()) + ", " + std::to_string(read.snapshot.signals.size()));
+    }
     for (int i = 0; i < 40; ++i) game.tick(now += 0.05);
     take(rec, 1);
     // A signal held at stop from the console.

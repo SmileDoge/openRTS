@@ -45,6 +45,13 @@ struct AceRgbaImage {
     // gluBuild2DMipmaps). Empty only for images not decoded from an ACE.
     std::vector<std::vector<std::uint8_t>> mips;
     bool mips_from_file = false;
+    // A DXT1 ACE with its own levels: the file's 8-byte BC1 blocks of level 0
+    // and of each level down to 4x4 (rows of ceil(w/4) blocks), for a GPU to
+    // take as they are (as RTS gives Direct3D its DXT1). Its three-colour
+    // blocks' fourth colour is transparent black there, as `pixels` has it
+    // for a texture with a mask; a maskless one using it (none in the 2026-11
+    // content) is not kept. Empty otherwise.
+    std::vector<std::vector<std::uint8_t>> bc1;
 };
 
 // Mipmap levels 1.. of an RGBA8 image: each a 2x2 box filter of the level

@@ -190,9 +190,10 @@ WgpuDeviceContextResult create_wgpu_device(const GraphicsBackend backend) {
         };
         // Optional features: timestamp queries (GPU frame time in the
         // viewer), a first instance in indirect draws (the model renderer's
-        // multi-draw calls).
+        // multi-draw calls), BC compressed textures (DXT1 ACE as they are).
         std::vector<WGPUFeatureName> features;
-        for (const auto feature : {WGPUFeatureName_TimestampQuery, WGPUFeatureName_IndirectFirstInstance}) {
+        for (const auto feature : {WGPUFeatureName_TimestampQuery, WGPUFeatureName_IndirectFirstInstance,
+                                   WGPUFeatureName_TextureCompressionBC}) {
             if (wgpuAdapterHasFeature(context.adapter_, feature)) features.push_back(feature);
         }
         const WGPUDeviceDescriptor device_descriptor{

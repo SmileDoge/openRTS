@@ -185,6 +185,21 @@ Impacts per bogie: `n = 1 − (distance since the node end entered) / w`,
 `w = WheelRadius · 1.25 · NumWheels`. Rail joints lie every 50 m along a node,
 or on nodes longer than 2000 m in groups at 0, 12.5, 25, 37.5 m every 600 m.
 Crossing a joint triggers the wagon sound event 3, changing node event 2.
+(Of the track of this installation's routes, 34 % (Chernyshevsk) to 56 %
+(Kuban) lies in nodes over 2000 m.)
+
+openRTS's layout (2026-11-10, not RTS; Settings and the panel's General,
+"Rail joints", openRTS by default, RTS as above;
+`simulation/src/rail_joints.cpp`): a node under 1000 m is jointed track, a
+joint every 25 m from its start; a longer one is welded, strings of about
+800 m (their count the length / 800 m rounded, sharing the length left
+with weights 0.8 to 1.2) with an equalizing span of two or three 12.5 m
+rails (three or four joints) before the first, between them and after the
+last. The spans' rails and the weights come from the node's index
+(SplitMix64), so a place sounds the same at every run and on every client.
+Joints within 0.25 m of a node's end are left out (the junction's event).
+The distance since a joint for the knock counts the way the bogie goes
+(RTS counts it towards greater offsets either way).
 
 Use: only the driven engine's offsets, times player mass · 0.0055, move the
 cab camera (`0x424488`); the car shapes are drawn without them. openRTS
@@ -195,6 +210,19 @@ not found again as a constant: UNKNOWN; openRTS moves the camera by the
 offsets times the slider.) openRTS draws the offsets between the last two
 0.05 s steps, like the cars' places (2026-11-08); before, the cab jerked at
 20 Hz however high the frame rate.
+
+openRTS's head motion (2026-11-10, not RTS; Settings and the panel's
+General, "Head motion in the cab", 0 to 3, 1 by default, 0 as RTS): the
+driver's head on its neck, per car axis a mass on a spring and a damper
+(`viewer/src/head_motion.cpp`: 0.9 Hz sideways, 2 Hz up and down, 0.85 Hz
+fore and aft, damping ratios 0.3 to 0.35), carried by the body's offsets
+above and pushed by the train's own acceleration (`v^2 / R` towards the
+curve's inside, the acceleration along the front). Its lag behind the body
+moves the camera and turns it: thrown forward it looks down (1.5 rad per
+metre; service braking at 0.7 m/s^2 about 2 degrees, nodding back once at
+the stop), aside it leans that way (1.5 rad per metre), knocked up at a
+joint it nods down (2.5 rad per metre); at most 0.12 m and 0.2 rad. The
+nod and the tilt go into the view only, so the mouse's look is unchanged.
 
 ## The exterior in the cab (`0x438D50`, parser `0x44247C`)
 

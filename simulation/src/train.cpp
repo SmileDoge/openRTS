@@ -902,8 +902,46 @@ void Train::set_asleep(const bool asleep) noexcept {
     }
 }
 
+void Train::set_kinematic(const bool kinematic) noexcept {
+    kinematic_ = kinematic;
+    drive_acceleration_ = 0.0f;
+    if (!kinematic || cars_.empty()) return;
+    // One body: every car at the speed of the first.
+    for (auto& car : cars_) car.velocity = cars_.front().velocity;
+}
+
+// RTS 0x424488 for a TRAFFIC train: speed += acceleration * dt, set to 0
+// when it would change sign, given to the cars; then the cars move along
+// as usual (positions, joints, junctions, the body springs).
+void Train::step_kinematic() {
+    const auto dt = static_cast<float>(train_step);
+    const float before = cars_.front().velocity;
+    float after = before + drive_acceleration_ * dt;
+    if ((before > 0.0f && after < 0.0f) || (before < 0.0f && after > 0.0f)) after = 0.0f;
+    if (std::abs(after) < 1e-5f) after = 0.0f;
+    for (auto& car : cars_) {
+        car.acceleration = (after - before) / dt;
+        car.velocity = after;
+        car.force = 0.0f;
+        car.brake_force = 0.0f;
+        car.coupler_force = 0.0f;
+        car.resistance = 0.0f;
+        car.wheelslip = false;
+        car.sanding = false;
+        car.power = 0.0f;
+        car.travelled += after * train_step;
+    }
+    const double moved = after * train_step;
+    move_and_update(moved, moved);
+    sway();
+}
+
 void Train::step() {
     if (!network_ || cars_.empty() || asleep_) return;
+    if (kinematic_ && !derailed()) {
+        step_kinematic();
+        return;
+    }
     const auto n = cars_.size();
     const auto dt = static_cast<float>(train_step);
     auto& impl = *impl_;
@@ -1606,34 +1644,14 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
             if (turn < -pi * 0.5) turn += pi;
             car.curvature = distance > 0.5 ? static_cast<float>(turn / distance) : 0.0f;
         }
-        // Rail joints as RTS places them (0x4F5B34): a junction event when a
-        // bogie changes node; a joint event when it passes a rail joint along
-        // the node: every 50 m, or on nodes over 2000 m (welded) a group at
-        // 0, 12.5, 25 and 37.5 m every 600 m. Each also gives an impact for
-        // the body springs that fades over WheelRadius * 1.25 * NumWheels.
+        // Rail joints (RTS 0x4F5B34): a junction event when a bogie changes
+        // node; a joint event when it passes a rail joint along the node,
+        // laid out as RTS or openRTS does (TrackNetwork::rail_joints). Each
+        // also gives an impact for the body springs that fades over
+        // WheelRadius * 1.25 * NumWheels.
         const auto& wagon = *car.definition;
         const double window = static_cast<double>(wagon.wheel_radius) * 1.25 * wagon.wheels;
-        const auto since_joint = [](const double offset, const double node_length) {
-            if (node_length > 2000.0) {
-                double in = offset - std::floor(offset / 600.0) * 600.0;
-                if (in < 37.5) {
-                    if (in >= 25.0) in -= 25.0;
-                    else if (in >= 12.5) in -= 12.5;
-                } else {
-                    in -= 37.5;
-                }
-                return in;
-            }
-            return offset - std::floor(offset / 50.0) * 50.0;
-        };
-        const auto joint_index = [](const double offset, const double node_length) {
-            if (node_length > 2000.0) {
-                const double group = std::floor(offset / 600.0);
-                const double in = offset - group * 600.0;
-                return group * 4.0 + (in < 12.5 ? 0.0 : in < 25.0 ? 1.0 : in < 37.5 ? 2.0 : 3.0);
-            }
-            return std::floor(offset / 50.0);
-        };
+        const auto& joints = network_->rail_joints();
         auto& impact = impl.impacts[i];
         impact = {0.0f, 0.0f};
         const std::array<const TrackTraveller*, 2> bogies{&front, &rear};
@@ -1642,20 +1660,22 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
             const auto* node = network_->node(traveller->node());
             const double length = node ? node->length : 0.0;
             const double offset = traveller->offset();
+            // Going towards the node's greater offsets.
+            const bool along = traveller->forward() == (car.velocity > 0.0f);
+            const auto place = joints.place(traveller->node(), length, offset, along);
             auto& before = impl.last_bogie[i][b];
             if (before.node != ~0u && car.velocity != 0.0f) {
                 if (before.node != traveller->node()) {
                     impl.events.push_back(
                         {.kind = TrainEventKind::junction, .car = static_cast<std::uint32_t>(i), .bogie = b});
-                } else if (joint_index(before.offset, length) != joint_index(offset, length)) {
+                } else if (joints.place(before.node, length, before.offset, along).index != place.index) {
                     impl.events.push_back({.kind = TrainEventKind::joint, .car = static_cast<std::uint32_t>(i), .bogie = b});
                 }
                 if (window > 0.0) {
                     // Distance since the node end the bogie entered by.
-                    const bool along = traveller->forward() == (car.velocity > 0.0f);
                     const double entered = along ? offset : length - offset;
                     const double node_impact = entered / window <= 1.0 ? 1.0 - entered / window : 0.0;
-                    const double joint = since_joint(offset, length) / window;
+                    const double joint = place.since / window;
                     const double joint_impact = joint <= 1.0 ? 1.0 - joint : 0.0;
                     impact[0] = (std::max)(impact[0], static_cast<float>(node_impact));
                     impact[1] = (std::max)(impact[1], static_cast<float>(joint_impact));

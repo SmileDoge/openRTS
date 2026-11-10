@@ -88,6 +88,16 @@ void read_static_field(Tokenizer& tokens,
         }
     } else if (equals_ignore_case(field, "StaticFlags")) {
         if (const auto value = tokens.next()) object.static_flags = static_cast<std::uint32_t>(std::strtoul(value->c_str(), nullptr, 16));
+    } else if (equals_ignore_case(field, "QDirection")) {
+        // Every kind's, before the kinds' own fields below: their branches
+        // take every field of their kind, and a level crossing, a forest or a
+        // car spawner lost its turn (Pavlovsk's rm_vorota2.s gates, 20
+        // degrees, stood square to the tile).
+        for (auto& component : object.rotation) {
+            if (const auto value = tokens.next()) {
+                if (const auto parsed = parse_double(*value)) component = static_cast<float>(*parsed);
+            }
+        }
     } else if (object.kind == WorldObjectKind::transfer && (equals_ignore_case(field, "Width") || equals_ignore_case(field, "Height"))) {
         if (const auto value = tokens.next()) {
             if (const auto parsed = parse_double(*value)) {
@@ -150,12 +160,6 @@ void read_static_field(Tokenizer& tokens,
         }
     } else if (equals_ignore_case(field, "SignalSubObj")) {
         if (const auto value = tokens.next()) object.signal_sub_objects = static_cast<std::uint32_t>(std::strtoul(value->c_str(), nullptr, 16));
-    } else if (equals_ignore_case(field, "QDirection")) {
-        for (auto& component : object.rotation) {
-            if (const auto value = tokens.next()) {
-                if (const auto parsed = parse_double(*value)) component = static_cast<float>(*parsed);
-            }
-        }
     }
 }
 

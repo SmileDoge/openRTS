@@ -168,10 +168,14 @@ std::string write_train_path(const TrainPath& path) {
 }
 
 std::vector<TrainPath> load_train_paths(const core::Vfs& vfs, const core::VirtualPath& route) {
-    std::vector<TrainPath> paths;
     const auto directory = route.resolve(std::string_view("PATHS"));
-    if (!directory) return paths;
-    for (const auto& entry : vfs.list(*directory)) {
+    if (!directory) return {};
+    return load_train_paths_in(vfs, *directory);
+}
+
+std::vector<TrainPath> load_train_paths_in(const core::Vfs& vfs, const core::VirtualPath& directory) {
+    std::vector<TrainPath> paths;
+    for (const auto& entry : vfs.list(directory)) {
         if (entry.directory) continue;
         const std::string name(entry.path.filename());
         if (name.size() < 5) continue;

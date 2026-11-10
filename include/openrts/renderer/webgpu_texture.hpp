@@ -53,4 +53,12 @@ struct WgpuTextureUploadResult {
 [[nodiscard]] WgpuTextureUploadResult upload_rgba8_texture(
     WGPUDevice device, Rgba8ImageView image, std::string_view label = {});
 
+// A BC1 (DXT1) texture from its levels' 8-byte blocks (level k:
+// max(1, width >> k) x max(1, height >> k) texels, rows of ceil(w/4)
+// blocks). Needs the device's TextureCompressionBC and level 0's sides in
+// whole blocks; the chain may stop at any level.
+[[nodiscard]] WgpuTextureUploadResult upload_bc1_texture(
+    WGPUDevice device, std::uint32_t width, std::uint32_t height, const std::vector<std::vector<std::uint8_t>>& levels,
+    std::string_view label = {});
+
 } // namespace openrts::renderer

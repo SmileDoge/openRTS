@@ -2,6 +2,7 @@
 
 #ifdef OPENRTS_HAS_WGPU
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <future>
 #include <map>
@@ -9,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -22,6 +24,7 @@
 #include <openrts/audio/sound_instance.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/formats/activity.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/train_path.hpp>
 #include <openrts/renderer/frustum.hpp>
@@ -41,11 +44,13 @@
 #include <openrts/simulation/train.hpp>
 #include <openrts/simulation/train_lights.hpp>
 #include <openrts/simulation/train_route.hpp>
+#include <openrts/simulation/traffic.hpp>
 #include <openrts/trainplugin/native_plugin.hpp>
 
 #include "camera.hpp"
 #include "cab_view.hpp"
 #include "engineer.hpp"
+#include "head_motion.hpp"
 #include "legacy_cab.hpp"
 #include "particle_effects.hpp"
 #include "viewer_scene.hpp"
@@ -207,11 +212,65 @@ public:
     // (--spawn): in its cab; on foot beside the cab car, as RTS starts an
     // activity by default (0x42F4A4: 2 m off the car's left side at its
     // front end); or the free camera above the train.
-    enum class StartView : std::uint8_t { none, cab, car, above };
+    // `position`: a scenario's start outside the trains (start_activity).
+    enum class StartView : std::uint8_t { none, cab, car, above, position };
     void set_start_view(StartView view) noexcept {
         start_view_ = view;
         starts_in_cab_ = view == StartView::cab;
     }
+    // An RTS scenario (formats::Activity, docs/activities.md), at the next
+    // update: its own consists and paths (RTS_ACT/<name>, `folder`) found
+    // before the route's and RTS's; the player's service's train driven, at
+    // its path's start; the standing (STATIC) services' trains where their
+    // placement says; a train whose stock is missing left out (the log
+    // says which car); the player where the header says. The trains there
+    // now go. The player's train gets its service's path (the dispatcher
+    // reserves it, block points hold it); the traffic services' trains start
+    // at their times and run as RTS's traffic (docs/traffic.md).
+    void request_activity(std::shared_ptr<const formats::Activity> activity, core::VirtualPath folder) {
+        pending_activity_ = std::move(activity);
+        pending_activity_folder_ = std::move(folder);
+    }
+    // The scenario's trains have been put on the track (or tried to).
+    [[nodiscard]] bool activity_started() const noexcept { return activity_started_; }
+    // A scenario's train by its service and number in it (TrainID ( s t )):
+    // the player in its cab; some car of it within `radius` m of `at` on the
+    // ground; a car's value for WagonState (from 0: BrakeCylinder,
+    // BrakePipe in kgf/cm2, Speed in km/h); the couplings of the scenario's
+    // trains since the last call (the two ids; a coupled train keeps the
+    // earlier one's, the player's); a train given another id (AssignService).
+    using ActivityId = std::pair<std::uint32_t, std::uint32_t>;
+    [[nodiscard]] bool activity_in_cab(ActivityId train) const;
+    // `reach`: WAGON_ANY (any car; also ""), WAGON_ALL, WAGON_FRONT,
+    // WAGON_BACK, WAGON_PLAYER and PLAYER (the player's car).
+    [[nodiscard]] bool activity_near(ActivityId train, const formats::RoutePosition& at, double radius, std::string_view reach) const;
+    // A car by its place in the train (negative from the tail) or by its
+    // scenario ID (`by_id`: the train it started in and its consist UiD):
+    // the state variable `name` of activity_WagonStateVariables (BrakeCylinder,
+    // Auxiliary, PipePressure, MainReservoir, IndependentBrake, Handbrake,
+    // Velocity, Acceleration in kgf/cm2, %, m/s; SMSStream of its CABIN or
+    // WAGON sound).
+    [[nodiscard]] std::optional<double> activity_car_value(ActivityId train, std::int32_t number, bool by_id, std::string_view area,
+                                                           std::string_view name, int idx, int sub) const;
+    // SendSoundTrigger: the scenario's sound object `object`, or (-1) the
+    // sounds of car `number` of `train`.
+    void activity_sound_trigger(std::int32_t object, std::uint32_t code, ActivityId train, std::int32_t number);
+    // ModifyWagons' end valves: the cocks at the group's ends (the whole
+    // train for -1 -1) open or shut.
+    void activity_end_valves(ActivityId train, std::int32_t first, std::int32_t last, bool open);
+    [[nodiscard]] std::vector<std::pair<ActivityId, ActivityId>> take_activity_couplings() {
+        return std::exchange(activity_couplings_, {});
+    }
+    // A train given another id (AssignService): a new service's path with it.
+    void retag_activity(ActivityId from, ActivityId to);
+    // Traffic (docs/traffic.md): the scenario's traffic trains that started
+    // since the last call; its block points released or enabled (service 0
+    // the global ones, point -1 all of them); ModifyVelocity (not positive:
+    // unchanged); WaitHere (not positive: for good).
+    [[nodiscard]] std::vector<ActivityId> take_activity_started() { return std::exchange(traffic_started_, {}); }
+    void activity_block_point(std::uint32_t service, std::int32_t point, bool enabled, double distance);
+    void activity_modify_velocity(ActivityId train, float speed, float acceleration, float deceleration);
+    void activity_wait_here(ActivityId train, double time);
     // Situations: the trains on the route as they stand (roles, where each
     // front is, the cars in order), <situation_folder>/<name>.situation.
     [[nodiscard]] std::filesystem::path situation_folder() const;
@@ -227,6 +286,11 @@ public:
         std::string name;
         Role role = Role::standing;
         std::optional<simulation::TrackLocation> front;
+        // Without a front: the last car's rear here, the train ahead of it
+        // the way `rear` faces (a scenario's placement, a path's start).
+        std::optional<simulation::TrackLocation> rear;
+        // A scenario's train: its service and its number in it.
+        std::optional<std::pair<std::uint32_t, std::uint32_t>> activity_id;
         std::vector<formats::ConsistEntry> cars;
         // The cars' keys (0 or none: new ones). A car keeps its key through
         // couplings and cuts, and the DLL host its DLL by it: a car that
@@ -556,8 +620,51 @@ private:
     [[nodiscard]] std::string make_unit_from(std::string name, const std::vector<formats::ConsistEntry>& entries, Unit& unit,
                                              std::vector<std::unique_ptr<formats::WagonDefinition>>& stock) const;
     [[nodiscard]] std::string load_situation(const std::filesystem::path& file);
-    [[nodiscard]] std::string put_back(std::vector<PlacedTrain> saved, const std::string& source);
+    // `skip_broken`: a train that cannot be made (its stock missing) is left
+    // out, the log says why; else none of them is put on the track.
+    [[nodiscard]] std::string put_back(std::vector<PlacedTrain> saved, const std::string& source, bool skip_broken = false);
     void apply_start_view(ViewerCamera& camera);
+    // The scenario's trains (request_activity).
+    [[nodiscard]] std::string start_activity(const formats::Activity& activity, const core::VirtualPath& folder);
+    // A consist from the scenario's own folder (nullopt: none there).
+    [[nodiscard]] std::optional<formats::ConsistDefinition> activity_consist(std::string_view name) const;
+    // A path from the scenario's own folder, else the route's.
+    [[nodiscard]] const formats::TrainPath* find_activity_path(std::string_view name) const;
+    // Where a train's rear stands at a path's start, facing along its first
+    // leg; at `start` facing `heading` (nullopt: no track within 20 m).
+    [[nodiscard]] std::optional<simulation::TrackLocation> path_rear(const formats::TrainPath& path) const;
+    [[nodiscard]] std::optional<simulation::TrackLocation> placement_rear(const formats::RoutePosition& start,
+                                                                          const formats::RoutePosition& heading) const;
+    [[nodiscard]] std::optional<simulation::TrackLocation> rear_towards(std::uint32_t node, double offset,
+                                                                        const glm::vec3& direction) const;
+    // How far a train's nearer end is from the player's train's head, m on
+    // the ground (0: the player's own, or no place yet).
+    [[nodiscard]] float distance_to_player(const Unit& unit) const;
+    // The nearest of the unit's cars to `point` (scene coordinates), m on
+    // the ground; 0 for a unit with no place yet.
+    [[nodiscard]] float distance_to(const Unit& unit, const glm::vec3& point) const;
+    // Car shapes are loaded for the trains within train_load_range of the
+    // camera or of the player's train, and let go once no train within
+    // train_keep_range uses them: a scenario's trains all along the line held
+    // 12.8 GB of textures on a 16 GB card (Novokuznetsk, 66 trains).
+    static constexpr float train_load_range = 4000.0f;
+    static constexpr float train_keep_range = 6000.0f;
+    [[nodiscard]] bool train_near(const Unit& unit, float range) const;
+    void let_go_far_shapes(renderer::ModelLibrary& library);
+    std::optional<glm::vec3> camera_eye_; // the last update's
+    std::unordered_map<std::string, core::VirtualPath> train_shapes_; // car and freight shapes asked of the library
+    std::chrono::steady_clock::time_point shapes_checked_{};
+    // Shapes of cars and of their freight asked of the loader (by key): one
+    // load each for every train; the freight's loads on their way.
+    std::unordered_set<std::string> shapes_asked_;
+    std::vector<std::future<renderer::StreamedModelAsset>> freight_loading_;
+    std::shared_ptr<const formats::Activity> pending_activity_;
+    std::vector<std::pair<ActivityId, ActivityId>> activity_couplings_; // take_activity_couplings
+    core::VirtualPath pending_activity_folder_;
+    std::optional<core::VirtualPath> activity_folder_;
+    std::vector<formats::TrainPath> activity_paths_;
+    bool activity_started_ = false;
+    std::optional<formats::RoutePosition> start_point_; // StartView::position
     StartView start_view_ = StartView::none;
     bool starts_in_cab_ = false; // the start view asked for (start_view_ is cleared once applied)
     // The driven train was just made (load, put_back): its DLLs' Init gives
@@ -609,8 +716,36 @@ private:
     void attach_role(Unit& unit);
     [[nodiscard]] Unit* find_unit(std::uint64_t id);
     [[nodiscard]] const Unit* find_unit(std::uint64_t id) const;
-    // What the test driver of `unit` must do this step.
-    [[nodiscard]] simulation::DriveOrders drive_orders(Unit& unit);
+    // A scenario's traffic train not yet started (start_activity).
+    struct TrafficPlan {
+        ActivityId id{};
+        std::int32_t start{};               // s into the day
+        std::optional<std::int32_t> remove; // TrainRemoveTime
+        bool started = false;               // started, or given up
+        bool waiting = false;               // CHECK_IF_BUSY: its place was taken
+    };
+    // A scenario's block point (service 0: a global one).
+    struct ActivityBlock {
+        std::uint32_t service{};
+        const formats::ActivityBlockPoint* point = nullptr;
+        bool released = false; // by its own ReleaseOn... condition
+    };
+    // The service's path to the unit's train in the dispatcher, with the
+    // block points that hold it; empty, or why not.
+    std::string give_activity_path(Unit& unit, const formats::ActivityService& service);
+    [[nodiscard]] std::vector<simulation::RouteBlock> activity_blocks(const formats::ActivityService& service, ActivityId train,
+                                                                      const simulation::TrainRoute& route) const;
+    void start_traffic(TrafficPlan& plan);
+    // Once a frame: traffic due starts, block points release by their
+    // times and trains, traffic at its end (or remove time) goes.
+    void update_traffic();
+    // Another train's cars stand where `train` is (CHECK_IF_BUSY).
+    [[nodiscard]] bool traffic_place_taken(const simulation::Train& train) const;
+    std::shared_ptr<const formats::Activity> activity_; // the scenario running
+    std::vector<TrafficPlan> traffic_plans_;
+    std::vector<ActivityBlock> activity_block_list_;
+    std::vector<ActivityId> traffic_started_; // take_activity_started
+    double traffic_logged_ = -1.0e9;          // the time of day the traffic was last logged
     void load_user_paths();
     // The unit the information panels describe: the followed train, else the driven one.
     [[nodiscard]] const Unit* shown_unit() const;
@@ -725,6 +860,11 @@ private:
     // A car's body on its springs, between the last two steps (render time).
     [[nodiscard]] glm::vec3 body_sway(const Unit& unit, std::size_t i) const;
     [[nodiscard]] glm::vec3 sway_offset(const Unit& unit, std::size_t i) const;
+    // The driver's head in car `i` (head_motion.hpp, the setting
+    // head_motion()): one frame of it, its nod, tilt and shift on `camera`.
+    void move_head(const Unit& unit, std::size_t i, float elapsed, ViewerCamera& camera);
+    HeadMotion head_{};
+    std::uint32_t head_car_{}; // Car::key of the car it rides
     // The 3-D cab (cab_view.hpp) of car cab_car_ of the driven train.
     std::unique_ptr<CabView> cab_;
     std::size_t cab_car_ = SIZE_MAX;

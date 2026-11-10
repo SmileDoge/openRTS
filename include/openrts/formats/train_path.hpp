@@ -55,5 +55,7 @@ struct TrainPath {
 [[nodiscard]] std::string write_train_path(const TrainPath& path);
 // Every .pat of the route's PATHS folder, sorted by file name.
 [[nodiscard]] std::vector<TrainPath> load_train_paths(const core::Vfs& vfs, const core::VirtualPath& route);
+// Every .pat of a folder (a scenario's own, RTS_ACT/<name>), sorted by file name.
+[[nodiscard]] std::vector<TrainPath> load_train_paths_in(const core::Vfs& vfs, const core::VirtualPath& directory);
 
 } // namespace openrts::formats

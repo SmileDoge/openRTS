@@ -30,6 +30,7 @@
 #include <openrts/core/core.hpp>
 #include <openrts/core/installation.hpp>
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/activity.hpp>
 #include <openrts/formats/train_path.hpp>
 #include <openrts/renderer/webgpu_context.hpp>
 
@@ -294,6 +295,10 @@ struct Launcher::State {
     int spawn = 0;                          // spawn_names
     std::vector<std::string> situations;    // saved for the chosen route (the game's Train window)
     int situation = -1;                     // -1: none
+    // The chosen route's RTS scenarios (RTS_ACT/*.act); one chosen sets the
+    // trains, the time, season and weather and the start (-1: none).
+    std::vector<formats::ActivityFile> activities;
+    int activity = -1;
     bool sound = true;
     float volume = 0.5f;
     bool vsync = true;
@@ -358,6 +363,40 @@ struct Launcher::State {
     void draw_update_popup();
     void draw_update_settings(float label_width);
 
+    // openrts-ace (tools/ace): beside the game in a release's tools\, in a
+    // build's tools\ace\Release\; empty when neither is there.
+    std::string ace_status;
+    [[nodiscard]] fs::path ace_tool() const {
+        std::error_code error;
+        for (const auto& candidate : {exe_dir / "tools" / "openrts-ace.exe",
+                                      exe_dir.parent_path().parent_path() / "tools" / "ace" / "Release" / "openrts-ace.exe"}) {
+            if (fs::exists(candidate, error)) return candidate;
+        }
+        return {};
+    }
+    // Runs it with `arguments`, no window, waiting up to 10 s: its exit code
+    // (-1: did not start or finish).
+    [[nodiscard]] int run_ace_tool(const std::string& arguments) const {
+#ifdef _WIN32
+        const auto tool = ace_tool();
+        if (tool.empty()) return -1;
+        std::wstring line = L"\"" + tool.wstring() + L"\" " + from_utf8(arguments).wstring();
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION info{};
+        if (!CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &info)) return -1;
+        DWORD code = static_cast<DWORD>(-1);
+        if (WaitForSingleObject(info.hProcess, 10000) == WAIT_OBJECT_0) GetExitCodeProcess(info.hProcess, &code);
+        CloseHandle(info.hThread);
+        CloseHandle(info.hProcess);
+        return static_cast<int>(code);
+#else
+        (void)arguments;
+        return -1;
+#endif
+    }
+    void draw_ace_settings();
+
     [[nodiscard]] bool running() const {
 #ifdef _WIN32
         return process != nullptr;
@@ -398,6 +437,8 @@ struct Launcher::State {
         sound = remembered_int("launcher_sound", 1) != 0;
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
         viewer::set_mouse_sensitivity(remembered_float("mouse_sensitivity", 1.0f));
+        viewer::set_head_motion(remembered_float("head_motion", 1.0f));
+        viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
         vsync = remembered_int("launcher_vsync", 1) != 0;
         load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
@@ -568,9 +609,13 @@ struct Launcher::State {
             if (situations[i] == chosen) situation = static_cast<int>(i);
     }
 
-    // A consist is wanted: not when the trains come from a situation or there is no train.
-    [[nodiscard]] bool consist_used() const noexcept { return spawn != no_train && situation < 0; }
+    // A consist is wanted: not when the trains come from a scenario or a
+    // situation, or there is no train.
+    [[nodiscard]] bool consist_used() const noexcept { return spawn != no_train && situation < 0 && activity < 0; }
     [[nodiscard]] bool ready() const noexcept { return route >= 0 && (!consist_used() || consist >= 0); }
+    [[nodiscard]] const formats::ActivityFile* chosen_activity() const noexcept {
+        return activity >= 0 && activity < static_cast<int>(activities.size()) ? &activities[static_cast<std::size_t>(activity)] : nullptr;
+    }
 
     [[nodiscard]] std::string address_text() const { return trimmed(address.data()); }
     [[nodiscard]] std::string nick_text() const { return trimmed(nick.data()); }
@@ -587,8 +632,12 @@ struct Launcher::State {
         load_situations();
         paths.clear();
         path = -1;
+        activities.clear();
+        activity = -1;
         if (!vfs || route < 0) return;
         if (const auto folder = core::VirtualPath::parse("ROUTES/" + routes[static_cast<std::size_t>(route)])) {
+            activities = formats::load_activities(*vfs, *folder);
+            std::erase_if(activities, [](const formats::ActivityFile& file) { return !file.activity.ok(); });
             paths = formats::load_train_paths(*vfs, *folder);
             std::erase_if(paths, [](const formats::TrainPath& p) { return !p.ok(); });
             std::sort(paths.begin(), paths.end(), [](const formats::TrainPath& a, const formats::TrainPath& b) {
@@ -624,7 +673,11 @@ struct Launcher::State {
             }
         } else {
             args.insert(args.end(), {"--route", routes[static_cast<std::size_t>(route)], "--root", utf8(root)});
-            if (situation >= 0) {
+            if (const auto* chosen = chosen_activity()) {
+                // The scenario sets the trains, the start, the time, season
+                // and weather (the game reads them from it).
+                args.insert(args.end(), {"--activity", chosen->file});
+            } else if (situation >= 0) {
                 args.insert(args.end(), {"--situation", utf8(situation_folder() / (situations[static_cast<std::size_t>(situation)] + ".situation"))});
             } else if (consist_used()) {
                 args.insert(args.end(), {"--consist", consists[static_cast<std::size_t>(consist)]});
@@ -633,12 +686,14 @@ struct Launcher::State {
                     args.push_back(paths[static_cast<std::size_t>(path)].file);
                 }
             }
-            if (spawn != no_train) args.insert(args.end(), {"--spawn", spawn_keys[spawn]});
-            char time[16];
-            std::snprintf(time, sizeof time, "%02d:%02d", minutes / 60, minutes % 60);
-            args.insert(args.end(), {"--time", time, "--season", season_keys[season], "--weather", weather_keys[weather]});
-            if (start == 1) args.insert(args.end(), {"--start", "on"});
-            if (start == 2) args.insert(args.end(), {"--start", "cold"});
+            if (!chosen_activity()) {
+                if (spawn != no_train) args.insert(args.end(), {"--spawn", spawn_keys[spawn]});
+                char time[16];
+                std::snprintf(time, sizeof time, "%02d:%02d", minutes / 60, minutes % 60);
+                args.insert(args.end(), {"--time", time, "--season", season_keys[season], "--weather", weather_keys[weather]});
+                if (start == 1) args.insert(args.end(), {"--start", "on"});
+                if (start == 2) args.insert(args.end(), {"--start", "cold"});
+            }
         }
         if (sound) {
             args.insert(args.end(), {"--volume", std::to_string(volume)});
@@ -933,6 +988,7 @@ void Launcher::State::draw_single(const float height) {
             }
 
             ImGui::TableNextColumn();
+            ImGui::BeginDisabled(!consist_used());
             if (ImGui::BeginListBox("##paths", {-FLT_MIN, -FLT_MIN})) {
                 if (ImGui::Selectable(tr("(the route's first path)"), path < 0)) path = -1;
                 for (std::size_t i = 0; i < paths.size(); ++i) {
@@ -944,6 +1000,7 @@ void Launcher::State::draw_single(const float height) {
                 ImGui::EndListBox();
             }
             ImGui::EndDisabled();
+            ImGui::EndDisabled();
             ImGui::EndTable();
         }
     }
@@ -953,6 +1010,50 @@ void Launcher::State::draw_single(const float height) {
     if (ImGui::BeginChild("##trip_panel", {options_width, height}, panel_flags)) {
         const float label_width = std::clamp(options_width * 0.48f, 190.0f, 240.0f);
         ImGui::SeparatorText(tr("Trip"));
+        const auto* scenario = chosen_activity();
+        if (begin_form("##scenario_form", label_width)) {
+            // The route's RTS scenarios (RTS_ACT): one sets everything below.
+            form_row(tr("Scenario"));
+            const auto none = std::string(tr("none"));
+            const auto shown = scenario ? (scenario->activity.name.empty() ? scenario->file : scenario->activity.name) : none;
+            ImGui::BeginDisabled(activities.empty());
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::BeginCombo("##activity", shown.c_str())) {
+                if (ImGui::Selectable(none.c_str(), activity < 0)) activity = -1;
+                for (int i = 0; i < static_cast<int>(activities.size()); ++i) {
+                    const auto& file = activities[static_cast<std::size_t>(i)];
+                    const auto label = (file.activity.name.empty() ? file.file : file.activity.name) + "##" + file.file;
+                    if (ImGui::Selectable(label.c_str(), activity == i)) activity = i;
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::EndDisabled();
+            ImGui::EndTable();
+        }
+        if (scenario) {
+            const auto& a = scenario->activity;
+            const auto clock = [](const std::int32_t seconds) {
+                char text[16];
+                std::snprintf(text, sizeof text, "%02d:%02d", seconds / 3600 % 24, seconds / 60 % 60);
+                return std::string(text);
+            };
+            if (!a.starts_in.empty() || !a.ends_in.empty()) hint(trf("From %s to %s", a.starts_in.c_str(), a.ends_in.c_str()).c_str());
+            hint(trf("Starts at %s, lasts %s; %s, %s", clock(a.start_time).c_str(), clock(a.duration).c_str(),
+                     tr(season_names[std::clamp(a.season, 0, 3)]), tr(weather_names[std::clamp(a.weather, 0, 2)]))
+                     .c_str());
+            if (!a.description.empty()) hint(a.description.c_str());
+            std::size_t traffic = 0;
+            for (const auto& service : a.services)
+                if (service.type == formats::ActivityServiceType::traffic) traffic += service.trains.size();
+            hint(trf("The scenario's events run: its messages (F11), its reports (F8), signals, sounds; its %zu traffic trains come "
+                     "out at their times and run as RTS's traffic (block points, the end of their paths).",
+                     traffic)
+                     .c_str());
+        } else if (activities.empty() && route >= 0) {
+            hint(tr("The route has no scenarios (RTS_ACT)."));
+        }
+        ImGui::Spacing();
+        ImGui::BeginDisabled(scenario != nullptr);
         if (begin_form("##trip", label_width)) {
             char time[16];
             std::snprintf(time, sizeof time, "%02d:%02d", minutes / 60, minutes % 60);
@@ -988,13 +1089,17 @@ void Launcher::State::draw_single(const float height) {
             ImGui::EndDisabled();
             ImGui::EndTable();
         }
+        ImGui::EndDisabled();
         ImGui::Spacing();
-        if (spawn == beside_the_car) hint(tr("On foot next to the cab car, as RTS starts an activity."));
-        if (spawn == no_train) hint(tr("A flight over the route; the first consist put on the track in Track control (Ctrl+Alt+F7) is yours."));
-        if (situation >= 0) {
-            hint(tr("The situation's trains replace the consist chosen here."));
-        } else if (situations.empty()) {
-            hint(tr("Situations are saved in the game: Train window, Situations."));
+        if (!scenario) {
+            // A scenario sets all of it.
+            if (spawn == beside_the_car) hint(tr("On foot next to the cab car, as RTS starts an activity."));
+            if (spawn == no_train) hint(tr("A flight over the route; the first consist put on the track in Track control (Ctrl+Alt+F7) is yours."));
+            if (situation >= 0) {
+                hint(tr("The situation's trains replace the consist chosen here."));
+            } else if (situations.empty()) {
+                hint(tr("Situations are saved in the game: Train window, Situations."));
+            }
         }
     }
     ImGui::EndChild();
@@ -1138,6 +1243,14 @@ void Launcher::State::draw_settings(const float height) {
                 viewer::set_mouse_sensitivity(sensitivity);
                 remember("mouse_sensitivity", std::to_string(viewer::mouse_sensitivity()));
             }
+            form_row(tr("Head motion in the cab"));
+            float head = viewer::head_motion();
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::SliderFloat("##head_motion", &head, 0.0f, viewer::max_head_motion, "%.1f")) {
+                viewer::set_head_motion(head);
+                remember("head_motion", std::to_string(viewer::head_motion()));
+            }
+            ImGui::TextDisabled("%s", tr("(the head nods with speeding up, braking and rail joints and leans in curves; 0: as RTS, the cab only sways)"));
             ImGui::EndTable();
         }
         if (vfs) {
@@ -1154,6 +1267,16 @@ void Launcher::State::draw_settings(const float height) {
             ImGui::BeginDisabled(!sound);
             ImGui::SliderFloat("##volume", &volume, 0.0f, 1.0f, "%.2f");
             ImGui::EndDisabled();
+            form_row(tr("Rail joints"));
+            int joints = viewer::rail_joint_layout() == simulation::RailJointLayout::rts ? 1 : 0;
+            const char* joint_layouts[] = {"openRTS", "RTS"};
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo("##rail_joints", &joints, joint_layouts, 2)) {
+                viewer::set_rail_joint_layout(joints == 1 ? simulation::RailJointLayout::rts : simulation::RailJointLayout::openrts);
+                remember("rail_joints", joints == 1 ? "rts" : "openrts");
+            }
+            ImGui::TextDisabled("%s", joints == 1 ? tr("(as RTS: a joint every 50 m; on stretches over 2 km four joints 12.5 m apart every 600 m)")
+                                                  : tr("(25 m rails; on stretches of 1 km or more between switches welded strings of about 800 m with 3 or 4 joints 12.5 m apart between them)"));
             ImGui::EndTable();
         }
     }
@@ -1170,8 +1293,31 @@ void Launcher::State::draw_settings(const float height) {
         ImGui::Spacing();
 #endif
         draw_update_settings(label_width);
+        ImGui::Spacing();
+        draw_ace_settings();
     }
     ImGui::EndChild();
+}
+
+// ACE textures: openrts-ace, and opening .ace with it.
+void Launcher::State::draw_ace_settings() {
+    ImGui::SeparatorText(tr("ACE textures"));
+    hint(tr("openrts-ace turns ACE textures into PNG and back (DXT1, RGB, RGB + mask, RGBA). Registered, a double click on an .ace shows it as PNG, and PNG files and folders get \"to ACE (openRTS)\" in their menu (this Windows user only)."));
+    if (ace_tool().empty()) {
+        warning(tr("openrts-ace is not found beside the game."));
+        return;
+    }
+    if (ImGui::Button(tr("Open .ace with openRTS"))) {
+        const int code = run_ace_tool("--register --no-wait");
+        ace_status = code == 0 ? tr("Done: .ace opens with openrts-ace. If Windows still opens it with another program: Open with -> openrts-ace -> Always.")
+                               : trf("openrts-ace did not finish (code %d).", code);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Remove##ace"))) {
+        const int code = run_ace_tool("--unregister --no-wait");
+        ace_status = code == 0 ? tr("The association is removed; .ace opens as before.") : trf("openrts-ace did not finish (code %d).", code);
+    }
+    if (!ace_status.empty()) hint(ace_status.c_str());
 }
 
 namespace {
@@ -1320,6 +1466,7 @@ void Launcher::State::draw_graphics(const float height) {
                     fps_limit = shown > viewer::max_fps_limit ? 0 : shown;
                     remember("fps_limit", std::to_string(fps_limit));
                 }
+                row_note(tr("In the background (another window in front, or minimised): at most 30 frames/s."));
             }
             group_row(tr("Anti-aliasing (MSAA 4x)"), Load::none, Load::above_medium);
             ImGui::Checkbox("##msaa", &g.msaa);
