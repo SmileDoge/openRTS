@@ -966,6 +966,18 @@ ShapeModel parse_binary_shape_model(const std::string_view body) {
             return {.error = "Distance-level hierarchy has an out-of-range parent matrix."};
         }
     }
+    // RTS never applies matrix 0: a node's world matrix is its chain up to,
+    // not including, matrix 0 (0x4ACDF8), and the draws multiply a
+    // primitive's matrix only when its index is not 0 (0x4B1664, 0x4B042C,
+    // 0x4ADA94). So matrix 0 is the identity and nothing is above it; its
+    // name stays (animations and DLLs find nodes by name). TSRE5 draws it so
+    // too. Kievskij hod's pineline6.s has MAIN at (0, 13.5, 0) over trees
+    // from y 0: with it the tree line hung 13.5 m above the ground.
+    {
+        auto& first = model.matrices.front();
+        for (std::size_t k = 0; k < 12; ++k) first.values[k] = (k == 0 || k == 4 || k == 8) ? 1.0f : 0.0f;
+        model.hierarchy.front() = -1;
+    }
     if (animations_block) model.animations = read_animations(body, *animations_block, model.matrices);
     if (textures) model.textures = *textures;
     if (shader_names) model.shader_names = *shader_names;

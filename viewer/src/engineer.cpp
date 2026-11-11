@@ -346,7 +346,13 @@ void Engineer::get_on(CabView& cab, const std::size_t door) {
     const float plane = d.plane.a[1] != 0.0f || d.plane.b[1] != 0.0f ? (d.plane.a[1] + d.plane.b[1]) * 0.5f : d.position[1] - 1.0f;
     inner.y = plane;
     if (const auto* surfaces = cab.collision()) {
-        if (const auto floor = surfaces->floor(inner.x, inner.z, plane - 0.6f, plane + 0.8f, cab.skip())) inner.y = *floor;
+        // Up the steps when the doorway's floor is the lowest step: the
+        // ER9PK's cab doors (cabklub.sd DOOR1 / DOOR2) have their plane at
+        // 0.50, the vestibule's floor at 1.39; he stood under it, and no
+        // step of his reached it (2026-11-11).
+        auto floor = surfaces->floor(inner.x, inner.z, plane - 0.6f, plane + 0.8f, cab.skip());
+        if (!floor) floor = surfaces->floor(inner.x, inner.z, plane - 0.6f, plane + 1.6f, cab.skip());
+        if (floor) inner.y = *floor;
     }
     feet_ = inner;
     mode_ = Mode::standing;

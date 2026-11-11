@@ -61,9 +61,9 @@ public:
     // SendSoundTrigger: the code to scenario object `object`'s sound (-1:
     // to the sounds of `car` itself).
     virtual void sound_trigger(std::int32_t object, std::uint32_t code, const ActivityCarRef& car) = 0;
-    // ModifyWagons' end valves: the cocks at the group's ends (the first
-    // car's front, the last's rear; the whole train for -1 -1) open or shut.
-    virtual void end_valves(ActivityTrainId train, std::int32_t first, std::int32_t last, bool open) = 0;
+    // ModifyWagons: a WagonGroup on the train's cars (RTS 0x4FA374): chocks,
+    // hoses and end cocks at the group's ends, handbrakes on its cars.
+    virtual void modify_wagons(ActivityTrainId train, const formats::ActivityWagonGroup& group) = 0;
     // Traffic (docs/traffic.md). The trains that came into play since the
     // last call (a traffic train started at its time: OnStart).
     [[nodiscard]] virtual std::vector<ActivityTrainId> take_started() { return {}; }

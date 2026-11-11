@@ -540,21 +540,13 @@ bool ActivityView::run_outcome(Script& script, const formats::ActivityNode& o, A
         return true;
     }
     if (name == "modifywagons") {
-        // WagonParameters ( n WagonGroup ( Range ( a b ) ... ) ): the end valves.
+        // WagonParameters ( n WagonGroup ( Range ( a b ) ... ) ): as a
+        // train's own (RTS 0x474590, applied by 0x4FA374).
         if (const auto* parameters = o.child("wagonparameters")) {
-            for (const auto& group : parameters->children) {
-                if (group.name != "wagongroup") continue;
-                const auto* range = group.child("range");
-                const auto first = static_cast<std::int32_t>(number(range, 0, -1));
-                const auto last = static_cast<std::int32_t>(number(range, 1, -1));
-                for (const auto& p : group.children) {
-                    if (p.name == "range") continue;
-                    if (p.name == "openendvalves" || p.name == "closeendvalves") {
-                        if (number(&p, 0, 1.0) != 0.0) world.end_valves(train, first, last, p.name == "openendvalves");
-                    } else if (not_run_.insert("ModifyWagons " + p.name).second) {
-                        std::cout << "activity: ModifyWagons " << p.name << " not run yet" << std::endl;
-                    }
-                }
+            for (const auto& group : formats::read_wagon_parameters(*parameters)) {
+                world.modify_wagons(train, group);
+                for (const auto& key : group.other)
+                    if (not_run_.insert("ModifyWagons " + key).second) std::cout << "activity: ModifyWagons " << key << " not run yet" << std::endl;
             }
         }
         return true;

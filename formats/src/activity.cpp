@@ -97,6 +97,7 @@ void read_events(const TextNode* list, std::vector<ActivityEvent>& events) {
     train.service_type = first(node.child("trainservicetype"));
     if (const auto* flags = node.child("trainflags")) train.flags = flags->values;
     if (const auto* state = node.child("trainstate"); state && !state->values.empty()) train.state = integer(state, 0);
+    if (const auto* parameters = node.child("wagonparameters")) train.wagon_groups = read_wagon_parameters(convert(*parameters));
     return train;
 }
 
@@ -170,6 +171,53 @@ void read_block_points(const TextNode* list, std::vector<ActivityBlockPoint>& po
 }
 
 } // namespace
+
+ActivityWagonGroup read_wagon_group(const ActivityNode& group) {
+    ActivityWagonGroup out;
+    const auto value = [](const ActivityNode& node, const std::size_t k, const double fallback) {
+        return k < node.values.size() ? std::strtod(node.values[k].c_str(), nullptr) : fallback;
+    };
+    const auto bits = [&](const ActivityNode& node) { return static_cast<std::uint8_t>(static_cast<int>(value(node, 0, 0.0)) & 3); };
+    for (const auto& p : group.children) {
+        const auto& key = p.name;
+        if (key == "range") {
+            out.first = static_cast<std::int32_t>(value(p, 0, -1.0));
+            out.last = static_cast<std::int32_t>(value(p, 1, -1.0));
+        } else if (key == "placedrag") {
+            out.place_drag |= bits(p);
+        } else if (key == "disconnecttrainpipe") {
+            out.ends_set |= bits(p);
+        } else if (key == "disconnectchargingpipe") {
+            out.ends_set |= static_cast<std::uint8_t>(bits(p) << 2);
+        } else if (key == "disconnectepcable") {
+            out.ends_set |= static_cast<std::uint8_t>(bits(p) << 4);
+        } else if (key == "closeendvalves") {
+            out.ends_set |= static_cast<std::uint8_t>(bits(p) << 6);
+        } else if (key == "connecttrainpipe") {
+            out.ends_clear |= bits(p);
+        } else if (key == "connectchargingpipe") {
+            out.ends_clear |= static_cast<std::uint8_t>(bits(p) << 2);
+        } else if (key == "connectepcable") {
+            out.ends_clear |= static_cast<std::uint8_t>(bits(p) << 4);
+        } else if (key == "openendvalves") {
+            out.ends_clear |= static_cast<std::uint8_t>(bits(p) << 6);
+        } else if (key == "handbrakepercent") {
+            out.handbrake = static_cast<float>(value(p, 0, 0.0) * 0.01);
+        } else if (key == "cold") {
+            out.cold = value(p, 0, 0.0) != 0.0;
+        } else {
+            out.other.push_back(key);
+        }
+    }
+    return out;
+}
+
+std::vector<ActivityWagonGroup> read_wagon_parameters(const ActivityNode& parameters) {
+    std::vector<ActivityWagonGroup> groups;
+    for (const auto& group : parameters.children)
+        if (group.name == "wagongroup") groups.push_back(read_wagon_group(group));
+    return groups;
+}
 
 const ActivityNode* ActivityNode::child(const std::string_view key) const {
     for (const auto& node : children)

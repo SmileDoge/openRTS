@@ -135,6 +135,8 @@ public:
             off[i] = cab_.displays[i].blink > 0.0f && blink_clock_[i] > cab_.displays[i].blink;
         screens_->build(state, elapsed, out, &off);
     }
+    // The SCREEN labels the last screens() call laid out (CabScreens::labels_seen); null: no screens.
+    [[nodiscard]] const CabScreens* screen_layout() const noexcept { return screens_.get(); }
     [[nodiscard]] std::size_t switches_bound() const noexcept { return switch_nodes_; }
     // The frames of switch `index`'s node a position takes, as RTS counts
     // them for dragging (0x51C1C8): the node has the shape's frame rate x

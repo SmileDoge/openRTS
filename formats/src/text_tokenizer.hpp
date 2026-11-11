@@ -48,6 +48,44 @@ public:
         return std::string(text_.substr(start, at_ - start));
     }
 
+    // One value of a block whose opening bracket was just read, as RTS reads
+    // it (0x4578C0 finds the block's end, counting brackets outside quotes;
+    // 0x458688 takes its first word, up to a space or that end, or a
+    // quoted string): brackets inside the word are its characters. The rest
+    // of the block is skipped; its closing bracket comes next. A screen
+    // label's Alphabet needs it: the EP2D's "0123456789.АБВ...()+/Ё".
+    [[nodiscard]] std::string raw_block_value() {
+        std::size_t end = at_;
+        int depth = 0;
+        bool quoted = false;
+        for (; end < text_.size(); ++end) {
+            const char c = text_[end];
+            if (c == '"') {
+                quoted = !quoted;
+            } else if (!quoted && c == '(') {
+                ++depth;
+            } else if (!quoted && c == ')') {
+                if (depth == 0) break;
+                --depth;
+            }
+        }
+        std::size_t i = at_;
+        while (i < end && is_space(text_[i])) ++i;
+        std::string value;
+        if (i < end && (text_[i] == '"' || text_[i] == '\'')) {
+            const char quote = text_[i++];
+            const auto start = i;
+            while (i < end && text_[i] != quote) ++i;
+            value = std::string(text_.substr(start, i - start));
+        } else {
+            const auto start = i;
+            while (i < end && !is_space(text_[i])) ++i;
+            value = std::string(text_.substr(start, i - start));
+        }
+        at_ = end;
+        return value;
+    }
+
     // Consumes an opening bracket; returns false when something else follows.
     [[nodiscard]] bool open_block() {
         const auto token = next();

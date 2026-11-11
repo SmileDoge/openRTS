@@ -136,8 +136,8 @@ public:
     void sound_trigger(const std::int32_t object, const std::uint32_t code, const ActivityCarRef& car) override {
         trains_.activity_sound_trigger(object, code, {car.train.service, car.train.train}, car.number);
     }
-    void end_valves(const ActivityTrainId train, const std::int32_t first, const std::int32_t last, const bool open) override {
-        trains_.activity_end_valves({train.service, train.train}, first, last, open);
+    void modify_wagons(const ActivityTrainId train, const formats::ActivityWagonGroup& group) override {
+        trains_.activity_modify_wagons({train.service, train.train}, group);
     }
     [[nodiscard]] std::vector<std::pair<ActivityTrainId, ActivityTrainId>> take_couplings() override {
         std::vector<std::pair<ActivityTrainId, ActivityTrainId>> out;

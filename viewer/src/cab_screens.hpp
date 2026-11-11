@@ -6,6 +6,7 @@
 // docs/reverse/cab-screens.md). This lays them out; the renderer draws them.
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include <glm/vec2.hpp>
@@ -42,6 +43,17 @@ public:
     // its DisplayFade blink (RTS 0x525DB0); null: none.
     void build(const dllhost::CarOutput* state, float elapsed, std::vector<ScreenBatch>& out,
                const std::vector<bool>* blinked_off = nullptr);
+    // The labels with a text at the last build(): what the DLL wrote, whether
+    // the label was shown and how many of its characters the alphabet had
+    // (for the log: a text the DLL never wrote, or one drawn only in part).
+    struct LabelSeen {
+        std::uint32_t display{};
+        std::size_t object{};
+        std::u16string text;
+        bool shown = false;
+        std::size_t chars{}, drawn{};
+    };
+    [[nodiscard]] const std::vector<LabelSeen>& labels_seen() const noexcept { return labels_seen_; }
 
 private:
     struct Object {
@@ -60,6 +72,7 @@ private:
     };
     const formats::CabDescription* cab_;
     std::vector<Screen> screens_;
+    std::vector<LabelSeen> labels_seen_;
 };
 
 } // namespace openrts::viewer

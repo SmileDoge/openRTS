@@ -401,15 +401,34 @@ void TrainView::activity_sound_trigger(const std::int32_t object, const std::uin
     }
 }
 
-void TrainView::activity_end_valves(const ActivityId train, const std::int32_t first, const std::int32_t last, const bool open) {
+void TrainView::activity_modify_wagons(const ActivityId train, const formats::ActivityWagonGroup& group) {
     const auto unit = std::find_if(units_.begin(), units_.end(), [&](const Unit& u) { return u.activity_id == train; });
-    if (unit == units_.end() || unit->cars.empty()) return;
-    const auto count = static_cast<std::int32_t>(unit->train->cars().size());
-    const auto a = static_cast<std::size_t>(std::clamp(first < 0 ? 0 : first, 0, count - 1));
-    const auto b = static_cast<std::size_t>(std::clamp(last < 0 ? count - 1 : last, 0, count - 1));
-    // The cock is "closed" in the car's pipe ends: open clears it.
-    unit->train->set_car_flags(a, simulation::Train::CarFlags::pipe_ends, simulation::pipe_cock_front, !open);
-    unit->train->set_car_flags(b, simulation::Train::CarFlags::pipe_ends, simulation::pipe_cock_rear, !open);
+    if (unit != units_.end()) apply_wagon_group(*unit, group);
+}
+
+void TrainView::apply_wagon_group(Unit& unit, const formats::ActivityWagonGroup& group) {
+    auto& train = *unit.train;
+    const auto count = static_cast<std::int32_t>(train.cars().size());
+    if (count == 0) return;
+    const auto a = static_cast<std::size_t>(std::clamp(group.first, 0, count - 1));
+    const auto b = static_cast<std::size_t>(group.last < 0 || group.last >= count ? count - 1 : group.last);
+    using Flags = simulation::Train::CarFlags;
+    // Only what is set: a flag touched wakes the train.
+    const auto flags = [&](const std::size_t car, const Flags which, const std::uint8_t mask, const bool on) {
+        if (mask != 0) train.set_car_flags(car, which, mask, on);
+    };
+    for (std::size_t i = a; i <= b; ++i) {
+        if (group.handbrake) train.set_handbrake(i, *group.handbrake);
+        if (group.cold && i < unit.cars.size() && unit.cars[i].engine) unit.cars[i].cold = *group.cold;
+    }
+    // The ends: pipe_ends' *_front bits (0x55) at the first car, *_rear
+    // (0xAA) at the last (RTS: car flags & 0x55555500 / 0xAAAAAA00).
+    flags(a, Flags::pipe_ends, group.ends_set & 0x55u, true);
+    flags(a, Flags::pipe_ends, group.ends_clear & 0x55u, false);
+    flags(b, Flags::pipe_ends, group.ends_set & 0xAAu, true);
+    flags(b, Flags::pipe_ends, group.ends_clear & 0xAAu, false);
+    flags(a, Flags::chocks, group.place_drag & simulation::chock_front, true);
+    flags(b, Flags::chocks, group.place_drag & simulation::chock_rear, true);
 }
 
 void TrainView::retag_activity(const ActivityId from, const ActivityId to) {
@@ -624,6 +643,9 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
     unit.freight = !passenger;
     unit.cars = std::move(cars);
     unit.train = std::make_unique<simulation::Train>(std::move(setups));
+    // The consist's PlaceDrag (RTS 0x477928): the cars' chocks from the start.
+    for (std::size_t i = 0; i < entries.size() && i < unit.cars.size(); ++i)
+        if (entries[i].place_drag != 0) unit.train->set_car_flags(i, simulation::Train::CarFlags::chocks, entries[i].place_drag, true);
     unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
     if (realistic_air_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
     return {};
@@ -2650,6 +2672,7 @@ void TrainView::start_traffic(TrafficPlan& plan) {
     unit.role = Role::ai;
     unit.activity_id = plan.id;
     for (auto& car : unit.cars) car.activity_origin = plan.id;
+    for (const auto& group : train->wagon_groups) apply_wagon_group(unit, group); // RTS 0x4EF740 -> 0x4FA374
     if (!train->service_type.empty()) unit.category = simulation::category_from_cars(lower(train->service_type) == "freight");
     unit.traffic_settings = settings;
     unit.scenario_traffic = true;
@@ -2900,7 +2923,41 @@ std::string TrainView::start_activity(const formats::Activity& activity, const c
     for (const auto& block : activity_block_list_)
         dispatcher_->enable_block((block.service << 16) | (static_cast<std::uint32_t>(block.point->id) & 0xFFFFu), block.point->enabled);
     if (trains.empty()) return tr("none of the scenario's trains could be put on the track (see openrts.log)");
+    // The player's train starts as its TrainState says (the DLLs' Init),
+    // unless the launch chose (--start): without one RTS leaves 0, cold, for
+    // a PLAYER service (0x471B9C; 0x4EF740 raises no pantograph then).
+    const auto record = [&](const std::pair<std::uint32_t, std::uint32_t>& id) -> const formats::ActivityTrain* {
+        for (const auto& service : activity.services)
+            if (service.id == id.first) return service.train(id.second);
+        return nullptr;
+    };
+    if (start_state_ < 0 && player) {
+        const auto* train = activity.player_train ? player->train(activity.player_train->train) : nullptr;
+        if (!train && !player->trains.empty()) train = &player->trains.front();
+        if (train) {
+            start_state_ = train->state.value_or(player->type == formats::ActivityServiceType::traffic ? 2 : 0);
+            pantographs_down_ = start_state_ == 0;
+            std::cout << "activity: the player's train starts " << (start_state_ == 0 ? "cold" : start_state_ == 1 ? "on" : "running")
+                      << " (TrainState " << (train->state ? "" : "not given, ") << start_state_ << ")" << std::endl;
+        }
+    }
     auto error = put_back(std::move(trains), "activity", true);
+    // Each train's WagonParameters (RTS 0x4EF740 -> 0x4FA374): chocks,
+    // hoses, end cocks, handbrakes as the scenario sets them.
+    std::size_t groups = 0;
+    std::set<std::string> other;
+    for (auto& unit : units_) {
+        if (!unit.activity_id) continue;
+        const auto* train = record(*unit.activity_id);
+        if (!train) continue;
+        for (const auto& group : train->wagon_groups) {
+            apply_wagon_group(unit, group);
+            ++groups;
+            other.insert(group.other.begin(), group.other.end());
+        }
+    }
+    if (groups > 0) std::cout << "activity: " << groups << " wagon groups set on the trains" << std::endl;
+    for (const auto& key : other) std::cout << "activity: WagonParameters " << key << " not run yet" << std::endl;
     if (units_.empty() || units_.front().role != Role::driven) {
         const auto problem = std::string(tr("the player's train could not be made (see openrts.log)"));
         return error.empty() ? problem : problem + "; " + error;
@@ -4577,6 +4634,20 @@ std::string TrainView::systems_report() const {
                 + std::to_string(engines) + " DLLs bound";
         }
         text += ")";
+    }
+    // The cab screens' labels: what the DLL wrote, and how much of it shows.
+    if (const auto* layout = cab_ ? cab_->screen_layout() : nullptr) {
+        std::size_t shown = 0, partly = 0;
+        std::string labels;
+        for (const auto& l : layout->labels_seen()) {
+            if (l.shown) ++shown;
+            if (l.shown && l.drawn < l.chars) ++partly;
+            labels += " " + std::to_string(l.display) + "/" + std::to_string(l.object) + (l.shown ? "" : "(hidden)") + "'"
+                + trainplugin::utf16_to_utf8(l.text) + "'";
+            if (l.drawn < l.chars) labels += "[" + std::to_string(l.drawn) + "/" + std::to_string(l.chars) + "]";
+        }
+        text += "; screen labels with a text " + std::to_string(layout->labels_seen().size()) + ", shown " + std::to_string(shown)
+            + ", shown in part " + std::to_string(partly) + ":" + labels;
     }
     // The engineer's room and the share of the outside heard there (docs/sound.md).
     if (listener_cab_) {

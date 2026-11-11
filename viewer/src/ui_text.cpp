@@ -63,6 +63,7 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"filter", "фильтр"},
         {"as traffic (AI)", "как трафик (ИИ)"},
         {"Browse...", "Обзор..."},
+        {"Choose the RTS folder (the one with ROUTES and TRAINS)", "Выберите папку RTS (ту, где ROUTES и TRAINS)"},
         {"a .con from anywhere (the folder is remembered)", "любой .con с диска (папка запоминается)"},
         {"%s, %zu cars", "%s, вагонов: %zu"},
         {"Put it here", "Поставить здесь"},

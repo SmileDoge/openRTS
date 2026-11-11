@@ -40,6 +40,9 @@ struct ConsistEntry {
     bool flipped = false;
     bool cold = false;                  // engines
     std::optional<float> handbrake;     // HandbrakePercent
+    // PlaceDrag ( n ): chocks under the car, 1 its end towards the train's
+    // front, 2 towards the rear, 3 both (RTS 0x477928: car flags << 24).
+    std::uint8_t place_drag{};
     std::vector<ConsistFreight> freight; // FreightAnim blocks
 };
 

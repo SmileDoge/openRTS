@@ -52,7 +52,7 @@ shape (
 	sort_vectors ( 0 )
 	colours ( 0 )
 	matrices ( 2
-		matrix MAIN ( 1 0 0 0 1 0 0 0 1 0 0 0 )
+		matrix MAIN ( 1 0 0 0 1 0 0 0 1 0 13.5 0 )
 		matrix DOOR_A ( 1 0 0 0 1 0 0 0 1 0.5 0 0 )
 	)
 	images ( 1 image ( "brick wall.ace" ) )
@@ -232,6 +232,9 @@ int main() {
     check(model.matrices.size() == 2 && model.matrices[1].name == "DOOR_A" && near(model.matrices[1].values[9], 0.5),
           "labelled matrices");
     check(model.hierarchy.size() == 2 && model.hierarchy[1] == 0, "hierarchy");
+    check(model.matrices.size() == 2 && model.matrices[0].name == "MAIN" && near(model.matrices[0].values[10], 0.0)
+              && near(model.matrices[0].values[0], 1.0) && near(model.matrices[0].values[4], 1.0),
+          "matrix 0 is the identity, as RTS never applies it (its 13.5 m lift dropped)");
     check(model.animations.size() == 1 && model.animations[0].frame_count == 2, "animation");
     if (!model.animations.empty()) {
         const auto& nodes = model.animations[0].nodes;
@@ -275,6 +278,27 @@ int main() {
             " InteriorGeometryInfo ( InteriorChairs ( 1 Chair ( Position ( 0.8 2.6 6.2 ) Pos1 ( 0.8 2.4 6.2 ) ) ) ) ) )"));
         check(cab.ok() && cab.switches.size() == 1, "a cab with a } for a ) parses");
         check(cab.chairs.size() == 1 && cab.chairs[0].seated[2] > 6.0f, "its chair after the } is read");
+    }
+
+    // A screen label's Alphabet with brackets in it (the EP2D's "...()+/Ё"):
+    // RTS takes the block's first word, brackets and all (0x4578C0,
+    // 0x458688); read as a nested block, the alphabet was lost and the
+    // label drew nothing.
+    {
+        const auto cab = parse_cab_description(utf16_file(
+            "SIMISA@@@@@@@@@@JINX0t1t______\nShape ( cab.s\n ESD_Interior ( Displays ( 1 Display ( ID ( 0 ) DisplayType ( SCREEN )\n"
+            " DisplayScreen ( TopLeft ( 0 1 0 ) TopRight ( 1 1 0 ) BottomRight ( 1 0 0 ) SubObjects ( 2\n"
+            " SubObject ( SubID ( 0 ) Type ( LABEL ) Area ( 0 0 1 1 ) UV ( 0 0 1 1 ) Textures ( 1 \"f.ace\" )\n"
+            "  CharacterWidth ( 0.1 0.1 ) CharacterHeight ( 0.1 0.1 ) Alphabet ( 01.AB-()+/Z ) MaxStringLength ( 4 ) )\n"
+            " SubObject ( SubID ( 1 ) Type ( LABEL ) Area ( 0 0 1 1 ) UV ( 0 0 1 1 ) Textures ( 1 \"f.ace\" )\n"
+            "  CharacterWidth ( 0.1 0.1 ) CharacterHeight ( 0.1 0.1 ) Alphabet ( \"0 1\" ) MaxStringLength ( 2 ) ) ) ) ) ) ) )"));
+        check(cab.ok() && cab.displays.size() == 1 && cab.displays[0].screen.objects.size() == 2, "a screen with two labels");
+        if (cab.displays.size() == 1 && cab.displays[0].screen.objects.size() == 2) {
+            const auto& labels = cab.displays[0].screen.objects;
+            check(labels[0].alphabet == U"01.AB-()+/Z", "an Alphabet with brackets: one word, brackets and all");
+            check(labels[0].max_length == 4, "the keys after it still read");
+            check(labels[1].alphabet == U"0 1", "a quoted Alphabet keeps its space");
+        }
     }
 
     // A car's WagonObjects (the VL60's .sd): the wheel chocks shown by their

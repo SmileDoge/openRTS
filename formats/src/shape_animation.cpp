@@ -94,7 +94,8 @@ std::vector<ShapeMatrix> animate_matrices(const ShapeModel& model, const std::si
     auto matrices = model.matrices;
     if (animation >= model.animations.size()) return matrices;
     for (const auto& node : model.animations[animation].nodes) {
-        if (node.matrix_index < 0 || static_cast<std::size_t>(node.matrix_index) >= matrices.size()) continue;
+        // Matrix 0 is never applied in RTS, animated or not (shape_binary.cpp).
+        if (node.matrix_index <= 0 || static_cast<std::size_t>(node.matrix_index) >= matrices.size()) continue;
         pose(node, frame, matrices[static_cast<std::size_t>(node.matrix_index)]);
     }
     return matrices;
@@ -102,6 +103,7 @@ std::vector<ShapeMatrix> animate_matrices(const ShapeModel& model, const std::si
 
 ShapeMatrix animate_matrix(const ShapeModel& model, const std::size_t animation, const std::size_t matrix, const float frame) {
     ShapeMatrix out = matrix < model.matrices.size() ? model.matrices[matrix] : ShapeMatrix{};
+    if (matrix == 0) return out; // never applied in RTS (shape_binary.cpp)
     if (const auto* node = node_of(model, animation, matrix)) pose(*node, frame, out);
     return out;
 }

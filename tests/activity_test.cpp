@@ -59,7 +59,11 @@ Services (
 		Type ( PLAYER )
 		Path ( Shunt 1 )
 		ServiceTrains ( 1
-			Train ( ID ( 1 ) Consist ( "My loco" 1 ) TrainMaxSpeed ( 25 ) TrainStartTime ( 02:59:00 ) TrainFlags ( CRITICAL_TRAIN ) )
+			Train ( ID ( 1 ) Consist ( "My loco" 1 ) TrainMaxSpeed ( 25 ) TrainStartTime ( 02:59:00 ) TrainFlags ( CRITICAL_TRAIN )
+				WagonParameters ( 2
+					WagonGroup ( PlaceDrag ( 3 ) )
+					WagonGroup ( Range ( 2 5 ) HandbrakePercent ( 50 ) CloseEndValves ( 2 ) DisconnectTrainPipe ( 1 ) ConnectEPCable ( 3 ) RaisePanto ( 1 ) )
+				) )
 		)
 		ServiceEvents ( 1
 			ServiceEvent ( ID ( 2 ) Enabled ( 0 ) Action ( WagonState ( WagonID ( 0001-0001-0006 ) Equal ( CABIN SMSStream 0 24 1.0 ) ) ) Outcome ( EnableEvent ( 1 2 ) ) )
@@ -118,6 +122,21 @@ int main(int argc, char* argv[]) {
         check(player && player->trains.size() == 1 && player->trains.front().consist == "My loco"
                   && player->trains.front().start_time == 2 * 3600 + 59 * 60 && player->trains.front().max_speed == 25.0f,
               "its train");
+        if (player && player->trains.size() == 1) {
+            const auto& train = player->trains.front();
+            check(!train.state, "no TrainState: none read (the runtime takes RTS's default)");
+            check(train.wagon_groups.size() == 2, "WagonParameters: two groups");
+            if (train.wagon_groups.size() == 2) {
+                const auto& all = train.wagon_groups[0];
+                check(all.first == -1 && all.last == -1 && all.place_drag == 3 && all.ends_set == 0 && !all.handbrake,
+                      "PlaceDrag ( 3 ): chocks at both ends of the whole train");
+                const auto& some = train.wagon_groups[1];
+                check(some.first == 2 && some.last == 5 && some.place_drag == 0 && some.handbrake && *some.handbrake == 0.5f,
+                      "a range and a handbrake percentage");
+                check(some.ends_set == (0x80 | 0x01) && some.ends_clear == 0x30, "the end bits: cock rear, hose front shut; EP cables joined");
+                check(some.other.size() == 1 && some.other.front() == "raisepanto", "what is not run is named");
+            }
+        }
         const auto* standing = a.service(2);
         check(standing && standing->type == ActivityServiceType::standing && standing->trains.size() == 2, "the STATIC service");
         check(standing && standing->trains[0].start && standing->trains[0].heading && standing->trains[0].heading->tile_z == 14567

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <string_view>
 
+#include <glm/geometric.hpp>
+
 namespace openrts::viewer {
 namespace {
 
@@ -175,6 +177,7 @@ CabScreens::CabScreens(const formats::CabDescription& cab, const core::VirtualPa
 
 void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std::vector<ScreenBatch>& out,
                        const std::vector<bool>* blinked_off) {
+    labels_seen_.clear();
     for (auto& screen : screens_) {
         const auto& display = cab_->displays[screen.display];
         if (blinked_off && screen.display < blinked_off->size() && (*blinked_off)[screen.display]) continue;
@@ -255,6 +258,8 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
             const auto& def = defs[k];
             auto& o = screen.objects[k];
             const auto& l = live[k];
+            const bool label_text = def.type == ScreenObjectType::label && !l.text.empty();
+            if (label_text) labels_seen_.push_back({.display = display.id, .object = k, .text = std::u16string(l.text), .shown = !(l.state < 0 || parent_hidden(k))});
             if (l.state < 0 || parent_hidden(k)) continue;
             const Rect r = rect_of(rect_of, k, 0);
             if (o.texture >= o.textures.size()) continue;
@@ -287,9 +292,16 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
                 const float a = -degrees * pi / 180.0f;
                 const float c = std::cos(a), s = std::sin(a);
                 const glm::vec2 centre{def.center[0], def.center[1]};
+                // RTS (0x46B668) turns it in the screen's metres: the corners
+                // times Width and Height, then glRotatef. Turned in the 0..1
+                // units, a needle on a screen wider than high was sheared
+                // and its round hub went oval (the EP2D's speedometer).
+                const float width = glm::length(screen.top_right - screen.top_left);
+                const float height = glm::length(screen.bottom_right - screen.top_right);
+                const float sx = width > 0.0f ? width : 1.0f, sy = height > 0.0f ? height : 1.0f;
                 auto turn = [&](float x, float y) {
-                    const glm::vec2 d{x - centre.x, y - centre.y};
-                    return centre + glm::vec2{d.x * c - d.y * s, d.x * s + d.y * c};
+                    const glm::vec2 d{(x - centre.x) * sx, (y - centre.y) * sy};
+                    return centre + glm::vec2{(d.x * c - d.y * s) / sx, (d.x * s + d.y * c) / sy};
                 };
                 const glm::vec2 p[4] = {turn(r.x0, r.y0), turn(r.x0, r.y1), turn(r.x1, r.y1), turn(r.x1, r.y0)};
                 const glm::vec2 uv[4] = {{t.x0, t.y0}, {t.x0, t.y1}, {t.x1, t.y1}, {t.x1, t.y0}};
@@ -311,6 +323,12 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
                     ++count;
                 }
                 if (count == 0) break;
+                if (!labels_seen_.empty() && labels_seen_.back().object == k) {
+                    labels_seen_.back().chars = count;
+                    for (std::size_t i = 0; i < count; ++i)
+                        if (text[i] != u'\n' && text[i] != u'\r' && def.alphabet.find(static_cast<char32_t>(text[i])) != std::u32string::npos)
+                            ++labels_seen_.back().drawn;
+                }
                 const float cw = def.char_width[0], ch = def.char_height[0];
                 const float sp = def.char_spacing[0], ls = def.line_spacing[0];
                 float y = r.y0;

@@ -8,6 +8,8 @@
 #endif
 #include <windows.h>
 #include <commdlg.h>
+#include <objbase.h>
+#include <shobjidl.h>
 #endif
 
 namespace openrts::viewer {
@@ -42,6 +44,48 @@ std::optional<std::filesystem::path> open_file_dialog(const std::filesystem::pat
     (void)folder;
     (void)description;
     (void)pattern;
+    return std::nullopt;
+#endif
+}
+
+std::optional<std::filesystem::path> open_folder_dialog(const std::filesystem::path& folder, const std::wstring_view title) {
+#ifdef _WIN32
+    // The Vista dialog in folder mode (COM, single-threaded on this thread
+    // for the call unless the thread has COM already).
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    std::optional<std::filesystem::path> result;
+    IFileOpenDialog* dialog = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+        DWORD options = 0;
+        if (SUCCEEDED(dialog->GetOptions(&options)))
+            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR);
+        if (!title.empty()) dialog->SetTitle(std::wstring(title).c_str());
+        std::error_code error;
+        if (!folder.empty() && std::filesystem::is_directory(folder, error)) {
+            IShellItem* start = nullptr;
+            if (SUCCEEDED(SHCreateItemFromParsingName(folder.wstring().c_str(), nullptr, IID_PPV_ARGS(&start)))) {
+                dialog->SetFolder(start);
+                start->Release();
+            }
+        }
+        if (SUCCEEDED(dialog->Show(GetActiveWindow()))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+                    result = std::filesystem::path(path);
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+    if (SUCCEEDED(init)) CoUninitialize();
+    return result;
+#else
+    (void)folder;
+    (void)title;
     return std::nullopt;
 #endif
 }

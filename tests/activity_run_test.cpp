@@ -81,7 +81,10 @@ struct FakeWorld final : viewer::ActivityWorld {
     void sound_trigger(const std::int32_t object, const std::uint32_t code, const viewer::ActivityCarRef&) override {
         sounds.emplace_back(object, code);
     }
-    void end_valves(ActivityTrainId, std::int32_t, std::int32_t, const bool open) override { valves.push_back(open); }
+    void modify_wagons(ActivityTrainId, const formats::ActivityWagonGroup& group) override {
+        if (group.ends_clear & 0xC0u) valves.push_back(true);
+        if (group.ends_set & 0xC0u) valves.push_back(false);
+    }
     [[nodiscard]] std::vector<std::pair<ActivityTrainId, ActivityTrainId>> take_couplings() override { return std::exchange(couplings, {}); }
     void reassign(const ActivityTrainId from, const ActivityTrainId to) override {
         reassigned.emplace_back(from, to);

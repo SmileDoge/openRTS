@@ -35,6 +35,7 @@
 #include <openrts/renderer/webgpu_context.hpp>
 
 #include "controls_help.hpp"
+#include "file_dialog.hpp"
 #include "frame_limiter.hpp"
 #include "graphics_settings.hpp"
 #include "key_layout.hpp"
@@ -1208,11 +1209,26 @@ void Launcher::State::draw_settings(const float height) {
         if (begin_form("##game_form", label_width)) {
             form_row(tr("RTS folder"));
             const char* read = tr("Read");
-            const float read_width = ImGui::CalcTextSize(read).x + ImGui::GetStyle().FramePadding.x * 2.0f + 24.0f;
-            ImGui::SetNextItemWidth(-(read_width + spacing));
+            const char* browse = tr("Browse...");
+            const float pad = ImGui::GetStyle().FramePadding.x * 2.0f + 24.0f;
+            const float read_width = ImGui::CalcTextSize(read).x + pad;
+            const float browse_width = ImGui::CalcTextSize(browse).x + pad;
+            ImGui::SetNextItemWidth(-(read_width + browse_width + spacing * 2.0f));
             const bool entered = ImGui::InputText("##root", root_text.data(), root_text.size(), ImGuiInputTextFlags_EnterReturnsTrue);
             ImGui::SameLine();
-            if (ImGui::Button(read, {read_width, 0.0f}) || entered) {
+            bool chosen = false;
+            if (ImGui::Button(browse, {browse_width, 0.0f})) {
+                // The system's folder picker, from the folder given (or the one above it).
+                fs::path from = from_utf8(std::string(root_text.data()));
+                std::error_code error;
+                if (!from.empty() && !fs::is_directory(from, error)) from = from.parent_path();
+                if (const auto folder = viewer::open_folder_dialog(from, from_utf8(tr("Choose the RTS folder (the one with ROUTES and TRAINS)")).wstring())) {
+                    set_root(*folder);
+                    chosen = true;
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(read, {read_width, 0.0f}) || entered || chosen) {
                 set_root(from_utf8(std::string(root_text.data())));
                 scan();
                 if (is_installation(root)) remember("root", utf8(root));

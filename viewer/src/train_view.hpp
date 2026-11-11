@@ -255,9 +255,8 @@ public:
     // SendSoundTrigger: the scenario's sound object `object`, or (-1) the
     // sounds of car `number` of `train`.
     void activity_sound_trigger(std::int32_t object, std::uint32_t code, ActivityId train, std::int32_t number);
-    // ModifyWagons' end valves: the cocks at the group's ends (the whole
-    // train for -1 -1) open or shut.
-    void activity_end_valves(ActivityId train, std::int32_t first, std::int32_t last, bool open);
+    // ModifyWagons: a WagonGroup on a scenario's train (apply_wagon_group).
+    void activity_modify_wagons(ActivityId train, const formats::ActivityWagonGroup& group);
     [[nodiscard]] std::vector<std::pair<ActivityId, ActivityId>> take_activity_couplings() {
         return std::exchange(activity_couplings_, {});
     }
@@ -626,6 +625,11 @@ private:
     void apply_start_view(ViewerCamera& camera);
     // The scenario's trains (request_activity).
     [[nodiscard]] std::string start_activity(const formats::Activity& activity, const core::VirtualPath& folder);
+    // A WagonGroup on `unit`'s cars as RTS's 0x4FA374: the range's ends (a
+    // negative first: the first car; a last out of the train: the last),
+    // chocks and the end bits at the first car's front and the last car's
+    // rear, the handbrake and Cold on every car between.
+    static void apply_wagon_group(Unit& unit, const formats::ActivityWagonGroup& group);
     // A consist from the scenario's own folder (nullopt: none there).
     [[nodiscard]] std::optional<formats::ConsistDefinition> activity_consist(std::string_view name) const;
     // A path from the scenario's own folder, else the route's.

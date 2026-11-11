@@ -36,6 +36,30 @@ struct ActivityNode {
     [[nodiscard]] std::string text(std::string_view key) const;
 };
 
+// WagonParameters' WagonGroup (activity.pdf, "ModifyWagons"; RTS reads it
+// with 0x474590 for a Train and for ModifyWagons alike, applies it with
+// 0x4FA374): what a scenario sets on a train's cars. The end bits work on
+// the group's ends: the first car's front, the last car's rear; the rest on
+// every car of the group.
+struct ActivityWagonGroup {
+    // Range ( a b ): the cars from 0; -1 the first / the last.
+    std::int32_t first = -1, last = -1;
+    // PlaceDrag: chocks, 1 under the first car's front, 2 under the last
+    // car's rear, 3 both (RTS car flags 0x1000000 / 0x2000000).
+    std::uint8_t place_drag{};
+    // The end bits as Train::CarState::pipe_ends has them (RTS car flags
+    // >> 8): set by DisconnectTrainPipe, DisconnectChargingPipe,
+    // DisconnectEPCable, CloseEndValves; cleared by their Connect / Open
+    // twins. Each takes 1 the front, 2 the rear, 3 both.
+    std::uint8_t ends_set{}, ends_clear{};
+    std::optional<float> handbrake; // HandbrakePercent / 100, every car
+    std::optional<bool> cold;       // Cold ( 1 / 0 ): engines stopped (pantographs down) or not
+    std::vector<std::string> other; // keys read but not run (lower case)
+};
+[[nodiscard]] ActivityWagonGroup read_wagon_group(const ActivityNode& group);
+// WagonParameters ( n WagonGroup ( ... ) ... ): its groups.
+[[nodiscard]] std::vector<ActivityWagonGroup> read_wagon_parameters(const ActivityNode& parameters);
+
 struct ActivityEvent {
     std::uint32_t id{};
     // It fires while its level is above 0 (IncreaseActivationLevel,
@@ -72,7 +96,12 @@ struct ActivityTrain {
     std::optional<float> no_return;          // TrainDistanceOfNoReturn (at least 250 m)
     std::string service_type;                // TrainServiceType: FREIGHT, PASSENGER...
     std::vector<std::string> flags;          // TrainFlags
-    std::optional<int> state;                // TrainState
+    // TrainState: 0 cold, 1 on and standing, 2 / 3 running (the DLLs'
+    // Init). Without it RTS (0x471B9C) leaves 0 for PLAYER and STATIC
+    // services and gives TRAFFIC ones 2 (activity.pdf says 1 for all but
+    // static ones; the code does not).
+    std::optional<int> state;
+    std::vector<ActivityWagonGroup> wagon_groups; // WagonParameters, applied as the train is placed (0x4EF740)
 
     [[nodiscard]] bool flag(std::string_view key) const; // TrainFlags has it (any case)
 };

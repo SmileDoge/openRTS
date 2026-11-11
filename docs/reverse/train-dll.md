@@ -913,7 +913,12 @@ without compliance and RTS refuses it too.
   door without a leaf or of a cab only stood at): Enter opens or shuts it,
   Ctrl+Enter climbs in, a passenger door only when the train has opened
   it. A way in is an outer door the player opens or one with its
-  doorway's floor (`InteriorPlane`). The cab of any car of the driven
+  doorway's floor (`InteriorPlane`). He comes in on the floor 0.45 m
+  inside the doorway, from 0.6 m below its plane to 0.8 m above, else up
+  to 1.6 m above, as up the steps: the ER9PK's cab doors (`cabklub.sd`
+  `DOOR1` / `DOOR2`) have their plane at the lowest step, 0.50, the
+  vestibule's floor at 1.39; before 2026-11-11 he stood under the floor
+  there and could not walk. The cab of any car of the driven
   train or of another own train takes him; his car and its DLL follow
   (`TrainView::walk_up_to_cab`, `board`). A cab only stood at reads its
   doors as the `.sd` leaves them until its shape is read. A cab he leaves

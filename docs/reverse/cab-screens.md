@@ -37,7 +37,10 @@ rts1.exe; findings from the decompiled code, on a copy of the database.
     `CharacterHeight`, `CharacterSpacing`, `LineSpacing` (screen, texture
     units), `Alignment` (LEFT 0, CENTER 1, RIGHT 2, JUSTIFIED 3, BOTTOM 4,
     TOP 5; `0x45BF44`), characters per texture row = floor((u1 − u0) /
-    (width + spacing)), `Alphabet`, `MaxStringLength`. A texture height ≤ 0
+    (width + spacing)), `Alphabet` (the block's first word, `0x4588BC`:
+    its end found counting brackets outside quotes, `0x4578C0`, the word up
+    to a space or that end, `0x458688`, or a quoted string; brackets inside
+    are characters: the EP2D's `0123456789.АБВ…I:-…()+/Ё`), `MaxStringLength`. A texture height ≤ 0
     or no character per row turns the label off. Pt[1] = MaxStringLength + 1
     and the text buffer (`hint`) has that many characters.
   - BAR: `BarStyle` H_LEFT 1, V_UP 2, V_DOWN 3, H_RIGHT 4 → Pt[0];
@@ -76,7 +79,9 @@ rts1.exe; findings from the decompiled code, on a copy of the database.
   object shows while it is ≤ `Fade[2]`.
 - FRAME: the area quad. ARROW: turned about Center by (Pt[4] − v) × Pt[5] /
   (Pt[4] − Pt[2]) degrees, v moving to Value by Pt[5] × dt / AnimTime and
-  clamped to the range. BAR: the area cut to (v − min) / (max − min) by
+  clamped to the range; turned in the screen's metres (the corners times
+  `Width` / `Height` about Center, then `glRotatef`), so a round hub stays
+  round on a screen wider than high. BAR: the area cut to (v − min) / (max − min) by
   style; the UV is cut as well unless `STRETCH_UV`. GRID: the State bits;
   the area's cells divided by the texture counts, the texture's by the
   shown counts (as written). SECTOR: a fan from the area's centre over the
@@ -98,6 +103,15 @@ rts1.exe; findings from the decompiled code, on a copy of the database.
 - `viewer/src/cab_screens` lays the objects out as above;
   `renderer::ScreenQuadRenderer` draws them before the translucent pass (the
   cab glass covers them), a millimetre towards the eye.
+- Fixed 2026-11-11 (the EP2D's screens): an `Alphabet` with brackets was
+  read as a nested block and lost, so most labels drew nothing (the
+  speedometer's "0.00", the clock, the kilometre post); arrows turned in the
+  screen's 0..1 units, which sheared them and made the speedometer's round
+  hub an oval swinging with the speed.
+- The log's report at a capture (`--capture`) lists the labels with a text:
+  display/object, the text the DLL wrote, `(hidden)`, and `[drawn/all]`
+  when some characters are not in the alphabet (a space in an alphabet
+  without one leaves a gap, as in RTS).
 - Not done: LINK (2-D scenes), close-up scenes, `CopySubObjects`, the
   lighting of the `…Diff` shaders.
 

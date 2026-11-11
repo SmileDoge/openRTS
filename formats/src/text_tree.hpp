@@ -44,7 +44,15 @@ struct TextNode {
 inline bool read_text_tree(std::string_view text, TextNode& root) {
     Tokenizer tokenizer(text);
     std::vector<std::string> tokens;
-    while (auto token = tokenizer.next()) tokens.push_back(std::move(*token));
+    while (auto token = tokenizer.next()) {
+        // Alphabet ( ... ): one word as RTS reads it, brackets and all.
+        const bool raw = *token == "(" && !tokens.empty() && lower_ascii(tokens.back()) == "alphabet";
+        tokens.push_back(std::move(*token));
+        if (raw) {
+            auto value = tokenizer.raw_block_value();
+            if (!value.empty() && value != "(" && value != ")") tokens.push_back(std::move(value));
+        }
+    }
 
     std::vector<TextNode*> stack{&root};
     std::vector<bool> dropped{false};

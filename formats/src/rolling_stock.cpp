@@ -614,6 +614,7 @@ ConsistDefinition parse_consist(const std::string_view bytes) {
         if (auto handbrake = values(t, "handbrakepercent", block); handbrake.found()) {
             entry.handbrake = static_cast<float>(handbrake.atof());
         }
+        if (auto drag = values(t, "placedrag", block); drag.found()) entry.place_drag = static_cast<std::uint8_t>(rts_atoi(drag.here()) & 3);
         for (const auto anim : blocks(t, "freightanim", block)) {
             ConsistFreight f;
             auto shape = values(t, "freightanimshape", anim);

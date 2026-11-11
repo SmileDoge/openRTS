@@ -696,10 +696,12 @@ EngExtended (
     const auto consist = formats::parse_consist(R"(SIMISA@@@@@@@@@@JINX0D0t______
 Train ( TrainCfg ( "c"
     Wagon ( UiD ( 1 ) WagonData ( car folder )
-        FreightAnim ( FreightAnimShape ( "coal.s" 0 ) FreightAnimPosition ( 0 1.5 0 ) FreightAnimMass ( 60t ) FreightAnimCargoType ( Coal ) ) )
+        FreightAnim ( FreightAnimShape ( "coal.s" 0 ) FreightAnimPosition ( 0 1.5 0 ) FreightAnimMass ( 60t ) FreightAnimCargoType ( Coal ) )
+        PlaceDrag ( 2 ) )
 ) )
 )");
     check(consist.ok() && consist.entries.size() == 1 && consist.entries[0].freight.size() == 1, "FreightAnim in a consist");
+    check(consist.ok() && consist.entries.size() == 1 && consist.entries[0].place_drag == 2, "PlaceDrag in a consist: a chock at the car's rear");
     if (consist.ok() && !consist.entries.empty() && !consist.entries[0].freight.empty()) {
         const auto& f = consist.entries[0].freight[0];
         check(f.shape == "coal.s" && near(f.position[1], 1.5, 1e-6) && near(f.mass, 60000.0, 1.0) && (f.cargo_type == "coal" || f.cargo_type == "Coal"),

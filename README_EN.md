@@ -244,7 +244,7 @@ The easiest way is the start menu. It has four tabs:
   wait, which can be cancelled. An own server is `openrts-server`, next to
   the game ([docs/server.md](docs/server.md)); the menu does not start it
   yet.
-- **Settings:** the RTS folder, language, key layout, the key hints at the
+- **Settings:** the RTS folder (typed, or "Browse..." to pick it), language, key layout, the key hints at the
   bottom of the screen (they can be turned off; the game's panel too), the
   mouse sensitivity and the head motion in the cab (the game's panel too),
   sound and volume, the rail joints (as RTS, or openRTS: 25 m rails, welded

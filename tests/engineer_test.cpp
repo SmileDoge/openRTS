@@ -329,6 +329,67 @@ int main(int argc, char** argv) {
         std::printf("no EP2K-117 here: its cab doors not checked\n");
     }
 
+    // The ER9PK-328 (Pavlovsk): its cab a .repaint of mdd_ER9P-Alias/Cab/
+    // cabklub.s. Its cab doors' InteriorPlane (DOOR1 / DOOR2) is at 0.50, the
+    // vestibule's floor at 1.39: climbing in there he stood under the floor
+    // and could not walk (2026-11-11).
+    if (const auto er9 = formats::load_wagon(vfs, "mdd_ER9PK-328", "mdd_ER9P_01", true); er9.ok()) {
+        auto cab3 = viewer::CabView::create(vfs, er9, formats::wagon_path("mdd_ER9PK-328", "mdd_ER9P_01", true));
+        for (int i = 0; i < 600 && cab3 && !cab3->collision(); ++i) {
+            cab3->poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        check(cab3 && cab3->collision() && !cab3->collision()->empty(), "ER9PK: the repainted cab's surfaces are read");
+        if (cab3 && cab3->collision()) {
+            const auto& sd = cab3->description();
+            const auto* surfaces = cab3->collision();
+            const auto floor_at = [&](const glm::vec3& eye) { return surfaces->floor(eye.x, eye.z, 0.0f, eye.y - 0.5f, cab3->skip()); };
+            // Up from the driver's chair: on the cab floor (1.49), walking.
+            Engineer driver;
+            driver.configure("engineer.Height = 1.81\r\nengineer.Height1 = 0.81\r\n");
+            driver.sit(0);
+            viewer::ViewerCamera view;
+            view.fly = true;
+            auto go = [&](Engineer& who, viewer::ViewerCamera& at, EngineerControls controls, const float seconds) {
+                for (float t = 0.0f; t < seconds; t += dt) {
+                    who.update(*cab3, controls, car, ground, dt, at);
+                    controls.action = controls.window = controls.head_out = false;
+                }
+            };
+            go(driver, view, {}, 0.1f);
+            go(driver, view, {.action = true, .action_ctrl = true}, 1.0f);
+            const auto standing = view.position;
+            const auto cab_floor = floor_at(standing);
+            const float rise = cab_floor ? standing.y - *cab_floor : 0.0f; // the eye above the feet
+            check(driver.mode() == Engineer::Mode::standing && cab_floor && std::abs(*cab_floor - 1.49f) < 0.05f,
+                  "ER9PK: up from the chair, on the cab floor (1.49)");
+            go(driver, view, {.forward = true}, 1.0f);
+            check(glm::distance(standing, view.position) > 0.3f, "ER9PK: he walks in the cab");
+            // In from outside by every door one gets on by: on the floor there, walking.
+            for (const auto& [door, spot] : Engineer::get_on_points(*cab3)) {
+                const auto& d = sd.doors[door];
+                Engineer walker;
+                walker.configure("engineer.Height = 1.81\r\nengineer.Height1 = 0.81\r\n");
+                walker.arrive(*cab3, door);
+                viewer::ViewerCamera in;
+                in.fly = true;
+                go(walker, in, {}, 0.05f);
+                const auto at = in.position;
+                const auto under = surfaces->floor(at.x, at.z, 0.0f, 3.0f, cab3->skip());
+                in.yaw = at.x > 0.3f ? 3.14159265f * 0.5f : at.x < -0.3f ? -3.14159265f * 0.5f : 0.0f;
+                go(walker, in, {}, 0.05f);
+                go(walker, in, {.forward = true}, 1.0f);
+                const float walked = glm::distance(at, in.position);
+                std::printf("  ER9PK in by %-7s feet %.2f, the floor there %.2f, walked %.2f m\n", d.name.c_str(), at.y - rise,
+                            under ? *under : -9.0f, walked);
+                check(under && std::abs(at.y - rise - *under) < 0.05f, ("ER9PK: in by " + d.name + ", on the floor").c_str());
+                check(walked > 0.3f, ("ER9PK: in by " + d.name + ", he walks").c_str());
+            }
+        }
+    } else {
+        std::printf("no ER9PK-328 here: its cab doors not checked\n");
+    }
+
     std::printf("%s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;
 }

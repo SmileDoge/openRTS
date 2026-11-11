@@ -21,7 +21,7 @@ the menus (`ActivityMenus`), the scenario's parameters
 (`TrainsDistanceOfNoReturn`, `TrafficLimitsTable`, `GlobalBlockPoints`),
 the services (type, path, `ServiceStarts`, `ServiceFlags`, block points,
 trains with their consist, placement, start and remove times, speeds,
-rates, efficiency, offset, flags, state) and every event
+rates, efficiency, offset, flags, state, `WagonParameters`) and every event
 (`GlobalEvents`, a service's `ServiceEvents`: id, activation level,
 enabled, `Permanent`, conditions and outcomes, kept as written).
 
@@ -47,6 +47,24 @@ enabled, `Permanent`, conditions and outcomes, kept as written).
 - **The player's path.** The player's train gets its service's path: the
   dispatcher reserves it and sets its junctions, the service's block points
   hold it (RTS); `AssignService` gives it the new service's path.
+- **The state.** The player's train starts as its `TrainState` says (the
+  locomotives' DLLs get it at `Init`): 0 cold, 1 on and standing, 2 / 3
+  running. Without one RTS leaves 0 for a `PLAYER` service and gives a
+  `TRAFFIC` one 2 (`0x471B9C`; activity.pdf says 1 for all but static
+  trains, the code does not), and with 0 raises no pantograph (`0x4EF740`):
+  Kuban's and Novokuznetsk's scenarios (none sets it) start with the
+  locomotive cold, its pantographs down. `--start` overrides it.
+- **The cars' state.** Each train's `WagonParameters ( n WagonGroup ( ... ) )`
+  as it is placed (RTS `0x474590` reads it as `ModifyWagons`' groups,
+  `0x4FA374` applies it): `Range ( a b )` the cars from 0 (the whole train
+  by default); `PlaceDrag` chocks under the first car's front (1), the last
+  car's rear (2) or both (3); `DisconnectTrainPipe`,
+  `DisconnectChargingPipe`, `DisconnectEPCable`, `CloseEndValves` and their
+  `Connect...` / `OpenEndValves` twins at those ends (1 the front, 2 the
+  rear); `HandbrakePercent` and `Cold` on every car of the group. A
+  consist's own `PlaceDrag ( n )` puts chocks under that car (`0x477928`).
+  The other keys (pressures, pantographs, sand, fuel, doors, cargo,
+  `AIControlled`) are named in the log, not run yet.
 - **Traffic.** The `TRAFFIC` services' trains start at their times and run
   as RTS's traffic: one body along their paths, RTS's controller, block
   points, removed at their ends (`docs/traffic.md`).
@@ -124,9 +142,8 @@ script), `AssignService` (the train is the new service's from then: its
 `OnStart`), `StartWagonStateTracking`, `CheckWagonState`,
 `SendSoundTrigger ( ObjectNum TriggerID )` (the code to the scenario's
 `SOUND` object on its car, heard as the cab's while the player is in that
-car; object −1: the car's own sounds), `ModifyWagons`' `OpenEndValves` /
-`CloseEndValves` (the cocks at the group's ends: the first car's front, the
-last's rear; the whole train by default), `ReleaseBlockPoint`,
+car; object −1: the car's own sounds), `ModifyWagons` (its groups as a
+train's `WagonParameters`, above), `ReleaseBlockPoint`,
 `EnableBlockPoint`, `ModifyVelocity`, `WaitHere` (`docs/traffic.md`),
 `SuccessfullyCompleteActivity`, `ActivityFailed`. An outcome's `TrainID`
 names its train (default the event's).
@@ -149,7 +166,10 @@ menu's first item in an automated run (with `--capture-board`).
 - `UncoupleCars` (the condition and the outcome), `SetDefaultUncouple`,
   `DeliverCars`, `PickupEvent`, `WaitAtLocation`, `ReachVelocity`,
   `RandomEvent`, `OnActivationLevel`, `PlayerBoardsTrain ( EXTERIOR )`.
-- `ModifyWagons` beyond the end valves; the other WagonState variables
+- Of a `WagonGroup`: the pressures, pantographs, sand, fuel and water,
+  doors, cargo, `AIControlled`, the SME / HV cables, locked couplings; a
+  static train's own `TrainState` (it stands with its pantographs down);
+  the other WagonState variables
   (switches, doors, lamps, couplings, pipes' flags...).
 - Player tasks, saves, weather changes, `FailActivityOn...`, static
   objects other than sounds.

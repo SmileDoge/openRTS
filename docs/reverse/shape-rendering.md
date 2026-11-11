@@ -74,6 +74,20 @@ indices (≤2), `+16` z bias (parsed, unused by drawing), `+20` vtx_state,
 
 `vtx_state` (20 bytes): `+0` flags, `+4` matrix, `+8` light material.
 
+**Matrix 0 is never applied** (CONFIRMED, 2026-11-11). `0x4AC5A4` builds the
+nodes' world matrices (shape `+88`, 64 bytes each, only when there is more
+than one matrix) with `0x4ACDF8`: for each node, its matrix times its
+parents' going up the hierarchy while the index is above 0, so matrix 0 and
+anything above it are left out of every chain. The draws (`0x4B1664`,
+`0x4B042C`, `0x4ADA94`) multiply a primitive's matrix (or its animated one)
+only when the vtx_state's matrix index is not 0. TSRE5 draws shapes so too.
+In the installed content 765 shapes have a matrix 0 other than the identity
+(484 in routes, 268 in GLOBAL, 13 in TRAINSET: interiors moved 0.5–0.8 m,
+freight loads); Kievskij hod's `pineline6.s` has MAIN at (0, 13.5, 0) over
+trees from y 0. openRTS: `parse_binary_shape_model` makes matrix 0 the
+identity with no parent (its name kept), and an animation does not move it
+(before, the tree line hung 13.5 m above the ground).
+
 Vertex colours are the raw `u32` 0xAARRGGBB of the shape vertex record.
 
 ### PROBABLE
