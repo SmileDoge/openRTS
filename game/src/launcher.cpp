@@ -1884,7 +1884,7 @@ void Launcher::State::draw_update_settings(const float label_width) {
     ImGui::SeparatorText(tr("Updates"));
     if (begin_form("##update_form", label_width)) {
         form_row(tr("Version"));
-        ImGui::TextUnformatted(std::string(core::version()).c_str());
+        ImGui::TextUnformatted(core::version_text().c_str());
         form_row(tr("Check for a new version at the start"));
         if (ImGui::Checkbox("##update_check", &update_check)) remember("update_check", update_check ? "1" : "0");
         ImGui::EndTable();

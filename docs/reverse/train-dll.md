@@ -835,8 +835,9 @@ without compliance and RTS refuses it too.
 - **CONFIRMED** `.sd` `InteriorChairs ( n Chair ( ... ) )` (the cab loader
   `0x51CD88`): a chair is 108 bytes; `Position` at +16, `Radius` +28,
   `StartDirection` +60, `Pos1` +72, `Pos3` +96 (X negated on reading, as
-  every `.sd` position: it matches the cab shape's own X); **PROBABLE**
-  `Pos2` +84 (the keyword there is an unnamed 4-character string).
+  every `.sd` position: it matches the cab shape's own X); `Pos2` +84 (the
+  keyword there is an unnamed 4-character string; CONFIRMED by its use,
+  `0x436CA8` / `0x43778C`).
 - **CONFIRMED** config.ini `engineer.Height` (default 1.8, `0x61D400`) and
   `engineer.Height1` (0.8, `0x61D404`); the installation here has 1.81 / 0.81.
 - **CONFIRMED** Seated (`byte_61D394 == 3`), `0x43778C` sets the engineer's
@@ -847,9 +848,11 @@ without compliance and RTS refuses it too.
   state): with a current chair, seated puts him at `Pos1`, not seated at
   `Pos3` (`+96`). RTSFileReference: `Pos2` where Enter stands him up,
   `Pos3` where Ctrl+Enter does.
-- **PROBABLE** He walks on `InteriorPlanes` (rectangles with a height), which
-  in the VL10k lie at 1.75, 0.29 under the visible floor (2.04): RTS's
-  standing eye, `Height` above them, is 1.52 over the floor.
+- **CONFIRMED** In a cab he walks on `InteriorPlanes` and the planes of its
+  open doors only (`0x434C58`, `walking.md`); in the VL10k they lie at
+  1.75, 0.29 under the visible floor (2.04): RTS's standing eye, `Height`
+  above them, is 1.52 over the floor. Risen at the chair (Enter, bit 0 of
+  its +44) his feet are at `Pos2.y` (`0x43778C`), the eye `Height` above.
 - **CONFIRMED** Sitting down and standing up move the camera along a short
   path over 2 s (`sub_4352B0` with 2.0).
 - The current chair is `[0x61D6A8]` (set by `0x41B434`; a saved state's
@@ -899,13 +902,40 @@ without compliance and RTS refuses it too.
     (`+372`; UNKNOWN which).
 - **CONFIRMED** `InteriorWindows` (`0x51CD88`): 100 bytes, type 6 (chairs
   are type 5); `Position` +16, `Radius` +28, `CanBeOpened` +60,
-  `HeadOutPosition` +64, `AnimTime` +76, `SMSTriggers` +96/+98.
+  `HeadOutPosition` +64, `AnimTime` +76, `SMSTriggers` +96/+98. Standing
+  by one (its Position within Radius, on the screen: `0x414D24`), Enter
+  opens or shuts it (`0x438708`), Ctrl+Enter puts the head out of it
+  (`0x4370DC`; not in openRTS). The ED9M salon's windows have no Position:
+  only from a seat.
+- **CONFIRMED** A salon's `InteriorSeats ( n InteriorSeat ( Position Radius
+  Pos1 Pos2 Area HeadOutWindow ) )` (`0x515434`; object type 11; `Pos1`
+  +52, `Pos2` +64, flags +92, the window +96): Enter by one, not seated,
+  goes along the aisle to `Pos1` and down to `Pos2` (`0x4372B8` action 1;
+  seated the eye `Height1` above `Pos2`, as a chair's); Enter seated, up
+  and back to `Pos1` (action 2); Num0 its window (action 3), Num1 the head
+  out of it (action 4). The ED9M's `motor9.sd`: 39 seats (the count says
+  700), 20 windows. openRTS (2026-11-11, `Engineer`, `CabSeat`): the same,
+  the seat picked as the one most in the middle of the view within 2.2 m
+  (a salon's seats stand close; a door or a chair by him wins unless the
+  seat is nearer the middle), sitting and getting up by the 0.7 s blend,
+  not along RTS's path.
 - **PROBABLE** `Cabin ( "x.s" 1 )`: the cab shape turned round in its car
   (the VL10k's b sections, whose cab is at the rear of the body and whose
   `DOOR3` "WAGON_BACK" then faces section a).
-- openRTS: walks on the cab shape's own surfaces (floor, walls, desks, doors
-  by their animated nodes), the eye 0.85 `Height` over his feet (1.54);
-  outside, on the ground and (optionally) the world's objects. Walking
+- openRTS: in a cab with `InteriorPlanes` (every cab with chairs in the
+  2026-11 build, 220), RTS's walking (since 2026-11-11, `Engineer::
+  walk_planes`): on the planes and the open doors' planes, the eye `Height`
+  above them; risen, `Height` above `Pos2.y`. Before, he walked on the cab
+  shape's own surfaces, stepping up to 0.4 m: from the floor onto the
+  driver's seat, from it onto the desk, his head through the roof. A cab
+  without planes still walks so (floor, walls, desks, doors by their
+  animated nodes, the eye 0.85 `Height` over his feet); outside, on the
+  ground, the world's objects (their `ESD_Complex` boxes, else their
+  surfaces; optionally) and the cars' outsides (walkways, steps, ladders:
+  `walking.md`), the eye `Height` over his feet (0.85 before 2026-11-11).
+  A cab door to the car's outside (`EXT_WAG`, the ChME3's): walking off
+  its open plane puts him on the walkway, Ctrl+Enter takes the car's
+  door's way out. Walking
   into the face of an open outer door (its plane, inside its width) gets
   him off; before 2026-11-06 only where the wall stopped him dead, so
   sliding along it he had to search the doorway. Getting on, RTS's keys
@@ -913,12 +943,15 @@ without compliance and RTS refuses it too.
   door without a leaf or of a cab only stood at): Enter opens or shuts it,
   Ctrl+Enter climbs in, a passenger door only when the train has opened
   it. A way in is an outer door the player opens or one with its
-  doorway's floor (`InteriorPlane`). He comes in on the floor 0.45 m
-  inside the doorway, from 0.6 m below its plane to 0.8 m above, else up
-  to 1.6 m above, as up the steps: the ER9PK's cab doors (`cabklub.sd`
-  `DOOR1` / `DOOR2`) have their plane at the lowest step, 0.50, the
-  vestibule's floor at 1.39; before 2026-11-11 he stood under the floor
-  there and could not walk. The cab of any car of the driven
+  doorway's floor (`InteriorPlane`). He comes in 0.45 m inside the
+  doorway: on the plane there up to 1.6 m above the doorway's (or the
+  nearest within 0.6 m: the CHS4t's point lies 0.013 m off it), RTS
+  running the door's `Trajectory` instead; in a cab without planes on the
+  shape's floor, from 0.6 m below the doorway's plane to 0.8 m above, else
+  up to 1.6 m above, as up the steps. The ER9PK's cab doors (`cabklub.sd`
+  `DOOR1` / `DOOR2`) have their planes from 1.0 down to 0.0 (0.50 between),
+  the vestibule's (`TAMBUR_M`) at 1.0 under its visible floor (1.39);
+  before 2026-11-11 he stood under that floor and could not walk. The cab of any car of the driven
   train or of another own train takes him; his car and its DLL follow
   (`TrainView::walk_up_to_cab`, `board`). A cab only stood at reads its
   doors as the `.sd` leaves them until its shape is read. A cab he leaves

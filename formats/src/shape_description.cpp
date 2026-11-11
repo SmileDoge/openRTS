@@ -1,5 +1,6 @@
 #include <openrts/formats/shape_description.hpp>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
@@ -134,6 +135,26 @@ void read_extensions(const std::string_view text, ShapeDescription& description)
     detail::read_text_tree(text, root);
     if (const auto* alternative = find_node(root, "esd_alternative_texture")) {
         description.alternative_texture = static_cast<std::uint32_t>((std::max)(0.0, alternative->number(0, 0.0)));
+    }
+    // RTS 0x4BB7BC: ESD_Complex's boxes, else the one ESD_Bounding_Box.
+    auto box = [&](const detail::TextNode& node, const std::size_t first) {
+        WalkBox b;
+        if (first) {
+            b.rotation = {value(&node, 0), value(&node, 1), value(&node, 2)};
+            b.translation = {value(&node, 3), value(&node, 4), value(&node, 5)};
+        }
+        for (std::size_t k = 0; k < 3; ++k) {
+            const float p = value(&node, first + k), q = value(&node, first + 3 + k);
+            b.low[k] = (std::min)(p, q);
+            b.high[k] = (std::max)(p, q);
+        }
+        description.boxes.push_back(b);
+    };
+    if (const auto* complex = find_node(root, "esd_complex")) {
+        for (const auto& node : complex->children)
+            if (node.name == "esd_complex_box" && node.values.size() >= 12) box(node, 6);
+    } else if (const auto* bounding = find_node(root, "esd_bounding_box"); bounding && bounding->values.size() >= 6) {
+        box(*bounding, 0);
     }
     const auto* lights = find_node(root, "esd_lightsources");
     if (!lights) return;

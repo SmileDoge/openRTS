@@ -254,7 +254,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         } catch (...) {
         }
     }
-    options.title = "openRTS " + std::string(openrts::core::version());
+    options.title = "openRTS " + openrts::core::version_text();
     // --view first: it sets what to open and the conditions; later flags win.
     std::string view_mode;
     std::string view_content;
@@ -377,6 +377,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.capture_uncouple = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--capture-board" && has_value) {
             options.capture_board.push_back(static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str())));
+        } else if (flags[i] == "--capture-passage" && has_value) {
+            options.capture_passage = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--fps-limit" && has_value) {
             options.fps_limit = openrts::viewer::clamp_fps_limit(std::atoi(std::string(flags[++i]).c_str()));
             fps_given = true;

@@ -275,7 +275,7 @@ endif()
 # doors, gets off and climbs in.
 if(OPENRTS_TEST_ROOT AND TARGET openrts_viewer)
     add_executable(openrts_engineer_test engineer_test.cpp
-        ../viewer/src/cab_view.cpp ../viewer/src/cab_screens.cpp ../viewer/src/engineer.cpp ../viewer/src/key_layout.cpp ../viewer/src/camera.cpp ../viewer/src/ui_text.cpp)
+        ../viewer/src/cab_view.cpp ../viewer/src/cab_screens.cpp ../viewer/src/engineer.cpp ../viewer/src/walk_rules.cpp ../viewer/src/key_layout.cpp ../viewer/src/camera.cpp ../viewer/src/ui_text.cpp)
     openrts_configure_target(openrts_engineer_test)
     target_link_libraries(openrts_engineer_test PRIVATE openrts_assets openrts_audio openrts_formats openrts_renderer openrts_trainplugin)
     add_test(NAME openrts.content.engineer_vl10k COMMAND openrts_engineer_test "${OPENRTS_TEST_ROOT}")

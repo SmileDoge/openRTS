@@ -94,7 +94,14 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
   or without): stand up at the desk, open the window and lean out, walk
   through the cab and into the next section, get down onto the ground by a
   door and climb back into any cab of his train (the far cab of a multiple
-  unit too, its DLL going along) or of another train of his.
+  unit too, its DLL going along) or of another train of his. In a cab only
+  on its `.sd` planes, as in RTS (no climbing onto the seat or the desk).
+  Outside, up the cars' steps and ladders and along their walkways (the
+  ChME3: from the ground onto the walkway, through the door into the cab,
+  up onto the roof) and on the route objects' boxes (`ESD_Complex`:
+  footbridges, platforms, a lighting mast's ladder); off an edge he falls.
+  Through an open passage door the next car's salon or cab shows (the
+  ED9M, the VL80's second section), not its outside.
 - **Network play on an RTS server** (`rts_server.exe`, together with
   `rts1.exe`, [more](docs/net.md)):
   - login by nick and the wait for a train from the dispatcher, as
@@ -186,7 +193,8 @@ Every push to `master` is built on GitHub Actions. Ready archives (the start
 menu, the game, the locomotive DLL host, the tools, `wgpu_native.dll`) are in
 **Releases**; how to install and run them is in [INSTALL_EN.md](INSTALL_EN.md):
 - **nightly** — a pre-release with the latest `master` build, replaced
-  automatically;
+  automatically; the window's title and the settings mark its version with
+  the commit, e.g. "openRTS 0.6.2 (nightly f1a6b90)";
 - **vX.Y.Z** — versions; the release is created automatically when a version
   tag is pushed.
 

@@ -913,6 +913,7 @@ public:
         auto lighting = sky_state_->lighting;
         lighting.light_rings = light_rings_;
         if (train_) lighting.interior_lights = train_->interior_lights();
+        if (train_) lighting.portals = train_->portals();
         lighting.fog_colour = sky_state_->fog_colour;
         lighting.fog_start = sky_state_->fog_start;
         lighting.fog_end = sky_state_->fog_end;
@@ -1219,6 +1220,9 @@ public:
     }
     void drive_unit(const std::size_t index) override {
         if (train_) train_->drive_unit(index);
+    }
+    void stand_at_passage(const std::size_t index) override {
+        if (train_) train_->stand_at_passage(index);
     }
     void stand_at_cab_door(const std::size_t index) override {
         if (train_) train_->stand_at_cab_door(index);

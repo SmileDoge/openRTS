@@ -21,6 +21,7 @@ add_library(openrts_viewer_core STATIC
     src/cab_view.cpp
     src/cab_screens.cpp
     src/engineer.cpp
+    src/walk_rules.cpp
     src/key_layout.cpp
     src/frame_limiter.cpp
     src/head_motion.cpp

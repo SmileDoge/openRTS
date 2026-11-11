@@ -269,6 +269,8 @@ public:
     // --capture-board: the engineer on the ground at a cab door of car
     // `index` (from 0) of the driven train.
     virtual void stand_at_cab_door(std::size_t) {}
+    // --capture-passage: the engineer at the passage door of car `index`.
+    virtual void stand_at_passage(std::size_t) {}
     [[nodiscard]] virtual std::string car_menu_report() const { return {}; }
     // --capture-ok: the scenario's open message closed (its OK).
     virtual void close_activity_message() {}

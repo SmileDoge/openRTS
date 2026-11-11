@@ -213,12 +213,23 @@ struct CabPlane {
     std::string name;
     std::array<float, 3> a{}, b{}; // InteriorPlane ( [name] x1 y1 z1 x2 y2 z2 )
 };
+// A point of a Trajectory ( n  x y z kind  ... ): where the engineer goes, in
+// the frame of what it belongs to (a cab, a car's shape), and the kind of
+// move to it (RTS 0x435654's speed profiles: docs/reverse/walking.md).
+struct TrajectoryPoint {
+    std::array<float, 3> at{};
+    std::int32_t kind{};
+};
 struct CabDoor {
     std::string name;              // a node of the cab shape (its animation opens it)
     std::string from, to;          // Connects ( a b ): areas, EXTERIOR or WAGON_BACK / WAGON_FRONT
     std::array<float, 3> position{};
     float radius = 1.5f;
     CabPlane plane;                // the floor through the doorway
+    // Trajectory: the way through it (Ctrl+Enter); for a door out onto the
+    // car's outside (EXT_WAG), RTS runs the car's ExteriorDoor of the same
+    // name instead (0x431270).
+    std::vector<TrajectoryPoint> trajectory;
     float anim_time = 1.0f;
     bool has_position = false;
     // GlobalID: 1 the left doors, 2 the right ones: opened and closed with the
@@ -238,6 +249,18 @@ struct CabDoor {
     // to open and to shut (RTS +0x74 / +0x76, 0x438708); 0 none.
     std::array<std::uint16_t, 2> sms_triggers{};
 };
+// InteriorSeats ( n InteriorSeat ( Position Radius Pos1 Pos2 Area
+// HeadOutWindow ) ): a salon's passenger seats (RTS 0x515434, object type
+// 11). Enter by one (its Position within Radius, in view) takes him along
+// the aisle to Pos1 and down at Pos2, the eye Height1 above it; Enter again
+// back up at Pos1 (0x4372B8). Its window opens and he leans out of it as
+// from a chair (Num0 / Num1).
+struct CabSeat {
+    std::array<float, 3> position{}, aisle{}, seated{};
+    float radius = 3.0f;
+    std::array<float, 4> area{}; // x1 z1 x2 z2: the seat's floor (RTS marks it taken)
+    std::string head_out_window;
+};
 struct CabWindow {
     std::string name;
     bool can_open = false;
@@ -245,6 +268,7 @@ struct CabWindow {
     std::array<float, 3> head_out{};
     std::array<float, 3> position{};
     bool has_position = false;
+    float radius{};      // Enter by it (Position within Radius, in view) opens or shuts it (RTS type 6)
     float anim_time = 1.0f;
     // SoundProof ( closed open ) towards the outside of the room the window's
     // Position is in; without it nothing passes (RTS 0x51CD88: 0, 0).
@@ -277,6 +301,7 @@ struct CabDescription {
     CabSignalization signalization;
     std::uint32_t interior_doors{};
     std::vector<CabChair> chairs;
+    std::vector<CabSeat> seats; // a salon's (InteriorSeats)
     std::vector<CabArea> areas;
     std::vector<CabPlane> planes;
     std::vector<CabDoor> doors;
@@ -295,17 +320,46 @@ struct CabDescription {
 [[nodiscard]] CabDescription parse_cab_description(std::string_view bytes);
 
 // What a car's own shape .sd adds outside (ESD_Exterior_Details): free
-// animations a DLL finds by name (FindAnim) and doors.
+// animations a DLL finds by name (FindAnim), doors, and what the engineer
+// walks on outside the car (RTS 0x4F0BC8; docs/reverse/walking.md).
 // ESD_Exterior_Details ExteriorDoor: a door of the car's shape (its node opens
 // by its animation). CanBeOpened ( 0 ): only a DLL opens it (passenger doors,
 // GlobalID groups them by side).
 struct ExteriorDoor {
     std::string name;
+    // Connects ( a b ), lower case: ext_wag (the car's outside), interior
+    // (its cab), exterior (the ground), wagon_front / wagon_back.
+    std::string from, to;
     std::array<float, 3> position{};
+    bool has_position = false;
     float radius = 2.0f;
+    CabPlane plane;          // InteriorPlane: the doorway's floor
+    bool has_plane = false;
+    std::vector<TrajectoryPoint> trajectory; // the way through it
     float anim_time = 1.0f;
     std::uint32_t global_id{};
     bool can_be_opened = true;
+    std::int32_t parent = -1; // ParentObject: the door whose state it has
+};
+// ExteriorLadder: steps or a ladder, run as a passage (Ctrl+Enter within
+// Radius of Position): its Trajectory up or down, from the end nearer him.
+struct ExteriorLadder {
+    std::string from, to; // Connects, as a door's (none: he stays where it ends)
+    std::array<float, 3> position{};
+    float radius{};
+    std::vector<TrajectoryPoint> trajectory;
+};
+// ExteriorPlane ( x1 y1 z1 x2 y2 z2 [EXIT] [WAGON_FRONT] [WAGON_BACK] ): a
+// floor outside the car (walkways, steps); off its edge with EXIT he gets
+// down to the ground, with WAGON_FRONT / WAGON_BACK over to that car.
+struct ExteriorPlane {
+    std::array<float, 3> a{}, b{};
+    bool exit = false, front = false, back = false;
+};
+// ExteriorLedge ( Trajectory ( .. ) ): segments he walks along (a roof's
+// edge), within 0.3 m of them.
+struct ExteriorLedge {
+    std::vector<TrajectoryPoint> points;
 };
 
 // A car's object shown by its state (an RTS .sd's ESD_Exterior_Details
@@ -325,6 +379,11 @@ struct ExteriorDetails {
     std::vector<std::string> doors;
     std::vector<ExteriorDoor> door_details; // in the same order
     std::vector<WagonObject> wagon_objects;
+    std::vector<ExteriorLadder> ladders;
+    std::vector<ExteriorPlane> planes;
+    std::vector<ExteriorLedge> ledges;
+    // Anything the engineer can walk on or climb outside.
+    [[nodiscard]] bool walkable() const noexcept { return !ladders.empty() || !planes.empty() || !ledges.empty(); }
 };
 [[nodiscard]] ExteriorDetails parse_exterior_details(std::string_view bytes);
 

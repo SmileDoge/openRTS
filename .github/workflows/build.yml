@@ -39,9 +39,17 @@ jobs:
           Invoke-WebRequest $url -OutFile wgpu.zip
           Expand-Archive wgpu.zip -DestinationPath wgpu-native
 
+      # The build's label after the version in the windows' titles: "nightly
+      # <commit>" for a push to master (the nightly release), "ci <commit>"
+      # for a pull request or a manual run, none for a version tag.
       - name: Configure
         shell: pwsh
-        run: cmake -S . -B build -DOPENRTS_ENABLE_WGPU=ON "-DOPENRTS_WGPU_ROOT=$env:GITHUB_WORKSPACE/wgpu-native"
+        run: |
+          $commit = $env:GITHUB_SHA.Substring(0, 7)
+          if ($env:GITHUB_REF -like 'refs/tags/v*') { $label = '' }
+          elseif ($env:GITHUB_REF -eq 'refs/heads/master' -and $env:GITHUB_EVENT_NAME -eq 'push') { $label = "nightly $commit" }
+          else { $label = "ci $commit" }
+          cmake -S . -B build -DOPENRTS_ENABLE_WGPU=ON "-DOPENRTS_WGPU_ROOT=$env:GITHUB_WORKSPACE/wgpu-native" "-DOPENRTS_BUILD_LABEL=$label"
 
       - name: Build
         run: cmake --build build --config Release --parallel

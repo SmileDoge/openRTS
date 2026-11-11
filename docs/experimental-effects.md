@@ -85,6 +85,10 @@ that keeps to surfaces of about the same depth. A slice of a tilted surface
 can see more than 1; the value is clamped only after the blur, where the
 slices average out (clamping before darkened flat ground by several
 percent). It darkens the sky (ambient) light only, not the sun or the lamps.
+Blended surfaces (glass) take none (2026-11-11): they are not in the
+pre-pass, so the occlusion at their pixels is that of what lies behind (a
+yellow sticker on an ED9M door's glass showed the seats' shading). The
+pre-pass keeps the portals into the next car (`docs/reverse/rolling-stock.md`).
 
 Two qualities (2026-11-09), the panel's «Качество затенения: низкое /
 высокое», remembered as `effect_ao_quality` (`low` / `high`, high by

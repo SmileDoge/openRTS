@@ -447,6 +447,9 @@ public:
     [[nodiscard]] const std::vector<renderer::ModelExtraLight>& light_beams() const noexcept { return light_beams_; }
     // The lamps of the cab or salon the engineer is in that are on.
     [[nodiscard]] const std::vector<renderer::ModelExtraLight>& interior_lights() const noexcept { return interior_lights_; }
+    // The open passage doors of the car he is in, as doorways into the cars
+    // coupled there (ModelLighting::portals).
+    [[nodiscard]] const std::vector<renderer::ModelPortal>& portals() const noexcept { return portals_; }
     // The world clock the DLLs read (RTS_VAR_TIME, RTS_ISNIGHT): the scene's
     // time of day, s since midnight, and whether the sky is at night.
     void set_world_clock(const double day_time, const bool night) noexcept {
@@ -509,6 +512,9 @@ public:
     // A test (--capture-board): the engineer on the ground at a cab door of
     // car `car` of the driven train.
     void stand_at_cab_door(std::size_t car);
+    // A test (--capture-passage): the engineer on foot in car `car`'s cab or
+    // salon, at its passage door towards the next car, the door opened.
+    void stand_at_passage(std::size_t car);
     [[nodiscard]] std::string car_menu_report() const;
     // For the capture report: lights, pantographs, the line, cables, the
     // native plugin, of every train.
@@ -844,6 +850,26 @@ private:
     void gather_walk_world(const glm::vec3& around, renderer::ModelLibrary& library);
     [[nodiscard]] std::optional<float> walk_floor(const glm::vec3& at) const;
     [[nodiscard]] bool walk_blocked(const glm::vec3& from, const glm::vec3& to) const;
+    // A car by its key: (unit, car).
+    [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> find_car(std::uint32_t key) const;
+    // Car i of unit u's outside as the engineer walks it this frame (none:
+    // nothing to walk on, or not placed).
+    [[nodiscard]] std::optional<CarOutside> car_outside(std::size_t u, std::size_t i, bool with_cab = true);
+    // The cab view of car i of unit u: his own, the one he visits, or one
+    // kept (made when `create`).
+    CabView* car_cab(std::size_t u, std::size_t i, bool create);
+    // Makes car `car`'s cab (of the driven train) the engineer's, as walking
+    // up to it (the one he leaves kept): the cab, or null.
+    CabView* take_engineer_cab(std::size_t car);
+    // What the engineer did that the scene carries out (Engineer::Event).
+    void carry_out(const Engineer::Event& event);
+    // On foot on the ground: the nearest ladder of a car in reach (unit, car,
+    // ladder, distance).
+    struct LadderTarget {
+        std::size_t unit{}, car{}, ladder{};
+        float distance{};
+    };
+    [[nodiscard]] std::optional<LadderTarget> ladder_target(const glm::vec3& eye, const glm::vec3& forward);
     void post_cab_sounds();
     void update_aux_sounds(Unit& unit, std::size_t u, std::size_t i, const audio::SoundInputs& exterior, float elapsed,
                            const ViewerCamera& camera, audio::AudioEngine& sound);
@@ -915,6 +941,29 @@ private:
     std::vector<LightGlow> light_glows_;
     std::vector<renderer::ModelExtraLight> light_beams_;
     std::vector<renderer::ModelExtraLight> interior_lights_;
+    // openRTS: through an open passage door of the car he is in, the next
+    // car's salon or cab (its cab view, kept) instead of its outside: drawn
+    // through the doorway (ModelPortal) only, its outside everywhere else.
+    bool neighbour_rooms_ = true;
+    bool neighbour_rooms_shut_ = false; // ... and through a shut door's glass (off by default)
+    struct NeighbourRoom {
+        std::size_t car{};    // in units_.front()
+        std::size_t portal{}; // in portals_
+    };
+    std::vector<NeighbourRoom> neighbour_rooms_now_; // with an open door this frame
+    std::vector<std::uint32_t> neighbour_room_keys_; // every next car's at a passage door: loaded
+    std::vector<renderer::ModelPortal> portals_;
+    glm::vec3 portal_eye_{}; // the eye they were made for (the report's check)
+    std::optional<glm::vec3> look_once_; // a test's turn of his head (world direction)
+    std::unordered_map<std::uint32_t, std::vector<float>> neighbour_lamp_levels_; // by car key
+    struct RoomLoad {
+        bool requested = false;
+        std::future<renderer::StreamedModelAsset> loading;
+    };
+    std::unordered_map<std::uint32_t, RoomLoad> room_loads_; // by car key
+    // The next cars' rooms, their doors to his car with his, the doorways.
+    // Drawn only while the doorway is in view (`eye`, look_).
+    void update_neighbour_rooms(float elapsed, const glm::vec3& eye);
     // Textures the cabs' TextureChanges draw, held while the train is here.
     std::map<std::string, std::shared_ptr<const renderer::GpuTexture>> cab_textures_;
     std::vector<float> lamp_level_; // the engineer's cab or salon, by lamp (LightFade)
@@ -983,6 +1032,12 @@ private:
         float half_width{}, half_length{}, height{};
     };
     std::vector<WalkBox> walk_cars_;
+    // The world's objects' ESD_Complex / ESD_Bounding_Box boxes (RTS walks
+    // the ground among them, 0x4322F0): read from each shape's .sd once.
+    std::unordered_map<std::string, std::shared_ptr<const std::vector<formats::WalkBox>>> walk_boxes_; // by shape path
+    std::vector<PlacedBoxes> walk_boxes_near_;
+    // On a car's outside (Engineer::Mode::on_car): that car, by its key.
+    std::optional<std::uint32_t> outside_car_;
     double accumulator_{};
     bool follow_ = true;
     std::size_t joints_ = 0, junctions_ = 0, coupler_breaks_ = 0, derailments_ = 0;

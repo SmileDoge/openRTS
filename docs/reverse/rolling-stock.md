@@ -233,3 +233,43 @@ nod and the tilt go into the view only, so the mouse's look is unchanged.
   (its shape instance flag +88 = 20) unless bits 4-5 are set; putting the
   head out of the window (camera mode 4) shows it again (flag 0), back in
   the cab hides it. Bits 6-7 do the same for a salon.
+- **CONFIRMED** only the current cab or salon is drawn (`0x438D50` hands
+  its object to the draw list, `sub_4E0954`); the cars coupled to it stay
+  their outsides. Through the passage door one sees the next car's end wall
+  (the ED9M), or its outside's simple insides (the VL80's section b), not
+  its salon or cab.
+- openRTS (2026-11-11, its own, the setting «Через открытую дверь
+  перехода — салон или кабина соседнего вагона», on): while the engineer is
+  in a car, the cars coupled at its passage doors (`WAGON_FRONT` /
+  `WAGON_BACK`) have their cab views made and their shapes loaded; their
+  door at that end opens and shuts with his; through his open door the
+  next car's salon or cab is drawn, and its outside everywhere but there:
+  the doorway (in his car's end wall at the door's point, the door's
+  `InteriorPlane` across, 0.15 m wider each side and at least the
+  gangway's 1.4 m, 2.4 m from its floor; when he stands in the gangway, the
+  door's plane going on into it, moved to 0.15 m ahead of his eye, the
+  cuts with it) is a `renderer::ModelPortal`, tested per fragment. Through it the next car's
+  outside is cut beyond its end wall (its facing door's point, 0.05 m on)
+  and in the doors' opening (the door's width and 0.1 m each side, 1.9 m
+  high) from 0.45 m short of it: the ED9M's end door is part of its end
+  wall's node (`ZADNICA`) and lies nearer than the salon's door point, so
+  it showed, low-poly and shut. His own car's outside is drawn in the
+  gangway between (from 0.15 m past his wall, not in the opening within
+  0.45 m of it, no higher than the opening: the ED9M's blue roof edge
+  stood over the gangway; without shadow): the plates and bellows of both halves of
+  the gap, which neither room has (the ED9M: 1.46 m between the walls;
+  before, holes to the ballast there). The test (`portal_keeps`:
+  the line from the eye through it) is made in the camera's
+  depth pre-pass too (GTAO and the light clusters of the experimental
+  path: before, they saw the end wall in the doorway); the shadow passes
+  draw both whole. Only while the doorway is in view (a corner of it
+  within about 70 degrees of where he looks); with the setting «И через
+  закрытую (сквозь её стекло)» (off by default) through his shut door's
+  glass too. Its lamps light as its DLL says (up to 8 with his own). Each
+  car sways on its own springs (`Car::body`: knocks at the rail joints,
+  hunting and curves, pulling and braking), so the next car moves in the
+  doorway; his own cab is drawn still and the eye carried (RTS), so the
+  next car moves there by its own sway only. Walking in, the room is there
+  at once, and he goes straight through (`walking.md`). Checked
+  (`--capture-passage 0`): the ED9M's head car into car 2's `motor9.s`,
+  the VL80k's section a into b's `cabin.s`.

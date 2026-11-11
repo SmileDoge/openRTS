@@ -92,6 +92,31 @@ private:
     std::size_t placed_ = 0;
 };
 
+// openRTS: a doorway the camera looks through into another room (the
+// passage door of the car he is in, open into the car coupled there): its
+// centre and its two half axes, across its width and up its height, all in
+// world space; cross(across, up) points into the next car. Seen through it,
+// by distance beyond it along that normal: the gap between the cars
+// (near_cut .. far_cut: the gangway's plates and bellows), then the next
+// car from its end wall (far_cut) on. An instance tagged set_portal(+k) is
+// drawn only through portal k - 1 (that car's salon or cab); -k everywhere
+// but through it beyond far_cut, and inside the doors' opening (door_half_*
+// round the centre) beyond far_door (that car's outside: its insides, and
+// its end door, part of its end wall in the shape, the ED9M's); 8 + k only
+// through it between near_cut and far_cut, not inside the opening short of
+// near_door, no higher than the opening (the outside of the car he is in:
+// its half of the gangway, not its own end door nor its end's top; no
+// shadow).
+struct ModelPortal {
+    glm::vec3 centre{};
+    glm::vec3 across{1.0f, 0.0f, 0.0f}, up{0.0f, 1.0f, 0.0f}; // unit
+    float half_across{}, half_up{};
+    float near_cut{}, far_cut{};
+    float near_door{}, far_door{};
+    float door_half_across{}, door_half_up{};
+};
+inline constexpr std::size_t max_portals = 2;
+
 struct ModelLighting {
     glm::vec4 sun_diffuse{1.0f};
     glm::vec4 sun_ambient{0.5f, 0.5f, 0.5f, 1.0f};
@@ -106,6 +131,8 @@ struct ModelLighting {
     // Lamps of the cab or salon the player is in (RTS LightsInt): kind 4 cone,
     // 2 sphere, 3 box; up to 8.
     std::vector<ModelExtraLight> interior_lights;
+    // The doorways he looks through into the next cars (ModelPortal), up to 2.
+    std::vector<ModelPortal> portals;
 };
 
 // RTS sun direction from the environment's azimuth and elevation in degrees.
@@ -322,6 +349,11 @@ public:
     // A tag of the instance submitted last (0: none), the one its lamps carry
     // as ModelExtraLight::owner.
     void set_owner(std::uint32_t owner);
+    // The instance submitted last seen through a portal of the frame
+    // (ModelLighting::portals): +k only through portal k - 1, -k everywhere
+    // but through it beyond its far cut, 8 + k only through it between its
+    // cuts (left out of the shadow passes), 0 as always.
+    void set_portal(std::int32_t code);
     // Records the frame's draws. `before_translucent` is called once in the
     // pass after the opaque and alpha-tested geometry and before the
     // translucent pass (glass), for helpers that must show through glass but

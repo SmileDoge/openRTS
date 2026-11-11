@@ -169,7 +169,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    std::cout << "openRTS server " << core::version() << ": loading " << route_name << " from " << root.string() << std::endl;
+    std::cout << "openRTS server " << core::version_text() << ": loading " << route_name << " from " << root.string() << std::endl;
     const auto loading = std::chrono::steady_clock::now();
     std::string error;
     auto route = server::ServerRoute::load(root, route_name, error);

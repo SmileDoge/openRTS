@@ -119,6 +119,11 @@ struct WindowOptions {
     // opened) and Ctrl+Enter (up the steps) are pressed; each takes 0.6 of
     // capture_at shared out.
     std::vector<std::size_t> capture_board;
+    // --capture-passage <index>: at 0.3 of capture_at the engineer stands in
+    // the cab or salon of car `index` (from 0) of the driven train, at its
+    // passage door to the next car, the door opened (the next car's room
+    // seen through it); from 0.6 to 0.75 he walks on through it.
+    std::optional<std::size_t> capture_passage;
     // --capture-ok: a scenario's messages closed as they come (their OK).
     bool capture_ok = false;
     // --capture-report: from 0.5 of capture_at, every 2 s, the first item

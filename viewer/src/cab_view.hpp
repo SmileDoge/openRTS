@@ -161,6 +161,17 @@ public:
         return door < doors_.size() && geometry_ && doors_[door].node < 0;
     }
     [[nodiscard]] bool door_moving(std::size_t door) const noexcept;
+    // How far a door is open now, 0 .. 1 (a doorway without a door: 1;
+    // before the shape's nodes are read: as it was left).
+    [[nodiscard]] float door_openness(std::size_t door) const noexcept {
+        if (door >= doors_.size()) return 0.0f;
+        if (!geometry_) return doors_[door].target ? 1.0f : 0.0f;
+        return doors_[door].node < 0 ? 1.0f : doors_[door].open;
+    }
+    // Where it is going: open or shut.
+    [[nodiscard]] bool door_wanted(std::size_t door) const noexcept {
+        return door < doors_.size() && doors_[door_root(door)].target;
+    }
     // The door a door follows through ParentObject (itself when it follows
     // none): working a following one works that one.
     [[nodiscard]] std::size_t door_root(std::size_t door) const noexcept;

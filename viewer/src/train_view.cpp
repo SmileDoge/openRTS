@@ -16,6 +16,7 @@
 #include <set>
 #include <sstream>
 #include <iostream>
+#include <tuple>
 
 #include <glm/ext/matrix_transform.hpp>
 #include <glm/geometric.hpp>
@@ -135,8 +136,12 @@ struct TrainView::Car {
         std::size_t index{};    // in the .sd's ExteriorDoors (the DLL host's door order)
         std::uint32_t group{};  // GlobalID: 1 the right doors, 2 the left ones, 0 none
         float last_frame{};     // the node's own last key frame (the shape's animation is longer)
+        std::optional<bool> wanted; // the engineer opened or shut it from outside (no cab door of its name)
     };
     std::vector<ExteriorDoorAnim> exterior_doors;
+    // Its shape .sd's ESD_Exterior_Details when the engineer can walk on it
+    // or climb it (ExteriorPlanes, ExteriorLadders, ExteriorLedges: RTS mode 6).
+    std::shared_ptr<const formats::ExteriorDetails> outside;
     std::vector<std::uint32_t> door_groups; // every ExteriorDoor's GlobalID, in .sd order
     std::vector<simulation::LightRunner> lights; // by LightID: fading and the States shown
     bool cold = false;      // an engine started cold (the consist's Cold; RTS LocoFlags bit 3)
@@ -791,6 +796,13 @@ void TrainView::request_models(renderer::ModelLibrary& library) {
     };
     load_cab(cab_.get(), cab_requested_, cab_loading_);
     load_cab(visit_cab_.get(), visit_requested_, visit_loading_);
+    // The next cars' rooms he may see into (update_neighbour_rooms).
+    for (const auto key : neighbour_room_keys_) {
+        const auto at = find_car(key);
+        if (!at || at->first != 0) continue;
+        if (auto* room = car_cab(0, at->second, false); room && room != cab_.get() && room != visit_cab_.get())
+            load_cab(room, room_loads_[key].requested, room_loads_[key].loading);
+    }
     std::vector<Car*> all;
     for (auto& unit : units_) {
         for (auto& car : unit.cars) all.push_back(&car);
@@ -974,6 +986,7 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
         }
         if (const auto bytes = vfs_->read(formats::shape_description(*vfs_, car.shape))) {
             const auto details = formats::parse_exterior_details(*bytes);
+            if (details.walkable()) car.outside = std::make_shared<const formats::ExteriorDetails>(details);
             // A node's own key frames: the ED9M's doors move over frames
             // 0..5 of a 250-frame shape animation.
             const auto node_last_frame = [&](const std::size_t m) {
@@ -3955,8 +3968,10 @@ void TrainView::gather_walk_world(const glm::vec3& around, renderer::ModelLibrar
     }
     // The world's objects near him, their surfaces read aside (a few at a time).
     walk_objects_near_.clear();
+    walk_boxes_near_.clear();
     if (!walk_objects_ || !obstacles_) return;
     std::size_t in_flight = 0;
+    std::size_t box_reads = 0;
     for (auto& [path, entry] : walk_meshes_) {
         if (!entry.loading.valid()) continue;
         if (entry.loading.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -3975,6 +3990,25 @@ void TrainView::gather_walk_world(const glm::vec3& around, renderer::ModelLibrar
             continue; // until the model says how big it is
         }
         const std::string key(object.source_path.str());
+        // RTS walks the ground among an object's boxes (ESD_Complex, else
+        // ESD_Bounding_Box; 0x4322F0): an object that has them is walked so,
+        // its surfaces not read (the Osvstozar4 mast's 30 boxes, its ladder).
+        auto boxes = walk_boxes_.find(key);
+        if (boxes == walk_boxes_.end()) {
+            if (box_reads >= 16) continue;
+            ++box_reads;
+            std::shared_ptr<const std::vector<formats::WalkBox>> read;
+            if (auto sd = formats::load_shape_description(*vfs_, formats::shape_description(*vfs_, object.source_path));
+                sd.ok() && !sd.value->boxes.empty()) {
+                read = std::make_shared<const std::vector<formats::WalkBox>>(std::move(sd.value->boxes));
+            }
+            boxes = walk_boxes_.emplace(key, std::move(read)).first;
+        }
+        if (boxes->second) {
+            walk_boxes_near_.push_back(
+                {.boxes = boxes->second.get(), .transform = object.transform, .inverse = glm::inverse(object.transform)});
+            continue;
+        }
         auto it = walk_meshes_.find(key);
         if (it == walk_meshes_.end()) {
             if (in_flight >= 6) continue;
@@ -4038,6 +4072,12 @@ bool TrainView::walk_blocked(const glm::vec3& from, const glm::vec3& to) const {
 
 void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, const float elapsed,
                                 renderer::ModelLibrary& library) {
+    // A test turned his head (stand_at_passage): the camera that way.
+    if (const auto d = std::exchange(look_once_, std::nullopt); d && glm::length(*d) > 1e-4f) {
+        const glm::vec3 n = glm::normalize(*d);
+        camera.yaw = std::atan2(-n.x, -n.z);
+        camera.pitch = std::asin(std::clamp(-n.y, -1.0f, 1.0f));
+    }
     look_ = camera.forward();
     if (!engineer_.active()) return;
     if (!engineer_configured_) {
@@ -4067,14 +4107,54 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
     const Outdoors outdoors{
         .floor = [this](const glm::vec3& p) { return walk_floor(p); },
         .blocked = [this](const glm::vec3& from, const glm::vec3& to) { return walk_blocked(from, to); },
+        .boxes = [this](const glm::vec3& from, const glm::vec3& to, const float height) {
+            return step_among_boxes(walk_boxes_near_, from, to, height);
+        },
     };
+    board_prompt_.clear();
+    // On a car's outside (RTS mode 6): its walkways, ladders, doors.
+    if (engineer_.mode() == Engineer::Mode::on_car) {
+        follow_ = false;
+        const auto at = outside_car_ ? find_car(*outside_car_) : std::nullopt;
+        auto outside = at ? car_outside(at->first, at->second) : std::nullopt;
+        if (outside) {
+            gather_walk_world(glm::vec3{outside->transform[3]}, library);
+            engineer_.update_on_car(*outside, controls, outdoors, elapsed, camera);
+            carry_out(engineer_.take_event());
+            if (engineer_.mode() != Engineer::Mode::on_car) outside_car_.reset();
+            look_ = camera.forward();
+            return;
+        }
+        // The car went away: on the ground under him.
+        outside_car_.reset();
+        engineer_.stand_outside(camera.eye() - glm::vec3{0.0f, engineer_.height(), 0.0f});
+    }
+    // On the ground by a car's ladder or steps (RTS 0x414D24): Ctrl+Enter
+    // takes them (0x431F88), up onto its outside.
+    bool at_ladder = false;
+    if (engineer_.mode() == Engineer::Mode::outside && !engineer_.passing()) {
+        const glm::vec3 eye = engineer_.feet() + glm::vec3{0.0f, engineer_.height(), 0.0f};
+        if (const auto ladder = ladder_target(eye, camera.forward())) {
+            if (auto outside = car_outside(ladder->unit, ladder->car, false)) {
+                at_ladder = true;
+                const glm::vec3 feet_car{glm::inverse(outside->transform) * glm::vec4{engineer_.feet(), 1.0f}};
+                board_prompt_ = Engineer::ladder_prompt(*outside, ladder->ladder, feet_car);
+                if (input.engineer_action && input.engineer_action_ctrl) {
+                    engineer_.climb(*outside, ladder->ladder);
+                    outside_car_ = units_[ladder->unit].cars[ladder->car].key;
+                    board_prompt_.clear();
+                    look_ = camera.forward();
+                    return;
+                }
+            }
+        }
+    }
     // At the door of another cab: of the driven train (the far end of a
     // multiple unit) or of another train of his (the network's own). The
     // same prompt as at his own cab; Enter makes that cab his (and the train
     // the driven one), and the same Enter then opens the door or climbs in
     // as into any cab.
-    board_prompt_.clear();
-    if (engineer_.mode() == Engineer::Mode::outside) {
+    if (engineer_.mode() == Engineer::Mode::outside && !at_ladder) {
         if (const auto target = board_target(engineer_.feet())) {
             if (const auto* unit = find_unit(target->train); unit && target->car < unit->cars.size()) {
                 if (const auto it = board_cabs_.find(unit->cars[target->car].key); it != board_cabs_.end() && it->second) {
@@ -4119,6 +4199,11 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
         gather_walk_world(engineer_.mode() == Engineer::Mode::outside ? engineer_.feet() : camera.eye(), library);
     }
     engineer_.update(*cab, controls, body->transform * cab->placement(), outdoors, elapsed, camera);
+    carry_out(engineer_.take_event());
+    if (engineer_.mode() == Engineer::Mode::on_car) {
+        look_ = camera.forward();
+        return;
+    }
     // RTS moves the cab camera by the body's offsets on its springs and draws
     // the cab without them (0x424488): the cab sways around the driver.
     // openRTS's head on its neck nods and leans on top (head_motion()).
@@ -4306,11 +4391,60 @@ void TrainView::pass_to_next_car(const std::size_t door) {
         visit_cab_ = std::move(created);
         visit_requested_ = false;
     }
+    // openRTS: straight through. Where he is against his door (beyond its
+    // point towards the next car by so much, so far aside) he is against
+    // the next car's door, as one walks through a gangway: 9 m from his
+    // car's middle, 9 m from the next one's, not at its door's point
+    // (RTS: the next car's door's way). His heading is kept.
+    std::optional<glm::vec3> through;
+    const auto from_body = body_pose(unit, i, false);
+    const auto to_body = body_pose(unit, j, false);
+    const auto& leaving = from->description().doors[door];
+    const auto& entering = to->description().doors[*arrival];
+    if (from_body && to_body && leaving.has_position && entering.has_position) {
+        const glm::mat4 from_scene = from_body->transform * from->placement();
+        const glm::mat4 to_scene = to_body->transform * to->placement();
+        const glm::vec3 d{from_scene * glm::vec4{leaving.position[0], leaving.position[1], leaving.position[2], 1.0f}};
+        const glm::vec3 a{to_scene * glm::vec4{entering.position[0], entering.position[1], entering.position[2], 1.0f}};
+        const glm::vec3 feet{from_scene * glm::vec4{engineer_.feet(), 1.0f}};
+        // Towards the next car, along the ground.
+        glm::vec3 n = a - d;
+        n.y = 0.0f;
+        if (glm::length(n) > 1e-3f) {
+            n = glm::normalize(n);
+            const glm::vec3 v = feet - d;
+            const float beyond = glm::dot(v, n);
+            const glm::vec3 aside = v - n * beyond;
+            // As far out of the next car's door, on its side of the gangway.
+            glm::vec3 there = a - n * beyond + glm::vec3{aside.x, 0.0f, aside.z};
+            there.y = feet.y;
+            through = glm::vec3{glm::inverse(to_scene) * glm::vec4{there, 1.0f}};
+        }
+    }
     engineer_car_ = j;
     if (j == cab_car_) keep_cab(i, std::move(visit_cab_));
     to->poll();
-    engineer_.arrive(*to, *arrival);
+    if (entering.can_be_opened) to->open_door(*arrival);
+    // On the next car's floor there (its open door's plane, its planes), or
+    // a step further in; else at its door's point as before.
+    bool placed = false;
+    if (through) {
+        const glm::vec3 point{entering.position[0], through->y, entering.position[2]};
+        glm::vec3 in = point - *through;
+        in.y = 0.0f;
+        const float length = glm::length(in);
+        for (float s = 0.0f; s <= 1.0f && !placed; s += 0.1f) {
+            const glm::vec3 at = length > 1e-4f ? *through + in / length * s : *through;
+            if (!Engineer::cab_holds(*to, at, engineer_.height())) continue;
+            engineer_.enter_cab(*to, *arrival, at);
+            placed = true;
+        }
+    }
+    if (!placed) engineer_.arrive(*to, *arrival);
     hovered_.reset();
+    std::cout << "the engineer goes through into car " << j + 1 << (placed ? " straight on" : " at its door") << ": at x "
+              << engineer_.feet().x << " z " << engineer_.feet().z << " of its cab (its door's point x " << entering.position[0] << " z "
+              << entering.position[2] << ")" << std::endl;
     // Into another engine's cab with a desk: RTS makes it the player's at
     // once (0x435654 -> 0x436734 -> 0x468C74: Init, ChangeLoco, the groups).
     if (j != cab_car_ && !to->description().switches.empty()) change_cab(j);
@@ -4365,13 +4499,13 @@ void TrainView::stand_at_cab_door(const std::size_t car) {
     std::cout << "test: on foot at the door of the cab of car " << car + 1 << std::endl;
 }
 
-void TrainView::walk_up_to_cab(const std::size_t car, const glm::vec3& feet) {
-    if (units_.empty() || car >= units_.front().cars.size()) return;
+CabView* TrainView::take_engineer_cab(const std::size_t car) {
+    if (units_.empty() || car >= units_.front().cars.size()) return nullptr;
     if (car == cab_car_) {
         keep_cab(engineer_car_, std::move(visit_cab_));
     } else if (car != engineer_car_ || !visit_cab_) {
         auto taken = take_cab(car);
-        if (!taken) return;
+        if (!taken) return nullptr;
         keep_cab(engineer_car_, std::move(visit_cab_));
         visit_cab_ = std::move(taken);
         visit_requested_ = false;
@@ -4380,8 +4514,238 @@ void TrainView::walk_up_to_cab(const std::size_t car, const glm::vec3& feet) {
     // A cab with a desk is driven from at once, as when he walks into it
     // (pass_to_next_car; RTS 0x435654 -> 0x468C74).
     if (car != cab_car_ && visit_cab_ && !visit_cab_->description().switches.empty()) change_cab(car);
+    return engineer_cab();
+}
+
+void TrainView::stand_at_passage(const std::size_t car) {
+    if (!loaded() || units_.empty() || car >= units_.front().cars.size()) return;
+    auto& unit = units_.front();
+    CabView* cab = take_engineer_cab(car);
+    if (!cab) {
+        std::cout << "test: car " << car + 1 << " has no cab or salon" << std::endl;
+        return;
+    }
+    cab->poll();
+    // Its passage door towards the train's rear when a car is there, else the front.
+    const auto& doors = cab->description().doors;
+    std::optional<std::size_t> pick;
+    for (std::size_t k = 0; k < doors.size(); ++k) {
+        if (!passage_door(doors[k]) || !doors[k].has_position || doors[k].parent >= 0) continue;
+        const bool toward_front = ((cab->turned() ? -1.0f : 1.0f) * doors[k].position[2] > 0.0f) != unit.cars[car].flipped;
+        const bool coupled = toward_front ? car > 0 : car + 1 < unit.cars.size();
+        if (!coupled) continue;
+        if (!pick || !toward_front) pick = k;
+    }
+    if (!pick) {
+        std::cout << "test: car " << car + 1 << " has no passage door to a coupled car" << std::endl;
+        return;
+    }
+    cab->open_door(*pick);
+    engineer_.arrive(*cab, *pick);
+    hovered_.reset();
+    // Looking at the door (the next car's room is drawn only so).
+    if (const auto body = body_pose(unit, car, false)) {
+        const glm::vec3 door{doors[*pick].position[0], doors[*pick].position[1], doors[*pick].position[2]};
+        const glm::vec3 eye = engineer_.feet() + glm::vec3{0.0f, engineer_.height(), 0.0f};
+        look_once_ = glm::vec3{body->transform * cab->placement() * glm::vec4{door - eye, 0.0f}};
+    }
+    std::cout << "test: on foot in car " << car + 1 << " at its door " << doors[*pick].name << std::endl;
+}
+
+void TrainView::walk_up_to_cab(const std::size_t car, const glm::vec3& feet) {
+    if (!take_engineer_cab(car)) return;
     engineer_.stand_outside(feet);
     std::cout << "the player goes to the cab of car " << car + 1 << std::endl;
+}
+
+std::optional<std::pair<std::size_t, std::size_t>> TrainView::find_car(const std::uint32_t key) const {
+    for (std::size_t u = 0; u < units_.size(); ++u)
+        for (std::size_t i = 0; i < units_[u].cars.size(); ++i)
+            if (units_[u].cars[i].key == key) return std::pair{u, i};
+    return std::nullopt;
+}
+
+CabView* TrainView::car_cab(const std::size_t u, const std::size_t i, const bool create) {
+    if (u >= units_.size() || i >= units_[u].cars.size()) return nullptr;
+    if (u == 0 && i == cab_car_ && cab_) return cab_.get();
+    if (u == 0 && i == engineer_car_ && visit_cab_) return visit_cab_.get();
+    const auto& car = units_[u].cars[i];
+    if (const auto it = board_cabs_.find(car.key); it != board_cabs_.end() && it->second) return it->second.get();
+    // A Cabin: a driving cab or a motor car's salon (the ED9M's).
+    const auto* engine = car.definition && car.definition->engine ? &*car.definition->engine : nullptr;
+    if (!create || !engine || engine->cabin.empty()) return nullptr;
+    auto cab = CabView::create(*vfs_, *car.definition, formats::wagon_path(car.folder, car.definition->name, true));
+    if (!cab) return nullptr;
+    auto* raw = cab.get();
+    board_cabs_[car.key] = std::move(cab);
+    return raw;
+}
+
+std::optional<CarOutside> TrainView::car_outside(const std::size_t u, const std::size_t i, const bool with_cab) {
+    if (u >= units_.size()) return std::nullopt;
+    auto& unit = units_[u];
+    if (i >= unit.cars.size() || !unit.cars[i].outside || unit.current.empty()) return std::nullopt;
+    const auto body = body_pose(unit, i, false);
+    if (!body) return std::nullopt;
+    auto& car = unit.cars[i];
+    CarOutside out;
+    out.details = car.outside.get();
+    out.transform = body->transform;
+    out.width = car.definition && car.definition->width > 1.0f ? car.definition->width : 3.1f;
+    const auto* details = car.outside.get();
+    const auto* anims = &car.exterior_doors;
+    out.door_open = [details, anims](std::size_t k) {
+        // A leaf has its door's state (ParentObject).
+        for (int guard = 0; k < details->door_details.size() && details->door_details[k].parent >= 0 && guard < 8; ++guard)
+            k = static_cast<std::size_t>(details->door_details[k].parent);
+        for (const auto& door : *anims)
+            if (door.index == k) return door.open >= 0.6f;
+        return true; // no node of its own: a doorway
+    };
+    if (with_cab) {
+        if (const CabView* cab = car_cab(u, i, true)) {
+            out.cab_holds = [cab, height = engineer_.height()](const glm::vec3& at_car) {
+                return Engineer::cab_holds(*cab, glm::vec3{glm::inverse(cab->placement()) * glm::vec4{at_car, 1.0f}}, height);
+            };
+        }
+    }
+    return out;
+}
+
+std::optional<TrainView::LadderTarget> TrainView::ladder_target(const glm::vec3& eye, const glm::vec3& forward) {
+    std::optional<LadderTarget> best;
+    for (std::size_t u = 0; u < units_.size(); ++u) {
+        const auto& unit = units_[u];
+        if (unit.remote || unit.current.empty()) continue;
+        for (std::size_t i = 0; i < unit.cars.size() && i < unit.current.size(); ++i) {
+            const auto& car = unit.cars[i];
+            if (!car.outside || car.outside->ladders.empty() || !car.definition) continue;
+            const auto here = local(unit.current[i].front);
+            if (glm::distance(glm::vec2{here.x, here.z}, glm::vec2{eye.x, eye.z}) > car.definition->length + 8.0f) continue;
+            const auto outside = car_outside(u, i, false);
+            if (!outside) continue;
+            if (const auto ladder = Engineer::ladder_in_reach(*outside, eye, forward); ladder && (!best || ladder->second < best->distance))
+                best = LadderTarget{u, i, ladder->first, ladder->second};
+        }
+    }
+    return best;
+}
+
+void TrainView::carry_out(const Engineer::Event& event) {
+    using Kind = Engineer::Event::Kind;
+    if (event.kind == Kind::none) return;
+    if (event.kind == Kind::onto_car) {
+        // Out of his cab onto its car's outside (RTS 0x431E00 / 0x431270).
+        auto* cab = engineer_cab();
+        if (!cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return;
+        const std::size_t i = engineer_car_;
+        const auto outside = car_outside(0, i);
+        if (!outside) return;
+        const glm::vec3 at_car{cab->placement() * glm::vec4{event.at, 1.0f}};
+        std::optional<std::size_t> path;
+        if (event.by_path) {
+            if (event.door >= cab->description().doors.size()) return;
+            const auto name = lower(cab->description().doors[event.door].name);
+            for (std::size_t k = 0; k < outside->details->door_details.size(); ++k) {
+                const auto& door = outside->details->door_details[k];
+                if (lower(door.name) == name && !door.trajectory.empty()) path = k;
+            }
+            if (!path) return; // RTS: only a door with a way (flag 1)
+        } else if (outside_footing(*outside->details, outside->door_open, at_car).kind == OutsideFooting::Kind::none) {
+            return; // not onto anything there: he stays
+        }
+        engineer_.step_onto_car(*outside, at_car, path);
+        outside_car_ = units_.front().cars[i].key;
+        // The cab he left stays with its doors.
+        if (engineer_car_ != cab_car_) keep_cab(engineer_car_, std::move(visit_cab_));
+        engineer_car_ = cab_car_;
+        hovered_.reset();
+        std::cout << "the engineer goes out onto car " << i + 1 << std::endl;
+        return;
+    }
+    const auto at = outside_car_ ? find_car(*outside_car_) : std::nullopt;
+    if (!at) return;
+    auto [u, i] = *at;
+    auto& car = units_[u].cars[i];
+    if (!car.outside) return;
+    switch (event.kind) {
+    case Kind::outer_door: {
+        if (event.door >= car.outside->door_details.size()) return;
+        const auto name = lower(car.outside->door_details[event.door].name);
+        // A cab's door: the cab's of the same name (the outer one follows it).
+        if (auto* cab = car_cab(u, i, true)) {
+            const auto& doors = cab->description().doors;
+            for (std::size_t j = 0; j < doors.size(); ++j) {
+                if (lower(doors[j].name) != name) continue;
+                cab->toggle_door(j);
+                return;
+            }
+        }
+        for (auto& door : car.exterior_doors) {
+            if (door.index != event.door) continue;
+            door.wanted = !(door.open >= 0.6f);
+            return;
+        }
+        return;
+    }
+    case Kind::into_cab: {
+        if (event.door >= car.outside->door_details.size()) return;
+        const auto name = lower(car.outside->door_details[event.door].name);
+        const auto key = car.key;
+        if (u != 0 || units_[u].role != Role::driven) {
+            // Another train's engine: his own other train becomes the driven one.
+            const auto id = units_[u].train->id();
+            std::string problem = boardable_.contains(id) ? set_role(id, Role::driven) : std::string("This is not your train.");
+            if (problem.empty()) {
+                const auto again = find_car(key);
+                if (!again || again->first != 0) problem = "This is not your train.";
+                if (again) std::tie(u, i) = *again;
+            }
+            if (!problem.empty()) {
+                message_ = tr(problem.c_str());
+                if (auto outside = car_outside(u, i)) engineer_.step_onto_car(*outside, event.at);
+                return;
+            }
+        }
+        CabView* cab = take_engineer_cab(i);
+        if (!cab) {
+            message_ = tr("The next car has no interior to walk into.");
+            return;
+        }
+        std::size_t door = 0;
+        const auto& doors = cab->description().doors;
+        for (std::size_t j = 0; j < doors.size(); ++j)
+            if (lower(doors[j].name) == name) door = j;
+        engineer_.enter_cab(*cab, door, glm::vec3{glm::inverse(cab->placement()) * glm::vec4{event.at, 1.0f}});
+        outside_car_.reset();
+        hovered_.reset();
+        std::cout << "the engineer goes into the cab of car " << i + 1 << std::endl;
+        return;
+    }
+    case Kind::next_car: {
+        auto& unit = units_[u];
+        const auto from = car_outside(u, i, false);
+        if (!from) return;
+        // The car's +Z end looks to the front of the train unless it is turned.
+        const bool toward_front = (event.side > 0) != unit.cars[i].flipped;
+        if (!((toward_front && i == 0) || (!toward_front && i + 1 >= unit.cars.size()))) {
+            const std::size_t j = toward_front ? i - 1 : i + 1;
+            if (const auto to = car_outside(u, j, false)) {
+                const glm::vec3 scene{from->transform * glm::vec4{event.at, 1.0f}};
+                const glm::vec3 there{glm::inverse(to->transform) * glm::vec4{scene, 1.0f}};
+                if (const auto held = outside_footing(*to->details, to->door_open, there); held.kind != OutsideFooting::Kind::none) {
+                    engineer_.step_onto_car(*to, held.at);
+                    outside_car_ = unit.cars[j].key;
+                    return;
+                }
+            }
+        }
+        if (event.or_off) engineer_.get_off_car(*from, event.at);
+        return;
+    }
+    default:
+        return;
+    }
 }
 
 void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& direction, const bool click, const bool shift,
@@ -4648,6 +5012,43 @@ std::string TrainView::systems_report() const {
         }
         text += "; screen labels with a text " + std::to_string(layout->labels_seen().size()) + ", shown " + std::to_string(shown)
             + ", shown in part " + std::to_string(partly) + ":" + labels;
+    }
+    // The next cars' rooms seen through his car's passage doors (openRTS).
+    if (!neighbour_room_keys_.empty()) {
+        text += "; next rooms";
+        for (const auto key : neighbour_room_keys_) {
+            const auto at = find_car(key);
+            const auto* room = at && at->first == 0 ? const_cast<TrainView*>(this)->car_cab(0, at->second, false) : nullptr;
+            if (!room) continue;
+            bool through = false;
+            std::string sight;
+            for (const auto& r : neighbour_rooms_now_) {
+                if (r.car != at->second) continue;
+                through = true;
+                // The shader's test on the CPU: the line from the eye to the
+                // middle of that car, 1.5 m over its floor, through the doorway?
+                const auto& unit = units_.front();
+                const auto body = body_pose(unit, r.car, true);
+                if (!body || r.portal >= portals_.size()) continue;
+                const auto& p = portals_[r.portal];
+                const glm::vec3 target{body->transform * glm::vec4{0.0f, 2.8f, 0.0f, 1.0f}};
+                const glm::vec3 n = glm::cross(p.across, p.up);
+                const glm::vec3 along = target - portal_eye_;
+                const float towards = glm::dot(n, along);
+                const float t = std::abs(towards) > 1e-6f ? glm::dot(n, p.centre - portal_eye_) / towards : -1.0f;
+                const glm::vec3 hit = portal_eye_ + along * t - p.centre;
+                const bool in = t > 0.0f && t < 1.0f && std::abs(glm::dot(hit, p.across)) <= p.half_across
+                                && std::abs(glm::dot(hit, p.up)) <= p.half_up;
+                char seen[160];
+                std::snprintf(seen, sizeof seen, " (doorway %.2f m from the eye, %.2f x %.2f m, the gangway %.2f .. %.2f m beyond; its middle %s it)",
+                              glm::distance(portal_eye_, p.centre), p.half_across * 2.0f, p.half_up * 2.0f, p.near_cut, p.far_cut,
+                              in ? "seen through" : "NOT seen through");
+                sight = seen;
+            }
+            text += " car " + std::to_string(at->second + 1) + " " + room->shape().str() + (room->bound() ? " loaded" : " loading")
+                + (through ? " seen through its doorway" + sight : " (not drawn: the door shut, or not looked at)");
+        }
+        text += ", doorways " + std::to_string(portals_.size());
     }
     // The engineer's room and the share of the outside heard there (docs/sound.md).
     if (listener_cab_) {
@@ -5424,6 +5825,127 @@ void TrainView::apply_default_systems(const SceneInput& input) {
 // its LightTexture, flat, facing where the light points (seen from the
 // front only); types 1..4 light the scene through the shape shaders (RTS
 // lights.glsl), the nearest nine.
+void TrainView::update_neighbour_rooms(const float elapsed, const glm::vec3& eye) {
+    neighbour_rooms_now_.clear();
+    neighbour_room_keys_.clear();
+    portals_.clear();
+    if (!neighbour_rooms_ || !viewing_inside() || units_.empty()) return;
+    auto& unit = units_.front();
+    const std::size_t i = engineer_car_;
+    auto* cab = engineer_cab();
+    if (!cab || i >= unit.cars.size() || unit.current.empty()) return;
+    const auto body = body_pose(unit, i, false);
+    if (!body) return;
+    const glm::mat4 to_scene = body->transform * cab->placement();
+    const auto& doors = cab->description().doors;
+    for (std::size_t k = 0; k < doors.size(); ++k) {
+        const auto& d = doors[k];
+        const bool planed = d.plane.a != std::array<float, 3>{} || d.plane.b != std::array<float, 3>{};
+        if (!passage_door(d) || (!d.has_position && !planed) || d.parent >= 0) continue;
+        // Which end, as pass_to_next_car: the car's +Z end looks to the
+        // front of the train unless the car is turned.
+        const float door_z = planed ? (d.plane.a[2] + d.plane.b[2]) * 0.5f : d.position[2];
+        const bool toward_front = ((cab->turned() ? -1.0f : 1.0f) * door_z > 0.0f) != unit.cars[i].flipped;
+        if ((toward_front && i == 0) || (!toward_front && i + 1 >= unit.cars.size())) continue;
+        const std::size_t j = toward_front ? i - 1 : i + 1;
+        CabView* room = car_cab(0, j, true);
+        if (!room) continue;
+        neighbour_room_keys_.push_back(unit.cars[j].key);
+        room->poll();
+        // Its door at this end opens and shuts with his (RTS 0x4313FC opens
+        // the facing door as he goes through).
+        const bool want_plus = toward_front ? unit.cars[j].flipped : !unit.cars[j].flipped;
+        std::optional<std::size_t> facing;
+        float farthest = -1.0f;
+        const auto& theirs = room->description().doors;
+        for (std::size_t a = 0; a < theirs.size(); ++a) {
+            if (!theirs[a].has_position || !passage_door(theirs[a])) continue;
+            const float za = (room->turned() ? -1.0f : 1.0f) * theirs[a].position[2];
+            if ((za > 0.0f) != want_plus || std::abs(za) <= farthest) continue;
+            farthest = std::abs(za);
+            facing = a;
+        }
+        if (facing) room->set_door(*facing, cab->door_wanted(k));
+        // Its doors move here unless the car's outer doors move them (update_exterior_doors).
+        if (unit.cars[j].exterior_doors.empty()) room->step_doors(elapsed);
+        // Open, or shut too by the setting (his door's glass shows the next
+        // car's room, its own door shut with his).
+        if ((!neighbour_rooms_shut_ && cab->door_openness(k) < 0.02f) || portals_.size() >= renderer::max_portals) continue;
+        // The doorway: across the door's plane, at its end towards the next
+        // car, a little wider and taller than a doorway (his cab's own walls
+        // hide what is beyond it).
+        float x0 = d.position[0] - 0.45f, x1 = d.position[0] + 0.45f, floor = d.position[1] - 1.1f, z = d.position[2];
+        if (planed) {
+            x0 = (std::min)(d.plane.a[0], d.plane.b[0]);
+            x1 = (std::max)(d.plane.a[0], d.plane.b[0]);
+            floor = (std::min)(d.plane.a[1], d.plane.b[1]);
+            z = door_z > 0.0f ? (std::max)(d.plane.a[2], d.plane.b[2]) : (std::min)(d.plane.a[2], d.plane.b[2]);
+        }
+        constexpr float margin = 0.15f, height = 2.4f;
+        // In his car's end wall (the door's point): beyond it the gangway
+        // (the plane goes on into it), then the next car's end wall at its
+        // door's point. His car's outside shows in the gap past its wall's
+        // thickness, the next car's outside up to its wall.
+        if (d.has_position) z = d.position[2];
+        renderer::ModelPortal portal;
+        portal.centre = glm::vec3{to_scene * glm::vec4{(x0 + x1) * 0.5f, floor - 0.1f + height * 0.5f, z, 1.0f}};
+        portal.across = glm::normalize(glm::vec3{to_scene[0]});
+        portal.up = glm::normalize(glm::vec3{to_scene[1]});
+        // At least the gangway's width: standing in it he sees its sides
+        // through the doorway too (his cab's walls hide the rest from inside).
+        portal.half_across = (std::max)((x1 - x0) * 0.5f + margin, 0.7f);
+        portal.half_up = height * 0.5f;
+        const auto room_body = body_pose(unit, j, false);
+        const glm::vec3 next_middle = room_body ? glm::vec3{room_body->transform[3]} : portal.centre;
+        if (glm::dot(glm::cross(portal.across, portal.up), next_middle - portal.centre) < 0.0f) portal.across = -portal.across;
+        const glm::vec3 normal = glm::normalize(glm::cross(portal.across, portal.up));
+        // The next car's end wall (its facing door's point): its outside is
+        // cut beyond it, and in the doors' opening from 0.45 m short of it
+        // (the ED9M's end door is part of its end wall's node and lies a
+        // little nearer than the salon's door point); his own car's outside
+        // fills the gangway between, but for its own door within 0.45 m.
+        portal.near_cut = 0.15f;
+        portal.far_cut = 0.0f;
+        portal.near_door = 0.45f;
+        portal.door_half_across = (x1 - x0) * 0.5f + 0.1f;
+        portal.door_half_up = 0.95f;
+        if (facing && room_body && theirs[*facing].has_position) {
+            const auto& p = theirs[*facing].position;
+            const glm::vec3 wall{room_body->transform * room->placement() * glm::vec4{p[0], p[1], p[2], 1.0f}};
+            const float depth = glm::dot(wall - portal.centre, normal);
+            portal.far_cut = (std::max)(0.0f, depth + 0.05f);
+            portal.far_door = (std::max)(0.0f, depth - 0.45f);
+            const auto& q = theirs[*facing].plane;
+            if (q.a != std::array<float, 3>{} || q.b != std::array<float, 3>{})
+                portal.door_half_across = (std::max)(portal.door_half_across, std::abs(q.a[0] - q.b[0]) * 0.5f + 0.1f);
+        }
+        // His door's plane goes on into the gangway: standing there his eye
+        // is past his wall, and the doorway (the cuts with it) is put just
+        // ahead of it, else nothing would be seen through it.
+        if (const float past = glm::dot(eye - portal.centre, normal) + 0.15f; past > 0.0f) {
+            portal.centre += normal * past;
+            portal.near_cut = (std::max)(0.0f, portal.near_cut - past);
+            portal.far_cut = (std::max)(0.0f, portal.far_cut - past);
+            portal.near_door = (std::max)(0.0f, portal.near_door - past);
+            portal.far_door = (std::max)(0.0f, portal.far_door - past);
+        }
+        // Only while he looks that way (a corner of the doorway in view):
+        // else the room is not drawn nor the car's outside cut.
+        bool in_view = false;
+        for (const float a : {-1.0f, 1.0f}) {
+            for (const float b : {-1.0f, 1.0f}) {
+                const glm::vec3 corner = portal.centre + portal.across * (a * portal.half_across) + portal.up * (b * portal.half_up);
+                const glm::vec3 to = corner - eye;
+                const float distance = glm::length(to);
+                in_view = in_view || distance < 0.3f || glm::dot(to / distance, look_) > 0.35f;
+            }
+        }
+        if (!in_view) continue;
+        neighbour_rooms_now_.push_back({j, portals_.size()});
+        portals_.push_back(portal);
+    }
+}
+
 void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
     light_glows_.clear();
     light_beams_.clear();
@@ -5431,12 +5953,13 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
     if (units_.empty()) return;
     auto& unit = units_.front();
     // The lamps of the cab or salon the engineer is in (InternalLight State:
-    // the DLL's SwitchLight or GM_LIGHT_ON by GlobalID), RTS's LightsInt.
-    if (const auto* cab = viewing_inside() ? engineer_cab() : nullptr; cab && engineer_car_ < unit.cars.size()) {
+    // the DLL's SwitchLight or GM_LIGHT_ON by GlobalID), RTS's LightsInt;
+    // then (openRTS) those of the next cars' rooms he sees into.
+    const auto add_lamps = [&](const CabView* cab, const std::size_t car_index, std::vector<float>& lamp_level, const bool sway) {
         const auto& lamps = cab->description().lights;
-        const auto* out = legacy_ && legacy_->has_dll(engineer_car_) ? legacy_->output(engineer_car_) : nullptr;
-        const auto body = body_pose(unit, engineer_car_, false);
-        lamp_level_.resize(lamps.size(), 0.0f);
+        const auto* out = legacy_ && legacy_->has_dll(car_index) ? legacy_->output(car_index) : nullptr;
+        const auto body = body_pose(unit, car_index, sway);
+        lamp_level.resize(lamps.size(), 0.0f);
         for (std::size_t k = 0; k < lamps.size() && body; ++k) {
             const auto& lamp = lamps[k];
             // A DLL's SwitchLight / GM_LIGHT_ON; without one the .sd's Flags
@@ -5451,7 +5974,7 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
                     on = lamp.auto_when_world_lit > 0.0f ? world_lit_ <= lamp.auto_when_world_lit : night_;
                 if (lamp_flags.find("night_only") != std::string::npos && !night_) on = false;
             }
-            auto& level = lamp_level_[k];
+            auto& level = lamp_level[k];
             // RTS steps a lamp with LightFade's first value both ways
             // (0x4B0284 reads +44 only; the second value, +48, is unused).
             const float time = lamp.fade[0];
@@ -5490,6 +6013,14 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
                                       static_cast<float>(c & 0xFFu) / 255.0f * level, 1.0f};
             interior_lights_.push_back(light);
         }
+    };
+    if (const auto* cab = viewing_inside() ? engineer_cab() : nullptr; cab && engineer_car_ < unit.cars.size()) {
+        add_lamps(cab, engineer_car_, lamp_level_, false);
+    }
+    update_neighbour_rooms(elapsed, eye);
+    portal_eye_ = eye;
+    for (const auto& room : neighbour_rooms_now_) {
+        if (const auto* cab = car_cab(0, room.car, false)) add_lamps(cab, room.car, neighbour_lamp_levels_[unit.cars[room.car].key], true);
     }
     struct Beam {
         renderer::ModelExtraLight light;
@@ -5632,6 +6163,11 @@ void TrainView::update_exterior_doors(const float elapsed) {
                     cab->poll();
                     cab->step_doors(elapsed);
                 }
+            } else if (!(u == 0 && i == engineer_car_ && engineer_.inside())) {
+                // His own cab while he is outside it (on its walkways): the
+                // engineer's update does not move them.
+                cab->poll();
+                cab->step_doors(elapsed);
             }
             // The train's doors of a GlobalID in this car (GM_DOOR_OPEN / CLOSE).
             const auto group_open = [&](const std::uint32_t group) {
@@ -5661,6 +6197,10 @@ void TrainView::update_exterior_doors(const float elapsed) {
                         decided = true;
                         break;
                     }
+                }
+                if (!decided && door.wanted) {
+                    target = *door.wanted;
+                    decided = true;
                 }
                 if (!decided && out && door.index < out->doors.size()) target = out->doors[door.index].set_state != 0;
                 // The driven train without a DLL: the Y / U keys (GlobalID 2
@@ -6332,7 +6872,22 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 // RTS 0x438D50: the exterior comes back with the head out of
                 // the window; DoNotHideExtInCabin keeps it in the cab.
                 const bool keep = car.definition->engine && car.definition->engine->keep_exterior_in_cab != 0;
-                if (!engineer_.heading_out() && !keep) continue;
+                if (!engineer_.heading_out() && !keep) {
+                    // openRTS: through an open passage door his car's half
+                    // of the gangway (its outside between its end wall and
+                    // the next car's), no shadow (ModelPortal).
+                    if (model && !neighbour_rooms_now_.empty()) {
+                        adjustments.clear();
+                        for (const auto& door : car.exterior_doors) {
+                            if (door.last_frame > 0.0f) adjustments.push_back({.matrix = door.node, .frame = door.open * door.last_frame});
+                        }
+                        for (const auto& room : neighbour_rooms_now_) {
+                            renderer.submit(*model, transform, adjustments);
+                            renderer.set_portal(static_cast<std::int32_t>(9 + room.portal));
+                        }
+                    }
+                    continue;
+                }
             }
         }
         if (!model) continue;
@@ -6371,6 +6926,23 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
             adjustments.push_back({.matrix = matrix, .local = glm::rotate(glm::mat4{1.0f}, delta, glm::vec3{0.0f, 1.0f, 0.0f})});
         }
         renderer.submit(*model, transform, adjustments);
+        // openRTS: the next car's salon or cab seen through the open passage
+        // door of the car he is in (update_neighbour_rooms): only through the
+        // doorway, and the car's outside everywhere but there.
+        if (&unit == &units_.front()) {
+            for (const auto& room : neighbour_rooms_now_) {
+                if (room.car != i) continue;
+                const auto* room_cab = car_cab(0, i, false);
+                auto* room_model = room_cab ? library.find(room_cab->shape()) : nullptr;
+                if (!room_model || !room_cab->bound()) continue;
+                const auto code = static_cast<std::int32_t>(room.portal + 1);
+                renderer.set_portal(-code);
+                std::vector<renderer::NodeAdjustment> room_adjustments;
+                room_cab->adjustments(cab_state(i), room_adjustments, signal_aspect(unit), nullptr);
+                renderer.submit(*room_model, transform * room_cab->placement(), room_adjustments);
+                renderer.set_portal(code);
+            }
+        }
         // FreightAnim: objects fastened to the car, at FreightAnimPosition.
         for (std::size_t k = 0; k < car.freight_shapes.size() && k < car.freight.size(); ++k) {
             if (car.freight_shapes[k].str().empty()) continue;
@@ -6534,10 +7106,12 @@ void TrainView::draw_overlay() {
         }
         if (on) {
             ImGui::TextDisabled("%s", tr("Arrows: walk (Shift: run), Enter: stand up / sit down / a door, "
-                                         "RMB: look round, Alt: captions of the controls"));
+                                         "Ctrl+Enter: steps, ladders, through a door, RMB: look round, Alt: captions of the controls"));
             ImGui::TextDisabled("%s", trf("Mouse: a click works a switch, the wheel turns it a step; %s: the window, %s: head out",
                                           window_key_name(), head_out_key_name()).c_str());
             ImGui::Checkbox(tr("On foot outside: collide with objects (off: only the ground and trains)"), &walk_objects_);
+            ImGui::Checkbox(tr("Through an open passage door: the next car's salon or cab"), &neighbour_rooms_);
+            ImGui::Checkbox(tr("And through a shut one (its glass)"), &neighbour_rooms_shut_);
             // The paces (config.ini engineer.velocity / engineer.velocity1, as RTS), for this session.
             float walk = engineer_.walk_speed(), run = engineer_.run_speed();
             ImGui::SetNextItemWidth(160.0f);

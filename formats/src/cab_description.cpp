@@ -84,6 +84,34 @@ std::string joined(const TextNode* node) {
     return r;
 }
 
+// Trajectory ( n  x y z kind  ... ) (RTS 0x529D70).
+std::vector<TrajectoryPoint> trajectory(const TextNode* node) {
+    std::vector<TrajectoryPoint> out;
+    if (!node || node->values.empty()) return out;
+    const std::size_t count = to_uint(node->values[0]);
+    for (std::size_t i = 0; i < count && 4 * i + 4 < node->values.size(); ++i) {
+        TrajectoryPoint p;
+        for (std::size_t k = 0; k < 3; ++k) p.at[k] = number(node, 1 + 4 * i + k);
+        p.kind = static_cast<std::int32_t>(number(node, 4 * i + 4));
+        out.push_back(p);
+    }
+    return out;
+}
+
+// InteriorPlane ( [name] x1 y1 z1 x2 y2 z2 ): the name is there when there
+// are seven values.
+CabPlane read_plane(const TextNode* node) {
+    CabPlane p;
+    if (!node) return p;
+    const std::size_t first = node->values.size() >= 7 ? 1 : 0;
+    if (first) p.name = node->values[0];
+    for (std::size_t i = 0; i < 3; ++i) {
+        p.a[i] = number(node, first + i);
+        p.b[i] = number(node, first + 3 + i);
+    }
+    return p;
+}
+
 // Finds `key` anywhere below `node` (the first in document order).
 const TextNode* find(const TextNode& node, std::string_view key) {
     for (const auto& child : node.children) {
@@ -478,14 +506,53 @@ ExteriorDetails parse_exterior_details(std::string_view bytes) {
             if (node.name == "exteriordoor") {
                 ExteriorDoor door;
                 door.name = text(node.child("name"));
+                door.from = lower(text(node.child("connects"), 0));
+                door.to = lower(text(node.child("connects"), 1));
+                door.has_position = node.child("position") != nullptr;
                 door.position = vec3(node.child("position"));
                 door.radius = number(node.child("radius"), 0, 2.0f);
+                door.has_plane = node.child("interiorplane") != nullptr;
+                door.plane = read_plane(node.child("interiorplane"));
+                door.trajectory = trajectory(node.child("trajectory"));
                 door.anim_time = number(node.child("animtime"), 0, 1.0f);
                 door.global_id = static_cast<std::uint32_t>(number(node.child("globalid"), 0, 0.0f));
                 door.can_be_opened = number(node.child("canbeopened"), 0, 1.0f) != 0.0f;
+                if (const auto* parent = node.child("parentobject")) door.parent = static_cast<std::int32_t>(number(parent, 0, -1.0f));
                 out.doors.push_back(door.name);
                 out.door_details.push_back(std::move(door));
             }
+    if (const auto* ladders = exterior->child("exteriorladders"))
+        for (const auto& node : ladders->children)
+            if (node.name == "exteriorladder") {
+                ExteriorLadder ladder;
+                ladder.from = lower(text(node.child("connects"), 0));
+                ladder.to = lower(text(node.child("connects"), 1));
+                ladder.position = vec3(node.child("position"));
+                ladder.radius = number(node.child("radius"), 0);
+                ladder.trajectory = trajectory(node.child("trajectory"));
+                out.ladders.push_back(std::move(ladder));
+            }
+    if (const auto* planes = exterior->child("exteriorplanes"))
+        for (const auto& node : planes->children)
+            if (node.name == "exteriorplane") {
+                ExteriorPlane plane;
+                for (std::size_t i = 0; i < 3; ++i) {
+                    plane.a[i] = number(&node, i);
+                    plane.b[i] = number(&node, 3 + i);
+                }
+                // The words after the corners (RTS 0x4F0BC8 looks for them
+                // anywhere in the block).
+                for (std::size_t i = 6; i < node.values.size(); ++i) {
+                    const auto word = lower(node.values[i]);
+                    plane.exit = plane.exit || word == "exit";
+                    plane.front = plane.front || word == "wagon_front";
+                    plane.back = plane.back || word == "wagon_back";
+                }
+                out.planes.push_back(plane);
+            }
+    if (const auto* ledges = exterior->child("exteriorledges"))
+        for (const auto& node : ledges->children)
+            if (node.name == "exteriorledge") out.ledges.push_back({trajectory(node.child("trajectory"))});
     if (const auto* objects = exterior->child("wagonobjects")) {
         for (const auto& node : objects->children) {
             WagonObject object;
@@ -647,19 +714,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
         s.scripted = number(signals->child("signalizationscripted"), 0) != 0.0f;
     }
     if (const auto* geometry = child_or_nested(*interior, "interiorgeometryinfo")) {
-        // InteriorPlane ( [name] x1 y1 z1 x2 y2 z2 ): the name is there when
-        // there are seven values.
-        auto plane = [](const TextNode* node) {
-            CabPlane p;
-            if (!node) return p;
-            const std::size_t first = node->values.size() >= 7 ? 1 : 0;
-            if (first) p.name = node->values[0];
-            for (std::size_t i = 0; i < 3; ++i) {
-                p.a[i] = number(node, first + i);
-                p.b[i] = number(node, first + 3 + i);
-            }
-            return p;
-        };
+        const auto plane = read_plane;
         if (const auto* areas = child_or_nested(*geometry, "interiorareas")) {
             for (const auto& node : areas->children) {
                 if (node.name != "interiorarea") continue;
@@ -691,6 +746,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
                 d.position = vec3(node.child("position"));
                 d.radius = number(node.child("radius"), 0, 1.5f);
                 d.plane = plane(node.child("interiorplane"));
+                d.trajectory = trajectory(node.child("trajectory"));
                 d.anim_time = number(node.child("animtime"), 0, 1.0f);
                 d.global_id = static_cast<std::uint32_t>(number(node.child("globalid"), 0, 0.0f));
                 d.can_be_opened = number(node.child("canbeopened"), 0, 1.0f) != 0.0f;
@@ -716,6 +772,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
                 w.head_out = vec3(node.child("headoutposition"));
                 w.has_position = node.child("position") != nullptr;
                 w.position = vec3(node.child("position"));
+                w.radius = number(node.child("radius"), 0, 0.0f);
                 w.anim_time = number(node.child("animtime"), 0, 1.0f);
                 if (const auto* proof = node.child("soundproof")) {
                     w.sound_closed = number(proof, 0);
@@ -725,6 +782,20 @@ CabDescription parse_cab_description(std::string_view bytes) {
                     w.sms_triggers = {static_cast<std::uint16_t>(number(sms, 0)), static_cast<std::uint16_t>(number(sms, 1))};
                 }
                 cab.windows.push_back(std::move(w));
+            }
+        }
+        if (const auto* seats = child_or_nested(*geometry, "interiorseats")) {
+            for (const auto& node : seats->children) {
+                if (node.name != "interiorseat") continue;
+                CabSeat s;
+                s.position = vec3(node.child("position"));
+                s.radius = number(node.child("radius"), 0, 3.0f);
+                s.aisle = node.child("pos1") ? vec3(node.child("pos1")) : s.position;
+                s.seated = node.child("pos2") ? vec3(node.child("pos2")) : s.position;
+                if (const auto* area = node.child("area"))
+                    s.area = {number(area, 0), number(area, 1), number(area, 2), number(area, 3)};
+                s.head_out_window = text(node.child("headoutwindow"));
+                cab.seats.push_back(std::move(s));
             }
         }
         if (const auto* chairs = child_or_nested(*geometry, "interiorchairs")) {

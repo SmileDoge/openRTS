@@ -16,7 +16,9 @@
 
 #include <openrts/core/installation.hpp>
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/formats/shape_description.hpp>
 
 #include "../viewer/src/cab_view.hpp"
 #include "../viewer/src/engineer.hpp"
@@ -149,7 +151,7 @@ int main(int argc, char** argv) {
         std::printf("  %-28s %-8s eye (%.2f %.2f %.2f)  prompt \"%s\"\n", what, mode_name(engineer.mode()), camera.position.x,
                     camera.position.y, camera.position.z, engineer.prompt().c_str());
     };
-    const float eye = 0.85f * 1.81f;
+    const float eye = 1.81f; // outside: Height above his feet (RTS)
 
     run({}, 0.1f);
     where("seated");
@@ -190,7 +192,7 @@ int main(int argc, char** argv) {
     run({.action = true}, 1.0f);
     where("risen at the desk");
     check(engineer.risen() && engineer.mode() == Engineer::Mode::seated, "Enter rises at the desk, still at the chair");
-    check(std::abs(camera.position.y - (2.04f + eye)) < 0.05f, "risen: standing on the cab floor (2.04)");
+    check(std::abs(camera.position.y - (1.65f + 1.81f)) < 0.01f, "risen: the eye Height above Pos2 (1.65, RTS 0x43778C)");
     const auto risen_at = camera.position;
     run({.forward = true}, 0.5f);
     check(engineer.risen() && glm::distance(camera.position, risen_at) < 0.01f, "risen, the arrows do not walk him off");
@@ -199,7 +201,25 @@ int main(int argc, char** argv) {
     run({.action = true, .action_ctrl = true}, 1.0f);
     where("stood up");
     check(engineer.mode() == Engineer::Mode::standing, "Ctrl+Enter gets him up");
-    check(std::abs(camera.position.y - (2.04f + eye)) < 0.05f, "standing on the cab floor (2.04)");
+    const float standing_eye = 1.75f + 1.81f; // the CABIN plane, Height above it
+    check(std::abs(camera.position.y - standing_eye) < 0.01f, "standing: the eye Height above the cab's plane (1.75)");
+
+    // RTS walks him on the .sd InteriorPlanes only (0x434C58): the VL10k's
+    // CABIN is the aisle between the chairs (X -0.251..0.336). Before
+    // 2026-11-11 openRTS walked the cab shape's surfaces: from the floor up
+    // onto the driver's seat, from it onto the desk, the head through the roof.
+    {
+        float highest = camera.position.y, farthest = camera.position.x;
+        for (int i = 0; i < 180; ++i) { // at the driver's chair (+X), then on to the desk (+Z)
+            run({.forward = i >= 60, .right = true}, dt);
+            highest = (std::max)(highest, camera.position.y);
+            farthest = (std::max)(farthest, camera.position.x);
+        }
+        where("at the chair and the desk");
+        check(highest < standing_eye + 0.01f, "he does not climb the driver's seat or the desk");
+        check(farthest < 0.371f, "the driver's chair is off the planes: he stays in the aisle");
+        check(camera.position.z < 6.695f, "the desk end of the aisle stops him");
+    }
 
     // Face the back of the cab (-Z), step to the middle, walk to the door.
     camera.yaw += 3.14159265f;
@@ -330,9 +350,10 @@ int main(int argc, char** argv) {
     }
 
     // The ER9PK-328 (Pavlovsk): its cab a .repaint of mdd_ER9P-Alias/Cab/
-    // cabklub.s. Its cab doors' InteriorPlane (DOOR1 / DOOR2) is at 0.50, the
-    // vestibule's floor at 1.39: climbing in there he stood under the floor
-    // and could not walk (2026-11-11).
+    // cabklub.s. Its outer doors' InteriorPlanes (DOOR1 / DOOR2) go from 1.0
+    // down to 0.0, the vestibule's (TAMBUR_M) is at 1.0, under the visible
+    // floor (1.39). Climbing in there he stood under the floor and could not
+    // walk (before 2026-11-11, on the cab shape's surfaces).
     if (const auto er9 = formats::load_wagon(vfs, "mdd_ER9PK-328", "mdd_ER9P_01", true); er9.ok()) {
         auto cab3 = viewer::CabView::create(vfs, er9, formats::wagon_path("mdd_ER9PK-328", "mdd_ER9P_01", true));
         for (int i = 0; i < 600 && cab3 && !cab3->collision(); ++i) {
@@ -342,9 +363,20 @@ int main(int argc, char** argv) {
         check(cab3 && cab3->collision() && !cab3->collision()->empty(), "ER9PK: the repainted cab's surfaces are read");
         if (cab3 && cab3->collision()) {
             const auto& sd = cab3->description();
-            const auto* surfaces = cab3->collision();
-            const auto floor_at = [&](const glm::vec3& eye) { return surfaces->floor(eye.x, eye.z, 0.0f, eye.y - 0.5f, cab3->skip()); };
-            // Up from the driver's chair: on the cab floor (1.49), walking.
+            // The height of the plane holding (x, z) nearest `y` (RTS's corner order).
+            const auto plane_at = [&](const glm::vec3& feet) -> std::optional<float> {
+                std::optional<float> best;
+                auto take = [&](const formats::CabPlane& p) {
+                    if (!(p.a[0] <= feet.x && feet.x <= p.b[0] && p.b[2] <= feet.z && feet.z <= p.a[2])) return;
+                    const float y = p.a[1] + (p.b[1] - p.a[1]) * (p.a[2] - feet.z) / (p.a[2] - p.b[2]);
+                    if (!best || std::abs(y - feet.y) < std::abs(*best - feet.y)) best = y;
+                };
+                for (const auto& p : sd.planes) take(p);
+                for (const auto& d : sd.doors) take(d.plane);
+                return best;
+            };
+            const auto floor_at = [&](const glm::vec3& eye) { return plane_at(eye - glm::vec3{0.0f, 1.81f, 0.0f}); };
+            // Up from the driver's chair: on the cab's plane (1.2), walking.
             Engineer driver;
             driver.configure("engineer.Height = 1.81\r\nengineer.Height1 = 0.81\r\n");
             driver.sit(0);
@@ -360,12 +392,12 @@ int main(int argc, char** argv) {
             go(driver, view, {.action = true, .action_ctrl = true}, 1.0f);
             const auto standing = view.position;
             const auto cab_floor = floor_at(standing);
-            const float rise = cab_floor ? standing.y - *cab_floor : 0.0f; // the eye above the feet
-            check(driver.mode() == Engineer::Mode::standing && cab_floor && std::abs(*cab_floor - 1.49f) < 0.05f,
-                  "ER9PK: up from the chair, on the cab floor (1.49)");
+            check(driver.mode() == Engineer::Mode::standing && cab_floor && std::abs(*cab_floor - 1.2f) < 0.01f
+                      && std::abs(standing.y - 1.2f - 1.81f) < 0.01f,
+                  "ER9PK: up from the chair, on the cab's plane (1.2)");
             go(driver, view, {.forward = true}, 1.0f);
             check(glm::distance(standing, view.position) > 0.3f, "ER9PK: he walks in the cab");
-            // In from outside by every door one gets on by: on the floor there, walking.
+            // In from outside by every door one gets on by: on the plane there, walking.
             for (const auto& [door, spot] : Engineer::get_on_points(*cab3)) {
                 const auto& d = sd.doors[door];
                 Engineer walker;
@@ -375,19 +407,284 @@ int main(int argc, char** argv) {
                 in.fly = true;
                 go(walker, in, {}, 0.05f);
                 const auto at = in.position;
-                const auto under = surfaces->floor(at.x, at.z, 0.0f, 3.0f, cab3->skip());
+                const auto under = floor_at(at);
                 in.yaw = at.x > 0.3f ? 3.14159265f * 0.5f : at.x < -0.3f ? -3.14159265f * 0.5f : 0.0f;
                 go(walker, in, {}, 0.05f);
                 go(walker, in, {.forward = true}, 1.0f);
                 const float walked = glm::distance(at, in.position);
-                std::printf("  ER9PK in by %-7s feet %.2f, the floor there %.2f, walked %.2f m\n", d.name.c_str(), at.y - rise,
+                std::printf("  ER9PK in by %-7s feet %.2f, the plane there %.2f, walked %.2f m\n", d.name.c_str(), at.y - 1.81f,
                             under ? *under : -9.0f, walked);
-                check(under && std::abs(at.y - rise - *under) < 0.05f, ("ER9PK: in by " + d.name + ", on the floor").c_str());
+                check(under && std::abs(at.y - 1.81f - *under) < 0.01f, ("ER9PK: in by " + d.name + ", on the plane").c_str());
                 check(walked > 0.3f, ("ER9PK: in by " + d.name + ", he walks").c_str());
             }
         }
     } else {
         std::printf("no ER9PK-328 here: its cab doors not checked\n");
+    }
+
+    // The ChME3 (mdd_CHME3-1277): RTS's car outside (mode 6). Up its steps
+    // from the ground (ExteriorLadders EXTERIOR -> EXT_WAG), along its
+    // walkway (ExteriorPlanes at 1.4), into the cab by the door DOOR_D (the
+    // way through it, Connects EXT_WAG INTERIOR), out again onto the walkway
+    // (the cab's DOOR_D, CABIN -> EXT_WAG), up the roof ladder and down the
+    // steps to the ground. Before 2026-11-11 its cab could not be got into
+    // or out of: its doors lead to the walkways, which openRTS did not have.
+    if (const auto chme = formats::load_wagon(vfs, "mdd_CHME3-1277", "mdd_CHME3-1277", true); chme.ok()) {
+        const auto shape = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_CHME3-1277/" + chme.shape);
+        const auto sd = shape ? vfs.read(formats::shape_description(vfs, *shape)) : std::nullopt;
+        const auto details = sd ? formats::parse_exterior_details(*sd) : formats::ExteriorDetails{};
+        check(details.ladders.size() == 6 && details.planes.size() == 6 && details.ledges.size() == 2 && details.door_details.size() == 8,
+              "ChME3: 6 ladders, 6 walkway planes, 2 ledges, 8 outer doors");
+        auto cab4 = viewer::CabView::create(vfs, chme, formats::wagon_path("mdd_CHME3-1277", "mdd_CHME3-1277", true));
+        for (int i = 0; i < 600 && cab4 && !cab4->collision(); ++i) {
+            cab4->poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        std::size_t outer_d = SIZE_MAX, cab_d = SIZE_MAX;
+        for (std::size_t k = 0; k < details.door_details.size(); ++k)
+            if (details.door_details[k].name == "DOOR_D") outer_d = k;
+        for (std::size_t k = 0; cab4 && k < cab4->description().doors.size(); ++k)
+            if (cab4->description().doors[k].name == "DOOR_D") cab_d = k;
+        check(outer_d != SIZE_MAX && cab_d != SIZE_MAX && details.door_details[outer_d].to == "interior"
+                  && details.door_details[outer_d].trajectory.size() == 2,
+              "ChME3: DOOR_D leads from the walkway into the cab along its way");
+        if (cab4 && outer_d != SIZE_MAX && cab_d != SIZE_MAX) {
+            // The outer door follows the cab's door of its name (TrainView).
+            viewer::CarOutside car_out;
+            car_out.details = &details;
+            car_out.width = chme.width > 1.0f ? chme.width : 3.1f;
+            car_out.door_open = [&](std::size_t k) {
+                while (k < details.door_details.size() && details.door_details[k].parent >= 0)
+                    k = static_cast<std::size_t>(details.door_details[k].parent);
+                return k == outer_d ? cab4->door_open(cab_d) : false;
+            };
+            car_out.cab_holds = [&](const glm::vec3& at) {
+                return Engineer::cab_holds(*cab4, glm::vec3{glm::inverse(cab4->placement()) * glm::vec4{at, 1.0f}}, 1.81f);
+            };
+            const viewer::Outdoors flat{.floor = [](const glm::vec3&) -> std::optional<float> { return 0.0f; }};
+            Engineer man;
+            man.configure("engineer.Height = 1.81\r\nengineer.Height1 = 0.81\r\n");
+            viewer::ViewerCamera eye_cam;
+            eye_cam.fly = true;
+            float doors_time = 0.0f;
+            // One frame of what TrainView does with him.
+            auto frame = [&](EngineerControls controls) {
+                cab4->poll();
+                cab4->step_doors(dt);
+                doors_time += dt;
+                if (man.mode() == Engineer::Mode::on_car) {
+                    man.update_on_car(car_out, controls, flat, dt, eye_cam);
+                } else if (man.mode() == Engineer::Mode::outside) {
+                    man.update_on_foot(controls, flat, dt, eye_cam);
+                } else {
+                    man.update(*cab4, controls, cab4->placement(), flat, dt, eye_cam);
+                }
+                const auto e = man.take_event();
+                using Kind = Engineer::Event::Kind;
+                if (e.kind == Kind::outer_door) {
+                    cab4->toggle_door(cab_d);
+                } else if (e.kind == Kind::into_cab) {
+                    man.enter_cab(*cab4, cab_d, glm::vec3{glm::inverse(cab4->placement()) * glm::vec4{e.at, 1.0f}});
+                } else if (e.kind == Kind::onto_car) {
+                    const glm::vec3 at{cab4->placement() * glm::vec4{e.at, 1.0f}};
+                    std::optional<std::size_t> path;
+                    if (e.by_path) path = outer_d;
+                    if (e.by_path || viewer::outside_footing(details, car_out.door_open, at).kind != viewer::OutsideFooting::Kind::none)
+                        man.step_onto_car(car_out, at, path);
+                }
+            };
+            auto go = [&](EngineerControls controls, const float seconds) {
+                for (float t = 0.0f; t < seconds; t += dt) {
+                    frame(controls);
+                    controls.action = false;
+                }
+            };
+            auto feet_y = [&] { return eye_cam.position.y - 1.81f; };
+            // On the ground by the front left steps, facing the car (+X).
+            man.stand_outside({-2.3f, 0.0f, 7.736f});
+            eye_cam.yaw = -3.14159265f * 0.5f;
+            eye_cam.pitch = 0.3f; // + looks down
+            go({}, 0.05f);
+            const auto steps = Engineer::ladder_in_reach(car_out, eye_cam.position, eye_cam.forward());
+            check(steps && steps->first == 1, "ChME3: the front left steps are in reach");
+            check(steps && Engineer::ladder_prompt(car_out, steps->first, man.feet()) == std::string(viewer::tr("Ctrl+Enter: climb up")),
+                  "ChME3: Ctrl+Enter climbs up");
+            if (steps) man.climb(car_out, steps->first);
+            for (int i = 0; i < 600 && man.passing(); ++i) frame({});
+            std::printf("  ChME3 up the steps          %s eye (%.2f %.2f %.2f)\n", man.mode() == Engineer::Mode::on_car ? "on car" : "?",
+                        eye_cam.position.x, eye_cam.position.y, eye_cam.position.z);
+            check(man.mode() == Engineer::Mode::on_car && std::abs(feet_y() - 1.4f) < 0.02f && std::abs(eye_cam.position.x + 1.124f) < 0.05f,
+                  "ChME3: up the steps onto the left walkway (1.4)");
+            // Along the walkway to the cab door; it stops him (shut).
+            eye_cam.yaw = 0.0f; // -Z
+            eye_cam.pitch = 0.0f;
+            go({.forward = true}, 8.0f);
+            std::printf("  ChME3 at the cab door       eye (%.2f %.2f %.2f) prompt \"%s\"\n", eye_cam.position.x, eye_cam.position.y,
+                        eye_cam.position.z, man.prompt().c_str());
+            check(eye_cam.position.z > -3.36f && eye_cam.position.z < -3.0f && std::abs(feet_y() - 1.4f) < 0.02f,
+                  "ChME3: the walkway ends at the shut cab door");
+            // Look at the door (left, down) and open it.
+            eye_cam.yaw = 3.14159265f * 0.5f;
+            eye_cam.pitch = 0.9f;
+            go({}, 0.05f);
+            check(man.prompt() == std::string(viewer::tr("Enter: open the door, Ctrl+Enter: go through")), "ChME3: Enter opens the cab door");
+            go({.action = true}, 1.3f);
+            check(cab4->door_open(cab_d), "ChME3: the cab door is open");
+            eye_cam.yaw = 0.0f;
+            eye_cam.pitch = 0.0f;
+            for (int i = 0; i < 600 && man.mode() == Engineer::Mode::on_car; ++i) frame({.forward = true});
+            go({}, 0.5f);
+            std::printf("  ChME3 in the cab            %s eye (%.2f %.2f %.2f)\n", man.mode() == Engineer::Mode::standing ? "standing" : "?",
+                        eye_cam.position.x, eye_cam.position.y, eye_cam.position.z);
+            check(man.mode() == Engineer::Mode::standing && std::abs(feet_y() - 1.4f) < 0.02f, "ChME3: through the door into the cab");
+            go({.forward = true}, 1.0f);
+            check(man.mode() == Engineer::Mode::standing && eye_cam.position.z < -3.65f, "ChME3: he walks in the cab");
+            // Back out onto the walkway (+Z).
+            eye_cam.yaw = 3.14159265f;
+            for (int i = 0; i < 600 && man.mode() == Engineer::Mode::standing; ++i) frame({.forward = true});
+            go({.forward = true}, 0.5f);
+            std::printf("  ChME3 out of the cab        %s eye (%.2f %.2f %.2f)\n", man.mode() == Engineer::Mode::on_car ? "on car" : "?",
+                        eye_cam.position.x, eye_cam.position.y, eye_cam.position.z);
+            check(man.mode() == Engineer::Mode::on_car && eye_cam.position.z > -3.24f && std::abs(feet_y() - 1.4f) < 0.02f,
+                  "ChME3: out of the cab door onto the walkway");
+            // Along it to the front, across the front to the right side.
+            for (int i = 0; i < 900 && eye_cam.position.z < 7.7f; ++i) frame({.forward = true});
+            eye_cam.yaw = -3.14159265f * 0.5f; // +X
+            for (int i = 0; i < 900 && eye_cam.position.x < 1.1f; ++i) frame({.forward = true});
+            eye_cam.yaw = 0.0f; // -Z, to the roof ladder (z 7.3)
+            for (int i = 0; i < 900 && eye_cam.position.z > 7.32f; ++i) frame({.forward = true});
+            std::printf("  ChME3 at the roof ladder    eye (%.2f %.2f %.2f) prompt \"%s\"\n", eye_cam.position.x, eye_cam.position.y,
+                        eye_cam.position.z, man.prompt().c_str());
+            check(man.mode() == Engineer::Mode::on_car && eye_cam.position.x > 1.0f && std::abs(feet_y() - 1.4f) < 0.02f,
+                  "ChME3: along the walkways round the front to the right side");
+            eye_cam.pitch = -0.5f; // up at it
+            go({}, 0.05f);
+            check(man.prompt() == std::string(viewer::tr("Ctrl+Enter: climb up")), "ChME3: the roof ladder is in reach");
+            go({.action = true, .action_ctrl = true}, 0.05f);
+            for (int i = 0; i < 900 && man.passing(); ++i) frame({});
+            std::printf("  ChME3 up the roof ladder    eye (%.2f %.2f %.2f)\n", eye_cam.position.x, eye_cam.position.y, eye_cam.position.z);
+            check(man.mode() == Engineer::Mode::on_car && std::abs(feet_y() - 4.0f) < 0.02f, "ChME3: up the roof ladder (4.0)");
+            go({.action = true, .action_ctrl = true}, 0.05f);
+            for (int i = 0; i < 900 && man.passing(); ++i) frame({});
+            go({.forward = true}, 0.1f);
+            go({}, 1.0f);
+            check(man.mode() == Engineer::Mode::on_car && std::abs(feet_y() - 1.4f) < 0.02f, "ChME3: and down it to the walkway");
+            // To the front right steps and down them.
+            eye_cam.yaw = 3.14159265f; // +Z
+            eye_cam.pitch = 0.3f;
+            for (int i = 0; i < 900 && eye_cam.position.z < 7.7f; ++i) frame({.forward = true});
+            eye_cam.yaw = -3.14159265f * 0.5f; // +X, the steps, looking down at them
+            eye_cam.pitch = 0.8f;
+            go({}, 0.05f);
+            check(man.prompt() == std::string(viewer::tr("Ctrl+Enter: climb down")), "ChME3: the steps down are in reach");
+            go({.action = true, .action_ctrl = true}, 0.05f);
+            for (int i = 0; i < 900 && man.passing(); ++i) frame({});
+            go({}, 1.0f);
+            std::printf("  ChME3 down the steps        eye (%.2f %.2f %.2f)\n", eye_cam.position.x, eye_cam.position.y, eye_cam.position.z);
+            check(man.mode() == Engineer::Mode::outside && std::abs(feet_y()) < 0.02f && eye_cam.position.x > 1.5f,
+                  "ChME3: down the steps to the ground");
+        }
+    } else {
+        std::printf("no ChME3-1277 here: its outside not checked\n");
+    }
+
+    // The ED9M's salon (mdd_ED4M-Alias motor9.sd): 700 InteriorSeats. Looking
+    // at a seat Enter sits him down at its Pos2 (the eye Height1 above, RTS
+    // 0x4372B8), Num0 opens its window (HeadOutWindow WIN1), Num1 puts his
+    // head out, Enter gets him up at its Pos1 in the aisle.
+    if (const auto motor = formats::load_wagon(vfs, "mdd_ED9M-0032", "mdd_ED9M-0032_M", true); motor.ok()) {
+        auto salon = viewer::CabView::create(vfs, motor, formats::wagon_path("mdd_ED9M-0032", "mdd_ED9M-0032_M", true));
+        for (int i = 0; i < 600 && salon && !salon->collision(); ++i) {
+            salon->poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        std::printf("  ED9M salon seats %zu, windows %zu\n", salon ? salon->description().seats.size() : 0,
+                    salon ? salon->description().windows.size() : 0);
+        check(salon && salon->description().seats.size() >= 30, "ED9M salon: its InteriorSeats read");
+        if (salon && !salon->description().seats.empty()) {
+            const auto& seat = salon->description().seats[0];
+            const auto window = salon->find_window(seat.head_out_window);
+            Engineer rider;
+            rider.configure("engineer.Height = 1.81\r\nengineer.Height1 = 0.81\r\n");
+            viewer::ViewerCamera view;
+            view.fly = true;
+            const viewer::Outdoors none{};
+            auto ride = [&](EngineerControls controls, const float seconds) {
+                for (float t = 0.0f; t < seconds; t += dt) {
+                    rider.update(*salon, controls, salon->placement(), none, dt, view);
+                    controls.action = controls.window = controls.head_out = false;
+                }
+            };
+            rider.enter_cab(*salon, 0, {0.0f, 1.2f, 7.0f});
+            ride({}, 0.05f);
+            const glm::vec3 to = glm::normalize(glm::vec3{seat.position[0], seat.position[1], seat.position[2]} - view.position);
+            view.yaw = std::atan2(-to.x, -to.z);
+            view.pitch = std::asin(-to.y);
+            ride({}, 0.05f);
+            std::printf("  ED9M at seat 0               mode %s eye (%.2f %.2f %.2f) yaw %.2f pitch %.2f prompt \"%s\"\n",
+                        mode_name(rider.mode()), view.position.x, view.position.y, view.position.z, view.yaw, view.pitch,
+                        rider.prompt().c_str());
+            check(rider.prompt() == std::string(viewer::tr("Enter: sit down")), "ED9M salon: looking at a seat, Enter sits down");
+            ride({.action = true}, 1.0f);
+            std::printf("  ED9M seated                 eye (%.2f %.2f %.2f)\n", view.position.x, view.position.y, view.position.z);
+            check(rider.mode() == Engineer::Mode::seated && std::abs(view.position.y - (seat.seated[1] + 0.81f)) < 0.01f
+                      && std::abs(view.position.x - seat.seated[0]) < 0.01f,
+                  "ED9M salon: seated at Pos2, the eye Height1 above it");
+            check(window && !salon->window_open(*window), "ED9M salon: the seat's window is shut");
+            ride({.window = true}, 1.3f);
+            check(window && salon->window_open(*window), "ED9M salon: Num0 opens the seat's window");
+            ride({.head_out = true}, 1.0f);
+            check(rider.heading_out() && window
+                      && glm::distance(view.position, glm::vec3{salon->description().windows[*window].head_out[0],
+                                                                salon->description().windows[*window].head_out[1],
+                                                                salon->description().windows[*window].head_out[2]}) < 0.01f,
+                  "ED9M salon: Num1 puts the head out of it");
+            ride({.head_out = true}, 1.0f);
+            ride({.action = true}, 1.0f);
+            std::printf("  ED9M up                     eye (%.2f %.2f %.2f)\n", view.position.x, view.position.y, view.position.z);
+            check(rider.mode() == Engineer::Mode::standing && std::abs(view.position.x - seat.aisle[0]) < 0.01f
+                      && std::abs(view.position.z - seat.aisle[2]) < 0.01f,
+                  "ED9M salon: Enter gets him up in the aisle (Pos1)");
+        }
+    } else {
+        std::printf("no ED9M-0032 motor car here: its seats not checked\n");
+    }
+
+    // The lighting mast Osvstozar4 (Kuban): its ladder is 30 boxes of 1 m
+    // one on another (ESD_Complex), a platform 4 x 2 m at the top (30.3).
+    // RTS climbs a box whose top is 0.4..0.9 Height above his feet
+    // (0x4322F0): walking at the mast he climbs it box by box to the top.
+    if (const auto mast = formats::load_shape_description(vfs, *core::VirtualPath::parse("ROUTES/Kuban_RTS/SHAPES/Osvstozar4.sd")); mast.ok()) {
+        check(mast.value->boxes.size() == 31, "Osvstozar4: 31 boxes");
+        const std::vector<viewer::PlacedBoxes> objects{{.boxes = &mast.value->boxes}};
+        const viewer::Outdoors ground_only{
+            .floor = [](const glm::vec3&) -> std::optional<float> { return 0.0f; },
+            .boxes = [&](const glm::vec3& from, const glm::vec3& to, const float h) { return viewer::step_among_boxes(objects, from, to, h); },
+        };
+        Engineer climber;
+        climber.configure("engineer.Height = 1.81\r\nengineer.Height1 = 0.81\r\n");
+        climber.stand_outside({0.0f, 0.0f, -2.0f});
+        viewer::ViewerCamera view;
+        view.fly = true;
+        view.yaw = 3.14159265f; // +Z, at the mast
+        float highest = 0.0f;
+        for (int i = 0; i < 60 * 120 && climber.feet().y < 30.25f; ++i) {
+            climber.update_on_foot({.forward = true}, ground_only, dt, view);
+            highest = (std::max)(highest, climber.feet().y);
+        }
+        std::printf("  Osvstozar4 climbed to       feet %.2f at (%.2f %.2f)\n", climber.feet().y, climber.feet().x, climber.feet().z);
+        check(std::abs(climber.feet().y - 30.3f) < 0.01f, "Osvstozar4: up the mast's boxes onto the platform (30.3)");
+        // Along the platform, off its end: down to the ground, falling.
+        view.yaw = -3.14159265f * 0.5f; // +X
+        for (int i = 0; i < 60 && climber.feet().x < 1.5f; ++i) climber.update_on_foot({.forward = true}, ground_only, dt, view);
+        check(std::abs(climber.feet().y - 30.3f) < 0.01f, "Osvstozar4: he walks on the platform");
+        int frames = 0;
+        for (; frames < 600 && (climber.feet().y > 0.0f || climber.feet().x < 2.4f); ++frames)
+            climber.update_on_foot({.forward = climber.feet().x < 2.4f}, ground_only, dt, view);
+        std::printf("  Osvstozar4 off the platform feet %.2f after %.1f s\n", climber.feet().y, frames * dt);
+        check(climber.feet().y == 0.0f && frames * dt > 2.0f, "Osvstozar4: off the platform he falls to the ground (9.8 m/s^2)");
+    } else {
+        std::printf("no Osvstozar4 here: the mast's boxes not checked\n");
     }
 
     std::printf("%s\n", failures ? "FAILED" : "passed");

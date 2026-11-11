@@ -113,7 +113,9 @@ struct GpuInstance {
     std::int32_t ring;   // its ring of further lights (LightRings::ring_for)
     // 1: a decal on the ground (a transfer), drawn a hair nearer (vs_main).
     std::int32_t decal;
-    std::int32_t padding;
+    // Through a portal (ModelRenderer::set_portal): +k only through portal
+    // k - 1, -k all but through it, 0 none.
+    std::int32_t portal;
 };
 static_assert(sizeof(GpuInstance) == 144);
 
@@ -141,6 +143,9 @@ struct FrameUniform {
     float shading[4]; // x: night_ambient_scale()
     float fog_sun[4];            // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     float fog_ring[FogRing::count][4]; // the horizon's colour at each fog_ring_angle (display)
+    // ModelPortal: centre, (across, half), (up, half), (eye) as columns.
+    glm::mat4 portals[max_portals];
+    glm::vec4 portal_doors[max_portals]; // far_door, near_door, door_half_across, door_half_up
 };
 
 // Bindings and types shared by both shading paths.
@@ -158,6 +163,8 @@ struct Frame {
     shading: vec4<f32>, // x: the experimental path's night ambient factor
     fog_sun: vec4<f32>,             // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     fog_ring: array<vec4<f32>, 12>, // the horizon's colour at each fog_ring_angle (fog_ring.hpp)
+    portals: array<mat4x4<f32>, 2>, // centre, (across, half), (up, half), eye
+    portal_doors: array<vec4<f32>, 2>, // far_door, near_door, the opening's half sizes
 };
 
 // One primitive of the shape (static per model generation).
@@ -176,6 +183,7 @@ struct Instance {
     locals: i32,
     ring: i32,
     decal: i32,
+    portal: i32,
 };
 
 struct Local {
@@ -189,6 +197,9 @@ override alpha_test: bool = false;
 override alpha_to_coverage: bool = false;
 // HDR frame: the experimental path keeps its highlights for the tone curve.
 override hdr_output: bool = false;
+// Blended (glass): not in the camera's depth pre-pass, so the screen's
+// ambient occlusion there belongs to what lies behind it.
+override blended: bool = false;
 
 // Alpha-to-coverage for an alpha test at `cutoff` (Golus, "Anti-aliased
 // Alpha Test"): the edge spread over one pixel (`width`: fwidth of the
@@ -249,7 +260,70 @@ struct VertexOut {
     @location(4) fog: vec4<f32>,
     @location(5) @interpolate(flat) ring: u32, // the instance's ring of further lights
     @location(6) @interpolate(flat) draw_slot: u32, // the primitive (draws[])
+    @location(7) @interpolate(flat) portal: i32,    // the instance's portal (set_portal)
 };
+
+// openRTS: does the line from the eye to `world` pass through portal `p`
+// (a doorway, ModelPortal) before it gets there?
+fn through_portal(p: mat4x4<f32>, world: vec3<f32>) -> bool {
+    let centre = p[0].xyz;
+    let across = p[1].xyz;
+    let up = p[2].xyz;
+    let eye = p[3].xyz;
+    let n = cross(across, up);
+    let along = world - eye;
+    let towards = dot(n, along);
+    if (abs(towards) < 1e-6) {
+        return false;
+    }
+    let t = dot(n, centre - eye) / towards;
+    if (t <= 0.0 || t >= 1.0) {
+        return false;
+    }
+    let at = eye + along * t - centre;
+    return abs(dot(at, across)) <= p[1].w && abs(dot(at, up)) <= p[2].w;
+}
+
+// How far beyond portal `p` `world` lies, into the next car.
+fn portal_depth(p: mat4x4<f32>, world: vec3<f32>) -> f32 {
+    return dot(world - p[0].xyz, normalize(cross(p[1].xyz, p[2].xyz)));
+}
+
+// Inside the doors' opening (`d`: far_door, near_door, its half sizes).
+fn in_door_opening(p: mat4x4<f32>, d: vec4<f32>, world: vec3<f32>) -> bool {
+    let at = world - p[0].xyz;
+    return abs(dot(at, p[1].xyz)) <= d.z && abs(dot(at, p[2].xyz)) <= d.w;
+}
+
+// An instance's fragment kept by its portal code (ModelPortal): +k only
+// through portal k - 1 (the next car's salon), -k all but through it from
+// its far cut on and in the opening from its far door on (that car's
+// outside: its insides and its end door), 8 + k only through it between its
+// cuts, not in the opening short of its near door (his own car's outside:
+// its half of the gangway, not its end door).
+fn portal_keeps(code: i32, world: vec3<f32>) -> bool {
+    if (code == 0) {
+        return true;
+    }
+    if (code > 8) {
+        let k = min(u32(code - 9), 1u);
+        let p = frame.portals[k];
+        let d = frame.portal_doors[k];
+        let depth = portal_depth(p, world);
+        // No higher than the doors' opening: the top of his car's end
+        // (the ED9M's blue roof edge) stood over the gangway.
+        return through_portal(p, world) && depth >= p[3].w && depth < p[0].w
+               && !(depth < d.y && in_door_opening(p, d, world)) && dot(world - p[0].xyz, p[2].xyz) <= d.w;
+    }
+    if (code > 0) {
+        return through_portal(frame.portals[min(u32(code - 1), 1u)], world);
+    }
+    let k = min(u32(-code - 1), 1u);
+    let p = frame.portals[k];
+    let d = frame.portal_doors[k];
+    let depth = portal_depth(p, world);
+    return !(through_portal(p, world) && (depth >= p[0].w || (depth >= d.x && in_door_opening(p, d, world))));
+}
 
 fn ring_count(ring: u32) -> i32 {
     return min(frame.ring_counts[ring / 4u][ring % 4u], 9);
@@ -300,6 +374,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
     }
     out.uv = input.uv;
     out.ring = u32(clamp(instances[instance_ids[input.instance].x].ring, 0, 9));
+    out.portal = instances[instance_ids[input.instance].x].portal;
     out.normal = vec3<f32>(0.0);
 
     let shader = draw.named_shader;
@@ -349,6 +424,9 @@ fn vs_main(input: VertexIn) -> VertexOut {
 // Port of RTS shape.frag.
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
+    if (!portal_keeps(input.portal, input.world.xyz)) {
+        discard;
+    }
     draw = draws[input.draw_slot];
     let texel = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
     let alpha_width = fwidth(texel.w);
@@ -446,6 +524,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
     }
     out.uv = input.uv;
     out.ring = u32(clamp(instances[instance_ids[input.instance].x].ring, 0, 9));
+    out.portal = instances[instance_ids[input.instance].x].portal;
     out.normal = (place.normal_matrix * vec4<f32>(input.normal, 0.0)).xyz;
     if (draw.light_material == -9) { // Circumference
         out.normal = vec3<f32>(0.0, 1.0, 0.0);
@@ -497,6 +576,9 @@ fn shoulder(c: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
+    if (!portal_keeps(input.portal, input.world.xyz)) {
+        discard;
+    }
     draw = draws[input.draw_slot];
     let texel = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
     let alpha_width = fwidth(texel.w);
@@ -547,7 +629,10 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             * mix(1.0, frame.shading.x, 1.0 - sun_strength);
         // The sun's shadow and the ambient occlusion (SceneEffects).
         let shadow = effects_shadow(input.world.xyz, n, input.clip);
-        let occlusion = effects_ao(input.clip);
+        // Glass (blended) takes none: the occlusion at its pixel is of the
+        // surface behind it (a sticker on a door's glass showed the seats'
+        // shading through it).
+        let occlusion = select(effects_ao(input.clip), 1.0, blended);
         ambient = ambient * occlusion;
         var diffuse = sun_colour * facing * shadow;
         // Light the ground throws back (SceneEffectSettings::ground_bounce):
@@ -721,6 +806,12 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
     result.shading[0] = night_ambient_scale();
     result.shading[1] = light_fullbright() ? 1.0f : 0.0f;
     fill_fog_ring(result, lighting.fog_ring, eye);
+    for (std::size_t i = 0; i < (std::min)(lighting.portals.size(), max_portals); ++i) {
+        const auto& p = lighting.portals[i];
+        result.portals[i] = glm::mat4{glm::vec4{p.centre, p.far_cut}, glm::vec4{p.across, p.half_across}, glm::vec4{p.up, p.half_up},
+                                      glm::vec4{eye, p.near_cut}};
+        result.portal_doors[i] = glm::vec4{p.far_door, p.near_door, p.door_half_across, p.door_half_up};
+    }
     return result;
 }
 
@@ -820,12 +911,20 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
     return wgpuDeviceCreateShaderModule(device, &descriptor);
 }
 
+// The depth passes' uniform: the view-projection and the portals (DepthFrame).
+constexpr std::uint64_t depth_frame_size = sizeof(glm::mat4) * (1 + max_portals) + sizeof(glm::vec4) * max_portals;
+
 // Depth only (SceneEffects: the shadow cascades and the camera's pre-pass):
 // the instance's placement as the shading paths have it, the view-projection
 // of the pass by a dynamic offset; alpha-tested primitives cut out at 0.5.
+// The camera's pass keeps the frame's portals as the main pass does
+// (fs_portal: GTAO and the light clusters see the next car's salon through
+// the doorway, not its end wall); the shadow passes draw every instance whole.
 constexpr char depth_shader[] = R"(
 struct DepthFrame {
     view_projection: mat4x4<f32>,
+    portals: array<mat4x4<f32>, 2>, // the camera's pass: as Frame.portals
+    portal_doors: array<vec4<f32>, 2>,
 };
 struct Draw {
     local: mat4x4<f32>,
@@ -841,6 +940,7 @@ struct Instance {
     locals: i32,
     ring: i32,
     decal: i32,
+    portal: i32,
 };
 struct Local {
     matrix: mat4x4<f32>,
@@ -857,7 +957,61 @@ struct Local {
 struct DepthOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    @location(1) world: vec3<f32>,
+    @location(2) @interpolate(flat) portal: i32,
 };
+
+fn through_portal(p: mat4x4<f32>, world: vec3<f32>) -> bool {
+    let centre = p[0].xyz;
+    let across = p[1].xyz;
+    let up = p[2].xyz;
+    let eye = p[3].xyz;
+    let n = cross(across, up);
+    let along = world - eye;
+    let towards = dot(n, along);
+    if (abs(towards) < 1e-6) {
+        return false;
+    }
+    let t = dot(n, centre - eye) / towards;
+    if (t <= 0.0 || t >= 1.0) {
+        return false;
+    }
+    let at = eye + along * t - centre;
+    return abs(dot(at, across)) <= p[1].w && abs(dot(at, up)) <= p[2].w;
+}
+
+fn portal_depth(p: mat4x4<f32>, world: vec3<f32>) -> f32 {
+    return dot(world - p[0].xyz, normalize(cross(p[1].xyz, p[2].xyz)));
+}
+
+fn in_door_opening(p: mat4x4<f32>, d: vec4<f32>, world: vec3<f32>) -> bool {
+    let at = world - p[0].xyz;
+    return abs(dot(at, p[1].xyz)) <= d.z && abs(dot(at, p[2].xyz)) <= d.w;
+}
+
+fn portal_keeps(code: i32, world: vec3<f32>) -> bool {
+    if (code == 0) {
+        return true;
+    }
+    if (code > 8) {
+        let k = min(u32(code - 9), 1u);
+        let p = depth_frame.portals[k];
+        let d = depth_frame.portal_doors[k];
+        let depth = portal_depth(p, world);
+        // No higher than the doors' opening: the top of his car's end
+        // (the ED9M's blue roof edge) stood over the gangway.
+        return through_portal(p, world) && depth >= p[3].w && depth < p[0].w
+               && !(depth < d.y && in_door_opening(p, d, world)) && dot(world - p[0].xyz, p[2].xyz) <= d.w;
+    }
+    if (code > 0) {
+        return through_portal(depth_frame.portals[min(u32(code - 1), 1u)], world);
+    }
+    let k = min(u32(-code - 1), 1u);
+    let p = depth_frame.portals[k];
+    let d = depth_frame.portal_doors[k];
+    let depth = portal_depth(p, world);
+    return !(through_portal(p, world) && (depth >= p[0].w || (depth >= d.x && in_door_opening(p, d, world))));
+}
 
 @vertex
 fn vs_depth(@location(0) position: vec3<f32>, @location(2) uv: vec2<f32>, @builtin(instance_index) index: u32) -> DepthOut {
@@ -869,8 +1023,11 @@ fn vs_depth(@location(0) position: vec3<f32>, @location(2) uv: vec2<f32>, @built
         local = locals[u32(instance.locals + draw.matrix_index)].matrix;
     }
     var out: DepthOut;
-    out.clip = depth_frame.view_projection * (instance.transform * local * vec4<f32>(position, 1.0));
+    let world = instance.transform * local * vec4<f32>(position, 1.0);
+    out.clip = depth_frame.view_projection * world;
     out.uv = uv;
+    out.world = world.xyz;
+    out.portal = instance.portal;
     return out;
 }
 
@@ -880,10 +1037,24 @@ fn fs_cutout(input: DepthOut) {
         discard;
     }
 }
+
+@fragment
+fn fs_portal(input: DepthOut) {
+    if (!portal_keeps(input.portal, input.world)) {
+        discard;
+    }
+}
+
+@fragment
+fn fs_cutout_portal(input: DepthOut) {
+    if (!portal_keeps(input.portal, input.world) || textureSample(source_texture, source_sampler, input.uv).a < 0.5) {
+        discard;
+    }
+}
 )";
 
 [[nodiscard]] WGPURenderPipeline create_depth_pipeline(const WGPUDevice device, const WGPUPipelineLayout layout, const WGPUShaderModule shader,
-                                                       const bool shadow, const bool cutout, const bool cull) {
+                                                       const bool shadow, const bool cutout, const bool cull, const bool portal = false) {
     const std::array<WGPUVertexAttribute, 2> attributes{{
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(GpuVertex, position), .shaderLocation = 0},
         {.format = WGPUVertexFormat_Float32x2, .offset = offsetof(GpuVertex, uv), .shaderLocation = 2},
@@ -914,7 +1085,8 @@ fn fs_cutout(input: DepthOut) {
         .depthBiasSlopeScale = shadow ? 2.0f : 0.0f,
         .depthBiasClamp = 0.0f,
     };
-    const WGPUFragmentState fragment{.module = shader, .entryPoint = wgsl_name("fs_cutout"), .targetCount = 0, .targets = nullptr};
+    const char* entry = portal ? (cutout ? "fs_cutout_portal" : "fs_portal") : "fs_cutout";
+    const WGPUFragmentState fragment{.module = shader, .entryPoint = wgsl_name(entry), .targetCount = 0, .targets = nullptr};
     const WGPURenderPipelineDescriptor descriptor{
         .layout = layout,
         .vertex = {.module = shader, .entryPoint = wgsl_name("vs_depth"), .bufferCount = 1, .buffers = &vertex_layout},
@@ -923,7 +1095,7 @@ fn fs_cutout(input: DepthOut) {
                       .cullMode = cull ? WGPUCullMode_Back : WGPUCullMode_None},
         .depthStencil = &depth,
         .multisample = {.count = 1, .mask = ~0u, .alphaToCoverageEnabled = false},
-        .fragment = cutout ? &fragment : nullptr,
+        .fragment = cutout || portal ? &fragment : nullptr,
     };
     return wgpuDeviceCreateRenderPipeline(device, &descriptor);
 }
@@ -1005,10 +1177,11 @@ constexpr std::size_t shading_path_count = 2;
         .blend = key.blend ? &alpha_blend : nullptr,
         .writeMask = WGPUColorWriteMask_All,
     };
-    const std::array<WGPUConstantEntry, 3> constants{{
+    const std::array<WGPUConstantEntry, 4> constants{{
         {.key = wgsl_name("alpha_test"), .value = key.alpha_test ? 1.0 : 0.0},
         {.key = wgsl_name("alpha_to_coverage"), .value = key.alpha_test && render_sample_count() > 1 ? 1.0 : 0.0},
         {.key = wgsl_name("hdr_output"), .value = scene_hdr() ? 1.0 : 0.0},
+        {.key = wgsl_name("blended"), .value = key.blend ? 1.0 : 0.0},
     }};
     const WGPUFragmentState fragment{
         .module = shader,
@@ -1355,6 +1528,7 @@ struct ModelRenderer::Impl {
         std::uint32_t static_flags = 0;
         bool transfer = false;
         std::uint32_t owner = 0; // set_owner
+        std::int32_t portal = 0; // set_portal
         // First of this instance's animated local matrices in
         // `frame_locals`, or -1 for the model's rest pose.
         std::ptrdiff_t matrices = -1;
@@ -1422,6 +1596,7 @@ struct ModelRenderer::Impl {
     // Each queued instance's bounding sphere in world space (centre, radius).
     std::vector<glm::vec4> instance_spheres;
     std::vector<std::uint32_t> instance_owners; // set_owner, by instance
+    std::vector<std::int32_t> instance_portals; // set_portal, by instance
     // Instance ids of the depth passes: after the main draws' ids, a region
     // of `depth_id_total` per slot.
     std::size_t depth_id_base = 0;
@@ -1441,11 +1616,13 @@ struct ModelRenderer::Impl {
     WGPUBindGroupLayout depth_layout = nullptr;
     WGPUBuffer depth_buffer = nullptr;
     WGPUBindGroup depth_binding = nullptr;
-    // Shadow opaque, shadow cut-out; camera opaque, cut-out (culled), then two-sided.
-    std::array<WGPURenderPipeline, 6> depth_pipelines{};
-    [[nodiscard]] WGPURenderPipeline depth_pipeline(const bool shadow, const bool cutout) const {
+    // Shadow opaque, shadow cut-out; camera opaque, cut-out (culled), then
+    // two-sided; then the camera's four again for instances seen through a
+    // portal (set_portal).
+    std::array<WGPURenderPipeline, 10> depth_pipelines{};
+    [[nodiscard]] WGPURenderPipeline depth_pipeline(const bool shadow, const bool cutout, const bool portal = false) const {
         if (shadow) return depth_pipelines[cutout ? 1 : 0];
-        return depth_pipelines[2 + (cutout ? 1 : 0) + (face_culling ? 0 : 2)];
+        return depth_pipelines[2 + (cutout ? 1 : 0) + (face_culling ? 0 : 2) + (portal ? 4 : 0)];
     }
 
     // Group 2 of the experimental path: the viewer's SceneEffects, or a
@@ -1711,7 +1888,7 @@ void ModelRenderer::Impl::ensure_capacity(const std::uint64_t instances,
     if (!depth_layout || !depth_buffer) return;
     std::array<WGPUBindGroupEntry, 4> depth_entries = entries;
     depth_entries[0].buffer = depth_buffer;
-    depth_entries[0].size = sizeof(glm::mat4);
+    depth_entries[0].size = depth_frame_size;
     const WGPUBindGroupDescriptor depth_descriptor{.layout = depth_layout, .entryCount = depth_entries.size(), .entries = depth_entries.data()};
     depth_binding = wgpuDeviceCreateBindGroup(device, &depth_descriptor);
 }
@@ -1913,10 +2090,10 @@ ModelRenderer::ModelRenderer(const WGPUDevice device, const WGPUTextureFormat ta
     {
         std::array<WGPUBindGroupLayoutEntry, 4> entries{};
         entries[0].binding = 0;
-        entries[0].visibility = WGPUShaderStage_Vertex;
+        entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
         entries[0].buffer.type = WGPUBufferBindingType_Uniform;
         entries[0].buffer.hasDynamicOffset = true;
-        entries[0].buffer.minBindingSize = sizeof(glm::mat4);
+        entries[0].buffer.minBindingSize = depth_frame_size;
         const std::array<std::uint64_t, 3> storage_sizes{sizeof(GpuInstance), sizeof(IdEntry), sizeof(GpuLocal)};
         for (std::uint32_t i = 0; i < storage_sizes.size(); ++i) {
             entries[i + 1].binding = i + 1;
@@ -1940,6 +2117,10 @@ ModelRenderer::ModelRenderer(const WGPUDevice device, const WGPUTextureFormat ta
         p[3] = create_depth_pipeline(device, depth_pipeline_layout, shader, false, true, true);
         p[4] = create_depth_pipeline(device, depth_pipeline_layout, shader, false, false, false);
         p[5] = create_depth_pipeline(device, depth_pipeline_layout, shader, false, true, false);
+        p[6] = create_depth_pipeline(device, depth_pipeline_layout, shader, false, false, true, true);
+        p[7] = create_depth_pipeline(device, depth_pipeline_layout, shader, false, true, true, true);
+        p[8] = create_depth_pipeline(device, depth_pipeline_layout, shader, false, false, false, true);
+        p[9] = create_depth_pipeline(device, depth_pipeline_layout, shader, false, true, false, true);
         wgpuShaderModuleRelease(shader);
         wgpuPipelineLayoutRelease(depth_pipeline_layout);
     }
@@ -2416,6 +2597,11 @@ void ModelRenderer::set_owner(const std::uint32_t owner) {
     impl_->queue.back().owner = owner;
 }
 
+void ModelRenderer::set_portal(const std::int32_t code) {
+    if (!impl_ || impl_->queue.empty()) return;
+    impl_->queue.back().portal = code;
+}
+
 // Builds the frame's primitive list for the active shading path, merges
 // identical primitives of different instances into instanced draw calls,
 // uploads the frame data at once and records the draws.
@@ -2712,6 +2898,7 @@ void ModelRenderer::prepare() {
     instances.resize(count);
     impl_->instance_spheres.resize(count);
     impl_->instance_owners.resize(count);
+    impl_->instance_portals.resize(count);
     const auto& rings = impl_->frame.lighting.light_rings;
     const auto fill = [&](const std::size_t from, const std::size_t to) {
         for (std::size_t k = from; k < to; ++k) {
@@ -2729,9 +2916,11 @@ void ModelRenderer::prepare() {
                 .locals = static_cast<std::int32_t>(submitted.matrices),
                 .ring = static_cast<std::int32_t>(rings.ring_for(centre, bounds.radius * scale)),
                 .decal = submitted.transfer ? 1 : 0,
+                .portal = submitted.portal,
             };
             impl_->instance_spheres[k] = glm::vec4{centre, bounds.radius * scale};
             impl_->instance_owners[k] = submitted.owner;
+            impl_->instance_portals[k] = submitted.portal;
         }
     };
     constexpr std::size_t chunk = 1024;
@@ -2747,7 +2936,7 @@ void ModelRenderer::prepare() {
     impl_->depth_indirect_base = indirect.size();
     impl_->ensure_capacity(instances.size(), (std::max)(ids.size() + Impl::depth_slots * impl_->depth_id_total, std::size_t{1}),
                            (std::max)(impl_->frame_locals.size(), std::size_t{1}),
-                           indirect.size() + Impl::depth_slots * impl_->depth_batches.size());
+                           indirect.size() + Impl::depth_slots * 2 * impl_->depth_batches.size());
     if (!impl_->frame_binding) return;
     impl_->uploaded = true;
 
@@ -2870,11 +3059,26 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
     OPENRTS_ZONE("models: depth pass");
     if (!impl_->uploaded || impl_->depth_batches.empty() || !impl_->depth_binding) return;
     auto& impl = *impl_;
-    const auto queue = wgpuDeviceGetQueue(impl.device);
-    wgpuQueueWriteBuffer(queue, impl.depth_buffer, static_cast<std::uint64_t>(slot) * Impl::depth_stride, &view_projection,
-                         sizeof(view_projection));
-    if (queue) wgpuQueueRelease(queue);
     const bool shadow = kind == DepthPassKind::shadow;
+    {
+        // The view-projection, and for the camera's pass the frame's portals.
+        struct {
+            glm::mat4 view_projection;
+            glm::mat4 portals[max_portals];
+            glm::vec4 doors[max_portals];
+        } data{view_projection, {}, {}};
+        static_assert(sizeof(data) == depth_frame_size);
+        const auto& portals = impl.frame.lighting.portals;
+        for (std::size_t i = 0; !shadow && i < (std::min)(portals.size(), max_portals); ++i) {
+            const auto& p = portals[i];
+            data.portals[i] = glm::mat4{glm::vec4{p.centre, p.far_cut}, glm::vec4{p.across, p.half_across}, glm::vec4{p.up, p.half_up},
+                                        glm::vec4{impl.frame.camera_position, p.near_cut}};
+            data.doors[i] = glm::vec4{p.far_door, p.near_door, p.door_half_across, p.door_half_up};
+        }
+        const auto queue = wgpuDeviceGetQueue(impl.device);
+        wgpuQueueWriteBuffer(queue, impl.depth_buffer, static_cast<std::uint64_t>(slot) * Impl::depth_stride, &data, sizeof(data));
+        if (queue) wgpuQueueRelease(queue);
+    }
     // The instances this pass sees, in the slot's own region of the ids.
     const auto frustum = Frustum::from_view_projection(view_projection);
     const auto base = impl.depth_id_base + static_cast<std::size_t>(slot) * impl.depth_id_total;
@@ -2882,28 +3086,37 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
         const Impl::DepthBatch* batch;
         std::uint32_t first;
         std::uint32_t count;
+        bool portal; // the camera's pass: instances seen through a portal (their own pipeline)
     };
     std::vector<Run> runs;
     std::vector<IdEntry> ids;
     ids.reserve(impl.depth_id_total);
     for (const auto& batch : impl.depth_batches) {
         if (batch.shadow_only && !shadow) continue;
-        const auto first = ids.size();
-        for (std::uint32_t k = batch.first; k < batch.first + batch.count; ++k) {
-            const auto instance = impl.depth_instances[k];
-            if (skip_owner != 0 && instance < impl.instance_owners.size() && impl.instance_owners[instance] == skip_owner) continue;
-            const auto& sphere = impl.instance_spheres[instance];
-            if (frustum.intersects_sphere(glm::vec3{sphere}, sphere.w)) ids.push_back({instance, batch.draw->slot});
-        }
-        if (ids.size() > first) {
-            runs.push_back({&batch, static_cast<std::uint32_t>(base + first), static_cast<std::uint32_t>(ids.size() - first)});
+        // The camera's pass: the instances without a portal, then those with one.
+        for (int with_portal = 0; with_portal < (shadow ? 1 : 2); ++with_portal) {
+            const auto first = ids.size();
+            for (std::uint32_t k = batch.first; k < batch.first + batch.count; ++k) {
+                const auto instance = impl.depth_instances[k];
+                if (skip_owner != 0 && instance < impl.instance_owners.size() && impl.instance_owners[instance] == skip_owner) continue;
+                const std::int32_t code = instance < impl.instance_portals.size() ? impl.instance_portals[instance] : 0;
+                if (shadow && code > 8) continue; // his car's gangway: no shadow
+                const bool portal = !shadow && code != 0;
+                if (portal != (with_portal == 1)) continue;
+                const auto& sphere = impl.instance_spheres[instance];
+                if (frustum.intersects_sphere(glm::vec3{sphere}, sphere.w)) ids.push_back({instance, batch.draw->slot});
+            }
+            if (ids.size() > first) {
+                runs.push_back({&batch, static_cast<std::uint32_t>(base + first), static_cast<std::uint32_t>(ids.size() - first),
+                                with_portal == 1});
+            }
         }
     }
     if (runs.empty()) return;
     // The slot's indirect arguments, a region of its own (the passes may be
     // recorded on several threads at once).
-    const bool multi = impl.use_multi_draw() && runs.size() <= impl.depth_batches.size();
-    const auto indirect_base = impl.depth_indirect_base + static_cast<std::size_t>(slot) * impl.depth_batches.size();
+    const bool multi = impl.use_multi_draw() && runs.size() <= 2 * impl.depth_batches.size();
+    const auto indirect_base = impl.depth_indirect_base + static_cast<std::size_t>(slot) * 2 * impl.depth_batches.size();
     {
         const auto ids_queue = wgpuDeviceGetQueue(impl.device);
         wgpuQueueWriteBuffer(ids_queue, impl.id_buffer, base * sizeof(IdEntry), ids.data(), ids.size() * sizeof(IdEntry));
@@ -2939,7 +3152,7 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
     };
     for (std::size_t i = 0; i < runs.size(); ++i) {
         const auto& batch = *runs[i].batch;
-        const auto pipeline = impl.depth_pipeline(shadow, batch.alpha_test);
+        const auto pipeline = impl.depth_pipeline(shadow, batch.alpha_test, runs[i].portal);
         if (!pipeline) {
             flush();
             continue;

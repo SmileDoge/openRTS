@@ -97,7 +97,7 @@ int main(int argc, char* argv[]) {
     }
     openrts::viewer::WindowOptions options;
     options.menu = true;
-    options.title = "openRTS " + std::string(openrts::core::version());
+    options.title = "openRTS " + openrts::core::version_text();
     options.sound = false;
     options.msaa = 1;
     // --tab single|network|settings|controls opens that tab; --capture <file> draws

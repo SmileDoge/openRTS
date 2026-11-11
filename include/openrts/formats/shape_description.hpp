@@ -46,10 +46,23 @@ struct ShapeLight {
     std::array<float, 3> array_step{};
 };
 
+// A box the engineer walks on, climbs or is stopped by (RTS 0x4BB7BC,
+// docs/reverse/walking.md): ESD_Complex_Box ( rx ry rz tx ty tz x1 y1 z1 x2
+// y2 z2 ), the box between the corners turned by rx, ry, rz degrees (Rx·Ry·Rz,
+// in RTS's own frame, X negated) and moved by (tx, ty, tz) in the shape's;
+// an ESD_Bounding_Box ( x1 y1 z1 x2 y2 z2 ) is one such box, when there is
+// no ESD_Complex. As the file writes them; low and high: the corners sorted.
+struct WalkBox {
+    std::array<float, 3> rotation{};    // degrees, as written
+    std::array<float, 3> translation{}; // as written
+    std::array<float, 3> low{}, high{}; // the corners, sorted per axis
+};
+
 struct ShapeDescription {
     std::filesystem::path shape_file;
     std::uint32_t alternative_texture{}; // ESD_Alternative_Texture bits
     std::vector<ShapeLight> lights;      // ESD_LightSources
+    std::vector<WalkBox> boxes;          // ESD_Complex, else ESD_Bounding_Box
 };
 
 struct ShapeDescriptionResult {

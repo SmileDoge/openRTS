@@ -2188,6 +2188,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     int capture_inspect_step = 0; // --capture-inspect: 1 opened, 2 clicked
     bool capture_driven = false;
     int capture_board_step = 0; // --capture-board: 1 at the door, then the presses of Enter
+    bool capture_passed = false; // --capture-passage done
     double capture_reported = 0.0; // --capture-report: the last pick
     FrameLimiter limiter;
 
@@ -2404,6 +2405,16 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (capture && options.capture_uncouple && !capture_uncoupled && glfwGetTime() - capture_start >= options.capture_at * 0.6) {
             scene.uncouple_driven(*options.capture_uncouple);
             capture_uncoupled = true;
+        }
+        if (capture && options.capture_passage && !capture_passed && glfwGetTime() - capture_start >= options.capture_at * 0.3) {
+            scene.stand_at_passage(*options.capture_passage);
+            capture_passed = true;
+        }
+        // Then a walk through the door into the next car (0.6 .. 0.75), and
+        // back to look into the room left (the capture).
+        if (capture && options.capture_passage && capture_passed) {
+            const double since = glfwGetTime() - capture_start;
+            if (since >= options.capture_at * 0.6 && since < options.capture_at * 0.75) frame_input.walk_forward = true;
         }
         if (capture && !options.capture_board.empty()) {
             const double since = glfwGetTime() - capture_start;
