@@ -1,6 +1,7 @@
 #include <openrts/renderer/webgpu_texture.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <limits>
 
 namespace openrts::renderer {
@@ -10,21 +11,36 @@ namespace {
     return (value + 255u) & ~255u;
 }
 
+std::atomic<std::uint64_t> live_bytes{0};
+
 } // namespace
 
+std::uint64_t uploaded_texture_bytes() noexcept {
+    return live_bytes.load();
+}
+
+WgpuTexture::WgpuTexture(const WGPUTexture texture, const std::uint64_t bytes) noexcept : texture_(texture), bytes_(bytes) {
+    live_bytes += bytes_;
+}
+
 WgpuTexture::~WgpuTexture() {
+    live_bytes -= bytes_;
     if (texture_) wgpuTextureRelease(texture_);
 }
 
-WgpuTexture::WgpuTexture(WgpuTexture&& other) noexcept : texture_(other.texture_) {
+WgpuTexture::WgpuTexture(WgpuTexture&& other) noexcept : texture_(other.texture_), bytes_(other.bytes_) {
     other.texture_ = nullptr;
+    other.bytes_ = 0;
 }
 
 WgpuTexture& WgpuTexture::operator=(WgpuTexture&& other) noexcept {
     if (this == &other) return *this;
+    live_bytes -= bytes_;
     if (texture_) wgpuTextureRelease(texture_);
     texture_ = other.texture_;
+    bytes_ = other.bytes_;
     other.texture_ = nullptr;
+    other.bytes_ = 0;
     return *this;
 }
 
@@ -103,7 +119,9 @@ WgpuTextureUploadResult upload_rgba8_texture(
                               &size);
     }
     wgpuQueueRelease(queue);
-    return {.texture = WgpuTexture(texture)};
+    std::uint64_t bytes = 0;
+    for (const auto* level : levels) bytes += level->size();
+    return {.texture = WgpuTexture(texture, bytes)};
 }
 
 WgpuTextureUploadResult upload_bc1_texture(const WGPUDevice device, const std::uint32_t width, const std::uint32_t height,
@@ -158,7 +176,9 @@ WgpuTextureUploadResult upload_bc1_texture(const WGPUDevice device, const std::u
         wgpuQueueWriteTexture(queue, &destination, levels[k].data(), levels[k].size(), &layout, &size);
     }
     wgpuQueueRelease(queue);
-    return {.texture = WgpuTexture(texture)};
+    std::uint64_t bytes = 0;
+    for (std::size_t k = 0; k < count; ++k) bytes += levels[k].size();
+    return {.texture = WgpuTexture(texture, bytes)};
 }
 
 } // namespace openrts::renderer

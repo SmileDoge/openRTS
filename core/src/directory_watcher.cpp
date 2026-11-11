@@ -1,6 +1,7 @@
 #include "directory_watcher.hpp"
 
 #include <atomic>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -30,71 +31,94 @@ namespace {
     return GetDriveTypeW(root.c_str()) == DRIVE_REMOTE;
 }
 
+// Overlapped ReadDirectoryChangesW: the first request is made in the
+// constructor, so a change right after it is caught (Windows queues a
+// directory's changes from its first request on; the thread making the first
+// one itself missed what came before it ran, a file written right after
+// start_watching on CI, 2026-11-10).
 class WindowsWatcher final : public DirectoryWatcher {
 public:
     WindowsWatcher(HANDLE directory, Sink sink) : directory_(directory), sink_(std::move(sink)) {
+        overlapped_.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!overlapped_.hEvent || !stop_ || !request()) {
+            healthy_ = false;
+            return;
+        }
         thread_ = std::thread([this] { run(); });
     }
 
     ~WindowsWatcher() override {
-        stopping_ = true;
-        // The thread blocks in a synchronous ReadDirectoryChangesW; it may not
-        // have entered the call yet, so cancel until it has left.
-        const auto native = static_cast<HANDLE>(thread_.native_handle());
-        while (!finished_) {
-            CancelSynchronousIo(native);
-            Sleep(5);
+        if (stop_) SetEvent(stop_);
+        if (thread_.joinable()) thread_.join();
+        // A request still pending is cancelled and waited for before its
+        // buffer goes.
+        if (pending_) {
+            CancelIoEx(directory_, &overlapped_);
+            DWORD bytes = 0;
+            GetOverlappedResult(directory_, &overlapped_, &bytes, TRUE);
         }
-        thread_.join();
+        if (overlapped_.hEvent) CloseHandle(overlapped_.hEvent);
+        if (stop_) CloseHandle(stop_);
         CloseHandle(directory_);
     }
 
     [[nodiscard]] bool healthy() const override { return healthy_; }
 
 private:
-    void run() {
-        struct Finished {
-            std::atomic<bool>& flag;
-            ~Finished() { flag = true; }
-        } finished{finished_};
-
-        std::vector<std::byte> buffer(64 * 1024);
+    bool request() {
         constexpr DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_SIZE
             | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_CREATION;
-        while (!stopping_) {
+        ResetEvent(overlapped_.hEvent);
+        pending_ = ReadDirectoryChangesW(directory_, buffer_.data(), static_cast<DWORD>(buffer_.size()), TRUE, filter, nullptr,
+                                         &overlapped_, nullptr)
+            != FALSE;
+        return pending_;
+    }
+
+    void run() {
+        const HANDLE events[2] = {stop_, overlapped_.hEvent};
+        while (true) {
+            const auto woke = WaitForMultipleObjects(2, events, FALSE, INFINITE);
+            if (woke != WAIT_OBJECT_0 + 1) return; // stopping (or the wait failed)
             DWORD bytes = 0;
-            const auto ok = ReadDirectoryChangesW(directory_, buffer.data(), static_cast<DWORD>(buffer.size()), TRUE,
-                                                  filter, &bytes, nullptr, nullptr);
-            if (stopping_) return;
+            const auto ok = GetOverlappedResult(directory_, &overlapped_, &bytes, FALSE);
+            pending_ = false;
             if (!ok) {
                 if (GetLastError() == ERROR_NOTIFY_ENUM_DIR) {
                     sink_({.overflow = true});
-                    continue;
+                } else {
+                    healthy_ = false; // folder removed, handle invalid, ...
+                    return;
                 }
-                healthy_ = false; // folder removed, handle invalid, ...
-                return;
-            }
-            if (bytes == 0) { // buffer overflow: events were dropped
+            } else if (bytes == 0) { // buffer overflow: events were dropped
                 sink_({.overflow = true});
-                continue;
+            } else {
+                std::size_t offset = 0;
+                while (true) {
+                    const auto* info = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(buffer_.data() + offset);
+                    const std::wstring name(info->FileName, info->FileNameLength / sizeof(WCHAR));
+                    sink_({.relative = std::filesystem::path(name)});
+                    if (info->NextEntryOffset == 0) break;
+                    offset += info->NextEntryOffset;
+                }
             }
-
-            std::size_t offset = 0;
-            while (true) {
-                const auto* info = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(buffer.data() + offset);
-                const std::wstring name(info->FileName, info->FileNameLength / sizeof(WCHAR));
-                sink_({.relative = std::filesystem::path(name)});
-                if (info->NextEntryOffset == 0) break;
-                offset += info->NextEntryOffset;
+            if (!request()) {
+                healthy_ = false;
+                return;
             }
         }
     }
 
     HANDLE directory_;
     Sink sink_;
-    std::atomic<bool> stopping_{false};
+    // DWORD-aligned, as ReadDirectoryChangesW wants.
+    std::vector<DWORD> buffer_storage_ = std::vector<DWORD>(64 * 1024 / sizeof(DWORD));
+    std::span<std::byte> buffer_{reinterpret_cast<std::byte*>(buffer_storage_.data()), 64 * 1024};
+    OVERLAPPED overlapped_{};
+    HANDLE stop_ = nullptr;
+    std::atomic<bool> pending_{false};
     std::atomic<bool> healthy_{true};
-    std::atomic<bool> finished_{false};
     std::thread thread_;
 };
 
@@ -192,7 +216,7 @@ std::unique_ptr<DirectoryWatcher> DirectoryWatcher::create(const std::filesystem
     }
     const auto handle = CreateFileW(directory.c_str(), FILE_LIST_DIRECTORY,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                                    FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+                                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         error = "cannot open directory for watching";
         return nullptr;

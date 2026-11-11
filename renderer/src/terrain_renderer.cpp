@@ -3,6 +3,7 @@
 #include <openrts/core/profile.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <optional>
 
@@ -288,6 +289,9 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 
 namespace openrts::renderer {
 namespace {
+
+// The terrain tiles' vertex and index buffers alive.
+std::atomic<std::uint64_t> terrain_tile_bytes{0};
 
 using TileKey = std::pair<std::int32_t, std::int32_t>;
 
@@ -1004,7 +1008,14 @@ struct TerrainRenderer::Impl {
         if (material_layout) wgpuBindGroupLayoutRelease(material_layout);
     }
 
+    static std::uint64_t tile_bytes(const GpuTile& tile) {
+        std::uint64_t bytes = 0;
+        for (const auto buffer : {tile.vertices, tile.indices, tile.water, tile.surface_vertices, tile.surface_indices})
+            if (buffer) bytes += wgpuBufferGetSize(buffer);
+        return bytes;
+    }
     static void release_tile(GpuTile& tile) {
+        terrain_tile_bytes -= tile_bytes(tile);
         if (tile.surface_indices) wgpuBufferRelease(tile.surface_indices);
         if (tile.surface_vertices) wgpuBufferRelease(tile.surface_vertices);
         if (tile.water) wgpuBufferRelease(tile.water);
@@ -1161,6 +1172,8 @@ struct TerrainRenderer::Impl {
                                                  mesh.water_surface_indices.data());
             tile.surface_index_count = static_cast<std::uint32_t>(mesh.water_surface_indices.size());
         }
+        terrain_tile_bytes += tile_bytes(tile);
+        if (const auto old = tiles.find(key); old != tiles.end()) release_tile(old->second);
         tiles[key] = std::move(tile);
     }
 
@@ -1596,6 +1609,10 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
 }
 
 TerrainRenderer::~TerrainRenderer() = default;
+
+std::uint64_t terrain_tile_buffer_bytes() noexcept {
+    return terrain_tile_bytes.load();
+}
 TerrainRenderer::TerrainRenderer(TerrainRenderer&&) noexcept = default;
 TerrainRenderer& TerrainRenderer::operator=(TerrainRenderer&&) noexcept = default;
 

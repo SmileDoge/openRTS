@@ -40,6 +40,7 @@
 #include "key_layout.hpp"
 #include "rts_config.hpp"
 #include "ui_fonts.hpp"
+#include "ui_slider.hpp"
 #include "ui_text.hpp"
 #include "update.hpp"
 #include "viewer_state.hpp"
@@ -1239,14 +1240,14 @@ void Launcher::State::draw_settings(const float height) {
             form_row(tr("Mouse sensitivity"));
             float sensitivity = viewer::mouse_sensitivity();
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::SliderFloat("##mouse_sensitivity", &sensitivity, viewer::min_mouse_sensitivity, viewer::max_mouse_sensitivity, "%.2f")) {
+            if (viewer::slider_with_input("##mouse_sensitivity", &sensitivity, viewer::min_mouse_sensitivity, viewer::max_mouse_sensitivity, "%.2f", "%.2f")) {
                 viewer::set_mouse_sensitivity(sensitivity);
                 remember("mouse_sensitivity", std::to_string(viewer::mouse_sensitivity()));
             }
             form_row(tr("Head motion in the cab"));
             float head = viewer::head_motion();
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::SliderFloat("##head_motion", &head, 0.0f, viewer::max_head_motion, "%.1f")) {
+            if (viewer::slider_with_input("##head_motion", &head, 0.0f, viewer::max_head_motion, "%.1f", "%.1f")) {
                 viewer::set_head_motion(head);
                 remember("head_motion", std::to_string(viewer::head_motion()));
             }
@@ -1265,7 +1266,7 @@ void Launcher::State::draw_settings(const float height) {
             ImGui::Checkbox("##sound", &sound);
             form_row(tr("Sound volume"));
             ImGui::BeginDisabled(!sound);
-            ImGui::SliderFloat("##volume", &volume, 0.0f, 1.0f, "%.2f");
+            viewer::slider_with_input("##volume", &volume, 0.0f, 1.0f, "%.2f", "%.2f");
             ImGui::EndDisabled();
             form_row(tr("Rail joints"));
             int joints = viewer::rail_joint_layout() == simulation::RailJointLayout::rts ? 1 : 0;
@@ -1475,7 +1476,7 @@ void Launcher::State::draw_graphics(const float height) {
             {
                 float shown = game_fov();
                 group_row(tr("Field of view"), Load::negligible, Load::negligible);
-                if (ImGui::SliderFloat("##fov", &shown, 15.0f, 100.0f, tr("%.1f degrees"))) {
+                if (viewer::slider_with_input("##fov", &shown, 15.0f, 100.0f, tr("%.1f degrees"), "%.1f")) {
                     fov = shown;
                     remember("fov", std::to_string(shown));
                 }
@@ -1499,13 +1500,13 @@ void Launcher::State::draw_graphics(const float height) {
                 group_row(tr("Tone curve"), Load::none, Load::none);
                 ImGui::Combo("##tone", &g.tone_curve, curves, 5);
                 group_row(tr("Exposure"), Load::none, Load::none);
-                ImGui::SliderFloat("##exposure", &g.exposure, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+                viewer::slider_with_input("##exposure", &g.exposure, 0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
                 if (g.tone_curve == 4) {
                     group_row(tr("Night exposure"), Load::none, Load::none);
-                    ImGui::SliderFloat("##night_exposure", &g.night_exposure, 0.5f, 6.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+                    viewer::slider_with_input("##night_exposure", &g.night_exposure, 0.5f, 6.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
                 }
                 group_row(tr("Saturation"), Load::none, Load::none);
-                ImGui::SliderFloat("##saturation", &g.saturation, 0.5f, 1.8f, "%.2f");
+                viewer::slider_with_input("##saturation", &g.saturation, 0.5f, 1.8f, "%.2f", "%.2f");
             }
             ImGui::EndTable();
         }
@@ -1520,7 +1521,7 @@ void Launcher::State::draw_graphics(const float height) {
             ImGui::BeginDisabled(!e.shadows);
             group_row(tr("Shadow distance"), by_steps(e.shadow_distance, 250.0f, 500.0f, Load::medium, Load::above_medium, Load::high),
                       by_steps(e.shadow_distance, 250.0f, 500.0f, Load::medium, Load::above_medium, Load::high));
-            ImGui::SliderFloat("##shadow_distance", &e.shadow_distance, 100.0f, 1000.0f, tr("%.0f m"));
+            viewer::slider_with_input("##shadow_distance", &e.shadow_distance, 100.0f, 1000.0f, tr("%.0f m"), "%.0f");
             {
                 const char* sizes[] = {"1024", "2048", "4096"};
                 int quality = e.shadow_map_size <= 1024 ? 0 : e.shadow_map_size >= 4096 ? 2 : 1;
@@ -1537,7 +1538,7 @@ void Launcher::State::draw_graphics(const float height) {
                 row_note(tr("Pieces the shadow distance is split into: more keeps the middle distance sharp, each one more pass."));
             }
             group_row(tr("Shadow softness"), Load::none, Load::negligible);
-            ImGui::SliderFloat("##shadow_softness", &e.shadow_softness, 0.5f, 4.0f, "%.1f");
+            viewer::slider_with_input("##shadow_softness", &e.shadow_softness, 0.5f, 4.0f, "%.1f", "%.1f");
             group_row(tr("Keep the far cascades"), Load::negligible, Load::negligible);
             ImGui::Checkbox("##shadow_cache", &e.cache_far_cascades);
             row_note(tr("The far cascades are drawn every other frame, and at once when the view leaves them."));
@@ -1578,23 +1579,23 @@ void Launcher::State::draw_graphics(const float height) {
             {
                 const Load load = g.light_range < 1.0f ? Load::negligible : g.light_range <= 1000.0f ? Load::medium : Load::above_medium;
                 group_row(tr("Light range"), load, load);
-                ImGui::SliderFloat("##light_range", &g.light_range, 0.0f, 3000.0f, g.light_range < 1.0f ? tr("as RTS") : tr("%.0f m"));
+                viewer::slider_with_input("##light_range", &g.light_range, 0.0f, 3000.0f, g.light_range < 1.0f ? tr("as RTS") : tr("%.0f m"), "%.0f");
                 row_note(tr("How far the scenery's lamps and floodlights still light the scene; at 0 as RTS's MaxLightDistance."));
             }
             group_row(tr("Headlight reach"), Load::none, Load::negligible);
-            ImGui::SliderFloat("##headlight_reach", &g.headlight_reach, 1.0f, 5.0f, "x%.1f");
+            viewer::slider_with_input("##headlight_reach", &g.headlight_reach, 1.0f, 5.0f, "x%.1f", "%.1f");
             row_note(tr("How far the trains' headlights and searchlights reach, as a factor of their .eng; 1 as RTS."));
             group_row(tr("Physical light falloff"), Load::none, Load::none);
             ImGui::Checkbox("##light_falloff", &g.physical_light);
             row_note(tr("Headlights and lamps fall off as 1/distance squared with a soft cone edge; off: the RTS light shapes."));
             group_row(tr("Lamps in daylight"), Load::none, Load::none);
-            ImGui::SliderFloat("##lamps_daylight", &e.lamps_in_daylight, 0.0f, 1.0f, "%.2f");
+            viewer::slider_with_input("##lamps_daylight", &e.lamps_in_daylight, 0.0f, 1.0f, "%.2f", "%.2f");
             row_note(tr("How strong lamps are in full daylight against the night: an eye used to the sun hardly sees a cab lamp. 1: as at night."));
             group_row(tr("Night sky light"), Load::none, Load::none);
-            ImGui::SliderFloat("##night_ambient", &g.night_ambient, 0.5f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+            viewer::slider_with_input("##night_ambient", &g.night_ambient, 0.5f, 8.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
             row_note(tr("The environment's ambient light at night, as a factor: the unlit surroundings brighter, the lamps as they are. No effect by day."));
             group_row(tr("Ground bounce"), Load::none, Load::negligible);
-            ImGui::SliderFloat("##ground_bounce", &e.ground_bounce, 0.0f, 0.5f, "%.2f");
+            viewer::slider_with_input("##ground_bounce", &e.ground_bounce, 0.0f, 0.5f, "%.2f", "%.2f");
             row_note(tr("Light the sunlit ground throws back onto bogies and the underframe, as the ground's reflectance (ballast and grass about 0.2). 0: none."));
             group_row(tr("Light FullBright as ordinary surfaces"), Load::none, Load::none);
             ImGui::Checkbox("##fullbright", &g.light_fullbright);
@@ -1614,16 +1615,16 @@ void Launcher::State::draw_graphics(const float height) {
             ImGui::Checkbox("##cloud_cover_weather", &g.cloud_cover_weather);
             ImGui::BeginDisabled(g.cloud_cover_weather);
             group_row(tr("Cloud cover"), Load::none, Load::negligible);
-            ImGui::SliderFloat("##cloud_cover", &g.cloud_cover, 0.0f, 100.0f, "%.0f %%");
+            viewer::slider_with_input("##cloud_cover", &g.cloud_cover, 0.0f, 100.0f, "%.0f %%", "%.0f");
             ImGui::EndDisabled();
             ImGui::BeginDisabled(!g.experimental);
             group_row(tr("Cloud shadows on the ground (experimental renderer)"), Load::none, Load::medium);
             ImGui::Checkbox("##cloud_shadows", &g.cloud_shadows);
             ImGui::BeginDisabled(!g.cloud_shadows);
             group_row(tr("Cloud shadow darkness (the sun a thick cloud takes)"), Load::none, Load::none);
-            ImGui::SliderFloat("##cloud_shadow_darkness", &g.cloud_shadow_darkness, 0.0f, 100.0f, "%.0f %%");
+            viewer::slider_with_input("##cloud_shadow_darkness", &g.cloud_shadow_darkness, 0.0f, 100.0f, "%.0f %%", "%.0f");
             group_row(tr("Cloud shadow sharpness (1: soft, as the clouds)"), Load::none, Load::none);
-            ImGui::SliderFloat("##cloud_shadow_sharpness", &g.cloud_shadow_sharpness, 1.0f, 10.0f, "%.1f");
+            viewer::slider_with_input("##cloud_shadow_sharpness", &g.cloud_shadow_sharpness, 1.0f, 10.0f, "%.1f", "%.1f");
             ImGui::EndDisabled();
             ImGui::EndDisabled();
             ImGui::EndDisabled();
@@ -1643,7 +1644,7 @@ void Launcher::State::draw_graphics(const float height) {
             ImGui::Checkbox("##forest_clearance", &g.forest_clearance);
             ImGui::BeginDisabled(!g.forest_clearance);
             group_row(tr("Trees from the track's or road's edge"), Load::none, Load::none);
-            ImGui::SliderFloat("##forest_clearance_distance", &g.forest_clearance_distance, 0.5f, 20.0f, tr("%.1f m"));
+            viewer::slider_with_input("##forest_clearance_distance", &g.forest_clearance_distance, 0.5f, 20.0f, tr("%.1f m"), "%.1f");
             ImGui::EndDisabled();
             group_row(tr("Signal lights at the lens's size, far off a dot (not as in RTS)"), Load::none, Load::none);
             ImGui::Checkbox("##signal_lights", &g.signal_lights_real_size);

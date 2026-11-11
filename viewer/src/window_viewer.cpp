@@ -8,6 +8,7 @@
 #include <openrts/renderer/glow_sprites.hpp>
 #include <openrts/renderer/native_sky.hpp>
 #include <openrts/renderer/terrain_renderer.hpp>
+#include <openrts/renderer/webgpu_texture.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/depth_export.hpp>
 #include <algorithm>
@@ -38,6 +39,7 @@
 #include <openrts/renderer/gpu_pass_timer.hpp>
 #include "key_layout.hpp"
 #include "ui_fonts.hpp"
+#include "ui_slider.hpp"
 #include "ui_text.hpp"
 #include "rts_config.hpp"
 #include "viewer_state.hpp"
@@ -892,13 +894,13 @@ public:
             }
             float sensitivity = mouse_sensitivity();
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::SliderFloat(tr("Mouse sensitivity"), &sensitivity, min_mouse_sensitivity, max_mouse_sensitivity, "%.2f")) {
+            if (slider_with_input(tr("Mouse sensitivity"), &sensitivity, min_mouse_sensitivity, max_mouse_sensitivity, "%.2f", "%.2f")) {
                 set_mouse_sensitivity(sensitivity);
                 remember("mouse_sensitivity", std::to_string(mouse_sensitivity()));
             }
             float head = head_motion();
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::SliderFloat(tr("Head motion in the cab"), &head, 0.0f, max_head_motion, "%.1f")) {
+            if (slider_with_input(tr("Head motion in the cab"), &head, 0.0f, max_head_motion, "%.1f", "%.1f")) {
                 set_head_motion(head);
                 remember("head_motion", std::to_string(head_motion()));
             }
@@ -989,7 +991,7 @@ public:
                 }
             }
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::SliderFloat(tr("Field of view (Num+ / Num-)"), &panel.fov, 15.0f, 100.0f, tr("%.1f degrees")))
+            if (slider_with_input(tr("Field of view (Num+ / Num-)"), &panel.fov, 15.0f, 100.0f, tr("%.1f degrees"), "%.1f"))
                 remember("fov", std::to_string(panel.fov));
             ImGui::BeginDisabled(!panel.experimental_supported);
             if (ImGui::Checkbox(tr("Depth for ReShade"), &panel.reshade_depth))
@@ -1003,7 +1005,7 @@ public:
                 remember("forest_clearance", panel.forest_clearance ? "1" : "0");
             ImGui::BeginDisabled(!panel.forest_clearance);
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::SliderFloat(tr("Trees from the track's or road's edge"), &panel.forest_clearance_distance, 0.5f, 20.0f, tr("%.1f m")))
+            if (slider_with_input(tr("Trees from the track's or road's edge"), &panel.forest_clearance_distance, 0.5f, 20.0f, tr("%.1f m"), "%.1f"))
                 remember("forest_clearance_distance", std::to_string(panel.forest_clearance_distance));
             ImGui::EndDisabled();
             if (ImGui::Checkbox(tr("openRTS water: waves, sky reflection, soft shores (not as in RTS)"), &panel.native_water))
@@ -1018,17 +1020,17 @@ public:
                     remember("cloud_cover_weather", panel.cloud_cover_weather ? "1" : "0");
                 ImGui::BeginDisabled(panel.cloud_cover_weather);
                 ImGui::SetNextItemWidth(220.0f);
-                if (ImGui::SliderFloat(tr("Cloud cover"), &panel.cloud_cover, 0.0f, 100.0f, "%.0f %%"))
+                if (slider_with_input(tr("Cloud cover"), &panel.cloud_cover, 0.0f, 100.0f, "%.0f %%", "%.0f"))
                     remember("cloud_cover", std::to_string(panel.cloud_cover));
                 ImGui::EndDisabled();
                 if (ImGui::Checkbox(tr("Cloud shadows on the ground (experimental renderer)"), &panel.cloud_shadows))
                     remember("cloud_shadows", panel.cloud_shadows ? "1" : "0");
                 ImGui::BeginDisabled(!panel.cloud_shadows);
                 ImGui::SetNextItemWidth(220.0f);
-                if (ImGui::SliderFloat(tr("Cloud shadow darkness (the sun a thick cloud takes)"), &panel.cloud_shadow_darkness, 0.0f, 100.0f, "%.0f %%"))
+                if (slider_with_input(tr("Cloud shadow darkness (the sun a thick cloud takes)"), &panel.cloud_shadow_darkness, 0.0f, 100.0f, "%.0f %%", "%.0f"))
                     remember("cloud_shadow_darkness", std::to_string(panel.cloud_shadow_darkness));
                 ImGui::SetNextItemWidth(220.0f);
-                if (ImGui::SliderFloat(tr("Cloud shadow sharpness (1: soft, as the clouds)"), &panel.cloud_shadow_sharpness, 1.0f, 10.0f, "%.1f"))
+                if (slider_with_input(tr("Cloud shadow sharpness (1: soft, as the clouds)"), &panel.cloud_shadow_sharpness, 1.0f, 10.0f, "%.1f", "%.1f"))
                     remember("cloud_shadow_sharpness", std::to_string(panel.cloud_shadow_sharpness));
                 ImGui::EndDisabled();
                 ImGui::Unindent();
@@ -1045,16 +1047,16 @@ public:
                 if (ImGui::Combo(tr("Tone curve (experimental renderer)"), &panel.tone_curve, curves, 5))
                     remember("tone_mode", std::to_string(panel.tone_curve));
                 ImGui::SetNextItemWidth(220.0f);
-                if (ImGui::SliderFloat(tr("Exposure"), &panel.exposure, 0.25f, 4.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
+                if (slider_with_input(tr("Exposure"), &panel.exposure, 0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
                     remember("exposure", std::to_string(panel.exposure));
                 if (panel.tone_curve == 4) {
                     ImGui::SetNextItemWidth(220.0f);
-                    if (ImGui::SliderFloat(tr("Night exposure"), &panel.night_exposure, 0.5f, 6.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
+                    if (slider_with_input(tr("Night exposure"), &panel.night_exposure, 0.5f, 6.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
                         remember("night_exposure", std::to_string(panel.night_exposure));
                     ImGui::TextDisabled(tr("night %.0f %%"), panel.night * 100.0f);
                 }
                 ImGui::SetNextItemWidth(220.0f);
-                if (ImGui::SliderFloat(tr("Saturation"), &panel.saturation, 0.5f, 1.8f, "%.2f"))
+                if (slider_with_input(tr("Saturation"), &panel.saturation, 0.5f, 1.8f, "%.2f", "%.2f"))
                     remember("saturation", std::to_string(panel.saturation));
             }
         }
@@ -1068,7 +1070,7 @@ public:
             if (panel.effects.shadows) {
                 ImGui::Indent();
                 ImGui::SetNextItemWidth(200.0f);
-                if (ImGui::SliderFloat(tr("Shadow distance"), &panel.effects.shadow_distance, 100.0f, 1000.0f, tr("%.0f m")))
+                if (slider_with_input(tr("Shadow distance"), &panel.effects.shadow_distance, 100.0f, 1000.0f, tr("%.0f m"), "%.0f"))
                     remember("shadow_distance", std::to_string(panel.effects.shadow_distance));
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("%s", tr("How far from the camera things cast shadows; farther makes the far cascade coarser."));
@@ -1090,7 +1092,7 @@ public:
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("%s", tr("Pieces the shadow distance is split into: more keeps the middle distance sharp, each one more pass."));
                 ImGui::SetNextItemWidth(200.0f);
-                if (ImGui::SliderFloat(tr("Shadow softness"), &panel.effects.shadow_softness, 0.5f, 4.0f, "%.1f"))
+                if (slider_with_input(tr("Shadow softness"), &panel.effects.shadow_softness, 0.5f, 4.0f, "%.1f", "%.1f"))
                     remember("shadow_softness", std::to_string(panel.effects.shadow_softness));
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("How blurred shadow edges are, in shadow map texels."));
                 if (ImGui::Checkbox(tr("Keep the far cascades"), &panel.effects.cache_far_cascades))
@@ -1120,12 +1122,12 @@ public:
                     ImGui::SetTooltip("%s", tr("Lamps that throw shadows: those lighting the cab (or the view) most, by power, direction and reach, so a floodlight does not shine through the roof. Each is one more pass."));
             }
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderFloat(tr("Light range"), &panel.light_range, 0.0f, 3000.0f, panel.light_range < 1.0f ? tr("as RTS") : tr("%.0f m")))
+            if (slider_with_input(tr("Light range"), &panel.light_range, 0.0f, 3000.0f, panel.light_range < 1.0f ? tr("as RTS") : tr("%.0f m"), "%.0f"))
                 remember("light_range", std::to_string(panel.light_range));
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("How far the scenery's lamps and floodlights still light the scene; at 0 as RTS's MaxLightDistance."));
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderFloat(tr("Headlight reach"), &panel.headlight_reach, 1.0f, 5.0f, "x%.1f"))
+            if (slider_with_input(tr("Headlight reach"), &panel.headlight_reach, 1.0f, 5.0f, "x%.1f", "%.1f"))
                 remember("headlight_reach", std::to_string(panel.headlight_reach));
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("How far the trains' headlights and searchlights reach, as a factor of their .eng; 1 as RTS."));
@@ -1134,7 +1136,7 @@ public:
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("Headlights and lamps fall off as 1/distance squared with a soft cone edge; off: the RTS light shapes."));
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderFloat(tr("Lamps in daylight"), &panel.effects.lamps_in_daylight, 0.0f, 1.0f, "%.2f"))
+            if (slider_with_input(tr("Lamps in daylight"), &panel.effects.lamps_in_daylight, 0.0f, 1.0f, "%.2f", "%.2f"))
                 remember("lamps_daylight", std::to_string(panel.effects.lamps_in_daylight));
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("How strong lamps are in full daylight against the night: an eye used to the sun hardly sees a cab lamp. 1: as at night."));
@@ -1163,12 +1165,12 @@ public:
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("Distance haze thinning with height and brighter towards the sun, instead of RTS's linear fog."));
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderFloat(tr("Night sky light"), &panel.night_ambient, 0.5f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
+            if (slider_with_input(tr("Night sky light"), &panel.night_ambient, 0.5f, 8.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
                 remember("night_ambient", std::to_string(panel.night_ambient));
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("The environment's ambient light at night, as a factor: the unlit surroundings brighter, the lamps as they are. No effect by day."));
             ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::SliderFloat(tr("Ground bounce"), &panel.effects.ground_bounce, 0.0f, 0.5f, "%.2f"))
+            if (slider_with_input(tr("Ground bounce"), &panel.effects.ground_bounce, 0.0f, 0.5f, "%.2f", "%.2f"))
                 remember("ground_bounce", std::to_string(panel.effects.ground_bounce));
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("Light the sunlit ground throws back onto bogies and the underframe, as the ground's reflectance (ballast and grass about 0.2). 0: none."));
@@ -1185,7 +1187,7 @@ public:
             if (panel.sound) {
                 float volume = panel.sound->volume();
                 ImGui::SetNextItemWidth(220.0f);
-                if (ImGui::SliderFloat(tr("Sound volume"), &volume, 0.0f, 1.0f, "%.2f")) {
+                if (slider_with_input(tr("Sound volume"), &volume, 0.0f, 1.0f, "%.2f", "%.2f")) {
                     panel.sound->set_volume(volume);
                     remember("volume", std::to_string(volume)); // the next run starts with it
                 }
@@ -2682,7 +2684,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             {
                 const auto gpu = renderer.stats();
                 std::cout << "textures on the GPU: " << gpu.cached_textures << ", " << gpu.texture_bytes / 1048576 << " MB, the trains' "
-                          << gpu.train_texture_bytes / 1048576 << " MB" << std::endl;
+                          << gpu.train_texture_bytes / 1048576 << " MB; model geometry " << gpu.geometry_bytes / 1048576
+                          << " MB, the trains' " << gpu.train_geometry_bytes / 1048576 << " MB; all uploaded textures "
+                          << renderer::uploaded_texture_bytes() / 1048576 << " MB; terrain tiles' buffers "
+                          << renderer::terrain_tile_buffer_bytes() / 1048576 << " MB" << std::endl;
             }
             if (depth_shot.buffer) {
                 const auto near_plane = std::clamp(camera.distance * 0.002f, 0.01f, 0.05f);

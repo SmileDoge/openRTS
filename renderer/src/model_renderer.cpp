@@ -6,6 +6,7 @@
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cctype>
 #include <cstddef>
@@ -1161,15 +1162,23 @@ private:
 
 } // namespace
 
+// The model generations' vertex and index buffers alive (ModelRendererStats).
+std::atomic<std::uint64_t> live_geometry_bytes{0};
+std::atomic<std::uint64_t> live_train_geometry_bytes{0};
+
 // Vertex and index buffers of one model generation.
 struct GpuGeometry {
     WGPUBuffer vertices = nullptr;
     WGPUBuffer indices = nullptr;
+    std::uint64_t bytes{};
+    bool train = false; // a TRAINS/ shape's
 
     GpuGeometry() = default;
     GpuGeometry(const GpuGeometry&) = delete;
     GpuGeometry& operator=(const GpuGeometry&) = delete;
     ~GpuGeometry() {
+        live_geometry_bytes -= bytes;
+        if (train) live_train_geometry_bytes -= bytes;
         if (indices) wgpuBufferRelease(indices);
         if (vertices) wgpuBufferRelease(vertices);
     }
@@ -2033,6 +2042,10 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     geometry->indices = create_buffer(
         impl_->device, WGPUBufferUsage_Index, model.indices.size() * sizeof(std::uint32_t), model.indices.data());
     if (!geometry->vertices || !geometry->indices) return result;
+    geometry->bytes = vertices.size() * sizeof(GpuVertex) + model.indices.size() * sizeof(std::uint32_t);
+    geometry->train = asset.source_path.key().rfind("trains/", 0) == 0;
+    live_geometry_bytes += geometry->bytes;
+    if (geometry->train) live_train_geometry_bytes += geometry->bytes;
     gpu->geometry = std::move(geometry);
 
     gpu->textures.resize(model.images.size());
@@ -2208,6 +2221,8 @@ ModelRendererStats ModelRenderer::stats() const {
         .cached_textures = live,
         .texture_bytes = bytes,
         .train_texture_bytes = train_bytes,
+        .geometry_bytes = live_geometry_bytes.load(),
+        .train_geometry_bytes = live_train_geometry_bytes.load(),
         .retired_pending = impl_->retired.pending(),
         .completed_frame = impl_->retired.completed_frame(),
         .instances = impl_->last_instances,

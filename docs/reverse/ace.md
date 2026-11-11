@@ -57,8 +57,8 @@ transparent (1-bit alpha).
 
 **On the GPU** (openRTS, 2026-11-10): a DXT1 ACE with its own levels
 (square, options 17 / 21) goes to the GPU as BC1, its file's blocks as they
-are, levels down to 4 x 4 (8x less than RGBA8; RTS gives Direct3D its DXT1
-the same way). The GPU's BC1 makes the fourth entry of a three-colour block
+are, levels down to 4 x 4 (8x less than RGBA8; RTS gives OpenGL its DXT1
+levels the same way, `glCompressedTexImage2D`, `shape-rendering.md`). The GPU's BC1 makes the fourth entry of a three-colour block
 transparent black whatever the file says; in the 2026-11 content only the
 textures with a mask use it (1325 of 4143 DXT1 files in TRAINSET, Kuban and
 Novokuznetsk; the maskless ones never), and a maskless file that did would

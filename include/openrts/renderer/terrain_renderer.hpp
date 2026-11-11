@@ -99,6 +99,9 @@ inline bool& native_water() {
 }
 
 #ifdef OPENRTS_HAS_WGPU
+// The terrain tiles' vertex and index buffers alive, bytes.
+[[nodiscard]] std::uint64_t terrain_tile_buffer_bytes() noexcept;
+
 // Streams and draws the terrain tiles around the camera.
 class TerrainRenderer {
 public:

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(openRTS
-    VERSION 0.6.0
+    VERSION 0.6.1
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
 

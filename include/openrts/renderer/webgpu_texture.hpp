@@ -22,10 +22,14 @@ struct Rgba8ImageView {
     const std::vector<std::vector<std::uint8_t>>* mips = nullptr;
 };
 
+// The bytes of every texture uploaded through this file's functions that is
+// alive (models, terrain, sky, sprites, cab screens).
+[[nodiscard]] std::uint64_t uploaded_texture_bytes() noexcept;
+
 class WgpuTexture {
 public:
     WgpuTexture() = default;
-    explicit WgpuTexture(WGPUTexture texture) noexcept : texture_(texture) {}
+    explicit WgpuTexture(WGPUTexture texture, std::uint64_t bytes = 0) noexcept;
     ~WgpuTexture();
 
     WgpuTexture(const WgpuTexture&) = delete;
@@ -38,6 +42,7 @@ public:
 
 private:
     WGPUTexture texture_ = nullptr;
+    std::uint64_t bytes_ = 0;
 };
 
 struct WgpuTextureUploadResult {
