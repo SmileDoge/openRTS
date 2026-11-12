@@ -65,6 +65,10 @@ jobs:
           Copy-Item build/game/Release/openrts_game.exe, build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll, build/viewer/Release/openrts-dllhost32.exe, build/server/Release/openrts-server.exe $out
           Get-ChildItem build/tools -Recurse -Filter *.exe | Where-Object { $_.DirectoryName -like '*\Release' } |
               ForEach-Object { Copy-Item $_.FullName "$out/tools" }
+          # Luau samples (the ВР 292) and how to script, for the brake stand.
+          New-Item -ItemType Directory -Force "$out/sdk/luau" | Out-Null
+          Copy-Item sdk/luau/*.luau, docs/ru/scripting.md "$out/sdk/luau"
+          Copy-Item docs/scripting.md "$out/sdk/luau/scripting_en.md"
           Copy-Item README.md, README_EN.md, INSTALL.md, INSTALL_EN.md, LICENSE $out
           # What people miss first: the VC++ runtime and the RTS installation.
           @(

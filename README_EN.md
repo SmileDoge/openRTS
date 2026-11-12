@@ -62,7 +62,9 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
   - the car menu (Num3 / the key left of `1`): at a coupling — end cocks,
     hoses, the EP cable, the SME cable and the high-voltage bus,
     uncoupling, fixing a broken coupler; at a bogie — brake shoe,
-    handbrake, release valve, emergency valve, cargo information;
+    handbrake, release valve, emergency valve, cargo information, and with
+    the realistic air the distributor's switches (483: empty / medium /
+    loaded and flat / mountain; the 292's plug К / Д / УВ);
   - derailment as RTS does it (overturning in curves, running off the end
     of the track);
   - the body on its springs over the bogies: the track's errors under each
@@ -224,7 +226,7 @@ The main platform is Windows 10/11 x64. You need:
   SDK (`wgpu-windows-x86_64-msvc-release.zip`), extracted to a folder with
   `include/` and `lib/`.
 
-CMake fetches GLFW, Dear ImGui, glm, miniaudio, zlib and zstd by itself.
+CMake fetches GLFW, Dear ImGui, glm, miniaudio, zlib, zstd and Luau by itself.
 
 ```powershell
 cmake -S . -B build -DOPENRTS_ENABLE_WGPU=ON -DOPENRTS_WGPU_ROOT=C:\sdk\wgpu-native
@@ -415,6 +417,7 @@ the Train window)
 | `openrts-path-check` | drive test trains along paths: reservations, the planner |
 | `openrts-signal-check` | compile every `sigscr.dat`, compare with RTS's assembly |
 | `openrts-sound-check` | parse every `.sms` / `.ws` and the sound files |
+| `openrts-brake-stand` | the ВР test stand: the built-in 292 / 483 / 305 or your own in Luau through a fixed program — charging, a step, release, stability, emergency (`docs/scripting.md`) |
 | `openrts-train-check` | load every consist and drive it on a test track; `--dll` runs a locomotive DLL by a script (with `--screens` the cab screens, `--triggers` its sound triggers), `--cab` shows how a cab binds, `--brake ... --realistic` brakes |
 | `openrts-dllhost32 --probe <folder>` | versions and layouts of every locomotive DLL |
 | `openrts_asset_dump` | resolve assets the way RTS looks them up; `--lights <route\|all>` counts the placed shapes' lamps by kind |
@@ -465,6 +468,8 @@ RTS's DLLs.
   commands, what it decides and relays;
 - `docs/tape.md` — the tape as in RTS: the keys, the file, the line's
   fields, what `lenta.xls` reads; the speed recorder tape window;
+- `docs/scripting.md` — scripting in Luau: the sandbox, your own brake
+  distributor (`ORTSBrakeDistributor`), the ВР stand;
 - `docs/train-systems.md` — lights, pantographs, horn and doors without a
   DLL, the cab's displays and lamps, cables and coupler repair, taking
   another cab, native plugins, the line current and wire burning, ALSN;

@@ -130,6 +130,7 @@ void read_brakes(std::string_view text, BrakeEquipment& brakes, std::string& err
     if (auto leak = values(text, "trainpipeleakrate"); leak.found()) {
         brakes.train_pipe_leak_rate = static_cast<float>(leak.atof() * psi_to_atm);
     }
+    brakes.distributor_script = values(text, "ortsbrakedistributor").token();
     if (auto add = values(text, "addbrakeforce"); add.found()) brakes.max_brake_force += static_cast<float>(add.quantity());
     if (auto scale = values(text, "scalebrakeforce"); scale.found()) {
         brakes.max_brake_force *= static_cast<float>(scale.atof());
@@ -577,6 +578,17 @@ WagonDefinition load_wagon(const core::Vfs& vfs, const std::string_view folder, 
     // The merged companion text comes first in the Wagon block, so its
     // first token is no longer the name; the file name is.
     wagon.name = std::string(name);
+    // openRTS: a distributor script, next to the file.
+    if (auto& brakes = wagon.brakes; !brakes.distributor_script.empty()) {
+        const auto script = core::VirtualPath::parse(path.parent().str() + "/" + brakes.distributor_script);
+        std::string script_error;
+        const auto source = script ? vfs.read(*script, &script_error) : std::nullopt;
+        if (source) {
+            brakes.distributor_source = *source;
+        } else {
+            brakes.distributor_error = brakes.distributor_script + ": " + (script_error.empty() ? "not found" : script_error);
+        }
+    }
     return wagon;
 }
 

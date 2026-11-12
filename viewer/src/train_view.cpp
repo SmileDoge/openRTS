@@ -5201,6 +5201,25 @@ std::vector<TrainView::CarMenuItem> TrainView::car_menu_items(const CarMenu& men
             items.push_back({11, "Open release valve"});
         }
         if (car.valves & simulation::valve_emergency) items.push_back({7, "Shut emergency valve"});
+        // openRTS: the distributor's switches, with the realistic air (RTS's
+        // triple valve has none). The label says the position it is in.
+        if (unit->train->brake_model() == simulation::BrakeModel::realistic && (car.definition->brakes.system & 5)) {
+            const auto& modes = car.distributor;
+            if (simulation::distributor_kind(*car.definition) == simulation::DistributorKind::vr483) {
+                switch (simulation::effective_load(modes.load, car.definition->mass)) {
+                case simulation::DistributorLoad::empty: items.push_back({40, "Distributor: empty mode (switch to medium)"}); break;
+                case simulation::DistributorLoad::medium: items.push_back({40, "Distributor: medium mode (switch to loaded)"}); break;
+                default: items.push_back({40, "Distributor: loaded mode (switch to empty)"}); break;
+                }
+                items.push_back({41, modes.mountain ? "Distributor: mountain mode (switch to flat)" : "Distributor: flat mode (switch to mountain)"});
+            } else {
+                switch (modes.plug) {
+                case simulation::DistributorPlug::short_train: items.push_back({42, "Distributor plug: К, short train (switch to Д)"}); break;
+                case simulation::DistributorPlug::long_train: items.push_back({42, "Distributor plug: Д, long train (switch to УВ)"}); break;
+                default: items.push_back({42, "Distributor plug: УВ, accelerator off (switch to К)"}); break;
+                }
+            }
+        }
         // RTS: a freight car with cargo (FreightAnim with a mass or a cargo type).
         if (menu.car < unit->cars.size() && car.definition->kind == formats::WagonKind::freight) {
             const auto& freight = unit->cars[menu.car].freight;
@@ -5385,6 +5404,38 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
             train.set_car_flags(i, Flags::valves, simulation::valve_release, false);
             trigger(i, 93);
             break;
+        case 40: { // the 483's load mode: empty -> medium -> loaded -> empty
+            auto modes = cars[i].distributor;
+            const auto load = simulation::effective_load(modes.load, cars[i].definition->mass);
+            modes.load = load == simulation::DistributorLoad::empty    ? simulation::DistributorLoad::medium
+                         : load == simulation::DistributorLoad::medium ? simulation::DistributorLoad::loaded
+                                                                       : simulation::DistributorLoad::empty;
+            train.set_distributor_modes(i, modes);
+            message_ = trf(modes.load == simulation::DistributorLoad::empty    ? "car %zu: distributor in empty mode"
+                           : modes.load == simulation::DistributorLoad::medium ? "car %zu: distributor in medium mode"
+                                                                               : "car %zu: distributor in loaded mode",
+                           i + 1);
+            break;
+        }
+        case 41: { // the 483: flat <-> mountain
+            auto modes = cars[i].distributor;
+            modes.mountain = !modes.mountain;
+            train.set_distributor_modes(i, modes);
+            message_ = trf(modes.mountain ? "car %zu: distributor in mountain mode" : "car %zu: distributor in flat mode", i + 1);
+            break;
+        }
+        case 42: { // the 292's plug: К -> Д -> УВ -> К
+            auto modes = cars[i].distributor;
+            modes.plug = modes.plug == simulation::DistributorPlug::short_train ? simulation::DistributorPlug::long_train
+                         : modes.plug == simulation::DistributorPlug::long_train ? simulation::DistributorPlug::no_accelerator
+                                                                                 : simulation::DistributorPlug::short_train;
+            train.set_distributor_modes(i, modes);
+            message_ = trf(modes.plug == simulation::DistributorPlug::short_train  ? "car %zu: distributor plug at К (short train)"
+                           : modes.plug == simulation::DistributorPlug::long_train ? "car %zu: distributor plug at Д (long train)"
+                                                                                   : "car %zu: distributor plug at УВ (accelerator off)",
+                           i + 1);
+            break;
+        }
         default: break;
         }
         return;

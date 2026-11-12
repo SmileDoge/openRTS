@@ -2,8 +2,10 @@
 // stability, and the train ends staying a train length apart at a buffer stop.
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <tuple>
 #include <array>
@@ -552,6 +554,78 @@ void test_realistic_air(const Stock& stock) {
         Run r(stock, settings, 1000.0);
         r.train.set_controller(0, std::make_unique<RtsValve>());
         check(r.train.brake_model() == simulation::BrakeModel::rts, "a legacy valve keeps the RTS model");
+    }
+    // The wagons' distributor in Luau (ORTSBrakeDistributor,
+    // sdk/luau/vr292.luau): the train charges, holds, brakes on a service
+    // step, releases and stops in emergency with it.
+    {
+#ifndef OPENRTS_SOURCE_DIR
+#define OPENRTS_SOURCE_DIR "."
+#endif
+        Stock scripted = stock;
+        std::ifstream in(std::string(OPENRTS_SOURCE_DIR) + "/sdk/luau/vr292.luau", std::ios::binary);
+        std::stringstream source;
+        source << in.rdbuf();
+        scripted.wagon.brakes.distributor_script = "vr292.luau";
+        scripted.wagon.brakes.distributor_source = source.str();
+        check(!scripted.wagon.brakes.distributor_source.empty(), "the Luau 292 is there");
+        Run r(scripted, settings, 1000.0);
+        r.run(120.0);
+        check(r.max_cylinder < 0.05f, "Luau ВР: II keeps the train released");
+        r.driver->brake = Handle::service;
+        r.run(4.0);
+        r.driver->brake = Handle::lap;
+        r.run(20.0);
+        float least = 99.0f;
+        for (std::size_t k = 1; k < r.train.cars().size(); ++k) least = (std::min)(least, r.train.cars()[k].cylinder);
+        check(least > 0.3f, "Luau ВР: a service step applies every wagon (" + std::to_string(least) + ")");
+        r.driver->brake = Handle::running;
+        r.run(240.0);
+        float most = 0.0f;
+        for (const auto& car : r.train.cars()) most = (std::max)(most, car.cylinder);
+        check(most < 0.05f, "Luau ВР: II releases after a service step");
+        r.driver->brake = Handle::emergency;
+        r.run(10.0);
+        check(r.train.cars().back().cylinder > 2.0f, "Luau ВР: VI applies the last wagon within 10 s");
+    }
+    // The 292's plug (passenger wagons): at УВ the accelerators do not vent
+    // the pipe and the cylinders fill as at Д, so in VI the tail brakes
+    // later than at К, but it does.
+    {
+        Stock passenger = stock;
+        passenger.wagon.kind = formats::WagonKind::passenger;
+        const auto tail_time = [&](const simulation::DistributorPlug plug) {
+            Run r(passenger, settings, 1000.0);
+            for (std::size_t k = 0; k < r.train.cars().size(); ++k) {
+                simulation::DistributorModes modes;
+                modes.plug = plug;
+                r.train.set_distributor_modes(k, modes);
+            }
+            r.run(120.0);
+            r.driver->brake = Handle::emergency;
+            for (int k = 1; k <= 600; ++k) {
+                r.run(0.05);
+                if (r.train.cars().back().cylinder > 1.0f) return k * 0.05f;
+            }
+            return 99.0f;
+        };
+        const float k_time = tail_time(simulation::DistributorPlug::short_train);
+        const float uv_time = tail_time(simulation::DistributorPlug::no_accelerator);
+        check(k_time < 10.0f && uv_time < 30.0f && uv_time > k_time,
+              "УВ: VI reaches the tail later than at К (" + std::to_string(k_time) + " / " + std::to_string(uv_time) + " s)");
+    }
+    // A script that fails: the built-in distributor takes over.
+    {
+        Stock broken = stock;
+        broken.wagon.brakes.distributor_script = "broken.luau";
+        broken.wagon.brakes.distributor_source = "function step(c, dt)\n  error('broken')\nend\n";
+        Run r(broken, settings, 1000.0);
+        r.run(120.0);
+        r.driver->brake = Handle::service;
+        r.run(4.0);
+        r.driver->brake = Handle::lap;
+        r.run(20.0);
+        check(r.train.cars().back().cylinder > 0.3f, "a failing script: the built-in distributor brakes the wagon");
     }
 }
 

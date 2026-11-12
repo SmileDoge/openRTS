@@ -15,6 +15,7 @@
 
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/body_motion.hpp>
+#include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/track_traveller.hpp>
 
 namespace openrts::simulation {
@@ -254,6 +255,8 @@ struct CarState {
     std::uint8_t cables{};       // cable_*
     std::uint8_t valves{};       // valve_*
     std::uint8_t chocks{};       // chock_*
+    // The distributor's switches (realistic air only; the car menu at a bogie).
+    DistributorModes distributor{};
     // The body swaying on its springs (RTS 0x4F5B34): offset from its rest
     // pose (m) along the curve's turning side (lateral), up (vertical) and
     // towards the train front (longitudinal), and the rates.
@@ -344,6 +347,8 @@ public:
     void set_car_flags(std::size_t car, CarFlags which, std::uint8_t mask, bool on);
     // Car `car`'s handbrake, 0..1.
     void set_handbrake(std::size_t car, float value);
+    // Car `car`'s distributor switches (the realistic air model reads them).
+    void set_distributor_modes(std::size_t car, const DistributorModes& modes);
     // Car `car`'s air, atm (a DLL's Init sets it; RTS's cars start empty).
     struct Air {
         float pipe{}, charging_pipe{}, cylinder{}, auxiliary{}, control{}, main_reservoir{};

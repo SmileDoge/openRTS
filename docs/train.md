@@ -281,6 +281,20 @@ valve. What is built, against the proposal below:
 - **Emergency:** the front starts at the driver's valve in VI or at an open
   pipe end and moves from car to car at 280 m/s (the accelerators); the
   flow model alone would carry it faster than sound.
+- **Distributor switches** (2026-11-12), set per car in the car menu at a
+  bogie (Num3 outside), only with the realistic air; the item's label says
+  the position. `CarState::distributor`, `Train::set_distributor_modes`:
+  - 483 load mode: empty / medium / loaded (full ТЦ 1.5 / 3.0 / 3.8). Until
+    a hand sets it, it is chosen by the car's mass as before;
+  - 483 flat / mountain: mountain releases in steps (the ТЦ comes down to
+    what the pipe's shortfall below РК gives; a rise under 0.03 releases
+    nothing) and the РК charges in 4 min instead of 3;
+  - 292 plug (the 305's pneumatic part too): К — fill 0.5, release 0.35,
+    emergency fill 0.5 atm/s (release 9–12 s, emergency to 3.5 in 6–9 s);
+    Д — 0.25 / 0.16 / 0.25 (19–24 s, 12–16 s; the slower service fill is
+    PROBABLE); УВ — as Д, and the car's accelerator does not vent the pipe
+    (the front still passes on). A Luau distributor gets them as `c.load`,
+    `c.mountain`, `c.plug` (`docs/scripting.md`).
 - **Driver's valve 395:** the pipe follows the УР through the relay
   (20 l/(s·atm), 50 l·atm/s feed, 20 vent), fed from the main reservoir;
   VI vents at 50 l/(s·atm). The keyboard controller drops RTS's forced

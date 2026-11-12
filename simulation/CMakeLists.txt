@@ -4,6 +4,7 @@ add_library(openrts_simulation STATIC
     src/track_network.cpp
     src/rail_joints.cpp
     src/body_motion.cpp
+    src/distributor.cpp
     src/track_traveller.cpp
     src/train.cpp
     src/realistic_air.cpp
@@ -17,4 +18,4 @@ add_library(openrts_simulation STATIC
     src/train_lights.cpp
     src/tape.cpp)
 openrts_configure_target(openrts_simulation)
-target_link_libraries(openrts_simulation PUBLIC openrts_core openrts_formats)
+target_link_libraries(openrts_simulation PUBLIC openrts_core openrts_formats PRIVATE openrts_script)

@@ -93,6 +93,12 @@ struct BrakeEquipment {
     float max_auxiliary_charging_rate{}; // atm/s
     float cylinder_pressure_for_max_force{}; // atm
     float train_pipe_leak_rate{};       // atm/s
+    // openRTS: ORTSBrakeDistributor ( "file.lua" ), a brake distributor (ВР)
+    // in Luau for the realistic air model (docs/scripting.md), its file
+    // next to the .wag / .eng; the source as read (load_wagon), or why not.
+    std::string distributor_script;
+    std::string distributor_source;
+    std::string distributor_error;
 };
 
 // EngExtended EngineParameters / AuxLibraryParameters entry (names lower

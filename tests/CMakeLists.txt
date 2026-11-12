@@ -51,6 +51,7 @@ add_test(NAME openrts.track COMMAND openrts_track_test)
 add_executable(openrts_train_test train_test.cpp)
 openrts_configure_target(openrts_train_test)
 target_link_libraries(openrts_train_test PRIVATE openrts_simulation openrts_formats)
+target_compile_definitions(openrts_train_test PRIVATE OPENRTS_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 add_test(NAME openrts.train COMMAND openrts_train_test)
 
 add_executable(openrts_signal_test signal_test.cpp)
@@ -202,6 +203,14 @@ add_executable(openrts_tape_test tape_test.cpp)
 openrts_configure_target(openrts_tape_test)
 target_link_libraries(openrts_tape_test PRIVATE openrts_simulation)
 add_test(NAME openrts.tape COMMAND openrts_tape_test)
+
+# Brake distributors: the built-in ones on the stand, the Luau 292 as the
+# built-in one, Luau's sandbox and time limit.
+add_executable(openrts_distributor_test distributor_test.cpp)
+openrts_configure_target(openrts_distributor_test)
+target_link_libraries(openrts_distributor_test PRIVATE openrts_simulation openrts_script)
+target_compile_definitions(openrts_distributor_test PRIVATE OPENRTS_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+add_test(NAME openrts.distributor COMMAND openrts_distributor_test)
 
 # Cab keys held down repeat once per key delay (RTS 0x414340).
 add_executable(openrts_key_repeat_test key_repeat_test.cpp ../viewer/src/key_repeat.cpp)

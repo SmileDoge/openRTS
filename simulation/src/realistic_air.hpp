@@ -9,21 +9,24 @@
 // 250-300 m/s. Internal to openrts_simulation.
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
+#include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/train.hpp>
 
 namespace openrts::simulation::detail {
 
-enum class Distributor : std::uint8_t { vr483, vr292, evr305 };
-
 struct AirCar {
-    Distributor type = Distributor::vr292;
+    DistributorKind type = DistributorKind::vr292;
     bool braking = false;     // an application is in progress (quick service done)
     bool emergency = false;   // the accelerator fired
     float reference{};        // 483: control chamber РК; 292: the ЗР when the application began
     float last_pipe{};        // pipe at the last sub-step (rate detection)
     float wave = -1.0f;       // s until the emergency front reaches this car (< 0: not coming)
+    // ORTSBrakeDistributor: the car's own distributor in Luau (null: the
+    // built-in one; also after a script error, reported once).
+    std::shared_ptr<ScriptDistributor> script;
 };
 
 // What the model needs to know about car i's neighbours and engines.
@@ -44,9 +47,5 @@ public:
 private:
     std::vector<AirCar> air_;
 };
-
-// The distributor a car gets: EP-equipped cars 305 (+292), freight 483,
-// everything else 292.
-[[nodiscard]] Distributor distributor_for(const formats::WagonDefinition& definition);
 
 } // namespace openrts::simulation::detail

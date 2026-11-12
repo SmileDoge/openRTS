@@ -14,6 +14,7 @@ on screen. Reverse notes live in `docs/reverse/`.
 | `simulation` | track network and travellers with the RTS junction modes (`track.md`); trains with RTS physics, couplers, RTS brakes, the 395 valve and ЭПТ (`train.md`); signals: the RTS script VM, block_state/route_set, train chains (`signals.md`) |
 | `formats` (trains) | `.con`, `.eng`/`.wag` with `.rtseng` merge, `.pat`, `.sms`/`.ws` |
 | `audio` | `.sms` runner, miniaudio output, world and train sounds (`sound.md`) |
+| `script` | the Luau VM: sandbox, time limit; the brake distributor in Luau (`scripting.md`) |
 | `viewer` (trains) | drive a consist from a path start, follow camera, Train panel |
 | `core` | content VFS (`vfs.md`) |
 | `platform`, `compat`, `game` | empty stubs |
@@ -562,7 +563,16 @@ here is decided beyond that.
 - People who know the real hardware: a Metrostroi developer wants to put the
   real ЭР9 circuit in.
 
-### Lua plugins (LuaJIT)
+### Lua plugins (Luau, 2026-11-12)
+
+**The language (the user's call, 2026-11-12): Luau, for everything** —
+train plugins, server plugins and client panels alike, one VM and one set
+of bindings (`script/`, `docs/scripting.md`). Its sandbox and its interrupt
+(a script that hangs is stopped) are built in; speed is no issue at these
+loads. LuaJIT, planned before, is dropped. Done so far: the VM with its
+sandbox and time limit, and the first module, the brake distributor
+(`ORTSBrakeDistributor`) with its stand (`openrts-brake-stand`). The text
+below still says LuaJIT where it was written for it; the plan carries over.
 
 **How it fits:**
 - one more implementation of the plugin interface (`train_plugin.h`), as

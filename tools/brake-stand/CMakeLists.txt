@@ -1,0 +1,7 @@
+add_executable(openrts_brake_stand src/main.cpp)
+set_target_properties(openrts_brake_stand PROPERTIES OUTPUT_NAME openrts-brake-stand)
+openrts_configure_target(openrts_brake_stand)
+target_link_libraries(openrts_brake_stand PRIVATE openrts_simulation)
+if(WIN32)
+    target_link_libraries(openrts_brake_stand PRIVATE shell32)
+endif()

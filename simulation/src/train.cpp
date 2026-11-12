@@ -514,6 +514,12 @@ void Train::set_handbrake(const std::size_t car, const float value) {
     asleep_ = false;
 }
 
+void Train::set_distributor_modes(const std::size_t car, const DistributorModes& modes) {
+    if (car >= cars_.size()) return;
+    cars_[car].distributor = modes;
+    asleep_ = false;
+}
+
 void Train::set_air(const std::size_t car, const Air& air) {
     if (car >= cars_.size()) return;
     auto& c = cars_[car];

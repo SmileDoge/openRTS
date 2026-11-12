@@ -74,6 +74,24 @@ FetchContent_Declare(miniaudio
     SOURCE_SUBDIR openrts-sources-only)
 FetchContent_MakeAvailable(miniaudio)
 
+# Luau (MIT): the scripting language of openRTS's own modules (a brake
+# distributor now; train plugins later, docs/scripting.md). Its VM and
+# compiler only.
+set(LUAU_BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(LUAU_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LUAU_BUILD_WEB OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(luau
+    GIT_REPOSITORY https://github.com/luau-lang/luau.git
+    GIT_TAG 0.740
+    GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(luau)
+# Only what openrts_script links is built.
+foreach(unused Luau.Analysis Luau.CodeGen Luau.Config Luau.Require Luau.CLI.lib Luau.Inliner isocline osthreads)
+    if(TARGET ${unused})
+        set_target_properties(${unused} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    endif()
+endforeach()
+
 function(openrts_configure_target target)
     target_compile_features(${target} PUBLIC cxx_std_20)
     target_include_directories(${target} PUBLIC "${PROJECT_SOURCE_DIR}/include")
@@ -133,6 +151,7 @@ if(OPENRTS_ENABLE_TRACY)
 endif()
 
 add_subdirectory(core)
+add_subdirectory(script)
 add_subdirectory(formats)
 add_subdirectory(assets)
 add_subdirectory(renderer)
