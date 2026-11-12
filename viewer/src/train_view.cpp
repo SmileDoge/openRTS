@@ -663,6 +663,11 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
         if (entries[i].place_drag != 0) unit.train->set_car_flags(i, simulation::Train::CarFlags::chocks, entries[i].place_drag, true);
     unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
     if (realistic_air_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
+    if (!distributor_stability_loaded_) {
+        distributor_stability_loaded_ = true;
+        distributor_stability_ = remembered("distributor_stability").value_or("0") == "1";
+    }
+    unit.train->set_distributor_stability(distributor_stability_);
     return {};
 }
 
@@ -3445,6 +3450,17 @@ void TrainView::draw_hud() {
                 }
                 ImGui::Text(tr("Overall: mass %.1f t, length %.0f m, units %zu (passenger %zu, freight %zu, engines %zu)"),
                             train.mass() / 1000.0, train.length(), unit->cars.size(), passenger, freight, engines);
+                // The driven car's pressures, so a small window shows them
+                // without the car pages (testers, 2026-11-12).
+                if (unit == &units_.front()) {
+                    const auto i = driven_car();
+                    if (i < train.cars().size()) {
+                        const auto& state = train.cars()[i];
+                        const auto ur = equalising_of(0, i);
+                        ImGui::Text(tr("Driven car %zu: pipe %.2f  equalising %s  cylinder %.2f atm"), i + 1, state.pipe,
+                                    ur ? trf("%.2f", *ur).c_str() : "-", state.cylinder);
+                    }
+                }
                 std::size_t chocked = 0;
                 for (const auto& state : train.cars())
                     if (state.chocks != 0) ++chocked;
@@ -3458,24 +3474,71 @@ void TrainView::draw_hud() {
                             ordinate ? (std::to_string(static_cast<int>(*ordinate)) + "." + std::to_string(static_cast<int>(std::abs(*ordinate) * 100.0) % 100)).c_str() : "-");
                 const auto& states = train.cars();
                 const auto last = (std::min)(car_page_ + car_page_size, unit->cars.size());
-                for (std::size_t i = car_page_; i < last && i < states.size(); ++i) {
-                    const auto& car = unit->cars[i];
-                    const auto& state = states[i];
-                    ImGui::Text(tr("%02zu - %s. Mass %.1f t"), i + 1, car.definition ? car.definition->name.c_str() : "?",
-                                car.definition ? car.definition->mass / 1000.0f : 0.0f);
-                    // Marks: the handbrake, the chocks (by the car's own
-                    // ends, as the car menu puts them), a derailment.
-                    std::string marks;
-                    if (tape_.recording() && car.key == tape_car_key_) marks += tr(" [TAPE]");
-                    if (state.handbrake > 0.0f) marks += trf(" [HANDBRAKE %d%%]", static_cast<int>(state.handbrake * 100.0f));
-                    if (state.chocks != 0) {
-                        const bool front = (state.chocks & simulation::chock_front) != 0, rear = (state.chocks & simulation::chock_rear) != 0;
-                        marks += front && rear ? tr(" [CHOCKS front and rear]") : front ? tr(" [CHOCK front]") : tr(" [CHOCK rear]");
+                // A car a row (RTS's F5 takes two lines a car, which filled
+                // the screen). The speed and acceleration are the train's,
+                // above. The coupler: the force the joint passes to each car,
+                // half of RTS's CF (the stiffness sum times the gap, which
+                // RTS keeps for the break check; docs/train.md).
+                if (ImGui::BeginTable("##car_pages", 10, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+                    for (const char* title : {"No.", "Car", "t", "Pipe", "Aux", "Cyl.", "Force, kN", "Brake, kN", "Coupler, kN (- squeezed)", ""})
+                        ImGui::TableSetupColumn(*title ? tr(title) : "");
+                    ImGui::TableHeadersRow();
+                    for (std::size_t i = car_page_; i < last && i < states.size(); ++i) {
+                        const auto& car = unit->cars[i];
+                        const auto& state = states[i];
+                        // Marks: the handbrake, the chocks (by the car's own
+                        // ends, as the car menu puts them), a derailment.
+                        std::string marks;
+                        if (tape_.recording() && car.key == tape_car_key_) marks += tr(" [TAPE]");
+                        if (state.handbrake > 0.0f) marks += trf(" [HANDBRAKE %d%%]", static_cast<int>(state.handbrake * 100.0f));
+                        if (state.chocks != 0) {
+                            const bool front = (state.chocks & simulation::chock_front) != 0, rear = (state.chocks & simulation::chock_rear) != 0;
+                            marks += front && rear ? tr(" [CHOCKS front and rear]") : front ? tr(" [CHOCK front]") : tr(" [CHOCK rear]");
+                        }
+                        if (state.derailed) marks += tr(" [DERAILED]");
+                        // A DLL's own brake force (Engine::BrakeForce: the
+                        // dynamic brake, or an EP brake it works by itself):
+                        // the brake column has it, the cylinder does not.
+                        const auto u = static_cast<std::size_t>(unit - units_.data());
+                        if (const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr;
+                            out && out->has_engine && std::abs(out->engine.brake_force) >= 500.0f) {
+                            marks += trf(" [DLL brake %.0f kN]", out->engine.brake_force / 1000.0f);
+                        }
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%02zu", i + 1);
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(car.definition ? car.definition->name.c_str() : "?");
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.1f", car.definition ? car.definition->mass / 1000.0f : 0.0f);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.2f", state.pipe);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.2f", state.auxiliary);
+                        // The cylinder the brake force takes: the train brake's
+                        // or the independent brake's, the higher (RTS's
+                        // BrakeForce; an EMU's DLL may brake its own car with
+                        // the independent one), marked when it is that one.
+                        ImGui::TableNextColumn();
+                        if (state.independent > state.cylinder + 0.005f) {
+                            ImGui::Text("%.2f %s", state.independent, tr("(ind.)"));
+                        } else {
+                            ImGui::Text("%.2f", state.cylinder);
+                        }
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.1f", state.force / 1000.0f);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.1f", state.brake_force / 1000.0f);
+                        ImGui::TableNextColumn();
+                        if (i + 1 < states.size()) {
+                            ImGui::Text("%.0f", state.coupler_force * 0.5f / 1000.0f);
+                        } else {
+                            ImGui::TextDisabled("-");
+                        }
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(marks.c_str());
                     }
-                    ImGui::Text(tr("     Pipe %.3f Aux %.3f Cylinder %.3f  Velocity %.2f Acceleration %.3f  Force %.1f kN BF %.1f kN CF %.0f kN%s%s"),
-                                state.pipe, state.auxiliary, state.cylinder, state.velocity, state.acceleration, state.force / 1000.0f,
-                                state.brake_force / 1000.0f, state.coupler_force / 1000.0f, marks.c_str(),
-                                state.derailed ? tr(" [DERAILED]") : "");
+                    ImGui::EndTable();
                 }
                 ImGui::TextDisabled(tr("F5: next page (%zu-%zu of %zu)  Shift+F5: the whole train"), car_page_ + 1, last, unit->cars.size());
             }
@@ -3517,7 +3580,7 @@ void TrainView::draw_hud() {
     }
     if (stations_panel_) {
         if (begin_panel("##stations", stations_place_, 1.0f - margin_x, 0.45f)) {
-            ImGui::Text(tr("Stations ahead: %s"), unit->name.c_str());
+            ImGui::TextUnformatted(tr("Stations ahead"));
             ImGui::Separator();
             if (!service_marks_loaded_) {
                 service_marks_loaded_ = true;
@@ -4329,7 +4392,7 @@ std::optional<TrainView::BoardTarget> TrainView::board_target(const glm::vec3& f
             if (driven && i == engineer_car_) continue;
             const auto& car = unit.cars[i];
             const auto* engine = car.definition && car.definition->engine ? &*car.definition->engine : nullptr;
-            if (!engine || !engine->cab_view || engine->cabin.empty()) continue;
+            if (!engine || engine->cabin.empty()) continue;
             const auto body = body_pose(unit, i, false);
             if (!body) continue;
             const glm::vec3 centre{body->transform[3]};
@@ -4340,6 +4403,10 @@ std::optional<TrainView::BoardTarget> TrainView::board_target(const glm::vec3& f
                                       formats::wagon_path(car.folder, car.definition->name, true));
                 if (!cab) continue;
             }
+            // A driving cab: a CabView, or a driver's chair in its Cabin (the
+            // 2ЭС4К's sections have no CabView, testers 2026-11-12); a motor
+            // car's Cabin that is its salon has neither.
+            if (!engine->cab_view && cab->description().chairs.empty()) continue;
             // Its doors as they are (the shape's nodes read: a door or a doorway).
             cab->poll();
             const auto to_scene = body->transform * cab->placement();
@@ -5899,6 +5966,16 @@ void TrainView::update_tape() {
         return;
     }
     if (tape_.advance(simulation::train_step)) tape_.write(tape_record(at->first, at->second));
+}
+
+std::optional<float> TrainView::equalising_of(const std::size_t u, const std::size_t i) const {
+    if (const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr; out && out->has_engine) {
+        // What its DLL keeps in Engine::UR (not every DLL fills it).
+        if (out->engine.equalising > 0.0f) return out->engine.equalising;
+        return std::nullopt;
+    }
+    if (u == 0 && driver_ && i == driven_car()) return driver_->equalising;
+    return std::nullopt;
 }
 
 simulation::TapeRecord TrainView::tape_record(const std::size_t u, const std::size_t i) {
@@ -7529,7 +7606,7 @@ void TrainView::draw_overlay() {
             ImGui::TextDisabled("%s", tr("End: slower, Shift+End: twice the Shift pace. From config.ini (engineer.velocity, engineer.velocity1)."));
         }
     };
-    if (legacy_) legacy_->draw_window(cab_controls);
+    if (legacy_ && panels_shown()) legacy_->draw_window(cab_controls);
     // What Enter does where the engineer stands (unless the hints are off).
     if (key_hints() && engineer_.active() && car_view_ == CarView::off && (!board_prompt_.empty() || !engineer_.prompt().empty())) {
         const auto size = ImGui::GetIO().DisplaySize;
@@ -7760,6 +7837,15 @@ void TrainView::draw_overlay() {
     } else {
         ImGui::TextDisabled("%s", tr("(off: RTS model; flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave)"));
     }
+    if (ImGui::Checkbox(tr("Distributor stability in the RTS model (openRTS)"), &distributor_stability_)) {
+        distributor_stability_loaded_ = true;
+        remember("distributor_stability", distributor_stability_ ? "1" : "0");
+        for (auto& unit : units_) unit.train->set_distributor_stability(distributor_stability_);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", tr(distributor_stability_
+                                     ? "(a slow pipe fall, as the stabiliser's, brakes nothing: 483 up to 0.3, 292 up to 0.5 atm/min)"
+                                     : "(off: as RTS, any pipe fall below the reservoir brakes, the stabiliser's slow one too)"));
     if (ImGui::TreeNode(tr("Cars and coupling"))) {
         // Uncoupling as from the RTS menu: both end cocks closed, the
         // couplers left open so the parts do not couple again by themselves.

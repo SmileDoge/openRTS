@@ -1017,6 +1017,9 @@ private:
     [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> tape_car() const;
     // The car he drives in the driven unit (SIZE_MAX: none).
     [[nodiscard]] std::size_t driven_car() const;
+    // The equalising reservoir of car i of unit u: its DLL's Engine::UR, or
+    // the keyboard driver's; none when it has neither.
+    [[nodiscard]] std::optional<float> equalising_of(std::size_t u, std::size_t i) const;
     bool start_tape(std::size_t unit, std::size_t car);
     void stop_tape(const char* why = nullptr);
     void update_tape();
@@ -1106,6 +1109,10 @@ private:
     std::unique_ptr<audio::SoundBank> bank_;
     int substeps_ = 1;
     bool realistic_air_ = false; // openRTS realistic air for every train (BrakeModel::realistic)
+    // The RTS model with a distributor's stability (TrainSettings), remembered
+    // as distributor_stability; read at the first train.
+    mutable bool distributor_stability_ = false;
+    mutable bool distributor_stability_loaded_ = false;
     float sway_scale_ = 1.0f; // body sway shown on the cars: 1 = the RTS model's size, 0 off
     bool random_loop_phase_ = true; // SoundInstance::set_random_loop_phase for every car
 

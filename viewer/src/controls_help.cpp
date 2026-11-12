@@ -104,6 +104,7 @@ void draw_controls_help() {
     note("The 3D cab: \"3D cab view\" in the Train window.");
 
     if (begin_section("Information (as in RTS)", "##controls_info")) {
+        row("Esc", "the openRTS panel and the DLL cab window: show / hide");
         row("F5", "the train's cars; again: the next page");
         row("Shift+F5", "the train as a whole");
         row("Ctrl+F5", "speed limits and the kilometre");

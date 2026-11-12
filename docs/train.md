@@ -181,6 +181,18 @@ As `docs/reverse/brakes.md`:
 - independent brake, handbrake, brake skids;
 - brake force from the cylinder ratio.
 
+**openRTS: distributor stability on the RTS model** (2026-11-13; the Train
+window's "Distributor stability in the RTS model (openRTS)", off by
+default, remembered; `TrainSettings::distributor_stability`). RTS's triple
+valve applies on any pipe fall below the control chamber, so a stabiliser
+taking an overcharge off at 0.12–0.18 atm/min creeps the cylinders on (the
+ЭД9М tape of 2026-11-12: 0 → 0.35 atm while the pipe fell 5.17 → 5.09). With
+the option, while a car is released, a pipe falling no faster than the
+stability (483: 0.3 atm/min, 292: 0.5) takes the control chamber down with
+it (single pipe: the auxiliary reservoir, which is the chamber there), so
+nothing applies; a faster fall outruns it and brakes as before. Test:
+`test_distributor_stability` in `tests/train_test.cpp`.
+
 **Keyboard brake valve: the 395 of the ВЛ10к DLL.** The cars keep the RTS
 triple valve, the only brake model now. The keyboard controller's valve is
 the one the ВЛ10к DLL (`tsrLoco_VL10k-1461/cab/vl10k_main.cpp`) runs on it, with the

@@ -357,6 +357,31 @@ int main() {
         check(cab.chairs.size() == 1 && cab.chairs[0].seated[2] > 6.0f, "its chair after the } is read");
     }
 
+    // CopySubObjects (the ЭП20's second cab, RTS 0x529F00): a screen takes
+    // another's objects, all of them with NumObjects 0, or a slice before
+    // its own; parents move with the objects.
+    {
+        const auto cab = parse_cab_description(utf16_file(
+            "SIMISA@@@@@@@@@@JINX0t1t______\nShape ( cab.s\n ESD_Interior ( Displays ( 3\n"
+            " Display ( ID ( 180 ) DisplayType ( SCREEN ) DisplayScreen ( TopLeft ( 0 1 0 ) TopRight ( 1 1 0 ) BottomRight ( 1 0 0 )\n"
+            "  SubObjects ( 3 SubObject ( SubID ( 0 ) Type ( FRAME ) Hint ( a ) ) SubObject ( SubID ( 1 ) Type ( FRAME ) Hint ( b ) )\n"
+            "  SubObject ( SubID ( 2 ) Type ( FRAME ) Hint ( c ) ParentSub ( 1 ) ) ) ) )\n"
+            " Display ( ID ( 181 ) DisplayType ( SCREEN ) DisplayScreen ( TopLeft ( 0 1 0 ) TopRight ( 1 1 0 ) BottomRight ( 1 0 0 )\n"
+            "  CopySubObjects ( ScreenID ( 180 ) NumObjects ( 0 ) ) ) )\n"
+            " Display ( ID ( 182 ) DisplayType ( SCREEN ) DisplayScreen ( TopLeft ( 0 1 0 ) TopRight ( 1 1 0 ) BottomRight ( 1 0 0 )\n"
+            "  SubObjects ( 1 SubObject ( SubID ( 0 ) Type ( FRAME ) Hint ( own ) ) )\n"
+            "  CopySubObjects ( ScreenID ( 180 ) StartFrom ( 1 ) NumObjects ( 2 ) InsertBefore ( 0 ) ) ) ) ) )"));
+        check(cab.ok() && cab.displays.size() == 3, "three screens");
+        if (cab.displays.size() == 3) {
+            const auto& all = cab.displays[1].screen.objects;
+            check(all.size() == 3 && all[0].hint == "a" && all[2].hint == "c" && all[2].parent == 1,
+                  "CopySubObjects with NumObjects 0 takes every object, parents kept");
+            const auto& part = cab.displays[2].screen.objects;
+            check(part.size() == 3 && part[0].hint == "b" && part[1].hint == "c" && part[2].hint == "own" && part[1].parent == 0,
+                  "a slice inserted before the screen's own, its parent moved with it");
+        }
+    }
+
     // A screen label's Alphabet with brackets in it (the EP2D's "...()+/Ё"):
     // RTS takes the block's first word, brackets and all (0x4578C0,
     // 0x458688); read as a nested block, the alphabet was lost and the

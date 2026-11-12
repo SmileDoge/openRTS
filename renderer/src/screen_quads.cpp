@@ -36,15 +36,17 @@ fn vs_main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @locati
     return out;
 }
 
+// Half a mip level sharper than the plain choice: a screen's small print
+// is read from the seat (testers, 2026-11-12: the ЭП20's БЛОК was blurry).
 @fragment
 fn fs_blend(input: VertexOut) -> @location(0) vec4<f32> {
-    let texel = textureSample(screen_texture, screen_sampler, input.uv) * input.colour;
+    let texel = textureSampleBias(screen_texture, screen_sampler, input.uv, -0.5) * input.colour;
     return texel;
 }
 
 @fragment
 fn fs_opaque(input: VertexOut) -> @location(0) vec4<f32> {
-    let texel = textureSample(screen_texture, screen_sampler, input.uv) * input.colour;
+    let texel = textureSampleBias(screen_texture, screen_sampler, input.uv, -0.5) * input.colour;
     return vec4<f32>(texel.rgb, 1.0);
 }
 )";
@@ -173,7 +175,9 @@ ScreenQuadRenderer::ScreenQuadRenderer(const WGPUDevice device, const WGPUTextur
     // ACE's levels come with the image, Rgba8ImageView::mips).
     sampler.mipmapFilter = WGPUMipmapFilterMode_Linear;
     sampler.lodMaxClamp = 32.0f;
-    sampler.maxAnisotropy = 1;
+    // openRTS: anisotropic, as the screens are seen at a slant from the seat
+    // (RTS samples them as any texture, without it).
+    sampler.maxAnisotropy = 16;
     impl.sampler = wgpuDeviceCreateSampler(device, &sampler);
 
     const WGPUShaderSourceWGSL source{.chain = {.sType = WGPUSType_ShaderSourceWGSL}, .code = wgsl_name(screen_shader)};

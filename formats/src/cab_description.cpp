@@ -352,7 +352,51 @@ CabScreen read_screen(const TextNode& node) {
             s.objects.push_back(read_screen_object(c));
         }
     }
+    for (const auto& c : node.children) {
+        if (c.name != "copysubobjects") continue;
+        const auto* from = c.child("screenid");
+        if (!from) continue; // SceneID: another scene's, not supported
+        CabScreen::Copy copy;
+        copy.screen = static_cast<std::int32_t>(number(from, 0, -1.0f));
+        copy.start = static_cast<std::uint32_t>((std::max)(number(c.child("startfrom"), 0, 0.0f), 0.0f));
+        copy.count = static_cast<std::uint32_t>((std::max)(number(c.child("numobjects"), 0, 0.0f), 0.0f));
+        copy.insert_before = static_cast<std::int32_t>(number(c.child("insertbefore"), 0, -1.0f));
+        s.copies.push_back(copy);
+    }
     return s;
+}
+
+// CopySubObjects: each screen takes the objects it copies, in the file's
+// order (a copy of a copy has what that one has by then). Parents and links
+// move with the objects.
+void copy_screen_objects(std::vector<CabDisplay>& displays) {
+    for (auto& d : displays) {
+        for (const auto& c : d.screen.copies) {
+            const CabDisplay* from = nullptr;
+            for (const auto& other : displays) {
+                if (&other != &d && other.type == CabDisplayType::screen && static_cast<std::int32_t>(other.id) == c.screen) {
+                    from = &other;
+                    break;
+                }
+            }
+            if (!from) continue;
+            const auto& source = from->screen.objects;
+            const std::size_t start = (std::min)(static_cast<std::size_t>(c.start), source.size());
+            const std::size_t left = source.size() - start;
+            const std::size_t count = c.count == 0 ? left : (std::min)(static_cast<std::size_t>(c.count), left);
+            auto& objects = d.screen.objects;
+            const std::size_t at = c.insert_before < 0 ? objects.size() : (std::min)(static_cast<std::size_t>(c.insert_before), objects.size());
+            std::vector<ScreenObject> part(source.begin() + static_cast<std::ptrdiff_t>(start),
+                                           source.begin() + static_cast<std::ptrdiff_t>(start + count));
+            const auto shift = static_cast<std::int32_t>(at) - static_cast<std::int32_t>(start);
+            for (auto& o : part) {
+                if (o.parent >= 0) o.parent += shift;
+                if (o.link >= 0) o.link += shift;
+            }
+            objects.insert(objects.begin() + static_cast<std::ptrdiff_t>(at), part.begin(), part.end());
+            d.screen_subobjects = static_cast<std::uint32_t>(objects.size());
+        }
+    }
 }
 
 CabDisplay read_display(const TextNode& node) {
@@ -648,6 +692,7 @@ CabDescription parse_cab_description(std::string_view bytes) {
         cab.display_count = static_cast<std::uint32_t>(number(displays, 0, 0));
         for (const auto& node : displays->children)
             if (node.name == "display") cab.displays.push_back(read_display(node));
+        copy_screen_objects(cab.displays);
     }
     if (const auto* lights = interior->child("lightsources")) {
         for (const auto& node : lights->children) {

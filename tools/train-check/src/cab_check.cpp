@@ -271,6 +271,9 @@ int cab_check(const core::Vfs& vfs, const std::vector<std::string>& args) {
     std::printf("lights %zu, texture changes %zu, animations %zu, signal lights %zu (scripted %d)\n", cab.lights.size(),
                 cab.texture_changes.size(), cab.animations.size(), cab.signalization.lights.size(),
                 cab.signalization.scripted ? 1 : 0);
+    for (const auto& light : cab.signalization.lights) {
+        if (!nodes.count(lower(light))) missing.push_back("signal light " + light);
+    }
     for (std::size_t i = 0; i < missing.size() && i < 30; ++i) std::printf("  no node: %s\n", missing[i].c_str());
 
     // Where the seat is in the shape: the surfaces straight below and above

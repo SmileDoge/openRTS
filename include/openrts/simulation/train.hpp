@@ -39,6 +39,10 @@ struct TrainSettings {
     // The bodies on their springs (body_motion.hpp): RTS's model (the
     // default here) or openRTS's (the viewer's setting).
     BodyMotionModel body_motion = BodyMotionModel::rts;
+    // openRTS: the RTS triple valve gets a distributor's stability (мягкость):
+    // a slow pipe fall applies nothing (docs/train.md). Off: as RTS, which
+    // applies on any fall below the reservoir, the stabiliser's too.
+    bool distributor_stability = false;
 };
 
 struct CarSetup {
@@ -428,6 +432,7 @@ public:
     void set_coupler_substeps(std::uint32_t substeps) noexcept;
     // The air brake model from the next step on.
     void set_brake_model(BrakeModel model) noexcept;
+    void set_distributor_stability(bool on) noexcept { settings_.distributor_stability = on; }
     // The body motion model from the next step on (the bodies start at rest).
     void set_body_motion(BodyMotionModel model) noexcept;
     // The model this step runs: realistic only when no controller needs RTS's.

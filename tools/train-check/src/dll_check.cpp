@@ -548,10 +548,14 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                         const auto& cs = train.cars()[i];
                         if (!o || !o->has_engine) continue;
                         std::printf("         car %zu: F %.1f kN, notch %u, rev %d, panto %u, BV %u, car force %.1f kN, flags 0x%X, "
-                                    "pipe rate %.3f, systems %u, pipe %.2f\n",
+                                    "pipe rate %.3f, systems %u, pipe %.2f, aux %.2f, cylinder %.2f, independent %.2f (wants %.2f), "
+                                    "EP %.2f (asks %.2f), UR %.2f, brake %.1f kN (DLL %.1f), ALSNOn %d, cab aspect %u\n",
                                     i, o->engine.force / 1000.0, o->engine.throttle, o->engine.reverse, o->engine.panto,
                                     o->engine.main_switch, cs.force / 1000.0, o->loco_flags, o->engine.train_pipe_rate,
-                                    static_cast<unsigned>(o->engine.systems), cs.pipe);
+                                    static_cast<unsigned>(o->engine.systems), cs.pipe, cs.auxiliary, cs.cylinder, cs.independent,
+                                    o->engine.independent_brake, cs.ep, o->engine.ep_value, o->engine.equalising,
+                                    cs.brake_force / 1000.0, o->engine.brake_force / 1000.0,
+                                    static_cast<int>(static_cast<std::int16_t>(o->engine.alsn_on)), o->cab_aspect);
                         if (!o->doors.empty()) {
                             std::printf("           doors");
                             for (const auto& d : o->doors) std::printf(" %u/%u", d.state, d.set_state);

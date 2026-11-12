@@ -240,6 +240,9 @@ public:
     [[nodiscard]] virtual bool keyboard_captured() const { return false; }
     // The scene is done: its window closes (the start menu, updated, starts again).
     [[nodiscard]] virtual bool wants_close() const { return false; }
+    // Esc closes something of the scene's this frame (the car menu, a
+    // placement in Track control): it does not show or hide the panels then.
+    [[nodiscard]] virtual bool escape_taken() const { return false; }
     // The mouse wheel works the scene (the 3-D cab) instead of zooming.
     [[nodiscard]] virtual bool takes_scroll() const { return false; }
     // Switch `id` of the driven train's cab to `state` (--capture-switch).

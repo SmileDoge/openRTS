@@ -626,6 +626,9 @@ struct PanelState {
     // RTS's Pause key (0x402FC3): the world stands still, the camera moves.
     bool paused = false;
     bool controls_tab = false; // the panel shows the keys (its "Controls" tab), not the settings
+    // Until when the hint "Esc: the panels" shows while they are hidden
+    // (set when a scene has loaded and when Esc hides them; ImGui time).
+    double panels_hint_until = -1.0;
     // The window (window_mode.hpp): the mode wanted, which the main loop
     // applies; the full screen kind Alt+Enter goes to; fixed: always a
     // window (a capture, the start menu).
@@ -818,6 +821,7 @@ public:
         if (const auto loading = scene.loading(); !loading.done) {
             draw_loading_screen(loading);
             panel.loaded_at = -1.0;
+            panel.panels_hint_until = -1.0;
             ImGui::Render();
             return;
         }
@@ -842,6 +846,35 @@ public:
             const ImVec2 at{(display.x - size.x) * 0.5f, display.y * 0.12f};
             list->AddRectFilled({at.x - 10.0f, at.y - 6.0f}, {at.x + size.x + 10.0f, at.y + size.y + 6.0f}, 0xb0000000u, 4.0f);
             list->AddText(at, 0xff40e0ffu, text);
+        }
+        // Esc shows and hides this panel and the DLL cab window, hidden at
+        // the start (testers: they cluttered the picture); not while Esc
+        // closes something of the scene's, nor in a text field.
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !scene.escape_taken() && !ImGui::GetIO().WantTextInput) {
+            set_panels_shown(!panels_shown());
+            if (!panels_shown()) panel.panels_hint_until = ImGui::GetTime() + 8.0;
+        }
+        if (!panels_shown()) {
+            // The scene's own windows and HUD as ever; its lines for the
+            // panel go nowhere.
+            ImGui::SetNextWindowPos({-10.0f, -10.0f});
+            ImGui::SetNextWindowSize({1.0f, 1.0f});
+            ImGui::Begin("##viewer_hidden", nullptr,
+                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground
+                             | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing
+                             | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
+            draw_scene_unseen(scene, camera);
+            ImGui::End();
+            if (panel.panels_hint_until < 0.0) panel.panels_hint_until = ImGui::GetTime() + 10.0;
+            if (key_hints() && ImGui::GetTime() < panel.panels_hint_until) {
+                const char* text = tr("Esc: the openRTS panel and the DLL cab window");
+                auto* list = ImGui::GetForegroundDrawList();
+                const auto size = ImGui::CalcTextSize(text);
+                list->AddRectFilled({6.0f, 6.0f}, {14.0f + size.x, 14.0f + size.y}, 0x90000000u, 3.0f);
+                list->AddText({10.0f, 10.0f}, 0xffd0d0d0u, text);
+            }
+            ImGui::Render();
+            return;
         }
         ImGui::Begin(tr("openRTS viewer###viewer"));
         // What is open and how fast it runs; then the settings, a section

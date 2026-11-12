@@ -249,7 +249,17 @@ the head cars barely moved. openRTS's instead:
   same errors as the car ahead, later.
 - **Kicks** at a bogie: a rail joint dips it (1.2 to 3.8 mm a joint, from
   the node and the joint), a junction (a node change) knocks it and jolts it
-  aside; the faster, the harder (|v| / 15 m/s, at most 2.2).
+  aside; the faster, the harder (|v| / 15 m/s, at most 2.2). Since
+  2026-11-13 (testers: the switches swayed the body smoothly instead of
+  throwing it, the joints were soft): a junction throws that end of the body
+  aside 1.5 cm at 40 km/h, up to 2 cm from 80 (a little more or less each
+  junction), on a stiff spring of its own (3.5 Hz, damping 0.55: at its
+  most within 0.2 s, over within a second), and only a tenth of the old
+  push goes into the slow sway; a joint or a frog knocks that end down by
+  its depth times |v| / 15 m/s (at most 1.5) on another (7 Hz, damping 0.5,
+  gone in half a second), and 0.4 of the old dip (0.3 at a frog) goes into
+  the slow bounce. The lateral damping is twice what it was (0.9 → 1.8
+  times the bounce's), so the smooth sway is about half.
 - **The bogies' hunting:** a lateral wave of 16 to 28 m per car (the rear
   bogie's 4 % longer, its own phase), 3.5 to 6.5 mm from 5 to 25 m/s,
   swelling and fading over 120 to 340 m.

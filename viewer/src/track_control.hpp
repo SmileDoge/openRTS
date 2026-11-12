@@ -30,6 +30,8 @@ public:
     // Signal names (route database, Ctrl+F7) by signal object.
     void set_signal_names(std::function<std::string(std::uint32_t)> names) { signal_names_ = std::move(names); }
     [[nodiscard]] bool is_open() const noexcept { return open_; }
+    // A consist is being placed (Esc drops it).
+    [[nodiscard]] bool placing() const noexcept { return placement_.active; }
     // The camera this frame, in scene coordinates against the scene's
     // current (floating) origin: the player's figure on the map.
     void set_viewer(const glm::vec3& eye, const glm::vec3& forward, const formats::RoutePosition& scene_origin) noexcept {

@@ -1233,6 +1233,9 @@ public:
         if (train_) train_->stand_at_cab_door(index);
     }
     [[nodiscard]] std::string car_menu_report() const override { return train_ ? train_->car_menu_report() : std::string{}; }
+    [[nodiscard]] bool escape_taken() const override {
+        return (train_ && train_->car_menu_open()) || (track_control_ && track_control_->is_open() && track_control_->placing());
+    }
     [[nodiscard]] std::string inspector_report() const override { return inspector_.report(inspector_world()); }
     [[nodiscard]] std::string tape_report() const override { return tape_view_.report(); }
     [[nodiscard]] std::optional<renderer::ShadowFocus> shadow_focus() const override {

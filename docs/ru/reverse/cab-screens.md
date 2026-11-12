@@ -23,7 +23,12 @@
   `ReferenceScreen ( id )` (или `ReferenceCloseup`) показывает объекты
   другого экрана вместо своих. `SubObjects ( n` выделяет n объектов по 204
   байта (`CloseUpSubObject` из ts.h); `CopySubObjects ( ScreenID | SceneID
-  StartFrom NumObjects InsertBefore IncrementID )` копирует чужие.
+  StartFrom NumObjects InsertBefore IncrementID )` копирует чужие. openRTS
+  (2026-11-13, `formats/src/cab_description.cpp`): копии по ScreenID,
+  NumObjects 0 — все начиная со StartFrom, InsertBefore (< 0 или нет — в
+  конец), родители и ссылки сдвигаются вместе с объектами; SceneID и
+  IncrementID пока не учитываются. Так вторая кабина ЭП20 копирует все
+  восемь экранов первой (раньше в openRTS они были тёмными).
 - **CONFIRMED** `0x519B8C` (подобъект): `Type` FRAME 0, ARROW 1, LINK 2,
   LABEL 3, BAR 4, GRID 5, SECTOR 6; `ParentSub` (+196, хранится + 1);
   `Hint`; `Area` / `UV` / `Activation` (x0 y0 x1 y1, 0..1) ставят флаги
@@ -121,8 +126,11 @@
   дисплей/объект, текст от DLL, `(hidden)` и `[нарисовано/всего]`, когда
   каких-то символов нет в алфавите (пробел в алфавите без пробела
   оставляет промежуток, как в RTS).
-- Не сделано: LINK (2D-сцены), сцены крупного плана, `CopySubObjects`,
-  освещение шейдеров `…Diff`.
+- `CopySubObjects` по `ScreenID` (выше). Экраны выбираются с анизотропией
+  16 и на полуровень мипа резче, чем в RTS (`renderer/src/screen_quads.cpp`;
+  тестеры жаловались, что БЛОК на ЭП20 мылит).
+- Не сделано: LINK (2D-сцены), сцены крупного плана, `CopySubObjects` по
+  `SceneID`, освещение шейдеров `…Diff`.
 
 ## Другие дисплеи (`0x525DB0`)
 

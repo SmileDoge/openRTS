@@ -607,9 +607,9 @@ void Train::reverse_cars() {
         car.body_rate[2] = -car.body_rate[2];
         if (settings_.body_motion == BodyMotionModel::openrts) {
             reverse_body(car.motion);
-            car.body[0] = car.motion.shift[0];
+            car.body[0] = car.motion.pose_shift[0];
             car.body_rate[0] = car.motion.shift_rate[0];
-            for (int axis = 0; axis < 3; ++axis) car.body_turn[axis] = car.motion.turn[axis];
+            for (int axis = 0; axis < 3; ++axis) car.body_turn[axis] = car.motion.pose_turn[axis];
         }
         car.pipe_ends = swap_ends(car.pipe_ends, pipe_hose_front, pipe_hose_rear);
         car.pipe_ends = swap_ends(car.pipe_ends, charging_hose_front, charging_hose_rear);
@@ -1192,6 +1192,19 @@ void Train::step() {
             } else {
                 car.control = car.auxiliary;
             }
+            // openRTS's stability (TrainSettings::distributor_stability):
+            // while released, a pipe falling no faster than the distributor's
+            // stability (483 0.3, 292 0.5 atm/min) takes the control chamber
+            // (on a single pipe: the reservoir) down with it, so it applies
+            // nothing; a faster fall outruns it and brakes as before.
+            if (settings_.distributor_stability && car.cylinder <= 0.0f && pipe_change < 0.0f) {
+                const float stability = (distributor_kind(*car.definition) == DistributorKind::vr483 ? 0.3f : 0.5f) / 60.0f;
+                const float floor = car.pipe - 0.2f;
+                if (car.control > floor) {
+                    car.control = (std::max)(floor, car.control - stability * dt);
+                    if (!(brakes.system & 4)) car.auxiliary = car.control;
+                }
+            }
             if (pipe_change >= 0.0f) {
                 // Charge the auxiliary reservoir from the pipe.
                 if (car.auxiliary + 0.2f < car.pipe) {
@@ -1508,7 +1521,11 @@ void Train::sway() {
                 continue;
             }
             const bool kicked = motion.input.kick_vertical[0] != 0.0f || motion.input.kick_vertical[1] != 0.0f ||
-                                motion.input.kick_lateral[0] != 0.0f || motion.input.kick_lateral[1] != 0.0f;
+                                motion.input.kick_lateral[0] != 0.0f || motion.input.kick_lateral[1] != 0.0f ||
+                                motion.input.throw_lateral[0] != 0.0f || motion.input.throw_lateral[1] != 0.0f ||
+                                motion.input.knock[0] != 0.0f || motion.input.knock[1] != 0.0f ||
+                                motion.jolt[0] != 0.0f || motion.jolt[1] != 0.0f || motion.knocked[0] != 0.0f ||
+                                motion.knocked[1] != 0.0f;
             if (car.velocity == 0.0f && !kicked) {
                 // At rest once it settles.
                 float most = 0.0f;
@@ -1530,9 +1547,9 @@ void Train::sway() {
             motion.input.base = ahead + behind;
             step_body(motion, modes, dt);
             for (int axis = 0; axis < 3; ++axis) {
-                car.body[axis] = motion.shift[axis];
+                car.body[axis] = motion.pose_shift[axis];
                 car.body_rate[axis] = motion.shift_rate[axis];
-                car.body_turn[axis] = motion.turn[axis];
+                car.body_turn[axis] = motion.pose_turn[axis];
             }
         }
         return;
@@ -1758,14 +1775,29 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
                     impl.events.push_back(
                         {.kind = TrainEventKind::junction, .car = static_cast<std::uint32_t>(i), .bogie = b});
                     if (body_motion) {
-                        // A frog and switch rails: a knock, and a jolt aside.
+                        // A frog and switch rails: a knock, and a throw aside of
+                        // 1.5 cm at 40 km/h up to 2 cm from 80 (testers,
+                        // 2026-11-12), a little more or less at each junction;
+                        // a little of it rocks the slow springs too.
                         const float depth = joint_depth(traveller->node(), 0.5 + (before.node & 0xFFFFu));
-                        car.motion.input.kick_vertical[b] += depth * 0.7f * kick;
-                        car.motion.input.kick_lateral[b] += ((traveller->node() ^ before.node) & 1u ? 1.0f : -1.0f) * depth * kick;
+                        const float speed = std::abs(car.velocity);
+                        const float size = (speed < 11.0f ? 0.015f * speed / 11.0f : 0.015f + 0.005f * (std::min)((speed - 11.0f) / 11.0f, 1.0f)) *
+                                           (0.85f + 0.3f * std::clamp((depth - 0.0012f) / 0.0026f, 0.0f, 1.0f));
+                        const float side = ((traveller->node() ^ before.node) & 1u) ? 1.0f : -1.0f;
+                        car.motion.input.throw_lateral[b] += side * size;
+                        car.motion.input.kick_lateral[b] += side * 0.1f * depth * kick;
+                        car.motion.input.kick_vertical[b] += depth * 0.3f * kick;
+                        car.motion.input.knock[b] += depth * std::clamp(speed / 15.0f, 0.0f, 1.5f);
                     }
                 } else if (joints.place(before.node, length, before.offset, along).index != place.index) {
                     impl.events.push_back({.kind = TrainEventKind::joint, .car = static_cast<std::uint32_t>(i), .bogie = b});
-                    if (body_motion) car.motion.input.kick_vertical[b] += joint_depth(traveller->node(), place.index) * kick;
+                    if (body_motion) {
+                        // A rail joint: a short, crisp knock, and less of the
+                        // slow bounce it gave before (testers, 2026-11-12).
+                        const float depth = joint_depth(traveller->node(), place.index);
+                        car.motion.input.kick_vertical[b] += depth * 0.4f * kick;
+                        car.motion.input.knock[b] += depth * std::clamp(std::abs(car.velocity) / 15.0f, 0.0f, 1.5f);
+                    }
                 }
                 if (window > 0.0) {
                     // Distance since the node end the bogie entered by.

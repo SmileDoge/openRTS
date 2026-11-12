@@ -35,6 +35,12 @@ void set_key_layout(KeyLayout layout) noexcept;
 [[nodiscard]] bool key_hints() noexcept;
 void set_key_hints(bool shown) noexcept;
 
+// The openRTS panel and the DLL cab window: hidden until Esc shows them
+// (testers, 2026-11-12: they cluttered the top of the picture); Esc hides
+// them again. Each start begins with them hidden.
+[[nodiscard]] bool panels_shown() noexcept;
+void set_panels_shown(bool shown) noexcept;
+
 // How fast the mouse turns the view (the right button's look, the orbit): a
 // factor on the usual step, 0.2..3, set in the start menu's Settings or the
 // panel's General (remembered as mouse_sensitivity). The step also narrows

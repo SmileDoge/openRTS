@@ -120,7 +120,9 @@ BodyModes body_modes(const formats::WagonDefinition& wagon, const float mass, co
     modes.roll = static_cast<float>(w * 0.6 * spread(0.1));
     modes.surge = static_cast<float>(2.0 * pi * 2.0 * spread(0.1));
     modes.vertical_damping = static_cast<float>(damping * spread(0.15));
-    modes.lateral_damping = static_cast<float>(damping * 0.9 * spread(0.15));
+    // Twice the damping aside: the smooth sway at half its size (testers,
+    // 2026-11-12: "поменять демпфера"); the junctions throw it instead.
+    modes.lateral_damping = static_cast<float>(damping * 1.8 * spread(0.15));
     modes.roll_damping = static_cast<float>(damping * 0.8 * spread(0.15));
     modes.surge_damping = 0.35f;
     modes.hunting_wavelength = static_cast<float>(16.0 + 12.0 * s.unit());
@@ -237,6 +239,45 @@ void step_body(BodyMotion& motion, const BodyModes& modes, const float dt) {
     stop(motion.turn[0], motion.turn_rate[0], 0.05f);
     stop(motion.turn[1], motion.turn_rate[1], 0.02f);
     stop(motion.turn[2], motion.turn_rate[2], 0.01f);
+
+    // The throws and knocks: a start at a size's pace (the spring's first
+    // swing peaks at about the size), stiff and well damped, in sub-steps
+    // short enough for their frequencies.
+    {
+        constexpr float throw_w = 2.0f * static_cast<float>(pi) * 3.5f, throw_zeta = 0.55f;
+        constexpr float knock_w = 2.0f * static_cast<float>(pi) * 7.0f, knock_zeta = 0.5f;
+        for (int k = 0; k < 2; ++k) {
+            motion.jolt_rate[k] += 1.92f * throw_w * in.throw_lateral[k];
+            motion.knocked_rate[k] += 1.83f * knock_w * in.knock[k];
+        }
+        constexpr int fast_steps = 20;
+        const float fh = dt / static_cast<float>(fast_steps);
+        for (int j = 0; j < fast_steps; ++j) {
+            for (int k = 0; k < 2; ++k) {
+                motion.jolt_rate[k] += (-throw_w * throw_w * motion.jolt[k] - 2.0f * throw_zeta * throw_w * motion.jolt_rate[k]) * fh;
+                motion.jolt[k] += motion.jolt_rate[k] * fh;
+                motion.knocked_rate[k] += (-knock_w * knock_w * motion.knocked[k] - 2.0f * knock_zeta * knock_w * motion.knocked_rate[k]) * fh;
+                motion.knocked[k] += motion.knocked_rate[k] * fh;
+            }
+        }
+        for (int k = 0; k < 2; ++k) {
+            if (std::abs(motion.jolt[k]) < 1e-7f && std::abs(motion.jolt_rate[k]) < 1e-6f) motion.jolt[k] = motion.jolt_rate[k] = 0.0f;
+            if (std::abs(motion.knocked[k]) < 1e-7f && std::abs(motion.knocked_rate[k]) < 1e-6f) motion.knocked[k] = motion.knocked_rate[k] = 0.0f;
+        }
+    }
+    // The pose: aside by the ends' mean, yawed by their difference; down by
+    // the knocks' mean, pitched (the front down) by theirs; a little roll
+    // with the throw.
+    for (int axis = 0; axis < 3; ++axis) {
+        motion.pose_shift[axis] = motion.shift[axis];
+        motion.pose_turn[axis] = motion.turn[axis];
+    }
+    motion.pose_shift[0] += 0.5f * (motion.jolt[0] + motion.jolt[1]);
+    motion.pose_turn[2] += (motion.jolt[0] - motion.jolt[1]) / base;
+    motion.pose_turn[0] += 0.25f * 0.5f * (motion.jolt[0] + motion.jolt[1]);
+    motion.pose_shift[1] -= 0.5f * (motion.knocked[0] + motion.knocked[1]);
+    motion.pose_turn[1] += (motion.knocked[1] - motion.knocked[0]) / base;
+
     motion.last[0] = in.bogie[0];
     motion.last[1] = in.bogie[1];
     motion.travelled += v * dt;
@@ -244,6 +285,8 @@ void step_body(BodyMotion& motion, const BodyModes& modes, const float dt) {
     for (int k = 0; k < 2; ++k) {
         in.kick_vertical[k] = 0.0f;
         in.kick_lateral[k] = 0.0f;
+        in.throw_lateral[k] = 0.0f;
+        in.knock[k] = 0.0f;
     }
 }
 
@@ -270,6 +313,24 @@ void reverse_body(BodyMotion& motion) {
     std::swap(motion.input.kick_lateral[0], motion.input.kick_lateral[1]);
     motion.input.kick_lateral[0] = -motion.input.kick_lateral[0];
     motion.input.kick_lateral[1] = -motion.input.kick_lateral[1];
+    std::swap(motion.input.throw_lateral[0], motion.input.throw_lateral[1]);
+    motion.input.throw_lateral[0] = -motion.input.throw_lateral[0];
+    motion.input.throw_lateral[1] = -motion.input.throw_lateral[1];
+    std::swap(motion.input.knock[0], motion.input.knock[1]);
+    // The ends swap; aside is the other way.
+    std::swap(motion.jolt[0], motion.jolt[1]);
+    std::swap(motion.jolt_rate[0], motion.jolt_rate[1]);
+    for (int k = 0; k < 2; ++k) {
+        motion.jolt[k] = -motion.jolt[k];
+        motion.jolt_rate[k] = -motion.jolt_rate[k];
+    }
+    std::swap(motion.knocked[0], motion.knocked[1]);
+    std::swap(motion.knocked_rate[0], motion.knocked_rate[1]);
+    // The pose follows the next step; until then the springs alone, turned.
+    for (int axis = 0; axis < 3; ++axis) {
+        motion.pose_shift[axis] = motion.shift[axis];
+        motion.pose_turn[axis] = motion.turn[axis];
+    }
 }
 
 } // namespace openrts::simulation

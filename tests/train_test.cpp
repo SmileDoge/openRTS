@@ -502,6 +502,41 @@ void test_ept() {
     check(most < 0.05f, "II releases the EP brake");
 }
 
+// openRTS's stability on the RTS model: an overcharge removed at the
+// stabiliser's pace creeps the cylinders on without it (as RTS), not with it;
+// a service step still brakes with it.
+void test_distributor_stability(const Stock& stock) {
+    using Handle = simulation::DriverHandles::BrakeHandle;
+    const auto creep = [&](const bool stable) {
+        simulation::TrainSettings settings;
+        settings.distributor_stability = stable;
+        Run r(stock, settings, 1000.0);
+        r.run(240.0);
+        // An overcharge of 0.6 in the УР, held until the train has it ...
+        r.driver->brake = Handle::lap_feed;
+        r.driver->equalising += 0.6f;
+        r.run(120.0);
+        // ... then taken off at 0.15 atm/min, as a stabiliser does.
+        r.max_cylinder = 0.0f;
+        for (int i = 0; i < static_cast<int>(240.0 / simulation::train_step); ++i) {
+            r.driver->equalising -= 0.15f / 60.0f * static_cast<float>(simulation::train_step);
+            r.run(simulation::train_step);
+        }
+        const float crept = r.max_cylinder;
+        // A service step brakes all the same.
+        r.driver->brake = Handle::service;
+        r.run(4.0);
+        r.driver->brake = Handle::lap;
+        r.run(10.0);
+        return std::pair{crept, r.train.cars().back().cylinder};
+    };
+    const auto [rts_creep, rts_step] = creep(false);
+    const auto [stable_creep, stable_step] = creep(true);
+    check(rts_creep > 0.2f, "RTS model: an overcharge removed slowly creeps the cylinders (" + std::to_string(rts_creep) + ")");
+    check(stable_creep < 0.05f, "stability: no creep (" + std::to_string(stable_creep) + ")");
+    check(stable_step > 0.3f && rts_step > 0.3f, "stability: a service step still brakes (" + std::to_string(stable_step) + ")");
+}
+
 // openRTS realistic air (docs/train.md): stability, service, release, emergency;
 // a controller tuned to RTS's triple valve keeps the RTS model.
 void test_realistic_air(const Stock& stock) {
@@ -799,6 +834,7 @@ int main() {
     test_contacts(stock);
     test_ept();
     test_realistic_air(stock);
+    test_distributor_stability(stock);
     test_car_menu(stock);
     test_broken_and_sand(stock);
     test_engine_keys();

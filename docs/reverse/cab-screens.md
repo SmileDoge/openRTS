@@ -20,7 +20,12 @@ rts1.exe; findings from the decompiled code, on a copy of the database.
   (or `ReferenceCloseup`) shows another screen's objects instead of its own.
   `SubObjects ( n` allocates n objects of 204 bytes (ts.h
   `CloseUpSubObject`); `CopySubObjects ( ScreenID | SceneID StartFrom
-  NumObjects InsertBefore IncrementID )` copies others.
+  NumObjects InsertBefore IncrementID )` copies others. openRTS (2026-11-13,
+  `formats/src/cab_description.cpp`): ScreenID copies, NumObjects 0 as all
+  from StartFrom, InsertBefore (< 0 or none: at the end), parents and links
+  moved with the objects; SceneID and IncrementID are not taken yet. The
+  ЭП20's second cab copies all eight of the first cab's screens so (its
+  screens were dark in openRTS before).
 - **CONFIRMED** `0x519B8C` (sub-object): `Type` FRAME 0, ARROW 1, LINK 2,
   LABEL 3, BAR 4, GRID 5, SECTOR 6; `ParentSub` (+196, stored + 1); `Hint`;
   `Area` / `UV` / `Activation` (x0 y0 x1 y1, 0..1) set flags 0x20 / 0x80 /
@@ -112,8 +117,11 @@ rts1.exe; findings from the decompiled code, on a copy of the database.
   display/object, the text the DLL wrote, `(hidden)`, and `[drawn/all]`
   when some characters are not in the alphabet (a space in an alphabet
   without one leaves a gap, as in RTS).
-- Not done: LINK (2-D scenes), close-up scenes, `CopySubObjects`, the
-  lighting of the `…Diff` shaders.
+- `CopySubObjects` by `ScreenID` (above). The screens are sampled
+  anisotropically (16) and half a mip level sharper than RTS samples them
+  (`renderer/src/screen_quads.cpp`; testers found the ЭП20's БЛОК blurry).
+- Not done: LINK (2-D scenes), close-up scenes, `CopySubObjects` by
+  `SceneID`, the lighting of the `…Diff` shaders.
 
 ## The other displays (`0x525DB0`)
 

@@ -120,6 +120,19 @@ struct CabScreen {
     std::array<float, 3> top_left{}, top_right{}, bottom_right{};
     std::int32_t reference_screen = -1; // ReferenceScreen ( display ID ): shows that screen's objects
     std::vector<ScreenObject> objects;
+    // CopySubObjects ( ScreenID StartFrom NumObjects InsertBefore ) (RTS
+    // 0x529F00, docs/reverse/cab-screens.md): objects of another screen
+    // copied into this one's, with states of their own (the ЭП20's second
+    // cab copies the first's screens this way). NumObjects 0: all from
+    // StartFrom; InsertBefore < 0: at the end. Done by the parser, after
+    // every display is read; SceneID copies are not supported.
+    struct Copy {
+        std::int32_t screen = -1;
+        std::uint32_t start{};
+        std::uint32_t count{};
+        std::int32_t insert_before = -1;
+    };
+    std::vector<Copy> copies;
 };
 
 struct CabDisplay {

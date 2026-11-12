@@ -151,6 +151,44 @@ int main() {
         check(most < 1e-4f, "and dies away");
     }
 
+    // A junction's throw: 1.5-2 cm aside within a fifth of a second, over
+    // within a second (not the slow sway); a joint's knock: down and back
+    // within a few hundredths, gone in half a second.
+    {
+        BodyMotion body;
+        body.seed = 11;
+        const auto modes = body_modes(wagon, wagon.mass, body.seed);
+        body.input.base = 15.0f;
+        body.input.throw_lateral[0] = 0.018f;
+        body.input.throw_lateral[1] = 0.018f;
+        float most = 0.0f, late = 0.0f;
+        int peak_step = 0;
+        for (int step = 0; step < 40; ++step) {
+            step_body(body, modes, dt);
+            if (std::abs(body.pose_shift[0]) > most) {
+                most = std::abs(body.pose_shift[0]);
+                peak_step = step;
+            }
+            if (step * dt > 1.0f) late = (std::max)(late, std::abs(body.jolt[0]));
+        }
+        check(most > 0.012f && most < 0.025f, "a junction throws the body aside: " + std::to_string(most) + " m");
+        check((peak_step + 1) * dt <= 0.2f, "sharply: at its most after " + std::to_string((peak_step + 1) * dt) + " s");
+        check(late < 0.001f, "and the throw is over within a second: " + std::to_string(late) + " m");
+
+        BodyMotion knock;
+        knock.seed = 12;
+        knock.input.base = 15.0f;
+        knock.input.knock[0] = 0.003f;
+        float deepest = 0.0f, after = 0.0f;
+        for (int step = 0; step < 20; ++step) {
+            step_body(knock, modes, dt);
+            if (step == 0) deepest = -knock.pose_shift[1];
+            if (step * dt >= 0.5f) after = (std::max)(after, std::abs(knock.knocked[0]));
+        }
+        check(deepest > 0.0003f, "a joint knocks the front down at once: " + std::to_string(deepest) + " m");
+        check(after < 0.0002f, "and the knock is gone in half a second: " + std::to_string(after) + " m");
+    }
+
     // Turned twice: the same motion.
     {
         BodyMotion body;

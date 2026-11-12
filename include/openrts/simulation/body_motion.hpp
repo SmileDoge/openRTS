@@ -58,8 +58,15 @@ struct BodyModes {
 // (CarState::body[0]).
 struct BodyInput {
     TrackIrregularity bogie[2]; // the track under each bogie, in the car's axes
-    float kick_vertical[2]{};   // m/s downwards at the bogie (a rail joint, a junction)
-    float kick_lateral[2]{};    // m/s towards the lateral axis (a junction)
+    float kick_vertical[2]{};   // m/s downwards at the bogie (a rail joint, a junction): the slow springs
+    float kick_lateral[2]{};    // m/s towards the lateral axis: the slow springs
+    // A junction throws the bogie's end aside this far (m, towards the
+    // lateral axis): a sharp throw of its own, not the slow sway (testers,
+    // 2026-11-12: 1.5-2 cm by the speed).
+    float throw_lateral[2]{};
+    // A rail joint or a frog knocks the bogie's end down this far (m): a
+    // short, crisp knock of its own.
+    float knock[2]{};
     float speed{};              // m/s, its size
     float lateral_acceleration{}; // m/s^2 the curve gives the car towards its lateral axis (v^2 * curvature)
     float acceleration{};       // m/s^2 towards the train front
@@ -81,6 +88,14 @@ struct BodyMotion {
     bool started = false;        // `last` holds a step
     std::uint64_t seed = 0;      // 0: not given yet
     BodyInput input{};           // this step's, filled as the train moves
+    // Each end's throw aside and knock down (m, m/s): stiff, well damped
+    // springs of their own, over in a fraction of a second.
+    float jolt[2]{}, jolt_rate[2]{};
+    float knocked[2]{}, knocked_rate[2]{};
+    // The pose: the springs above with the throws and knocks on top, in the
+    // axes of shift and turn. What the car shows.
+    float pose_shift[3]{};
+    float pose_turn[3]{};
 };
 
 // One step (`dt` s, in sub-steps) of `motion` with its `input`; the input's

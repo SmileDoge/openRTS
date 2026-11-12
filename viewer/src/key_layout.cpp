@@ -10,6 +10,7 @@ namespace {
 
 KeyLayout current = KeyLayout::openrts;
 bool hints = true;
+bool panels = false;
 float sensitivity = 1.0f;
 float head = default_head_motion;
 simulation::RailJointLayout joints = simulation::RailJointLayout::openrts;
@@ -24,6 +25,10 @@ void set_key_layout(const KeyLayout layout) noexcept { current = layout; }
 bool key_hints() noexcept { return hints; }
 
 void set_key_hints(const bool shown) noexcept { hints = shown; }
+
+bool panels_shown() noexcept { return panels; }
+
+void set_panels_shown(const bool shown) noexcept { panels = shown; }
 
 float mouse_sensitivity() noexcept { return sensitivity; }
 
