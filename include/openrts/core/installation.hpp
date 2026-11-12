@@ -35,4 +35,11 @@ void mount_installation(Vfs& vfs, const std::filesystem::path& root, const Insta
 // ROUTES, TRAINS, GLOBAL or PACKS.
 [[nodiscard]] std::optional<std::filesystem::path> find_installation_root(const std::filesystem::path& inside);
 
+// The installation Windows knows of. rts1.exe finds itself as MSTS did:
+// HKLM\SOFTWARE\Microsoft\Microsoft Games\Train Simulator\1.0, value Path,
+// else EXEPath ("MSTS not installed" without them), in the 32-bit view
+// (WOW6432Node); RTS's installers and MDD Launcher write it. The folder
+// holding ROUTES, or nullopt (none, or not Windows).
+[[nodiscard]] std::optional<std::filesystem::path> registered_installation();
+
 } // namespace openrts::core

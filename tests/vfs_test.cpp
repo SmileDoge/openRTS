@@ -256,6 +256,15 @@ int main() {
     test_layers_and_references(work / "install");
     test_watching(work / "install");
 
+    // The installation Windows knows of (RTS's registry key): none, or a
+    // folder that holds ROUTES (this machine's own, printed).
+    if (const auto registered = openrts::core::registered_installation()) {
+        check(fs::is_directory(*registered / "ROUTES"), "the registered installation holds ROUTES");
+        std::cout << "registered installation: " << registered->string() << '\n';
+    } else {
+        std::cout << "registered installation: none\n";
+    }
+
     fs::remove_all(work);
     if (failures == 0) std::cout << "vfs: all checks passed\n";
     return failures == 0 ? 0 : 1;

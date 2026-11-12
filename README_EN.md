@@ -12,7 +12,7 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.8.0](../../releases/tag/v0.8.0):
+> Work in progress. The latest version is [v0.8.1](../../releases/tag/v0.8.1):
 > a nearly playable game. Driving from a 3-D cab with RTS's locomotive
 > DLLs, signalling, the Track control window, a living route (forests,
 > level crossings, road traffic, water, rain and snow, smoke), sound by the
@@ -201,7 +201,7 @@ menu, the game, the locomotive DLL host, the tools, `wgpu_native.dll`) are in
 **Releases**; how to install and run them is in [INSTALL_EN.md](INSTALL_EN.md):
 - **nightly** — a pre-release with the latest `master` build, replaced
   automatically; the window's title and the settings mark its version with
-  the commit, e.g. "openRTS 0.8.0 (nightly abc1234)";
+  the commit, e.g. "openRTS 0.8.1 (nightly abc1234)";
 - **vX.Y.Z** — versions; the release is created automatically when a version
   tag is pushed.
 

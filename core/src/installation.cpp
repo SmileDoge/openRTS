@@ -4,6 +4,17 @@
 #include <fstream>
 #include <map>
 #include <string_view>
+#include <system_error>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace openrts::core {
 namespace fs = std::filesystem;
@@ -129,6 +140,26 @@ void mount_installation(Vfs& vfs, const fs::path& root, const InstallationConfig
         }
     }
     vfs.build_index();
+}
+
+std::optional<fs::path> registered_installation() {
+#ifdef _WIN32
+    constexpr const wchar_t* key = L"SOFTWARE\\Microsoft\\Microsoft Games\\Train Simulator\\1.0";
+    // rts1.exe reads Path, then EXEPath; MDD Launcher writes "EXE Path" too.
+    for (const wchar_t* name : {L"Path", L"EXEPath", L"EXE Path"}) {
+        for (const DWORD view : {static_cast<DWORD>(RRF_SUBKEY_WOW6432KEY), static_cast<DWORD>(RRF_SUBKEY_WOW6464KEY)}) {
+            wchar_t value[1024]{};
+            DWORD size = sizeof value;
+            if (RegGetValueW(HKEY_LOCAL_MACHINE, key, name, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | view, nullptr, value, &size) != ERROR_SUCCESS) {
+                continue;
+            }
+            const fs::path folder(value);
+            std::error_code error;
+            if (!folder.empty() && fs::is_directory(folder / "ROUTES", error)) return folder;
+        }
+    }
+#endif
+    return std::nullopt;
 }
 
 std::optional<fs::path> find_installation_root(const fs::path& inside) {

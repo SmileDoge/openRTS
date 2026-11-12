@@ -17,7 +17,8 @@ openRTS changes nothing in it.
   Without it Windows reports `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` or
   `MSVCP140.dll` missing. The x64 version is needed; x86 will not do.
 - **Your own RTrainSim installation** with routes and consists: the folder
-  holding `rts1.exe`, `ROUTES`, `TRAINS`, `GLOBAL` and `SOUND`.
+  holding `ROUTES`, `TRAINS` (with `TRAINSET` in it), `GLOBAL` and `SOUND`.
+  `rts1.exe` itself lies deeper, in its `RTS` folder.
 
 ## Installing
 
@@ -56,8 +57,13 @@ What the archive holds:
 
 1. **Run `openrts_game.exe`.** The interface starts in Russian; switch it
    to English under Settings (Язык / Language).
-2. **RTS folder:** give the folder with `rts1.exe` and press Read. The
-   route list should appear.
+2. **RTS folder:** usually found by itself: the menu takes it from the
+   Windows registry, where RTS itself looks (its installer and MDD
+   Launcher write the path there), or finds the installation when openRTS
+   is unpacked inside it. Otherwise give the installation's top folder, the
+   one holding `ROUTES` and `TRAINS` (not the `RTS` folder with
+   `rts1.exe`), and press Read; "From the registry" brings back the one the
+   registry names. The route list should appear.
 3. **What to run:** choose a route, a consist and a train path. Set the
    time, season and weather.
    - **Train start:** the state the engine starts in (running, switched
@@ -229,7 +235,7 @@ included, so depth effects reach them too.
 |---|---|
 | `VCRUNTIME140.dll` / `MSVCP140.dll` not found | Install the Visual C++ Redistributable **x64** |
 | "openrts_viewer.exe is not found next to the menu" | Unpack the whole archive; do not move the exe files one by one |
-| "There is no ROUTES folder here" | Give the folder holding `rts1.exe` |
+| "There is no ROUTES folder here" | Give the folder holding `ROUTES` and `TRAINS`: one level above the `RTS` folder with `rts1.exe` |
 | No window, or a black screen | Update the graphics driver (Vulkan or DirectX 12 is needed). In the start menu's Settings choose Graphics API → DirectX 12. Look for `WebGPU error` lines in `openrts.log` |
 | A DLL locomotive does not respond, the cab window is empty | `openrts-dllhost32.exe` must sit next to `openrts_viewer.exe`. An antivirus may block it — add the folder to its exclusions. The reason is written to `openrts.log` |
 | Low frame rate | Turn experimental renderer off (`R`), or shadows and occlusion in the openRTS panel; lower anti-aliasing |

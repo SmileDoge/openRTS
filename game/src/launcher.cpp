@@ -311,6 +311,7 @@ struct Launcher::State {
     int fps_limit = 0; // the game's FPS limit, shared with its panel ("fps_limit"): 0 none, 30..500
     viewer::WindowMode window_mode = viewer::WindowMode::windowed; // the game's window ("window_mode"), shared with its panel
     std::string status;
+    bool registry_missing = false; // "From the registry" found nothing
     Tab tab = Tab::single;
     bool select_tab = true; // the tab bar is told to show `tab` on the next frame
     // Network play: the server ("host[:port]", port 800 when none is given),
@@ -430,6 +431,10 @@ struct Launcher::State {
                     from = from.parent_path();
                 }
             }
+        }
+        // Else the one Windows knows of (RTS's own key, MDD Launcher's too).
+        if (folder.empty()) {
+            if (const auto registered = core::registered_installation()) folder = *registered;
         }
         set_root(folder);
         minutes = std::clamp(remembered_int("launcher_time", 12 * 60), 0, 24 * 60 - 1);
@@ -1211,10 +1216,12 @@ void Launcher::State::draw_settings(const float height) {
             form_row(tr("RTS folder"));
             const char* read = tr("Read");
             const char* browse = tr("Browse...");
+            const char* registry = tr("From the registry");
             const float pad = ImGui::GetStyle().FramePadding.x * 2.0f + 24.0f;
             const float read_width = ImGui::CalcTextSize(read).x + pad;
             const float browse_width = ImGui::CalcTextSize(browse).x + pad;
-            ImGui::SetNextItemWidth(-(read_width + browse_width + spacing * 2.0f));
+            const float registry_width = ImGui::CalcTextSize(registry).x + pad;
+            ImGui::SetNextItemWidth(-(read_width + browse_width + registry_width + spacing * 3.0f));
             const bool entered = ImGui::InputText("##root", root_text.data(), root_text.size(), ImGuiInputTextFlags_EnterReturnsTrue);
             ImGui::SameLine();
             bool chosen = false;
@@ -1229,10 +1236,23 @@ void Launcher::State::draw_settings(const float height) {
                 }
             }
             ImGui::SameLine();
+            if (ImGui::Button(registry, {registry_width, 0.0f})) {
+                // RTS's own key (MSTS's before it): where the installers put it.
+                const auto folder = core::registered_installation();
+                registry_missing = !folder;
+                if (folder) {
+                    set_root(*folder);
+                    chosen = true;
+                }
+            }
+            ImGui::SameLine();
             if (ImGui::Button(read, {read_width, 0.0f}) || entered || chosen) {
                 set_root(from_utf8(std::string(root_text.data())));
                 scan();
-                if (is_installation(root)) remember("root", utf8(root));
+                if (is_installation(root)) {
+                    remember("root", utf8(root));
+                    registry_missing = false;
+                }
             }
             int language = viewer::ui_language() == viewer::UiLanguage::russian ? 0 : 1;
             const char* languages[] = {"Русский", "English"};
@@ -1276,6 +1296,7 @@ void Launcher::State::draw_settings(const float height) {
         } else {
             warning(tr("There is no ROUTES folder here: give the RTS folder."));
         }
+        if (registry_missing) warning(tr("Windows's registry names no RTS folder with ROUTES (Microsoft Games\\Train Simulator\\1.0, Path)."));
         ImGui::Spacing();
         ImGui::SeparatorText(tr("Sound"));
         if (begin_form("##sound_form", label_width)) {
