@@ -921,6 +921,11 @@ private:
     // Where the body's move carries the point `eye` (scene) of car `i`: the
     // cab camera, the cab itself drawn at rest (RTS 0x424488).
     [[nodiscard]] glm::vec3 sway_offset(const Unit& unit, std::size_t i, const glm::vec3& eye) const;
+    // How much of the body's move carries the cab camera: RTS's model moves
+    // it by the offsets times engineer.Mass / 180 (0x4F5B34: 0.0111 * mass *
+    // 0.5; config.ini, 90 by default: 0.5, the installations' 65: 0.36);
+    // openRTS's body carries the eye whole.
+    [[nodiscard]] float cab_sway_share(const Unit& unit) const;
     // The driver's head in car `i` (head_motion.hpp, the setting
     // head_motion()): one frame of it, its nod, tilt and shift on `camera`.
     void move_head(const Unit& unit, std::size_t i, float elapsed, ViewerCamera& camera);
@@ -1025,6 +1030,9 @@ private:
     // RTS number.
     [[nodiscard]] std::string car_label(const Car& car) const;
     float frame_elapsed_{};
+    // Cab keys held down work again once per KeyDelay (RTS 0x414340).
+    KeyRepeat cab_key_repeat_;
+    double key_clock_ = 0.0; // s of frames, for the key delay
     // The driven train without a DLL: openRTS's default systems.
     bool horn_ = false;
     bool bell_ = false;

@@ -12,7 +12,7 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.8.1](../../releases/tag/v0.8.1):
+> Work in progress. The latest version is [v0.8.2](../../releases/tag/v0.8.2):
 > a nearly playable game. Driving from a 3-D cab with RTS's locomotive
 > DLLs, signalling, the Track control window, a living route (forests,
 > level crossings, road traffic, water, rain and snow, smoke), sound by the
@@ -201,7 +201,7 @@ menu, the game, the locomotive DLL host, the tools, `wgpu_native.dll`) are in
 **Releases**; how to install and run them is in [INSTALL_EN.md](INSTALL_EN.md):
 - **nightly** — a pre-release with the latest `master` build, replaced
   automatically; the window's title and the settings mark its version with
-  the commit, e.g. "openRTS 0.8.1 (nightly abc1234)";
+  the commit, e.g. "openRTS 0.8.2 (nightly abc1234)";
 - **vX.Y.Z** — versions; the release is created automatically when a version
   tag is pushed.
 
@@ -391,6 +391,7 @@ the Train window)
 | F12 | the inspector: a tree of the map's objects and trains, the chosen one's properties, the shape's materials (FullBright as ordinary, into a mod), `docs/inspector.md` |
 | RMB + mouse | look round |
 | Mouse | click works a control, the wheel moves a handle a step (never a button or a switch), dragging moves handles and blinds |
+| Cab keys | as in RTS: a key held steps again once per `KeyDelay` of RTS's `config.ini` (200 ms in the installations), e.g. the crane runs through its positions while held |
 | Wheel at the chair | off the controls, the head nearer to what the cursor points at, or back |
 | Alt | captions of the controls |
 

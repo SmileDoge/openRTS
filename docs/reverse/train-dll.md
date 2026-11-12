@@ -728,6 +728,20 @@ without compliance and RTS refuses it too.
   button steps up (a released one takes the click step); let go, the switch
   steps towards `FixedState` one position per key delay. Without
   `FixedState ( x )` the rest position is 0.
+- **CONFIRMED** held keys (`0x414340`, called every frame from `0x424488`
+  while not paused; switch record +72 / +73 the up key and its modifiers,
+  +74 / +75 the down key and its, +96 the time of its last key step): a key
+  is polled (`GetAsyncKeyState`) with exactly the modifiers bound, and a
+  switch steps again once `key_delay` ms have passed since its last key
+  step: config.ini `KeyDelay` (`0x405D2C`, 600 without it; both
+  installations here 200). So a held key steps every delay: a two-key
+  switch one position in its direction (a crane runs through its
+  positions, stopping where the DLL refuses), a one-key switch its click
+  step. Within the delay the other direction works at once, the same one
+  waits (a quick second tap of the same key is lost). openRTS
+  (`viewer/src/key_repeat.cpp`, 2026-11-12; before, one step a press): a
+  held key works again each delay, DLL and native cabs alike; a press
+  always works at once.
 - **CONFIRMED** dragged controls (`0x4121BC`; switch fields: +44 State, +48
   SetState, +68 Flags, +84 the frame in states, +88 / +92 `SwitchPrecision`
   PrecX / PrecY; the node state +16 its frame, +32 frames, +36 states):

@@ -203,6 +203,11 @@ openrts_configure_target(openrts_tape_test)
 target_link_libraries(openrts_tape_test PRIVATE openrts_simulation)
 add_test(NAME openrts.tape COMMAND openrts_tape_test)
 
+# Cab keys held down repeat once per key delay (RTS 0x414340).
+add_executable(openrts_key_repeat_test key_repeat_test.cpp ../viewer/src/key_repeat.cpp)
+openrts_configure_target(openrts_key_repeat_test)
+add_test(NAME openrts.key_repeat COMMAND openrts_key_repeat_test)
+
 # openRTS's body motion: the track's errors, cars not in step, curves, joints.
 add_executable(openrts_body_motion_test body_motion_test.cpp)
 openrts_configure_target(openrts_body_motion_test)

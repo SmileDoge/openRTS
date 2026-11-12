@@ -24,6 +24,8 @@
 #include <openrts/renderer/rts_sky.hpp>
 #include <openrts/renderer/scene_effects.hpp>
 
+#include "key_repeat.hpp"
+
 #include "camera.hpp"
 
 namespace openrts::viewer {
@@ -92,12 +94,6 @@ struct WorldLine {
 };
 
 // Keys the scene reacts to this frame (edges are "pressed this frame").
-// A key going down or up, for cab keys bound by the content (AssignKey).
-struct KeyEvent {
-    int key{};     // GLFW key code
-    bool down = false;
-    bool shift = false, ctrl = false, alt = false;
-};
 
 struct SceneInput {
     // The eye the train's lights are seen from (--capture-camera, whose

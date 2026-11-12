@@ -205,9 +205,15 @@ Use: only the driven engine's offsets, times player mass · 0.0055, move the
 cab camera (`0x424488`); the car shapes are drawn without them. openRTS
 applies them to the car bodies too (viewer slider, 1 = this size); in the cab
 the player is in, the cab shape stays at rest and the camera takes the
-offsets, so the cab sways around the driver as in RTS. (The 0.0055 factor was
-not found again as a constant: UNKNOWN; openRTS moves the camera by the
-offsets times the slider.) openRTS draws the offsets between the last two
+offsets, so the cab sways around the driver as in RTS. The factor is
+CONFIRMED (2026-11-12): `0x4F5B34` moves the camera by the offsets times
+0.0111 · `player_mass` · 0.5, that is mass / 180, and `player_mass` is
+config.ini's `engineer.mass` (`0x405D2C`, 90 when missing: 0.5; both
+installations here have `engineer.Mass = 65`: 0.36). openRTS with RTS's
+model takes the same share (`TrainView::cab_sway_share`); before, it moved
+the camera by the whole offsets, nearly three times RTS's sway in the cab.
+With openRTS's model the body carries the eye whole. openRTS draws the
+offsets between the last two
 0.05 s steps, like the cars' places (2026-11-08); before, the cab jerked at
 20 Hz however high the frame rate.
 

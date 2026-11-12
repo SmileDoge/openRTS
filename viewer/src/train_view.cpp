@@ -35,6 +35,7 @@
 #endif
 
 #include "key_layout.hpp"
+#include "rts_config.hpp"
 #include "ui_text.hpp"
 #include "viewer_state.hpp"
 
@@ -3832,16 +3833,26 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     // Where the engineer's eye is in his cab: a key works a CHECKDISTANCEONPRESS
     // switch within its Radius only (key_reaches: the desk he is at).
     const auto key_eye = eye_in_cab(camera.eye());
+    // A key held works its switch again once per key delay (RTS's
+    // config.ini KeyDelay, ms; 600 without it).
+    key_clock_ += elapsed;
+    std::vector<KeyEvent> keys;
+    if (keys_live) {
+        const float delay = rts_config_value(rts_config_, "keydelay").value_or(600.0f) * 0.001f;
+        keys = cab_key_repeat_.step(input.keys, key_clock_, delay);
+    } else {
+        cab_key_repeat_.clear();
+    }
     if (legacy_) {
         if (keys_live) {
-            for (const auto& key : input.keys) legacy_->key(key, key_eye);
+            for (const auto& key : keys) legacy_->key(key, key_eye);
         } else if (keys_were_live_) {
             legacy_->release_keys();
         }
     }
     if (native_ && keys_live) {
-        // The native cab's AssignKey keys (presses only).
-        for (const auto& key : input.keys) {
+        // The native cab's AssignKey keys (presses, and again while held).
+        for (const auto& key : keys) {
             if (!key.down) continue;
             const auto* cab = engineer_cab();
             for (const auto& b : native_bindings_) {
@@ -7297,13 +7308,19 @@ TrainView::BodyOffset TrainView::body_sway(const Unit& unit, const std::size_t i
     return {glm::vec3{car.body[0], car.body[1], car.body[2]}, glm::vec3{car.body_turn[0], car.body_turn[1], car.body_turn[2]}};
 }
 
+float TrainView::cab_sway_share(const Unit& unit) const {
+    if (!unit.train || unit.train->settings().body_motion != simulation::BodyMotionModel::rts) return 1.0f;
+    const float mass = rts_config_value(rts_config_, "engineer.mass").value_or(90.0f);
+    return mass / 180.0f;
+}
+
 glm::vec3 TrainView::sway_offset(const Unit& unit, const std::size_t i, const glm::vec3& eye) const {
     if (sway_scale_ <= 0.0f || i >= unit.cars.size() || i >= unit.train->cars().size()) return {};
     const auto rest = body_pose(unit, i, false);
     const auto moving = body_pose(unit, i, true);
     if (!rest || !moving) return {};
     const glm::vec3 carried{moving->transform * glm::inverse(rest->transform) * glm::vec4{eye, 1.0f}};
-    return carried - eye;
+    return (carried - eye) * cab_sway_share(unit);
 }
 
 void TrainView::move_head(const Unit& unit, const std::size_t i, const float elapsed, ViewerCamera& camera) {
@@ -7314,7 +7331,7 @@ void TrainView::move_head(const Unit& unit, const std::size_t i, const float ela
     }
     const auto& state = unit.train->cars()[i];
     // The body as the camera is carried by it (the sway slider's size).
-    const glm::vec3 body = body_sway(unit, i).shift * sway_scale_;
+    const glm::vec3 body = body_sway(unit, i).shift * sway_scale_ * cab_sway_share(unit);
     // At rest in a car he entered; after a long frame (a load, a hitch) not
     // thrown by it.
     if (!head_.started || head_car_ != unit.cars[i].key || elapsed > 0.25f) {
