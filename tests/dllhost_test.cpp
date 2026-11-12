@@ -141,6 +141,29 @@ int main(int argc, char** argv) {
     check(std::abs(reply.cars[1].engine.equalising - 4.25f) < 1e-6f, "the master wrote into the slave's Engine");
     check(std::abs(reply.cars[0].engine.brake_force - 2.0f) < 1e-6f, "Run saw the velocity");
     check(std::abs(reply.cars[0].engine.power - 1.0f) < 1e-6f, "RTSGetInteger(TRAINDIR) answered 1");
+    check(reply.cars[0].engine.wheelslip == 0 && !reply.tape_set, "no tape: RTSGetInteger(7) answers 0");
+    // The tape (RTS 0x43929C / 0x43939C).
+    {
+        StepRequest s = step;
+        s.tape_car = 1; // rolling on the slave
+        check(host->step(s, reply), "step with the tape on car 1");
+        check(reply.cars[0].engine.wheelslip == 10 && reply.cars[1].engine.wheelslip == 31,
+              "RTSGetInteger(7): 1 on another engine, 3 on its own (LocoFlags 0x10000)");
+        s.cars[0].velocity = 77.0f; // car 0 asks for it (1): refused, it rolls on another
+        check(host->step(s, reply) && reply.cars[0].engine.wheelslip == 10 && !reply.tape_set,
+              "RTSSetIntegerG(7, 1) while another engine records: 0, nothing changes");
+        s.cars[0].velocity = 79.0f; // 2 | 4: take it over
+        check(host->step(s, reply) && reply.tape_set && reply.tape_restart && reply.tape_car == 0,
+              "RTSSetIntegerG(7, 6) takes the tape over");
+        check(reply.cars[0].engine.wheelslip == 131, "it answered 1, then RTSGetInteger(7) said 3 with LocoFlags 0x10000");
+        s.tape_car = 0;
+        s.cars[0].velocity = 77.0f; // rolling on itself already: 2
+        check(host->step(s, reply) && !reply.tape_set && reply.cars[0].engine.wheelslip == 231,
+              "RTSSetIntegerG(7, 1) on its own tape: 2");
+        s.cars[0].velocity = 78.0f; // 0: stop it
+        check(host->step(s, reply) && reply.tape_set && reply.tape_car == -1 && reply.cars[0].engine.wheelslip == 100,
+              "RTSSetIntegerG(7, 0) stops it: 1, then not rolling, the flag cleared");
+    }
     // Parameters by name (the host keeps the answers): each car its own
     // object for the same names; case aside, the first match; none missing.
     for (int again = 0; again < 3; ++again) {

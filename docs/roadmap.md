@@ -51,8 +51,9 @@ Leftovers from earlier steps (2026-11-01):
 ## What is needed
 
 Current focus: single-player driving and multiplayer. Simple AI trains are
-in scope as a testing tool; activities and full AI traffic are deferred to
-the end. Order follows dependencies; items in the
+in scope as a testing tool; full AI traffic is deferred to the end (RTS's
+scenarios and their traffic came early, step 7). Order follows
+dependencies; items in the
 same step can be done in parallel.
 
 ### 1. Track network (foundation for everything else)
@@ -432,9 +433,11 @@ yet. Each stage ends with something that runs and is checked:
 
 Not planned yet; tested by the code reading only.
 
-### 7. Activities and full AI traffic (deferred)
+### 7. Activities and full AI traffic (started 2026-11-10)
 
-Deferred until single-player driving and multiplayer work.
+Deferred until single-player driving and multiplayer work, except RTS's
+scenarios and their traffic trains, taken up early (2026-11-10) so that the
+community's scenarios can be played.
 
 - `.act`/`.srv`/`.trf`: services, timetables, player train placement.
   Started 2026-11-10 with RTS's scenarios (`RTS_ACT/*.act`,
@@ -547,8 +550,7 @@ None of it blocks multiplayer.
   wires from the catenary types.
 
 **Later, planned:** Lua plugins and replaceable train systems, cars as
-entities (both below), activities and full AI traffic (step 7), PBR
-(step 8).
+entities (both below), full AI traffic (step 7), PBR (step 8).
 
 ## Train plugins in Lua and replaceable train systems (plan, 2026-11-04)
 

@@ -23,6 +23,9 @@ void set_key_layout(KeyLayout layout) noexcept;
 // RTS's flashlight: Num2; openRTS's Shift+` (the backslash is the ED4M's and
 // ER2's cab key, the tilde no cab's).
 [[nodiscard]] const char* flashlight_key_name();
+// The tape (RTS: Ctrl+Num5; openRTS: Ctrl+`). Num5, which locomotive it
+// records, is RTS's layout's only.
+[[nodiscard]] const char* tape_key_name();
 
 // The key hints at the bottom of the screen (what Enter does where the
 // engineer stands, the window keys, a cab door's): shown unless turned off

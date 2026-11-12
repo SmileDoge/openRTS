@@ -1418,7 +1418,9 @@ struct CameraInput {
     bool kp1_down = false;
     bool kp3_down = false;
     bool kp2_down = false;
+    bool kp5_down = false;
     bool inspector_key_down = false;
+    bool tape_window_key_down = false; // F9
     int clicks = 0;            // left clicks in fly mode since the last scene_input()
     int releases = 0;          // left button let go (anywhere, over a panel too)
     double scroll = 0.0;       // wheel since the last scene_input()
@@ -1654,6 +1656,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool f5 = pressed(GLFW_KEY_F5, input.info_key_down);
     const bool f7 = pressed(GLFW_KEY_F7, input.track_control_key_down);
     const bool f12 = pressed(GLFW_KEY_F12, input.inspector_key_down);
+    // Ctrl+F9 the tape window (F9 alone is RTS's objectives, 0x402C88).
+    const bool f9 = pressed(GLFW_KEY_F9, input.tape_window_key_down);
     const bool enter_now = down(GLFW_KEY_ENTER) || down(GLFW_KEY_KP_ENTER);
     const bool enter = enter_now && !input.enter_key_down;
     input.enter_key_down = enter_now;
@@ -1662,10 +1666,13 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool rts_keys = key_layout() == KeyLayout::rts;
     const bool kp0 = pressed(rts_keys ? GLFW_KEY_KP_0 : GLFW_KEY_MINUS, input.kp0_down);
     const bool kp1 = pressed(rts_keys ? GLFW_KEY_KP_1 : GLFW_KEY_EQUAL, input.kp1_down);
-    // ` alone the car menu, Shift+` the flashlight (RTS: Num3 and Num2).
+    // ` alone the car menu, Shift+` the flashlight, Ctrl+` the tape (RTS:
+    // Num3, Num2 and Ctrl+Num5).
     const bool grave = !rts_keys && pressed(GLFW_KEY_GRAVE_ACCENT, input.kp3_down);
-    const bool kp3 = rts_keys ? pressed(GLFW_KEY_KP_3, input.kp3_down) : grave && !shift;
-    const bool kp2 = rts_keys ? pressed(GLFW_KEY_KP_2, input.kp2_down) : grave && shift;
+    const bool kp3 = rts_keys ? pressed(GLFW_KEY_KP_3, input.kp3_down) : grave && !shift && !ctrl;
+    const bool kp2 = rts_keys ? pressed(GLFW_KEY_KP_2, input.kp2_down) : grave && shift && !ctrl;
+    const bool kp5 = rts_keys && pressed(GLFW_KEY_KP_5, input.kp5_down);
+    const bool tape = rts_keys ? kp5 && ctrl : grave && ctrl;
     int width = 0, height = 0;
     glfwGetWindowSize(window, &width, &height);
     const bool pointer = !input.fly_looking && width > 0 && height > 0 && !overlay_wants_mouse()
@@ -1678,6 +1685,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.head_out = kp1;
         in.car_menu = kp3;
         in.flashlight = kp2;
+        in.tape = tape;
+        in.tape_which = kp5 && !ctrl;
         in.inspector = f12;
         in.pointer = pointer;
         in.pointer_x = static_cast<float>(input.cursor_x / width * 2.0 - 1.0);
@@ -1713,6 +1722,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .signal_names = f7 && ctrl && !alt,
             .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
             .activity_menu = pressed(GLFW_KEY_F8, input.menu_key_down),
+            .tape_window = f9 && ctrl,
         };
         engineer(captured);
         captured.keys = std::exchange(input.key_events, {});
@@ -1752,6 +1762,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .signal_names = f7 && ctrl && !alt,
         .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
         .activity_menu = pressed(GLFW_KEY_F8, input.menu_key_down),
+        .tape_window = f9 && ctrl,
     };
     engineer(result);
     result.keys = std::exchange(input.key_events, {});
@@ -2187,6 +2198,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     bool capture_uncoupled = false;
     int capture_inspect_step = 0; // --capture-inspect: 1 opened, 2 clicked
     bool capture_driven = false;
+    bool capture_taped = false;
     int capture_board_step = 0; // --capture-board: 1 at the door, then the presses of Enter
     bool capture_passed = false; // --capture-passage done
     double capture_reported = 0.0; // --capture-report: the last pick
@@ -2439,6 +2451,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             capture_reported = glfwGetTime();
             scene.report_activity();
         }
+        if (capture && options.capture_tape && !capture_taped && glfwGetTime() - capture_start >= options.capture_at * 0.2) {
+            frame_input.tape = true;
+            frame_input.tape_window = true;
+            capture_taped = true;
+        }
         if (capture && options.capture_drive && !capture_driven && glfwGetTime() - capture_start >= options.capture_at * 0.8) {
             scene.drive_unit(*options.capture_drive);
             capture_driven = true;
@@ -2678,6 +2695,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             if (const auto world = scene.world_report(); !world.empty()) std::cout << "world: " << world << std::endl;
             if (options.capture_menu) std::cout << "car menu: " << scene.car_menu_report() << std::endl;
             if (options.capture_inspect) std::cout << "inspector: " << scene.inspector_report() << std::endl;
+            if (options.capture_tape) std::cout << "tape window: " << scene.tape_report() << std::endl;
             const auto effect_stats = effects.stats();
             std::cout << "effects: " << effect_stats.cascades << " cascades (" << effect_stats.cascades_drawn << " drawn, nearest texel "
                       << effect_stats.near_texel * 1000.0f << " mm), cab map " << (effect_stats.focus ? "on" : "off");

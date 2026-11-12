@@ -722,11 +722,13 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
         }
     };
     std::vector<ImVec2> points;
+    // The track's line; platforms and sidings are drawn over it as wide.
+    constexpr float track_width = 2.0f;
     for (const auto& line : lines_) {
         if (line.max_x < left || line.min_x > right || line.max_z < bottom || line.min_z > top) continue;
         points.clear();
         for (std::size_t i = 0; i < line.x.size(); ++i) points.emplace_back(sx(line.x[i]), sy(line.z[i]));
-        draw->AddPolyline(points.data(), static_cast<int>(points.size()), IM_COL32(30, 30, 30, 255), 0, 2.0f);
+        draw->AddPolyline(points.data(), static_cast<int>(points.size()), IM_COL32(30, 30, 30, 255), 0, track_width);
     }
     // Electrification: each stretch in its supply type's colour (the
     // .electrotype's AARRGGBB), dead wire grey; track without wire stays black.
@@ -908,8 +910,8 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
             }
         }
     }
-    // Platforms (blue) and sidings (yellow): a thick line along the track
-    // between their two ends, and the name on a leader above its middle.
+    // Platforms (blue) and sidings (yellow): the track's line in their colour
+    // between their two ends, and the name above its middle.
     if ((show_platforms_ || show_sidings_) && scale_ > 0.05) {
         for (const auto& place : places_) {
             if (place.platform ? !show_platforms_ : !show_sidings_) continue;
@@ -927,7 +929,7 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
             }
             if (max_x < corner.x - 20 || min_x > far_corner.x + 20 || max_y < corner.y - 20 || min_y > far_corner.y + 20) continue;
             const ImU32 colour = place.platform ? IM_COL32(30, 90, 230, 255) : IM_COL32(230, 190, 0, 255);
-            const float width = std::clamp(static_cast<float>(scale_ * 2.5) - 1.5f, 2.5f, 8.5f);
+            const float width = track_width;
             if (points.size() > 1) {
                 draw->AddPolyline(points.data(), static_cast<int>(points.size()), colour, 0, width);
             } else {

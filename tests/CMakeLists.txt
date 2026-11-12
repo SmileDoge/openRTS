@@ -197,6 +197,12 @@ openrts_configure_target(openrts_rail_joints_test)
 target_link_libraries(openrts_rail_joints_test PRIVATE openrts_simulation)
 add_test(NAME openrts.rail_joints COMMAND openrts_rail_joints_test)
 
+# The tape (RTS's "tape roll"): the line as RTS writes it, the file's name, a line a game second.
+add_executable(openrts_tape_test tape_test.cpp)
+openrts_configure_target(openrts_tape_test)
+target_link_libraries(openrts_tape_test PRIVATE openrts_simulation)
+add_test(NAME openrts.tape COMMAND openrts_tape_test)
+
 # The graphics settings the start menu and the game share: defaults, presets, what is written.
 add_executable(openrts_graphics_settings_test graphics_settings_test.cpp ../viewer/src/graphics_settings.cpp ../viewer/src/viewer_state.cpp)
 openrts_configure_target(openrts_graphics_settings_test)

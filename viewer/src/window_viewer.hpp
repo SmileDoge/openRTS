@@ -129,6 +129,10 @@ struct WindowOptions {
     // --capture-report: from 0.5 of capture_at, every 2 s, the first item
     // of the scenario's report menu (F8) picked, each menu once.
     bool capture_report = false;
+    // --capture-tape: at 0.2 of capture_at the tape starts (Ctrl+Num5) and
+    // its window opens (Ctrl+F9); it rolls until the capture ends, when the
+    // window's tape is printed.
+    bool capture_tape = false;
 };
 
 [[nodiscard]] int run_window_viewer(ViewerScene& scene, const WindowOptions& options);

@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <limits>
 #include <functional>
 #include <future>
 #include <iomanip>
@@ -3397,6 +3399,7 @@ void TrainView::draw_hud() {
                     // Marks: the handbrake, the chocks (by the car's own
                     // ends, as the car menu puts them), a derailment.
                     std::string marks;
+                    if (tape_.recording() && car.key == tape_car_key_) marks += tr(" [TAPE]");
                     if (state.handbrake > 0.0f) marks += trf(" [HANDBRAKE %d%%]", static_cast<int>(state.handbrake * 100.0f));
                     if (state.chocks != 0) {
                         const bool front = (state.chocks & simulation::chock_front) != 0, rear = (state.chocks & simulation::chock_rear) != 0;
@@ -3824,6 +3827,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
                 OPENRTS_ZONE("trains: DLL host step");
                 legacy_->step(trains, posted);
             }
+            take_dll_tape();
             for (std::size_t t = 0; t < posted.size() && t < host_units.size(); ++t) {
                 if (!host_units[t]) continue;
                 auto& unit = *host_units[t];
@@ -3864,6 +3868,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
             unit.take_body();
             if (unit.previous_body.size() != unit.current_body.size()) unit.previous_body = unit.current_body;
         }
+        update_tape();
     }
 
     const Unit* followed = follow_id_ != 0 ? find_unit(follow_id_) : nullptr;
@@ -5608,8 +5613,215 @@ const TrainView::SignalUnits* TrainView::signal_units() {
     return signal_units_.get().get();
 }
 
+namespace {
+
+[[nodiscard]] std::string utf8(const std::filesystem::path& path) {
+    const auto text = path.u8string();
+    return {text.begin(), text.end()};
+}
+
+[[nodiscard]] std::tm local_now() {
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    return local;
+}
+
+} // namespace
+
+// The engine's LocomotiveSeries (RTS's ENG +386, the tape's name), else its file.
+[[nodiscard]] std::string series_of(const formats::WagonDefinition* definition, const std::string& file) {
+    if (definition && definition->engine && !definition->engine->series.empty()) return definition->engine->series;
+    return file;
+}
+
+std::string TrainView::car_label(const Car& car) const {
+    std::string name = series_of(car.definition, car.file);
+    char number[32];
+    std::snprintf(number, sizeof number, "[%04u-%04u-%04u]", car.number >> 18, (car.number >> 10) & 0xFFu, car.number & 0x3FFu);
+    return name + number;
+}
+
+std::size_t TrainView::driven_car() const {
+    if (units_.empty() || units_.front().role != Role::driven) return SIZE_MAX;
+    const auto& unit = units_.front();
+    if (legacy_ && legacy_->player() < unit.cars.size()) return legacy_->player();
+    if (cab_car_ < unit.cars.size()) return cab_car_;
+    if (native_ && native_car_ < unit.cars.size()) return native_car_;
+    for (std::size_t i = 0; i < unit.cars.size(); ++i)
+        if (unit.cars[i].definition && unit.cars[i].definition->engine) return i;
+    return SIZE_MAX;
+}
+
+std::optional<std::pair<std::size_t, std::size_t>> TrainView::tape_car() const {
+    if (!tape_car_key_) return std::nullopt;
+    for (std::size_t u = 0; u < units_.size(); ++u)
+        for (std::size_t i = 0; i < units_[u].cars.size(); ++i)
+            if (units_[u].cars[i].key == tape_car_key_) return std::pair{u, i};
+    return std::nullopt;
+}
+
+void TrainView::tape_key() {
+    // RTS 0x414B40: Ctrl+Num5 stops a tape rolling (on whichever engine),
+    // else starts one on the engine he drives.
+    if (tape_.recording()) {
+        stop_tape();
+        return;
+    }
+    const auto car = driven_car();
+    if (car == SIZE_MAX || !units_.front().cars[car].definition || !units_.front().cars[car].definition->engine) {
+        message_ = tr("the tape records a locomotive: drive one first");
+        return;
+    }
+    start_tape(0, car);
+}
+
+void TrainView::tape_which() {
+    // RTS 0x414C10: Num5 names the engine while a tape rolls, else nothing.
+    if (!tape_.recording()) return;
+    if (const auto at = tape_car()) message_ = trf("the tape records %s", car_label(units_[at->first].cars[at->second]).c_str());
+}
+
+bool TrainView::start_tape(const std::size_t u, const std::size_t i) {
+    if (u >= units_.size() || i >= units_[u].cars.size()) return false;
+    const auto& car = units_[u].cars[i];
+    const std::string series = series_of(car.definition, car.file);
+    if (!tape_.start(user_data_directory() / "RTS_TAPES", series, local_now())) {
+        message_ = trf("the tape cannot be written: %s", utf8(tape_.path()).c_str());
+        tape_car_key_ = 0;
+        return false;
+    }
+    tape_car_key_ = car.key;
+    tape_signal_distance_ = 0.0f;
+    message_ = trf("tape rolling: %s, file %s", car_label(car).c_str(), utf8(tape_.path().filename()).c_str());
+    std::fprintf(stderr, "tape: rolling on car %zu (%s) into %s\n", i + 1, car_label(car).c_str(), utf8(tape_.path()).c_str());
+    return true;
+}
+
+void TrainView::stop_tape(const char* why) {
+    if (!tape_.recording()) return;
+    const auto lines = tape_.lines();
+    const auto name = utf8(tape_.path().filename());
+    tape_.stop();
+    tape_car_key_ = 0;
+    message_ = why ? trf("tape stopped (%s): %s, %zu lines", why, name.c_str(), lines)
+                   : trf("tape stopped: %s, %zu lines", name.c_str(), lines);
+    std::fprintf(stderr, "tape: stopped, %zu lines in %s\n", lines, name.c_str());
+}
+
+void TrainView::take_dll_tape() {
+    // RTSSetIntegerG(7) (0x43939C): a DLL starts the tape on its engine
+    // (again: a new file), takes it over from another, or stops it.
+    if (!legacy_ || units_.empty()) return;
+    const auto request = legacy_->take_tape_request();
+    if (!request.set) return;
+    if (request.car < 0) {
+        stop_tape(tr("by the locomotive's DLL"));
+        return;
+    }
+    const auto i = static_cast<std::size_t>(request.car);
+    if (units_.front().host_train != 0 || i >= units_.front().cars.size()) return;
+    const auto at = tape_car();
+    if (at && at->first == 0 && at->second == i && !request.restart) return;
+    start_tape(0, i);
+}
+
+void TrainView::update_tape() {
+    if (!tape_.recording()) return;
+    // The engine taken out of the game stops it (RTS 0x503A90).
+    const auto at = tape_car();
+    if (!at || !units_[at->first].train) {
+        stop_tape(tr("the locomotive is gone"));
+        return;
+    }
+    if (tape_.advance(simulation::train_step)) tape_.write(tape_record(at->first, at->second));
+}
+
+simulation::TapeRecord TrainView::tape_record(const std::size_t u, const std::size_t i) {
+    simulation::TapeRecord r;
+    const auto& unit = units_[u];
+    const auto& train = *unit.train;
+    const auto& states = train.cars();
+    if (i >= states.size() || i >= unit.cars.size()) return r;
+    const auto& car = unit.cars[i];
+    const auto& state = states[i];
+    r.velocity = state.velocity;
+    r.game_time = static_cast<std::int32_t>(std::floor(day_time_));
+    // The obeyed signal ahead (train +0xA0 / +0x7C, the signal pass 0x508520).
+    if (signals_) {
+        if (const auto next = signals_->ahead(train); next.valid) {
+            r.signal = static_cast<std::uint32_t>(next.aspect);
+            tape_signal_distance_ = static_cast<float>(next.distance);
+        }
+    }
+    r.signal_distance = tape_signal_distance_;
+    r.train_pipe = state.pipe;
+    r.independent = state.independent;
+    r.cylinder = state.cylinder;
+    // Wagon::TrPos[0]: where the car's front is on the track.
+    if (const auto placements = train.placements(); i < placements.size()) {
+        const auto& p = placements[i].front;
+        r.tile_x = p.tile_x;
+        r.tile_z = p.tile_z;
+        r.x = static_cast<float>(p.x);
+        r.y = static_cast<float>(p.y);
+        r.z = static_cast<float>(p.z);
+    }
+    r.pantographs = pantographs_up(u, i);
+    const auto* engine = car.definition && car.definition->engine ? &*car.definition->engine : nullptr;
+    if (engine) r.kind = engine->kind == formats::EngineKind::electric ? 3 : engine->kind == formats::EngineKind::diesel ? 2 : 0;
+    if (const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr; out && out->has_engine) {
+        // What its DLL keeps in Engine (0x5050B0 reads locoA).
+        r.throttle = out->engine.throttle;
+        r.sanding = static_cast<float>(out->engine.sanding);
+        r.ep = (out->engine.systems & 2u) != 0;
+        r.equalising = out->engine.equalising;
+        r.consumption = r.kind == 3 ? out->engine.power_consuming * 0.001f : r.kind == 2 ? out->engine.fuel_consuming : 0.0f;
+    } else if (u == 0 && driver_ && i == driven_car()) {
+        // The keyboard driver's handles; the power the engine drew, kW.
+        r.throttle = driver_->throttle;
+        r.sanding = state.sanding ? 1.0f : 0.0f;
+        r.ep = driver_->ep_brake;
+        r.equalising = driver_->equalising;
+        r.consumption = r.kind == 3 ? state.power * 0.001f : 0.0f;
+    } else {
+        r.sanding = state.sanding ? 1.0f : 0.0f;
+    }
+    // The speed in force (0x4FB630): the posts', else the route's SpeedLimit
+    // (100 m/s when the .trk has none).
+    r.speed_limit = limits_ && limits_->route_limit() > 0.0f ? limits_->route_limit() : 100.0f;
+    if (limits_) {
+        if (const auto now = limits_->evaluate(train, unit.speed_category()); now.current > 0.0f) r.speed_limit = now.current;
+        if (const auto km = limits_->ordinate(train)) r.ordinate = static_cast<float>(*km);
+    }
+    const std::tm clock = local_now();
+    r.clock_hour = static_cast<std::uint16_t>(clock.tm_hour);
+    r.clock_minute = static_cast<std::uint16_t>(clock.tm_min);
+    r.clock_second = static_cast<std::uint16_t>(clock.tm_sec);
+    r.mass = train.mass();
+    r.cars = static_cast<std::uint32_t>(unit.cars.size());
+    for (const auto& c : unit.cars)
+        if (c.definition && c.definition->engine && !c.cold) ++r.locomotives;
+    r.length = train.length();
+    r.season = season_;
+    r.weather = weather_;
+    return r;
+}
+
 void TrainView::feed_world(const Unit& unit) {
     auto& world = legacy_->world();
+    // The car the tape rolls on, for RTSGetInteger 7 (one outside the
+    // player's train: "another locomotive" to every DLL).
+    world.tape_car = -1;
+    if (tape_.recording()) {
+        const auto at = tape_car();
+        world.tape_car = at && at->first == 0 && unit.host_train == 0 ? static_cast<std::int32_t>(at->second)
+                                                                         : std::numeric_limits<std::int32_t>::max();
+    }
     world.day_time = day_time_;
     world.night = night_;
     world.route_speed_limit = limits_ ? limits_->route_limit() : 0.0f;
@@ -5728,13 +5940,35 @@ std::uint32_t TrainView::signal_aspect(const Unit& unit) const {
 // line comes when it has risen; without animated pantographs, from what the
 // DLL wants or, without a DLL, while the train works. Then the line current,
 // the wire's heat and the substations' load (0x503CE4).
+std::uint8_t TrainView::pantographs_up(const std::size_t u, const std::size_t i) const {
+    if (u >= units_.size() || i >= units_[u].cars.size()) return 0;
+    const auto& unit = units_[u];
+    const auto& car = unit.cars[i];
+    const auto* engine = car.definition && car.definition->engine ? &*car.definition->engine : nullptr;
+    if (!engine || engine->kind != formats::EngineKind::electric) return 0;
+    std::uint8_t raised = 0;
+    if (!car.pantograph_nodes.empty() && car.pantograph_frames >= 2) {
+        const float top = static_cast<float>(car.pantograph_frames - 1u) - 0.01f;
+        for (const auto& [node, number] : car.pantograph_nodes) {
+            if (car.pantograph_frame[number - 1u] >= top) raised |= static_cast<std::uint8_t>(1u << (number - 1u));
+        }
+    } else if (const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr) {
+        raised = out->panto_raised;
+    } else if (u == 0 && native_ && i == native_car_) {
+        raised = static_cast<std::uint8_t>(native_->outputs().pantographs);
+    } else {
+        const bool working = unit.role != Role::standing && !unit.train->asleep();
+        raised = working && !car.cold && !(u == 0 && pantographs_down_) ? 1 : 0;
+    }
+    return raised;
+}
+
 void TrainView::feed_line() {
     electrification_->advance_loads(simulation::train_step);
     for (std::size_t u = 0; u < units_.size(); ++u) {
         auto& unit = units_[u];
         if (!unit.train->placed()) continue;
         const auto& states = unit.train->cars();
-        const bool working = unit.role != Role::standing && !unit.train->asleep();
         std::vector<std::uint8_t> raised(states.size(), 0);
         bool electric = false;
         for (std::size_t i = 0; i < unit.cars.size() && i < states.size(); ++i) {
@@ -5742,18 +5976,7 @@ void TrainView::feed_line() {
             const auto* engine = car.definition && car.definition->engine ? &*car.definition->engine : nullptr;
             if (!engine || engine->kind != formats::EngineKind::electric) continue;
             electric = true;
-            if (!car.pantograph_nodes.empty() && car.pantograph_frames >= 2) {
-                const float top = static_cast<float>(car.pantograph_frames - 1u) - 0.01f;
-                for (const auto& [node, number] : car.pantograph_nodes) {
-                    if (car.pantograph_frame[number - 1u] >= top) raised[i] |= static_cast<std::uint8_t>(1u << (number - 1u));
-                }
-            } else if (const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr) {
-                raised[i] = out->panto_raised;
-            } else if (u == 0 && native_ && i == native_car_) {
-                raised[i] = static_cast<std::uint8_t>(native_->outputs().pantographs);
-            } else {
-                raised[i] = working && !car.cold && !(u == 0 && pantographs_down_) ? 1 : 0;
-            }
+            raised[i] = pantographs_up(u, i);
         }
         const auto line = electrification_->apply(*unit.train, raised, simulation::train_step);
         if (u == 0) {

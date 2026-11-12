@@ -12,12 +12,14 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.4.3](../../releases/tag/v0.4.3):
+> Work in progress. The latest version is [v0.7.0](../../releases/tag/v0.7.0):
 > a nearly playable game. Driving from a 3-D cab with RTS's locomotive
-> DLLs, signalling, a dispatcher window, a living route (forests, level
-> crossings, road traffic, water, rain and snow, smoke), sound by the cab's
-> rooms, coupling and uncoupling with the DLLs, and now network play on an
-> RTS server together with `rts1.exe`; activities are not yet.
+> DLLs, signalling, the Track control window, a living route (forests,
+> level crossings, road traffic, water, rain and snow, smoke), sound by the
+> cab's rooms, coupling and uncoupling with the DLLs, RTS scenarios with
+> traffic trains, network play on an RTS server together with `rts1.exe`
+> and on openRTS's own server, automatic updates, and now walking as in
+> RTS: along the cars' walkways and ladders, into the next car's salon.
 
 ## What works
 
@@ -175,16 +177,18 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
 ## Not yet
 
 In the order of the plan (`docs/roadmap.md`):
-1. The rest of the cab and consist: ALSN from the route's signals, native
-   plugins from the `.eng`, the SME cable and high-voltage bus in the car
-   menu. There will be no 2-D cabs.
+1. The rest of the cab, the consist and the sound: the cab screens'
+   close-ups and LINK scenes, lamps and displays fading (`DisplayFade`),
+   native plugins on every section, not only the driven one; RTS's volume
+   law, the route's sounds. There will be no 2-D cabs.
 2. The openRTS server's own protocol (Legacy off) and plugins, helpers and
    the dispatcher console (Пульт ДСП). The client for an RTS server and the
    server in Legacy mode are there.
 3. Cars as entities with their own logic (the cab is the car's) and
    standard car classes: freight, passenger (compartments and so on),
    multiple-unit cars.
-4. Activities and full AI traffic.
+4. Full AI traffic. RTS's scenarios and their traffic trains are there;
+   next come `SERIAL` starts, `SpawnTrain`, timetables and platform stops.
 5. PBR materials.
 
 ## Prebuilt binaries
@@ -194,7 +198,7 @@ menu, the game, the locomotive DLL host, the tools, `wgpu_native.dll`) are in
 **Releases**; how to install and run them is in [INSTALL_EN.md](INSTALL_EN.md):
 - **nightly** — a pre-release with the latest `master` build, replaced
   automatically; the window's title and the settings mark its version with
-  the commit, e.g. "openRTS 0.6.2 (nightly f1a6b90)";
+  the commit, e.g. "openRTS 0.7.0 (nightly d90631d)";
 - **vX.Y.Z** — versions; the release is created automatically when a version
   tag is pushed.
 
@@ -373,6 +377,9 @@ the Train window)
 | Num1 / `=` | lean out |
 | Num3 / the key left of `1` | the car menu at the coupling or bogie under the cursor (outside) |
 | Num2 / Shift + the key left of `1` | the flashlight, as in RTS: a beam from the eyes along the view, 50 m |
+| Ctrl+Num5 / Ctrl + the key left of `1` | the tape, as in RTS: start it on the locomotive driven / stop it; the files go to `%LOCALAPPDATA%\openRTS\RTS_TAPES`, RTS's `lenta.xls` reads them (`docs/tape.md`) |
+| Num5 | while the tape rolls: which locomotive it records |
+| Ctrl+F9 | the speed recorder tape (openRTS): the tapes on a paper in the manner of the 3СЛ-2М — the speed and the limit, the time, the signal, the pressures, the path and the kilometres; the one rolling as it is written |
 | F12 | the inspector: a tree of the map's objects and trains, the chosen one's properties, the shape's materials (FullBright as ordinary, into a mod), `docs/inspector.md` |
 | RMB + mouse | look round |
 | Mouse | click works a control, the wheel moves it a step, dragging moves handles and blinds |
@@ -447,6 +454,8 @@ RTS's DLLs.
   players' trains, couplings, sound, the line;
 - `docs/server.md` — the openRTS server: running it, the dispatcher's
   commands, what it decides and relays;
+- `docs/tape.md` — the tape as in RTS: the keys, the file, the line's
+  fields, what `lenta.xls` reads; the speed recorder tape window;
 - `docs/train-systems.md` — lights, pantographs, horn and doors without a
   DLL, the cab's displays and lamps, cables and coupler repair, taking
   another cab, native plugins, the line current and wire burning, ALSN;

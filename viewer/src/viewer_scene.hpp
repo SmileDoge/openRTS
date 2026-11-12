@@ -111,6 +111,8 @@ struct SceneInput {
     bool toggle_labels = false;  // L: junction and signal labels
     bool car_menu = false;       // Num3 / `: the car menu at a coupling or bogie (edge)
     bool flashlight = false;     // Num2 / Shift+`: RTS's flashlight on or off (edge)
+    bool tape = false;           // Ctrl+Num5 / Ctrl+`: the tape on or off (edge)
+    bool tape_which = false;     // Num5: which locomotive the tape records (edge)
     bool inspector = false;      // F12: the inspector open or shut (edge)
     // Train driving (edges).
     bool place_train = false;      // C
@@ -142,6 +144,7 @@ struct SceneInput {
     bool signal_names = false;    // Ctrl+F7: signal names near the camera
     bool activity_journal = false; // F11 (RTS): the scenario's messages
     bool activity_menu = false;    // F8 (RTS): the scenario's menu (reports)
+    bool tape_window = false;      // Ctrl+F9 (openRTS): the tape window open or shut
     // The engineer on foot (engineer.hpp), with the cab keys or without.
     bool walk_forward = false, walk_back = false, walk_left = false, walk_right = false; // arrows held
     bool walk_run = false;             // Shift held
@@ -279,6 +282,8 @@ public:
     virtual void report_activity() {}
     // The inspector's choice as text (--capture-inspect).
     [[nodiscard]] virtual std::string inspector_report() const { return {}; }
+    // The tape window's tape as text (--capture-tape).
+    [[nodiscard]] virtual std::string tape_report() const { return {}; }
     // What the shadows look at most closely this frame (after submit): the
     // cab the engineer is in.
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> shadow_focus() const { return std::nullopt; }

@@ -68,4 +68,6 @@ const char* car_menu_key_name() { return current == KeyLayout::rts ? "Num3" : tr
 
 const char* flashlight_key_name() { return current == KeyLayout::rts ? "Num2" : tr("Shift+'`'"); }
 
+const char* tape_key_name() { return current == KeyLayout::rts ? "Ctrl+Num5" : tr("Ctrl+'`'"); }
+
 } // namespace openrts::viewer

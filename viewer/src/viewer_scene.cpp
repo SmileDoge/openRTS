@@ -52,6 +52,7 @@
 #include "viewer_state.hpp"
 #include "track_control.hpp"
 #include "inspector.hpp"
+#include "tape_view.hpp"
 #include "net_session.hpp"
 #include "console_panel.hpp"
 #include "activity_view.hpp"
@@ -649,6 +650,7 @@ public:
         if (input.place_names) place_names_ = !place_names_;
         cab_labels_ = input.cab_labels;
         if (input.inspector) inspector_.toggle();
+        if (input.tape_window) tape_view_.toggle();
         // The ray under the mouse, from the last frame's camera.
         std::optional<glm::vec3> direction;
         if (input.pointer) {
@@ -690,6 +692,8 @@ public:
         }
         if (train_) {
             if (input.car_info) train_->car_info_key(input.car_info_shift);
+            if (input.tape) train_->tape_key();
+            if (input.tape_which) train_->tape_which();
             if (input.limits_panel) train_->toggle_limits_panel();
             if (input.stations_panel) train_->toggle_stations_panel();
             if (input.activity_journal && activity_) activity_->toggle_journal();
@@ -709,7 +713,8 @@ public:
             }
             train_->set_obstacles(streamer_ ? &streamer_->visible_instances() : nullptr);
             train_->set_world_clock(clock.time_of_day, sky_state_ && sky_state_->night);
-            train_->set_world_light(sky_state_ ? sky_state_->world_lit : 1.0f, static_cast<std::uint8_t>(clock.weather));
+            train_->set_world_light(sky_state_ ? sky_state_->world_lit : 1.0f, static_cast<std::uint8_t>(clock.weather),
+                                    static_cast<std::uint8_t>(clock.season));
             if (net_) {
                 net_->update(track_->network(), signals_ ? signals_->system() : nullptr, *train_,
                              renderer::route_position(camera.eye(), origin_));
@@ -1229,6 +1234,7 @@ public:
     }
     [[nodiscard]] std::string car_menu_report() const override { return train_ ? train_->car_menu_report() : std::string{}; }
     [[nodiscard]] std::string inspector_report() const override { return inspector_.report(inspector_world()); }
+    [[nodiscard]] std::string tape_report() const override { return tape_view_.report(); }
     [[nodiscard]] std::optional<renderer::ShadowFocus> shadow_focus() const override {
         return train_ ? train_->cab_shadow_focus() : std::nullopt;
     }
@@ -1321,6 +1327,10 @@ public:
         ImGui::Checkbox(tr("Names (F7)"), &place_names_);
         ImGui::SameLine();
         ImGui::Checkbox(tr("Signal names (Ctrl+F7)"), &signal_names_);
+        {
+            bool tape_open = tape_view_.is_open();
+            if (ImGui::Checkbox(tr("Speed recorder tape (Ctrl+F9)"), &tape_open)) tape_view_.toggle();
+        }
         if (track_) track_->draw_overlay();
         if (train_) train_->draw_overlay();
         if (signals_) signals_->draw_overlay();
@@ -1329,6 +1339,11 @@ public:
             track_control_->draw(*train_, signals_ ? signals_->system() : nullptr);
         }
         if (net_ && net_->console() && train_) console_panel_.draw(*net_, *train_, track_control_.get(), *content_.vfs());
+        {
+            // The tape window: the file rolling now, and the RTS installation's tapes.
+            static const std::filesystem::path none;
+            tape_view_.draw(train_ && train_->tape_rolling() ? train_->tape_path() : none, content_.root());
+        }
         if (train_) train_->draw_hud();
         if (activity_) activity_->draw();
         content_.draw_overlay(library_.get());
@@ -1953,6 +1968,8 @@ private:
     glm::vec3 flashlight_forward_{0.0f, 0.0f, -1.0f};
     // F12: the map's objects and their properties.
     mutable Inspector inspector_;
+    // Ctrl+F9: the tapes drawn as a speed recorder's paper.
+    mutable TapeView tape_view_;
     [[nodiscard]] InspectorWorld inspector_world() const {
         return {.instances = streamer_ ? &streamer_->visible_instances() : nullptr,
                 .library = library_.get(),

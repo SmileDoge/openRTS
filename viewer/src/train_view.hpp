@@ -40,6 +40,7 @@
 #include <openrts/simulation/electrification.hpp>
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/speed_limits.hpp>
+#include <openrts/simulation/tape.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train.hpp>
 #include <openrts/simulation/train_lights.hpp>
@@ -401,6 +402,13 @@ public:
     [[nodiscard]] DerailLook derail_of(std::uint64_t id) const;
     // A line for the player (the message strip).
     void say(std::string text) { message_ = std::move(text); }
+    // The tape (simulation/tape.hpp, RTS 0x414B40): Ctrl+Num5 starts it on
+    // the locomotive he drives and stops it; Num5 says which one it rolls
+    // on. Its files go to RTS_TAPES in user_data_directory().
+    void tape_key();
+    void tape_which();
+    [[nodiscard]] bool tape_rolling() const noexcept { return tape_.recording(); }
+    [[nodiscard]] const std::filesystem::path& tape_path() const noexcept { return tape_.path(); }
     // A train's exterior sound for the network (0x4639, 0x463D): per car the
     // discrete triggers it played since the last call (the group's
     // NonDistributableTriggers left out) and its Var1..Var8 and distance
@@ -459,9 +467,10 @@ public:
     // How lit the world is (SkyState::world_lit) and the weather (0 clear, 1
     // snow, 2 rain): the light conditions of trains without a DLL, the cab
     // lamps' NIGHT_AUTO.
-    void set_world_light(const float world_lit, const std::uint8_t weather) noexcept {
+    void set_world_light(const float world_lit, const std::uint8_t weather, const std::uint8_t season = 1) noexcept {
         world_lit_ = world_lit;
         weather_ = weather;
+        season_ = season;
     }
     // The cab screens (КЛУБ, САВПЭ ...) of the cab the engineer is in, for
     // this frame, in scene coordinates (filled by submit()).
@@ -971,6 +980,28 @@ private:
     bool night_ = false;
     float world_lit_ = 1.0f;
     std::uint8_t weather_ = 0;
+    std::uint8_t season_ = 1;  // 0 spring, 1 summer, 2 autumn, 3 winter
+    // The tape: the car it rolls on (Car::key), found again each step; the
+    // distance to the last signal seen (RTS keeps it when none is ahead).
+    simulation::TapeRecorder tape_;
+    std::uint32_t tape_car_key_{};
+    float tape_signal_distance_{};
+    // The unit and car the tape rolls on, if they are still in the game.
+    [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> tape_car() const;
+    // The car he drives in the driven unit (SIZE_MAX: none).
+    [[nodiscard]] std::size_t driven_car() const;
+    bool start_tape(std::size_t unit, std::size_t car);
+    void stop_tape(const char* why = nullptr);
+    void update_tape();
+    // A DLL's RTSSetIntegerG(7) from the last step.
+    void take_dll_tape();
+    [[nodiscard]] simulation::TapeRecord tape_record(std::size_t unit, std::size_t car);
+    // The pantographs up on car `i` of unit `u` (bit n-1: pantograph n), as
+    // the line reads them (feed_line).
+    [[nodiscard]] std::uint8_t pantographs_up(std::size_t u, std::size_t i) const;
+    // A car's name for the player: its LocomotiveSeries (else its file) and
+    // RTS number.
+    [[nodiscard]] std::string car_label(const Car& car) const;
     float frame_elapsed_{};
     // The driven train without a DLL: openRTS's default systems.
     bool horn_ = false;

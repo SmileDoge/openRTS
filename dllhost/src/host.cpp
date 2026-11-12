@@ -1047,6 +1047,9 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
     air_temperature_ = request.air_temperature;
     set_direction_ = 0;
     items_wanted_ = 0.0f;
+    tape_car_ = request.tape_car;
+    tape_set_ = tape_started_ = false;
+    mark_tape();
     // The route database's signals, the track items and the player's
     // train's item list, and the SMS objects' trigger pairs.
     for (const auto& u : request.signal_units) {
@@ -1161,6 +1164,9 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
     collect(reply);
     reply.set_direction = set_direction_;
     reply.items_wanted = items_wanted_;
+    reply.tape_set = tape_set_ ? 1 : 0;
+    reply.tape_restart = tape_started_ ? 1 : 0;
+    reply.tape_car = tape_car_;
     if (name_check_ && ++name_check_steps_ % 200 == 0) report_names();
     return true;
 }
@@ -1966,8 +1972,9 @@ int Host::get_integer(const abi::Locomotive* loco, std::uint32_t code, int index
         const bool flipped = (car->wagon()->flags & 1) != 0;
         return flipped != train_reversed_ ? -1 : 1;
     }
-    case 7: // RTS_TAPEROLL: not recording
-        return 0;
+    case 7: // RTS_TAPEROLL (0x43929C): 0 not rolling, 1 on another locomotive, 3 on this one
+        if (tape_car_ < 0) return 0;
+        return car && static_cast<std::int32_t>(car->index) == tape_car_ ? 3 : 1;
     default:
         trace_once(L"integer" + std::to_wstring(code), L"RTSGetInteger code " + std::to_wstring(code) + L": 0 (not answered)");
         return 0;
@@ -1984,7 +1991,41 @@ int Host::set_integer(const abi::Locomotive* loco, std::uint32_t code, int value
         }
         return 1;
     }
-    return 0; // 7: tape roll is not recorded
+    if (code == 7 && car) { // the tape (0x43939C)
+        const auto self = static_cast<std::int32_t>(car->index);
+        if (value == 0) {
+            if (tape_car_ != self) return 0;
+            tape_car_ = -1;
+            tape_set_ = true;
+            mark_tape();
+            return 1;
+        }
+        if (tape_car_ >= 0) {
+            if (tape_car_ == self) {
+                if ((value & 4) == 0) return 2; // rolling already; 4: start it again
+            } else if ((value & 2) == 0) {
+                return 0; // on another locomotive; 2: take it over
+            }
+        }
+        // The game opens the file; RTS answers 0 when it cannot, this host 1.
+        tape_car_ = self;
+        tape_set_ = tape_started_ = true;
+        mark_tape();
+        return 1;
+    }
+    return 0;
+}
+
+void Host::mark_tape() {
+    // LocoFlags 0x10000: the locomotive the tape rolls on (0x414B40).
+    for (const auto& c : cars_) {
+        if (!c->is_loco()) continue;
+        if (static_cast<std::int32_t>(c->index) == tape_car_) {
+            c->loco()->loco_flags |= 0x10000u;
+        } else {
+            c->loco()->loco_flags &= ~0x10000u;
+        }
+    }
 }
 
 void* Host::loco_object(const Module* caller, const abi::Locomotive* loco, int code, int index, int sub) {

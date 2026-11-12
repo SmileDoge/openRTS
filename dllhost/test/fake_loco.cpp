@@ -16,6 +16,7 @@ namespace {
 using GetLocoObjectFn = void* (*)(void* dll, const Locomotive* loco, int code, int index, int sub);
 using GetCabObjectFn = void* (*)(void* dll, const Cabin* cab, int code, int index, int sub);
 using GetIntegerFn = int (*)(const Locomotive* loco, unsigned code, int index);
+using SetIntegerFn = int (*)(const Locomotive* loco, unsigned code, int value);
 using GetTrackItemsFn = int (*)(void* dll, const Locomotive* loco, unsigned code, float distance, TrackItemsItem*& items,
                                 unsigned& count);
 using GetNamedIntegerFn = int (*)(const void* obj, unsigned code, const wchar_t* name);
@@ -26,6 +27,8 @@ void* g_dll = nullptr;
 GetLocoObjectFn g_loco_object = nullptr;
 GetCabObjectFn g_cab_object = nullptr;
 GetIntegerFn g_integer = nullptr;
+SetIntegerFn g_set_integer = nullptr;
+int g_tape_answer = -1;
 GetTrackItemsFn g_track_items = nullptr;
 GetNamedIntegerFn g_named = nullptr;
 IsTriggerOnFn g_trigger_on = nullptr;
@@ -55,6 +58,7 @@ bool __cdecl InitRTSLibrary(HINSTANCE module, void* dll) {
     g_loco_object = reinterpret_cast<GetLocoObjectFn>(GetProcAddress(module, "_RTSGetLocoObject"));
     g_cab_object = reinterpret_cast<GetCabObjectFn>(GetProcAddress(module, "_RTSGetCabObject"));
     g_integer = reinterpret_cast<GetIntegerFn>(GetProcAddress(module, "_RTSGetInteger"));
+    g_set_integer = reinterpret_cast<SetIntegerFn>(GetProcAddress(module, "_RTSSetIntegerG"));
     g_track_items = reinterpret_cast<GetTrackItemsFn>(GetProcAddress(module, "_RTSGetTrackItems"));
     g_named = reinterpret_cast<GetNamedIntegerFn>(GetProcAddress(module, "_RTSGetNamedInteger"));
     g_trigger_on = reinterpret_cast<IsTriggerOnFn>(GetProcAddress(module, "_RTSIsSMSTriggerOn"));
@@ -129,6 +133,15 @@ void __cdecl Run(ElectricEngine* eng, ElectricLocomotive* loco, unsigned state, 
     // velocity it sees is already in its own direction.
     eng->force = 1000.0f * static_cast<float>(eng->throttle_position) * static_cast<float>(eng->reverse);
     eng->brake_force = loco->velocity; // echo for the test
+    // The tape: a velocity of 77 / 78 / 79 m/s asks RTSSetIntegerG(7, 1 / 0 /
+    // 2 | 4); Wheelslip: its answer x 100 + RTSGetInteger 7 x 10 + LocoFlags 0x10000.
+    if (g_set_integer && loco->velocity >= 76.5f && loco->velocity <= 79.5f) {
+        const int value = loco->velocity < 77.5f ? 1 : loco->velocity < 78.5f ? 0 : 6;
+        g_tape_answer = g_set_integer(loco, 7, value);
+    } else {
+        g_tape_answer = 0;
+    }
+    eng->wheelslip = static_cast<u32>(g_tape_answer * 100 + g_integer(loco, 7, 0) * 10 + ((loco->loco_flags & 0x10000u) ? 1 : 0));
     if (loco->loco_flags & 1) eng->ur = 5.0f; // the master's own; slaves get theirs from it
     // Track items ahead within 1 km and under the train: their count x 100 +
     // the first two types; ahead within 5 km: the first platform's station

@@ -22,7 +22,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 9;
+inline constexpr std::uint32_t protocol_version = 10;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -453,6 +453,9 @@ struct StepRequest {
     std::vector<TrackItemSpec> items;          // items not sent before
     std::vector<TrackItemEntry> track_items;   // the player's train's items (RTS's 0x4808DC list)
     float items_range{};                       // how far ahead and behind the list reaches, m
+    // The car whose tape rolls (simulation/tape.hpp), -1 none: RTSGetInteger
+    // 7 answers from it, its LocoFlags get 0x10000 (RTS 0x414B40).
+    std::int32_t tape_car = -1;
 };
 
 struct EngineOutput {
@@ -529,6 +532,11 @@ struct StepReply {
     std::int32_t set_direction{}; // RTSSetIntegerG(6): -1 / 1 requested, 0 none
     float items_wanted{};         // the farthest RTSGetTrackItems asked for this step, m
     std::vector<CarAir> air;      // enter: every car's, after Init
+    // RTSSetIntegerG(7) during the step (RTS 0x43939C): the tape is to roll
+    // on `tape_car` (-1: stopped); `tape_restart`: a new file for the same car.
+    std::uint8_t tape_set{};
+    std::uint8_t tape_restart{};
+    std::int32_t tape_car = -1;
 };
 
 struct CanSwitchRequest {
@@ -725,6 +733,7 @@ inline void write(Writer& w, const StepRequest& s) {
     w.put(s.next_limit); w.put(s.next_limit_distance);
     write_list(w, s.signal_units); write_pod_list(w, s.sound_pairs);
     write_list(w, s.items); write_pod_list(w, s.track_items); w.put(s.items_range);
+    w.put(s.tape_car);
 }
 inline void read(Reader& r, StepRequest& s) {
     s.day_time = r.get<double>(); s.dt = r.get<float>(); s.air_temperature = r.get<float>();
@@ -735,6 +744,7 @@ inline void read(Reader& r, StepRequest& s) {
     s.next_limit = r.get<float>(); s.next_limit_distance = r.get<float>();
     read_list(r, s.signal_units, 100000); read_pod_list(r, s.sound_pairs, 4096);
     read_list(r, s.items, 200000); read_pod_list(r, s.track_items, 200000); s.items_range = r.get<float>();
+    s.tape_car = r.get<std::int32_t>();
 }
 
 inline void write(Writer& w, const ReconsistCar& c) { w.put(c.from); write(w, c.spec); }
@@ -797,10 +807,12 @@ inline void read(Reader& r, CarOutput& c) {
 
 inline void write(Writer& w, const StepReply& s) {
     write_list(w, s.cars); w.put(s.set_direction); w.put(s.items_wanted); write_pod_list(w, s.air);
+    w.put(s.tape_set); w.put(s.tape_restart); w.put(s.tape_car);
 }
 inline void read(Reader& r, StepReply& s) {
     read_list(r, s.cars, 2000); s.set_direction = r.get<std::int32_t>(); s.items_wanted = r.get<float>();
     read_pod_list(r, s.air, 2000);
+    s.tape_set = r.get<std::uint8_t>(); s.tape_restart = r.get<std::uint8_t>(); s.tape_car = r.get<std::int32_t>();
 }
 
 } // namespace openrts::dllhost

@@ -708,6 +708,7 @@ bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>&
     // route database's signals the SignalInputs name.
     request.track_items = world.track_items;
     request.items_range = world.items_range;
+    request.tape_car = world.tape_car;
     // The libraries' sounds by the host's numbering of the libraries.
     for (const auto& p : world.sound_pairs) {
         auto q = p;
@@ -753,6 +754,9 @@ bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>&
     outputs_->cars = std::move(reply.cars);
     outputs_->valid = true;
     items_wanted_ = reply.items_wanted;
+    if (reply.tape_set) {
+        tape_request_ = {.set = true, .restart = reply.tape_restart != 0, .car = reply.tape_car};
+    }
     return true;
 }
 

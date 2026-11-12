@@ -158,6 +158,10 @@ public:
     [[nodiscard]] std::size_t player() const { return consist_ ? consist_->player() : SIZE_MAX; }
     // The farthest RTSGetTrackItems asked for in the last step, m.
     [[nodiscard]] float items_wanted() const { return consist_ ? consist_->items_wanted() : 0.0f; }
+    // What the DLLs asked of the tape in the last step, once.
+    [[nodiscard]] trainplugin::LegacyConsist::TapeRequest take_tape_request() {
+        return consist_ ? consist_->take_tape_request() : trainplugin::LegacyConsist::TapeRequest{};
+    }
     [[nodiscard]] bool has_dll(std::size_t car) const { return consist_ && consist_->has_dll(car); }
     [[nodiscard]] const dllhost::CarOutput* output(std::size_t car) const { return consist_ ? consist_->output(car) : nullptr; }
     // SMS Var1..Var8 the DLL set for car `car` (exterior), if any.

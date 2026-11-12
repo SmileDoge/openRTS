@@ -373,8 +373,9 @@ types 1, 2 and 4).** For each locomotive with a bound DLL (`LocoFlags &
 **CONFIRMED.**
 - **`_RTSGetInteger(loco, code, index)`** (`0x43929C`): 1 world time; 2 the
   number of wagons (relative to `index`); 3 night; 4 the number of units; 6
-  the train's direction relative to the locomotive (−1 / 1); 7 tape roll
-  (1 recording, 3 recording this locomotive). Code 5 (`RTS_TRIGGERID`) goes
+  the train's direction relative to the locomotive (−1 / 1); 7 the tape
+  (0 none, 1 rolling on another locomotive, 3 on this one; docs/tape.md).
+  Code 5 (`RTS_TRIGGERID`) goes
   through `_RTSGetNamedInteger`; others give 0.
 - **`_RTSGetLocoObject(dll, loco, code, index, sub)`** (`0x536650`):
   3 / 21 the car itself; 4 door (`index`); 7 cabin; 12 `Engine`; 13 exhaust
@@ -414,7 +415,8 @@ types 1, 2 and 4).** For each locomotive with a bound DLL (`LocoFlags &
   without its stream table, −4 for an unknown trigger (`0x439548`).
 - **`_RTSSetIntegerG`** (`0x43939C`): code 6 sets the train's direction, only
   for a train without cars (returns 2 when it changed, 1 otherwise); code 7
-  starts / stops the tape recorder (RTS's replay) for this locomotive.
+  starts / stops the tape on this locomotive (value 0 stops it; bit 2 takes
+  it from another locomotive, bit 4 starts a new file; docs/tape.md).
 - **FPU:** RTS does not change the FPU control word around DLL calls: the
   only `fldcw` instructions in the executable are in runtime math helpers.
   DLLs run with the process's mode, PROBABLY the Borland RTL default

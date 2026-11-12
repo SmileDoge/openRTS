@@ -18,6 +18,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
@@ -73,6 +74,8 @@ struct LegacyWorld {
     float items_range = 0.0f;
     // The SMS objects' trigger pair states (RTSIsSMSTriggerOn).
     std::vector<dllhost::SoundPairState> sound_pairs;
+    // The player's train's car whose tape rolls (simulation/tape.hpp), -1 none.
+    std::int32_t tape_car = -1;
 };
 
 class LegacyConsist {
@@ -142,6 +145,14 @@ public:
     [[nodiscard]] std::size_t player() const noexcept { return player_; }
     // The farthest RTSGetTrackItems asked for in the last step, m (0: none).
     [[nodiscard]] float items_wanted() const noexcept { return items_wanted_; }
+    // What the DLLs asked of the tape in the last step (RTSSetIntegerG 7),
+    // once: nothing when `set` is false.
+    struct TapeRequest {
+        bool set = false;
+        bool restart = false; // started (again): a new file
+        std::int32_t car = -1; // the player's train's car, -1 stopped
+    };
+    [[nodiscard]] TapeRequest take_tape_request() { return std::exchange(tape_request_, TapeRequest{}); }
     [[nodiscard]] bool alive() const;
     [[nodiscard]] std::string error() const;
     [[nodiscard]] std::string take_messages();
@@ -190,6 +201,7 @@ private:
     std::unordered_set<std::uint32_t> items_sent_;
     std::unordered_set<std::int32_t> units_sent_;
     float items_wanted_ = 0.0f;
+    TapeRequest tape_request_;
 };
 
 // Engine outputs of a legacy DLL as the simulation's demands.
