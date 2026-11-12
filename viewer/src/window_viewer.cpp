@@ -900,7 +900,7 @@ public:
             }
             float head = head_motion();
             ImGui::SetNextItemWidth(220.0f);
-            if (slider_with_input(tr("Head motion in the cab"), &head, 0.0f, max_head_motion, "%.1f", "%.1f")) {
+            if (slider_with_input(tr("Head motion in the cab"), &head, 0.0f, max_head_motion, "%.2f", "%.2f")) {
                 set_head_motion(head);
                 remember("head_motion", std::to_string(head_motion()));
             }
@@ -914,6 +914,15 @@ public:
             }
             ImGui::TextDisabled("%s", joints == 1 ? tr("(as RTS: a joint every 50 m; on stretches over 2 km four joints 12.5 m apart every 600 m)")
                                                   : tr("(25 m rails; on stretches of 1 km or more between switches welded strings of about 800 m with 3 or 4 joints 12.5 m apart between them)"));
+            int bodies = body_motion_model() == simulation::BodyMotionModel::rts ? 1 : 0;
+            const char* body_models[] = {"openRTS", "RTS"};
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo(tr("Body motion"), &bodies, body_models, 2)) {
+                set_body_motion_model(bodies == 1 ? simulation::BodyMotionModel::rts : simulation::BodyMotionModel::openrts);
+                remember("body_motion", bodies == 1 ? "rts" : "openrts");
+            }
+            ImGui::TextDisabled("%s", bodies == 1 ? tr("(as RTS: one swing that grows with the speed, sideways, up and down)")
+                                                  : tr("(each body on its own springs over its bogies: the track's errors under each bogie, rail joints and switches, hunting, curves; bounce, pitch, sway, yaw and roll)"));
             ImGui::Checkbox(tr("Pause (Pause)"), &panel.paused);
         }
 
@@ -2152,8 +2161,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     set_key_layout(remembered("key_layout").value_or("openrts") == "rts" ? KeyLayout::rts : KeyLayout::openrts);
     set_key_hints(remembered("key_hints").value_or("1") != "0");
     set_mouse_sensitivity(parse_mouse_sensitivity(remembered("mouse_sensitivity").value_or("1").c_str()));
-    set_head_motion(parse_head_motion(remembered("head_motion").value_or("1").c_str()));
+    set_head_motion(parse_head_motion(remembered("head_motion").value_or("").c_str()));
     set_rail_joint_layout(parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
+    set_body_motion_model(parse_body_motion_model(remembered("body_motion").value_or("openrts").c_str()));
     // Sound is optional: without a device the viewer runs silent.
     std::unique_ptr<audio::AudioEngine> sound;
     if (options.sound) {

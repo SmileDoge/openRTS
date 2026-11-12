@@ -534,8 +534,8 @@ None of it blocks multiplayer.
   reference are PROBABLE (`reverse/train-dll.md` §19).
 
 **Sound:**
-- RTS's volume law (30·log10) and its distance fade: they change every
-  sound, to be done separately and listened to;
+- done (2026-11-12): RTS's volume law (30·log10, `sound.md`); the panning
+  no longer takes 3 to 6 dB off every sound outside;
 - a salon's own sound (`SoundInt`, one installed wagon);
 - where RTS puts the listener while the head is out of the window;
 - route ambient sounds (`ingame.sms`), the default signal and tower sounds

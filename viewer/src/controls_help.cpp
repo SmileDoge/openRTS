@@ -65,7 +65,7 @@ void draw_controls_help() {
         ImGui::EndTable();
     }
 
-    if (begin_section("Train without a DLL", "##controls_train")) {
+    if (begin_section("Locomotive without a DLL (openRTS only)", "##controls_train")) {
         row("Home / End", "throttle");
         row("Page Up / Page Down", "reverser");
         row("] / [", "driver's brake valve (395)");
@@ -78,6 +78,7 @@ void draw_controls_help() {
         row("Y / U", "left / right doors (standing)");
         ImGui::EndTable();
     }
+    note("RTS cannot drive a locomotive without a DLL; openRTS drives MSTS stock without one and Track control's test trains with these keys.");
     note("A locomotive with a DLL is driven from its cab with the mouse and the cab keys of its .sd, as in RTS: on foot (the 3D cab) the keys work at once; with the free camera \"Cab keys of the locomotive DLL\" in the Train window gives them the keyboard (the camera keys are off then, the F keys work).");
 
     if (begin_section("Engineer and cab", "##controls_cab")) {
@@ -92,7 +93,7 @@ void draw_controls_help() {
         if (key_layout() == KeyLayout::rts) row("Num5", "which locomotive the tape records");
         row("F12", "the inspector: the map's objects and their properties");
         row("RMB + mouse", "look around");
-        row("Mouse", "click: a control; wheel: one position; drag: handles and blinds");
+        row("Mouse", "click: a control; wheel: a handle one position (not buttons and switches); drag: handles and blinds");
         row("F3", "view from the first car, again from the last, again back; the wheel nearer, Ctrl+wheel zoom");
         row("Wheel at the chair", "off the controls: the head nearer to what the cursor points at, or back");
         row("Ctrl+wheel", "zoom (in the cab too)");
@@ -106,7 +107,7 @@ void draw_controls_help() {
         row("F5", "the train's cars; again: the next page");
         row("Shift+F5", "the train as a whole");
         row("Ctrl+F5", "speed limits and the kilometre");
-        row("F6", "the stations ahead");
+        row("F6", "the stations ahead and the sidings (yellow)");
         row("F7", "platform and siding names");
         row("Ctrl+F7", "signal names");
         row("Ctrl+Alt+F7", "the Track control window");

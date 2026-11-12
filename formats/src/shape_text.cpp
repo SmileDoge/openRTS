@@ -60,6 +60,10 @@ const std::unordered_map<std::string_view, BlockSchema>& schemas() {
         {"distance_levels", {36, "C"}},
         {"distance_level", {37, ""}},
         {"distance_level_header", {34, ""}},
+        // A level's distance: without it every level read as 0 m and the
+        // renderer drew the coarsest one at any distance (Kuban's catenary
+        // gantries g2wide2.S showed their masts without wires).
+        {"dlevel_selection", {35, "f"}},
         {"hierarchy", {67, "Nu*"}},
         {"sub_objects", {38, "C"}},
         {"sub_object", {39, ""}},
@@ -93,7 +97,7 @@ bool known_block(const std::string_view name) {
         {"uv_op_copy", true}, {"uv_op_reflectmapfull", true}, {"uv_op_reflectmap", true},
         {"uv_op_uniformscale", true}, {"uv_op_nonuniformscale", true}, {"colours", true}, {"colour", true},
         {"packed_colour", true}, {"quaternion", true}, {"sort_vectors", true}, {"distance_levels_header", true},
-        {"dlevel_bias", true}, {"dlevel_selection", true}, {"sub_object_header", true}, {"geometry_info", true},
+        {"dlevel_bias", true}, {"sub_object_header", true}, {"geometry_info", true},
         {"geometry_nodes", true}, {"geometry_node", true}, {"geometry_node_map", true}, {"cullable_prims", true},
         {"vertex_sets", true}, {"vertex_set", true}, {"normal_idxs", true}, {"flags", true}, {"comment", true},
         {"skip", true}, {"_skip", true}, {"_info", true}, {"tcb_pos", true}, {"anim", true},

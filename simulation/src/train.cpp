@@ -599,6 +599,12 @@ void Train::reverse_cars() {
         std::swap(car.bogie_ahead, car.bogie_behind);
         car.body[2] = -car.body[2];
         car.body_rate[2] = -car.body_rate[2];
+        if (settings_.body_motion == BodyMotionModel::openrts) {
+            reverse_body(car.motion);
+            car.body[0] = car.motion.shift[0];
+            car.body_rate[0] = car.motion.shift_rate[0];
+            for (int axis = 0; axis < 3; ++axis) car.body_turn[axis] = car.motion.turn[axis];
+        }
         car.pipe_ends = swap_ends(car.pipe_ends, pipe_hose_front, pipe_hose_rear);
         car.pipe_ends = swap_ends(car.pipe_ends, charging_hose_front, charging_hose_rear);
         car.pipe_ends = swap_ends(car.pipe_ends, ep_cable_front, ep_cable_rear);
@@ -1457,8 +1463,74 @@ void Train::derailment() {
 // load: UNKNOWN, not taken), damping FrameSpringDamping. RTS feeds the
 // result only to the cab camera of the driven engine; openRTS also shows it
 // on the car bodies.
+void Train::set_body_motion(const BodyMotionModel model) noexcept {
+    if (settings_.body_motion == model) return;
+    settings_.body_motion = model;
+    for (auto& car : cars_) {
+        for (int axis = 0; axis < 3; ++axis) {
+            car.body[axis] = 0.0f;
+            car.body_rate[axis] = 0.0f;
+            car.body_turn[axis] = 0.0f;
+        }
+        const auto seed = car.motion.seed;
+        car.motion = {};
+        car.motion.seed = seed;
+    }
+}
+
+namespace {
+
+// A seed for a car's own springs (body_modes): each car its own.
+[[nodiscard]] std::uint64_t next_body_seed() {
+    static std::atomic<std::uint64_t> counter{0};
+    std::uint64_t z = (counter.fetch_add(1) + 1) * 0x9E3779B97F4A7C15ull;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return (z ^ (z >> 31)) | 1u;
+}
+
+} // namespace
+
 void Train::sway() {
     const auto dt = static_cast<float>(train_step);
+    if (settings_.body_motion == BodyMotionModel::openrts) {
+        for (auto& car : cars_) {
+            auto& motion = car.motion;
+            if (car.derailed) {
+                motion = BodyMotion{.seed = motion.seed};
+                for (int axis = 0; axis < 3; ++axis) car.body[axis] = car.body_rate[axis] = car.body_turn[axis] = 0.0f;
+                continue;
+            }
+            const bool kicked = motion.input.kick_vertical[0] != 0.0f || motion.input.kick_vertical[1] != 0.0f ||
+                                motion.input.kick_lateral[0] != 0.0f || motion.input.kick_lateral[1] != 0.0f;
+            if (car.velocity == 0.0f && !kicked) {
+                // At rest once it settles.
+                float most = 0.0f;
+                for (int axis = 0; axis < 3; ++axis) {
+                    most = (std::max)({most, std::abs(motion.shift[axis]), std::abs(motion.shift_rate[axis]), std::abs(motion.turn[axis]),
+                                       std::abs(motion.turn_rate[axis])});
+                }
+                if (most < 1e-5f) continue;
+            }
+            if (motion.seed == 0) motion.seed = next_body_seed();
+            const auto modes = body_modes(*car.definition, mass_of(car), motion.seed);
+            motion.input.speed = std::abs(car.velocity);
+            // The curve's pull; the track has no cant here, and a line's
+            // cant takes about half of it at its usual speeds.
+            motion.input.lateral_acceleration = 0.5f * car.velocity * car.velocity * car.curvature;
+            motion.input.acceleration = car.acceleration;
+            const float ahead = car.bogie_ahead > 0.0f ? car.bogie_ahead : car.definition->length * 0.35f;
+            const float behind = car.bogie_behind > 0.0f ? car.bogie_behind : car.definition->length * 0.35f;
+            motion.input.base = ahead + behind;
+            step_body(motion, modes, dt);
+            for (int axis = 0; axis < 3; ++axis) {
+                car.body[axis] = motion.shift[axis];
+                car.body_rate[axis] = motion.shift_rate[axis];
+                car.body_turn[axis] = motion.turn[axis];
+            }
+        }
+        return;
+    }
     for (std::size_t i = 0; i < cars_.size(); ++i) {
         auto& car = cars_[i];
         const auto& wagon = *car.definition;
@@ -1664,12 +1736,30 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
             const bool along = traveller->forward() == (car.velocity > 0.0f);
             const auto place = joints.place(traveller->node(), length, offset, along);
             auto& before = impl.last_bogie[i][b];
+            // openRTS's body motion: the track under the bogie in the car's
+            // axes (the node's right is the car's lateral axis when the
+            // bogie faces along the node), and a kick at a joint or a
+            // junction, the harder the faster.
+            const bool body_motion = settings_.body_motion == BodyMotionModel::openrts;
+            if (body_motion) {
+                const float side = traveller->forward() ? 1.0f : -1.0f;
+                const auto track = bogie_irregularity(traveller->node(), length, offset, 2.4);
+                car.motion.input.bogie[b] = {track.vertical, side * track.lateral, side * track.cross_level};
+            }
+            const float kick = std::clamp(std::abs(car.velocity) / 15.0f, 0.0f, 2.2f) * 8.0f;
             if (before.node != ~0u && car.velocity != 0.0f) {
                 if (before.node != traveller->node()) {
                     impl.events.push_back(
                         {.kind = TrainEventKind::junction, .car = static_cast<std::uint32_t>(i), .bogie = b});
+                    if (body_motion) {
+                        // A frog and switch rails: a knock, and a jolt aside.
+                        const float depth = joint_depth(traveller->node(), 0.5 + (before.node & 0xFFFFu));
+                        car.motion.input.kick_vertical[b] += depth * 0.7f * kick;
+                        car.motion.input.kick_lateral[b] += ((traveller->node() ^ before.node) & 1u ? 1.0f : -1.0f) * depth * kick;
+                    }
                 } else if (joints.place(before.node, length, before.offset, along).index != place.index) {
                     impl.events.push_back({.kind = TrainEventKind::joint, .car = static_cast<std::uint32_t>(i), .bogie = b});
+                    if (body_motion) car.motion.input.kick_vertical[b] += joint_depth(traveller->node(), place.index) * kick;
                 }
                 if (window > 0.0) {
                     // Distance since the node end the bogie entered by.

@@ -401,9 +401,17 @@ car's sound is made.
 - **Frequency:** the frequency curve gives Hz; pitch = Hz / the file's sample
   rate.
 - **Positional voices:**
-  - they are panned by direction;
+  - they are panned by direction (openRTS, 2026-11-12: by its own balance
+    law, `audio::pan_depth`: ahead and behind both sides at full level, as
+    RTS plays every sound; fully to one side the other side at 0.3);
+  - before, miniaudio's spatializer panned them: a sound straight ahead got
+    half its level on each side (6 dB down), to the side 1 and 0.2, so every
+    sound outside (the running gear, the horn, other trains) was 3 to 6 dB
+    quieter than the cab's own, heard at the listener unpanned, and than in
+    RTS: outside or with the head out of the window the train sounded
+    quieter than in the cab;
   - distance attenuation is off, because scripts carry their own distance
-    curves;
+    curves (rolling stock: reference / distance beyond 15 m, openRTS);
   - weather and environment sounds are not positioned (`Ignore3d` itself
     is unknown to RTS);
   - nor are the sounds heard at the listener: the cab's own script inside
@@ -412,9 +420,12 @@ car's sound is made.
     1–2 km/h), they were panned by turns and lost up to half their power:
     miniaudio pans a source farther than 1 mm, and one straight ahead gets
     0.5 per channel. RTS places no sound at all (above).
-- **CONFIRMED, not ported (2026-11-04):** `0x4A78A0` sets DirectSound's
-  volume to 3000 × log10(v) hundredths of a dB: 30 dB a decade, an
-  amplitude of v^1.5 (openRTS: v).
+- **CONFIRMED, ported (2026-11-12):** `0x4A78A0` sets DirectSound's volume
+  to 3000 × log10(v) hundredths of a dB: 30 dB a decade, an amplitude of
+  v^1.5; from v = 1 up −1 (0 dB, full), at most −10000. openRTS
+  (`AudioEngine::set`) plays v^1.5, 1 from v = 1 up; before, v (so the
+  quieter streams, volume 0.25 say, were twice as loud as in RTS: 0.25
+  against 0.125).
 - **CONFIRMED, ported (2026-11-08): objects with flag 0x20 fade with
   distance** by the `Attenuation` rule (`0x4A7764`, below), the default rule
   for a stream without one, unless the stream's volume curve is distance
@@ -468,8 +479,9 @@ car's sound is made.
 - **With the cab:** a salon's own sound (`Interior ( SoundInt )`, one
   installed wagon). Named triggers are done (2026-11-04,
   `reverse/train-dll.md` §19).
-- **Loudness:** RTS's volume law and distance fade (the CONFIRMED items
-  under "Volume, pitch and position").
+- **Loudness:** done (2026-11-12): RTS's volume law; the distance fade
+  since 2026-11-08 (the CONFIRMED items under "Volume, pitch and
+  position").
 
 ## The cab sound (2026-11-01)
 

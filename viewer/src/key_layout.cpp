@@ -11,8 +11,9 @@ namespace {
 KeyLayout current = KeyLayout::openrts;
 bool hints = true;
 float sensitivity = 1.0f;
-float head = 1.0f;
+float head = default_head_motion;
 simulation::RailJointLayout joints = simulation::RailJointLayout::openrts;
+simulation::BodyMotionModel bodies = simulation::BodyMotionModel::openrts;
 
 } // namespace
 
@@ -45,10 +46,10 @@ void set_head_motion(const float amount) noexcept {
 }
 
 float parse_head_motion(const char* text) noexcept {
-    if (!text) return 1.0f;
+    if (!text) return default_head_motion;
     char* end = nullptr;
     const float value = std::strtof(text, &end);
-    if (end == text || !(value >= 0.0f)) return 1.0f;
+    if (end == text || !(value >= 0.0f)) return default_head_motion;
     return value < max_head_motion ? value : max_head_motion;
 }
 
@@ -58,6 +59,14 @@ void set_rail_joint_layout(const simulation::RailJointLayout layout) noexcept { 
 
 simulation::RailJointLayout parse_rail_joint_layout(const char* text) noexcept {
     return text && std::strcmp(text, "rts") == 0 ? simulation::RailJointLayout::rts : simulation::RailJointLayout::openrts;
+}
+
+simulation::BodyMotionModel body_motion_model() noexcept { return bodies; }
+
+void set_body_motion_model(const simulation::BodyMotionModel model) noexcept { bodies = model; }
+
+simulation::BodyMotionModel parse_body_motion_model(const char* text) noexcept {
+    return text && std::strcmp(text, "rts") == 0 ? simulation::BodyMotionModel::rts : simulation::BodyMotionModel::openrts;
 }
 
 const char* window_key_name() { return current == KeyLayout::rts ? "Num0" : tr("'-'"); }

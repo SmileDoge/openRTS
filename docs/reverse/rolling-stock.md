@@ -212,7 +212,8 @@ offsets times the slider.) openRTS draws the offsets between the last two
 20 Hz however high the frame rate.
 
 openRTS's head motion (2026-11-10, not RTS; Settings and the panel's
-General, "Head motion in the cab", 0 to 3, 1 by default, 0 as RTS): the
+General, "Head motion in the cab", 0 to 3, 0.25 by default since 2026-11-12
+(1 before: the neck felt too loose), 0 as RTS): the
 driver's head on its neck, per car axis a mass on a spring and a damper
 (`viewer/src/head_motion.cpp`: 0.9 Hz sideways, 2 Hz up and down, 0.85 Hz
 fore and aft, damping ratios 0.3 to 0.35), carried by the body's offsets
@@ -223,6 +224,51 @@ metre; service braking at 0.7 m/s^2 about 2 degrees, nodding back once at
 the stop), aside it leans that way (1.5 rad per metre), knocked up at a
 joint it nods down (2.5 rad per metre); at most 0.12 m and 0.2 rad. The
 nod and the tilt go into the view only, so the mouse's look is unchanged.
+
+openRTS's body motion (2026-11-12, not RTS; Settings and the panel's
+General, "Body motion", openRTS by default, RTS as above;
+`simulation/src/body_motion.cpp`). RTS's model drawn on every body showed
+what RTS never shows: one sine of the speed, sideways and up and down, and
+cars without their own `FrameSpringStiffness` / `FrameSpringDamping` (the
+ED9M's motor and trailer cars; its head cars have them) all on the same
+default springs, so they swayed in step, near resonance at 55 km/h, while
+the head cars barely moved. openRTS's instead:
+- **The track's errors** along each node, from its index (SplitMix64, the
+  same at every run): five sines a channel, longer waves larger; the rails'
+  level 2.5 mm rms (waves 6 to 40 m), the line 2.5 mm (8 to 50 m), the cross
+  level 2.5 mm over the 1.5 m between the rails (6 to 35 m); a node's track
+  0.6 to 1.6 of that, jointed track (a node under 1000 m) 1.3 times rougher;
+  faded to nothing over 12 m at the node's ends. Each bogie takes them
+  averaged over a 2.4 m wheelbase, in the car's axes; so each car meets the
+  same errors as the car ahead, later.
+- **Kicks** at a bogie: a rail joint dips it (1.2 to 3.8 mm a joint, from
+  the node and the joint), a junction (a node change) knocks it and jolts it
+  aside; the faster, the harder (|v| / 15 m/s, at most 2.2).
+- **The bogies' hunting:** a lateral wave of 16 to 28 m per car (the rear
+  bogie's 4 % longer, its own phase), 3.5 to 6.5 mm from 5 to 25 m/s,
+  swelling and fading over 120 to 340 m.
+- **The curve:** half of `v^2 / R` (the cant takes the rest at a line's
+  usual speeds: the track has none here) pushes the body out on its springs
+  and rolls it outwards (0.015 rad per m/s^2); braking dips the front
+  (0.004 rad per m/s^2), the pull and the brake move it along (as RTS).
+- **The body:** bounce and pitch from the two bogies' levels, sway and yaw
+  from their lines, roll from the cross level and with the sway (the top
+  further out than the floor), each a mass on a spring and a damper driven
+  through both (4 sub-steps a 0.05 s step); bump stops at 6 cm aside, 5 cm
+  up and down, 0.05 rad roll. The bounce frequency and damping are the
+  car's `FrameSpringStiffness` / `FrameSpringDamping` when it has them (0.8
+  to 2.6 Hz, damping 0.12 to 0.5), else by its kind (passenger 1.1 Hz,
+  engine 1.45 Hz, freight 2.3 Hz less when loaded); pitch 1.2 times it, sway
+  0.8, yaw 0.9, roll 0.6; each car's frequencies 8 to 10 % and dampings
+  15 % different (a seed of its own), so no two cars move in step.
+- **Drawn:** the body shifted and turned about a point 1.1 m above the rails;
+  the bogies and the wheels without a bogie take the move back and stay on
+  the rails (with RTS's model too). In the cab the player is in the cab
+  stays at rest and the camera is carried as the body carries that point.
+  The "Body sway" slider scales it.
+- On a passenger car at 72 km/h on average track (`openrts_body_motion_test`):
+  about 3 to 4 mm of sway, 0.17 degrees of roll, 2 mm of bounce rms, the
+  roof's side 7 to 8 mm rms; two cars' sway correlates about 0.
 
 ## The exterior in the cab (`0x438D50`, parser `0x44247C`)
 

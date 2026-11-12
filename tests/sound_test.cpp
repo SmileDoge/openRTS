@@ -820,6 +820,39 @@ void test_engine() {
     engine.update();
     check(!engine.playing(voice) && engine.active_voices() == 0, "released loop ends and is freed");
 
+    // A source straight ahead as loud on each side as one heard at the
+    // listener (RTS places no sound at all), and RTS's volume law: v^1.5,
+    // 1 from v = 1 up (0x4A78A0).
+    {
+        const auto level = [&](const audio::VoiceSpace space, const float volume, const glm::vec3& at) {
+            audio::AudioEngine e({.device = false, .channels = 2, .sample_rate = 22050});
+            e.set_listener({0, 0, 0}, {0, 0, 1});
+            const auto v = e.play(clip, audio::VoicePlayback::loop, space);
+            e.set(v, volume, 1.0f, at);
+            std::vector<float> out(2 * 22050);
+            e.render(out.data(), 22050);
+            double l = 0.0, r = 0.0;
+            for (std::size_t i = 0; i < out.size(); i += 2) {
+                l += out[i] * out[i];
+                r += out[i + 1] * out[i + 1];
+            }
+            return std::pair{std::sqrt(l), std::sqrt(r)};
+        };
+        const auto flat = level(audio::VoiceSpace::flat, 1.0f, {0, 0, 0});
+        const auto ahead = level(audio::VoiceSpace::panned, 1.0f, {0, 0, 10});
+        const auto behind = level(audio::VoiceSpace::positional, 1.0f, {0, 0, -10});
+        check(flat.first > 1.0 && std::abs(ahead.first / flat.first - 1.0) < 0.05 && std::abs(ahead.second / flat.second - 1.0) < 0.05,
+              "a source ahead as loud on each side as one at the listener");
+        check(std::abs(behind.first / flat.first - 1.0) < 0.05, "one behind within the reference distance too");
+        const auto side = level(audio::VoiceSpace::panned, 1.0f, {10, 0, 0});
+        check(std::abs(side.second / flat.second - 1.0) < 0.05 && std::abs(side.first / flat.first - (1.0 - audio::pan_depth)) < 0.05,
+              "fully to the right: the right side full, the left at 1 - pan_depth");
+        const auto quarter = level(audio::VoiceSpace::flat, 0.25f, {0, 0, 0});
+        check(std::abs(quarter.first / flat.first - 0.125) < 0.01, "volume 0.25 plays at 0.125 (v^1.5)");
+        const auto loud = level(audio::VoiceSpace::flat, 2.0f, {0, 0, 0});
+        check(std::abs(loud.first / flat.first - 1.0) < 0.01, "volume above 1 plays at 1 (0 dB)");
+    }
+
     // A silent loop is held where it is (not mixed) and goes on from there.
     const auto quiet = engine.play(clip, audio::VoicePlayback::loop, audio::VoiceSpace::panned);
     engine.set(quiet, 1.0f, 1.0f, {0, 0, 10});

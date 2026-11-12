@@ -32,9 +32,14 @@ struct AudioEngineOptions {
 };
 
 // Distance (m) up to which positional voices play at full volume; beyond it
-// they fall off as reference / distance. openRTS choice: RTS uses DirectSound
-// 3D buffers, its min distance and rolloff settings are UNKNOWN.
+// they fall off as reference / distance. openRTS choice: RTS places no sound
+// (docs/sound.md), its rolling stock fades only by its scripts' curves.
 inline constexpr float positional_reference_distance = 15.0f;
+
+// How far a voice placed in space is panned (openRTS: RTS pans nothing):
+// straight ahead or behind both sides at full level, as RTS plays every
+// sound; fully to one side the other side at 1 - pan_depth.
+inline constexpr float pan_depth = 0.7f;
 
 class AudioEngine final : public VoiceSink {
 public:

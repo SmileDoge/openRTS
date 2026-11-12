@@ -1,5 +1,6 @@
 #pragma once
 
+#include <openrts/simulation/body_motion.hpp>
 #include <openrts/simulation/rail_joints.hpp>
 
 // Which keys the viewer's own engineer actions use. RTS's put the cab
@@ -48,12 +49,13 @@ void set_mouse_sensitivity(float factor) noexcept;
 // The driver's head in the cab (openRTS, head_motion.hpp): how far it nods
 // with the train's acceleration, braking and the rail joints and leans in
 // curves; 0 as RTS (the camera carried by the body's sway alone), 1 as
-// tuned, up to 3. Set in the start menu's Settings or the panel's General
-// (remembered as head_motion).
+// tuned, up to 3; 0.25 by default (at 1 the neck felt too loose). Set in the
+// start menu's Settings or the panel's General (remembered as head_motion).
 inline constexpr float max_head_motion = 3.0f;
+inline constexpr float default_head_motion = 0.25f;
 [[nodiscard]] float head_motion() noexcept;
 void set_head_motion(float amount) noexcept;
-// The remembered value (1 when none or unreadable).
+// The remembered value (default_head_motion when none or unreadable).
 [[nodiscard]] float parse_head_motion(const char* text) noexcept;
 
 // The rail joints the wheels knock on (openrts/simulation/rail_joints.hpp):
@@ -63,5 +65,13 @@ void set_head_motion(float amount) noexcept;
 void set_rail_joint_layout(simulation::RailJointLayout layout) noexcept;
 // The remembered value ("rts": RTS's, anything else openRTS's).
 [[nodiscard]] simulation::RailJointLayout parse_rail_joint_layout(const char* text) noexcept;
+
+// How the car bodies move on their springs (openrts/simulation/body_motion.hpp):
+// openRTS's model unless RTS's is chosen in the start menu's Settings or the
+// panel's General (remembered as body_motion: "openrts" or "rts").
+[[nodiscard]] simulation::BodyMotionModel body_motion_model() noexcept;
+void set_body_motion_model(simulation::BodyMotionModel model) noexcept;
+// The remembered value ("rts": RTS's, anything else openRTS's).
+[[nodiscard]] simulation::BodyMotionModel parse_body_motion_model(const char* text) noexcept;
 
 } // namespace openrts::viewer

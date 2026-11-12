@@ -439,8 +439,9 @@ struct Launcher::State {
         sound = remembered_int("launcher_sound", 1) != 0;
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
         viewer::set_mouse_sensitivity(remembered_float("mouse_sensitivity", 1.0f));
-        viewer::set_head_motion(remembered_float("head_motion", 1.0f));
+        viewer::set_head_motion(remembered_float("head_motion", viewer::default_head_motion));
         viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
+        viewer::set_body_motion_model(viewer::parse_body_motion_model(remembered("body_motion").value_or("openrts").c_str()));
         vsync = remembered_int("launcher_vsync", 1) != 0;
         load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
@@ -1263,7 +1264,7 @@ void Launcher::State::draw_settings(const float height) {
             form_row(tr("Head motion in the cab"));
             float head = viewer::head_motion();
             ImGui::SetNextItemWidth(220.0f);
-            if (viewer::slider_with_input("##head_motion", &head, 0.0f, viewer::max_head_motion, "%.1f", "%.1f")) {
+            if (viewer::slider_with_input("##head_motion", &head, 0.0f, viewer::max_head_motion, "%.2f", "%.2f")) {
                 viewer::set_head_motion(head);
                 remember("head_motion", std::to_string(viewer::head_motion()));
             }
@@ -1294,6 +1295,16 @@ void Launcher::State::draw_settings(const float height) {
             }
             ImGui::TextDisabled("%s", joints == 1 ? tr("(as RTS: a joint every 50 m; on stretches over 2 km four joints 12.5 m apart every 600 m)")
                                                   : tr("(25 m rails; on stretches of 1 km or more between switches welded strings of about 800 m with 3 or 4 joints 12.5 m apart between them)"));
+            form_row(tr("Body motion"));
+            int bodies = viewer::body_motion_model() == simulation::BodyMotionModel::rts ? 1 : 0;
+            const char* body_models[] = {"openRTS", "RTS"};
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo("##body_motion", &bodies, body_models, 2)) {
+                viewer::set_body_motion_model(bodies == 1 ? simulation::BodyMotionModel::rts : simulation::BodyMotionModel::openrts);
+                remember("body_motion", bodies == 1 ? "rts" : "openrts");
+            }
+            ImGui::TextDisabled("%s", bodies == 1 ? tr("(as RTS: one swing that grows with the speed, sideways, up and down)")
+                                                  : tr("(each body on its own springs over its bogies: the track's errors under each bogie, rail joints and switches, hunting, curves; bounce, pitch, sway, yaw and roll)"));
             ImGui::EndTable();
         }
     }

@@ -315,6 +315,16 @@ level an object holds at +104 (`0x4B1664`); where RTS chooses it (another
 thread, distance, FOV or a LOD bias) is not traced, so the rule is the MSTS
 one — PROBABLE. The hierarchy of the first level is used for all levels.
 
+Text shapes (`JINX0s1t`, transcoded to the binary tokens) lost their
+`dlevel_selection` until 2026-11-12: the block was not in the transcoder's
+table, so every level read as 0 m and the coarsest one was drawn at any
+distance. On the new installation that was 318 of its 2201 text shapes with
+two levels or more, among them Kuban's catenary gantries `g2wide2.S` /
+`g2grass2.S` (600 m: masts, brackets and the wires; 1100 m: the masts
+alone), so the line showed bare masts without wires, and tunnels, a double
+slip and signals of `GLOBAL\SHAPES`. `openrts_asset_dump --kind shape` now
+reads text shapes too and prints the levels' distances.
+
 ## Output colour format
 
 RTS draws into a plain GL framebuffer: the shaders' outputs go to the screen

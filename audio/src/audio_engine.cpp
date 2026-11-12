@@ -3,8 +3,11 @@
 #include <openrts/core/profile.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <unordered_map>
+
+#include <glm/geometric.hpp>
 
 #include "miniaudio_config.hpp"
 
@@ -17,7 +20,11 @@ struct AudioEngine::Impl {
         ma_sound sound{};
         bool loops = false; // looping, not released
         bool held = false;  // stopped while silent (set)
+        VoiceSpace space = VoiceSpace::flat;
     };
+    // The listener in miniaudio's axes (X mirrored), and its right.
+    glm::vec3 listener{0.0f};
+    glm::vec3 right{1.0f, 0.0f, 0.0f};
 
     ma_engine engine{};
     bool initialized = false;
@@ -103,6 +110,10 @@ void AudioEngine::set_listener(const glm::vec3& position, const glm::vec3& forwa
     if (!ok()) return;
     ma_engine_listener_set_position(&impl_->engine, 0, -position.x, position.y, position.z);
     ma_engine_listener_set_direction(&impl_->engine, 0, -forward.x, forward.y, forward.z);
+    impl_->listener = {-position.x, position.y, position.z};
+    // miniaudio's right: the direction across the world's up.
+    const glm::vec3 across = glm::cross(glm::vec3{-forward.x, forward.y, forward.z}, glm::vec3{0.0f, 1.0f, 0.0f});
+    if (glm::length(across) > 1e-4f) impl_->right = glm::normalize(across);
 }
 
 void AudioEngine::set_paused(const bool paused) {
@@ -169,18 +180,14 @@ VoiceId AudioEngine::play(std::shared_ptr<const AudioClip> clip, const VoicePlay
     }
     ma_sound_set_looping(&voice->sound, playback != VoicePlayback::once);
     voice->loops = playback != VoicePlayback::once;
-    ma_sound_set_spatialization_enabled(&voice->sound, space != VoiceSpace::flat);
-    // Panned voices: a model with zero rolloff, no distance attenuation (the
-    // scripts' curves set the volume) but still panning;
-    // ma_attenuation_model_none would skip the spatializer altogether.
-    // Positional voices: inverse distance from positional_reference_distance.
-    ma_sound_set_attenuation_model(&voice->sound, ma_attenuation_model_inverse);
-    if (space == VoiceSpace::positional) {
-        ma_sound_set_rolloff(&voice->sound, 1.0f);
-        ma_sound_set_min_distance(&voice->sound, positional_reference_distance);
-    } else {
-        ma_sound_set_rolloff(&voice->sound, 0.0f);
-    }
+    voice->space = space;
+    // Panned and positional voices are panned here (set), not by
+    // miniaudio's spatializer: that gives a sound straight ahead half its
+    // level on each side (6 dB down), so every sound outside was quieter
+    // than the cab's own (heard at the listener, unpanned), and quieter than
+    // RTS, which places no sound at all.
+    ma_sound_set_spatialization_enabled(&voice->sound, MA_FALSE);
+    ma_sound_set_pan_mode(&voice->sound, ma_pan_mode_balance);
     ma_sound_set_volume(&voice->sound, 0.0f);
     ma_sound_start(&voice->sound);
     const auto id = impl_->next_id++;
@@ -220,9 +227,23 @@ void AudioEngine::set(const VoiceId id, const float volume, const float pitch, c
         voice.held = false;
         ++impl_->audible;
     }
-    ma_sound_set_volume(&sound, volume);
+    // RTS's volume law (0x4A78A0, CONFIRMED): 3000 * log10(v) hundredths of
+    // a dB to DirectSound, at most 0 dB: an amplitude of v^1.5, 1 from v = 1
+    // up.
+    float gain = volume >= 1.0f ? 1.0f : volume > 0.0f ? std::pow(volume, 1.5f) : 0.0f;
+    float pan = 0.0f;
+    if (voice.space != VoiceSpace::flat) {
+        const glm::vec3 away = glm::vec3{-position.x, position.y, position.z} - impl_->listener;
+        const float distance = glm::length(away);
+        if (distance > 1e-3f) pan = std::clamp(glm::dot(away / distance, impl_->right) * pan_depth, -1.0f, 1.0f);
+        // Positional voices fall off as reference / distance beyond it.
+        if (voice.space == VoiceSpace::positional && distance > positional_reference_distance) {
+            gain *= positional_reference_distance / distance;
+        }
+    }
+    ma_sound_set_volume(&sound, gain);
+    ma_sound_set_pan(&sound, pan);
     ma_sound_set_pitch(&sound, pitch);
-    ma_sound_set_position(&sound, -position.x, position.y, position.z);
 }
 
 void AudioEngine::seek(const VoiceId id, const std::uint64_t frame) {

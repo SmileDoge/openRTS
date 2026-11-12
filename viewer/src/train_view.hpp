@@ -769,7 +769,15 @@ private:
     // The unit the information panels describe: the followed train, else the driven one.
     [[nodiscard]] const Unit* shown_unit() const;
     // Platforms ahead of the unit's leading end: (station and platform, metres).
-    [[nodiscard]] std::vector<std::pair<std::string, double>> stations_ahead(const Unit& unit) const;
+    // F6: the stations and stops ahead (RTS 0x466F70) and, openRTS, the
+    // sidings, nearest first; a name like "%3 мост" (a mark for the
+    // announcer, САВПЭ) only with service_marks_.
+    struct PlaceAhead {
+        std::string name;
+        double distance{};
+        bool siding = false;
+    };
+    [[nodiscard]] std::vector<PlaceAhead> stations_ahead(const Unit& unit) const;
 
     std::shared_ptr<const core::Vfs> vfs_;
     core::VirtualPath route_;
@@ -811,6 +819,8 @@ private:
     static constexpr std::size_t car_page_size = 15;
     bool limits_panel_ = false;
     bool stations_panel_ = false;
+    bool service_marks_ = false;       // F6 shows the "%n ..." marks too (remembered as f6_service_marks)
+    bool service_marks_loaded_ = false;
     // A HUD panel the user can drag: where its pivot corner sits, as a
     // fraction of the display (it keeps its place when the window is
     // resized), remembered in viewer_state.ini.
@@ -888,6 +898,16 @@ private:
         glm::mat4 transform{1.0f};
         Pose here;
         float heading{};
+        // The body's move on its springs in the shape's space (transform =
+        // the rest pose times it): the bogies and wheels take it back to
+        // stay on the rails.
+        glm::mat4 motion{1.0f};
+    };
+    // A body on its springs: shifted (lateral, up, along the train front, m)
+    // and turned (roll, pitch, yaw, rad; CarState::body, body_turn).
+    struct BodyOffset {
+        glm::vec3 shift{0.0f};
+        glm::vec3 turn{0.0f};
     };
     // Where car `i`'s body is drawn this frame (interpolated, swaying, tipped).
     // `sway` off: on its springs at rest (the cab the player is in: RTS sways
@@ -897,8 +917,10 @@ private:
     [[nodiscard]] std::optional<glm::vec3> eye_in_cab(const glm::vec3& eye) const;
     // The body's offset on its springs in the scene (times the sway slider).
     // A car's body on its springs, between the last two steps (render time).
-    [[nodiscard]] glm::vec3 body_sway(const Unit& unit, std::size_t i) const;
-    [[nodiscard]] glm::vec3 sway_offset(const Unit& unit, std::size_t i) const;
+    [[nodiscard]] BodyOffset body_sway(const Unit& unit, std::size_t i) const;
+    // Where the body's move carries the point `eye` (scene) of car `i`: the
+    // cab camera, the cab itself drawn at rest (RTS 0x424488).
+    [[nodiscard]] glm::vec3 sway_offset(const Unit& unit, std::size_t i, const glm::vec3& eye) const;
     // The driver's head in car `i` (head_motion.hpp, the setting
     // head_motion()): one frame of it, its nod, tilt and shift on `camera`.
     void move_head(const Unit& unit, std::size_t i, float elapsed, ViewerCamera& camera);

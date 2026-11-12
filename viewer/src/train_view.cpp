@@ -121,6 +121,12 @@ struct TrainView::Car {
     bool script_tried = false;
     float lift = default_lift;
     std::vector<std::int32_t> wheels;
+    // The wheels' and bogies' rest matrices in the shape (their chain from
+    // the root), to keep them on the rails while the body moves on its
+    // springs; a wheel under a bogie follows its bogie (not loose).
+    std::vector<glm::mat4> wheel_rest;
+    std::vector<bool> wheel_loose;
+    std::vector<glm::mat4> bogie_rest; // by bogies
     // Pantograph nodes (PANTOGRAPH*<n>): node, pantograph number 1..; the
     // number's z along the shape (to tell the rear one).
     std::vector<std::pair<std::int32_t, std::uint8_t>> pantograph_nodes;
@@ -241,7 +247,7 @@ struct TrainView::Unit {
     std::vector<double> previous_travelled, current_travelled;
     // The bodies on their springs (CarState::body) at the last two steps:
     // drawn between them like the placements, not stepping at 20 Hz.
-    std::vector<glm::vec3> previous_body, current_body;
+    std::vector<BodyOffset> previous_body, current_body;
     // Its cars are in the DLL host (the driven train, or a part cut off from
     // it): host_train is its train there (0: the driven one).
     bool host = false;
@@ -263,8 +269,9 @@ struct TrainView::Unit {
     void take_body() {
         current_body.resize(train->cars().size());
         for (std::size_t i = 0; i < current_body.size(); ++i) {
-            const auto& body = train->cars()[i].body;
-            current_body[i] = glm::vec3{body[0], body[1], body[2]};
+            const auto& car = train->cars()[i];
+            current_body[i] = {glm::vec3{car.body[0], car.body[1], car.body[2]},
+                               glm::vec3{car.body_turn[0], car.body_turn[1], car.body_turn[2]}};
         }
     }
 };
@@ -943,6 +950,43 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
         }
         for (auto& [matrix, front] : car.bogies) {
             front = rig.matrices[static_cast<std::size_t>(matrix)].values[11] >= (front_z + rear_z) * 0.5f;
+        }
+        {
+            // The rest matrices, as the renderer chains them (row vectors
+            // stored: each row an axis's image).
+            const auto rest_of = [&](std::size_t m) {
+                glm::mat4 result{1.0f};
+                for (std::size_t guard = 0; m < rig.matrices.size() && guard <= rig.matrices.size(); ++guard) {
+                    const auto& v = rig.matrices[m].values;
+                    glm::mat4 node{1.0f};
+                    node[0] = glm::vec4{v[0], v[1], v[2], 0.0f};
+                    node[1] = glm::vec4{v[3], v[4], v[5], 0.0f};
+                    node[2] = glm::vec4{v[6], v[7], v[8], 0.0f};
+                    node[3] = glm::vec4{v[9], v[10], v[11], 1.0f};
+                    result = node * result;
+                    const auto parent = m < rig.hierarchy.size() ? rig.hierarchy[m] : -1;
+                    if (parent < 0) break;
+                    m = static_cast<std::size_t>(parent);
+                }
+                return result;
+            };
+            const auto under_bogie = [&](std::size_t m) {
+                for (std::size_t guard = 0; m < rig.hierarchy.size() && guard <= rig.matrices.size(); ++guard) {
+                    const auto parent = rig.hierarchy[m];
+                    if (parent < 0 || static_cast<std::size_t>(parent) >= rig.matrices.size()) return false;
+                    m = static_cast<std::size_t>(parent);
+                    if (lower(rig.matrices[m].name).starts_with("bogie")) return true;
+                }
+                return false;
+            };
+            car.bogie_rest.clear();
+            for (const auto& [matrix, front] : car.bogies) car.bogie_rest.push_back(rest_of(static_cast<std::size_t>(matrix)));
+            car.wheel_rest.clear();
+            car.wheel_loose.clear();
+            for (const auto wheel : car.wheels) {
+                car.wheel_rest.push_back(rest_of(static_cast<std::size_t>(wheel)));
+                car.wheel_loose.push_back(!under_bogie(static_cast<std::size_t>(wheel)));
+            }
         }
         // RTS numbers pantographs 1 and 2 by where they stand, not by their
         // names (0x4F0BC8): towards the shape's rear (z < 0) is 1, towards its
@@ -3226,12 +3270,31 @@ const TrainView::Unit* TrainView::shown_unit() const {
     return unit && unit->train && unit->train->placed() ? unit : nullptr;
 }
 
-std::vector<std::pair<std::string, double>> TrainView::stations_ahead(const Unit& unit) const {
-    std::vector<std::pair<std::string, double>> result;
+namespace {
+
+// "%3 мост", "%A ...": a siding or platform named as a mark for the
+// announcer (САВПЭ), not a place (Kuban: %1 %3 %7 %8 %A, 136 of its 690
+// siding ends; Chernyshevsk 180 of 1752, some with a Cyrillic letter).
+[[nodiscard]] bool service_mark(const std::string_view name) {
+    return !name.empty() && name[0] == '%';
+}
+
+} // namespace
+
+std::vector<TrainView::PlaceAhead> TrainView::stations_ahead(const Unit& unit) const {
+    std::vector<PlaceAhead> result;
     const auto& items = network_->database().items;
     std::set<std::string> seen;
     const auto add = [&](const std::uint32_t item, const double distance) {
-        if (item >= items.size() || items[item].kind != formats::TrackItemKind::platform) return;
+        if (item >= items.size()) return;
+        if (items[item].kind == formats::TrackItemKind::siding) {
+            // A siding's two ends carry its name: the nearer one.
+            const auto& name = items[item].name;
+            if (name.empty() || (!service_marks_ && service_mark(name)) || !seen.insert("\x01" + name).second) return;
+            result.push_back({name, distance, true});
+            return;
+        }
+        if (items[item].kind != formats::TrackItemKind::platform) return;
         const auto& platform = items[item];
         // "station, platform"; a platform named after its station adds only
         // the rest ("о.п. Фабрика кожизделий п.I" -> "о.п. Фабрика кожизделий, п.I").
@@ -3242,15 +3305,15 @@ std::vector<std::pair<std::string, double>> TrainView::stations_ahead(const Unit
             while (!rest.empty() && (rest.front() == ' ' || rest.front() == ',' || rest.front() == '-')) rest.remove_prefix(1);
             if (!rest.empty()) label += ", " + std::string(rest);
         }
-        if (label.empty() || !seen.insert(label).second) return;
-        result.emplace_back(label, distance);
+        if (label.empty() || (!service_marks_ && service_mark(label)) || !seen.insert(label).second) return;
+        result.push_back({label, distance, false});
     };
     // Along the path when the train has one, else along the junctions as set.
     const auto id = unit.train->id();
     const auto* route = dispatcher_->route(id);
     const auto* progress = dispatcher_->progress(id);
     if (route && progress && progress->on_route) {
-        for (std::size_t l = progress->leg; l < route->legs.size() && result.size() < 10; ++l) {
+        for (std::size_t l = progress->leg; l < route->legs.size() && result.size() < 16; ++l) {
             const auto& leg = route->legs[l];
             const double base = l == progress->leg ? progress->head : 0.0;
             for (const auto& span : leg.spans) {
@@ -3274,7 +3337,10 @@ std::vector<std::pair<std::string, double>> TrainView::stations_ahead(const Unit
     const auto lead = unit.train->leading_end();
     if (!lead) return result;
     const auto ahead = simulation::look_ahead(*network_, lead->node(), lead->offset(), lead->forward(), 40000.0,
-                                              [](const formats::TrackItem& item) { return item.kind == formats::TrackItemKind::platform; }, 40);
+                                              [](const formats::TrackItem& item) {
+                                                  return item.kind == formats::TrackItemKind::platform || item.kind == formats::TrackItemKind::siding;
+                                              },
+                                              80);
     for (const auto& found : ahead.items) add(found.item, found.distance);
     return result;
 }
@@ -3452,16 +3518,25 @@ void TrainView::draw_hud() {
         if (begin_panel("##stations", stations_place_, 1.0f - margin_x, 0.45f)) {
             ImGui::Text(tr("Stations ahead: %s"), unit->name.c_str());
             ImGui::Separator();
+            if (!service_marks_loaded_) {
+                service_marks_loaded_ = true;
+                service_marks_ = remembered("f6_service_marks").value_or("0") == "1";
+            }
             const auto stations = stations_ahead(*unit);
             if (stations.empty()) ImGui::TextDisabled(tr("none within 40 km"));
             // Two columns sized to the longest name: names never run into
-            // the distances, which are right-aligned.
+            // the distances, which are right-aligned. Sidings in yellow, as
+            // F7 and Track control draw them.
             if (!stations.empty() && ImGui::BeginTable("##stations_ahead", 2, ImGuiTableFlags_SizingFixedFit)) {
-                for (std::size_t k = 0; k < stations.size() && k < 8; ++k) {
-                    const auto& [name, distance] = stations[k];
+                for (std::size_t k = 0; k < stations.size() && k < 12; ++k) {
+                    const auto& [name, distance, siding] = stations[k];
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::TextUnformatted(name.c_str());
+                    if (siding) {
+                        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.1f, 1.0f), "%s", name.c_str());
+                    } else {
+                        ImGui::TextUnformatted(name.c_str());
+                    }
                     ImGui::TableNextColumn();
                     char text[32];
                     std::snprintf(text, sizeof text, distance >= 1000.0 ? tr("in %.2f km") : tr("in %.0f m"),
@@ -3469,6 +3544,10 @@ void TrainView::draw_hud() {
                     ImGui::TextUnformatted(text);
                 }
                 ImGui::EndTable();
+            }
+            ImGui::Separator();
+            if (ImGui::Checkbox(tr("marks (%n ...)"), &service_marks_)) {
+                remember("f6_service_marks", service_marks_ ? "1" : "0");
             }
         }
         end_panel(stations_place_);
@@ -3666,6 +3745,9 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     const SceneInput& input = car_menu_ ? menu_input : given_input;
     frame_elapsed_ = elapsed;
     if (network_ && network_->rail_joints().layout() != rail_joint_layout()) network_->set_rail_joint_layout(rail_joint_layout());
+    for (auto& unit : units_) {
+        if (unit.train && unit.train->settings().body_motion != body_motion_model()) unit.train->set_body_motion(body_motion_model());
+    }
     if (!pending_load_.empty()) {
         if (sound) stop_sound(*sound);
         const auto name = std::exchange(pending_load_, {});
@@ -4213,7 +4295,7 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
     // the cab without them (0x424488): the cab sways around the driver.
     // openRTS's head on its neck nods and leans on top (head_motion()).
     if (engineer_.inside()) {
-        camera.position += sway_offset(unit, engineer_car_);
+        camera.position += sway_offset(unit, engineer_car_, camera.position);
         move_head(unit, engineer_car_, elapsed, camera);
     } else {
         head_.started = false;
@@ -4777,18 +4859,34 @@ void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& di
     const glm::vec3 along = glm::normalize(glm::vec3{to_cab * glm::vec4{*direction, 0.0f}});
     // The reach is each control's Radius (RTS); the ray goes as far as any.
     hovered_ = cab->pick(origin, along, 4.0f);
+    // The wheel turns handles only (CONTROLLERX / CONTROLLERY, the ones a
+    // drag moves, or the piece of one); over a button or a switch it is as
+    // off the controls, so leaning in to read the КЛУБ no longer pressed
+    // its keys (openRTS).
+    float wheel = hovered_ && hovered_->control ? scroll : 0.0f;
+    if (wheel != 0.0f) {
+        const auto& all = cab->description().switches;
+        const auto root = cab->description().root_switch(all[hovered_->index].id);
+        bool handle = false;
+        for (const auto& each : all) {
+            if (each.id == root || each.id == all[hovered_->index].id) {
+                handle = handle || (each.flags & (formats::cab_controller_x | formats::cab_controller_y)) != 0;
+            }
+        }
+        if (!handle) wheel = 0.0f;
+    }
     // The wheel off the controls at the chair: the head nearer to what the
     // cursor points at, or back.
-    if (scroll != 0.0f && (!hovered_ || !hovered_->control) && engineer_.mode() == Engineer::Mode::seated) {
+    if (scroll != 0.0f && wheel == 0.0f && engineer_.mode() == Engineer::Mode::seated) {
         engineer_.lean(along, scroll);
-        return;
+        if (!click) return;
     }
-    if (!hovered_ || !hovered_->control || (!click && scroll == 0.0f)) return;
+    if (!hovered_ || !hovered_->control || (!click && wheel == 0.0f)) return;
     if (native_ && engineer_car_ == native_car_) {
         // A native plugin's cab: RTS's click step, the wheel one way.
         const auto id = cab->description().switches[hovered_->index].id;
         if (click) native_operate(id, 0);
-        if (scroll != 0.0f) native_operate(id, scroll > 0.0f ? 1 : -1);
+        if (wheel != 0.0f) native_operate(id, wheel > 0.0f ? 1 : -1);
         return;
     }
     // The cab driven from, or the interior of another car whose DLL has it
@@ -4824,7 +4922,7 @@ void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& di
     } else if (click) {
         legacy_->click(id, 0, shift, car);
     }
-    if (scroll != 0.0f) legacy_->click(id, scroll > 0.0f ? 1 : -1, false, car);
+    if (wheel != 0.0f) legacy_->click(id, wheel > 0.0f ? 1 : -1, false, car);
 }
 
 // ---------------------------------------------------------------------------
@@ -7122,8 +7220,15 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
             : state.travelled;
         const double radius = car.definition->wheel_radius > 0.05f ? car.definition->wheel_radius : 0.5;
         const float angle = static_cast<float>(std::fmod(travelled / radius, 2.0 * pi)) * (car.flipped ? -1.0f : 1.0f);
-        for (const auto wheel : car.wheels) {
-            adjustments.push_back({.matrix = wheel, .local = glm::rotate(glm::mat4{1.0f}, angle, glm::vec3{1.0f, 0.0f, 0.0f})});
+        // The body's move on its springs taken back: wheels and bogies stay
+        // on the rails under it.
+        const bool moved = body->motion != glm::mat4{1.0f};
+        const glm::mat4 back = moved ? glm::inverse(body->motion) : glm::mat4{1.0f};
+        const auto on_rails = [&](const glm::mat4& rest) { return glm::inverse(rest) * back * rest; };
+        for (std::size_t w = 0; w < car.wheels.size(); ++w) {
+            const auto turn = glm::rotate(glm::mat4{1.0f}, angle, glm::vec3{1.0f, 0.0f, 0.0f});
+            const bool loose = moved && w < car.wheel_loose.size() && car.wheel_loose[w];
+            adjustments.push_back({.matrix = car.wheels[w], .local = loose ? on_rails(car.wheel_rest[w]) * turn : turn});
         }
         if (car.pantograph_frames > 1) {
             for (const auto& [node, number] : car.pantograph_nodes) {
@@ -7140,13 +7245,15 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
             const auto chock = shape_front != car.flipped ? simulation::chock_front : simulation::chock_rear;
             if ((state.chocks & chock) == 0) adjustments.push_back({.matrix = node, .hidden = true});
         }
-        for (const auto& [matrix, shape_front] : car.bogies) {
+        for (std::size_t k = 0; k < car.bogies.size(); ++k) {
+            const auto& [matrix, shape_front] = car.bogies[k];
             // A bogie follows the track heading at its own position.
             const bool train_front = shape_front != car.flipped;
             float delta = wrap_angle((train_front ? here.front_heading : here.rear_heading) - body_heading);
             if (std::abs(delta) > 0.5f) delta = wrap_angle(delta + pi); // a heading along the node's other direction
             if (std::abs(delta) > 0.5f) delta = 0.0f;
-            adjustments.push_back({.matrix = matrix, .local = glm::rotate(glm::mat4{1.0f}, delta, glm::vec3{0.0f, 1.0f, 0.0f})});
+            const auto turn = glm::rotate(glm::mat4{1.0f}, delta, glm::vec3{0.0f, 1.0f, 0.0f});
+            adjustments.push_back({.matrix = matrix, .local = moved && k < car.bogie_rest.size() ? on_rails(car.bogie_rest[k]) * turn : turn});
         }
         renderer.submit(*model, transform, adjustments);
         // openRTS: the next car's salon or cab seen through the open passage
@@ -7178,26 +7285,25 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
     }
 }
 
-glm::vec3 TrainView::body_sway(const Unit& unit, const std::size_t i) const {
+TrainView::BodyOffset TrainView::body_sway(const Unit& unit, const std::size_t i) const {
     if (i < unit.current_body.size()) {
         const auto& now = unit.current_body[i];
-        return glm::mix(i < unit.previous_body.size() ? unit.previous_body[i] : now, now, alpha());
+        const auto& before = i < unit.previous_body.size() ? unit.previous_body[i] : now;
+        const float t = alpha();
+        return {glm::mix(before.shift, now.shift, t), glm::mix(before.turn, now.turn, t)};
     }
     if (i >= unit.train->cars().size()) return {};
-    const auto& body = unit.train->cars()[i].body;
-    return {body[0], body[1], body[2]};
+    const auto& car = unit.train->cars()[i];
+    return {glm::vec3{car.body[0], car.body[1], car.body[2]}, glm::vec3{car.body_turn[0], car.body_turn[1], car.body_turn[2]}};
 }
 
-glm::vec3 TrainView::sway_offset(const Unit& unit, const std::size_t i) const {
+glm::vec3 TrainView::sway_offset(const Unit& unit, const std::size_t i, const glm::vec3& eye) const {
     if (sway_scale_ <= 0.0f || i >= unit.cars.size() || i >= unit.train->cars().size()) return {};
-    const auto body = body_sway(unit, i);
-    const auto here = pose(unit, i);
-    const auto axis = here.front - here.rear;
-    const float span = glm::length(axis);
-    if (span < 0.01f) return {};
-    const float heading = std::atan2(axis.x, axis.z);
-    const glm::vec3 turning{std::cos(heading), 0.0f, -std::sin(heading)};
-    return (turning * body.x + glm::vec3{0.0f, body.y, 0.0f} + axis / span * body.z) * sway_scale_;
+    const auto rest = body_pose(unit, i, false);
+    const auto moving = body_pose(unit, i, true);
+    if (!rest || !moving) return {};
+    const glm::vec3 carried{moving->transform * glm::inverse(rest->transform) * glm::vec4{eye, 1.0f}};
+    return carried - eye;
 }
 
 void TrainView::move_head(const Unit& unit, const std::size_t i, const float elapsed, ViewerCamera& camera) {
@@ -7208,7 +7314,7 @@ void TrainView::move_head(const Unit& unit, const std::size_t i, const float ela
     }
     const auto& state = unit.train->cars()[i];
     // The body as the camera is carried by it (the sway slider's size).
-    const glm::vec3 body = body_sway(unit, i) * sway_scale_;
+    const glm::vec3 body = body_sway(unit, i).shift * sway_scale_;
     // At rest in a car he entered; after a long frame (a load, a hitch) not
     // thrown by it.
     if (!head_.started || head_car_ != unit.cars[i].key || elapsed > 0.25f) {
@@ -7253,20 +7359,28 @@ std::optional<TrainView::BodyPose> TrainView::body_pose(const Unit& unit, const 
     if (span < 0.01f) return std::nullopt;
     auto centre = here.rear + axis * (behind / (ahead + behind));
     const float body_heading = std::atan2(axis.x, axis.z);
+    const float up = std::asin(std::clamp(axis.y / span, -1.0f, 1.0f));
+    // The body on its springs (simulation: RTS 0x4F5B34 or openRTS's
+    // body_motion), in its own axes (lateral, up, along the train front):
+    // shifted, and turned about a point 1.1 m above the rails (roll, pitch,
+    // yaw).
+    glm::mat4 motion{1.0f};
     if (sway && sway_scale_ > 0.0f) {
-        // The body on its springs (simulation: RTS 0x4F5B34): lateral
-        // towards the side the car turns to, vertical, along the train.
-        const glm::vec3 turning{std::cos(body_heading), 0.0f, -std::sin(body_heading)};
-        const auto along = axis / span;
         const auto body = body_sway(unit, i);
-        centre += (turning * body.x + glm::vec3{0.0f, body.y, 0.0f} + along * body.z) * sway_scale_;
+        const glm::vec3 shift = body.shift * sway_scale_;
+        const glm::vec3 turn = body.turn * sway_scale_;
+        motion = glm::translate(glm::mat4{1.0f}, shift);
+        if (turn != glm::vec3{0.0f}) {
+            constexpr float pivot = 1.1f;
+            motion = glm::translate(motion, glm::vec3{0.0f, pivot, 0.0f});
+            motion = glm::rotate(motion, turn.z, glm::vec3{0.0f, 1.0f, 0.0f});
+            motion = glm::rotate(motion, -turn.y, glm::vec3{1.0f, 0.0f, 0.0f});
+            motion = glm::rotate(motion, -turn.x, glm::vec3{0.0f, 0.0f, 1.0f});
+            motion = glm::translate(motion, glm::vec3{0.0f, -pivot, 0.0f});
+        }
     }
-    float heading = body_heading;
-    float up = std::asin(std::clamp(axis.y / span, -1.0f, 1.0f));
-    if (car.flipped) {
-        heading += pi;
-        up = -up;
-    }
+    // A turned car: its shape's front to the train's rear.
+    const glm::mat4 flip = car.flipped ? glm::rotate(glm::mat4{1.0f}, pi, glm::vec3{0.0f, 1.0f, 0.0f}) : glm::mat4{1.0f};
     auto transform = glm::mat4{1.0f};
     if (state.derail != simulation::DerailKind::none && state.tilt != 0.0f) {
         // Overturning about the rail on the side it falls to: the roll
@@ -7288,9 +7402,10 @@ std::optional<TrainView::BodyPose> TrainView::body_pose(const Unit& unit, const 
         transform = glm::translate(transform, -pivot);
     }
     transform = glm::translate(transform, centre);
-    transform = glm::rotate(transform, heading, glm::vec3{0.0f, 1.0f, 0.0f});
+    transform = glm::rotate(transform, body_heading, glm::vec3{0.0f, 1.0f, 0.0f});
     transform = glm::rotate(transform, -up, glm::vec3{1.0f, 0.0f, 0.0f});
-    return BodyPose{.transform = transform, .here = here, .heading = body_heading};
+    transform = transform * motion * flip;
+    return BodyPose{.transform = transform, .here = here, .heading = body_heading, .motion = glm::inverse(flip) * motion * flip};
 }
 
 void TrainView::list_consists() {

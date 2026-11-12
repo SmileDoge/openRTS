@@ -293,18 +293,14 @@ int main(const int argc, char* argv[]) {
         // The nodes (matrices: name, translation, the basis rows), their
         // parents and the animations' keys: what a node's rest pose and its
         // frames are (a crossing's gates, a turntable, a door).
+        // Compressed, binary or text: the binary body the game reads.
         const auto bytes = vfs.read(*result.resolved_path).value_or(std::string{});
-        const auto probe = openrts::formats::probe_shape_file(std::string_view(bytes));
-        std::string body = bytes;
-        if (probe.representation == openrts::formats::ShapeRepresentation::compressed_binary) {
-            const auto inflated = openrts::formats::inflate_narrow_compressed_shape(std::string_view(bytes));
-            if (!inflated.ok()) {
-                std::cout << "shape inflate error: " << inflated.error << '\n';
-                return 3;
-            }
-            body = *inflated.body;
+        const auto loaded = openrts::formats::load_binary_shape_body(std::string_view(bytes));
+        if (!loaded.ok()) {
+            std::cout << "shape read error: " << loaded.error << '\n';
+            return 3;
         }
-        const auto model = openrts::formats::parse_binary_shape_model(body);
+        const auto model = openrts::formats::parse_binary_shape_model(*loaded.body);
         // The images (each name once, with how many image entries carry it),
         // the textures and the primitives that use them.
         std::cout << "images: " << model.images.size() << ", textures: " << model.textures.size() << ", primitive states: "
@@ -313,6 +309,11 @@ int main(const int argc, char* argv[]) {
             std::map<std::string, int> names;
             for (const auto& image : model.images) ++names[image.generic_string()];
             for (const auto& [name, count] : names) std::cout << "  image " << name << " x" << count << '\n';
+        }
+        if (!model.level_distances.empty()) {
+            std::cout << "distance levels:";
+            for (const float distance : model.level_distances) std::cout << ' ' << distance << " m";
+            std::cout << '\n';
         }
         std::cout << "matrices: " << model.matrices.size() << '\n';
         for (std::size_t m = 0; m < model.matrices.size(); ++m) {

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/body_motion.hpp>
 #include <openrts/simulation/track_traveller.hpp>
 
 namespace openrts::simulation {
@@ -34,6 +35,9 @@ struct TrainSettings {
     bool coupler_break = true;
     bool derailment = true;
     BrakeModel brake_model = BrakeModel::rts;
+    // The bodies on their springs (body_motion.hpp): RTS's model (the
+    // default here) or openRTS's (the viewer's setting).
+    BodyMotionModel body_motion = BodyMotionModel::rts;
 };
 
 struct CarSetup {
@@ -256,6 +260,11 @@ struct CarState {
     float body[3]{};
     float body_rate[3]{};
     float hunting_phase{}; // rad, the lateral hunting oscillation
+    // openRTS's body motion (TrainSettings::body_motion): its state, and
+    // the body's roll, pitch and yaw (rad, BodyMotion::turn; 0 with RTS's).
+    // body[] holds its shifts then.
+    BodyMotion motion{};
+    float body_turn[3]{};
     float curvature{};     // 1/m, positive: turning towards the lateral axis
     // Derailment (RTS 0x580B30, 0x581BC4, 0x581694).
     DerailKind derail = DerailKind::none;
@@ -414,6 +423,8 @@ public:
     void set_coupler_substeps(std::uint32_t substeps) noexcept;
     // The air brake model from the next step on.
     void set_brake_model(BrakeModel model) noexcept;
+    // The body motion model from the next step on (the bodies start at rest).
+    void set_body_motion(BodyMotionModel model) noexcept;
     // The model this step runs: realistic only when no controller needs RTS's.
     [[nodiscard]] BrakeModel brake_model() const noexcept;
     [[nodiscard]] std::uint64_t id() const noexcept { return id_; }

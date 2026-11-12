@@ -12,14 +12,15 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.7.0](../../releases/tag/v0.7.0):
+> Work in progress. The latest version is [v0.8.0](../../releases/tag/v0.8.0):
 > a nearly playable game. Driving from a 3-D cab with RTS's locomotive
 > DLLs, signalling, the Track control window, a living route (forests,
 > level crossings, road traffic, water, rain and snow, smoke), sound by the
 > cab's rooms, coupling and uncoupling with the DLLs, RTS scenarios with
 > traffic trains, network play on an RTS server together with `rts1.exe`
-> and on openRTS's own server, automatic updates, and now walking as in
-> RTS: along the cars' walkways and ladders, into the next car's salon.
+> and on openRTS's own server, automatic updates, walking as in RTS, and
+> now the tape as in RTS with a speed recorder window and car bodies that
+> move on their springs over the bogies.
 
 ## What works
 
@@ -64,7 +65,9 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
     handbrake, release valve, emergency valve, cargo information;
   - derailment as RTS does it (overturning in curves, running off the end
     of the track);
-  - body sway on the springs, rail joints;
+  - the body on its springs over the bogies: the track's errors under each
+    bogie, rail joints and switches, hunting, curves; bounce, pitch, sway,
+    yaw and roll, each car its own (or as RTS); rail joints;
   - electrification as RTS has it: the kind of current and the voltage
     under every electric engine, neutral sections, changeover stations;
     the pantographs' current, burning the contact wire, the substations'
@@ -198,7 +201,7 @@ menu, the game, the locomotive DLL host, the tools, `wgpu_native.dll`) are in
 **Releases**; how to install and run them is in [INSTALL_EN.md](INSTALL_EN.md):
 - **nightly** — a pre-release with the latest `master` build, replaced
   automatically; the window's title and the settings mark its version with
-  the commit, e.g. "openRTS 0.7.0 (nightly d90631d)";
+  the commit, e.g. "openRTS 0.8.0 (nightly abc1234)";
 - **vX.Y.Z** — versions; the release is created automatically when a version
   tag is pushed.
 
@@ -260,7 +263,8 @@ The easiest way is the start menu. It has four tabs:
   bottom of the screen (they can be turned off; the game's panel too), the
   mouse sensitivity and the head motion in the cab (the game's panel too),
   sound and volume, the rail joints (as RTS, or openRTS: 25 m rails, welded
-  strings with equalizing spans), the settings and log folder, updates.
+  strings with equalizing spans), the body motion (openRTS or as RTS), the
+  settings and log folder, updates.
 - **Graphics:** every graphics setting of the game's panel in groups
   (screen, renderer, shadows, ambient occlusion, lamps, sky and water,
   world), presets from Low to Ultra, and each setting's load on the CPU
@@ -344,7 +348,11 @@ default. The keys at hand: the
 | Pause | pause |
 | Alt+Enter | full screen / window |
 
-**A train without a DLL**
+**A locomotive without a DLL** (openRTS only)
+
+RTS cannot drive a locomotive without a DLL. In openRTS these keys drive
+MSTS stock without one and Track control's test trains ("Drive it
+(keyboard)").
 
 | Keys | Action |
 |---|---|
@@ -382,7 +390,7 @@ the Train window)
 | Ctrl+F9 | the speed recorder tape (openRTS): the tapes on a paper in the manner of the 3СЛ-2М — the speed and the limit, the time, the signal, the pressures, the path and the kilometres; the one rolling as it is written |
 | F12 | the inspector: a tree of the map's objects and trains, the chosen one's properties, the shape's materials (FullBright as ordinary, into a mod), `docs/inspector.md` |
 | RMB + mouse | look round |
-| Mouse | click works a control, the wheel moves it a step, dragging moves handles and blinds |
+| Mouse | click works a control, the wheel moves a handle a step (never a button or a switch), dragging moves handles and blinds |
 | Wheel at the chair | off the controls, the head nearer to what the cursor points at, or back |
 | Alt | captions of the controls |
 
@@ -391,7 +399,7 @@ the Train window)
 | Keys | Action |
 |---|---|
 | F5, Shift+F5, Ctrl+F5 | cars, the whole train, limits and the kilometre |
-| F6 | stations ahead |
+| F6 | stations ahead and (openRTS) the sidings in yellow; the "marks (%n ...)" box shows the announcer's marks such as "%3 мост" too |
 | F7, Ctrl+F7 | platform names, signal names |
 | Ctrl+Alt+F7 | Track control |
 | Ctrl+F6 | save a debug view |

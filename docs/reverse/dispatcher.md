@@ -313,7 +313,7 @@ object (world kind 20) 3 m above each named signal.
 | Ctrl+F7 | `byte_5E04BD` | signal names (kind 20 labels) within 150 m of the camera, full colour up to 30 m and fading out to 150 m, colour (1, 0.9, 0.25); the other players (person.ace icons at their trains, `dword_631E58` list) |
 | F7 | `byte_5E04BC` | platform names "platform (station)" 10 m above the platform item with a line down, blue (0.1, 0.1, 1); siding names, yellow; car numbers on both sides of every car body (the number the console gives, `0x45C54C`: car +16 written "AAAA-BBBB-CCCC" with bits 18+, 10..17 and 0..9, each zero-padded to 4 digits; drawn 2.64–2.8 m from the body's rear end at half its height, both side walls) |
 | Ctrl+Alt+F7 | — | the Track control menu (`0x462FC8`, mode 4) |
-| F6 | `byte_61D55E` | a panel of the stations and stops ahead with distances (`0x466F70`, columns at 25/40/55/70/85 % of its width) |
+| F6 | `byte_61D55E` | a panel of the stations and stops ahead with distances (`0x466F70`, columns at 25/40/55/70/85 % of its width); openRTS adds the sidings ahead in yellow, a name starting with `%` (a mark for the announcer, САВПЭ: "%3 мост", "%A ...") only with its "marks (%n ...)" box |
 | Ctrl+F5 | `byte_5E04BE` | the speed limit now and the kilometre post (ordinate) at the top, the limits ahead and their distances (`0x468544` / `0x4686F4`) |
 | F5 | `byte_5E04B9` | a per-car information page, paged through the train with F5 (Shift: ...) |
 | F4 | `byte_5E04BA` | performance and position statistics |

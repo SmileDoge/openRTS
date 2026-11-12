@@ -966,7 +966,10 @@ without compliance and RTS refuses it too.
   the eye at `HeadOutPosition` (RTSFileReference: "the camera when the
   player looks out of the window"). The mouse picks a control by the cab
   shape's triangles (the node it meets, or the switch's `.sd` Position on
-  the ray); a click is RTS's click step, the wheel one step up or down.
+  the ray); a click is RTS's click step, the wheel one step up or down on
+  a handle (`CONTROLLERX` / `CONTROLLERY`; openRTS, 2026-11-12: over a
+  button or a switch the wheel leans the head as off the controls, so
+  leaning in to the КЛУБ does not press its keys).
 
 ## 14. Line voltage (`0x503CE4`, `0x5B53A8`)
 

@@ -3,6 +3,7 @@ add_library(openrts_simulation STATIC
     src/track_geometry.cpp
     src/track_network.cpp
     src/rail_joints.cpp
+    src/body_motion.cpp
     src/track_traveller.cpp
     src/train.cpp
     src/realistic_air.cpp
