@@ -140,6 +140,12 @@ private:
     char consist_filter_[64]{};
     int consist_choice_ = -1;
     bool spawn_ai_ = true;
+    // The consist put down (as the ТЧД console's train form): its type, 0
+    // by its cars, 1 passenger, 2 freight, 3 other; its state, 0 running, 1
+    // on and standing, 2 cold (no air, pantographs down).
+    int spawn_category_ = 0;
+    int spawn_state_ = 0;
+    void spawn_options();
     bool focused_ = false; // the window has the keyboard focus
 
     // Putting a consist down: first a preview on the map, with the front car

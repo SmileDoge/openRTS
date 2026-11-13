@@ -5,11 +5,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <map>
 #include <optional>
 
 #include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/sound.hpp>
+#include <openrts/simulation/driver_valve.hpp>
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/formats/shape_file.hpp>
 
@@ -195,21 +197,103 @@ void add_shortcuts(const core::Vfs& vfs, const core::VirtualPath& cabin, const f
 
 class LegacyController final : public simulation::LocomotiveController {
 public:
-    LegacyController(std::weak_ptr<const LegacyConsist::Outputs> outputs, std::size_t car)
-        : outputs_(std::move(outputs)), car_(car) {}
-    void step(double, const simulation::EngineInputs&, simulation::EngineDemands& demands) override {
+    LegacyController(std::weak_ptr<const LegacyConsist::Outputs> outputs, std::size_t car, std::shared_ptr<const DllAirSetting> air,
+                     BrakeCabControls cab)
+        : outputs_(std::move(outputs)), car_(car), air_(std::move(air)), cab_(std::move(cab)) {}
+    void step(double dt, const simulation::EngineInputs& inputs, simulation::EngineDemands& demands) override {
         const auto outputs = outputs_.lock();
         if (!outputs || !outputs->valid || car_ >= outputs->cars.size() || !outputs->cars[car_].has_engine) {
             demands = {};
             return;
         }
-        apply_engine_output(outputs->cars[car_].engine, demands);
+        const auto& out = outputs->cars[car_];
+        apply_engine_output(out.engine, demands);
+        const auto mode = air_ ? air_->mode : DllAir::rts;
+        if (mode == DllAir::rts || !inputs.realistic_air) {
+            valve_started_ = false;
+            dll_ur_known_ = false;
+            return;
+        }
+        // The main reservoir is the model's: the DLLs keep RTS's (its huge
+        // volume never drains, their compressors may never run, and they
+        // take their own air from it), so openRTS runs the compressors.
+        demands.main_reservoir_rate = simulation::compressor_rate(compressor_, inputs);
+        // The realistic air works the pipe. The DLL's TrainPipeRate counts
+        // only as a direct vent (its VI, the ЭПК, a stop valve): faster than
+        // 0.6 atm/s and faster than its own valve would vent, which follows
+        // the pipe's excess over the DLL's УР about one to one (the ЭД9М's
+        // Brakes.dll: V -0.23 atm/s; with openRTS's valve over it, its УР
+        // below the pipe after an overcharge, -0.54 at 0.54 apart); or its
+        // УР falling faster than 0.6 atm/s (its VI). The ЭПК: about -0.9
+        // with its УР standing at the pipe.
+        const float dll_ur = out.engine.equalising;
+        const float ur_rate = dll_ur_known_ && dt > 0.0 ? (dll_ur - last_dll_ur_) / static_cast<float>(dt) : 0.0f;
+        last_dll_ur_ = dll_ur;
+        dll_ur_known_ = true;
+        const float excess = (std::max)(inputs.train_pipe - dll_ur, 0.0f);
+        const float rate = out.engine.train_pipe_rate;
+        // A driven cab whose DLL valve stands cut off (its УР about 0: the
+        // 367 off, a cold start) vents nothing by its valve: a fall then is
+        // its ЭПК (the ВЛ80С-1886 from cold, 2026-11-13: -1.2 at УР 0).
+        const bool cut_off = (out.loco_flags & 1u) != 0 && dll_ur < 0.5f;
+        const bool vent = rate <= -0.6f && (rate < -(excess + 0.3f) || ur_rate < -0.6f || cut_off);
+        demands.emergency = vent;
+        // Only the cab driven (LocoFlags 1) works the pipe: the DLLs of the
+        // other cars of a multiple unit keep a УР of their own.
+        if ((out.loco_flags & 1u) == 0) return;
+        const auto* engine = inputs.definition && inputs.definition->engine ? &*inputs.definition->engine : nullptr;
+        const auto valve = engine ? engine->brakes_library.valve : -1;
+        if (mode == DllAir::own_valve && valve >= 0 && static_cast<std::size_t>(valve) < out.switches.size()) {
+            // openRTS's 395 on Brakes.dll's handle, its states as the cab
+            // names them (valve_states; VЭ as Va without the ЭПТ); a state
+            // not known keeps the last position. Its ЭПТ demand stays the DLL's.
+            // The charging pressure: the cab's reducer (BR_REDID1), else
+            // BR_ZARPRESS, else 5.0.
+            controls_ = cab_.read(engine->brakes_library, out.switches, controls_);
+            if (controls_.position < 0) controls_.position = static_cast<int>(simulation::ValvePosition::running);
+            const auto position = static_cast<simulation::ValvePosition>(controls_.position);
+            const float charging = controls_.charging > 0.0f                    ? controls_.charging
+                                   : engine->brakes_library.charging > 0.0f ? engine->brakes_library.charging
+                                                                             : 5.0f;
+            if (!valve_started_) {
+                // From where the DLL's valve stood.
+                state_.equalising = out.engine.equalising > 0.5f ? out.engine.equalising : (std::min)(inputs.train_pipe, charging);
+                valve_started_ = true;
+            }
+            const simulation::ValveInputs in{
+                .pipe = inputs.train_pipe,
+                .main_reservoir = inputs.main_reservoir,
+                .cylinder = inputs.cylinder,
+                .charging_pressure = charging,
+                .realistic = true,
+                .ep_on = (out.engine.systems & 2u) != 0,
+                .slow_service = true,
+            };
+            const auto valve_out = simulation::step_valve_395(state_, position, in, static_cast<float>(dt));
+            // The combined valve: double traction cuts the valve off the pipe
+            // (its УР goes on), emergency vents the pipe. The 367 out of its
+            // operating state cuts it off too.
+            const bool connected = controls_.combined != 1 && !controls_.blocked;
+            if (connected) demands.equalising = valve_out.equalising;
+            demands.emergency = (connected && valve_out.emergency) || controls_.combined == 2 || vent;
+            return;
+        }
+        // The DLL's valve: its УР.
+        if (out.engine.equalising > 0.5f) demands.equalising = out.engine.equalising;
     }
-    [[nodiscard]] bool rts_brakes() const override { return true; }
+    [[nodiscard]] bool rts_brakes() const override { return !air_ || air_->mode == DllAir::rts; }
 
 private:
     std::weak_ptr<const LegacyConsist::Outputs> outputs_;
     std::size_t car_;
+    std::shared_ptr<const DllAirSetting> air_;
+    BrakeCabControls cab_;
+    CabBrakes controls_;
+    simulation::ValveState state_;
+    bool valve_started_ = false;
+    bool compressor_ = false;
+    float last_dll_ur_{};      // the DLL's УР at the last step
+    bool dll_ur_known_ = false;
 };
 
 } // namespace
@@ -665,8 +749,18 @@ bool LegacyConsist::enter(std::size_t car, const simulation::Train& train, bool 
 
 bool enter_new_train(LegacyConsist& consist, const std::size_t car, simulation::Train& train, const bool running, const int state) {
     const std::size_t count = train.cars().size();
-    for (std::size_t i = 0; i < count; ++i) train.set_air(i, {});
-    if (!consist.enter(car, train, running, state)) return false;
+    // The main reservoirs the train had: an engine whose DLL Init does not
+    // run here (not in the player's group, no DLL) keeps its own (else a
+    // ВЛ80Т section standing apart started with 0, 2026-11-13).
+    std::vector<float> reservoirs(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        reservoirs[i] = train.cars()[i].main_reservoir;
+        train.set_air(i, {});
+    }
+    if (!consist.enter(car, train, running, state)) {
+        for (std::size_t i = 0; i < count; ++i) train.set_air(i, {.main_reservoir = reservoirs[i]});
+        return false;
+    }
     const auto& air = consist.entered_air();
     if (car >= air.size() || air.size() != count) return true;
     const auto& from = air[car];
@@ -676,7 +770,7 @@ bool enter_new_train(LegacyConsist& consist, const std::size_t car, simulation::
                           .cylinder = from.cylinder,
                           .auxiliary = from.auxiliary,
                           .control = from.control,
-                          .main_reservoir = air[i].main_reservoir});
+                          .main_reservoir = air[i].main_reservoir > 0.0f ? air[i].main_reservoir : reservoirs[i]});
     }
     return true;
 }
@@ -882,6 +976,68 @@ const formats::CabDescription* LegacyConsist::cab(std::size_t car) const {
     return at < cabs_.size() && !cabs_[at].switches.empty() ? &cabs_[at] : nullptr;
 }
 
+CabBrakes LegacyConsist::cab_brakes(const std::size_t train, const std::size_t car) const {
+    const auto at = flat(train, car);
+    if (!outputs_->valid || at >= outputs_->cars.size() || at >= cars_.size() || at >= cabs_.size()) return {};
+    const auto* definition = cars_[at].definition;
+    if (!definition || !definition->engine || !definition->engine->brakes_library.present) return {};
+    // As the controller reads them (LegacyController).
+    const auto& ids = definition->engine->brakes_library;
+    return brake_cab_controls(ids, cabs_[at]).read(ids, outputs_->cars[at].switches);
+}
+
+BrakeCabControls brake_cab_controls(const formats::EngineDefinition::BrakesLibrary& ids, const formats::CabDescription& cab) {
+    BrakeCabControls controls;
+    const auto control = [&](const std::int32_t id) { return id >= 0 ? cab.find_switch(static_cast<std::uint32_t>(id)) : nullptr; };
+    if (const auto* valve = control(ids.valve)) controls.valve = valve_states(*valve);
+    // The reducer: its hints are the pressures, "[4.0]" .. "[5.9]".
+    if (const auto* reducer = control(ids.reducer)) {
+        for (const auto& hint : reducer->state_hints) {
+            std::string s;
+            for (const char c : hint) {
+                if ((c >= '0' && c <= '9') || c == '.') s += c;
+                else if (c == ',') s += '.';
+            }
+            const float value = s.empty() ? 0.0f : static_cast<float>(std::atof(s.c_str()));
+            controls.reducer.push_back(value >= 3.0f && value <= 8.0f ? value : 0.0f);
+        }
+    }
+    // The combined valve усл. 114: "Двойная тяга", "Нормальное", "Экстренное".
+    if (const auto* combined = control(ids.combined)) {
+        for (const auto& hint : combined->state_hints) {
+            const auto s = core::fold_case(hint);
+            const bool twin = s.find("\xd0\xb4\xd0\xb2\xd0\xbe\xd0\xb9\xd0\xbd") != std::string::npos;     // двойн
+            const bool emergency = s.find("\xd1\x8d\xd0\xba\xd1\x81\xd1\x82\xd1\x80") != std::string::npos; // экстр
+            controls.combined.push_back(static_cast<std::int8_t>(twin ? 1 : emergency ? 2 : 0));
+        }
+    }
+    return controls;
+}
+
+CabBrakes BrakeCabControls::read(const formats::EngineDefinition::BrakesLibrary& ids, const std::vector<dllhost::SwitchState>& switches,
+                                 const CabBrakes& last) const {
+    CabBrakes now = last;
+    const auto state = [&](const std::int32_t id) -> int {
+        return id >= 0 && static_cast<std::size_t>(id) < switches.size() ? static_cast<int>(switches[static_cast<std::size_t>(id)].state) : -1;
+    };
+    // The 395: the cab's hints, else 0..6 are I..VI.
+    if (const int s = state(ids.valve); s >= 0) {
+        now.raw = s;
+        int known = -1;
+        if (valve.empty()) known = s <= 6 ? s : -1;
+        else if (static_cast<std::size_t>(s) < valve.size()) known = valve[static_cast<std::size_t>(s)];
+        if (known >= 0) now.position = known;
+    }
+    if (const int s = state(ids.reducer); s >= 0 && static_cast<std::size_t>(s) < reducer.size() && reducer[static_cast<std::size_t>(s)] > 0.0f) {
+        now.charging = reducer[static_cast<std::size_t>(s)];
+    }
+    if (const int s = state(ids.combined); s >= 0 && static_cast<std::size_t>(s) < combined.size()) {
+        now.combined = combined[static_cast<std::size_t>(s)];
+    }
+    if (const int s = state(ids.block); s >= 0 && ids.block_operating >= 0) now.blocked = s != ids.block_operating;
+    return now;
+}
+
 bool LegacyConsist::has_dll(std::size_t car) const { return has_dll(0, car); }
 
 bool LegacyConsist::has_dll(std::size_t train, std::size_t car) const {
@@ -898,7 +1054,68 @@ std::string LegacyConsist::take_messages() { return std::exchange(messages_, {})
 std::unique_ptr<simulation::LocomotiveController> LegacyConsist::controller(std::size_t car) const { return controller(0, car); }
 
 std::unique_ptr<simulation::LocomotiveController> LegacyConsist::controller(std::size_t train, std::size_t car) const {
-    return std::make_unique<LegacyController>(outputs_, flat(train, car));
+    const auto at = flat(train, car);
+    // The cab's Brakes.dll controls (the 395, the reducer, the combined valve)
+    // and what their states are.
+    BrakeCabControls cab;
+    if (at < cars_.size() && at < cabs_.size() && cars_[at].definition && cars_[at].definition->engine) {
+        cab = brake_cab_controls(cars_[at].definition->engine->brakes_library, cabs_[at]);
+    }
+    return std::make_unique<LegacyController>(outputs_, at, air_, std::move(cab));
+}
+
+std::vector<std::int8_t> valve_states(const formats::CabSwitch& control) {
+    // The hint's word: brackets, quotes and spaces off, in lower case.
+    const auto word = [](const std::string& hint) {
+        std::string s;
+        for (const char c : hint)
+            if (c != '[' && c != ']' && c != '"' && c != ' ' && c != '.') s += c;
+        return core::fold_case(s);
+    };
+    const auto position = [&](const std::string& hint) -> int {
+        const auto s = word(hint);
+        // Roman numerals; the Cyrillic а / э of "Vа" / "VЭ" read as Latin.
+        auto roman = s;
+        for (const auto& [from, to] : {std::pair<const char*, const char*>{"\xd0\xb0", "a"}, {"\xd1\x8d", "e"}}) {
+            for (auto at = roman.find(from); at != std::string::npos; at = roman.find(from)) roman.replace(at, std::strlen(from), to);
+        }
+        if (roman == "i") return 0;
+        if (roman == "ii") return 1;
+        if (roman == "iii") return 2;
+        if (roman == "iv") return 3;
+        if (roman == "va" || roman == "ve" || roman == "v-a" || roman == "v-e") return 4;
+        if (roman == "v") return 5;
+        if (roman == "vi") return 6;
+        // Words.
+        const auto has = [&](const char* part) { return s.find(part) != std::string::npos; };
+        if (has("\xd1\x8d\xd0\xba\xd1\x81\xd1\x82\xd1\x80")) return 6;                       // экстр
+        if (has("\xd0\xbf\xd0\xbe\xd0\xb5\xd0\xb7\xd0\xb4")) return 1;                       // поезд
+        if (has("\xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xba\xd1\x80")) {                     // перекр
+            return has("\xd0\xb1\xd0\xb5\xd0\xb7") ? 2 : 3;                                       // без питания: III
+        }
+        if (has("\xd0\xb7\xd0\xb0\xd1\x80\xd1\x8f\xd0\xb4") || has("\xd0\xbe\xd1\x82\xd0\xbf\xd1\x83\xd1\x81\xd0\xba")) return 0; // заряд, отпуск
+        if (has("\xd1\x81\xd0\xbb\xd1\x83\xd0\xb6")) return 5;                                 // служ
+        return -1;
+    };
+    std::vector<std::int8_t> states;
+    bool any = false;
+    for (const auto& hint : control.state_hints) {
+        const int p = position(hint);
+        any = any || p >= 0;
+        states.push_back(static_cast<std::int8_t>(p));
+    }
+    if (any) return states;
+    states.clear();
+    if (control.num_states == 7)
+        for (std::int8_t s = 0; s < 7; ++s) states.push_back(s);
+    return states;
+}
+
+std::unique_ptr<simulation::LocomotiveController> make_legacy_controller(std::weak_ptr<const LegacyConsist::Outputs> outputs,
+                                                                         const std::size_t car,
+                                                                         std::shared_ptr<const DllAirSetting> air,
+                                                                         BrakeCabControls cab) {
+    return std::make_unique<LegacyController>(std::move(outputs), car, std::move(air), std::move(cab));
 }
 
 } // namespace openrts::trainplugin

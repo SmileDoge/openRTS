@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <map>
 #include <set>
@@ -547,7 +548,14 @@ public:
     // Uncouples train `id` before car `index` (end cocks closed, couplers left open).
     [[nodiscard]] std::string uncouple_at(std::uint64_t id, std::size_t index);
     // A consist put on the track with its front at `where`, facing along it.
-    [[nodiscard]] std::string spawn(std::string_view consist, const simulation::TrackLocation& where, Role role);
+    // `category`: its type for the speed posts (the ТЧД console's Прочий /
+    // Пассажирский / Грузовой; none: by its cars); `start_state`: its DLLs'
+    // start when the player takes it (an activity's TrainState: 0 cold, with
+    // no air at all and the pantographs down; 1 on and standing; -1 running;
+    // none: the Train window's).
+    [[nodiscard]] std::string spawn(std::string_view consist, const simulation::TrackLocation& where, Role role,
+                                    std::optional<simulation::TrainCategory> category = std::nullopt,
+                                    std::optional<int> start_state = std::nullopt);
     // Saves train `id`'s path as <user_path_folder>/<name>.pat (never into the route).
     [[nodiscard]] std::string save_path(std::uint64_t id, const std::string& name);
     // The camera follows train `id` (0: the driven train).
@@ -1113,6 +1121,44 @@ private:
     // as distributor_stability; read at the first train.
     mutable bool distributor_stability_ = false;
     mutable bool distributor_stability_loaded_ = false;
+    // The air of trains with DLLs under the realistic air (trainplugin::DllAir:
+    // 0 RTS's, 1 the DLL's valve, 2 openRTS's valve over Brakes.dll),
+    // remembered as dll_air; read at the first update.
+    int dll_air_ = 0;
+    bool dll_air_loaded_ = false;
+    // The rails' state for the adhesion (simulation::RailCondition): 0 as
+    // RTS, 1 by the weather (rain wet, snow snow), 2 dry, 3 wet, 4 snow, 5
+    // ice, 6 leaves; remembered as rails, read at the first update.
+    int rails_ = 1;
+    bool rails_loaded_ = false;
+    // TrainSettings::limit_brake_force, remembered as limit_brake_force.
+    bool limit_brake_force_ = false;
+    [[nodiscard]] simulation::RailCondition rails_now() const noexcept;
+    // cab_state() with openRTS's valve over Brakes.dll: the DLL's output with
+    // its УР gauge showing the valve's УР.
+    mutable dllhost::CarOutput patched_output_;
+    // openRTS's brake log next to the tape (docs/tape.md, "The brake log"):
+    // twice a second and at every change of a handle, the valve's position
+    // and УР, the ЭПТ, what the DLL gives, every car's pressures.
+    std::unique_ptr<std::ofstream> brake_log_;
+    std::filesystem::path brake_log_path_;
+    double brake_log_time_{}; // s since the tape started
+    double brake_log_due_{};  // s until the next regular row
+    std::vector<std::size_t> brake_log_cars_; // the cars with columns
+    struct BrakeControls {
+        int position = -2;
+        bool ep = false;
+        float independent = -9.0f;
+        bool emergency = false;
+        int throttle = -1;
+        int reverser = -9;
+        bool operator==(const BrakeControls&) const = default;
+    };
+    BrakeControls brake_log_last_;
+    void open_brake_log();
+    void close_brake_log();
+    void log_brakes(double dt);
+    void brake_log_header();
     float sway_scale_ = 1.0f; // body sway shown on the cars: 1 = the RTS model's size, 0 off
     bool random_loop_phase_ = true; // SoundInstance::set_random_loop_phase for every car
 
@@ -1133,7 +1179,12 @@ private:
         std::size_t car = 0;     // in that train
         bool front = true;       // the end / bogie towards the train front
         int highlight = 0;
+        // Opened from F5 (a right click on a car's row): it stays however
+        // far the camera is, in the cab too.
+        bool remote = false;
     };
+    // F5's right click: the car whose bogie or coupling to choose.
+    std::optional<std::pair<std::uint64_t, std::size_t>> f5_car_pick_;
     struct CarMenuItem {
         int id;            // RTS's item id (0x463F84)
         const char* label; // English, translated when shown

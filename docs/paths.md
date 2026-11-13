@@ -22,8 +22,21 @@ openrts-track-check <installation root> [route...]    (now also: every .pat reso
 train, else the driven one):
 - **F5** — a page of the train's cars: the overall line (speed,
   acceleration, limit, next limit and its distance, kilometre) and per car
-  its mass, pipe / auxiliary / cylinder pressures, velocity, acceleration,
-  forces, handbrake, derailment; F5 again turns the page, past the last one
+  its mass, pipe / auxiliary / cylinder pressures (with the realistic air a
+  483's РК, the level it releases at), velocity, acceleration, forces,
+  handbrake, an open release valve or emergency valve (the car menu's),
+  wheel slide and wet or hot shoes (docs/train.md), derailment. A right
+  click on a car's name offers its bogie or coupling towards the train's
+  head or tail and opens that car menu, as a click on the bogie or the
+  coupler does; it stays open however far the camera is, in the cab too; under the page a Σ row for the whole train (its
+  mass, traction and brake force summed, the strongest coupler pull and
+  squeeze with the joint's number: coupler forces are inner and cancel in a
+  sum) and its grade and rolling resistance. The coupler column is the
+  force the joint passes (`Train::joint_forces`): on the move what the cars
+  behind it need by Newton; RTS's CF stops at the springs' full stretch
+  (100 kN on a flat car, 20 on a gondola, the rest goes through the
+  solver's rigid stop), so before 2026-11-13 a train pulling 250 kN showed
+  a row of 100s; F5 again turns the page, past the last one
   it hides; **Shift+F5** the train as a whole (mass, length, passenger /
   freight cars, engines);
 - **Ctrl+F5** — the kilometre and picket (from the nearest kilometre post
@@ -101,6 +114,12 @@ train, else the driven one):
     with "Browse..." from any .con on disk (Windows' Open dialog; it starts
     in the folder the last one came from, kept in `viewer_state.ini` in the
     working directory; the cars still come from the content's TRAINSET);
+    as the ТЧД console's train form, its type for the speed posts (by its
+    cars, passenger, freight, other) and its state: running, on and standing
+    (its DLLs' Init gets TrainState 1), or cold (TrainState 0: no air in the
+    pipe, the reservoirs or the main reservoirs, the pantographs down), when
+    the player takes it (`TrainView::spawn`; a network game's server places
+    it as it does);
   - **placing a consist** (after choosing it) shows a preview first:
     - every car at its true length, the front car orange with an arrow the
       way the train will face, engines pale orange; the front of car 0 at

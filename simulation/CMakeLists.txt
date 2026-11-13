@@ -5,6 +5,9 @@ add_library(openrts_simulation STATIC
     src/rail_joints.cpp
     src/body_motion.cpp
     src/distributor.cpp
+    src/brake_shoes.cpp
+    src/adhesion.cpp
+    src/driver_valve.cpp
     src/track_traveller.cpp
     src/train.cpp
     src/realistic_air.cpp

@@ -204,6 +204,13 @@ openrts_configure_target(openrts_tape_test)
 target_link_libraries(openrts_tape_test PRIVATE openrts_simulation)
 add_test(NAME openrts.tape COMMAND openrts_tape_test)
 
+# Trains with legacy DLLs under the realistic air: the DLL's valve, openRTS's
+# valve over Brakes.dll (the DLL controller on outputs made by the test).
+add_executable(openrts_dll_air_test dll_air_test.cpp)
+openrts_configure_target(openrts_dll_air_test)
+target_link_libraries(openrts_dll_air_test PRIVATE openrts_trainplugin openrts_simulation openrts_formats)
+add_test(NAME openrts.dll_air COMMAND openrts_dll_air_test)
+
 # Brake distributors: the built-in ones on the stand, the Luau 292 as the
 # built-in one, Luau's sandbox and time limit.
 add_executable(openrts_distributor_test distributor_test.cpp)

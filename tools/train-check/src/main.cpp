@@ -27,6 +27,8 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/ace_file.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/adhesion.hpp>
+#include <openrts/simulation/brake_shoes.hpp>
 #include <openrts/simulation/train.hpp>
 
 namespace openrts {
@@ -58,12 +60,180 @@ void walk(const core::Vfs& vfs, const core::VirtualPath& directory,
 // level track, then the brake valve to emergency (VI). Prints the stopping
 // distance and time, how long the brakes take to reach the last car, the
 // largest coupler tension and compression, breaks and derailments.
+// --brake-ratio <folder> ...: every .eng in the TRAINSET folders, read as
+// RTS reads it (with its .rtseng): its brake force at the full cylinder
+// against its weight (at 40 km/h, the content's), what its shoes make of it
+// at a stop in an emergency (3.8 atm), and whether that outgrows the
+// adhesion of dry (0.33) and wet (0.215) rails, as is and with the
+// limit to real stock's (docs/train.md). A force marked * is the engine's
+// ORTSBrakeForce, which the limit leaves as it is.
+int brake_ratio(const core::Vfs& vfs, const std::vector<std::string>& folders) {
+    std::printf("%-34s %6s %8s %6s %-9s %6s %6s  %-15s %s\n", "engine", "t", "F kN", "F/W", "shoes", "stop", "limit", "as is: dry/wet",
+                "limited: dry/wet");
+    for (const auto& folder : folders) {
+        const auto dir = core::VirtualPath::parse("TRAINS/TRAINSET/" + folder);
+        if (!dir) continue;
+        for (const auto& entry : vfs.list(*dir)) {
+            const auto name = std::string(entry.path.filename());
+            if (entry.directory || name.size() < 5 || core::fold_case(name.substr(name.size() - 4)) != ".eng") continue;
+            const auto stem = name.substr(0, name.size() - 4);
+            const auto wagon = formats::load_wagon(vfs, folder, stem, true);
+            if (!wagon.ok() || wagon.mass <= 0.0f) continue;
+            const auto& brakes = wagon.brakes;
+            const float weight = wagon.mass * 10.0f;
+            // ORTSBrakeForce, when given, is the realistic air's (marked *).
+            const bool own = brakes.realistic_brake_force > 0.0f;
+            const float force = own ? brakes.realistic_brake_force : brakes.max_brake_force;
+            const float ratio = force / weight;
+            const auto shoe = simulation::shoe_of(wagon);
+            const float share = brakes.cylinder_pressure_for_max_force > 0.0f ? (std::min)(3.8f / brakes.cylinder_pressure_for_max_force, 1.5f) : 1.0f;
+            const float stop = ratio * share * simulation::shoe_factor(shoe, 0.0f, share);
+            const float limited = (own ? ratio : (std::min)(ratio, simulation::shoe_force_limit(shoe))) * share * simulation::shoe_factor(shoe, 0.0f, share);
+            const float dry = simulation::wheel_rail_adhesion(0.0f);
+            const float wet = dry * simulation::rail_factor(simulation::RailCondition::wet);
+            const auto verdict = [&](const float at_stop) {
+                return std::string(at_stop > dry ? "slides" : "holds") + "/" + (at_stop > wet ? "slides" : "holds");
+            };
+            std::printf("%-34s %6.1f %7.1f%s %6.3f %-9s %6.3f %6.3f  %-15s %s\n", (folder + "/" + stem).c_str(), wagon.mass / 1000.0f,
+                        force / 1000.0f, own ? "*" : " ", ratio, formats::brake_shoe_name(shoe), stop, limited, verdict(stop).c_str(),
+                        verdict(limited).c_str());
+        }
+    }
+    return 0;
+}
+
+// --charge <wagons> <folder/eng>[!] ... <folder/wag> [--realistic]: the
+// engines (the first is the master, keyboard driven, no DLL) and `wagons`
+// of the wagon, standing; how long the air takes (docs/train.md): from
+// empty, and released after VI with the pipe empty. The cars' times: the
+// head and tail pipe to 4.5 and 4.8, the tail's auxiliary reservoir to 4.5,
+// every cylinder below 0.4 (released).
+int charge_test(const core::Vfs& vfs, std::vector<std::string> args) {
+    const auto realistic_flag = std::find(args.begin(), args.end(), "--realistic");
+    const bool realistic = realistic_flag != args.end();
+    if (realistic) args.erase(realistic_flag);
+    if (args.size() < 3) {
+        std::fprintf(stderr, "--charge <wagons> <folder/eng>[!] ... <folder/wag> [--realistic]\n");
+        return 2;
+    }
+    const auto count = static_cast<std::size_t>(std::atoi(args[0].c_str()));
+    std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
+    const auto load = [&](std::string spec, const bool engine) -> const formats::WagonDefinition* {
+        bool flipped = false;
+        if (!spec.empty() && spec.back() == '!') {
+            flipped = true;
+            spec.pop_back();
+        }
+        (void)flipped;
+        const auto slash = spec.find('/');
+        if (slash == std::string::npos) return nullptr;
+        auto wagon = std::make_unique<formats::WagonDefinition>(formats::load_wagon(vfs, spec.substr(0, slash), spec.substr(slash + 1), engine));
+        if (!wagon->ok()) {
+            std::fprintf(stderr, "%s: %s\n", spec.c_str(), wagon->error.c_str());
+            return nullptr;
+        }
+        stock.push_back(std::move(wagon));
+        return stock.back().get();
+    };
+    std::vector<simulation::CarSetup> cars;
+    for (std::size_t k = 1; k + 1 < args.size(); ++k) {
+        const auto* engine = load(args[k], true);
+        if (!engine) return 2;
+        cars.push_back({.definition = engine, .flipped = !args[k].empty() && args[k].back() == '!'});
+    }
+    const auto* wagon = load(args.back(), false);
+    if (!wagon) return 2;
+    for (std::size_t k = 0; k < count; ++k) cars.push_back({.definition = wagon});
+    double length = 0.0, mass = 0.0;
+    for (const auto& car : cars) {
+        length += car.definition->length;
+        mass += car.definition->mass;
+    }
+    auto network = simulation::straight_test_track(length + 2000.0);
+    simulation::Train train(cars);
+    if (realistic) train.set_brake_model(simulation::BrakeModel::realistic);
+    std::string error;
+    if (!network || !train.place(*network, 1, length + 100.0, true, &error)) {
+        std::fprintf(stderr, "cannot place the train: %s\n", error.c_str());
+        return 2;
+    }
+    const auto driver = simulation::attach_keyboard_driver(train);
+    if (!driver) {
+        std::fprintf(stderr, "no engine to drive\n");
+        return 2;
+    }
+    std::printf("train: %zu cars (%zu wagons), %.0f t, %.0f m; %s air\n", cars.size(), count, mass / 1000.0, train.length(),
+                realistic ? "realistic" : "RTS");
+    const auto n = train.cars().size();
+    // The run: until every figure came or 30 min; a line every 30 s.
+    const auto run = [&](const char* what) {
+        double time = 0.0, head45 = -1, tail45 = -1, tail48 = -1, zr45 = -1, released = -1;
+        float least_mr = 99.0f;
+        std::printf("%s\n     s  head pipe  tail pipe  tail aux  most cyl   MR\n", what);
+        while (time < 1800.0) {
+            train.step();
+            time += simulation::train_step;
+            const auto& c = train.cars();
+            float most = 0.0f;
+            for (const auto& car : c) most = (std::max)(most, (std::max)(car.cylinder, car.independent));
+            least_mr = (std::min)(least_mr, c.front().main_reservoir);
+            if (head45 < 0 && c.front().pipe >= 4.5f) head45 = time;
+            if (tail45 < 0 && c.back().pipe >= 4.5f) tail45 = time;
+            if (tail48 < 0 && c.back().pipe >= 4.8f) tail48 = time;
+            if (zr45 < 0 && c.back().auxiliary >= 4.5f) zr45 = time;
+            if (released < 0 && most < 0.4f) released = time;
+            if (std::fmod(time + 1e-6, 30.0) < simulation::train_step) {
+                std::printf("  %4.0f  %9.2f  %9.2f  %8.2f  %8.2f  %4.2f\n", time, c.front().pipe, c.back().pipe, c.back().auxiliary, most,
+                            c.front().main_reservoir);
+            }
+            if (head45 >= 0 && tail48 >= 0 && zr45 >= 0 && released >= 0) break;
+        }
+        const auto when = [](const double t) { return t < 0 ? std::string("not in 30 min") : std::to_string(static_cast<int>(t + 0.5)) + " s"; };
+        std::printf("  head pipe 4.5: %s; tail pipe 4.5: %s, 4.8: %s; tail aux 4.5: %s; released (every cylinder < 0.4): %s; MR at least %.2f\n",
+                    when(head45).c_str(), when(tail45).c_str(), when(tail48).c_str(), when(zr45).c_str(), when(released).c_str(),
+                    least_mr);
+    };
+    // From empty: every car's pipe, reservoirs and cylinder at 0.
+    for (std::size_t k = 0; k < n; ++k) {
+        const auto& c = train.cars()[k];
+        train.set_air(k, {.pipe = 0.0f, .charging_pipe = 0.0f, .cylinder = 0.0f, .auxiliary = 0.0f, .control = 0.0f,
+                          .main_reservoir = c.main_reservoir});
+    }
+    driver->brake = simulation::DriverHandles::BrakeHandle::running;
+    run("from empty, the valve in II:");
+    // Charged for 10 min more, then VI for 40 s, then II.
+    for (int k = 0; k < static_cast<int>(600.0 / simulation::train_step); ++k) train.step();
+    driver->brake = simulation::DriverHandles::BrakeHandle::emergency;
+    for (int k = 0; k < static_cast<int>(40.0 / simulation::train_step); ++k) train.step();
+    std::printf("after 40 s of VI: head pipe %.2f, tail pipe %.2f, tail aux %.2f, tail cylinder %.2f\n", train.cars().front().pipe,
+                train.cars().back().pipe, train.cars().back().auxiliary, train.cars().back().cylinder);
+    driver->brake = simulation::DriverHandles::BrakeHandle::running;
+    run("released after VI, the valve in II:");
+    return 0;
+}
+
 int brake_test(const core::Vfs& vfs, const std::vector<core::VirtualPath>& consists, const double speed_kmh,
                std::vector<std::string> names) {
     // --realistic among the names: openRTS realistic air instead of RTS's model.
     const auto realistic_flag = std::find(names.begin(), names.end(), "--realistic");
     const bool realistic = realistic_flag != names.end();
     if (realistic) names.erase(realistic_flag);
+    // --limit-brakes: TrainSettings::limit_brake_force.
+    const auto limit_flag = std::find(names.begin(), names.end(), "--limit-brakes");
+    const bool limit_brakes = limit_flag != names.end();
+    if (limit_brakes) names.erase(limit_flag);
+    // --rails dry|wet|snow|ice|leaves: the rails' state (adhesion.hpp); RTS's by default.
+    auto rails = simulation::RailCondition::rts;
+    if (const auto flag = std::find(names.begin(), names.end(), "--rails"); flag != names.end() && flag + 1 != names.end()) {
+        const auto value = *(flag + 1);
+        rails = value == "dry"    ? simulation::RailCondition::dry
+              : value == "wet"    ? simulation::RailCondition::wet
+              : value == "snow"   ? simulation::RailCondition::snow
+              : value == "ice"    ? simulation::RailCondition::ice
+              : value == "leaves" ? simulation::RailCondition::leaves
+                                  : simulation::RailCondition::rts;
+        names.erase(flag, flag + 2);
+    }
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
     std::vector<simulation::CarSetup> cars;
     for (const auto& name : names) {
@@ -103,6 +273,8 @@ int brake_test(const core::Vfs& vfs, const std::vector<core::VirtualPath>& consi
     auto network = simulation::straight_test_track(length + 80000.0);
     simulation::Train train(cars);
     if (realistic) train.set_brake_model(simulation::BrakeModel::realistic);
+    train.set_rails(rails);
+    train.set_limit_brake_force(limit_brakes);
     std::string error;
     if (!network || !train.place(*network, 1, length + 100.0, true, &error)) {
         std::fprintf(stderr, "cannot place the train: %s\n", error.c_str());
@@ -186,11 +358,32 @@ int brake_test(const core::Vfs& vfs, const std::vector<core::VirtualPath>& consi
         time += simulation::train_step;
         watch();
         if (head_brakes < 0.0 && train.cars().front().cylinder > 0.1f) head_brakes = time - brake_at;
+        // Where the first car's wheels start sliding (the realistic air).
+        if (static bool told = false; !told && train.cars().front().sliding()) {
+            told = true;
+            const auto& c = train.cars().front();
+            std::printf("  car 1 slides from %.1f km/h: cylinder %.2f, independent %.2f, brake %.0f kN, shoes wet %.2f\n",
+                        std::abs(c.velocity) * 3.6, c.cylinder, c.independent, c.brake_force / 1000.0, c.shoe_state[0].wet);
+        }
         if (tail_brakes < 0.0 && train.cars().back().cylinder > 0.1f) tail_brakes = time - brake_at;
     }
     const double distance = std::abs(train.front_end()->offset() - from);
     std::printf("emergency at %.1f km/h: stopped after %.0f m in %.0f s\n", speed_at_brake * 3.6, distance, time - brake_at);
     std::printf("  brakes: the first car after %.1f s, the last after %.1f s (cylinder above 0.1 atm)\n", head_brakes, tail_brakes);
+    {
+        // Wheel slide (the realistic air): the cars that slid and how far.
+        std::size_t slid = 0;
+        float most = 0.0f;
+        for (const auto& car : train.cars()) {
+            if (car.slid > 0.0f) ++slid;
+            most = (std::max)(most, car.slid);
+        }
+        std::printf("  wheel slide: %zu cars slid, the most %.0f m\n", slid, most);
+        for (std::size_t k = 0; k < train.cars().size(); ++k) {
+            const auto& car = train.cars()[k];
+            if (car.slid > 0.0f) std::printf("    car %zu (%s): %.0f m\n", k + 1, car.definition->name.c_str(), car.slid);
+        }
+    }
     std::printf("  couplers: the largest compression %.0f kN (coupler %zu, %.1f s), tension %.0f kN (coupler %zu, %.1f s)\n",
                 compression.force / 1000.0, compression.coupler, compression.time - brake_at, tension.force / 1000.0, tension.coupler,
                 tension.time - brake_at);
@@ -322,6 +515,12 @@ int main(int argc, char** argv) {
     }
     if (argc > 2 && std::string(argv[2]) == "--dll") {
         return dll_check(vfs, root, std::vector<std::string>(argv + 3, argv + argc));
+    }
+    if (argc > 3 && std::string(argv[2]) == "--brake-ratio") {
+        return brake_ratio(vfs, std::vector<std::string>(argv + 3, argv + argc));
+    }
+    if (argc > 4 && std::string(argv[2]) == "--charge") {
+        return charge_test(vfs, std::vector<std::string>(argv + 3, argv + argc));
     }
     if (argc > 4 && std::string(argv[2]) == "--brake") {
         return brake_test(vfs, consists, std::atof(argv[3]), std::vector<std::string>(argv + 4, argv + argc));

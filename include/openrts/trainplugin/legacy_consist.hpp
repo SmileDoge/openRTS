@@ -32,6 +32,43 @@
 
 namespace openrts::trainplugin {
 
+// The air of trains with legacy DLLs under openRTS's realistic air model
+// (docs/train.md, "Realistic air with DLL locomotives"; never with Legacy).
+enum class DllAir : std::uint8_t {
+    rts,       // as RTS: the DLLs' valves work RTS's air (the train keeps BrakeModel::rts)
+    dll_valve, // the DLL's valve: its УР (Engine::UR) into the model's relay
+    own_valve, // openRTS's 395 on the cab's handle (Brakes.dll's BR_395ID1), the DLL's direct vents (the ЭПК) kept
+};
+struct DllAirSetting {
+    DllAir mode = DllAir::rts;
+};
+
+// What a cab's Brakes.dll controls tell openRTS's valve (own_valve).
+struct CabBrakes {
+    int position = -1; // the 395's (simulation::ValvePosition), -1 not known
+    int raw = -1;      // its control's state
+    float charging{};  // the reducer's charging pressure (BR_REDID1), atm; 0: none
+    int combined = 0;  // the combined valve (BR_KKID1): 0 normal, 1 double traction (cut out), 2 emergency
+    // The blocking device усл. 367 (BR_367ID1) out of its operating state
+    // (BR_367OPPOL): the 395 is cut off the pipe.
+    bool blocked = false;
+};
+// The cab's controls read once (brake_cab_controls): per state, the 395's
+// position (valve_states; empty: I..VI), the reducer's pressure ("[4.0]" ..
+// "[5.9]", 0 not known), the combined valve's kind ("Двойная тяга",
+// "Нормальное", "Экстренное").
+struct BrakeCabControls {
+    std::vector<std::int8_t> valve;
+    std::vector<float> reducer;
+    std::vector<std::int8_t> combined;
+    // From the switches' states now; `last` the reading before (an unknown
+    // state keeps its value).
+    [[nodiscard]] CabBrakes read(const formats::EngineDefinition::BrakesLibrary& ids,
+                                 const std::vector<dllhost::SwitchState>& switches, const CabBrakes& last = {}) const;
+};
+[[nodiscard]] BrakeCabControls brake_cab_controls(const formats::EngineDefinition::BrakesLibrary& ids,
+                                                  const formats::CabDescription& cab);
+
 // A switch's AssignKey keys as RTS keeps them in ActSwitch::Key (+72, the
 // loader 0x45AE90): per key, two at most, its character in upper case
 // (Space 0x20) and its modifiers (1 Shift, 2 Ctrl or Control, 4 Alt), the
@@ -140,6 +177,9 @@ public:
 
     [[nodiscard]] const dllhost::CarOutput* output(std::size_t car) const;
     [[nodiscard]] const formats::CabDescription* cab(std::size_t car) const;
+    // Train `train`'s car `car`: its cab's Brakes.dll controls as openRTS's
+    // valve reads them (the 395's position, the reducer, the combined valve).
+    [[nodiscard]] CabBrakes cab_brakes(std::size_t train, std::size_t car) const;
     [[nodiscard]] bool has_dll(std::size_t car) const;
     [[nodiscard]] const std::vector<dllhost::ModuleReport>& modules() const noexcept { return modules_; }
     [[nodiscard]] std::size_t player() const noexcept { return player_; }
@@ -158,6 +198,10 @@ public:
     [[nodiscard]] std::string take_messages();
     // A controller for `car` reading this consist's outputs.
     [[nodiscard]] std::unique_ptr<simulation::LocomotiveController> controller(std::size_t car) const;
+    // The air of its trains under the realistic air model (every controller
+    // of this consist follows it at once).
+    void set_air(DllAir mode) noexcept { air_->mode = mode; }
+    [[nodiscard]] DllAir air() const noexcept { return air_->mode; }
 
 private:
     LegacyConsist() = default;
@@ -177,6 +221,7 @@ private:
     std::vector<bool> dll_;
     std::vector<dllhost::ModuleReport> modules_;
     std::shared_ptr<Outputs> outputs_ = std::make_shared<Outputs>();
+    std::shared_ptr<DllAirSetting> air_ = std::make_shared<DllAirSetting>();
     std::size_t player_ = SIZE_MAX;
     std::vector<dllhost::CarAir> entered_air_;
     std::vector<std::uint32_t> train_types_;
@@ -215,5 +260,19 @@ void apply_engine_output(const dllhost::EngineOutput& out, simulation::EngineDem
 // player's engine's pipe, charging pipe, cylinder, auxiliary reservoir and
 // control chamber; main reservoirs stay each engine's. enter()'s result.
 bool enter_new_train(LegacyConsist& consist, std::size_t car, simulation::Train& train, bool running = true, int state = -1);
+
+// What each state of a cab's 395 control is (simulation::ValvePosition, -1
+// not known), read from its StateHints ("[I]" .. "[VI]", "[Vа]" / "[VЭ]",
+// or words: "экстренное", "поездное", "перекрыша" ...): cabs order them
+// either way (the ЭД9М's I..VI, the ВЛ80С's VI..I). Without hints a 7-state
+// control is taken as I..VI.
+[[nodiscard]] std::vector<std::int8_t> valve_states(const formats::CabSwitch& control);
+
+// A controller for car `car` of `outputs` (LegacyConsist::controller makes
+// them; tests make them on outputs of their own). `cab`: its cab's brake
+// controls (brake_cab_controls); empty: the 395's states I..VI, no reducer.
+[[nodiscard]] std::unique_ptr<simulation::LocomotiveController> make_legacy_controller(
+    std::weak_ptr<const LegacyConsist::Outputs> outputs, std::size_t car, std::shared_ptr<const DllAirSetting> air,
+    BrakeCabControls cab = {});
 
 } // namespace openrts::trainplugin

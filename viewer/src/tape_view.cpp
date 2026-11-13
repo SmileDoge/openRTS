@@ -270,6 +270,7 @@ void TapeView::draw(const fs::path& rolling, const fs::path& rts_root) {
     legend(ImVec4(0.95f, 0.0f, 0.0f, 1.0f), tr("above the limit"));
     legend(ImVec4(0.10f, 0.33f, 0.69f, 1.0f), tr("brake pipe"));
     legend(ImVec4(0.67f, 0.29f, 0.08f, 1.0f), tr("brake cylinder"));
+    legend(ImVec4(0.89f, 0.55f, 0.15f, 1.0f), tr("independent brake cylinder (also a DLL's ЭПТ)"));
     legend(ImVec4(0.45f, 0.45f, 0.45f, 1.0f), tr("equalising reservoir"));
     ImGui::TextDisabled("%s", tr("wheel: scale; drag: scroll; double click: the whole tape; below: the line under the cursor (else the last)"));
 
@@ -370,6 +371,7 @@ constexpr ImU32 ink_over = IM_COL32(242, 0, 0, 255);
 constexpr ImU32 ink_time = IM_COL32(45, 45, 45, 255);
 constexpr ImU32 ink_pipe = IM_COL32(26, 84, 176, 255);
 constexpr ImU32 ink_cylinder = IM_COL32(170, 74, 20, 255);
+constexpr ImU32 ink_independent = IM_COL32(227, 140, 38, 255);
 constexpr ImU32 ink_equalising = IM_COL32(115, 115, 115, 255);
 constexpr ImU32 cursor_line = IM_COL32(0, 0, 0, 120);
 
@@ -613,6 +615,15 @@ void TapeView::draw_tape() {
     if (any_equalising) {
         Pen pen(list, ink_equalising, 1.0f);
         for (std::size_t i = first; i <= last; ++i) pen.to(x_of(i), pressure_y(records[i].equalising));
+    }
+    // The independent brake's cylinder (field 7): the engine's own brake,
+    // and on MaDaDev's multiple units their ЭПТ (Brakes.dll fills it in
+    // every car); drawn where it was used, under the train brake's.
+    bool any_independent = false;
+    for (std::size_t i = first; i <= last && !any_independent; ++i) any_independent = records[i].independent > 0.02f;
+    if (any_independent) {
+        Pen pen(list, ink_independent, 1.5f);
+        for (std::size_t i = first; i <= last; ++i) pen.to(x_of(i), pressure_y(records[i].independent));
     }
     {
         Pen pen(list, ink_cylinder, 1.5f);

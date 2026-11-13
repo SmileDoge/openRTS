@@ -127,6 +127,11 @@ public:
     void set_train_types(std::vector<std::uint32_t> types) {
         if (consist_) consist_->set_train_types(std::move(types));
     }
+    // The DLL trains' air under the realistic air model (LegacyConsist::set_air).
+    void set_air(const trainplugin::DllAir mode) {
+        if (consist_) consist_->set_air(mode);
+    }
+    [[nodiscard]] trainplugin::DllAir air() const { return consist_ ? consist_->air() : trainplugin::DllAir::rts; }
     [[nodiscard]] std::size_t take_restored() { return consist_ ? consist_->take_restored() : 0; }
     bool reconsist(const core::Vfs& vfs, const std::vector<std::vector<LegacyCarRef>>& trains,
                    const std::vector<simulation::Train*>& sims);
@@ -137,6 +142,11 @@ public:
         return consist_ ? consist_->output(train, car) : nullptr;
     }
     [[nodiscard]] bool has_dll(std::size_t train, std::size_t car) const { return consist_ && consist_->has_dll(train, car); }
+    // The car's Brakes.dll controls as openRTS's valve reads them
+    // (LegacyConsist::cab_brakes).
+    [[nodiscard]] trainplugin::CabBrakes cab_brakes(std::size_t train, std::size_t car) const {
+        return consist_ ? consist_->cab_brakes(train, car) : trainplugin::CabBrakes{};
+    }
     [[nodiscard]] std::unique_ptr<simulation::LocomotiveController> controller(std::size_t train, std::size_t car) const {
         return consist_ ? consist_->controller(train, car) : nullptr;
     }
@@ -145,7 +155,8 @@ public:
     // The player takes locomotive `car` (the engineer walked into its cab):
     // the host enters it (Init, ChangeLoco, the multiple-unit groups) and its
     // cab's keys are bound. False when it has no DLL or the host refuses.
-    bool enter(std::size_t car, const simulation::Train& train);
+    // `state`: an activity's TrainState for its DLL's Init (0 cold, 1 on), -1 running.
+    bool enter(std::size_t car, const simulation::Train& train, int state = -1);
     // The cab keys have the keyboard: chosen (with the free camera, whose
     // WASD they take), or always while the engineer is on foot (he walks
     // with the arrows, as in RTS, where a cab's keys work at once).

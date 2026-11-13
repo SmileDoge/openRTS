@@ -24,6 +24,10 @@ struct AirCar {
     float reference{};        // 483: control chamber РК; 292: the ЗР when the application began
     float last_pipe{};        // pipe at the last sub-step (rate detection)
     float wave = -1.0f;       // s until the emergency front reaches this car (< 0: not coming)
+    // s its emergency accelerator still vents the pipe: it opens when the
+    // car goes into emergency and closes after a few seconds; the car stays
+    // in emergency (its distributor full on) until the pipe is charged again.
+    float accelerator{};
     // ORTSBrakeDistributor: the car's own distributor in Luau (null: the
     // built-in one; also after a script error, reported once).
     std::shared_ptr<ScriptDistributor> script;
@@ -36,6 +40,10 @@ struct AirInputs {
     // Car i and i + 1 are joined by connected hoses and open cocks.
     std::vector<bool> joined;
 };
+
+// An engine's main reservoir, m³ (AirBrakesMainResVolume: litres above 50,
+// else cubic feet as MSTS gives it).
+[[nodiscard]] float main_reservoir_volume(const formats::EngineDefinition& engine);
 
 class RealisticAir {
 public:

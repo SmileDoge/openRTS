@@ -555,7 +555,14 @@ void TrackControl::finish_placement(TrainView& trains) {
         placement_ = {};
         return;
     }
-    const auto error = trains.spawn(placement_.consist, placement_.head, spawn_ai_ ? TrainView::Role::ai : TrainView::Role::standing);
+    const std::optional<simulation::TrainCategory> category =
+        spawn_category_ == 1   ? std::optional{simulation::TrainCategory::passenger}
+        : spawn_category_ == 2 ? std::optional{simulation::TrainCategory::freight}
+        : spawn_category_ == 3 ? std::optional{simulation::TrainCategory::other}
+                               : std::nullopt;
+    const int state = spawn_state_ == 2 ? 0 : spawn_state_ == 1 ? 1 : -1;
+    const auto error = trains.spawn(placement_.consist, placement_.head, spawn_ai_ ? TrainView::Role::ai : TrainView::Role::standing, category,
+                                    state);
     if (!error.empty()) {
         message_ = error;
         return;
@@ -589,6 +596,24 @@ void TrackControl::start_editing(TrainView& trains, const std::uint64_t id) {
         if (const auto rear = train->rear_end()) plan_.start = {rear->node(), rear->offset(), rear->forward()};
     }
     message_ = tr("editing: right-click the track to place waiting, reverse and end points");
+}
+
+// The consist's type and state, as the ТЧД console's train form gives them
+// ("Редактирование поезда": its type and Холодный / Включен / Движется).
+void TrackControl::spawn_options() {
+    const char* categories[] = {tr("by its cars"), tr("passenger"), tr("freight"), tr("other")};
+    ImGui::SetNextItemWidth(150.0f);
+    ImGui::Combo(tr("Train type##spawn"), &spawn_category_, categories, 4);
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", tr(spawn_category_ == 0 ? "(for the speed posts: freight without passenger cars, else passenger)"
+                                                      : "(for the speed posts, as the dispatcher's train form)"));
+    const char* states[] = {tr("running"), tr("on, standing"), tr("cold")};
+    ImGui::SetNextItemWidth(150.0f);
+    ImGui::Combo(tr("State##spawn"), &spawn_state_, states, 3);
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", tr(spawn_state_ == 2   ? "(everything off: no air in the pipe, reservoirs and main reservoirs, pantographs down)"
+                                 : spawn_state_ == 1 ? "(standing ready: its DLLs start on, the air charged)"
+                                                     : "(ready to go, as before)"));
 }
 
 void TrackControl::draw(TrainView& trains, simulation::SignalSystem* signals) {
@@ -1422,15 +1447,23 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
                     for (auto& c : folded) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                     if (!filter.empty() && folded.find(filter) == std::string::npos) continue;
                     ++shown;
-                    if (ImGui::Selectable(name.c_str(), i == consist_choice_)) {
+                    // The same file name in two folders (CONSISTS and
+                    // CONSISTS_RTS, a copy): each its own item, the folder said.
+                    const bool twin = (i > 0 && consists[static_cast<std::size_t>(i - 1)].ends_with("/" + name)) ||
+                                      (i + 1 < static_cast<int>(consists.size()) && consists[static_cast<std::size_t>(i + 1)].ends_with("/" + name));
+                    const auto label = twin ? name + "  (" + path.substr(0, path.find_last_of('/')) + ")" : name;
+                    ImGui::PushID(i);
+                    if (ImGui::Selectable(label.c_str(), i == consist_choice_)) {
                         consist_choice_ = i;
                         start_placement(trains, path, menu_.location);
                         ImGui::CloseCurrentPopup();
                     }
+                    ImGui::PopID();
                 }
                 ImGui::EndListBox();
             }
             ImGui::Checkbox(tr("as traffic (AI)"), &spawn_ai_);
+            spawn_options();
             // A .con from anywhere: the system's dialog, starting in the
             // folder the last one came from.
             if (ImGui::Button(tr("Browse..."))) {
@@ -1574,6 +1607,7 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
             placement_ = {};
             message_ = tr("placing dropped");
         }
+        spawn_options();
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextDisabled(tr("Drag a car along the track; click another\ntrack to move it there. Arrows nudge it\n(1 m, Shift 10 m); > is the way it faces."));
         ImGui::PopTextWrapPos();

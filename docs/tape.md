@@ -167,7 +167,9 @@ scales): Ctrl+F9, or "Speed recorder tape" in the game panel.
     (З, Ж, Ж-Ж, КЖ, Б, К); `К/—` is 0, STOP or no signal (the line does not
     tell them apart);
   - the pressures, 0–7 kgf/cm²: the brake pipe (field 6), the brake
-    cylinder (8), the equalising reservoir (45, when the tape has it);
+    cylinder (8), the independent brake's cylinder (7, where it was used:
+    MaDaDev's multiple units brake their ЭПТ through it, Brakes.dll filling
+    it in every car), the equalising reservoir (45, when the tape has it);
   - under the paper: the path from the tape's start, or the game clock; the
     kilometre posts passed (field 46).
 - **The values** of the line under the cursor (else the last), below the
@@ -184,6 +186,36 @@ Reading (`parse_tape_line`, as `ReadLenta`): fields 0..44 must be there and
 be numbers (RTS 0.44.1's lines end at 44), 45 and 46 are read when there; a
 line that is not a tape's is counted and left out. `TapeReader` reads the
 whole lines added since the last time; the one being written waits.
+
+## The brake log (openRTS)
+
+Next to each tape openRTS writes a file of its own: the tape's name with
+`_openrts.csv` for `_rts.txt`
+(`2026.11.13_10_53_24_ed9m_trainlog_openrts.csv`), started and stopped with
+the tape (`TrainView::log_brakes`). It holds what the tape has not, so a
+run can be read back without being told when which handle stood where:
+twice a second, and a row more at every change of a handle, the change
+named in `событие` ("кран V", "ЭПТ вкл", "вспом 1.5", "экстренное",
+"контроллер 3", "реверс 1"). UTF-8 with a BOM, `;` between the fields, a
+decimal point; a header again when the cars change (coupled, cut).
+
+| Column | What |
+|---|---|
+| `время`, `с_начала` | the game clock; s since the tape started |
+| `скорость_кмч`, `км`, `сигнал`, `до_сигнала_м` | the speed, the kilometre by the posts, the signal obeyed ahead and the distance to it |
+| `воздух`, `поезда_с_DLL` | RTS's air or the realistic one; with DLLs: RTS's, the DLL's valve or openRTS's valve (docs/train.md) |
+| `кран`, `кран_состояние` | the 395's position (I, II, III, IV, VЭ, V, VI): the keyboard's, or the cab's control under Brakes.dll (`BR_395ID1`) as openRTS's valve reads it (the cab's StateHints: the ВЛ80С numbers them VI..I); its raw state |
+| `редуктор`, `КК`, `блокировка_367` | under Brakes.dll: the reducer's charging pressure (`BR_REDID1`), the combined valve усл. 114 (`BR_KKID1`: нормальное, двойная тяга, экстренное), the 367 on or off (`BR_367ID1`, `BR_367OPPOL`) |
+| `АЛСН_вкл`, `огонь_АЛСН` | the DLL's Engine::ALSNOn (0: the cab's signal lights out) and the aspect its cab signal shows (Cabin::Signal.Aspect[0], an index into the cab's SignalAspects; 8 none) |
+| `вспом_цель` | the independent brake's target the controller asks, atm |
+| `ЭПТ`, `цель_ЭПТ` | the ЭПТ engaged; its demand |
+| `УР`, `экстренное`, `вагонов_в_экстренном` | the УР of the valve working the pipe; the emergency asked (the valve's VI, or the DLL's direct vent); cars in emergency (realistic air) |
+| `ГР`, `подача_ГР` | the engine's main reservoir; the compressor's rate, atm/s |
+| `тяга_кН`, `тормоз_кН`, `контроллер`, `реверс` | the train's traction and brake force; the throttle and reverser |
+| `DLL_УР`, `DLL_темп_ТМ`, `DLL_ЭПТ`, `DLL_вспом`, `DLL_системы` | what the DLL gives: Engine::UR, TrainPipeRate, EPTvalue, IndependentBrakeValue, BrakeSystemsEngaged |
+| `рельсы`, `тележек_в_юзе`, `колодки_влажность_ср`, `колодки_нагрев_макс`, `тележек_горит` | the rails' state (the Train window's "Rails"), the bogies sliding (юз), the shoes' mean wetness (0 .. 1) and most warmth (K above the air), the bogies whose wooden shoes are alight: docs/train.md |
+| `ТЦ_мин`, `ТЦ_макс` | the least and the most cylinder in the train (each car's higher of the train and independent one) |
+| `вN_ТМ`, `вN_ЗР`, `вN_РК`, `вN_ТЦ`, `вN_вспом` | car N's pipe, auxiliary reservoir, a 483's РК (realistic air), cylinder and independent cylinder: every car up to 16, else the first and the last 8 |
 
 ## Testing
 

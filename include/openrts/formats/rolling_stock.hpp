@@ -18,6 +18,16 @@
 
 namespace openrts::formats {
 
+// Brake shoes (openRTS; their friction under the realistic air,
+// simulation/brake_shoes.hpp): not given, cast iron, composite, disc pads,
+// wood (the first railways'; they char and catch fire).
+enum class BrakeShoe : std::uint8_t { unknown, cast_iron, composite, disc, wood };
+// A shoe type's name as the files give it, in any case: "cast_iron" /
+// "cast", "composite", "disc", "wood"; anything else is unknown.
+[[nodiscard]] BrakeShoe brake_shoe_from(std::string_view name);
+// Its name as written: "cast_iron", "composite", "disc", "wood", "" for unknown.
+[[nodiscard]] const char* brake_shoe_name(BrakeShoe shoe) noexcept;
+
 // ---- consists ---------------------------------------------------------------
 
 // FreightAnim of a consist entry (RTS "FreightAnim description"): a cargo or
@@ -44,6 +54,10 @@ struct ConsistEntry {
     // front, 2 towards the rear, 3 both (RTS 0x477928: car flags << 24).
     std::uint8_t place_drag{};
     std::vector<ConsistFreight> freight; // FreightAnim blocks
+    // openRTS: ORTSBrakeShoes ( front [rear] ): the shoes of the car's front
+    // and rear bogie (by the car's own ends), one value for both; unknown:
+    // the car's own (ORTSBrakeShoeType, else by its kind).
+    std::array<BrakeShoe, 2> shoes{};
 };
 
 struct ConsistDefinition {
@@ -93,6 +107,13 @@ struct BrakeEquipment {
     float max_auxiliary_charging_rate{}; // atm/s
     float cylinder_pressure_for_max_force{}; // atm
     float train_pipe_leak_rate{};       // atm/s
+    // openRTS: ORTSBrakeShoeType ( cast_iron | composite | disc | wood ).
+    BrakeShoe shoe = BrakeShoe::unknown;
+    // openRTS: ORTSBrakeForce ( N ): the brake force at the full cylinder
+    // (BrakeCylinderPressureForMaxBrakeBrakeForce) at 40 km/h for the
+    // realistic air's shoes, in place of MaxBrakeForce (which RTS's model
+    // keeps); 0: not given. Not scaled by ScaleBrakeForce / AddBrakeForce.
+    float realistic_brake_force{};
     // openRTS: ORTSBrakeDistributor ( "file.lua" ), a brake distributor (ВР)
     // in Luau for the realistic air model (docs/scripting.md), its file
     // next to the .wag / .eng; the source as read (load_wagon), or why not.
@@ -224,6 +245,24 @@ struct EngineDefinition {
     std::string train_plugin;
     std::vector<EngineParameter> parameters; // EngineParameters
     std::vector<AuxLibraryDefinition> aux_libraries;
+    // MaDaDev's Brakes.dll among them (an AuxLibrary whose module is
+    // Brakes.dll), from its parameters: the cab control of its 395 valve
+    // (BR_395ID1), the display of its equalising reservoir gauge (BR_MANU1),
+    // the charging pressure (BR_ZARPRESS, atm), the cab controls of the
+    // charging pressure reducer (BR_REDID1), of the combined valve усл. 114
+    // (BR_KKID1), of the blocking device усл. 367 (BR_367ID1) and the
+    // state it works in (BR_367OPPOL); -1 / 0 when not given.
+    struct BrakesLibrary {
+        bool present = false;
+        std::int32_t valve = -1;
+        std::int32_t equalising_gauge = -1;
+        float charging{};
+        std::int32_t reducer = -1;
+        std::int32_t combined = -1;
+        std::int32_t block = -1;
+        std::int32_t block_operating = -1;
+    };
+    BrakesLibrary brakes_library;
     // EngExtended WorksOnLineVoltages: the supplies it works on, in file
     // order (RTS gives the middle of the first on a route without an
     // .electrotype, docs/electrification.md).

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/brake_shoes.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train.hpp>
 
@@ -377,6 +378,236 @@ void test_turn_around(const Stock& stock) {
 
 // Uncoupling: closed cocks keep both parts charged; open cocks (a coupler
 // break) vent the pipe and both parts brake. The cut stands where it was.
+// The joints' force on the move (Train::joint_forces): Newton on the cars
+// behind; RTS's CF stops at the springs' full stretch.
+void test_joint_forces(const Stock& stock) {
+    Run r(stock, {}, 1500.0);
+    r.driver->reverser = 1;
+    r.driver->throttle = r.driver->notches;
+    r.run(40.0);
+    const auto& cars = r.train.cars();
+    const auto forces = r.train.joint_forces();
+    check(forces.size() + 1 == cars.size(), "a force for every joint");
+    check(r.train.speed() > 0.5, "the train is moving after 40 s of full throttle");
+    if (forces.size() + 1 != cars.size() || r.train.speed() < 0.5) return;
+    // Behind the engine: its traction less what it needs itself.
+    const auto& engine = cars.front();
+    const double own = engine.force - engine.grade - engine.resistance - engine.brake_force;
+    const double need = engine.definition->mass * engine.acceleration;
+    check(near(forces.front(), own - need, 2000.0), "the first joint passes the engine's traction less its own needs");
+    // It falls along the train and the last one pulls just the last car.
+    bool falling = true;
+    for (std::size_t j = 1; j < forces.size(); ++j) falling = falling && forces[j] <= forces[j - 1] + 500.0f;
+    check(falling, "the force falls along the train");
+    const auto& last = cars.back();
+    check(near(forces.back(), last.definition->mass * last.acceleration + last.resistance + last.brake_force + last.grade, 2000.0),
+          "the last joint pulls the last car");
+}
+
+// Brake shoes (brake_shoes.hpp): the Правила тяговых расчётов friction, and
+// the realistic air's brake force by the speed.
+void test_brake_shoes(const Stock& stock) {
+    using formats::BrakeShoe;
+    // Cast iron at 30 kN: 0.261 standing, 0.087 at 100 km/h; composite at 15 kN: 0.364 standing.
+    check(near(simulation::shoe_friction(BrakeShoe::cast_iron, 0.0f, 30.0f), 0.2612, 0.001), "cast iron standing");
+    check(near(simulation::shoe_friction(BrakeShoe::cast_iron, 100.0f, 30.0f), 0.0871, 0.001), "cast iron at 100 km/h");
+    check(near(simulation::shoe_friction(BrakeShoe::composite, 0.0f, 15.0f), 0.3638, 0.001), "composite standing");
+    check(near(simulation::shoe_factor(BrakeShoe::cast_iron, 40.0f, 1.0f), 1.0, 1e-5), "the content's force at 40 km/h");
+    check(simulation::shoe_factor(BrakeShoe::cast_iron, 0.0f, 1.0f) > 1.9f, "cast iron grips twice as hard at a stop");
+    check(simulation::shoe_factor(BrakeShoe::composite, 0.0f, 1.0f) < 1.3f, "composite only a fifth more");
+    check(simulation::shoe_factor(BrakeShoe::cast_iron, 40.0f, 0.4f) > 1.0f, "a lightly pressed cast-iron shoe grips relatively harder");
+    // The defaults: the engine cast iron, the freight car composite.
+    check(simulation::shoe_of(stock.engine) == BrakeShoe::cast_iron && simulation::shoe_of(stock.wagon) == BrakeShoe::composite,
+          "default shoes by the kind");
+    // A train braking: the realistic air's force grows as it slows (cast
+    // iron on the engine), RTS's stays.
+    for (const bool realistic : {true, false}) {
+        Run r(stock, {}, 1500.0);
+        if (realistic) r.train.set_brake_model(simulation::BrakeModel::realistic);
+        r.driver->reverser = 1;
+        r.driver->throttle = r.driver->notches;
+        r.run(60.0);
+        r.driver->throttle = 0;
+        r.driver->independent = 3.0f;
+        // The force per atm of the cylinder (the cylinder still fills).
+        double fast = 0.0, slow = 0.0;
+        for (int i = 0; i < 4000 && r.train.speed() > 0.3; ++i) {
+            r.train.step();
+            const auto& engine = r.train.cars().front();
+            const double per_atm = engine.brake_force / (std::max)(engine.independent, engine.cylinder);
+            if (engine.independent > 2.9f && fast == 0.0) fast = per_atm;
+            if (engine.independent > 2.9f) slow = per_atm;
+        }
+        if (realistic) {
+            check(fast > 0.0 && slow > fast * 1.3, "realistic air: the engine's cast-iron shoes brake harder as it slows");
+        } else {
+            check(fast > 0.0 && near(slow, fast, fast * 0.01), "RTS model: the brake force does not change with the speed");
+        }
+    }
+}
+
+// The rails' adhesion, wheel slide and the shoes' warmth (adhesion.hpp).
+void test_adhesion(const Stock& stock) {
+    using simulation::RailCondition;
+    check(near(simulation::wheel_rail_adhesion(0.0f), 0.3315, 0.001) && near(simulation::wheel_rail_adhesion(100.0f), 0.2131, 0.001),
+          "dry adhesion: 0.33 standing, 0.21 at 100 km/h");
+    check(simulation::rails_for_weather(2) == RailCondition::wet && simulation::rails_for_weather(1) == RailCondition::snow &&
+              simulation::rails_for_weather(0) == RailCondition::dry,
+          "the rails by the weather");
+    check(simulation::wet_shoe_factor(formats::BrakeShoe::composite, 1.0f) < simulation::wet_shoe_factor(formats::BrakeShoe::cast_iron, 1.0f),
+          "wet composite shoes lose more than cast iron");
+    // An emergency on ice: wheels slide; they roll again by the stop.
+    {
+        Run r(stock, {.rails = RailCondition::ice}, 1500.0);
+        r.train.set_brake_model(simulation::BrakeModel::realistic);
+        r.driver->reverser = 1;
+        r.driver->throttle = r.driver->notches;
+        r.run(60.0);
+        r.driver->throttle = 0;
+        r.driver->brake = simulation::DriverHandles::BrakeHandle::emergency;
+        bool slid = false;
+        for (int i = 0; i < 6000 && r.train.speed() > 0.05; ++i) {
+            r.train.step();
+            for (const auto& car : r.train.cars()) slid = slid || car.sliding();
+        }
+        r.run(2.0);
+        bool still = false;
+        float distance = 0.0f;
+        for (const auto& car : r.train.cars()) {
+            still = still || car.sliding();
+            distance = (std::max)(distance, car.slid);
+        }
+        check(slid && distance > 1.0f, "an emergency on ice slides the wheels");
+        check(!still, "standing, no wheel slides");
+    }
+    // Dry rails, the same emergency: no slide.
+    {
+        Run r(stock, {.rails = RailCondition::dry}, 1500.0);
+        r.train.set_brake_model(simulation::BrakeModel::realistic);
+        r.driver->reverser = 1;
+        r.driver->throttle = r.driver->notches;
+        r.run(60.0);
+        r.driver->throttle = 0;
+        r.driver->brake = simulation::DriverHandles::BrakeHandle::emergency;
+        bool slid = false;
+        for (int i = 0; i < 6000 && r.train.speed() > 0.05; ++i) {
+            r.train.step();
+            for (const auto& car : r.train.cars()) slid = slid || car.sliding();
+        }
+        check(!slid, "an emergency on dry rails slides nothing");
+    }
+    // Rain wets the shoes; braking warms and dries them.
+    {
+        // Standing in the rain, then away for a minute (the track is 3 km).
+        Run r(stock, {.rails = RailCondition::wet}, 1200.0);
+        r.train.set_brake_model(simulation::BrakeModel::realistic);
+        r.run(240.0);
+        r.driver->reverser = 1;
+        r.driver->throttle = r.driver->notches;
+        r.run(60.0);
+        const float soaked = r.train.cars()[3].shoe_state[0].wet;
+        check(soaked > 0.8f, "rain soaks the shoes while they do not brake");
+        r.driver->throttle = 0;
+        r.driver->brake = simulation::DriverHandles::BrakeHandle::service;
+        r.run(4.0);
+        r.driver->brake = simulation::DriverHandles::BrakeHandle::lap_feed;
+        float hottest = 0.0f;
+        for (int i = 0; i < 400 && r.train.speed() > 1.0; ++i) {
+            r.train.step();
+            hottest = (std::max)(hottest, r.train.cars()[3].shoe_state[0].heat);
+        }
+        std::cerr << "  shoes: soaked " << soaked << ", hottest +" << hottest << " K, then wet " << r.train.cars()[3].shoe_state[0].wet
+                  << ", speed " << r.train.speed() * 3.6 << " km/h, cylinder " << r.train.cars()[3].cylinder << '\n';
+        check(hottest > 15.0f, "braking warms the shoes");
+        check(r.train.cars()[3].shoe_state[0].wet < soaked - 0.2f, "warm shoes dry");
+    }
+    // The brake force limited to real stock's: less at the engine, none at a wagon below it.
+    {
+        Run plain(stock, {.rails = RailCondition::dry}, 1500.0);
+        Run limited(stock, {.rails = RailCondition::dry, .limit_brake_force = true}, 1500.0);
+        for (auto* r : {&plain, &limited}) {
+            r->train.set_brake_model(simulation::BrakeModel::realistic);
+            r->driver->independent = 3.0f;
+            r->run(10.0);
+        }
+        const float engine_plain = plain.train.cars().front().brake_force;
+        const float engine_limited = limited.train.cars().front().brake_force;
+        const float limit = simulation::shoe_force_limit(formats::BrakeShoe::cast_iron) * 100000.0f * 10.0f *
+                            simulation::shoe_factor(formats::BrakeShoe::cast_iron, 0.0f, 3.0f / 3.79f) * 3.0f / 3.79f;
+        check(engine_limited < engine_plain && near(engine_limited, limit, limit * 0.05),
+              "the limit brings the engine's 100 kN down to real stock's");
+        check(simulation::shoe_force_limit(formats::BrakeShoe::cast_iron) < simulation::shoe_force_limit(formats::BrakeShoe::composite),
+              "cast iron's limit is the lower (its grip rises more at a stop)");
+    }
+    // ORTSBrakeForce: the realistic air takes it (the limit leaves it be),
+    // RTS's model keeps MaxBrakeForce.
+    {
+        Stock own = stock;
+        own.engine.brakes.realistic_brake_force = 50000.0f;
+        const float share = 3.0f / own.engine.brakes.cylinder_pressure_for_max_force;
+        for (const bool limit : {false, true}) {
+            Run r(own, {.rails = RailCondition::dry, .limit_brake_force = limit}, 1500.0);
+            r.train.set_brake_model(simulation::BrakeModel::realistic);
+            r.driver->independent = 3.0f;
+            r.run(10.0);
+            const float expected = share * 50000.0f * simulation::shoe_factor(formats::BrakeShoe::cast_iron, 0.0f, share);
+            check(near(r.train.cars().front().brake_force, expected, expected * 0.03),
+                  limit ? "ORTSBrakeForce stays under the limit" : "the realistic air brakes with ORTSBrakeForce");
+        }
+        Run rts(own, {}, 1500.0);
+        rts.driver->independent = 3.0f;
+        rts.run(10.0);
+        check(near(rts.train.cars().front().brake_force, share * 100000.0f, 1500.0), "RTS's model keeps MaxBrakeForce");
+    }
+    // Wooden shoes: a bogie dragged at 60 km/h with 20 kN smoulders, catches
+    // fire and burns away; other shoes never burn; new ones are new.
+    {
+        check(formats::brake_shoe_from("Wood") == formats::BrakeShoe::wood && std::string(formats::brake_shoe_name(formats::BrakeShoe::wood)) == "wood",
+              "wood by its name");
+        const auto drag = [](const formats::BrakeShoe shoe, simulation::ShoeState& state, const float force, const float seconds) {
+            const simulation::BogieBrake bogie{.shoe = shoe,
+                                               .share = 0.5f,
+                                               .force = force,
+                                               .standing_force = force * 2.0f,
+                                               .weight = 400000.0f,
+                                               .rails = 1.0f,
+                                               .wetness = 0.0f,
+                                               .speed_kmh = 60.0f};
+            bool smouldered = false, alight = false;
+            for (int i = 0; i < static_cast<int>(seconds / 0.05f); ++i) {
+                (void)simulation::step_bogie_brake(state, bogie, 0.05f);
+                smouldered = smouldered || state.heat >= simulation::wood_smoulders;
+                alight = alight || state.burning;
+            }
+            return std::pair{smouldered, alight};
+        };
+        simulation::ShoeState wood;
+        const auto [smouldered, alight] = drag(formats::BrakeShoe::wood, wood, 20000.0f, 60.0f);
+        std::cerr << "  wood: smouldered " << smouldered << ", alight " << alight << ", worn " << wood.wear << ", +" << wood.heat << " K\n";
+        check(smouldered && alight && wood.wear > 0.0f, "wooden shoes dragged smoulder and catch fire");
+        (void)drag(formats::BrakeShoe::wood, wood, 0.0f, 150.0f);
+        check(wood.wear >= 1.0f && !wood.burning, "alight, they burn away");
+        simulation::ShoeState iron;
+        const auto [hot, burnt] = drag(formats::BrakeShoe::cast_iron, iron, 20000.0f, 60.0f);
+        check(!burnt && iron.wear == 0.0f, "cast iron never burns");
+        Run r(stock, {}, 1500.0);
+        r.train.set_brake_shoes(3, {formats::BrakeShoe::wood, formats::BrakeShoe::wood});
+        r.train.replace_brake_shoes(3, 0);
+        check(r.train.cars()[3].shoe_state[0].wear == 0.0f && !r.train.cars()[3].shoe_state[0].burning, "new shoes are new");
+    }
+    // RTS's rails: the traction limit stays the .eng's.
+    {
+        Run dry(stock, {.rails = RailCondition::rts}, 1500.0);
+        Run wet(stock, {.rails = RailCondition::wet}, 1500.0);
+        for (auto* r : {&dry, &wet}) {
+            r->driver->reverser = 1;
+            r->driver->throttle = r->driver->notches;
+            r->run(10.0);
+        }
+        check(wet.train.speed() <= dry.train.speed(), "wet rails pull no faster than RTS's");
+    }
+}
+
 void test_uncouple(const Stock& stock) {
     {
         Run r(stock, {}, 1500.0);
@@ -811,6 +1042,26 @@ Train ( TrainCfg ( "c"
 )");
     check(consist.ok() && consist.entries.size() == 1 && consist.entries[0].freight.size() == 1, "FreightAnim in a consist");
     check(consist.ok() && consist.entries.size() == 1 && consist.entries[0].place_drag == 2, "PlaceDrag in a consist: a chock at the car's rear");
+    {
+        const auto own = formats::parse_wagon("Wagon ( w\n Type ( Freight )\n Mass ( 80t )\n MaxBrakeForce ( 100kN )\n ORTSBrakeForce ( 74kN )\n"
+                                              " TripleValveRatio ( 2.5 )\n BrakeCylinderPressureForMaxBrakeBrakeForce ( 55 )\n)");
+        check(near(own.brakes.realistic_brake_force, 74000.0, 1.0) && near(own.brakes.max_brake_force, 100000.0, 1.0),
+              "ORTSBrakeForce beside MaxBrakeForce");
+    }
+    const auto shod = formats::parse_consist(R"(SIMISA@@@@@@@@@@JINX0D0t______
+Train ( TrainCfg ( "c"
+    Wagon ( UiD ( 1 ) WagonData ( car folder ) ORTSBrakeShoes ( Composite cast_iron ) )
+    Wagon ( UiD ( 2 ) WagonData ( car folder ) ORTSBrakeShoes ( disc ) )
+    Wagon ( UiD ( 3 ) WagonData ( car folder ) )
+) )
+)");
+    check(shod.ok() && shod.entries.size() == 3 && shod.entries[0].shoes[0] == formats::BrakeShoe::composite &&
+              shod.entries[0].shoes[1] == formats::BrakeShoe::cast_iron,
+          "ORTSBrakeShoes: the front and the rear bogie");
+    check(shod.ok() && shod.entries.size() == 3 && shod.entries[1].shoes[0] == formats::BrakeShoe::disc &&
+              shod.entries[1].shoes[1] == formats::BrakeShoe::disc,
+          "ORTSBrakeShoes: one value for both bogies");
+    check(shod.ok() && shod.entries.size() == 3 && shod.entries[2].shoes[0] == formats::BrakeShoe::unknown, "no ORTSBrakeShoes: the car's own");
     if (consist.ok() && !consist.entries.empty() && !consist.entries[0].freight.empty()) {
         const auto& f = consist.entries[0].freight[0];
         check(f.shape == "coal.s" && near(f.position[1], 1.5, 1e-6) && near(f.mass, 60000.0, 1.0) && (f.cargo_type == "coal" || f.cargo_type == "Coal"),
@@ -830,6 +1081,9 @@ int main() {
     test_slide_off(stock);
     test_overturn(stock);
     test_hit(stock);
+    test_joint_forces(stock);
+    test_brake_shoes(stock);
+    test_adhesion(stock);
     test_uncouple(stock);
     test_contacts(stock);
     test_ept();

@@ -204,12 +204,18 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     bool show_light_defs = false; // --light-defs: with --cars, each lit exterior light's .eng definition
     std::string screens_image;  // --screens-image <dir>: the cab screens as RTS lays them out, at the end (PPM)
     int start_state = -1; // --start cold|on|running
+    // --air rts|dll|own: the realistic air with the DLL's valve (its УР), or
+    // openRTS's 395 over Brakes.dll (docs/train.md); rts: as RTS.
+    trainplugin::DllAir air = trainplugin::DllAir::rts;
     for (std::size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "--script" && i + 1 < args.size()) {
             script_path = args[++i];
         } else if (args[i] == "--start" && i + 1 < args.size()) {
             const auto& value = args[++i];
             start_state = value == "cold" ? 0 : value == "on" ? 1 : -1;
+        } else if (args[i] == "--air" && i + 1 < args.size()) {
+            const auto& value = args[++i];
+            air = value == "dll" ? trainplugin::DllAir::dll_valve : value == "own" ? trainplugin::DllAir::own_valve : trainplugin::DllAir::rts;
         } else if (args[i] == "--cars") {
             per_car = true;
         } else if (args[i] == "--triggers") {
@@ -305,6 +311,11 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             if (player == SIZE_MAX) player = i;
         }
     }
+    consist->set_air(air);
+    if (air != trainplugin::DllAir::rts) {
+        train.set_brake_model(simulation::BrakeModel::realistic);
+        std::printf("realistic air, %s\n", air == trainplugin::DllAir::own_valve ? "openRTS's valve over Brakes.dll" : "the DLL's valve");
+    }
     // Its air from Init, as the game's first entering (RTS's).
     if (!trainplugin::enter_new_train(*consist, player, train, true, start_state)) {
         std::fprintf(stderr, "enter failed: %s\n%s", consist->error().c_str(), consist->take_messages().c_str());
@@ -371,6 +382,20 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     std::printf("%6.1f switch %zu: state %u, set %u, fixed %u, frame %.2f, flags 0x%X\n", time, id,
                                 sw.state, sw.set_state, sw.fixed_state, sw.current_frame, sw.flags);
                 }
+            } else if (c.verb == "display" && !c.args.empty()) {
+                // display <id> ...: the cab displays' Value and State the DLL set
+                if (const auto* out = consist->output(player)) {
+                    const auto& s = train.cars()[player];
+                    std::printf("%6.1f displays (pipe %.2f cylinder %.2f independent %.2f MR %.2f UR %.2f):", time, s.pipe, s.cylinder,
+                                s.independent, s.main_reservoir, out->engine.equalising);
+                    for (const auto& a : c.args) {
+                        const auto id = static_cast<std::size_t>(std::atoi(a.c_str()));
+                        if (id < out->displays.size()) {
+                            std::printf(" %zu=%.3f/%u", id, out->displays[id].value, out->displays[id].state);
+                        }
+                    }
+                    std::printf("\n");
+                }
             } else if (c.verb == "screen" && c.args.size() >= 3) {
                 // screen <display> <object> <text | shown | hidden>
                 const auto display = static_cast<std::uint32_t>(std::atoi(c.args[0].c_str()));
@@ -408,6 +433,27 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 const bool ok = got == c.args[2];
                 std::printf("%6.1f lamp %zu/%zu: %s %s\n", time, car_index, lamp, got.c_str(), ok ? "ok" : "FAILED");
                 if (!ok) ++failures;
+            } else if (c.verb == "enter" && !c.args.empty()) {
+                // enter <car>: the player walks into another engine's cab
+                // (the viewer's LegacyCab::enter: Init, ChangeLoco, grouping).
+                const auto car = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
+                const bool ok = car < legacy.size() && consist->enter(car, train, true);
+                std::printf("%6.1f enter car %zu: %s\n", time, car, ok ? "ok" : "refused");
+                if (ok) player = car; // the switches are its cab's from now (one cab description for the series)
+                std::printf("%s", consist->take_messages().c_str());
+            } else if (c.verb == "signal" && !c.args.empty()) {
+                // signal <aspect> [distance m] [flags]: one signal ahead for the
+                // ALSN (its RTS aspect: 0 stop, 1 stop and proceed, 2
+                // restricting, 3..5 approach, 6..7 clear; flags as ts.h
+                // SignalsInfo::Flags, 1 normal by default); "signal off": none.
+                world.alsn_ahead.clear();
+                if (c.args[0] != "off") {
+                    dllhost::SignalInput signal;
+                    signal.aspect[0] = static_cast<std::uint32_t>(std::atoi(c.args[0].c_str()));
+                    signal.distance = c.args.size() > 1 ? static_cast<float>(std::atof(c.args[1].c_str())) : 500.0f;
+                    signal.flags = c.args.size() > 2 ? static_cast<std::uint32_t>(std::atoi(c.args[2].c_str())) : 1u; // 1 normal
+                    world.alsn_ahead.push_back(signal);
+                }
             } else if (c.verb == "voltage" && !c.args.empty()) {
                 world.line_voltage = static_cast<float>(std::atof(c.args[0].c_str()));
                 world.line_frequency = c.args.size() > 1 ? static_cast<float>(std::atof(c.args[1].c_str())) : 0.0f;
@@ -438,6 +484,15 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 // (the part's DLLs come back with it: one train again)
                 train.set_car_flags(joint, Flags::cables, simulation::cable_sme_rear, true);
                 train.set_car_flags(joint + 1, Flags::cables, simulation::cable_sme_front, true);
+                // The hoses and cocks by hand, as the driver joins them.
+                train.set_car_flags(joint, Flags::pipe_ends,
+                                    simulation::pipe_hose_rear | simulation::charging_hose_rear | simulation::ep_cable_rear |
+                                        simulation::pipe_cock_rear,
+                                    false);
+                train.set_car_flags(joint + 1, Flags::pipe_ends,
+                                    simulation::pipe_hose_front | simulation::charging_hose_front | simulation::ep_cable_front |
+                                        simulation::pipe_cock_front,
+                                    false);
                 reconsisted("coupled");
             } else if (c.verb == "expect_cut" && c.args.size() >= 4 && cut_train) {
                 // expect_cut <car> <field> <op> <value>: a car of the part cut off
@@ -523,10 +578,14 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 const auto& e = out->engine;
                 double brake = 0.0;
                 for (const auto& c : train.cars()) brake += c.brake_force;
-                std::printf("%6.1f %7.2f %9.1f %5u %4d %5u %3u %6.2f %6.2f %6.2f %6.2f %8.1f %5llu\n", time,
+                // The УР: the valve working the pipe (realistic air), else the DLL's.
+                const auto* asked = train.demands_of(player);
+                const float ur = asked && asked->equalising >= 0.0f ? asked->equalising : e.equalising;
+                std::printf("%6.1f %7.2f %9.1f %5u %4d %5u %3u %6.2f %6.2f %6.2f %6.2f %8.1f %5llu  tail %.2f/%.2f\n", time,
                             train.speed() * 3.6, e.force / 1000.0, e.throttle, e.reverse, e.panto, e.main_switch,
-                            s.pipe, e.equalising, s.main_reservoir, (std::max)(s.cylinder, s.independent),
-                            brake / 1000.0, static_cast<unsigned long long>(triggers));
+                            s.pipe, ur, s.main_reservoir, (std::max)(s.cylinder, s.independent),
+                            brake / 1000.0, static_cast<unsigned long long>(triggers), train.cars().back().pipe,
+                            train.cars().back().cylinder);
                 if (show_screens) {
                     for (const auto& screen : out->screens) {
                         std::printf("         screen %u:", screen.display);
@@ -549,13 +608,14 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                         if (!o || !o->has_engine) continue;
                         std::printf("         car %zu: F %.1f kN, notch %u, rev %d, panto %u, BV %u, car force %.1f kN, flags 0x%X, "
                                     "pipe rate %.3f, systems %u, pipe %.2f, aux %.2f, cylinder %.2f, independent %.2f (wants %.2f), "
-                                    "EP %.2f (asks %.2f), UR %.2f, brake %.1f kN (DLL %.1f), ALSNOn %d, cab aspect %u\n",
+                                    "EP %.2f (asks %.2f), UR %.2f, brake %.1f kN (DLL %.1f), ALSNOn %d, cab aspect %u, MR %.2f (rate %.3f), engine flags 0x%X\n",
                                     i, o->engine.force / 1000.0, o->engine.throttle, o->engine.reverse, o->engine.panto,
                                     o->engine.main_switch, cs.force / 1000.0, o->loco_flags, o->engine.train_pipe_rate,
                                     static_cast<unsigned>(o->engine.systems), cs.pipe, cs.auxiliary, cs.cylinder, cs.independent,
                                     o->engine.independent_brake, cs.ep, o->engine.ep_value, o->engine.equalising,
                                     cs.brake_force / 1000.0, o->engine.brake_force / 1000.0,
-                                    static_cast<int>(static_cast<std::int16_t>(o->engine.alsn_on)), o->cab_aspect);
+                                    static_cast<int>(static_cast<std::int16_t>(o->engine.alsn_on)), o->cab_aspect, cs.main_reservoir,
+                                    o->engine.main_reservoir_rate, o->engine.engine_flags);
                         if (!o->doors.empty()) {
                             std::printf("           doors");
                             for (const auto& d : o->doors) std::printf(" %u/%u", d.state, d.set_state);

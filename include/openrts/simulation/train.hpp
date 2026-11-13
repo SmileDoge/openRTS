@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/body_motion.hpp>
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/track_traveller.hpp>
@@ -39,6 +40,14 @@ struct TrainSettings {
     // The bodies on their springs (body_motion.hpp): RTS's model (the
     // default here) or openRTS's (the viewer's setting).
     BodyMotionModel body_motion = BodyMotionModel::rts;
+    // openRTS: the rails' state for the wheels' adhesion (adhesion.hpp): rts
+    // keeps RTS's traction limit; any other scales it, and under the
+    // realistic air the brakes slide (юз) and the shoes wet and warm.
+    RailCondition rails = RailCondition::rts;
+    // openRTS, the realistic air: a bogie's full brake force at most what
+    // real stock with its shoes gives (shoe_force_limit), for content that
+    // brakes far harder than the real thing.
+    bool limit_brake_force = false;
     // openRTS: the RTS triple valve gets a distributor's stability (мягкость):
     // a slow pipe fall applies nothing (docs/train.md). Off: as RTS, which
     // applies on any fall below the reservoir, the stabiliser's too.
@@ -49,6 +58,9 @@ struct CarSetup {
     const formats::WagonDefinition* definition = nullptr;
     bool flipped = false;
     float handbrake{}; // 0..1 (consist HandbrakePercent / 100)
+    // The front and rear bogie's brake shoes (the consist's ORTSBrakeShoes);
+    // unknown: the car's own (simulation::shoe_of).
+    std::array<formats::BrakeShoe, 2> shoes{};
 };
 
 // What a locomotive controller asks of its engine: the ts.h `Engine` outputs
@@ -92,6 +104,9 @@ struct EngineInputs {
     bool flipped = false;   // the car faces the train rear
     const formats::WagonDefinition* definition = nullptr;
     bool realistic_air = false; // the train runs BrakeModel::realistic
+    // The rails' adhesion as a share of RTS's (TrainSettings::rails, the
+    // treads' wetness): the traction limit's factor.
+    float adhesion = 1.0f;
     // The line at the pantographs (electric engines; Locomotive::LineVoltage,
     // LineFreq): V and Hz. Negative voltage: the route's electrification is
     // not modelled, the engine has power anywhere.
@@ -143,6 +158,12 @@ struct DriverHandles {
 // through Engine::UR and TrainPipeRate (docs/reverse/air-brakes-real.md §8).
 // The ЭПТ layer is the ЭР9Т DLL's (tedStepanki_emu, er9t_main.cpp):
 // EPTvalue ramps up in VЭ and V, holds in III/IV, ramps down in I/II.
+// An engine's compressor as openRTS runs it (the keyboard controller, and
+// DLL engines under the realistic air, whose DLLs keep RTS's main reservoir):
+// on below 7.5 atm, off above 9; with the realistic air a КТ-6's 0.088
+// m³·atm/s into the real reservoir volume. The rate for MainResRate, atm/s.
+[[nodiscard]] float compressor_rate(bool& running, const EngineInputs& inputs);
+
 class KeyboardController final : public LocomotiveController {
 public:
     using BrakeHandle = DriverHandles::BrakeHandle;
@@ -230,6 +251,9 @@ enum class DerailKind : std::uint8_t {
 struct CarState {
     const formats::WagonDefinition* definition = nullptr;
     bool flipped = false;
+    // The brake shoes of its front and rear bogie (its own ends): their
+    // friction under the realistic air (brake_shoes.hpp).
+    std::array<formats::BrakeShoe, 2> shoes{};
     double offset{};     // centre along the train, m; the last car is 0, ahead is positive
     float velocity{};    // m/s, towards the train front
     float acceleration{};
@@ -305,6 +329,11 @@ struct CarState {
     bool sanding = false;
     float sand_left = -1.0f;
     float sand_travel = -1.0f;  // m since the sanding stopped, < 0: no effect left
+    // Under the realistic air: each bogie's shoes and treads (wet, warm,
+    // sliding: adhesion.hpp) and the distance the car slid (юз), m.
+    std::array<ShoeState, 2> shoe_state{};
+    float slid{};
+    [[nodiscard]] bool sliding() const noexcept { return shoe_state[0].sliding || shoe_state[1].sliding; }
 };
 
 
@@ -340,9 +369,10 @@ public:
     // Couples `other` onto this train's front (`at_front`) or rear. `other`
     // touches with its front (`other_front`) or rear and is turned as needed
     // so the cars keep their places; `gap` is the distance between the two
-    // ends. The hoses at the joint are connected and the cocks opened.
-    // `other` is left empty and off the track. Returns false if either train
-    // is not placed.
+    // ends. Only the couplers join: the hoses, the EP cable and the end
+    // cocks at the joint stay as they were (hanging, closed) for the driver
+    // to join (set_car_flags). `other` is left empty and off the track.
+    // Returns false if either train is not placed.
     bool couple(Train& other, bool at_front, bool other_front, double gap);
     // What a hand at the track changes on car `car` (RTS's car menu,
     // 0x463F84): set or clear `mask` in its pipe ends, coupler ends left
@@ -353,6 +383,12 @@ public:
     void set_handbrake(std::size_t car, float value);
     // Car `car`'s distributor switches (the realistic air model reads them).
     void set_distributor_modes(std::size_t car, const DistributorModes& modes);
+    // The brake shoes of car `car`'s front and rear bogie (CarState::shoes);
+    // a bogie whose shoes change gets new ones (shoe_state as new).
+    void set_brake_shoes(std::size_t car, const std::array<formats::BrakeShoe, 2>& shoes);
+    // New shoes of the same kind on car `car`'s bogie `bogie` (0 front, 1
+    // rear): not worn, cold, dry, not alight.
+    void replace_brake_shoes(std::size_t car, std::size_t bogie);
     // Car `car`'s air, atm (a DLL's Init sets it; RTS's cars start empty).
     struct Air {
         float pipe{}, charging_pipe{}, cylinder{}, auxiliary{}, control{}, main_reservoir{};
@@ -406,6 +442,14 @@ public:
     void set_drive_acceleration(float acceleration) noexcept { drive_acceleration_ = acceleration; }
 
     [[nodiscard]] const std::vector<CarState>& cars() const noexcept { return cars_; }
+    // The force each joint passes after the last step (tension +; joint j is
+    // behind car j). On the move it is what the cars behind it need (Newton:
+    // each one's m·a less its own forces, its brake and resistance against
+    // its motion). RTS's CF (CarState::coupler_force, the stiffness sum
+    // times the gap, kept for the break check) stops at the springs' full
+    // stretch and the rest goes through the solver's rigid stop. Standing:
+    // half of RTS's CF, the force each car gets.
+    [[nodiscard]] std::vector<float> joint_forces() const;
     [[nodiscard]] std::vector<CarPlacement> placements() const;
     // A traveller at the centre of each car, facing the train front; empty
     // while the train is not on the track.
@@ -432,7 +476,17 @@ public:
     void set_coupler_substeps(std::uint32_t substeps) noexcept;
     // The air brake model from the next step on.
     void set_brake_model(BrakeModel model) noexcept;
+    // What car `car`'s controller asked at the last step (its УР, ЭПТ ...);
+    // null past the end.
+    [[nodiscard]] const EngineDemands* demands_of(std::size_t car) const noexcept;
+    // Cars in emergency under the realistic air (their accelerators fired,
+    // the pipe not charged again yet); 0 with RTS's air.
+    [[nodiscard]] std::size_t emergency_cars() const noexcept;
     void set_distributor_stability(bool on) noexcept { settings_.distributor_stability = on; }
+    // The rails' state (TrainSettings::rails).
+    void set_rails(RailCondition rails) noexcept { settings_.rails = rails; }
+    // TrainSettings::limit_brake_force.
+    void set_limit_brake_force(bool on) noexcept { settings_.limit_brake_force = on; }
     // The body motion model from the next step on (the bodies start at rest).
     void set_body_motion(BodyMotionModel model) noexcept;
     // The model this step runs: realistic only when no controller needs RTS's.

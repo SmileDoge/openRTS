@@ -192,12 +192,12 @@ bool LegacyCab::reconsist(const core::Vfs& vfs, const std::vector<std::vector<Le
     return true;
 }
 
-bool LegacyCab::enter(const std::size_t car, const simulation::Train& train) {
+bool LegacyCab::enter(const std::size_t car, const simulation::Train& train, const int state) {
     if (!consist_ || !consist_->has_dll(car) || car == consist_->player()) return false;
     release_keys();
     held_.reset();
     drag_.reset();
-    const bool ok = consist_->enter(car, train, true);
+    const bool ok = consist_->enter(car, train, state < 0, state);
     log(consist_->take_messages());
     if (!ok) return false;
     bind_keys(car);

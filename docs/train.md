@@ -252,7 +252,11 @@ RTS's menu at a coupling or a bogie (`docs/reverse/car-menu.md`), in
 - **Bogie:** brake shoe (`CarState::chocks`, 10 kN each), handbrake,
   release valve, emergency valve (`CarState::valves`).
   - The release valve bleeds the cylinder at 0.5 atm/s; the emergency
-    valve vents the pipe at 18 atm/s. Both act in both brake models.
+    valve vents the pipe at 18 atm/s. Both act in both brake models. Under
+    the realistic air a distributor would fill the cylinder again, so the
+    release valve also works the distributor of a braked car as the real
+    one does: a 483 vents its РК and releases at once, its ЗР kept; a 292
+    vents its ЗР until the pipe stands above it.
 - **Sounds:** RTS's discrete triggers go to the cars' SMS (80 air, 81 it
   stops, 82 / 83 hose, 84 / 85 EP, 86 / 87 cock, 59 / 62 coupler, 92 / 93
   release valve).
@@ -276,9 +280,11 @@ RTS's menu at a coupling or a bogie (`docs/reverse/car-menu.md`), in
 checkbox, `openrts-train-check --brake ... --realistic`). Off by default;
 the RTS model (`docs/reverse/brakes.md`) stays as it is and is the only path
 with Legacy on (the server fixes the choice, like the coupler sub-steps). A
-train with a legacy DLL keeps the RTS model whatever is chosen
+train with a legacy DLL keeps the RTS model
 (`LocomotiveController::rts_brakes`): its valve is tuned to RTS's triple
-valve. What is built, against the proposal below:
+valve; since 2026-11-13 the Train window's "Trains with DLLs" can give it
+the realistic air too ("Realistic air with DLL locomotives" below). What is
+built, against the proposal below:
 - **Pipe:** per-car volumes (0.8 l per metre, a 32 mm bore), flow
   `q = k · V · Δp` with k = 200 1/s between joined neighbours, about 30
   sub-steps per 0.05 s, open ends venting, `TrainPipeLeakRate`.
@@ -290,9 +296,125 @@ valve. What is built, against the proposal below:
   train never release in II). 292: the ЗР as the reference with its
   0.5 atm/min stability, full release at +0.12 above the ЗР. 305: the
   cylinder follows the EP demand at 1 atm/s.
+- **Brake shoes** (`simulation/brake_shoes.hpp`, 2026-11-13): the shoes'
+  friction changes with the speed and the pressing force by the formulas of
+  the Russian traction rules (Правила тяговых расчётов), K the force on one
+  shoe in kN, v in km/h:
+  - cast iron: φ = 0.6 · (1.6K + 100) / (8K + 100) · (v + 100) / (5v + 100);
+  - composite: φ = 0.44 · (0.1K + 20) / (0.4K + 20) · (v + 150) / (2v + 150);
+  - disc pads: 0.35 at any speed;
+  - wood (the first railways' blocks; no rule for them, a guess):
+    φ = 0.45 · (v + 60) / (2v + 60).
+
+  The content's `MaxBrakeForce` stays the force at the full cylinder
+  (`BrakeCylinderPressureForMaxBrakeBrakeForce`), taken at 40 km/h; a full
+  shoe presses 30 kN (cast iron) or 15 kN (composite). Cast iron then gives
+  0.68 of it at 100 km/h and twice it at a stop (more at a light
+  application: a lightly pressed shoe grips relatively harder); composite
+  0.86 and 1.21. Each bogie has half the force on its own shoes and the
+  hand brake presses the same shoes; how much of it reaches the rail is the
+  next item. RTS's model keeps a force that does not depend on the speed.
+  - Wooden shoes (`wood`, for fun) keep the heat at their face (half the
+    heat capacity), char from +250 K (losing grip, down to 0.35 of it at
+    +800 K, and wearing away over about ten minutes at +500 K), catch fire
+    at +400 K and, alight, warm by 4 K a second and burn away in two
+    minutes: then the bogie has no brake. A bogie dragged at 60 km/h with
+    20 kN catches fire in about 15 s. F5 marks "[колодки тлеют]",
+    "[КОЛОДКИ ГОРЯТ]" and "[колодки сгорели]", the bogie smokes (the
+    diesels' smoke, darker alight), the brake log counts the bogies alight
+    (`тележек_горит`). The bogie's car menu puts on new shoes ("Колодки
+    изношены или горят (поставить новые)"), and on the whole train at once
+    new shoes of each car's kind ("Новые колодки на всём поезде") or this
+    bogie's kind on every braked car ("... на всём поезде (как здесь)").
+  - The shoes: the car's `ORTSBrakeShoeType ( cast_iron | composite | disc | wood )`
+    in its `.wag` / `.eng`, else cast iron on engines and passenger cars and
+    composite on freight cars; a consist entry's
+    `ORTSBrakeShoes ( front [rear] )` overrides them per bogie (by the car's
+    own ends; one value for both), and the bogie's car menu switches its
+    shoes cast iron, composite, wood in turn (the label says which they are;
+    the menu's bogie is the one towards the train's head or tail, the shoes
+    are kept by the car's own ends).
+    A saved situation keeps them. No file in the MaDaDev install names its
+    shoes.
+  - Measured (`openrts-train-check --brake`): a 10-car ЭД9М (cast iron)
+    stops from 100 km/h in 327 m (RTS's model: 225 m); a ВЛ80Т with 90 loaded
+    freight cars (composite) from 60 km/h in 394 m (393 m).
+- **Adhesion, wheel slide and the shoes' warmth** (`simulation/adhesion.hpp`,
+  2026-11-13; the Train window's "Rails"):
+  - The rails: as RTS (no weather), by the weather (rain wet, snow snow), or
+    dry, wet, snow, ice, leaves. Their adhesion is a share of the dry one:
+    wet 0.65, snow 0.5, ice 0.35, leaves 0.3. With anything but "as RTS" the
+    traction limit (the .eng's `Adheasion`, sand) takes it too.
+  - Dry adhesion by the speed (Curtius and Kniffler): 0.161 + 7.5 / (v + 44),
+    0.33 standing, 0.25 at 40 km/h, 0.21 at 100.
+  - Wheel slide (юз), per bogie under the realistic air: the wheels lock when
+    the shoes hold them harder than the rail's adhesion turns them; a locked
+    wheel holds back with 0.75 of the adhesion, and its shoe holds it with
+    the standing grip, so it rolls again only once the brake is let off that
+    far, or the car stops. The engine's sand raises the adhesion by a
+    quarter. F5 marks "[ЮЗ]" while it slides and "[юз был: N м]" after.
+  - The shoes and the wheels' treads get wet in rain and snow (towards 1 in
+    rain, 0.8 in snow and ice, 0.6 on leaves, in about 1.5 min), dry in the
+    air in 10 min, and the brakes warm them: the friction's power on the
+    turning wheel heats a bogie's shoes and tread skin (25 kJ/K, cooling over
+    200 s, at most +800 K), and above +5 K they dry fast. Wet composite shoes
+    lose up to half their grip, cast iron a fifth, disc pads a tenth; dry
+    treads win back 30 % of what wet rails take from the adhesion, for the
+    traction too. A light application at speed for ten seconds or so dries
+    the shoes (on the test train: soaked 0.96, +82 K, then 0.09), as the
+    drivers' drying of the shoes does. F5 marks "[колодки мокрые]" and
+    "[колодки +N °C]" above +100 K; the brake log has the rails, the bogies
+    sliding, the shoes' mean wetness and most warmth.
+  - Measured, emergency from 60 km/h, a ВЛ80Т with 90 loaded freight cars:
+    dry 401 m, wet 477 m, snow 467 m, ice 475 m; a 10-car ЭД9М from 100 km/h:
+    dry 329 m, wet 366 m, ice 439 m (every car slid).
+  - The MaDaDev ВЛ80Т's own brake: its `.rtseng` gives `MaxBrakeForce 164.4kN`
+    and `ScaleBrakeForce 1.5`, 246.6 kN a section (0.26 of its weight at
+    40 km/h); with cast-iron shoes it outgrows dry adhesion below about
+    42 km/h, so both sections slide in an emergency (157 m of 401). Its
+    `AirBrakesMainResVolume 900` lies outside every section of the `.rtseng`
+    and RTS's merge leaves it out: the .eng's 66 ft³ count.
+  - "Limit the brake force to real stock's" (the Train window, off by
+    default, `TrainSettings::limit_brake_force`): a bogie's full brake force
+    is at most what real stock with its shoes gives, its stop at about half
+    the dry adhesion (0.165 of the weight at no speed, as a locomotive's shoe
+    pressing gives): at 40 km/h cast iron 0.077 of the weight, composite
+    0.136, disc pads 0.165 (`shoe_force_limit`). For content that brakes far
+    harder than the real thing, until its files are put right.
+  - `ORTSBrakeForce ( 74kN )` in a `.wag` / `.eng` (or its `.rts*`
+    companion): the brake force at the full cylinder
+    (`BrakeCylinderPressureForMaxBrakeBrakeForce`) at 40 km/h that the
+    realistic air's shoes take in place of `MaxBrakeForce`. RTS's model, and
+    RTS itself, which does not read the key, keep `MaxBrakeForce`: content
+    tuned for RTS's constant force stays as it was there. `ScaleBrakeForce`
+    and `AddBrakeForce` do not touch it, and the limit leaves it as the
+    author gives it. As a start for cast iron: 0.077 x the mass x g at
+    40 km/h (a 96 t ВЛ80 section about 74 kN, a 43 t ЭД9М head car about
+    33 kN). `--brake-ratio` marks such a force with *.
+  - `openrts-train-check <root> --brake-ratio <folder>...` lists each engine
+    of the TRAINSET folders as RTS reads it (with its `.rtseng`): its brake
+    force against its weight, what its shoes make of it at a stop in an
+    emergency, and whether that slides on dry and wet rails, as is and with
+    the limit. The MaDaDev install, 2026-11-13 (brake force / weight at
+    40 km/h; real stock with cast iron is about 0.08): ЭП20 0.067; ЭП2К
+    0.119, ВЛ82м 0.120, ВЛ60 0.141, ЧС7 0.146, ВЛ10 0.155, 2ЭС4К 0.157 (all
+    slide on wet rails at a stop, 2ЭС4К on dry too); ЧС4з 0.189, the ВЛ10к's
+    two sections 0.100 and 0.201, ВЛ80С and ВЛ80Т 0.257; EMU cars 0.15 to
+    0.28 (ЭД9М, ЭР9Т, ЭД4М, ЭР2Т: their light cars slide on dry rails). With
+    the limit none slides on dry or wet rails at a stop.
+  - Measured with the limit, emergency: the 10-car ЭД9М from 100 km/h in
+    669 m (329 m without, five cars sliding), wet 680 m; the ВЛ80Т with 90
+    loaded freight cars from 60 km/h in 432 m dry (401 m, both sections
+    sliding 157 m), 498 m wet, nothing sliding.
 - **Emergency:** the front starts at the driver's valve in VI or at an open
   pipe end and moves from car to car at 280 m/s (the accelerators); the
-  flow model alone would carry it faster than sound.
+  flow model alone would carry it faster than sound. Since 2026-11-13 a
+  car's accelerator vents its pipe for 3 s after the car goes into
+  emergency and only then carries the front on; the car stays in emergency
+  (its distributor full on) until its pipe is above 3.5 atm and rising.
+  Before, the accelerators vented until then and the front was sent again
+  from every car still in emergency, so after VI the pipe never charged
+  again (the driver's relay could not beat them).
 - **Distributor switches** (2026-11-12), set per car in the car menu at a
   bogie (Num3 outside), only with the realistic air; the item's label says
   the position. `CarState::distributor`, `Train::set_distributor_modes`:
@@ -312,10 +434,93 @@ valve. What is built, against the proposal below:
   VI vents at 50 l/(s·atm). The keyboard controller drops RTS's forced
   overcharge in II and its stabiliser removes an overcharge at 0.12 atm/min.
 - **Main reservoir:** the real volume (`AirBrakesMainResVolume` in litres
-  when above 50, else cubic feet) and a КТ-6 compressor (0.088 m³·atm/s).
+  when above 100, else cubic feet: the install has 1 .. 84 ft³ and 175 ..
+  2020 l; at a border of 50 the ВЛ80Т's 66 ft³ read as 66 l and its
+  compressors cycled every few seconds) and a КТ-6 compressor
+  (0.088 m³·atm/s).
+  Twin-pipe stock (`Air_twin_pipe`) has its feed pipe: the engines' main
+  reservoirs along the cars whose second pipe is coupled are one volume (a
+  multiple unit's compressors on its motor cars feed its cab's valve).
+
+#### The driver's valve
+
+`simulation/driver_valve.hpp`: the 395 as a module of its own
+(`step_valve_395`), which the keyboard controller works, and the boundary
+between a valve and the air. A valve gives the air model its УР (the relay
+holds the pipe at it), an emergency opening at the engine (VI, an ЭПК, a
+stop valve), the ЭПТ demand, the independent brake's target and the
+release of the engine's own brake (`EngineDemands::equalising`,
+`emergency`, `ep_value`, `independent_brake`, `release_train_brake`). The
+RTS model takes its pipe rate instead. Positions I, II, III, IV, VЭ, V, VI
+are a cab control's states 0..6. VЭ without the ЭПТ is a lap without feed
+(the ЭР9Т), or with `slow_service` a Va: the УР down 0.03 atm/s, as
+Brakes.dll's.
+
+#### Realistic air with DLL locomotives
+
+(2026-11-13; the Train window's "Trains with DLLs", remembered as
+`dll_air`; works with the realistic air on, never with Legacy;
+`trainplugin::DllAir`, `LegacyConsist::set_air`.) A DLL's valve is made
+for RTS's triple valve, so as RTS (the default) the train keeps RTS's air.
+The other two choices take the air after the valve from the model:
+- **The DLL's valve** (`dll_valve`): the cab driven (LocoFlags 1) gives its
+  `Engine::UR` to the model's relay; the DLL's valve, gauges, sounds and
+  protections stay its own. Its `TrainPipeRate` counts only as a direct
+  vent (VI, the ЭПК, a stop valve) when it is −0.6 atm/s or faster and
+  either faster than its own valve would vent (that follows the pipe's
+  excess over the DLL's УР about one to one: the excess + 0.3) or with its
+  УР falling faster than 0.6 atm/s (its VI). On the ЭД9М's Brakes.dll V is
+  −0.23 and the ЭПК about −0.9 with the УР standing at the pipe (its tape of
+  2026-11-13). With openRTS's valve over it, its own УР lags after an
+  overcharge and it asks to vent the pipe down to it (−0.54 at 0.54 apart
+  on the stand): a plain −0.6 threshold took that for an ЭПК in the game
+  (the tape of 2026-11-13 10:53). In the driven cab a DLL valve standing cut
+  off (its УР below 0.5: the 367 off, a cold start) vents nothing itself,
+  so any −0.6 there is a direct vent: the ВЛ80С-1886's ЭПК from a cold
+  start went unseen before (2026-11-13).
+- **openRTS's valve over Brakes.dll** (`own_valve`, experimental): for an
+  engine whose AuxLibraries run MaDaDev's Brakes.dll, its parameters say
+  where its valve is (`BR_395ID1`, the cab control), its УР gauge
+  (`BR_MANU1`, a display) and the charging pressure (`BR_ZARPRESS`;
+  `EngineDefinition::brakes_library`). The handle's state works openRTS's
+  395 (VЭ as Va without the ЭПТ), each state as the cab's StateHints name
+  it (`trainplugin::valve_states`: "[I]" .. "[VI]", "[Vа]" / "[VЭ]", or
+  words such as "экстренное", "поездное", "перекрыша без питания"): cabs
+  order them either way, the ЭД9М's I..VI, the ВЛ80С's VI..I (read as
+  I..VI its II was a V, so the ВЛ80С braked from the start); without hints a
+  7-state control is I..VI. The charging pressure is the cab's reducer
+  where Brakes.dll names one (`BR_REDID1`, its StateHints "[4.0]" ..
+  "[5.9]"; the ВЛ80С's starts at 5.2), else `BR_ZARPRESS`, else 5.0. The
+  blocking device усл. 367 (`BR_367ID1`, a KEY switch: 0 the key out, 1
+  off, 2 on) out of its operating state (`BR_367OPPOL`, 2 on the ВЛ80С)
+  cuts the valve off the pipe, as it cuts the DLL's own (its УР stays at
+  0; Brakes.dll lets it on only with the handles where it wants them). The
+  combined valve усл. 114 (`BR_KKID1`): "Двойная тяга" cuts the valve off
+  the pipe (its УР goes on), "Экстренное" vents the pipe
+  (`trainplugin::brake_cab_controls`, `BrakeCabControls::read`). The УР gauge shows its УР (the cab's
+  copy of the DLL's output, `TrainView::cab_state`); the other gauges
+  already show the model's pressures (on the stand: the ТЦ, ТМ and main
+  reservoir displays are the host's values). Brakes.dll's ЭПК, КЛУБ, САУТ
+  and ЭПТ go on: its direct vents as above, its EPTvalue as it gives it.
+- In both, the compressors are openRTS's (`compressor_rate`): the DLLs keep
+  RTS's main reservoir (its huge volume never drains; the ЭД9М's DLLs never
+  run a compressor and take their own air from it), and their
+  MainResRate is not taken. An engine releasing its own brake (EngineFlags
+  1, the 254 in I) vents its cylinder as in the RTS model.
+- Checked on the ЭД9М (7 cars, `openrts-train-check --dll ... --air
+  dll|own`): a V of 3 s then IV gives 2.15 / 1.94 atm in every cylinder
+  and II releases it; VI empties the pipe in 2-3 s and fills every
+  cylinder to 3.8 in 13 s; back in II the pipe charges again and every car
+  releases (35 s with openRTS's valve, 65 s with the DLL's, whose II
+  charges the УР slower). Test: `openrts.dll_air` (`tests/dll_air_test.cpp`,
+  the controller on outputs of its own).
 
 Measured (`--brake 60 "1,5VL10k-1654+943b" rzd_poluvag17_96vag_7906t_1322m`,
-99 cars, 8182 t, 1372 m):
+99 cars, 8182 t, 1372 m; on 2026-11-01, with the soft relay of then: since
+2026-11-13 the relay is stiff (0.4 m³/(s·atm), feed 150 l·atm/s, exhaust 80),
+so the pipe at the engine follows the УР within seconds and these release
+times are no longer its figures; the consist is not in the installations at
+hand to measure again):
 
 | | RTS model | realistic |
 |---|---|---|
@@ -326,6 +531,23 @@ Measured (`--brake 60 "1,5VL10k-1654+943b" rzd_poluvag17_96vag_7906t_1322m`,
 
 The slow release in II after an emergency is how a long freight train
 behaves with a 483 in flat mode: drivers release with I (an overcharge).
+The other way round, a long I overcharges the РК of the cars near the
+engine: they stay braked in II until the pipe is back at their РК (a
+92-car ВЛ80С train, 2026-11-13: two minutes in I took the head cars' РК to
+about 6.6, the tail's stayed near 5). F5 shows the РК of each 483 under
+the realistic air.
+
+Charging the same 60 loaded gondolas behind a two-section ВЛ80С
+(`openrts-train-check <root> --charge 60 <engine>... <wagon> [--realistic]`,
+the valve in II, 5.0 atm):
+
+| | RTS's model | realistic |
+|---|---|---|
+| from empty: head pipe to 4.5 | 124 s | 83 s |
+| tail pipe to 4.5 / 4.8 | 157 / 207 s | 270 / 375 s |
+| tail ЗР to 4.5 | 185 s | 327 s |
+| after 40 s of VI: tail pipe to 4.5 / 4.8 | 57 / 108 s | 35 / 84 s |
+| every cylinder below 0.4 | 9 s | 221 s |
 ЭД4М (12 cars, 292 / 305) from 100 km/h: 314 m, 19 s, released in 45 s.
 
 Tests: `test_realistic_air` in `tests/train_test.cpp` (II holds the train
@@ -675,7 +897,11 @@ makes it audible.
   (`reverse/runtime-overview.md`); RTS's solver for derailed trains, ground
   contact and impacts are not ported.
 - **Coupling hoses:** RTS's hose handling when trains couple is not traced;
-  openRTS connects the hoses and opens the cocks at the joint.
+  openRTS joins only the couplers (since 2026-11-13; before, it connected
+  the hoses and opened the cocks too): the brake pipe and charging hoses,
+  the EP cable and the end cocks at the joint stay hanging and closed, and
+  the driver joins them in the car menu at the joint, as a driver does
+  after coupling.
 - **Lights, pantographs, doors, multiple-unit control.**
 
 ## STATIC consists (2026-11-01)

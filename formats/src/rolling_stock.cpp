@@ -131,6 +131,8 @@ void read_brakes(std::string_view text, BrakeEquipment& brakes, std::string& err
         brakes.train_pipe_leak_rate = static_cast<float>(leak.atof() * psi_to_atm);
     }
     brakes.distributor_script = values(text, "ortsbrakedistributor").token();
+    brakes.shoe = brake_shoe_from(values(text, "ortsbrakeshoetype").token());
+    if (auto force = values(text, "ortsbrakeforce"); force.found()) brakes.realistic_brake_force = (std::max)(static_cast<float>(force.quantity()), 0.0f);
     if (auto add = values(text, "addbrakeforce"); add.found()) brakes.max_brake_force += static_cast<float>(add.quantity());
     if (auto scale = values(text, "scalebrakeforce"); scale.found()) {
         brakes.max_brake_force *= static_cast<float>(scale.atof());
@@ -350,6 +352,22 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
             a.sound_external = flag("auxlibrarysoundexternal");
             a.sound_own_stack = flag("auxlibrarysoundownstack");
             a.sound_single_wagon = flag("auxlibrarysoundsinglewagon");
+            // MaDaDev's Brakes.dll: where its valve and gauge are.
+            const auto module = core::fold_case(a.module);
+            if (module == "brakes.dll" || (module.size() > 11 && (module.ends_with("/brakes.dll") || module.ends_with("\\brakes.dll")))) {
+                auto& brakes_dll = engine.brakes_library;
+                brakes_dll.present = true;
+                for (const auto& p : a.parameters) {
+                    const auto name = core::fold_case(p.name);
+                    if (name == "br_395id1") brakes_dll.valve = static_cast<std::int32_t>(p.value);
+                    else if (name == "br_manu1") brakes_dll.equalising_gauge = static_cast<std::int32_t>(p.value);
+                    else if (name == "br_zarpress") brakes_dll.charging = p.value;
+                    else if (name == "br_redid1") brakes_dll.reducer = static_cast<std::int32_t>(p.value);
+                    else if (name == "br_kkid1") brakes_dll.combined = static_cast<std::int32_t>(p.value);
+                    else if (name == "br_367id1") brakes_dll.block = static_cast<std::int32_t>(p.value);
+                    else if (name == "br_367oppol") brakes_dll.block_operating = static_cast<std::int32_t>(p.value);
+                }
+            }
             engine.aux_libraries.push_back(std::move(a));
         }
     }
@@ -592,6 +610,25 @@ WagonDefinition load_wagon(const core::Vfs& vfs, const std::string_view folder, 
     return wagon;
 }
 
+BrakeShoe brake_shoe_from(const std::string_view name) {
+    const auto s = core::fold_case(std::string(name));
+    if (s.find("cast") != std::string::npos) return BrakeShoe::cast_iron;
+    if (s.find("composite") != std::string::npos) return BrakeShoe::composite;
+    if (s.find("disc") != std::string::npos || s.find("disk") != std::string::npos) return BrakeShoe::disc;
+    if (s.find("wood") != std::string::npos) return BrakeShoe::wood;
+    return BrakeShoe::unknown;
+}
+
+const char* brake_shoe_name(const BrakeShoe shoe) noexcept {
+    switch (shoe) {
+    case BrakeShoe::cast_iron: return "cast_iron";
+    case BrakeShoe::composite: return "composite";
+    case BrakeShoe::disc: return "disc";
+    case BrakeShoe::wood: return "wood";
+    default: return "";
+    }
+}
+
 ConsistDefinition parse_consist(const std::string_view bytes) {
     ConsistDefinition consist;
     std::string error;
@@ -627,6 +664,11 @@ ConsistDefinition parse_consist(const std::string_view bytes) {
             entry.handbrake = static_cast<float>(handbrake.atof());
         }
         if (auto drag = values(t, "placedrag", block); drag.found()) entry.place_drag = static_cast<std::uint8_t>(rts_atoi(drag.here()) & 3);
+        if (auto shoes = values(t, "ortsbrakeshoes", block); shoes.found()) {
+            entry.shoes[0] = brake_shoe_from(shoes.token());
+            const auto rear = brake_shoe_from(shoes.token());
+            entry.shoes[1] = rear != BrakeShoe::unknown ? rear : entry.shoes[0];
+        }
         for (const auto anim : blocks(t, "freightanim", block)) {
             ConsistFreight f;
             auto shape = values(t, "freightanimshape", anim);

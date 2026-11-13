@@ -59,7 +59,8 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
     the independent brake;
   - an optional "realistic air" brake model: flow along the brake pipe,
     483 / 292 / 305 distributors, a 280 m/s emergency wave (RTS's brakes by
-    default);
+    default); trains with DLLs too: the pipe follows their valve's УР, or
+    openRTS's valve over Brakes.dll (experimental, the Train window);
   - the car menu (Num3 / the key left of `1`): at a coupling — end cocks,
     hoses, the EP cable, the SME cable and the high-voltage bus,
     uncoupling, fixing a broken coupler; at a bogie — brake shoe,
@@ -388,7 +389,7 @@ the Train window)
 | Num1 / `=` | lean out |
 | Num3 / the key left of `1` | the car menu at the coupling or bogie under the cursor (outside) |
 | Num2 / Shift + the key left of `1` | the flashlight, as in RTS: a beam from the eyes along the view, 50 m |
-| Ctrl+Num5 / Ctrl + the key left of `1` | the tape, as in RTS: start it on the locomotive driven / stop it; the files go to `%LOCALAPPDATA%\openRTS\RTS_TAPES`, RTS's `lenta.xls` reads them (`docs/tape.md`) |
+| Ctrl+Num5 / Ctrl + the key left of `1` | the tape, as in RTS: start it on the locomotive driven / stop it; the files go to `%LOCALAPPDATA%\openRTS\RTS_TAPES`, RTS's `lenta.xls` reads them; next to it openRTS's brake log `…_openrts.csv`: the valve's position, the УР, the ЭПТ, every car's pressures (`docs/tape.md`) |
 | Num5 | while the tape rolls: which locomotive it records |
 | Ctrl+F9 | the speed recorder tape (openRTS): the tapes on a paper in the manner of the 3СЛ-2М — the speed and the limit, the time, the signal, the pressures, the path and the kilometres; the one rolling as it is written |
 | F12 | the inspector: a tree of the map's objects and trains, the chosen one's properties, the shape's materials (FullBright as ordinary, into a mod), `docs/inspector.md` |
