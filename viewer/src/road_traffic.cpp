@@ -419,6 +419,28 @@ void RoadTraffic::submit(renderer::ModelRenderer& renderer, renderer::ModelLibra
     }
 }
 
+std::string RoadTraffic::report(const CrossingView* crossings) const {
+    std::string text;
+    for (const auto& [key, spawner] : spawners_) {
+        std::size_t standing = 0;
+        for (const auto& car : spawner.cars) standing += car.speed < 0.1f ? 1 : 0;
+        char line[160];
+        std::snprintf(line, sizeof line, "; spawner %u: road %.0f m, %zu cars (%zu standing)", std::get<2>(key), spawner.end,
+                      spawner.cars.size(), standing);
+        text += line;
+        if (!spawner.cars.empty()) {
+            std::snprintf(line, sizeof line, ", first at %.1f m, %.1f m/s", spawner.cars.front().along, spawner.cars.front().speed);
+            text += line;
+        }
+        for (const auto& crossing : spawner.crossings) {
+            std::snprintf(line, sizeof line, ", crossing %u at %.1f m state %u", crossing.item, crossing.at,
+                          crossings ? static_cast<unsigned>(crossings->road_state(crossing.item)) : 0u);
+            text += line;
+        }
+    }
+    return text;
+}
+
 std::size_t RoadTraffic::cars() const noexcept {
     std::size_t total = 0;
     for (const auto& [_, spawner] : spawners_) total += spawner.cars.size();

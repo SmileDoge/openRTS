@@ -16,6 +16,7 @@ float head = default_head_motion;
 simulation::RailJointLayout joints = simulation::RailJointLayout::openrts;
 simulation::BodyMotionModel bodies = simulation::BodyMotionModel::openrts;
 float throws = 1.0f;
+BackgroundSound background = BackgroundSound::play;
 
 } // namespace
 
@@ -88,5 +89,25 @@ const char* car_menu_key_name() { return current == KeyLayout::rts ? "Num3" : tr
 const char* flashlight_key_name() { return current == KeyLayout::rts ? "Num2" : tr("Shift+'`'"); }
 
 const char* tape_key_name() { return current == KeyLayout::rts ? "Ctrl+Num5" : tr("Ctrl+'`'"); }
+
+const char* board_key_name() { return current == KeyLayout::rts ? "Ctrl+Num7" : "Ctrl+'='"; }
+
+BackgroundSound background_sound() noexcept { return background; }
+
+void set_background_sound(const BackgroundSound sound) noexcept { background = sound; }
+
+BackgroundSound parse_background_sound(const char* text) noexcept {
+    if (text && std::strcmp(text, "quiet") == 0) return BackgroundSound::quiet;
+    if (text && std::strcmp(text, "off") == 0) return BackgroundSound::off;
+    return BackgroundSound::play;
+}
+
+const char* background_sound_key(const BackgroundSound sound) noexcept {
+    return sound == BackgroundSound::quiet ? "quiet" : sound == BackgroundSound::off ? "off" : "play";
+}
+
+float background_sound_gain(const BackgroundSound sound) noexcept {
+    return sound == BackgroundSound::quiet ? 1.0f / 3.0f : sound == BackgroundSound::off ? 0.0f : 1.0f;
+}
 
 } // namespace openrts::viewer

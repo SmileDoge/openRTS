@@ -98,6 +98,29 @@ void read_events(const TextNode* list, std::vector<ActivityEvent>& events) {
     if (const auto* flags = node.child("trainflags")) train.flags = flags->values;
     if (const auto* state = node.child("trainstate"); state && !state->values.empty()) train.state = integer(state, 0);
     if (const auto* parameters = node.child("wagonparameters")) train.wagon_groups = read_wagon_parameters(convert(*parameters));
+    if (const auto* value = node.child("traintimetabletollerance"); value && !value->values.empty())
+        train.timetable_tolerance = (std::max)(static_cast<float>(value->number(0)), 0.0f);
+    train.check_doors = integer(node.child("traincheckopeneddoorsatstop"), 0) != 0;
+    // TrainSchedule (RTS 0x471B9C -> 0x4751E4): a stop without a name is
+    // left out (RTS: message 0x4A).
+    if (const auto* schedule = node.child("trainschedule")) {
+        for (const auto& station : schedule->children) {
+            if (station.name != "station") continue;
+            ActivityStop stop;
+            if (const auto* name = station.child("stationname")) {
+                for (const auto& part : name->values) stop.station += (stop.station.empty() ? "" : " ") + part;
+            }
+            if (stop.station.empty()) continue;
+            stop.skipped = integer(station.child("numskipped"), 0);
+            stop.passengers = static_cast<float>(integer(station.child("numpassengers"), 0));
+            if (const auto* time = station.child("arrivaltime")) stop.arrival = parse_activity_time(first(time)).value_or(0);
+            stop.departure = stop.arrival;
+            if (const auto* time = station.child("departuretime")) stop.departure = parse_activity_time(first(time)).value_or(stop.arrival);
+            stop.align = first(station.child("alignwhenstops"));
+            stop.suppress_errors = station.child("suppresserrors") != nullptr;
+            train.schedule.push_back(std::move(stop));
+        }
+    }
     return train;
 }
 

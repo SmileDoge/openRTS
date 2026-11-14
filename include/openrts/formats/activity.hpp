@@ -78,6 +78,19 @@ enum class ActivityServiceType : std::uint8_t {
     other,
 };
 
+// A stop of a train's TrainSchedule (RTS 0x4751E4 reads it): a station of
+// the route's platforms (the TDB's Station, any case), found along the
+// train's path after the stop before it (simulation/timetable.hpp).
+struct ActivityStop {
+    std::string station;        // StationName
+    std::int32_t skipped{};     // NumSkipped: passes of the station by the path to leave out first
+    float passengers{};         // NumPassengers (boarding takes the platform's wait for that many)
+    std::int32_t arrival{};     // ArrivalTime, s into the day
+    std::int32_t departure{};   // DepartureTime; without it the arrival
+    std::string align;          // AlignWhenStops (traffic: which end of the platform)
+    bool suppress_errors = false; // SuppressErrors: no message when it is not found
+};
+
 struct ActivityTrain {
     std::uint32_t id{};
     std::string consist;                     // the .con file's stem
@@ -102,6 +115,15 @@ struct ActivityTrain {
     // static ones; the code does not).
     std::optional<int> state;
     std::vector<ActivityWagonGroup> wagon_groups; // WagonParameters, applied as the train is placed (0x4EF740)
+    // TrainSchedule ( Station ( ... ) ... ): the stops in order (F6 shows
+    // them, RTS 0x466F70).
+    std::vector<ActivityStop> schedule;
+    // TrainTimetableTollerance: s late at a stop still on time (negative
+    // read as 0); without it the route's TimetableTollerance.
+    std::optional<float> timetable_tolerance;
+    // TrainCheckOpenedDoorsAtStop ( 1 ): boarding wants doors open at the
+    // platform (RTS train record +96 flag 0x2000).
+    bool check_doors = false;
 
     [[nodiscard]] bool flag(std::string_view key) const; // TrainFlags has it (any case)
 };

@@ -507,6 +507,9 @@ WagonDefinition parse_wagon(const std::string_view bytes) {
         wagon.pantograph_raise_time = static_cast<float>(raise.atof());
         if (wagon.pantograph_raise_time <= 0.0f) wagon.pantograph_raise_time = 3.0f;
     }
+    wagon.passenger_capacity = wagon.kind == WagonKind::passenger ? 200.0f : 0.0f;
+    if (auto capacity = values(t, "passengercapacity"); capacity.found())
+        wagon.passenger_capacity = (std::max)(static_cast<float>(capacity.atof()), 0.0f);
 
     if (const auto front = rts_find(t, "coupling")) {
         read_coupling(t, *front, wagon.mass, nullptr, wagon.couplings[0]);

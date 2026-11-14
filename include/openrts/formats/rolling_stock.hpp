@@ -290,6 +290,9 @@ struct WagonDefinition {
     Friction friction;
     std::array<float, 4> adhesion{};
     float pantograph_raise_time = 3.0f; // PantographRaiseTime, s (RTS default 3; <= 0 is 3)
+    // PassengerCapacity: who boards at a stop (RTS 0x44247C: 200 for a
+    // Carriage without it, 0 for anything else; negative read as 0).
+    float passenger_capacity{};
     float derail_rail_height{};
     float derail_rail_force = 240000.0f;
     float derail_buffer_force{};

@@ -97,6 +97,8 @@ public:
     [[nodiscard]] glm::mat4 placement() const noexcept;
     [[nodiscard]] bool turned() const noexcept { return turned_; }
     [[nodiscard]] const formats::CabDescription& description() const noexcept { return cab_; }
+    // The LocomotiveSignalization lights' nodes in the cab shape (-1: not found), once bound.
+    [[nodiscard]] const std::vector<std::int32_t>& signal_light_nodes() const noexcept { return signal_lights_; }
     // Finds the nodes once the cab model has loaded.
     void bind(const formats::ShapeModel& rig);
     [[nodiscard]] bool bound() const noexcept { return bound_; }

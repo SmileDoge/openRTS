@@ -375,6 +375,10 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.capture_report = true;
         } else if (flags[i] == "--capture-tape") {
             options.capture_tape = true;
+        } else if (flags[i] == "--capture-boarding") {
+            options.capture_boarding = true;
+        } else if (flags[i] == "--capture-minimise") {
+            options.capture_minimise = true;
         } else if (flags[i] == "--capture-uncouple" && has_value) {
             options.capture_uncouple = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--capture-board" && has_value) {

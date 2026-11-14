@@ -476,6 +476,27 @@ car's sound is made.
   chosen by RTS. openRTS can use it for its own variant — the number and
   the rule are still to be agreed.
 
+## In the background (2026-11-14)
+
+- **RTS** falls silent as soon as its window is not the one in front:
+  minimised, or behind another window. Its buffers (`0x4AA178`, flags
+  `0xAA`, above) have neither `DSBCAPS_GLOBALFOCUS` (0x8000) nor
+  `DSBCAPS_STICKYFOCUS` (0x4000), and DirectSound mutes such buffers when
+  the program loses the focus (CONFIRMED for the buffers made there).
+  Its world runs on, so one misses a vigilance device's whistle (ТСКБМ,
+  ЭПК) and gets the brakes (a tester, 2026-11-14).
+- **openRTS** plays on. Its output is miniaudio's (WASAPI, shared), which
+  no window's focus touches. The main loop steps the world, the DLLs and
+  the sound whether the window is in front, behind or minimised (at most
+  30 frames/s in the background). `--capture-minimise` minimises the
+  window from 0.3 to 0.7 of `--capture-at` and logs once a second: on
+  Kuban's "Кубанский выльник" (`--sound-offline`) 30-32 frames a second,
+  the clock 1 s a second, the voices kept, the sound not paused.
+- **The setting** "Sound in the background (minimised or behind another
+  window)", in the start menu's Settings and the panel's General: plays as
+  in front (the default), quieter (a third, about -10 dB) or off; only the
+  volume changes, the world runs on (remembered as `background_sound`).
+
 ## Not yet
 
 - **Route ambient sounds:** `ingame.sms` (what its `Variable1` is, is

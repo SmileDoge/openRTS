@@ -126,11 +126,22 @@ void AudioEngine::set_paused(const bool paused) {
 bool AudioEngine::paused() const noexcept { return paused_; }
 
 void AudioEngine::set_volume(const float volume) {
-    if (ok()) ma_engine_set_volume(&impl_->engine, volume);
+    volume_ = volume;
+    if (ok()) ma_engine_set_volume(&impl_->engine, volume_ * background_gain_);
 }
 
 float AudioEngine::volume() const noexcept {
-    return ok() ? ma_engine_get_volume(&impl_->engine) : 0.0f;
+    return ok() ? volume_ : 0.0f;
+}
+
+void AudioEngine::set_background_gain(const float gain) {
+    if (gain == background_gain_) return;
+    background_gain_ = gain;
+    if (ok()) ma_engine_set_volume(&impl_->engine, volume_ * background_gain_);
+}
+
+std::uint64_t AudioEngine::played_frames() const noexcept {
+    return ok() ? ma_engine_get_time_in_pcm_frames(&impl_->engine) : 0;
 }
 
 void AudioEngine::update() {

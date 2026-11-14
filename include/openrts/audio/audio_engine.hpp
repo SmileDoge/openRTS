@@ -53,7 +53,12 @@ public:
 
     void set_listener(const glm::vec3& position, const glm::vec3& forward);
     void set_volume(float volume);
-    [[nodiscard]] float volume() const noexcept;
+    [[nodiscard]] float volume() const noexcept; // as set, without the background's factor
+    // A factor on the volume while the game's window is in the background
+    // (the viewer's "Sound in the background"): 1 plays on as in front.
+    void set_background_gain(float gain);
+    // Frames the output has taken since it started (a device's clock).
+    [[nodiscard]] std::uint64_t played_frames() const noexcept;
     // Stops the output (every voice holds where it is) or starts it again.
     void set_paused(bool paused);
     [[nodiscard]] bool paused() const noexcept;
@@ -81,6 +86,8 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     bool paused_ = false;
+    float volume_ = 1.0f;
+    float background_gain_ = 1.0f;
 };
 
 } // namespace openrts::audio

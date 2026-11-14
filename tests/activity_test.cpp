@@ -78,7 +78,13 @@ Services (
 			Train ( ID ( 2 ) Consist ( Tanks 1 ) )
 		)
 	)
-	Service ( ID ( 3 ) Name ( "Later" ) Type ( PLAYER ) Path ( "Main train" 1 ) ServiceTrains ( 1 Train ( ID ( 1 ) Consist ( X 1 ) ) ) )
+	Service ( ID ( 3 ) Name ( "Later" ) Type ( PLAYER ) Path ( "Main train" 1 ) ServiceTrains ( 1 Train ( ID ( 1 ) Consist ( X 1 )
+		TrainTimetableTollerance ( 60 ) TrainCheckOpenedDoorsAtStop ( 1 )
+		TrainSchedule (
+			Station ( StationName ( Kanevskaya ) NumPassengers ( 2 ) ArrivalTime ( 20:49:00 ) DepartureTime ( 20:52:00 ) )
+			Station ( StationName ( "Krasnodar 1" ) ArrivalTime ( 22:47:00 ) NumSkipped ( 1 ) AlignWhenStops ( FAR ) SuppressErrors ( ) )
+			Station ( NumPassengers ( 3 ) )
+		) ) ) )
 	Service ( ID ( 4 ) Name ( "AI" ) Type ( TRAFFIC ) Path ( AI 1 )
 		ServiceStartup ( ServiceStarts ( SINGLE ) )
 		ServiceFlags ( NO_REMOVE FORCE_REMOVAL )
@@ -143,6 +149,28 @@ int main(int argc, char* argv[]) {
                   && !standing->trains[1].start,
               "its trains' placements");
         check(a.service(4) && a.service(4)->type == ActivityServiceType::traffic, "the TRAFFIC service");
+        // TrainSchedule (RTS 0x4751E4), the timetable's tolerance and doors.
+        if (const auto* later = a.service(3); later && later->trains.size() == 1) {
+            const auto& train = later->trains.front();
+            check(train.schedule.size() == 2, "TrainSchedule: two stops (one without a name is left out)");
+            if (train.schedule.size() == 2) {
+                const auto& first = train.schedule[0];
+                check(first.station == "Kanevskaya" && first.passengers == 2.0f && first.arrival == 20 * 3600 + 49 * 60
+                          && first.departure == 20 * 3600 + 52 * 60 && first.skipped == 0 && !first.suppress_errors,
+                      "a stop: its station, passengers, arrival and departure");
+                const auto& second = train.schedule[1];
+                check(second.station == "Krasnodar 1" && second.departure == second.arrival && second.skipped == 1
+                          && second.align == "FAR" && second.suppress_errors,
+                      "no DepartureTime: the arrival; NumSkipped, AlignWhenStops, SuppressErrors");
+            }
+            check(train.timetable_tolerance && *train.timetable_tolerance == 60.0f, "TrainTimetableTollerance");
+            check(train.check_doors, "TrainCheckOpenedDoorsAtStop");
+        } else {
+            check(false, "the third service's train");
+        }
+        check(player && player->trains.front().schedule.empty() && !player->trains.front().timetable_tolerance
+                  && !player->trains.front().check_doors,
+              "a train without a schedule");
         // Traffic (docs/traffic.md).
         check(a.no_return == 250.0f, "TrainsDistanceOfNoReturn: at least 250 m");
         check(a.traffic_limits && a.traffic_limits->size() == 2 && (*a.traffic_limits)[1].radius == 500.0f

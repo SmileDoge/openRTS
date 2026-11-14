@@ -806,9 +806,11 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
             cab.toggle_window(choice.index);
             break;
         case Target::door:
-            if (controls.action_ctrl && to_car_outside(sd.doors[choice.index])) {
+            if (controls.action_ctrl
+                && (to_car_outside(sd.doors[choice.index]) || (is_exterior(sd.doors[choice.index]) && door_way(choice.index)))) {
                 // RTS 0x4121BC -> 0x431270: Ctrl+Enter opens the door and
-                // goes out along the car's ExteriorDoor of the same name.
+                // goes out along the car's ExteriorDoor of the same name:
+                // onto the car's walkway, or down its steps to the ground.
                 if (!cab.door_open(choice.index)) cab.toggle_door(choice.index);
                 event_ = {.kind = Event::Kind::onto_car, .door = choice.index, .at = feet_, .by_path = true};
             } else {
@@ -825,6 +827,13 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
                 break;
             }
             if (!by_hand && !cab.door_open(choice.index)) break; // shut: the driver opens it
+            if (door_way(choice.index)) {
+                // Up the steps along the car's ExteriorDoor of this name
+                // (RTS 0x4310B0), its leaves opening with the cab's door.
+                if (by_hand && !cab.door_open(choice.index)) cab.open_door(choice.index);
+                event_ = {.kind = Event::Kind::climb_in, .door = choice.index};
+                break;
+            }
             get_on(cab, choice.index);
             look_yaw_ = camera.yaw - base;
             break;
@@ -899,8 +908,9 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
     case Target::door: {
         const auto c = choose(cab, car);
         const auto& door = cab.description().doors[c.index];
-        prompt_ = to_car_outside(door)   ? (cab.door_open(c.index) ? tr("Enter: close the door, Ctrl+Enter: go out")
-                                                                   : tr("Enter: open the door, Ctrl+Enter: go out"))
+        prompt_ = to_car_outside(door) || (is_exterior(door) && door_way(c.index))
+                      ? (cab.door_open(c.index) ? tr("Enter: close the door, Ctrl+Enter: go out")
+                                                : tr("Enter: open the door, Ctrl+Enter: go out"))
                   : cab.door_open(c.index) ? tr("Enter: close the door")
                   : is_exterior(door)    ? tr("Enter: open the door (then walk out)")
                   : is_passage(door)     ? tr("Enter: open the door (then on to the next section)")
@@ -1022,7 +1032,7 @@ void Engineer::climb(const CarOutside& car, const std::size_t ladder) {
     camera_set_ = true;
 }
 
-void Engineer::step_onto_car(const CarOutside& car, const glm::vec3& at, const std::optional<std::size_t> door) {
+void Engineer::step_onto_car(const CarOutside& car, const glm::vec3& at, const std::optional<std::size_t> door, std::string end) {
     if (!car.details) return;
     mode_ = Mode::on_car;
     feet_ = at;
@@ -1034,13 +1044,35 @@ void Engineer::step_onto_car(const CarOutside& car, const glm::vec3& at, const s
     camera_set_ = true;
     last_ = outside_footing(*car.details, car.door_open, feet_);
     if (door && *door < car.details->door_details.size() && !car.details->door_details[*door].trajectory.empty()) {
-        // RTS 0x431270: the car's door's way backwards, out to its outside.
+        // RTS 0x431270: the car's door's way backwards, out to the cab
+        // door's other side.
         passage_.start(car.details->door_details[*door].trajectory, feet_, true);
-        passage_end_ = "ext_wag";
+        passage_end_ = std::move(end);
         passage_door_ = SIZE_MAX;
     } else {
         passage_.stop();
     }
+}
+
+void Engineer::go_through(const CarOutside& car, const std::size_t door) {
+    if (!car.details || door >= car.details->door_details.size()) return;
+    const auto& d = car.details->door_details[door];
+    if (d.trajectory.empty()) return;
+    if (mode_ == Mode::outside) {
+        feet_ = glm::vec3{glm::inverse(car.transform) * glm::vec4{feet_, 1.0f}};
+        rebase_ = true;
+    }
+    mode_ = Mode::on_car;
+    passage_.start(d.trajectory, feet_, false);
+    passage_end_ = d.to;
+    passage_door_ = door;
+    last_ = {};
+    fall_ = 0.0f;
+    up_ = false;
+    head_out_ = false;
+    blend_ = 1.0f;
+    box_top_.reset();
+    camera_set_ = true;
 }
 
 void Engineer::enter_cab(const CabView& cab, const std::size_t door, const glm::vec3& at) {

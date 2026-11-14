@@ -1205,6 +1205,7 @@ public:
         const auto streamed = streamer_->stats();
         report += "; terrain tiles " + std::to_string(terrain_ ? terrain_->loaded_tiles() : 0) + ", world tiles " + std::to_string(streamed.loaded_tiles) + " of "
             + std::to_string(streamed.requested_tiles) + ", instances " + std::to_string(streamed.visible_instances);
+        if (roads_) report += std::string(1, '\n') + "road traffic" + roads_->report(crossings_.get());
         if (train_ && train_->placed()) report += std::string(1, '\n') + "trains: " + train_->systems_report();
         return report;
     }
@@ -1241,6 +1242,7 @@ public:
     }
     [[nodiscard]] std::string inspector_report() const override { return inspector_.report(inspector_world()); }
     [[nodiscard]] std::string tape_report() const override { return tape_view_.report(); }
+    [[nodiscard]] std::string timetable_report() const override { return train_ ? train_->timetable_report() : std::string(); }
     [[nodiscard]] std::optional<renderer::ShadowFocus> shadow_focus() const override {
         return train_ ? train_->cab_shadow_focus() : std::nullopt;
     }

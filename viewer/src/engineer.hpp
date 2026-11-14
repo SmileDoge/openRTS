@@ -24,6 +24,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 #include <string_view>
 #include <utility>
 
@@ -87,6 +88,8 @@ public:
             next_car,    // over to the car at the end `side` (+1 the shape's front), at `at` (car frame);
                          // `or_off`: none there, down to the ground
             outer_door,  // Enter at the car's ExteriorDoor `door`: open or shut it
+            climb_in,    // on the ground, Ctrl+Enter at cab door `door`: up the car's ExteriorDoor of the
+                         // same name into the cab (RTS 0x4310B0), see go_through()
         };
         Kind kind = Kind::none;
         std::size_t door{};
@@ -122,8 +125,20 @@ public:
     // car's outside, going along it.
     void climb(const CarOutside& car, std::size_t ladder);
     // Out of the cab onto the car's outside at `at` (car frame); along the
-    // car's ExteriorDoor `door` backwards when it is given (RTS 0x431270).
-    void step_onto_car(const CarOutside& car, const glm::vec3& at, std::optional<std::size_t> door = std::nullopt);
+    // car's ExteriorDoor `door` backwards when it is given (RTS 0x431270),
+    // to `end`, the cab door's other side: the car's outside (ext_wag) or
+    // the ground (exterior: down the steps).
+    void step_onto_car(const CarOutside& car, const glm::vec3& at, std::optional<std::size_t> door = std::nullopt,
+                       std::string end = "ext_wag");
+    // From the ground through the car's ExteriorDoor `door` along its
+    // Trajectory (RTS 0x4310B0): forwards from its point nearest him, up the
+    // steps, to its second Connects word (interior: into the cab).
+    void go_through(const CarOutside& car, std::size_t door);
+    // Which of the cab's doors the car's ExteriorDoor of the same name
+    // gives a way to (by the cab's door index): Ctrl+Enter takes it in from
+    // the ground and out of the cab, as RTS does; the others he steps
+    // through at once.
+    void set_door_ways(std::vector<bool> ways) { door_ways_ = std::move(ways); }
     // Into `cab` by its door `door`, standing at `at` (cab frame).
     void enter_cab(const CabView& cab, std::size_t door, const glm::vec3& at);
     // A cab's planes hold `at` (cab frame), RTS 0x434C58: a plane (or an
@@ -241,6 +256,8 @@ private:
     std::optional<std::size_t> pass_;
     std::string prompt_;
     Passage passage_;
+    std::vector<bool> door_ways_; // set_door_ways
+    [[nodiscard]] bool door_way(std::size_t door) const noexcept { return door < door_ways_.size() && door_ways_[door]; }
     std::string passage_end_;               // the Connects word it leads to ("": he stays where it ends)
     std::size_t passage_door_ = SIZE_MAX;   // the car's ExteriorDoor it goes through
     OutsideFooting last_;                   // on the car's outside: what he stood on last (RTS dword_61D6B0)

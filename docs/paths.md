@@ -42,10 +42,11 @@ train, else the driven one):
 - **Ctrl+F5** — the kilometre and picket (from the nearest kilometre post
   behind, counting the way the posts ahead go), the limit now, the limits
   ahead within 10 km with their distances, the next signal;
-- **F6** — the stations ahead with their distances (RTS shows the
-  activity's schedule there; openRTS has no activities yet): along the path,
-  or along the junctions as set within 40 km; a platform named after its
-  station shows only the rest ("о.п. ЗИП, п.I");
+- **F6** — the stations ahead with their distances: along the path, or
+  along the junctions as set within 40 km; a platform named after its
+  station shows only the rest ("о.п. ЗИП, п.I"). In a scenario whose
+  train has a timetable, the timetable instead, as RTS shows it
+  (`docs/activities.md`, "The timetable");
 - **the panels can be dragged** with the left mouse button; each keeps the
   edge it is anchored to (F5 the left one, Ctrl+F5 and F6 the right one) and
   its place is remembered in `viewer_state.ini`;

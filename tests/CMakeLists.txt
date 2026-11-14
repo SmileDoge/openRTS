@@ -230,6 +230,15 @@ openrts_configure_target(openrts_body_motion_test)
 target_link_libraries(openrts_body_motion_test PRIVATE openrts_simulation)
 add_test(NAME openrts.body_motion COMMAND openrts_body_motion_test)
 
+# A scenario train's timetable: its stops on the route, the boarding (F6, Ctrl+Num7).
+add_executable(openrts_timetable_test timetable_test.cpp)
+openrts_configure_target(openrts_timetable_test)
+target_link_libraries(openrts_timetable_test PRIVATE openrts_simulation)
+add_test(NAME openrts.timetable COMMAND openrts_timetable_test)
+if(OPENRTS_TEST_ROOT)
+    add_test(NAME openrts.content.timetable COMMAND openrts_timetable_test "${OPENRTS_TEST_ROOT}")
+endif()
+
 # The graphics settings the start menu and the game share: defaults, presets, what is written.
 add_executable(openrts_graphics_settings_test graphics_settings_test.cpp ../viewer/src/graphics_settings.cpp ../viewer/src/viewer_state.cpp)
 openrts_configure_target(openrts_graphics_settings_test)

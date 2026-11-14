@@ -323,6 +323,30 @@ int main(const int argc, char* argv[]) {
                       << ") rows (" << v[0] << ' ' << v[1] << ' ' << v[2] << " | " << v[3] << ' ' << v[4] << ' ' << v[5] << " | " << v[6]
                       << ' ' << v[7] << ' ' << v[8] << ")\n";
         }
+        // Each draw: its node, distance level, shader, textures, alpha test
+        // and the vertex state's light material (how a lamp's mesh is lit).
+        std::cout << "draws by node:\n";
+        for (const auto& draw : model.draws) {
+            const auto node = draw.matrix_index >= 0 && static_cast<std::size_t>(draw.matrix_index) < model.matrices.size()
+                ? model.matrices[static_cast<std::size_t>(draw.matrix_index)].name
+                : std::string("-");
+            std::cout << "  node " << draw.matrix_index << ' ' << node << " level " << static_cast<int>(draw.level) << ", "
+                      << draw.index_count / 3 << " triangles, state " << draw.primitive_state_index;
+            if (draw.primitive_state_index < model.primitive_states.size()) {
+                const auto& state = model.primitive_states[draw.primitive_state_index];
+                std::cout << " shader "
+                          << (state.shader_index < model.shader_names.size() ? model.shader_names[state.shader_index] : std::string("?"))
+                          << " alpha test " << state.alpha_test_mode << " z " << state.z_buffer_mode;
+                for (std::uint32_t t = 0; t < state.texture_count; ++t) {
+                    const auto index = state.texture_index + t;
+                    if (index < model.textures.size() && model.textures[index].image_index < model.images.size())
+                        std::cout << " texture " << model.images[model.textures[index].image_index].generic_string();
+                }
+                if (state.vertex_state_index >= 0 && static_cast<std::size_t>(state.vertex_state_index) < model.vertex_states.size())
+                    std::cout << " light material " << model.vertex_states[static_cast<std::size_t>(state.vertex_state_index)].light_material_index;
+            }
+            std::cout << '\n';
+        }
         std::cout << "animations: " << model.animations.size() << '\n';
         for (const auto& animation : model.animations) {
             std::cout << "  frames " << animation.frame_count << ", rate " << animation.frame_rate << ", nodes with keys "

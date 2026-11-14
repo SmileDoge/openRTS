@@ -1,5 +1,6 @@
 #include <openrts/formats/route_world.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -316,6 +317,11 @@ RouteDefinition parse_route_definition(const std::string_view trk_bytes) {
                 if (const auto parsed = parse_double(*value)) {
                     (limit ? result.speed_limit : result.temp_restricted_speed) = static_cast<float>(*parsed);
                 }
+            }
+            tokens.skip_block();
+        } else if (equals_ignore_case(*key, "TimetableTollerance") && tokens.open_block()) {
+            if (const auto value = tokens.next()) {
+                if (const auto parsed = parse_double(*value)) result.timetable_tolerance = (std::max)(static_cast<float>(*parsed), 0.0f);
             }
             tokens.skip_block();
         } else if (equals_ignore_case(*key, "Electrified") && tokens.open_block()) {

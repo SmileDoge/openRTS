@@ -42,6 +42,7 @@
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/speed_limits.hpp>
 #include <openrts/simulation/tape.hpp>
+#include <openrts/simulation/timetable.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train.hpp>
 #include <openrts/simulation/train_lights.hpp>
@@ -776,6 +777,27 @@ private:
     // Once a frame: traffic due starts, block points release by their
     // times and trains, traffic at its end (or remove time) goes.
     void update_traffic();
+    // The player's train's timetable (simulation/timetable.hpp): the
+    // TrainSchedule of its train in the service whose path it has, found on
+    // that path; F6 shows it (RTS 0x466F70), Ctrl+Num7 starts the boarding
+    // at a stop.
+    simulation::Timetable timetable_;
+    std::string timetable_service_; // the service's name, F6's title
+    std::uint32_t timetable_train_{};
+    std::uint64_t timetable_owner_{}; // the train it is for (another one in front: it goes)
+    float route_tolerance_{};       // the route's TimetableTollerance
+    std::optional<std::size_t> timetable_hint_; // the stop whose boarding key was last told
+    void set_timetable(const Unit& unit, const formats::ActivityService& service);
+    // The train against its path; nothing while it is off it.
+    [[nodiscard]] std::optional<simulation::TimetableTrain> timetable_train(const Unit& unit) const;
+    void update_timetable(const SceneInput& input, float elapsed);
+    void draw_timetable(const Unit& unit);
+
+public:
+    // Each stop: planned and noted times, the distance, the boarding (--capture-boarding).
+    [[nodiscard]] std::string timetable_report() const;
+
+private:
     // Another train's cars stand where `train` is (CHECK_IF_BUSY).
     [[nodiscard]] bool traffic_place_taken(const simulation::Train& train) const;
     std::shared_ptr<const formats::Activity> activity_; // the scenario running

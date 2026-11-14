@@ -106,7 +106,8 @@ void draw_controls_help() {
         row("F5", "the train's cars; again: the next page");
         row("Shift+F5", "the train as a whole");
         row("Ctrl+F5", "speed limits and the kilometre");
-        row("F6", "the stations ahead and the sidings (yellow)");
+        row("F6", "the stations ahead and the sidings (yellow); in a scenario with a timetable, the timetable");
+        row(board_key_name(), "a scenario's stop: start the boarding of the passengers");
         row("F7", "platform and siding names");
         row("Ctrl+F7", "signal names");
         row("Ctrl+Alt+F7", "the Track control window");

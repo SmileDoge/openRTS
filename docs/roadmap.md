@@ -446,7 +446,10 @@ community's scenarios can be played.
   player's and the standing trains put on the track, the player's start;
   the events' engine after RTS's activity.pdf (messages, F8 reports,
   signal overrides, service changes, wagon states, the scenario's sounds,
-  end valves).
+  end valves). The player's timetable (2026-11-14): `TrainSchedule`
+  found on the path as RTS finds it, F6 showing it as RTS does, the
+  boarding at a stop (Ctrl+Num7) with RTS's time and the arrivals and
+  departures noted (`docs/activities.md`, "The timetable").
 - Traffic trains after RTS's model (`docs/traffic.md`,
   `docs/reverse/traffic.md`), done 2026-11-10: one rigid body on its path,
   no per-car physics, RTS's speed controller (the least of the limits

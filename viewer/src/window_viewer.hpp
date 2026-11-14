@@ -135,6 +135,13 @@ struct WindowOptions {
     // its window opens (Ctrl+F9); it rolls until the capture ends, when the
     // window's tape is printed.
     bool capture_tape = false;
+    // --capture-boarding: at 0.4 of capture_at the boarding key (Ctrl+Num7)
+    // at a scenario's stop; the timetable is printed when the capture ends.
+    bool capture_boarding = false;
+    // --capture-minimise: the window minimised from 0.3 to 0.7 of capture_at;
+    // meanwhile, once a second, the clock, the frames and the sound's voices
+    // go to the log (the world and its sound run on in the background).
+    bool capture_minimise = false;
 };
 
 [[nodiscard]] int run_window_viewer(ViewerScene& scene, const WindowOptions& options);

@@ -290,6 +290,7 @@ TrainView::TrainView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath rou
     dispatcher_ = std::make_unique<simulation::Dispatcher>(network);
     const auto definition = formats::load_route_definition(*vfs_, route_);
     limits_ = std::make_unique<simulation::SpeedLimits>(network, definition.ok() ? definition.speed_limit : 0.0f);
+    route_tolerance_ = definition.ok() ? definition.timetable_tolerance : 0.0f;
     electrification_ = simulation::Electrification::load(*vfs_, route_, network);
     if (!electrification_->data().error.empty()) std::cout << "electrification: " << electrification_->data().error << '\n';
 }
@@ -1043,7 +1044,7 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
         }
         if (const auto bytes = vfs_->read(formats::shape_description(*vfs_, car.shape))) {
             const auto details = formats::parse_exterior_details(*bytes);
-            if (details.walkable()) car.outside = std::make_shared<const formats::ExteriorDetails>(details);
+            if (details.walkable() || details.door_ways()) car.outside = std::make_shared<const formats::ExteriorDetails>(details);
             // A node's own key frames: the ED9M's doors move over frames
             // 0..5 of a 250-frame shape animation.
             const auto node_last_frame = [&](const std::size_t m) {
@@ -1735,7 +1736,7 @@ void TrainView::step_trains() {
                     message_ = trf("derailed: car %u; the dispatcher puts the train back (removes it from the world and places it again)",
                                    event.car + 1);
                 } else {
-                    message_ = u == 0 ? trf("derailed: car %u; C or \"Put on the path start\" puts the train back", event.car + 1)
+                    message_ = u == 0 ? trf("derailed: car %u; Esc, the Train tab, \"Put on the path start\" puts the train back", event.car + 1)
                                       : trf("derailed: car %u of a cut", event.car + 1);
                 }
                 break;
@@ -2729,7 +2730,249 @@ std::string TrainView::give_activity_path(Unit& unit, const formats::ActivitySer
     dispatcher_->assign(id, std::move(*plan), std::move(route));
     dispatcher_->set_blocks(id, std::move(blocks));
     if (count > 0) std::cout << "activity: " << service.name << ": " << count << " block points on its path" << std::endl;
+    if (!units_.empty() && &unit == &units_.front() && unit.role == Role::driven) set_timetable(unit, service);
     return {};
+}
+
+namespace {
+
+// s into the day as RTS writes it (0x45CA30), wrapped into the day.
+[[nodiscard]] std::string clock_text(std::int64_t seconds) {
+    seconds %= 86400;
+    if (seconds < 0) seconds += 86400;
+    char text[16];
+    std::snprintf(text, sizeof text, "%02d:%02d:%02d", static_cast<int>(seconds / 3600), static_cast<int>(seconds / 60 % 60),
+                  static_cast<int>(seconds % 60));
+    return text;
+}
+
+} // namespace
+
+// The TrainSchedule of the unit's train in `service`, on its path (RTS
+// 0x471B9C reads it with the path; a station not on it: message 0x4B unless
+// SuppressErrors).
+void TrainView::set_timetable(const Unit& unit, const formats::ActivityService& service) {
+    timetable_ = {};
+    timetable_hint_.reset();
+    const auto* record = unit.activity_id ? service.train(unit.activity_id->second) : nullptr;
+    const auto* route = dispatcher_->route(unit.train->id());
+    if (!record || record->schedule.empty() || !route) return;
+    std::vector<simulation::TimetableStop> stops;
+    for (const auto& s : record->schedule) {
+        stops.push_back({.station = s.station, .skipped = s.skipped, .passengers = s.passengers, .arrival = s.arrival, .departure = s.departure});
+    }
+    simulation::locate_stops(*network_, *route, stops);
+    std::size_t found = 0;
+    for (std::size_t k = 0; k < stops.size(); ++k) {
+        const auto& stop = stops[k];
+        if (stop.found) {
+            ++found;
+            const double boarding = stop.waiting > 0 ? stop.min_wait * stop.passengers / stop.waiting : stop.passengers;
+            std::cout << "activity: timetable: " << stop.station << " " << clock_text(stop.arrival) << " - " << clock_text(stop.departure)
+                      << ", leg " << stop.leg + 1 << " at " << static_cast<long>(stop.distance) << " m, platform "
+                      << static_cast<long>(stop.length) << " m, boarding " << static_cast<long>(boarding) << " s" << std::endl;
+        } else if (!record->schedule[k].suppress_errors) {
+            std::cout << "activity: timetable: station " << stop.station << " not found on the path" << std::endl;
+        }
+    }
+    timetable_ = simulation::Timetable(std::move(stops), *route, record->timetable_tolerance.value_or(route_tolerance_), record->check_doors);
+    timetable_service_ = service.name;
+    timetable_train_ = record->id;
+    timetable_owner_ = unit.train->id();
+    std::cout << "activity: timetable of " << service.name << ": " << found << " of " << record->schedule.size()
+              << " stops on its path" << std::endl;
+}
+
+std::optional<simulation::TimetableTrain> TrainView::timetable_train(const Unit& unit) const {
+    const auto* progress = dispatcher_->progress(unit.train->id());
+    if (!progress || !progress->on_route) return std::nullopt;
+    simulation::TimetableTrain result;
+    result.leg = progress->leg;
+    result.head = progress->head;
+    result.length = unit.train->length();
+    result.speed = static_cast<float>(std::abs(unit.train->speed()));
+    // The cars from the leading end back.
+    const auto& cars = unit.train->cars();
+    double behind = 0.0;
+    for (std::size_t k = 0; k < cars.size(); ++k) {
+        const auto& car = cars[progress->front_leads ? k : cars.size() - 1 - k];
+        const double length = car.definition ? car.definition->length : 0.0;
+        if (k == 0) result.lead_car = length;
+        const float room = car.definition ? car.definition->passenger_capacity : 0.0f;
+        if (room > 0.0f) result.cars.emplace_back(behind + length * 0.5, room);
+        behind += length;
+    }
+    // openRTS knows the doors of a train without DLLs (Y / U); a DLL's own
+    // doors are not known here: open.
+    result.doors_open = legacy_ || native_ || doors_open_[0] || doors_open_[1];
+    return result;
+}
+
+// Ctrl+Num7 and the boarding's course (RTS 0x424488, 0x4FB1B4); the key's
+// hint once the train stands at a stop ready for it.
+void TrainView::update_timetable(const SceneInput& input, const float elapsed) {
+    if (!timetable_.empty() && (units_.empty() || units_.front().train->id() != timetable_owner_)) timetable_ = {};
+    if (timetable_.empty() || units_.empty() || units_.front().role != Role::driven) return;
+    const auto train = timetable_train(units_.front());
+    const auto now = static_cast<std::int32_t>(std::floor(day_time_));
+    bool started = false;
+    if (input.board) {
+        const auto result = train ? timetable_.start_boarding(*train, now) : simulation::BoardingStart::no_stop;
+        switch (result) {
+        case simulation::BoardingStart::started: started = true; break;
+        case simulation::BoardingStart::already: message_ = tr("Passengers are boarding train"); break;
+        case simulation::BoardingStart::moving: message_ = tr("stop the train to start the boarding"); break;
+        case simulation::BoardingStart::no_stop: message_ = tr("no stop of the timetable here (F6: the timetable)"); break;
+        case simulation::BoardingStart::doors_closed: message_ = tr("Can't start boarding passengers. All the doors are closed."); break;
+        }
+    }
+    if (train) timetable_.step(*train, elapsed, now);
+    for (const auto& event : timetable_.take_events()) {
+        const auto& stop = timetable_.stops()[event.stop];
+        switch (event.kind) {
+        case simulation::TimetableEventKind::boarding_started:
+            message_ = trf("%s: passengers are boarding, %s", stop.station.c_str(),
+                           clock_text(static_cast<std::int64_t>(std::ceil(timetable_.boarding_left()))).c_str());
+            std::cout << "activity: timetable: boarding at " << stop.station << " from " << clock_text(now) << ", "
+                      << static_cast<long>(std::ceil(timetable_.boarding_left())) << " s" << std::endl;
+            break;
+        case simulation::TimetableEventKind::boarding_over:
+            message_ = trf("%s: the boarding is over, the train may leave", stop.station.c_str());
+            std::cout << "activity: timetable: boarding over at " << stop.station << ' ' << clock_text(now) << std::endl;
+            break;
+        case simulation::TimetableEventKind::left:
+            // Ended at once: no passenger room at the platform.
+            if (started && !event.done) {
+                message_ = trf("%s: no passenger car at the platform", stop.station.c_str());
+            } else if (!event.done) {
+                message_ = trf("%s: the boarding stopped before it was over", stop.station.c_str());
+            }
+            std::cout << "activity: timetable: left " << stop.station << ' ' << clock_text(now) << (event.done ? "" : " (boarding not over)")
+                      << std::endl;
+            break;
+        }
+    }
+    // Standing where the boarding can start, not started yet: the key, once a stop.
+    if (train && !timetable_.boarding() && train->speed < 0.01f) {
+        if (const auto at = timetable_.stop_at(*train); at && !timetable_.stops()[*at].arrived && timetable_hint_ != at) {
+            const auto place = timetable_.place(*at, *train);
+            if (place == simulation::StopPlace::in_place || place == simulation::StopPlace::covering) {
+                timetable_hint_ = at;
+                message_ = trf("%s: %s starts the boarding (F6: the timetable)", timetable_.stops()[*at].station.c_str(), board_key_name());
+            }
+        }
+    }
+}
+
+std::string TrainView::timetable_report() const {
+    if (timetable_.empty()) return "none";
+    const auto train = units_.empty() ? std::nullopt : timetable_train(units_.front());
+    std::string text = timetable_service_ + (train ? "" : " (off its path)");
+    for (std::size_t k = 0; k < timetable_.stops().size(); ++k) {
+        const auto& stop = timetable_.stops()[k];
+        text += "\n  " + stop.station + " " + clock_text(stop.arrival) + " [" + (stop.arrived_at ? clock_text(*stop.arrived_at) : "-") + "] "
+            + clock_text(stop.departure) + " [" + (stop.departed_at ? clock_text(*stop.departed_at) : "-") + "]";
+        if (!stop.found) {
+            text += " not on the path";
+            continue;
+        }
+        if (train) text += " " + std::to_string(static_cast<long>(timetable_.distance(k, *train))) + " m";
+        if (train) {
+            const char* places[] = {"ahead", "partly", "in place", "covering", "passed"};
+            text += std::string(" ") + places[static_cast<int>(timetable_.place(k, *train))];
+        }
+        if (timetable_.boarding() == k) text += ", boarding " + std::to_string(static_cast<long>(std::ceil(timetable_.boarding_left()))) + " s left";
+        if (stop.departed) text += ", done";
+    }
+    if (train) {
+        float room = 0.0f;
+        for (const auto& car : train->cars) room += car.second;
+        text += "\n  train " + std::to_string(static_cast<long>(train->length)) + " m, leg " + std::to_string(train->leg + 1) + " at "
+            + std::to_string(static_cast<long>(train->head)) + " m, " + std::to_string(train->cars.size()) + " passenger cars, "
+            + std::to_string(static_cast<long>(room)) + " seats";
+    }
+    return text;
+}
+
+// F6 in a scenario whose train has a timetable (RTS 0x466F70): the stops,
+// their times as planned and as they were, the distance to each one not left
+// yet, coloured as RTS colours them.
+void TrainView::draw_timetable(const Unit& unit) {
+#ifdef OPENRTS_HAS_IMGUI
+    const auto now = static_cast<std::int32_t>(std::floor(day_time_));
+    ImGui::TextUnformatted(trf("Train schedule. Service \"%s\", train %u  %s", timetable_service_.c_str(), timetable_train_,
+                               clock_text(now).c_str()).c_str());
+    ImGui::Separator();
+    const auto train = timetable_train(unit);
+    const auto& stops = timetable_.stops();
+    const ImVec4 white{1.0f, 1.0f, 1.0f, 1.0f}, green{0.2f, 1.0f, 0.2f, 1.0f}, red{1.0f, 0.2f, 0.2f, 1.0f},
+        yellow{1.0f, 0.9f, 0.1f, 1.0f}, lime{0.5f, 0.9f, 0.1f, 1.0f}, grey{0.6f, 0.6f, 0.6f, 1.0f};
+    bool ready = false; // standing where the boarding of a stop not boarded yet can start
+    if (ImGui::BeginTable("##timetable", 6, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableSetupColumn(tr("Station"));
+        ImGui::TableSetupColumn(tr("Arrival"));
+        ImGui::TableSetupColumn(tr("Actual"));
+        ImGui::TableSetupColumn(tr("Departure"));
+        ImGui::TableSetupColumn((std::string(tr("Actual")) + "##departure").c_str());
+        ImGui::TableSetupColumn(tr("Distance"));
+        ImGui::TableHeadersRow();
+        for (std::size_t k = 0; k < stops.size(); ++k) {
+            const auto& stop = stops[k];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            if (stop.found) {
+                ImGui::TextUnformatted(stop.station.c_str());
+            } else {
+                ImGui::TextColored(grey, "%s", stop.station.c_str());
+            }
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(clock_text(stop.arrival).c_str());
+            ImGui::TableNextColumn();
+            if (stop.arrived_at) ImGui::TextColored(timetable_.arrived_on_time(stop) ? green : red, "%s", clock_text(*stop.arrived_at).c_str());
+            ImGui::TableNextColumn();
+            // The last stop's 00:00:00: the run ends there.
+            const bool end = k + 1 == stops.size() && stop.departure == 0;
+            ImGui::TextUnformatted(end ? "-" : clock_text(stop.departure).c_str());
+            ImGui::TableNextColumn();
+            if (stop.departed && stop.departed_at) {
+                ImGui::TextColored(simulation::Timetable::left_on_time(stop) || end ? green : red, "%s", clock_text(*stop.departed_at).c_str());
+            } else if (timetable_.boarding() == k) {
+                const auto left = clock_text(static_cast<std::int64_t>(std::ceil(timetable_.boarding_left())));
+                ImGui::TextColored(yellow, "%s", trf("in %s", left.c_str()).c_str());
+            } else if (stop.arrived && stop.departed_at) {
+                // Left before the boarding was over (RTS keeps such a stop open).
+                ImGui::TextColored(red, "%s", clock_text(*stop.departed_at).c_str());
+            }
+            ImGui::TableNextColumn();
+            if (!stop.found) {
+                ImGui::TextColored(grey, "%s", tr("not on the path"));
+            } else if (!stop.departed && train) {
+                const double d = timetable_.distance(k, *train);
+                char text[32];
+                std::snprintf(text, sizeof text, std::abs(d) >= 1000.0 ? tr("%.2f km") : tr("%.0f m"), std::abs(d) >= 1000.0 ? d / 1000.0 : d);
+                const auto place = timetable_.place(k, *train);
+                const auto colour = place == simulation::StopPlace::passed ? red
+                    : place == simulation::StopPlace::ahead                ? white
+                    : place == simulation::StopPlace::in_place             ? green
+                    : place == simulation::StopPlace::covering             ? lime
+                                                                           : yellow;
+                ImGui::TextColored(colour, "%s", text);
+                if (!stop.arrived && train->speed < 0.01f
+                    && (place == simulation::StopPlace::in_place || place == simulation::StopPlace::covering))
+                    ready = true;
+            }
+        }
+        ImGui::EndTable();
+    }
+    if (!train) ImGui::TextColored(grey, "%s", tr("the train is off its path"));
+    if (timetable_.boarding() && timetable_.boarding_left() > 0.0f) {
+        ImGui::TextColored(ImVec4(0.8f, 0.4f, 0.4f, 1.0f), "%s", tr("Passengers are boarding train"));
+    } else if (ready) {
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.9f, 1.0f), "%s", trf("[Press \"%s\" to start boarding passengers]", board_key_name()).c_str());
+    }
+#else
+    (void)unit;
+#endif
 }
 
 bool TrainView::traffic_place_taken(const simulation::Train& train) const {
@@ -3760,38 +4003,43 @@ void TrainView::draw_hud() {
     }
     if (stations_panel_) {
         if (begin_panel("##stations", stations_place_, 1.0f - margin_x, 0.45f)) {
-            ImGui::TextUnformatted(tr("Stations ahead"));
-            ImGui::Separator();
-            if (!service_marks_loaded_) {
-                service_marks_loaded_ = true;
-                service_marks_ = remembered("f6_service_marks").value_or("0") == "1";
-            }
-            const auto stations = stations_ahead(*unit);
-            if (stations.empty()) ImGui::TextDisabled(tr("none within 40 km"));
-            // Two columns sized to the longest name: names never run into
-            // the distances, which are right-aligned. Sidings in yellow, as
-            // F7 and Track control draw them.
-            if (!stations.empty() && ImGui::BeginTable("##stations_ahead", 2, ImGuiTableFlags_SizingFixedFit)) {
-                for (std::size_t k = 0; k < stations.size() && k < 12; ++k) {
-                    const auto& [name, distance, siding] = stations[k];
-                    ImGui::TableNextRow();
-                    ImGui::TableNextColumn();
-                    if (siding) {
-                        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.1f, 1.0f), "%s", name.c_str());
-                    } else {
-                        ImGui::TextUnformatted(name.c_str());
-                    }
-                    ImGui::TableNextColumn();
-                    char text[32];
-                    std::snprintf(text, sizeof text, distance >= 1000.0 ? tr("in %.2f km") : tr("in %.0f m"),
-                                  distance >= 1000.0 ? distance / 1000.0 : distance);
-                    ImGui::TextUnformatted(text);
+            if (!timetable_.empty() && unit == &units_.front()) {
+                // A scenario's timetable: RTS shows it here when the train has one.
+                draw_timetable(*unit);
+            } else {
+                ImGui::TextUnformatted(tr("Stations ahead"));
+                ImGui::Separator();
+                if (!service_marks_loaded_) {
+                    service_marks_loaded_ = true;
+                    service_marks_ = remembered("f6_service_marks").value_or("0") == "1";
                 }
-                ImGui::EndTable();
-            }
-            ImGui::Separator();
-            if (ImGui::Checkbox(tr("marks (%n ...)"), &service_marks_)) {
-                remember("f6_service_marks", service_marks_ ? "1" : "0");
+                const auto stations = stations_ahead(*unit);
+                if (stations.empty()) ImGui::TextDisabled(tr("none within 40 km"));
+                // Two columns sized to the longest name: names never run into
+                // the distances, which are right-aligned. Sidings in yellow, as
+                // F7 and Track control draw them.
+                if (!stations.empty() && ImGui::BeginTable("##stations_ahead", 2, ImGuiTableFlags_SizingFixedFit)) {
+                    for (std::size_t k = 0; k < stations.size() && k < 12; ++k) {
+                        const auto& [name, distance, siding] = stations[k];
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        if (siding) {
+                            ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.1f, 1.0f), "%s", name.c_str());
+                        } else {
+                            ImGui::TextUnformatted(name.c_str());
+                        }
+                        ImGui::TableNextColumn();
+                        char text[32];
+                        std::snprintf(text, sizeof text, distance >= 1000.0 ? tr("in %.2f km") : tr("in %.0f m"),
+                                      distance >= 1000.0 ? distance / 1000.0 : distance);
+                        ImGui::TextUnformatted(text);
+                    }
+                    ImGui::EndTable();
+                }
+                ImGui::Separator();
+                if (ImGui::Checkbox(tr("marks (%n ...)"), &service_marks_)) {
+                    remember("f6_service_marks", service_marks_ ? "1" : "0");
+                }
             }
         }
         end_panel(stations_place_);
@@ -4237,6 +4485,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         }
         update_tape();
     }
+    update_timetable(input, elapsed);
 
     const Unit* followed = follow_id_ != 0 ? find_unit(follow_id_) : nullptr;
     if (!followed) followed = &units_.front();
@@ -4569,6 +4818,19 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
         walk_objects_near_.clear();
     } else {
         gather_walk_world(engineer_.mode() == Engineer::Mode::outside ? engineer_.feet() : camera.eye(), library);
+    }
+    {
+        // The cab's doors with the car's way of the same name (RTS 0x4310B0 /
+        // 0x431270): in up the steps and out down them.
+        std::vector<bool> ways(cab->description().doors.size(), false);
+        if (const auto& outside = unit.cars[engineer_car_].outside) {
+            for (std::size_t d = 0; d < ways.size(); ++d) {
+                const auto name = lower(cab->description().doors[d].name);
+                for (const auto& door : outside->door_details)
+                    if (!door.trajectory.empty() && lower(door.name) == name) ways[d] = true;
+            }
+        }
+        engineer_.set_door_ways(std::move(ways));
     }
     engineer_.update(*cab, controls, body->transform * cab->placement(), outdoors, elapsed, camera);
     carry_out(engineer_.take_event());
@@ -5030,13 +5292,41 @@ void TrainView::carry_out(const Engineer::Event& event) {
         } else if (outside_footing(*outside->details, outside->door_open, at_car).kind == OutsideFooting::Kind::none) {
             return; // not onto anything there: he stays
         }
-        engineer_.step_onto_car(*outside, at_car, path);
+        // Where the way ends: the cab door's other side (RTS 0x431270), the
+        // car's walkway or (EXTERIOR) the ground at the steps' foot.
+        std::string end = "ext_wag";
+        if (event.by_path && event.door < cab->description().doors.size()) {
+            const auto& door = cab->description().doors[event.door];
+            if (lower(door.from) == "exterior" || lower(door.to) == "exterior") end = "exterior";
+        }
+        if (end == "exterior") std::cout << "the engineer climbs down from car " << i + 1 << std::endl;
+        engineer_.step_onto_car(*outside, at_car, path, end);
         outside_car_ = units_.front().cars[i].key;
         // The cab he left stays with its doors.
         if (engineer_car_ != cab_car_) keep_cab(engineer_car_, std::move(visit_cab_));
         engineer_car_ = cab_car_;
         hovered_.reset();
         std::cout << "the engineer goes out onto car " << i + 1 << std::endl;
+        return;
+    }
+    if (event.kind == Kind::climb_in) {
+        // On the ground at his cab's door: up the car's way of its name.
+        auto* cab = engineer_cab();
+        if (!cab || units_.empty() || engineer_car_ >= units_.front().cars.size() || event.door >= cab->description().doors.size())
+            return;
+        const std::size_t i = engineer_car_;
+        const auto outside = car_outside(0, i);
+        if (!outside) return;
+        const auto name = lower(cab->description().doors[event.door].name);
+        for (std::size_t k = 0; k < outside->details->door_details.size(); ++k) {
+            const auto& door = outside->details->door_details[k];
+            if (door.trajectory.empty() || lower(door.name) != name) continue;
+            engineer_.go_through(*outside, k);
+            outside_car_ = units_.front().cars[i].key;
+            hovered_.reset();
+            std::cout << "the engineer climbs up into car " << i + 1 << " by its door " << door.name << std::endl;
+            return;
+        }
         return;
     }
     const auto at = outside_car_ ? find_car(*outside_car_) : std::nullopt;
@@ -5390,6 +5680,29 @@ std::string TrainView::systems_report() const {
                 + std::to_string(engines) + " DLLs bound";
         }
         text += ")";
+    }
+    // The cab's lamps as its DLL lights them (state by .sd ID): an ALSN that
+    // stays dark is the DLL's (its power off) or the drawing's.
+    if (cab_ && legacy_) {
+        if (const auto* out = legacy_->output(cab_car_)) {
+            std::string lamps;
+            for (const auto& d : cab_->description().displays) {
+                if (d.type != formats::CabDisplayType::lamp || d.id >= out->displays.size()) continue;
+                lamps += " " + std::to_string(d.id) + "/" + d.name + "=" + std::to_string(out->displays[d.id].state);
+            }
+            text += "; cab lamps:" + lamps;
+            std::string on;
+            for (std::size_t k = 0; k < out->switches.size(); ++k)
+                if (out->switches[k].state != 0) on += " " + std::to_string(k) + "=" + std::to_string(out->switches[k].state);
+            text += "; cab switches not at 0:" + on;
+            // The locomotive signal lights (LocomotiveSignalization): the DLL's
+            // aspect, the engine's ALSNOn (0: all out), the lights' nodes.
+            if (!cab_->description().signalization.lights.empty()) {
+                text += "; signalization aspect " + std::to_string(out->cab_aspect) + " of " + std::to_string(cab_->description().signalization.aspects.size())
+                    + ", ALSNOn " + (out->has_engine ? std::to_string(static_cast<std::int16_t>(out->engine.alsn_on)) : std::string("-")) + ", nodes";
+                for (const auto node : cab_->signal_light_nodes()) text += " " + std::to_string(node);
+            }
+        }
     }
     // The cab screens' labels: what the DLL wrote, and how much of it shows.
     if (const auto* layout = cab_ ? cab_->screen_layout() : nullptr) {

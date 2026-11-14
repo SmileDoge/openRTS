@@ -108,6 +108,7 @@ struct SceneInput {
     bool flashlight = false;     // Num2 / Shift+`: RTS's flashlight on or off (edge)
     bool tape = false;           // Ctrl+Num5 / Ctrl+`: the tape on or off (edge)
     bool tape_which = false;     // Num5: which locomotive the tape records (edge)
+    bool board = false;          // Ctrl+Num7 / Ctrl+=: start the boarding at a scenario's stop (edge)
     bool inspector = false;      // F12: the inspector open or shut (edge)
     // Train driving (edges).
     bool throttle_up = false;      // Home
@@ -286,6 +287,8 @@ public:
     [[nodiscard]] virtual std::string inspector_report() const { return {}; }
     // The tape window's tape as text (--capture-tape).
     [[nodiscard]] virtual std::string tape_report() const { return {}; }
+    // The player's train's timetable as it stands (--capture-boarding).
+    [[nodiscard]] virtual std::string timetable_report() const { return {}; }
     // What the shadows look at most closely this frame (after submit): the
     // cab the engineer is in.
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> shadow_focus() const { return std::nullopt; }

@@ -40,6 +40,9 @@ struct RouteDefinition {
     // speed limit for speed posts that end a restriction (0x482680).
     float speed_limit{};
     float temp_restricted_speed{};
+    // TimetableTollerance: s late at a stop still on time, for the
+    // scenarios' trains without their own (RTS 0x407588; 0 without it).
+    float timetable_tolerance{};
     // Electrified ( 1 ): RTS gives an electric engine its own voltage on a
     // route without an .electrotype (docs/electrification.md).
     bool electrified = false;

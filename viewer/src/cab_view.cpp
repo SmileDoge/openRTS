@@ -748,6 +748,7 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
         return was + (now - was) * std::clamp(blend->alpha, 0.0f, 1.0f);
     };
     if (!bound_) return;
+    const std::size_t first = out.size(); // this cab's entries start here
     switch_frames_.assign(cab_.switches.size(), -1.0f);
     for (std::size_t i = 0; i < cab_.switches.size() && i < switches_.size(); ++i) {
         const auto& b = switches_[i];
@@ -822,7 +823,9 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             if (b.last_frame > 0.0f) {
                 out.push_back({.matrix = b.node, .frame = lit ? b.last_frame : 0.0f});
             } else if (!lit) {
-                out.push_back({.matrix = b.node, .local = hidden}); // a lamp without keys shows only when lit
+                // A lamp without keys shows only when lit (RTS 0x4B355C with
+                // AnimTime 0: the node's flag 1, its own primitives).
+                out.push_back({.matrix = b.node, .hidden = true});
             }
             break;
         default:
@@ -863,9 +866,20 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
         if (shown >= sig.aspects.size()) shown = 0;
         const auto& lit = sig.aspects[shown];
         for (std::size_t m = 0; m < signal_lights_.size(); ++m) {
-            if (signal_lights_[m] < 0) continue;
+            const auto node = signal_lights_[m];
+            if (node < 0) continue;
             const bool show = on != 0 && (on == -1 || std::find(lit.begin(), lit.end(), static_cast<std::uint32_t>(m)) != lit.end());
-            if (!show) out.push_back({.matrix = signal_lights_[m], .hidden = true}); // node flag 1 (0x525DB0)
+            if (!show) {
+                out.push_back({.matrix = node, .hidden = true}); // node flag 1 (0x525DB0)
+                continue;
+            }
+            // RTS sets the lights after the displays and clears the flag of
+            // one that burns: a LAMP display of the same node left out does
+            // not put it out (the ER9P / ER9M 3SL cabs' A_G1..A_W1 are both,
+            // their displays at 0; every ALSN light stayed dark, 2026-11-14).
+            for (auto it = out.begin() + static_cast<std::ptrdiff_t>(first); it != out.end();) {
+                it = it->matrix == node && it->hidden ? out.erase(it) : it + 1;
+            }
         }
     }
 }

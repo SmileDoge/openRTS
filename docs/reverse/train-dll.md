@@ -351,6 +351,15 @@ types 1, 2 and 4).** For each locomotive with a bound DLL (`LocoFlags &
   .. lk ) .. )`, the count first, a bitmask per aspect of
   ceil(lights / 32) words (Cabin `+64`); indices past the lights (the VL10k
   lists 10..15 for the other end) never show.
+- **CONFIRMED** the signal lights come after the displays in `0x525DB0`
+  and set or clear the node's flag themselves: a LAMP display of the same
+  node that is out (`0x4B355C` with `AnimTime` 0 sets flag 1) does not put
+  a burning light out. The ER9P / ER9M 3SL cab (`mdd_ER2-Alias`
+  `cab9M3SL.sd`) has `A_W1 A_R1 A_YR1 A_Y1 A_G1` as both its signal lights
+  and LAMP displays 58..62, which `ER9T.dll` leaves at 0. In openRTS the
+  displays hid every light until 2026-11-14 (testers: "the ALSN does not
+  burn"); now the light of the aspect wins, as in RTS
+  (`tests/engineer_test.cpp`).
 
 ## 6. Switches: `CanSwitch` and `Switched`
 

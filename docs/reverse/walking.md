@@ -197,8 +197,7 @@ Since 2026-11-11, as above:
 - in a cab on its planes (`Engineer::walk_planes`), with two additions of
   openRTS's own: from a place off every plane (a `Pos3`) a step takes him
   onto the nearest plane within 0.3 m, and climbing in by an outer door
-  puts him on the plane 0.45 m inside it (RTS runs the door's
-  `Trajectory`); off a door's plane to `EXT_WAG` it looks 0.1 m on for the
+  with no way of its own puts him on the plane 0.45 m inside it; off a door's plane to `EXT_WAG` it looks 0.1 m on for the
   area's edge (the ChME3's door plane ends 0.036 m short of it, less than
   a step at a walk). A cab without planes walks on its shape's surfaces;
 - on a car's outside (`Engineer::Mode::on_car`): the steps and ladders
@@ -214,6 +213,28 @@ Since 2026-11-11, as above:
   and as far aside as he was beyond his own (the ED9M: 0.6 m past z 10.4
   at 11.0), on its floor there or up to 1 m further in; else at its door's
   point as before (RTS runs that door's way).
+
+Since 2026-11-14, a cab's door from the ground and back as RTS does it
+(testers: "no climbing animation as in RTS"):
+- **In** (`0x4310B0`). Ctrl+Enter on the ground at a cab door whose car
+  has an `ExteriorDoor` of the same name with a `Trajectory` runs that way
+  forwards from its point nearest him: up the steps and in, at its
+  points' speeds, then he stands in the cab where it ends. The 2026-11
+  build has 8386 such doors (`EXTERIOR INTERIOR`, every one starting on
+  the ground) in 888 folders. The 2ES4K's `DOOR_D` goes from y 0 up
+  0.61, 0.84, 1.4 and 1.5, then in: 2.4 s, after which he stands on the
+  cab's floor at 1.53. Its cab's own `DOOR_D` (`MACHINE EXTERIOR`) has no
+  `Trajectory`, nor has any of the build's 834 cab doors to `EXTERIOR`.
+  Before, openRTS put him on the plane inside at once.
+- **Out** (`0x431270`, CONFIRMED). Ctrl+Enter at such a cab door inside
+  runs the same way backwards to the cab door's other side, as for
+  `EXT_WAG` doors: `EXTERIOR` puts him on the ground at the steps' foot
+  (the 2ES4K: 2.0 s). RTS needs the car's door to have its way (flag 1)
+  and the speed under `MaxSpeedToGetOff`. Walking out through the open
+  door still steps him off at once, as RTS's mode 2 does (above).
+- A car with such doors and nothing else to walk on is read for them too
+  (`ExteriorDetails::door_ways`). `tests/engineer_test.cpp` checks the
+  2ES4K in and out with the content.
 
 Not done: the speeds to get on and off (`MaxSpeedToGetOn` /
 `MaxSpeedToGetOff`), the track's bed, a cab's ledges and a car's own boxes

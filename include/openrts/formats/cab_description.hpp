@@ -397,6 +397,13 @@ struct ExteriorDetails {
     std::vector<ExteriorLedge> ledges;
     // Anything the engineer can walk on or climb outside.
     [[nodiscard]] bool walkable() const noexcept { return !ladders.empty() || !planes.empty() || !ledges.empty(); }
+    // A door with a Trajectory: its way in from the ground and out (8386
+    // doors EXTERIOR -> INTERIOR in the 2026-11 build, up a cab's steps).
+    [[nodiscard]] bool door_ways() const noexcept {
+        for (const auto& door : door_details)
+            if (!door.trajectory.empty()) return true;
+        return false;
+    }
 };
 [[nodiscard]] ExteriorDetails parse_exterior_details(std::string_view bytes);
 

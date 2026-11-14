@@ -872,7 +872,8 @@ public:
         if (!panels_shown()) {
             // The scene's own windows and HUD as ever; its lines for the
             // panel go nowhere.
-            ImGui::SetNextWindowPos({-10.0f, -10.0f});
+            // Wholly off the screen (ImGui makes it at least WindowMinSize).
+            ImGui::SetNextWindowPos({-200.0f, -200.0f});
             ImGui::SetNextWindowSize({1.0f, 1.0f});
             ImGui::Begin("##viewer_hidden", nullptr,
                          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground
@@ -1309,6 +1310,13 @@ public:
                     remember("volume", std::to_string(volume)); // the next run starts with it
                 }
                 ImGui::TextDisabled(tr("%zu voices, %zu heard"), panel.sound->active_voices(), panel.sound->audible_voices());
+                int quiet = static_cast<int>(background_sound());
+                const char* choices[] = {tr("plays as in front"), tr("quieter"), tr("silent")};
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::Combo(tr("Sound in the background (minimised or behind another window)"), &quiet, choices, 3)) {
+                    set_background_sound(static_cast<BackgroundSound>(quiet));
+                    remember("background_sound", background_sound_key(background_sound()));
+                }
             } else {
                 ImGui::TextDisabled("%s", tr("Sound: off"));
             }
@@ -1435,9 +1443,16 @@ private:
     }
 
     static void draw_scene_unseen(const ViewerScene& scene, const ViewerCamera& camera) {
+        // The scene's lines for the panel go nowhere (its own windows and
+        // HUD as ever): clipped to an empty rectangle off the screen. Drawn
+        // into the 1 x 1 child alone, its first pixel showed: a white dot
+        // at the panel's end, or with the panel hidden at the screen's
+        // top-left corner (testers, 2026-11-14).
         ImGui::BeginChild("##scene_unseen", {1.0f, 1.0f}, ImGuiChildFlags_None,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBackground);
+        ImGui::PushClipRect({-16.0f, -16.0f}, {-16.0f, -16.0f}, false);
         scene.draw_overlay(camera);
+        ImGui::PopClipRect();
         ImGui::EndChild();
     }
 
@@ -1552,6 +1567,7 @@ struct CameraInput {
     bool kp3_down = false;
     bool kp2_down = false;
     bool kp5_down = false;
+    bool kp7_down = false;
     bool inspector_key_down = false;
     bool tape_window_key_down = false; // F9
     int clicks = 0;            // left clicks in fly mode since the last scene_input()
@@ -1798,7 +1814,9 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     // keys, or - and = on the top row.
     const bool rts_keys = key_layout() == KeyLayout::rts;
     const bool kp0 = pressed(rts_keys ? GLFW_KEY_KP_0 : GLFW_KEY_MINUS, input.kp0_down);
-    const bool kp1 = pressed(rts_keys ? GLFW_KEY_KP_1 : GLFW_KEY_EQUAL, input.kp1_down);
+    // Ctrl+= is the boarding's in openRTS's layout, not the head out.
+    const bool equal = pressed(rts_keys ? GLFW_KEY_KP_1 : GLFW_KEY_EQUAL, input.kp1_down);
+    const bool kp1 = equal && (rts_keys || !ctrl);
     // ` alone the car menu, Shift+` the flashlight, Ctrl+` the tape (RTS:
     // Num3, Num2 and Ctrl+Num5).
     const bool grave = !rts_keys && pressed(GLFW_KEY_GRAVE_ACCENT, input.kp3_down);
@@ -1806,6 +1824,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool kp2 = rts_keys ? pressed(GLFW_KEY_KP_2, input.kp2_down) : grave && shift && !ctrl;
     const bool kp5 = rts_keys && pressed(GLFW_KEY_KP_5, input.kp5_down);
     const bool tape = rts_keys ? kp5 && ctrl : grave && ctrl;
+    // The boarding at a scenario's stop (RTS: Ctrl+Num7, 0x403208).
+    const bool board = rts_keys ? pressed(GLFW_KEY_KP_7, input.kp7_down) && ctrl : equal && ctrl;
     int width = 0, height = 0;
     glfwGetWindowSize(window, &width, &height);
     const bool pointer = !input.fly_looking && width > 0 && height > 0 && !overlay_wants_mouse()
@@ -1820,6 +1840,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.flashlight = kp2;
         in.tape = tape;
         in.tape_which = kp5 && !ctrl;
+        in.board = board;
         in.inspector = f12;
         in.pointer = pointer;
         in.pointer_x = static_cast<float>(input.cursor_x / width * 2.0 - 1.0);
@@ -2297,6 +2318,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     set_key_hints(remembered("key_hints").value_or("1") != "0");
     set_mouse_sensitivity(parse_mouse_sensitivity(remembered("mouse_sensitivity").value_or("1").c_str()));
     set_head_motion(parse_head_motion(remembered("head_motion").value_or("").c_str()));
+    set_background_sound(parse_background_sound(remembered("background_sound").value_or("").c_str()));
     set_rail_joint_layout(parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
     set_body_motion_model(parse_body_motion_model(remembered("body_motion").value_or("openrts").c_str()));
     // Sound is optional: without a device the viewer runs silent.
@@ -2344,6 +2366,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     int capture_inspect_step = 0; // --capture-inspect: 1 opened, 2 clicked
     bool capture_driven = false;
     bool capture_taped = false;
+    bool capture_boarded = false;
+    int capture_minimise_step = 0; // --capture-minimise: 1 minimised, 2 back
+    double capture_minimise_log = 0.0;
+    int capture_minimise_frames = 0;
+    double capture_minimise_clock = 0.0;
     int capture_board_step = 0; // --capture-board: 1 at the door, then the presses of Enter
     bool capture_passed = false; // --capture-passage done
     double capture_reported = 0.0; // --capture-report: the last pick
@@ -2500,7 +2527,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             if (pause_key && !input.pause_key_down) panel.paused = !panel.paused;
             input.pause_key_down = pause_key;
         }
-        if (sound) sound->set_paused(panel.paused || !loading.done);
+        if (sound) {
+            sound->set_paused(panel.paused || !loading.done);
+            // Not silent in the background unless so chosen (key_layout.hpp).
+            sound->set_background_gain(background ? background_sound_gain(background_sound()) : 1.0f);
+        }
         renderer::physical_light_falloff() = panel.physical_light;
         renderer::native_water() = panel.native_water;
         renderer::native_sky() = panel.native_sky;
@@ -2604,6 +2635,40 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             frame_input.tape = true;
             frame_input.tape_window = true;
             capture_taped = true;
+        }
+        if (capture && options.capture_minimise) {
+            const double since = glfwGetTime() - capture_start;
+            if (capture_minimise_step == 0 && since >= options.capture_at * 0.3) {
+                glfwIconifyWindow(window.get());
+                capture_minimise_step = 1;
+                capture_minimise_log = glfwGetTime();
+                capture_minimise_clock = clock.time_of_day;
+                std::cout << "minimise: the window minimised" << std::endl;
+            } else if (capture_minimise_step == 1 && since >= options.capture_at * 0.7) {
+                glfwRestoreWindow(window.get());
+                capture_minimise_step = 2;
+                std::cout << "minimise: the window back" << std::endl;
+            }
+            if (capture_minimise_step == 1) {
+                ++capture_minimise_frames;
+                if (glfwGetTime() - capture_minimise_log >= 1.0) {
+                    std::cout << "minimise: iconified " << glfwGetWindowAttrib(window.get(), GLFW_ICONIFIED) << ", "
+                              << capture_minimise_frames << " frames in " << glfwGetTime() - capture_minimise_log << " s, the clock +"
+                              << clock.time_of_day - capture_minimise_clock << " s, sound "
+                              << (sound ? std::to_string(sound->active_voices()) + " voices, " + std::to_string(sound->audible_voices())
+                                              + " heard, output at frame " + std::to_string(sound->played_frames())
+                                              + (sound->paused() ? ", paused" : "")
+                                        : std::string("off"))
+                              << std::endl;
+                    capture_minimise_log = glfwGetTime();
+                    capture_minimise_clock = clock.time_of_day;
+                    capture_minimise_frames = 0;
+                }
+            }
+        }
+        if (capture && options.capture_boarding && !capture_boarded && glfwGetTime() - capture_start >= options.capture_at * 0.4) {
+            frame_input.board = true;
+            capture_boarded = true;
         }
         if (capture && options.capture_drive && !capture_driven && glfwGetTime() - capture_start >= options.capture_at * 0.8) {
             scene.drive_unit(*options.capture_drive);
@@ -2846,6 +2911,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             if (options.capture_menu) std::cout << "car menu: " << scene.car_menu_report() << std::endl;
             if (options.capture_inspect) std::cout << "inspector: " << scene.inspector_report() << std::endl;
             if (options.capture_tape) std::cout << "tape window: " << scene.tape_report() << std::endl;
+            if (options.capture_boarding) std::cout << "timetable: " << scene.timetable_report() << std::endl;
             const auto effect_stats = effects.stats();
             std::cout << "effects: " << effect_stats.cascades << " cascades (" << effect_stats.cascades_drawn << " drawn, nearest texel "
                       << effect_stats.near_texel * 1000.0f << " mm), cab map " << (effect_stats.focus ? "on" : "off");

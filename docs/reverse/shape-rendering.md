@@ -209,9 +209,10 @@ blended primitives either).
 **CONFIRMED** node state flag 0x01 (not drawn) leaves out the node's own
 primitives only, its children still show (the same lookup); RTS sets it for
 an unlit lamp's node (`0x514630`) and a cab signal light that is out
-(`0x525DB0`). openRTS: `NodeAdjustment::hidden` for those two; a cab's KEY
-switch with its key out and a LAMP display without animation keys still
-hide their nodes with their children (how RTS hides them is not traced).
+(`0x525DB0`), and for a LAMP display without animation time that is out
+(`0x4B355C`). openRTS: `NodeAdjustment::hidden` for those three; a cab's KEY
+switch with its key out still hides its node with its children (how RTS
+hides it is not traced).
 
 **PROBABLE** the textures of light glows (`LightTex`, signal lights) and cab
 screens are mipmapped like every RTS texture (the glow loop of `0x408574`

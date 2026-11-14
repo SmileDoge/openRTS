@@ -21,7 +21,9 @@ the menus (`ActivityMenus`), the scenario's parameters
 (`TrainsDistanceOfNoReturn`, `TrafficLimitsTable`, `GlobalBlockPoints`),
 the services (type, path, `ServiceStarts`, `ServiceFlags`, block points,
 trains with their consist, placement, start and remove times, speeds,
-rates, efficiency, offset, flags, state, `WagonParameters`) and every event
+rates, efficiency, offset, flags, state, `WagonParameters`, the timetable:
+`TrainSchedule`, `TrainTimetableTollerance`, `TrainCheckOpenedDoorsAtStop`)
+and every event
 (`GlobalEvents`, a service's `ServiceEvents`: id, activation level,
 enabled, `Permanent`, conditions and outcomes, kept as written).
 
@@ -154,15 +156,92 @@ there is one); F11 the scenario's window with everything said; hints at the
 top. `--capture-ok` closes the messages and `--capture-report` picks each
 menu's first item in an automated run (with `--capture-board`).
 
+## The timetable (F6)
+
+A train's `TrainSchedule` lists its stops. Each `Station` has
+`StationName`, `NumSkipped`, `NumPassengers`, `ArrivalTime`,
+`DepartureTime` (without it the arrival), `AlignWhenStops` (traffic) and
+`SuppressErrors`. RTS reads it with the train (`0x471B9C` → `0x4751E4`)
+and openRTS keeps it in `simulation::Timetable`
+(`simulation/timetable.hpp`). The player's train gets the timetable of
+its train in the service whose path it has: the start's, or one that
+`AssignService` gives. Both installed scenarios with timetables give it
+that way: Novokuznetsk's "Скорый поезд 77" after the shunting, Kuban's
+"Пассажирский поезд №310-1" once the engine is coupled to its cars.
+
+- **The stops on the path** (`0x4755C8`, CONFIRMED). Each stop is the next
+  platform the path passes after the stop before it: both ends are
+  platform items, the station is the TDB's `Station` (any case), and
+  `NumSkipped` such passes are left out first. A platform counts once on
+  each track node. Its place is the end the train reaches last, where the
+  head stops, and its length is the distance between the ends. A train
+  starting on a platform gets it whole: the end behind the path's start
+  still counts. The log names each stop with its place and boarding time,
+  or says it is not on the path (RTS: message `0x4B` unless
+  `SuppressErrors`). On the 2026-11 build Kuban's 310-1 finds all 5 stops
+  on its 203 km path (Краснодар-1 at its second pass, `NumSkipped ( 1 )`)
+  and Novokuznetsk's express all 4 (`tests/timetable_test.cpp` with the
+  content).
+- **F6** (`0x466F70`, CONFIRMED). With a timetable the panel shows "Train
+  schedule. Service ..., train ..." and the time, then one row a stop:
+  the station, the arrival as planned and as it was, the departure as
+  planned and as it was, the distance.
+  - The noted arrival is green when it is no later than the planned one
+    plus the tolerance, else red. The tolerance is `TrainTimetableTollerance`,
+    else the route's `TimetableTollerance` (`.trk`, `0x407588`), else 0.
+  - The noted departure is green when it is no earlier than the planned
+    one. While boarding, that cell shows "in ..." with the time left, in
+    yellow.
+  - The distance runs from the head to the stop's place, shown only for
+    stops not left yet. It is red when the rear has passed the platform's
+    end, white when the platform is ahead, green when the whole train is
+    on it. A train longer than the platform is lime with its head within
+    half a car of the end; anything else is yellow.
+  - Under the table: "Passengers are boarding train", or, when standing
+    green or lime at a stop not boarded yet, the key to press.
+  - openRTS also shows the stops not found, in grey, and a last stop's
+    00:00:00 departure as "-". Without a timetable F6 is the stations
+    ahead, as before.
+- **The boarding** (Ctrl+Num7, `0x424488`, CONFIRMED). In openRTS's key
+  layout it is Ctrl+=. Standing (under 0.5 m/s) with some of the train on
+  the platform of the first stop not left yet (`0x46AE0C`), the key starts
+  the boarding and notes the arrival.
+  - The time is the platform's `PlatformMinWaitingTime` ×
+    `NumPassengers` / `PlatformNumPassengersWaiting`, or `NumPassengers`
+    s when the platform has nobody waiting. That is 26 s for the express's
+    stops (180 s × 1 / 7), 90 s at Староминская and 15 min at Краснодар-1
+    for the 310th.
+  - It is scaled by the train's passenger room over the room at the
+    platform (`0x4FB1B4`): a car is at the platform when its centre is
+    (PROBABLE: RTS asks `0x48F84C`). The room is each car's
+    `PassengerCapacity`, 200 for a `Carriage` without it, 0 for anything
+    else (`0x44247C`).
+  - It counts down, and the boarding ends when the train moves (over
+    0.5 m/s) or no room at the platform is open. The departure is noted
+    then, and the stop is done if the time had run out. Otherwise it stays
+    open and can be boarded again, its arrival noted anew.
+  - With `TrainCheckOpenedDoorsAtStop ( 1 )` (train flag 0x2000) RTS
+    counts only the doors on the platform's side (the side is UNKNOWN in
+    openRTS). openRTS asks for a door side open on a train without DLLs
+    (Y / U) and takes a DLL train's doors as open. No installed scenario
+    sets it.
+  - The messages: the boarding started with its time, over ("the train may
+    leave"), stopped before it was over, no passenger car at the platform;
+    standing ready at a stop, the key once.
+  - `--capture-boarding` presses the key at 0.4 of `--capture-at` and
+    prints the timetable when the capture ends.
+
 ## Not yet
 
 - Traffic's rest (`docs/traffic.md`, "Not yet"): `SERIAL` starts,
   `SpawnTrain`, `RemoveTrain`, `AlternatePath`, the conditions
   `ReachBlockPoint`, `ApproachBlockPoint`, `ReleasedBlockPoint`, the
   traffic's orders in `WaitAtLocation`; the server running it.
-- The timetable: `StopAtStation`, `DepartFromStation`,
-  `TimetableCompleted`, `ReachReversePoint`, `ReachEndPoint`; a
-  `NewPathLoad` path of `AssignService`.
+- The timetable's conditions: `StopAtStation`, `DepartFromStation`,
+  `TimetableCompleted` (RTS raises them as the boarding starts, ends and,
+  at the last stop, runs out: events 22, 23 and 28; the station numbering
+  is UNKNOWN), `ReachReversePoint`, `ReachEndPoint`; the traffic's stops
+  (`AlignWhenStops`); a `NewPathLoad` path of `AssignService`.
 - `UncoupleCars` (the condition and the outcome), `SetDefaultUncouple`,
   `DeliverCars`, `PickupEvent`, `WaitAtLocation`, `ReachVelocity`,
   `RandomEvent`, `OnActivationLevel`, `PlayerBoardsTrain ( EXTERIOR )`.

@@ -449,6 +449,7 @@ struct Launcher::State {
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
         viewer::set_mouse_sensitivity(remembered_float("mouse_sensitivity", 1.0f));
         viewer::set_head_motion(remembered_float("head_motion", viewer::default_head_motion));
+        viewer::set_background_sound(viewer::parse_background_sound(remembered("background_sound").value_or("").c_str()));
         viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
         viewer::set_body_motion_model(viewer::parse_body_motion_model(remembered("body_motion").value_or("openrts").c_str()));
         vsync = remembered_int("launcher_vsync", 1) != 0;
@@ -1310,6 +1311,14 @@ void Launcher::State::draw_settings(const float height) {
             form_row(tr("Sound volume"));
             ImGui::BeginDisabled(!sound);
             viewer::slider_with_input("##volume", &volume, 0.0f, 1.0f, "%.2f", "%.2f");
+            form_row(tr("Sound in the background (minimised or behind another window)"));
+            int quiet = static_cast<int>(viewer::background_sound());
+            const char* choices[] = {tr("plays as in front"), tr("quieter"), tr("silent")};
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::Combo("##background_sound", &quiet, choices, 3)) {
+                viewer::set_background_sound(static_cast<viewer::BackgroundSound>(quiet));
+                remember("background_sound", viewer::background_sound_key(viewer::background_sound()));
+            }
             ImGui::EndDisabled();
             form_row(tr("Rail joints"));
             int joints = viewer::rail_joint_layout() == simulation::RailJointLayout::rts ? 1 : 0;

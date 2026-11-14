@@ -5,6 +5,10 @@
 //
 //   openrts_engineer_test <RTS root>
 
+#include <openrts/renderer/model_renderer.hpp>
+#include <openrts/dllhost/protocol.hpp>
+#include <openrts/formats/shape_binary.hpp>
+#include <openrts/formats/shape_file.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -586,6 +590,161 @@ int main(int argc, char** argv) {
         }
     } else {
         std::printf("no ChME3-1277 here: its outside not checked\n");
+    }
+
+    // The 2ES4K (mdd_3ES4k-057, section a): in from the ground up its cab's
+    // steps along the outer door's way (ExteriorDoor DOOR_D, Connects
+    // EXTERIOR INTERIOR, six points up from the ground, RTS 0x4310B0; the
+    // cab's own DOOR_D, MACHINE -> EXTERIOR, has none), and out down them by
+    // Ctrl+Enter at the cab's door (RTS 0x431270). Before 2026-11-14
+    // Ctrl+Enter put him inside at once and out on the ground at once.
+    if (const auto loco = formats::load_wagon(vfs, "mdd_3ES4k-057", "mdd_3ES4k-057a", true); loco.ok()) {
+        const auto shape = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_3ES4k-057/" + loco.shape);
+        const auto sd = shape ? vfs.read(formats::shape_description(vfs, *shape)) : std::nullopt;
+        const auto details = sd ? formats::parse_exterior_details(*sd) : formats::ExteriorDetails{};
+        auto cab5 = viewer::CabView::create(vfs, loco, formats::wagon_path("mdd_3ES4k-057", "mdd_3ES4k-057a", true));
+        for (int i = 0; i < 600 && cab5 && !cab5->collision(); ++i) {
+            cab5->poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        std::size_t outer_d = SIZE_MAX, cab_d = SIZE_MAX;
+        for (std::size_t k = 0; k < details.door_details.size(); ++k)
+            if (details.door_details[k].name == "DOOR_D") outer_d = k;
+        for (std::size_t k = 0; cab5 && k < cab5->description().doors.size(); ++k)
+            if (cab5->description().doors[k].name == "DOOR_D") cab_d = k;
+        check(details.door_ways() && outer_d != SIZE_MAX && cab_d != SIZE_MAX && details.door_details[outer_d].from == "exterior"
+                  && details.door_details[outer_d].to == "interior" && details.door_details[outer_d].trajectory.size() == 6
+                  && cab5->description().doors[cab_d].trajectory.empty(),
+              "2ES4K: the outer DOOR_D leads from the ground into the cab along its way, the cab's DOOR_D has none");
+        if (cab5 && outer_d != SIZE_MAX && cab_d != SIZE_MAX) {
+            viewer::CarOutside car_out;
+            car_out.details = &details;
+            car_out.door_open = [&](std::size_t k) {
+                while (k < details.door_details.size() && details.door_details[k].parent >= 0)
+                    k = static_cast<std::size_t>(details.door_details[k].parent);
+                return k == outer_d ? cab5->door_open(cab_d) : false;
+            };
+            car_out.cab_holds = [&](const glm::vec3& at) {
+                return Engineer::cab_holds(*cab5, glm::vec3{glm::inverse(cab5->placement()) * glm::vec4{at, 1.0f}}, 1.81f);
+            };
+            const viewer::Outdoors flat{.floor = [](const glm::vec3&) -> std::optional<float> { return 0.0f; }};
+            Engineer man;
+            man.configure("engineer.Height = 1.81\r\nengineer.Height1 = 0.81\r\n");
+            std::vector<bool> ways(cab5->description().doors.size(), false);
+            ways[cab_d] = true;
+            man.set_door_ways(ways);
+            viewer::ViewerCamera eye_cam;
+            eye_cam.fly = true;
+            auto frame = [&](EngineerControls controls) {
+                cab5->poll();
+                cab5->step_doors(dt);
+                if (man.mode() == Engineer::Mode::on_car) {
+                    man.update_on_car(car_out, controls, flat, dt, eye_cam);
+                } else {
+                    man.update(*cab5, controls, cab5->placement(), flat, dt, eye_cam);
+                }
+                const auto e = man.take_event();
+                using Kind = Engineer::Event::Kind;
+                if (e.kind == Kind::climb_in) {
+                    man.go_through(car_out, outer_d);
+                } else if (e.kind == Kind::into_cab) {
+                    man.enter_cab(*cab5, cab_d, glm::vec3{glm::inverse(cab5->placement()) * glm::vec4{e.at, 1.0f}});
+                } else if (e.kind == Kind::onto_car && e.by_path) {
+                    man.step_onto_car(car_out, glm::vec3{cab5->placement() * glm::vec4{e.at, 1.0f}}, outer_d, "exterior");
+                }
+            };
+            auto go = [&](EngineerControls controls, const float seconds) {
+                for (float s = 0.0f; s < seconds; s += dt) {
+                    frame(controls);
+                    controls.action = false;
+                }
+            };
+            auto feet_y = [&] { return eye_cam.position.y - 1.81f; };
+            // On the ground at the cab door's spot.
+            glm::vec3 spot{};
+            for (const auto& [door, at] : Engineer::get_on_points(*cab5))
+                if (door == cab_d) spot = glm::vec3{cab5->placement() * glm::vec4{at, 1.0f}};
+            man.stand_outside({spot.x, 0.0f, spot.z});
+            eye_cam.yaw = 3.14159265f * 0.5f; // towards the car (-X)
+            go({}, 0.05f);
+            check(man.prompt().find("Ctrl+Enter") != std::string::npos, "2ES4K: Ctrl+Enter at the cab door from the ground");
+            go({.action = true, .action_ctrl = true}, 0.05f);
+            check(man.mode() == Engineer::Mode::on_car && man.passing(), "2ES4K: Ctrl+Enter climbs the steps (a passage, not in at once)");
+            float up_time = 0.0f, lowest = 9.0f, highest = -9.0f;
+            for (int i = 0; i < 900 && man.mode() == Engineer::Mode::on_car; ++i) {
+                frame({});
+                up_time += dt;
+                lowest = (std::min)(lowest, feet_y());
+                highest = (std::max)(highest, feet_y());
+            }
+            go({}, 0.2f);
+            std::printf("  2ES4K up the steps          %.2f s, feet %.2f .. %.2f, then %s at %.2f\n", up_time, lowest, highest,
+                        man.mode() == Engineer::Mode::standing ? "standing" : "?", feet_y());
+            check(up_time > 1.0f && lowest < 0.1f && highest > 1.4f, "2ES4K: up the steps from the ground over a second or more");
+            check(man.mode() == Engineer::Mode::standing && feet_y() > 1.4f, "2ES4K: then standing in the cab");
+            // Out again: Ctrl+Enter at the open cab door, down the steps.
+            go({}, 0.05f);
+            std::printf("  2ES4K in the doorway        prompt \"%s\"\n", man.prompt().c_str());
+            check(man.prompt() == std::string(viewer::tr("Enter: close the door, Ctrl+Enter: go out")), "2ES4K: Ctrl+Enter goes out by the steps");
+            go({.action = true, .action_ctrl = true}, 0.05f);
+            check(man.mode() == Engineer::Mode::on_car && man.passing(), "2ES4K: down the steps (a passage)");
+            float down_time = 0.0f;
+            for (int i = 0; i < 900 && man.mode() == Engineer::Mode::on_car; ++i) {
+                frame({});
+                down_time += dt;
+            }
+            go({}, 1.0f);
+            std::printf("  2ES4K down the steps        %.2f s, then %s, feet %.2f, x %.2f\n", down_time,
+                        man.mode() == Engineer::Mode::outside ? "outside" : "?", feet_y(), eye_cam.position.x);
+            check(down_time > 1.0f && man.mode() == Engineer::Mode::outside && std::abs(feet_y()) < 0.02f,
+                  "2ES4K: down the steps to the ground");
+        }
+    } else {
+        std::printf("no 3ES4k-057 here: its steps not checked\n");
+    }
+
+    // The ER9P-373's 3SL cab (mdd_ER2-Alias cab9M3SL): its ALSN lights are
+    // the LocomotiveSignalization's (A_W1 A_R1 A_YR1 A_Y1 A_G1) and also LAMP
+    // displays 58..62 of the same nodes, which its DLL leaves at 0. RTS sets
+    // the signal lights after the displays (0x525DB0): the light of the
+    // aspect burns. Before 2026-11-14 the displays hid every one of them.
+    if (const auto er9 = formats::load_wagon(vfs, "zdsEMU_ER9P-373", "zdsEMU_ER9M_01", true); er9.ok()) {
+        auto cab6 = viewer::CabView::create(vfs, er9, formats::wagon_path("zdsEMU_ER9P-373", "zdsEMU_ER9M_01", true));
+        const auto shape = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_ER2-Alias/Cab/cab9M3SL.s");
+        const auto bytes = shape ? vfs.read(*shape) : std::nullopt;
+        const auto body = formats::load_binary_shape_body(std::string_view(bytes ? *bytes : std::string()));
+        if (cab6 && bytes && body.ok()) {
+            const auto rig = formats::parse_binary_shape_model(*body.body);
+            cab6->bind(rig);
+            const auto& nodes = cab6->signal_light_nodes();
+            check(nodes.size() == 5 && std::all_of(nodes.begin(), nodes.end(), [](const std::int32_t n) { return n >= 0; }),
+                  "ER9P 3SL: its five ALSN lights found in the cab shape");
+            dllhost::CarOutput state;
+            state.displays.resize(600);
+            state.has_engine = true;
+            state.engine.alsn_on = 1;
+            state.cab_aspect = 1; // Aspect ( 1 2 ): the light A_YR1
+            std::vector<renderer::NodeAdjustment> out;
+            cab6->adjustments(&state, out);
+            const auto hidden = [&](const std::int32_t node) {
+                return std::any_of(out.begin(), out.end(), [&](const renderer::NodeAdjustment& a) {
+                    // Its flag 1, or squashed to nothing (how openRTS hid a lamp before).
+                    return a.matrix == node && (a.hidden || (a.local[0][0] == 0.0f && a.local[1][1] == 0.0f && a.local[2][2] == 0.0f));
+                });
+            };
+            if (nodes.size() == 5) {
+                check(!hidden(nodes[2]), "ER9P 3SL: the red-yellow light burns though its LAMP display is at 0");
+                check(hidden(nodes[0]) && hidden(nodes[1]) && hidden(nodes[3]) && hidden(nodes[4]), "ER9P 3SL: the other four are out");
+                state.engine.alsn_on = 0;
+                out.clear();
+                cab6->adjustments(&state, out);
+                check(std::all_of(nodes.begin(), nodes.end(), hidden), "ER9P 3SL: ALSNOn 0 puts every light out");
+            }
+        } else {
+            check(false, "ER9P 3SL: its cab and shape load");
+        }
+    } else {
+        std::printf("no ER9P-373 here: its ALSN lights not checked\n");
     }
 
     // The ED9M's salon (mdd_ED4M-Alias motor9.sd): 700 InteriorSeats. Looking

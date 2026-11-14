@@ -65,6 +65,9 @@ public:
                 const glm::vec3& eye, float draw_distance);
     [[nodiscard]] std::size_t cars() const noexcept;
     [[nodiscard]] std::size_t spawners() const noexcept { return spawners_.size(); }
+    // Each spawner: its cars (standing ones), the first car's place and
+    // speed, the level crossings on its road with their states (the log).
+    [[nodiscard]] std::string report(const CrossingView* crossings) const;
 
 private:
     using Key = std::tuple<std::int32_t, std::int32_t, std::uint32_t>;

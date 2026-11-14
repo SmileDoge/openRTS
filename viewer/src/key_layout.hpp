@@ -27,6 +27,23 @@ void set_key_layout(KeyLayout layout) noexcept;
 // The tape (RTS: Ctrl+Num5; openRTS: Ctrl+`). Num5, which locomotive it
 // records, is RTS's layout's only.
 [[nodiscard]] const char* tape_key_name();
+// The boarding at a scenario's stop (RTS: Ctrl+Num7; openRTS: Ctrl+=).
+[[nodiscard]] const char* board_key_name();
+
+// The sound while the game's window is in the background (another window
+// in front, or minimised). RTS falls silent then: its DirectSound buffers
+// have no DSBCAPS_GLOBALFOCUS (rts1.exe 0x4AA178, flags 0xAA), and one
+// misses a vigilance device's whistle and gets the brakes (testers,
+// 2026-11-14). openRTS plays on, unless set quieter or off in the start
+// menu's Settings or the panel's General (remembered as background_sound:
+// "play", "quiet", "off"). The trains and their DLLs run on either way.
+enum class BackgroundSound : unsigned char { play, quiet, off };
+[[nodiscard]] BackgroundSound background_sound() noexcept;
+void set_background_sound(BackgroundSound sound) noexcept;
+[[nodiscard]] BackgroundSound parse_background_sound(const char* text) noexcept;
+[[nodiscard]] const char* background_sound_key(BackgroundSound sound) noexcept;
+// The volume's factor in the background: 1, a third (about -10 dB), 0.
+[[nodiscard]] float background_sound_gain(BackgroundSound sound) noexcept;
 
 // The key hints at the bottom of the screen (what Enter does where the
 // engineer stands, the window keys, a cab door's): shown unless turned off
