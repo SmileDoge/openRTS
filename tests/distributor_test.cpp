@@ -90,6 +90,27 @@ int main() {
                   effective_load(DistributorLoad::by_mass, 22000.0f) == DistributorLoad::empty &&
                   effective_load(DistributorLoad::empty, 80000.0f) == DistributorLoad::empty,
               "483: the load by mass until a hand sets it");
+        // RTS content's force at the full cylinder of the mode the car's
+        // mass gives: an empty file's MaxBrakeForce is its empty mode's.
+        {
+            openrts::formats::WagonDefinition wagon;
+            wagon.kind = openrts::formats::WagonKind::freight;
+            wagon.brakes.cylinder_pressure_for_max_force = 57.0f / 14.69f;
+            const float full = wagon.brakes.cylinder_pressure_for_max_force;
+            wagon.mass = 23300.0f;
+            const float empty_at = brake_force_pressure(wagon);
+            check(std::abs(empty_at - full * 1.5f / 3.8f) < 1e-3f, "483 empty file: its force at the empty mode's full ТЦ (" + std::to_string(empty_at) + ")");
+            wagon.mass = 50000.0f;
+            check(std::abs(brake_force_pressure(wagon) - full * 3.0f / 3.8f) < 1e-3f, "483 medium by mass: the medium mode's full ТЦ");
+            wagon.mass = 93100.0f;
+            check(brake_force_pressure(wagon) == full, "483 loaded file: as the content gives it");
+            wagon.mass = 23300.0f;
+            wagon.brakes.realistic_brake_force = 48000.0f;
+            check(brake_force_pressure(wagon) == full, "ORTSBrakeForce: a real car's force at the content's pressure, every mode");
+            wagon.brakes.realistic_brake_force = 0.0f;
+            wagon.kind = openrts::formats::WagonKind::passenger;
+            check(brake_force_pressure(wagon) == full, "a 292 car: as the content gives it");
+        }
         auto empty = car_of(DistributorKind::vr483);
         empty.load = DistributorLoad::empty;
         empty.full_cylinder = distributor_full_cylinder(empty.kind, empty.load);

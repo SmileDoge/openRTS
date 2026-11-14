@@ -1033,7 +1033,10 @@ void Train::step() {
     for (auto& car : cars_) {
         const auto& brakes = car.definition->brakes;
         const float cylinder = (std::max)(car.cylinder, car.independent);
-        const float share = brakes.cylinder_pressure_for_max_force > 0.0f ? cylinder / brakes.cylinder_pressure_for_max_force : 0.0f;
+        // The realistic air: a 483 car's content force at its load mode's
+        // full cylinder (distributor.hpp, brake_force_pressure).
+        const float reference = realistic_air ? brake_force_pressure(*car.definition) : brakes.cylinder_pressure_for_max_force;
+        const float share = reference > 0.0f ? cylinder / reference : 0.0f;
         if (realistic_air) {
             // Each bogie: half the force on its shoes, wet and warm as they
             // are, its wheels sliding when the shoes hold them harder than

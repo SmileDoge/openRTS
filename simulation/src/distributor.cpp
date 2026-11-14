@@ -65,6 +65,14 @@ DistributorKind distributor_kind(const formats::WagonDefinition& definition) noe
     return DistributorKind::vr292;
 }
 
+float brake_force_pressure(const formats::WagonDefinition& definition) noexcept {
+    const float pressure = definition.brakes.cylinder_pressure_for_max_force;
+    if (definition.brakes.realistic_brake_force > 0.0f || distributor_kind(definition) != DistributorKind::vr483) return pressure;
+    const auto meant = effective_load(DistributorLoad::by_mass, definition.mass);
+    return pressure * distributor_full_cylinder(DistributorKind::vr483, meant) /
+           distributor_full_cylinder(DistributorKind::vr483, DistributorLoad::loaded);
+}
+
 void step_distributor(DistributorState& s, const DistributorCar& car, const float rate, const float ep, const float h) {
     (void)rate;
     const float p = s.pipe;

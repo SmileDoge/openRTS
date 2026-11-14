@@ -391,6 +391,23 @@ built, against the proposal below:
     author gives it. As a start for cast iron: 0.077 x the mass x g at
     40 km/h (a 96 t ВЛ80 section about 74 kN, a 43 t ЭД9М head car about
     33 kN). `--brake-ratio` marks such a force with *.
+  - **Load modes in RTS content** (2026-11-14): RTS has no load modes, so
+    its content gives an empty freight car and a loaded one each a file of
+    its own, each `MaxBrakeForce` that car's full application (MaDaDev's
+    gondolas and tanks: 24 kN empty, 34 kN loaded). Without
+    `ORTSBrakeForce` a 483 car's force is therefore taken at the full
+    cylinder of the mode its mass gives (`brake_force_pressure`), not at
+    `BrakeCylinderPressureForMaxBrakeBrakeForce`: before, an empty car's
+    1.5 atm cut its file's force again, to 0.39 of it (an empty gondola
+    braked with 9 kN). A mode set by hand changes the cylinder from there
+    (an empty car on loaded presses 2.5 times harder and slides on wet
+    rails, as a real one does). `ORTSBrakeForce` stays the force at the
+    content's full cylinder, one figure for every mode of the same car (a
+    real 4-axle freight car with composite shoes, from its cylinder and
+    levers: about 48 kN, so 18 / 37 / 47 kN empty / medium / loaded).
+    Measured, the ВЛ80Т consist `rzd_splotka_elektr2` (288 t) with 60 empty
+    gondolas (`uz_poluvag14`, 1668 t in all), emergency from 60 km/h: dry
+    168 m (246 m before, RTS's model 179 m), wet 189 m.
   - `openrts-train-check <root> --brake-ratio <folder>...` lists each engine
     of the TRAINSET folders as RTS reads it (with its `.rtseng`): its brake
     force against its weight, what its shoes make of it at a stop in an

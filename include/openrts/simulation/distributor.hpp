@@ -41,6 +41,20 @@ struct DistributorModes {
 // `Type ( Freight )` 483, everything else 292.
 [[nodiscard]] DistributorKind distributor_kind(const formats::WagonDefinition& definition) noexcept;
 
+// The cylinder pressure (atm) at which the realistic air gives a car its
+// full brake force. RTS has no load modes: its content gives an empty car
+// and a loaded one each a file of its own, each MaxBrakeForce the force of
+// that car's full application. A 483 fills an empty car's cylinder to 1.5
+// atm only, so without ORTSBrakeForce a 483 car's MaxBrakeForce stands for
+// the full cylinder of the mode its mass gives (the mode its author meant),
+// BrakeCylinderPressureForMaxBrakeBrakeForce scaled as that mode's full
+// cylinder is to a loaded car's: an empty MaDaDev gondola (24 kN at 57 psi)
+// brakes with 24 kN in its empty mode, not 9. A mode set by hand then
+// changes the cylinder from there (an empty car on loaded presses harder).
+// ORTSBrakeForce (a real car's force, every mode from one figure) and the
+// other distributors keep BrakeCylinderPressureForMaxBrakeBrakeForce.
+[[nodiscard]] float brake_force_pressure(const formats::WagonDefinition& definition) noexcept;
+
 // The distributor's air and its state at one car, atm.
 struct DistributorState {
     float pipe{};       // ТМ at the car: a distributor takes air from it (charging, quick service)

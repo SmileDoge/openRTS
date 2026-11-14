@@ -13,6 +13,7 @@
 
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/brake_shoes.hpp>
+#include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train.hpp>
 
@@ -558,6 +559,29 @@ void test_adhesion(const Stock& stock) {
         rts.driver->independent = 3.0f;
         rts.run(10.0);
         check(near(rts.train.cars().front().brake_force, share * 100000.0f, 1500.0), "RTS's model keeps MaxBrakeForce");
+    }
+    // RTS's load modes are in its files: an empty car's MaxBrakeForce is its
+    // empty mode's full application (brake_force_pressure), not cut again
+    // by the 483's 1.5 atm (a MaDaDev empty gondola: 24 kN, braked with 9).
+    {
+        Stock empty = stock;
+        empty.wagon.mass = 23000.0f;
+        empty.wagon.brakes.max_brake_force = 24000.0f;
+        Run r(empty, {.rails = RailCondition::dry}, 1500.0);
+        r.train.set_brake_model(simulation::BrakeModel::realistic);
+        r.run(240.0);
+        r.driver->brake = simulation::DriverHandles::BrakeHandle::service;
+        r.run(12.0);
+        r.driver->brake = simulation::DriverHandles::BrakeHandle::lap_feed;
+        r.run(20.0);
+        const auto& car = r.train.cars()[3];
+        const float share = car.cylinder / simulation::brake_force_pressure(empty.wagon);
+        const float expected = share * 24000.0f * simulation::shoe_factor(formats::BrakeShoe::composite, 0.0f, share);
+        std::cerr << "  empty car: cylinder " << car.cylinder << " atm, share " << share << ", force " << car.brake_force / 1000.0f
+                  << " kN (expected " << expected / 1000.0f << ")\n";
+        check(car.cylinder < 1.7f && share > 0.85f, "an empty car's full service fills its empty mode's cylinder");
+        check(near(car.brake_force, expected, expected * 0.03) && car.brake_force > 0.8f * 24000.0f,
+              "an empty car brakes with its own file's force");
     }
     // Wooden shoes: a bogie dragged at 60 km/h with 20 kN smoulders, catches
     // fire and burns away; other shoes never burn; new ones are new.
