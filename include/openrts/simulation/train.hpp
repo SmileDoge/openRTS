@@ -40,6 +40,8 @@ struct TrainSettings {
     // The bodies on their springs (body_motion.hpp): RTS's model (the
     // default here) or openRTS's (the viewer's setting).
     BodyMotionModel body_motion = BodyMotionModel::rts;
+    // openRTS's body motion: the push aside at switches, a factor (0: none).
+    float switch_throws = 1.0f;
     // openRTS: the rails' state for the wheels' adhesion (adhesion.hpp): rts
     // keeps RTS's traction limit; any other scales it, and under the
     // realistic air the brakes slide (юз) and the shoes wet and warm.
@@ -489,6 +491,8 @@ public:
     void set_limit_brake_force(bool on) noexcept { settings_.limit_brake_force = on; }
     // The body motion model from the next step on (the bodies start at rest).
     void set_body_motion(BodyMotionModel model) noexcept;
+    // TrainSettings::switch_throws.
+    void set_switch_throws(float factor) noexcept { settings_.switch_throws = factor; }
     // The model this step runs: realistic only when no controller needs RTS's.
     [[nodiscard]] BrakeModel brake_model() const noexcept;
     [[nodiscard]] std::uint64_t id() const noexcept { return id_; }

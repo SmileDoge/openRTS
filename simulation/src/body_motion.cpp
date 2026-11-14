@@ -240,21 +240,38 @@ void step_body(BodyMotion& motion, const BodyModes& modes, const float dt) {
     stop(motion.turn[1], motion.turn_rate[1], 0.02f);
     stop(motion.turn[2], motion.turn_rate[2], 0.01f);
 
-    // The throws and knocks: a start at a size's pace (the spring's first
-    // swing peaks at about the size), stiff and well damped, in sub-steps
-    // short enough for their frequencies.
+    // The throws and knocks, in sub-steps short enough for their
+    // frequencies. A knock: a start at a size's pace (the spring's first
+    // swing peaks at about the size). A throw: the bogie's end pushed aside
+    // and back smoothly (a raised cosine) under a stiff, well damped spring:
+    // no step in the body's speed, so no blow.
     {
-        constexpr float throw_w = 2.0f * static_cast<float>(pi) * 3.5f, throw_zeta = 0.55f;
-        constexpr float knock_w = 2.0f * static_cast<float>(pi) * 7.0f, knock_zeta = 0.5f;
+        constexpr float two_pi = 2.0f * static_cast<float>(pi);
+        constexpr float throw_w = two_pi * 2.5f, throw_zeta = 0.65f;
+        constexpr float knock_w = two_pi * 7.0f, knock_zeta = 0.5f;
         for (int k = 0; k < 2; ++k) {
-            motion.jolt_rate[k] += 1.92f * throw_w * in.throw_lateral[k];
+            if (in.throw_lateral[k] != 0.0f) {
+                motion.push[k] = in.throw_lateral[k];
+                motion.push_length[k] = (std::max)(in.throw_time, 0.05f);
+                motion.push_clock[k] = 0.0f;
+            }
             motion.knocked_rate[k] += 1.83f * knock_w * in.knock[k];
         }
         constexpr int fast_steps = 20;
         const float fh = dt / static_cast<float>(fast_steps);
         for (int j = 0; j < fast_steps; ++j) {
             for (int k = 0; k < 2; ++k) {
-                motion.jolt_rate[k] += (-throw_w * throw_w * motion.jolt[k] - 2.0f * throw_zeta * throw_w * motion.jolt_rate[k]) * fh;
+                float pushed = 0.0f, pushed_rate = 0.0f;
+                if (motion.push_length[k] > 0.0f) {
+                    const float length = motion.push_length[k];
+                    const float phase = two_pi * motion.push_clock[k] / length;
+                    pushed = motion.push[k] * 0.5f * (1.0f - std::cos(phase));
+                    pushed_rate = motion.push[k] * 0.5f * two_pi / length * std::sin(phase);
+                    motion.push_clock[k] += fh;
+                    if (motion.push_clock[k] >= length) motion.push_length[k] = 0.0f;
+                }
+                motion.jolt_rate[k] +=
+                    (-throw_w * throw_w * (motion.jolt[k] - pushed) - 2.0f * throw_zeta * throw_w * (motion.jolt_rate[k] - pushed_rate)) * fh;
                 motion.jolt[k] += motion.jolt_rate[k] * fh;
                 motion.knocked_rate[k] += (-knock_w * knock_w * motion.knocked[k] - 2.0f * knock_zeta * knock_w * motion.knocked_rate[k]) * fh;
                 motion.knocked[k] += motion.knocked_rate[k] * fh;
@@ -320,9 +337,13 @@ void reverse_body(BodyMotion& motion) {
     // The ends swap; aside is the other way.
     std::swap(motion.jolt[0], motion.jolt[1]);
     std::swap(motion.jolt_rate[0], motion.jolt_rate[1]);
+    std::swap(motion.push[0], motion.push[1]);
+    std::swap(motion.push_length[0], motion.push_length[1]);
+    std::swap(motion.push_clock[0], motion.push_clock[1]);
     for (int k = 0; k < 2; ++k) {
         motion.jolt[k] = -motion.jolt[k];
         motion.jolt_rate[k] = -motion.jolt_rate[k];
+        motion.push[k] = -motion.push[k];
     }
     std::swap(motion.knocked[0], motion.knocked[1]);
     std::swap(motion.knocked_rate[0], motion.knocked_rate[1]);

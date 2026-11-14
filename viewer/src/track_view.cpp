@@ -19,7 +19,6 @@ using renderer::debug_colour;
 using renderer::DebugVertex;
 
 constexpr float line_lift = 0.35f; // above the rail head
-constexpr double junction_reach = 300.0;
 constexpr double indicator_range = 1500.0;
 
 constexpr auto colour_track = debug_colour(255, 210, 0);
@@ -137,54 +136,6 @@ std::optional<simulation::TrackTraveller> TrackView::nearest_track(const glm::ve
         return std::nullopt;
     }
     return simulation::TrackTraveller(*network_, location->node, location->offset, true);
-}
-
-void TrackView::throw_junction(const std::uint32_t junction) {
-    const auto* node = network_->node(junction);
-    const auto* state = network_->junction(junction);
-    if (!node || !state || node->branch_count() == 0) return;
-    const auto branch = static_cast<std::uint32_t>((state->selected + 1) % node->branch_count());
-    message_ = network_->throw_junction(junction, branch)
-        ? "junction " + std::to_string(junction) + " -> branch " + std::to_string(branch)
-        : "junction " + std::to_string(junction) + (state->occupied ? " is occupied" : " is held by a train's path");
-}
-
-void TrackView::throw_junction_ahead(const simulation::TrackTraveller& from) {
-    // Walk along the set route (changing nothing) to the first facing junction.
-    auto walker = from;
-    double walked = 0.0;
-    while (walked < junction_reach) {
-        const auto result = walker.move((std::min)(25.0, junction_reach - walked), simulation::JunctionMode::plain);
-        for (const auto& pass : result.junctions) {
-            if (!pass.facing) continue;
-            throw_junction(pass.junction);
-            return;
-        }
-        walked += result.moved;
-        if (!result.ok() || result.moved <= 0.0) break;
-    }
-    message_ = tr("no facing junction within ") + std::to_string(static_cast<int>(junction_reach)) + " m ahead";
-}
-
-void TrackView::throw_nearest_junction(const glm::vec3& point) {
-    std::optional<std::uint32_t> best;
-    float best_distance = static_cast<float>(junction_reach);
-    for (std::uint32_t i = 1; i < network_->node_count(); ++i) {
-        const auto* node = network_->node(i);
-        if (!node || node->kind != formats::TrackNodeKind::junction) continue;
-        const auto position = network_->node_position(i);
-        if (!position) continue;
-        const float d = glm::length(local(*position) - point);
-        if (d < best_distance) {
-            best_distance = d;
-            best = i;
-        }
-    }
-    if (!best) {
-        message_ = tr("no junction within 300 m");
-        return;
-    }
-    throw_junction(*best);
 }
 
 void TrackView::advance_switches(const float elapsed) {

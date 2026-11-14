@@ -127,13 +127,15 @@ public:
     // The driver's seat (Pos1 of the first chair), in the engine's shape coordinates.
     [[nodiscard]] glm::vec3 eye() const noexcept { return eye_; }
     // The SCREEN displays for this frame, in cab shape coordinates.
-    void screens(const dllhost::CarOutput* state, float elapsed, std::vector<ScreenBatch>& out) {
+    // `planes`: the screens drawn (CabScreens::build).
+    void screens(const dllhost::CarOutput* state, float elapsed, std::vector<ScreenBatch>& out,
+                 std::vector<ScreenPlane>* planes = nullptr) {
         if (!screens_) return;
         // A screen display blinks too (DisplayFade, RTS 0x525DB0).
         std::vector<bool> off(cab_.displays.size(), false);
         for (std::size_t i = 0; i < off.size() && i < blink_clock_.size(); ++i)
             off[i] = cab_.displays[i].blink > 0.0f && blink_clock_[i] > cab_.displays[i].blink;
-        screens_->build(state, elapsed, out, &off);
+        screens_->build(state, elapsed, out, &off, planes);
     }
     // The SCREEN labels the last screens() call laid out (CabScreens::labels_seen); null: no screens.
     [[nodiscard]] const CabScreens* screen_layout() const noexcept { return screens_.get(); }

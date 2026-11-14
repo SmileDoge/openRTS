@@ -126,6 +126,12 @@ The action of a trigger is the first keyword found in this order:
   them.
 - **Selection:** `SelectionMethod ( RandomSelection )` selects randomly; any
   other value, or none, selects sequentially.
+- **A player inside a player** (MaDaDev, 20 scripts of the install: the
+  2ЭС4К's typhon `StartLoopRelease ( 1 StartLoopRelease ( 1 File (
+  "tifon.wav" -1 ) ... ) )`, the ВЛ82м, ЭС1, ВЛ85, ЭП20, ЭП1М, 2ЭС6, ВЛ10):
+  a player without files of its own plays the inner one's (PROBABLE: RTS
+  plays these horns; its File search not traced). openRTS since
+  2026-11-14; before, those sounds were silent.
 
 ### How RTS plays a sound (CONFIRMED 2026-11-04)
 

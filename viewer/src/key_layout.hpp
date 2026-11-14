@@ -77,6 +77,10 @@ void set_rail_joint_layout(simulation::RailJointLayout layout) noexcept;
 // panel's General (remembered as body_motion: "openrts" or "rts").
 [[nodiscard]] simulation::BodyMotionModel body_motion_model() noexcept;
 void set_body_motion_model(simulation::BodyMotionModel model) noexcept;
+// openRTS's body motion: how hard switches push the bodies aside (0..2, 1
+// by default; remembered as switch_throws).
+[[nodiscard]] float switch_throws() noexcept;
+void set_switch_throws(float factor) noexcept;
 // The remembered value ("rts": RTS's, anything else openRTS's).
 [[nodiscard]] simulation::BodyMotionModel parse_body_motion_model(const char* text) noexcept;
 

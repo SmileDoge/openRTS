@@ -45,7 +45,7 @@ WgpuTexture& WgpuTexture::operator=(WgpuTexture&& other) noexcept {
 }
 
 WgpuTextureUploadResult upload_rgba8_texture(
-    const WGPUDevice device, const Rgba8ImageView image, const std::string_view label) {
+    const WGPUDevice device, const Rgba8ImageView image, const std::string_view label, const WGPUTextureFormat format) {
     if (!device) return {.error = "Cannot upload a texture without a WebGPU device."};
     if (!image.pixels || image.width == 0 || image.height == 0)
         return {.error = "RGBA8 image dimensions or pixels are invalid."};
@@ -74,7 +74,7 @@ WgpuTextureUploadResult upload_rgba8_texture(
         .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
         .dimension = WGPUTextureDimension_2D,
         .size = {.width = image.width, .height = image.height, .depthOrArrayLayers = 1},
-        .format = WGPUTextureFormat_RGBA8Unorm,
+        .format = format == WGPUTextureFormat_RGBA8UnormSrgb ? format : WGPUTextureFormat_RGBA8Unorm,
         .mipLevelCount = static_cast<std::uint32_t>(levels.size()),
         .sampleCount = 1,
         .viewFormatCount = 0,

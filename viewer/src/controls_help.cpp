@@ -55,11 +55,9 @@ void draw_controls_help() {
         row("Shift", "faster");
         row("F", "free / orbit camera");
         row("V", "the camera follows the train");
-        row("C", "put the train on the track by the camera");
-        row("J", "throw the switch ahead");
         row("T", "track diagram (yellow lines) on / off");
         row("L", "switch and signal labels");
-        row("R", "renderer: RTS / experimental");
+        row("F10", "renderer: RTS / experimental");
         row("Pause", "pause");
         row("Alt+Enter", "full screen / window");
         ImGui::EndTable();

@@ -340,7 +340,8 @@ The installed RTS config has `Antialiasing = 4x MSAA +Alpha` and
 (`0x61D5D8`) 1 MSAA, 2 when the value has "csaa" (4 coverage samples, 8 with
 "xq"), 3 with "fxaa"; "+alpha" sets `0x61D5D9`, alpha-to-coverage for the
 blend shaders (above). `GL_MULTISAMPLE` is on for modes 1 and 2. openRTS: 4x
-MSAA by default (`--msaa 1|4`), alpha-to-coverage on every blend-shader
+MSAA by default (`--msaa 1|2|4|8`; 2 and 8 where the device takes them,
+else 4), alpha-to-coverage on every blend-shader
 pipeline (alpha-tested or blended) when multisampled, and 16x anisotropic
 filtering on samplers whose min, mag and mip filters are all linear (models,
 terrain).

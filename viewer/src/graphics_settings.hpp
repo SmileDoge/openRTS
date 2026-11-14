@@ -5,15 +5,24 @@
 // the game's defaults and ranges; and the presets that set the costly ones
 // together.
 
+#include <cstdint>
 #include <optional>
 
 #include <openrts/renderer/scene_effects.hpp>
 
 namespace openrts::viewer {
 
+// MSAA samples as the menu offers them: 1 (off), 2, 4, 8; anything else to
+// the nearest below (at least 1).
+[[nodiscard]] constexpr std::uint32_t valid_msaa_samples(const int wanted) noexcept {
+    return wanted >= 8 ? 8u : wanted >= 4 ? 4u : wanted >= 2 ? 2u : 1u;
+}
+
 struct GraphicsSettings {
     // The start: the menu passes them on the game's command line.
-    bool msaa = true;           // launcher_msaa: 4x (RTS's content counts on it, alpha to coverage)
+    // msaa_samples (until 2026-11-14 launcher_msaa: 0 off, 1 4x): 4 by default,
+    // as RTS's "4x MSAA +Alpha" (its content counts on the alpha to coverage).
+    std::uint32_t msaa = 4;
     bool experimental = false;  // launcher_experimental: the new renderer
     bool hdr = false;           // launcher_hdr
     // HDR (the new renderer): tone_mode (0 none, 1 Khronos, 2 AgX, 3 ACES,
@@ -46,6 +55,9 @@ struct GraphicsSettings {
     bool forest_clearance = true;
     float forest_clearance_distance = 3.0f; // m
     bool signal_lights_real_size = true;
+    // The cab screens each drawn into an image of their own, blended in
+    // linear light (renderer::cab_screens_supersampled); off: as RTS.
+    bool screen_supersampling = true;
     bool reshade_depth = false;
 
     bool operator==(const GraphicsSettings&) const = default;
@@ -58,8 +70,9 @@ struct GraphicsSettings {
 void save_graphics_settings(const GraphicsSettings& now, const GraphicsSettings& before);
 
 // Presets: the costly settings together (shadows, ambient occlusion, lamp
-// shadows, cloud shadows); the look (HDR, exposure, lamps' strength, sky
-// and water on or off) is left as it is.
+// shadows, cloud shadows); MSAA (a choice of its own since there are four)
+// and the look (HDR, exposure, lamps' strength, sky and water on or off)
+// are left as they are.
 enum class GraphicsPreset { low, medium, high, ultra };
 inline constexpr int graphics_preset_count = 4;
 // English keys for tr(): the name and what it is for.

@@ -137,7 +137,13 @@ public:
     // around his place in it, fixed to the cab, and its forward, for the
     // cab's own shadow map.
     [[nodiscard]] std::optional<renderer::ShadowFocus> cab_shadow_focus() const { return cab_focus_; }
+    // Every frame: the DLL's cab window and what Enter does where he stands.
     void draw_overlay();
+    // The panel's Train tab: the buttons and switches on top, what the train
+    // is doing below.
+    void draw_panel();
+    // The 3-D cab and the engineer on foot (the Train tab and the DLL's cab window).
+    void draw_cab_controls();
     void set_origin(const formats::RoutePosition& origin);
     // The streamed world objects near the camera: obstacles for derailed
     // cars sliding along (null: none).
@@ -476,6 +482,8 @@ public:
     // The cab screens (КЛУБ, САВПЭ ...) of the cab the engineer is in, for
     // this frame, in scene coordinates (filled by submit()).
     [[nodiscard]] const std::vector<ScreenBatch>& screen_batches() const noexcept { return screen_batches_; }
+    // Those screens (the batches' `screen`), in scene coordinates.
+    [[nodiscard]] const std::vector<ScreenPlane>& screen_planes() const noexcept { return screen_planes_; }
     // The route's paths, then the ones saved from Track control.
     [[nodiscard]] const std::vector<formats::TrainPath>& route_paths() const noexcept { return paths_; }
     [[nodiscard]] const std::vector<std::string>& consist_list();
@@ -535,6 +543,8 @@ public:
     // The view from inside his cab or salon: not while the car view has the
     // camera (F3).
     [[nodiscard]] bool viewing_inside() const noexcept { return engineer_.inside() && car_view_ == CarView::off; }
+    // The engineer sits in a cab's chair and the view is his.
+    [[nodiscard]] bool seated_in_cab() const noexcept { return engineer_.mode() == Engineer::Mode::seated && car_view_ == CarView::off; }
     // F3: the camera orbits the train's first car, then its last, then back.
     void car_view_key(ViewerCamera& camera);
     // F7: car numbers on the side of each car facing `eye`, within `range`.
@@ -972,6 +982,7 @@ private:
     bool keys_were_live_ = true;             // cab_keys_live() the last frame
     glm::vec2 drag_cursor_{};                // where the cursor was when a dragged control last moved
     std::vector<ScreenBatch> screen_batches_; // this frame's cab screens, scene coordinates
+    std::vector<ScreenPlane> screen_planes_;  // their screens, scene coordinates
     // The cab shape's placement in the last submitted frame: the mouse ray and
     // the captions use it with that frame's camera, so they keep still on the move.
     std::optional<glm::mat4> cab_to_scene_;

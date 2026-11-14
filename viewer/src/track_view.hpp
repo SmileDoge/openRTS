@@ -48,15 +48,10 @@ public:
     [[nodiscard]] simulation::TrackNetwork& network() noexcept { return *network_; }
     // A traveller on the track nearest to `eye` (within 5 km).
     [[nodiscard]] std::optional<simulation::TrackTraveller> nearest_track(const glm::vec3& eye);
-    // Throws the first facing junction within reach ahead of `from`.
-    void throw_junction_ahead(const simulation::TrackTraveller& from);
-    // Throws the junction nearest to `point` (within reach).
-    void throw_nearest_junction(const glm::vec3& point);
 
 private:
     [[nodiscard]] glm::vec3 local(const simulation::TrackPoint& point, float lift = 0.0f) const;
     void build_lines();
-    void throw_junction(std::uint32_t junction);
     void advance_switches(float elapsed);
 
     std::unique_ptr<simulation::TrackNetwork> network_;

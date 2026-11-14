@@ -162,8 +162,12 @@ constexpr int beside_the_car = 1;
 constexpr int no_train = 3;
 
 // The menu's tabs, remembered by their keys.
-enum class Tab { single, network, settings, graphics, controls };
-constexpr const char* tab_keys[] = {"single", "network", "settings", "graphics", "controls"};
+// info: the version, the project's links and the keys (until 2026-11-14 a
+// Controls tab of the keys alone, remembered as "controls").
+enum class Tab { single, network, settings, graphics, info };
+constexpr const char* tab_keys[] = {"single", "network", "settings", "graphics", "info"};
+constexpr const char* discord_invite = "https://discord.gg/NGTU7mKJXZ";
+constexpr const char* project_page = "https://github.com/SmileDoge/openRTS";
 constexpr int tab_count = static_cast<int>(std::size(tab_keys));
 
 // How far the running game got in joining a server: its "status:" lines in
@@ -455,6 +459,7 @@ struct Launcher::State {
         if (const auto value = remembered("launcher_tab")) {
             for (int i = 0; i < tab_count; ++i)
                 if (*value == tab_keys[i]) tab = static_cast<Tab>(i);
+            if (*value == "controls") tab = Tab::info;
         }
         set_text(address, remembered("mp_address").value_or("127.0.0.1"));
         set_text(nick, remembered("mp_nick").value_or(""));
@@ -708,7 +713,7 @@ struct Launcher::State {
         } else {
             args.push_back("--no-sound");
         }
-        if (!graphics.msaa) args.insert(args.end(), {"--msaa", "1"});
+        if (graphics.msaa != 4) args.insert(args.end(), {"--msaa", std::to_string(graphics.msaa)});
         if (!vsync) args.push_back("--no-vsync");
         if (graphics.experimental) args.push_back("--experimental");
         if (graphics.hdr) args.push_back("--hdr");
@@ -905,7 +910,7 @@ struct Launcher::State {
     void draw_network(float height);
     void draw_settings(float height);
     void draw_graphics(float height);
-    void draw_controls(float height);
+    void draw_info(float height);
     void draw_bar(float button_width, float button_height, float status_height);
 #endif
 };
@@ -923,7 +928,7 @@ void Launcher::State::draw_tabs() {
     if (ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_NoTooltip)) {
         const std::string labels[] = {std::string(tr("Single player")) + "###single", std::string(tr("Network game")) + "###network",
                                       std::string(tr("Settings")) + "###settings", std::string(tr("Graphics")) + "###graphics",
-                                      std::string(tr("Controls")) + "###controls"};
+                                      std::string(tr("Information")) + "###info"};
         for (int i = 0; i < tab_count; ++i) {
             const auto which = static_cast<Tab>(i);
             const ImGuiTabItemFlags flags = forcing && tab == which ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
@@ -1473,7 +1478,7 @@ void Launcher::State::draw_graphics(const float height) {
             ImGui::TextColored(ImVec4{0.95f, 0.80f, 0.45f, 1.0f}, "%s", tr("Custom (changed by hand)"));
         }
         hint(preset ? tr(viewer::graphics_preset_note(*preset))
-                    : tr("A preset sets the costly settings together: anti-aliasing, the shadows, the ambient occlusion, the lamp and cloud shadows. The look (HDR, exposure, the lamps' strength, the sky and the water) stays as it is."));
+                    : tr("A preset sets the costly settings together: the shadows, the ambient occlusion, the lamp and cloud shadows. Anti-aliasing and the look (HDR, exposure, the lamps' strength, the sky and the water) stay as they are."));
         ImGui::Spacing();
         // The load's scale, in its colours.
         ImGui::TextDisabled("%s", tr("The load on the processor (CPU) and the video card (GPU):"));
@@ -1517,10 +1522,20 @@ void Launcher::State::draw_graphics(const float height) {
                 }
                 row_note(tr("In the background (another window in front, or minimised): at most 30 frames/s."));
             }
-            group_row(tr("Anti-aliasing (MSAA 4x)"), Load::none, Load::above_medium);
-            ImGui::Checkbox("##msaa", &g.msaa);
-            if (!g.msaa)
-                row_note(tr("Without it RTS's content loses its alpha to coverage: glass and see-through overlays hide what is drawn behind them, thin wires break up."));
+            {
+                constexpr std::uint32_t counts[] = {1, 2, 4, 8};
+                const char* names[] = {tr("no anti-aliasing"), "2x", "4x", "8x"};
+                int index = 2;
+                for (int i = 0; i < 4; ++i) {
+                    if (counts[i] == g.msaa) index = i;
+                }
+                group_row(tr("Anti-aliasing (MSAA)"), Load::none, g.msaa >= 8 ? Load::high : Load::above_medium);
+                if (ImGui::Combo("##msaa", &index, names, 4)) g.msaa = counts[index];
+                if (g.msaa <= 1)
+                    row_note(tr("Without it RTS's content loses its alpha to coverage: glass and see-through overlays hide what is drawn behind them, thin wires break up."));
+                else if (g.msaa != 4)
+                    row_note(tr("2x and 8x where the video card takes them, else 4x. RTS draws with 4x."));
+            }
             {
                 float shown = game_fov();
                 group_row(tr("Field of view"), Load::negligible, Load::negligible);
@@ -1696,6 +1711,8 @@ void Launcher::State::draw_graphics(const float height) {
             ImGui::EndDisabled();
             group_row(tr("Signal lights at the lens's size, far off a dot (not as in RTS)"), Load::none, Load::none);
             ImGui::Checkbox("##signal_lights", &g.signal_lights_real_size);
+            group_row(tr("Sharp cab screens: drawn at a higher resolution (not as in RTS)"), Load::negligible, Load::negligible);
+            ImGui::Checkbox("##screen_supersampling", &g.screen_supersampling);
             group_row(tr("Depth for ReShade"), Load::none, Load::negligible);
             ImGui::Checkbox("##reshade_depth", &g.reshade_depth);
             row_note(tr("Keeps the scene depth to the end of the frame and, with anti-aliasing, adds a copy ReShade can take. In ReShade: RESHADE_DEPTH_INPUT_IS_REVERSED 1, RESHADE_DEPTH_MULTIPLIER 20 (see INSTALL.md)."));
@@ -1707,9 +1724,25 @@ void Launcher::State::draw_graphics(const float height) {
     if (g != before) viewer::save_graphics_settings(g, before);
 }
 
-// The simulator's keys and mouse (the game's panel has the same tab).
-void Launcher::State::draw_controls(const float height) {
-    if (ImGui::BeginChild("##controls", {0.0f, height}, panel_flags)) viewer::draw_controls_help();
+namespace {
+void open_page(const std::string& url);
+}
+
+// The version, the project's Discord and GitHub, then the simulator's keys
+// and mouse (the game's panel has the same in its Controls tab).
+void Launcher::State::draw_info(const float height) {
+    if (ImGui::BeginChild("##info", {0.0f, height}, panel_flags)) {
+        ImGui::TextUnformatted(core::version_text().c_str());
+        ImGui::TextWrapped("%s", tr("Questions, discussion and bug reports: our Discord. The releases, the source and the documentation: GitHub."));
+        if (ImGui::Button(tr("Discord: join the server"))) open_page(discord_invite);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", discord_invite);
+        if (ImGui::Button(tr("GitHub: the project's page"))) open_page(project_page);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", project_page);
+        ImGui::SeparatorText(tr("Controls"));
+        viewer::draw_controls_help();
+    }
     ImGui::EndChild();
 }
 
@@ -2048,7 +2081,7 @@ void Launcher::draw_overlay(const viewer::ViewerCamera&) const {
     case Tab::network: s.draw_network(middle); break;
     case Tab::settings: s.draw_settings(middle); break;
     case Tab::graphics: s.draw_graphics(middle); break;
-    case Tab::controls: s.draw_controls(middle); break;
+    case Tab::info: s.draw_info(middle); break;
     }
     ImGui::EndDisabled();
 

@@ -260,6 +260,16 @@ the head cars barely moved. openRTS's instead:
   gone in half a second), and 0.4 of the old dip (0.3 at a frog) goes into
   the slow bounce. The lateral damping is twice what it was (0.9 → 1.8
   times the bounce's), so the smooth sway is about half.
+- **Since 2026-11-14** (testers: at speed the throw jerked the body like a
+  blow; it started with a step in the body's sideways speed, up to 2 g):
+  a junction pushes that end of the bogie aside and back smoothly (a
+  raised cosine over about 2.5 m of track, 0.12 to 0.5 s) under a spring of
+  its own (2.5 Hz, damping 0.65): 2 mm at walking pace to 6 mm from
+  100 km/h on a straight route, 1.6 times that where the bogie takes a
+  curve under 1500 m (the diverging route's turnout curve), a little more
+  or less each junction, times the panel's "Throws aside at switches"
+  (0 to 2, 1 by default; `TrainSettings::switch_throws`). At 100 km/h the
+  body goes some 3 to 5 mm aside, under a quarter of g.
 - **The bogies' hunting:** a lateral wave of 16 to 28 m per car (the rear
   bogie's 4 % longer, its own phase), 3.5 to 6.5 mm from 5 to 25 m/s,
   swelling and fading over 120 to 340 m.

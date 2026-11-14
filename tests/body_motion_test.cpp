@@ -151,29 +151,34 @@ int main() {
         check(most < 1e-4f, "and dies away");
     }
 
-    // A junction's throw: 1.5-2 cm aside within a fifth of a second, over
-    // within a second (not the slow sway); a joint's knock: down and back
-    // within a few hundredths, gone in half a second.
+    // A junction's push at 100 km/h: both bogies' ends pushed 6 mm aside
+    // over 0.12 s; the body goes a few millimetres aside smoothly (testers,
+    // 2026-11-14: the sharp throw of 1.5-2 cm jerked it like a blow; its
+    // sideways acceleration now stays under a quarter of g) and it is over
+    // within a second. A joint's knock: down and back within a few
+    // hundredths, gone in half a second.
     {
         BodyMotion body;
         body.seed = 11;
         const auto modes = body_modes(wagon, wagon.mass, body.seed);
         body.input.base = 15.0f;
-        body.input.throw_lateral[0] = 0.018f;
-        body.input.throw_lateral[1] = 0.018f;
-        float most = 0.0f, late = 0.0f;
-        int peak_step = 0;
+        body.input.throw_lateral[0] = 0.006f;
+        body.input.throw_lateral[1] = 0.006f;
+        body.input.throw_time = 0.12f;
+        float most = 0.0f, late = 0.0f, hardest = 0.0f;
+        float before = 0.0f, last = 0.0f;
         for (int step = 0; step < 40; ++step) {
             step_body(body, modes, dt);
-            if (std::abs(body.pose_shift[0]) > most) {
-                most = std::abs(body.pose_shift[0]);
-                peak_step = step;
-            }
+            const float now = body.pose_shift[0];
+            most = (std::max)(most, std::abs(now));
+            if (step >= 1) hardest = (std::max)(hardest, std::abs(now - 2.0f * last + before) / (dt * dt));
+            before = last;
+            last = now;
             if (step * dt > 1.0f) late = (std::max)(late, std::abs(body.jolt[0]));
         }
-        check(most > 0.012f && most < 0.025f, "a junction throws the body aside: " + std::to_string(most) + " m");
-        check((peak_step + 1) * dt <= 0.2f, "sharply: at its most after " + std::to_string((peak_step + 1) * dt) + " s");
-        check(late < 0.001f, "and the throw is over within a second: " + std::to_string(late) + " m");
+        check(most > 0.002f && most < 0.009f, "a junction pushes the body aside: " + std::to_string(most) + " m");
+        check(hardest < 2.5f, "smoothly: at most " + std::to_string(hardest) + " m/s2 sideways");
+        check(late < 0.0005f, "and the push is over within a second: " + std::to_string(late) + " m");
 
         BodyMotion knock;
         knock.seed = 12;

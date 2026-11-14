@@ -120,6 +120,32 @@ rts1.exe; findings from the decompiled code, on a copy of the database.
 - `CopySubObjects` by `ScreenID` (above). The screens are sampled
   anisotropically (16) and half a mip level sharper than RTS samples them
   (`renderer/src/screen_quads.cpp`; testers found the ЭП20's БЛОК blurry).
+- **Supersampled screens** (openRTS, 2026-11-14; on by default, "Sharp cab
+  screens" in the Graphics panel; off: every object straight onto the
+  panel, as RTS). The ЭП2Д's БЛОК (`block1.ace`, 2048 x 2048) is the
+  2ЭС6's (`block.ace`, 1024) at twice the size, the same layout (its
+  background frame UV 0..0.625 x 0..0.469), but its yellow lines are one
+  texel wide against two: on the panel four times thinner, under a fifth
+  of a pixel on a Full HD monitor (the 0.23 m screen some 185 pixels
+  across for 1280 texels). Its transparent texels are black (the 2ЭС6's
+  light beige), so straight-alpha filtering darkened a line twice (its
+  colour mixed with the black, then its alpha): a fifth covered, it showed
+  about 4 % of its light. The ACE's own mipmaps are a plain 2 x 2 box
+  filter (within 0.0004 of openRTS's), not the cause. Now:
+  - each screen drawn this frame (`CabScreens::build`'s `ScreenPlane`) is
+    drawn into an image of its own (RGBA8UnormSrgb, 5000 pixels a metre
+    of screen, 64 to 2048 a side; widened where an object reaches past the
+    screen) before the main pass, its objects blended with premultiplied
+    alpha in linear light from textures premultiplied in linear light
+    (`premultiplied_linear_levels`: the colour times alpha, the mipmaps
+    from that, the file's own left);
+  - its mipmaps averaged in linear light, then the image laid on the panel
+    as one quad (anisotropic 16, half a mip sharper), turned back to the
+    display's values and blended as before (straight alpha).
+
+  A line a fifth of a pixel wide now shows about half its brightness (a
+  fifth of its light in linear light); turned needles and hard alpha edges
+  lose their steps.
 - Not done: LINK (2-D scenes), close-up scenes, `CopySubObjects` by
   `SceneID`, the lighting of the `…Diff` shaders.
 

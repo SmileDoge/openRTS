@@ -60,10 +60,13 @@ struct BodyInput {
     TrackIrregularity bogie[2]; // the track under each bogie, in the car's axes
     float kick_vertical[2]{};   // m/s downwards at the bogie (a rail joint, a junction): the slow springs
     float kick_lateral[2]{};    // m/s towards the lateral axis: the slow springs
-    // A junction throws the bogie's end aside this far (m, towards the
-    // lateral axis): a sharp throw of its own, not the slow sway (testers,
-    // 2026-11-12: 1.5-2 cm by the speed).
+    // A junction pushes the bogie's end aside this far (m, towards the
+    // lateral axis): a smooth push over the switch rails and the frog,
+    // `throw_time` s long, that a stiff spring of its own softens (not the
+    // slow sway). Until 2026-11-14 a sharp throw of 1.5-2 cm (testers,
+    // 2026-11-12), which then jerked the body like a blow.
     float throw_lateral[2]{};
+    float throw_time = 0.2f;
     // A rail joint or a frog knocks the bogie's end down this far (m): a
     // short, crisp knock of its own.
     float knock[2]{};
@@ -91,6 +94,8 @@ struct BodyMotion {
     // Each end's throw aside and knock down (m, m/s): stiff, well damped
     // springs of their own, over in a fraction of a second.
     float jolt[2]{}, jolt_rate[2]{};
+    // The push under each end now: its size (m), length and clock (s).
+    float push[2]{}, push_length[2]{}, push_clock[2]{};
     float knocked[2]{}, knocked_rate[2]{};
     // The pose: the springs above with the throws and knocks on top, in the
     // axes of shift and turn. What the car shows.

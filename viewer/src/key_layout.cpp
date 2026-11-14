@@ -8,13 +8,14 @@
 namespace openrts::viewer {
 namespace {
 
-KeyLayout current = KeyLayout::openrts;
+KeyLayout current = KeyLayout::rts;
 bool hints = true;
 bool panels = false;
 float sensitivity = 1.0f;
 float head = default_head_motion;
 simulation::RailJointLayout joints = simulation::RailJointLayout::openrts;
 simulation::BodyMotionModel bodies = simulation::BodyMotionModel::openrts;
+float throws = 1.0f;
 
 } // namespace
 
@@ -69,6 +70,10 @@ simulation::RailJointLayout parse_rail_joint_layout(const char* text) noexcept {
 simulation::BodyMotionModel body_motion_model() noexcept { return bodies; }
 
 void set_body_motion_model(const simulation::BodyMotionModel model) noexcept { bodies = model; }
+
+float switch_throws() noexcept { return throws; }
+
+void set_switch_throws(const float factor) noexcept { throws = factor < 0.0f ? 0.0f : factor > 2.0f ? 2.0f : factor; }
 
 simulation::BodyMotionModel parse_body_motion_model(const char* text) noexcept {
     return text && std::strcmp(text, "rts") == 0 ? simulation::BodyMotionModel::rts : simulation::BodyMotionModel::openrts;

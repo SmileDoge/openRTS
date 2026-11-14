@@ -1586,6 +1586,7 @@ void Train::sway() {
             const bool kicked = motion.input.kick_vertical[0] != 0.0f || motion.input.kick_vertical[1] != 0.0f ||
                                 motion.input.kick_lateral[0] != 0.0f || motion.input.kick_lateral[1] != 0.0f ||
                                 motion.input.throw_lateral[0] != 0.0f || motion.input.throw_lateral[1] != 0.0f ||
+                                motion.push_length[0] > 0.0f || motion.push_length[1] > 0.0f ||
                                 motion.input.knock[0] != 0.0f || motion.input.knock[1] != 0.0f ||
                                 motion.jolt[0] != 0.0f || motion.jolt[1] != 0.0f || motion.knocked[0] != 0.0f ||
                                 motion.knocked[1] != 0.0f;
@@ -1838,16 +1839,28 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
                     impl.events.push_back(
                         {.kind = TrainEventKind::junction, .car = static_cast<std::uint32_t>(i), .bogie = b});
                     if (body_motion) {
-                        // A frog and switch rails: a knock, and a throw aside of
-                        // 1.5 cm at 40 km/h up to 2 cm from 80 (testers,
-                        // 2026-11-12), a little more or less at each junction;
-                        // a little of it rocks the slow springs too.
+                        // A frog and switch rails: a knock, and the bogie pushed
+                        // aside over the switch rails, about 2.5 m of track:
+                        // 2 mm at walking pace to 6 mm from 100 km/h on a
+                        // straight route, 1.6 times that where the bogie takes a
+                        // curve (the diverging route's turnout curve), a little
+                        // more or less at each junction, times the panel's
+                        // factor; a little of it rocks the slow springs too.
+                        // Until 2026-11-14 a sharp throw of 1.5-2 cm.
                         const float depth = joint_depth(traveller->node(), 0.5 + (before.node & 0xFFFFu));
                         const float speed = std::abs(car.velocity);
-                        const float size = (speed < 11.0f ? 0.015f * speed / 11.0f : 0.015f + 0.005f * (std::min)((speed - 11.0f) / 11.0f, 1.0f)) *
-                                           (0.85f + 0.3f * std::clamp((depth - 0.0012f) / 0.0026f, 0.0f, 1.0f));
+                        bool curve = false;
+                        if (node && traveller->section() < node->sections.size()) {
+                            const auto* section = node->sections[traveller->section()].definition;
+                            curve = section && section->curved && section->radius > 1.0 && section->radius < 1500.0;
+                        }
+                        const float share = std::clamp(speed / 27.8f, 0.0f, 1.0f);
+                        const float size = (0.002f + 0.004f * share * share) * (curve ? 1.6f : 1.0f) *
+                                           (0.85f + 0.3f * std::clamp((depth - 0.0012f) / 0.0026f, 0.0f, 1.0f)) *
+                                           (std::max)(settings_.switch_throws, 0.0f);
                         const float side = ((traveller->node() ^ before.node) & 1u) ? 1.0f : -1.0f;
                         car.motion.input.throw_lateral[b] += side * size;
+                        car.motion.input.throw_time = std::clamp(2.5f / (std::max)(speed, 1.0f), 0.12f, 0.5f);
                         car.motion.input.kick_lateral[b] += side * 0.1f * depth * kick;
                         car.motion.input.kick_vertical[b] += depth * 0.3f * kick;
                         car.motion.input.knock[b] += depth * std::clamp(speed / 15.0f, 0.0f, 1.5f);

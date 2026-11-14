@@ -190,10 +190,12 @@ WgpuDeviceContextResult create_wgpu_device(const GraphicsBackend backend) {
         };
         // Optional features: timestamp queries (GPU frame time in the
         // viewer), a first instance in indirect draws (the model renderer's
-        // multi-draw calls), BC compressed textures (DXT1 ACE as they are).
+        // multi-draw calls), BC compressed textures (DXT1 ACE as they are),
+        // the adapter's own format features (MSAA 2x and 8x).
         std::vector<WGPUFeatureName> features;
         for (const auto feature : {WGPUFeatureName_TimestampQuery, WGPUFeatureName_IndirectFirstInstance,
-                                   WGPUFeatureName_TextureCompressionBC}) {
+                                   WGPUFeatureName_TextureCompressionBC,
+                                   static_cast<WGPUFeatureName>(WGPUNativeFeature_TextureAdapterSpecificFormatFeatures)}) {
             if (wgpuAdapterHasFeature(context.adapter_, feature)) features.push_back(feature);
         }
         const WGPUDeviceDescriptor device_descriptor{
@@ -226,6 +228,49 @@ WgpuDeviceContextResult create_wgpu_device(const GraphicsBackend backend) {
         error = result.error;
     }
     return {.error = error};
+}
+
+std::uint32_t supported_sample_count(const WgpuDeviceContext& context, const std::uint32_t wanted) {
+    if (wanted <= 1) return 1;
+    if (wanted != 2 && wanted != 8) return 4;
+    const auto device = context.device();
+    if (!device || !wgpuDeviceHasFeature(device, static_cast<WGPUFeatureName>(WGPUNativeFeature_TextureAdapterSpecificFormatFeatures)))
+        return 4;
+    // Each scene target format at that count, in a validation error scope.
+    wgpuDevicePushErrorScope(device, WGPUErrorFilter_Validation);
+    for (const auto format : {WGPUTextureFormat_BGRA8Unorm, WGPUTextureFormat_RGBA8Unorm, WGPUTextureFormat_RGBA16Float,
+                              WGPUTextureFormat_Depth32Float}) {
+        const WGPUTextureDescriptor descriptor{
+            .usage = WGPUTextureUsage_RenderAttachment,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {.width = 4, .height = 4, .depthOrArrayLayers = 1},
+            .format = format,
+            .mipLevelCount = 1,
+            .sampleCount = wanted,
+        };
+        if (const auto texture = wgpuDeviceCreateTexture(device, &descriptor)) wgpuTextureRelease(texture);
+    }
+    struct Outcome {
+        bool done = false;
+        bool failed = true;
+    } outcome;
+    const WGPUPopErrorScopeCallbackInfo pop{
+        .mode = WGPUCallbackMode_AllowProcessEvents,
+        .callback = [](const WGPUPopErrorScopeStatus status, const WGPUErrorType type, WGPUStringView, void* userdata, void*) {
+            auto& o = *static_cast<Outcome*>(userdata);
+            o.failed = status != WGPUPopErrorScopeStatus_Success || type != WGPUErrorType_NoError;
+            o.done = true;
+        },
+        .userdata1 = &outcome,
+    };
+    wgpuDevicePopErrorScope(device, pop);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!outcome.done && std::chrono::steady_clock::now() < deadline) {
+        wgpuDevicePoll(device, false, nullptr);
+        wgpuInstanceProcessEvents(context.instance());
+        if (!outcome.done) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return outcome.done && !outcome.failed ? wanted : 4;
 }
 
 } // namespace openrts::renderer

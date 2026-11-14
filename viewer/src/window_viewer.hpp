@@ -60,7 +60,9 @@ struct WindowOptions {
     // start menu are always a window.
     std::optional<WindowMode> window_mode;
     bool batching = true;
-    std::uint32_t msaa = 4; // samples (--msaa 1|4); 4 as RTS's "4x MSAA +Alpha"
+    // Samples wanted (--msaa 1|2|4|8; what the device takes:
+    // renderer::supported_sample_count); 4 as RTS's "4x MSAA +Alpha".
+    std::uint32_t msaa = 4;
     bool sound = true;
     // --sound-offline: the sounds run without a device, nothing is heard
     // (automated checks with OPENRTS_SOUND_TRACE).

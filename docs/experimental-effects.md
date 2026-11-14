@@ -138,13 +138,14 @@ remembered in `viewer_state.ini` (`effect_shadows`, `effect_clusters`,
 The start menu's Graphics tab shows every one of them too, grouped, with
 its load on the CPU and the GPU, and four presets (2026-11-09,
 `viewer/src/graphics_settings`; the game reads the same keys through it).
-A preset sets anti-aliasing, the sun shadows (on; distance, map size,
-cascades, the cab's map), the ambient occlusion and its quality, the lamp
-shadows and the cloud shadows; the rest is left:
+A preset sets the sun shadows (on; distance, map size, cascades, the cab's
+map), the ambient occlusion and its quality, the lamp shadows and the cloud
+shadows; the rest is left, anti-aliasing too (since 2026-11-14 a choice of
+its own: off, 2x, 4x, 8x; 2x and 8x where the video card takes them, else
+4x, `renderer::supported_sample_count`):
 
 | | Low | Medium | High (the defaults) | Ultra |
 |---|---|---|---|---|
-| MSAA 4x | on | on | on | on |
 | shadow distance | 150 m | 250 m | 250 m | 500 m |
 | shadow map | 1024 | 2048 | 2048 | 4096 |
 | cascades | 2 | 3 | 3 | 4 |

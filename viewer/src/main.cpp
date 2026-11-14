@@ -129,9 +129,9 @@ struct ContentTarget {
 // `--window --shape <file.s>` or `--window --route <route folder | name>`,
 // followed by optional `--root <installation>`, `--mount <zip|folder>` (an
 // extra mod-layer source), `--no-hot-reload`, `--consist <name>` and `--path <name>` (a train to drive, on a
-// route path start; C puts it on the track nearest to the camera), `--track-control` (open the
+// route path start, or by Track control), `--track-control` (open the
 // Track control window at start), (
-// the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|4` (default 4), `--no-sound`, `--sound-offline`, `--volume <0..1>` (default 0.5),
+// the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|2|4|8` (default 4; 2 and 8 where the video card takes them, else 4), `--no-sound`, `--sound-offline`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`, `--paused` (start paused),
 // `--window-mode windowed|borderless|fullscreen`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
@@ -405,7 +405,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         } else if (flags[i] == "--volume" && has_value) {
             options.sound_volume = std::clamp(std::stof(std::string(flags[++i])), 0.0f, 1.0f);
         } else if (flags[i] == "--msaa" && has_value) {
-            options.msaa = std::stoi(std::string(flags[++i])) > 1 ? 4u : 1u;
+            const int samples = std::stoi(std::string(flags[++i]));
+            options.msaa = samples >= 8 ? 8u : samples >= 4 ? 4u : samples >= 2 ? 2u : 1u;
         } else if (flags[i] == "--no-batching") {
             options.batching = false;
         } else if (flags[i] == "--no-vsync") {

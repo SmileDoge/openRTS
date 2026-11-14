@@ -4,6 +4,7 @@
 // frame. A WGSL error or a binding mismatch shows as a validation error here
 // instead of a crash when the viewer starts.
 #include <iostream>
+#include <utility>
 #include <memory>
 #include <string>
 #include <vector>
@@ -12,6 +13,7 @@
 #include <openrts/renderer/depth.hpp>
 #include <openrts/renderer/depth_export.hpp>
 #include <openrts/renderer/model_renderer.hpp>
+#include <openrts/renderer/screen_quads.hpp>
 #include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/webgpu_context.hpp>
@@ -34,6 +36,30 @@ void check(const bool condition, const std::string& what) {
 } // namespace
 
 int main() {
+    // The supersampled screens' textures: a one-texel yellow line on black
+    // transparent texels keeps its colour down the mipmaps (premultiplied,
+    // in linear light): half covered, half the alpha, still yellow, not
+    // darkened by the black under the transparent texels.
+    {
+        std::vector<std::uint8_t> pixels(4 * 4 * 4, 0);
+        for (std::size_t y = 0; y < 4; ++y) {
+            auto* p = &pixels[(y * 4 + 1) * 4];
+            p[0] = 255;
+            p[1] = 220;
+            p[2] = 0;
+            p[3] = 255;
+        }
+        const auto levels = renderer::premultiplied_linear_levels(4, 4, pixels);
+        check(levels.size() == 3, "levels 4x4, 2x2, 1x1");
+        if (levels.size() == 3) {
+            const auto* half = &levels[1][0]; // 2x2: its left column half yellow
+            check(half[3] == 128 || half[3] == 127, "alpha halves (" + std::to_string(half[3]) + ")");
+            // Premultiplied: linear yellow / 2, in sRGB about 186 for red; a
+            // straight average with the black would give 128 x half alpha.
+            check(half[0] > 180 && half[0] < 192, "red premultiplied in linear light (" + std::to_string(half[0]) + ")");
+            check(levels[0][4 * 1 + 0] == 255 && levels[0][3] == 0, "level 0: the line kept, the black transparent");
+        }
+    }
     auto context = renderer::create_headless_wgpu_device();
     if (!context.ok()) {
         std::cout << "no WebGPU device (" << context.error << "): skipped\n";
@@ -42,8 +68,19 @@ int main() {
     const auto device = context.context.device();
     const auto vfs = std::make_shared<const core::Vfs>();
     const auto route = core::VirtualPath::parse("ROUTES/none");
+    // 1 and 4 always; 2 and 8 where this device takes them (the menu's MSAA).
+    std::vector<std::uint32_t> counts{1u, 4u};
+    for (const std::uint32_t wanted : {2u, 8u}) {
+        if (renderer::supported_sample_count(context.context, wanted) == wanted) counts.push_back(wanted);
+    }
+    std::cout << "sample counts:";
+    for (const auto c : counts) std::cout << ' ' << c;
+    std::cout << '\n';
+    check(renderer::supported_sample_count(context.context, 1) == 1 && renderer::supported_sample_count(context.context, 4) == 4,
+          "1 and 4 samples always");
+    check(renderer::supported_sample_count(context.context, 3) == 4, "an odd count: 4");
     wgpuDevicePushErrorScope(device, WGPUErrorFilter_Validation);
-    for (const std::uint32_t samples : {1u, 4u}) {
+    for (const std::uint32_t samples : counts) {
         for (const bool hdr : {false, true}) {
             renderer::render_sample_count() = samples;
             renderer::scene_hdr() = hdr;
@@ -51,6 +88,67 @@ int main() {
             const auto what = std::to_string(samples) + " samples" + (hdr ? ", HDR" : "");
             const renderer::ModelRenderer models(device, format);
             check(models.ready(), "model renderer (" + what + ")");
+            // The cab screens, both paths: a screen with one blended
+            // object drawn into its image (mipmaps too), then on the panel.
+            {
+                renderer::ScreenQuadRenderer screens(device, format);
+                check(screens.ready(), "cab screen renderer (" + what + ")");
+                const std::vector<std::uint8_t> pixels(16 * 16 * 4, 200);
+                const auto plain = screens.add_texture({.width = 16, .height = 16, .pixels = &pixels});
+                const auto premultiplied = screens.add_texture({.width = 16, .height = 16, .pixels = &pixels}, true);
+                check(plain != 0 && premultiplied != 0, "cab screen textures (" + what + ")");
+                std::vector<renderer::ScreenQuadVertex> vertices;
+                for (const auto& [x, y] : {std::pair{0.1f, 0.1f}, {0.1f, 0.9f}, {0.9f, 0.9f}, {0.1f, 0.1f}, {0.9f, 0.9f}, {0.9f, 0.1f}})
+                    vertices.push_back({.position = {x, -y, 1.0f}, .uv = {x, y}, .local = {x, y}});
+                const WGPUTextureDescriptor target{
+                    .usage = WGPUTextureUsage_RenderAttachment,
+                    .dimension = WGPUTextureDimension_2D,
+                    .size = {.width = 64, .height = 64, .depthOrArrayLayers = 1},
+                    .format = format,
+                    .mipLevelCount = 1,
+                    .sampleCount = samples,
+                };
+                const auto colour = wgpuDeviceCreateTexture(device, &target);
+                auto depth_target = target;
+                depth_target.format = renderer::depth_format;
+                const auto depth = wgpuDeviceCreateTexture(device, &depth_target);
+                const auto colour_view = wgpuTextureCreateView(colour, nullptr);
+                const auto depth_view = wgpuTextureCreateView(depth, nullptr);
+                for (const bool supersampled : {true, false}) {
+                    renderer::cab_screens_supersampled() = supersampled;
+                    screens.set(vertices, {{.texture = supersampled ? premultiplied : plain, .blend = true, .first = 0, .count = 6, .surface = 0}},
+                                {{.top_left = {0.0f, 0.0f, 1.0f}, .top_right = {1.0f, 0.0f, 1.0f}, .bottom_right = {1.0f, -1.0f, 1.0f},
+                                  .width = 0.2f, .height = 0.15f}});
+                    const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+                    screens.prepare(encoder);
+                    WGPURenderPassColorAttachment colour_attachment{.view = colour_view,
+                                                                    .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+                                                                    .loadOp = WGPULoadOp_Clear,
+                                                                    .storeOp = WGPUStoreOp_Store};
+                    WGPURenderPassDepthStencilAttachment depth_attachment{.view = depth_view,
+                                                                          .depthLoadOp = WGPULoadOp_Clear,
+                                                                          .depthStoreOp = WGPUStoreOp_Store,
+                                                                          .depthClearValue = renderer::depth_clear_value};
+                    const WGPURenderPassDescriptor pass_descriptor{.colorAttachmentCount = 1,
+                                                                   .colorAttachments = &colour_attachment,
+                                                                   .depthStencilAttachment = &depth_attachment};
+                    const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+                    screens.render(pass, glm::mat4{1.0f}, glm::vec3{0.0f, 0.0f, 0.0f});
+                    wgpuRenderPassEncoderEnd(pass);
+                    wgpuRenderPassEncoderRelease(pass);
+                    const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
+                    const auto queue = wgpuDeviceGetQueue(device);
+                    wgpuQueueSubmit(queue, 1, &commands);
+                    wgpuQueueRelease(queue);
+                    wgpuCommandBufferRelease(commands);
+                    wgpuCommandEncoderRelease(encoder);
+                }
+                renderer::cab_screens_supersampled() = true;
+                wgpuTextureViewRelease(colour_view);
+                wgpuTextureViewRelease(depth_view);
+                wgpuTextureRelease(colour);
+                wgpuTextureRelease(depth);
+            }
             if (route) {
                 const renderer::TerrainRenderer terrain(device, format, vfs, *route, {});
                 check(terrain.ready(), "terrain renderer (" + what + ")");

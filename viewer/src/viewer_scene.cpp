@@ -623,27 +623,6 @@ public:
         }
         if (track_) {
             track_->update(input, clock.elapsed);
-            if (input.throw_junction) {
-                // In a network game the server decides: what was thrown here
-                // goes to it as a request, and it sends back what stands.
-                std::vector<std::pair<std::uint32_t, std::uint32_t>> before;
-                auto& network = track_->network();
-                if (net_) {
-                    for (std::uint32_t n = 1; n < network.node_count(); ++n) {
-                        if (const auto* state = network.junction(n)) before.emplace_back(n, state->selected);
-                    }
-                }
-                // The first facing junction ahead of the train, else the
-                // junction nearest to the camera.
-                if (const auto ahead = train_ ? train_->ahead() : std::nullopt) {
-                    track_->throw_junction_ahead(*ahead);
-                } else {
-                    track_->throw_nearest_junction(camera.eye());
-                }
-                for (const auto& [n, selected] : before) {
-                    if (const auto* state = network.junction(n); state && state->selected != selected) net_->request_junction(n, state->selected);
-                }
-            }
         }
         if (input.toggle_track_control && track_control_) track_control_->toggle();
         if (input.signal_names) signal_names_ = !signal_names_;
@@ -702,15 +681,6 @@ public:
         }
         if (train_) {
             train_->set_signals(signals_ ? signals_->system() : nullptr);
-            if (input.place_train && train_->loaded()) {
-                // In a network game the server places trains (RTS: a derailed
-                // train goes back by the dispatcher's remove and place).
-                if (net_) {
-                    train_->say(tr("In a network game the dispatcher places trains: C does not."));
-                } else {
-                    place_train(camera);
-                }
-            }
             train_->set_obstacles(streamer_ ? &streamer_->visible_instances() : nullptr);
             train_->set_world_clock(clock.time_of_day, sky_state_ && sky_state_->night);
             train_->set_world_light(sky_state_ ? sky_state_->world_lit : 1.0f, static_cast<std::uint8_t>(clock.weather),
@@ -1113,24 +1083,57 @@ public:
     // cover screens drawn before it.
     void draw_foreground(const WGPURenderPassEncoder pass, const FrameView& frame) override {
         if (screens_ && train_ && !train_->screen_batches().empty()) {
-            std::vector<renderer::ScreenQuadVertex> vertices;
-            std::vector<renderer::ScreenQuadDraw> draws;
-            for (const auto& batch : train_->screen_batches()) {
-                const auto texture = screen_texture(batch.texture);
-                if (texture == 0 || batch.vertices.empty()) continue;
-                draws.push_back({texture, batch.blend, static_cast<std::uint32_t>(vertices.size()),
-                                 static_cast<std::uint32_t>(batch.vertices.size())});
-                for (const auto& v : batch.vertices) vertices.push_back({v.position, v.uv, v.colour});
-            }
-            screens_->set(std::move(vertices), std::move(draws));
+            // Not laid out before the pass (no before_main_pass this frame):
+            // straight onto the panel.
+            if (!screens_set_) set_screens();
             screens_->render(pass, frame.projection * frame.view, frame.eye);
         }
+        screens_set_ = false;
     }
 
-    [[nodiscard]] WGPUQuerySet occlusion_query_set() const override { return probe_ ? probe_->query_set() : nullptr; }
+    // This frame's cab screens to the renderer: the supersampled ones blend
+    // premultiplied textures (renderer::cab_screens_supersampled).
+    void set_screens() {
+        screens_set_ = true;
+        const bool supersampled = renderer::cab_screens_supersampled();
+        std::vector<renderer::ScreenQuadVertex> vertices;
+        std::vector<renderer::ScreenQuadDraw> draws;
+        std::vector<renderer::ScreenSurface> surfaces;
+        for (const auto& batch : train_->screen_batches()) {
+            const auto texture = screen_texture(batch.texture, supersampled && batch.blend);
+            if (texture == 0 || batch.vertices.empty()) continue;
+            draws.push_back({texture, batch.blend, static_cast<std::uint32_t>(vertices.size()),
+                             static_cast<std::uint32_t>(batch.vertices.size()), batch.screen});
+            for (const auto& v : batch.vertices) vertices.push_back({v.position, v.uv, v.colour, v.local});
+        }
+        for (const auto& plane : train_->screen_planes()) {
+            surfaces.push_back({plane.top_left, plane.top_right, plane.bottom_right, glm::length(plane.top_right - plane.top_left),
+                                glm::length(plane.bottom_right - plane.top_right)});
+        }
+        screens_->set(std::move(vertices), std::move(draws), std::move(surfaces));
+    }
+    bool screens_set_ = false; // set_screens() this frame
 
-    // openRTS's own sky's clouds for this frame's view (half its size).
+    [[nodiscard]] WGPUQuerySet occlusion_query_set() const override { return probe_ ? probe_->query_set() : nullptr; }
+    [[nodiscard]] bool seated_in_cab() const override { return train_ && train_->seated_in_cab(); }
+    [[nodiscard]] bool has_train_panel() const override { return true; }
+    void draw_train_panel() const override {
+#ifdef OPENRTS_HAS_IMGUI
+        if (train_) {
+            train_->draw_panel();
+        } else {
+            ImGui::TextDisabled("%s", tr("No train yet."));
+        }
+#endif
+    }
+
+    // openRTS's own sky's clouds for this frame's view (half its size); the
+    // cab screens' images (supersampled).
     void before_main_pass(const WGPUCommandEncoder encoder, const FrameView& frame) override {
+        if (screens_ && train_ && !train_->screen_batches().empty()) {
+            set_screens();
+            screens_->prepare(encoder);
+        }
         if (native_sky_on()) {
             native_sky_->render_clouds(encoder, frame.projection, frame.view, static_cast<std::uint32_t>(frame.viewport_width),
                                        static_cast<std::uint32_t>(frame.viewport_height));
@@ -1355,23 +1358,6 @@ public:
 
 private:
     static constexpr int tile_radius = 1;
-
-    // Front of the train on the track nearest to the camera; the other way
-    // if the track ends behind.
-    void place_train(ViewerCamera& camera) {
-        const auto spot = track_->nearest_track(camera.eye());
-        if (!spot) {
-            std::cout << "train: no track near the camera\n";
-            return;
-        }
-        auto error = train_->place(spot->node(), spot->offset(), spot->forward());
-        if (!error.empty()) error = train_->place(spot->node(), spot->offset(), !spot->forward());
-        if (!error.empty()) {
-            std::cout << "train: " << error << '\n';
-            return;
-        }
-        std::cout << "train " << train_->consist_name() << " placed on node " << spot->node() << '\n';
-    }
 
     static constexpr int terrain_radius = 2;
     // The nearest the loaded terrain ends (m): its tiles round the eye's.
@@ -1814,21 +1800,24 @@ private:
         train_glow_textures_.emplace(path.key(), id);
         return id;
     }
-    std::unordered_map<std::string, std::uint32_t> screen_textures_; // ACE path key -> texture (0: failed)
+    std::unordered_map<std::string, std::uint32_t> screen_textures_; // ACE path key (+ "|p") -> texture (0: failed)
 
-    // A cab screen texture, decoded the first time it is asked for.
-    std::uint32_t screen_texture(const core::VirtualPath& path) {
-        const auto it = screen_textures_.find(path.key());
+    // A cab screen texture, decoded the first time it is asked for;
+    // `premultiplied` as the supersampled screens blend it.
+    std::uint32_t screen_texture(const core::VirtualPath& path, const bool premultiplied) {
+        const auto key = premultiplied ? path.key() + "|p" : path.key();
+        const auto it = screen_textures_.find(key);
         if (it != screen_textures_.end()) return it->second;
         std::uint32_t id = 0;
         const auto decoded = formats::decode_ace_rgba(*content_.vfs(), path);
         if (decoded.ok()) {
             const auto& image = *decoded.image;
-            id = screens_->add_texture({.width = image.width, .height = image.height, .pixels = &image.pixels, .mips = &image.mips});
+            id = screens_->add_texture({.width = image.width, .height = image.height, .pixels = &image.pixels, .mips = &image.mips},
+                                       premultiplied);
         } else {
             std::cout << "cab screen texture " << path.str() << ": " << decoded.error << '\n';
         }
-        screen_textures_.emplace(path.key(), id);
+        screen_textures_.emplace(key, id);
         return id;
     }
     std::unique_ptr<renderer::OcclusionProbe> probe_;

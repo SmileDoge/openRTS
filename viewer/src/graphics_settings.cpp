@@ -47,7 +47,7 @@ namespace {
 [[nodiscard]] std::vector<std::pair<const char*, std::string>> keys_of(const GraphicsSettings& s) {
     const auto& e = s.effects;
     return {
-        {"launcher_msaa", text(s.msaa)},
+        {"msaa_samples", text(s.msaa)},
         {"launcher_experimental", text(s.experimental)},
         {"launcher_hdr", text(s.hdr)},
         {"tone_mode", text(s.tone_curve)},
@@ -84,6 +84,7 @@ namespace {
         {"forest_clearance", text(s.forest_clearance)},
         {"forest_clearance_distance", text(s.forest_clearance_distance)},
         {"signal_lights_real_size", text(s.signal_lights_real_size)},
+        {"screen_supersampling", text(s.screen_supersampling)},
         {"reshade_depth", text(s.reshade_depth)},
     };
 }
@@ -93,7 +94,11 @@ namespace {
 GraphicsSettings load_graphics_settings() {
     GraphicsSettings s;
     auto& e = s.effects;
-    s.msaa = whole("launcher_msaa", 1, 0, 1) != 0;
+    if (const auto samples = remembered("msaa_samples")) {
+        s.msaa = valid_msaa_samples(std::atoi(samples->c_str()));
+    } else if (const auto before = remembered("launcher_msaa")) {
+        s.msaa = *before == "0" ? 1u : 4u; // the old switch: off or 4x
+    }
     s.experimental = whole("launcher_experimental", 0, 0, 1) != 0;
     s.hdr = whole("launcher_hdr", 0, 0, 1) != 0;
     s.tone_curve = whole("tone_mode", s.tone_curve, 0, 4);
@@ -134,6 +139,7 @@ GraphicsSettings load_graphics_settings() {
     s.forest_clearance = flag_not_zero("forest_clearance", s.forest_clearance);
     s.forest_clearance_distance = number("forest_clearance_distance", s.forest_clearance_distance, 0.5f, 20.0f);
     s.signal_lights_real_size = flag_not_zero("signal_lights_real_size", s.signal_lights_real_size);
+    s.screen_supersampling = flag_not_zero("screen_supersampling", s.screen_supersampling);
     s.reshade_depth = flag_one("reshade_depth", s.reshade_depth);
     return s;
 }
@@ -172,9 +178,8 @@ const char* graphics_preset_note(const GraphicsPreset preset) noexcept {
 
 void apply_graphics_preset(GraphicsSettings& s, const GraphicsPreset preset) {
     auto& e = s.effects;
-    // Every preset: MSAA (RTS's content counts on its alpha to coverage),
-    // sun shadows kept for far cascades every other frame.
-    s.msaa = true;
+    // Every preset: sun shadows, kept for far cascades every other frame.
+    // MSAA stays as chosen (1, 2, 4 or 8: a choice of its own).
     e.shadows = true;
     switch (preset) {
     case GraphicsPreset::low:

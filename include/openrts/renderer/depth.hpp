@@ -21,9 +21,10 @@ inline constexpr float depth_clear_value = 0.0f;
 inline constexpr WGPUCompareFunction depth_nearer_or_equal = WGPUCompareFunction_GreaterEqual;
 
 // Multisampling of the scene targets, chosen once before any renderer or
-// pipeline is created (the viewer's --msaa): 1 or 4, the counts WebGPU
-// guarantees. RTS's own setting is "Antialiasing = 4x MSAA +Alpha"
-// (alpha-to-coverage on every BlendATex / BlendATexDiff surface).
+// pipeline is created (the viewer's --msaa): 1, 2, 4 or 8, as the device
+// takes it (supported_sample_count; WebGPU guarantees 1 and 4). RTS's own
+// setting is "Antialiasing = 4x MSAA +Alpha" (alpha-to-coverage on every
+// BlendATex / BlendATexDiff surface).
 inline std::uint32_t& render_sample_count() {
     static std::uint32_t count = 1;
     return count;

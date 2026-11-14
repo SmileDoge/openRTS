@@ -186,6 +186,25 @@ struct Reader {
                 for (const auto& child : play->children) {
                     if (child.name == "file") files.push_back(&child);
                 }
+                // A player inside the player (MaDaDev: `StartLoopRelease ( 1
+                // StartLoopRelease ( 1 File ( "tifon.wav" -1 ) ... ) )`, the
+                // 2ЭС4К's typhon and whistle, 20 scripts of the install):
+                // its files. RTS plays them (PROBABLE: its File search goes
+                // deeper; not traced).
+                for (const TextNode* inner = play; files.empty() && inner;) {
+                    const TextNode* next = nullptr;
+                    for (const auto& child : inner->children) {
+                        if (child.name == "playoneshot" || child.name == "startloop" || child.name == "startlooprelease") {
+                            next = &child;
+                            break;
+                        }
+                    }
+                    inner = next;
+                    if (!inner) break;
+                    for (const auto& child : inner->children) {
+                        if (child.name == "file") files.push_back(&child);
+                    }
+                }
                 const auto count = limit(*play, files.size());
                 for (std::size_t i = 0; i < count; ++i) {
                     if (files[i]->values.empty()) continue;

@@ -38,17 +38,18 @@ struct Live {
 
 class Emitter {
 public:
-    Emitter(std::vector<ScreenBatch>& out, const glm::vec3& tl, const glm::vec3& tr, const glm::vec3& br)
-        : out_(out), origin_(tl), across_(tr - tl), down_(br - tr) {}
+    Emitter(std::vector<ScreenBatch>& out, const glm::vec3& tl, const glm::vec3& tr, const glm::vec3& br, const std::uint32_t screen)
+        : out_(out), first_(out.size()), origin_(tl), across_(tr - tl), down_(br - tr), screen_(screen) {}
 
     void use(const core::VirtualPath& texture, const bool blend, const std::uint32_t colour) {
         colour_ = colour;
-        if (!out_.empty() && out_.back().texture == texture && out_.back().blend == blend) return;
-        out_.push_back({texture, blend, {}});
+        // A batch of this screen's only: each screen may become an image of its own.
+        if (out_.size() > first_ && out_.back().texture == texture && out_.back().blend == blend) return;
+        out_.push_back({texture, blend, {}, screen_});
     }
     [[nodiscard]] glm::vec3 at(const float u, const float v) const { return origin_ + across_ * u + down_ * v; }
     void vertex(const float x, const float y, const float u, const float v) {
-        out_.back().vertices.push_back({at(x, y), {u, v}, colour_});
+        out_.back().vertices.push_back({at(x, y), {u, v}, colour_, {x, y}});
     }
     // Screen rect r with texture rect t (x0 y0 x1 y1 each).
     void quad(const Rect& r, const Rect& t) {
@@ -67,7 +68,9 @@ public:
 
 private:
     std::vector<ScreenBatch>& out_;
+    std::size_t first_; // this screen's batches start here
     glm::vec3 origin_, across_, down_;
+    std::uint32_t screen_;
     std::uint32_t colour_ = 0xFFFFFFFFu;
 };
 
@@ -176,7 +179,7 @@ CabScreens::CabScreens(const formats::CabDescription& cab, const core::VirtualPa
 }
 
 void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std::vector<ScreenBatch>& out,
-                       const std::vector<bool>* blinked_off) {
+                       const std::vector<bool>* blinked_off, std::vector<ScreenPlane>* planes) {
     labels_seen_.clear();
     for (auto& screen : screens_) {
         const auto& display = cab_->displays[screen.display];
@@ -253,7 +256,12 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
             return false;
         };
 
-        Emitter emit(out, screen.top_left, screen.top_right, screen.bottom_right);
+        std::uint32_t plane = 0;
+        if (planes) {
+            plane = static_cast<std::uint32_t>(planes->size());
+            planes->push_back({screen.top_left, screen.top_right, screen.bottom_right});
+        }
+        Emitter emit(out, screen.top_left, screen.top_right, screen.bottom_right, plane);
         for (std::size_t k = 0; k < n; ++k) {
             const auto& def = defs[k];
             auto& o = screen.objects[k];

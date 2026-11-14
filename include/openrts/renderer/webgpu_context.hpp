@@ -4,6 +4,7 @@
 #error "webgpu_context.hpp requires OPENRTS_ENABLE_WGPU and an installed wgpu-native SDK."
 #endif
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -59,5 +60,12 @@ struct WgpuDeviceContextResult {
 [[nodiscard]] WgpuDeviceContextResult create_wgpu_device(GraphicsBackend backend);
 // The automatic choice (tests, tools, captures).
 [[nodiscard]] WgpuDeviceContextResult create_headless_wgpu_device();
+
+// The multisample count the scene can be drawn with on this device:
+// `wanted` (1, 2, 4 or 8) when every scene target format takes it (the
+// screen's BGRA8 / RGBA8, the HDR frame's RGBA16Float, the Depth32Float
+// depth), else 4. WebGPU guarantees 1 and 4; 2 and 8 are the adapter's own
+// (the device asks for its format features where offered), tried here.
+[[nodiscard]] std::uint32_t supported_sample_count(const WgpuDeviceContext& context, std::uint32_t wanted);
 
 } // namespace openrts::renderer

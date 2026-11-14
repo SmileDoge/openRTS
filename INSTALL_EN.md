@@ -86,9 +86,12 @@ What the archive holds:
    Screen, Renderer, Shadows, Ambient occlusion, Lamps, Sky and water,
    World. Presets on top: Low (for weak cards, GTX 1050 / 1650 class),
    Medium, High (as openRTS starts) and Ultra. A preset sets the costly
-   settings together: anti-aliasing, the shadows, the ambient occlusion,
-   the lamp and cloud shadows; it leaves the look (HDR, exposure, the sky,
-   the water) alone. A setting changed by hand makes it Custom. Each
+   settings together: the shadows, the ambient occlusion, the lamp and
+   cloud shadows; it leaves anti-aliasing and the look (HDR, exposure, the
+   sky, the water) alone. Anti-aliasing (MSAA) is chosen under Screen: off,
+   2x, 4x (as RTS, the default) or 8x; 2x and 8x where the video card takes
+   them, else the game draws with 4x. The same is in the game, in the
+   openRTS panel's Graphics (from the next start). A setting changed by hand makes it Custom. Each
    setting shows its load on the processor (CPU) and the video card (GPU):
    no effect, almost none, medium, above medium, high, very high, from grey
    to violet. That is an estimate from openRTS's own frames and players'
@@ -155,11 +158,14 @@ server's window: `add`, `assign`, `route`, `junction`, `signal`, `time`,
 
 ## In the game: first steps
 
-- **Windows.** Top left is the openRTS panel: graphics, lighting and
-  sound settings. The Train window has the consist, brakes and uncoupling.
-  The Cab window shows a DLL locomotive's cab.
+- **Windows.** Top left is the openRTS panel (Esc shows and hides it), in
+  tabs: General (language, keys, sound, time and weather), Graphics, Train
+  (the switches and consists on top, what the train is doing below),
+  World, Performance, Controls. "FPS on screen" next to the frame counter
+  puts it in a corner of the screen, with the panel hidden too. The Cab
+  window shows a DLL locomotive's cab.
 - **The consist.** It stands at the start of the chosen path. With no
-  path, `C` puts it on the track near the camera.
+  path, put it with Track control (Ctrl+Alt+F7): a right click on a track.
 - **Cab.**
   - How to get in: the 3D cab view checkbox in the Train window.
   - Enter stands up at the desk; Ctrl+Enter steps out into the passage
@@ -185,7 +191,7 @@ server's window: `add`, `assign`, `route`, `junction`, `signal`, `time`,
   - F6 — stations ahead;
   - F7 — platform names;
   - Ctrl+Alt+F7 — Track control (track map, junctions, trains).
-- **Renderer.** `R` switches between the RTS renderer and the
+- **Renderer.** `F10` switches between the RTS renderer and the
   experimental one (shadows, ambient occlusion, every lamp, haze). Its settings are in
   the openRTS panel.
 
@@ -238,7 +244,7 @@ included, so depth effects reach them too.
 | "There is no ROUTES folder here" | Give the folder holding `ROUTES` and `TRAINS`: one level above the `RTS` folder with `rts1.exe` |
 | No window, or a black screen | Update the graphics driver (Vulkan or DirectX 12 is needed). In the start menu's Settings choose Graphics API → DirectX 12. Look for `WebGPU error` lines in `openrts.log` |
 | A DLL locomotive does not respond, the cab window is empty | `openrts-dllhost32.exe` must sit next to `openrts_viewer.exe`. An antivirus may block it — add the folder to its exclusions. The reason is written to `openrts.log` |
-| Low frame rate | Turn experimental renderer off (`R`), or shadows and occlusion in the openRTS panel; lower anti-aliasing |
+| Low frame rate | Turn experimental renderer off (`F10`), or shadows and occlusion in the openRTS panel; lower anti-aliasing |
 | Settings went wrong | Delete `viewer_state.ini` in `%LOCALAPPDATA%\openRTS` to reset everything |
 
 If that does not help, open an issue: say what you did and attach

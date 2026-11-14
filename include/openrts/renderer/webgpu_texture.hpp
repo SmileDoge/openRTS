@@ -54,9 +54,12 @@ struct WgpuTextureUploadResult {
 
 // Creates a sampled RGBA8Unorm 2D texture and uploads all pixels immediately,
 // with the image's mipmap levels (the leading ones of the right size).
+// `format`: RGBA8Unorm, or RGBA8UnormSrgb for bytes that are sRGB-encoded
+// (sampled as linear values, filtered in linear light).
 // The caller owns the WGPUDevice; returned texture owns its WGPUTexture handle.
 [[nodiscard]] WgpuTextureUploadResult upload_rgba8_texture(
-    WGPUDevice device, Rgba8ImageView image, std::string_view label = {});
+    WGPUDevice device, Rgba8ImageView image, std::string_view label = {},
+    WGPUTextureFormat format = WGPUTextureFormat_RGBA8Unorm);
 
 // A BC1 (DXT1) texture from its levels' 8-byte blocks (level k:
 // max(1, width >> k) x max(1, height >> k) texels, rows of ceil(w/4)

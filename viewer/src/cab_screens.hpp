@@ -22,13 +22,20 @@ struct ScreenVertex {
     glm::vec3 position{};              // cab shape coordinates (or scene, once placed)
     glm::vec2 uv{};
     std::uint32_t colour = 0xFFFFFFFFu; // RGBA8, 0xAABBGGRR
+    glm::vec2 local{};                  // on its screen: 0..1 across and down
 };
 
-// Triangles with one texture.
+// Triangles with one texture, on one screen.
 struct ScreenBatch {
     core::VirtualPath texture;
     bool blend = true; // BlendATex / AddATex (RTS enables blending for shaders 3, 4, 6, 7)
     std::vector<ScreenVertex> vertices;
+    std::uint32_t screen{}; // its screen in the build's ScreenPlane list (0 without one)
+};
+
+// A screen drawn: its corners (cab shape coordinates, or scene once placed).
+struct ScreenPlane {
+    glm::vec3 top_left{}, top_right{}, bottom_right{};
 };
 
 class CabScreens {
@@ -41,8 +48,10 @@ public:
     // states. `elapsed` drives blinking and the smoothed arrows and bars.
     // `blinked_off`: by display index, the display is in the hidden half of
     // its DisplayFade blink (RTS 0x525DB0); null: none.
+    // `planes`: each screen drawn appended, its batches' `screen` its index
+    // there (the supersampled screens draw each into an image of its own).
     void build(const dllhost::CarOutput* state, float elapsed, std::vector<ScreenBatch>& out,
-               const std::vector<bool>* blinked_off = nullptr);
+               const std::vector<bool>* blinked_off = nullptr, std::vector<ScreenPlane>* planes = nullptr);
     // The labels with a text at the last build(): what the DLL wrote, whether
     // the label was shown and how many of its characters the alphabet had
     // (for the log: a text the DLL never wrote, or one drawn only in part).

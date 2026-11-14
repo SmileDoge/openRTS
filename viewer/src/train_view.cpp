@@ -4017,6 +4017,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     const auto rails = rails_now();
     for (auto& unit : units_) {
         if (unit.train && unit.train->settings().body_motion != body_motion_model()) unit.train->set_body_motion(body_motion_model());
+        if (unit.train) unit.train->set_switch_throws(switch_throws());
         if (unit.train) {
             unit.train->set_rails(rails);
             unit.train->set_limit_brake_force(limit_brake_force_);
@@ -4070,7 +4071,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         if (shapes_ready) {
             pending_path_ = false;
             if (paths_.empty()) {
-                message_ = tr("the route has no paths: C puts the train on the track nearest to the camera");
+                message_ = tr("the route has no paths: put the train with Track control (Ctrl+Alt+F7)");
             } else {
                 const auto index = static_cast<std::size_t>(std::clamp(path_choice_, 0, static_cast<int>(paths_.size()) - 1));
                 if (const auto error = place_on_path(paths_[index]); !error.empty()) message_ = error;
@@ -7705,6 +7706,7 @@ void TrainView::update_cab_sound(Unit& unit, const std::size_t u, const std::siz
 void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view) {
     OPENRTS_ZONE("trains: submit");
     screen_batches_.clear();
+    screen_planes_.clear();
     cab_to_scene_.reset();
     cab_focus_.reset();
     if (!placed()) return;
@@ -7801,9 +7803,16 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 }
                 if (auto* cab = engineer_cab()) {
                     const auto first = screen_batches_.size();
-                    cab->screens(cab_state(i), frame_elapsed_, screen_batches_);
+                    const auto first_plane = screen_planes_.size();
+                    cab->screens(cab_state(i), frame_elapsed_, screen_batches_, &screen_planes_);
                     for (auto b = first; b < screen_batches_.size(); ++b) {
                         for (auto& v : screen_batches_[b].vertices) v.position = glm::vec3{to_scene * glm::vec4{v.position, 1.0f}};
+                    }
+                    const auto place = [&](glm::vec3& p) { p = glm::vec3{to_scene * glm::vec4{p, 1.0f}}; };
+                    for (auto p = first_plane; p < screen_planes_.size(); ++p) {
+                        place(screen_planes_[p].top_left);
+                        place(screen_planes_[p].top_right);
+                        place(screen_planes_[p].bottom_right);
                     }
                 }
                 // RTS 0x438D50: the exterior comes back with the head out of
@@ -8050,40 +8059,42 @@ void TrainView::list_consists() {
     });
 }
 
+void TrainView::draw_cab_controls() {
+#ifdef OPENRTS_HAS_IMGUI
+    if (!cab_) return;
+    bool on = engineer_.active();
+    if (ImGui::Checkbox(tr("3D cab view"), &on)) set_engineer(on);
+    if (on && !cab_->bound()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr("(loading the cab)"));
+    } else if (on) {
+        ImGui::SameLine();
+        ImGui::TextDisabled(tr("(%zu controls in the shape)"), cab_->switches_bound());
+    }
+    if (on) {
+        ImGui::TextDisabled("%s", tr("Arrows: walk (Shift: run), Enter: stand up / sit down / a door, "
+                                     "Ctrl+Enter: steps, ladders, through a door, RMB: look round, Alt: captions of the controls"));
+        ImGui::TextDisabled("%s", trf("Mouse: a click works a switch, the wheel turns it a step; %s: the window, %s: head out",
+                                      window_key_name(), head_out_key_name()).c_str());
+        ImGui::Checkbox(tr("On foot outside: collide with objects (off: only the ground and trains)"), &walk_objects_);
+        ImGui::Checkbox(tr("Through an open passage door: the next car's salon or cab"), &neighbour_rooms_);
+        ImGui::Checkbox(tr("And through a shut one (its glass)"), &neighbour_rooms_shut_);
+        // The paces (config.ini engineer.velocity / engineer.velocity1, as RTS), for this session.
+        float walk = engineer_.walk_speed(), run = engineer_.run_speed();
+        ImGui::SetNextItemWidth(160.0f);
+        bool changed = ImGui::SliderFloat(tr("Walk, m/s"), &walk, 0.5f, 10.0f, "%.1f");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(160.0f);
+        changed |= ImGui::SliderFloat(tr("With Shift, m/s"), &run, 1.0f, 150.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+        if (changed) engineer_.set_speeds(walk, run);
+        ImGui::TextDisabled("%s", tr("End: slower, Shift+End: twice the Shift pace. From config.ini (engineer.velocity, engineer.velocity1)."));
+    }
+#endif
+}
+
 void TrainView::draw_overlay() {
 #ifdef OPENRTS_HAS_IMGUI
-    // The 3-D cab and the engineer on foot.
-    const auto cab_controls = [this] {
-        if (!cab_) return;
-        bool on = engineer_.active();
-        if (ImGui::Checkbox(tr("3D cab view"), &on)) set_engineer(on);
-        if (on && !cab_->bound()) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", tr("(loading the cab)"));
-        } else if (on) {
-            ImGui::SameLine();
-            ImGui::TextDisabled(tr("(%zu controls in the shape)"), cab_->switches_bound());
-        }
-        if (on) {
-            ImGui::TextDisabled("%s", tr("Arrows: walk (Shift: run), Enter: stand up / sit down / a door, "
-                                         "Ctrl+Enter: steps, ladders, through a door, RMB: look round, Alt: captions of the controls"));
-            ImGui::TextDisabled("%s", trf("Mouse: a click works a switch, the wheel turns it a step; %s: the window, %s: head out",
-                                          window_key_name(), head_out_key_name()).c_str());
-            ImGui::Checkbox(tr("On foot outside: collide with objects (off: only the ground and trains)"), &walk_objects_);
-            ImGui::Checkbox(tr("Through an open passage door: the next car's salon or cab"), &neighbour_rooms_);
-            ImGui::Checkbox(tr("And through a shut one (its glass)"), &neighbour_rooms_shut_);
-            // The paces (config.ini engineer.velocity / engineer.velocity1, as RTS), for this session.
-            float walk = engineer_.walk_speed(), run = engineer_.run_speed();
-            ImGui::SetNextItemWidth(160.0f);
-            bool changed = ImGui::SliderFloat(tr("Walk, m/s"), &walk, 0.5f, 10.0f, "%.1f");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(160.0f);
-            changed |= ImGui::SliderFloat(tr("With Shift, m/s"), &run, 1.0f, 150.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
-            if (changed) engineer_.set_speeds(walk, run);
-            ImGui::TextDisabled("%s", tr("End: slower, Shift+End: twice the Shift pace. From config.ini (engineer.velocity, engineer.velocity1)."));
-        }
-    };
-    if (legacy_ && panels_shown()) legacy_->draw_window(cab_controls);
+    if (legacy_ && panels_shown()) legacy_->draw_window([this] { draw_cab_controls(); });
     // What Enter does where the engineer stands (unless the hints are off).
     if (key_hints() && engineer_.active() && car_view_ == CarView::off && (!board_prompt_.empty() || !engineer_.prompt().empty())) {
         const auto size = ImGui::GetIO().DisplaySize;
@@ -8095,7 +8106,12 @@ void TrainView::draw_overlay() {
                             0xa0000000u, 4.0f);
         list->AddText(corner, 0xffffffffu, text);
     }
-    if (!ImGui::CollapsingHeader(tr("Train"), ImGuiTreeNodeFlags_DefaultOpen)) return;
+#endif
+}
+
+void TrainView::draw_panel() {
+#ifdef OPENRTS_HAS_IMGUI
+    // The buttons and switches first.
     // The network's own trains: walk to a cab door, or as a reserve "Drive".
     if (!boardable_.empty()) {
         ImGui::TextUnformatted(tr("Your trains (network): on foot, Enter at a cab door takes one"));
@@ -8113,7 +8129,7 @@ void TrainView::draw_overlay() {
             ImGui::PopID();
         }
     }
-    cab_controls();
+    draw_cab_controls();
     if (legacy_) {
         // With the free camera a choice (they take its WASD); on foot always on.
         bool keys = legacy_->keyboard();
@@ -8211,7 +8227,134 @@ void TrainView::draw_overlay() {
         }
     }
     if (!message_.empty()) ImGui::TextUnformatted(message_.c_str());
+    const bool own = loaded() && !units_.front().remote;
+    if (own && placed()) {
+        const auto& train = driven();
+        const auto driven = driven_car();
+        const bool dll_driven = driven != SIZE_MAX && dll_car(0, driven);
+        ImGui::SeparatorText(tr("Train settings"));
+        ImGui::Checkbox(tr("Camera follows (V)"), &follow_);
+        if (!dll_driven && driver_) {
+            ImGui::SameLine();
+            ImGui::Checkbox(tr("EP brake (K)"), &driver_->ep_brake);
+        }
+        ImGui::SliderFloat(tr("Body sway"), &sway_scale_, 0.0f, 10.0f, "%.1f");
+        ImGui::SameLine();
+        ImGui::TextDisabled(tr("(1 = RTS model; RTS shows it in the cab only)"));
+        ImGui::Checkbox(tr("Car loops start at random points"), &random_loop_phase_);
+        ImGui::SameLine();
+        ImGui::TextDisabled(tr("(openRTS: identical loops on many cars do not add up in phase; RTS starts them together)"));
+        if (ImGui::SliderInt(tr("Coupler sub-steps"), &substeps_, 1, 4)) {
+            for (auto& unit : units_) unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled(substeps_ == 1 ? "(RTS)" : "(experimental)");
+        if (ImGui::Checkbox(tr("Realistic air (openRTS)"), &realistic_air_)) {
+            for (auto& unit : units_)
+                unit.train->set_brake_model(realistic_air_ ? simulation::BrakeModel::realistic : simulation::BrakeModel::rts);
+        }
+        ImGui::SameLine();
+        if (!units_.empty() && realistic_air_ && units_.front().train->brake_model() == simulation::BrakeModel::rts) {
+            ImGui::TextDisabled("%s", tr("(the player's train keeps RTS air: its DLL's valve is made for it)"));
+        } else {
+            ImGui::TextDisabled("%s", tr("(off: RTS model; flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed)"));
+        }
+        {
+            // Trains with locomotive DLLs under the realistic air (docs/train.md).
+            const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),
+                                   tr("openRTS valve over Brakes.dll (experimental)")};
+            ImGui::SetNextItemWidth(330.0f);
+            if (ImGui::Combo(tr("Trains with DLLs##dll_air"), &dll_air_, modes, 3)) {
+                dll_air_loaded_ = true;
+                remember("dll_air", std::to_string(dll_air_));
+                if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
+                if (realistic_air_) {
+                    for (auto& unit : units_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
+                }
+            }
+            ImGui::TextDisabled("%s", tr(!realistic_air_ ? "(works with the realistic air on)"
+                                         : dll_air_ == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
+                                         : dll_air_ == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
+                                                         : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
+        }
+        {
+            // The rails' adhesion (adhesion.hpp): traction and, with the realistic
+            // air, wheel slide and the shoes' wetness and warmth.
+            const char* rails[] = {tr("as RTS (no weather)"), tr("by the weather"), tr("dry"), tr("wet"), tr("snow"), tr("ice"), tr("leaves")};
+            ImGui::SetNextItemWidth(200.0f);
+            if (ImGui::Combo(tr("Rails##rails"), &rails_, rails, 7)) {
+                rails_loaded_ = true;
+                remember("rails", std::to_string(rails_));
+            }
+            ImGui::SameLine();
+            const auto now = rails_now();
+            ImGui::TextDisabled("%s", tr(now == simulation::RailCondition::rts    ? "(RTS's adhesion; no wheel slide limit by weather)"
+                                         : now == simulation::RailCondition::dry  ? "(now dry: adhesion 0.33 standing, 0.21 at 100 km/h)"
+                                         : now == simulation::RailCondition::wet  ? "(now wet: 0.65 of dry; the shoes get wet, braking dries them)"
+                                         : now == simulation::RailCondition::snow ? "(now snow: 0.5 of dry; the shoes get wet, braking dries them)"
+                                         : now == simulation::RailCondition::ice  ? "(now ice: 0.35 of dry)"
+                                                                                  : "(now leaves: 0.3 of dry)"));
+        }
+        if (ImGui::Checkbox(tr("Limit the brake force to real stock's (openRTS)"), &limit_brake_force_)) {
+            rails_loaded_ = true;
+            remember("limit_brake_force", limit_brake_force_ ? "1" : "0");
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr(limit_brake_force_
+                                         ? "(with the realistic air: at most what real stock with its shoes gives; some content brakes 3x harder and slides on dry rails)"
+                                         : "(off: the brake force as the stock's files give it)"));
+        if (ImGui::Checkbox(tr("Distributor stability in the RTS model (openRTS)"), &distributor_stability_)) {
+            distributor_stability_loaded_ = true;
+            remember("distributor_stability", distributor_stability_ ? "1" : "0");
+            for (auto& unit : units_) unit.train->set_distributor_stability(distributor_stability_);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr(distributor_stability_
+                                         ? "(a slow pipe fall, as the stabiliser's, brakes nothing: 483 up to 0.3, 292 up to 0.5 atm/min)"
+                                         : "(off: as RTS, any pipe fall below the reservoir brakes, the stabiliser's slow one too)"));
+        if (line_engines_) {
+            ImGui::Checkbox(tr("pantographs can burn the wire"), &electrification_->wire_burning);
+            ImGui::SameLine();
+            ImGui::Checkbox(tr("each engine its own voltage##line"), &electrification_->own_voltage);
+            if (electrification_->mode() != simulation::Electrification::Mode::sections && !electrification_->own_voltage) {
+                ImGui::SameLine();
+                ImGui::TextDisabled(electrification_->mode() == simulation::Electrification::Mode::single_type
+                                        ? tr("(the route's one supply type)")
+                                    : electrification_->mode() == simulation::Electrification::Mode::by_engine
+                                        ? tr("(no .electrotype: the engine's own voltage, as RTS)")
+                                        : tr("(the route is not electrified)"));
+            }
+        }
+        if (ImGui::TreeNode(tr("Cars and coupling"))) {
+            // Uncoupling as from the RTS menu: both end cocks closed, the
+            // couplers left open so the parts do not couple again by themselves.
+            const auto& cars = units_.front().cars;
+            for (std::size_t i = 0; i < cars.size(); ++i) {
+                const auto& state = train.cars()[i];
+                ImGui::Text("%2zu %s%s%s", i + 1, cars[i].definition ? cars[i].definition->name.c_str() : "?",
+                            state.flipped ? tr(" (turned)") : "", state.derailed ? tr(" DERAILED") : "");
+                if (i + 1 < cars.size()) {
+                    ImGui::PushID(static_cast<int>(i));
+                    if (ImGui::SmallButton(tr("uncouple here"))) pending_uncouple_ = i + 1;
+                    ImGui::PopID();
+                }
+            }
+            if (units_.size() > 1) {
+                ImGui::Separator();
+                for (std::size_t u = 1; u < units_.size(); ++u) {
+                    const auto& cut = *units_[u].train;
+                    ImGui::Text(tr("Cut %zu: %zu cars, %.1f km/h, pipe %.2f atm%s"), u, cut.cars().size(), cut.speed() * 3.6,
+                                cut.cars().empty() ? 0.0f : cut.cars().front().pipe, cut.derailed() ? ", derailed" : "");
+                }
+                ImGui::TextDisabled(tr("Push gently into a cut with automatic couplers to couple; open couplers only push."));
+            }
+            ImGui::TreePop();
+        }
+    }
+
+    // What the train is doing.
     if (!loaded()) return;
+    ImGui::SeparatorText(tr("The train now"));
     // The network: the player's train was taken away or taken off the
     // track and another client's is first now; nothing below is his.
     if (units_.front().remote) {
@@ -8223,7 +8366,7 @@ void TrainView::draw_overlay() {
     ImGui::Text(tr("%s: %zu cars, %.0f m, %.0f t"), units_.front().name.c_str(), units_.front().cars.size(), train.length(),
                 train.mass() / 1000.0);
     if (!placed()) {
-        ImGui::TextUnformatted(tr("Not on the track: C puts it on the track nearest to the camera."));
+        ImGui::TextUnformatted(tr("Not on the track: put it with Track control (Ctrl+Alt+F7) or on a path start."));
         return;
     }
     const auto& head = train.cars().front();
@@ -8253,11 +8396,7 @@ void TrainView::draw_overlay() {
                     driver_->reverser > 0 ? tr("forward") : driver_->reverser < 0 ? tr("back") : tr("neutral"),
                     handle_name(driver_->brake), driver_->independent);
         ImGui::Text(tr("Equalising reservoir %.2f atm (II keeps %.1f)"), driver_->equalising, driver_->charging_pressure);
-        ImGui::Checkbox(tr("EP brake (K)"), &driver_->ep_brake);
-        if (driver_->ep_brake) {
-            ImGui::SameLine();
-            ImGui::Text(tr("demand %.2f atm (VE/V apply, III/IV hold, I/II release)"), driver_->ep_target);
-        }
+        if (driver_->ep_brake) ImGui::Text(tr("EP brake: demand %.2f atm (VE/V apply, III/IV hold, I/II release)"), driver_->ep_target);
     }
     ImGui::Text(tr("Pipe %.2f  cylinder %.2f  aux %.2f  main reservoir %.2f atm"), head.pipe, head.cylinder, head.auxiliary,
                 head.main_reservoir);
@@ -8290,10 +8429,6 @@ void TrainView::draw_overlay() {
                 ImGui::Text(tr("Car %zu: line current %.0f A"), i + 1, c.line_current);
             }
         }
-        ImGui::SameLine();
-        ImGui::Checkbox(tr("pantographs can burn the wire"), &electrification_->wire_burning);
-    }
-    if (line_engines_) {
         if (line_.voltage <= 0.0f) {
             ImGui::TextUnformatted(tr("Overhead line: no voltage (pantographs down, no wire or a dead section)"));
         } else if (line_.frequency > 0.0f) {
@@ -8301,121 +8436,11 @@ void TrainView::draw_overlay() {
         } else {
             ImGui::Text(tr("Overhead line: %.2f kV DC"), line_.voltage / 1000.0f);
         }
-        ImGui::SameLine();
-        ImGui::Checkbox(tr("each engine its own voltage##line"), &electrification_->own_voltage);
-        if (electrification_->mode() != simulation::Electrification::Mode::sections && !electrification_->own_voltage) {
-            ImGui::SameLine();
-            ImGui::TextDisabled(electrification_->mode() == simulation::Electrification::Mode::single_type
-                                    ? tr("(the route's one supply type)")
-                                : electrification_->mode() == simulation::Electrification::Mode::by_engine
-                                    ? tr("(no .electrotype: the engine's own voltage, as RTS)")
-                                    : tr("(the route is not electrified)"));
-        }
     }
     const auto& last = train.cars().back();
     ImGui::Text(tr("Last car: pipe %.2f cylinder %.2f; worst coupler %.0f kN"), last.pipe, last.cylinder, worst_coupler / 1000.0);
     ImGui::Text(tr("Joints %zu, junctions %zu%s; coupler breaks %zu, derailments %zu"), joints_, junctions_,
                 end_of_track_ ? ", END OF TRACK" : "", coupler_breaks_, derailments_);
-    ImGui::SliderFloat(tr("Body sway"), &sway_scale_, 0.0f, 10.0f, "%.1f");
-    ImGui::SameLine();
-    ImGui::TextDisabled(tr("(1 = RTS model; RTS shows it in the cab only)"));
-    ImGui::Checkbox(tr("Car loops start at random points"), &random_loop_phase_);
-    ImGui::SameLine();
-    ImGui::TextDisabled(tr("(openRTS: identical loops on many cars do not add up in phase; RTS starts them together)"));
-    if (ImGui::SliderInt(tr("Coupler sub-steps"), &substeps_, 1, 4)) {
-        for (auto& unit : units_) unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled(substeps_ == 1 ? "(RTS)" : "(experimental)");
-    if (ImGui::Checkbox(tr("Realistic air (openRTS)"), &realistic_air_)) {
-        for (auto& unit : units_)
-            unit.train->set_brake_model(realistic_air_ ? simulation::BrakeModel::realistic : simulation::BrakeModel::rts);
-    }
-    ImGui::SameLine();
-    if (!units_.empty() && realistic_air_ && units_.front().train->brake_model() == simulation::BrakeModel::rts) {
-        ImGui::TextDisabled("%s", tr("(the player's train keeps RTS air: its DLL's valve is made for it)"));
-    } else {
-        ImGui::TextDisabled("%s", tr("(off: RTS model; flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed)"));
-    }
-    {
-        // Trains with locomotive DLLs under the realistic air (docs/train.md).
-        const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),
-                               tr("openRTS valve over Brakes.dll (experimental)")};
-        ImGui::SetNextItemWidth(330.0f);
-        if (ImGui::Combo(tr("Trains with DLLs##dll_air"), &dll_air_, modes, 3)) {
-            dll_air_loaded_ = true;
-            remember("dll_air", std::to_string(dll_air_));
-            if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
-            if (realistic_air_) {
-                for (auto& unit : units_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
-            }
-        }
-        ImGui::TextDisabled("%s", tr(!realistic_air_ ? "(works with the realistic air on)"
-                                     : dll_air_ == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
-                                     : dll_air_ == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
-                                                     : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
-    }
-    {
-        // The rails' adhesion (adhesion.hpp): traction and, with the realistic
-        // air, wheel slide and the shoes' wetness and warmth.
-        const char* rails[] = {tr("as RTS (no weather)"), tr("by the weather"), tr("dry"), tr("wet"), tr("snow"), tr("ice"), tr("leaves")};
-        ImGui::SetNextItemWidth(200.0f);
-        if (ImGui::Combo(tr("Rails##rails"), &rails_, rails, 7)) {
-            rails_loaded_ = true;
-            remember("rails", std::to_string(rails_));
-        }
-        ImGui::SameLine();
-        const auto now = rails_now();
-        ImGui::TextDisabled("%s", tr(now == simulation::RailCondition::rts    ? "(RTS's adhesion; no wheel slide limit by weather)"
-                                     : now == simulation::RailCondition::dry  ? "(now dry: adhesion 0.33 standing, 0.21 at 100 km/h)"
-                                     : now == simulation::RailCondition::wet  ? "(now wet: 0.65 of dry; the shoes get wet, braking dries them)"
-                                     : now == simulation::RailCondition::snow ? "(now snow: 0.5 of dry; the shoes get wet, braking dries them)"
-                                     : now == simulation::RailCondition::ice  ? "(now ice: 0.35 of dry)"
-                                                                              : "(now leaves: 0.3 of dry)"));
-    }
-    if (ImGui::Checkbox(tr("Limit the brake force to real stock's (openRTS)"), &limit_brake_force_)) {
-        rails_loaded_ = true;
-        remember("limit_brake_force", limit_brake_force_ ? "1" : "0");
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", tr(limit_brake_force_
-                                     ? "(with the realistic air: at most what real stock with its shoes gives; some content brakes 3x harder and slides on dry rails)"
-                                     : "(off: the brake force as the stock's files give it)"));
-    if (ImGui::Checkbox(tr("Distributor stability in the RTS model (openRTS)"), &distributor_stability_)) {
-        distributor_stability_loaded_ = true;
-        remember("distributor_stability", distributor_stability_ ? "1" : "0");
-        for (auto& unit : units_) unit.train->set_distributor_stability(distributor_stability_);
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", tr(distributor_stability_
-                                     ? "(a slow pipe fall, as the stabiliser's, brakes nothing: 483 up to 0.3, 292 up to 0.5 atm/min)"
-                                     : "(off: as RTS, any pipe fall below the reservoir brakes, the stabiliser's slow one too)"));
-    if (ImGui::TreeNode(tr("Cars and coupling"))) {
-        // Uncoupling as from the RTS menu: both end cocks closed, the
-        // couplers left open so the parts do not couple again by themselves.
-        const auto& cars = units_.front().cars;
-        for (std::size_t i = 0; i < cars.size(); ++i) {
-            const auto& state = train.cars()[i];
-            ImGui::Text("%2zu %s%s%s", i + 1, cars[i].definition ? cars[i].definition->name.c_str() : "?",
-                        state.flipped ? tr(" (turned)") : "", state.derailed ? tr(" DERAILED") : "");
-            if (i + 1 < cars.size()) {
-                ImGui::PushID(static_cast<int>(i));
-                if (ImGui::SmallButton(tr("uncouple here"))) pending_uncouple_ = i + 1;
-                ImGui::PopID();
-            }
-        }
-        if (units_.size() > 1) {
-            ImGui::Separator();
-            for (std::size_t u = 1; u < units_.size(); ++u) {
-                const auto& cut = *units_[u].train;
-                ImGui::Text(tr("Cut %zu: %zu cars, %.1f km/h, pipe %.2f atm%s"), u, cut.cars().size(), cut.speed() * 3.6,
-                            cut.cars().empty() ? 0.0f : cut.cars().front().pipe, cut.derailed() ? ", derailed" : "");
-            }
-            ImGui::TextDisabled(tr("Push gently into a cut with automatic couplers to couple; open couplers only push."));
-        }
-        ImGui::TreePop();
-    }
-    ImGui::Checkbox(tr("Camera follows (V)"), &follow_);
     ImGui::TextUnformatted(tr("Home/End: throttle  PgUp/PgDn: reverser  ] [: brake valve V..I (hold [ in I)  , .: independent"));
 #endif
 }

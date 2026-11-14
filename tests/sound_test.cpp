@@ -215,6 +215,26 @@ Tr_SMS ( ScalabiltyGroup ( 0
           "no SelectionMethod: sequential");
     check(near(quirk_group.volume, 0.3), "group Volume is the first Volume in the group's text");
     check(formats::parse_sound_script("SIMISA@@@@@@@@@@JINX0x1t______\nTr_SMS ( )").ok(), "empty script is silent");
+    // A player inside the player, as MaDaDev writes the 2ЭС4К's typhon: its
+    // file plays.
+    const auto nested = formats::parse_sound_script(R"(SIMISA@@@@@@@@@@JINX0x1t______
+Tr_SMS ( ScalabiltyGroup ( 0
+    Streams ( 1
+        Stream ( Triggers ( 2
+            Discrete_Trigger ( 8
+                TriggerActions ( 2
+                    HaltPlayback (  )
+                    StartLoopRelease ( 1 StartLoopRelease ( 1 File ( "tifon.wav" -1 ) SelectionMethod ( SequentialSelection ) ) )
+                )
+            )
+            Discrete_Trigger ( 9 ReleaseLoopReleaseWithJump () )
+        ) )
+    ) ) )
+)");
+    const auto& nested_actions = nested.groups.at(0).streams.at(0).triggers.at(0).actions;
+    check(nested_actions.size() == 2 && nested_actions.at(1).kind == formats::SoundActionKind::start_loop_release &&
+              nested_actions.at(1).files.size() == 1 && nested_actions.at(1).files.at(0).name == "tifon.wav",
+          "a StartLoopRelease inside a StartLoopRelease plays the inner one's file");
 
     const auto world = formats::parse_world_sounds(
         "SIMISA@@@@@@@@@@JINX0W0t______\nTr_Worldsoundfile ( Soundsource ( Position ( 1199.5 1 485.5 ) "

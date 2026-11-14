@@ -9,6 +9,7 @@
 #include <openrts/renderer/native_sky.hpp>
 #include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
+#include <openrts/renderer/screen_quads.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/depth_export.hpp>
 #include <algorithm>
@@ -625,7 +626,14 @@ struct PanelState {
     std::string save_status;
     // RTS's Pause key (0x402FC3): the world stands still, the camera moves.
     bool paused = false;
-    bool controls_tab = false; // the panel shows the keys (its "Controls" tab), not the settings
+    // The panel's tab (testers, 2026-11-14: the sections one under another
+    // lost what one looked for): general, graphics, train, world,
+    // performance, the keys.
+    enum class Tab : std::uint8_t { general, graphics, train, world, performance, controls };
+    Tab tab = Tab::general;
+    // The frame rate in a corner of the screen, the panel shown or not
+    // (remembered as fps_counter).
+    bool fps_counter = false;
     // Until when the hint "Esc: the panels" shows while they are hidden
     // (set when a scene has loaded and when Esc hides them; ImGui time).
     double panels_hint_until = -1.0;
@@ -664,6 +672,8 @@ struct PanelState {
     bool native_water = true; // the openRTS water instead of the environment's layers
     bool native_sky = true;   // openRTS's own sky (atmosphere, volumetric clouds) instead of RTS's dome
     bool signal_lights_real_size = true; // signal lights at the lens's size however far (not RTS's far angle)
+    bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
+    float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
     bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
     float cloud_cover = 42.0f;       // %
     bool cloud_shadows = true;       // its clouds' shadows on the ground (the experimental path)
@@ -678,6 +688,9 @@ struct PanelState {
     // The graphics settings as kept when the game started (MSAA, the
     // renderer and HDR are the start's), for the presets.
     GraphicsSettings kept_graphics;
+    // The MSAA samples this start asked for (the device may draw with
+    // fewer: renderer::render_sample_count()).
+    std::uint32_t msaa_asked = 4;
 };
 
 // The panel's graphics settings from and to the start menu's
@@ -706,6 +719,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.forest_clearance = g.forest_clearance;
     panel.forest_clearance_distance = g.forest_clearance_distance;
     panel.signal_lights_real_size = g.signal_lights_real_size;
+    panel.screen_supersampling = g.screen_supersampling;
     panel.reshade_depth = g.reshade_depth;
 }
 
@@ -733,6 +747,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.forest_clearance = panel.forest_clearance;
     g.forest_clearance_distance = panel.forest_clearance_distance;
     g.signal_lights_real_size = panel.signal_lights_real_size;
+    g.screen_supersampling = panel.screen_supersampling;
     g.reshade_depth = panel.reshade_depth;
     return g;
 }
@@ -866,6 +881,7 @@ public:
             draw_scene_unseen(scene, camera);
             ImGui::End();
             if (panel.panels_hint_until < 0.0) panel.panels_hint_until = ImGui::GetTime() + 10.0;
+            draw_fps_counter(panel);
             if (key_hints() && ImGui::GetTime() < panel.panels_hint_until) {
                 const char* text = tr("Esc: the openRTS panel and the DLL cab window");
                 auto* list = ImGui::GetForegroundDrawList();
@@ -876,34 +892,52 @@ public:
             ImGui::Render();
             return;
         }
+        draw_fps_counter(panel);
         ImGui::Begin(tr("openRTS viewer###viewer"));
-        // What is open and how fast it runs; then the settings, a section
-        // each, one setting a line, top to bottom.
+        // What is open and how fast it runs; then a tab each: general,
+        // graphics, the train, the world, performance, the keys.
         // Scene titles are literals: their text is NUL-terminated.
         ImGui::TextUnformatted(tr(scene.title().data()));
         ImGui::Text(tr("FPS %.0f  |  %.2f ms avg, %.2f ms worst"), panel.stats.fps(), panel.stats.average_ms(),
                     panel.stats.worst_ms());
-        // Two tabs: the settings, and the keys (the start menu has the same).
+        ImGui::SameLine();
+        if (ImGui::SmallButton(panel.fps_counter ? tr("FPS on screen: on") : tr("FPS on screen: off"))) {
+            panel.fps_counter = !panel.fps_counter;
+            remember("fps_counter", panel.fps_counter ? "1" : "0");
+        }
         if (ImGui::BeginTabBar("##panel_tabs")) {
-            if (ImGui::BeginTabItem(tr("Settings"))) {
-                panel.controls_tab = false;
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem(tr("Controls"))) {
-                panel.controls_tab = true;
-                ImGui::EndTabItem();
-            }
+            const auto tab = [&](const char* name, const PanelState::Tab which) {
+                if (ImGui::BeginTabItem(name)) {
+                    panel.tab = which;
+                    ImGui::EndTabItem();
+                }
+            };
+            tab(tr("General"), PanelState::Tab::general);
+            tab(tr("Graphics"), PanelState::Tab::graphics);
+            if (scene.has_train_panel()) tab(tr("Train"), PanelState::Tab::train);
+            tab(tr("World"), PanelState::Tab::world);
+            tab(tr("Performance"), PanelState::Tab::performance);
+            tab(tr("Controls"), PanelState::Tab::controls);
             ImGui::EndTabBar();
         }
-        if (panel.controls_tab) {
+        if (panel.tab == PanelState::Tab::train && !scene.has_train_panel()) panel.tab = PanelState::Tab::general;
+        if (panel.tab == PanelState::Tab::controls) {
             draw_controls_help();
             draw_scene_unseen(scene, camera);
             ImGui::End();
             ImGui::Render();
             return;
         }
+        if (panel.tab == PanelState::Tab::train) {
+            // The buttons and switches on top, the train's state below.
+            scene.draw_train_panel();
+            draw_scene_unseen(scene, camera);
+            ImGui::End();
+            ImGui::Render();
+            return;
+        }
 
-        if (ImGui::CollapsingHeader(tr("General"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (panel.tab == PanelState::Tab::general) {
             // Language of the interface (Russian by default), remembered.
             int language = ui_language() == UiLanguage::russian ? 0 : 1;
             const char* languages[] = {"Русский", "English"};
@@ -956,10 +990,19 @@ public:
             }
             ImGui::TextDisabled("%s", bodies == 1 ? tr("(as RTS: one swing that grows with the speed, sideways, up and down)")
                                                   : tr("(each body on its own springs over its bogies: the track's errors under each bogie, rail joints and switches, hunting, curves; bounce, pitch, sway, yaw and roll)"));
+            if (bodies == 0) {
+                float throws = switch_throws();
+                ImGui::SetNextItemWidth(220.0f);
+                if (slider_with_input(tr("Throws aside at switches"), &throws, 0.0f, 2.0f, "%.2f", "%.2f")) {
+                    set_switch_throws(throws);
+                    remember("switch_throws", std::to_string(switch_throws()));
+                }
+                ImGui::TextDisabled("%s", tr("(1: a smooth push of the bogie, harder with the speed and on the diverging route; 0: none)"));
+            }
             ImGui::Checkbox(tr("Pause (Pause)"), &panel.paused);
         }
 
-        if (ImGui::CollapsingHeader(tr("Graphics"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (panel.tab == PanelState::Tab::graphics) {
             {
                 // A preset: the costly settings together, as in the start menu.
                 const auto current = panel_graphics(panel);
@@ -980,9 +1023,32 @@ public:
                 }
                 ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
                 ImGui::TextWrapped("%s", preset ? tr(graphics_preset_note(*preset)) : tr("Custom (changed by hand)"));
-                if (panel.kept_graphics.msaa && renderer::render_sample_count() <= 1)
-                    ImGui::TextWrapped("%s", tr("Anti-aliasing (MSAA 4x) from the next start."));
                 ImGui::PopStyleColor();
+            }
+            {
+                // MSAA: its own choice, from the next start (the scene's
+                // targets and pipelines are made with the samples).
+                constexpr std::uint32_t counts[] = {1, 2, 4, 8};
+                const char* names[] = {tr("no anti-aliasing"), "2x", "4x", "8x"};
+                int index = 2;
+                for (int i = 0; i < 4; ++i) {
+                    if (counts[i] == panel.kept_graphics.msaa) index = i;
+                }
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::Combo(tr("Anti-aliasing (MSAA)"), &index, names, 4)) {
+                    auto now = panel_graphics(panel);
+                    now.msaa = counts[index];
+                    save_graphics_settings(now, panel_graphics(panel));
+                    panel.kept_graphics.msaa = now.msaa;
+                }
+                const auto drawn = renderer::render_sample_count();
+                if (panel.kept_graphics.msaa != panel.msaa_asked) {
+                    ImGui::TextDisabled("%s", tr("(from the next start)"));
+                } else if (drawn != panel.msaa_asked) {
+                    ImGui::TextDisabled(tr("(%ux: this video card does not take it here, drawn with %ux)"), panel.msaa_asked, drawn);
+                } else if (drawn <= 1) {
+                    ImGui::TextDisabled("%s", tr("(off: RTS's content loses its alpha to coverage, thin wires break up)"));
+                }
             }
             // The lighting: RTS's or the experimental one (R); not on OpenGL.
             auto path = renderer.shading_path();
@@ -990,7 +1056,7 @@ public:
             const char* paths[] = {tr("RTS"), tr("Experimental")};
             ImGui::BeginDisabled(!panel.experimental_supported);
             ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::Combo(tr("Renderer (R)"), &path_index, paths, 2))
+            if (ImGui::Combo(tr("Renderer (F10)"), &path_index, paths, 2))
                 path = path_index == 1 ? renderer::ShadingPath::experimental : renderer::ShadingPath::rts_compatible;
             ImGui::EndDisabled();
             if (!panel.experimental_supported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -1054,6 +1120,13 @@ public:
                 remember("native_water", panel.native_water ? "1" : "0");
             if (ImGui::Checkbox(tr("Signal lights at the lens's size, far off a dot (not as in RTS)"), &panel.signal_lights_real_size))
                 remember("signal_lights_real_size", panel.signal_lights_real_size ? "1" : "0");
+            if (ImGui::Checkbox(tr("Sharp cab screens: drawn at a higher resolution (not as in RTS)"), &panel.screen_supersampling))
+                remember("screen_supersampling", panel.screen_supersampling ? "1" : "0");
+            ImGui::TextDisabled("%s", tr("(each screen drawn into an image of its own and blended in linear light: thin lines keep their brightness, no steps on edges and needles)"));
+            ImGui::SetNextItemWidth(220.0f);
+            if (slider_with_input(tr("Near plane seated in the cab (experiment)"), &panel.cab_near_plane, 0.0f, 0.3f, tr("%.2f m"), "%.2f"))
+                remember("cab_near_plane", std::to_string(panel.cab_near_plane));
+            ImGui::TextDisabled("%s", tr("(0: as anywhere else, 1 cm; RTS draws with 0.2 m: what is nearer the eye is cut away)"));
             if (ImGui::Checkbox(tr("openRTS sky: atmosphere, volumetric clouds (not as in RTS)"), &panel.native_sky))
                 remember("native_sky", panel.native_sky ? "1" : "0");
             if (panel.native_sky) {
@@ -1103,7 +1176,8 @@ public:
             }
         }
 
-        if (ImGui::CollapsingHeader(tr("Experimental renderer"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (panel.tab == PanelState::Tab::graphics) {
+            ImGui::SeparatorText(tr("Experimental renderer"));
             ImGui::BeginDisabled(!panel.experimental_supported);
             ImGui::SeparatorText(tr("Sun"));
             if (ImGui::Checkbox(tr("Sun shadows"), &panel.effects.shadows)) remember("effect_shadows", panel.effects.shadows ? "1" : "0");
@@ -1225,7 +1299,8 @@ public:
             ImGui::EndDisabled();
         }
 
-        if (ImGui::CollapsingHeader(tr("Sound"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (panel.tab == PanelState::Tab::general) {
+            ImGui::SeparatorText(tr("Sound"));
             if (panel.sound) {
                 float volume = panel.sound->volume();
                 ImGui::SetNextItemWidth(220.0f);
@@ -1239,9 +1314,12 @@ public:
             }
         }
 
-        if (ImGui::CollapsingHeader(tr("Time and weather"), ImGuiTreeNodeFlags_DefaultOpen)) draw_clock(clock, time_of_day_applies);
+        if (panel.tab == PanelState::Tab::general) {
+            ImGui::SeparatorText(tr("Time and weather"));
+            draw_clock(clock, time_of_day_applies);
+        }
 
-        if (ImGui::CollapsingHeader(tr("Scene"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (panel.tab == PanelState::Tab::world) {
             ImGui::Text(tr("Camera: %s"), camera.fly ? "fly" : "orbit");
             scene.draw_overlay(camera);
             if (ImGui::Button(tr("Save debug view (Ctrl+F6)"))) panel.save_view = true;
@@ -1250,7 +1328,7 @@ public:
             draw_scene_unseen(scene, camera);
         }
 
-        if (ImGui::CollapsingHeader(tr("Performance"))) {
+        if (panel.tab == PanelState::Tab::performance) {
             const auto& stages = panel.stats.stage_ms();
             double cpu = 0.0;
             for (std::size_t i = 0; i < frame_stage_count; ++i) {
@@ -1340,6 +1418,20 @@ private:
         const float share = std::clamp(loading.progress, 0.0f, 1.0f);
         if (share > 0.0f) list->AddRectFilled(from, {from.x + width * share, to.y}, IM_COL32(92, 148, 230, 255), 5.0f);
         if (loading.stage && *loading.stage) centred(normal, normal_size, to.y + 14.0f, IM_COL32(140, 148, 163, 255), tr(loading.stage));
+    }
+
+    // The frame rate in the screen's top right corner (the panel's "FPS on
+    // screen"), whether the panel shows or not.
+    static void draw_fps_counter(const PanelState& panel) {
+        if (!panel.fps_counter) return;
+        char text[64];
+        std::snprintf(text, sizeof text, "%.0f FPS  %.1f ms", panel.stats.fps(), panel.stats.average_ms());
+        auto* list = ImGui::GetForegroundDrawList();
+        const auto size = ImGui::CalcTextSize(text);
+        const auto display = ImGui::GetIO().DisplaySize;
+        const ImVec2 at{display.x - size.x - 12.0f, 8.0f};
+        list->AddRectFilled({at.x - 6.0f, at.y - 3.0f}, {at.x + size.x + 6.0f, at.y + size.y + 3.0f}, 0x90000000u, 3.0f);
+        list->AddText(at, 0xff80ff80u, text);
     }
 
     static void draw_scene_unseen(const ViewerScene& scene, const ViewerCamera& camera) {
@@ -1443,7 +1535,6 @@ struct CameraInput {
     bool shading_key_down = false;
     bool pause_key_down = false;
     // Scene keys, for press edges.
-    bool junction_key_down = false;
     bool follow_key_down = false;
     bool track_key_down = false;
     bool labels_key_down = false;
@@ -1773,11 +1864,9 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     SceneInput result{
         .step_up = down(GLFW_KEY_UP),
         .step_down = down(GLFW_KEY_DOWN),
-        .throw_junction = pressed(GLFW_KEY_J, input.junction_key_down),
         .toggle_follow = pressed(GLFW_KEY_V, input.follow_key_down),
         .toggle_track = pressed(GLFW_KEY_T, input.track_key_down),
         .toggle_labels = pressed(GLFW_KEY_L, input.labels_key_down),
-        .place_train = pressed(GLFW_KEY_C, input.train_keys_down[0]),
         .throttle_up = pressed(GLFW_KEY_HOME, input.train_keys_down[1]),
         .throttle_down = pressed(GLFW_KEY_END, input.train_keys_down[2]),
         .reverser_forward = pressed(GLFW_KEY_PAGE_UP, input.train_keys_down[3]),
@@ -1811,8 +1900,9 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     return result;
 }
 
+// F10 (until 2026-11-14 R, which cabs take too: both went at once).
 void toggle_shading_from_keyboard(GLFWwindow* window, CameraInput& input, renderer::ModelRenderer& renderer) {
-    const bool down = glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS;
+    const bool down = glfwGetKey(window, GLFW_KEY_F10) == GLFW_PRESS;
     if (down && !input.shading_key_down) {
         renderer.set_shading_path(renderer.shading_path() == renderer::ShadingPath::rts_compatible
                                       ? renderer::ShadingPath::experimental
@@ -1908,12 +1998,20 @@ void report_adapter(const WGPUAdapter adapter) {
               << ", timestamps: " << has(WGPUFeatureName_TimestampQuery) << std::endl;
 }
 
-[[nodiscard]] glm::mat4 projection(const ViewerCamera& camera, const float aspect, const float vertical_fov) {
+// The experiment (the panel's "Near plane seated in the cab"): the near
+// plane while the engineer sits in a cab, 0: as anywhere else. Set each frame.
+float seated_cab_near = 0.0f;
+
+[[nodiscard]] float near_plane_of(const ViewerCamera& camera) {
+    if (seated_cab_near > 0.0f) return seated_cab_near;
     // At most 5 cm: the route camera keeps distance 1000 (the far plane at
     // 20 km), which made the near plane 2 m and cut the cab's walls and floor
     // away. Reversed Z on Depth32Float keeps the far precision anyway.
-    const auto near_plane = std::clamp(camera.distance * 0.002f, 0.01f, 0.05f);
-    return renderer::reversed_z_perspective(vertical_fov, aspect, near_plane, camera.far_plane());
+    return std::clamp(camera.distance * 0.002f, 0.01f, 0.05f);
+}
+
+[[nodiscard]] glm::mat4 projection(const ViewerCamera& camera, const float aspect, const float vertical_fov) {
+    return renderer::reversed_z_perspective(vertical_fov, aspect, near_plane_of(camera), camera.far_plane());
 }
 
 struct FrameTargets {
@@ -2152,11 +2250,13 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     CameraInput input{.camera = &camera};
     install_input_callbacks(window.get(), input);
 
-    renderer::render_sample_count() = options.msaa;
+    renderer::render_sample_count() = renderer::supported_sample_count(context.context, options.msaa);
     renderer::scene_hdr() = options.hdr && !options.menu;
     if (renderer::scene_hdr()) std::cout << "HDR frame: Rgba16Float, tone curve (AgX in the experimental path)" << std::endl;
-    std::cout << "antialiasing: " << (options.msaa > 1 ? std::to_string(options.msaa) + "x MSAA, alpha-to-coverage" : "off")
-              << ", anisotropy " << renderer::max_anisotropy << "x" << std::endl;
+    const auto samples = renderer::render_sample_count();
+    std::cout << "antialiasing: " << (samples > 1 ? std::to_string(samples) + "x MSAA, alpha-to-coverage" : "off");
+    if (samples != options.msaa) std::cout << " (" << options.msaa << "x asked: not offered by this device)";
+    std::cout << ", anisotropy " << renderer::max_anisotropy << "x" << std::endl;
     PresentationSurface surface(context.context, window.get(), capture);
     if (!surface.ok()) return exit_code::surface_failed;
 
@@ -2190,8 +2290,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
 
     // The interface language chosen last time (Russian by default).
     set_ui_language(remembered("language").value_or("ru") == "en" ? UiLanguage::english : UiLanguage::russian);
-    // The keys chosen last time (openRTS's, without the keypad, by default).
-    set_key_layout(remembered("key_layout").value_or("openrts") == "rts" ? KeyLayout::rts : KeyLayout::openrts);
+    // The keys chosen last time (RTS's, with the keypad, by default since
+    // 2026-11-14: most players come from RTS; openRTS's for laptops).
+    set_key_layout(remembered("key_layout").value_or("rts") == "openrts" ? KeyLayout::openrts : KeyLayout::rts);
+    if (const auto throws = remembered("switch_throws")) set_switch_throws(std::strtof(throws->c_str(), nullptr));
     set_key_hints(remembered("key_hints").value_or("1") != "0");
     set_mouse_sensitivity(parse_mouse_sensitivity(remembered("mouse_sensitivity").value_or("1").c_str()));
     set_head_motion(parse_head_motion(remembered("head_motion").value_or("").c_str()));
@@ -2283,6 +2385,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // The graphics settings as the start menu keeps them, its defaults
     // (graphics_settings.hpp); the command line's options over them.
     panel.kept_graphics = load_graphics_settings();
+    panel.msaa_asked = options.msaa;
+    panel.fps_counter = remembered("fps_counter").value_or("0") == "1";
+    if (const auto kept = remembered("cab_near_plane")) panel.cab_near_plane = std::clamp(std::strtof(kept->c_str(), nullptr), 0.0f, 0.3f);
     set_panel_graphics(panel, panel.kept_graphics);
     if (options.reshade_depth) panel.reshade_depth = *options.reshade_depth;
     renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
@@ -2400,6 +2505,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::native_water() = panel.native_water;
         renderer::native_sky() = panel.native_sky;
         renderer::signal_lights_real_size() = panel.signal_lights_real_size;
+        renderer::cab_screens_supersampled() = panel.screen_supersampling;
         renderer::cloud_cover() = panel.cloud_cover_weather ? -1.0f : panel.cloud_cover / 100.0f;
         renderer::cloud_shadows() = panel.cloud_shadows;
         renderer::cloud_shadow_darkness() = panel.cloud_shadow_darkness / 100.0f;
@@ -2572,6 +2678,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const bool hdr = tone && surface.hdr_view();
 
         const auto aspect = static_cast<float>(width) / static_cast<float>(height);
+        seated_cab_near = panel.cab_near_plane > 0.0f && scene.seated_in_cab() ? panel.cab_near_plane : 0.0f;
         FrameView frame{
             .eye = camera.eye(),
             .view = camera.view(),
@@ -2592,7 +2699,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                              .eye = frame.eye,
                              .vertical_fov = frame.vertical_fov,
                              .aspect = aspect,
-                             .near_plane = std::clamp(camera.distance * 0.002f, 0.01f, 0.05f),
+                             .near_plane = near_plane_of(camera),
                              .far_plane = camera.far_plane(),
                              .width = static_cast<std::uint32_t>(width),
                              .height = static_cast<std::uint32_t>(height)},
@@ -2762,7 +2869,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                           << renderer::terrain_tile_buffer_bytes() / 1048576 << " MB" << std::endl;
             }
             if (depth_shot.buffer) {
-                const auto near_plane = std::clamp(camera.distance * 0.002f, 0.01f, 0.05f);
+                const auto near_plane = near_plane_of(camera);
                 report_reshade_depth(context.context, depth_shot, near_plane, camera.far_plane());
             }
             wgpuTextureRelease(frame_texture);

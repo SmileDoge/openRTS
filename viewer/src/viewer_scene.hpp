@@ -101,7 +101,6 @@ struct SceneInput {
     std::optional<glm::vec3> light_eye;
     bool step_up = false;        // Up arrow held (shape scenes: animation frames)
     bool step_down = false;      // Down arrow held
-    bool throw_junction = false; // J
     bool toggle_follow = false;  // V
     bool toggle_track = false;   // T
     bool toggle_labels = false;  // L: junction and signal labels
@@ -111,7 +110,6 @@ struct SceneInput {
     bool tape_which = false;     // Num5: which locomotive the tape records (edge)
     bool inspector = false;      // F12: the inspector open or shut (edge)
     // Train driving (edges).
-    bool place_train = false;      // C
     bool throttle_up = false;      // Home
     bool throttle_down = false;    // End
     bool reverser_forward = false; // Page Up
@@ -262,6 +260,11 @@ public:
     [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
     // The engineer into the driven train's cab (--capture-cab).
     virtual void enter_cab() {}
+    // The engineer sits in a cab (the near plane's experiment).
+    [[nodiscard]] virtual bool seated_in_cab() const { return false; }
+    // The panel's Train tab: whether the scene has one, and its contents.
+    [[nodiscard]] virtual bool has_train_panel() const { return false; }
+    virtual void draw_train_panel() const {}
     // --capture-menu: pick an item of the open car menu; the menu as text.
     virtual void choose_car_menu_item(int) {}
     // --capture-uncouple: uncouple the driven train before car `index` (from 0).

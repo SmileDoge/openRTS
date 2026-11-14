@@ -33,8 +33,9 @@ Questions, discussion and bug reports: our
   consist, path, time, season, weather, how the train starts), "Network
   game" (the server's address and the nick; the menu follows the login and
   the wait for a train), "Settings" (the RTS folder, language, keys,
-  sound, graphics, the window mode) and "Controls" (the hotkeys, also a tab
-  of the game's panel); the game runs as a process of its own.
+  sound, graphics, the window mode) and "Information" (the version, Discord
+  and GitHub, the hotkeys, also a tab of the game's panel); the game runs
+  as a process of its own.
 - **Content:** a virtual file system (installation folders, zip packs,
   patches, mods, hot reload); ACE, `.s` / `.sd` shapes, `.w` world files,
   terrain, environment, `.trk`, the `.tdb` / `.tsection` track database,
@@ -52,7 +53,7 @@ Questions, discussion and bug reports: our
     tracks and roads (a Graphics setting);
   - an HDR frame with tone mapping (`--hdr`);
   - Vulkan, DirectX 12 or OpenGL to choose from; depth for ReShade;
-  - experimental renderer (R): sun shadows (cascades and a map of the cab's
+  - experimental renderer (F10): sun shadows (cascades and a map of the cab's
     own), lamp shadows, ambient occlusion (GTAO), every lamp at once,
     light bounced off the ground, aerial haze; passes recorded on several
     threads.
@@ -281,8 +282,9 @@ The easiest way is the start menu. It has four tabs:
   to 500 or none) are there too. While the game's or the menu's window is
   not in focus or is minimised, it draws at most 30 frames a second; the
   streaming of models and textures is not slowed by it.
-- **Controls:** the simulator's hotkeys (as in "Controls" below); the
-  in-game openRTS panel has the same tab.
+- **Information:** the version, the Discord and GitHub buttons, the
+  simulator's hotkeys (as in "Controls" below); the in-game openRTS panel
+  has the keys too, in its Controls tab.
 
 All of it is remembered in `%LOCALAPPDATA%\openRTS\viewer_state.ini`. The
 game runs as a process of its own (its output goes to `openrts.log` there
@@ -314,7 +316,7 @@ The game can also be started directly:
 | `--season spring\|summer\|autumn\|winter` | season |
 | `--weather clear\|snow\|rain` | weather |
 | `--no-sound`, `--volume 0..1` | no sound, volume |
-| `--msaa 1`, `--no-vsync`, `--no-batching` | graphics settings |
+| `--msaa 1\|2\|4\|8`, `--no-vsync`, `--no-batching` | graphics settings |
 | `--fps-limit <30..500 \| 0>` | the FPS limit for this run (0: none), not remembered |
 | `--multi-draw on\|off` | multi-draw indirect for models this run (on by default where the GPU has it) |
 | `--window-mode windowed\|borderless\|fullscreen` | the window for this run: in a window, borderless, full screen (else as in the settings) |
@@ -334,9 +336,9 @@ The game can also be started directly:
 
 Two key layouts (the start menu or the openRTS panel → Keys): RTS, with the
 numeric keypad (Num0, Num1, Num2, Num3), and openRTS, without it, for
-laptops (`-`, `=`, Shift and the key left of `1`, that key); openRTS by
+laptops (`-`, `=`, Shift and the key left of `1`, that key); RTS by
 default. The keys at hand: the
-"Controls" tab of the start menu and of the game's panel.
+start menu's "Information" tab and the game panel's "Controls".
 
 **Camera and world**
 
@@ -348,11 +350,9 @@ default. The keys at hand: the
 | F3 | view from the first car (an orbit round it), again from the last, again back; the train is still driven with the cab keys |
 | Wheel / Ctrl+wheel | outside the cab: nearer and farther / zoom (the field of view; Ctrl+wheel in the cab too) |
 | Num+ / Num− | field of view narrower / wider, as RTS (15–90°) |
-| C | put the consist on the track near the camera |
-| J | throw the junction ahead |
 | T | the track diagram (yellow lines; off by default, remembered) |
 | L | junction and signal labels |
-| R | RTS / experimental renderer |
+| F10 | RTS / experimental renderer |
 | Pause | pause |
 | Alt+Enter | full screen / window |
 
