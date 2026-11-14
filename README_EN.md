@@ -1,6 +1,6 @@
 # openRTS
 
-[Русская версия](README.md) · **[Installing and running](INSTALL_EN.md)**
+[Русская версия](README.md) · **[Installing and running](INSTALL_EN.md)** · [Discord](https://discord.gg/NGTU7mKJXZ)
 
 **openRTS** is an open, independent implementation of the RTrainSim (RTS)
 train simulator. The goal is to run existing RTS and MSTS content (routes and
@@ -23,6 +23,9 @@ analysis of `rts1.exe`. Every finding is marked with its confidence
 > over the bogies, scripting in Luau (your own brake distributor and a test
 > stand for it), and now the realistic air with locomotive DLLs, brake
 > shoes, adhesion by the weather and wheel slide.
+
+Questions, discussion and bug reports: our
+[Discord](https://discord.gg/NGTU7mKJXZ).
 
 ## What works
 
