@@ -15,6 +15,10 @@ constexpr float s483 = 0.3f / 60.0f;       // stability, atm/s
 constexpr float s292 = 0.5f / 60.0f;
 constexpr float apply_483 = 0.15f;         // РК − pipe that starts an application
 constexpr float apply_292 = 0.10f;
+// The 292's spool: it takes up a 0.015 gap against its springs and sticks in
+// a 0.03 band, so a pipe movement under the band does not move it; with the
+// 0.05 lap that makes the 0.095 the application threshold is drawn from.
+constexpr float spool_band = 0.03f;
 constexpr float quick_service = 0.12f;     // atm the quick-service valve takes locally
 constexpr float release_483 = 0.06f;       // flat mode: release once the pipe is back within this of РК
 constexpr float release_292 = 0.12f;       // a rise this far above the ЗР releases fully
@@ -169,7 +173,10 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
     }
     if (s.braking) {
         const float ratio = car.ratio > 0.5f ? car.ratio : 3.0f;
-        const float target = (std::min)(tc_max, ratio * (s.reference - p));
+        // The spool sticks in its friction band: a pipe rise shorter than the
+        // band does not let the cylinder down, so the target only follows the
+        // drop past it. Up to the gap and the band, it stays at lap.
+        const float target = (std::min)(tc_max, ratio * (std::max)(s.reference - p - spool_band, 0.0f));
         if (s.cylinder < target && s.auxiliary > s.cylinder) take_for_cylinder((std::min)(target - s.cylinder, rates.fill * h));
         // A rise above the ЗР releases fully.
         if (p >= s.auxiliary + release_292) s.braking = false;

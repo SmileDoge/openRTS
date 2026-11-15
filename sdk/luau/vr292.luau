@@ -37,6 +37,10 @@ local APPLY = 0.10           -- ЗР − ТМ that starts an application
 local QUICK_SERVICE = 0.06   -- atm the quick-service valve takes from the pipe
 local RELEASE = 0.12         -- a rise this far above the ЗР releases fully
 local ZR_CHARGE = 35         -- s, the ЗР's charging time constant
+-- The spool's friction band: a pipe rise shorter than this does not move it,
+-- so the cylinder follows the drop only past it (with the 0.015 gap and the
+-- 0.05 lap it is where the 0.10 application threshold comes from).
+local SPOOL_BAND = 0.03
 
 -- atm/s by the plug: how fast the ТЦ fills, empties and fills in emergency.
 -- К: release 9–12 s, emergency to 3.5 in 6–9 s; Д and УВ about twice as slow.
@@ -82,7 +86,7 @@ function step(c: Car, dt: number)
 	end
 	if c.braking then
 		local ratio = if c.ratio > 0.5 then c.ratio else 3
-		local target = math.min(c.tc_max, ratio * (c.ref - p))
+		local target = math.min(c.tc_max, ratio * math.max(c.ref - p - SPOOL_BAND, 0))
 		if c.tc < target and c.zr > c.tc then
 			fill(c, math.min(target - c.tc, rates.fill * dt))
 		end
