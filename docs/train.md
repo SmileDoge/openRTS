@@ -162,6 +162,19 @@ The RTS rules from the notes:
 - curve resistance `7/R · m`;
 - grade `-sin(pitch) · m · 10`.
 
+Two more models are the Train window's settings:
+- `ResistanceModel::ptr` replaces the car's `Friction` with the ПТР's basic
+  resistance, `w0 = b0 + (b1 + b2 V + b3 V^2) / q` kgf per tonne, `V` in km/h
+  and `q` the tonnes on an axle (`b0 = 0.7`, `b1 = 8`, `b2 = 0.08`,
+  `b3 = 0.002`), the force `m w0 g / 1000`;
+- `TrainSettings::axle_dynamics` gives every wheelset its own turning
+  (`CarState::axle_omega`, `J = 100 kg·m²` in ten sub-steps a step): the rail
+  returns the grip the creep allows, `mu / (1 + tanh |slip|)`, and what is left
+  of the demand spins the wheelset up. The pull is the sum of the rail's
+  forces, so a demand past the adhesion becomes a growing slip and a force near
+  half the grip instead of the 25 % cut. A coasting wheelset is back at the
+  rail's speed in 0.25 s.
+
 ### Couplers
 
 The RTS solver:
