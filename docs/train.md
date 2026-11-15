@@ -278,15 +278,12 @@ RTS's menu at a coupling or a bogie (`docs/reverse/car-menu.md`), in
 
 #### Realistic pneumatics (openRTS path)
 
-**Implemented (2026-11-01)** as `BrakeModel::realistic`
-(`simulation/src/realistic_air.cpp`, the Train window's "Realistic air"
-checkbox, `openrts-train-check --brake ... --realistic`). Off by default;
-the RTS model (`docs/reverse/brakes.md`) stays as it is and is the only path
-with Legacy on (the server fixes the choice, like the coupler sub-steps). A
-train with a legacy DLL keeps the RTS model
-(`LocomotiveController::rts_brakes`): its valve is tuned to RTS's triple
-valve; since 2026-11-13 the Train window's "Trains with DLLs" can give it
-the realistic air too ("Realistic air with DLL locomotives" below). What is
+**Implemented (2026-11-01)** in `simulation/src/realistic_air.cpp`. Since
+2026-11-15 it is the only brake model: RTS's triple-valve path
+(`docs/reverse/brakes.md`) is gone, the Train window has no model switch, and
+`openrts-train-check --brake ... --realistic` keeps the flag for older
+scripts only. A train with a legacy DLL can still let the DLL work its own
+pipe and valves ("Trains with DLLs" below). What is
 built, against the proposal below:
 - **Pipe:** per-car volumes (0.8 l per metre, a 32 mm bore), flow
   `q = k · V · Δp` with k = 200 1/s between joined neighbours, about 30

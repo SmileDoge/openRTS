@@ -250,8 +250,8 @@ playable game. Order (the user's decisions, 2026-11-01):
   any of his trains).
 - 4 done: `RTSCabinSound` of the player's engine with the DLL's cab
   triggers and Var1..8; the camera kind for SMS activation.
-- 5 done: `BrakeModel::realistic` (Train window, off by default; trains
-  with a legacy DLL keep RTS's air).
+- 5 done: the realistic pneumatics (`simulation/src/realistic_air.cpp`) —
+  since 2026-11-15 the only brake model (no RTS switch in the Train window).
 - 6 done: the API, the C++ layer, the loader, a sample and the parity
   test; the `ORTSTrainPlugin` key in the game (cab, keys, mouse, gauges);
   the VL10k logic as a native example (`sdk/samples/vl10k`, one section,
