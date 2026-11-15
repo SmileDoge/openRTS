@@ -30,7 +30,7 @@ struct SpeedPostOnTrack {
 
 struct SpeedLimit {
     float current = -1.0f;      // m/s, -1: none
-    float ahead = -1.0f;        // m/s, the next post's limit (-1: none within the look-ahead)
+    float ahead = -1.0f;        // m/s, the most restrictive post within the look-ahead (-1: none)
     double ahead_distance = 0.0; // m from the leading end
 };
 
