@@ -53,9 +53,9 @@ DistributorLoad effective_load(const DistributorLoad load, const float mass) noe
 float distributor_full_cylinder(const DistributorKind kind, const DistributorLoad load) noexcept {
     if (kind != DistributorKind::vr483) return 3.8f;
     switch (load) {
-    case DistributorLoad::empty: return 1.5f;
+    case DistributorLoad::empty: return 1.9f;
     case DistributorLoad::medium: return 3.0f;
-    default: return 3.8f;
+    default: return 4.1f;
     }
 }
 
@@ -68,9 +68,16 @@ DistributorKind distributor_kind(const formats::WagonDefinition& definition) noe
 float brake_force_pressure(const formats::WagonDefinition& definition) noexcept {
     const float pressure = definition.brakes.cylinder_pressure_for_max_force;
     if (definition.brakes.realistic_brake_force > 0.0f || distributor_kind(definition) != DistributorKind::vr483) return pressure;
+    // The 483 fills the ТЦ to its load mode's full pressure: the file's force
+    // stands at whichever of that and the file's own pressure is lower (its
+    // MaxBrakeForce was written for the mode its mass gives).
     const auto meant = effective_load(DistributorLoad::by_mass, definition.mass);
-    return pressure * distributor_full_cylinder(DistributorKind::vr483, meant) /
-           distributor_full_cylinder(DistributorKind::vr483, DistributorLoad::loaded);
+    return (std::min)(pressure, distributor_full_cylinder(DistributorKind::vr483, meant));
+}
+
+float brake_rigging_share(const float cylinder, const float reference) noexcept {
+    if (reference <= brake_touch_pressure) return 0.0f;
+    return std::clamp((cylinder - brake_touch_pressure) / (reference - brake_touch_pressure), 0.0f, 1.1f);
 }
 
 void step_distributor(DistributorState& s, const DistributorCar& car, const float rate, const float ep, const float h) {
@@ -117,26 +124,38 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
             s.braking = true;
             s.pipe = (std::max)(s.pipe - quick_service, 0.0f); // quick service
         }
+        if (s.braking && (car.mountain ? drop < step_483 : p >= s.reference - release_483)) s.braking = false;
+        // The piston: down while the pipe is below РК, it lets the pipe into
+        // the spool chamber (ЗК); up, it shuts the pipe off and vents it. The
+        // extra chamber (КДР) follows the ЗК, and the cylinder the КДР, so
+        // the fill comes in the stages a 483 gives.
+        constexpr float v_zk = 0.0045f;
+        constexpr float v_kdr = 0.0005f;
+        const float k_zk = v_zk / 3.0f;
+        const float k_kdr = v_kdr / 3.0f;
         if (s.braking) {
-            const float target = (std::min)(tc_max, tc_max / 1.5f * drop);
-            if (s.cylinder < target && s.auxiliary > s.cylinder) {
-                take_for_cylinder((std::min)(target - s.cylinder, tc_max * 0.9f / 18.0f * h));
-            }
-            if (car.mountain) {
-                // Mountain mode: graduated release; the ТЦ comes down to
-                // what the pipe's shortfall below РК gives, and is released
-                // once the pipe is back at РК.
-                if (s.cylinder > target + tc_max / 1.5f * step_483) {
-                    s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * h, target);
-                }
-                if (drop < step_483) s.braking = false;
-            } else if (p >= s.reference - release_483) {
-                // Flat mode: no graduated release; back within this of РК releases fully.
-                s.braking = false;
-            }
-        } else if (s.cylinder > 0.0f) {
-            s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * h, 0.0f);
+            s.zk = std::clamp(s.zk + k_zk * (p - s.zk) * h / v_zk, 0.0f, (std::max)(p, 0.0f));
+            s.kdr = std::clamp(s.kdr + k_kdr * (s.zk - s.kdr) * h / v_kdr, 0.0f, s.zk);
+        } else {
+            s.zk = (std::max)(s.zk - k_zk * s.zk * h / v_zk, 0.0f);
+            s.kdr = (std::max)(s.kdr - k_kdr * s.kdr * h / v_kdr, 0.0f);
         }
+        // The equalising piston: the cylinder follows what the drop asks, up
+        // to the full of the load mode; its volume grows with the stroke, so
+        // the last of the fill is slower than the first.
+        const float target = s.braking ? (std::min)(tc_max, tc_max / 1.5f * drop) : 0.0f;
+        const float stroke = s.cylinder / tc_max;
+        const float v_bc = car.cylinder_volume * (0.15f + 0.85f * std::clamp(stroke, 0.0f, 1.0f));
+        const float k_bc = car.cylinder_volume / 5.0f;
+        if (s.cylinder < target) {
+            const float rise = k_bc * ((std::min)(s.kdr, target) - s.cylinder) * h / v_bc;
+            take_for_cylinder(std::clamp(rise, 0.0f, target - s.cylinder));
+        } else if (s.cylinder > target && (car.mountain || !s.braking)) {
+            // Flat mode holds its application until the pipe comes back to
+            // РК; the mountain mode may let part of it out on a rise.
+            s.cylinder = (std::max)(s.cylinder - k_bc * (s.cylinder - target) * h / v_bc, target);
+        }
+        if (s.cylinder < 1.0e-4f) s.cylinder = 0.0f;
         return;
     }
     // ВР 292: the ЗР is the reference; it flows back on a slow fall.

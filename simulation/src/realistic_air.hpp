@@ -22,6 +22,8 @@ struct AirCar {
     bool braking = false;     // an application is in progress (quick service done)
     bool emergency = false;   // the accelerator fired
     float reference{};        // 483: control chamber РК; 292: the ЗР when the application began
+    float zk{};               // 483: the spool chamber's pressure, atm
+    float kdr{};              // 483: the extra chamber's pressure, atm
     float last_pipe{};        // pipe at the last sub-step (rate detection)
     float wave = -1.0f;       // s until the emergency front reaches this car (< 0: not coming)
     // s its emergency accelerator still vents the pipe: it opens when the

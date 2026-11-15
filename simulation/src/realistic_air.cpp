@@ -205,7 +205,14 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                 .mountain = car.distributor.mountain,
                 .plug = car.distributor.plug,
             };
-            DistributorState state{car.pipe, car.auxiliary, car.cylinder, a.reference, a.braking, a.emergency};
+            DistributorState state{.pipe = car.pipe,
+                                   .auxiliary = car.auxiliary,
+                                   .cylinder = car.cylinder,
+                                   .reference = a.reference,
+                                   .braking = a.braking,
+                                   .emergency = a.emergency,
+                                   .zk = a.zk,
+                                   .kdr = a.kdr};
             bool stepped = false;
             if (a.script) {
                 std::string error;
@@ -221,6 +228,8 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
             car.cylinder = state.cylinder;
             a.reference = state.reference;
             a.braking = state.braking;
+            a.zk = state.zk;
+            a.kdr = state.kdr;
             // A script may start the emergency front itself.
             if (state.emergency) a.emergency = true;
             // Gone into emergency: its accelerator opens for 3 s.

@@ -99,9 +99,9 @@ int main() {
             const float full = wagon.brakes.cylinder_pressure_for_max_force;
             wagon.mass = 23300.0f;
             const float empty_at = brake_force_pressure(wagon);
-            check(std::abs(empty_at - full * 1.5f / 3.8f) < 1e-3f, "483 empty file: its force at the empty mode's full ТЦ (" + std::to_string(empty_at) + ")");
+            check(std::abs(empty_at - 1.9f) < 1e-3f, "483 empty file: its force at the empty mode's full ТЦ (" + std::to_string(empty_at) + ")");
             wagon.mass = 50000.0f;
-            check(std::abs(brake_force_pressure(wagon) - full * 3.0f / 3.8f) < 1e-3f, "483 medium by mass: the medium mode's full ТЦ");
+            check(std::abs(brake_force_pressure(wagon) - 3.0f) < 1e-3f, "483 medium by mass: the medium mode's full ТЦ");
             wagon.mass = 93100.0f;
             check(brake_force_pressure(wagon) == full, "483 loaded file: as the content gives it");
             wagon.mass = 23300.0f;
@@ -115,7 +115,7 @@ int main() {
         empty.load = DistributorLoad::empty;
         empty.full_cylinder = distributor_full_cylinder(empty.kind, empty.load);
         const auto re = run_stand(empty, nullptr);
-        check(re.full_cylinder < 1.6f, "483 empty: full service gives the empty ТЦ (" + std::to_string(re.full_cylinder) + ")");
+        check(re.full_cylinder < 2.0f && re.full_cylinder > 1.7f, "483 empty: full service gives the empty ТЦ (" + std::to_string(re.full_cylinder) + ")");
         // Charge, a 1.0 step, then the pipe back up by 0.5 and held.
         const auto partial_release = [](const bool mountain) {
             auto car = car_of(DistributorKind::vr483);
