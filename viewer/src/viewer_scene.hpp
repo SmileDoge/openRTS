@@ -106,6 +106,7 @@ struct SceneInput {
     bool toggle_labels = false;  // L: junction and signal labels
     bool car_menu = false;       // Num3 / `: the car menu at a coupling or bogie (edge)
     bool flashlight = false;     // Num2 / Shift+`: RTS's flashlight on or off (edge)
+    bool clock = false;          // Num4 / Shift+-: the world's time on the screen or not (edge; the viewer's)
     bool tape = false;           // Ctrl+Num5 / Ctrl+`: the tape on or off (edge)
     bool tape_which = false;     // Num5: which locomotive the tape records (edge)
     bool board = false;          // Ctrl+Num7 / Ctrl+=: start the boarding at a scenario's stop (edge)

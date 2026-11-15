@@ -442,6 +442,19 @@ int shape_check(const core::Vfs& vfs, const std::vector<std::string>& args) {
         std::printf("texture %zu: image %u (%s), filter %s, lod bias %.2f\n", i, t.image_index, image.c_str(), filter.c_str(),
                     t.mipmap_lod_bias);
     }
+    // Each primitive state: its texture's image, shader and light material
+    // (-5 normal, -8 FullBright, -11 half bright...) and flags.
+    for (std::size_t i = 0; i < model.primitive_states.size(); ++i) {
+        const auto& p = model.primitive_states[i];
+        const auto image = p.texture_index < model.textures.size() && model.textures[p.texture_index].image_index < model.images.size()
+                               ? model.images[model.textures[p.texture_index].image_index].string()
+                               : std::string("-");
+        const auto shader = p.shader_index < model.shader_names.size() ? model.shader_names[p.shader_index] : std::string("?");
+        const int material = p.vertex_state_index >= 0 && static_cast<std::size_t>(p.vertex_state_index) < model.vertex_states.size()
+                                 ? model.vertex_states[static_cast<std::size_t>(p.vertex_state_index)].light_material_index
+                                 : -5;
+        std::printf("prim state %zu: %s, shader %s, light material %d, flags 0x%X\n", i, image.c_str(), shader.c_str(), material, p.flags);
+    }
     report_shape(model, args);
     std::printf("shape: %zu nodes, %zu draws\n", model.matrices.size(), model.draws.size());
     return 0;

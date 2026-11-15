@@ -87,6 +87,7 @@ void draw_controls_help() {
         row(head_out_key_name(), "lean out");
         row(car_menu_key_name(), "the car menu at the coupling or bogie under the cursor (outside)");
         row(flashlight_key_name(), "the flashlight on / off");
+        row(clock_key_name(), "the time of day on the screen / off (shown anyway while time runs faster)");
         row(tape_key_name(), "the tape (RTS_TAPES, read by RTS's lenta.xls): start on the locomotive driven / stop");
         if (key_layout() == KeyLayout::rts) row("Num5", "which locomotive the tape records");
         row("F12", "the inspector: the map's objects and their properties");

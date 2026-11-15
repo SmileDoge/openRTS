@@ -27,6 +27,8 @@ void set_key_layout(KeyLayout layout) noexcept;
 // The tape (RTS: Ctrl+Num5; openRTS: Ctrl+`). Num5, which locomotive it
 // records, is RTS's layout's only.
 [[nodiscard]] const char* tape_key_name();
+// The world's time on the screen (RTS: Num4, 0x402C88; openRTS: Shift+-).
+[[nodiscard]] const char* clock_key_name();
 // The boarding at a scenario's stop (RTS: Ctrl+Num7; openRTS: Ctrl+=).
 [[nodiscard]] const char* board_key_name();
 

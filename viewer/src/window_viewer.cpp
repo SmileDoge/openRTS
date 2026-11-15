@@ -636,6 +636,9 @@ struct PanelState {
     // The frame rate in a corner of the screen, the panel shown or not
     // (remembered as fps_counter).
     bool fps_counter = false;
+    // RTS's clock (Num4 / Shift+-, 0x402C88 byte_61D55C): the world's time
+    // in the top right corner; shown too while time runs faster (0x408574).
+    bool show_clock = false;
     // Until when the hint "Esc: the panels" shows while they are hidden
     // (set when a scene has loaded and when Esc hides them; ImGui time).
     double panels_hint_until = -1.0;
@@ -888,6 +891,7 @@ public:
             ImGui::End();
             if (panel.panels_hint_until < 0.0) panel.panels_hint_until = ImGui::GetTime() + 10.0;
             draw_fps_counter(panel);
+            draw_world_clock(panel, clock);
             if (key_hints() && ImGui::GetTime() < panel.panels_hint_until) {
                 const char* text = tr("Esc: the openRTS panel and the DLL cab window");
                 auto* list = ImGui::GetForegroundDrawList();
@@ -899,6 +903,7 @@ public:
             return;
         }
         draw_fps_counter(panel);
+        draw_world_clock(panel, clock);
         ImGui::Begin(tr("openRTS viewer###viewer"));
         // What is open and how fast it runs; then a tab each: general,
         // graphics, the train, the world, performance, the keys.
@@ -1462,6 +1467,24 @@ private:
         list->AddText(at, 0xff80ff80u, text);
     }
 
+    // RTS's clock (0x408574): the world's time as H:MM:SS (0x45CA30) in the
+    // top right corner, white, with " x60" while time runs faster, which
+    // shows it as well; below the FPS counter when that is on.
+    static void draw_world_clock(const PanelState& panel, const ClockControls& clock) {
+        if (!panel.show_clock && clock.speed <= 1.0f) return;
+        const auto seconds = static_cast<long long>(clock.time_of_day) % 86400;
+        char text[48];
+        int length = std::snprintf(text, sizeof text, "%lld:%02lld:%02lld", seconds / 3600, seconds % 3600 / 60, seconds % 60);
+        if (clock.speed > 1.0f && length > 0) std::snprintf(text + length, sizeof text - static_cast<std::size_t>(length), " x%.0f", clock.speed);
+        auto* list = ImGui::GetForegroundDrawList();
+        const auto size = ImGui::CalcTextSize(text);
+        const auto display = ImGui::GetIO().DisplaySize;
+        const float top = panel.fps_counter ? 8.0f + size.y + 12.0f : 8.0f;
+        const ImVec2 at{display.x - size.x - 12.0f, top};
+        list->AddRectFilled({at.x - 6.0f, at.y - 3.0f}, {at.x + size.x + 6.0f, at.y + size.y + 3.0f}, 0x90000000u, 3.0f);
+        list->AddText(at, 0xffffffffu, text);
+    }
+
     static void draw_scene_unseen(const ViewerScene& scene, const ViewerCamera& camera) {
         // The scene's lines for the panel go nowhere (its own windows and
         // HUD as ever): clipped to an empty rectangle off the screen. Drawn
@@ -1587,6 +1610,7 @@ struct CameraInput {
     bool kp3_down = false;
     bool kp2_down = false;
     bool kp5_down = false;
+    bool kp4_down = false;
     bool kp7_down = false;
     bool inspector_key_down = false;
     bool tape_window_key_down = false; // F9
@@ -1833,7 +1857,10 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     // The engineer's window and head out (key_layout.hpp): RTS's keypad
     // keys, or - and = on the top row.
     const bool rts_keys = key_layout() == KeyLayout::rts;
-    const bool kp0 = pressed(rts_keys ? GLFW_KEY_KP_0 : GLFW_KEY_MINUS, input.kp0_down);
+    // - alone the window, Shift+- the clock (RTS: Num0 and Num4).
+    const bool minus = pressed(rts_keys ? GLFW_KEY_KP_0 : GLFW_KEY_MINUS, input.kp0_down);
+    const bool kp0 = minus && (rts_keys || !shift);
+    const bool kp4 = rts_keys ? pressed(GLFW_KEY_KP_4, input.kp4_down) : minus && shift;
     // Ctrl+= is the boarding's in openRTS's layout, not the head out.
     const bool equal = pressed(rts_keys ? GLFW_KEY_KP_1 : GLFW_KEY_EQUAL, input.kp1_down);
     const bool kp1 = equal && (rts_keys || !ctrl);
@@ -1858,6 +1885,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.head_out = kp1;
         in.car_menu = kp3;
         in.flashlight = kp2;
+        in.clock = kp4;
         in.tape = tape;
         in.tape_which = kp5 && !ctrl;
         in.board = board;
@@ -2573,6 +2601,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::lamp_skips_own_model() = panel.lamp_own_model;
         renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
         auto frame_input = scene_input(window.get(), input);
+        if (frame_input.clock) panel.show_clock = !panel.show_clock;
         if (!loading.done) {
             // The keys were read (their edges stay right) and are dropped;
             // the camera stays where the scene put it.

@@ -7319,11 +7319,18 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
             const glm::mat4 world = body->transform * cab->placement() * local;
             const std::string flags = lower(lamp.flags);
             renderer::ModelExtraLight light;
-            light.kind = flags.find("light_cone") != std::string::npos ? 4.0f : flags.find("light_sphere") != std::string::npos ? 2.0f : 3.0f;
+            // RTS's packing (rts1.exe 0x4AEBEC): the kind (cone 4, sphere 2,
+            // box 3) plus 32 for POSITIONAL, which lights a surface whatever
+            // way it faces (the shader's normal term is for the others: the
+            // 2ES6's desk lamps, all POSITIONAL, lit its upright gauges from
+            // above at 0.3 until 2026-11-15); a cone's Size its Radius over
+            // the reach as it is (not squared: RTS's cones are that much
+            // wider than the Radius), a sphere's and a box's the Radius.
+            const bool cone = flags.find("light_cone") != std::string::npos;
+            const float kind = cone ? 4.0f : flags.find("light_sphere") != std::string::npos ? 2.0f : 3.0f;
+            light.kind = kind + (flags.find("positional") != std::string::npos ? 32.0f : 0.0f);
             const float rx = (std::max)(lamp.radius[0], 0.01f), rz = (std::max)(lamp.radius[1] > 0.0f ? lamp.radius[1] : lamp.radius[0], 0.01f);
-            // A cone takes the squared spread at the PointsTo plane; a sphere and a box their half sizes.
-            light.size = light.kind == 4.0f ? glm::vec4{(rx / reach) * (rx / reach), (rz / reach) * (rz / reach), reach, lamp.source_radius}
-                                            : glm::vec4{rx, rz, reach, lamp.source_radius};
+            light.size = cone ? glm::vec4{rx / reach, rz / reach, reach, lamp.source_radius} : glm::vec4{rx, rz, reach, lamp.source_radius};
             light.to_light = glm::inverse(world);
             light.direction = glm::normalize(glm::vec3{world[2]});
             light.spot_exponent = std::clamp(lamp.spot_exponent, 0.0f, 1.0f) * 128.0f;

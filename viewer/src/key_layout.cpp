@@ -90,6 +90,8 @@ const char* flashlight_key_name() { return current == KeyLayout::rts ? "Num2" : 
 
 const char* tape_key_name() { return current == KeyLayout::rts ? "Ctrl+Num5" : tr("Ctrl+'`'"); }
 
+const char* clock_key_name() { return current == KeyLayout::rts ? "Num4" : tr("Shift+'-'"); }
+
 const char* board_key_name() { return current == KeyLayout::rts ? "Ctrl+Num7" : "Ctrl+'='"; }
 
 BackgroundSound background_sound() noexcept { return background; }

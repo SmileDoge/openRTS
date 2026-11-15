@@ -395,6 +395,7 @@ the Train window)
 | Num1 / `=` | lean out |
 | Num3 / the key left of `1` | the car menu at the coupling or bogie under the cursor (outside) |
 | Num2 / Shift + the key left of `1` | the flashlight, as in RTS: a beam from the eyes along the view, 50 m |
+| Num4 / Shift+`-` | the time of day on the screen, as in RTS (shown anyway, with "x60", while time runs faster) |
 | Ctrl+Num5 / Ctrl + the key left of `1` | the tape, as in RTS: start it on the locomotive driven / stop it; the files go to `%LOCALAPPDATA%\openRTS\RTS_TAPES`, RTS's `lenta.xls` reads them; next to it openRTS's brake log `…_openrts.csv`: the valve's position, the УР, the ЭПТ, every car's pressures (`docs/tape.md`) |
 | Num5 | while the tape rolls: which locomotive it records |
 | Ctrl+F9 | the speed recorder tape (openRTS): the tapes on a paper in the manner of the 3СЛ-2М — the speed and the limit, the time, the signal, the pressures, the path and the kilometres; the one rolling as it is written |

@@ -690,8 +690,19 @@ without compliance and RTS refuses it too.
   `RUNNING` 0x800, `PROJECTION` 0x400, `LIGHT_CONE` 0x200, `LIGHT_SPHERE`
   0x100), `Projection`, `AutoWhenWorldLit`, `Attenuation`, `LightArray`.
   RTS's `shape.frag.shader` (GLOBAL\SHADERS) lights the scene with them in
-  its `LightsInt` block: kind 4 cone, 2 sphere, 3 box (a lamp with neither
-  flag; PROBABLE). A DLL switches one by `SwitchLight` (State) or a group by
+  its `LightsInt` block. **CONFIRMED** (`0x4AEBEC`, the packing): the
+  kind `LIGHT_SPHERE` 2, `LIGHT_CONE` 4, `PROJECTION` 3, none 0 (no case in
+  the shader: lit at full, no reach), plus 32 for `POSITIONAL`, which skips
+  the shader's normal term (`clamp(-dot(N, D) * 2 + 0.3)`): a POSITIONAL
+  lamp lights a surface whatever way it faces. `Size` a cone's `Radius`
+  over the reach (|PointsTo - Position|; 5 m straight down without
+  PointsTo), not squared, so its edge is at z * sqrt(r / reach); other
+  kinds the `Radius`. Type.y the array count, Type.z SpotExponent x 128;
+  the colour red x level, green x level twice, blue as it is, alpha x
+  level (sic). openRTS until 2026-11-15: no +32 (the 2ES6's desk lamps lit
+  its upright gauges from above at 0.3: "тускло") and a cone's spread
+  squared; `PROJECTION` and none both as a box (none stays so: RTS's
+  whole-cab light is left out). A DLL switches one by `SwitchLight` (State) or a group by
   `GM_LIGHT_ON` / `GM_LIGHT_OFF` id = `GlobalID` (the ED9M's salon light:
   group 2 in every car; it posts `GM_LIGHT_OFF 2` every step while off).
   **CONFIRMED** (`0x514630`): the lamp's node (named as the lamp: the

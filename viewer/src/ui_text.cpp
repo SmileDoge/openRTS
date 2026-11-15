@@ -810,6 +810,8 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"'`'", "«Ё»"},
         {"Shift+'`'", "Shift+«Ё»"},
         {"the flashlight on / off", "фонарик: включить / выключить"},
+        {"the time of day on the screen / off (shown anyway while time runs faster)", "время на экране: показать / убрать (при ускоренном времени показывается всегда)"},
+        {"Shift+'-'", "Shift+'-'"},
         {"flashlight on", "фонарик включён"},
         {"flashlight off", "фонарик выключен"},
         {"Ctrl+'`'", "Ctrl+«Ё»"},
