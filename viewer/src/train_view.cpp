@@ -672,7 +672,11 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
     if (!distributor_stability_loaded_) {
         distributor_stability_loaded_ = true;
         distributor_stability_ = remembered("distributor_stability").value_or("0") == "1";
+        ptr_resistance_ = remembered("ptr_resistance").value_or("0") == "1";
+        axle_dynamics_ = remembered("axle_dynamics").value_or("0") == "1";
     }
+    unit.train->set_resistance_model(ptr_resistance_ ? simulation::ResistanceModel::ptr : simulation::ResistanceModel::msts);
+    unit.train->set_axle_dynamics(axle_dynamics_);
     unit.train->set_distributor_stability(distributor_stability_);
     return {};
 }
@@ -8717,6 +8721,20 @@ void TrainView::draw_panel() {
         ImGui::TextDisabled(substeps_ == 1 ? "(RTS)" : "(experimental)");
         ImGui::SameLine();
         ImGui::TextDisabled("%s", tr("(flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed)"));
+        if (ImGui::Checkbox(tr("Resistance by the ПТР"), &ptr_resistance_)) {
+            remember("ptr_resistance", ptr_resistance_ ? "1" : "0");
+            for (auto& unit : units_)
+                unit.train->set_resistance_model(ptr_resistance_ ? simulation::ResistanceModel::ptr
+                                                                 : simulation::ResistanceModel::msts);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled(tr("(w0 = b0 + (b1 + b2 V + b3 V^2) / q; off: the car's Friction)"));
+        if (ImGui::Checkbox(tr("Wheelsets slip"), &axle_dynamics_)) {
+            remember("axle_dynamics", axle_dynamics_ ? "1" : "0");
+            for (auto& unit : units_) unit.train->set_axle_dynamics(axle_dynamics_);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled(tr("(every axle pulls at the creep its own turning allows)"));
         {
             // Trains with locomotive DLLs under the realistic air (docs/train.md).
             const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),

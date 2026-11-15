@@ -1164,6 +1164,10 @@ private:
     bool end_of_track_ = false;
     std::unique_ptr<audio::SoundBank> bank_;
     int substeps_ = 1;
+    // The running resistance (simulation::ResistanceModel::ptr) and the
+    // wheelsets' own slip (TrainSettings::axle_dynamics).
+    mutable bool ptr_resistance_ = false;
+    mutable bool axle_dynamics_ = false;
     // The RTS model with a distributor's stability (TrainSettings), remembered
     // as distributor_stability; read at the first train.
     mutable bool distributor_stability_ = false;
