@@ -412,6 +412,7 @@ the Train window)
 |---|---|
 | Esc | the openRTS panel and the DLL cab window: show / hide (hidden at the start) |
 | F5, Shift+F5, Ctrl+F5 | cars (a car a row: pipe, auxiliary, cylinder, force, brake, coupler), the whole train (with the driven car's pipe, equalising reservoir and cylinder), limits and the kilometre |
+| F4 | the driver's summary at the top right: moving or standing, speed and limit, pipe / cylinder / equalising / main reservoir, the next signal (its name, how far), the platform, the time and FPS |
 | F6 | stations ahead and (openRTS) the sidings in yellow; the "marks (%n ...)" box shows the announcer's marks such as "%3 мост" too |
 | F7, Ctrl+F7 | platform names, signal names |
 | Ctrl+Alt+F7 | Track control |

@@ -13,13 +13,14 @@ namespace openrts::renderer {
 // colours as authored up to near white and rolls only the highlights off;
 // AgX (with its "punchy" look) as film would; ACES (Stephen Hill's fit of
 // the RRT and sRGB ODT) contrasty and saturated, shifting hues in highlights;
-// day_night: Khronos by day, AgX by night, crossfaded with the sun.
-enum class ToneCurve : std::uint32_t { none = 0, khronos_neutral = 1, agx = 2, aces = 3, day_night = 4 };
+// day_night: Khronos by day, AgX by night, crossfaded with the sun;
+// aces_night: ACES by day, AgX by night, the same way.
+enum class ToneCurve : std::uint32_t { none = 0, khronos_neutral = 1, agx = 2, aces = 3, day_night = 4, aces_night = 5 };
 
 struct ToneSettings {
     ToneCurve curve = ToneCurve::day_night;
     float exposure = 1.0f;
-    // 0 by day, 1 at night (from the sun's direct light); day_night only.
+    // 0 by day, 1 at night (from the sun's direct light); day_night and aces_night only.
     float night = 0.0f;
     // Exposure of the night curve: every filmic toe crushes the dark tones a
     // night in MSTS content lives in; about 2 keeps them as drawn.

@@ -10,7 +10,7 @@ namespace {
 
 constexpr const char* tone_shader = R"(
 struct Settings {
-    curve: u32,     // 0 none, 1 Khronos PBR Neutral, 2 AgX, 3 ACES, 4 day Khronos / night AgX
+    curve: u32,     // 0 none, 1 Khronos PBR Neutral, 2 AgX, 3 ACES, 4 day Khronos / night AgX, 5 day ACES / night AgX
     exposure: f32,
     night: f32,
     night_exposure: f32,
@@ -55,7 +55,8 @@ fn agx(linear: vec3<f32>) -> vec3<f32> {
     // which reads washed out on content painted for a plain display.
     display = pow(max(display, vec3<f32>(0.0)), vec3<f32>(1.35));
     let luma = dot(display, vec3<f32>(0.2126, 0.7152, 0.0722));
-    display = luma + 1.4 * (display - luma);
+    // x 1.2, not Wrensch's 1.4: by day it read oversaturated (testers 2026-11-15).
+    display = luma + 1.2 * (display - luma);
     return clamp(outset * display, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
@@ -110,9 +111,16 @@ fn curved(encoded: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
     }
     let scene_linear = pow(max(encoded, vec3<f32>(0.0)), vec3<f32>(2.2)) + bloom * settings.bloom;
     let linear = scene_linear * settings.exposure;
-    if (settings.curve == 4u) {
-        // Khronos keeps the day as authored; AgX, brighter, holds the night.
-        let day = pow(clamp(khronos_neutral(linear), vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
+    if (settings.curve == 4u || settings.curve == 5u) {
+        // Khronos keeps the day as authored (ACES: contrastier, its shade
+        // deeper); AgX, brighter, holds the night.
+        var day_display = vec3<f32>(0.0);
+        if (settings.curve == 5u) {
+            day_display = aces(linear * 1.3);
+        } else {
+            day_display = khronos_neutral(linear);
+        }
+        let day = pow(clamp(day_display, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
         if (settings.night <= 0.0) {
             return day;
         }
@@ -124,7 +132,9 @@ fn curved(encoded: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
         return pow(clamp(display, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
     }
     if (settings.curve == 3u) {
-        let display = aces(linear);
+        // Hill's fit put a mid grey 12 % darker than Khronos: x 1.3 brings
+        // it level (testers 2026-11-15: "ACES is dark by itself").
+        let display = aces(linear * 1.3);
         return pow(clamp(display, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
     }
     return agx(linear);

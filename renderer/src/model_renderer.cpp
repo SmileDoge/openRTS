@@ -1,5 +1,7 @@
 #include <mutex>
 #include <openrts/renderer/model_renderer.hpp>
+#include <openrts/renderer/bc7.hpp>
+#include <chrono>
 
 #include <openrts/core/profile.hpp>
 
@@ -1904,8 +1906,25 @@ void ModelRenderer::Impl::ensure_capacity(const std::uint64_t instances,
 std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::VirtualPath& path,
                                                               const formats::AceRgbaImage& image) const {
     auto texture = std::make_shared<GpuTexture>();
+    // A train's DXT1 without its blocks' squares, kept in BC7 (renderer/bc7.hpp;
+    // the Graphics panel's choice, openRTS's own).
+    const auto path_key = path.key();
+    if (!image.bc1.empty() && bc_textures && smooth_train_textures() && path_key.rfind("trains/trainset/", 0) == 0) {
+        const auto started = std::chrono::steady_clock::now();
+        if (const auto levels = smoothed_bc7_levels(image.width, image.height, image.pixels, image.bc1.front())) {
+            static std::atomic<int> told{0};
+            const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            if (told++ < 3 || ms > 1500.0) std::cout << "texture '" << path.str() << "': smoothed BC7 in " << static_cast<int>(ms) << " ms\n";
+            texture->texture = upload_bc7_texture(device, image.width, image.height, *levels, std::string(path.filename()));
+            if (texture->texture.ok()) {
+                for (const auto& level : *levels) texture->bytes += level.size();
+            } else {
+                std::cout << "texture '" << path.str() << "': as BC7: " << texture->texture.error << "; as BC1\n";
+            }
+        }
+    }
     // A DXT1 ACE as its blocks (8x less than RGBA8, RTS's own way), else RGBA8.
-    if (!image.bc1.empty() && bc_textures) {
+    if (!texture->texture.ok() && !image.bc1.empty() && bc_textures) {
         texture->texture = upload_bc1_texture(device, image.width, image.height, image.bc1, std::string(path.filename()));
         if (texture->texture.ok()) {
             for (const auto& level : image.bc1) texture->bytes += level.size();

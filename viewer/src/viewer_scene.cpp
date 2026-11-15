@@ -676,12 +676,17 @@ public:
             if (input.tape_which) train_->tape_which();
             if (input.limits_panel) train_->toggle_limits_panel();
             if (input.stations_panel) train_->toggle_stations_panel();
+            if (input.drive_panel) train_->toggle_drive_panel();
             if (input.activity_journal && activity_) activity_->toggle_journal();
             if (input.activity_menu && activity_) activity_->toggle_menu();
             if (input.car_view) train_->car_view_key(camera);
         }
         if (train_) {
             train_->set_signals(signals_ ? signals_->system() : nullptr);
+            if (signals_ && !signal_names_set_) {
+                signal_names_set_ = true;
+                train_->set_signal_names([this](const std::uint32_t object) { return signals_ ? signals_->object_name(object) : std::string{}; });
+            }
             train_->set_obstacles(streamer_ ? &streamer_->visible_instances() : nullptr);
             train_->set_world_clock(clock.time_of_day, sky_state_ && sky_state_->night);
             train_->set_world_light(sky_state_ ? sky_state_->world_lit : 1.0f, static_cast<std::uint8_t>(clock.weather),
@@ -2039,6 +2044,7 @@ private:
     std::unique_ptr<TrackControl> track_control_;
     mutable bool signal_names_ = false; // Ctrl+F7
     mutable bool place_names_ = false;  // F7
+    bool signal_names_set_ = false;     // the F4 panel has the signals' names
     // The other players' names over the world (a network game).
     mutable bool player_names_ = remembered("player_names").value_or("1") != "0";
     mutable bool cab_labels_ = false;   // Alt held in the 3-D cab

@@ -622,6 +622,9 @@ public:
     void update_car_view(ViewerCamera& camera);
     void toggle_limits_panel() noexcept { limits_panel_ = !limits_panel_; }
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
+    void toggle_drive_panel();
+    // The names of signal objects (the route database's), for the F4 panel.
+    void set_signal_names(std::function<std::string(std::uint32_t object)> names) { signal_names_ = std::move(names); }
     void draw_hud();
     // Where Track control keeps saved paths: user_paths/<route> in
     // user_data_directory().
@@ -900,6 +903,12 @@ private:
     static constexpr std::size_t car_page_size = 15;
     bool limits_panel_ = false;
     bool stations_panel_ = false;
+    // F4: the driver's summary (openRTS): moving or standing, the speed and
+    // its limit, the pressures, the next signal and platform, the time.
+    // On at first; remembered as drive_panel.
+    std::optional<bool> drive_panel_;
+    void draw_drive_panel(const Unit& unit);
+    std::function<std::string(std::uint32_t)> signal_names_;
     bool service_marks_ = false;       // F6 shows the "%n ..." marks too (remembered as f6_service_marks)
     bool service_marks_loaded_ = false;
     // A HUD panel the user can drag: where its pivot corner sits, as a
@@ -916,6 +925,7 @@ private:
     HudPanel car_info_place_{.key = "hud_car_info"};
     HudPanel limits_place_{.key = "hud_limits", .pivot_x = 1.0f};
     HudPanel stations_place_{.key = "hud_stations", .pivot_x = 1.0f};
+    HudPanel drive_place_{.key = "hud_drive", .pivot_x = 1.0f};
     // Starts a panel window at its place; false when it is not drawn.
     bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y);
     void end_panel(HudPanel& place);

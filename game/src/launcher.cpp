@@ -1582,12 +1582,13 @@ void Launcher::State::draw_graphics(const float height) {
             ImGui::SameLine();
             ImGui::TextDisabled("%s", tr("tone curve with the experimental renderer"));
             if (g.hdr) {
-                const char* curves[] = {tr("none (as RTS)"), "Khronos PBR Neutral", "AgX (punchy)", "ACES", tr("auto: Khronos by day, AgX by night")};
+                const char* curves[] = {tr("none (as RTS)"), "Khronos PBR Neutral", "AgX (punchy)", "ACES", tr("auto: Khronos by day, AgX by night"),
+                                        tr("auto: ACES by day, AgX by night")};
                 group_row(tr("Tone curve"), Load::none, Load::none);
-                ImGui::Combo("##tone", &g.tone_curve, curves, 5);
+                ImGui::Combo("##tone", &g.tone_curve, curves, 6);
                 group_row(tr("Exposure"), Load::none, Load::none);
                 viewer::slider_with_input("##exposure", &g.exposure, 0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
-                if (g.tone_curve == 4) {
+                if (g.tone_curve == 4 || g.tone_curve == 5) {
                     group_row(tr("Night exposure"), Load::none, Load::none);
                     viewer::slider_with_input("##night_exposure", &g.night_exposure, 0.5f, 6.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
                 }

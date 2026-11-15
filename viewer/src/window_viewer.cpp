@@ -4,6 +4,7 @@
 
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
+#include <openrts/renderer/bc7.hpp>
 #include <openrts/renderer/forest_clearance.hpp>
 #include <openrts/renderer/glow_sprites.hpp>
 #include <openrts/renderer/native_sky.hpp>
@@ -678,6 +679,9 @@ struct PanelState {
     bool native_sky = true;   // openRTS's own sky (atmosphere, volumetric clouds) instead of RTS's dome
     bool signal_lights_real_size = true; // signal lights at the lens's size however far (not RTS's far angle)
     bool night_textures = true;          // the models' NIGHT textures at night (as RTS)
+    // The trains' DXT1 textures without the blocks' squares, kept in BC7
+    // (renderer/bc7.hpp; openRTS's own; remembered as smooth_train_textures).
+    bool smooth_train_textures = false;
     bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
     float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
     bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
@@ -1134,6 +1138,9 @@ public:
             if (ImGui::Checkbox(tr("Night textures of the models (as in RTS)"), &panel.night_textures))
                 remember("night_textures", panel.night_textures ? "1" : "0");
             ImGui::TextDisabled("%s", tr("(TEXTURES\\NIGHT: lit windows and lamps painted in; off: the day's textures at night, lit by the lamps)"));
+            if (ImGui::Checkbox(tr("Smooth the compression blocks of the trains' textures (BC7, not as in RTS)"), &panel.smooth_train_textures))
+                remember("smooth_train_textures", panel.smooth_train_textures ? "1" : "0");
+            ImGui::TextDisabled("%s", tr("(the DXT1 of cars and cabs: the squares of its 4x4 blocks smoothed where they meet, kept in BC7, twice the video memory of the trains; a train loaded after: the first time some seconds longer, then from the cache)"));
             if (ImGui::Checkbox(tr("Sharp cab screens: drawn at a higher resolution (not as in RTS)"), &panel.screen_supersampling))
                 remember("screen_supersampling", panel.screen_supersampling ? "1" : "0");
             ImGui::TextDisabled("%s", tr("(each screen drawn into an image of its own and blended in linear light: thin lines keep their brightness, no steps on edges and needles)"));
@@ -1171,14 +1178,14 @@ public:
             if (panel.hdr) {
                 ImGui::SeparatorText("HDR");
                 const char* curves[] = {tr("none (as RTS)"), "Khronos PBR Neutral", "AgX (punchy)", "ACES",
-                                        tr("auto: Khronos by day, AgX by night")};
+                                        tr("auto: Khronos by day, AgX by night"), tr("auto: ACES by day, AgX by night")};
                 ImGui::SetNextItemWidth(220.0f);
-                if (ImGui::Combo(tr("Tone curve (experimental renderer)"), &panel.tone_curve, curves, 5))
+                if (ImGui::Combo(tr("Tone curve (experimental renderer)"), &panel.tone_curve, curves, 6))
                     remember("tone_mode", std::to_string(panel.tone_curve));
                 ImGui::SetNextItemWidth(220.0f);
                 if (slider_with_input(tr("Exposure"), &panel.exposure, 0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
                     remember("exposure", std::to_string(panel.exposure));
-                if (panel.tone_curve == 4) {
+                if (panel.tone_curve == 4 || panel.tone_curve == 5) {
                     ImGui::SetNextItemWidth(220.0f);
                     if (slider_with_input(tr("Night exposure"), &panel.night_exposure, 0.5f, 6.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
                         remember("night_exposure", std::to_string(panel.night_exposure));
@@ -1599,6 +1606,7 @@ struct CameraInput {
     bool track_control_key_down = false;
     bool info_key_down = false;
     bool stations_key_down = false;
+    bool drive_key_down = false;
     bool journal_key_down = false; // F11
     bool menu_key_down = false;    // F8
     bool car_view_key_down = false;
@@ -1847,6 +1855,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool shift = down(GLFW_KEY_LEFT_SHIFT) || down(GLFW_KEY_RIGHT_SHIFT);
     const bool alt = down(GLFW_KEY_LEFT_ALT) || down(GLFW_KEY_RIGHT_ALT);
     const bool f5 = pressed(GLFW_KEY_F5, input.info_key_down);
+    const bool f4 = pressed(GLFW_KEY_F4, input.drive_key_down);
     const bool f7 = pressed(GLFW_KEY_F7, input.track_control_key_down);
     const bool f12 = pressed(GLFW_KEY_F12, input.inspector_key_down);
     // Ctrl+F9 the tape window (F9 alone is RTS's objectives, 0x402C88).
@@ -1920,6 +1929,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .car_info_shift = shift,
             .limits_panel = f5 && ctrl,
             .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+            .drive_panel = f4,
             .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
             .signal_names = f7 && ctrl && !alt,
             .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -1958,6 +1968,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .car_info_shift = shift,
         .limits_panel = f5 && ctrl,
         .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+        .drive_panel = f4,
         .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
         .signal_names = f7 && ctrl && !alt,
         .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -2465,6 +2476,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     panel.kept_graphics = load_graphics_settings();
     panel.msaa_asked = options.msaa;
     panel.fps_counter = remembered("fps_counter").value_or("0") == "1";
+    panel.smooth_train_textures = remembered("smooth_train_textures").value_or("0") == "1";
+    // Tests: OPENRTS_SMOOTH_TRAIN_TEXTURES turns it on for the run, not remembered.
+    {
+        char* forced = nullptr;
+        std::size_t length = 0;
+        if (_dupenv_s(&forced, &length, "OPENRTS_SMOOTH_TRAIN_TEXTURES") == 0 && forced && *forced == '1') panel.smooth_train_textures = true;
+        std::free(forced);
+    }
+    renderer::texture_cache_directory() = user_data_directory() / "texture_cache" / "bc7";
     if (const auto kept = remembered("cab_near_plane")) panel.cab_near_plane = std::clamp(std::strtof(kept->c_str(), nullptr), 0.0f, 0.3f);
     set_panel_graphics(panel, panel.kept_graphics);
     if (options.reshade_depth) panel.reshade_depth = *options.reshade_depth;
@@ -2598,6 +2618,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::headlight_reach() = panel.headlight_reach;
         renderer::light_fullbright() = panel.light_fullbright;
         renderer::night_textures() = panel.night_textures;
+        renderer::smooth_train_textures() = panel.smooth_train_textures;
         renderer::lamp_skips_own_model() = panel.lamp_own_model;
         renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
         auto frame_input = scene_input(window.get(), input);

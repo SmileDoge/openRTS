@@ -68,5 +68,9 @@ struct WgpuTextureUploadResult {
 [[nodiscard]] WgpuTextureUploadResult upload_bc1_texture(
     WGPUDevice device, std::uint32_t width, std::uint32_t height, const std::vector<std::vector<std::uint8_t>>& levels,
     std::string_view label = {});
+// The same of BC7's 16-byte blocks (renderer/bc7.hpp).
+[[nodiscard]] WgpuTextureUploadResult upload_bc7_texture(
+    WGPUDevice device, std::uint32_t width, std::uint32_t height, const std::vector<std::vector<std::uint8_t>>& levels,
+    std::string_view label = {});
 
 } // namespace openrts::renderer

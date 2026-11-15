@@ -490,6 +490,51 @@ none). Settings: «Bloom» (`effect_bloom`, on), «Сила bloom»
 (`bloom_strength`, 0..3, 1). Cost (the RTX 4070 Ti SUPER, a small window):
 the lights' pass a few microseconds, the chain some 0.03 ms.
 
+### Trains' textures without DXT1's blocks (BC7, 2026-11-16)
+
+- **What was seen.** Close to a dark body or in a cab, squares in the
+  shade under the Khronos PBR Neutral tone curve, not under AgX or ACES
+  (testers: "Minecraft pixels").
+- **Why.** The content's textures are DXT1 (the 2ES6's body and cab:
+  2048 x 2048). Each 4 x 4 texels have two colours of 5:6:5 and two
+  between them, so a dark, flat shade comes out as a quilt of blocks one
+  level apart.
+  - Khronos shows the shade as drawn, as RTS does. Measured on a dark red
+    body: mean 0.095, a step of 0.014 between blocks; RTS's plain mapping
+    0.098 and 0.016.
+  - AgX and ACES darken saturated shade three to five times (0.037 and
+    0.020), and the blocks sink in it. That is also why ACES looked dark.
+- **The option.** «Сглаживать блоки сжатия текстур поездов (BC7, не как
+  в RTS)», off by default, remembered as `smooth_train_textures`. It applies
+  to DXT1 textures under `TRAINS/TRAINSET` (cars, cabs, salons) loaded after
+  it is turned on (`renderer/bc7.hpp`):
+  - A block whose texels lie within 14 levels is "flat". Its texels take
+    the means of the flat blocks about it, bilinearly between their
+    centres, keeping their own grain. A neighbour more than 32 levels off
+    (a real edge, the lettering) is not drawn from.
+  - Any step left across a block edge between nearly flat sides is laid on
+    a ramp of four texels.
+  - The result goes to the GPU as BC7 (mode 6: two RGBA colours of 7 bits
+    and a shared low bit, 16 levels; an encoder of openRTS's own). That is
+    1 byte a texel: twice DXT1, an eighth of RGBA8. The mipmaps are made
+    from the smoothed level 0.
+  - Encoded once, about 0.5-0.6 s for a 2048 x 2048 texture on several
+    threads, and kept in `texture_cache/bc7` in the user data folder,
+    keyed by a hash of the DXT1 blocks. Next time it is read in 6-7 ms.
+  - Without BC on the device: the texture stays as it was.
+- **Measured** on the 2ES6's `kuz1a.ace`, dark texels: the hard steps of 3
+  levels and more where blocks meet go from 20 441 to 3 882 smoothed and
+  5 410 in BC7. The smoothing changes the texture by 45.3 dB PSNR; BC7
+  keeps the smoothed one at 52.2 dB (`openrts.content.bc7`).
+- **The tone curves (2026-11-16).** ACES got an exposure of x 1.3, its mid
+  grey now as bright as Khronos's (Hill's fit put it 12 % darker). AgX's
+  "punchy" saturation went from x 1.4 to x 1.2: it read oversaturated by
+  day. A grey sky stays AgX's own: it takes bright colours to white.
+- **"Auto: ACES by day, AgX by night"** (`tone_mode` 5) crossfades the two
+  with the sun as "Khronos by day, AgX by night" does (`tone_mode` 4), the
+  night exposure as there: ACES's contrast and deep shade by day, AgX's
+  holding of the dark tones at night.
+
 ## openRTS sky (atmosphere, volumetric clouds)
 
 Not RTS: a Graphics setting, «Небо openRTS: атмосфера, объёмные облака

@@ -105,7 +105,7 @@ GraphicsSettings load_graphics_settings() {
     }
     s.experimental = whole("launcher_experimental", 0, 0, 1) != 0;
     s.hdr = whole("launcher_hdr", 0, 0, 1) != 0;
-    s.tone_curve = whole("tone_mode", s.tone_curve, 0, 4);
+    s.tone_curve = whole("tone_mode", s.tone_curve, 0, 5);
     s.exposure = number("exposure", s.exposure, 0.25f, 4.0f);
     s.night_exposure = number("night_exposure", s.night_exposure, 0.5f, 6.0f);
     s.saturation = number("saturation", s.saturation, 0.5f, 1.8f);

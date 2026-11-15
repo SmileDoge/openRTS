@@ -26,7 +26,8 @@ struct GraphicsSettings {
     bool experimental = false;  // launcher_experimental: the new renderer
     bool hdr = false;           // launcher_hdr
     // HDR (the new renderer): tone_mode (0 none, 1 Khronos, 2 AgX, 3 ACES,
-    // 4 Khronos by day and AgX by night), exposure, night_exposure, saturation.
+    // 4 Khronos by day and AgX by night, 5 ACES by day and AgX by night),
+    // exposure, night_exposure, saturation.
     int tone_curve = 4;
     float exposure = 1.0f;
     float night_exposure = 2.0f;
