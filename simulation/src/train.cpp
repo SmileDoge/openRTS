@@ -204,7 +204,32 @@ void equalise(std::vector<CarState>& cars, const std::size_t a, const std::size_
     }
 }
 
+// СА-3 friction draft gear: a preloaded block that takes the first
+// millimetres stiffly, then the absorbing apparatus, and past its travel the
+// apparatus yields plastically. `travel` is how far the coupler has gone past
+// its play, `rate` how fast the cars grind past each other (m/s, magnitude).
+double sa3_coupler_force(const double travel, const double rate) {
+    constexpr double block_travel = 0.011;        // m, the preloaded block's stroke
+    constexpr double block_stiffness = 5.0e8;     // N/m
+    constexpr double preload = 5.0e3;             // N
+    constexpr double apparatus_travel = 0.22;     // m, +-2 lambda
+    constexpr double apparatus_stiffness = 2.0e7; // N/m
+    constexpr double plastic = 0.1;               // the apparatus past its travel
+    constexpr double friction = 0.6;              // dry friction of the gear
+    if (travel <= 0.0) return 0.0;
+    double force = preload + block_stiffness * (std::min)(travel, block_travel);
+    if (travel > block_travel) {
+        const double apparatus = (std::min)(travel, apparatus_travel) - block_travel;
+        force += apparatus_stiffness * apparatus;
+        if (travel > apparatus_travel) force += plastic * apparatus_stiffness * (travel - apparatus_travel);
+    }
+    // Dry friction holds the gear: it resists the movement, more the faster.
+    return force * (1.0 + friction * std::tanh(100.0 * rate));
+}
+
 } // namespace
+
+double sa3_draft_gear_force(const double travel, const double rate) { return sa3_coupler_force(travel, rate); }
 
 // ---------------------------------------------------------------------------
 // Keyboard controller
@@ -426,6 +451,8 @@ void Train::set_brake_model(const BrakeModel model) noexcept {
     if (settings_.brake_model != model && model == BrakeModel::realistic) impl_->air.reset(cars_);
     settings_.brake_model = model;
 }
+
+void Train::set_coupler_model(const CouplerModel model) noexcept { settings_.coupler_model = model; }
 
 BrakeModel Train::brake_model() const noexcept {
     if (settings_.brake_model != BrakeModel::realistic) return BrakeModel::rts;
@@ -1395,8 +1422,21 @@ void Train::step() {
             gaps[j] = gap;
             const auto& a = coupling_behind(ahead);
             const auto& b = coupling_ahead(behind);
-            const double force = gap < 0.0 ? (a.stiffness_compression + b.stiffness_compression) * gap
-                                           : (a.stiffness_tension + b.stiffness_tension) * gap;
+            double force = 0.0;
+            if (settings_.coupler_model == CouplerModel::sa3) {
+                const bool compression = gap < 0.0;
+                const double play = compression ? 0.5 * (a.r0_compression + b.r0_compression)
+                                                : 0.5 * (a.r0_tension + b.r0_tension);
+                const double travel = (std::max)(std::abs(gap) - play, 0.0);
+                const double rate = velocity[j] - velocity[j + 1];
+                force = std::copysign(sa3_coupler_force(travel, std::abs(rate)), gap);
+                force -= (compression ? a.damping_compression + b.damping_compression
+                                      : a.damping_tension + b.damping_tension) *
+                         rate;
+            } else {
+                force = gap < 0.0 ? (a.stiffness_compression + b.stiffness_compression) * gap
+                                  : (a.stiffness_tension + b.stiffness_tension) * gap;
+            }
             active[j] -= force * 0.5;
             active[j + 1] += force * 0.5;
             if (pass == 0) cars_[j].coupler_force = static_cast<float>(force);

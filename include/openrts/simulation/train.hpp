@@ -29,6 +29,17 @@ inline constexpr double train_step = 0.05;
 // DLL keeps RTS's: its driver's valve is tuned to the RTS triple valve.
 enum class BrakeModel : std::uint8_t { rts, realistic };
 
+// The coupler model: RTS's (a spring of the coupling's stiffness, the
+// default) or the СА-3 friction draft gear: a preloaded block, then the
+// absorbing apparatus, and past its travel the apparatus yields.
+enum class CouplerModel : std::uint8_t { rts, sa3 };
+
+// The СА-3 draft gear's force (N) at `travel` m of the gear's stroke past its
+// play, moving at `rate` m/s: the preloaded block takes the first millimetres,
+// the absorbing apparatus the rest of its travel, then it yields; dry friction
+// resists the movement.
+[[nodiscard]] double sa3_draft_gear_force(double travel, double rate);
+
 struct TrainSettings {
     // Coupler solver passes per step: 1 is RTS (0.05 s); 2..4 are the
     // experimental finer integration of the stiff part only.
@@ -37,6 +48,8 @@ struct TrainSettings {
     bool coupler_break = true;
     bool derailment = true;
     BrakeModel brake_model = BrakeModel::rts;
+    // The couplers' model (coupler_model above), the same choice for the train.
+    CouplerModel coupler_model = CouplerModel::rts;
     // The bodies on their springs (body_motion.hpp): RTS's model (the
     // default here) or openRTS's (the viewer's setting).
     BodyMotionModel body_motion = BodyMotionModel::rts;
@@ -478,6 +491,8 @@ public:
     void set_coupler_substeps(std::uint32_t substeps) noexcept;
     // The air brake model from the next step on.
     void set_brake_model(BrakeModel model) noexcept;
+    // The couplers' model from the next step on (TrainSettings::coupler_model).
+    void set_coupler_model(CouplerModel model) noexcept;
     // What car `car`'s controller asked at the last step (its УР, ЭПТ ...);
     // null past the end.
     [[nodiscard]] const EngineDemands* demands_of(std::size_t car) const noexcept;
@@ -495,6 +510,7 @@ public:
     void set_switch_throws(float factor) noexcept { settings_.switch_throws = factor; }
     // The model this step runs: realistic only when no controller needs RTS's.
     [[nodiscard]] BrakeModel brake_model() const noexcept;
+    [[nodiscard]] CouplerModel coupler_model() const noexcept { return settings_.coupler_model; }
     [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
 
 private:
