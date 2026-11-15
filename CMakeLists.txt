@@ -208,6 +208,7 @@ if(OPENRTS_BUILD_TOOLS)
     add_subdirectory(tools)
 endif()
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+    # The tests are local work and are not tracked in the repository.
     add_subdirectory(tests)
 endif()

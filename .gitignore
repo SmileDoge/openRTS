@@ -1,4 +1,5 @@
 build/
+tests/
 tools/mp-capture/*.bin
 tools/mp-capture/*.log
 __pycache__/
