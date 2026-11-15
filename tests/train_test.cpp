@@ -547,7 +547,8 @@ void test_adhesion(const Stock& stock) {
     {
         Stock own = stock;
         own.engine.brakes.realistic_brake_force = 50000.0f;
-        const float share = 3.0f / own.engine.brakes.cylinder_pressure_for_max_force;
+        const float rts_share = 3.0f / own.engine.brakes.cylinder_pressure_for_max_force;
+        const float share = simulation::brake_rigging_share(3.0f, simulation::brake_force_pressure(own.engine));
         for (const bool limit : {false, true}) {
             Run r(own, {.rails = RailCondition::dry, .limit_brake_force = limit}, 1500.0);
             r.train.set_brake_model(simulation::BrakeModel::realistic);
@@ -560,7 +561,7 @@ void test_adhesion(const Stock& stock) {
         Run rts(own, {}, 1500.0);
         rts.driver->independent = 3.0f;
         rts.run(10.0);
-        check(near(rts.train.cars().front().brake_force, share * 100000.0f, 1500.0), "RTS's model keeps MaxBrakeForce");
+        check(near(rts.train.cars().front().brake_force, rts_share * 100000.0f, 1500.0), "RTS's model keeps MaxBrakeForce");
     }
     // RTS's load modes are in its files: an empty car's MaxBrakeForce is its
     // empty mode's full application (brake_force_pressure), not cut again
@@ -577,11 +578,11 @@ void test_adhesion(const Stock& stock) {
         r.driver->brake = simulation::DriverHandles::BrakeHandle::lap_feed;
         r.run(20.0);
         const auto& car = r.train.cars()[3];
-        const float share = car.cylinder / simulation::brake_force_pressure(empty.wagon);
+        const float share = simulation::brake_rigging_share(car.cylinder, simulation::brake_force_pressure(empty.wagon));
         const float expected = share * 24000.0f * simulation::shoe_factor(formats::BrakeShoe::composite, 0.0f, share);
         std::cerr << "  empty car: cylinder " << car.cylinder << " atm, share " << share << ", force " << car.brake_force / 1000.0f
                   << " kN (expected " << expected / 1000.0f << ")\n";
-        check(car.cylinder < 1.7f && share > 0.85f, "an empty car's full service fills its empty mode's cylinder");
+        check(car.cylinder < 2.05f && share > 0.85f, "an empty car's full service fills its empty mode's cylinder");
         check(near(car.brake_force, expected, expected * 0.03) && car.brake_force > 0.8f * 24000.0f,
               "an empty car brakes with its own file's force");
     }

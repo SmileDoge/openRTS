@@ -1043,7 +1043,12 @@ void Train::step() {
         // The realistic air: a 483 car's content force at its load mode's
         // full cylinder (distributor.hpp, brake_force_pressure).
         const float reference = realistic_air ? brake_force_pressure(*car.definition) : brakes.cylinder_pressure_for_max_force;
-        const float share = reference > 0.0f ? cylinder / reference : 0.0f;
+        // The rigging takes up its slack and the piston its stroke before the
+        // shoes reach the wheels: under the touch pressure the cylinder
+        // presses nothing (distributor.hpp, brake_rigging_share). RTS's own
+        // model has no such take-up and keeps the plain share.
+        const float share = !realistic_air ? (reference > 0.0f ? cylinder / reference : 0.0f)
+                                           : brake_rigging_share(cylinder, reference);
         if (realistic_air) {
             // Each bogie: half the force on its shoes, wet and warm as they
             // are, its wheels sliding when the shoes hold them harder than
