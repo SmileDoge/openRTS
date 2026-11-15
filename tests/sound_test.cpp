@@ -1050,12 +1050,70 @@ void test_content_chs4t_compressor(const std::filesystem::path& root) {
     }
 }
 
+// The VL80s cab's 3СЛ2М (mdd_VL80-Alias vl80s-cabr.sms, "Р А Б О Т А
+// 3 С Л 2 М"): sl2m.wav loops from Speed_Inc_Past 1.38, its stream at
+// Sources ( 2 10 11 ) the group lacks (it plays at its own volume). RTS
+// gives the speed without its sign (0x44AB7C: fabs of the wagon's), so a
+// turned section or running back hears it too; openRTS's view passes the
+// same since 2026-11-15. A speed below 0 starts nothing.
+void test_content_3sl2m(const std::filesystem::path& root) {
+    core::Vfs vfs;
+    core::mount_installation(vfs, root, core::load_installation_config(root));
+    const auto path = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_VL80-Alias/Sound/vl80s-cabr.sms");
+    if (!path || !vfs.exists(*path)) {
+        std::cout << "vl80s cab: not installed, skipped\n";
+        return;
+    }
+    auto script = std::make_shared<formats::SoundScript>(formats::load_sound_script(vfs, *path));
+    const auto* group = script->select_group(formats::SoundOwner::player_train);
+    check(script->ok() && group != nullptr, "vl80s cab: the script parses");
+    if (!group) return;
+    for (const auto& stream : group->streams) {
+        if (stream.sources.size() != 2 || stream.sources[0] != 10 || !stream.volume_curve) continue;
+        std::printf("  a stream at sources 10 11: volume %.2f, curve", stream.volume);
+        for (const auto& [x, y] : stream.volume_curve->points) std::printf(" (%.2f %.2f)", x, y);
+        std::printf("\n");
+    }
+    const auto run = [&](const float speed) {
+        std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips;
+        audio::SoundInstance sound(script, *group, formats::SoundOwner::player_train,
+                                   [&](const std::string& name) {
+                                       auto& clip = clips[name];
+                                       if (!clip) clip = test_clip(1000);
+                                       return clip;
+                                   }, 7);
+        RecordingSink sink;
+        audio::SoundInputs inputs;
+        inputs.camera = audio::SoundCamera::cab;
+        inputs.at_listener = true;
+        inputs[SoundVariable::distance] = 0;
+        inputs[SoundVariable::speed] = 0;
+        sound.update(0.05f, inputs, sink);
+        for (int i = 0; i < 40; ++i) {
+            inputs[SoundVariable::speed] = speed * static_cast<float>(i + 1) / 40.0f;
+            sound.update(0.05f, inputs, sink);
+        }
+        float loudest = -1.0f;
+        for (const auto& [id, voice] : sink.voices) {
+            const auto it = std::find_if(clips.begin(), clips.end(), [&](const auto& c) { return c.second == voice.clip; });
+            if (it == clips.end() || core::fold_case(it->first).find("sl2m.wav") == std::string::npos || !sink.playing(id)) continue;
+            loudest = (std::max)(loudest, voice.volume);
+        }
+        return loudest;
+    };
+    const float ahead = run(5.0f);
+    std::printf("  3СЛ2М at 5 m/s: volume %.2f; at -5 m/s: %.2f\n", ahead, run(-5.0f));
+    check(ahead > 0.1f, "vl80s cab: the 3СЛ2М loops at 5 m/s, heard");
+    check(run(-5.0f) < 0.0f, "vl80s cab: a speed below 0 starts it not (why the view gives it without its sign)");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc > 1) {
         test_content_ed9m_cab(argv[1]);
         test_content_chs4t_compressor(argv[1]);
+        test_content_3sl2m(argv[1]);
         if (failures == 0) std::cout << "sound content: all checks passed\n";
         return failures == 0 ? 0 : 1;
     }

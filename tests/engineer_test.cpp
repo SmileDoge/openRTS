@@ -809,6 +809,58 @@ int main(int argc, char** argv) {
         std::printf("no ED9M-0032 motor car here: its seats not checked\n");
     }
 
+    // A passenger car's salon: Wagon Interior ( InteriorFile ( .. ) ) in its
+    // .rtswag (RTS 0x44247C / 0x515434). The coupe car's cype_ammendorf.repaint
+    // names ../ev_Pass_salon/cype_tsr06.s and its own cype_ammendorf.sd: drawn
+    // from the repaint, its surfaces read from the shape, seats and doors from
+    // the .sd.
+    if (const auto kupe = formats::load_wagon(vfs, "mdd_PassKZD", "mdd_KupeKZD", false); kupe.ok()) {
+        check(core::fold_case(kupe.interior) == "cype_ammendorf.repaint" && kupe.interior_flipped == 0
+                  && core::fold_case(kupe.interior_sound).find("vnutr.sms") != std::string::npos,
+              "coupe car: Interior ( InteriorFile SoundInt ) read");
+        check(viewer::CabView::has_room(kupe), "coupe car: it has a room (its salon)");
+        auto salon = viewer::CabView::create(vfs, kupe, formats::wagon_path("mdd_PassKZD", "mdd_KupeKZD", false));
+        for (int i = 0; i < 600 && salon && !salon->collision(); ++i) {
+            salon->poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        const std::string drawn = salon ? std::string(salon->shape().str()) : "-";
+        const std::string read = salon ? std::string(salon->shape_file().str()) : "-";
+        std::printf("  coupe salon %s (shape %s): seats %zu, doors %zu, turned %d\n", drawn.c_str(), read.c_str(),
+                    salon ? salon->description().seats.size() : 0, salon ? salon->description().doors.size() : 0,
+                    salon ? int(salon->turned()) : -1);
+        check(salon && salon->salon(), "coupe car: its salon made");
+        if (salon) {
+            check(salon->shape().key() == "trains/trainset/mdd_passkzd/cype_ammendorf.repaint", "coupe salon: drawn from its repaint");
+            check(salon->shape_file().key() == "trains/trainset/ev_pass_salon/cype_tsr06.s", "coupe salon: read from the repaint's Shape");
+            check(!salon->description().seats.empty() && !salon->description().doors.empty(), "coupe salon: seats and doors from its .sd");
+            check(salon->collision() != nullptr, "coupe salon: its surfaces read");
+            check(!salon->turned(), "coupe salon: InteriorFile ( .. ) not flipped");
+        }
+    } else {
+        std::printf("no mdd_PassKZD coupe car here: its salon not checked\n");
+    }
+    // InteriorFile ( "x.s" 1 ): the salon turned round in the car.
+    if (const auto tvz = formats::load_wagon(vfs, "mdd_Pass_TVZ", "mdd_TVZ_61-4440", false); tvz.ok() && !tvz.interior.empty()) {
+        check(tvz.interior_flipped == 1, "TVZ car: InteriorFile's Flipped read");
+        const auto salon = viewer::CabView::create(vfs, tvz, formats::wagon_path("mdd_Pass_TVZ", "mdd_TVZ_61-4440", false));
+        check(!salon || salon->turned(), "TVZ car: its salon turned round");
+    }
+    // The VL80s-606's cab, Cabin ( "../mdd_VL80-Alias/CABS/CabBCHEPT.repaint" 0 ):
+    // drawn from the repaint (its TextureReplace images), read from its
+    // CabSKLUBEPT.s with CabSKLUBEPT.sd.
+    if (const auto vl80 = formats::load_wagon(vfs, "mdd_VL80s-606", "vl80s-606a", true); vl80.ok()) {
+        const auto vl80_cab = viewer::CabView::create(vfs, vl80, formats::wagon_path("mdd_VL80s-606", "vl80s-606a", true));
+        check(vl80_cab && !vl80_cab->salon(), "VL80s-606: its cab made");
+        if (vl80_cab) {
+            check(vl80_cab->shape().key() == "trains/trainset/mdd_vl80-alias/cabs/cabbchept.repaint", "VL80s-606 cab: drawn from its repaint");
+            check(vl80_cab->shape_file().key() == "trains/trainset/mdd_vl80-alias/cabs/cabsklubept.s", "VL80s-606 cab: read from the repaint's Shape");
+            check(!vl80_cab->description().switches.empty(), "VL80s-606 cab: its switches from CabSKLUBEPT.sd");
+        }
+    } else {
+        std::printf("no VL80s-606 here: its cab repaint not checked\n");
+    }
+
     // The lighting mast Osvstozar4 (Kuban): its ladder is 30 boxes of 1 m
     // one on another (ESD_Complex), a platform 4 x 2 m at the top (30.3).
     // RTS climbs a box whose top is 0.4..0.9 Height above his feet

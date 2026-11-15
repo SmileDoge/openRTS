@@ -271,6 +271,12 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
         std::cout << "net: " << applied << " of " << waiting_heads_.size() << " signal heads set" << std::endl;
         waiting_heads_.clear();
     }
+    // Our couplings and cuts of the last step first, while the trains taken
+    // in are still known by their place here: move_trains forgets a remote
+    // train that is no longer on the track, and the coupling went unsent
+    // (the server and its consoles kept the other train and dropped every
+    // position of ours with the cars taken in; testers 2026-11-15).
+    send_couplings(trains);
     if (connection_) {
         for (const auto& package : connection_->receive()) {
             ++received_[package.id];
@@ -278,7 +284,6 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
         }
     }
     move_trains(network, trains, t);
-    send_couplings(trains);
     if (!paused_) send_own(trains, t);
     // What our electric trains drew, to the dispatchers (0x4649, every 2 s
     // window, as rts1.exe 0x5B6030).
@@ -594,7 +599,7 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         if (auto state = net::decode_console_state(body)) console_state_ = std::move(*state);
         return;
     case P(net::Package::couple):
-        if (const auto c = net::decode_couple(body)) coupled(*c, trains);
+        if (const auto c = net::decode_couple(body)) coupled(*c, network, trains);
         return;
     case P(net::Package::uncouple):
         if (const auto u = net::decode_uncouple(body)) uncoupled(*u, trains);
@@ -678,7 +683,11 @@ void NetSession::send_couplings(TrainView& trains) {
     }
     for (const auto& c : trains.take_couplings()) {
         const auto [a, own] = owned_by(c.survivor);
-        if (!own) continue;
+        if (!own) {
+            std::cout << "net: a coupling here (train " << c.survivor << " took " << c.absorbed
+                      << " in) is none of our trains': not sent" << std::endl;
+            continue;
+        }
         // The other train: ours, another client's or the server's.
         std::uint32_t b = 0;
         net::SnapshotTrain other;
@@ -695,7 +704,11 @@ void NetSession::send_couplings(TrainView& trains) {
                 break;
             }
         }
-        if (b == 0) continue;
+        if (b == 0) {
+            std::cout << "net: our train " << a << " took in a train the server does not know (" << c.absorbed
+                      << " here): not sent" << std::endl;
+            continue;
+        }
         // The ends: 1 the front, 0 the rear (A's cars, then B's, is A's rear
         // to B's front).
         net::Coupling out;
@@ -710,7 +723,53 @@ void NetSession::send_couplings(TrainView& trains) {
     }
 }
 
-void NetSession::coupled(const net::Coupling& c, TrainView& trains) {
+void NetSession::coupled(const net::Coupling& c, simulation::TrackNetwork& network, TrainView& trains) {
+    if (const auto mine = owned_.find(c.a); mine != owned_.end()) {
+        // Our train took B in on the server: its own coupling, a LOOSE train
+        // run into ours (rts_server.exe 0x40DCDC -> 0x4501E0, sent to
+        // everyone, us too). B's cars join ours here as there, or the server
+        // drops every position of ours from now on (the car count).
+        auto& own = mine->second;
+        std::vector<net::TrainCar> b_cars;
+        std::uint64_t b_train = 0;
+        if (const auto b = remotes_.find(c.b); b != remotes_.end()) {
+            b_cars = b->second.record.cars;
+            b_train = b->second.train;
+            remotes_.erase(b);
+        } else if (const auto other = owned_.find(c.b); other != owned_.end() && other != mine) {
+            b_cars = other->second.record.cars;
+            b_train = other->second.train;
+            owned_.erase(other);
+        } else {
+            std::cout << "net: the server put train " << c.b << " into our train " << c.a << ": no such train here" << std::endl;
+            return;
+        }
+        const bool at_front = c.end_a == 1;
+        const bool other_front = c.end_b == 1;
+        auto* ours = own.train != 0 ? trains.find_train(own.train) : nullptr;
+        auto* theirs = b_train != 0 ? trains.find_train(b_train) : nullptr;
+        double gap = 0.0;
+        if (ours && theirs) {
+            const auto end_a = at_front ? ours->front_end() : ours->rear_end();
+            const auto end_b = other_front ? theirs->front_end() : theirs->rear_end();
+            if (end_a && end_b) {
+                const simulation::TrackLocation from{end_a->node(), end_a->offset(), at_front ? end_a->forward() : !end_a->forward()};
+                const simulation::TrackLocation to{end_b->node(), end_b->offset(), other_front ? !end_b->forward() : end_b->forward()};
+                if (const auto d = net::track_distance(network, from, to, 50.0)) gap = (std::max)(0.0, *d);
+            }
+        }
+        if (ours && theirs && trains.join_trains(own.train, b_train, at_front, other_front, gap)) {
+            own.record.cars = net::coupled_cars(own.record.cars, b_cars, c.end_a, c.end_b);
+            own.announced = false;
+            std::cout << "net: the server put train " << c.b << " into our train " << c.a << ": " << own.record.cars.size()
+                      << " cars" << std::endl;
+        } else {
+            if (b_train != 0) trains.remove_train(b_train);
+            std::cout << "net: the server put train " << c.b << " into our train " << c.a
+                      << ", which cannot take it in here: the server will drop our positions" << std::endl;
+        }
+        return;
+    }
     // Another client coupled: A took B in. A's next position has every car.
     const auto a = remotes_.find(c.a);
     if (a == remotes_.end()) return;
@@ -738,6 +797,39 @@ void NetSession::coupled(const net::Coupling& c, TrainView& trains) {
 }
 
 void NetSession::uncoupled(const net::Uncoupling& u, TrainView& trains) {
+    if (const auto mine = owned_.find(u.train); mine != owned_.end()) {
+        // Someone else cut our train (another player at its joint): the
+        // server made the part train u.part, ours as the train was
+        // (0x44FE34 -> 0x456958). The same cut here, or our positions carry
+        // cars the server no longer gives the train and are dropped.
+        auto& own = mine->second;
+        if (own.train == 0 || u.car == 0 || u.car >= own.record.cars.size()) return;
+        const auto halves = trains.cut_train(own.train, u.car);
+        if (!halves) {
+            std::cout << "net: train " << u.train << " of ours cut before car " << u.car << " on the server: not here" << std::endl;
+            return;
+        }
+        auto [stay, part_cars] = net::cut_cars(own.record.cars, u.car, u.side);
+        // Side 0: the part is the cars from the cut on (the rear half);
+        // side 1 the cars before it.
+        const auto [front_train, rear_train] = *halves;
+        Owned part;
+        part.record = own.record;
+        part.record.id = u.part;
+        part.record.cars = std::move(part_cars);
+        part.record.pos.reset();
+        part.train = u.side == 0 ? rear_train : front_train;
+        own.record.cars = std::move(stay);
+        own.train = u.side == 0 ? front_train : rear_train;
+        own.announced = false;
+        trains.share_sound(part.train, true);
+        trains.set_boardable(part.train, true);
+        trains.set_category(part.train, category_of(part.record.subtype));
+        std::cout << "net: our train " << u.train << " cut before car " << u.car << " on the server: the part is train "
+                  << u.part << " (" << part.record.cars.size() << " cars), ours too" << std::endl;
+        owned_[u.part] = std::move(part);
+        return;
+    }
     // Another client cut its train: the part is a train of its own (kind and
     // owner as the train's, 0x44FE34); both come back with their positions.
     const auto t = remotes_.find(u.train);

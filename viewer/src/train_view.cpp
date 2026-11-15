@@ -1546,7 +1546,21 @@ bool TrainView::cab_keys_live() const noexcept {
     return engineer_.inside() && engineer_car_ == cab_car_;
 }
 
-void TrainView::split(const std::size_t unit_index, const std::size_t index, const bool close_cocks, const bool keep_open) {
+std::optional<std::pair<std::uint64_t, std::uint64_t>> TrainView::cut_train(const std::uint64_t id, const std::size_t index) {
+    auto* unit = find_unit(id);
+    if (!unit || index == 0 || index >= unit->cars.size()) return std::nullopt;
+    const auto unit_index = static_cast<std::size_t>(unit - units_.data());
+    const auto before = units_.size();
+    // The train keeps the cars before the cut (Train::uncouple gives the
+    // rear part a train of its own); the cocks at the joint closed.
+    split(unit_index, index, true, true, false);
+    if (units_.size() != before + 1) return std::nullopt;
+    const auto rear = units_[unit_index].train->id() == id ? units_.back().train->id() : units_[unit_index].train->id();
+    return std::pair{id, rear};
+}
+
+void TrainView::split(const std::size_t unit_index, const std::size_t index, const bool close_cocks, const bool keep_open,
+                      const bool announce) {
     if (unit_index >= units_.size()) return;
     auto& unit = units_[unit_index];
     const auto keys = driven_keys();
@@ -1571,8 +1585,10 @@ void TrainView::split(const std::size_t unit_index, const std::size_t index, con
     // The driver goes with the master engine.
     const bool swapped = unit_index == 0 && master && *master >= index;
     if (swapped) std::swap(unit, cut);
-    cuts_.push_back({from, unit.train->id(), cut.train->id(), index, swapped});
-    if (cuts_.size() > 16) cuts_.erase(cuts_.begin());
+    if (announce) {
+        cuts_.push_back({from, unit.train->id(), cut.train->id(), index, swapped});
+        if (cuts_.size() > 16) cuts_.erase(cuts_.begin());
+    }
     for (std::size_t i = 0; i < cut.train->cars().size(); ++i) cut.train->set_controller(i, nullptr);
     cut.name = unit.name + " (cut)";
     cut.freight = unit.freight;
@@ -1592,8 +1608,21 @@ void TrainView::split(const std::size_t unit_index, const std::size_t index, con
     }
 }
 
+bool TrainView::join_trains(const std::uint64_t survivor, const std::uint64_t absorbed, const bool at_front,
+                            const bool other_front, const double gap) {
+    auto* s = find_unit(survivor);
+    auto* a = find_unit(absorbed);
+    if (!s || !a || s == a || !s->train->placed() || !a->train->placed()) return false;
+    s->train->set_asleep(false);
+    if (!s->train->couple(*a->train, at_front, other_front, (std::max)(gap, 0.0))) return false;
+    const auto merged = merge_units(s->train.get(), a->train.get(), at_front, at_front == other_front, false);
+    if (merged >= units_.size()) return false;
+    message_ = trf("coupled: %zu cars; the hoses and cocks by hand (the car menu at the joint)", units_[merged].cars.size());
+    return true;
+}
+
 std::size_t TrainView::merge_units(const simulation::Train* survivor_train, const simulation::Train* absorbed_train,
-                                   const bool absorbed_ahead, const bool absorbed_turned) {
+                                   const bool absorbed_ahead, const bool absorbed_turned, const bool announce) {
     const auto keys = driven_keys();
     const auto find = [&](const simulation::Train* train) {
         return static_cast<std::size_t>(std::find_if(units_.begin(), units_.end(), [&](const Unit& unit) {
@@ -1603,8 +1632,10 @@ std::size_t TrainView::merge_units(const simulation::Train* survivor_train, cons
     const auto s = find(survivor_train);
     const auto a = find(absorbed_train);
     if (s >= units_.size() || a >= units_.size() || s == a) return units_.size();
-    couplings_.push_back({units_[s].train->id(), units_[a].train->id(), absorbed_ahead, absorbed_turned});
-    if (couplings_.size() > 16) couplings_.erase(couplings_.begin());
+    if (announce) {
+        couplings_.push_back({units_[s].train->id(), units_[a].train->id(), absorbed_ahead, absorbed_turned});
+        if (couplings_.size() > 16) couplings_.erase(couplings_.begin());
+    }
     // A scenario's trains (CoupleCars): the survivor keeps its id, or takes
     // the absorbed one's when it has none.
     if (units_[s].activity_id && units_[a].activity_id) activity_couplings_.emplace_back(*units_[s].activity_id, *units_[a].activity_id);
@@ -4344,6 +4375,22 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
             message_ = trf("uncoupled before car %zu (end cocks closed)", static_cast<std::size_t>(index + 1));
         }
     }
+    if (pending_couple_ && !units_.empty()) {
+        const bool front = *std::exchange(pending_couple_, std::nullopt);
+        const auto& cars = units_.front().cars;
+        const bool done = !cars.empty() && couple_standing(0, front ? 0 : cars.size() - 1, front);
+        std::cout << "test: couple the driven train at its " << (front ? "front" : "rear") << ": "
+                  << (done ? std::to_string(units_.front().cars.size()) + " cars" : message_) << std::endl;
+        for (const auto& unit : units_) {
+            const auto f = unit.train->front_end();
+            const auto r = unit.train->rear_end();
+            std::cout << "test:   " << unit.name << (unit.remote ? " (remote)" : "") << ": " << unit.cars.size() << " cars, front "
+                      << (f ? std::to_string(f->node()) + " " + std::to_string(f->offset()) + (f->forward() ? " along" : " against") : "-")
+                      << ", rear "
+                      << (r ? std::to_string(r->node()) + " " + std::to_string(r->offset()) + (r->forward() ? " along" : " against") : "-")
+                      << std::endl;
+        }
+    }
     // On foot the DLL's cab keys are on at once (the arrows walk him).
     if (legacy_) legacy_->set_on_foot(engineer_.active());
     const bool keys_live = cab_keys_live();
@@ -5001,7 +5048,7 @@ void TrainView::pass_to_next_car(const std::size_t door) {
     CabView* to = nullptr;
     if (j == cab_car_) {
         to = cab_.get();
-    } else if (const auto& car = unit.cars[j]; car.definition && car.definition->engine) {
+    } else if (const auto& car = unit.cars[j]; car.definition && CabView::has_room(*car.definition)) {
         created = take_cab(j);
         to = created.get();
     }
@@ -5102,7 +5149,7 @@ std::unique_ptr<CabView> TrainView::take_cab(const std::size_t car) {
         board_cabs_.erase(it);
         return cab;
     }
-    return CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, true));
+    return CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, c.definition->engine.has_value()));
 }
 
 void TrainView::stand_at_cab_door(const std::size_t car) {
@@ -5209,10 +5256,11 @@ CabView* TrainView::car_cab(const std::size_t u, const std::size_t i, const bool
     if (u == 0 && i == engineer_car_ && visit_cab_) return visit_cab_.get();
     const auto& car = units_[u].cars[i];
     if (const auto it = board_cabs_.find(car.key); it != board_cabs_.end() && it->second) return it->second.get();
-    // A Cabin: a driving cab or a motor car's salon (the ED9M's).
-    const auto* engine = car.definition && car.definition->engine ? &*car.definition->engine : nullptr;
-    if (!create || !engine || engine->cabin.empty()) return nullptr;
-    auto cab = CabView::create(*vfs_, *car.definition, formats::wagon_path(car.folder, car.definition->name, true));
+    // A Cabin: a driving cab or a motor car's salon (the ED9M's); a
+    // passenger car's Interior: its salon.
+    if (!create || !car.definition || !CabView::has_room(*car.definition)) return nullptr;
+    auto cab = CabView::create(*vfs_, *car.definition,
+                               formats::wagon_path(car.folder, car.definition->name, car.definition->engine.has_value()));
     if (!cab) return nullptr;
     auto* raw = cab.get();
     board_cabs_[car.key] = std::move(cab);
@@ -6225,46 +6273,53 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
         }
         break;
     }
-    case 16: { // Couple to the train standing at this free end (0x469ED8)
+    case 16: // Couple to the train standing at this free end (0x469ED8)
         if (both) break;
-        const bool front = menu.front;
-        std::vector<simulation::Train*> trains;
-        for (const auto& u : units_) trains.push_back(u.train.get());
-        const auto contact = simulation::end_contact(train, front, trains, 5.0);
-        if (!contact) break;
-        auto* other = contact->other;
-        if (std::abs(train.speed()) > 0.01 || std::abs(other->speed()) > 0.01) {
-            message_ = tr("both trains must stand to couple");
-            break;
-        }
-        // The couplers at the joint are no longer held open.
-        train.set_car_flags(menu.car, Flags::coupler_open, front ? simulation::coupler_open_front : simulation::coupler_open_rear, false);
-        const auto other_car = contact->other_front ? std::size_t{0} : other->cars().size() - 1;
-        other->set_car_flags(other_car, Flags::coupler_open,
-                             contact->other_front ? simulation::coupler_open_front : simulation::coupler_open_rear, false);
-        // The earlier unit survives (the driven train keeps its place).
-        const auto other_unit = static_cast<std::size_t>(
-            std::find_if(units_.begin(), units_.end(), [&](const Unit& u) { return u.train.get() == other; }) - units_.begin());
-        if (other_unit < units_.size() && units_[other_unit].remote && units_[unit_index].remote) break;
-        // Ours takes another client's train in (RTS: its own train always
-        // takes the other); else the earlier unit survives.
-        const bool keep_this = other_unit < units_.size() && units_[other_unit].remote ? true
-                             : units_[unit_index].remote                             ? false
-                                                                                     : unit_index < other_unit;
-        auto* survivor = keep_this ? &train : other;
-        auto* absorbed = keep_this ? other : &train;
-        const bool survivor_front = keep_this ? front : contact->other_front;
-        const bool absorbed_front = keep_this ? contact->other_front : front;
-        if (survivor->couple(*absorbed, survivor_front, absorbed_front, (std::max)(contact->gap, 0.0))) {
-            const auto merged = merge_units(survivor, absorbed, survivor_front, absorbed_front == survivor_front);
-            if (merged < units_.size()) {
-                message_ = trf("coupled: %zu cars; the hoses and cocks by hand (the car menu at the joint)", units_[merged].cars.size());
-            }
-        }
+        couple_standing(unit_index, menu.car, menu.front);
         break;
-    }
     default: break;
     }
+}
+
+bool TrainView::couple_standing(const std::size_t unit_index, const std::size_t car, const bool front) {
+    if (unit_index >= units_.size()) return false;
+    using Flags = simulation::Train::CarFlags;
+    auto& train = *units_[unit_index].train;
+    std::vector<simulation::Train*> trains;
+    for (const auto& u : units_) trains.push_back(u.train.get());
+    const auto contact = simulation::end_contact(train, front, trains, 5.0);
+    if (!contact) {
+        message_ = tr("no train stands at this end");
+        return false;
+    }
+    auto* other = contact->other;
+    if (std::abs(train.speed()) > 0.01 || std::abs(other->speed()) > 0.01) {
+        message_ = tr("both trains must stand to couple");
+        return false;
+    }
+    // The couplers at the joint are no longer held open.
+    train.set_car_flags(car, Flags::coupler_open, front ? simulation::coupler_open_front : simulation::coupler_open_rear, false);
+    const auto other_car = contact->other_front ? std::size_t{0} : other->cars().size() - 1;
+    other->set_car_flags(other_car, Flags::coupler_open,
+                         contact->other_front ? simulation::coupler_open_front : simulation::coupler_open_rear, false);
+    // The earlier unit survives (the driven train keeps its place).
+    const auto other_unit = static_cast<std::size_t>(
+        std::find_if(units_.begin(), units_.end(), [&](const Unit& u) { return u.train.get() == other; }) - units_.begin());
+    if (other_unit < units_.size() && units_[other_unit].remote && units_[unit_index].remote) return false;
+    // Ours takes another client's train in (RTS: its own train always
+    // takes the other); else the earlier unit survives.
+    const bool keep_this = other_unit < units_.size() && units_[other_unit].remote ? true
+                         : units_[unit_index].remote                             ? false
+                                                                                 : unit_index < other_unit;
+    auto* survivor = keep_this ? &train : other;
+    auto* absorbed = keep_this ? other : &train;
+    const bool survivor_front = keep_this ? front : contact->other_front;
+    const bool absorbed_front = keep_this ? contact->other_front : front;
+    if (!survivor->couple(*absorbed, survivor_front, absorbed_front, (std::max)(contact->gap, 0.0))) return false;
+    const auto merged = merge_units(survivor, absorbed, survivor_front, absorbed_front == survivor_front);
+    if (merged >= units_.size()) return false;
+    message_ = trf("coupled: %zu cars; the hoses and cocks by hand (the car menu at the joint)", units_[merged].cars.size());
+    return true;
 }
 
 void TrainView::draw_car_menu() {
@@ -7685,15 +7740,18 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
         const auto& state = states[i];
         const auto here = pose(unit, i);
         const auto position = (here.front + here.rear) * 0.5f;
-        const float direction = state.flipped ? -1.0f : 1.0f;
         // Other trains are heard by their outside groups (RTS 0x44AB7C).
         audio::SoundInputs inputs{.camera = u == 0 ? sound_camera() : audio::SoundCamera::external, .position = position};
         // Every car's sound as heard from the engineer's room (0x44AB7C).
         inputs.gain = outside_gain_;
-        inputs[formats::SoundVariable::speed] = state.velocity * direction;
+        // RTS 0x44AB7C: the speed without its sign (fabs of the wagon's), the
+        // acceleration along the way it moves (speeding up positive). Signed,
+        // a turned section or running back gave a speed below 0: the 3СЛ2М's
+        // Speed_Inc_Past 1.38 loop never started there (testers 2026-11-15).
+        inputs[formats::SoundVariable::speed] = std::abs(state.velocity);
         inputs[formats::SoundVariable::distance] = glm::distance(camera.eye(), position);
         inputs[formats::SoundVariable::distance_travelled] = static_cast<float>(std::abs(state.travelled));
-        inputs[formats::SoundVariable::acceleration] = state.acceleration * direction;
+        inputs[formats::SoundVariable::acceleration] = state.velocity >= 0.0f ? state.acceleration : -state.acceleration;
         // RTS (0x4F6DA9): the curve's radius without its sign, the straight
         // (0) as 10 000 000 m. The VL80's curve squeal starts below 680 m and
         // stops above it, its volume 0 beyond 870 m: with 0 on the straight
@@ -8075,7 +8133,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                     const auto& changes = inside->description().texture_changes;
                     for (std::size_t k = 0; k < changes.size() && k < out->tex_changes.size(); ++k) {
                         if (out->tex_changes[k] == 0 || changes[k].file.empty()) continue;
-                        const auto path = inside->shape().parent().resolve(changes[k].file);
+                        const auto path = inside->shape_file().parent().resolve(changes[k].file);
                         if (!path) continue;
                         auto& texture = cab_textures_[path->key()];
                         if (!texture) texture = renderer.texture(*vfs_, *path);
@@ -8129,8 +8187,10 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                     }
                 }
                 // RTS 0x438D50: the exterior comes back with the head out of
-                // the window; DoNotHideExtInCabin keeps it in the cab.
-                const bool keep = car.definition->engine && car.definition->engine->keep_exterior_in_cab != 0;
+                // the window; DoNotHideExtInCabin keeps it in the cab,
+                // DoNotHideExtInSalon in a passenger car's salon.
+                const bool keep = inside->salon() ? car.definition->keep_exterior_in_salon != 0
+                                                  : car.definition->engine && car.definition->engine->keep_exterior_in_cab != 0;
                 if (!engineer_.heading_out() && !keep) {
                     // openRTS: through an open passage door his car's half
                     // of the gangway (its outside between its end wall and

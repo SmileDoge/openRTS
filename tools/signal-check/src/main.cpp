@@ -269,7 +269,7 @@ int main(int argc, char** argv) {
                 for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                 return s;
             };
-            std::size_t shapes_checked = 0, lights_checked = 0, lights_behind = 0;
+            std::size_t shapes_checked = 0, lights_checked = 0, lights_behind = 0, lights_turned = 0;
             for (const auto& shape : config.shapes) {
                 std::optional<core::VirtualPath> file;
                 for (const auto* folder : {"SHAPES", "../../GLOBAL/SHAPES"}) {
@@ -321,7 +321,15 @@ int main(int argc, char** argv) {
                         const auto key = type->name + "/" + std::to_string(light.index) + "/" + std::to_string(x) + "/" + std::to_string(y);
                         if (!done.insert(key).second) continue;
                         ++lights_checked;
-                        const float toward = z < 0.0f ? -1.0f : 1.0f;
+                        // Every lens faces -Z in shape space (RTS's one-sided
+                        // light quad, SignalView::lens_front); the viewer took
+                        // the side of z until 2026-11-15, which turned these.
+                        if (z > 0.0f) {
+                            ++lights_turned;
+                            std::printf("  %-40s %-28s light %u (%s): z %+.3f, faced +Z before\n", shape.file.c_str(), type->name.c_str(),
+                                        light.index, light.colour.c_str(), z);
+                        }
+                        const float toward = -1.0f;
                         float front = z;
                         for (std::size_t t = 0; t + 2 < triangles.size(); t += 3) {
                             const auto& a = triangles[t];
@@ -345,7 +353,8 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            std::printf("%zu shapes, %zu lights, %zu behind a surface\n", shapes_checked, lights_checked, lights_behind);
+            std::printf("%zu shapes, %zu lights, %zu behind a surface, %zu with z above 0 (faced +Z before)\n", shapes_checked,
+                        lights_checked, lights_behind, lights_turned);
             return 0;
         } else if (arg == "--rays" && i + 3 < argc) {
             // Debug: rays along +Z through a shape at "x:y,x:y,..." (shape

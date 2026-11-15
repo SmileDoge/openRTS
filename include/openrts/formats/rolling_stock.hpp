@@ -305,6 +305,17 @@ struct WagonDefinition {
     BrakeEquipment brakes;
     std::string sound;          // RTSExteriorSound, else Sound
     std::string cab_sound;      // RTSCabinSound
+    // A passenger car's salon (RTS 0x44247C, loaded by 0x515434): Wagon
+    // Interior ( InteriorFile ( "x.s" flipped ) SoundInt ( "x.sms" )
+    // DoNotHideExtInSalon ( n ) ). The file is relative to the car's folder
+    // (a .repaint too), turned round in the car when flipped & 3 is not 0;
+    // the sound is relative to its SOUND folder; DoNotHideExtInSalon & 3 not
+    // 0 keeps the exterior drawn while the player is inside. RTS reads the
+    // last two only with an InteriorFile.
+    std::string interior;
+    std::uint8_t interior_flipped{};
+    std::string interior_sound;
+    std::uint8_t keep_exterior_in_salon{};
     // Lights ( n Light ( ... ) ) and RTSLights: by LightID (RTS 0x44247C,
     // 0x50036C); an entry that was never given has no states.
     std::vector<LightDefinition> lights;

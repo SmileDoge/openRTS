@@ -2363,6 +2363,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     std::size_t capture_menu_next = 0; // of capture_menu_more: the next to open and pick
     bool capture_menu_open = false;
     bool capture_uncoupled = false;
+    bool capture_coupled = false;
     int capture_inspect_step = 0; // --capture-inspect: 1 opened, 2 clicked
     bool capture_driven = false;
     bool capture_taped = false;
@@ -2597,6 +2598,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (capture && options.capture_uncouple && !capture_uncoupled && glfwGetTime() - capture_start >= options.capture_at * 0.6) {
             scene.uncouple_driven(*options.capture_uncouple);
             capture_uncoupled = true;
+        }
+        if (capture && options.capture_couple && !capture_coupled && glfwGetTime() - capture_start >= options.capture_at * 0.6) {
+            scene.couple_driven(*options.capture_couple);
+            capture_coupled = true;
         }
         if (capture && options.capture_passage && !capture_passed && glfwGetTime() - capture_start >= options.capture_at * 0.3) {
             scene.stand_at_passage(*options.capture_passage);

@@ -526,6 +526,9 @@ public:
     // --capture-uncouple: the Train window's "uncouple here" before car `index`
     // of the driven train (done in update(), the train standing).
     void uncouple_driven(std::size_t index) { pending_uncouple_ = index; }
+    // The driven train coupled to the train standing at its front (or rear)
+    // end, as the car menu's "Couple" (a test, --capture-couple).
+    void couple_driven(bool front) { pending_couple_ = front; }
     // --capture-drive: train `index` (in the trains' order) becomes the driven one.
     void drive_unit(std::size_t index);
     // A test (--capture-board): the engineer on the ground at a cab door of
@@ -600,7 +603,8 @@ private:
     void step_trains();
     // Uncouples unit `unit` behind car `index - 1`; the driver stays with
     // the part he drives from (the cab's car, else the master engine).
-    void split(std::size_t unit, std::size_t index, bool close_cocks, bool keep_open);
+    // `announce` false: a cut the server made, not told to it again.
+    void split(std::size_t unit, std::size_t index, bool close_cocks, bool keep_open, bool announce = true);
     // The cars the cab and the engineer are in (Car::key), taken before the
     // driven train's cars change.
     struct DrivenKeys {
@@ -1205,6 +1209,7 @@ private:
     std::string pending_load_;
     bool pending_path_ = false;
     std::optional<std::size_t> pending_uncouple_; // uncouple the driven train before this car
+    std::optional<bool> pending_couple_;          // couple the driven train at its front (true) or rear
     // The open car menu: a coupling (the joint at a car's end) or a bogie.
     struct CarMenu {
         bool coupling = true;
@@ -1229,10 +1234,28 @@ private:
     void update_car_menu(const glm::vec3& eye);
     void do_car_menu_item(const CarMenu& menu, int id);
     void draw_car_menu();
+public:
+    // The server joined train `absorbed` to `survivor` (rts_server.exe's own
+    // coupling, 0x4501E0): at `survivor`'s front or rear, `absorbed`'s front
+    // or rear, `gap` metres between them. Not reported to the server again
+    // (take_couplings). False when either train is not here or not placed.
+    bool join_trains(std::uint64_t survivor, std::uint64_t absorbed, bool at_front, bool other_front, double gap);
+    // The server cut train `id` before car `index` (another player at its
+    // joint, 0x460E): the same cut here, not told to it again. The ids of
+    // the part with the cars before the cut (the train's own) and of the
+    // rest; none when the train is not here.
+    [[nodiscard]] std::optional<std::pair<std::uint64_t, std::uint64_t>> cut_train(std::uint64_t id, std::size_t index);
+
+private:
+    // The car menu's "Couple" (0x469ED8): unit `unit_index` coupled at its
+    // end car `car` (front or rear) to the train standing within 5 m there,
+    // both standing; ours takes another client's in. False with message_.
+    bool couple_standing(std::size_t unit_index, std::size_t car, bool front);
     // Joins `absorbed`'s unit into `survivor`'s after Train::couple (as
     // resolve_contacts reports it); returns the survivor's index.
+    // `announce` false: the server's own coupling, not told to it again.
     std::size_t merge_units(const simulation::Train* survivor, const simulation::Train* absorbed, bool absorbed_ahead,
-                            bool absorbed_turned);
+                            bool absorbed_turned, bool announce = true);
     std::string message_;
 };
 

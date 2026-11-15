@@ -270,6 +270,9 @@ RTS's menu at a coupling or a bogie (`docs/reverse/car-menu.md`), in
   for each next item (uncouple, hold the coupler open, couple: `1 15 16`).
   `--capture-uncouple <index>` uncouples the driven train before that car,
   as the Train window's button does (the engineer may sit in the cab);
+  `--capture-couple front|rear` couples it at that end to the train
+  standing within 5 m there, as the car menu's "Couple" (and prints where
+  every train's ends are);
   `--capture-drive <index>` then makes train `index` (from 0, in the trains'
   order) the driven one, as the Train window's "drive" does.
 

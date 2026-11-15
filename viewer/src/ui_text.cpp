@@ -928,6 +928,7 @@ const std::unordered_map<std::string_view, const char*>& russian() {
          "Мод добавлен в openrts.ini: он подключится со следующего запуска (здесь изменение уже действует)."},
         {"uncoupled before car %zu", "расцеплено перед вагоном %zu"},
         {"both trains must stand to couple", "для сцепки оба состава должны стоять"},
+        {"no train stands at this end", "у этого конца нет состава"},
         {"Cut %zu: %zu cars, %.1f km/h, pipe %.2f atm%s", "Отцеп %zu: вагонов %zu, %.1f км/ч, ТМ %.2f атм%s"},
         {"Push gently into a cut with automatic couplers to couple; open couplers only push.", "Мягко подайте на отцеп с автосцепками, чтобы сцепиться; открытые сцепки только толкают."},
         {"Camera follows (V)", "Камера следует (V)"},

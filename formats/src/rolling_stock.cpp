@@ -562,6 +562,15 @@ WagonDefinition parse_wagon(const std::string_view bytes) {
     read_lights(t, *block, wagon.lights);
     wagon.sound = values(t, "rtsexteriorsound", *block).token();
     if (wagon.sound.empty()) wagon.sound = values(t, "sound", *block).token();
+    if (const auto interior = rts_find(t, "interior", *block)) {
+        if (auto file = values(t, "interiorfile", *interior); file.found()) {
+            wagon.interior = file.token();
+            wagon.interior_flipped = static_cast<std::uint8_t>(rts_atoi(file.here()) & 3);
+            wagon.interior_sound = values(t, "soundint", *interior).token();
+            if (auto keep = values(t, "donothideextinsalon", *interior); keep.found())
+                wagon.keep_exterior_in_salon = static_cast<std::uint8_t>(read_uint(keep) & 3u);
+        }
+    }
 
     if (const auto engine = rts_find(t, "engine")) {
         wagon.engine = read_engine(t, *engine);

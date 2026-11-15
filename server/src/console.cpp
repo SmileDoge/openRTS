@@ -45,6 +45,8 @@ constexpr const char* help_text =
     "  assign <train> <nick>          give a player a train (they drive it)\n"
     "  unassign <train>               take it back (it stands, STATIC)\n"
     "  remove <train>                 delete a train\n"
+    "  couple <train> <train>         the second joins the first where they stand end to end\n"
+    "  cut <train> <car>              cut before car <car> (from 0): its own train, the same owner\n"
     "  say <nick|*> <text>            a message to a player or everyone\n"
     "  pause | resume                 stop or start the game\n"
     "  time [HH:MM[:SS]]              show or set the time of day\n"
@@ -356,6 +358,18 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         }
         if (command == "unassign") return done(server.unassign(*train, error), "train " + std::to_string(*train) + " is nobody's");
         return done(server.remove_train(*train, error), "train " + std::to_string(*train) + " removed");
+    }
+    if (command == "couple") {
+        const auto a = number_of(arg(1));
+        const auto b = number_of(arg(2));
+        if (!a || !b) return "usage: couple <train> <train>";
+        return done(server.couple(*a, *b, error), "train " + std::to_string(*a) + " took in train " + std::to_string(*b));
+    }
+    if (command == "cut") {
+        const auto train = number_of(arg(1));
+        const auto car = number_of(arg(2));
+        if (!train || !car) return "usage: cut <train> <car>";
+        return done(server.cut(*train, *car, error), "train " + std::to_string(*train) + " cut before car " + std::to_string(*car));
     }
     if (command == "say") {
         if (words.size() < 3) return "usage: say <nick|*> <text>";

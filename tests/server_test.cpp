@@ -403,6 +403,30 @@ void game() {
         check(trains.size() == 2 && trains[0].cars == 2 && trains[1].cars == 2 && trains[1].owner == "Alice", "two trains of two cars, both Alice's");
     }
 
+    // The server's own cut and coupling (the dispatcher's, as rts_server.exe
+    // couples a LOOSE train run into another, 0x4501E0): to everyone, the
+    // owner too, who must do the same with the train or its positions are
+    // dropped (the car count).
+    {
+        check(game.cut(1, 1, error), "the server cuts train 1 before car 1: " + error);
+        got = take(rec, 1);
+        check(ids(got) == std::vector<std::uint16_t>{P(Package::uncouple), P(Package::train_pos)}, "Alice, the owner, gets the server's cut");
+        const auto cut = got.empty() ? std::nullopt : net::decode_uncouple(got[0].body);
+        check(cut && cut->train == 1 && cut->car == 1 && cut->side == 0 && cut->part != 0, "the cut names her train and the part");
+        check(ids(take(rec, 2)) == std::vector<std::uint16_t>{P(Package::uncouple), P(Package::train_pos)}, "Bob gets it too");
+        const auto part = cut ? cut->part : 0u;
+        check(game.trains().size() == 3, "three trains");
+        check(game.couple(1, part, error), "the server joins them again: " + error);
+        got = take(rec, 1);
+        check(ids(got) == std::vector<std::uint16_t>{P(Package::couple), P(Package::train_pos)}, "Alice, the owner of A, gets the server's coupling");
+        const auto c = got.empty() ? std::nullopt : net::decode_couple(got[0].body);
+        check(c && c->a == 1 && c->b == part, "the coupling names her train and the part");
+        take(rec, 2);
+        const auto trains = game.trains();
+        check(trains.size() == 2 && trains[0].cars == 2, "two trains of two cars again");
+        check(!game.couple(1, 1, error) && !game.cut(1, 0, error), "no coupling with itself, no cut before car 0");
+    }
+
     // Pause: announced, then nothing goes out; time every 300 s.
     game.set_paused(true);
     check(ids(take(rec, 1)) == std::vector<std::uint16_t>{P(Package::pause)} && ids(take(rec, 2)) == std::vector<std::uint16_t>{P(Package::pause)},

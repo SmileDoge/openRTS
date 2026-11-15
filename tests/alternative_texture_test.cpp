@@ -177,6 +177,21 @@ void test_content(const std::filesystem::path& root) {
         const auto asset = renderer::load_model_asset(vfs, *chs2, {});
         check(asset.ok() && !asset.textures.empty(), "TSR ChS2's body (a repaint in its .rtseng) loads: " + asset.error);
     }
+    // A replacement written with a leading slash, "/CabBCHEPT/CAB1KE_BCH.ace"
+    // (RTS 0x4BCCFC: the repaint's folder followed by the text): the
+    // VL80s-606's cab.
+    if (const auto vl80 = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_VL80-Alias/CABS/CabBCHEPT.repaint"); vl80 && vfs.exists(*vl80)) {
+        const auto asset = renderer::load_model_asset(vfs, *vl80, {});
+        check(asset.ok(), "CabBCHEPT.repaint loads: " + asset.error);
+        std::string replaced;
+        for (const auto& texture : asset.textures) {
+            if (core::fold_case(texture.image_name) == "cab1ke.ace" && texture.source_path) replaced = texture.source_path->key();
+        }
+        check(replaced == "trains/trainset/mdd_vl80-alias/cabs/cabbchept/cab1ke_bch.ace",
+              "TextureReplace with a leading slash: a folder beside the repaint: " + replaced);
+    } else {
+        std::cout << "VL80s cab repaint: not installed, skipped" << std::endl;
+    }
 
     // A transfer (rts1.exe 0x4B4E60): Kuban's UiD 325, 80 x 80 m of
     // zemlya5.ace, BlendATexDiff with the mip bias -3, its texture from

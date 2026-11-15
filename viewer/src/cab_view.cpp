@@ -286,11 +286,22 @@ bool CabCollision::crosses(const glm::vec3& a, const glm::vec3& b, const std::ve
     return hit;
 }
 
-std::unique_ptr<CabView> CabView::create(const core::Vfs& vfs, const formats::WagonDefinition& engine,
+bool CabView::has_room(const formats::WagonDefinition& car) {
+    return (car.engine && !car.engine->cabin.empty()) || !car.interior.empty();
+}
+
+std::unique_ptr<CabView> CabView::create(const core::Vfs& vfs, const formats::WagonDefinition& car,
                                          const core::VirtualPath& file) {
-    if (!engine.engine || engine.engine->cabin.empty()) return nullptr;
-    auto shape = file.parent().resolve(engine.engine->cabin);
-    if (!shape) return nullptr;
+    // An engine's Cabin (its cab, or a motor car's salon), else a passenger
+    // car's Interior (RTS 0x51CD88 / 0x515434).
+    const bool cabin = car.engine && !car.engine->cabin.empty();
+    if (!cabin && car.interior.empty()) return nullptr;
+    const auto drawn = file.parent().resolve(cabin ? car.engine->cabin : car.interior);
+    if (!drawn) return nullptr;
+    // An RTS .repaint names the shape and its .sd; the model is drawn from
+    // the repaint (its TextureReplace images, renderer::load_model_asset, as
+    // RTS's 0x4AAAE0 for cabs and salons too), read from its shape.
+    auto shape = drawn;
     auto sd = shape->with_extension(".sd");
     if (core::fold_case(std::string(shape->extension())) == ".repaint") {
         const auto text = vfs.read(*shape);
@@ -308,11 +319,15 @@ std::unique_ptr<CabView> CabView::create(const core::Vfs& vfs, const formats::Wa
     const auto bytes = vfs.read(sd);
     if (!bytes || !vfs.exists(*shape)) return nullptr;
     auto view = std::make_unique<CabView>();
-    view->shape_ = *shape;
-    view->turned_ = engine.engine->cabin_param == 1;
+    view->shape_ = *drawn;
+    view->shape_file_ = *shape;
+    view->salon_ = !cabin;
+    // Cabin ( "x.s" 1 ) turns the cab round (0x44247C: == 1); InteriorFile's
+    // Flipped any value but 0 (0x515434: & 0xC).
+    view->turned_ = cabin ? car.engine->cabin_param == 1 : car.interior_flipped != 0;
     view->cab_ = formats::parse_cab_description(*bytes);
     if (!view->cab_.ok()) return nullptr;
-    view->screens_ = std::make_unique<CabScreens>(view->cab_, view->shape_);
+    view->screens_ = std::make_unique<CabScreens>(view->cab_, view->shape_file_);
     if (view->screens_->empty()) view->screens_.reset();
     if (!view->cab_.chairs.empty()) {
         const auto& seat = view->cab_.chairs.front().seated;

@@ -299,6 +299,20 @@ interiors described by an RTS extension of the shape description:
   cabin") which is triggered from the train update when the player enters.
 - `0x515434`: passenger-car interior (`Interior ( InteriorFile ... )`):
   areas, doors, windows, seats, `togglelights`, `unlockdoors`.
+  **CONFIRMED** (`0x44247C`): the Wagon block's `Interior ( InteriorFile (
+  "x.s" flipped ) SoundInt ( "x.sms" ) DoNotHideExtInSalon ( n ) )`. The
+  file is relative to the car's folder (+372 of the wagon type), `flipped &
+  3` goes to bits 2-3 of +32 and turns the salon round (`0x515434` negates
+  X and Z of what it reads), `SoundInt` is relative to the car's `SOUND`
+  folder (+368), `DoNotHideExtInSalon & 3` bits 6-7 (the cab's
+  `DoNotHideExtInCabin` is bits 4-5, `Cabin`'s second value bits 0-1);
+  the last two are read only with an `InteriorFile`. Going to the next car
+  (`0x4313FC`) RTS takes the car's cab when it has a door to that end, else
+  its salon. 160 cars of the new build have one (`.rtswag`), 11 through a
+  `.repaint`; no engine does. openRTS (2026-11-15): `WagonDefinition`
+  `interior`, `interior_flipped`, `interior_sound`,
+  `keep_exterior_in_salon`; the salon is the car's room (`CabView`, as an
+  engine's `Cabin`). Its `SoundInt` is not played yet.
 - `0x4F0BC8`: `esd_interior_parts` of the exterior model: exterior doors,
   ladders, ledges, pantograph parts, wheels, bogies, `wagon_front/back`.
 

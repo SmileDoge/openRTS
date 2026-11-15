@@ -58,6 +58,8 @@ Russian path names and messages work.
 | `signals [text]` | the signals' names and how many stand under each |
 | `junction <node> [branch] [lock\|unlock]` | thrown (refused while occupied or held by a route) or locked against players |
 | `signal <item> <aspect\|auto>` | the heads of a TDB signal item held at an aspect, or back to their scripts |
+| `couple <train> <train>` | the second joins the first where they stand end to end (the nearest ends within 50 m), as `rts_server.exe` couples a LOOSE train run into another: `0x460F` to everyone, the first's owner too |
+| `cut <train> <car>` | cut before car `car` (from 0): the cars from it on are a train of their own, kind and owner as the train's; `0x460E` to everyone, the owner too |
 | `kick <nick>`, `admit on\|off`, `quit` | |
 
 ## The dispatcher's console (in the game) — hidden for now

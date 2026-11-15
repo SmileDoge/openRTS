@@ -288,7 +288,14 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
             };
             const auto swap = std::find_if(repaint.textures.begin(), repaint.textures.end(),
                                            [&](const auto& pair) { return file_name(pair.first) == file_name(name); });
-            const auto& wanted = swap != repaint.textures.end() ? swap->second : name;
+            // RTS 0x4BCCFC: the new file is the repaint's folder followed by
+            // the text, so a leading slash ("/CabBCHEPT/CAB1KE_BCH.ace", the
+            // VL80s and 2TE10 cabs) is still a folder beside the repaint.
+            std::string wanted = name;
+            if (swap != repaint.textures.end()) {
+                const auto start = swap->second.find_first_not_of("/\\");
+                if (start != std::string::npos) wanted = swap->second.substr(start);
+            }
             auto candidates = swap != repaint.textures.end() ? shape_texture_candidates(shape, wanted, texture_directories)
                                                              : std::vector<core::VirtualPath>{};
             for (auto& candidate : shape_texture_candidates(geometry, wanted, texture_directories)) {

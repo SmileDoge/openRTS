@@ -334,8 +334,8 @@ A name says what the package is about; the rows below hold the details.
 
 | Id | Direction | Payload | What happens |
 |---|---|---|---|
-| `0x460E` | player → server → others | train id, car index, the player's local id for the new part `u32`, side `u8` | an uncoupling (below). Side 0: the part is the cars from the index on (the live cut: 19 cars cut at 1 left 1 and made an 18-car train); PROBABLE 1: the cars before it |
-| `0x460F` | player → server → others | train A, train B, ends `u8`, `u8` | a coupling: `multiplayer.md`, "Coupling in play". PROBABLE: an end is 0 the rear, 1 the front: both live couplings (ends 0, 1) gave A's cars then B's in their order (the car spacings of the merged `0x4603`) |
+| `0x460E` | player → server → others | train id, car index, the player's local id for the new part `u32`, side `u8` | an uncoupling (below). Side 0: the part is the cars from the index on (the live cut: 19 cars cut at 1 left 1 and made an 18-car train); 1: the cars before it (CONFIRMED, `0x44FE34`: side 0 makes the part of cars `car`..n−1, else 0..`car`−1; car 0 or past the last is ignored) |
+| `0x460F` | player → server → others | train A, train B, ends `u8`, `u8` | a coupling: `multiplayer.md`, "Coupling in play". PROBABLE: an end is 0 the rear, 1 the front: both live couplings (ends 0, 1) gave A's cars then B's in their order (the car spacings of the merged `0x4603`). CONFIRMED (`0x4501E0`): end_a 1 puts B's cars ahead of A's, 0 behind; B is turned when the two ends are equal. No check of where the trains stand. From a player it goes to everyone but the sender; the server's own (a LOOSE train run into a PLAYER or TRAFFIC one, `0x40DCDC`) to everyone, A's owner too |
 | `0x461B` | player → server → others | train, car, train 2, car 2, action `u32` | a car menu action between two cars. Every client carries it out; actions 1 and 16 are not |
 | `0x4640` | player → server → others | train, car, `u32`, action `u32`, `u32` | a car menu action on one car. Clients carry out `action \| 0x1000000`; the server keeps flags `0x100` / `0x200` on its car and the last `u32` (`+84`) |
 

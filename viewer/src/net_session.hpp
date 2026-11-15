@@ -120,7 +120,8 @@ private:
     void assigned(const net::TrainAssignUpdate& a, simulation::TrackNetwork& network, TrainView& trains, double now);
     // Couplings and cuts: ours to the server, the others' from it.
     void send_couplings(TrainView& trains);
-    void coupled(const net::Coupling& c, TrainView& trains);
+    // Another client's coupling, or the server's own into one of ours.
+    void coupled(const net::Coupling& c, simulation::TrackNetwork& network, TrainView& trains);
     void uncoupled(const net::Uncoupling& u, TrainView& trains);
     void renamed(std::uint32_t from, std::uint32_t to);
     std::uint32_t next_local_ = 100000; // ids of parts we cut off, until the server's (rts1.exe: 100244, ...)

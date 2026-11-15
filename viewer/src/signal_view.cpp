@@ -366,8 +366,13 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
                 const auto axis_y = glm::normalize(glm::vec3{frame[1]});
                 // RTS keeps GL_CULL_FACE on (enabled in create_game_window,
                 // default back faces): the one-sided quad is not drawn from
-                // behind the lens plane. The lens faces the side of its z.
-                const auto facing = glm::normalize(glm::vec3{frame[2]}) * (z < 0.0f ? -1.0f : 1.0f);
+                // behind the lens plane. Its winding is fixed, so every lens
+                // faces -Z in shape space wherever its Position lies. openRTS
+                // took the side of z until 2026-11-15: a Position a little
+                // behind the head's origin (Lviv's mast heads at -0.03, the
+                // DZHD's t_head_yg_rx, 560 lights) was lit from behind only
+                // (testers 2026-11-15; openrts-signal-check --lenses).
+                const auto facing = -glm::normalize(glm::vec3{frame[2]});
                 if (glm::dot(eye - world, facing) <= 0.0f) continue;
                 const auto packed = static_cast<std::uint32_t>(colour->argb[1]) | (static_cast<std::uint32_t>(colour->argb[2]) << 8)
                     | (static_cast<std::uint32_t>(colour->argb[3]) << 16) | (static_cast<std::uint32_t>(colour->argb[0]) << 24);
@@ -386,8 +391,8 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
 }
 
 float SignalView::lens_front(const core::VirtualPath& shape, const std::string& type, const std::uint32_t light, const glm::vec3& at) {
-    // The lens faces the side of its z (-Z for RTS's lights, see above).
-    const float toward = at.z < 0.0f ? -1.0f : 1.0f;
+    // Every lens faces -Z (RTS's one-sided quad, see above).
+    constexpr float toward = -1.0f;
     const auto key = std::tuple{shape.key(), type, light};
     if (const auto it = lens_fronts_.find(key); it != lens_fronts_.end()) return it->second;
 

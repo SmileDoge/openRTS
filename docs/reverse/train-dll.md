@@ -819,6 +819,14 @@ without compliance and RTS refuses it too.
   TextureReplace ( "old.ace" "new.ace" ) ... )`. Without resolving it the
   cab and the car's exterior details are missing, and DLLs that reach for
   them crash (`mdd_EP1`, `mdd_2ES4k`, `mdd_EP2D` in the probe).
+  - **CONFIRMED** RTS loads every model through one function, `0x4AAAE0`:
+    the exterior, the cab (`0x51CD88`) and a passenger car's salon
+    (`0x515434`) all get the repaint's images. The new file of a
+    `TextureReplace` is the repaint's folder followed by the text
+    (`0x4BCCFC`), so `"/CabBCHEPT/CAB1KE_BCH.ace"` (a leading slash: the
+    VL80s and 2TE10 cabs, 23 repaints) is the folder `CabBCHEPT` beside the
+    repaint. openRTS (2026-11-15): the same for the cab and the salon
+    (drawn from the repaint, their surfaces read from its `Shape`).
 - **Free animations and doors** of the car shape's `.sd`
   (`ESD_Exterior_Details`): DLLs find them by name (`FindAnim("KONTR")` in
   the draisine) or index (`Door(4)` of every car in the EP2D) and use the

@@ -69,6 +69,27 @@ Tr_Worldfile (
 		QDirection ( 0 1 0 0 )
 		VDbId ( 1 )
 	)
+	Forest (
+		UiD ( 253 )
+		TreeTexture ( watr400.ace )
+		ScaleRange ( 0.8 1.2 )
+		Area ( 125 125 )
+		Population ( 500 )
+		TreeSize ( 5 6.5 )
+		StaticFlags ( 00000000 )
+		Position ( 959.232 269.452 64.5871 )
+		QDirection ( -0.999672 0 0 1 )
+		VDbId ( 4294967295 )
+	)
+	Transfer (
+		UiD ( 15 )
+		FileName ( zemlya5.ace )
+		Width ( 80 )
+		Height ( 80 )
+		Position ( 1 2 3 )
+		QDirection ( 0.1 0.6 0.2 0.6 )
+		VDbId ( 1 )
+	)
 )
 )";
     const auto tile = parse_world_tile(text, "w-006153+014889.w");
@@ -90,6 +111,18 @@ Tr_Worldfile (
     check(spawner && near(spawner->rotation[1], -0.7071f), "the car spawner keeps its QDirection");
     const auto* house = find(14);
     check(house && near(house->rotation[1], 1.0f), "a static object keeps its QDirection");
+    // rts1.exe 0x41B6D0: a forest and a transfer keep only their turn round
+    // the vertical (QDirection's x and z set to 0). Lviv's forest 253, as
+    // TSRE wrote it, stands level; the rest made a unit quaternion.
+    const auto* lviv = find(253);
+    check(lviv && near(lviv->rotation[0], 0.0f) && near(lviv->rotation[1], 0.0f) && near(lviv->rotation[2], 0.0f)
+              && near(lviv->rotation[3], 1.0f),
+          "a forest tilted round x (Lviv's 253) stands level");
+    const auto* transfer = find(15);
+    check(transfer && near(transfer->rotation[0], 0.0f) && near(transfer->rotation[2], 0.0f) && near(transfer->rotation[1], 0.7071068f)
+              && near(transfer->rotation[3], 0.7071068f),
+          "a transfer keeps its turn round the vertical alone, a unit quaternion");
+    check(forest && near(forest->rotation[1], 0.5f) && near(forest->rotation[3], 0.866025f), "a forest's own turn is kept");
     if (failures == 0) std::cout << "world parse: all checks passed\n";
     return failures == 0 ? 0 : 1;
 }

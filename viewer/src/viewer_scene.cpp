@@ -1227,6 +1227,9 @@ public:
     void uncouple_driven(const std::size_t index) override {
         if (train_) train_->uncouple_driven(index);
     }
+    void couple_driven(const bool front) override {
+        if (train_) train_->couple_driven(front);
+    }
     void drive_unit(const std::size_t index) override {
         if (train_) train_->drive_unit(index);
     }

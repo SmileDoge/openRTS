@@ -105,6 +105,7 @@ struct GameServer::Train {
     std::uint32_t number{};
     double placed_at = -1.0;                // when record.pos last came (server clock)
     double stood_at = -1.0;                 // when it last came to a stand
+    bool count_warned = false;              // a position with another car count noted
 };
 
 struct GameServer::Impl {
@@ -655,7 +656,19 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         if (!update) return;
         auto* t = impl.train(update->train);
         // Taken for a PLAYER train from any sender, as rts_server.exe does.
-        if (!t || t->record.kind != kind_player || update->pos.cars.size() != t->record.cars.size()) return;
+        if (!t || t->record.kind != kind_player) return;
+        // A position with another car count is dropped (rts_server.exe
+        // 0x40FB90: the speed is kept, the place and the relay are not), and
+        // the train stands still on every map: say so once.
+        if (update->pos.cars.size() != t->record.cars.size()) {
+            if (!t->count_warned) {
+                t->count_warned = true;
+                impl.note("train " + std::to_string(update->train) + ": a position with " + std::to_string(update->pos.cars.size()) +
+                          " cars from " + utf8(user->nick) + ", the server has " + std::to_string(t->record.cars.size()) + ": dropped");
+            }
+            return;
+        }
+        t->count_warned = false;
         t->record.pos = update->pos;
         t->record.forced = false;
         if (std::abs(update->pos.speed) > 0.01f) {
@@ -721,96 +734,14 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
     case P(Package::couple): {
         const auto c = net::decode_couple(body);
         if (!c) return;
-        auto* a = impl.train(c->a);
-        auto* b = impl.train(c->b);
-        if (!a || !b || a == b) return; // the second of two clients' couplings names a train gone
-        const auto old_b = c->b;
-        const auto b_owner = b->owner;
-        // The taken-in player is told first that the train is no longer theirs.
-        if (b->record.kind == kind_player && b_owner && b_owner != a->owner) {
-            if (const auto it = impl.users.find(b_owner); it != impl.users.end()) {
-                send_to(it->second, assign_package(old_b, false, b->number, b->record.subtype, b->record.kind));
-            }
-        }
-        a->record.cars = net::coupled_cars(a->record.cars, b->record.cars, c->end_a, c->end_b);
-        if (a->sim && b->sim && a->sim->placed() && b->sim->placed()) {
-            const bool at_front = c->end_a == 1;
-            const bool other_front = c->end_b == 1;
-            double gap = 0.0;
-            const auto end_a = at_front ? a->sim->front_end() : a->sim->rear_end();
-            const auto end_b = other_front ? b->sim->front_end() : b->sim->rear_end();
-            if (end_a && end_b) {
-                const simulation::TrackLocation from{end_a->node(), end_a->offset(), at_front ? end_a->forward() : !end_a->forward()};
-                const simulation::TrackLocation to{end_b->node(), end_b->offset(), other_front ? !end_b->forward() : end_b->forward()};
-                if (const auto d = net::track_distance(impl.network, from, to, 50.0)) gap = std::max(0.0, *d);
-            }
-            a->sim->couple(*b->sim, at_front, other_front, gap);
-            if (const auto pos = net::position_of(*a->sim)) a->record.pos = *pos;
-        }
-        impl.trains.erase(old_b);
-        b = nullptr;
-        net::WireWriter merged;
-        merged.u32(c->a);
-        merged.u32(old_b);
-        merged.u8(c->end_a);
-        merged.u8(c->end_b);
-        to_playing(framed(P(Package::couple), merged.data()), user->id);
-        if (b_owner && b_owner != a->owner) {
-            if (const auto it = impl.users.find(b_owner); it != impl.users.end()) {
-                send_to(it->second, package(P(Package::train_id), [&](net::WireWriter& w) {
-                    w.u32(old_b);
-                    w.u32(c->a);
-                }));
-            }
-        }
-        if (a->record.pos && a->record.pos->cars.size() == a->record.cars.size()) to_playing(pos_package(a->record), user->id);
-        impl.note("train " + std::to_string(c->a) + " took in train " + std::to_string(old_b) + " (" + utf8(user->nick) + ")");
+        // The second of two clients' couplings names a train gone.
+        couple_trains(c->a, c->b, c->end_a, c->end_b, user->id);
         return;
     }
     case P(Package::uncouple): {
         const auto u = net::decode_uncouple(body);
         if (!u) return;
-        auto* t = impl.train(u->train);
-        if (!t || u->car == 0 || u->car >= t->record.cars.size()) return;
-        auto [stay, part_cars] = net::cut_cars(t->record.cars, u->car, u->side);
-        // The part keeps the kind, the owner, the number and the state of
-        // its train (rts_server.exe 0x44FE34 -> 0x456958).
-        Train part;
-        part.record = t->record;
-        part.record.id = impl.free_train_id();
-        part.record.cars = std::move(part_cars);
-        part.record.names.reset();
-        part.record.cargo.clear();
-        part.record.derail.reset();
-        part.owner = t->owner;
-        part.number = t->number;
-        part.placed_at = impl.now;
-        t->record.cars = std::move(stay);
-        if (t->sim && t->sim->placed()) {
-            auto rear = t->sim->uncouple(u->car, true, true);
-            // Side 0: the part is the cars from `car` on, the rear ones.
-            if (u->side == 0) {
-                part.sim = std::move(rear);
-            } else {
-                part.sim = std::move(t->sim);
-                t->sim = std::move(rear);
-            }
-            if (t->sim) {
-                if (const auto pos = net::position_of(*t->sim)) t->record.pos = *pos;
-            }
-            if (part.sim) {
-                if (const auto pos = net::position_of(*part.sim)) part.record.pos = *pos;
-            }
-        }
-        const auto new_id = part.record.id;
-        impl.trains.emplace(new_id, std::move(part));
-        send_to(*user, package(P(Package::train_id), [&](net::WireWriter& w) {
-            w.u32(u->part);
-            w.u32(new_id);
-        }));
-        to_playing(framed(P(Package::uncouple), net::encode_uncouple({.train = u->train, .car = u->car, .part = new_id, .side = u->side})), user->id);
-        if (const auto* p = impl.train(new_id); p && p->record.pos) to_playing(pos_package(p->record), user->id);
-        impl.note("train " + std::to_string(u->train) + " cut at car " + std::to_string(u->car) + ": part " + std::to_string(new_id) + " (" + utf8(user->nick) + ")");
+        cut_train(u->train, u->car, u->side, u->part, user->id);
         return;
     }
     // A player's train changes the server keeps for its consoles alone
@@ -1091,6 +1022,170 @@ bool GameServer::remove_train(const std::uint32_t train, std::string& error) {
         if (user.playing && user.connection) transport_.send(user.connection, bytes);
     }
     return true;
+}
+
+bool GameServer::couple_trains(const std::uint32_t a_id, const std::uint32_t b_id, const std::uint8_t end_a, const std::uint8_t end_b,
+                               const std::uint32_t sender) {
+    auto& impl = *impl_;
+    auto* a = impl.train(a_id);
+    auto* b = impl.train(b_id);
+    if (!a || !b || a == b) return false;
+    const auto to_playing = [&](const net::Bytes& bytes, const std::uint32_t except) {
+        for (auto& [uid, user] : impl.users) {
+            if (uid != except && user.playing && user.connection) transport_.send(user.connection, bytes);
+        }
+    };
+    const auto b_owner = b->owner;
+    // The taken-in player is told first that the train is no longer theirs.
+    if (b->record.kind == kind_player && b_owner && b_owner != a->owner) {
+        if (const auto it = impl.users.find(b_owner); it != impl.users.end() && it->second.connection) {
+            transport_.send(it->second.connection, assign_package(b_id, false, b->number, b->record.subtype, b->record.kind));
+        }
+    }
+    a->record.cars = net::coupled_cars(a->record.cars, b->record.cars, end_a, end_b);
+    if (a->sim && b->sim && a->sim->placed() && b->sim->placed()) {
+        const bool at_front = end_a == 1;
+        const bool other_front = end_b == 1;
+        double gap = 0.0;
+        const auto ea = at_front ? a->sim->front_end() : a->sim->rear_end();
+        const auto eb = other_front ? b->sim->front_end() : b->sim->rear_end();
+        if (ea && eb) {
+            const simulation::TrackLocation from{ea->node(), ea->offset(), at_front ? ea->forward() : !ea->forward()};
+            const simulation::TrackLocation to{eb->node(), eb->offset(), other_front ? !eb->forward() : eb->forward()};
+            if (const auto d = net::track_distance(impl.network, from, to, 50.0)) gap = std::max(0.0, *d);
+        }
+        a->sim->couple(*b->sim, at_front, other_front, gap);
+        if (const auto pos = net::position_of(*a->sim)) a->record.pos = *pos;
+    }
+    a->count_warned = false;
+    impl.trains.erase(b_id);
+    b = nullptr;
+    net::WireWriter merged;
+    merged.u32(a_id);
+    merged.u32(b_id);
+    merged.u8(end_a);
+    merged.u8(end_b);
+    // To everyone but the player who coupled; the server's own coupling
+    // (sender 0) to everyone, the owner of A too (rts_server.exe 0x4501E0).
+    to_playing(framed(P(Package::couple), merged.data()), sender);
+    if (b_owner && b_owner != a->owner) {
+        if (const auto it = impl.users.find(b_owner); it != impl.users.end() && it->second.connection) {
+            transport_.send(it->second.connection, package(P(Package::train_id), [&](net::WireWriter& w) {
+                                w.u32(b_id);
+                                w.u32(a_id);
+                            }));
+        }
+    }
+    if (a->record.pos && a->record.pos->cars.size() == a->record.cars.size()) to_playing(pos_package(a->record), sender);
+    const auto who = sender ? impl.users.find(sender) : impl.users.end();
+    impl.note("train " + std::to_string(a_id) + " took in train " + std::to_string(b_id) + " (" +
+              (who != impl.users.end() ? utf8(who->second.nick) : std::string("the server")) + ")");
+    return true;
+}
+
+std::optional<std::uint32_t> GameServer::cut_train(const std::uint32_t train, const std::uint32_t car, const std::uint8_t side,
+                                                   const std::uint32_t local_part, const std::uint32_t sender) {
+    auto& impl = *impl_;
+    auto* t = impl.train(train);
+    if (!t || car == 0 || car >= t->record.cars.size()) return std::nullopt;
+    const auto to_playing = [&](const net::Bytes& bytes, const std::uint32_t except) {
+        for (auto& [uid, user] : impl.users) {
+            if (uid != except && user.playing && user.connection) transport_.send(user.connection, bytes);
+        }
+    };
+    auto [stay, part_cars] = net::cut_cars(t->record.cars, car, side);
+    // The part keeps the kind, the owner, the number and the state of its
+    // train (rts_server.exe 0x44FE34 -> 0x456958).
+    Train part;
+    part.record = t->record;
+    part.record.id = impl.free_train_id();
+    part.record.cars = std::move(part_cars);
+    part.record.names.reset();
+    part.record.cargo.clear();
+    part.record.derail.reset();
+    part.owner = t->owner;
+    part.number = t->number;
+    part.placed_at = impl.now;
+    t->record.cars = std::move(stay);
+    t->count_warned = false;
+    if (t->sim && t->sim->placed()) {
+        auto rear = t->sim->uncouple(car, true, true);
+        // Side 0: the part is the cars from `car` on, the rear ones.
+        if (side == 0) {
+            part.sim = std::move(rear);
+        } else {
+            part.sim = std::move(t->sim);
+            t->sim = std::move(rear);
+        }
+        if (t->sim) {
+            if (const auto pos = net::position_of(*t->sim)) t->record.pos = *pos;
+        }
+        if (part.sim) {
+            if (const auto pos = net::position_of(*part.sim)) part.record.pos = *pos;
+        }
+    }
+    const auto new_id = part.record.id;
+    impl.trains.emplace(new_id, std::move(part));
+    const auto who = sender ? impl.users.find(sender) : impl.users.end();
+    if (who != impl.users.end() && who->second.connection) {
+        transport_.send(who->second.connection, package(P(Package::train_id), [&](net::WireWriter& w) {
+                            w.u32(local_part);
+                            w.u32(new_id);
+                        }));
+    }
+    to_playing(framed(P(Package::uncouple), net::encode_uncouple({.train = train, .car = car, .part = new_id, .side = side})), sender);
+    if (const auto* p = impl.train(new_id); p && p->record.pos) to_playing(pos_package(p->record), sender);
+    impl.note("train " + std::to_string(train) + " cut at car " + std::to_string(car) + ": part " + std::to_string(new_id) + " (" +
+              (who != impl.users.end() ? utf8(who->second.nick) : std::string("the server")) + ")");
+    return new_id;
+}
+
+bool GameServer::couple(const std::uint32_t a_id, const std::uint32_t b_id, std::string& error) {
+    auto& impl = *impl_;
+    auto* a = impl.train(a_id);
+    auto* b = impl.train(b_id);
+    if (!a || !b || a == b) {
+        error = !a ? "no train " + std::to_string(a_id) : !b ? "no train " + std::to_string(b_id) : "a train with itself";
+        return false;
+    }
+    if (!a->sim || !b->sim || !a->sim->placed() || !b->sim->placed()) {
+        error = "both trains must be on the track";
+        return false;
+    }
+    // The ends that face each other, the nearest within 50 m (as the
+    // server's own coupling of a LOOSE train, rts_server.exe 0x40DCDC).
+    std::optional<std::pair<double, std::pair<std::uint8_t, std::uint8_t>>> best;
+    for (const bool at_front : {true, false}) {
+        for (const bool other_front : {true, false}) {
+            const auto ea = at_front ? a->sim->front_end() : a->sim->rear_end();
+            const auto eb = other_front ? b->sim->front_end() : b->sim->rear_end();
+            if (!ea || !eb) continue;
+            const simulation::TrackLocation from{ea->node(), ea->offset(), at_front ? ea->forward() : !ea->forward()};
+            const simulation::TrackLocation to{eb->node(), eb->offset(), other_front ? !eb->forward() : eb->forward()};
+            const auto d = net::track_distance(impl.network, from, to, 50.0);
+            if (d && *d >= -1.0 && (!best || std::abs(*d) < best->first))
+                best = std::pair{std::abs(*d), std::pair{static_cast<std::uint8_t>(at_front ? 1 : 0), static_cast<std::uint8_t>(other_front ? 1 : 0)}};
+        }
+    }
+    if (!best) {
+        error = "the trains do not stand end to end within 50 m";
+        return false;
+    }
+    return couple_trains(a_id, b_id, best->second.first, best->second.second, 0);
+}
+
+bool GameServer::cut(const std::uint32_t train, const std::uint32_t car, std::string& error) {
+    const auto* t = impl_->train(train);
+    if (!t) {
+        error = "no train " + std::to_string(train);
+        return false;
+    }
+    if (car == 0 || car >= t->record.cars.size()) {
+        error = "train " + std::to_string(train) + " has no coupling before car " + std::to_string(car) + " (1.." +
+                std::to_string(t->record.cars.size() - 1) + ")";
+        return false;
+    }
+    return cut_train(train, car, 0, 0, 0).has_value();
 }
 
 bool GameServer::message(const std::string_view nick, const std::u16string_view text, std::string& error) {

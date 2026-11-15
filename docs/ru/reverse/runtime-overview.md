@@ -313,6 +313,20 @@ WinMain
   cabin»), который запускается из обновления поезда, когда игрок входит.
 - `0x515434`: интерьер пассажирского вагона (`Interior ( InteriorFile ... )`):
   области, двери, окна, сиденья, `togglelights`, `unlockdoors`.
+  **CONFIRMED** (`0x44247C`): в блоке Wagon `Interior ( InteriorFile (
+  "x.s" flipped ) SoundInt ( "x.sms" ) DoNotHideExtInSalon ( n ) )`. Файл
+  задаётся относительно папки вагона (+372 типа вагона), `flipped & 3`
+  попадает в биты 2-3 +32 и разворачивает салон (`0x515434` меняет знак X
+  и Z всего, что читает), `SoundInt` — относительно папки `SOUND` вагона
+  (+368), `DoNotHideExtInSalon & 3` — биты 6-7 (у кабины
+  `DoNotHideExtInCabin` — биты 4-5, второе значение `Cabin` — биты 0-1);
+  последние два читаются только вместе с `InteriorFile`. При переходе в
+  соседний вагон (`0x4313FC`) RTS берёт кабину вагона, если у неё есть
+  дверь в эту сторону, иначе его салон. Салон есть у 160 вагонов новой
+  сборки (`.rtswag`), у 11 через `.repaint`; ни у одного локомотива.
+  openRTS (2026-11-15): `WagonDefinition` `interior`, `interior_flipped`,
+  `interior_sound`, `keep_exterior_in_salon`; салон — комната вагона
+  (`CabView`, как `Cabin` локомотива). Его `SoundInt` пока не играет.
 - `0x4F0BC8`: `esd_interior_parts` внешней модели: наружные двери,
   лестницы, площадки, части токоприёмников, колёса, тележки,
   `wagon_front/back`.

@@ -45,6 +45,12 @@ all present. `0x4B3C40` builds it as a shape of its own:
   (Circumference: lit as facing up), UVs 0..1 across and 0.99..0 up, mip bias
   -3, the texture from the season's folder (alternative value 252).
 - **Reach:** one distance level, 1500 m.
+- **Turn:** only round the vertical. The loader sets QDirection's x and z
+  to 0 for a forest (and for a `Transfer`), `0x41B6D0`: CONFIRMED. TSRE
+  wrote Lviv's forest 253 of `w-005211+014832` as `( -0.999672 0 0 1 )`,
+  not even a unit quaternion; openRTS drew it whole until 2026-11-15, its
+  trees sheared up into the sky (testers). Now the reader keeps y and w
+  alone, made a unit again.
 
 openRTS: `renderer/src/forest_shape.cpp`, loaded as `<world>.<UiD>.forest`
 like transfers, so seasons and hot reload work.

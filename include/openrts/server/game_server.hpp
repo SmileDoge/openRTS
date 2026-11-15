@@ -121,6 +121,14 @@ public:
     bool assign(std::uint32_t train, std::string_view nick, std::string& error);
     bool unassign(std::uint32_t train, std::string& error);
     bool remove_train(std::uint32_t train, std::string& error);
+    // The server joins two trains standing end to end (the nearest ends
+    // within 50 m), as rts_server.exe does with a LOOSE train run into
+    // another (0x40DCDC -> 0x4501E0): `0x460F` to everyone, A's owner too.
+    bool couple(std::uint32_t a, std::uint32_t b, std::string& error);
+    // The server cuts a train before car `car` (from 0): the part with the
+    // cars from it on is a train of its own, kind and owner as the train's;
+    // `0x460E` to everyone, its owner too.
+    bool cut(std::uint32_t train, std::uint32_t car, std::string& error);
     // To one player (by nick) or to everyone ("*").
     bool message(std::string_view nick, std::u16string_view text, std::string& error);
     void set_paused(bool paused);
@@ -170,6 +178,12 @@ private:
     struct Impl;
     // 0x4619 to everyone, kept in the train's record for the snapshot.
     void send_route_left(std::uint32_t train, float left, bool rear_first);
+    // A coupling or a cut, a player's (`sender`, not sent back to them) or
+    // the server's own (sender 0: to everyone). The cut's part is named to
+    // its sender as `local_part` (0x4610).
+    bool couple_trains(std::uint32_t a, std::uint32_t b, std::uint8_t end_a, std::uint8_t end_b, std::uint32_t sender);
+    std::optional<std::uint32_t> cut_train(std::uint32_t train, std::uint32_t car, std::uint8_t side, std::uint32_t local_part,
+                                           std::uint32_t sender);
     std::unique_ptr<Impl> impl_;
     Transport& transport_;
     ServerOptions options_;

@@ -616,6 +616,20 @@ the lens plane — CONFIRMED. openRTS skips a light whose lens faces away from
 the camera, which also hides the far-grown quad around a head seen from
 behind.
 
+**Which way a lens faces.** The quad's winding is fixed, so in RTS every
+light faces -Z in shape space (Position turned 180 degrees, see above),
+wherever its Position lies. openRTS took the side of the light's z until
+2026-11-15 (a heuristic, not RTS): a light a little behind its head's
+origin was drawn facing back, lit from behind and hidden from the front.
+Lviv's mast heads (Position z -0.03, testers 2026-11-15) did so; in the new
+build the DZHD's `t_head_yg_rx` (560 lights), Kuban's
+`t_head_wr_speciale` (4) and the digital route pointer `t_head_route_3g`
+of Novokuznetsk, Chernyshevsk and Stepy Priazovya (42 each) too. Every
+one of them has its glass 40–51 mm in front of it towards -Z
+(`openrts-signal-check <root> --lenses <route>` counts and lists them).
+Now -Z always, for the lens search below as well; the lights with z below
+0 (the -new heads of Novokuznetsk among them) are as they were.
+
 ### A light behind its lens's glass (openRTS)
 
 RTS draws the quad at the light's Position, depth tested against the

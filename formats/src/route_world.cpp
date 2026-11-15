@@ -1,6 +1,7 @@
 #include <openrts/formats/route_world.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -255,6 +256,24 @@ constexpr ObjectKeyword object_keywords[] = {
     }
 
     if (!has_position) return std::nullopt;
+    if (kind == WorldObjectKind::forest || kind == WorldObjectKind::transfer) {
+        // rts1.exe 0x41B6D0 keeps only a forest's and a transfer's turn
+        // round the vertical: QDirection's x and z are set to 0. TSRE wrote
+        // Lviv's forest 253 of w-005211+014832 as ( -0.999672 0 0 1 ), not
+        // even a unit quaternion: drawn whole, its trees stood sheared up
+        // into the sky (testers 2026-11-15); RTS draws it level. Made a unit
+        // again so that the turn is not a scale too.
+        auto& q = object.rotation;
+        q[0] = q[2] = 0.0f;
+        const float length = std::sqrt(q[1] * q[1] + q[3] * q[3]);
+        if (length > 1e-6f) {
+            q[1] /= length;
+            q[3] /= length;
+        } else {
+            q[1] = 0.0f;
+            q[3] = 1.0f;
+        }
+    }
     if (kind == WorldObjectKind::forest) {
         object.forest_complete = !object.tree_texture.empty() && object.population > 0 && object.tree_size[0] != 0.0f
             && object.tree_size[1] != 0.0f && (object.scale_range[0] != 0.0f || object.scale_range[1] != 0.0f);

@@ -87,13 +87,25 @@ private:
 
 class CabView {
 public:
-    // nullptr when the engine has no cab shape with a description.
-    [[nodiscard]] static std::unique_ptr<CabView> create(const core::Vfs& vfs, const formats::WagonDefinition& engine,
+    // The car's room: an engine's Cabin (its cab, or a motor car's salon),
+    // else a passenger car's Interior (its salon). nullptr when it has none
+    // with a description. `file` is the car's .eng / .wag.
+    [[nodiscard]] static std::unique_ptr<CabView> create(const core::Vfs& vfs, const formats::WagonDefinition& car,
                                                          const core::VirtualPath& file);
+    // Whether the car names a cab or a salon (create may still fail).
+    [[nodiscard]] static bool has_room(const formats::WagonDefinition& car);
 
+    // The model drawn: the Cabin / InteriorFile as named (an RTS .repaint
+    // with its replaced images, or the shape).
     [[nodiscard]] const core::VirtualPath& shape() const noexcept { return shape_; }
+    // The shape file itself (a .repaint's Shape): its folder holds the
+    // cab's own files (TextureChanges, screens).
+    [[nodiscard]] const core::VirtualPath& shape_file() const noexcept { return shape_file_; }
+    // A passenger car's salon (Interior), not an engine's Cabin.
+    [[nodiscard]] bool salon() const noexcept { return salon_; }
     // Where the cab shape sits in the car: EngExtended Cabin ( "x.s" 1 )
-    // turns it round (the cab at the car's rear end, VL10k section b).
+    // turns it round (the cab at the car's rear end, VL10k section b), a
+    // salon's InteriorFile ( "x.s" 1 ) the same.
     [[nodiscard]] glm::mat4 placement() const noexcept;
     [[nodiscard]] bool turned() const noexcept { return turned_; }
     [[nodiscard]] const formats::CabDescription& description() const noexcept { return cab_; }
@@ -246,6 +258,8 @@ private:
     // Doors that follow another (ParentObject) take its state.
     void follow_doors();
     core::VirtualPath shape_;
+    core::VirtualPath shape_file_;
+    bool salon_ = false;
     bool turned_ = false;
     formats::CabDescription cab_;
     audio::InteriorAcoustics acoustics_;

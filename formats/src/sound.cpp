@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 
 #include "text_tree.hpp"
 
@@ -19,13 +20,26 @@ namespace {
 
 using detail::TextNode;
 
+// A number as rts1.exe reads it (_wtof / _wtoi): what stands at the start of
+// the word, the rest ignored, so the VL80s cab's 3СЛ2М curve "0.2,  0.7"
+// gives 0.2 (as strict text every x of it was lost: the curve stayed at 0
+// and the 3СЛ2М silent, testers 2026-11-15). A word with no number at its
+// start takes the fallback.
+[[nodiscard]] double leading_number(const TextNode& node, const std::size_t index, const double fallback) {
+    if (index >= node.values.size()) return fallback;
+    const auto& text = node.values[index];
+    char* end = nullptr;
+    const double value = std::strtod(text.c_str(), &end);
+    return end && end != text.c_str() ? value : fallback;
+}
+
 [[nodiscard]] std::uint32_t unsigned_value(const TextNode& node, std::size_t index, std::uint32_t fallback = 0) {
-    const auto value = node.number(index, -1.0);
+    const auto value = leading_number(node, index, -1.0);
     return value < 0.0 ? fallback : static_cast<std::uint32_t>(value);
 }
 
 [[nodiscard]] float float_value(const TextNode& node, std::size_t index, float fallback = 0.0f) {
-    return static_cast<float>(node.number(index, fallback));
+    return static_cast<float>(leading_number(node, index, fallback));
 }
 
 // First block named `name` inside `node` (or `node` itself), in document order.

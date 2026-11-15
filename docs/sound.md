@@ -103,6 +103,21 @@ what the DLLs post play in the viewer (the sections below).
   `_inc_past`. Curve controllers: `speedcontrolled`,
   `variable1controlled`…, `distancetravelledcontrolled`,
   `accelerationcontrolled`, `radiuscontrolled`.
+- **CONFIRMED `speed` and `acceleration`** (`0x44AB7C`, every sound object
+  each frame): the speed is the wagon's without its sign (`fabs`, object
+  `+204`); the acceleration has the sign of the way the wagon moves
+  (`+292`: as it is at a speed of 0 or more, turned below), speeding up
+  positive. openRTS gave both with the car's own sign until 2026-11-15: a
+  turned section or running back gave a speed below 0, so `Speed_Inc_Past`
+  loops never started there (the 3СЛ2М's, testers 2026-11-15) and curves
+  read their speed-0 value.
+- **Numbers** (PROBABLE: RTS reads them with `_wtof` / `_wtoi`, as in
+  `0x44247C` and `0x515434`): what stands at the start of the word, so
+  `CurvePoints ( 9 0.0, 0.0 0.2, 0.7 … )` gives 0.2. 113 scripts of the
+  new build write curves so (181 curves: the 3СЛ2М of the VL80s, VL80k and
+  VL82m cabs, `SOUND\GenPassWag14.sms`, …). openRTS read such a word as no
+  number until 2026-11-15: every x of the curve was 0, the curve stayed at
+  its last value (0) and the stream silent.
 - **CONFIRMED `radius`** (`0x4F6DA9`, the car's step): the car's curve
   radius (Wagon `+0xC4`) without its sign, the straight (0) as 10 000 000,
   written to the car's sound objects (`+0x12C`). The VL80's cab curve
@@ -503,9 +518,9 @@ car's sound is made.
   UNKNOWN); default signal and tower sounds from the `.trk`. (Weather and
   level crossing sounds came with `v0.2.0`, `world-objects.md`; the trains'
   sounds with roadmap step 2, above.)
-- **With the cab:** a salon's own sound (`Interior ( SoundInt )`, one
-  installed wagon). Named triggers are done (2026-11-04,
-  `reverse/train-dll.md` §19).
+- **With the cab:** a salon's own sound (`Interior ( SoundInt )`, all
+  160 cars with a salon, `reverse/runtime-overview.md`). Named triggers
+  are done (2026-11-04, `reverse/train-dll.md` §19).
 - **Loudness:** done (2026-11-12): RTS's volume law; the distance fade
   since 2026-11-08 (the CONFIRMED items under "Volume, pitch and
   position").

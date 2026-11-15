@@ -111,6 +111,9 @@ struct WindowOptions {
     // --capture-uncouple <index>: at 0.6 of capture_at the driven train is
     // uncoupled before car `index` (from 0), as the Train window's button does.
     std::optional<std::size_t> capture_uncouple;
+    // --capture-couple front|rear: at 0.6 of capture_at the driven train is
+    // coupled at that end to the train standing there (the car menu's "Couple").
+    std::optional<bool> capture_couple;
     // --capture-drive <index>: at 0.8 of capture_at train `index` (in the
     // trains' order, from 0) becomes the driven one, as the Train window's
     // "drive" does.

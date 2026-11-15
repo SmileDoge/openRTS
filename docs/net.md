@@ -335,8 +335,33 @@ traction, brake shoes and couplers sound in openRTS.
 **Checked offline** with a fake server replaying the saved snapshot: a
 train taken away and frozen, another client's coupling it in (9 cars) and
 cutting it off again (a train of its own), and the part given back to us:
-its car came back with its DLL. Our own couplings and cuts on a live server
-are not checked yet.
+its car came back with its DLL.
+
+**Checked against `openrts-server`** (2026-11-15, it keeps the rules of
+`rts_server.exe` that matter here: a position with another car count is
+dropped, the speed alone kept):
+- **Our coupling with another client's or the server's train was never
+  sent until 2026-11-15.** The remote train taken in leaves the track here,
+  and `move_trains`, which ran first, forgot its id; `send_couplings` then
+  could not name it. The server and its consoles (the ТЧД map) kept the two
+  trains and dropped every position of ours with the cars taken in: the
+  train stood where it had coupled, its speed going on in the console's
+  list (testers: a steam engine "standing at its start" while it ran far
+  away; "coupled at ours, not on the console"; giving the cars to the
+  player first worked, our two trains coupling being named from our own
+  list). Now the couplings go first in the frame. Checked: the VL80s-606
+  coupled to 11 standing coaches, the server's train 13 cars, no position
+  dropped; a cut (part 3 named by `0x4610`).
+- **The server's own coupling into our train** (a LOOSE train run into
+  ours, `rts_server.exe` `0x40DCDC` → `0x4501E0`: `0x460F` to everyone,
+  the owner too) and **a cut of our train by someone else** (`0x460E`
+  naming it) were left; the same car count trouble. Now our train takes the
+  cars in (`TrainView::join_trains`, not sent back) or is cut the same way
+  (`TrainView::cut_train`), the part ours under the server's id. Checked
+  with the server's `couple` and `cut`.
+- A position the server drops for its car count is logged by
+  `openrts-server` once per train (`train N: a position with M cars …:
+  dropped`); `rts_server.exe` says nothing.
 
 **Derailments** (2026-11-07, as `rts1.exe` in the live capture):
 - **Sent.** When a car of an own train comes off, and with each `0x4603`

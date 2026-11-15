@@ -270,6 +270,9 @@ public:
     virtual void choose_car_menu_item(int) {}
     // --capture-uncouple: uncouple the driven train before car `index` (from 0).
     virtual void uncouple_driven(std::size_t) {}
+    // --capture-couple: couple the driven train at its front (or rear) end
+    // to the train standing there.
+    virtual void couple_driven(bool) {}
     // --capture-drive: train `index` (from 0, in order) becomes the driven one.
     virtual void drive_unit(std::size_t) {}
     // --capture-board: the engineer on the ground at a cab door of car
