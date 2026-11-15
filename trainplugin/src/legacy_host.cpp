@@ -2,6 +2,8 @@
 
 #include <openrts/core/profile.hpp>
 
+#include <utility>
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX

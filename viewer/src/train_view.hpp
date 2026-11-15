@@ -129,7 +129,10 @@ public:
         float draw_distance = 0.0f;  // <= 0: no limit
         float shadow_range = 0.0f;
     };
-    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view = {});
+    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library) {
+        submit(renderer, library, SubmitView{});
+    }
+    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view);
     // The engineer into the driving cab's seat (--capture-cab).
     void enter_cab() { set_engineer(true); }
     // Walking is the player's, not a train's (the main panel's "On foot"):
