@@ -36,7 +36,8 @@ public:
     [[nodiscard]] bool standing() const noexcept { return standing_; }
     [[nodiscard]] const std::shared_ptr<DriverHandles>& handles() const noexcept { return handles_; }
 
-    static constexpr float planned_deceleration = 0.35f; // m/s^2 the driver plans its stops with
+    // m/s^2 the driver plans its stops with when the composition says nothing.
+    static constexpr float planned_deceleration = 0.35f;
     static constexpr double stop_margin = 8.0;           // m short of a stop point
 
 private:
@@ -51,6 +52,12 @@ private:
 // speed where a car's m v^2 / R reaches its DerailRailForce (the derailment
 // rule, docs/train.md). Infinity when no car has a DerailRailForce.
 [[nodiscard]] double curve_speed(const Train& train, double radius);
+
+// The service deceleration (m/s^2) the driver plans the stops and the braking
+// curves of `train` with: a part of the brake force the cars' brake systems
+// give against their mass, less for a long train whose brakes come on from
+// the head backwards. The class's planned_deceleration when it says nothing.
+[[nodiscard]] float planned_deceleration_for(const Train& train);
 
 // The tightest curve of the leg between two leg distances.
 struct CurveAhead {

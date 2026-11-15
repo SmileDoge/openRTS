@@ -23,15 +23,16 @@ void AutoDriver::step(const double dt, const Train& train, const DriveOrders& or
 
     // The speed it may run at: the limit, the next limit as a braking curve,
     // the stop point as a braking curve, a little under all of them.
+    const float decel = planned_deceleration_for(train);
     float limit = orders.speed_limit > 0.0f ? orders.speed_limit : 22.0f;
     if (orders.next_limit >= 0.0f) {
         const double room = (std::max)(0.0, orders.next_limit_distance - 30.0);
-        const double curve = std::sqrt(static_cast<double>(orders.next_limit) * orders.next_limit + 2.0 * planned_deceleration * room);
+        const double curve = std::sqrt(static_cast<double>(orders.next_limit) * orders.next_limit + 2.0 * decel * room);
         limit = (std::min)(limit, static_cast<float>(curve));
     }
     double room = orders.stop_distance - stop_margin;
     if (std::isfinite(orders.stop_distance)) {
-        limit = (std::min)(limit, static_cast<float>(room > 0.0 ? std::sqrt(2.0 * planned_deceleration * room) : 0.0));
+        limit = (std::min)(limit, static_cast<float>(room > 0.0 ? std::sqrt(2.0 * decel * room) : 0.0));
     }
     if (orders.hold) limit = 0.0f;
     target_ = limit > 1.5f ? limit - 1.0f : (limit > 0.3f ? limit * 0.5f : 0.0f);
@@ -83,6 +84,25 @@ void AutoDriver::step(const double dt, const Train& train, const DriveOrders& or
             h.brake = Brake::running;
         }
     }
+}
+
+float planned_deceleration_for(const Train& train) {
+    double force = 0.0;
+    double mass = 0.0;
+    for (const auto& car : train.cars()) {
+        const auto* definition = car.definition;
+        if (!definition || definition->mass <= 0.0f) continue;
+        mass += definition->mass;
+        force += definition->brakes.realistic_brake_force > 0.0f ? definition->brakes.realistic_brake_force
+                                                                 : definition->brakes.max_brake_force;
+    }
+    if (mass <= 0.0 || force <= 0.0) return AutoDriver::planned_deceleration;
+    // A service application, not the emergency one; a long train's brakes
+    // come on from the head backwards, so its average is lower.
+    double decel = 0.6 * force / mass;
+    const double length = train.length();
+    if (length > 0.0) decel /= 1.0 + length / 1200.0;
+    return std::clamp(static_cast<float>(decel), 0.15f, 0.7f);
 }
 
 double curve_speed(const Train& train, const double radius) {
@@ -169,7 +189,8 @@ DriveOrders path_orders(const Train& train, Dispatcher& dispatcher, const Signal
         }
     }
     const double speed = std::abs(train.speed());
-    const double look = speed * speed / (2.0 * AutoDriver::planned_deceleration) + 300.0;
+    const double decel = planned_deceleration_for(train);
+    const double look = speed * speed / (2.0 * decel) + 300.0;
     if (const auto curve = tightest_curve(*train.network(), leg, progress->head, progress->head + look)) {
         const auto v = static_cast<float>(curve_speed(train, curve->radius));
         if (std::isfinite(v)) ahead.push_back({v, (std::max)(0.0, curve->distance - progress->head)});
@@ -177,7 +198,7 @@ DriveOrders path_orders(const Train& train, Dispatcher& dispatcher, const Signal
     double best = std::numeric_limits<double>::infinity();
     for (const auto& candidate : ahead) {
         const double curve = std::sqrt(static_cast<double>(candidate.speed) * candidate.speed
-                                       + 2.0 * AutoDriver::planned_deceleration * (std::max)(0.0, candidate.distance - 30.0));
+                                       + 2.0 * decel * (std::max)(0.0, candidate.distance - 30.0));
         if (curve < best) {
             best = curve;
             orders.next_limit = candidate.speed;
