@@ -1101,6 +1101,42 @@ Train ( TrainCfg ( "c"
     }
 }
 
+// The СА-3 draft gear: the preloaded block takes a push at once, the
+// absorbing apparatus gives way behind it, and the train stays whole.
+void test_sa3_couplers(const Stock& stock) {
+    simulation::TrainSettings settings;
+    settings.coupler_model = simulation::CouplerModel::sa3;
+    Run run(stock, settings, 1500.0);
+    check(run.train.coupler_model() == simulation::CouplerModel::sa3, "sa3: the model is set");
+    run.run(6.0);
+    float worst = 0.0f;
+    bool finite = true;
+    for (const auto& car : run.train.cars()) {
+        if (!std::isfinite(car.coupler_force)) finite = false;
+        worst = (std::max)(worst, std::abs(car.coupler_force));
+    }
+    check(finite, "sa3: coupler forces stay finite");
+    check(worst < 2.0e7f, "sa3: the apparatus holds the train");
+    check(std::isfinite(run.train.speed()), "sa3: the train keeps its speed");
+}
+
+// The draft gear's curve: the preloaded block at once, the absorbing
+// apparatus behind it, the apparatus yielding past its travel.
+void test_sa3_curve() {
+    using simulation::sa3_draft_gear_force;
+    check(sa3_draft_gear_force(0.0, 0.0) == 0.0, "sa3: nothing at the play");
+    const double seated = sa3_draft_gear_force(0.001, 0.0);
+    check(near(seated, 5.0e3 + 5.0e8 * 0.001, 1.0), "sa3: the preloaded block takes the first");
+    const double block_end = sa3_draft_gear_force(0.011, 0.0);
+    check(near(block_end, 5.0e3 + 5.0e8 * 0.011, 1.0), "sa3: the block gives way at its stroke");
+    const double apparatus_end = sa3_draft_gear_force(0.22, 0.0);
+    check(near(apparatus_end, block_end + 2.0e7 * (0.22 - 0.011), 1.0), "sa3: the apparatus takes the rest");
+    const double past = sa3_draft_gear_force(0.42, 0.0);
+    check(near(past, apparatus_end + 0.1 * 2.0e7 * 0.2, 1.0), "sa3: past its travel it yields");
+    const double moving = sa3_draft_gear_force(0.22, 0.5);
+    check(moving > apparatus_end * 1.5 && moving < apparatus_end * 1.7, "sa3: the friction resists the movement");
+}
+
 int main() {
     test_units();
     const Stock stock;
@@ -1121,6 +1157,8 @@ int main() {
     test_ept();
     test_realistic_air(stock);
     test_distributor_stability(stock);
+    test_sa3_couplers(stock);
+    test_sa3_curve();
     test_car_menu(stock);
     test_broken_and_sand(stock);
     test_engine_keys();
