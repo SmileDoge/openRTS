@@ -29,6 +29,11 @@ inline constexpr double train_step = 0.05;
 // absorbing apparatus, and past its travel the apparatus yields.
 enum class CouplerModel : std::uint8_t { rts, sa3 };
 
+// The running resistance: MSTS's friction law (the car's Friction, the default,
+// as RTS reads it) or the ПТР's own, w0 = b0 + (b1 + b2 V + b3 V^2) / q, q the
+// tonnes on an axle (TrainSettings::resistance).
+enum class ResistanceModel : std::uint8_t { msts, ptr };
+
 // The СА-3 draft gear's force (N) at `travel` m of the gear's stroke past its
 // play, moving at `rate` m/s: the preloaded block takes the first millimetres,
 // the absorbing apparatus the rest of its travel, then it yields; dry friction
@@ -44,6 +49,11 @@ struct TrainSettings {
     bool derailment = true;
     // The couplers' model (coupler_model above), the same choice for the train.
     CouplerModel coupler_model = CouplerModel::rts;
+    // The running resistance (ResistanceModel above) and the wheelsets' own
+    // slip: every axle pulls to the rail's grip at its own speed of turning,
+    // as a locomotive's do, not the car as a whole.
+    ResistanceModel resistance = ResistanceModel::msts;
+    bool axle_dynamics = false;
     // The bodies on their springs (body_motion.hpp): RTS's model (the
     // default here) or openRTS's (the viewer's setting).
     BodyMotionModel body_motion = BodyMotionModel::rts;
@@ -280,6 +290,10 @@ struct CarState {
     float bogie_ahead{};
     float bogie_behind{};
     bool wheelslip = false;
+    // The wheelsets (TrainSettings::axle_dynamics): their turning, rad/s, and
+    // the slip at the rail, m/s (omega * the wheel's radius - the car's speed).
+    std::array<float, 4> axle_omega{};
+    std::array<float, 4> axle_slip{};
     bool derailed = false;
     // Brake pipe ends (pipe_hose_*, pipe_cock_*). A train's end cars start
     // with the outer hose disconnected and its end cock closed.
@@ -482,6 +496,9 @@ public:
     // The air brake model from the next step on.
     // The couplers' model from the next step on (TrainSettings::coupler_model).
     void set_coupler_model(CouplerModel model) noexcept;
+    // The running resistance and the wheelsets' model (TrainSettings).
+    void set_resistance_model(ResistanceModel model) noexcept;
+    void set_axle_dynamics(bool on) noexcept;
     // What car `car`'s controller asked at the last step (its УР, ЭПТ ...);
     // null past the end.
     [[nodiscard]] const EngineDemands* demands_of(std::size_t car) const noexcept;

@@ -78,6 +78,79 @@ using formats::WagonDefinition;
     return static_cast<float>(scale * f.c1);
 }
 
+// The axles a car's wheels make: half of NumWheels, in the four the car state
+// keeps (a car without the number is taken as a four-axle one).
+[[nodiscard]] std::size_t axle_count(const WagonDefinition& wagon) {
+    const auto wheels = static_cast<std::size_t>((std::max)(wagon.wheels, std::uint8_t{2}));
+    return (std::min)(wheels / 2, std::size_t{4});
+}
+
+// The ПТР's basic resistance (TrainSettings::resistance): w0 = b0 + (b1 + b2 V
+// + b3 V^2) / q kgf per tonne, V in km/h and q the tonnes on an axle. The car's
+// force is that over the whole mass, m w0 g / 1000.
+[[nodiscard]] float ptr_resistance(const WagonDefinition& wagon, const float speed, const float mass) {
+    constexpr double b0 = 0.7;
+    constexpr double b1 = 8.0;
+    constexpr double b2 = 0.08;
+    constexpr double b3 = 0.002;
+    const double q = static_cast<double>(mass) / 1000.0 / static_cast<double>(axle_count(wagon));
+    if (q <= 0.0) return 0.0f;
+    const double kmh = std::abs(speed) * 3.6;
+    const double w = b0 + (b1 + b2 * kmh + b3 * kmh * kmh) / q;
+    return static_cast<float>(static_cast<double>(mass) * w * gravity / 1000.0);
+}
+
+// A wheelset's moment of inertia about its axle, kg m^2: a metre wheel with its
+// axle boxes, which holds the tread near the rail's speed between steps.
+constexpr double axle_inertia = 100.0;
+// The wheelsets are integrated in this many sub-steps: their grip falls with the
+// slip, and over the whole 0.05 s step that fall is too steep to hold.
+constexpr int axle_substeps = 10;
+// How fast a coasting wheelset is back at the rail's speed, s.
+constexpr double axle_roll_time = 0.25;
+// The slip, m/s, past which a wheelset counts as spinning.
+constexpr float axle_slip_flag = 0.5f;
+
+// The traction at the rail through the wheelsets (TrainSettings::axle_dynamics):
+// every axle takes its share of the demand as a torque, the rail gives back the
+// grip the creep allows (mu / (1 + tanh |slip|), half of mu once the tread runs
+// well past the rail), and the difference spins the wheelset up or lets it
+// back. The car sees the sum of the rail's forces, so a demand past the adhesion
+// becomes a growing slip and a pull that settles near half the grip instead of
+// a cut.
+[[nodiscard]] float step_axles(CarState& car, const float demand, const float mu, const double h) {
+    const auto axles = axle_count(*car.definition);
+    const float r = car.definition->wheel_radius > 0.0f ? car.definition->wheel_radius : 0.5f;
+    const double normal = static_cast<double>(mass_of(car)) * gravity / static_cast<double>(axles);
+    const double v = static_cast<double>(car.velocity) * (car.flipped ? -1.0 : 1.0);
+    const double share = static_cast<double>(demand) / static_cast<double>(axles);
+    // A car that just started up: its wheels turn with the rail.
+    if (v != 0.0 && car.axle_omega[0] == 0.0f) car.axle_omega.fill(static_cast<float>(v / r));
+    const double hh = h / axle_substeps;
+    double rail_sum = 0.0;
+    bool spinning = false;
+    for (int pass = 0; pass < axle_substeps; ++pass) {
+        for (std::size_t i = 0; i < axles; ++i) {
+            float& omega = car.axle_omega[i];
+            if (demand == 0.0f) {
+                // Coasting: the treads come back to the rail's speed.
+                omega += static_cast<float>((v / r - static_cast<double>(omega)) * (std::min)(1.0, hh / axle_roll_time));
+                car.axle_slip[i] = 0.0f;
+                continue;
+            }
+            const double slip = static_cast<double>(omega) * r - v;
+            const double grip = mu > 0.0f ? static_cast<double>(mu) / (1.0 + std::tanh(std::abs(slip))) * normal : 0.0;
+            const double rail = std::clamp(share, -grip, grip);
+            omega = static_cast<float>(static_cast<double>(omega) + (share - rail) * r / axle_inertia * hh);
+            car.axle_slip[i] = static_cast<float>(static_cast<double>(omega) * r - v);
+            if (std::abs(car.axle_slip[i]) > axle_slip_flag) spinning = true;
+            rail_sum += rail;
+        }
+    }
+    car.wheelslip = spinning;
+    return static_cast<float>(rail_sum / axle_substeps);
+}
+
 
 // Velocity equalisation between car `a` and car `b = a + 1` (rts1.exe
 // 0x504648). The relative displacement of the pair over the sub-step is
@@ -447,6 +520,18 @@ std::size_t Train::emergency_cars() const noexcept {
 }
 
 void Train::set_coupler_model(const CouplerModel model) noexcept { settings_.coupler_model = model; }
+
+void Train::set_resistance_model(const ResistanceModel model) noexcept { settings_.resistance = model; }
+
+void Train::set_axle_dynamics(const bool on) noexcept {
+    settings_.axle_dynamics = on;
+    if (!on) return;
+    for (auto& car : cars_) {
+        const float r = car.definition->wheel_radius > 0.0f ? car.definition->wheel_radius : 0.5f;
+        car.axle_omega.fill(car.velocity * (car.flipped ? -1.0f : 1.0f) / r);
+        car.axle_slip.fill(0.0f);
+    }
+}
 
 void Train::set_coupler_substeps(const std::uint32_t substeps) noexcept {
     settings_.coupler_substeps = std::clamp<std::uint32_t>(substeps, 1, 8);
@@ -1014,15 +1099,20 @@ void Train::step() {
         }
         if ((car.sanding || car.sand_travel >= 0.0f) && car.definition->adhesion[2] > 0.0f) mu *= car.definition->adhesion[2];
         mu *= rails_grip;
-        const float limit = mass_of(car) * gravity * mu;
-        car.wheelslip = mu > 0.0f && std::abs(force) > limit;
-        if (car.wheelslip) {
-            // The wheels spin up instead of pulling: the rail takes less the
-            // further the demand is past the grip, down to RTS's quarter
-            // (0x424488) at half again the limit. Continuous at the limit,
-            // where the old flat cut dropped the force below the grip.
-            const float excess = std::abs(force) / limit - 1.0f;
-            force *= std::clamp(1.0f - 0.75f * excess / 0.5f, 0.25f, 1.0f);
+        if (settings_.axle_dynamics) {
+            // The wheelsets pull at the creep their own turning allows.
+            force = step_axles(car, force, mu, train_step);
+        } else {
+            const float limit = mass_of(car) * gravity * mu;
+            car.wheelslip = mu > 0.0f && std::abs(force) > limit;
+            if (car.wheelslip) {
+                // The wheels spin up instead of pulling: the rail takes less the
+                // further the demand is past the grip, down to RTS's quarter
+                // (0x424488) at half again the limit. Continuous at the limit,
+                // where the old flat cut dropped the force below the grip.
+                const float excess = std::abs(force) / limit - 1.0f;
+                force *= std::clamp(1.0f - 0.75f * excess / 0.5f, 0.25f, 1.0f);
+            }
         }
         car.force = force * direction;
         car.power = demands.power >= 0.0f ? demands.power : std::abs(force * car.velocity);
@@ -1157,7 +1247,9 @@ void Train::step() {
     for (auto& car : cars_) {
         const auto& wagon = *car.definition;
         const float speed = std::abs(car.velocity);
-        car.resistance = rolling_resistance(wagon, speed);
+        car.resistance = settings_.resistance == ResistanceModel::ptr
+                             ? ptr_resistance(wagon, speed, mass_of(car))
+                             : rolling_resistance(wagon, speed);
         if (wagon.engine && wagon.engine->max_velocity > 0.0f && speed > wagon.engine->max_velocity) {
             const float limit = wagon.engine->max_velocity;
             if (limit * 1.2f >= speed) {
