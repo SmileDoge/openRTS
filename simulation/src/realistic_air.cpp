@@ -169,6 +169,9 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
             const bool end_open = ((car.pipe_ends & pipe_hose_front) && !(car.pipe_ends & pipe_cock_front)) ||
                                   ((car.pipe_ends & pipe_hose_rear) && !(car.pipe_ends & pipe_cock_rear));
             if (!a.emergency && end_open && rate <= emergency_rate) a.emergency = true;
+            // A hand-opened emergency valve fires at its car at once: the
+            // accelerators along the train go with it.
+            if (!a.emergency && (car.valves & valve_emergency)) a.emergency = true;
             // The driver's valve in VI starts the front at its own locomotive.
             if (!a.emergency && i < inputs.has_controller->size() && (*inputs.has_controller)[i] && demands[i].emergency)
                 a.emergency = true;
