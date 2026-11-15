@@ -1004,7 +1004,14 @@ void Train::step() {
         mu *= rails_grip;
         const float limit = mass_of(car) * gravity * mu;
         car.wheelslip = mu > 0.0f && std::abs(force) > limit;
-        if (car.wheelslip) force *= 0.25f;
+        if (car.wheelslip) {
+            // The wheels spin up instead of pulling: the rail takes less the
+            // further the demand is past the grip, down to RTS's quarter
+            // (0x424488) at half again the limit. Continuous at the limit,
+            // where the old flat cut dropped the force below the grip.
+            const float excess = std::abs(force) / limit - 1.0f;
+            force *= std::clamp(1.0f - 0.75f * excess / 0.5f, 0.25f, 1.0f);
+        }
         car.force = force * direction;
         car.power = demands.power >= 0.0f ? demands.power : std::abs(force * car.velocity);
         car.handbrake = demands.sets_handbrake ? std::clamp(0.01f * demands.handbrake, 0.0f, 1.0f)
