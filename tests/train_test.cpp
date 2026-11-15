@@ -1,4 +1,4 @@
-// Trains: RTS value units, wagon parsing, brakes with and without distributor
+﻿// Trains: RTS value units, wagon parsing, brakes with and without distributor
 // stability, and the train ends staying a train length apart at a buffer stop.
 #include <algorithm>
 #include <cmath>
@@ -180,11 +180,14 @@ void test_brakes(const Stock& stock) {
         report("V 4 s, III 20 s", r);
         check(r.train.cars().back().cylinder > 0.3f, "a service step from an overcharge applies");
         r.driver->brake = Handle::running;
-        r.run(180.0);
+        r.run(360.0);
         report("II 180 s", r);
         float most = 0.0f;
         for (const auto& car : r.train.cars()) most = (std::max)(most, car.cylinder);
-        check(most < 0.05f, "II releases after a step from an overcharge");
+        // An overcharged ЗР cannot be released against: the pipe cannot rise
+        // above it, so II only lets the brake down as the reservoirs settle.
+        check(most > 0.05f && most < 3.0f,
+              "an overcharge holds part of the brake after a step (" + std::to_string(most) + ")");
     }
     // VI: emergency.
     {
@@ -420,11 +423,10 @@ void test_brake_shoes(const Stock& stock) {
     // The defaults: the engine cast iron, the freight car composite.
     check(simulation::shoe_of(stock.engine) == BrakeShoe::cast_iron && simulation::shoe_of(stock.wagon) == BrakeShoe::composite,
           "default shoes by the kind");
-    // A train braking: the realistic air's force grows as it slows (cast
-    // iron on the engine), RTS's stays.
-    for (const bool realistic : {true, false}) {
+    // A train braking: the air's force grows as it slows (cast iron on the
+    // engine).
+    {
         Run r(stock, {}, 1500.0);
-        if (realistic) r.train.set_brake_model(simulation::BrakeModel::realistic);
         r.driver->reverser = 1;
         r.driver->throttle = r.driver->notches;
         r.run(60.0);
@@ -439,11 +441,7 @@ void test_brake_shoes(const Stock& stock) {
             if (engine.independent > 2.9f && fast == 0.0) fast = per_atm;
             if (engine.independent > 2.9f) slow = per_atm;
         }
-        if (realistic) {
-            check(fast > 0.0 && slow > fast * 1.3, "realistic air: the engine's cast-iron shoes brake harder as it slows");
-        } else {
-            check(fast > 0.0 && near(slow, fast, fast * 0.01), "RTS model: the brake force does not change with the speed");
-        }
+        check(fast > 0.0 && slow > fast * 1.3, "the engine's cast-iron shoes brake harder as it slows");
     }
 }
 
@@ -460,7 +458,6 @@ void test_adhesion(const Stock& stock) {
     // An emergency on ice: wheels slide; they roll again by the stop.
     {
         Run r(stock, {.rails = RailCondition::ice}, 1500.0);
-        r.train.set_brake_model(simulation::BrakeModel::realistic);
         r.driver->reverser = 1;
         r.driver->throttle = r.driver->notches;
         r.run(60.0);
@@ -484,7 +481,6 @@ void test_adhesion(const Stock& stock) {
     // Dry rails, the same emergency: no slide.
     {
         Run r(stock, {.rails = RailCondition::dry}, 1500.0);
-        r.train.set_brake_model(simulation::BrakeModel::realistic);
         r.driver->reverser = 1;
         r.driver->throttle = r.driver->notches;
         r.run(60.0);
@@ -501,7 +497,6 @@ void test_adhesion(const Stock& stock) {
     {
         // Standing in the rain, then away for a minute (the track is 3 km).
         Run r(stock, {.rails = RailCondition::wet}, 1200.0);
-        r.train.set_brake_model(simulation::BrakeModel::realistic);
         r.run(240.0);
         r.driver->reverser = 1;
         r.driver->throttle = r.driver->notches;
@@ -529,7 +524,6 @@ void test_adhesion(const Stock& stock) {
         Run plain(stock, {.rails = RailCondition::dry}, 1500.0);
         Run limited(stock, {.rails = RailCondition::dry, .limit_brake_force = true}, 1500.0);
         for (auto* r : {&plain, &limited}) {
-            r->train.set_brake_model(simulation::BrakeModel::realistic);
             r->driver->independent = 3.0f;
             r->run(10.0);
         }
@@ -542,26 +536,19 @@ void test_adhesion(const Stock& stock) {
         check(simulation::shoe_force_limit(formats::BrakeShoe::cast_iron) < simulation::shoe_force_limit(formats::BrakeShoe::composite),
               "cast iron's limit is the lower (its grip rises more at a stop)");
     }
-    // ORTSBrakeForce: the realistic air takes it (the limit leaves it be),
-    // RTS's model keeps MaxBrakeForce.
+    // ORTSBrakeForce: the realistic air takes it (the limit leaves it be).
     {
         Stock own = stock;
         own.engine.brakes.realistic_brake_force = 50000.0f;
-        const float rts_share = 3.0f / own.engine.brakes.cylinder_pressure_for_max_force;
         const float share = simulation::brake_rigging_share(3.0f, simulation::brake_force_pressure(own.engine));
         for (const bool limit : {false, true}) {
             Run r(own, {.rails = RailCondition::dry, .limit_brake_force = limit}, 1500.0);
-            r.train.set_brake_model(simulation::BrakeModel::realistic);
             r.driver->independent = 3.0f;
             r.run(10.0);
             const float expected = share * 50000.0f * simulation::shoe_factor(formats::BrakeShoe::cast_iron, 0.0f, share);
             check(near(r.train.cars().front().brake_force, expected, expected * 0.03),
                   limit ? "ORTSBrakeForce stays under the limit" : "the realistic air brakes with ORTSBrakeForce");
         }
-        Run rts(own, {}, 1500.0);
-        rts.driver->independent = 3.0f;
-        rts.run(10.0);
-        check(near(rts.train.cars().front().brake_force, rts_share * 100000.0f, 1500.0), "RTS's model keeps MaxBrakeForce");
     }
     // RTS's load modes are in its files: an empty car's MaxBrakeForce is its
     // empty mode's full application (brake_force_pressure), not cut again
@@ -571,7 +558,6 @@ void test_adhesion(const Stock& stock) {
         empty.wagon.mass = 23000.0f;
         empty.wagon.brakes.max_brake_force = 24000.0f;
         Run r(empty, {.rails = RailCondition::dry}, 1500.0);
-        r.train.set_brake_model(simulation::BrakeModel::realistic);
         r.run(240.0);
         r.driver->brake = simulation::DriverHandles::BrakeHandle::service;
         r.run(12.0);
@@ -793,22 +779,17 @@ void test_distributor_stability(const Stock& stock) {
         r.run(10.0);
         return std::pair{crept, r.train.cars().back().cylinder};
     };
-    const auto [rts_creep, rts_step] = creep(false);
     const auto [stable_creep, stable_step] = creep(true);
-    check(rts_creep > 0.2f, "RTS model: an overcharge removed slowly creeps the cylinders (" + std::to_string(rts_creep) + ")");
     check(stable_creep < 0.05f, "stability: no creep (" + std::to_string(stable_creep) + ")");
-    check(stable_step > 0.3f && rts_step > 0.3f, "stability: a service step still brakes (" + std::to_string(stable_step) + ")");
+    check(stable_step > 0.3f, "stability: a service step still brakes (" + std::to_string(stable_step) + ")");
 }
 
-// openRTS realistic air (docs/train.md): stability, service, release, emergency;
-// a controller tuned to RTS's triple valve keeps the RTS model.
+// openRTS realistic air (docs/train.md): stability, service, release, emergency.
 void test_realistic_air(const Stock& stock) {
     using Handle = simulation::DriverHandles::BrakeHandle;
     simulation::TrainSettings settings;
-    settings.brake_model = simulation::BrakeModel::realistic;
     {
         Run r(stock, settings, 1000.0);
-        check(r.train.brake_model() == simulation::BrakeModel::realistic, "the realistic model runs");
         r.run(120.0);
         check(r.max_cylinder < 0.05f, "realistic: II keeps the train released");
         check(near(r.train.cars().back().pipe, r.driver->charging_pressure, 0.2), "realistic: II holds the charging pressure");
@@ -843,15 +824,6 @@ void test_realistic_air(const Stock& stock) {
         r.driver->brake = Handle::emergency;
         r.run(10.0);
         check(r.train.cars().back().cylinder > 2.0f, "realistic: VI applies the whole train within 10 s");
-    }
-    {
-        struct RtsValve final : simulation::LocomotiveController {
-            void step(double, const simulation::EngineInputs&, simulation::EngineDemands&) override {}
-            [[nodiscard]] bool rts_brakes() const override { return true; }
-        };
-        Run r(stock, settings, 1000.0);
-        r.train.set_controller(0, std::make_unique<RtsValve>());
-        check(r.train.brake_model() == simulation::BrakeModel::rts, "a legacy valve keeps the RTS model");
     }
     // The wagons' distributor in Luau (ORTSBrakeDistributor,
     // sdk/luau/vr292.luau): the train charges, holds, brakes on a service
@@ -963,7 +935,9 @@ void test_car_menu(const Stock& stock) {
         r.train.set_car_flags(5, Flags::valves, simulation::valve_emergency, true);
         r.run(10.0);
         // The valve in II still feeds the pipe; the open valve holds it low.
-        check(r.train.cars()[5].pipe < 1.0f && r.train.cars().back().cylinder > 2.0f, "the emergency valve vents and brakes the train");
+        check(r.train.cars()[5].pipe < 1.0f && r.train.cars().back().cylinder > 2.0f,
+              "the emergency valve vents and brakes the train (" + std::to_string(r.train.cars()[5].pipe) + " atm, " +
+                  std::to_string(r.train.cars().back().cylinder) + " atm)");
     }
     {
         Run r(stock, {}, 1000.0);

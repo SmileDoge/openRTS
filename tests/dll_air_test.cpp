@@ -1,4 +1,4 @@
-// Trains with legacy DLLs under the realistic air (docs/train.md, "Realistic
+﻿// Trains with legacy DLLs under the realistic air (docs/train.md, "Realistic
 // air with DLL locomotives"): the DLL controller on outputs made here, no DLL
 // run. As RTS the train keeps RTS's air; with the DLL's valve the pipe
 // follows its УР and its fast vent is an emergency; with openRTS's valve over
@@ -78,7 +78,6 @@ struct Rig {
         std::vector<simulation::CarSetup> setups{{.definition = &engine}};
         for (int i = 0; i < 6; ++i) setups.push_back({.definition = &wagon});
         simulation::TrainSettings settings;
-        settings.brake_model = simulation::BrakeModel::realistic;
         train = std::make_unique<simulation::Train>(setups, settings);
         std::string error;
         check(train->place(*network, 1, 1000.0, true, &error), "placed: " + error);
@@ -126,13 +125,11 @@ int main() {
     // As RTS: the DLL's valve is made for RTS's triple valve.
     {
         Rig rig(trainplugin::DllAir::rts);
-        check(rig.train->brake_model() == simulation::BrakeModel::rts, "rts: the train keeps RTS's air");
     }
 
     // The DLL's valve: the pipe follows its УР; its fast vent is an emergency.
     {
         Rig rig(trainplugin::DllAir::dll_valve);
-        check(rig.train->brake_model() == simulation::BrakeModel::realistic, "dll: the realistic air runs");
         rig.run(240.0);
         check(std::abs(rig.train->cars().back().pipe - 5.0f) < 0.15f, "dll: the pipe charged to the DLL's УР (" +
                                                                          std::to_string(rig.train->cars().back().pipe) + ")");
