@@ -7,12 +7,31 @@ namespace openrts::simulation {
 
 namespace {
 
-// A bogie's shoes and the treads' working skin take this heat per kelvin
-// (four wheels), J/K, and give it to the air in this time, s: a light
+// A bogie's shoes take this heat per kelvin, J/K (an engine's eight cast
+// iron shoes of some 13 kg: about 100 kg), and give it to the air in this
+// time, s. Only a share of the friction's heat goes into them
+// (shoe_heat_share); the wheels' treads, far heavier, take the rest. A light
 // application at speed warms them by tens of kelvin in ten seconds, as the
-// drivers' drying of the shoes ("просушка колодок") does.
-constexpr float heat_capacity = 25000.0f;
+// drivers' drying of the shoes ("просушка колодок") does. Until 2026-11-15
+// 25 kJ/K took all the heat: a stop from speed reached the 800 K the model
+// stops at (testers: "800 градусов за одно торможение").
+constexpr float heat_capacity = 50000.0f;
 constexpr float cooling_time = 200.0f;
+
+// The friction heat's share a shoe takes; the wheel takes the rest (tread
+// braking: some three quarters into the wheel with cast iron, nearly all
+// with composite shoes, which hardly conduct; disc pads: the discs take
+// it). Wood, a poor conductor, keeps it at its face.
+[[nodiscard]] float shoe_heat_share(const formats::BrakeShoe shoe) noexcept {
+    switch (shoe) {
+    case formats::BrakeShoe::composite: return 0.1f;
+    case formats::BrakeShoe::disc: return 0.1f;
+    case formats::BrakeShoe::wood: return 0.8f;
+    case formats::BrakeShoe::cast_iron:
+    case formats::BrakeShoe::unknown: break;
+    }
+    return 0.3f;
+}
 constexpr float hottest = 800.0f;
 // Wet in about 1.5 min of rain or snow; dry in the air in 10 min.
 constexpr float wetting_time = 90.0f;
@@ -20,6 +39,10 @@ constexpr float air_drying_time = 600.0f;
 // Warm shoes dry: per s and per K above 5 K.
 constexpr float warm_drying = 0.004f;
 constexpr float drying_from = 5.0f;
+// Braking dries them at their working faces, whatever share of the heat the
+// wheel takes: the friction's energy, J, that takes their wetness down to
+// 1/e (a light application at speed for some ten seconds dries them).
+constexpr float face_drying_energy = 800000.0f;
 // A sliding wheel's friction on the rail, as a share of the adhesion.
 constexpr float sliding_share = 0.75f;
 // Wood: half the heat capacity (it keeps the heat at its face), a fire
@@ -97,7 +120,8 @@ float step_bogie_brake(ShoeState& state, const BogieBrake& bogie, const float dt
     const float force = state.sliding ? sliding : (std::min)(rolling, adhesion);
     // The shoes take the friction's heat while the wheel turns under them
     // (a locked wheel heats the rail instead); they cool to the air.
-    const float power = state.sliding ? 0.0f : force * speed / 3.6f;
+    const float friction = state.sliding ? 0.0f : force * speed / 3.6f;
+    const float power = friction * shoe_heat_share(bogie.shoe);
     const float capacity = wood ? heat_capacity * wood_capacity_share : heat_capacity;
     state.heat += (power / capacity - state.heat / cooling_time + (state.burning ? fire_heat : 0.0f)) * dt;
     state.heat = std::clamp(state.heat, 0.0f, hottest);
@@ -123,7 +147,7 @@ float step_bogie_brake(ShoeState& state, const BogieBrake& bogie, const float dt
     } else {
         state.wet += (bogie.wetness - state.wet) * dt / air_drying_time;
     }
-    state.wet -= warm_drying * (std::max)(state.heat - drying_from, 0.0f) * state.wet * dt;
+    state.wet -= (friction / face_drying_energy + warm_drying * (std::max)(state.heat - drying_from, 0.0f)) * state.wet * dt;
     state.wet = std::clamp(state.wet, 0.0f, 1.0f);
     return force;
 }

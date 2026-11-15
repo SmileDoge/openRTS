@@ -358,13 +358,20 @@ built, against the proposal below:
     quarter. F5 marks "[ЮЗ]" while it slides and "[юз был: N м]" after.
   - The shoes and the wheels' treads get wet in rain and snow (towards 1 in
     rain, 0.8 in snow and ice, 0.6 on leaves, in about 1.5 min), dry in the
-    air in 10 min, and the brakes warm them: the friction's power on the
-    turning wheel heats a bogie's shoes and tread skin (25 kJ/K, cooling over
-    200 s, at most +800 K), and above +5 K they dry fast. Wet composite shoes
+    air in 10 min, and the brakes warm them: of the friction's power on the
+    turning wheel a share heats a bogie's shoes (50 kJ/K, some 100 kg of cast
+    iron; cooling over 200 s, at most +800 K), the wheels, far heavier, take
+    the rest: cast iron 0.3 of it, composite and disc pads 0.1 (they hardly
+    conduct), wood 0.8. A minute dragged at 20 kN and 60 km/h warms cast
+    iron by about 100 K; an emergency of a lone VL80t from 80 km/h ends at
+    +48 K (`train-check --brake`, its last 35 m sliding). Until 2026-11-15 all the heat went into 25 kJ/K, and a stop from
+    speed reached the model's 800 K (testers). The friction dries the shoes'
+    faces whatever the wheel takes (its energy over 0.8 MJ, to 1/e), and
+    above +5 K their warmth dries them too. Wet composite shoes
     lose up to half their grip, cast iron a fifth, disc pads a tenth; dry
     treads win back 30 % of what wet rails take from the adhesion, for the
     traction too. A light application at speed for ten seconds or so dries
-    the shoes (on the test train: soaked 0.96, +82 K, then 0.09), as the
+    the shoes (on the test train, composite: soaked 0.96, +4 K, then 0.12), as the
     drivers' drying of the shoes does. F5 marks "[колодки мокрые]" and
     "[колодки +N °C]" above +100 K; the brake log has the rails, the bogies
     sliding, the shoes' mean wetness and most warmth.

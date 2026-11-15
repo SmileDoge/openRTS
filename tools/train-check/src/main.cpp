@@ -389,6 +389,20 @@ int brake_test(const core::Vfs& vfs, const std::vector<core::VirtualPath>& consi
                 tension.time - brake_at);
     std::printf("  coupler breaks %zu, derailments %zu%s%s\n", breaks, derailments, first_derailment.empty() ? "" : ", first: ",
                 first_derailment.c_str());
+    {
+        // The shoes' warmth at the stop (simulation/adhesion.cpp): the hottest bogie.
+        float hottest = 0.0f;
+        std::size_t hottest_car = 0;
+        for (std::size_t k = 0; k < train.cars().size(); ++k) {
+            for (const auto& shoe : train.cars()[k].shoe_state) {
+                if (shoe.heat > hottest) {
+                    hottest = shoe.heat;
+                    hottest_car = k + 1;
+                }
+            }
+        }
+        std::printf("  shoes at the stop: the hottest +%.0f K (car %zu)\n", hottest, hottest_car);
+    }
     std::printf("  speed: %s\n", profile.c_str());
 
     // Release: the valve to II (running), as after a stop; how long the

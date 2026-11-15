@@ -519,7 +519,9 @@ void test_adhesion(const Stock& stock) {
         }
         std::cerr << "  shoes: soaked " << soaked << ", hottest +" << hottest << " K, then wet " << r.train.cars()[3].shoe_state[0].wet
                   << ", speed " << r.train.speed() * 3.6 << " km/h, cylinder " << r.train.cars()[3].cylinder << '\n';
-        check(hottest > 15.0f, "braking warms the shoes");
+        // Composite shoes: the wheel takes nearly all the heat (a few K);
+        // their faces dry all the same.
+        check(hottest > 2.0f && hottest < 30.0f, "braking warms the composite shoes a little");
         check(r.train.cars()[3].shoe_state[0].wet < soaked - 0.2f, "warm shoes dry");
     }
     // The brake force limited to real stock's: less at the engine, none at a wagon below it.
@@ -614,6 +616,11 @@ void test_adhesion(const Stock& stock) {
         simulation::ShoeState iron;
         const auto [hot, burnt] = drag(formats::BrakeShoe::cast_iron, iron, 20000.0f, 60.0f);
         check(!burnt && iron.wear == 0.0f, "cast iron never burns");
+        // A share of the heat (the wheel takes the rest) into some 100 kg of
+        // iron: a minute dragged at 20 kN, 60 km/h warms them by about 100 K
+        // (until 2026-11-15 all of it into 25 kJ/K: some 1200 K, held at 800).
+        std::cerr << "  cast iron dragged a minute: +" << iron.heat << " K\n";
+        check(iron.heat > 50.0f && iron.heat < 200.0f, "cast iron dragged a minute warms by about 100 K");
         Run r(stock, {}, 1500.0);
         r.train.set_brake_shoes(3, {formats::BrakeShoe::wood, formats::BrakeShoe::wood});
         r.train.replace_brake_shoes(3, 0);
