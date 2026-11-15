@@ -24,11 +24,6 @@ namespace openrts::simulation {
 // One simulation step, s: the RTS coupler sub-step and the network tick.
 inline constexpr double train_step = 0.05;
 
-// The air brake model: RTS's (the default, and the only one with Legacy on)
-// or openRTS's realistic pneumatics (docs/train.md). A train with a legacy
-// DLL keeps RTS's: its driver's valve is tuned to the RTS triple valve.
-enum class BrakeModel : std::uint8_t { rts, realistic };
-
 // The coupler model: RTS's (a spring of the coupling's stiffness, the
 // default) or the СА-3 friction draft gear: a preloaded block, then the
 // absorbing apparatus, and past its travel the apparatus yields.
@@ -47,7 +42,6 @@ struct TrainSettings {
     // Report coupler breaks and derailments (as RTS with its default config).
     bool coupler_break = true;
     bool derailment = true;
-    BrakeModel brake_model = BrakeModel::rts;
     // The couplers' model (coupler_model above), the same choice for the train.
     CouplerModel coupler_model = CouplerModel::rts;
     // The bodies on their springs (body_motion.hpp): RTS's model (the
@@ -118,7 +112,6 @@ struct EngineInputs {
     float independent{};    // independent brake cylinder, atm
     bool flipped = false;   // the car faces the train rear
     const formats::WagonDefinition* definition = nullptr;
-    bool realistic_air = false; // the train runs BrakeModel::realistic
     // The rails' adhesion as a share of RTS's (TrainSettings::rails, the
     // treads' wetness): the traction limit's factor.
     float adhesion = 1.0f;
@@ -135,9 +128,6 @@ class LocomotiveController {
 public:
     virtual ~LocomotiveController() = default;
     virtual void step(double dt, const EngineInputs& inputs, EngineDemands& demands) = 0;
-    // The controller's valve is made for RTS's triple valve (legacy DLLs):
-    // the train keeps BrakeModel::rts.
-    [[nodiscard]] virtual bool rts_brakes() const { return false; }
 };
 
 // Driver's handles shared by every engine of a train (multiple-unit
@@ -490,7 +480,6 @@ public:
     // Coupler solver sub-steps (1 = RTS); takes effect on the next step.
     void set_coupler_substeps(std::uint32_t substeps) noexcept;
     // The air brake model from the next step on.
-    void set_brake_model(BrakeModel model) noexcept;
     // The couplers' model from the next step on (TrainSettings::coupler_model).
     void set_coupler_model(CouplerModel model) noexcept;
     // What car `car`'s controller asked at the last step (its УР, ЭПТ ...);
@@ -508,8 +497,6 @@ public:
     void set_body_motion(BodyMotionModel model) noexcept;
     // TrainSettings::switch_throws.
     void set_switch_throws(float factor) noexcept { settings_.switch_throws = factor; }
-    // The model this step runs: realistic only when no controller needs RTS's.
-    [[nodiscard]] BrakeModel brake_model() const noexcept;
     [[nodiscard]] CouplerModel coupler_model() const noexcept { return settings_.coupler_model; }
     [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
 

@@ -1,4 +1,4 @@
-// openrts-train-check <installation root> [--run]
+﻿// openrts-train-check <installation root> [--run]
 //
 // Reads every consist of TRAINS/CONSISTS_RTS and TRAINS/CONSISTS (as RTS
 // does), resolves and parses every engine and wagon they use, and reports
@@ -112,6 +112,7 @@ int charge_test(const core::Vfs& vfs, std::vector<std::string> args) {
     const auto realistic_flag = std::find(args.begin(), args.end(), "--realistic");
     const bool realistic = realistic_flag != args.end();
     if (realistic) args.erase(realistic_flag);
+    (void)realistic;
     if (args.size() < 3) {
         std::fprintf(stderr, "--charge <wagons> <folder/eng>[!] ... <folder/wag> [--realistic]\n");
         return 2;
@@ -151,7 +152,6 @@ int charge_test(const core::Vfs& vfs, std::vector<std::string> args) {
     }
     auto network = simulation::straight_test_track(length + 2000.0);
     simulation::Train train(cars);
-    if (realistic) train.set_brake_model(simulation::BrakeModel::realistic);
     std::string error;
     if (!network || !train.place(*network, 1, length + 100.0, true, &error)) {
         std::fprintf(stderr, "cannot place the train: %s\n", error.c_str());
@@ -163,7 +163,7 @@ int charge_test(const core::Vfs& vfs, std::vector<std::string> args) {
         return 2;
     }
     std::printf("train: %zu cars (%zu wagons), %.0f t, %.0f m; %s air\n", cars.size(), count, mass / 1000.0, train.length(),
-                realistic ? "realistic" : "RTS");
+                "realistic");
     const auto n = train.cars().size();
     // The run: until every figure came or 30 min; a line every 30 s.
     const auto run = [&](const char* what) {
@@ -214,10 +214,11 @@ int charge_test(const core::Vfs& vfs, std::vector<std::string> args) {
 
 int brake_test(const core::Vfs& vfs, const std::vector<core::VirtualPath>& consists, const double speed_kmh,
                std::vector<std::string> names) {
-    // --realistic among the names: openRTS realistic air instead of RTS's model.
+    // --realistic among the names: accepted for older scripts, the air is always the realistic one.
     const auto realistic_flag = std::find(names.begin(), names.end(), "--realistic");
     const bool realistic = realistic_flag != names.end();
     if (realistic) names.erase(realistic_flag);
+    (void)realistic;
     // --limit-brakes: TrainSettings::limit_brake_force.
     const auto limit_flag = std::find(names.begin(), names.end(), "--limit-brakes");
     const bool limit_brakes = limit_flag != names.end();
@@ -272,7 +273,6 @@ int brake_test(const core::Vfs& vfs, const std::vector<core::VirtualPath>& consi
     }
     auto network = simulation::straight_test_track(length + 80000.0);
     simulation::Train train(cars);
-    if (realistic) train.set_brake_model(simulation::BrakeModel::realistic);
     train.set_rails(rails);
     train.set_limit_brake_force(limit_brakes);
     std::string error;

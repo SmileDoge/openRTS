@@ -669,7 +669,6 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
     for (std::size_t i = 0; i < entries.size() && i < unit.cars.size(); ++i)
         if (entries[i].place_drag != 0) unit.train->set_car_flags(i, simulation::Train::CarFlags::chocks, entries[i].place_drag, true);
     unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
-    if (realistic_air_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
     if (!distributor_stability_loaded_) {
         distributor_stability_loaded_ = true;
         distributor_stability_ = remembered("distributor_stability").value_or("0") == "1";
@@ -3829,7 +3828,6 @@ void TrainView::draw_hud() {
                 const auto joint_force = train.joint_forces();
                 // The РК: a 483's control chamber under the realistic air,
                 // the level it releases at in the flat mode (docs/train.md).
-                const bool realistic = train.brake_model() == simulation::BrakeModel::realistic;
                 // A right click on a car's name opens the pick below, outside
                 // the table: a table pushes its own ID, so a popup opened in
                 // a cell would not be the one begun after it.
@@ -3902,7 +3900,7 @@ void TrainView::draw_hud() {
                         ImGui::TableNextColumn();
                         ImGui::Text("%.2f", state.auxiliary);
                         ImGui::TableNextColumn();
-                        if (realistic && car.definition && (car.definition->brakes.system & 5) &&
+                        if (car.definition && (car.definition->brakes.system & 5) &&
                             simulation::distributor_kind(*car.definition) == simulation::DistributorKind::vr483) {
                             ImGui::Text("%.2f", state.control);
                         } else {
@@ -5938,7 +5936,7 @@ std::vector<TrainView::CarMenuItem> TrainView::car_menu_items(const CarMenu& men
         }
         // openRTS: the distributor's switches, with the realistic air (RTS's
         // triple valve has none). The label says the position it is in.
-        if (unit->train->brake_model() == simulation::BrakeModel::realistic && (car.definition->brakes.system & 5)) {
+        if ((car.definition->brakes.system & 5)) {
             const auto& modes = car.distributor;
             if (simulation::distributor_kind(*car.definition) == simulation::DistributorKind::vr483) {
                 switch (simulation::effective_load(modes.load, car.definition->mass)) {
@@ -6829,7 +6827,7 @@ void TrainView::log_brakes(const double dt) {
     } else {
         f << ';';
     }
-    f << ';' << (train.brake_model() == simulation::BrakeModel::realistic ? "реалистичный" : "RTS") << ';';
+    f << ';' << "реалистичный" << ';';
     if (legacy_ && out) {
         const auto mode = legacy_->air();
         f << (mode == trainplugin::DllAir::own_valve ? "кран openRTS" : mode == trainplugin::DllAir::dll_valve ? "кран DLL" : "RTS");
@@ -6881,7 +6879,7 @@ void TrainView::log_brakes(const double dt) {
     }
     for (const auto k : brake_log_cars_) {
         const auto& c = cars[k];
-        const bool rk = train.brake_model() == simulation::BrakeModel::realistic && c.definition && (c.definition->brakes.system & 5) &&
+        const bool rk = c.definition && (c.definition->brakes.system & 5) &&
                         simulation::distributor_kind(*c.definition) == simulation::DistributorKind::vr483;
         f << ';' << num(c.pipe) << ';' << num(c.auxiliary) << ';' << (rk ? num(c.control) : std::string()) << ';' << num(c.cylinder) << ';'
           << num(c.independent);
@@ -6893,7 +6891,7 @@ void TrainView::log_brakes(const double dt) {
 std::optional<float> TrainView::equalising_of(const std::size_t u, const std::size_t i) const {
     // The valve working the pipe under the realistic air (the DLL's УР
     // taken, or openRTS's valve over it).
-    if (u < units_.size() && units_[u].train->brake_model() == simulation::BrakeModel::realistic) {
+    if (u < units_.size()) {
         if (const auto* asked = units_[u].train->demands_of(i); asked && asked->equalising >= 0.0f) return asked->equalising;
     }
     if (const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr; out && out->has_engine) {
@@ -8717,16 +8715,8 @@ void TrainView::draw_panel() {
         }
         ImGui::SameLine();
         ImGui::TextDisabled(substeps_ == 1 ? "(RTS)" : "(experimental)");
-        if (ImGui::Checkbox(tr("Realistic air (openRTS)"), &realistic_air_)) {
-            for (auto& unit : units_)
-                unit.train->set_brake_model(realistic_air_ ? simulation::BrakeModel::realistic : simulation::BrakeModel::rts);
-        }
         ImGui::SameLine();
-        if (!units_.empty() && realistic_air_ && units_.front().train->brake_model() == simulation::BrakeModel::rts) {
-            ImGui::TextDisabled("%s", tr("(the player's train keeps RTS air: its DLL's valve is made for it)"));
-        } else {
-            ImGui::TextDisabled("%s", tr("(off: RTS model; flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed)"));
-        }
+        ImGui::TextDisabled("%s", tr("(flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed)"));
         {
             // Trains with locomotive DLLs under the realistic air (docs/train.md).
             const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),
@@ -8736,14 +8726,10 @@ void TrainView::draw_panel() {
                 dll_air_loaded_ = true;
                 remember("dll_air", std::to_string(dll_air_));
                 if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
-                if (realistic_air_) {
-                    for (auto& unit : units_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
-                }
             }
-            ImGui::TextDisabled("%s", tr(!realistic_air_ ? "(works with the realistic air on)"
-                                         : dll_air_ == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
-                                         : dll_air_ == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
-                                                         : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
+            ImGui::TextDisabled("%s", tr(dll_air_ == 0 ? "(as RTS: the DLL works the train's pipe and triple valves)"
+                                                 : dll_air_ == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
+                                                                 : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
         }
         {
             // The rails' adhesion (adhesion.hpp): traction and, with the realistic
@@ -8848,11 +8834,9 @@ void TrainView::draw_panel() {
         // working the pipe (the DLL's, or openRTS's over Brakes.dll).
         const auto ur = equalising_of(0, driven);
         const auto mode = legacy_ ? legacy_->air() : trainplugin::DllAir::rts;
-        const bool realistic = train.brake_model() == simulation::BrakeModel::realistic;
-        const char* valve = !realistic ? tr("the DLL's valve, RTS air")
-                          : mode == trainplugin::DllAir::own_valve && train.cars()[driven].definition->engine->brakes_library.valve >= 0
-                              ? tr("openRTS valve over Brakes.dll")
-                              : tr("the DLL's valve");
+        const char* valve = mode == trainplugin::DllAir::own_valve && train.cars()[driven].definition->engine->brakes_library.valve >= 0
+                                ? tr("openRTS valve over Brakes.dll")
+                                : tr("the DLL's valve");
         ImGui::TextUnformatted(tr("The locomotive DLL drives it: its handles are in the cab."));
         if (ur) {
             ImGui::Text(tr("Equalising reservoir %.2f atm (%s)"), *ur, valve);

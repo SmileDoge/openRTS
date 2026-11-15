@@ -1164,7 +1164,6 @@ private:
     bool end_of_track_ = false;
     std::unique_ptr<audio::SoundBank> bank_;
     int substeps_ = 1;
-    bool realistic_air_ = false; // openRTS realistic air for every train (BrakeModel::realistic)
     // The RTS model with a distributor's stability (TrainSettings), remembered
     // as distributor_stability; read at the first train.
     mutable bool distributor_stability_ = false;

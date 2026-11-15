@@ -209,7 +209,7 @@ public:
         const auto& out = outputs->cars[car_];
         apply_engine_output(out.engine, demands);
         const auto mode = air_ ? air_->mode : DllAir::rts;
-        if (mode == DllAir::rts || !inputs.realistic_air) {
+        if (mode == DllAir::rts) {
             valve_started_ = false;
             dll_ur_known_ = false;
             return;
@@ -281,7 +281,6 @@ public:
         // The DLL's valve: its УР.
         if (out.engine.equalising > 0.5f) demands.equalising = out.engine.equalising;
     }
-    [[nodiscard]] bool rts_brakes() const override { return !air_ || air_->mode == DllAir::rts; }
 
 private:
     std::weak_ptr<const LegacyConsist::Outputs> outputs_;

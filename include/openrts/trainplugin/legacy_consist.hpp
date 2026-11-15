@@ -35,7 +35,7 @@ namespace openrts::trainplugin {
 // The air of trains with legacy DLLs under openRTS's realistic air model
 // (docs/train.md, "Realistic air with DLL locomotives"; never with Legacy).
 enum class DllAir : std::uint8_t {
-    rts,       // as RTS: the DLLs' valves work RTS's air (the train keeps BrakeModel::rts)
+    rts,       // as RTS: the DLLs' valves work the train's air themselves
     dll_valve, // the DLL's valve: its УР (Engine::UR) into the model's relay
     own_valve, // openRTS's 395 on the cab's handle (Brakes.dll's BR_395ID1), the DLL's direct vents (the ЭПК) kept
 };
