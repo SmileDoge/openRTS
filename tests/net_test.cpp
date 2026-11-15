@@ -546,6 +546,44 @@ void connection_loopback() {
           "addresses");
 }
 
+// openRTS's own packages: players and helpers (docs/net.md).
+void helper_packages() {
+    check(decode_openrts_hello(encode_openrts_hello()) == openrts_features, "openrts_hello round trip");
+    const HelperNote note{.kind = HelperKind::helping, .train = 7, .user = 3, .value = static_cast<std::uint8_t>(HelperState::helping),
+                          .nick = u"Машинист"};
+    const auto back = decode_helper_note(encode_helper_note(note));
+    check(back && back->kind == HelperKind::helping && back->train == 7 && back->user == 3 && back->value == 2 && back->nick == u"Машинист",
+          "helper note round trip");
+    auto bad = encode_helper_note(note);
+    bad[0] = 9;
+    check(!decode_helper_note(bad), "a helper note of no kind is refused");
+    const HelperCab cab{.train = 7, .car = 1, .packed = {1, 2, 3, 4, 5}};
+    const auto cab_back = decode_helper_cab(encode_helper_cab(cab));
+    check(cab_back && cab_back->train == 7 && cab_back->car == 1 && cab_back->packed == cab.packed, "helper cab round trip");
+    const HelperInput input{.kind = HelperInputKind::drag, .train = 7, .car = 0, .id = 12, .state = 0, .delta = -0.5f, .release = true};
+    const auto input_back = decode_helper_input(encode_helper_input(input));
+    check(input_back && input_back->kind == HelperInputKind::drag && input_back->id == 12 && input_back->delta == -0.5f && input_back->release,
+          "helper input round trip");
+    // player_pos as a server relays it: id, the 40 bytes after the first
+    // field, the name (padded).
+    WireWriter w;
+    w.u32(5);
+    w.u32(7);
+    w.u32(0);
+    w.i16(-4831);
+    w.i16(15012);
+    w.f32(10.0f);
+    w.f32(20.0f);
+    w.f32(-30.0f);
+    for (int i = 0; i < 4; ++i) w.f32(0.0f);
+    for (const char16_t c : std::u16string(u"смиле")) w.u16(c);
+    for (int i = 0; i < 37; ++i) w.u16(0);
+    const auto other = decode_other_player(w.data());
+    check(other && other->user == 5 && other->train == 7 && other->tile_x == -4831 && other->tile_z == 15012 && other->z == -30.0f &&
+              other->nick == u"смиле",
+          "a relayed player_pos: id, train, place, name");
+}
+
 void content(const std::filesystem::path& root) {
     const auto file = root / "RTS" / "multdata";
     if (!std::filesystem::exists(file)) {
@@ -576,6 +614,7 @@ int main(const int argc, char** argv) {
         snapshot_round_trip();
         broken_snapshot();
         play_packages();
+        helper_packages();
         connection_loopback();
     }
     if (failures == 0) std::cout << "net tests passed\n";

@@ -92,6 +92,22 @@ int main() {
         const auto once = head_pose(glm::vec3{0.0f, 0.0f, 0.01f}, 0.0f, ahead, 1.0f);
         check(std::abs(twice.nod - 2.0f * once.nod) < 1e-5f, "the setting scales it");
     }
+    {
+        // An electric train pulling away at 0.7 m/s^2: pressed into the seat
+        // (back, looking up a little), about a centimetre and a degree at the
+        // default setting; braking the other way.
+        HeadMotion head;
+        head.reset({});
+        run(head, {}, {0.0f, 0.0f, 0.7f}, 3.0f, 60.0f);
+        check(std::abs(head.lean - 0.7f) < 0.02f, "the lean follows the train's acceleration");
+        const auto away = seat_lean(head.lean, ahead, ahead, 0.25f);
+        check(away.shift.z < -0.007f && away.shift.z > -0.014f && away.nod < -0.01f && away.nod > -0.03f,
+              "pulling away: back into the seat by about a centimetre, a degree up");
+        const auto braking = seat_lean(-0.7f, ahead, ahead, 0.25f);
+        check(braking.shift.z > 0.007f && braking.nod > 0.01f, "braking: forward and down");
+        check(glm::length(seat_lean(0.7f, ahead, ahead, 0.0f).shift) == 0.0f, "0: no lean (RTS)");
+        check(glm::length(seat_lean(5.0f, ahead, ahead, 3.0f).shift) <= 0.014f * 1.5f * 2.0f * 1.001f, "a hit leans no more than 1.5 m/s^2 twice");
+    }
     if (failures == 0) std::cout << "head motion: all checks passed\n";
     return failures == 0 ? 0 : 1;
 }

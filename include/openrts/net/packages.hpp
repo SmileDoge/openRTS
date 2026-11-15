@@ -124,6 +124,12 @@ enum class Package : std::uint16_t {
     console_reply = 0x45F1,   // server -> console: what it printed
     console_state = 0x45F2,   // server -> consoles: the players and the trains with their owners
     console_place = 0x45F3,   // console -> server: a consist's cars to put on the track
+    // Between openRTS's server and openRTS players (docs/net.md, "Players
+    // and helpers"); a player sends them only after the server's hello.
+    openrts_hello = 0x45F4,   // player -> server after the snapshot, the server's answer back: both are openRTS
+    helper = 0x45F5,          // asking, answering and the helpers' news (net::HelperNote)
+    helper_cab = 0x45F6,      // engineer -> server -> his helpers: a cab as his DLLs show it
+    helper_input = 0x45F7,    // helper -> server -> the engineer: a control worked, the car he is in
 };
 
 [[nodiscard]] constexpr std::uint16_t id(const Package package) noexcept { return static_cast<std::uint16_t>(package); }

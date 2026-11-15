@@ -1,6 +1,7 @@
 #include <openrts/net/snapshot.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include <openrts/net/packages.hpp>
@@ -1247,6 +1248,118 @@ Bytes encode_player_pos(const PlayerPosition& p) {
     w.f32(p.z);
     for (const auto v : p.view) w.f32(v);
     return w.take();
+}
+
+std::optional<OtherPlayer> decode_other_player(const ByteView body) {
+    // u32 user, u32 train, u32, i16 tile x, i16 tile z, f32 x y z, 16 bytes
+    // of view, then the name as UTF-16 up to its first zero (rts_server.exe
+    // pads it; the snapshot's records have 32 bytes of it).
+    WireReader r(body);
+    OtherPlayer p;
+    p.user = r.u32();
+    p.train = r.u32();
+    r.u32();
+    p.tile_x = r.i16();
+    p.tile_z = r.i16();
+    p.x = r.f32();
+    p.y = r.f32();
+    p.z = r.f32();
+    r.skip(16);
+    if (!r.ok()) return std::nullopt;
+    while (r.remaining() >= 2) {
+        const auto unit = static_cast<char16_t>(r.u16());
+        if (unit == u'\0') break;
+        p.nick.push_back(unit);
+    }
+    return p;
+}
+
+Bytes encode_openrts_hello(const std::uint16_t features) {
+    WireWriter w;
+    w.u16(features);
+    return w.take();
+}
+
+std::optional<std::uint16_t> decode_openrts_hello(const ByteView body) {
+    // Later versions may add to it.
+    WireReader r(body);
+    const auto features = r.u16();
+    if (!r.ok()) return std::nullopt;
+    return features;
+}
+
+Bytes encode_helper_note(const HelperNote& n) {
+    WireWriter w;
+    w.u8(static_cast<std::uint8_t>(n.kind));
+    w.u32(n.train);
+    w.u32(n.user);
+    w.u8(n.value);
+    w.text_u32(n.nick);
+    return w.take();
+}
+
+std::optional<HelperNote> decode_helper_note(const ByteView body) {
+    HelperNote n;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        n.kind = static_cast<HelperKind>(r.u8());
+        n.train = r.u32();
+        n.user = r.u32();
+        n.value = r.u8();
+        n.nick = r.text_u32();
+    });
+    const auto kind = static_cast<std::uint8_t>(n.kind);
+    if (!ok || kind < 1 || kind > 6 || n.nick.size() > 64) return std::nullopt;
+    return n;
+}
+
+Bytes encode_helper_cab(const HelperCab& c) {
+    WireWriter w;
+    w.u32(c.train);
+    w.u32(c.car);
+    w.u32(static_cast<std::uint32_t>(c.packed.size()));
+    w.bytes(c.packed);
+    return w.take();
+}
+
+std::optional<HelperCab> decode_helper_cab(const ByteView body) {
+    HelperCab c;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        c.train = r.u32();
+        c.car = r.u32();
+        const auto size = r.u32();
+        const auto bytes = r.bytes(size);
+        c.packed.assign(bytes.begin(), bytes.end());
+    });
+    if (!ok) return std::nullopt;
+    return c;
+}
+
+Bytes encode_helper_input(const HelperInput& i) {
+    WireWriter w;
+    w.u8(static_cast<std::uint8_t>(i.kind));
+    w.u32(i.train);
+    w.u32(i.car);
+    w.u32(i.id);
+    w.u32(i.state);
+    w.f32(i.delta);
+    w.u8(i.release ? 1 : 0);
+    return w.take();
+}
+
+std::optional<HelperInput> decode_helper_input(const ByteView body) {
+    HelperInput i;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        i.kind = static_cast<HelperInputKind>(r.u8());
+        i.train = r.u32();
+        i.car = r.u32();
+        i.id = r.u32();
+        i.state = r.u32();
+        i.delta = r.f32();
+        i.release = r.u8() != 0;
+    });
+    const auto kind = static_cast<std::uint8_t>(i.kind);
+    if (!ok || kind < 1 || kind > 3 || !std::isfinite(i.delta)) return std::nullopt;
+    return i;
 }
 
 double front_distance(const SnapshotTrain& train) {

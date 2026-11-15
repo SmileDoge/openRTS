@@ -45,6 +45,7 @@
 #include <openrts/simulation/track_network.hpp>
 
 #include "track_view.hpp"
+#include "players_panel.hpp"
 #include "crossing_view.hpp"
 #include "particle_effects.hpp"
 #include "road_traffic.hpp"
@@ -1387,6 +1388,12 @@ public:
             track_control_->draw(*train_, signals_ ? signals_->system() : nullptr);
         }
         if (net_ && net_->console() && train_) console_panel_.draw(*net_, *train_, track_control_.get(), *content_.vfs());
+        if (net_ && !net_->console() && train_) {
+            if (draw_players_section(*net_, *train_, camera.eye(), origin_, player_names_)) {
+                remember("player_names", player_names_ ? "1" : "0");
+            }
+            draw_helper_windows(*net_);
+        }
         {
             // The tape window: the file rolling now, and the RTS installation's tapes.
             static const std::filesystem::path none;
@@ -1885,6 +1892,8 @@ private:
         if (place_names_ && track_) track_->collect_places(labels, lines, last_eye_, 2000.0f);
         if (place_names_ && train_) train_->collect_car_numbers(labels, last_eye_, 60.0f);
         if (train_) train_->collect_cab_labels(labels, last_eye_, cab_labels_);
+        // The other players of a network game, where their cameras are.
+        if (net_ && !net_->console() && player_names_) collect_player_labels(*net_, labels, last_eye_, origin_, 3000.0f);
         draw_world_lines(lines);
         draw_world_labels(std::move(labels));
     }
@@ -2030,6 +2039,8 @@ private:
     std::unique_ptr<TrackControl> track_control_;
     mutable bool signal_names_ = false; // Ctrl+F7
     mutable bool place_names_ = false;  // F7
+    // The other players' names over the world (a network game).
+    mutable bool player_names_ = remembered("player_names").value_or("1") != "0";
     mutable bool cab_labels_ = false;   // Alt held in the 3-D cab
     std::unique_ptr<SignalView> signals_;
     bool snapshot_signals_ = false; // the snapshot's aspects wait for the signals to load

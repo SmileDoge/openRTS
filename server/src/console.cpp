@@ -57,6 +57,7 @@ constexpr const char* help_text =
     "  junction <node> [branch] [lock|unlock]  throw or lock a junction (TDB node)\n"
     "  signal <item> <aspect|auto>    hold a signal's heads (TDB item) at an aspect, or give them back\n"
     "                                 aspects: stop, stop_and_proceed, restricting, approach_1..3, clear_1, clear_2\n"
+    "  helper <nick> <train|off>      make a player the helper (помощник машиниста) on a train's cab, or not\n"
     "  kick <nick>                    drop a player\n"
     "  admit on|off                   take new players or not\n"
     "  quit                           stop the server\n";
@@ -276,6 +277,9 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
                 out << "; trains";
                 for (const auto t : u.trains) out << ' ' << t;
             }
+            if (u.helping) out << "; helps on train " << u.helping;
+            if (u.asking) out << "; asks to help on train " << u.asking;
+            if (u.openrts) out << "; openRTS";
             if (!u.where.empty()) out << "; " << u.where;
             out << '\n';
         }
@@ -454,6 +458,13 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         }
         return done(server.set_signal(*item, aspect, error),
                     "signal " + std::to_string(*item) + (aspect ? std::string(" held at ") + formats::to_string(*aspect) : " runs its script"));
+    }
+    if (command == "helper") {
+        if (words.size() < 3) return "usage: helper <nick> <train|off>";
+        if (lower(arg(2)) == "off") return done(server.set_helper(arg(1), std::nullopt, error), std::string(arg(1)) + " helps no more");
+        const auto train = number_of(arg(2));
+        if (!train) return "usage: helper <nick> <train|off>";
+        return done(server.set_helper(arg(1), *train, error), std::string(arg(1)) + " helps on train " + std::to_string(*train));
     }
     if (command == "kick") {
         if (words.size() < 2) return "usage: kick <nick>";

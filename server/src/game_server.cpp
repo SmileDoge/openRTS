@@ -82,6 +82,11 @@ struct GameServer::User {
     bool playing = false;      // has the snapshot
     bool played = false;       // had it once: may come back with no train (RTS +92 bit 1)
     std::optional<net::Bytes> position; // the last player_pos body (44 bytes)
+    bool openrts = false;      // said openrts_hello: takes openRTS's own packages
+    // A helper (docs/server.md, "Helpers"): the train he asked to help on,
+    // its engineer not yet answering, or the train he helps on and whose it
+    // was then (the help ends when it is another's).
+    std::uint32_t asking{}, helping{}, helping_owner{};
     double window_start{};
     std::uint32_t window_all{}, window_sound{};
 
@@ -344,6 +349,13 @@ void GameServer::closed(const ConnectionId connection) {
     user->connection = 0;
     user->playing = false;
     user->position.reset();
+    // A helper's help ends with him; an engineer's helpers stop with him.
+    end_helping(*user, net::HelperState::ended);
+    for (auto& [_, other] : impl.users) {
+        if (!other.helping && !other.asking) continue;
+        const auto t = impl.trains.find(other.helping ? other.helping : other.asking);
+        if (t != impl.trains.end() && t->second.owner == user->id) end_helping(other, net::HelperState::ended);
+    }
     // Its trains stand where they are for the others (nobody drives them now).
     for (auto& [id, t] : impl.trains) {
         if (t.owner != user->id || t.record.stands || !t.record.pos) continue;
@@ -419,6 +431,8 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         user->address = address;
         user->playing = false;
         user->console = console;
+        // Another program may log in under the name: it says hello again.
+        user->openrts = false;
         impl.by_connection[connection] = user->id;
 
         net::WireWriter reply;
@@ -463,11 +477,23 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
 
     const auto relay = [&](const std::uint32_t except) { to_playing(framed(id, body), except); };
 
-    // The startup data: only for a player with a train, or one coming back.
+    // An openRTS player (right after its login, in the menu): the answer
+    // tells it the server is openRTS's too.
+    if (id == P(Package::openrts_hello)) {
+        if (!net::decode_openrts_hello(body) || user->console) return;
+        if (!user->openrts) impl.note("user " + utf8(user->nick) + " plays openRTS");
+        user->openrts = true;
+        send_to(*user, framed(P(Package::openrts_hello), net::encode_openrts_hello()));
+        return;
+    }
+
+    // The startup data: only for a player with a train, or one coming back;
+    // an openRTS player walks in without one (to look round, to help another:
+    // docs/server.md, "Helpers").
     if (id == P(Package::snapshot)) {
         bool owns = false;
         for (const auto& [_, t] : impl.trains) owns = owns || t.owner == user->id;
-        if (user->playing || (!owns && !user->played && !user->console)) {
+        if (user->playing || (!owns && !user->played && !user->console && !user->openrts)) {
             send_to(*user, code_only(P(Package::snapshot_again)));
             return;
         }
@@ -622,6 +648,67 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
             const bool answer = asked != impl.asked.end() && asked->second >= impl.now;
             if (!answer && at && there && std::hypot(at->x - there->x, at->z - there->z) > look_range) continue;
             transport_.send(other.connection, bytes);
+        }
+        return;
+    }
+    case P(Package::helper): {
+        const auto note = net::decode_helper_note(body);
+        if (!note || !user->openrts) return;
+        using net::HelperKind;
+        using net::HelperState;
+        if (note->kind == HelperKind::ask) {
+            end_helping(*user, HelperState::ended);
+            if (note->train == 0) return;
+            const auto* t = impl.train(note->train);
+            const auto engineer = t && t->owner ? impl.users.find(t->owner) : impl.users.end();
+            if (!t || engineer == impl.users.end() || engineer->second.id == user->id || !engineer->second.playing
+                || !engineer->second.connection || !engineer->second.openrts) {
+                send_helper(*user, {.kind = HelperKind::helping, .train = note->train, .value = static_cast<std::uint8_t>(HelperState::cannot)});
+                impl.note("user " + utf8(user->nick) + " cannot help on train " + std::to_string(note->train));
+                return;
+            }
+            user->asking = note->train;
+            send_helper(engineer->second, {.kind = HelperKind::asked, .train = note->train, .user = user->id, .nick = user->nick});
+            send_helper(*user, {.kind = HelperKind::helping, .train = note->train, .user = engineer->second.id,
+                                .value = static_cast<std::uint8_t>(HelperState::waiting), .nick = engineer->second.nick});
+            impl.note("user " + utf8(user->nick) + " asks to help " + utf8(engineer->second.nick) + " on train " +
+                      std::to_string(note->train));
+            return;
+        }
+        if (note->kind == HelperKind::answer || note->kind == HelperKind::drop) {
+            const auto helper = impl.users.find(note->user);
+            if (helper == impl.users.end()) return;
+            const auto on = helper->second.helping ? helper->second.helping : helper->second.asking;
+            const auto* t = impl.train(on);
+            if (!t || t->owner != user->id || on != note->train) return;
+            if (note->kind == HelperKind::answer && note->value != 0 && helper->second.asking == on) {
+                start_helping(helper->second, on);
+            } else {
+                end_helping(helper->second, note->kind == HelperKind::answer && helper->second.asking ? HelperState::refused : HelperState::ended);
+            }
+        }
+        return;
+    }
+    case P(Package::helper_cab): {
+        // The engineer's cab to his helpers on that train.
+        net::WireReader r(body);
+        const auto train = r.u32();
+        const auto* t = r.ok() ? impl.train(train) : nullptr;
+        if (!t || t->owner != user->id) return;
+        const auto bytes = framed(id, body);
+        for (const auto& [_, other] : impl.users) {
+            if (other.helping == train && other.playing && other.connection) transport_.send(other.connection, bytes);
+        }
+        return;
+    }
+    case P(Package::helper_input): {
+        // A helper's hand to his engineer.
+        const auto input = net::decode_helper_input(body);
+        if (!input || !user->helping || input->train != user->helping) return;
+        const auto* t = impl.train(input->train);
+        if (!t || !t->owner) return;
+        if (const auto engineer = impl.users.find(t->owner); engineer != impl.users.end() && engineer->second.playing) {
+            send_to(engineer->second, framed(id, body));
         }
         return;
     }
@@ -794,6 +881,7 @@ void GameServer::tick(const double now) {
             }
         }
     }
+    check_helpers();
     if (paused_) return; // nothing at all goes out while paused (live capture)
     const auto to_playing = [&](const net::Bytes& bytes) {
         for (auto& [_, user] : impl.users) {
@@ -1523,6 +1611,9 @@ std::vector<UserSummary> GameServer::users() const {
     for (const auto& [id, user] : impl_->users) {
         UserSummary s{.id = id, .nick = utf8(user.nick), .address = user.address, .connected = user.connection != 0, .playing = user.playing,
                       .console = user.console};
+        s.openrts = user.openrts;
+        s.helping = user.helping;
+        s.asking = user.asking;
         for (const auto& [tid, t] : impl_->trains) {
             if (t.owner == id) s.trains.push_back(tid);
         }
@@ -1563,5 +1654,91 @@ std::uint32_t GameServer::free_number() const {
 }
 
 std::vector<std::string> GameServer::take_log() { return std::exchange(impl_->log, {}); }
+
+void GameServer::send_helper(const User& user, const net::HelperNote& note) {
+    if (user.connection && user.openrts) transport_.send(user.connection, framed(P(Package::helper), net::encode_helper_note(note)));
+}
+
+void GameServer::end_helping(User& helper, const net::HelperState why) {
+    auto& impl = *impl_;
+    const auto train = helper.helping ? helper.helping : helper.asking;
+    if (!train) return;
+    const bool was_helping = helper.helping != 0;
+    const auto owner = was_helping ? helper.helping_owner : [&] {
+        const auto* t = impl.train(train);
+        return t ? t->owner : 0u;
+    }();
+    helper.helping = helper.asking = helper.helping_owner = 0;
+    const auto engineer = impl.users.find(owner);
+    send_helper(helper, {.kind = net::HelperKind::helping, .train = train, .user = owner, .value = static_cast<std::uint8_t>(why),
+                         .nick = engineer != impl.users.end() ? engineer->second.nick : std::u16string{}});
+    if (engineer != impl.users.end()) {
+        send_helper(engineer->second, {.kind = net::HelperKind::helper, .train = train, .user = helper.id, .value = 0, .nick = helper.nick});
+    }
+    impl.note("user " + utf8(helper.nick) + (was_helping ? " helps no more on train " : " does not help on train ") + std::to_string(train) +
+              (why == net::HelperState::refused ? " (refused)" : ""));
+}
+
+void GameServer::start_helping(User& helper, const std::uint32_t train) {
+    auto& impl = *impl_;
+    const auto* t = impl.train(train);
+    if (!t || !t->owner) return;
+    helper.asking = 0;
+    helper.helping = train;
+    helper.helping_owner = t->owner;
+    const auto engineer = impl.users.find(t->owner);
+    if (engineer == impl.users.end()) return;
+    send_helper(helper, {.kind = net::HelperKind::helping, .train = train, .user = t->owner,
+                         .value = static_cast<std::uint8_t>(net::HelperState::helping), .nick = engineer->second.nick});
+    send_helper(engineer->second, {.kind = net::HelperKind::helper, .train = train, .user = helper.id, .value = 1, .nick = helper.nick});
+    impl.note("user " + utf8(helper.nick) + " helps " + utf8(engineer->second.nick) + " on train " + std::to_string(train));
+}
+
+void GameServer::check_helpers() {
+    auto& impl = *impl_;
+    for (auto& [_, user] : impl.users) {
+        if (!user.helping && !user.asking) continue;
+        const auto* t = impl.train(user.helping ? user.helping : user.asking);
+        if (!t || !t->owner || (user.helping && t->owner != user.helping_owner)) end_helping(user, net::HelperState::ended);
+    }
+}
+
+bool GameServer::set_helper(const std::string_view nick, const std::optional<std::uint32_t> train, std::string& error) {
+    auto& impl = *impl_;
+    auto* user = impl.user_named(net::from_utf8(nick));
+    if (!user) {
+        error = "no player " + std::string(nick);
+        return false;
+    }
+    if (!train) {
+        if (!user->helping && !user->asking) {
+            error = std::string(nick) + " helps nobody";
+            return false;
+        }
+        end_helping(*user, net::HelperState::ended);
+        return true;
+    }
+    const auto* t = impl.train(*train);
+    if (!t) {
+        error = "no train " + std::to_string(*train);
+        return false;
+    }
+    const auto engineer = t->owner ? impl.users.find(t->owner) : impl.users.end();
+    if (engineer == impl.users.end()) {
+        error = "nobody drives train " + std::to_string(*train);
+        return false;
+    }
+    if (engineer->second.id == user->id) {
+        error = std::string(nick) + " drives it";
+        return false;
+    }
+    if (!user->openrts || !engineer->second.openrts) {
+        error = "helpers are openRTS's: both play openRTS (rts1.exe's helper link is not relayed yet)";
+        return false;
+    }
+    end_helping(*user, net::HelperState::ended);
+    start_helping(*user, *train);
+    return true;
+}
 
 } // namespace openrts::server

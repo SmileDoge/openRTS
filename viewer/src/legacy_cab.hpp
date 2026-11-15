@@ -166,7 +166,25 @@ public:
     void set_on_foot(bool on) noexcept { on_foot_ = on; }
     [[nodiscard]] bool on_foot() const noexcept { return on_foot_; }
     [[nodiscard]] bool alive() const { return consist_ && consist_->alive(); }
-    [[nodiscard]] std::size_t player() const { return consist_ ? consist_->player() : SIZE_MAX; }
+
+    // A helper's hands on the engineer's cab (docs/net.md, "Players and
+    // helpers"): no DLLs here; the cab is what the engineer's DLLs showed
+    // last (`output`), its .sd this side's (`cab`), and what the hands do
+    // (a switch to a state, a drag) goes to the engineer. The clicks, the
+    // drags and the keys work as on a cab of one's own.
+    struct Remote {
+        std::function<const dllhost::CarOutput*(std::size_t car)> output;
+        std::function<const formats::CabDescription*(std::size_t car)> cab;
+        std::function<void(std::size_t car, std::uint32_t id, std::uint32_t state)> operate;
+        std::function<void(std::size_t car, std::uint32_t id, float delta, bool release)> drag;
+    };
+    [[nodiscard]] static std::unique_ptr<LegacyCab> remote(Remote target, std::size_t player);
+    // The cab the helper is at (its keys bound).
+    void set_remote_player(std::size_t car);
+    // The engineer's side: a helper's hand, done here as his own would be.
+    bool operate_switch(std::size_t car, std::uint32_t id, std::uint32_t state);
+    void drag_switch(std::size_t car, std::uint32_t id, float delta, bool release);
+    [[nodiscard]] std::size_t player() const { return consist_ ? consist_->player() : remote_ ? remote_player_ : SIZE_MAX; }
     // The farthest RTSGetTrackItems asked for in the last step, m.
     [[nodiscard]] float items_wanted() const { return consist_ ? consist_->items_wanted() : 0.0f; }
     // What the DLLs asked of the tape in the last step, once.
@@ -190,6 +208,16 @@ private:
     [[nodiscard]] std::uint32_t next_state(std::uint32_t id, int direction, bool shift, std::size_t car = SIZE_MAX);
     void operate(std::uint32_t id, std::uint32_t state, std::size_t car = SIZE_MAX);
     void bind_keys(std::size_t car);
+    // The cab's state and .sd, and the hand's way to the DLLs: the consist
+    // here, or the engineer's for a helper (remote_).
+    [[nodiscard]] const dllhost::CarOutput* out_of(std::size_t car) const;
+    [[nodiscard]] const formats::CabDescription* cab_of(std::size_t car) const;
+    void apply_operate(std::size_t car, std::uint32_t id, std::uint32_t state);
+    void apply_drag(std::size_t car, std::uint32_t id, float delta, bool release);
+    void take_log();
+    [[nodiscard]] bool working() const noexcept { return consist_ != nullptr || remote_.has_value(); }
+    std::optional<Remote> remote_;
+    std::size_t remote_player_ = SIZE_MAX;
     [[nodiscard]] std::size_t car_or_player(std::size_t car) const;
     void log(std::string line);
 

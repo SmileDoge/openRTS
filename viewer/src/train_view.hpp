@@ -469,6 +469,40 @@ public:
     // The open passage doors of the car he is in, as doorways into the cars
     // coupled there (ModelLighting::portals).
     [[nodiscard]] const std::vector<renderer::ModelPortal>& portals() const noexcept { return portals_; }
+    // --- A helper (помощник машиниста; docs/net.md, "Players and helpers").
+    // The network makes him another player's helper: that player's train
+    // (another client's here) is first, the one he is in. He walks and sits
+    // in it; its cabs show what the engineer's DLLs show (set_helper_output)
+    // and what his hands do there goes to the engineer (take_helper_hands),
+    // whose DLLs do it (helper_hand). His own driven train stands meanwhile.
+    struct HelperHand {
+        enum class Kind : std::uint8_t { operate, drag };
+        Kind kind = Kind::operate;
+        std::size_t car{};
+        std::uint32_t id{}, state{};
+        float delta{};
+        bool release = false;
+    };
+    // Empty: done; else why not.
+    [[nodiscard]] std::string help(std::uint64_t id);
+    void stop_helping();
+    [[nodiscard]] std::uint64_t helping() const noexcept { return helping_; }
+    // Car `car`'s cab as the engineer's DLLs showed it; its cab triggers play here.
+    void set_helper_output(std::size_t car, dllhost::CarOutput output);
+    // The car he is in (its cab is sent to him), SIZE_MAX none.
+    [[nodiscard]] std::size_t helper_car() const noexcept;
+    [[nodiscard]] std::vector<HelperHand> take_helper_hands() { return std::exchange(helper_hands_, {}); }
+    // The helper's hand on switch `id` of the cab he is at (tests).
+    void helper_set_switch(std::uint32_t id, std::uint32_t state) {
+        if (helper_cab_) helper_cab_->set_switch(id, state);
+    }
+    // The engineer's side: a helper's hand on car `car` of the driven train;
+    // what came of it, for the log.
+    std::string helper_hand(const HelperHand& hand);
+    // The engineer's side: car `car`'s cab for his helpers, the cab
+    // triggers its DLL posted since the last call; nothing: no DLL cab there.
+    [[nodiscard]] std::optional<dllhost::CarOutput> helper_output(std::size_t car);
+
     // The world clock the DLLs read (RTS_VAR_TIME, RTS_ISNIGHT): the scene's
     // time of day, s since midnight, and whether the sky is at night.
     void set_world_clock(const double day_time, const bool night) noexcept {
@@ -1103,8 +1137,24 @@ private:
     std::vector<NativeBinding> native_bindings_;
     std::map<std::uint32_t, bool> native_going_down_;
     void native_operate(std::uint32_t id, int direction);
+    void spin_slipping_wheels(float elapsed);
     // The cab state the 3-D cab of car `car` shows: a DLL's or the native plugin's.
     [[nodiscard]] const dllhost::CarOutput* cab_state(std::size_t car) const;
+    // What lights and textures car `car`'s interior: its DLL's output, or for
+    // a helper the engineer's.
+    [[nodiscard]] const dllhost::CarOutput* interior_output(std::size_t car) const;
+    // The train the player is aboard as its driver or a helper.
+    [[nodiscard]] bool aboard(const Unit& unit, std::size_t u) const noexcept;
+    std::uint64_t helping_ = 0;                                // the train he helps on (TrainView id), 0 none
+    std::uint64_t helper_own_ = 0;                             // his own driven train before, to drive again after
+    std::map<std::size_t, dllhost::CarOutput> helper_outputs_; // the engineer's cabs, by car
+    std::unique_ptr<LegacyCab> helper_cab_;                    // the helper's hands on them
+    std::vector<HelperHand> helper_hands_;
+    // The engineer's: the cab triggers for his helpers since the last
+    // stream, by car, while one watches it (helper_clock_).
+    std::map<std::size_t, std::vector<std::uint16_t>> helper_triggers_;
+    std::map<std::size_t, double> helper_watched_until_;
+    double helper_clock_ = 0.0;
     // A coupling being fixed (the car menu's "Fix coupling", RTS 0x463F84
     // id 17: 120 s, 0x424488 counts it down).
     struct Repair {
@@ -1156,6 +1206,14 @@ private:
     std::size_t joints_ = 0, junctions_ = 0, coupler_breaks_ = 0, derailments_ = 0;
     bool end_of_track_ = false;
     std::unique_ptr<audio::SoundBank> bank_;
+    // Wheel flats (ползуны): their knocks are real wheel-rail blows of the
+    // RTS install (SOUND/ra_euro_joint*.wav, else mp_joint*.wav), one at
+    // random each time, its pitch and loudness a little different.
+    void play_wheel_flats(audio::AudioEngine& sound);
+    std::vector<std::shared_ptr<const audio::AudioClip>> flat_clips_;
+    bool flat_clips_tried_ = false;
+    std::uint32_t flat_random_ = 0x9E3779B9u;
+    [[nodiscard]] float flat_uniform(float low, float high);
     int substeps_ = 1;
     bool realistic_air_ = false; // openRTS realistic air for every train (BrakeModel::realistic)
     // The RTS model with a distributor's stability (TrainSettings), remembered

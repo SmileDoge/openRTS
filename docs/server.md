@@ -60,6 +60,7 @@ Russian path names and messages work.
 | `signal <item> <aspect\|auto>` | the heads of a TDB signal item held at an aspect, or back to their scripts |
 | `couple <train> <train>` | the second joins the first where they stand end to end (the nearest ends within 50 m), as `rts_server.exe` couples a LOOSE train run into another: `0x460F` to everyone, the first's owner too |
 | `cut <train> <car>` | cut before car `car` (from 0): the cars from it on are a train of their own, kind and owner as the train's; `0x460E` to everyone, the owner too |
+| `helper <nick> <train\|off>` | the player is the helper (помощник машиниста) on the train's cab, or no more (openRTS players: "Helpers" below) |
 | `kick <nick>`, `admit on\|off`, `quit` | |
 
 ## The dispatcher's console (in the game) — hidden for now
@@ -212,6 +213,25 @@ make couplings and cuts exact:
 
 **Time** runs at 1×; `0x460D` goes out every 300 s (as `rts_server.exe`)
 and when the dispatcher sets it.
+
+## Helpers
+
+- **openRTS players** say `0x45F4` after their login; the server answers.
+  Such a player gets the world without a train (an `rts1.exe` without one
+  still waits in the menu, `0x4703`).
+- **Asking** (`0x45F5`): a player asks to help on a train. The server asks
+  its owner (an openRTS player in play) and tells the helper "waiting"; the
+  owner takes him or refuses. Not possible: no such train, nobody drives
+  it, he drives it himself, or one side is not openRTS.
+- **The dispatcher** makes a player a helper with `helper <nick> <train>`,
+  as RTS's dispatcher assigns helpers, without asking; `helper <nick> off`
+  ends it. `users` shows who helps where, and who is an openRTS player.
+- **The streams:** the owner's `0x45F6` (his cab) goes to his helpers on
+  that train, a helper's `0x45F7` (his hand) to the train's owner. Nothing
+  else takes them.
+- **It ends** when the helper or the engineer leaves, the train is given to
+  another, taken back or removed, or either side says so; both are told.
+- `docs/net.md`, "Players and helpers", has the client's side.
 
 ## The code
 

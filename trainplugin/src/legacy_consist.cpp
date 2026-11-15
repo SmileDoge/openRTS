@@ -312,6 +312,8 @@ void apply_engine_output(const EngineOutput& out, simulation::EngineDemands& dem
     demands.release_train_brake = (out.engine_flags & 1) != 0;
     demands.release_independent_brake = (out.engine_flags & 2) != 0;
     demands.sanding = out.sanding != 0;
+    demands.engine_force_count = out.engine_force_count;
+    demands.engine_forces = out.engine_forces;
     // RTS 0x503CE4: the line current comes from ElectricEngine::PowerConsuming.
     demands.power = out.power_consuming;
 }
@@ -711,6 +713,14 @@ std::vector<CarInput> LegacyConsist::inputs(const std::vector<const simulation::
         in.charging_pipe = c.charging_pipe;
         in.handbrake = c.handbrake;
         in.main_reservoir = c.main_reservoir;
+        in.wheelslip = c.wheelslip;
+        // RTS (0x5031D8): a release bit of EngineFlags is cleared once its
+        // cylinder has bled empty (docs/reverse/brakes.md, section 7).
+        if (const auto at = train_first_[t] + i; outputs_ && outputs_->valid && at < outputs_->cars.size() && outputs_->cars[at].has_engine) {
+            const auto engine_flags = outputs_->cars[at].engine.engine_flags;
+            if ((engine_flags & 1u) && c.cylinder <= 0.001f) in.clear_engine_flags |= 1u;
+            if ((engine_flags & 2u) && c.independent <= 0.001f) in.clear_engine_flags |= 2u;
+        }
         if (c.definition && c.definition->engine && c.definition->engine->kind == formats::EngineKind::electric) {
             // The route's line (Electrification::apply) when modelled, else the world's.
             if (c.line_voltage >= 0.0f) {

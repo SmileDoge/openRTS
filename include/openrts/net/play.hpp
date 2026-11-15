@@ -288,6 +288,84 @@ struct ConsolePlace {
 [[nodiscard]] Bytes encode_console_place(const ConsolePlace& place);
 [[nodiscard]] std::optional<ConsolePlace> decode_console_place(ByteView body);
 
+// 0x462D player_pos as the server relays it in play: the sender's id in
+// front, the 40 bytes after its first field, its name after (rts_server.exe
+// and openRTS's server alike). Who is where, for the players' list and
+// their names over the world.
+struct OtherPlayer {
+    std::uint32_t user{};
+    std::uint32_t train{}; // the train he is in, 0 none
+    std::int16_t tile_x{}, tile_z{};
+    float x{}, y{}, z{};
+    std::u16string nick;
+};
+[[nodiscard]] std::optional<OtherPlayer> decode_other_player(ByteView body);
+
+// openrts_hello: u16 the openRTS features the sender has (1: players and
+// helpers).
+constexpr std::uint16_t openrts_features = 1;
+[[nodiscard]] Bytes encode_openrts_hello(std::uint16_t features = openrts_features);
+[[nodiscard]] std::optional<std::uint16_t> decode_openrts_hello(ByteView body);
+
+// helper (openRTS's own): a player becomes another's helper (помощник
+// машиниста), as RTS's 0x461F does through the dispatcher; here a player
+// asks and the engineer answers, or the dispatcher assigns. One layout for
+// every kind.
+enum class HelperKind : std::uint8_t {
+    ask = 1,     // player -> server: help on `train` (0: stop helping)
+    asked = 2,   // server -> engineer: `user` (`nick`) asks to help on `train`
+    answer = 3,  // engineer -> server: `user` taken (`value` 1) or not (0)
+    helping = 4, // server -> helper: on `train` of `user` (`nick`), `value` a HelperState
+    helper = 5,  // server -> engineer: `user` (`nick`) helps on `train` now (`value` 1) or no longer (0)
+    drop = 6,    // engineer -> server: `user` helps no more
+};
+enum class HelperState : std::uint8_t {
+    ended = 0,   // not (or no longer) a helper
+    waiting = 1, // asked, the engineer has not answered
+    helping = 2,
+    refused = 3, // the engineer said no
+    cannot = 4,  // no such train, nobody drives it, or not an openRTS player
+};
+struct HelperNote {
+    HelperKind kind = HelperKind::ask;
+    std::uint32_t train{};
+    std::uint32_t user{};
+    std::uint8_t value{};
+    std::u16string nick;
+};
+[[nodiscard]] Bytes encode_helper_note(const HelperNote& note);
+[[nodiscard]] std::optional<HelperNote> decode_helper_note(ByteView body);
+
+// helper_cab: what the engineer's DLLs show in car `car` of `train` (the
+// cab a helper is in), as the viewer packs it (zlib over the DLL host's
+// CarOutput).
+struct HelperCab {
+    std::uint32_t train{};
+    std::uint32_t car{};
+    Bytes packed;
+};
+[[nodiscard]] Bytes encode_helper_cab(const HelperCab& cab);
+[[nodiscard]] std::optional<HelperCab> decode_helper_cab(ByteView body);
+
+// helper_input: a helper's hand on the engineer's cab (car `car` of
+// `train`). The engineer's DLLs do it as if his own hand did.
+enum class HelperInputKind : std::uint8_t {
+    watch = 1,   // the helper is in car `car` (SIZE_MAX as 0xFFFFFFFF: in none): its cab is sent to him
+    operate = 2, // switch `id` to `state` (CanSwitch / Switched)
+    drag = 3,    // switch `id` dragged `delta` states, `release`: let go
+};
+struct HelperInput {
+    HelperInputKind kind = HelperInputKind::watch;
+    std::uint32_t train{};
+    std::uint32_t car{};
+    std::uint32_t id{};
+    std::uint32_t state{};
+    float delta{};
+    bool release = false;
+};
+[[nodiscard]] Bytes encode_helper_input(const HelperInput& input);
+[[nodiscard]] std::optional<HelperInput> decode_helper_input(ByteView body);
+
 // 0x4611 message: the dispatcher's text.
 [[nodiscard]] std::optional<std::u16string> decode_message(ByteView body);
 // 0x4616 pause: suspended or not.

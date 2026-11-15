@@ -322,7 +322,9 @@ built, against the proposal below:
     +800 K, and wearing away over about ten minutes at +500 K), catch fire
     at +400 K and, alight, warm by 4 K a second and burn away in two
     minutes: then the bogie has no brake. A bogie dragged at 60 km/h with
-    20 kN catches fire in about 15 s. F5 marks "[колодки тлеют]",
+    20 kN smoulders after about 25 s and catches fire after about 50 s
+    (the charred wood holds less; 15 s before the heat capacity was doubled
+    on 2026-11-15). F5 marks "[колодки тлеют]",
     "[КОЛОДКИ ГОРЯТ]" and "[колодки сгорели]", the bogie smokes (the
     diesels' smoke, darker alight), the brake log counts the bogies alight
     (`тележек_горит`). The bogie's car menu puts on new shoes ("Колодки
@@ -342,6 +344,37 @@ built, against the proposal below:
   - Measured (`openrts-train-check --brake`): a 10-car ЭД9М (cast iron)
     stops from 100 km/h in 327 m (RTS's model: 225 m); a ВЛ80Т with 90 loaded
     freight cars (composite) from 60 km/h in 394 m (393 m).
+- **Wheel flats (ползуны)**, openRTS's own (2026-11-15; RTS has none):
+  - A bogie's wheel sets sliding locked (юз; under RTS's air, a car braked
+    over its adhesion) wear a flat: about 1 mm in 15 m slid at 20 t an
+    axle, deeper the heavier the axle (√ of it), at most 12 mm. It does not
+    wear away by itself (`CarState::flat`, by the car's own ends).
+  - From 0.2 mm each of the bogie's two axles strikes the rail once a turn
+    at its flat (`TrainEventKind::wheel_flat`): a kick to the body springs
+    and a knock, both growing with the speed to some 40 km/h and hardly
+    after (the wheel flies over the flat), and with the depth.
+  - The knock is a real wheel-on-rail blow of the RTS install: one of
+    `SOUND/ra_euro_joint1..12.wav` (else `mp_joint*.wav`) at random each
+    time, its pitch ±6 % and loudness a little different, at the bogie.
+    The synthesised knocks tried first sounded made (testers 2026-11-15).
+  - F5 marks "[ползун N мм]"; the player is told once his train has a flat
+    of 1 mm. The bogie's car menu changes its wheel sets, or every one with
+    a flat on the train. The rules' speed limits by depth differ between
+    editions, so none is shown or enforced.
+  - Not yet: kept in a saved situation, sent to the other players.
+- **Wheel slip under traction (боксование)**, as RTS (`0x424488`,
+  `reverse/train-dll.md`, "Wheel slip"; 2026-11-15): the force against mass
+  × 10 × `Adheasion`'s second value (× its third while sanding, × the
+  rails' state), × its first once slipping, so the force must come down
+  further than it went over. A locomotive with `NumEngines` / `EngineAxles`
+  is checked motor by motor (`Engine::EngineForce` from its DLL): a
+  slipping motor's axles spin and its force falls to a quarter; without,
+  the whole locomotive slips and pulls nothing. The DLL reads the slipping
+  axles in `Engine::Wheelslip` (15: all). The slipping wheel sets spin
+  faster than the run (RTS `0x4F5B34`); F5 marks "[БОКСОВАНИЕ]". Until
+  then a slipping locomotive kept a quarter of its force and its DLL never
+  knew. In RTS's air a car braked over its adhesion has its wheels stand,
+  as RTS draws them.
 - **Adhesion, wheel slide and the shoes' warmth** (`simulation/adhesion.hpp`,
   2026-11-13; the Train window's "Rails"):
   - The rails: as RTS (no weather), by the weather (rain wet, snow snow), or
@@ -356,6 +389,8 @@ built, against the proposal below:
     the standing grip, so it rolls again only once the brake is let off that
     far, or the car stops. The engine's sand raises the adhesion by a
     quarter. F5 marks "[ЮЗ]" while it slides and "[юз был: N м]" after.
+    A sliding bogie's wheels stand still in the picture (`CarState::rolled`,
+    by bogie; until 2026-11-15 they turned on).
   - The shoes and the wheels' treads get wet in rain and snow (towards 1 in
     rain, 0.8 in snow and ice, 0.6 on leaves, in about 1.5 min), dry in the
     air in 10 min, and the brakes warm them: of the friction's power on the
@@ -533,7 +568,12 @@ The other two choices take the air after the valve from the model:
   RTS's main reservoir (its huge volume never drains; the ЭД9М's DLLs never
   run a compressor and take their own air from it), and their
   MainResRate is not taken. An engine releasing its own brake (EngineFlags
-  1, the 254 in I) vents its cylinder as in the RTS model.
+  1, the 254 in I) vents its cylinder as in the RTS model, and, as RTS
+  (`0x5031D8`), the bit is cleared once the cylinder is empty (bit 2 with
+  the independent brake's): the ВЛ80Т's master sets its second section's
+  bit through the train wires and never clears it, so that section's
+  cylinder was bled for good and its auxiliary reservoir drained (testers
+  2026-11-15; `CarInput::clear_engine_flags`).
 - Checked on the ЭД9М (7 cars, `openrts-train-check --dll ... --air
   dll|own`): a V of 3 s then IV gives 2.15 / 1.94 atm in every cylinder
   and II releases it; VI empties the pipe in 2-3 s and fills every

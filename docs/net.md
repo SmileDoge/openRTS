@@ -386,6 +386,75 @@ dropped, the speed alone kept):
 kept for the server's list); the console's dispatcher packages (stage 3 and
 5).
 
+## Players and helpers (openRTS's own, 2026-11-15)
+
+Between openRTS's server and openRTS players; `rts1.exe` and
+`rts_server.exe` never see these packages.
+
+- **Hello** (`0x45F4 openrts_hello`, `u16` features, 1: players and
+  helpers). The client sends it right after its login. `rts_server.exe`
+  leaves an id it does not know to its main thread
+  (`reverse/multiplayer.md`, "Routing"). openRTS's server answers it, and
+  only then does the client send the packages below. An openRTS player on
+  an openRTS server does not wait in the menu for a train: it asks for the
+  world at once and looks round with the free camera. The dispatcher can
+  give it a train any time, and another player can take it as his helper.
+- **Players.** The other players' places come as RTS relays them
+  (`0x462D`: the sender's id, its place, its name). openRTS showed nothing
+  of them until now. Now it shows:
+  - their names over the world where their cameras are, with the distance
+    (the panel's "Имена игроков над миром", on by default);
+  - the panel's "Игроки": each player, his train or "on foot or the free
+    camera", how far.
+- **Helpers** (помощник машиниста; RTS: `0x461F` and a peer link,
+  `reverse/multiplayer.md`, "Helpers"). Here everything goes over the
+  normal connection, and the server forwards it by train, so nobody needs
+  an open port:
+  - `0x45F5 helper` (`net::HelperNote`: kind, train, user, value, nick). A
+    player asks to help on a train ("Попроситься помощником" next to a
+    driving player in the panel). The engineer gets a window ("X просится к
+    вам помощником": "Принять" / "Отказать"). The server tells both sides
+    the outcome: waiting, helping, refused, not possible, ended. The
+    engineer can let a helper go, and the helper can stop.
+  - `0x45F6 helper_cab`, engineer → server → his helpers. It carries the
+    cab of the car the helper is in, as the engineer's DLLs show it: the
+    DLL host's `CarOutput`, zlib-packed (about 370 bytes for a ВЛ80Т cab
+    of 150 switches, 200 displays and 2 screens). The cab triggers posted
+    since the last stream go with it; the exterior sounds, lights and
+    doors do not, since the train's own packages carry those to everyone.
+    It goes ten times a second while the cab changes and every second
+    anyway.
+  - `0x45F7 helper_input`, helper → server → engineer. "I am in car N"
+    every second; a switch put at a state (CanSwitch / Switched, as the
+    engineer's own hand); a drag of a lever (delta in states, let go).
+- **The helper's side** (`TrainView::help`). The engineer's train, another
+  client's, becomes the first train here; the helper's own driven train
+  stands meanwhile, its DLLs waiting in the host, and is driven again when
+  the help ends.
+  - He stands by the chair of the engineer's cab and walks the train as in
+    his own.
+  - The cab draws the streamed state: switches, needles, lamps, screens,
+    texture changes and the cab lamps' light. Its cab sound plays with the
+    engineer's DLL variables and triggers.
+  - His clicks, drags, wheel and cab keys run through the same switch
+    logic as on his own train (`LegacyCab::remote`), and only the
+    resulting switch states and drags go to the engineer. A switch he
+    moved shows at once; the engineer's answer comes with the next stream.
+- **The engineer's side.** A helper's hand is done by his DLLs as his own
+  would be (`TrainView::helper_hand`). The helper's train stays his: it
+  moves, brakes and sounds by his packages, as any other client's.
+- **Not yet:** helpers with `rts1.exe` on either side (the relay of RTS's
+  peer link, `roadmap.md`); the helper's ears hear the train's exterior
+  sounds as another train's, through the cab.
+- **Checked** (2026-11-15, one PC): `openrts-server` on TestRoute_RTS, a
+  ВЛ80Т given to EngA, HelpB walked in without a train and asked to help;
+  EngA took him. HelpB sat in the cab, which came in 373 bytes. HelpB's
+  hand put switch 34 at 1: EngA's DLL took it ("done"), and the next
+  stream showed it at 1 at HelpB's. When HelpB left, EngA was told.
+  Test hooks for such runs: `OPENRTS_MP_HELP=<nick>` asks him,
+  `OPENRTS_MP_TAKE_HELPERS` takes every helper, `OPENRTS_MP_HELP_SWITCH=
+  <id>:<state>` works that switch once the cab is here.
+
 ## Tests
 
 - `openrts.net`: fields and strings both ways, nested packages, broken
@@ -393,7 +462,9 @@ kept for the server's list); the console's dispatcher packages (stage 3 and
   read and written again byte for byte, a stray position; the packages of
   play, the own train's (a sound trigger as `rts1.exe` sent it, read and
   written back); a connection to a fake server on the loopback (the login, its reply
-  without a length, an assignment, the snapshot, the hang-up).
+  without a length, an assignment, the snapshot, the hang-up); openRTS's
+  own hello and helper packages both ways, a relayed `0x462D` with its id
+  and name.
 - `openrts.net_world`: on a synthetic switch, distances along the track,
   junctions set the server's way, a train's front from its rear end, a
   remote train interpolated, run on, stopped and put across a jump.

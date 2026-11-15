@@ -549,6 +549,113 @@ void game() {
 
 // RTS's hand route from a console (0x4619): laid along the junctions as they
 // stand, its junction held, the distance sent to everyone; -1 cancels.
+// Helpers (помощник машиниста) and openRTS players (docs/server.md, "Helpers").
+void helpers() {
+    auto network = switch_track();
+    const auto car = car_definition();
+    Recorder rec;
+    server::ServerOptions options;
+    options.route_id = "testroute";
+    options.description = server::game_description("TestRoute", 1);
+    server::GameServer game(rec, options, *network, nullptr);
+    std::string error;
+    double now = 0.0;
+    game.tick(now);
+    const auto hello = net::encode_openrts_hello();
+    const auto notes = [&](const server::ConnectionId c) {
+        std::vector<net::HelperNote> out;
+        for (const auto& g : take(rec, c)) {
+            if (g.id != P(Package::helper)) continue;
+            if (const auto n = net::decode_helper_note(g.body)) out.push_back(*n);
+        }
+        return out;
+    };
+    // Alice (openRTS) drives train 1.
+    game.connected(1, "127.0.0.1:1");
+    game.received(1, P(Package::login), login(u"Alice"));
+    take_reply(rec, 1);
+    game.received(1, P(Package::openrts_hello), hello);
+    {
+        const auto got = ids(take(rec, 1));
+        std::string list;
+        for (const auto id : got) list += " " + std::to_string(id);
+        check(got == std::vector<std::uint16_t>{P(Package::openrts_hello)}, "an openRTS player's hello is answered:" + list);
+    }
+    check(game.add_train(new_train(car, 1, 45.0, 101), error) == 1u, "train 1: " + error);
+    check(game.assign(1, "Alice", error), "train 1 to Alice: " + error);
+    game.received(1, P(Package::snapshot), {});
+    rec.out[1].clear();
+    // Bob (openRTS) walks in without a train; Carl (rts1.exe, no hello) waits.
+    game.connected(2, "127.0.0.1:2");
+    game.received(2, P(Package::login), login(u"Bob"));
+    take_reply(rec, 2);
+    game.received(2, P(Package::openrts_hello), hello);
+    rec.out[2].clear();
+    game.received(2, P(Package::snapshot), {});
+    check(net::read_snapshot(rec.out[2]).ok(), "an openRTS player gets the world without a train");
+    rec.out[2].clear();
+    game.connected(3, "127.0.0.1:3");
+    game.received(3, P(Package::login), login(u"Carl"));
+    take_reply(rec, 3);
+    game.received(3, P(Package::snapshot), {});
+    check(rec.out[3] == net::Bytes{0x03, 0x47}, "rts1.exe without a train waits (0x4703): " + std::to_string(rec.out[3].size()) + " bytes");
+    rec.out[3].clear();
+    // Bob asks; Alice is asked; she takes him.
+    game.received(2, P(Package::helper), net::encode_helper_note({.kind = net::HelperKind::ask, .train = 1}));
+    auto alice = notes(1);
+    auto bob = notes(2);
+    check(alice.size() == 1 && alice[0].kind == net::HelperKind::asked && alice[0].nick == u"Bob" && alice[0].train == 1,
+          "Alice: Bob asks to help on train 1");
+    check(bob.size() == 1 && bob[0].kind == net::HelperKind::helping && bob[0].value == static_cast<std::uint8_t>(net::HelperState::waiting) &&
+              bob[0].nick == u"Alice",
+          "Bob: waiting for Alice");
+    const auto bob_id = alice.empty() ? 0u : alice[0].user;
+    game.received(1, P(Package::helper), net::encode_helper_note({.kind = net::HelperKind::answer, .train = 1, .user = bob_id, .value = 1}));
+    alice = notes(1);
+    bob = notes(2);
+    check(bob.size() == 1 && bob[0].value == static_cast<std::uint8_t>(net::HelperState::helping), "Bob helps");
+    check(alice.size() == 1 && alice[0].kind == net::HelperKind::helper && alice[0].value == 1 && alice[0].user == bob_id, "Alice: Bob is her helper");
+    // Her cab goes to him, his hand to her; nobody else's.
+    const auto cab = net::encode_helper_cab({.train = 1, .car = 0, .packed = {9, 9}});
+    game.received(1, P(Package::helper_cab), cab);
+    check(ids(take(rec, 2)) == std::vector<std::uint16_t>{P(Package::helper_cab)}, "Alice's cab reaches Bob");
+    game.received(2, P(Package::helper_cab), cab);
+    check(take(rec, 1).empty() && take(rec, 2).empty(), "Bob's cab of a train not his goes nowhere");
+    const auto hand = net::encode_helper_input({.kind = net::HelperInputKind::operate, .train = 1, .car = 0, .id = 3, .state = 1});
+    game.received(2, P(Package::helper_input), hand);
+    check(ids(take(rec, 1)) == std::vector<std::uint16_t>{P(Package::helper_input)}, "Bob's hand reaches Alice");
+    game.received(3, P(Package::helper_input), hand);
+    check(take(rec, 1).empty(), "a player helping nobody works no cab");
+    check(game.users().size() == 3 && game.users()[1].helping == 1, "the users: Bob helps on train 1");
+    // Train 1 taken from Alice: the help ends.
+    check(game.unassign(1, error), "train 1 back: " + error);
+    game.tick(now += 0.1);
+    bob = notes(2);
+    alice = notes(1);
+    check(bob.size() == 1 && bob[0].kind == net::HelperKind::helping && bob[0].value == static_cast<std::uint8_t>(net::HelperState::ended),
+          "Bob's help ends with the train taken away");
+    check(alice.size() == 1 && alice[0].kind == net::HelperKind::helper && alice[0].value == 0, "Alice: Bob helps no more");
+    // Alice again; Bob asks; she refuses.
+    check(game.assign(1, "Alice", error), "train 1 to Alice again");
+    rec.out[1].clear();
+    game.received(2, P(Package::helper), net::encode_helper_note({.kind = net::HelperKind::ask, .train = 1}));
+    notes(1);
+    notes(2);
+    game.received(1, P(Package::helper), net::encode_helper_note({.kind = net::HelperKind::answer, .train = 1, .user = bob_id, .value = 0}));
+    bob = notes(2);
+    check(bob.size() == 1 && bob[0].value == static_cast<std::uint8_t>(net::HelperState::refused), "Bob refused");
+    // Carl (no hello) cannot: helpers are openRTS's.
+    check(!game.set_helper("Carl", 1, error), "rts1.exe is no helper yet: " + error);
+    // The dispatcher makes Bob the helper; Alice leaves: it ends.
+    check(game.set_helper("Bob", 1, error), "the dispatcher's helper: " + error);
+    notes(1);
+    bob = notes(2);
+    check(bob.size() == 1 && bob[0].value == static_cast<std::uint8_t>(net::HelperState::helping), "Bob helps (the dispatcher)");
+    game.closed(1);
+    bob = notes(2);
+    check(bob.size() == 1 && bob[0].value == static_cast<std::uint8_t>(net::HelperState::ended), "Alice gone: Bob's help ends");
+}
+
 void hand_route() {
     auto network = switch_track();
     const auto car = car_definition();
@@ -884,6 +991,7 @@ int main(int argc, char** argv) {
         return failures == 0 ? 0 : 1;
     }
     game();
+    helpers();
     hand_route();
     over_tcp();
     if (failures == 0) std::cout << "server: all checks passed\n";

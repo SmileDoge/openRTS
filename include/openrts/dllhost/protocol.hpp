@@ -22,7 +22,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 10;
+inline constexpr std::uint32_t protocol_version = 12;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -389,6 +389,15 @@ struct CarInput {
     float line_voltage{}, line_frequency{}; // electric
     float line_current{};         // electric: Locomotive::LineCurrent (RTS 0x503CE4, before Run)
     std::uint8_t line_burnt{};    // electric: the pantograph burnt the wire (LocoFlags 0x200)
+    // Engine::Wheelslip as the game set it after the last step (RTS
+    // 0x424488): a bit per slipping axle, 15 for the whole locomotive.
+    std::uint32_t wheelslip{};
+    // EngineFlags bits the game clears before the DLLs run: RTS bleeds the
+    // cylinder a bit asks to release (1 the train brake, 2 the independent)
+    // and clears the bit once it is empty (0x5031D8). A master's DLL sets
+    // its slave's bit through the train wires and never clears it (the
+    // ВЛ80Т's 254 in release: the second section's cylinder bled for good).
+    std::uint32_t clear_engine_flags{};
 };
 
 struct EnterRequest {
@@ -466,6 +475,10 @@ struct EngineOutput {
     std::uint32_t engine_flags{};
     std::int32_t reverse{};
     std::uint32_t wheelslip{}, throttle{};
+    // Engine::EngineForce[NumEngines]: each traction motor's force, N
+    // (the first eight).
+    std::array<float, 8> engine_forces{};
+    std::uint8_t engine_force_count{};
     std::uint8_t panto{}, main_switch{}; // electric
     float power_consuming{};
     std::uint8_t diesel_on{};            // diesel

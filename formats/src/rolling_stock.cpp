@@ -276,6 +276,16 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
     if (auto stack = values(text, "variablestack", extended); stack.found()) engine.variable_stack = read_uint(stack);
     engine.series = values(text, "locomotiveseries", extended).token();
     if (auto n = values(text, "numengines", extended); n.found()) engine.num_engines = read_uint(n);
+    if (const auto motors = rts_find(text, "numengines", extended)) {
+        engine.engine_axles.clear();
+        for (const auto& block : blocks(text, "engineaxles", *motors)) {
+            Values v(text, block);
+            const auto count = (std::min)(read_uint(v), 32u);
+            std::vector<std::uint8_t> axles;
+            for (std::uint32_t k = 0; k < count; ++k) axles.push_back(static_cast<std::uint8_t>((std::min)(read_uint(v), 31u)));
+            engine.engine_axles.push_back(std::move(axles));
+        }
+    }
     if (auto n = values(text, "numaxles", extended); n.found()) engine.num_axles = read_uint(n);
     if (auto n = values(text, "maxnumslaveloco", extended); n.found()) engine.max_slaves = read_uint(n);
     if (auto c = values(text, "smecable", extended); c.found()) {

@@ -14,6 +14,12 @@ struct HeadMotion {
     glm::vec3 position{}; // m, car axes: where the head is (0: at rest on the body at rest)
     glm::vec3 velocity{}; // m/s
     glm::vec3 body{};     // the body's offset it was carried by at the last step
+    // The train's acceleration along its front, smoothed (about 0.6 s): the
+    // lean into the seat back as it pulls away and forward as it brakes
+    // (seat_lean), which the neck's spring alone left too small to see on a
+    // smooth electric train (testers 2026-11-15); a coupler's jolt stays
+    // the spring's.
+    float lean = 0.0f;    // m/s^2
     bool started = false;
 
     // At rest on the body at `at`.
@@ -39,5 +45,11 @@ struct HeadPose {
 // the camera looking along `forward` (horizontal, unit), times `amount`
 // (the setting: 0 none, 1 as tuned).
 [[nodiscard]] HeadPose head_pose(const glm::vec3& lag_world, float lag_up, const glm::vec3& forward, float amount);
+
+// The lean of a smoothed acceleration `lean` (m/s^2 along the train front,
+// whose direction in the world is `front`): pressed back into the seat
+// pulling away, thrown a little forward braking; about 1 cm and 1 degree at
+// 0.7 m/s^2 with the setting at its default, at most twice that.
+[[nodiscard]] HeadPose seat_lean(float lean, const glm::vec3& front, const glm::vec3& forward, float amount);
 
 } // namespace openrts::viewer

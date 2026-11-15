@@ -540,6 +540,12 @@ car's sound is made.
   `PostTriggerEng`) go to the cab and the exterior object; its
   `SMSObject` Var1..Var8 replace the engine variables 1..8 the keyboard
   driver would set.
+- The player's other engines with a DLL (the ВЛ80Т's second section) keep
+  their cab sound object too, silent (the passenger camera, no gain): what
+  their DLLs post to it waits in its queue as in an RTS object that is off
+  (`0x4A8284`), so when the engineer drives from there the loops started
+  long before (fans, the compressor) go on. Until 2026-11-15 the object
+  was made when he got there and that cab was nearly silent.
 - **Loading:** clips decode on the render thread when first played; moving
   that to a worker comes with train sounds.
 

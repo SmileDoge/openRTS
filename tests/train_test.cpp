@@ -467,10 +467,23 @@ void test_adhesion(const Stock& stock) {
         r.driver->throttle = 0;
         r.driver->brake = simulation::DriverHandles::BrakeHandle::emergency;
         bool slid = false;
+        // A sliding bogie's wheels stand (they are drawn by CarState::rolled).
+        bool stood = true, rolled_on = false;
         for (int i = 0; i < 6000 && r.train.speed() > 0.05; ++i) {
+            std::vector<std::array<double, 2>> before;
+            for (const auto& car : r.train.cars()) before.push_back(car.rolled);
             r.train.step();
-            for (const auto& car : r.train.cars()) slid = slid || car.sliding();
+            for (std::size_t c = 0; c < r.train.cars().size(); ++c) {
+                const auto& car = r.train.cars()[c];
+                slid = slid || car.sliding();
+                for (std::size_t b = 0; b < 2; ++b) {
+                    const bool moved = std::abs(car.rolled[b] - before[c][b]) > 1e-9;
+                    if (car.shoe_state[b].sliding && moved) stood = false;
+                    if (!car.shoe_state[b].sliding && moved) rolled_on = true;
+                }
+            }
         }
+        check(stood && rolled_on, "a sliding bogie's wheels stand, the rolling ones turn");
         r.run(2.0);
         bool still = false;
         float distance = 0.0f;
@@ -1040,6 +1053,143 @@ void test_broken_and_sand(const Stock& stock) {
     check(t.cars()[0].sanding && sanded > plain, "sand raises the force the adhesion allows: " + std::to_string(plain) + " -> " + std::to_string(sanded));
 }
 
+// Wheel slip under traction (боксование, RTS 0x424488): the locomotive's
+// force against mass x 10 x Adheasion[1], x Adheasion[0] after a slip; by
+// motor when the .eng names their axles.
+void test_wheel_slip(const Stock& stock) {
+    struct Puller final : simulation::LocomotiveController {
+        float force = 0.0f;
+        std::array<float, 8> motors{};
+        std::uint8_t count = 0;
+        void step(double, const simulation::EngineInputs&, simulation::EngineDemands& d) override {
+            d.force = force;
+            d.engine_forces = motors;
+            d.engine_force_count = count;
+        }
+    };
+    const auto network = simulation::straight_test_track(3000.0);
+    std::string error;
+    {
+        // 100 t, Adheasion ( 0.2 0.3 2 0 ): 300 kN, 60 kN once slipping.
+        simulation::Train t(stock.cars(0));
+        check(t.place(*network, 1, 500.0, true, &error), "placed: " + error);
+        auto made = std::make_unique<Puller>();
+        auto* p = made.get();
+        t.set_controller(0, std::move(made));
+        p->force = 350000.0f;
+        t.step();
+        check(t.cars()[0].wheelslip == 15 && t.cars()[0].force == 0.0f, "over the adhesion it slips (Wheelslip 15) and pulls nothing");
+        p->force = 250000.0f;
+        t.step();
+        check(t.cars()[0].wheelslip == 15, "slipping, the adhesion x Adheasion[0]: below the first limit it slips on");
+        p->force = 50000.0f;
+        t.step();
+        check(t.cars()[0].wheelslip == 0 && std::abs(t.cars()[0].force) > 40000.0f, "the force down far enough, the wheels grip again");
+        p->force = 250000.0f;
+        t.step();
+        check(t.cars()[0].wheelslip == 0 && std::abs(t.cars()[0].force) > 240000.0f, "gripping, it holds up to the adhesion");
+    }
+    {
+        // Two motors of two axles each (EngineAxles): 75 kN an axle.
+        Stock motors = stock;
+        motors.engine.engine->num_engines = 2;
+        motors.engine.engine->num_axles = 4;
+        motors.engine.engine->engine_axles = {{0, 1}, {2, 3}};
+        simulation::Train t(motors.cars(0));
+        check(t.place(*network, 1, 500.0, true, &error), "placed: " + error);
+        auto made = std::make_unique<Puller>();
+        auto* p = made.get();
+        t.set_controller(0, std::move(made));
+        p->force = 200000.0f;
+        p->motors = {170000.0f, 30000.0f};
+        p->count = 2;
+        t.step();
+        const auto& car = t.cars()[0];
+        check(car.wheelslip == 0b0011u, "the first motor's axles slip, the second's grip");
+        check(std::abs(std::abs(car.force) - (200000.0f - 0.75f * 170000.0f)) < 1.0f, "the slipping motor pulls a quarter");
+        check(car.slip_ratio[0] > 1.1f && car.slip_ratio[2] == 0.0f, "its axles' force over their adhesion, the wheels' spin");
+        p->motors = {0.0f, 0.0f};
+        p->force = 900000.0f;
+        t.step();
+        check(t.cars()[0].wheelslip == 0, "motors with no force of their own: no slip (RTS)");
+    }
+    {
+        // The RTS air: a brake far over the adhesion stands the wheels.
+        Stock heavy = stock;
+        heavy.wagon.brakes.max_brake_force = 2.0e6f;
+        Run r(heavy, {}, 1500.0);
+        r.driver->reverser = 1;
+        r.driver->throttle = r.driver->notches;
+        r.run(60.0);
+        r.driver->throttle = 0;
+        r.driver->brake = simulation::DriverHandles::BrakeHandle::emergency;
+        bool locked = false, stood = true;
+        for (int i = 0; i < 2000 && r.train.speed() > 1.0; ++i) {
+            const auto before = r.train.cars()[5].rolled;
+            r.train.step();
+            const auto& car = r.train.cars()[5];
+            if (!car.brake_locked) continue;
+            locked = true;
+            if (car.rolled[0] != before[0] || car.rolled[1] != before[1]) stood = false;
+        }
+        check(locked && stood, "the RTS air: braked over the adhesion, the wheels stand");
+    }
+}
+
+// Wheel flats (ползуны): a slide leaves them; each turn after, each of the
+// bogie's axles strikes the rail once; new wheel sets end it.
+void test_wheel_flats(const Stock& stock) {
+    using simulation::RailCondition;
+    Run r(stock, {.rails = RailCondition::ice}, 1500.0);
+    r.train.set_brake_model(simulation::BrakeModel::realistic);
+    r.driver->reverser = 1;
+    r.driver->throttle = r.driver->notches;
+    r.run(60.0);
+    r.driver->throttle = 0;
+    r.driver->brake = simulation::DriverHandles::BrakeHandle::emergency;
+    for (int i = 0; i < 6000 && r.train.speed() > 0.05; ++i) r.train.step();
+    std::size_t car = SIZE_MAX, bogie = 0;
+    float deepest = 0.0f;
+    for (std::size_t k = 0; k < r.train.cars().size(); ++k) {
+        for (std::size_t b = 0; b < 2; ++b) {
+            if (r.train.cars()[k].flat[b] > deepest) {
+                deepest = r.train.cars()[k].flat[b];
+                car = k;
+                bogie = b;
+            }
+        }
+    }
+    // About 1 mm in 15 m slid: the slide here is short.
+    check(car != SIZE_MAX && deepest > 0.05f && deepest <= simulation::flat_deepest, "a slide on ice leaves a flat: " + std::to_string(deepest) + " mm");
+    if (car == SIZE_MAX) return;
+    r.train.set_wheel_flat(car, bogie, 1.5f);
+    // Away again: count the knocks of that bogie over the run.
+    r.driver->brake = simulation::DriverHandles::BrakeHandle::running;
+    r.run(120.0);
+    r.driver->throttle = r.driver->notches;
+    const double from = r.train.cars()[car].rolled[bogie];
+    std::size_t knocks = 0;
+    for (int i = 0; i < 1200; ++i) {
+        r.train.step();
+        for (const auto& e : r.train.take_events()) {
+            if (e.kind == simulation::TrainEventKind::wheel_flat && e.car == car && e.bogie == bogie) ++knocks;
+        }
+    }
+    const double turns = std::abs(r.train.cars()[car].rolled[bogie] - from) /
+                         (2.0 * 3.14159265358979 * (stock.wagon.wheel_radius > 0.05f ? stock.wagon.wheel_radius : 0.5));
+    check(turns > 5.0 && std::abs(static_cast<double>(knocks) - 2.0 * turns) <= 2.5,
+          "each axle strikes once a turn: " + std::to_string(knocks) + " knocks in " + std::to_string(turns) + " turns");
+    r.train.replace_wheelsets(car, bogie);
+    knocks = 0;
+    for (int i = 0; i < 200; ++i) {
+        r.train.step();
+        for (const auto& e : r.train.take_events()) {
+            if (e.kind == simulation::TrainEventKind::wheel_flat && e.car == car && e.bogie == bogie) ++knocks;
+        }
+    }
+    check(knocks == 0 && r.train.cars()[car].flat[bogie] == 0.0f, "new wheel sets: no flat, no knock");
+}
+
 void test_engine_keys() {
     const auto engine = formats::parse_wagon(engine_text.substr(0, engine_text.size() - 1) + R"(
         MaxSandingTime ( 600 )
@@ -1122,6 +1272,8 @@ int main() {
     test_distributor_stability(stock);
     test_car_menu(stock);
     test_broken_and_sand(stock);
+    test_wheel_slip(stock);
+    test_wheel_flats(stock);
     test_engine_keys();
     if (failures == 0) std::cout << "train tests passed\n";
     return failures == 0 ? 0 : 1;
