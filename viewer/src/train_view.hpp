@@ -591,6 +591,8 @@ public:
     void update_car_view(ViewerCamera& camera);
     void toggle_limits_panel() noexcept { limits_panel_ = !limits_panel_; }
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
+    // Shift+F7: the track profile behind and ahead of the train.
+    void set_track_profile(bool on) noexcept { track_profile_panel_ = on; }
     void draw_hud();
     // Where Track control keeps saved paths: user_paths/<route> in
     // user_data_directory().
@@ -868,6 +870,7 @@ private:
     std::size_t car_page_ = 0;
     static constexpr std::size_t car_page_size = 15;
     bool limits_panel_ = false;
+    bool track_profile_panel_ = false; // Shift+F7
     bool stations_panel_ = false;
     bool service_marks_ = false;       // F6 shows the "%n ..." marks too (remembered as f6_service_marks)
     bool service_marks_loaded_ = false;
@@ -885,6 +888,7 @@ private:
     HudPanel car_info_place_{.key = "hud_car_info"};
     HudPanel limits_place_{.key = "hud_limits", .pivot_x = 1.0f};
     HudPanel stations_place_{.key = "hud_stations", .pivot_x = 1.0f};
+    HudPanel profile_place_{.key = "hud_profile", .pivot_x = 1.0f};
     // Starts a panel window at its place; false when it is not drawn.
     bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y);
     void end_panel(HudPanel& place);

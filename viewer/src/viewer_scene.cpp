@@ -627,6 +627,8 @@ public:
         if (input.toggle_track_control && track_control_) track_control_->toggle();
         if (input.signal_names) signal_names_ = !signal_names_;
         if (input.place_names) place_names_ = !place_names_;
+        if (input.track_profile) track_profile_ = !track_profile_;
+        if (train_) train_->set_track_profile(track_profile_);
         cab_labels_ = input.cab_labels;
         if (input.inspector) inspector_.toggle();
         if (input.tape_window) tape_view_.toggle();
@@ -1373,6 +1375,7 @@ public:
             ImGui::SameLine();
         }
         ImGui::Checkbox(tr("Names (F7)"), &place_names_);
+        ImGui::Checkbox(tr("Profile (Shift+F7)"), &track_profile_);
         ImGui::SameLine();
         ImGui::Checkbox(tr("Signal names (Ctrl+F7)"), &signal_names_);
         {
@@ -2030,6 +2033,7 @@ private:
     std::unique_ptr<TrackControl> track_control_;
     mutable bool signal_names_ = false; // Ctrl+F7
     mutable bool place_names_ = false;  // F7
+    mutable bool track_profile_ = false; // Shift+F7
     mutable bool cab_labels_ = false;   // Alt held in the 3-D cab
     std::unique_ptr<SignalView> signals_;
     bool snapshot_signals_ = false; // the snapshot's aspects wait for the signals to load

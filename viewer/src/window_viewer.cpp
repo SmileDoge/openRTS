@@ -1,4 +1,4 @@
-#include "window_viewer.hpp"
+﻿#include "window_viewer.hpp"
 
 #include <openrts/core/profile.hpp>
 
@@ -1915,7 +1915,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         // Only the function keys keep their viewer meaning; the rest is the cab's.
         SceneInput captured{
             .toggle_track_control = f7 && ctrl && alt,
-            .place_names = f7 && !ctrl && !alt,
+            .place_names = f7 && !ctrl && !alt && !shift,
+            .track_profile = f7 && !ctrl && !alt && shift,
             .car_info = f5 && !ctrl,
             .car_info_shift = shift,
             .limits_panel = f5 && ctrl,
@@ -1953,7 +1954,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .doors_left = pressed(GLFW_KEY_Y, input.train_keys_down[12]),
         .doors_right = pressed(GLFW_KEY_U, input.train_keys_down[13]),
         .toggle_track_control = f7 && ctrl && alt,
-        .place_names = f7 && !ctrl && !alt,
+        .place_names = f7 && !ctrl && !alt && !shift,
+        .track_profile = f7 && !ctrl && !alt && shift,
         .car_info = f5 && !ctrl,
         .car_info_shift = shift,
         .limits_panel = f5 && ctrl,

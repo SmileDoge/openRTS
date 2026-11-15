@@ -9,6 +9,7 @@ add_library(openrts_simulation STATIC
     src/adhesion.cpp
     src/driver_valve.cpp
     src/track_traveller.cpp
+    src/track_profile.cpp
     src/train.cpp
     src/realistic_air.cpp
     src/signals.cpp

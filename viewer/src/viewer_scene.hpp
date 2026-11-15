@@ -131,6 +131,7 @@ struct SceneInput {
     bool doors_right = false;      // U: the right doors open / shut
     bool toggle_track_control = false; // Ctrl+Alt+F7 (RTS): the Track control window
     bool place_names = false;     // F7 (RTS): platform and siding names along the track
+    bool track_profile = false;   // Shift+F7: the track profile behind and ahead
     // RTS's information keys (docs/reverse/dispatcher.md).
     bool car_info = false;        // F5: a page of the train's cars; again: the next page
     bool car_info_shift = false;  // Shift held with F5: the train as a whole
