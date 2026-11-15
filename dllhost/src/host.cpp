@@ -1795,6 +1795,10 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
     for (std::size_t k = 0; k < car.exhaust.size(); ++k) {
         const auto& e = car.exhaust[k];
         out.exhausts[k] = {e.rate, e.magnitude, e.dispersion, e.mass, e.colour};
+        if (e.rate > 0.0f)
+            trace_once(L"exhaust smokes " + std::to_wstring(car.index) + L" " + std::to_wstring(k),
+                       L"Exhaust(" + std::to_wstring(k) + L") of car " + std::to_wstring(car.index) + L" smokes: rate "
+                           + std::to_wstring(e.rate) + L", magnitude " + std::to_wstring(e.magnitude));
     }
     // Screens: RTS copies SetState to State each time it draws one (0x46B668).
     out.screens.resize(car.screens.size());
@@ -2047,6 +2051,9 @@ void* Host::loco_object(const Module* caller, const abi::Locomotive* loco, int c
     case abi::ot_engine:
         return car->has_engine ? car->eng() : nullptr;
     case abi::ot_exhaust:
+        trace_once(L"exhaust " + std::to_wstring(car->index) + L" " + std::to_wstring(index),
+                   L"Exhaust(" + std::to_wstring(index) + L") of car " + std::to_wstring(car->index) + L" asked for"
+                       + (car->spec.kind == car_diesel ? L"" : L": not a diesel"));
         return car->spec.kind == car_diesel && i < car->exhaust.size() ? &car->exhaust[i] : nullptr;
     case abi::ot_free_anim:
         return i < car->anims.size() ? &car->anims[i] : nullptr;

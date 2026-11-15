@@ -77,6 +77,9 @@ public:
     void set_size_factor(float factor) noexcept;
     void render(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, float viewport_height,
                 GlowBlend blend = GlowBlend::added);
+    // The same sprites (the last set_sprites) into the bloom's source
+    // (BloomRenderer::begin_sources: one sample, HDR, added, depth-tested).
+    void render_bloom(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, float viewport_height);
 
 private:
     struct Impl;

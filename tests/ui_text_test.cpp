@@ -34,6 +34,11 @@ int main() {
     check(tr(key) == key, "English: the key itself");
     check(trf("path %s set", "a") == "path a set", "English trf");
     set_ui_language(UiLanguage::russian);
+    // The consist search: Cyrillic case and Latin letters for Cyrillic ones.
+    const auto finds = [](const char* name, const char* typed) { return search_form(name).find(search_form(typed)) != std::string::npos; };
+    check(finds("2ЭС6-114", "2эс6") && finds("2ЭС6-114", "2es6") && finds("2эс6-126 162Б", "2ЭС6-126"), "2ES6 by either case or alphabet");
+    check(finds("ВЛ80с-606", "vl80s") && finds("ЧС4т-500", "chs4") && finds("mdd VL80s-606", "vl80"), "VL80s, ChS4t, Latin names");
+    check(!finds("2ЭС6-114", "2es5"), "and not another");
     if (failures == 0) std::cout << "ui text: all checks passed\n";
     return failures == 0 ? 0 : 1;
 }

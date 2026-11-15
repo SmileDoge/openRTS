@@ -5667,7 +5667,7 @@ std::string TrainView::car_menu_report() const {
 
 std::string TrainView::systems_report() const {
     std::string text = std::to_string(light_glows_.size()) + " light glows, " + std::to_string(light_beams_.size()) + " beams, "
-        + std::to_string(interior_lights_.size()) + " cab lamps";
+        + std::to_string(interior_lights_.size()) + " cab lamps, " + std::to_string(cab_texture_changes_) + " cab texture changes";
     if (native_) text += "; native plugin '" + native_->name() + "' on car " + std::to_string(native_car_ + 1);
     char line[200];
     for (const auto& unit : units_) {
@@ -6520,6 +6520,14 @@ std::string TrainView::car_label(const Car& car) const {
     return name + number;
 }
 
+std::string TrainView::driven_name() const {
+    const auto car = driven_car();
+    if (car == SIZE_MAX || !units_.front().train) return {};
+    const auto& driven = units_.front().cars[car];
+    if (driven.definition && !driven.definition->display_name.empty()) return driven.definition->display_name;
+    return driven.file;
+}
+
 std::size_t TrainView::driven_car() const {
     if (units_.empty() || units_.front().role != Role::driven) return SIZE_MAX;
     const auto& unit = units_.front();
@@ -7260,7 +7268,13 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
     auto& unit = units_.front();
     // The lamps of the cab or salon the engineer is in (InternalLight State:
     // the DLL's SwitchLight or GM_LIGHT_ON by GlobalID), RTS's LightsInt;
-    // then (openRTS) those of the next cars' rooms he sees into.
+    // then (openRTS) those of the next cars' rooms he sees into. As many
+    // as RTS's config.ini Shader.NumLightsInt (64 without it; rts1.exe
+    // 0x405D2C, the shaders' %NumLightsInt%), the first burning ones in
+    // LightSources' order.
+    const auto lamp_limit = static_cast<std::size_t>(
+        std::clamp(rts_config_value(rts_config_, "shader.numlightsint").value_or(64.0f), 1.0f,
+                   static_cast<float>(renderer::max_interior_lights)));
     const auto add_lamps = [&](const CabView* cab, const std::size_t car_index, std::vector<float>& lamp_level, const bool sway) {
         const auto& lamps = cab->description().lights;
         const auto* out = legacy_ && legacy_->has_dll(car_index) ? legacy_->output(car_index) : nullptr;
@@ -7286,7 +7300,7 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
             const float time = lamp.fade[0];
             const float goal = on ? 1.0f : 0.0f;
             level = time <= 0.0f ? goal : goal > level ? (std::min)(goal, level + elapsed / time) : (std::max)(goal, level - elapsed / time);
-            if (level <= 0.0f || interior_lights_.size() >= 8) continue;
+            if (level <= 0.0f || interior_lights_.size() >= lamp_limit) continue;
             const glm::vec3 from{lamp.position[0], lamp.position[1], lamp.position[2]};
             glm::vec3 to{lamp.points_to[0], lamp.points_to[1], lamp.points_to[2]};
             if (glm::distance(from, to) < 1e-3f) to = from - glm::vec3{0.0f, 1.0f, 0.0f};
@@ -8142,6 +8156,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 }
                 // RTS draws the cab in object pass 3 (0x438D50).
                 renderer.submit(*cab_model, to_scene, adjustments, textures, renderer::ObjectPass::last);
+                cab_texture_changes_ = textures.size();
                 cab_to_scene_ = to_scene;
                 if (engineer_.mode() != Engineer::Mode::seated) {
                     // On foot (in a salon, the ED9M's head car's too, or the

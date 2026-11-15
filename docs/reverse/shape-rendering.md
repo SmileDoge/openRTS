@@ -383,6 +383,11 @@ terrain).
   changes (`is_night`); openRTS reloads, on a worker thread, the models
   whose folders change (`ModelLibrary::set_texture_variant`), and models
   streamed under another variant on arrival.
+- openRTS's «Ночные текстуры моделей (как в RTS)» (`night_textures`, on;
+  `renderer::night_textures()`, since 2026-11-15): off, the day's textures
+  stay at night (the variant's night is left false) and the shapes are lit
+  as the rest: the NIGHT ones have the lamps' light painted in, which the
+  experimental path's lamps then lit once more.
 - **CONFIRMED** (`0x4B042C`, the shape draw): a primitive is drawn unlit
   (`glDisable(GL_LIGHTING)`, and with shaders `NamedShader` set to 3, whose
   `shape.vert` branch takes Ambient 1) when it is night and its shape has

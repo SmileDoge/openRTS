@@ -11,6 +11,7 @@
 #include <openrts/renderer/webgpu_texture.hpp>
 #include <openrts/renderer/screen_quads.hpp>
 #include <openrts/renderer/tone_map.hpp>
+#include <openrts/renderer/bloom.hpp>
 #include <openrts/renderer/depth_export.hpp>
 #include <algorithm>
 #include <array>
@@ -35,6 +36,7 @@
 #include <openrts/renderer/webgpu_context.hpp>
 
 #include "controls_help.hpp"
+#include "discord_status.hpp"
 #include "frame_limiter.hpp"
 #include "graphics_settings.hpp"
 #include <openrts/renderer/gpu_pass_timer.hpp>
@@ -672,6 +674,7 @@ struct PanelState {
     bool native_water = true; // the openRTS water instead of the environment's layers
     bool native_sky = true;   // openRTS's own sky (atmosphere, volumetric clouds) instead of RTS's dome
     bool signal_lights_real_size = true; // signal lights at the lens's size however far (not RTS's far angle)
+    bool night_textures = true;          // the models' NIGHT textures at night (as RTS)
     bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
     float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
     bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
@@ -719,6 +722,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.forest_clearance = g.forest_clearance;
     panel.forest_clearance_distance = g.forest_clearance_distance;
     panel.signal_lights_real_size = g.signal_lights_real_size;
+    panel.night_textures = g.night_textures;
     panel.screen_supersampling = g.screen_supersampling;
     panel.reshade_depth = g.reshade_depth;
 }
@@ -747,6 +751,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.forest_clearance = panel.forest_clearance;
     g.forest_clearance_distance = panel.forest_clearance_distance;
     g.signal_lights_real_size = panel.signal_lights_real_size;
+    g.night_textures = panel.night_textures;
     g.screen_supersampling = panel.screen_supersampling;
     g.reshade_depth = panel.reshade_depth;
     return g;
@@ -1121,6 +1126,9 @@ public:
                 remember("native_water", panel.native_water ? "1" : "0");
             if (ImGui::Checkbox(tr("Signal lights at the lens's size, far off a dot (not as in RTS)"), &panel.signal_lights_real_size))
                 remember("signal_lights_real_size", panel.signal_lights_real_size ? "1" : "0");
+            if (ImGui::Checkbox(tr("Night textures of the models (as in RTS)"), &panel.night_textures))
+                remember("night_textures", panel.night_textures ? "1" : "0");
+            ImGui::TextDisabled("%s", tr("(TEXTURES\\NIGHT: lit windows and lamps painted in; off: the day's textures at night, lit by the lamps)"));
             if (ImGui::Checkbox(tr("Sharp cab screens: drawn at a higher resolution (not as in RTS)"), &panel.screen_supersampling))
                 remember("screen_supersampling", panel.screen_supersampling ? "1" : "0");
             ImGui::TextDisabled("%s", tr("(each screen drawn into an image of its own and blended in linear light: thin lines keep their brightness, no steps on edges and needles)"));
@@ -1279,6 +1287,18 @@ public:
             }
             if (ImGui::Checkbox(tr("Aerial perspective"), &panel.effects.aerial_perspective))
                 remember("effect_aerial", panel.effects.aerial_perspective ? "1" : "0");
+            if (ImGui::Checkbox(tr("Bloom: light spreads round lamps, signals and the sun (HDR)"), &panel.effects.bloom))
+                remember("effect_bloom", panel.effects.bloom ? "1" : "0");
+            if (panel.effects.bloom) {
+                ImGui::Indent();
+                ImGui::SetNextItemWidth(200.0f);
+                if (slider_with_input(tr("Bloom strength"), &panel.effects.bloom_strength, 0.0f, 3.0f, "%.2f", "%.2f"))
+                    remember("bloom_strength", std::to_string(panel.effects.bloom_strength));
+                if (ImGui::Checkbox(tr("At night from the textures' brightest too (lamps' bulbs, lit windows, signs)"),
+                                    &panel.effects.bloom_textures))
+                    remember("bloom_textures", panel.effects.bloom_textures ? "1" : "0");
+                ImGui::Unindent();
+            }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("Distance haze thinning with height and brighter towards the sun, instead of RTS's linear fog."));
             ImGui::SetNextItemWidth(200.0f);
@@ -2284,6 +2304,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     renderer::ModelRenderer renderer(device, surface.scene_format());
     std::unique_ptr<renderer::ToneMapper> tone;
     if (renderer::scene_hdr()) tone = std::make_unique<renderer::ToneMapper>(device, surface.format());
+    // The HDR frame's bloom (the experimental path; made on first use).
+    std::unique_ptr<renderer::BloomRenderer> bloom;
     std::unique_ptr<renderer::DepthExport> depth_export;
     if (!renderer.ready()) {
         std::cerr << "Model renderer initialization failed.\n";
@@ -2476,6 +2498,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // Every 10 s the frame's breakdown goes to the console (openrts.log when
     // the menu runs the game): what a frame waits on, without the panel.
     double perf_at = last_time + 10.0;
+    DiscordStatus discord(options.discord && !capture);
     while (!glfwWindowShouldClose(window.get())) {
         // The start's loading (as the last update left it): its screen, no
         // input for the scene, and for a start in the cab no time passing.
@@ -2546,6 +2569,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::light_range() = panel.light_range;
         renderer::headlight_reach() = panel.headlight_reach;
         renderer::light_fullbright() = panel.light_fullbright;
+        renderer::night_textures() = panel.night_textures;
         renderer::lamp_skips_own_model() = panel.lamp_own_model;
         renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
         auto frame_input = scene_input(window.get(), input);
@@ -2692,6 +2716,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         scene_clock.background = background;
         camera.head_nod = camera.head_tilt = 0.0f;
         scene.update(renderer, camera, scene_clock, frame_input);
+        discord.update(scene);
         if (!scene.loading().done) loading_camera = camera;
         if (capture && options.capture_camera) {
             if (const auto car = scene.train_car_transform(options.capture_car)) {
@@ -2844,7 +2869,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             const auto luma = glm::dot(direct, glm::vec3(0.2126f, 0.7152f, 0.0722f));
             const auto day = std::clamp((luma - 0.15f) / 0.4f, 0.0f, 1.0f);
             panel.night = 1.0f - day * day * (3.0f - 2.0f * day);
-            const renderer::ToneSettings settings{
+            renderer::ToneSettings settings{
                 .curve = renderer.shading_path() == renderer::ShadingPath::experimental ? static_cast<renderer::ToneCurve>(panel.tone_curve)
                                                                                          : renderer::ToneCurve::none,
                 .exposure = panel.exposure,
@@ -2852,7 +2877,27 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 .night_exposure = panel.night_exposure * panel.exposure,
                 .saturation = panel.saturation,
             };
-            tone->render(encoder, surface.hdr_view(), frame_view, settings);
+            // The bloom (the experimental path): the scene's lights drawn once
+            // more into its source against the camera's depth pre-pass, then
+            // taken down and up; the tone curve adds it.
+            WGPUTextureView bloom_view = nullptr;
+            if (experimental && settings.curve != renderer::ToneCurve::none && panel.effects.bloom && panel.effects.bloom_strength > 0.0f) {
+                if (!bloom) bloom = std::make_unique<renderer::BloomRenderer>(device);
+                if (bloom->ready()) {
+                    const auto w = static_cast<std::uint32_t>(width), h = static_cast<std::uint32_t>(height);
+                    if (const auto depth = effects.camera_depth()) {
+                        if (const auto source = bloom->begin_sources(encoder, w, h, depth)) {
+                            scene.draw_bloom_sources(source, frame);
+                            wgpuRenderPassEncoderEnd(source);
+                            wgpuRenderPassEncoderRelease(source);
+                        }
+                    }
+                    bloom_view = bloom->build(encoder, surface.hdr_view(), w, h,
+                                              {.textures = panel.effects.bloom_textures, .night = panel.night});
+                    settings.bloom = 0.15f * panel.effects.bloom_strength;
+                }
+            }
+            tone->render(encoder, surface.hdr_view(), frame_view, settings, bloom_view);
 #ifdef OPENRTS_HAS_IMGUI
             const WGPURenderPassColorAttachment ui_colour{
                 .view = frame_view,

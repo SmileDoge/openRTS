@@ -116,6 +116,11 @@ struct ModelPortal {
     float door_half_across{}, door_half_up{};
 };
 inline constexpr std::size_t max_portals = 2;
+// The cab's or salon's lamps lit at once (RTS LightsInt): RTS takes
+// config.ini's Shader.NumLightsInt (64 without it, at most 1024; the MDD
+// build's 16); openRTS's frame holds 64. Until 2026-11-15 8: the 2ES6's
+// desk lamps past the eighth stayed dark.
+inline constexpr std::size_t max_interior_lights = 64;
 
 struct ModelLighting {
     glm::vec4 sun_diffuse{1.0f};
@@ -129,7 +134,7 @@ struct ModelLighting {
     FogRing fog_ring;
     LightRings light_rings; // the further lights (RTS Shader.NumLights 10, the sun first)
     // Lamps of the cab or salon the player is in (RTS LightsInt): kind 4 cone,
-    // 2 sphere, 3 box; up to 8.
+    // 2 sphere, 3 box; up to max_interior_lights.
     std::vector<ModelExtraLight> interior_lights;
     // The doorways he looks through into the next cars (ModelPortal), up to 2.
     std::vector<ModelPortal> portals;

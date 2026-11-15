@@ -1355,6 +1355,9 @@ void Train::step() {
     if (!moving) {
         move_and_update(0.0, 0.0);
         derailment();
+        // openRTS's bodies still swing a moment after a stop, then rest on
+        // the track (RTS's own model as before: it stays as it was).
+        if (settings_.body_motion == BodyMotionModel::openrts) sway();
         return;
     }
 
@@ -1591,13 +1594,21 @@ void Train::sway() {
                                 motion.jolt[0] != 0.0f || motion.jolt[1] != 0.0f || motion.knocked[0] != 0.0f ||
                                 motion.knocked[1] != 0.0f;
             if (car.velocity == 0.0f && !kicked) {
-                // At rest once it settles.
-                float most = 0.0f;
-                for (int axis = 0; axis < 3; ++axis) {
-                    most = (std::max)({most, std::abs(motion.shift[axis]), std::abs(motion.shift_rate[axis]), std::abs(motion.turn[axis]),
-                                       std::abs(motion.turn_rate[axis])});
+                // Standing, once its swing has died away (about 0.1 mm
+                // left): at rest on the track as it lies under the bogies,
+                // where it sets off from.
+                float swinging = 0.0f;
+                for (int axis = 0; axis < 3; ++axis)
+                    swinging = (std::max)({swinging, std::abs(motion.shift_rate[axis]), std::abs(motion.turn_rate[axis])});
+                if (swinging < 1e-3f) {
+                    settle_body(motion);
+                    for (int axis = 0; axis < 3; ++axis) {
+                        car.body[axis] = motion.pose_shift[axis];
+                        car.body_rate[axis] = 0.0f;
+                        car.body_turn[axis] = motion.pose_turn[axis];
+                    }
+                    continue;
                 }
-                if (most < 1e-5f) continue;
             }
             if (motion.seed == 0) motion.seed = next_body_seed();
             const auto modes = body_modes(*car.definition, mass_of(car), motion.seed);

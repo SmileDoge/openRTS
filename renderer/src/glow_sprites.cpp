@@ -110,6 +110,7 @@ struct GlowSpriteRenderer::Impl {
     WGPUBindGroupLayout layout = nullptr;
     WGPURenderPipeline pipeline = nullptr;      // GlowBlend::added
     WGPURenderPipeline over_pipeline = nullptr; // GlowBlend::over
+    WGPURenderPipeline bloom_pipeline = nullptr; // render_bloom: single-sample HDR, added
     WGPUBuffer uniform = nullptr;
     WGPUSampler sampler = nullptr;
     std::vector<Texture> textures;
@@ -120,6 +121,26 @@ struct GlowSpriteRenderer::Impl {
     // Per texture: first sprite and count, after sorting.
     std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
 
+    // The frame's uniform (the same for the scene's and the bloom's pass).
+    void write_frame(const glm::mat4& projection, const glm::mat4& view, const float viewport_height) const {
+        const glm::mat4 inverse = glm::inverse(view);
+        FrameUniform frame{
+            .view_projection = projection * view,
+            .right = glm::vec4{view[0][0], view[1][0], view[2][0], 0.0f},
+            .up = glm::vec4{view[0][1], view[1][1], view[2][1], 0.0f},
+            .eye = glm::vec4{glm::vec3{inverse[3]}, 0.0f},
+        };
+        // A pixel's size a metre away: the view's height over the pixels (the
+        // zoom included).
+        frame.right.w = 2.0f / ((std::max)(projection[1][1], 1e-4f) * (std::max)(viewport_height, 1.0f));
+        // RTS's fov / 45 at its installed FOV of 65 degrees, fixed (see set_sprites).
+        frame.eye.w = size_factor;
+        if (const auto queue = wgpuDeviceGetQueue(device)) {
+            wgpuQueueWriteBuffer(queue, uniform, 0, &frame, sizeof(frame));
+            wgpuQueueRelease(queue);
+        }
+    }
+
     ~Impl() {
         for (auto& texture : textures) {
             if (texture.group) wgpuBindGroupRelease(texture.group);
@@ -129,6 +150,7 @@ struct GlowSpriteRenderer::Impl {
         if (sampler) wgpuSamplerRelease(sampler);
         if (uniform) wgpuBufferRelease(uniform);
         if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        if (bloom_pipeline) wgpuRenderPipelineRelease(bloom_pipeline);
         if (over_pipeline) wgpuRenderPipelineRelease(over_pipeline);
         if (layout) wgpuBindGroupLayoutRelease(layout);
     }
@@ -247,6 +269,21 @@ GlowSpriteRenderer::GlowSpriteRenderer(const WGPUDevice device, const WGPUTextur
         };
         (blend == &additive ? impl.pipeline : impl.over_pipeline) = wgpuDeviceCreateRenderPipeline(device, &descriptor);
     }
+    {
+        // The bloom's source (BloomRenderer::begin_sources): one sample,
+        // the HDR format, depth-tested against the camera's pre-pass.
+        const WGPUColorTargetState target{.format = hdr_format, .blend = &additive, .writeMask = WGPUColorWriteMask_All};
+        const WGPUFragmentState fragment{.module = shader, .entryPoint = wgsl_name("fs_main"), .targetCount = 1, .targets = &target};
+        const WGPURenderPipelineDescriptor descriptor{
+            .layout = pipeline_layout,
+            .vertex = {.module = shader, .entryPoint = wgsl_name("vs_main"), .bufferCount = 1, .buffers = &vertex_layout},
+            .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+            .depthStencil = &depth,
+            .multisample = {.count = 1, .mask = ~0u},
+            .fragment = &fragment,
+        };
+        impl.bloom_pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
+    }
     wgpuPipelineLayoutRelease(pipeline_layout);
     wgpuShaderModuleRelease(shader);
 
@@ -295,23 +332,21 @@ void GlowSpriteRenderer::render(const WGPURenderPassEncoder pass, const glm::mat
                                 const float viewport_height, const GlowBlend blend) {
     auto& impl = *impl_;
     if (!ready() || impl.sprites.empty()) return;
-    const glm::mat4 inverse = glm::inverse(view);
-    FrameUniform frame{
-        .view_projection = projection * view,
-        .right = glm::vec4{view[0][0], view[1][0], view[2][0], 0.0f},
-        .up = glm::vec4{view[0][1], view[1][1], view[2][1], 0.0f},
-        .eye = glm::vec4{glm::vec3{inverse[3]}, 0.0f},
-    };
-    // A pixel's size a metre away: the view's height over the pixels (the
-    // zoom included).
-    frame.right.w = 2.0f / ((std::max)(projection[1][1], 1e-4f) * (std::max)(viewport_height, 1.0f));
-    // RTS's fov / 45 at its installed FOV of 65 degrees, fixed (see set_sprites).
-    frame.eye.w = impl.size_factor;
-    if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
-        wgpuQueueWriteBuffer(queue, impl.uniform, 0, &frame, sizeof(frame));
-        wgpuQueueRelease(queue);
-    }
+    impl.write_frame(projection, view, viewport_height);
     wgpuRenderPassEncoderSetPipeline(pass, blend == GlowBlend::over ? impl.over_pipeline : impl.pipeline);
+    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, impl.instances, 0, WGPU_WHOLE_SIZE);
+    for (const auto& [first, count] : impl.ranges) {
+        wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.textures[impl.sprites[first].texture].group, 0, nullptr);
+        wgpuRenderPassEncoderDraw(pass, 6, count, 0, first);
+    }
+}
+
+void GlowSpriteRenderer::render_bloom(const WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view,
+                                      const float viewport_height) {
+    auto& impl = *impl_;
+    if (!impl.bloom_pipeline || !ready() || impl.sprites.empty()) return;
+    impl.write_frame(projection, view, viewport_height);
+    wgpuRenderPassEncoderSetPipeline(pass, impl.bloom_pipeline);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, impl.instances, 0, WGPU_WHOLE_SIZE);
     for (const auto& [first, count] : impl.ranges) {
         wgpuRenderPassEncoderSetBindGroup(pass, 0, impl.textures[impl.sprites[first].texture].group, 0, nullptr);

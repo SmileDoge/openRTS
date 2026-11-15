@@ -526,6 +526,7 @@ struct SceneEffects::Impl {
     static constexpr std::uint32_t lamp_slot = max_cascades + 2;
     std::vector<ModelExtraLight> packed_lights; // as the light list holds them
     bool lamp_shadows_wanted = false;
+    bool camera_depth_wanted = false; // the pre-pass: the occlusion's or the bloom's
     std::uint32_t lamp_shadow_count = 0;
     std::uint32_t lamps_lighting = 0;
     float lamp_radius = 0.0f;
@@ -979,7 +980,8 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     const bool shadows = active && s.shadows && shadow_strength > 0.01f;
     impl.ensure_shadow(active && s.shadows);
     impl.ensure_lamp_shadow(active && s.lamp_shadows > 0);
-    impl.ensure_ao(active && s.ambient_occlusion, (std::max)(view.width, 1u), (std::max)(view.height, 1u), s.occlusion_low);
+    impl.ensure_ao(active && (s.ambient_occlusion || s.bloom), (std::max)(view.width, 1u), (std::max)(view.height, 1u),
+                   s.occlusion_low);
     impl.ensure_groups();
 
     const auto inverse_view = glm::inverse(view.view);
@@ -1052,6 +1054,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     }
     frame.flags[0] = active && s.clustered_lights ? 1u : 0u;
     frame.flags[1] = active && s.ambient_occlusion && impl.ao_is_real ? (s.show_occlusion ? 2u : 1u) : 0u;
+    impl.camera_depth_wanted = active && (s.ambient_occlusion || s.bloom) && impl.ao_is_real && impl.depth.view;
     frame.flags[2] = active && s.aerial_perspective ? 1u : 0u;
     frame.flags[3] = impl.light_count;
     impl.lamp_shadows_wanted = active && s.lamp_shadows > 0 && !impl.packed_lights.empty() && impl.lamp_layers[0];
@@ -1087,7 +1090,9 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
         const float t = glm::clamp((light - 0.1f) / 0.5f, 0.0f, 1.0f);
         impl.daylight = active ? t * t * (3.0f - 2.0f * t) : 0.0f;
         const float strength = 1.0f - impl.daylight * (1.0f - std::clamp(s.lamps_in_daylight, 0.0f, 1.0f));
-        frame.lamps = glm::vec4{1.0f - strength, active ? std::clamp(s.ground_bounce, 0.0f, 0.5f) : 0.0f, 0.0f, 0.0f};
+        // z: the cab's and salon's lamps, at least half (cab_lamps_in_daylight).
+        const float cab_strength = 1.0f - impl.daylight * (1.0f - (std::max)(std::clamp(s.lamps_in_daylight, 0.0f, 1.0f), cab_lamps_in_daylight));
+        frame.lamps = glm::vec4{1.0f - strength, active ? std::clamp(s.ground_bounce, 0.0f, 0.5f) : 0.0f, 1.0f - cab_strength, 0.0f};
     }
 
     const auto queue = wgpuDeviceGetQueue(impl.device);
@@ -1297,7 +1302,7 @@ void SceneEffects::Impl::record_depth(const WGPUCommandEncoder encoder, const WG
 
 // The camera's depth with the occlusion from it, then the light clusters.
 void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const DepthDraw& draw) const {
-    if (frame.flags[1] != 0u && gtao_group && blur_group) {
+    if (camera_depth_wanted && (frame.flags[1] == 0u || (gtao_group && blur_group))) {
         const WGPURenderPassDepthStencilAttachment depth_attachment{
             .view = depth.view,
             .depthLoadOp = WGPULoadOp_Clear,
@@ -1329,8 +1334,10 @@ void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const D
             wgpuComputePassEncoderEnd(compute);
             wgpuComputePassEncoderRelease(compute);
         };
-        compute_one(GpuPass::occlusion, ao_half ? gtao_low : gtao, gtao_group, ao_raw.width, ao_raw.height);
-        compute_one(GpuPass::occlusion_blur, ao_half ? blur_low : blur, blur_group, ao.width, ao.height);
+        if (frame.flags[1] != 0u) {
+            compute_one(GpuPass::occlusion, ao_half ? gtao_low : gtao, gtao_group, ao_raw.width, ao_raw.height);
+            compute_one(GpuPass::occlusion_blur, ao_half ? blur_low : blur, blur_group, ao.width, ao.height);
+        }
     }
     if (frame.flags[0] != 0 && cluster_group) {
         const auto writes = compute_pass_timestamps(GpuPass::light_clusters);
@@ -1437,8 +1444,13 @@ float SceneEffects::shadow_range() const noexcept {
     return (std::max)(sun, lamps);
 }
 
+WGPUTextureView SceneEffects::camera_depth() const noexcept {
+    return impl_->camera_depth_wanted ? impl_->depth.view : nullptr;
+}
+
 bool SceneEffects::wants_depth() const noexcept {
-    return impl_->active && (impl_->cascade_count > 0 || impl_->frame.flags[1] != 0u || impl_->lamp_shadows_wanted);
+    return impl_->active && (impl_->cascade_count > 0 || impl_->frame.flags[1] != 0u || impl_->camera_depth_wanted
+                             || impl_->lamp_shadows_wanted);
 }
 
 SceneEffectStats SceneEffects::stats() const noexcept {

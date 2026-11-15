@@ -52,6 +52,9 @@ double channel(Sequence& s, const double offset, const double wheelbase, const d
     return t * t * (3.0f - 2.0f * t);
 }
 
+// How much of the line's errors aside reaches the body at `speed` m/s.
+[[nodiscard]] float lateral_follow(const float speed) { return smoothstep(1.5f, 15.0f, speed); }
+
 } // namespace
 
 TrackIrregularity track_irregularity(const std::uint32_t node, const double length, const double offset) {
@@ -64,15 +67,17 @@ TrackIrregularity bogie_irregularity(const std::uint32_t node, const double leng
     double fade = (std::min)(edge / taper, 1.0);
     fade = fade * fade * (3.0 - 2.0 * fade);
     Sequence s{(static_cast<std::uint64_t>(node) << 20) ^ track_salt};
-    // This node's track: from good to worn; jointed track (a short node)
-    // rougher than welded.
-    const double quality = 0.6 + s.unit();
-    const double scale = quality * (length < 1000.0 ? 1.3 : 1.0) * fade;
+    // One average track everywhere (a tester who drove them, 2026-11-15:
+    // no good and bad lines for a start). Until then each node from good to
+    // worn (0.6..1.6) and a short one (jointed) 1.3 times rougher.
+    static_cast<void>(s.unit()); // the draw that chose the quality: the waves stay as they were
+    const double scale = fade;
     TrackIrregularity result;
     result.vertical = static_cast<float>(channel(s, offset, wheelbase, 0.0025, 6.0, 40.0) * scale);
     result.lateral = static_cast<float>(channel(s, offset, wheelbase, 0.0025, 8.0, 50.0) * scale);
-    // The rails' level difference over the 1.5 m between them.
-    result.cross_level = static_cast<float>(channel(s, offset, wheelbase, 0.0025, 6.0, 35.0) * scale / 1.5);
+    // The rails' level difference over the 1.5 m between them: 1.5 mm rms
+    // (2.5 until 2026-11-15; a tester: the roll is very small).
+    result.cross_level = static_cast<float>(channel(s, offset, wheelbase, 0.0015, 6.0, 35.0) * scale / 1.5);
     return result;
 }
 
@@ -160,6 +165,13 @@ void step_body(BodyMotion& motion, const BodyModes& modes, const float dt) {
     const float swell_wave = 0.5f + 0.5f * std::sin(swell_angle);
     const float swell = 0.35f + 0.65f * swell_wave * swell_wave;
     const float wavelengths[2] = {(std::max)(modes.hunting_wavelength, 4.0f), (std::max)(modes.hunting_wavelength, 4.0f) * 1.04f};
+    // The line's errors aside: at walking pace the wheelsets take them in
+    // their play in the gauge, and they reach the body as the speed grows
+    // (none to some 5 km/h, 3 % at 10, a fifth at 20, half at 30, all from
+    // 54 km/h).
+    // Until 2026-11-15 the body followed them at any speed (a tester on
+    // the 2TE116: as much sway at 5-10 km/h as at speed).
+    const float follow = lateral_follow(v);
     // The curve: the body out on its springs and rolled outwards.
     const float pull = std::clamp(in.lateral_acceleration, -2.5f, 2.5f);
     const float sway_curve = modes.sway > 0.0f ? -pull / (modes.sway * modes.sway) : 0.0f;
@@ -190,8 +202,8 @@ void step_body(BodyMotion& motion, const BodyModes& modes, const float dt) {
             const float y_rate = hunting * swell * std::cos(motion.hunting[k]) * rate;
             const TrackIrregularity& now = k == 0 ? a1 : b1;
             const TrackIrregularity& then = k == 0 ? a0 : b0;
-            lateral[k] = now.lateral + y;
-            lateral_rate[k] = (now.lateral - then.lateral) / h + y_rate;
+            lateral[k] = now.lateral * follow + y;
+            lateral_rate[k] = (now.lateral - then.lateral) * follow / h + y_rate;
         }
         const float bounce_in = (a1.vertical + b1.vertical) * 0.5f;
         const float bounce_rate = ((a1.vertical + b1.vertical) - (a0.vertical + b0.vertical)) * 0.5f / h;
@@ -305,6 +317,32 @@ void step_body(BodyMotion& motion, const BodyModes& modes, const float dt) {
         in.throw_lateral[k] = 0.0f;
         in.knock[k] = 0.0f;
     }
+}
+
+void settle_body(BodyMotion& motion) {
+    const auto& in = motion.input;
+    const float base = (std::max)(in.base, 2.0f);
+    // step_body's targets with no speed, curve, pull or hunting (so none of
+    // the line's errors aside).
+    const float follow = lateral_follow(0.0f);
+    const float sway = (in.bogie[0].lateral + in.bogie[1].lateral) * 0.5f * follow;
+    motion.shift[0] = sway;
+    motion.shift[1] = (in.bogie[0].vertical + in.bogie[1].vertical) * 0.5f;
+    motion.shift[2] = 0.0f;
+    motion.turn[0] = (in.bogie[0].cross_level + in.bogie[1].cross_level) * 0.5f + 0.6f * sway;
+    motion.turn[1] = (in.bogie[0].vertical - in.bogie[1].vertical) / base;
+    motion.turn[2] = (in.bogie[0].lateral - in.bogie[1].lateral) * follow / base;
+    for (int axis = 0; axis < 3; ++axis) {
+        motion.shift_rate[axis] = motion.turn_rate[axis] = 0.0f;
+        motion.pose_shift[axis] = motion.shift[axis];
+        motion.pose_turn[axis] = motion.turn[axis];
+    }
+    for (int k = 0; k < 2; ++k) {
+        motion.jolt[k] = motion.jolt_rate[k] = motion.push[k] = motion.push_length[k] = motion.push_clock[k] = 0.0f;
+        motion.knocked[k] = motion.knocked_rate[k] = 0.0f;
+        motion.last[k] = in.bogie[k];
+    }
+    motion.started = true;
 }
 
 void reverse_body(BodyMotion& motion) {

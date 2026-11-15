@@ -129,7 +129,7 @@ using detail::GpuLight;
 
 // The further lights: LightRings, nine a ring (RTS Shader.NumLights 10, the sun first).
 constexpr std::size_t ring_lights = LightRings::count * LightRings::capacity;
-constexpr std::size_t max_interior_lights = 8;
+static_assert(max_interior_lights == 64, "the shaders' Frame.interior holds 64 (shader_interface, the loops)");
 
 struct FrameUniform {
     GpuLight lights[1]; // the sun
@@ -147,6 +147,8 @@ struct FrameUniform {
     glm::mat4 portals[max_portals];
     glm::vec4 portal_doors[max_portals]; // far_door, near_door, door_half_across, door_half_up
 };
+// WebGPU's least maxUniformBufferBindingSize.
+static_assert(sizeof(FrameUniform) <= 65536);
 
 // Bindings and types shared by both shading paths.
 constexpr char shader_interface[] = R"(
@@ -155,7 +157,7 @@ struct Frame {
     lights: array<Light, 1>, // the sun
     rings: array<Light, 90>, // the further lights, nine a ring
     ring_counts: array<vec4<i32>, 3>,
-    interior: array<Light, 8>,
+    interior: array<Light, 64>,
     fog_colour: vec4<f32>,
     fog_distance: vec4<f32>,
     view_projection: mat4x4<f32>,
@@ -463,7 +465,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         }
 
         // The lamps of the cab or salon (RTS shape.frag, LightsInt).
-        let interior_lights = min(i32(frame.fog_distance.z), 8);
+        let interior_lights = min(i32(frame.fog_distance.z), 64);
         for (var i = 0; i < interior_lights; i = i + 1) {
             let factor = interior_factor(frame.interior[i], input.world, normal);
             if (factor < 0.0) { continue; }
@@ -688,16 +690,22 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                 }
             }
         }
-        let interior_lights = min(i32(frame.fog_distance.z), 8);
+        // Weaker by day (SceneEffectSettings::lamps_in_daylight): the
+        // headlights and the scenery's lamps out in the sun.
+        lamps = lamps * (1.0 - effects.lamps.x);
+        // The cab's and salon's lamps by day at least half as strong as at
+        // night (effects.lamps.z): they shine indoors, out of the sun (until
+        // 2026-11-15 faded with the others: with the setting at 0 a cab's
+        // lights did nothing by day).
+        var cab_lamps = vec3<f32>(0.0);
+        let interior_lights = min(i32(frame.fog_distance.z), 64);
         for (var i = 0; i < interior_lights; i = i + 1) {
             let factor = interior_factor(frame.interior[i], input.world, n);
             if (factor > 0.0) {
-                lamps = lamps + to_linear(frame.interior[i].diffuse.xyz * factor);
+                cab_lamps = cab_lamps + to_linear(frame.interior[i].diffuse.xyz * factor);
             }
         }
-
-        // Weaker by day (SceneEffectSettings::lamps_in_daylight).
-        lamps = lamps * (1.0 - effects.lamps.x);
+        lamps = lamps + cab_lamps * (1.0 - effects.lamps.z);
         colour = base * (ambient + diffuse + lamps + bounce) + highlight;
         if (material == -1) { // vertex colour emission
             colour = max(colour, base * to_linear(input.colour.xyz));

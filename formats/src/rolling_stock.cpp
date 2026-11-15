@@ -1,6 +1,8 @@
 #include <openrts/formats/rolling_stock.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <vector>
 
 #include "rts_text.hpp"
 
@@ -585,6 +587,31 @@ core::VirtualPath wagon_path(const std::string_view folder, const std::string_vi
     return core::VirtualPath::parse(text).value_or(core::VirtualPath{});
 }
 
+namespace {
+
+// Name ( "..." ) of the Engine block, else the Wagon block, in the file's
+// own case: found in the lower-cased text (the same length, byte for byte)
+// and read from the decoded one.
+[[nodiscard]] std::string written_name(const std::string_view bytes) {
+    std::string error;
+    const auto original = detail::decode_text(bytes, error);
+    if (!original) return {};
+    std::string lower = *original;
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    detail::rts_blank_comments(lower);
+    for (const std::string_view block_name : {"engine", "wagon"}) {
+        const auto block = rts_find(lower, block_name);
+        if (!block) continue;
+        if (const auto name = rts_find(lower, "name", *block)) {
+            auto value = rts_token(*original, name->begin, name->end);
+            if (!value.empty()) return value;
+        }
+    }
+    return {};
+}
+
+} // namespace
+
 WagonDefinition load_wagon(const core::Vfs& vfs, const std::string_view folder, const std::string_view name,
                            const bool engine) {
     const auto path = wagon_path(folder, name, engine);
@@ -608,6 +635,7 @@ WagonDefinition load_wagon(const core::Vfs& vfs, const std::string_view folder, 
     // The merged companion text comes first in the Wagon block, so its
     // first token is no longer the name; the file name is.
     wagon.name = std::string(name);
+    wagon.display_name = written_name(*bytes);
     // openRTS: a distributor script, next to the file.
     if (auto& brakes = wagon.brakes; !brakes.distributor_script.empty()) {
         const auto script = core::VirtualPath::parse(path.parent().str() + "/" + brakes.distributor_script);
@@ -713,6 +741,27 @@ std::optional<core::VirtualPath> find_consist(const core::Vfs& vfs, const std::s
     if (stem.size() > 4 && core::fold_case(stem.substr(stem.size() - 4)) == ".con") stem.resize(stem.size() - 4);
     for (const char* folder : {"TRAINS/CONSISTS_RTS/", "TRAINS/CONSISTS/"}) {
         if (auto path = core::VirtualPath::parse(std::string(folder) + stem + ".con"); path && vfs.exists(*path)) return path;
+    }
+    // In a folder of its own under them (the MDD build's "Составы РЖД/
+    // Сплотки/..."), as the start menu lists them by the name alone.
+    const auto wanted = core::fold_case(stem + ".con");
+    for (const char* folder : {"TRAINS/CONSISTS_RTS", "TRAINS/CONSISTS"}) {
+        const auto root = core::VirtualPath::parse(folder);
+        if (!root) continue;
+        std::vector<core::VirtualPath> stack;
+        for (const auto& entry : vfs.list(*root))
+            if (entry.directory) stack.push_back(entry.path);
+        while (!stack.empty()) {
+            const auto here = stack.back();
+            stack.pop_back();
+            for (const auto& entry : vfs.list(here)) {
+                if (entry.directory) {
+                    stack.push_back(entry.path);
+                } else if (core::fold_case(entry.path.filename()) == wanted) {
+                    return entry.path;
+                }
+            }
+        }
     }
     return std::nullopt;
 }

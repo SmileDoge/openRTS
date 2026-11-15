@@ -1,9 +1,12 @@
 #include "ui_text.hpp"
 
+#include <openrts/core/virtual_path.hpp>
+
 #include <cstdarg>
 #include <cstdio>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace openrts::viewer {
 namespace {
@@ -630,6 +633,8 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"main pass", "основной проход"},
         {"depth copy", "копия глубины"},
         {"tone curve", "тональная кривая"},
+        {"bloom lights", "огни для bloom"},
+        {"bloom", "bloom"},
         {"interface", "интерфейс"},
         {"water's sky", "небо для воды"},
         {"Low", "Низкие"},
@@ -688,6 +693,29 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"Updates", "Обновления"},
         {"Version", "Версия"},
         {"Check for a new version at the start", "Проверять новую версию при запуске"},
+        {"Show the game in the Discord profile", "Показывать игру в профиле Discord"},
+        {"Night textures of the models (as in RTS)", "Ночные текстуры моделей (как в RTS)"},
+        {"Bloom: light spreads round lamps, signals and the sun (HDR)", "Bloom: свет расходится вокруг фонарей, сигналов и солнца (HDR)"},
+        {"Bloom strength", "Сила bloom"},
+        {"At night from the textures' brightest too (lamps' bulbs, lit windows, signs)",
+         "Ночью и от самых ярких мест текстур (плафоны фонарей, окна, надписи)"},
+        {"The lights' glow and what is brighter than white, spread round them as an eye and a lens scatter it.",
+         "Свечение огней и всего, что ярче белого, расходится вокруг них, как свет рассеивают глаз и объектив."},
+        {"Only what a texture paints near white: a dark wall, or a lamp's light painted onto a platform, does not glow. Off: only the signals, the train's lights and the sun.",
+         "Только то, что текстура рисует почти белым: тёмная стена или нарисованный на перроне свет фонаря не светятся. Выключено: только сигналы, огни поезда и солнце."},
+        {"(TEXTURES\\NIGHT: lit windows and lamps painted in; off: the day's textures at night, lit by the lamps)",
+         "(TEXTURES\\NIGHT: освещённые окна и фонари нарисованы в самой текстуре; выключено — ночью дневные текстуры, их освещают фонари)"},
+        {"Others see \"Playing openRTS\": in the menu or driving which engine, on which route and for how long. Only the Discord program on this computer is told; nothing of a server's.",
+         "Другие видят «Играет в openRTS»: в меню вы или какой локомотив ведёте, на каком маршруте и сколько времени. Сведения получает только программа Discord на этом компьютере, о сервере ничего не передаётся."},
+        {"In the menu", "В меню"},
+        {"At the dispatcher's console", "За пультом дежурного"},
+        {"On foot", "Пешком"},
+        {"Drives %s", "Ведёт %s"},
+        {"Looks round the route", "Осматривает маршрут"},
+        {"%s: a network game", "%s, сетевая игра"},
+        {"%s: scenario \"%s\"", "%s, сценарий «%s»"},
+        {"Route %s", "Маршрут %s"},
+        {"openRTS on GitHub", "openRTS на GitHub"},
         {"Asking GitHub for the latest version...", "Запрос последней версии у GitHub..."},
         {"This is the latest version (%s).", "У вас последняя версия (%s)."},
         {"Version %s is out.", "Вышла версия %s."},
@@ -1400,6 +1428,32 @@ std::string trf(const char* english, ...) {
     std::vsnprintf(buffer, sizeof buffer, tr(english), arguments);
     va_end(arguments);
     return buffer;
+}
+
+std::string search_form(const std::string_view text) {
+    static constexpr std::pair<std::string_view, std::string_view> letters[] = {
+        {"а", "a"}, {"б", "b"}, {"в", "v"}, {"г", "g"}, {"ґ", "g"}, {"д", "d"}, {"е", "e"}, {"ё", "e"}, {"є", "e"},
+        {"ж", "zh"}, {"з", "z"}, {"и", "i"}, {"і", "i"}, {"ї", "i"}, {"й", "y"}, {"к", "k"}, {"л", "l"}, {"м", "m"},
+        {"н", "n"}, {"о", "o"}, {"п", "p"}, {"р", "r"}, {"с", "s"}, {"т", "t"}, {"у", "u"}, {"ф", "f"}, {"х", "h"},
+        {"ц", "c"}, {"ч", "ch"}, {"ш", "sh"}, {"щ", "sch"}, {"ъ", ""}, {"ы", "y"}, {"ь", ""}, {"э", "e"}, {"ю", "yu"},
+        {"я", "ya"}};
+    const auto folded = core::fold_case(text);
+    std::string out;
+    out.reserve(folded.size());
+    for (std::size_t i = 0; i < folded.size();) {
+        bool done = false;
+        if (static_cast<unsigned char>(folded[i]) >= 0xC0u) {
+            for (const auto& [from, to] : letters) {
+                if (folded.compare(i, from.size(), from) != 0) continue;
+                out += to;
+                i += from.size();
+                done = true;
+                break;
+            }
+        }
+        if (!done) out += folded[i++];
+    }
+    return out;
 }
 
 } // namespace openrts::viewer

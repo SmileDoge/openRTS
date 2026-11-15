@@ -49,6 +49,8 @@ public:
     void collect_lights(std::span<const renderer::StreamedInstance> instances, renderer::ModelLibrary& library,
                         const glm::vec3& eye, float draw_distance, float zoom = 1.0f);
     // The signal lights (where RTS draws its lights: after the glass, before the cab).
+    // The lights as drawn by draw_lights, into the bloom's source.
+    void draw_bloom(WGPURenderPassEncoder pass, const FrameView& frame, float viewport_height);
     void draw_lights(WGPURenderPassEncoder pass, const FrameView& frame, float viewport_height, renderer::GlowBlend blend);
     // The helper markers (posts by aspect), before the glass.
     void draw(WGPURenderPassEncoder pass, const FrameView& frame, float viewport_height);

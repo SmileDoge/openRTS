@@ -433,6 +433,15 @@ int shape_check(const core::Vfs& vfs, const std::vector<std::string>& args) {
     }
     const auto model = formats::parse_binary_shape_model(*body.body);
     for (std::size_t i = 0; i < model.images.size(); ++i) std::printf("image %zu: %s\n", i, model.images[i].string().c_str());
+    // Each texture: its image and filter (MipLinear, Point, ...: RTS sets the
+    // GL min and mag filters to it, so Point reads texels sharp up close).
+    for (std::size_t i = 0; i < model.textures.size(); ++i) {
+        const auto& t = model.textures[i];
+        const auto image = t.image_index < model.images.size() ? model.images[t.image_index].string() : std::string("?");
+        const auto filter = t.filter_mode_index < model.filter_names.size() ? model.filter_names[t.filter_mode_index] : std::string("?");
+        std::printf("texture %zu: image %u (%s), filter %s, lod bias %.2f\n", i, t.image_index, image.c_str(), filter.c_str(),
+                    t.mipmap_lod_bias);
+    }
     report_shape(model, args);
     std::printf("shape: %zu nodes, %zu draws\n", model.matrices.size(), model.draws.size());
     return 0;

@@ -31,6 +31,7 @@ add_library(openrts_viewer_core STATIC
     src/graphics_settings.cpp
     src/controls_help.cpp
     src/window_mode.cpp
+    src/discord_status.cpp
     src/window_viewer.cpp)
 openrts_configure_target(openrts_viewer_core)
 target_include_directories(openrts_viewer_core PUBLIC src)

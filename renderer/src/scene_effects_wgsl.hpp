@@ -30,7 +30,7 @@ struct Effects {
     horizon: vec4<f32>,        // xyz: RTS's fog colour (linear), w: where its fog ends (m)
     focus: mat4x4<f32>,        // world -> the focus map's clip (the cab)
     focus_params: vec4<f32>,   // x: its layer + 1 (0: none), y: its texel (m), z: margin (clip units), w: least filter radius (m)
-    lamps: vec4<f32>,          // x: how much daylight dims the lamps (0: not at all), y: the ground's reflectance for the bounce
+    lamps: vec4<f32>,          // x: how much daylight dims the lamps (0: not at all), y: the ground's reflectance for the bounce, z: x for the cab's and salon's lamps
     lamp_shadows: array<mat4x4<f32>, 8>, // world -> each shadowed lamp's clip
     lamp_shadow_ids: array<vec4<u32>, 2>, // each one's index in scene_lights + 1 (lamp s: [s / 4][s % 4])
     lamp_shadow_texel: array<vec4<f32>, 2>, // a texel a metre from the lamp (parallel: in metres)

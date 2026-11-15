@@ -256,6 +256,7 @@ endif()
 
 add_executable(openrts_ui_text_test ui_text_test.cpp ../viewer/src/ui_text.cpp)
 openrts_configure_target(openrts_ui_text_test)
+target_link_libraries(openrts_ui_text_test PRIVATE openrts_core)
 add_test(NAME openrts.ui_text COMMAND openrts_ui_text_test)
 
 # The legacy DLL host end to end with its fake locomotive DLL (no RTS content needed).
@@ -322,3 +323,8 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_viewer)
     target_link_libraries(openrts_engineer_test PRIVATE openrts_assets openrts_audio openrts_formats openrts_renderer openrts_trainplugin)
     add_test(NAME openrts.content.engineer_vl10k COMMAND openrts_engineer_test "${OPENRTS_TEST_ROOT}")
 endif()
+
+add_executable(openrts_discord_presence_test discord_presence_test.cpp)
+openrts_configure_target(openrts_discord_presence_test)
+target_link_libraries(openrts_discord_presence_test PRIVATE openrts_platform)
+add_test(NAME openrts.discord_presence COMMAND openrts_discord_presence_test)

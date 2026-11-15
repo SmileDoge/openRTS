@@ -55,6 +55,9 @@ struct GraphicsSettings {
     bool forest_clearance = true;
     float forest_clearance_distance = 3.0f; // m
     bool signal_lights_real_size = true;
+    // The models' night textures (TEXTURES\NIGHT, ESD_Alternative_Texture)
+    // at night, as RTS; off: the day's, lit by the lamps (night_textures).
+    bool night_textures = true;
     // The cab screens each drawn into an image of their own, blended in
     // linear light (renderer::cab_screens_supersampled); off: as RTS.
     bool screen_supersampling = true;

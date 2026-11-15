@@ -91,6 +91,14 @@ inline bool& light_fullbright() {
     return on;
 }
 
+// The models' night textures (TEXTURES\NIGHT) at night, as RTS; off: the
+// day's at night too, lit as the rest (the NIGHT ones have the lamps'
+// light painted in, which the lamps then light again). Read each frame.
+inline bool& night_textures() {
+    static bool on = true;
+    return on;
+}
+
 // The experimental path's lamp shadows: a scenery lamp (ESD_Light_Sources)
 // throws no shadow of the model it belongs to (its own pole, head and
 // glass; it still lights them). Some shapes have the light's place inside

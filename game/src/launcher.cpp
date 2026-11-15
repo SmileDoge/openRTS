@@ -35,6 +35,7 @@
 #include <openrts/renderer/webgpu_context.hpp>
 
 #include "controls_help.hpp"
+#include "discord_status.hpp"
 #include "file_dialog.hpp"
 #include "frame_limiter.hpp"
 #include "graphics_settings.hpp"
@@ -293,6 +294,7 @@ struct Launcher::State {
     std::shared_ptr<core::Vfs> vfs;
     std::vector<std::string> routes;
     std::vector<std::string> consists;
+    std::vector<std::string> consist_search; // viewer::search_form(consists[i])
     std::vector<formats::TrainPath> paths;
     int route = -1, consist = -1, path = -1; // -1 path: the route's first
     std::array<char, 128> filter{};
@@ -562,17 +564,19 @@ struct Launcher::State {
                 std::string name(entry.path.filename());
                 if (lower(name).ends_with(".con")) {
                     name.resize(name.size() - 4);
-                    if (seen.insert(lower(name)).second) consists.push_back(name);
+                    if (seen.insert(core::fold_case(name)).second) consists.push_back(name);
                 }
             }
         }
-        const auto by_name = [](const std::string& a, const std::string& b) { return lower(a) < lower(b); };
+        const auto by_name = [](const std::string& a, const std::string& b) { return core::fold_case(a) < core::fold_case(b); };
         std::sort(routes.begin(), routes.end(), by_name);
         std::sort(consists.begin(), consists.end(), by_name);
+        consist_search.clear();
+        for (const auto& name : consists) consist_search.push_back(viewer::search_form(name));
         const auto find = [](const std::vector<std::string>& list, const std::optional<std::string>& name) {
             if (!name) return -1;
             for (std::size_t i = 0; i < list.size(); ++i)
-                if (lower(list[i]) == lower(*name)) return static_cast<int>(i);
+                if (core::fold_case(list[i]) == core::fold_case(*name)) return static_cast<int>(i);
             return -1;
         };
         route = find(routes, remembered("launcher_route"));
@@ -992,10 +996,10 @@ void Launcher::State::draw_single(const float height) {
             ImGui::BeginDisabled(!consist_used());
             ImGui::SetNextItemWidth(-FLT_MIN);
             ImGui::InputTextWithHint("##filter", tr("search"), filter.data(), filter.size());
-            const auto wanted = lower(std::string(filter.data()));
+            const auto wanted = viewer::search_form(filter.data());
             if (ImGui::BeginListBox("##consists", {-FLT_MIN, -FLT_MIN})) {
                 for (std::size_t i = 0; i < consists.size(); ++i) {
-                    if (!wanted.empty() && lower(consists[i]).find(wanted) == std::string::npos) continue;
+                    if (!wanted.empty() && i < consist_search.size() && consist_search[i].find(wanted) == std::string::npos) continue;
                     if (ImGui::Selectable(consists[i].c_str(), consist == static_cast<int>(i))) consist = static_cast<int>(i);
                 }
                 ImGui::EndListBox();
@@ -1357,6 +1361,16 @@ void Launcher::State::draw_settings(const float height) {
 #endif
         draw_update_settings(label_width);
         ImGui::Spacing();
+        // Discord (discord_status.hpp): the profile says what the game does.
+        ImGui::SeparatorText("Discord");
+        if (begin_form("##discord_form", label_width)) {
+            form_row(tr("Show the game in the Discord profile"));
+            bool shown = viewer::discord_presence_enabled();
+            if (ImGui::Checkbox("##discord_presence", &shown)) viewer::set_discord_presence_enabled(shown);
+            ImGui::EndTable();
+        }
+        hint(tr("Others see \"Playing openRTS\": in the menu or driving which engine, on which route and for how long. Only the Discord program on this computer is told; nothing of a server's."));
+        ImGui::Spacing();
         draw_ace_settings();
     }
     ImGui::EndChild();
@@ -1635,6 +1649,21 @@ void Launcher::State::draw_graphics(const float height) {
             ImGui::EndTable();
         }
 
+        ImGui::SeparatorText("Bloom");
+        if (begin_group("##bloom", label_width)) {
+            group_row(tr("Bloom: light spreads round lamps, signals and the sun (HDR)"), Load::negligible, Load::negligible);
+            ImGui::Checkbox("##bloom", &e.bloom);
+            row_note(tr("The lights' glow and what is brighter than white, spread round them as an eye and a lens scatter it."));
+            ImGui::BeginDisabled(!e.bloom);
+            group_row(tr("Bloom strength"), Load::none, Load::none);
+            viewer::slider_with_input("##bloom_strength", &e.bloom_strength, 0.0f, 3.0f, "%.2f", "%.2f");
+            group_row(tr("At night from the textures' brightest too (lamps' bulbs, lit windows, signs)"), Load::none, Load::none);
+            ImGui::Checkbox("##bloom_textures", &e.bloom_textures);
+            row_note(tr("Only what a texture paints near white: a dark wall, or a lamp's light painted onto a platform, does not glow. Off: only the signals, the train's lights and the sun."));
+            ImGui::EndDisabled();
+            ImGui::EndTable();
+        }
+
         ImGui::SeparatorText(tr("Lamps"));
         if (begin_group("##lamps", label_width)) {
             group_row(tr("Every lamp, clustered"), Load::negligible, Load::medium);
@@ -1720,6 +1749,9 @@ void Launcher::State::draw_graphics(const float height) {
             ImGui::EndDisabled();
             group_row(tr("Signal lights at the lens's size, far off a dot (not as in RTS)"), Load::none, Load::none);
             ImGui::Checkbox("##signal_lights", &g.signal_lights_real_size);
+            group_row(tr("Night textures of the models (as in RTS)"), Load::none, Load::none);
+            ImGui::Checkbox("##night_textures", &g.night_textures);
+            row_note(tr("(TEXTURES\\NIGHT: lit windows and lamps painted in; off: the day's textures at night, lit by the lamps)"));
             group_row(tr("Sharp cab screens: drawn at a higher resolution (not as in RTS)"), Load::negligible, Load::negligible);
             ImGui::Checkbox("##screen_supersampling", &g.screen_supersampling);
             group_row(tr("Depth for ReShade"), Load::none, Load::negligible);
@@ -2040,6 +2072,11 @@ void Launcher::set_updated_from(std::string version) {
 }
 
 bool Launcher::wants_close() const { return state_->restart; }
+
+std::optional<viewer::ScenePresence> Launcher::presence() const {
+    if (state_->running()) return std::nullopt;
+    return viewer::ScenePresence{.details = tr("In the menu")};
+}
 
 void Launcher::update(renderer::ModelRenderer&, viewer::ViewerCamera&, const viewer::SceneClock&, const viewer::SceneInput&) {
     state_->poll();

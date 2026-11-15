@@ -24,6 +24,8 @@ const char* gpu_pass_name(const GpuPass pass) noexcept {
     case GpuPass::sky_table: return "sky table";
     case GpuPass::main: return "main pass";
     case GpuPass::depth_copy: return "depth copy";
+    case GpuPass::bloom_sources: return "bloom lights";
+    case GpuPass::bloom: return "bloom";
     case GpuPass::tone: return "tone curve";
     case GpuPass::overlay: return "interface";
     case GpuPass::reflection_probe: return "water's sky";

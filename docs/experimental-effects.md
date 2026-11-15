@@ -349,7 +349,11 @@ are scaled by `1 - Effects.lamps.x`: with the brighter of the sun's and
 the sky's linear luma L, daylight = smoothstep over L 0.1..0.6, the
 strength 1 - daylight * (1 - lamps_in_daylight). Setting «Лампы днём»
 (`lamps_daylight`, `--lamps-daylight`, 0.25). ED9M at noon, cab lamps on:
-mean change of the frame +14.4 -> +7.0; at night unchanged.
+mean change of the frame +14.4 -> +7.0; at night unchanged. Since
+2026-11-15 the cab's and salon's lamps keep at least half of it by day
+(`Effects.lamps.z`, `cab_lamps_in_daylight` 0.5): with the setting at 0 a
+cab's lights did nothing in the day (testers, the VL80t's "bright cab
+light").
 
 ### Lamp shadows
 
@@ -454,6 +458,37 @@ extra pass: a few instructions a pixel.
 ED9M side on at the bogies, 12:00, mean luma 0..255: the band of the car
 side and the bogies 73.0 -> 79.5 (0.2) -> 83.1 (0.35), the darkest tenth of
 it (deep under the body) 14.9 -> 16.1 -> 17.0, the ground unchanged.
+
+### Bloom
+
+openRTS's own (2026-11-15, testers: "а bloom можно сделать?"), the HDR
+frame on the experimental path (`renderer::BloomRenderer`). What it takes:
+- **The lights:** after the main pass the signals' and the train's glows
+  are drawn once more into a single-sample source at the frame's size,
+  depth-tested against the camera's depth pre-pass: a lamp behind a house
+  does not bloom; the cab's glass is blended, not in the pre-pass, so the
+  lights outside bloom through it. The pre-pass is drawn for the bloom
+  without the ambient occlusion too.
+- **The scene over 1** before the exposure (scene-linear, a soft threshold
+  from 0.5): the sun, the sky's brightest, lights laid over lit surfaces.
+- **At night, the textures' brightest** («Ночью и от самых ярких мест
+  текстур», `bloom_textures`, on): what is drawn near white (its brightest
+  channel 0.8 to 1 as displayed, smoothly), times the tone curve's night
+  factor: a scenery lamp's bulb and a lit window painted into a night
+  texture, a sign. A dark wall, or a lamp's pool painted onto a platform,
+  stays below it. A scenery lamp blooms by its bulb's texture, not by its
+  light: the first try put a glow at each burning lamp's `Position`, which
+  is where it lights from (Kuban's platform lamps: metres off the bulb), and
+  testers saw glows hanging in the sky.
+
+Down a chain of half-size images to about 16 pixels (at most six; the first
+step a 13-tap filter of Jimenez's with Karis's average against fireflies,
+the others the plain 13 taps), back up through a 3 x 3 tent each, added
+into the larger. The tone mapper adds the result times 0.15 x strength to
+the scene before its exposure (`ToneSettings::bloom`; not with the curve
+none). Settings: «Bloom» (`effect_bloom`, on), «Сила bloom»
+(`bloom_strength`, 0..3, 1). Cost (the RTX 4070 Ti SUPER, a small window):
+the lights' pass a few microseconds, the chain some 0.03 ms.
 
 ## openRTS sky (atmosphere, volumetric clouds)
 

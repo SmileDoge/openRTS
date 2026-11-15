@@ -34,6 +34,8 @@ enum class GpuPass : std::uint8_t {
     sky_table,       // its atmosphere's table
     main,            // the scene
     depth_copy,      // for ReShade
+    bloom_sources,   // the lights drawn for the bloom
+    bloom,           // its first step down (the costliest of its passes)
     tone,            // HDR to the screen
     overlay,         // the panels over HDR
     reflection_probe, // the sky the water reflects, six faces

@@ -2,6 +2,7 @@
 #include <openrts/renderer/gpu_pass_timer.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
+#include <algorithm>
 #include <array>
 
 namespace openrts::renderer {
@@ -14,12 +15,14 @@ struct Settings {
     night: f32,
     night_exposure: f32,
     saturation: f32,
-    pad0: f32,
+    bloom: f32,     // the bloom's strength (0: none)
     pad1: f32,
     pad2: f32,
 };
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> settings: Settings;
+@group(0) @binding(2) var bloom_image: texture_2d<f32>; // scene-linear (BloomRenderer), or 1 x 1 black
+@group(0) @binding(3) var bloom_sampler: sampler;
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -98,13 +101,14 @@ fn khronos_neutral(c_in: vec3<f32>) -> vec3<f32> {
     return mix(c, vec3<f32>(new_peak), g);
 }
 
-// The display-encoded picture through the chosen curve.
-fn curved(encoded: vec3<f32>) -> vec3<f32> {
+// The display-encoded picture through the chosen curve, the bloom's light
+// (scene-linear) added before the exposure.
+fn curved(encoded: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
     if (settings.curve == 0u) {
         // The scene as drawn: the RTS look.
         return clamp(encoded, vec3<f32>(0.0), vec3<f32>(1.0));
     }
-    let scene_linear = pow(max(encoded, vec3<f32>(0.0)), vec3<f32>(2.2));
+    let scene_linear = pow(max(encoded, vec3<f32>(0.0)), vec3<f32>(2.2)) + bloom * settings.bloom;
     let linear = scene_linear * settings.exposure;
     if (settings.curve == 4u) {
         // Khronos keeps the day as authored; AgX, brighter, holds the night.
@@ -129,7 +133,12 @@ fn curved(encoded: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let encoded = textureLoad(scene, vec2<i32>(position.xy), 0).rgb;
-    var display = curved(encoded);
+    var bloom = vec3<f32>(0.0);
+    if (settings.bloom > 0.0) {
+        let size = vec2<f32>(textureDimensions(scene));
+        bloom = textureSampleLevel(bloom_image, bloom_sampler, position.xy / size, 0.0).rgb;
+    }
+    var display = curved(encoded, bloom);
     if (settings.saturation != 1.0) {
         // Saturation around the pixel's own luma, as a display adjusts it.
         let luma = dot(display, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -149,7 +158,8 @@ struct SettingsUniform {
     float night = 0.0f;
     float night_exposure = 2.0f;
     float saturation = 1.0f;
-    float pad[3]{};
+    float bloom = 0.0f;
+    float pad[2]{};
 };
 
 } // namespace
@@ -159,8 +169,14 @@ struct ToneMapper::Impl {
     WGPUBindGroupLayout layout = nullptr;
     WGPURenderPipeline pipeline = nullptr;
     WGPUBuffer settings = nullptr;
+    WGPUSampler sampler = nullptr;
+    WGPUTexture black = nullptr; // the bloom when there is none
+    WGPUTextureView black_view = nullptr;
 
     ~Impl() {
+        if (black_view) wgpuTextureViewRelease(black_view);
+        if (black) wgpuTextureRelease(black);
+        if (sampler) wgpuSamplerRelease(sampler);
         if (settings) wgpuBufferRelease(settings);
         if (pipeline) wgpuRenderPipelineRelease(pipeline);
         if (layout) wgpuBindGroupLayoutRelease(layout);
@@ -170,7 +186,7 @@ struct ToneMapper::Impl {
 ToneMapper::ToneMapper(const WGPUDevice device, const WGPUTextureFormat output_format) : impl_(std::make_unique<Impl>()) {
     auto& impl = *impl_;
     impl.device = device;
-    std::array<WGPUBindGroupLayoutEntry, 2> entries{};
+    std::array<WGPUBindGroupLayoutEntry, 4> entries{};
     entries[0].binding = 0;
     entries[0].visibility = WGPUShaderStage_Fragment;
     entries[0].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
@@ -179,6 +195,44 @@ ToneMapper::ToneMapper(const WGPUDevice device, const WGPUTextureFormat output_f
     entries[1].visibility = WGPUShaderStage_Fragment;
     entries[1].buffer.type = WGPUBufferBindingType_Uniform;
     entries[1].buffer.minBindingSize = sizeof(SettingsUniform);
+    entries[2].binding = 2;
+    entries[2].visibility = WGPUShaderStage_Fragment;
+    entries[2].texture.sampleType = WGPUTextureSampleType_Float;
+    entries[2].texture.viewDimension = WGPUTextureViewDimension_2D;
+    entries[3].binding = 3;
+    entries[3].visibility = WGPUShaderStage_Fragment;
+    entries[3].sampler.type = WGPUSamplerBindingType_Filtering;
+    WGPUSamplerDescriptor sampler{};
+    sampler.addressModeU = WGPUAddressMode_ClampToEdge;
+    sampler.addressModeV = WGPUAddressMode_ClampToEdge;
+    sampler.addressModeW = WGPUAddressMode_ClampToEdge;
+    sampler.magFilter = WGPUFilterMode_Linear;
+    sampler.minFilter = WGPUFilterMode_Linear;
+    sampler.mipmapFilter = WGPUMipmapFilterMode_Nearest;
+    sampler.lodMaxClamp = 1.0f;
+    sampler.maxAnisotropy = 1;
+    impl.sampler = wgpuDeviceCreateSampler(device, &sampler);
+    {
+        const WGPUTextureDescriptor black{
+            .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {.width = 1, .height = 1, .depthOrArrayLayers = 1},
+            .format = WGPUTextureFormat_RGBA8Unorm,
+            .mipLevelCount = 1,
+            .sampleCount = 1,
+        };
+        impl.black = wgpuDeviceCreateTexture(device, &black);
+        if (impl.black) {
+            impl.black_view = wgpuTextureCreateView(impl.black, nullptr);
+            const std::uint8_t zero[4] = {0, 0, 0, 0};
+            const auto queue = wgpuDeviceGetQueue(device);
+            const WGPUTexelCopyTextureInfo target{.texture = impl.black};
+            const WGPUTexelCopyBufferLayout layout{.bytesPerRow = 4, .rowsPerImage = 1};
+            const WGPUExtent3D extent{.width = 1, .height = 1, .depthOrArrayLayers = 1};
+            wgpuQueueWriteTexture(queue, &target, zero, sizeof(zero), &layout, &extent);
+            wgpuQueueRelease(queue);
+        }
+    }
     const WGPUBindGroupLayoutDescriptor layout_descriptor{.entryCount = entries.size(), .entries = entries.data()};
     impl.layout = wgpuDeviceCreateBindGroupLayout(device, &layout_descriptor);
     const WGPUBufferDescriptor buffer{.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, .size = sizeof(SettingsUniform)};
@@ -205,27 +259,34 @@ ToneMapper::ToneMapper(const WGPUDevice device, const WGPUTextureFormat output_f
 
 ToneMapper::~ToneMapper() = default;
 
-bool ToneMapper::ready() const noexcept { return impl_->pipeline && impl_->layout && impl_->settings; }
+bool ToneMapper::ready() const noexcept {
+    return impl_->pipeline && impl_->layout && impl_->settings && impl_->sampler && impl_->black_view;
+}
 
 void ToneMapper::render(const WGPUCommandEncoder encoder, const WGPUTextureView scene, const WGPUTextureView output,
-                        const ToneSettings& tone) {
+                        const ToneSettings& tone, const WGPUTextureView bloom) {
     auto& impl = *impl_;
     if (!ready() || !scene || !output) return;
     const SettingsUniform settings{.curve = static_cast<std::uint32_t>(tone.curve),
                                    .exposure = tone.exposure,
                                    .night = tone.night,
                                    .night_exposure = tone.night_exposure,
-                                   .saturation = tone.saturation};
+                                   .saturation = tone.saturation,
+                                   .bloom = bloom ? (std::max)(tone.bloom, 0.0f) : 0.0f};
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
         wgpuQueueWriteBuffer(queue, impl.settings, 0, &settings, sizeof(settings));
         wgpuQueueRelease(queue);
     }
-    std::array<WGPUBindGroupEntry, 2> entries{};
+    std::array<WGPUBindGroupEntry, 4> entries{};
     entries[0].binding = 0;
     entries[0].textureView = scene;
     entries[1].binding = 1;
     entries[1].buffer = impl.settings;
     entries[1].size = sizeof(SettingsUniform);
+    entries[2].binding = 2;
+    entries[2].textureView = bloom ? bloom : impl.black_view;
+    entries[3].binding = 3;
+    entries[3].sampler = impl.sampler;
     const WGPUBindGroupDescriptor group_descriptor{.layout = impl.layout, .entryCount = entries.size(), .entries = entries.data()};
     const auto group = wgpuDeviceCreateBindGroup(impl.device, &group_descriptor);
     const WGPURenderPassColorAttachment colour{

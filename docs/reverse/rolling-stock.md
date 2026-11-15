@@ -242,9 +242,16 @@ the head cars barely moved. openRTS's instead:
 - **The track's errors** along each node, from its index (SplitMix64, the
   same at every run): five sines a channel, longer waves larger; the rails'
   level 2.5 mm rms (waves 6 to 40 m), the line 2.5 mm (8 to 50 m), the cross
-  level 2.5 mm over the 1.5 m between the rails (6 to 35 m); a node's track
-  0.6 to 1.6 of that, jointed track (a node under 1000 m) 1.3 times rougher;
-  faded to nothing over 12 m at the node's ends. Each bogie takes them
+  level 1.5 mm over the 1.5 m between the rails (6 to 35 m; 2.5 mm until
+  2026-11-15, a tester: the roll is very small, the sway and yaw the most);
+  the line's errors reach the body as the speed grows (the wheelsets take
+  them in their play in the gauge at walking pace): none to about 5 km/h,
+  3 % at 10, a fifth at 20, half at 30, all from 54 km/h (until 2026-11-15
+  at any speed: as much sway at 5 to 10 km/h as at speed); one average
+  track everywhere since 2026-11-15 (a tester who drove the real lines: no
+  good and bad track for a start; until then each node 0.6 to 1.6 of that,
+  and one under 1000 m, taken for jointed, 1.3 times rougher); faded to
+  nothing over 12 m at the node's ends. Each bogie takes them
   averaged over a 2.4 m wheelbase, in the car's axes; so each car meets the
   same errors as the car ahead, later.
 - **Kicks** at a bogie: a rail joint dips it (1.2 to 3.8 mm a joint, from
@@ -287,14 +294,26 @@ the head cars barely moved. openRTS's instead:
   engine 1.45 Hz, freight 2.3 Hz less when loaded); pitch 1.2 times it, sway
   0.8, yaw 0.9, roll 0.6; each car's frequencies 8 to 10 % and dampings
   15 % different (a seed of its own), so no two cars move in step.
+- **Standing** (since 2026-11-15): once its swing has died away (its
+  springs' speeds under 1 mm/s and 1 mrad/s), the body rests on the track as
+  it lies under the bogies, and sets off from there; after a stop it swings
+  on a moment, then rests. Before, a standing train's bodies were not
+  stepped at all: each kept the pose of the moment it stopped (the front
+  dipped by the brakes) and a new one had none, so as it moved off the
+  springs jumped to the track's errors and the brakes' dip came back up,
+  a swing at walking pace (testers on the 2TE116: "только тронулся, его уже
+  качает").
 - **Drawn:** the body shifted and turned about a point 1.1 m above the rails;
   the bogies and the wheels without a bogie take the move back and stay on
   the rails (with RTS's model too). In the cab the player is in the cab
   stays at rest and the camera is carried as the body carries that point.
   The "Body sway" slider scales it.
 - On a passenger car at 72 km/h on average track (`openrts_body_motion_test`):
-  about 3 to 4 mm of sway, 0.17 degrees of roll, 2 mm of bounce rms, the
-  roof's side 7 to 8 mm rms; two cars' sway correlates about 0.
+  about 2.5 to 3 mm of sway, 0.11 degrees of roll, 2 mm of bounce rms, the
+  roof's side 5 to 6 mm rms; two cars' sway correlates about 0. A 2TE116
+  moving off (`openrts-train-check --dll ... --body`, te116.dll): to
+  13 km/h no sway or yaw, 0.5 to 1 mrad of roll (the rails' levels as they
+  lie), 2 mm of bounce, the pull lifting the front 2 to 3 mrad.
 
 ## The exterior in the cab (`0x438D50`, parser `0x44247C`)
 
@@ -337,7 +356,10 @@ the head cars barely moved. openRTS's instead:
   draw both whole. Only while the doorway is in view (a corner of it
   within about 70 degrees of where he looks); with the setting «И через
   закрытую (сквозь её стекло)» (off by default) through his shut door's
-  glass too. Its lamps light as its DLL says (up to 8 with his own). Each
+  glass too. Its lamps light as its DLL says (with his own as many as
+  RTS's config.ini Shader.NumLightsInt: 64 without it, 16 in the MDD build;
+  8 until 2026-11-15, when the 2ES6's desk lamps past the eighth stayed
+  dark). Each
   car sways on its own springs (`Car::body`: knocks at the rail joints,
   hunting and curves, pulling and braking), so the next car moves in the
   doorway; his own cab is drawn still and the eye carried (RTS), so the

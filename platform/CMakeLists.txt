@@ -1,3 +1,5 @@
-add_library(openrts_platform STATIC src/platform.cpp)
+add_library(openrts_platform STATIC src/platform.cpp src/discord_presence.cpp)
 openrts_configure_target(openrts_platform)
 target_link_libraries(openrts_platform PUBLIC openrts_core)
+find_package(Threads REQUIRED)
+target_link_libraries(openrts_platform PUBLIC Threads::Threads)

@@ -113,6 +113,9 @@ public:
     };
     [[nodiscard]] Loading loading() const;
     [[nodiscard]] const std::string& consist_name() const noexcept { return consist_; }
+    // The engine the player drives: its Name as written (the file's name without one);
+    // empty while no train is driven (for the Discord profile).
+    [[nodiscard]] std::string driven_name() const;
 
     void update(const SceneInput& input, ViewerCamera& camera, float elapsed, renderer::ModelLibrary& library,
                 audio::AudioEngine* sound);
@@ -1047,6 +1050,7 @@ private:
     void update_neighbour_rooms(float elapsed, const glm::vec3& eye);
     // Textures the cabs' TextureChanges draw, held while the train is here.
     std::map<std::string, std::shared_ptr<const renderer::GpuTexture>> cab_textures_;
+    std::size_t cab_texture_changes_ = 0; // drawn in the cab this frame (the capture's report)
     std::vector<float> lamp_level_; // the engineer's cab or salon, by lamp (LightFade)
     void update_lights(float elapsed, const glm::vec3& eye);
     bool night_ = false;

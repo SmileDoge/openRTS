@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 
 namespace openrts::viewer {
 
@@ -19,5 +20,11 @@ void set_ui_language(UiLanguage language) noexcept;
 
 // tr() of a printf format, formatted.
 [[nodiscard]] std::string trf(const char* english, ...);
+
+// A name as a search compares it: its case folded, Cyrillic too, and the
+// Cyrillic letters as the Latin ones typed for them, so "2es6" and "2эс6"
+// both find "2ЭС6-114", "vl80" "ВЛ80с", "chs4" "ЧС4т". A name matches a
+// search when search_form(name) contains search_form(typed).
+[[nodiscard]] std::string search_form(std::string_view text);
 
 } // namespace openrts::viewer

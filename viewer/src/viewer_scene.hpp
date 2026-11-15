@@ -187,6 +187,14 @@ struct SceneLoading {
     std::string title;      // the route and the train
 };
 
+// What the player's Discord profile says the game is doing
+// (platform::DiscordPresence): two lines, in the game's language.
+struct ScenePresence {
+    std::string details; // what the player does ("Ведёт VL80s-606")
+    std::string state;   // where ("Маршрут Lviv")
+    bool operator==(const ScenePresence&) const = default;
+};
+
 // What the viewer shows. A scene is loaded on the CPU first so that content
 // errors are reported before any window or GPU device is created.
 class ViewerScene {
@@ -223,6 +231,10 @@ public:
     // After the translucent models (glass), before the cab: where RTS draws
     // its lights (0x408574's light loop between object passes 2 and 3).
     virtual void draw_after_translucent(WGPURenderPassEncoder, const FrameView&) {}
+    // The lights into the bloom's source (renderer::BloomRenderer::begin_sources:
+    // one sample, HDR, depth-tested against the camera's pre-pass), after
+    // the main pass.
+    virtual void draw_bloom_sources(WGPURenderPassEncoder, const FrameView&) {}
     // The occlusion queries the main pass is begun with (nullptr: none).
     [[nodiscard]] virtual WGPUQuerySet occlusion_query_set() const { return nullptr; }
     // After the main pass ended, before the encoder is finished; and after
@@ -257,6 +269,8 @@ public:
     [[nodiscard]] virtual bool paused() const { return false; }
     // The start's loading, as the last update left it.
     [[nodiscard]] virtual SceneLoading loading() const { return {}; }
+    // For the Discord profile, asked about once a second; none: nothing shown.
+    [[nodiscard]] virtual std::optional<ScenePresence> presence() const { return std::nullopt; }
     // Car `car` of the driven train, shape space to world (--capture-camera).
     [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
     // The engineer into the driven train's cab (--capture-cab).

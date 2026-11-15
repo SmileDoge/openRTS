@@ -74,6 +74,9 @@ struct WindowOptions {
     std::optional<DebugView> view;
     // A menu (openrts_game): the scene draws the whole interface, no viewer panel.
     bool menu = false;
+    // The Discord profile (discord_status.hpp); off with --no-discord, and
+    // never for a capture.
+    bool discord = true;
     // HDR frame with a tone curve (AgX in the experimental path), --hdr.
     bool hdr = false;
     // --backend auto|vulkan|dx12|opengl: this run's graphics API, instead of

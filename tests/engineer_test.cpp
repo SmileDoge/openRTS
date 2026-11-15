@@ -66,6 +66,15 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "no VL10k-1654a: %s\n", definition.error.c_str());
         return 2;
     }
+    // The Engine block's Name as written (the Discord profile shows it).
+    check(definition.display_name == "VL10k-1654", "the engine's Name in its own case");
+    // A consist in a folder of its own under TRAINS/CONSISTS, by its name
+    // alone as the start menu passes it (it was "consist not found").
+    if (const auto con = formats::find_consist(vfs, "rzd_splotka_tepl_2vag_276t_36m")) {
+        check(core::fold_case(con->str()).find("/rzd_splotka_tepl_2vag_276t_36m.con") != std::string::npos, "a consist in a subfolder");
+    } else {
+        check(!vfs.exists(*core::VirtualPath::parse("TRAINS/CONSISTS")), "a consist in a subfolder is found");
+    }
     auto cab = viewer::CabView::create(vfs, definition, formats::wagon_path("ev_VL10k-1654", "vl10k-1654a", true));
     if (!cab) {
         std::fprintf(stderr, "no cab\n");

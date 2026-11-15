@@ -26,6 +26,9 @@ struct ToneSettings {
     float night_exposure = 2.0f;
     // Saturation of the final picture, 1 as drawn (any curve, also none).
     float saturation = 1.0f;
+    // The bloom's light (render's `bloom`) times this, added to the scene
+    // before the exposure; 0: none. Not with the curve none (the RTS look).
+    float bloom = 0.0f;
 };
 
 // The HDR scene (scene_hdr(): drawn into hdr_format, gamma 2.2 encoded as
@@ -39,8 +42,10 @@ public:
     ToneMapper& operator=(const ToneMapper&) = delete;
 
     [[nodiscard]] bool ready() const noexcept;
-    // One full-screen pass from `scene` (sampled) into `output`.
-    void render(WGPUCommandEncoder encoder, WGPUTextureView scene, WGPUTextureView output, const ToneSettings& settings);
+    // One full-screen pass from `scene` (sampled) into `output`, with the
+    // bloom's light (BloomRenderer::build; null: none).
+    void render(WGPUCommandEncoder encoder, WGPUTextureView scene, WGPUTextureView output, const ToneSettings& settings,
+                WGPUTextureView bloom = nullptr);
 
 private:
     struct Impl;

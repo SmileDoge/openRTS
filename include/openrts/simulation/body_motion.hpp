@@ -107,6 +107,14 @@ struct BodyMotion {
 // kicks are taken.
 void step_body(BodyMotion& motion, const BodyModes& modes, float dt);
 
+// A car standing: its body at rest on the track under its bogies (the
+// springs' still pose for its `input`, nothing moving), so that it sets off
+// from there. Until 2026-11-15 a standing body kept the pose of the moment
+// it stopped (the front dipped by the brakes) and started from none, the
+// springs then jumping to the track's errors as it moved off (2TE116,
+// testers: "только тронулся, его уже качает").
+void settle_body(BodyMotion& motion);
+
 // The car turned end for end in its train (Train::reverse): the same body
 // motion in the new axes.
 void reverse_body(BodyMotion& motion);

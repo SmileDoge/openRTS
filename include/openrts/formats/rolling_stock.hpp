@@ -276,6 +276,10 @@ struct EngineDefinition {
 
 struct WagonDefinition {
     std::string name;
+    // load_wagon: Name ( "VL80s-606" ) of the Engine block, else of the
+    // Wagon block, as the file writes it (RTS reads the files lower-cased);
+    // for people only (the Discord profile). Empty without one.
+    std::string display_name;
     WagonKind kind = WagonKind::unknown;
     std::string shape;          // RTSWagonShape, else WagonShape
     std::string freight_shape;  // FreightAnim

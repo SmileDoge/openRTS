@@ -212,6 +212,42 @@ int main() {
         check(body.shift[0] == 0.01f && body.hunting[0] == 1.0f && body.last[0].lateral == 0.001f, "turned back");
     }
 
+    // Standing, then moving off at walking pace: the body rests on the track
+    // under it, and sets off from there without a swing (until 2026-11-15
+    // it stood at no pose and jumped to the track's errors as it moved off).
+    {
+        formats::WagonDefinition engine;
+        engine.kind = formats::WagonKind::engine;
+        engine.mass = 138000.0f;
+        const auto modes = body_modes(engine, engine.mass, 7);
+        BodyMotion body;
+        const auto place = [&](const double centre) {
+            body.input.bogie[0] = bogie_irregularity(21, 3000.0, centre + 6.0, 2.4);
+            body.input.bogie[1] = bogie_irregularity(21, 3000.0, centre - 6.0, 2.4);
+            body.input.base = 12.0f;
+        };
+        place(800.0);
+        settle_body(body);
+        const float level = (body.input.bogie[0].vertical + body.input.bogie[1].vertical) * 0.5f;
+        check(body.shift[1] == level && body.pose_shift[1] == level && body.shift_rate[1] == 0.0f, "standing: on the track as it lies");
+        check(std::abs(body.turn[0]) > 1e-5f, "the track's cross level tilts it");
+        // Off at 0.5 m/s^2: the body's speed on its springs stays a creep.
+        float fastest = 0.0f;
+        double centre = 800.0;
+        float speed = 0.0f;
+        for (int step = 0; step < 100; ++step) { // 5 s, to 2.5 m/s
+            speed += 0.5f * 0.05f;
+            centre += speed * 0.05f;
+            place(centre);
+            body.input.speed = speed;
+            body.input.acceleration = 0.5f;
+            step_body(body, modes, 0.05f);
+            for (int axis = 0; axis < 2; ++axis) fastest = (std::max)(fastest, std::abs(body.shift_rate[axis]));
+            fastest = (std::max)(fastest, std::abs(body.turn_rate[0]) * 2.3f); // the eye 2.3 m above the roll's pivot
+        }
+        check(fastest < 0.01f, "moving off it does not swing: at most " + std::to_string(fastest * 1000.0f) + " mm/s");
+    }
+
     if (failures == 0) std::cout << "body motion: all checks passed\n";
     return failures == 0 ? 0 : 1;
 }

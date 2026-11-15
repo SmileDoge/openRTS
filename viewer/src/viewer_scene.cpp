@@ -758,7 +758,7 @@ public:
         // published here as a whole.
         // Night, season and weather for the models' alternative textures
         // (TEXTURES\NIGHT, \WINTER, ...): RTS reloads them when night falls.
-        const renderer::TextureVariant variant{.night = sky_state_ && sky_state_->night,
+        const renderer::TextureVariant variant{.night = sky_state_ && sky_state_->night && renderer::night_textures(),
                                                .season = clock.season,
                                                .weather = clock.weather,
                                                .fullbright_lit = experimental_ && renderer::light_fullbright()};
@@ -1057,6 +1057,16 @@ public:
         }
     }
 
+    // The bloom's lights: the signals' and the train's glows as drawn (a
+    // scenery lamp blooms by its bulb's texture: its light's Position is
+    // where it lights from, often away from the bulb).
+    void draw_bloom_sources(const WGPURenderPassEncoder pass, const FrameView& frame) override {
+        if (!experimental_) return;
+        if (signals_) signals_->draw_bloom(pass, frame, frame.viewport_height);
+        if (train_glows_ && train_ && !train_->light_glows().empty())
+            train_glows_->render_bloom(pass, frame.projection, frame.view, frame.viewport_height);
+    }
+
     // The track lines, the helper lines and the labels' occlusion tests:
     // after the solid models, before the glass (which writes depth: anything
     // drawn after it vanished behind the windows).
@@ -1182,6 +1192,33 @@ public:
     // A server's pause; a scenario's modal message, till its OK.
     [[nodiscard]] bool paused() const override { return (net_ && net_->paused()) || (activity_ && activity_->holds()); }
     [[nodiscard]] SceneLoading loading() const override { return loading_; }
+    // The Discord profile: what he does (loading, at the console, on foot,
+    // driving which engine, looking round), and the route with the kind of
+    // game (a scenario's name; a network game: nothing of the server's).
+    [[nodiscard]] std::optional<ScenePresence> presence() const override {
+        ScenePresence presence;
+        const std::string route(route_.filename());
+        const auto engine = train_ ? train_->driven_name() : std::string{};
+        if (!loading_.done) {
+            presence.details = tr("Loading");
+        } else if (content_.console()) {
+            presence.details = tr("At the dispatcher's console");
+        } else if (train_ && train_->walking()) {
+            presence.details = tr("On foot");
+        } else if (!engine.empty()) {
+            presence.details = trf("Drives %s", engine.c_str());
+        } else {
+            presence.details = tr("Looks round the route");
+        }
+        if (content_.connection()) {
+            presence.state = trf("%s: a network game", route.c_str());
+        } else if (content_.activity() && !content_.activity()->name.empty()) {
+            presence.state = trf("%s: scenario \"%s\"", route.c_str(), content_.activity()->name.c_str());
+        } else {
+            presence.state = trf("Route %s", route.c_str());
+        }
+        return presence;
+    }
 
     [[nodiscard]] std::string world_report() const override {
         std::string report = "water " + std::to_string(terrain_ ? terrain_->water_quads() : 0) + " quads";

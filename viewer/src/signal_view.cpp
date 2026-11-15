@@ -464,6 +464,11 @@ void SignalView::draw_lights(const WGPURenderPassEncoder pass, const FrameView& 
     glows_->render(pass, frame.projection, frame.view, viewport_height, blend);
 }
 
+void SignalView::draw_bloom(const WGPURenderPassEncoder pass, const FrameView& frame, const float viewport_height) {
+    if (!glows_ || sprites_.empty()) return;
+    glows_->render_bloom(pass, frame.projection, frame.view, viewport_height);
+}
+
 void SignalView::draw(const WGPURenderPassEncoder pass, const FrameView& frame, const float viewport_height) {
     (void)viewport_height;
     if (markers_ && system_ && show_markers_) {

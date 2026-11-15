@@ -273,7 +273,9 @@ The easiest way is the start menu. It has four tabs:
   mouse sensitivity and the head motion in the cab (the game's panel too),
   sound and volume, the rail joints (as RTS, or openRTS: 25 m rails, welded
   strings with equalizing spans), the body motion (openRTS or as RTS), the
-  settings and log folder, updates.
+  settings and log folder, updates, the game in the Discord profile
+  ("Playing openRTS": in the menu or driving which engine, the route, the
+  time; on by default, told only to the Discord program on this computer).
 - **Graphics:** every graphics setting of the game's panel in groups
   (screen, renderer, shadows, ambient occlusion, lamps, sky and water,
   world), presets from Low to Ultra, and each setting's load on the CPU

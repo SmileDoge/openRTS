@@ -51,6 +51,9 @@ public:
     void set_updated_from(std::string version);
     // An update is installed: the window closes and the menu is started again.
     [[nodiscard]] bool wants_close() const override;
+    // The Discord profile: "in the menu"; nothing while the game runs (the
+    // game says its own).
+    [[nodiscard]] std::optional<viewer::ScenePresence> presence() const override;
 
 private:
     struct State;

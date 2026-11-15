@@ -59,6 +59,9 @@ namespace {
         {"effect_ao", text(e.ambient_occlusion)},
         {"effect_ao_quality", e.occlusion_low ? "low" : "high"},
         {"effect_aerial", text(e.aerial_perspective)},
+        {"effect_bloom", text(e.bloom)},
+        {"bloom_strength", text(e.bloom_strength)},
+        {"bloom_textures", text(e.bloom_textures)},
         {"shadow_distance", text(e.shadow_distance)},
         {"shadow_quality", text(e.shadow_map_size)},
         {"shadow_cascades", text(e.shadow_cascades)},
@@ -84,6 +87,7 @@ namespace {
         {"forest_clearance", text(s.forest_clearance)},
         {"forest_clearance_distance", text(s.forest_clearance_distance)},
         {"signal_lights_real_size", text(s.signal_lights_real_size)},
+        {"night_textures", text(s.night_textures)},
         {"screen_supersampling", text(s.screen_supersampling)},
         {"reshade_depth", text(s.reshade_depth)},
     };
@@ -109,6 +113,9 @@ GraphicsSettings load_graphics_settings() {
     e.clustered_lights = flag_one("effect_clusters", e.clustered_lights);
     e.ambient_occlusion = flag_one("effect_ao", e.ambient_occlusion);
     if (const auto quality = remembered("effect_ao_quality")) e.occlusion_low = *quality == "low";
+    e.bloom = flag_not_zero("effect_bloom", e.bloom);
+    e.bloom_strength = number("bloom_strength", e.bloom_strength, 0.0f, 3.0f);
+    e.bloom_textures = flag_not_zero("bloom_textures", e.bloom_textures);
     e.aerial_perspective = flag_one("effect_aerial", e.aerial_perspective);
     e.shadow_distance = number("shadow_distance", e.shadow_distance, 100.0f, 1000.0f);
     if (const auto value = remembered("shadow_quality")) {
@@ -139,6 +146,7 @@ GraphicsSettings load_graphics_settings() {
     s.forest_clearance = flag_not_zero("forest_clearance", s.forest_clearance);
     s.forest_clearance_distance = number("forest_clearance_distance", s.forest_clearance_distance, 0.5f, 20.0f);
     s.signal_lights_real_size = flag_not_zero("signal_lights_real_size", s.signal_lights_real_size);
+    s.night_textures = flag_not_zero("night_textures", s.night_textures);
     s.screen_supersampling = flag_not_zero("screen_supersampling", s.screen_supersampling);
     s.reshade_depth = flag_one("reshade_depth", s.reshade_depth);
     return s;

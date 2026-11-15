@@ -13,9 +13,11 @@ constexpr float two_pi = 6.28318531f;
 // The neck per car axis (lateral, vertical, along the train front): natural
 // frequencies (Hz) and damping ratios of a seated person's head and trunk
 // in a swaying vehicle, about 1 Hz fore and aft and sideways, 2 Hz up and
-// down; lightly damped, so a stop nods the head back once.
+// down; damped so that a stop nods the head back once and it settles
+// (fore and aft 0.5: until 2026-11-15 0.3, and with the setting raised a
+// stop under the independent brake rocked it back and forth, testers).
 constexpr glm::vec3 frequency{0.9f, 2.0f, 0.85f};
-constexpr glm::vec3 damping{0.3f, 0.35f, 0.3f};
+constexpr glm::vec3 damping{0.45f, 0.35f, 0.5f};
 constexpr float longest_step = 1.0f / 240.0f; // s
 constexpr float farthest = 0.12f;             // m: the lag at most (a hit, a derailment)
 // Radians per metre of lag: forward and aside the nod and the tilt (service

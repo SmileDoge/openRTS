@@ -27,6 +27,10 @@
 
 namespace openrts::renderer {
 
+// The cab's and salon's lamps in full daylight keep at least this part of
+// their night strength, whatever SceneEffectSettings::lamps_in_daylight.
+inline constexpr float cab_lamps_in_daylight = 0.5f;
+
 struct SceneEffectSettings {
     bool shadows = true;
     bool clustered_lights = true;
@@ -48,10 +52,12 @@ struct SceneEffectSettings {
     // A map of its own around the shadow focus (the cab the engineer is in),
     // looked up before the cascades: sharp shadows on the desk.
     bool cab_shadows = true;
-    // Lamps (headlights, the scenery's, the cab's) in full daylight, as a
-    // part of their strength at night (0..1): an eye used to the sun hardly
-    // sees a cab lamp. Their colours are made for the night (RTS lays a
-    // lamp over the lighting with max(), so by day its full ambient hides it).
+    // Lamps (headlights, the scenery's) in full daylight, as a part of their
+    // strength at night (0..1): an eye used to the sun hardly sees them.
+    // Their colours are made for the night (RTS lays a lamp over the
+    // lighting with max(), so by day its full ambient hides it). The cab's
+    // and salon's lamps at least cab_lamps_in_daylight of it (since
+    // 2026-11-15: indoors, out of the sun; at 0 they did nothing by day).
     float lamps_in_daylight = 0.25f;
     // Light the ground throws back onto surfaces turned down or sideways
     // (bogies, the underframe), as the ground's reflectance (0..0.5): the
@@ -62,6 +68,15 @@ struct SceneEffectSettings {
     // their power, where they shine and how far they reach, so a floodlight
     // does not light the cab through its roof.
     std::uint32_t lamp_shadows = 3;
+    // Bloom (BloomRenderer, the HDR frame): the light of the lamps, signals
+    // and headlights and of what is over 1 (the sun) spread round them;
+    // strength 0..3, 1 as made; bloom_textures: at night the textures'
+    // brightest too (lamps' bulbs, lit windows, signs; BloomRenderer). It
+    // takes the camera's depth pre-pass (for the lights hidden behind
+    // things), drawn for it without the ambient occlusion too.
+    bool bloom = true;
+    float bloom_strength = 1.0f;
+    bool bloom_textures = true;
     bool show_occlusion = false;    // debug: the occlusion as the colour
     bool operator==(const SceneEffectSettings&) const = default;
 };
@@ -161,6 +176,9 @@ public:
     [[nodiscard]] float shadow_range() const noexcept;
     // Whether this frame has depth passes (shadows or the occlusion's pre-pass).
     [[nodiscard]] bool wants_depth() const noexcept;
+    // The camera's depth pre-pass of this frame (single-sample, the frame's
+    // size), when it is drawn (the ambient occlusion or the bloom); else null.
+    [[nodiscard]] WGPUTextureView camera_depth() const noexcept;
     // The owner (ModelExtraLight::owner) of the lamp a depth slot draws the
     // shadow of, 0 for the other slots: its own model is left out.
     [[nodiscard]] std::uint32_t depth_slot_owner(std::uint32_t slot) const noexcept;

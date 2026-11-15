@@ -4,7 +4,9 @@
 // level test track: the consist is the named .eng / .wag files of one
 // TRAINSET folder in order ("!" after a name turns that car), the first
 // engine with a DLL is the one the player takes. Every second it prints
-// what the DLLs report. A script drives the cab and checks the outcome:
+// what the DLLs report (--cars: each car, its exhausts too; --body: each
+// car's body motion, openRTS's model, the most of each second). A script
+// drives the cab and checks the outcome:
 //
 //   # time in seconds, then a command
 //   1    switch 38 2          # CanSwitch + move cab switch ID 38 to state 2
@@ -19,6 +21,7 @@
 // Exit code 0: every expectation held; 1: one failed; 2: could not run.
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -191,7 +194,7 @@ void write_screen_images(const core::Vfs& vfs, const trainplugin::LegacyCar& car
 
 int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std::vector<std::string>& args) {
     if (args.empty()) {
-        std::fprintf(stderr, "--dll <TRAINSET folder> <eng|wag>[!] ... [--script <file>] [--seconds <s>] [--start cold|on|running] [--cars [--light-defs]] [--triggers]\n");
+        std::fprintf(stderr, "--dll <TRAINSET folder> <eng|wag>[!] ... [--script <file>] [--seconds <s>] [--start cold|on|running] [--cars [--light-defs]] [--triggers] [--body]\n");
         return 2;
     }
     const std::string folder = args[0];
@@ -200,6 +203,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     double seconds = 30.0;
     bool per_car = false;
     bool show_triggers = false; // --triggers: every SMS trigger a DLL posts
+    // --body: each car's body motion (simulation/body_motion.hpp), the most
+    // of each second: its acceleration, the sway, bounce and surge (cm),
+    // roll, pitch and yaw (mrad).
+    bool show_body = false;
     bool show_screens = false;  // --screens: the cab screens' shown objects and texts, each second
     bool show_light_defs = false; // --light-defs: with --cars, each lit exterior light's .eng definition
     std::string screens_image;  // --screens-image <dir>: the cab screens as RTS lays them out, at the end (PPM)
@@ -220,6 +227,8 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             per_car = true;
         } else if (args[i] == "--triggers") {
             show_triggers = true;
+        } else if (args[i] == "--body") {
+            show_body = true;
         } else if (args[i] == "--screens") {
             show_screens = true;
         } else if (args[i] == "--light-defs") {
@@ -299,6 +308,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     m.status == 0 ? "loaded" : "REFUSED", m.version[1]);
 
     simulation::Train train(setups);
+    if (show_body) train.set_body_motion(simulation::BodyMotionModel::openrts); // the game's by default
     auto network = simulation::straight_test_track(30000.0);
     if (!network || !train.place(*network, 1, 15000.0, true, &error)) {
         std::fprintf(stderr, "cannot place the train: %s\n", error.c_str());
@@ -354,6 +364,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         if (const auto text = consist->take_messages(); !text.empty()) std::printf("%s", text.c_str());
     };
     std::uint64_t triggers = 0;
+    std::vector<std::array<float, 9>> body_most; // --body: this second's most, by car (7, 8: the acceleration's least and most)
     std::printf("%6s %7s %9s %5s %4s %5s %3s %6s %6s %6s %6s %8s %5s\n", "t,s", "km/h", "F,kN", "notch", "rev",
                 "panto", "BV", "TM", "UR", "GR", "TC", "brake,kN", "snd");
     while (time <= seconds + 1e-9) {
@@ -568,6 +579,18 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         if (const auto text = consist->take_messages(); !text.empty()) std::printf("%s", text.c_str());
         train.step();
         if (cut_train) cut_train->step();
+        if (show_body) {
+            body_most.resize(train.cars().size());
+            for (std::size_t i = 0; i < train.cars().size(); ++i) {
+                const auto& cs = train.cars()[i];
+                auto& m = body_most[i];
+                const float now[7] = {cs.acceleration, cs.body[0], cs.body[1], cs.motion.pose_shift[2], cs.body_turn[0], cs.body_turn[1],
+                                      cs.body_turn[2]};
+                for (int k = 0; k < 7; ++k) m[static_cast<std::size_t>(k)] = (std::max)(m[static_cast<std::size_t>(k)], std::abs(now[k]));
+                m[7] = (std::min)(m[7], cs.acceleration);
+                m[8] = (std::max)(m[8], cs.acceleration);
+            }
+        }
         // The world clock runs with the simulation (RTS_VAR_TIME).
         world.day_time = std::fmod(world.day_time + simulation::train_step, 24.0 * 3600.0);
         if (time >= next_print - 1e-9) {
@@ -586,6 +609,14 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                             s.pipe, ur, s.main_reservoir, (std::max)(s.cylinder, s.independent),
                             brake / 1000.0, static_cast<unsigned long long>(triggers), train.cars().back().pipe,
                             train.cars().back().cylinder);
+                if (show_body) {
+                    for (std::size_t i = 0; i < body_most.size(); ++i) {
+                        const auto& m = body_most[i];
+                        std::printf("         car %zu body: accel %.2f..%.2f m/s2, sway %.2f bounce %.2f surge %.2f cm, roll %.2f pitch %.2f yaw %.2f mrad\n",
+                                    i, m[7], m[8], m[1] * 100.0f, m[2] * 100.0f, m[3] * 100.0f, m[4] * 1000.0f, m[5] * 1000.0f, m[6] * 1000.0f);
+                    }
+                    for (auto& m : body_most) m.fill(0.0f);
+                }
                 if (show_screens) {
                     for (const auto& screen : out->screens) {
                         std::printf("         screen %u:", screen.display);
@@ -616,6 +647,11 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                                     cs.brake_force / 1000.0, o->engine.brake_force / 1000.0,
                                     static_cast<int>(static_cast<std::int16_t>(o->engine.alsn_on)), o->cab_aspect, cs.main_reservoir,
                                     o->engine.main_reservoir_rate, o->engine.engine_flags);
+                        if (!o->exhausts.empty()) {
+                            std::printf("           exhausts");
+                            for (const auto& x : o->exhausts) std::printf(" rate %.2f magnitude %.2f;", x.rate, x.magnitude);
+                            std::printf("\n");
+                        }
                         if (!o->doors.empty()) {
                             std::printf("           doors");
                             for (const auto& d : o->doors) std::printf(" %u/%u", d.state, d.set_state);
