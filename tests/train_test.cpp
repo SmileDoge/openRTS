@@ -1111,6 +1111,74 @@ void test_sa3_curve() {
     check(moving > apparatus_end * 1.5 && moving < apparatus_end * 1.7, "sa3: the friction resists the movement");
 }
 
+// The ПТР's basic resistance (TrainSettings::resistance): w0 = b0 + (b1 + b2 V
+// + b3 V^2) / q kgf per tonne, q the tonnes on an axle, the force that over the
+// car's mass. At rest it is more than MSTS's friction law gives this stock.
+void test_ptr_resistance(const Stock& stock) {
+    const auto expected = [](const auto& wagon, const double kmh) {
+        const double axles = static_cast<double>((std::max)(wagon.wheels, std::uint8_t{2}) / 2);
+        const double q = static_cast<double>(wagon.mass) / 1000.0 / axles;
+        const double w = 0.7 + (8.0 + 0.08 * kmh + 0.002 * kmh * kmh) / q;
+        return static_cast<double>(wagon.mass) * w * 10.0 / 1000.0;
+    };
+    simulation::TrainSettings msts;
+    Run a(stock, msts, 1500.0);
+    a.run(0.2);
+    simulation::TrainSettings ptr;
+    ptr.resistance = simulation::ResistanceModel::ptr;
+    Run b(stock, ptr, 1500.0);
+    b.run(0.2);
+    for (std::size_t i = 0; i < b.train.cars().size(); ++i) {
+        const auto& car = b.train.cars()[i];
+        const double kmh = std::abs(car.velocity) * 3.6;
+        check(near(car.resistance, expected(*car.definition, kmh), 20.0),
+              "ptr: the basic resistance follows the formula");
+    }
+    check(std::abs(b.train.cars().back().resistance - a.train.cars().back().resistance) > 1.0,
+          "ptr: the model is not MSTS's law");
+}
+
+// The wheelsets at the rail (TrainSettings::axle_dynamics): within the grip
+// they roll with the train, past it a demand spins them up and the pull
+// settles near half the grip instead of a cut.
+void test_axle_dynamics(const Stock& stock) {
+    {
+        simulation::TrainSettings settings;
+        settings.axle_dynamics = true;
+        Run g(stock, settings, 1500.0);
+        check(g.train.cars().front().axle_omega[0] == 0.0f, "axles: at rest the wheelsets stand still");
+        g.driver->reverser = 1;
+        g.driver->throttle = g.driver->notches;
+        g.run(2.0);
+        const auto& engine = g.train.cars().front();
+        check(engine.axle_omega[0] > 0.0f, "axles: the wheelsets turn");
+        check(std::abs(engine.force) < 300000.0f * 1.05f, "axles: the pull stays at the grip");
+        check(!engine.wheelslip, "axles: within the grip the wheelsets roll");
+        check(g.train.speed() > 0.0f, "axles: the train moves");
+    }
+    {
+        // An engine asking more than its rails can take (the keyboard
+        // controller keeps itself to 90 % of the grip, so this one asks by hand).
+        struct FullPull final : simulation::LocomotiveController {
+            void step(double, const simulation::EngineInputs&, simulation::EngineDemands& demands) override {
+                demands.force = 900000.0f;
+            }
+        };
+        simulation::TrainSettings settings;
+        settings.axle_dynamics = true;
+        Run s(stock, settings, 1500.0);
+        s.train.set_controller(0, std::make_unique<FullPull>());
+        s.run(2.0);
+        const auto& engine = s.train.cars().front();
+        const float grip = engine.definition->mass * 10.0f * engine.definition->adhesion[1] * engine.definition->adhesion[2];
+        check(engine.wheelslip, "axles: past the grip the wheelsets spin (" + std::to_string(engine.force) + " N, grip "
+                                    + std::to_string(grip) + ")");
+        check(engine.axle_slip[0] > 0.5f, "axles: the slip is at the rail");
+        check(std::abs(engine.force) <= grip * 1.02f, "axles: the pull settles at the grip");
+        check(std::isfinite(s.train.speed()), "axles: the run stays finite");
+    }
+}
+
 int main() {
     test_units();
     const Stock stock;
@@ -1133,6 +1201,8 @@ int main() {
     test_distributor_stability(stock);
     test_sa3_couplers(stock);
     test_sa3_curve();
+    test_ptr_resistance(stock);
+    test_axle_dynamics(stock);
     test_car_menu(stock);
     test_broken_and_sand(stock);
     test_engine_keys();
