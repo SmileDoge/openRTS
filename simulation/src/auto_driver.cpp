@@ -102,7 +102,7 @@ float planned_deceleration_for(const Train& train) {
     double decel = 0.6 * force / mass;
     const double length = train.length();
     if (length > 0.0) decel /= 1.0 + length / 1200.0;
-    return std::clamp(static_cast<float>(decel), 0.15f, 0.7f);
+    return std::clamp(static_cast<float>(decel), 0.12f, 0.35f);
 }
 
 double curve_speed(const Train& train, const double radius) {
