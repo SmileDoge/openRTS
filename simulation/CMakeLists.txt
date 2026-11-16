@@ -13,6 +13,7 @@ add_library(openrts_simulation STATIC
     src/train.cpp
     src/realistic_air.cpp
     src/signals.cpp
+    src/alsn.cpp
     src/train_route.cpp
     src/dispatcher.cpp
     src/speed_limits.cpp
