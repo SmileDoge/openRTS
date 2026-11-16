@@ -252,7 +252,7 @@ endif()
 add_executable(openrts_graphics_settings_test graphics_settings_test.cpp ../viewer/src/graphics_settings.cpp ../viewer/src/viewer_state.cpp)
 openrts_configure_target(openrts_graphics_settings_test)
 openrts_copy_wgpu_runtime(openrts_graphics_settings_test)
-target_link_libraries(openrts_graphics_settings_test PRIVATE openrts_renderer)
+target_link_libraries(openrts_graphics_settings_test PRIVATE openrts_renderer ZLIB::ZLIB)
 add_test(NAME openrts.graphics_settings COMMAND openrts_graphics_settings_test)
 
 # The start menu's updates: versions, the release JSON, an archive laid over a folder.

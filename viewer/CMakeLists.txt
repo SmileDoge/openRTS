@@ -30,6 +30,7 @@ add_library(openrts_viewer_core STATIC
     src/head_motion.cpp
     src/activity_view.cpp
     src/graphics_settings.cpp
+    src/graphics_presets_ui.cpp
     src/controls_help.cpp
     src/window_mode.cpp
     src/discord_status.cpp

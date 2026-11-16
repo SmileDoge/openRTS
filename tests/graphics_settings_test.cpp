@@ -95,6 +95,43 @@ int main() {
     check(clamped.cloud_shadow_sharpness == GraphicsSettings{}.cloud_shadow_sharpness, "a broken number: the default");
     check(clamped.effects.occlusion_low && clamped.physical_light, "words read");
 
+    // A preset of one's own: its code and back, in a message, a file.
+    OwnGraphicsPreset mine;
+    mine.name = "Вечер: 4K/тени?";
+    mine.settings = defaults;
+    apply_graphics_preset(mine.settings, GraphicsPreset::ultra);
+    mine.settings.tone_curve = 5;
+    mine.settings.exposure = 1.25f;
+    mine.settings.msaa = 8;
+    mine.settings.smooth_train_textures = true;
+    mine.settings.native_water = false;
+    const auto code = graphics_preset_code(mine);
+    check(code.starts_with("openRTS-graphics:1:"), "the code's prefix: " + code.substr(0, 24));
+    check(code.size() < 1500, "the code fits a Discord message: " + std::to_string(code.size()));
+    std::cout << "a preset's code: " << code.size() << " characters\n";
+    const auto back = read_graphics_preset(code, GraphicsSettings{});
+    check(back && back->name == mine.name && back->settings == mine.settings, "the code read back");
+    const auto quoted = read_graphics_preset("смотри мой пресет:\n" + code + "\nпопробуй", GraphicsSettings{});
+    check(quoted && quoted->settings == mine.settings, "the code in a message copied whole");
+    auto broken = code;
+    broken[broken.size() / 2] = broken[broken.size() / 2] == 'A' ? 'B' : 'A';
+    check(!read_graphics_preset(broken, GraphicsSettings{}) || read_graphics_preset(broken, GraphicsSettings{})->settings != mine.settings,
+          "a damaged code does not read as the preset");
+    check(!read_graphics_preset("openRTS-graphics:1:", GraphicsSettings{}), "an empty code");
+    check(!read_graphics_preset("openRTS-graphics:7:AAAA", GraphicsSettings{}), "a later version's code");
+    check(!read_graphics_preset("привет, как дела", GraphicsSettings{}), "a message without a preset");
+    // An older code without some keys: they stay as the player has them.
+    auto base = defaults;
+    base.cloud_cover = 77.0f;
+    const auto partial = read_graphics_preset("name=old\nlamp_shadows=2\n", base);
+    check(partial && partial->settings.effects.lamp_shadows == 2 && partial->settings.cloud_cover == base.cloud_cover, "keys not there kept");
+    // The file: written under a name a file may have, read back by its name.
+    check(save_own_graphics_preset(mine), "the preset's file written");
+    const auto listed = load_own_graphics_presets();
+    check(listed.size() == 1 && listed.front().name == mine.name && listed.front().settings == mine.settings, "the preset read from its folder");
+    check(!listed.empty() && listed.front().file.filename().u8string() == u8"Вечер_ 4K_тени_.ini", "its file name");
+    check(!listed.empty() && delete_own_graphics_preset(listed.front()) && load_own_graphics_presets().empty(), "the preset deleted");
+
     fs::remove_all(folder, error);
     if (failures == 0) std::cout << "graphics settings: all checks passed\n";
     return failures == 0 ? 0 : 1;

@@ -192,7 +192,13 @@ void test_talk() {
     client.send(1, std::string(ready));
     activity = client.receive();
     check(activity && has(activity->second, R"("details":"Сценарий")"), "the activity again after the new READY");
-    const auto status = presence.status();
+    // The frame is out before the presence's thread counts it: a moment for
+    // the count (a CI runner once read "sent 2" here).
+    auto status = presence.status();
+    for (int i = 0; i < 50 && status.sent < 3; ++i) {
+        std::this_thread::sleep_for(20ms);
+        status = presence.status();
+    }
     check(status.ready && status.error.empty() && status.sent == 3 && status.accepted == 1,
           "status: sent " + std::to_string(status.sent) + ", accepted " + std::to_string(status.accepted));
 

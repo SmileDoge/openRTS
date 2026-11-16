@@ -133,7 +133,7 @@ The viewer panel (experimental renderer): «Тени от солнца», «Вс
 remembered in `viewer_state.ini` (`effect_shadows`, `effect_clusters`,
 `effect_ao`, `effect_aerial`; the occlusion's quality `effect_ao_quality`), the two ranges above (`light_range`,
 `headlight_reach`) and the ground bounce (`ground_bounce`, see below).
-`--effects shadows,clusters,ao,aerial | none` sets them for one run; `show-ao` shows the occlusion itself as the colour.
+`--effects shadows,clusters,ao,aerial,shafts | none` sets them for one run; `show-ao` shows the occlusion itself as the colour.
 
 The start menu's Graphics tab shows every one of them too, grouped, with
 its load on the CPU and the GPU, and four presets (2026-11-09,
@@ -156,6 +156,29 @@ its own: off, 2x, 4x, 8x; 2x and 8x where the video card takes them, else
 
 A setting is saved only when it changes (a default not touched stays a
 default, and follows a later version's).
+
+### Presets of one's own, to share (2026-11-16)
+
+"Your presets (to share with other players)", in the start menu's Graphics
+tab and the game's panel (`viewer/src/graphics_presets_ui`):
+
+- **Save the current settings as a preset** writes every graphics setting
+  above (anti-aliasing, the renderer, HDR and the tone curve, shadows,
+  lamps, sky, water, the world, BC7 smoothing) to `graphics_presets/<name>.ini`
+  in the settings folder: viewer_state.ini's keys, one `key=value` a line,
+  `name=` first. A name's characters a file name may not have become `_`.
+- **Copy the code of the current settings** puts a line in the clipboard:
+  `openRTS-graphics:1:` and that text deflated, in base64url (about 650
+  characters: a Discord message holds it).
+- **Paste a preset from the clipboard** finds the code anywhere in the text
+  (a message copied whole), applies it and saves it among the presets (a
+  name taken by other settings gets " (2)"). Keys a code does not have
+  (an older version's) stay as the player has them. A code of a later
+  version (`:2:`) or a damaged one is refused.
+- A file put in the presets folder (sent as a file) shows in the list
+  after "Refresh"; "Open the presets folder" opens it.
+- In the game a preset's renderer is switched at once (as F10);
+  anti-aliasing and HDR are the start's and take effect from the next one.
 
 ## Cost
 
@@ -489,6 +512,45 @@ the scene before its exposure (`ToneSettings::bloom`; not with the curve
 none). Settings: «Bloom» (`effect_bloom`, on), «Сила bloom»
 (`bloom_strength`, 0..3, 1). Cost (the RTX 4070 Ti SUPER, a small window):
 the lights' pass a few microseconds, the chain some 0.03 ms.
+
+### Light shafts (2026-11-16)
+
+openRTS's own, the HDR frame with a tone curve (testers: "можно ли сделать
+лучи бога?"); `renderer/light_shafts`. The shadows of trees, masts, bridges,
+the cab's frame and the clouds stand in the air as beams of sunlight:
+
+- **The march.** At half the frame's size each pixel's view ray runs from
+  the eye to what the camera's depth pre-pass shows there (the nearest of
+  its four texels; the pre-pass is drawn for the shafts too), 32 steps at
+  `end x ((i + jitter) / 32)^2`, closer together near the eye, the jitter
+  interleaved gradient noise per pixel. The end is the last cascade's
+  (the shadow distance). At each step the sun reaches the air or not by one
+  filtered compare in the cab's map, else in the cascade of that depth, and
+  by the clouds' shadow. Past the last cascade 8 more steps, with the
+  clouds' shadow only, up to 1.5 km.
+- **The air.** Dust of 1/1500 per metre outdoors and half of RTS's haze
+  (`0.5 / fog end`: more in haze and fog), thinning above the eye over
+  300 m; 0.3 per metre more inside the room the engineer is in (the cab's
+  or salon's shape box), where a beam through a window shows over a metre.
+  Each step adds `dust x e^(-optical depth so far) x sun x dt`.
+- **The light.** The sun's colour x a Henyey-Greenstein phase (g 0.7, 15 %
+  even) x pi: the scene lights a surface with its albedo x the sun (no
+  1 / pi), so the air is weighed the same way. The sun shadows' strength
+  (low sun, night) fades them; without sun shadows there are none.
+- **To the frame.** A 9-tap Gaussian along x and y over texels at about
+  the same distance (`e^(-|d - d0| / (0.1 d0 + 0.2))`), then up to the
+  frame's size from the four half-size texels round each pixel, bilinearly,
+  those at its distance (a tree's edge against the sky keeps its own). The
+  tone mapper adds it to the scene before the exposure, as the bloom
+  (`ToneSettings::shafts`).
+- **Settings.** «Объёмные лучи» (`effect_shafts`, off), «Сила лучей»
+  (`shafts_strength`, 0..4, 1): the panel's Graphics tab and the start
+  menu's Bloom group; `--effects ...,shafts` for one run.
+- **Measured** (Kuban, VL80s, 08:30 and 17:30, the RTX 4070 Ti SUPER, a
+  small window; the capture's report of the shafts' image, scene-linear):
+  outside by the car a mean of 0.019, at most 0.23, 14 % of the pixels
+  over 0.05 (the sky's third 0.043); in the cab a mean of 0.006 to 0.013,
+  at most 0.10 to 0.20. The march 0.08 to 0.1 ms.
 
 ### Trains' textures without DXT1's blocks (BC7, 2026-11-16)
 

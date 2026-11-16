@@ -13,6 +13,7 @@
 #include <openrts/renderer/screen_quads.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/bloom.hpp>
+#include <openrts/renderer/light_shafts.hpp>
 #include <openrts/renderer/depth_export.hpp>
 #include <algorithm>
 #include <array>
@@ -39,6 +40,7 @@
 #include "controls_help.hpp"
 #include "discord_status.hpp"
 #include "frame_limiter.hpp"
+#include "graphics_presets_ui.hpp"
 #include "graphics_settings.hpp"
 #include <openrts/renderer/gpu_pass_timer.hpp>
 #include "key_layout.hpp"
@@ -698,6 +700,7 @@ struct PanelState {
     // The graphics settings as kept when the game started (MSAA, the
     // renderer and HDR are the start's), for the presets.
     GraphicsSettings kept_graphics;
+    OwnPresetsUi own_presets; // the presets of one's own (graphics_presets_ui.hpp)
     // The MSAA samples this start asked for (the device may draw with
     // fewer: renderer::render_sample_count()).
     std::uint32_t msaa_asked = 4;
@@ -732,6 +735,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.night_textures = g.night_textures;
     panel.screen_supersampling = g.screen_supersampling;
     panel.reshade_depth = g.reshade_depth;
+    panel.smooth_train_textures = g.smooth_train_textures;
 }
 
 [[nodiscard]] GraphicsSettings panel_graphics(const PanelState& panel) {
@@ -761,6 +765,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.night_textures = panel.night_textures;
     g.screen_supersampling = panel.screen_supersampling;
     g.reshade_depth = panel.reshade_depth;
+    g.smooth_train_textures = panel.smooth_train_textures;
     return g;
 }
 
@@ -1041,6 +1046,21 @@ public:
                 ImGui::PopStyleColor();
             }
             {
+                // The presets of one's own, to pass to other players: the
+                // renderer as it draws now (F10), the rest as the panel has it.
+                ImGui::SeparatorText(tr("Your presets (to share with other players)"));
+                auto current = panel_graphics(panel);
+                current.experimental = renderer.shading_path() == renderer::ShadingPath::experimental;
+                auto now = current;
+                if (draw_own_graphics_presets(panel.own_presets, now, 220.0f)) {
+                    save_graphics_settings(now, load_graphics_settings());
+                    set_panel_graphics(panel, now);
+                    panel.kept_graphics = now;
+                    if (panel.experimental_supported)
+                        renderer.set_shading_path(now.experimental ? renderer::ShadingPath::experimental : renderer::ShadingPath::rts_compatible);
+                }
+            }
+            {
                 // MSAA: its own choice, from the next start (the scene's
                 // targets and pipelines are made with the samples).
                 constexpr std::uint32_t counts[] = {1, 2, 4, 8};
@@ -1309,6 +1329,18 @@ public:
                 if (ImGui::Checkbox(tr("At night from the textures' brightest too (lamps' bulbs, lit windows, signs)"),
                                     &panel.effects.bloom_textures))
                     remember("bloom_textures", panel.effects.bloom_textures ? "1" : "0");
+                ImGui::Unindent();
+            }
+            if (ImGui::Checkbox(tr("Light shafts: the sun's beams in the air through trees, windows and clouds (HDR, not as in RTS)"),
+                                &panel.effects.light_shafts))
+                remember("effect_shafts", panel.effects.light_shafts ? "1" : "0");
+            if (panel.effects.light_shafts) {
+                ImGui::Indent();
+                ImGui::SetNextItemWidth(200.0f);
+                if (slider_with_input(tr("Light shafts' strength"), &panel.effects.light_shafts_strength, 0.0f, 4.0f, "%.2f", "%.2f"))
+                    remember("shafts_strength", std::to_string(panel.effects.light_shafts_strength));
+                ImGui::TextDisabled("%s", tr("(the dust in the air: stronger in haze and fog, and in the cab, where a beam through a window shows)"));
+                if (!panel.effects.shadows) ImGui::TextDisabled("%s", tr("(they need the sun shadows on)"));
                 ImGui::Unindent();
             }
             if (ImGui::IsItemHovered())
@@ -2155,8 +2187,8 @@ struct FrameCapture {
 };
 
 [[nodiscard]] FrameCapture begin_capture(const WGPUDevice device, const WGPUCommandEncoder encoder, const WGPUTexture texture,
-                                         const std::uint32_t width, const std::uint32_t height) {
-    FrameCapture shot{.width = width, .height = height, .row_bytes = (width * 4 + 255) / 256 * 256};
+                                         const std::uint32_t width, const std::uint32_t height, const std::uint32_t texel_bytes = 4) {
+    FrameCapture shot{.width = width, .height = height, .row_bytes = (width * texel_bytes + 255) / 256 * 256};
     const WGPUBufferDescriptor descriptor{.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst,
                                           .size = static_cast<std::uint64_t>(shot.row_bytes) * height};
     shot.buffer = wgpuDeviceCreateBuffer(device, &descriptor);
@@ -2215,6 +2247,64 @@ struct FrameCapture {
     }
     wgpuBufferRelease(shot.buffer);
     return written;
+}
+
+// The light shafts' image of a captured frame (RGBA16Float, scene-linear):
+// how bright they are, for tuning them by numbers.
+void report_light_shafts(const renderer::WgpuDeviceContext& context, const FrameCapture& shot) {
+    bool mapped = false, done = false;
+    struct State {
+        bool* mapped;
+        bool* done;
+    } state{&mapped, &done};
+    const WGPUBufferMapCallbackInfo callback{
+        .mode = WGPUCallbackMode_AllowProcessEvents,
+        .callback = [](const WGPUMapAsyncStatus status, WGPUStringView, void* data, void*) {
+            auto* s = static_cast<State*>(data);
+            *s->mapped = status == WGPUMapAsyncStatus_Success;
+            *s->done = true;
+        },
+        .userdata1 = &state,
+    };
+    const auto size = static_cast<std::size_t>(shot.row_bytes) * shot.height;
+    wgpuBufferMapAsync(shot.buffer, WGPUMapMode_Read, 0, size, callback);
+    for (int i = 0; i < 1000 && !done; ++i) {
+        wgpuDevicePoll(context.device(), true, nullptr);
+        wgpuInstanceProcessEvents(context.instance());
+    }
+    if (mapped) {
+        const auto* bytes = static_cast<const std::uint8_t*>(wgpuBufferGetConstMappedRange(shot.buffer, 0, size));
+        const auto half = [](const std::uint16_t h) {
+            const std::uint32_t sign = (h >> 15) & 1u, exponent = (h >> 10) & 31u, mantissa = h & 1023u;
+            float v = 0.0f;
+            if (exponent == 0) v = std::ldexp(static_cast<float>(mantissa), -24);
+            else if (exponent < 31) v = std::ldexp(static_cast<float>(mantissa | 1024u), static_cast<int>(exponent) - 25);
+            else v = 65504.0f;
+            return sign ? -v : v;
+        };
+        double sum = 0.0, top = 0.0;
+        std::size_t over = 0, strong = 0;
+        std::array<double, 3> rows{}; // the top, middle and bottom thirds
+        for (std::uint32_t y = 0; y < shot.height; ++y) {
+            const auto* line = bytes + static_cast<std::size_t>(y) * shot.row_bytes;
+            for (std::uint32_t x = 0; x < shot.width; ++x) {
+                std::uint16_t c[3];
+                std::memcpy(c, line + static_cast<std::size_t>(x) * 8u, sizeof c);
+                const double luma = 0.2126 * half(c[0]) + 0.7152 * half(c[1]) + 0.0722 * half(c[2]);
+                sum += luma;
+                top = (std::max)(top, luma);
+                over += luma > 0.01;
+                strong += luma > 0.05;
+                rows[(std::min)(static_cast<std::size_t>(y) * 3 / shot.height, std::size_t{2})] += luma;
+            }
+        }
+        const double count = static_cast<double>(shot.width) * shot.height;
+        std::cout << "light shafts: mean " << sum / count << ", max " << top << ", over 0.01 " << 100.0 * static_cast<double>(over) / count
+                  << " %, over 0.05 " << 100.0 * static_cast<double>(strong) / count << " %; thirds top / middle / bottom "
+                  << rows[0] / (count / 3) << " / " << rows[1] / (count / 3) << " / " << rows[2] / (count / 3) << std::endl;
+        wgpuBufferUnmap(shot.buffer);
+    }
+    wgpuBufferRelease(shot.buffer);
 }
 
 // What ReShade makes of the exported depth with RESHADE_DEPTH_INPUT_IS_REVERSED 1,
@@ -2345,6 +2435,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (renderer::scene_hdr()) tone = std::make_unique<renderer::ToneMapper>(device, surface.format());
     // The HDR frame's bloom (the experimental path; made on first use).
     std::unique_ptr<renderer::BloomRenderer> bloom;
+    std::unique_ptr<renderer::LightShaftRenderer> shafts;
     std::unique_ptr<renderer::DepthExport> depth_export;
     if (!renderer.ready()) {
         std::cerr << "Model renderer initialization failed.\n";
@@ -2532,6 +2623,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         panel.effects.ambient_occlusion = has("ao");
         panel.effects.aerial_perspective = has("aerial");
         panel.effects.show_occlusion = has("show-ao");
+        panel.effects.light_shafts = has("shafts");
     }
     // The field of view: the panel's, else RTS's (config.ini FOV, vertical, degrees).
     if (const auto fov = remembered("fov")) {
@@ -2947,7 +3039,27 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                     settings.bloom = 0.15f * panel.effects.bloom_strength;
                 }
             }
-            tone->render(encoder, surface.hdr_view(), frame_view, settings, bloom_view);
+            // The light shafts (the experimental path): the sun's beams
+            // marched through the effects' shadows to the camera's depth.
+            WGPUTextureView shafts_view = nullptr;
+            if (experimental && settings.curve != renderer::ToneCurve::none && panel.effects.light_shafts
+                && panel.effects.light_shafts_strength > 0.0f) {
+                if (!shafts) shafts = std::make_unique<renderer::LightShaftRenderer>(device);
+                if (const auto depth = effects.camera_depth(); depth && shafts->ready()) {
+                    shafts_view = shafts->render(encoder, effects.bind_group(), depth,
+                                                 {.view = frame.view,
+                                                  .projection = frame.projection,
+                                                  .eye = frame.eye,
+                                                  .width = static_cast<std::uint32_t>(width),
+                                                  .height = static_cast<std::uint32_t>(height),
+                                                  .strength = panel.effects.light_shafts_strength,
+                                                  .shadow_distance = panel.effects.shadow_distance,
+                                                  .fog_end = environment.lighting.fog_end,
+                                                  .room = scene.light_shaft_room()});
+                    settings.shafts = shafts_view != nullptr;
+                }
+            }
+            tone->render(encoder, surface.hdr_view(), frame_view, settings, bloom_view, shafts_view);
 #ifdef OPENRTS_HAS_IMGUI
             const WGPURenderPassColorAttachment ui_colour{
                 .view = frame_view,
@@ -2972,6 +3084,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (capture_now && depth_copy && depth_export->texture())
             depth_shot = begin_capture(device, encoder, depth_export->texture(), static_cast<std::uint32_t>(width),
                                        static_cast<std::uint32_t>(height));
+        FrameCapture shafts_shot;
+        if (capture_now && shafts && shafts->texture() && panel.effects.light_shafts)
+            shafts_shot = begin_capture(device, encoder, shafts->texture(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 8);
         stage_clock.mark(FrameStage::post, stages);
         const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
         stage_clock.mark(FrameStage::encode, stages);
@@ -3038,6 +3153,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 const auto near_plane = near_plane_of(camera);
                 report_reshade_depth(context.context, depth_shot, near_plane, camera.far_plane());
             }
+            if (shafts_shot.buffer) report_light_shafts(context.context, shafts_shot);
             wgpuTextureRelease(frame_texture);
             return written ? exit_code::success : exit_code::device_failed;
         }

@@ -9,6 +9,7 @@ add_library(openrts_renderer STATIC
     src/tone_map.cpp
     src/bc7.cpp
     src/bloom.cpp
+    src/light_shafts.cpp
     src/depth_export.cpp
     src/frustum.cpp
     src/model_assets.cpp

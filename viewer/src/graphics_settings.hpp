@@ -6,7 +6,11 @@
 // together.
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include <openrts/renderer/scene_effects.hpp>
 
@@ -63,6 +67,9 @@ struct GraphicsSettings {
     // linear light (renderer::cab_screens_supersampled); off: as RTS.
     bool screen_supersampling = true;
     bool reshade_depth = false;
+    // The trains' DXT1 textures smoothed and kept as BC7 (renderer/bc7.hpp,
+    // smooth_train_textures; openRTS's own, not as in RTS).
+    bool smooth_train_textures = false;
 
     bool operator==(const GraphicsSettings&) const = default;
 };
@@ -85,5 +92,33 @@ inline constexpr int graphics_preset_count = 4;
 void apply_graphics_preset(GraphicsSettings& settings, GraphicsPreset preset);
 // The preset the settings are, none when changed by hand ("Custom").
 [[nodiscard]] std::optional<GraphicsPreset> matching_graphics_preset(const GraphicsSettings& settings);
+
+// A preset of one's own, to pass to other players: a name and every setting
+// above. Kept in graphics_presets/ in user_data_directory() as <name>.ini
+// (viewer_state.ini's keys, one key=value a line, "name=" first), and passed
+// as a line of text, its code: "openRTS-graphics:1:" and the file's text
+// deflated, in base64url (about 600 characters: a Discord message holds it).
+struct OwnGraphicsPreset {
+    std::string name;
+    GraphicsSettings settings;
+    std::filesystem::path file; // where it was read from (empty: not from a file)
+};
+inline constexpr std::string_view graphics_preset_code_prefix = "openRTS-graphics:";
+// The folder, made when missing.
+[[nodiscard]] std::filesystem::path graphics_presets_directory();
+// Every *.ini there that reads as a preset, by name (a file without
+// "name=": its file name).
+[[nodiscard]] std::vector<OwnGraphicsPreset> load_own_graphics_presets();
+// Written as <name>.ini (characters a file name may not have: "_"),
+// replacing one of that name. False when it could not be written.
+bool save_own_graphics_preset(const OwnGraphicsPreset& preset);
+bool delete_own_graphics_preset(const OwnGraphicsPreset& preset);
+// The file's text and the code.
+[[nodiscard]] std::string graphics_preset_text(const OwnGraphicsPreset& preset);
+[[nodiscard]] std::string graphics_preset_code(const OwnGraphicsPreset& preset);
+// A code (found anywhere in `text`: a message copied whole) or a preset
+// file's text. Keys not there keep `base`'s values (a code of an older
+// version). None when it reads as neither.
+[[nodiscard]] std::optional<OwnGraphicsPreset> read_graphics_preset(std::string_view text, const GraphicsSettings& base);
 
 } // namespace openrts::viewer

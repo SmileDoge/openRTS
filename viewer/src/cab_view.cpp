@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cmath>
 #include <map>
 #include <string>
@@ -638,6 +639,110 @@ std::optional<CabView::Picked> CabView::pick(const glm::vec3& origin, const glm:
         }
     }
     return best;
+}
+
+namespace {
+
+// A node posed at `frame`, in shape coordinates: what takes its rest-pose
+// surfaces (and its children's) to where they are drawn.
+// parent chain x (posed local) x (rest local)^-1 x (parent chain)^-1, as a switch's (pick()).
+glm::mat4 posed_correction(const formats::ShapeModel& rig, const std::int32_t node, const float frame) {
+    const auto count = rig.matrices.size();
+    glm::mat4 parent{1.0f};
+    std::size_t guard = 0;
+    for (auto p = static_cast<std::size_t>(node) < rig.hierarchy.size() ? rig.hierarchy[static_cast<std::size_t>(node)] : -1;
+         p >= 0 && static_cast<std::size_t>(p) < count && guard <= count;
+         p = static_cast<std::size_t>(p) < rig.hierarchy.size() ? rig.hierarchy[static_cast<std::size_t>(p)] : -1, ++guard)
+        parent = column_matrix(rig.matrices[static_cast<std::size_t>(p)]) * parent;
+    const auto posed = column_matrix(formats::animate_matrix(rig, 0, static_cast<std::size_t>(node), frame));
+    const auto rest = column_matrix(rig.matrices[static_cast<std::size_t>(node)]);
+    return parent * posed * glm::inverse(rest) * glm::inverse(parent);
+}
+
+} // namespace
+
+glm::mat4 CabCollision::pose_of(const formats::ShapeModel& rig, const std::int32_t node, const float frame) {
+    if (node < 0 || static_cast<std::size_t>(node) >= rig.matrices.size() || rig.animations.empty()) return glm::mat4{1.0f};
+    return posed_correction(rig, node, frame);
+}
+
+std::optional<CabCollision::Hit> CabCollision::ray_posed(const formats::ShapeModel& rig, const std::int32_t node, const float frame,
+                                                         const std::vector<std::int32_t>& nodes, const glm::vec3& origin,
+                                                         const glm::vec3& direction, const float reach) const {
+    const auto count = rig.matrices.size();
+    if (node < 0 || static_cast<std::size_t>(node) >= count || rig.animations.empty() || nodes.empty()) return std::nullopt;
+    const glm::mat4 back = glm::inverse(posed_correction(rig, node, frame));
+    const glm::vec3 o{back * glm::vec4{origin, 1.0f}};
+    const glm::vec3 d = glm::normalize(glm::vec3{back * glm::vec4{direction, 0.0f}});
+    std::vector<std::uint8_t> only(count, 1);
+    for (const auto n : nodes)
+        if (n >= 0 && static_cast<std::size_t>(n) < count) only[static_cast<std::size_t>(n)] = 0;
+    return ray(o, d, reach, only);
+}
+
+std::optional<CabView::DoorPicked> CabView::pick_door(const glm::vec3& origin, const glm::vec3& direction, const float reach) const {
+    if (!geometry_ || doors_.empty()) return std::nullopt;
+    // What the ray meets first as the cab stands (an open door's surfaces
+    // are out of skip_: they are tried where they are drawn, below).
+    const auto rest = geometry_->collision.ray(origin, direction, reach, skip_);
+    std::optional<DoorPicked> best;
+    if (rest && rest->node >= 0) {
+        for (std::size_t k = 0; k < doors_.size() && !best; ++k) {
+            const auto& nodes = doors_[k].nodes;
+            if (std::find(nodes.begin(), nodes.end(), rest->node) != nodes.end()) best = DoorPicked{k, rest->distance};
+        }
+    }
+    if (const auto& rig = geometry_->rig) {
+        for (std::size_t k = 0; k < doors_.size(); ++k) {
+            const auto& door = doors_[k];
+            if (door.node < 0 || door.last_frame <= 0.0f || door.open < 0.6f) continue; // the ones skip_ leaves out
+            const float limit = best ? best->distance : rest ? rest->distance : reach;
+            if (const auto hit = geometry_->collision.ray_posed(*rig, door.node, door.open * door.last_frame, door.nodes, origin, direction, limit))
+                best = DoorPicked{k, hit->distance};
+        }
+    }
+    return best;
+}
+
+std::string CabView::door_pick_report(const glm::vec3& eye) const {
+    if (!geometry_) return "the cab's surfaces not read";
+    std::vector<glm::vec3> lo, hi;
+    geometry_->collision.node_bounds(geometry_->hierarchy.size(), lo, hi);
+    std::string report;
+    for (std::size_t k = 0; k < doors_.size() && k < cab_.doors.size(); ++k) {
+        const auto& door = doors_[k];
+        if (door.node < 0) continue;
+        glm::vec3 a{1e9f}, b{-1e9f};
+        for (const auto n : door.nodes) {
+            if (static_cast<std::size_t>(n) >= lo.size() || lo[static_cast<std::size_t>(n)].x > hi[static_cast<std::size_t>(n)].x) continue;
+            a = glm::min(a, lo[static_cast<std::size_t>(n)]);
+            b = glm::max(b, hi[static_cast<std::size_t>(n)]);
+        }
+        if (a.x > b.x) continue;
+        glm::vec3 centre = (a + b) * 0.5f;
+        if (geometry_->rig && door.last_frame > 0.0f && door.open > 0.0f)
+            centre = glm::vec3{posed_correction(*geometry_->rig, door.node, door.open * door.last_frame) * glm::vec4{centre, 1.0f}};
+        const glm::vec3 to = centre - eye;
+        const float d = glm::length(to);
+        if (d < 1e-3f) continue;
+        const auto picked = pick_door(eye, to / d, d + 0.5f);
+        char line[256];
+        std::snprintf(line, sizeof line, "door %s (open %.2f, %.2f m): %s%s%s\n", cab_.doors[k].name.c_str(), door.open, d,
+                      picked ? "picked " : "nothing", picked ? cab_.doors[picked->door].name.c_str() : "",
+                      picked ? (" at " + std::to_string(picked->distance).substr(0, 4) + " m").c_str() : "");
+        report += line;
+        if (!picked) {
+            const auto first = geometry_->collision.ray(eye, to / d, d + 0.5f, skip_);
+            std::string name = "?";
+            if (first && geometry_->rig && first->node >= 0 && static_cast<std::size_t>(first->node) < geometry_->rig->matrices.size())
+                name = geometry_->rig->matrices[static_cast<std::size_t>(first->node)].name;
+            for (std::size_t j = 0; first && j < doors_.size(); ++j)
+                if (std::find(doors_[j].nodes.begin(), doors_[j].nodes.end(), first->node) != doors_[j].nodes.end())
+                    name += " (of door " + cab_.doors[j].name + ")";
+            report += "  the ray meets " + (first ? name + " at " + std::to_string(first->distance) : std::string("nothing")) + "\n";
+        }
+    }
+    return report;
 }
 
 float CabView::switch_frames_per_state(const std::size_t index) const noexcept {

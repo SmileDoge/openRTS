@@ -30,6 +30,9 @@ struct ToneSettings {
     // The bloom's light (render's `bloom`) times this, added to the scene
     // before the exposure; 0: none. Not with the curve none (the RTS look).
     float bloom = 0.0f;
+    // The light shafts' light (render's `shafts`, LightShaftRenderer) added
+    // the same way, as they are; false: none.
+    bool shafts = false;
 };
 
 // The HDR scene (scene_hdr(): drawn into hdr_format, gamma 2.2 encoded as
@@ -44,9 +47,10 @@ public:
 
     [[nodiscard]] bool ready() const noexcept;
     // One full-screen pass from `scene` (sampled) into `output`, with the
-    // bloom's light (BloomRenderer::build; null: none).
+    // bloom's light (BloomRenderer::build; null: none) and the light
+    // shafts' (LightShaftRenderer::render, the frame's size; null: none).
     void render(WGPUCommandEncoder encoder, WGPUTextureView scene, WGPUTextureView output, const ToneSettings& settings,
-                WGPUTextureView bloom = nullptr);
+                WGPUTextureView bloom = nullptr, WGPUTextureView shafts = nullptr);
 
 private:
     struct Impl;

@@ -1209,8 +1209,10 @@ public:
             presence.details = tr("Loading");
         } else if (content_.console()) {
             presence.details = tr("At the dispatcher's console");
-        } else if (train_ && train_->walking()) {
+        } else if (train_ && train_->on_foot()) {
             presence.details = tr("On foot");
+        } else if (train_ && train_->in_passenger_seat()) {
+            presence.details = tr("Rides as a passenger");
         } else if (!engine.empty()) {
             presence.details = trf("Drives %s", engine.c_str());
         } else {
@@ -1291,6 +1293,9 @@ public:
     [[nodiscard]] std::string timetable_report() const override { return train_ ? train_->timetable_report() : std::string(); }
     [[nodiscard]] std::optional<renderer::ShadowFocus> shadow_focus() const override {
         return train_ ? train_->cab_shadow_focus() : std::nullopt;
+    }
+    [[nodiscard]] std::optional<renderer::LightShaftRoom> light_shaft_room() const override {
+        return train_ ? train_->light_shaft_room() : std::nullopt;
     }
     // In flight the lamps' shadows go where the camera looks: along the view
     // to the ground (up to 200 m; looking up or level, 40 m), the sphere over

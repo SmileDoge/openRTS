@@ -2,17 +2,26 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <fstream>
+#include <functional>
+#include <map>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <zlib.h>
 
 #include "viewer_state.hpp"
 
 namespace openrts::viewer {
 namespace {
 
-[[nodiscard]] float number(const std::string_view key, const float fallback, const float low, const float high) {
-    const auto value = remembered(key);
+// Where a key's value comes from: viewer_state.ini, or a preset's text.
+using Lookup = std::function<std::optional<std::string>(std::string_view)>;
+
+[[nodiscard]] float number(const Lookup& value_of, const std::string_view key, const float fallback, const float low, const float high) {
+    const auto value = value_of(key);
     if (!value) return fallback;
     char* end = nullptr;
     const float read = std::strtof(value->c_str(), &end);
@@ -20,21 +29,21 @@ namespace {
     return std::clamp(read, low, high);
 }
 
-[[nodiscard]] int whole(const std::string_view key, const int fallback, const int low, const int high) {
-    const auto value = remembered(key);
+[[nodiscard]] int whole(const Lookup& value_of, const std::string_view key, const int fallback, const int low, const int high) {
+    const auto value = value_of(key);
     if (!value) return fallback;
     return std::clamp(std::atoi(value->c_str()), low, high);
 }
 
 // "1" on, anything else off; `fallback` when not there.
-[[nodiscard]] bool flag_one(const std::string_view key, const bool fallback) {
-    const auto value = remembered(key);
+[[nodiscard]] bool flag_one(const Lookup& value_of, const std::string_view key, const bool fallback) {
+    const auto value = value_of(key);
     return value ? *value == "1" : fallback;
 }
 
 // "0" off, anything else on.
-[[nodiscard]] bool flag_not_zero(const std::string_view key, const bool fallback) {
-    const auto value = remembered(key);
+[[nodiscard]] bool flag_not_zero(const Lookup& value_of, const std::string_view key, const bool fallback) {
+    const auto value = value_of(key);
     return value ? *value != "0" : fallback;
 }
 
@@ -62,6 +71,8 @@ namespace {
         {"effect_bloom", text(e.bloom)},
         {"bloom_strength", text(e.bloom_strength)},
         {"bloom_textures", text(e.bloom_textures)},
+        {"effect_shafts", text(e.light_shafts)},
+        {"shafts_strength", text(e.light_shafts_strength)},
         {"shadow_distance", text(e.shadow_distance)},
         {"shadow_quality", text(e.shadow_map_size)},
         {"shadow_cascades", text(e.shadow_cascades)},
@@ -90,66 +101,247 @@ namespace {
         {"night_textures", text(s.night_textures)},
         {"screen_supersampling", text(s.screen_supersampling)},
         {"reshade_depth", text(s.reshade_depth)},
+        {"smooth_train_textures", text(s.smooth_train_textures)},
     };
 }
+
+// The keys `value_of` has, over `s` (the others left as they are).
+void read_settings(GraphicsSettings& s, const Lookup& value_of) {
+    auto& e = s.effects;
+    if (const auto samples = value_of("msaa_samples")) {
+        s.msaa = valid_msaa_samples(std::atoi(samples->c_str()));
+    } else if (const auto before = value_of("launcher_msaa")) {
+        s.msaa = *before == "0" ? 1u : 4u; // the old switch: off or 4x
+    }
+    s.experimental = whole(value_of, "launcher_experimental", 0, 0, 1) != 0;
+    s.hdr = whole(value_of, "launcher_hdr", 0, 0, 1) != 0;
+    s.tone_curve = whole(value_of, "tone_mode", s.tone_curve, 0, 5);
+    s.exposure = number(value_of, "exposure", s.exposure, 0.25f, 4.0f);
+    s.night_exposure = number(value_of, "night_exposure", s.night_exposure, 0.5f, 6.0f);
+    s.saturation = number(value_of, "saturation", s.saturation, 0.5f, 1.8f);
+    e.shadows = flag_one(value_of, "effect_shadows", e.shadows);
+    e.clustered_lights = flag_one(value_of, "effect_clusters", e.clustered_lights);
+    e.ambient_occlusion = flag_one(value_of, "effect_ao", e.ambient_occlusion);
+    if (const auto quality = value_of("effect_ao_quality")) e.occlusion_low = *quality == "low";
+    e.bloom = flag_not_zero(value_of, "effect_bloom", e.bloom);
+    e.bloom_strength = number(value_of, "bloom_strength", e.bloom_strength, 0.0f, 3.0f);
+    e.bloom_textures = flag_not_zero(value_of, "bloom_textures", e.bloom_textures);
+    e.light_shafts = flag_one(value_of, "effect_shafts", e.light_shafts);
+    e.light_shafts_strength = number(value_of, "shafts_strength", e.light_shafts_strength, 0.0f, 4.0f);
+    e.aerial_perspective = flag_one(value_of, "effect_aerial", e.aerial_perspective);
+    e.shadow_distance = number(value_of, "shadow_distance", e.shadow_distance, 100.0f, 1000.0f);
+    if (const auto value = value_of("shadow_quality")) {
+        const auto size = std::atoi(value->c_str());
+        e.shadow_map_size = size <= 1024 ? 1024u : size >= 4096 ? 4096u : 2048u;
+    }
+    e.shadow_cascades = static_cast<std::uint32_t>(whole(value_of, "shadow_cascades", static_cast<int>(e.shadow_cascades), 2, 4));
+    e.shadow_softness = number(value_of, "shadow_softness", e.shadow_softness, 0.5f, 4.0f);
+    e.cache_far_cascades = flag_one(value_of, "shadow_cache", e.cache_far_cascades);
+    e.cab_shadows = flag_one(value_of, "shadow_cab", e.cab_shadows);
+    e.lamp_shadows = static_cast<std::uint32_t>(
+        whole(value_of, "lamp_shadows", static_cast<int>(e.lamp_shadows), 0, static_cast<int>(renderer::SceneEffects::max_lamp_shadows)));
+    e.lamps_in_daylight = number(value_of, "lamps_daylight", e.lamps_in_daylight, 0.0f, 1.0f);
+    e.ground_bounce = number(value_of, "ground_bounce", e.ground_bounce, 0.0f, 0.5f);
+    if (const auto falloff = value_of("light_falloff")) s.physical_light = *falloff == "physical";
+    s.light_range = number(value_of, "light_range", s.light_range, 0.0f, 3000.0f);
+    s.headlight_reach = number(value_of, "headlight_reach", s.headlight_reach, 1.0f, 5.0f);
+    s.night_ambient = number(value_of, "night_ambient", s.night_ambient, 0.5f, 8.0f);
+    s.light_fullbright = flag_one(value_of, "light_fullbright", s.light_fullbright);
+    s.lamp_own_model = flag_not_zero(value_of, "lamp_own_model", s.lamp_own_model);
+    s.native_sky = flag_not_zero(value_of, "native_sky", s.native_sky);
+    s.cloud_cover_weather = flag_not_zero(value_of, "cloud_cover_weather", s.cloud_cover_weather);
+    s.cloud_cover = number(value_of, "cloud_cover", s.cloud_cover, 0.0f, 100.0f);
+    s.cloud_shadows = flag_not_zero(value_of, "cloud_shadows", s.cloud_shadows);
+    s.cloud_shadow_darkness = number(value_of, "cloud_shadow_darkness", s.cloud_shadow_darkness, 0.0f, 100.0f);
+    s.cloud_shadow_sharpness = number(value_of, "cloud_shadow_sharpness", s.cloud_shadow_sharpness, 1.0f, 10.0f);
+    s.native_water = flag_not_zero(value_of, "native_water", s.native_water);
+    s.forest_clearance = flag_not_zero(value_of, "forest_clearance", s.forest_clearance);
+    s.forest_clearance_distance = number(value_of, "forest_clearance_distance", s.forest_clearance_distance, 0.5f, 20.0f);
+    s.signal_lights_real_size = flag_not_zero(value_of, "signal_lights_real_size", s.signal_lights_real_size);
+    s.night_textures = flag_not_zero(value_of, "night_textures", s.night_textures);
+    s.screen_supersampling = flag_not_zero(value_of, "screen_supersampling", s.screen_supersampling);
+    s.reshade_depth = flag_one(value_of, "reshade_depth", s.reshade_depth);
+    s.smooth_train_textures = flag_one(value_of, "smooth_train_textures", s.smooth_train_textures);
+}
+
+// Characters a file name may not have, and control characters: "_".
+[[nodiscard]] std::string file_name_of(const std::string& name) {
+    std::string out;
+    for (const char c : name) {
+        const auto u = static_cast<unsigned char>(c);
+        out += (u < 0x20 || std::string_view("<>:\"/\\|?*").find(c) != std::string_view::npos) ? '_' : c;
+    }
+    while (!out.empty() && (out.back() == '.' || out.back() == ' ')) out.pop_back();
+    while (!out.empty() && out.front() == ' ') out.erase(out.begin());
+    return out.empty() ? std::string("preset") : out;
+}
+
+[[nodiscard]] std::filesystem::path from_utf8(const std::string& text) {
+    return std::filesystem::path(std::u8string(text.begin(), text.end()));
+}
+
+[[nodiscard]] std::string utf8_of(const std::filesystem::path& path) {
+    const auto u8 = path.u8string();
+    return std::string(u8.begin(), u8.end());
+}
+
+constexpr std::string_view base64_letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+[[nodiscard]] std::string base64url(const std::string_view bytes) {
+    std::string out;
+    std::uint32_t bits = 0;
+    int count = 0;
+    for (const char c : bytes) {
+        bits = (bits << 8) | static_cast<unsigned char>(c);
+        count += 8;
+        while (count >= 6) {
+            count -= 6;
+            out += base64_letters[(bits >> count) & 63u];
+        }
+    }
+    if (count > 0) out += base64_letters[(bits << (6 - count)) & 63u];
+    return out;
+}
+
+[[nodiscard]] std::optional<std::string> from_base64url(const std::string_view text) {
+    std::string out;
+    std::uint32_t bits = 0;
+    int count = 0;
+    for (const char c : text) {
+        const auto at = base64_letters.find(c);
+        if (at == std::string_view::npos) return std::nullopt;
+        bits = (bits << 6) | static_cast<std::uint32_t>(at);
+        count += 6;
+        if (count >= 8) {
+            count -= 8;
+            out += static_cast<char>((bits >> count) & 0xFFu);
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] bool code_letter(const char c) { return base64_letters.find(c) != std::string_view::npos; }
 
 } // namespace
 
 GraphicsSettings load_graphics_settings() {
     GraphicsSettings s;
-    auto& e = s.effects;
-    if (const auto samples = remembered("msaa_samples")) {
-        s.msaa = valid_msaa_samples(std::atoi(samples->c_str()));
-    } else if (const auto before = remembered("launcher_msaa")) {
-        s.msaa = *before == "0" ? 1u : 4u; // the old switch: off or 4x
-    }
-    s.experimental = whole("launcher_experimental", 0, 0, 1) != 0;
-    s.hdr = whole("launcher_hdr", 0, 0, 1) != 0;
-    s.tone_curve = whole("tone_mode", s.tone_curve, 0, 5);
-    s.exposure = number("exposure", s.exposure, 0.25f, 4.0f);
-    s.night_exposure = number("night_exposure", s.night_exposure, 0.5f, 6.0f);
-    s.saturation = number("saturation", s.saturation, 0.5f, 1.8f);
-    e.shadows = flag_one("effect_shadows", e.shadows);
-    e.clustered_lights = flag_one("effect_clusters", e.clustered_lights);
-    e.ambient_occlusion = flag_one("effect_ao", e.ambient_occlusion);
-    if (const auto quality = remembered("effect_ao_quality")) e.occlusion_low = *quality == "low";
-    e.bloom = flag_not_zero("effect_bloom", e.bloom);
-    e.bloom_strength = number("bloom_strength", e.bloom_strength, 0.0f, 3.0f);
-    e.bloom_textures = flag_not_zero("bloom_textures", e.bloom_textures);
-    e.aerial_perspective = flag_one("effect_aerial", e.aerial_perspective);
-    e.shadow_distance = number("shadow_distance", e.shadow_distance, 100.0f, 1000.0f);
-    if (const auto value = remembered("shadow_quality")) {
-        const auto size = std::atoi(value->c_str());
-        e.shadow_map_size = size <= 1024 ? 1024u : size >= 4096 ? 4096u : 2048u;
-    }
-    e.shadow_cascades = static_cast<std::uint32_t>(whole("shadow_cascades", static_cast<int>(e.shadow_cascades), 2, 4));
-    e.shadow_softness = number("shadow_softness", e.shadow_softness, 0.5f, 4.0f);
-    e.cache_far_cascades = flag_one("shadow_cache", e.cache_far_cascades);
-    e.cab_shadows = flag_one("shadow_cab", e.cab_shadows);
-    e.lamp_shadows = static_cast<std::uint32_t>(
-        whole("lamp_shadows", static_cast<int>(e.lamp_shadows), 0, static_cast<int>(renderer::SceneEffects::max_lamp_shadows)));
-    e.lamps_in_daylight = number("lamps_daylight", e.lamps_in_daylight, 0.0f, 1.0f);
-    e.ground_bounce = number("ground_bounce", e.ground_bounce, 0.0f, 0.5f);
-    if (const auto falloff = remembered("light_falloff")) s.physical_light = *falloff == "physical";
-    s.light_range = number("light_range", s.light_range, 0.0f, 3000.0f);
-    s.headlight_reach = number("headlight_reach", s.headlight_reach, 1.0f, 5.0f);
-    s.night_ambient = number("night_ambient", s.night_ambient, 0.5f, 8.0f);
-    s.light_fullbright = flag_one("light_fullbright", s.light_fullbright);
-    s.lamp_own_model = flag_not_zero("lamp_own_model", s.lamp_own_model);
-    s.native_sky = flag_not_zero("native_sky", s.native_sky);
-    s.cloud_cover_weather = flag_not_zero("cloud_cover_weather", s.cloud_cover_weather);
-    s.cloud_cover = number("cloud_cover", s.cloud_cover, 0.0f, 100.0f);
-    s.cloud_shadows = flag_not_zero("cloud_shadows", s.cloud_shadows);
-    s.cloud_shadow_darkness = number("cloud_shadow_darkness", s.cloud_shadow_darkness, 0.0f, 100.0f);
-    s.cloud_shadow_sharpness = number("cloud_shadow_sharpness", s.cloud_shadow_sharpness, 1.0f, 10.0f);
-    s.native_water = flag_not_zero("native_water", s.native_water);
-    s.forest_clearance = flag_not_zero("forest_clearance", s.forest_clearance);
-    s.forest_clearance_distance = number("forest_clearance_distance", s.forest_clearance_distance, 0.5f, 20.0f);
-    s.signal_lights_real_size = flag_not_zero("signal_lights_real_size", s.signal_lights_real_size);
-    s.night_textures = flag_not_zero("night_textures", s.night_textures);
-    s.screen_supersampling = flag_not_zero("screen_supersampling", s.screen_supersampling);
-    s.reshade_depth = flag_one("reshade_depth", s.reshade_depth);
+    read_settings(s, [](const std::string_view key) { return remembered(key); });
     return s;
+}
+
+std::filesystem::path graphics_presets_directory() {
+    auto folder = user_data_directory() / "graphics_presets";
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    return folder;
+}
+
+std::string graphics_preset_text(const OwnGraphicsPreset& preset) {
+    std::string out = "; openRTS graphics preset\nname=" + preset.name + "\n";
+    for (const auto& [key, value] : keys_of(preset.settings)) out += std::string(key) + "=" + value + "\n";
+    return out;
+}
+
+std::string graphics_preset_code(const OwnGraphicsPreset& preset) {
+    const auto text = graphics_preset_text(preset);
+    uLongf packed_size = compressBound(static_cast<uLong>(text.size()));
+    std::string packed(packed_size, '\0');
+    if (compress2(reinterpret_cast<Bytef*>(packed.data()), &packed_size, reinterpret_cast<const Bytef*>(text.data()),
+                  static_cast<uLong>(text.size()), 9)
+        != Z_OK)
+        return {};
+    packed.resize(packed_size);
+    // The text's length first (4 bytes, little end first), for inflating it.
+    std::string body;
+    const auto length = static_cast<std::uint32_t>(text.size());
+    for (int i = 0; i < 4; ++i) body += static_cast<char>((length >> (8 * i)) & 0xFFu);
+    body += packed;
+    return std::string(graphics_preset_code_prefix) + "1:" + base64url(body);
+}
+
+std::optional<OwnGraphicsPreset> read_graphics_preset(const std::string_view text, const GraphicsSettings& base) {
+    std::string plain;
+    if (const auto at = text.find(graphics_preset_code_prefix); at != std::string_view::npos) {
+        auto rest = text.substr(at + graphics_preset_code_prefix.size());
+        if (!rest.starts_with("1:")) return std::nullopt; // a later version's
+        rest.remove_prefix(2);
+        std::size_t end = 0;
+        while (end < rest.size() && code_letter(rest[end])) ++end;
+        const auto body = from_base64url(rest.substr(0, end));
+        if (!body || body->size() < 5) return std::nullopt;
+        std::uint32_t length = 0;
+        for (int i = 0; i < 4; ++i) length |= static_cast<std::uint32_t>(static_cast<unsigned char>((*body)[i])) << (8 * i);
+        if (length == 0 || length > 1u << 16) return std::nullopt;
+        plain.assign(length, '\0');
+        uLongf size = length;
+        if (uncompress(reinterpret_cast<Bytef*>(plain.data()), &size, reinterpret_cast<const Bytef*>(body->data() + 4),
+                       static_cast<uLong>(body->size() - 4))
+                != Z_OK
+            || size != length)
+            return std::nullopt;
+    } else {
+        plain.assign(text);
+    }
+    std::map<std::string, std::string, std::less<>> values;
+    std::istringstream lines(plain);
+    for (std::string line; std::getline(lines, line);) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+        std::size_t start = 0;
+        while (start < line.size() && (line[start] == ' ' || line[start] == '\t')) ++start;
+        line.erase(0, start);
+        if (line.starts_with("\xEF\xBB\xBF")) line.erase(0, 3); // a BOM
+        if (line.empty() || line.front() == ';' || line.front() == '#') continue;
+        const auto equals = line.find('=');
+        if (equals == std::string::npos || equals == 0) continue;
+        values[line.substr(0, equals)] = line.substr(equals + 1);
+    }
+    // At least one setting's key: else it is not a preset.
+    bool any = false;
+    for (const auto& [key, value] : keys_of(base)) any = any || values.contains(std::string_view(key));
+    if (!any) return std::nullopt;
+    OwnGraphicsPreset preset;
+    if (const auto name = values.find("name"); name != values.end()) preset.name = name->second;
+    preset.settings = base;
+    read_settings(preset.settings, [&values](const std::string_view key) -> std::optional<std::string> {
+        const auto it = values.find(key);
+        if (it == values.end()) return std::nullopt;
+        return it->second;
+    });
+    return preset;
+}
+
+std::vector<OwnGraphicsPreset> load_own_graphics_presets() {
+    std::vector<OwnGraphicsPreset> out;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(graphics_presets_directory(), error)) {
+        if (!entry.is_regular_file(error) || entry.path().extension() != ".ini") continue;
+        if (entry.file_size(error) > (1u << 16)) continue;
+        std::ifstream in(entry.path(), std::ios::binary);
+        std::ostringstream text;
+        text << in.rdbuf();
+        auto preset = read_graphics_preset(text.str(), GraphicsSettings{});
+        if (!preset) continue;
+        if (preset->name.empty()) preset->name = utf8_of(entry.path().stem());
+        preset->file = entry.path();
+        out.push_back(std::move(*preset));
+    }
+    std::sort(out.begin(), out.end(), [](const OwnGraphicsPreset& a, const OwnGraphicsPreset& b) { return a.name < b.name; });
+    return out;
+}
+
+bool save_own_graphics_preset(const OwnGraphicsPreset& preset) {
+    const auto path = graphics_presets_directory() / from_utf8(file_name_of(preset.name) + ".ini");
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out << graphics_preset_text(preset);
+    return static_cast<bool>(out);
+}
+
+bool delete_own_graphics_preset(const OwnGraphicsPreset& preset) {
+    std::error_code error;
+    const auto path = preset.file.empty() ? graphics_presets_directory() / from_utf8(file_name_of(preset.name) + ".ini") : preset.file;
+    return std::filesystem::remove(path, error);
 }
 
 void save_graphics_settings(const GraphicsSettings& now, const GraphicsSettings& before) {

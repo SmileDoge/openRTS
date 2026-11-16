@@ -279,7 +279,9 @@ The easiest way is the start menu. It has four tabs:
 - **Graphics:** every graphics setting of the game's panel in groups
   (screen, renderer, shadows, ambient occlusion, lamps, sky and water,
   world), presets from Low to Ultra, and each setting's load on the CPU
-  and the GPU. The graphics API, the window mode (in a window, a borderless
+  and the GPU. Presets of one's own: saved under a name, passed to another
+  player as a code (a line of text for Discord) or as a file, taken from
+  the clipboard (the game's panel has them too). The graphics API, the window mode (in a window, a borderless
   window, full screen; Alt+Enter in the game), VSync and the FPS limit (30
   to 500 or none) are there too. While the game's or the menu's window is
   not in focus or is minimised, it draws at most 30 frames a second; the
@@ -327,7 +329,7 @@ The game can also be started directly:
 | `--backend auto\|vulkan\|dx12\|opengl` | the graphics API (OpenGL: the RTS renderer only) |
 | `--reshade-depth on\|off` | depth for ReShade ([INSTALL_EN.md](INSTALL_EN.md#reshade)) |
 | `--experimental` | experimental renderer instead of RTS's |
-| `--effects shadows,clusters,ao,aerial\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | experimental renderer settings for one run ([details](docs/experimental-effects.md)) |
+| `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | experimental renderer settings for one run ([details](docs/experimental-effects.md)) |
 | `--capture <file.ppm>` | take one frame and exit; `--capture-at <s>`, `--capture-car <n>`, `--capture-camera ex ey ez tx ty tz`, `--capture-cab` say when and from where |
 | `--mp-connect <address>[:port]`, `--mp-nick <nick>` | join an RTS server (port 800 by default); the route, season and weather are the server's, no `--route` needed |
 | `--mp-snapshot <file>`, `--mp-save-snapshot <file>` | open a saved server snapshot offline; save the one received |
@@ -389,6 +391,7 @@ the Train window)
 | Keys | Action |
 |---|---|
 | Enter | in the chair, rise at the desk and sit back (as RTS) / sit down / open a door / climb in |
+| Left click on a door | open or shut it (in the cab and outside by the car; not as in RTS) |
 | Ctrl+Enter | get up from the chair, step out into the passage; outside at a door, climb in |
 | Arrows, Shift, End | walk, run, slower |
 | Num0 / `-` | open the window |

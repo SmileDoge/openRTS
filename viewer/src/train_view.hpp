@@ -34,6 +34,7 @@
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/glow_sprites.hpp>
 #include <openrts/renderer/route_streamer.hpp>
+#include <openrts/renderer/light_shafts.hpp>
 #include <openrts/renderer/scene_effects.hpp>
 #include <openrts/formats/terrain.hpp>
 #include <openrts/simulation/auto_driver.hpp>
@@ -137,10 +138,19 @@ public:
     // train by its door; off, the free camera.
     void set_walking(bool on, const glm::vec3& eye);
     [[nodiscard]] bool walking() const noexcept { return engineer_.active(); }
+    // The engineer up from the chair (walking() is also true seated at the
+    // desk: openRTS's cab is the engineer's chair).
+    [[nodiscard]] bool on_foot() const noexcept { return engineer_.on_foot(); }
+    [[nodiscard]] bool in_passenger_seat() const noexcept { return engineer_.in_passenger_seat(); }
     // The cab the engineer is in as the last submit() drew it: a sphere
     // around his place in it, fixed to the cab, and its forward, for the
     // cab's own shadow map.
     [[nodiscard]] std::optional<renderer::ShadowFocus> cab_shadow_focus() const { return cab_focus_; }
+    // The cab or salon the engineer is in as submit() drew it: its shape's
+    // box (the light shafts' dust), while he is in it.
+    [[nodiscard]] std::optional<renderer::LightShaftRoom> light_shaft_room() const {
+        return viewing_inside() ? cab_room_ : std::nullopt;
+    }
     // Every frame: the DLL's cab window and what Enter does where he stands.
     void draw_overlay();
     // The panel's Train tab: the buttons and switches on top, what the train
@@ -580,6 +590,12 @@ public:
     [[nodiscard]] std::string systems_report() const;
     void pointer(const glm::vec3& eye, const std::optional<glm::vec3>& direction, bool click, bool shift, float scroll,
                  bool release = false, const glm::vec2& cursor = {}, bool held = false);
+    // On foot by a car: its ExteriorDoor under the mouse (openRTS: a click
+    // opens or shuts it, as Enter there does).
+    void outer_door_pointer(const glm::vec3& eye, const glm::vec3& direction, bool click);
+    // Car `i` of unit `u`: open or shut its ExteriorDoor `door` (a cab's
+    // door: the cab's of the same name, which the outer one follows).
+    void work_outer_door(std::size_t u, std::size_t i, std::size_t door);
     [[nodiscard]] bool engineer_inside() const noexcept { return engineer_.inside(); }
     // The view from inside his cab or salon: not while the car view has the
     // camera (F3).
@@ -1052,6 +1068,24 @@ private:
     bool visit_requested_ = false;
     std::future<renderer::StreamedModelAsset> visit_loading_;
     std::optional<CabView::Picked> hovered_; // the control under the mouse
+    // A door under the mouse (openRTS): where the ray met it (scene) and
+    // what a click does, for its label.
+    struct DoorHover {
+        glm::vec3 at{};
+        std::string text;
+    };
+    std::optional<DoorHover> door_hover_;
+    // A car shape's surfaces and matrices (its doors under the mouse), read aside.
+    struct CarMeshData {
+        CabCollision mesh;
+        formats::ShapeModel rig; // matrices, hierarchy, animations (no vertices)
+    };
+    struct CarMesh {
+        std::future<std::shared_ptr<const CarMeshData>> loading;
+        std::shared_ptr<const CarMeshData> data;
+    };
+    std::unordered_map<std::string, CarMesh> car_meshes_; // by shape path
+    [[nodiscard]] const CarMeshData* car_mesh(const core::VirtualPath& shape);
     bool keys_were_live_ = true;             // cab_keys_live() the last frame
     glm::vec2 drag_cursor_{};                // where the cursor was when a dragged control last moved
     std::vector<ScreenBatch> screen_batches_; // this frame's cab screens, scene coordinates
@@ -1060,6 +1094,7 @@ private:
     // the captions use it with that frame's camera, so they keep still on the move.
     std::optional<glm::mat4> cab_to_scene_;
     std::optional<renderer::ShadowFocus> cab_focus_;
+    std::optional<renderer::LightShaftRoom> cab_room_;
     // Where that sphere sits in the cab (cab coordinates) and for which cab:
     // it follows the eye only when he has moved a metre from it, so the
     // body's sway does not shake the map.
@@ -1083,6 +1118,8 @@ private:
     std::vector<renderer::ModelPortal> portals_;
     glm::vec3 portal_eye_{}; // the eye they were made for (the report's check)
     std::optional<glm::vec3> look_once_; // a test's turn of his head (world direction)
+    int door_pick_stage_ = 0;            // OPENRTS_DOOR_PICK: 0 closed, 1 opening, 2 done
+    float door_pick_time_ = 0.0f;
     std::unordered_map<std::uint32_t, std::vector<float>> neighbour_lamp_levels_; // by car key
     struct RoomLoad {
         bool requested = false;

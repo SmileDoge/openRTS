@@ -22,6 +22,7 @@
 #include <openrts/net/snapshot.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/rts_sky.hpp>
+#include <openrts/renderer/light_shafts.hpp>
 #include <openrts/renderer/scene_effects.hpp>
 
 #include "key_repeat.hpp"
@@ -311,6 +312,9 @@ public:
     // What the shadows look at most closely this frame (after submit): the
     // cab the engineer is in.
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> shadow_focus() const { return std::nullopt; }
+    // The room the engineer is in (the cab's or salon's box), for the light
+    // shafts' dust (renderer/light_shafts.hpp).
+    [[nodiscard]] virtual std::optional<renderer::LightShaftRoom> light_shaft_room() const { return std::nullopt; }
     // In flight: the sphere the lamps' shadows cover, where the camera looks
     // (nullopt: the shadow focus, or around the view).
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> lamp_shadow_focus(const ViewerCamera&) const { return std::nullopt; }

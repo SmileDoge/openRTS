@@ -77,6 +77,11 @@ struct SceneEffectSettings {
     bool bloom = true;
     float bloom_strength = 1.0f;
     bool bloom_textures = true;
+    // Light shafts (LightShaftRenderer, the HDR frame): the sun's beams in
+    // the air through what shades it; strength 0..4, 1 as made. They take
+    // the camera's depth pre-pass too. Off by default (openRTS's own).
+    bool light_shafts = false;
+    float light_shafts_strength = 1.0f;
     bool show_occlusion = false;    // debug: the occlusion as the colour
     bool operator==(const SceneEffectSettings&) const = default;
 };

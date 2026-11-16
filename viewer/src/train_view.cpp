@@ -25,6 +25,7 @@
 
 #include <fstream>
 
+#include <openrts/formats/shape_file.hpp>
 #include <openrts/formats/sound.hpp>
 #include <openrts/formats/terrain.hpp>
 #include <openrts/simulation/distributor.hpp>
@@ -55,6 +56,23 @@ bool sound_trace() {
         return set;
 #else
         return std::getenv("OPENRTS_SOUND_TRACE") != nullptr;
+#endif
+    }();
+    return on;
+}
+
+// OPENRTS_DOOR_PICK set: the cab's doors under the mouse, aimed at
+// each from the eye, logged closed and again open.
+bool door_pick_test() {
+    static const bool on = [] {
+#ifdef _WIN32
+        char* value = nullptr;
+        std::size_t size = 0;
+        const bool set = _dupenv_s(&value, &size, "OPENRTS_DOOR_PICK") == 0 && value != nullptr;
+        std::free(value);
+        return set;
+#else
+        return std::getenv("OPENRTS_DOOR_PICK") != nullptr;
 #endif
     }();
     return on;
@@ -5079,6 +5097,58 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
     }
     look_ = camera.forward();
     if (!engineer_.active()) return;
+    if (door_pick_test() && door_pick_stage_ < 4 && cab_ && cab_->loaded()) {
+        door_pick_time_ += elapsed;
+        if (door_pick_stage_ == 0 && door_pick_time_ > 2.0f) {
+            std::cout << "door pick, closed:\n" << cab_->door_pick_report(cab_->eye() + glm::vec3{0.0f, 0.75f, 0.0f}) << std::flush;
+            const auto& doors = cab_->description().doors;
+            for (std::size_t j = 0; j < doors.size(); ++j)
+                if (doors[j].can_be_opened && doors[j].parent < 0 && cab_->door_animated(j)) cab_->set_door(j, true);
+            door_pick_stage_ = 1;
+            door_pick_time_ = 0.0f;
+        } else if (door_pick_stage_ == 1 && door_pick_time_ > 5.0f) {
+            std::cout << "door pick, open:\n" << cab_->door_pick_report(cab_->eye() + glm::vec3{0.0f, 0.75f, 0.0f}) << std::flush;
+            for (std::size_t j = 0; j < cab_->description().doors.size(); ++j) cab_->set_door(j, false);
+            door_pick_stage_ = 2;
+            door_pick_time_ = 0.0f;
+        } else if ((door_pick_stage_ == 2 && door_pick_time_ > 4.0f) || (door_pick_stage_ == 3 && door_pick_time_ > 4.0f)) {
+            // The car's outer doors from 1.5 m off its side, at each one's
+            // middle as drawn: clicked once (stage 2), then looked at open.
+            const auto& car = units_.front().cars[cab_car_];
+            const auto body = body_pose(units_.front(), cab_car_, false);
+            const auto* data = car_mesh(car.shape);
+            if (body && data) {
+                std::vector<glm::vec3> lo, hi;
+                data->mesh.node_bounds(data->rig.matrices.size(), lo, hi);
+                std::cout << "door pick, outer doors" << (door_pick_stage_ == 2 ? ", clicked" : ", after") << ":\n";
+                for (const auto& door : car.exterior_doors) {
+                    if (door.node < 0 || static_cast<std::size_t>(door.node) >= lo.size()) continue;
+                    const auto n = static_cast<std::size_t>(door.node);
+                    if (lo[n].x > hi[n].x) {
+                        std::cout << "outer door " << door.name << ": no surfaces of its own\n";
+                        continue;
+                    }
+                    glm::vec3 centre = (lo[n] + hi[n]) * 0.5f;
+                    if (door.open > 0.0f && door.last_frame > 0.0f)
+                        centre = glm::vec3{CabCollision::pose_of(data->rig, door.node, door.open * door.last_frame) * glm::vec4{centre, 1.0f}};
+                    const glm::vec3 eye_car = centre + glm::vec3{centre.x >= 0.0f ? 1.5f : -1.5f, 0.0f, 0.0f};
+                    const glm::vec3 eye{body->transform * glm::vec4{eye_car, 1.0f}};
+                    const glm::vec3 at{body->transform * glm::vec4{centre, 1.0f}};
+                    door_hover_.reset();
+                    outer_door_pointer(eye, glm::normalize(at - eye), door_pick_stage_ == 2);
+                    std::cout << "outer door " << door.name << " (open " << door.open << "): " << (door_hover_ ? door_hover_->text : "nothing")
+                              << "\n";
+                }
+                std::cout << std::flush;
+                door_hover_.reset();
+                ++door_pick_stage_;
+                door_pick_time_ = 0.0f;
+            } else if (door_pick_time_ > 30.0f) {
+                std::cout << "door pick, outer doors: the car's shape not read" << std::endl;
+                door_pick_stage_ = 4;
+            }
+        }
+    }
     if (!engineer_configured_) {
         engineer_configured_ = true;
         if (!rts_config_.empty()) {
@@ -5714,25 +5784,9 @@ void TrainView::carry_out(const Engineer::Event& event) {
     auto& car = units_[u].cars[i];
     if (!car.outside) return;
     switch (event.kind) {
-    case Kind::outer_door: {
-        if (event.door >= car.outside->door_details.size()) return;
-        const auto name = lower(car.outside->door_details[event.door].name);
-        // A cab's door: the cab's of the same name (the outer one follows it).
-        if (auto* cab = car_cab(u, i, true)) {
-            const auto& doors = cab->description().doors;
-            for (std::size_t j = 0; j < doors.size(); ++j) {
-                if (lower(doors[j].name) != name) continue;
-                cab->toggle_door(j);
-                return;
-            }
-        }
-        for (auto& door : car.exterior_doors) {
-            if (door.index != event.door) continue;
-            door.wanted = !(door.open >= 0.6f);
-            return;
-        }
+    case Kind::outer_door:
+        work_outer_door(u, i, event.door);
         return;
-    }
     case Kind::into_cab: {
         if (event.door >= car.outside->door_details.size()) return;
         const auto name = lower(car.outside->door_details[event.door].name);
@@ -5793,6 +5847,150 @@ void TrainView::carry_out(const Engineer::Event& event) {
     }
 }
 
+void TrainView::work_outer_door(const std::size_t u, const std::size_t i, const std::size_t k) {
+    if (u >= units_.size() || i >= units_[u].cars.size()) return;
+    auto& car = units_[u].cars[i];
+    if (!car.outside || k >= car.outside->door_details.size()) return;
+    const auto name = lower(car.outside->door_details[k].name);
+    // A cab's door: the cab's of the same name (the outer one follows it).
+    if (auto* cab = car_cab(u, i, true)) {
+        const auto& doors = cab->description().doors;
+        for (std::size_t j = 0; j < doors.size(); ++j) {
+            if (lower(doors[j].name) != name) continue;
+            cab->toggle_door(j);
+            return;
+        }
+    }
+    for (auto& door : car.exterior_doors) {
+        if (door.index != k) continue;
+        door.wanted = !(door.open >= 0.6f);
+        return;
+    }
+}
+
+const TrainView::CarMeshData* TrainView::car_mesh(const core::VirtualPath& shape) {
+    const std::string key(shape.str());
+    auto it = car_meshes_.find(key);
+    if (it == car_meshes_.end()) {
+        CarMesh entry;
+        entry.loading = std::async(std::launch::async, [vfs = vfs_, shape]() -> std::shared_ptr<const CarMeshData> {
+            const auto body = formats::load_binary_shape_body(*vfs, shape);
+            if (!body.ok()) return nullptr;
+            auto model = formats::parse_binary_shape_model(*body.body);
+            if (!model.ok()) return nullptr;
+            auto data = std::make_shared<CarMeshData>();
+            data->mesh = CabCollision::build(model);
+            model.vertices.clear();
+            model.vertices.shrink_to_fit();
+            model.indices.clear();
+            model.indices.shrink_to_fit();
+            data->rig = std::move(model);
+            return data;
+        });
+        car_meshes_.emplace(key, std::move(entry));
+        return nullptr;
+    }
+    auto& entry = it->second;
+    if (entry.loading.valid()) {
+        if (entry.loading.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return nullptr;
+        entry.data = entry.loading.get();
+    }
+    return entry.data && !entry.data->mesh.empty() ? entry.data.get() : nullptr;
+}
+
+void TrainView::outer_door_pointer(const glm::vec3& eye, const glm::vec3& direction, const bool click) {
+    constexpr float reach = 3.0f;
+    struct Best {
+        std::size_t u{}, i{}, k{};
+        float distance{};
+    };
+    std::optional<Best> best;
+    float nearest = reach;
+    for (std::size_t u = 0; u < units_.size(); ++u) {
+        const auto& unit = units_[u];
+        if (unit.remote || unit.current.empty()) continue;
+        for (std::size_t i = 0; i < unit.cars.size() && i < unit.current.size(); ++i) {
+            const auto& car = unit.cars[i];
+            if (car.exterior_doors.empty() || !car.outside || !car.definition) continue;
+            const auto body = body_pose(unit, i, false);
+            if (!body) continue;
+            const float length = car.definition->length > 1.0f ? car.definition->length : 20.0f;
+            if (glm::distance(glm::vec3{body->transform[3]}, eye) > length * 0.5f + reach + 3.0f) continue;
+            const auto* data = car_mesh(car.shape);
+            if (!data) continue;
+            const auto& rig = data->rig;
+            const glm::mat4 to_car = glm::inverse(body->transform);
+            const glm::vec3 o{to_car * glm::vec4{eye, 1.0f}};
+            const glm::vec3 d = glm::normalize(glm::vec3{to_car * glm::vec4{direction, 0.0f}});
+            // Each door's node and the nodes below it.
+            const auto nodes_of = [&](const std::int32_t node) {
+                std::vector<std::int32_t> nodes{node};
+                for (bool grew = true; grew;) {
+                    grew = false;
+                    for (std::size_t n = 0; n < rig.hierarchy.size(); ++n) {
+                        const auto parent = rig.hierarchy[n];
+                        if (parent < 0 || std::find(nodes.begin(), nodes.end(), parent) == nodes.end()) continue;
+                        if (std::find(nodes.begin(), nodes.end(), static_cast<std::int32_t>(n)) != nodes.end()) continue;
+                        nodes.push_back(static_cast<std::int32_t>(n));
+                        grew = true;
+                    }
+                }
+                return nodes;
+            };
+            std::vector<std::vector<std::int32_t>> door_nodes;
+            std::vector<std::uint8_t> skip(rig.matrices.size(), 0);
+            for (const auto& door : car.exterior_doors) {
+                door_nodes.push_back(door.node >= 0 ? nodes_of(door.node) : std::vector<std::int32_t>{});
+                // An open door is tried where it is drawn, below.
+                if (door.open >= 0.6f && door.last_frame > 0.0f)
+                    for (const auto n : door_nodes.back())
+                        if (static_cast<std::size_t>(n) < skip.size()) skip[static_cast<std::size_t>(n)] = 1;
+            }
+            const auto rest = data->mesh.ray(o, d, nearest, skip);
+            float limit = rest ? rest->distance : nearest;
+            std::optional<std::size_t> hit_door;
+            if (rest && rest->node >= 0) {
+                for (std::size_t a = 0; a < door_nodes.size() && !hit_door; ++a)
+                    if (std::find(door_nodes[a].begin(), door_nodes[a].end(), rest->node) != door_nodes[a].end()) hit_door = a;
+            }
+            for (std::size_t a = 0; a < car.exterior_doors.size(); ++a) {
+                const auto& door = car.exterior_doors[a];
+                if (door.node < 0 || door.last_frame <= 0.0f || door.open < 0.6f) continue;
+                if (const auto hit = data->mesh.ray_posed(rig, door.node, door.open * door.last_frame, door_nodes[a], o, d, limit)) {
+                    limit = hit->distance;
+                    hit_door = a;
+                }
+            }
+            if (rest || hit_door) nearest = (std::min)(nearest, limit); // a nearer car body hides what is behind it
+            if (!hit_door) {
+                if (rest && best && rest->distance < best->distance) best.reset();
+                continue;
+            }
+            best = Best{u, i, car.exterior_doors[*hit_door].index, limit};
+        }
+    }
+    if (!best) return;
+    const auto& car = units_[best->u].cars[best->i];
+    const auto& details = car.outside->door_details;
+    // A leaf (ParentObject) is worked through the door it follows.
+    std::size_t k = best->k;
+    for (int guard = 0; k < details.size() && details[k].parent >= 0 && guard < 8; ++guard) k = static_cast<std::size_t>(details[k].parent);
+    if (k >= details.size()) return;
+    bool open = false;
+    for (const auto& door : car.exterior_doors)
+        if (door.index == k) open = door.open >= 0.6f;
+    const bool by_hand = details[k].can_be_opened;
+    door_hover_ = DoorHover{.at = eye + direction * best->distance,
+                            .text = !by_hand ? tr("The passenger doors are opened from the driver's cab.")
+                                    : open   ? tr("Door: click to close")
+                                             : tr("Door: click to open")};
+    if (click && by_hand) {
+        work_outer_door(best->u, best->i, k);
+        std::cout << "the engineer " << (open ? "shuts" : "opens") << " door " << details[k].name << " of car " << best->i + 1
+                  << " with the mouse" << std::endl;
+    }
+}
+
 void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& direction, const bool click, const bool shift,
                         const float scroll, const bool release, const glm::vec2& cursor, const bool held) {
     // A helper's hands work the engineer's cab (helper_cab_), else the DLLs here.
@@ -5810,15 +6008,44 @@ void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& di
     }
     if (release && hands) hands->release();
     hovered_.reset();
+    door_hover_.reset();
+    // On foot by the train: the cars' outer doors under the mouse.
+    if (direction && car_view_ == CarView::off && !engineer_.passing()
+        && (engineer_.mode() == Engineer::Mode::outside || engineer_.mode() == Engineer::Mode::on_car)) {
+        outer_door_pointer(eye, *direction, click);
+        return;
+    }
     const auto* cab = engineer_cab();
     if (!direction || !viewing_inside() || !cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return;
     const auto body = body_pose(units_.front(), engineer_car_, false);
     if (!body) return;
-    const glm::mat4 to_cab = glm::inverse(cab_to_scene_ ? *cab_to_scene_ : body->transform * cab->placement());
+    const glm::mat4 to_scene = cab_to_scene_ ? *cab_to_scene_ : body->transform * cab->placement();
+    const glm::mat4 to_cab = glm::inverse(to_scene);
     const glm::vec3 origin{to_cab * glm::vec4{eye, 1.0f}};
     const glm::vec3 along = glm::normalize(glm::vec3{to_cab * glm::vec4{*direction, 0.0f}});
     // The reach is each control's Radius (RTS); the ray goes as far as any.
     hovered_ = cab->pick(origin, along, 4.0f);
+    // A door under the mouse, nearer than any control (openRTS: a click
+    // opens or shuts it; RTS works doors with Enter only).
+    if (const auto door = cab->pick_door(origin, along, 2.5f); door && (!hovered_ || door->distance < hovered_->distance)) {
+        hovered_.reset();
+        const auto root = cab->door_root(door->door);
+        const auto& doors = cab->description().doors;
+        const bool by_hand = root < doors.size() && doors[root].can_be_opened;
+        const bool open = cab->door_open(root);
+        door_hover_ = DoorHover{.at = glm::vec3{to_scene * glm::vec4{origin + along * door->distance, 1.0f}},
+                                .text = !by_hand ? tr("The passenger doors are opened from the driver's cab.")
+                                        : open   ? tr("Door: click to close")
+                                                 : tr("Door: click to open")};
+        if (click && by_hand) {
+            if (CabView* own = engineer_car_ == cab_car_ ? cab_.get() : visit_cab_.get()) {
+                own->toggle_door(root);
+                std::cout << "the engineer " << (open ? "shuts" : "opens") << " the cab's door " << doors[root].name << " with the mouse"
+                          << std::endl;
+            }
+            return;
+        }
+    }
     // The wheel turns handles only (CONTROLLERX / CONTROLLERY, the ones a
     // drag moves, or the piece of one); over a button or a switch it is as
     // off the controls, so leaning in to read the КЛУБ no longer pressed
@@ -6756,6 +6983,10 @@ void TrainView::draw_car_menu() {
 }
 
 void TrainView::collect_cab_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, const bool all) const {
+    // The door under the mouse, in the cab or outside.
+    if (door_hover_)
+        labels.push_back({.position = door_hover_->at, .text = door_hover_->text, .colour = 0xff40ffffu, .occludable = false,
+                          .key = std::size_t{0xD002} << 40});
     const auto* cab = engineer_cab();
     if (!viewing_inside() || !cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return;
     if (!all && !hovered_) return;
@@ -8571,6 +8802,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
     screen_planes_.clear();
     cab_to_scene_.reset();
     cab_focus_.reset();
+    cab_room_.reset();
     if (!placed()) return;
     const float t = alpha();
     std::vector<renderer::NodeAdjustment> adjustments;
@@ -8635,6 +8867,8 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 renderer.submit(*cab_model, to_scene, adjustments, textures, renderer::ObjectPass::last);
                 cab_texture_changes_ = textures.size();
                 cab_to_scene_ = to_scene;
+                if (const auto box = cab_model->bounds(); box.max.x > box.min.x)
+                    cab_room_ = renderer::LightShaftRoom{.to_room = glm::inverse(to_scene), .lower = box.min, .upper = box.max};
                 if (engineer_.mode() != Engineer::Mode::seated) {
                     // On foot (in a salon, the ED9M's head car's too, or the
                     // cab away from the desk): the whole room, the shape's

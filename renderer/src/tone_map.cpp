@@ -16,13 +16,14 @@ struct Settings {
     night_exposure: f32,
     saturation: f32,
     bloom: f32,     // the bloom's strength (0: none)
-    pad1: f32,
+    shafts: f32,    // 1: the light shafts added
     pad2: f32,
 };
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> settings: Settings;
 @group(0) @binding(2) var bloom_image: texture_2d<f32>; // scene-linear (BloomRenderer), or 1 x 1 black
 @group(0) @binding(3) var bloom_sampler: sampler;
+@group(0) @binding(4) var shafts_image: texture_2d<f32>; // scene-linear (LightShaftRenderer), or 1 x 1 black
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -102,14 +103,15 @@ fn khronos_neutral(c_in: vec3<f32>) -> vec3<f32> {
     return mix(c, vec3<f32>(new_peak), g);
 }
 
-// The display-encoded picture through the chosen curve, the bloom's light
-// (scene-linear) added before the exposure.
+// The display-encoded picture through the chosen curve, the bloom's and
+// the light shafts' light (scene-linear, already weighed) added before the
+// exposure.
 fn curved(encoded: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
     if (settings.curve == 0u) {
         // The scene as drawn: the RTS look.
         return clamp(encoded, vec3<f32>(0.0), vec3<f32>(1.0));
     }
-    let scene_linear = pow(max(encoded, vec3<f32>(0.0)), vec3<f32>(2.2)) + bloom * settings.bloom;
+    let scene_linear = pow(max(encoded, vec3<f32>(0.0)), vec3<f32>(2.2)) + bloom;
     let linear = scene_linear * settings.exposure;
     if (settings.curve == 4u || settings.curve == 5u) {
         // Khronos keeps the day as authored (ACES: contrastier, its shade
@@ -146,7 +148,11 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     var bloom = vec3<f32>(0.0);
     if (settings.bloom > 0.0) {
         let size = vec2<f32>(textureDimensions(scene));
-        bloom = textureSampleLevel(bloom_image, bloom_sampler, position.xy / size, 0.0).rgb;
+        bloom = textureSampleLevel(bloom_image, bloom_sampler, position.xy / size, 0.0).rgb * settings.bloom;
+    }
+    if (settings.shafts > 0.0) {
+        let size = vec2<f32>(textureDimensions(scene));
+        bloom = bloom + textureSampleLevel(shafts_image, bloom_sampler, position.xy / size, 0.0).rgb;
     }
     var display = curved(encoded, bloom);
     if (settings.saturation != 1.0) {
@@ -169,7 +175,8 @@ struct SettingsUniform {
     float night_exposure = 2.0f;
     float saturation = 1.0f;
     float bloom = 0.0f;
-    float pad[2]{};
+    float shafts = 0.0f;
+    float pad = 0.0f;
 };
 
 } // namespace
@@ -196,7 +203,7 @@ struct ToneMapper::Impl {
 ToneMapper::ToneMapper(const WGPUDevice device, const WGPUTextureFormat output_format) : impl_(std::make_unique<Impl>()) {
     auto& impl = *impl_;
     impl.device = device;
-    std::array<WGPUBindGroupLayoutEntry, 4> entries{};
+    std::array<WGPUBindGroupLayoutEntry, 5> entries{};
     entries[0].binding = 0;
     entries[0].visibility = WGPUShaderStage_Fragment;
     entries[0].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
@@ -212,6 +219,10 @@ ToneMapper::ToneMapper(const WGPUDevice device, const WGPUTextureFormat output_f
     entries[3].binding = 3;
     entries[3].visibility = WGPUShaderStage_Fragment;
     entries[3].sampler.type = WGPUSamplerBindingType_Filtering;
+    entries[4].binding = 4;
+    entries[4].visibility = WGPUShaderStage_Fragment;
+    entries[4].texture.sampleType = WGPUTextureSampleType_Float;
+    entries[4].texture.viewDimension = WGPUTextureViewDimension_2D;
     WGPUSamplerDescriptor sampler{};
     sampler.addressModeU = WGPUAddressMode_ClampToEdge;
     sampler.addressModeV = WGPUAddressMode_ClampToEdge;
@@ -274,7 +285,7 @@ bool ToneMapper::ready() const noexcept {
 }
 
 void ToneMapper::render(const WGPUCommandEncoder encoder, const WGPUTextureView scene, const WGPUTextureView output,
-                        const ToneSettings& tone, const WGPUTextureView bloom) {
+                        const ToneSettings& tone, const WGPUTextureView bloom, const WGPUTextureView shafts) {
     auto& impl = *impl_;
     if (!ready() || !scene || !output) return;
     const SettingsUniform settings{.curve = static_cast<std::uint32_t>(tone.curve),
@@ -282,12 +293,13 @@ void ToneMapper::render(const WGPUCommandEncoder encoder, const WGPUTextureView 
                                    .night = tone.night,
                                    .night_exposure = tone.night_exposure,
                                    .saturation = tone.saturation,
-                                   .bloom = bloom ? (std::max)(tone.bloom, 0.0f) : 0.0f};
+                                   .bloom = bloom ? (std::max)(tone.bloom, 0.0f) : 0.0f,
+                                   .shafts = shafts && tone.shafts ? 1.0f : 0.0f};
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
         wgpuQueueWriteBuffer(queue, impl.settings, 0, &settings, sizeof(settings));
         wgpuQueueRelease(queue);
     }
-    std::array<WGPUBindGroupEntry, 4> entries{};
+    std::array<WGPUBindGroupEntry, 5> entries{};
     entries[0].binding = 0;
     entries[0].textureView = scene;
     entries[1].binding = 1;
@@ -297,6 +309,8 @@ void ToneMapper::render(const WGPUCommandEncoder encoder, const WGPUTextureView 
     entries[2].textureView = bloom ? bloom : impl.black_view;
     entries[3].binding = 3;
     entries[3].sampler = impl.sampler;
+    entries[4].binding = 4;
+    entries[4].textureView = shafts && tone.shafts ? shafts : impl.black_view;
     const WGPUBindGroupDescriptor group_descriptor{.layout = impl.layout, .entryCount = entries.size(), .entries = entries.data()};
     const auto group = wgpuDeviceCreateBindGroup(impl.device, &group_descriptor);
     const WGPURenderPassColorAttachment colour{

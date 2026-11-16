@@ -110,6 +110,12 @@ public:
     [[nodiscard]] Mode mode() const noexcept { return mode_; }
     [[nodiscard]] bool active() const noexcept { return mode_ != Mode::off; }
     [[nodiscard]] bool inside() const noexcept { return mode_ == Mode::seated || mode_ == Mode::standing; }
+    // Up from the chair: standing in the cab, outside or on the car's outside.
+    [[nodiscard]] bool on_foot() const noexcept {
+        return mode_ == Mode::standing || mode_ == Mode::outside || mode_ == Mode::on_car;
+    }
+    // In a salon's passenger seat (not a cab's chair).
+    [[nodiscard]] bool in_passenger_seat() const noexcept { return mode_ == Mode::seated && seat_.has_value(); }
     // Going along a trajectory (a ladder, a door's way, a climb onto a box).
     [[nodiscard]] bool passing() const noexcept { return passage_.active(); }
 
