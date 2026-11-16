@@ -646,6 +646,19 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                                     cs.brake_force / 1000.0, o->engine.brake_force / 1000.0,
                                     static_cast<int>(static_cast<std::int16_t>(o->engine.alsn_on)), o->cab_aspect, cs.main_reservoir,
                                     o->engine.main_reservoir_rate, o->engine.engine_flags);
+                        // Wheel slip (боксование): the motors' forces, the axles slipping.
+                        if (o->engine.engine_force_count > 0) {
+                            std::printf("           motors");
+                            for (std::size_t m = 0; m < o->engine.engine_force_count; ++m) std::printf(" %.1f", o->engine.engine_forces[m] / 1000.0);
+                            std::printf(" kN; wheel slip 0x%X", cs.wheelslip);
+                            if (cs.wheelslip != 0) {
+                                std::printf(" (");
+                                for (std::size_t a = 0; a < cs.slip_ratio.size(); ++a)
+                                    if (cs.wheelslip & (1u << a)) std::printf(" axle %zu x%.2f", a, cs.slip_ratio[a]);
+                                std::printf(" )");
+                            }
+                            std::printf("\n");
+                        }
                         if (!o->exhausts.empty()) {
                             std::printf("           exhausts");
                             for (const auto& x : o->exhausts) std::printf(" rate %.2f magnitude %.2f;", x.rate, x.magnitude);

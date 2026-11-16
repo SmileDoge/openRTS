@@ -296,12 +296,30 @@ wrote in the previous frame.
 - **Sanding** (`Engine::Sanding`): `LocoFlags |= 0x100`, adhesion × the ENG's
   sanding factor; `SandLeft` counts down; after sanding stops the effect lasts
   over the locomotive's length of travel (`LastSanding`).
-- **Wheel slip:** adhesion = ENG `+204` × sanding × slip factor (if it slipped
-  last frame) × weather. With no per-engine data, `|Force| > mass · 10 ·
-  adhesion` sets `Wheelslip` = 15 and **`Force` = 0**. With `EngineForce[]`
-  per engine, each engine is checked against its axles; a slipping engine's
-  force is replaced by `0.1 + (GetTickCount() % 10) / 30` of itself (10–40 %)
-  and its wheel sets spin.
+- **Wheel slip:** adhesion = ENG `+204` (`Adheasion`'s second value) ×
+  sanding (`+208`, its third) × slip factor (`+200`, its first, when
+  `Engine::Wheelslip` is not 0 after the DLL's step: it slipped last time)
+  × weather. Then `Wheelslip` = 0 and:
+  - `Force` = 0 or no `NumEngines` (`+392`): `|Force| > mass · 10 ·
+    adhesion` sets `Wheelslip` = 15 and **`Force` = 0**;
+  - else each motor's `Engine::EngineForce[m]` (`+48`) over its axles (the
+    .eng's `EngineAxles ( k a1 .. ak )`, `ENG +552`) is checked against
+    `mass · 10 / NumAxles · adhesion` an axle. A slipping motor's axles get
+    their bit in `Wheelslip` and their wheel record (`car +356`, 16 bytes
+    an axle: `+4` angle, `+8` force over the limit) the ratio, and
+    `Force` loses the motor's force but `0.1 + (GetTickCount() % 10) / 30`
+    of it (10–40 %). A motor whose DLL leaves `EngineForce` at 0 never
+    slips.
+  - **The wheels (`0x4F5B34`, CONFIRMED):** every frame a wheel set turns by
+    the run over its radius (ENG `+52`), and a slipping axle's by `2π ·
+    ratio · dt + 0.1` more. A car whose brake force (`car +44`) is over
+    `mass · 10 · adhesion · weather` has its wheels stand (the brake lock
+    of RTS's own air). The wheel nodes are the shape's `WHEELS…` in order,
+    axle k the k-th (`0x4F0BC8`).
+  - openRTS (`simulation/train.cpp`, 2026-11-15): as above, a slipping
+    motor keeps a quarter (not a random 10–40 %); the DLL gets the bits
+    back in `Engine::Wheelslip` before its next step (`CarInput::wheelslip`);
+    F5 marks "[БОКСОВАНИЕ]".
 - **Car force:** `Force` = `Engine::Force` (sign flipped for a flipped car).
 - **Brakes:** `BrakeSystemsEngaged` bit 1 → `TrainPipeRate` drives the pipe;
   bit 2 → `EPTvalue` is spread along the EP line in both directions until a

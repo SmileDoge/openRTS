@@ -125,7 +125,12 @@ CONFIRMED unless marked.
   unit conversion**), c2 (quantity), e2 (quantity). When e1 = 0 and the
   transition is 0, e1 becomes 1.
 - **`Adheasion`** (MSTS spelling): four `_wtof` values. [1] is the wheelslip
-  limit factor.
+  limit factor (the adhesion), [2] its factor while sanding, [0] its factor
+  while the locomotive slips (`train-dll.md`, "Wheel slip"; the ВЛ80Т:
+  0.6 0.55 2.975 0).
+- **`NumEngines ( n EngineAxles ( k a1 .. ak ) ... )`, `NumAxles ( n )`**
+  (EngExtended): the traction motors and the axles each turns, for the
+  wheel slip by motor (`train-dll.md`, "Wheel slip").
 - **Derailment:** `DerailRailHeight` (quantity), `DerailRailForce`
   (product, default 240000), `DerailBufferForce`.
 - **Brakes:** see `brakes.md` for the field list. `BrakeEquipmentType` and

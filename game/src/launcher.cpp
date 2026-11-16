@@ -38,6 +38,7 @@
 #include "discord_status.hpp"
 #include "file_dialog.hpp"
 #include "frame_limiter.hpp"
+#include "graphics_presets_ui.hpp"
 #include "graphics_settings.hpp"
 #include "key_layout.hpp"
 #include "rts_config.hpp"
@@ -313,6 +314,7 @@ struct Launcher::State {
     // The graphics settings, the game's panel's too (graphics_settings.hpp):
     // each change written at once, only what changed.
     viewer::GraphicsSettings graphics;
+    viewer::OwnPresetsUi own_presets; // the presets of one's own, to share
     std::optional<float> fov; // "fov", else RTS's config.ini
     int fps_limit = 0; // the game's FPS limit, shared with its panel ("fps_limit"): 0 none, 30..500
     viewer::WindowMode window_mode = viewer::WindowMode::windowed; // the game's window ("window_mode"), shared with its panel
@@ -1502,6 +1504,8 @@ void Launcher::State::draw_graphics(const float height) {
         }
         hint(preset ? tr(viewer::graphics_preset_note(*preset))
                     : tr("A preset sets the costly settings together: the shadows, the ambient occlusion, the lamp and cloud shadows. Anti-aliasing and the look (HDR, exposure, the lamps' strength, the sky and the water) stay as they are."));
+        ImGui::SeparatorText(tr("Your presets (to share with other players)"));
+        viewer::draw_own_graphics_presets(own_presets, g, 260.0f);
         ImGui::Spacing();
         // The load's scale, in its colours.
         ImGui::TextDisabled("%s", tr("The load on the processor (CPU) and the video card (GPU):"));
@@ -1582,12 +1586,13 @@ void Launcher::State::draw_graphics(const float height) {
             ImGui::SameLine();
             ImGui::TextDisabled("%s", tr("tone curve with the experimental renderer"));
             if (g.hdr) {
-                const char* curves[] = {tr("none (as RTS)"), "Khronos PBR Neutral", "AgX (punchy)", "ACES", tr("auto: Khronos by day, AgX by night")};
+                const char* curves[] = {tr("none (as RTS)"), "Khronos PBR Neutral", "AgX (punchy)", "ACES", tr("auto: Khronos by day, AgX by night"),
+                                        tr("auto: ACES by day, AgX by night")};
                 group_row(tr("Tone curve"), Load::none, Load::none);
-                ImGui::Combo("##tone", &g.tone_curve, curves, 5);
+                ImGui::Combo("##tone", &g.tone_curve, curves, 6);
                 group_row(tr("Exposure"), Load::none, Load::none);
                 viewer::slider_with_input("##exposure", &g.exposure, 0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
-                if (g.tone_curve == 4) {
+                if (g.tone_curve == 4 || g.tone_curve == 5) {
                     group_row(tr("Night exposure"), Load::none, Load::none);
                     viewer::slider_with_input("##night_exposure", &g.night_exposure, 0.5f, 6.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
                 }
@@ -1660,6 +1665,14 @@ void Launcher::State::draw_graphics(const float height) {
             group_row(tr("At night from the textures' brightest too (lamps' bulbs, lit windows, signs)"), Load::none, Load::none);
             ImGui::Checkbox("##bloom_textures", &e.bloom_textures);
             row_note(tr("Only what a texture paints near white: a dark wall, or a lamp's light painted onto a platform, does not glow. Off: only the signals, the train's lights and the sun."));
+            ImGui::EndDisabled();
+            group_row(tr("Light shafts: the sun's beams in the air through trees, windows and clouds (HDR, not as in RTS)"), Load::negligible,
+                      Load::medium);
+            ImGui::Checkbox("##light_shafts", &e.light_shafts);
+            row_note(tr("Each pixel's view ray marched through the sun shadows and the clouds' at half the screen's size: the shadows stand in the air as beams. They need the sun shadows."));
+            ImGui::BeginDisabled(!e.light_shafts);
+            group_row(tr("Light shafts' strength"), Load::none, Load::none);
+            viewer::slider_with_input("##shafts_strength", &e.light_shafts_strength, 0.0f, 4.0f, "%.2f", "%.2f");
             ImGui::EndDisabled();
             ImGui::EndTable();
         }
@@ -1754,6 +1767,9 @@ void Launcher::State::draw_graphics(const float height) {
             row_note(tr("(TEXTURES\\NIGHT: lit windows and lamps painted in; off: the day's textures at night, lit by the lamps)"));
             group_row(tr("Sharp cab screens: drawn at a higher resolution (not as in RTS)"), Load::negligible, Load::negligible);
             ImGui::Checkbox("##screen_supersampling", &g.screen_supersampling);
+            group_row(tr("Smooth the compression blocks of the trains' textures (BC7, not as in RTS)"), Load::medium, Load::negligible);
+            ImGui::Checkbox("##smooth_train_textures", &g.smooth_train_textures);
+            row_note(tr("DXT1's 4x4 blocks in the shade of cars and cabs smoothed; the first load of a train a few seconds longer, then from the cache; twice the video memory for the trains."));
             group_row(tr("Depth for ReShade"), Load::none, Load::negligible);
             ImGui::Checkbox("##reshade_depth", &g.reshade_depth);
             row_note(tr("Keeps the scene depth to the end of the frame and, with anti-aliasing, adds a copy ReShade can take. In ReShade: RESHADE_DEPTH_INPUT_IS_REVERSED 1, RESHADE_DEPTH_MULTIPLIER 20 (see INSTALL.md)."));

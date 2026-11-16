@@ -124,31 +124,35 @@ WgpuTextureUploadResult upload_rgba8_texture(
     return {.texture = WgpuTexture(texture, bytes)};
 }
 
-WgpuTextureUploadResult upload_bc1_texture(const WGPUDevice device, const std::uint32_t width, const std::uint32_t height,
-                                           const std::vector<std::vector<std::uint8_t>>& levels, const std::string_view label) {
+namespace {
+
+// BC1's 8-byte or BC7's 16-byte blocks of 4 x 4 texels.
+WgpuTextureUploadResult upload_block_texture(const WGPUDevice device, const std::uint32_t width, const std::uint32_t height,
+                                             const std::vector<std::vector<std::uint8_t>>& levels, const std::string_view label,
+                                             const WGPUTextureFormat format, const std::uint32_t block_bytes) {
     if (!device) return {.error = "Cannot upload a texture without a WebGPU device."};
     if (!wgpuDeviceHasFeature(device, WGPUFeatureName_TextureCompressionBC)) return {.error = "The device has no BC textures."};
     if (width == 0 || height == 0 || width % 4 != 0 || height % 4 != 0 || levels.empty())
-        return {.error = "BC1 level 0 must be whole 4x4 blocks."};
+        return {.error = "Level 0 must be whole 4x4 blocks."};
     const auto blocks_of = [](const std::uint32_t side) { return (side + 3u) / 4u; };
     std::size_t count = 0;
     for (; count < levels.size(); ++count) {
         const auto w = (std::max)(width >> count, 1u);
         const auto h = (std::max)(height >> count, 1u);
-        if (levels[count].size() != static_cast<std::size_t>(blocks_of(w)) * blocks_of(h) * 8) break;
+        if (levels[count].size() != static_cast<std::size_t>(blocks_of(w)) * blocks_of(h) * block_bytes) break;
         if (w == 1 && h == 1) {
             ++count;
             break;
         }
     }
-    if (count == 0) return {.error = "BC1 level 0 has the wrong number of blocks."};
+    if (count == 0) return {.error = "Level 0 has the wrong number of blocks."};
     const WGPUTextureDescriptor descriptor{
         .nextInChain = nullptr,
         .label = {.data = label.data(), .length = label.size()},
         .usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst,
         .dimension = WGPUTextureDimension_2D,
         .size = {.width = width, .height = height, .depthOrArrayLayers = 1},
-        .format = WGPUTextureFormat_BC1RGBAUnorm,
+        .format = format,
         .mipLevelCount = static_cast<std::uint32_t>(count),
         .sampleCount = 1,
         .viewFormatCount = 0,
@@ -171,7 +175,7 @@ WgpuTextureUploadResult upload_bc1_texture(const WGPUDevice device, const std::u
             .origin = {.x = 0, .y = 0, .z = 0},
             .aspect = WGPUTextureAspect_All,
         };
-        const WGPUTexelCopyBufferLayout layout{.offset = 0, .bytesPerRow = bx * 8, .rowsPerImage = by};
+        const WGPUTexelCopyBufferLayout layout{.offset = 0, .bytesPerRow = bx * block_bytes, .rowsPerImage = by};
         const WGPUExtent3D size{.width = bx * 4, .height = by * 4, .depthOrArrayLayers = 1};
         wgpuQueueWriteTexture(queue, &destination, levels[k].data(), levels[k].size(), &layout, &size);
     }
@@ -179,6 +183,18 @@ WgpuTextureUploadResult upload_bc1_texture(const WGPUDevice device, const std::u
     std::uint64_t bytes = 0;
     for (std::size_t k = 0; k < count; ++k) bytes += levels[k].size();
     return {.texture = WgpuTexture(texture, bytes)};
+}
+
+} // namespace
+
+WgpuTextureUploadResult upload_bc1_texture(const WGPUDevice device, const std::uint32_t width, const std::uint32_t height,
+                                           const std::vector<std::vector<std::uint8_t>>& levels, const std::string_view label) {
+    return upload_block_texture(device, width, height, levels, label, WGPUTextureFormat_BC1RGBAUnorm, 8);
+}
+
+WgpuTextureUploadResult upload_bc7_texture(const WGPUDevice device, const std::uint32_t width, const std::uint32_t height,
+                                           const std::vector<std::vector<std::uint8_t>>& levels, const std::string_view label) {
+    return upload_block_texture(device, width, height, levels, label, WGPUTextureFormat_BC7RGBAUnorm, 16);
 }
 
 } // namespace openrts::renderer

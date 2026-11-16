@@ -78,6 +78,42 @@ public:
     [[nodiscard]] std::uint64_t view_train(std::uint32_t server_train) const;
     [[nodiscard]] std::uint32_t server_train(std::uint64_t view_train) const;
 
+    // --- Players and helpers (docs/net.md, "Players and helpers").
+    // The server is openRTS's: it answered openrts_hello (helpers need it).
+    [[nodiscard]] bool openrts_server() const noexcept { return openrts_server_; }
+    // A server train as the players know it: its name or number.
+    [[nodiscard]] std::string train_label(std::uint32_t server_train) const;
+    // The other players as the server relays their places (player_pos),
+    // heard within the last 20 s.
+    struct Player {
+        std::uint32_t user{};
+        std::string nick;
+        std::uint32_t train{};          // the server train he is in, 0 none
+        formats::RoutePosition at;      // his camera's place
+        double heard{};                 // when, s of this session
+    };
+    [[nodiscard]] std::vector<Player> players() const;
+    // Our help: asked for, given, refused, ended (the server's last word).
+    struct Help {
+        std::uint32_t train{};          // the server train
+        std::uint32_t engineer{};
+        std::string nick;               // the engineer's
+        net::HelperState state = net::HelperState::ended;
+    };
+    [[nodiscard]] const std::optional<Help>& help() const noexcept { return help_; }
+    void ask_to_help(std::uint32_t server_train);
+    void stop_helping();
+    // The engineer's: players asking to help him, and his helpers.
+    struct Helper {
+        std::uint32_t user{};
+        std::uint32_t train{};
+        std::string nick;
+    };
+    [[nodiscard]] const std::vector<Helper>& asking() const noexcept { return asking_; }
+    [[nodiscard]] const std::vector<Helper>& helpers() const noexcept { return helpers_; }
+    void answer(std::uint32_t user, bool take);
+    void drop_helper(std::uint32_t user);
+
 private:
     struct Remote {
         net::SnapshotTrain record;
@@ -152,6 +188,28 @@ private:
     double range_at_ = 0.0;                              // the next check of the remote trains' distance
     std::optional<formats::RoutePosition> sent_camera_; // the last one sent
     bool console_ = false;
+    // Players and helpers.
+    bool hello_sent_ = false;
+    bool openrts_server_ = false;
+    std::map<std::uint32_t, Player> players_;
+    std::optional<Help> help_;
+    std::vector<Helper> asking_, helpers_;
+    void helper_note(const net::HelperNote& note, TrainView& trains);
+    void helper_streams(TrainView& trains, double now);
+    double cab_due_ = 0.0;       // the engineer's next cab stream
+    double watch_due_ = 0.0;     // the helper's next "I am in car N"
+    struct SentCab {
+        net::Bytes packed;
+        double at{};
+    };
+    std::map<std::uint32_t, SentCab> cab_sent_;        // by car: the last stream
+    std::map<std::uint32_t, double> cab_watched_;      // by car: until when a helper is in it
+    bool helping_view_ = false;                        // TrainView::help done for help_
+    // Tests (environment): OPENRTS_MP_HELP=<nick> asks to help him,
+    // OPENRTS_MP_TAKE_HELPERS takes every helper, OPENRTS_MP_HELP_SWITCH=
+    // <id>:<state> works that switch of the engineer's cab once it is here.
+    bool test_asked_ = false, test_switched_ = false;
+    std::map<std::uint32_t, std::pair<std::size_t, std::uint32_t>> cab_seen_; // by car: packages, the test switch's state
     std::map<std::uint32_t, std::pair<float, bool>> routes_; // by server train: 0x4619
     std::optional<net::ConsoleState> console_state_;
     std::vector<std::string> console_log_;

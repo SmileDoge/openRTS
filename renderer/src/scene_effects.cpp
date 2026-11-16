@@ -526,7 +526,7 @@ struct SceneEffects::Impl {
     static constexpr std::uint32_t lamp_slot = max_cascades + 2;
     std::vector<ModelExtraLight> packed_lights; // as the light list holds them
     bool lamp_shadows_wanted = false;
-    bool camera_depth_wanted = false; // the pre-pass: the occlusion's or the bloom's
+    bool camera_depth_wanted = false; // the pre-pass: the occlusion's, the bloom's or the light shafts'
     std::uint32_t lamp_shadow_count = 0;
     std::uint32_t lamps_lighting = 0;
     float lamp_radius = 0.0f;
@@ -980,7 +980,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     const bool shadows = active && s.shadows && shadow_strength > 0.01f;
     impl.ensure_shadow(active && s.shadows);
     impl.ensure_lamp_shadow(active && s.lamp_shadows > 0);
-    impl.ensure_ao(active && (s.ambient_occlusion || s.bloom), (std::max)(view.width, 1u), (std::max)(view.height, 1u),
+    impl.ensure_ao(active && (s.ambient_occlusion || s.bloom || s.light_shafts), (std::max)(view.width, 1u), (std::max)(view.height, 1u),
                    s.occlusion_low);
     impl.ensure_groups();
 
@@ -1054,7 +1054,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     }
     frame.flags[0] = active && s.clustered_lights ? 1u : 0u;
     frame.flags[1] = active && s.ambient_occlusion && impl.ao_is_real ? (s.show_occlusion ? 2u : 1u) : 0u;
-    impl.camera_depth_wanted = active && (s.ambient_occlusion || s.bloom) && impl.ao_is_real && impl.depth.view;
+    impl.camera_depth_wanted = active && (s.ambient_occlusion || s.bloom || s.light_shafts) && impl.ao_is_real && impl.depth.view;
     frame.flags[2] = active && s.aerial_perspective ? 1u : 0u;
     frame.flags[3] = impl.light_count;
     impl.lamp_shadows_wanted = active && s.lamp_shadows > 0 && !impl.packed_lights.empty() && impl.lamp_layers[0];

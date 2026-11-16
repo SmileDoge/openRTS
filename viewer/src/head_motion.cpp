@@ -26,6 +26,12 @@ constexpr float nod_per_metre = 1.5f;
 constexpr float tilt_per_metre = 1.5f;
 constexpr float jolt_per_metre = 2.5f;
 constexpr float widest = 0.2f; // radians: the nod and the tilt at most
+// The seat lean (seat_lean): smoothing, and per m/s^2 at the default setting.
+constexpr float lean_time = 0.6f;          // s
+constexpr float lean_metres = 0.014f;      // m
+constexpr float lean_radians = 0.022f;     // about 1.3 degrees
+constexpr float lean_most = 1.5f;          // m/s^2 counted at most
+constexpr float lean_default = 0.25f;      // key_layout.hpp default_head_motion
 
 } // namespace
 
@@ -54,6 +60,7 @@ void HeadMotion::step(const glm::vec3& at, const glm::vec3& carried, const float
         position += velocity * dt;
     }
     body = at;
+    lean += (carried.z - lean) * (1.0f - std::exp(-elapsed / lean_time));
     // A hit or a derailment: held at the neck's reach.
     const glm::vec3 lagging = position - body;
     const glm::vec3 held = glm::clamp(lagging, glm::vec3{-farthest}, glm::vec3{farthest});
@@ -75,6 +82,20 @@ HeadPose head_pose(const glm::vec3& lag_world, const float lag_up, const glm::ve
     // Thrown aside, it leans that way.
     pose.tilt = std::clamp(amount * glm::dot(lag_world, right) * tilt_per_metre, -widest, widest);
     pose.shift = lag_world * amount;
+    return pose;
+}
+
+HeadPose seat_lean(const float lean, const glm::vec3& front, const glm::vec3& forward, const float amount) {
+    if (!(amount > 0.0f) || !std::isfinite(lean)) return {};
+    const float share = (std::min)(amount / lean_default, 2.0f);
+    const float a = std::clamp(lean, -lean_most, lean_most) * share;
+    HeadPose pose;
+    // Pulling away the head goes back against the train's way (towards the
+    // seat back), braking forward; looking ahead it tips back (looks up)
+    // pulling away and down braking.
+    const glm::vec3 lag = -front * (a * lean_metres);
+    pose.shift = lag;
+    pose.nod = std::clamp(glm::dot(-front, forward) * a * lean_radians, -widest, widest);
     return pose;
 }
 

@@ -992,6 +992,9 @@ void Host::write_inputs(const std::vector<CarInput>& inputs) {
         w->train_pipe_rate = in.train_pipe;
         w->ept_value = -1.0f;
         if (car.is_loco()) car.loco()->main_res_pressure = in.main_reservoir;
+        if (car.is_loco() && car.initialised && in.clear_engine_flags) car.eng()->engine_flags &= ~in.clear_engine_flags;
+        // The slip the game found after the last step: the DLL reads it in Run.
+        if (car.is_loco() && car.initialised) car.eng()->wheelslip = in.wheelslip;
         if (car.spec.kind == car_electric) {
             // RTS 0x503CE4 sets these before Run (the current from the last
             // step's PowerConsuming); a burnt pantograph is LocoFlags 0x200.
@@ -1855,6 +1858,8 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
     o.engine_flags = e->engine_flags;
     o.reverse = e->reverse;
     o.wheelslip = e->wheelslip;
+    o.engine_force_count = static_cast<std::uint8_t>((std::min)(car.engine_force.size(), o.engine_forces.size()));
+    for (std::size_t k = 0; k < o.engine_force_count; ++k) o.engine_forces[k] = car.engine_force[k];
     o.throttle = e->throttle_position;
     if (car.spec.kind == car_electric) {
         o.panto = car.eng_e()->panto;

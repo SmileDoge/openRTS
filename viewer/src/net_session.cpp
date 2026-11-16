@@ -4,7 +4,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
+
+#include <zlib.h>
+
+#include <openrts/dllhost/protocol.hpp>
 
 #include <openrts/net/packages.hpp>
 #include <openrts/net/play.hpp>
@@ -15,6 +21,38 @@
 #include "train_view.hpp"
 
 namespace openrts::viewer {
+
+namespace {
+
+std::optional<std::string> environment(const char* name) {
+#ifdef _WIN32
+    char* value = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) return std::nullopt;
+    std::string text(value);
+    std::free(value);
+    return text;
+#else
+    const char* value = std::getenv(name);
+    return value ? std::optional<std::string>(value) : std::nullopt;
+#endif
+}
+
+// OPENRTS_MP_HELP_SWITCH=<id>:<state>.
+std::optional<std::pair<std::uint32_t, std::uint32_t>> test_switch() {
+    static const auto value = [] () -> std::optional<std::pair<std::uint32_t, std::uint32_t>> {
+        const auto text = environment("OPENRTS_MP_HELP_SWITCH");
+        if (!text) return std::nullopt;
+        const auto colon = text->find(':');
+        if (colon == std::string::npos) return std::nullopt;
+        return std::pair{static_cast<std::uint32_t>(std::stoul(text->substr(0, colon))),
+                         static_cast<std::uint32_t>(std::stoul(text->substr(colon + 1)))};
+    }();
+    return value;
+}
+
+} // namespace
+
 
 namespace {
 
@@ -277,6 +315,12 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
     // (the server and its consoles kept the other train and dropped every
     // position of ours with the cars taken in; testers 2026-11-15).
     send_couplings(trains);
+    // openRTS's own packages go to an openRTS server only: it answers this
+    // (rts_server.exe leaves an id it does not know to its main thread).
+    if (connection_ && !hello_sent_ && !console_) {
+        hello_sent_ = true;
+        connection_->send(net::id(net::Package::openrts_hello), net::encode_openrts_hello());
+    }
     if (connection_) {
         for (const auto& package : connection_->receive()) {
             ++received_[package.id];
@@ -284,6 +328,7 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
         }
     }
     move_trains(network, trains, t);
+    helper_streams(trains, t);
     if (!paused_) send_own(trains, t);
     // What our electric trains drew, to the dispatchers (0x4649, every 2 s
     // window, as rts1.exe 0x5B6030).
@@ -637,9 +682,260 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         if (!down_) std::cout << "net: the server is gone" << std::endl;
         down_ = true;
         return;
+    case P(net::Package::openrts_hello):
+        if (!openrts_server_) std::cout << "net: the server is openRTS's: players and helpers" << std::endl;
+        openrts_server_ = true;
+        return;
+    case P(net::Package::player_pos):
+        if (auto other = net::decode_other_player(body)) {
+            auto& p = players_[other->user];
+            p.user = other->user;
+            p.nick = net::to_utf8(other->nick);
+            p.train = other->train;
+            p.at = {.tile_x = other->tile_x, .tile_z = other->tile_z, .x = other->x, .y = other->y, .z = other->z};
+            p.heard = now;
+        }
+        return;
+    case P(net::Package::helper):
+        if (const auto note = net::decode_helper_note(body)) helper_note(*note, trains);
+        return;
+    case P(net::Package::helper_cab): {
+        // The engineer's cab, for us his helper.
+        const auto cab = net::decode_helper_cab(body);
+        if (!cab || !help_ || help_->state != net::HelperState::helping || cab->train != help_->train || !helping_view_) return;
+        if (cab->packed.size() < 4) return;
+        std::uint32_t size{};
+        std::memcpy(&size, cab->packed.data(), 4);
+        if (size == 0 || size > (8u << 20)) return;
+        std::vector<std::uint8_t> raw(size);
+        uLongf length = size;
+        if (uncompress(raw.data(), &length, cab->packed.data() + 4, static_cast<uLong>(cab->packed.size() - 4)) != Z_OK || length != size)
+            return;
+        dllhost::Reader r(raw.data(), size);
+        dllhost::CarOutput out;
+        dllhost::read(r, out);
+        if (r.failed()) return;
+        auto& seen = cab_seen_[cab->car];
+        const auto tested = test_switch();
+        const std::uint32_t state = tested && tested->first < out.switches.size() ? out.switches[tested->first].state : 0xFFFFFFFFu;
+        if (seen.first++ == 0) {
+            std::cout << "net: the engineer's cab of car " << cab->car + 1 << " came: " << out.switches.size() << " switches, "
+                      << out.displays.size() << " displays, " << out.screens.size() << " screens, " << cab->packed.size() << " bytes packed"
+                      << std::endl;
+        } else if (seen.first % 100 == 0) {
+            std::cout << "net: the engineer's cab of car " << cab->car + 1 << ": " << seen.first << " packages" << std::endl;
+        }
+        if (seen.first > 1 && tested && state != seen.second) {
+            std::cout << "net: the engineer's cab of car " << cab->car + 1 << ": switch " << tested->first << " is at " << state << " now"
+                      << std::endl;
+        }
+        seen.second = state;
+        trains.set_helper_output(cab->car, std::move(out));
+        if (tested && !test_switched_ && seen.first >= 10) {
+            test_switched_ = true;
+            std::cout << "net: test: the helper's hand puts switch " << tested->first << " at " << tested->second << std::endl;
+            trains.helper_set_switch(tested->first, tested->second);
+        }
+        return;
+    }
+    case P(net::Package::helper_input): {
+        // A helper's hand on our cab.
+        const auto input = net::decode_helper_input(body);
+        if (!input || helpers_.empty()) return;
+        const auto own = owned_.find(input->train);
+        if (own == owned_.end() || own->second.train == 0 || trains.train() == nullptr ||
+            trains.train()->id() != own->second.train)
+            return;
+        switch (input->kind) {
+        case net::HelperInputKind::watch:
+            if (input->car != 0xFFFFFFFFu) {
+                if (!cab_watched_.contains(input->car)) std::cout << "net: a helper is in car " << input->car + 1 << ": its cab goes to him" << std::endl;
+                cab_watched_[input->car] = now + 3.0;
+            }
+            return;
+        case net::HelperInputKind::operate:
+            std::cout << "net: the helper's hand: car " << input->car + 1 << ", switch " << input->id << " to " << input->state << ": "
+                      << trains.helper_hand({.kind = TrainView::HelperHand::Kind::operate, .car = input->car, .id = input->id, .state = input->state})
+                      << std::endl;
+            return;
+        case net::HelperInputKind::drag:
+            (void)trains.helper_hand({.kind = TrainView::HelperHand::Kind::drag, .car = input->car, .id = input->id, .delta = input->delta,
+                                .release = input->release});
+            return;
+        }
+        return;
+    }
     default:
         ++not_handled_[package.id];
         return;
+    }
+}
+
+std::string NetSession::train_label(const std::uint32_t server_train) const {
+    if (const auto it = remotes_.find(server_train); it != remotes_.end()) return net::train_name(it->second.record);
+    if (const auto it = owned_.find(server_train); it != owned_.end()) return net::train_name(it->second.record);
+    return std::to_string(server_train);
+}
+
+std::vector<NetSession::Player> NetSession::players() const {
+    std::vector<Player> out;
+    const double t = now();
+    for (const auto& [_, p] : players_) {
+        if (t - p.heard <= 20.0) out.push_back(p);
+    }
+    return out;
+}
+
+void NetSession::ask_to_help(const std::uint32_t server_train) {
+    if (!connection_ || !openrts_server_ || server_train == 0) return;
+    connection_->send(net::id(net::Package::helper), net::encode_helper_note({.kind = net::HelperKind::ask, .train = server_train}));
+}
+
+void NetSession::stop_helping() {
+    if (!connection_ || !help_) return;
+    connection_->send(net::id(net::Package::helper), net::encode_helper_note({.kind = net::HelperKind::ask, .train = 0}));
+}
+
+void NetSession::answer(const std::uint32_t user, const bool take) {
+    const auto it = std::find_if(asking_.begin(), asking_.end(), [&](const Helper& h) { return h.user == user; });
+    if (it == asking_.end() || !connection_) return;
+    connection_->send(net::id(net::Package::helper),
+                      net::encode_helper_note({.kind = net::HelperKind::answer, .train = it->train, .user = user, .value = take ? 1u : 0u}));
+    asking_.erase(it);
+}
+
+void NetSession::drop_helper(const std::uint32_t user) {
+    const auto it = std::find_if(helpers_.begin(), helpers_.end(), [&](const Helper& h) { return h.user == user; });
+    if (it == helpers_.end() || !connection_) return;
+    connection_->send(net::id(net::Package::helper),
+                      net::encode_helper_note({.kind = net::HelperKind::drop, .train = it->train, .user = user}));
+}
+
+void NetSession::helper_note(const net::HelperNote& note, TrainView& trains) {
+    using net::HelperKind;
+    using net::HelperState;
+    const auto nick = net::to_utf8(note.nick);
+    switch (note.kind) {
+    case HelperKind::asked:
+        // A player asks to help us.
+        std::erase_if(asking_, [&](const Helper& h) { return h.user == note.user; });
+        asking_.push_back({.user = note.user, .train = note.train, .nick = nick});
+        std::cout << "net: " << nick << " asks to be the helper on train " << note.train << std::endl;
+        if (environment("OPENRTS_MP_TAKE_HELPERS")) answer(note.user, true);
+        return;
+    case HelperKind::helper:
+        std::erase_if(asking_, [&](const Helper& h) { return h.user == note.user; });
+        std::erase_if(helpers_, [&](const Helper& h) { return h.user == note.user; });
+        if (note.value != 0) helpers_.push_back({.user = note.user, .train = note.train, .nick = nick});
+        std::cout << "net: " << nick << (note.value != 0 ? " helps on train " : " helps no more on train ") << note.train << std::endl;
+        if (helpers_.empty()) {
+            cab_sent_.clear();
+            cab_watched_.clear();
+        }
+        return;
+    case HelperKind::helping: {
+        const auto state = static_cast<HelperState>(note.value);
+        help_ = Help{.train = note.train, .engineer = note.user, .nick = nick, .state = state};
+        std::cout << "net: help on train " << note.train << " (" << nick << "): "
+                  << (state == HelperState::waiting   ? "asked"
+                      : state == HelperState::helping ? "helping"
+                      : state == HelperState::refused ? "refused"
+                      : state == HelperState::cannot  ? "not possible"
+                                                      : "ended")
+                  << std::endl;
+        if (state == HelperState::helping) {
+            const auto view = view_train(note.train);
+            const auto problem = view ? trains.help(view) : std::string("the train is not here");
+            helping_view_ = problem.empty();
+            if (!problem.empty()) std::cout << "net: cannot help here: " << problem << std::endl;
+        } else if (helping_view_) {
+            helping_view_ = false;
+            trains.stop_helping();
+        }
+        return;
+    }
+    default:
+        return;
+    }
+}
+
+void NetSession::helper_streams(TrainView& trains, const double t) {
+    if (!connection_ || paused_) return;
+    if (!test_asked_ && openrts_server_) {
+        static const auto nick = environment("OPENRTS_MP_HELP");
+        if (!nick) {
+            test_asked_ = true;
+        } else {
+            for (const auto& p : players()) {
+                if (p.nick != *nick || p.train == 0) continue;
+                test_asked_ = true;
+                std::cout << "net: test: asking " << p.nick << " to take us as the helper on train " << p.train << std::endl;
+                ask_to_help(p.train);
+            }
+        }
+    }
+    // The helper: where he is, and what his hands did.
+    if (helping_view_ && help_ && trains.helping() != 0) {
+        for (const auto& hand : trains.take_helper_hands()) {
+            net::HelperInput input{.train = help_->train, .car = static_cast<std::uint32_t>(hand.car), .id = hand.id, .state = hand.state,
+                                   .delta = hand.delta, .release = hand.release};
+            input.kind = hand.kind == TrainView::HelperHand::Kind::operate ? net::HelperInputKind::operate : net::HelperInputKind::drag;
+            connection_->send(net::id(net::Package::helper_input), net::encode_helper_input(input));
+        }
+        if (t >= watch_due_) {
+            watch_due_ = t + 1.0;
+            const auto car = trains.helper_car();
+            net::HelperInput input{.kind = net::HelperInputKind::watch, .train = help_->train,
+                                   .car = car == SIZE_MAX ? 0xFFFFFFFFu : static_cast<std::uint32_t>(car)};
+            connection_->send(net::id(net::Package::helper_input), net::encode_helper_input(input));
+        }
+    } else if (helping_view_ && trains.helping() == 0) {
+        // He left the train here (drove one of his own): the help ends.
+        helping_view_ = false;
+        stop_helping();
+    }
+    // The engineer: the cabs his helpers are in, ten times a second while
+    // they change, every second anyway.
+    if (helpers_.empty() || t < cab_due_) return;
+    cab_due_ = t + 0.1;
+    const auto driven = driven_id(trains);
+    if (driven == 0) return;
+    bool helped = false;
+    for (const auto& h : helpers_) helped = helped || h.train == driven;
+    if (!helped) return;
+    std::erase_if(cab_watched_, [&](const auto& entry) {
+        if (entry.second >= t) return false;
+        std::cout << "net: no helper in car " << entry.first + 1 << " now" << std::endl;
+        return true;
+    });
+    static std::vector<std::uint8_t> buffer(4u << 20);
+    for (const auto& [car, _] : cab_watched_) {
+        const auto out = trains.helper_output(car);
+        if (!out) continue;
+        if (const auto tested = test_switch(); tested && tested->first < out->switches.size()) {
+            static std::uint32_t last = 0xFFFFFFFFu;
+            const auto& sw = out->switches[tested->first];
+            if (sw.state != last) std::cout << "net: test: our cab's switch " << tested->first << " is at " << sw.state << " (set " << sw.set_state << ")" << std::endl;
+            last = sw.state;
+        }
+        dllhost::Writer w(buffer.data(), static_cast<std::uint32_t>(buffer.size()));
+        dllhost::write(w, *out);
+        if (w.overflow()) continue;
+        net::Bytes packed(4 + compressBound(w.size()));
+        const std::uint32_t size = w.size();
+        std::memcpy(packed.data(), &size, 4);
+        uLongf length = static_cast<uLongf>(packed.size() - 4);
+        if (compress2(packed.data() + 4, &length, buffer.data(), size, Z_BEST_SPEED) != Z_OK) continue;
+        packed.resize(4 + length);
+        auto& sent = cab_sent_[car];
+        if (sent.packed == packed && t - sent.at < 1.0 && out->sound_cab.empty()) continue;
+        // The server takes packages up to 0x3C00 bytes.
+        if (packed.size() > 0x3B00) {
+            std::cout << "net: the cab of car " << car + 1 << " is too big for a package (" << packed.size() << " bytes)" << std::endl;
+            continue;
+        }
+        sent = {packed, t};
+        connection_->send(net::id(net::Package::helper_cab), net::encode_helper_cab({.train = driven, .car = car, .packed = std::move(packed)}));
     }
 }
 

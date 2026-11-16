@@ -136,7 +136,7 @@ std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::ve
 
 void LegacyCab::bind_keys(const std::size_t car) {
     bindings_.clear();
-    const auto* sd = consist_ ? consist_->cab(car) : nullptr;
+    const auto* sd = cab_of(car);
     if (!sd) return;
     for (const auto& s : sd->switches) {
         for (std::size_t k = 0; k < s.keys.size() && k < 2; ++k) {
@@ -304,18 +304,79 @@ void LegacyCab::step(const simulation::Train& train, std::vector<std::vector<std
     log(consist_->take_messages());
 }
 
+const dllhost::CarOutput* LegacyCab::out_of(const std::size_t car) const {
+    if (remote_) return remote_->output ? remote_->output(car) : nullptr;
+    return consist_ ? consist_->output(car) : nullptr;
+}
+
+const formats::CabDescription* LegacyCab::cab_of(const std::size_t car) const {
+    if (remote_) return remote_->cab ? remote_->cab(car) : nullptr;
+    return consist_ ? consist_->cab(car) : nullptr;
+}
+
+void LegacyCab::apply_operate(const std::size_t car, const std::uint32_t id, const std::uint32_t state) {
+    if (remote_) {
+        if (remote_->operate) remote_->operate(car, id, state);
+        return;
+    }
+    if (consist_) consist_->operate(car, id, state);
+}
+
+void LegacyCab::apply_drag(const std::size_t car, const std::uint32_t id, const float delta, const bool release) {
+    if (remote_) {
+        if (remote_->drag) remote_->drag(car, id, delta, release);
+        return;
+    }
+    if (consist_) consist_->drag(car, id, delta, release);
+}
+
+void LegacyCab::take_log() {
+    if (consist_) log(consist_->take_messages());
+}
+
+std::unique_ptr<LegacyCab> LegacyCab::remote(Remote target, const std::size_t player) {
+    std::unique_ptr<LegacyCab> cab(new LegacyCab());
+    cab->remote_ = std::move(target);
+    cab->remote_player_ = player;
+    cab->bind_keys(player);
+    return cab;
+}
+
+void LegacyCab::set_remote_player(const std::size_t car) {
+    if (!remote_ || car == remote_player_) return;
+    release_keys();
+    held_.reset();
+    drag_.reset();
+    remote_player_ = car;
+    bind_keys(car);
+}
+
+bool LegacyCab::operate_switch(const std::size_t car, const std::uint32_t id, const std::uint32_t state) {
+    if (!consist_) return false;
+    const bool done = consist_->operate(car, id, state);
+    take_log();
+    return done;
+}
+
+void LegacyCab::drag_switch(const std::size_t car, const std::uint32_t id, const float delta, const bool release) {
+    if (!consist_) return;
+    consist_->drag(car, id, delta, release);
+    take_log();
+}
+
 std::size_t LegacyCab::car_or_player(const std::size_t car) const {
-    return car == SIZE_MAX && consist_ ? consist_->player() : car;
+    return car == SIZE_MAX ? player() : car;
 }
 
 bool LegacyCab::has_cab(const std::size_t car) const {
+    if (remote_) return cab_of(car) && out_of(car);
     return consist_ && consist_->cab(car) && consist_->output(car) && consist_->has_dll(car);
 }
 
 std::uint32_t LegacyCab::next_state(std::uint32_t id, int direction, bool shift, std::size_t car) {
     car = car_or_player(car);
-    const auto* out = consist_->output(car);
-    const auto* sd = consist_->cab(car);
+    const auto* out = out_of(car);
+    const auto* sd = cab_of(car);
     const auto* spec = sd ? sd->find_switch(id) : nullptr;
     if (!out || id >= out->switches.size() || !spec) return 0;
     const auto& sw = out->switches[id];
@@ -352,9 +413,9 @@ std::uint32_t LegacyCab::next_state(std::uint32_t id, int direction, bool shift,
 }
 
 void LegacyCab::click(const std::uint32_t id, const int direction, const bool shift, std::size_t car) {
-    if (!consist_) return;
+    if (!working()) return;
     car = car_or_player(car);
-    const auto* out = consist_->output(car);
+    const auto* out = out_of(car);
     if (!out || id >= out->switches.size()) return;
     const auto& sw = out->switches[id];
     // RTS 0x4121BC: a button (NONFIXED, not a lever you drag) goes one step
@@ -374,9 +435,9 @@ void LegacyCab::click(const std::uint32_t id, const int direction, const bool sh
 }
 
 bool LegacyCab::grab(const std::uint32_t id, const float frames_per_state, std::size_t car) {
-    if (!consist_) return false;
+    if (!working()) return false;
     car = car_or_player(car);
-    const auto* sd = consist_->cab(car);
+    const auto* sd = cab_of(car);
     const auto* spec = sd ? sd->find_switch(id) : nullptr;
     if (!spec || (spec->flags & (formats::cab_controller_x | formats::cab_controller_y)) == 0
         || (spec->flags & formats::cab_disabled) != 0)
@@ -391,12 +452,12 @@ bool LegacyCab::grab(const std::uint32_t id, const float frames_per_state, std::
 }
 
 void LegacyCab::drag(const float dx, const float dy, const bool shift) {
-    if (!drag_ || !consist_) return;
+    if (!drag_ || !working()) return;
     const auto d = *drag_;
     if (d.frames_per_state > 0.0f) {
         const float delta = (dx * d.precision[0] + dy * d.precision[1]) / d.frames_per_state;
-        if (delta != 0.0f) consist_->drag(d.car, d.id, delta, false);
-        log(consist_->take_messages());
+        if (delta != 0.0f) apply_drag(d.car, d.id, delta, false);
+        take_log();
         return;
     }
     // One step in the move's direction, then the hold ends (CONTROLLERX
@@ -416,23 +477,23 @@ void LegacyCab::drag(const float dx, const float dy, const bool shift) {
 
 void LegacyCab::drag_end() {
     const auto d = std::exchange(drag_, std::nullopt);
-    if (!d || !consist_) return;
-    if (d->frames_per_state > 0.0f) consist_->drag(d->car, d->id, 0.0f, true);
+    if (!d || !working()) return;
+    if (d->frames_per_state > 0.0f) apply_drag(d->car, d->id, 0.0f, true);
     // A NONFIXED switch goes back to its FixedState (0x4121BC).
     if ((d->flags & formats::cab_non_fixed) != 0) {
-        if (const auto* out = consist_->output(d->car); out && d->id < out->switches.size()) {
+        if (const auto* out = out_of(d->car); out && d->id < out->switches.size()) {
             const auto rest = out->switches[d->id].fixed_state;
             if (out->switches[d->id].set_state != rest) operate(d->id, rest, d->car);
         }
     }
-    log(consist_->take_messages());
+    take_log();
 }
 
 void LegacyCab::release() {
     const auto held = std::exchange(held_, std::nullopt);
-    if (!held || !consist_) return;
+    if (!held || !working()) return;
     const auto [car, id] = *held;
-    const auto* out = consist_->output(car);
+    const auto* out = out_of(car);
     if (!out || id >= out->switches.size()) return;
     // Back to the rest position (RTS: FixedState, then SetState is forced there).
     const auto rest = out->switches[id].fixed_state;
@@ -440,18 +501,17 @@ void LegacyCab::release() {
 }
 
 void LegacyCab::operate(std::uint32_t id, std::uint32_t state, std::size_t car) {
-    if (!consist_) return;
-    if (!consist_->operate(car_or_player(car), id, state)) {
-        // A refusal is the DLL's normal answer (an interlock); nothing to log.
-    }
-    log(consist_->take_messages());
+    if (!working()) return;
+    // A refusal is the DLL's normal answer (an interlock); nothing to log.
+    apply_operate(car_or_player(car), id, state);
+    take_log();
 }
 
 void LegacyCab::release_keys() {
-    if (!consist_) return;
-    const auto car = consist_->player();
-    const auto* out = consist_->output(car);
-    const auto* sd = consist_->cab(car);
+    if (!working()) return;
+    const auto car = player();
+    const auto* out = out_of(car);
+    const auto* sd = cab_of(car);
     if (!out || !sd) return;
     for (const auto& b : bindings_) {
         const auto* spec = sd->find_switch(b.id);
@@ -459,7 +519,7 @@ void LegacyCab::release_keys() {
         const auto& sw = out->switches[b.id];
         if (sw.set_state != sw.fixed_state) operate(b.id, sw.fixed_state);
     }
-    log(consist_->take_messages());
+    take_log();
 }
 
 bool key_reaches(const formats::CabSwitch& control, const std::optional<glm::vec3>& eye) {
@@ -469,14 +529,14 @@ bool key_reaches(const formats::CabSwitch& control, const std::optional<glm::vec
 }
 
 void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) {
-    if (!consist_ || !keyboard()) return;
-    const auto* out = consist_->output(consist_->player());
+    if (!working() || !keyboard()) return;
+    const auto* out = out_of(player());
     for (const auto& b : bindings_) {
         if (b.key != event.key || b.shift != event.shift || b.ctrl != event.ctrl) {
             // A release counts whatever the modifiers are now.
             if (event.down || b.key != event.key) continue;
         }
-        const auto* sd = consist_->cab(consist_->player());
+        const auto* sd = cab_of(player());
         const auto* spec = sd ? sd->find_switch(b.id) : nullptr;
         if (!spec || !out || b.id >= out->switches.size()) continue;
         const bool non_fixed = (spec->flags & formats::cab_non_fixed) != 0;

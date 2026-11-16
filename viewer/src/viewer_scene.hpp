@@ -22,6 +22,7 @@
 #include <openrts/net/snapshot.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/rts_sky.hpp>
+#include <openrts/renderer/light_shafts.hpp>
 #include <openrts/renderer/scene_effects.hpp>
 
 #include "key_repeat.hpp"
@@ -137,6 +138,7 @@ struct SceneInput {
     bool car_info_shift = false;  // Shift held with F5: the train as a whole
     bool limits_panel = false;    // Ctrl+F5: speed limits and the kilometre
     bool stations_panel = false;  // F6: the stations ahead
+    bool drive_panel = false;     // F4: the driver's summary (openRTS)
     bool car_view = false;        // F3: orbit the train's first car, then its last, then back
     bool signal_names = false;    // Ctrl+F7: signal names near the camera
     bool activity_journal = false; // F11 (RTS): the scenario's messages
@@ -311,6 +313,9 @@ public:
     // What the shadows look at most closely this frame (after submit): the
     // cab the engineer is in.
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> shadow_focus() const { return std::nullopt; }
+    // The room the engineer is in (the cab's or salon's box), for the light
+    // shafts' dust (renderer/light_shafts.hpp).
+    [[nodiscard]] virtual std::optional<renderer::LightShaftRoom> light_shaft_room() const { return std::nullopt; }
     // In flight: the sphere the lamps' shadows cover, where the camera looks
     // (nullopt: the shadow focus, or around the view).
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> lamp_shadow_focus(const ViewerCamera&) const { return std::nullopt; }

@@ -36,6 +36,7 @@ enum class GpuPass : std::uint8_t {
     depth_copy,      // for ReShade
     bloom_sources,   // the lights drawn for the bloom
     bloom,           // its first step down (the costliest of its passes)
+    light_shafts,    // the sun's beams marched (LightShaftRenderer)
     tone,            // HDR to the screen
     overlay,         // the panels over HDR
     reflection_probe, // the sky the water reflects, six faces

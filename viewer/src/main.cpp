@@ -195,6 +195,9 @@ std::optional<openrts::net::Bytes> wait_for_world(openrts::net::RtsConnection& c
     } else {
         std::cout << "net: waiting for a train: assign one to " << nick << " on the dispatcher console" << std::endl;
         report_status("waiting " + route);
+        // An openRTS server answers it and lets an openRTS player in without
+        // a train (docs/net.md, "Players and helpers"); rts_server.exe leaves it.
+        connection.send(net::id(net::Package::openrts_hello), net::encode_openrts_hello());
     }
 
     bool collecting = false;
@@ -211,6 +214,14 @@ std::optional<openrts::net::Bytes> wait_for_world(openrts::net::RtsConnection& c
                 std::cerr << "Server " << address << " closed the connection" << std::endl;
                 report_status("closed");
                 return std::nullopt;
+            }
+            if (!asked && package.id == net::id(net::Package::openrts_hello)) {
+                std::cout << "net: an openRTS server: into the world without a train (the dispatcher may give one, a player may take you as his helper)"
+                          << std::endl;
+                report_status("loading");
+                connection.send(net::id(net::Package::snapshot), {});
+                asked = true;
+                continue;
             }
             if (!asked) {
                 const auto assign = package.id == net::id(net::Package::train_assign)

@@ -96,6 +96,9 @@ struct UserSummary {
     // The last 0x462D place: the camera's (tile and the place in it), and
     // how far it is from the user's trains; empty none.
     std::string where;
+    bool openrts = false;     // an openRTS player (said openrts_hello)
+    std::uint32_t helping{};  // the train he helps on (помощник машиниста), 0 none
+    std::uint32_t asking{};   // the train he asked to help on, its engineer not yet answering
 };
 
 class GameServer {
@@ -141,6 +144,10 @@ public:
     // manual state), or gives them back to their scripts (nothing).
     bool set_signal(std::uint32_t item, std::optional<formats::SignalAspect> aspect, std::string& error);
     bool kick(std::string_view nick, std::string& error);
+    // The dispatcher makes a player another's helper (помощник машиниста) on
+    // `train`, as RTS's dispatcher assigns helpers; nothing: he helps no
+    // more. Both are openRTS players (docs/server.md, "Helpers").
+    bool set_helper(std::string_view nick, std::optional<std::uint32_t> train, std::string& error);
     // A train's route, as the console assembles one: from the train's front
     // (else its rear, when it runs rear first) through each stop in turn,
     // the shortest way; a stop is the TDB signal items it may be (one name
@@ -184,6 +191,14 @@ private:
     bool couple_trains(std::uint32_t a, std::uint32_t b, std::uint8_t end_a, std::uint8_t end_b, std::uint32_t sender);
     std::optional<std::uint32_t> cut_train(std::uint32_t train, std::uint32_t car, std::uint8_t side, std::uint32_t local_part,
                                            std::uint32_t sender);
+    // Helpers (openRTS's own packages, to openRTS players only).
+    void send_helper(const User& user, const net::HelperNote& note);
+    // `helper` asks or helps no more: he and the engineer are told.
+    void end_helping(User& helper, net::HelperState why);
+    // He helps on `train` now: he and its engineer are told.
+    void start_helping(User& helper, std::uint32_t train);
+    // A helper's train gone or given to another: his help ends.
+    void check_helpers();
     std::unique_ptr<Impl> impl_;
     Transport& transport_;
     ServerOptions options_;

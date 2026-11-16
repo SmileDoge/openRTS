@@ -63,6 +63,16 @@ public:
     };
     [[nodiscard]] std::optional<Hit> ray(const glm::vec3& origin, const glm::vec3& direction, float reach,
                                          const std::vector<std::uint8_t>& skip) const;
+    // The ray against `nodes` only (a node of `rig` and what hangs on it),
+    // that node posed at `frame` of the shape's animation: an open door
+    // where it is drawn. The surfaces are read in the rest pose, so the ray
+    // goes back into it.
+    // What takes a node's rest-pose surfaces (and its children's) to where
+    // they are drawn at `frame`, in shape coordinates.
+    [[nodiscard]] static glm::mat4 pose_of(const formats::ShapeModel& rig, std::int32_t node, float frame);
+    [[nodiscard]] std::optional<Hit> ray_posed(const formats::ShapeModel& rig, std::int32_t node, float frame,
+                                               const std::vector<std::int32_t>& nodes, const glm::vec3& origin,
+                                               const glm::vec3& direction, float reach) const;
     // The box around each node's own surfaces, by matrix index (lower > upper: none).
     void node_bounds(std::size_t nodes, std::vector<glm::vec3>& lower, std::vector<glm::vec3>& upper) const;
 
@@ -230,6 +240,17 @@ public:
         float distance{};
     };
     [[nodiscard]] std::optional<Picked> pick(const glm::vec3& origin, const glm::vec3& direction, float reach) const;
+    // The door (a node of its own) the ray meets before any other surface,
+    // within `reach`, as it is drawn now (openRTS: a click opens or shuts
+    // it; RTS works doors with Enter only).
+    struct DoorPicked {
+        std::size_t door{}; // in description().doors
+        float distance{};
+    };
+    [[nodiscard]] std::optional<DoorPicked> pick_door(const glm::vec3& origin, const glm::vec3& direction, float reach) const;
+    // OPENRTS_DOOR_PICK: from `eye` (the chair's seat and 0.75 m) at the middle of each door's own
+    // surfaces as drawn now, what pick_door() finds (a line a door).
+    [[nodiscard]] std::string door_pick_report(const glm::vec3& eye) const;
 
 private:
     struct Bound {

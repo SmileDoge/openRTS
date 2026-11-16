@@ -1,4 +1,4 @@
-#include "viewer_scene.hpp"
+﻿#include "viewer_scene.hpp"
 
 #include <openrts/core/profile.hpp>
 #include "rts_config.hpp"
@@ -46,6 +46,7 @@
 #include <openrts/simulation/alsn.hpp>
 
 #include "track_view.hpp"
+#include "players_panel.hpp"
 #include "crossing_view.hpp"
 #include "particle_effects.hpp"
 #include "road_traffic.hpp"
@@ -678,12 +679,17 @@ public:
             if (input.tape_which) train_->tape_which();
             if (input.limits_panel) train_->toggle_limits_panel();
             if (input.stations_panel) train_->toggle_stations_panel();
+            if (input.drive_panel) train_->toggle_drive_panel();
             if (input.activity_journal && activity_) activity_->toggle_journal();
             if (input.activity_menu && activity_) activity_->toggle_menu();
             if (input.car_view) train_->car_view_key(camera);
         }
         if (train_) {
             train_->set_signals(signals_ ? signals_->system() : nullptr);
+            if (signals_ && !signal_names_set_) {
+                signal_names_set_ = true;
+                train_->set_signal_names([this](const std::uint32_t object) { return signals_ ? signals_->object_name(object) : std::string{}; });
+            }
             train_->set_obstacles(streamer_ ? &streamer_->visible_instances() : nullptr);
             train_->set_world_clock(clock.time_of_day, sky_state_ && sky_state_->night);
             train_->set_world_light(sky_state_ ? sky_state_->world_lit : 1.0f, static_cast<std::uint8_t>(clock.weather),
@@ -1211,8 +1217,10 @@ public:
             presence.details = tr("Loading");
         } else if (content_.console()) {
             presence.details = tr("At the dispatcher's console");
-        } else if (train_ && train_->walking()) {
+        } else if (train_ && train_->on_foot()) {
             presence.details = tr("On foot");
+        } else if (train_ && train_->in_passenger_seat()) {
+            presence.details = tr("Rides as a passenger");
         } else if (!engine.empty()) {
             presence.details = trf("Drives %s", engine.c_str());
         } else {
@@ -1293,6 +1301,9 @@ public:
     [[nodiscard]] std::string timetable_report() const override { return train_ ? train_->timetable_report() : std::string(); }
     [[nodiscard]] std::optional<renderer::ShadowFocus> shadow_focus() const override {
         return train_ ? train_->cab_shadow_focus() : std::nullopt;
+    }
+    [[nodiscard]] std::optional<renderer::LightShaftRoom> light_shaft_room() const override {
+        return train_ ? train_->light_shaft_room() : std::nullopt;
     }
     // In flight the lamps' shadows go where the camera looks: along the view
     // to the ground (up to 200 m; looking up or level, 40 m), the sphere over
@@ -1396,6 +1407,12 @@ public:
             track_control_->draw(*train_, signals_ ? signals_->system() : nullptr);
         }
         if (net_ && net_->console() && train_) console_panel_.draw(*net_, *train_, track_control_.get(), *content_.vfs());
+        if (net_ && !net_->console() && train_) {
+            if (draw_players_section(*net_, *train_, camera.eye(), origin_, player_names_)) {
+                remember("player_names", player_names_ ? "1" : "0");
+            }
+            draw_helper_windows(*net_);
+        }
         {
             // The tape window: the file rolling now, and the RTS installation's tapes.
             static const std::filesystem::path none;
@@ -1894,6 +1911,8 @@ private:
         if (place_names_ && track_) track_->collect_places(labels, lines, last_eye_, 2000.0f);
         if (place_names_ && train_) train_->collect_car_numbers(labels, last_eye_, 60.0f);
         if (train_) train_->collect_cab_labels(labels, last_eye_, cab_labels_);
+        // The other players of a network game, where their cameras are.
+        if (net_ && !net_->console() && player_names_) collect_player_labels(*net_, labels, last_eye_, origin_, 3000.0f);
         draw_world_lines(lines);
         draw_world_labels(std::move(labels));
     }
@@ -2040,6 +2059,9 @@ private:
     mutable bool signal_names_ = false; // Ctrl+F7
     mutable bool place_names_ = false;  // F7
     mutable bool track_profile_ = false; // Shift+F7
+    bool signal_names_set_ = false;     // the F4 panel has the signals' names
+    // The other players' names over the world (a network game).
+    mutable bool player_names_ = remembered("player_names").value_or("1") != "0";
     mutable bool cab_labels_ = false;   // Alt held in the 3-D cab
     std::unique_ptr<SignalView> signals_;
     std::unique_ptr<simulation::AlsnSystem> alsn_; // the codes along the route

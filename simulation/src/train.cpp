@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include <openrts/formats/track_database.hpp>
 #include <openrts/formats/track_sections.hpp>
@@ -574,6 +575,34 @@ void Train::set_brake_shoes(const std::size_t car, const std::array<formats::Bra
     asleep_ = false;
 }
 
+namespace {
+
+// A bogie's wheel sets slide locked for `metres`: their flat deepens (the
+// heavier the axle, the faster); a new one stands somewhere on the wheel.
+void grow_flat(CarState& car, const std::size_t bogie, const double metres, const std::size_t index) {
+    if (!car.definition || metres <= 0.0) return;
+    const float axle_tonnes = mass_of(car) * 0.001f / 4.0f;
+    const float before = car.flat[bogie];
+    car.flat[bogie] = (std::min)(flat_deepest, before + flat_per_metre * static_cast<float>(metres) * std::sqrt((std::max)(axle_tonnes, 1.0f) / 20.0f));
+    if (before == 0.0f) {
+        const double seed = car.rolled[bogie] * 0.37 + static_cast<double>(index) * 0.618 + static_cast<double>(bogie) * 0.5;
+        car.flat_phase[bogie][0] = static_cast<float>(seed - std::floor(seed));
+        car.flat_phase[bogie][1] = static_cast<float>(std::fmod(car.flat_phase[bogie][0] + 0.41, 1.0));
+    }
+}
+
+} // namespace
+
+void Train::set_wheel_flat(const std::size_t car, const std::size_t bogie, const float mm) {
+    if (car >= cars_.size() || bogie > 1) return;
+    auto& state = cars_[car];
+    state.flat[bogie] = 0.0f;
+    if (mm > 0.0f) {
+        grow_flat(state, bogie, 0.001, car);
+        state.flat[bogie] = (std::min)(mm, flat_deepest);
+    }
+}
+
 void Train::replace_brake_shoes(const std::size_t car, const std::size_t bogie) {
     if (car >= cars_.size() || bogie > 1) return;
     auto& state = cars_[car].shoe_state[bogie];
@@ -666,6 +695,7 @@ void Train::reverse_cars() {
         car.pitch = -car.pitch;
         car.coupler_force = 0.0f;
         car.travelled = -car.travelled;
+        car.rolled = {-car.rolled[0], -car.rolled[1]};
         std::swap(car.bogie_ahead, car.bogie_behind);
         car.body[2] = -car.body[2];
         car.body_rate[2] = -car.body_rate[2];
@@ -758,7 +788,7 @@ void Train::add_velocity(const float change) {
 void Train::shift(const double metres) {
     if (!network_ || !impl_->head || metres == 0.0) return;
     // The cars roll the way they are moved: their wheels turn.
-    for (auto& car : cars_) car.travelled += metres;
+    for (auto& car : cars_) car.run(metres);
     move_and_update(metres, metres);
 }
 
@@ -1017,10 +1047,11 @@ void Train::step_kinematic() {
         car.brake_force = 0.0f;
         car.coupler_force = 0.0f;
         car.resistance = 0.0f;
-        car.wheelslip = false;
+        car.wheelslip = 0;
+        car.slip_ratio = {};
         car.sanding = false;
         car.power = 0.0f;
-        car.travelled += after * train_step;
+        car.run(after * train_step);
     }
     const double moved = after * train_step;
     move_and_update(moved, moved);
@@ -1044,6 +1075,9 @@ void Train::step() {
         car.ep = -1.0f;
         auto& demands = impl.demands[i];
         demands = {};
+        // The slip found last step (RTS: Engine::Wheelslip as the DLL left it).
+        const auto slipped = std::exchange(car.wheelslip, 0u);
+        car.slip_ratio = {};
         if (!car.definition->engine || !impl.controllers[i]) continue;
         const float direction = car.flipped ? -1.0f : 1.0f;
         // The rails' adhesion for the traction: their state, the treads
@@ -1103,15 +1137,38 @@ void Train::step() {
             // The wheelsets pull at the creep their own turning allows.
             force = step_axles(car, force, mu, train_step);
         } else {
+            // RTS 0x424488: slipping the last step, the adhesion x Adheasion's
+            // first value (the ВЛ80Т's 0.6): the force must come down further
+            // than it went over for the wheels to grip again.
+            if (slipped != 0 && car.definition->adhesion[0] > 0.0f) mu *= car.definition->adhesion[0];
             const float limit = mass_of(car) * gravity * mu;
-            car.wheelslip = mu > 0.0f && std::abs(force) > limit;
-            if (car.wheelslip) {
-                // The wheels spin up instead of pulling: the rail takes less the
-                // further the demand is past the grip, down to RTS's quarter
-                // (0x424488) at half again the limit. Continuous at the limit,
-                // where the old flat cut dropped the force below the grip.
-                const float excess = std::abs(force) / limit - 1.0f;
-                force *= std::clamp(1.0f - 0.75f * excess / 0.5f, 0.25f, 1.0f);
+            const auto& engine = *car.definition->engine;
+            if (mu > 0.0f && force != 0.0f && engine.num_engines > 0) {
+                // Each motor against its axles' share of the weight: a slipping
+                // one's axles spin and its force falls to a quarter (RTS: a
+                // random 10..40 %; a quarter keeps runs the same). As RTS, a
+                // locomotive with NumEngines but no EngineAxles, or whose DLL
+                // leaves EngineForce at 0, never slips.
+                const float axle_limit = limit / static_cast<float>((std::max)(engine.num_axles, 1u));
+                const std::size_t motors = (std::min)(static_cast<std::size_t>(demands.engine_force_count), engine.engine_axles.size());
+                for (std::size_t m = 0; m < motors; ++m) {
+                    const auto& axles = engine.engine_axles[m];
+                    if (axles.empty()) continue;
+                    const float motor = demands.engine_forces[m];
+                    const float per_axle = motor / static_cast<float>(axles.size());
+                    if (std::abs(per_axle) <= axle_limit) continue;
+                    for (const auto axle : axles) {
+                        car.wheelslip |= 1u << axle;
+                        if (axle < car.slip_ratio.size()) car.slip_ratio[axle] = per_axle / axle_limit;
+                    }
+                    force += (0.25f - 1.0f) * motor;
+                }
+            } else if (mu > 0.0f && std::abs(force) > limit) {
+                // No motors to tell apart: the whole locomotive slips (Wheelslip
+                // 15) and pulls nothing.
+                car.wheelslip = 15;
+                for (std::size_t a = 0; a < 4; ++a) car.slip_ratio[a] = force / limit;
+                force = 0.0f;
             }
         }
         car.force = force * direction;
@@ -1179,6 +1236,7 @@ void Train::step() {
                                        .wetness = rail_wetness(settings_.rails),
                                        .speed_kmh = kmh};
                 force += step_bogie_brake(car.shoe_state[b], bogie, dt);
+                if (car.shoe_state[b].sliding) grow_flat(car, b, std::abs(car.velocity) * dt, static_cast<std::size_t>(&car - cars_.data()));
             }
             if (car.sliding()) car.slid += std::abs(car.velocity) * dt;
             car.brake_force = force;
@@ -1188,6 +1246,8 @@ void Train::step() {
         if (car.chocks & chock_rear) car.brake_force += chock_force;
     }
     for (std::size_t i = 0; i < n; ++i) cars_[i].brake_force += impl.demands[i].brake_force;
+    // The realistic air slides by bogie (adhesion.hpp, shoe_state): a locked
+    // wheel's flat grows with the slide above, not by a whole-car grip check.
 
     // 3. Air: the pneumatics of the realistic model.
     {
@@ -1382,7 +1442,7 @@ void Train::step() {
     for (std::size_t i = n; i-- > 0;) {
         auto& car = cars_[i];
         car.offset += car.velocity * train_step - last_moved;
-        car.travelled += car.velocity * train_step;
+        car.run(car.velocity * train_step);
         if (i + 1 < n) {
             const double gap = joint_gap(car, cars_[i + 1], 0.0, 0.0);
             if (std::abs(gap) < 0.001 * train_step) {
@@ -1857,6 +1917,30 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
                 }
             }
             before = {traveller->node(), offset};
+            // Wheel flats: each axle's wheels strike the rail once a turn at
+            // theirs (the travellers are by the train's way: the car's own
+            // end is the other one in a turned car).
+            const std::uint8_t own = car.flipped ? static_cast<std::uint8_t>(1 - b) : b;
+            const double turned = car.rolled[own];
+            const double seen = std::exchange(car.flat_seen[own], turned);
+            if (car.flat[own] >= flat_struck && turned != seen) {
+                const double around = 2.0 * 3.14159265358979 * (wagon.wheel_radius > 0.05f ? wagon.wheel_radius : 0.5);
+                for (std::uint8_t a = 0; a < 2; ++a) {
+                    const double at = car.flat_phase[own][a] * around;
+                    if (std::floor((turned - at) / around) == std::floor((seen - at) / around)) continue;
+                    impl.events.push_back({.kind = TrainEventKind::wheel_flat, .car = static_cast<std::uint32_t>(i), .bogie = own,
+                                           .axle = a, .amount = car.flat[own]});
+                    if (settings_.body_motion == BodyMotionModel::openrts) {
+                        // A blow that grows to some 40 km/h and then hardly
+                        // more: the wheel flies over the flat.
+                        const float speed = std::abs(car.velocity);
+                        const float blow = std::pow((std::min)(speed / 11.0f, 1.0f), 0.8f) * 8.0f;
+                        const float depth = car.flat[own] * 0.001f;
+                        car.motion.input.kick_vertical[b] += depth * 0.6f * blow;
+                        car.motion.input.knock[b] += depth * std::clamp(speed / 15.0f, 0.0f, 1.5f);
+                    }
+                }
+            }
         }
     }
 }

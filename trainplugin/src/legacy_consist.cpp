@@ -311,6 +311,8 @@ void apply_engine_output(const EngineOutput& out, simulation::EngineDemands& dem
     demands.release_train_brake = (out.engine_flags & 1) != 0;
     demands.release_independent_brake = (out.engine_flags & 2) != 0;
     demands.sanding = out.sanding != 0;
+    demands.engine_force_count = out.engine_force_count;
+    demands.engine_forces = out.engine_forces;
     // RTS 0x503CE4: the line current comes from ElectricEngine::PowerConsuming.
     demands.power = out.power_consuming;
 }
@@ -710,6 +712,14 @@ std::vector<CarInput> LegacyConsist::inputs(const std::vector<const simulation::
         in.charging_pipe = c.charging_pipe;
         in.handbrake = c.handbrake;
         in.main_reservoir = c.main_reservoir;
+        in.wheelslip = c.wheelslip;
+        // RTS (0x5031D8): a release bit of EngineFlags is cleared once its
+        // cylinder has bled empty (docs/reverse/brakes.md, section 7).
+        if (const auto at = train_first_[t] + i; outputs_ && outputs_->valid && at < outputs_->cars.size() && outputs_->cars[at].has_engine) {
+            const auto engine_flags = outputs_->cars[at].engine.engine_flags;
+            if ((engine_flags & 1u) && c.cylinder <= 0.001f) in.clear_engine_flags |= 1u;
+            if ((engine_flags & 2u) && c.independent <= 0.001f) in.clear_engine_flags |= 2u;
+        }
         if (c.definition && c.definition->engine && c.definition->engine->kind == formats::EngineKind::electric) {
             // The route's line (Electrification::apply) when modelled, else the world's.
             if (c.line_voltage >= 0.0f) {
@@ -1064,36 +1074,54 @@ std::unique_ptr<simulation::LocomotiveController> LegacyConsist::controller(std:
 }
 
 std::vector<std::int8_t> valve_states(const formats::CabSwitch& control) {
-    // The hint's word: brackets, quotes and spaces off, in lower case.
-    const auto word = [](const std::string& hint) {
+    // The cabs name them (MaDaDev's, 2026-11-16): a Roman numeral first
+    // ("[V торможение]", "[VЭ Положение]", "[Vа Торможение замедленным
+    // темпом]"), alone ("[Va]"), or words only ("[торможение]",
+    // "[Торможение ЭПТ]", "Торможение замедленным темпом/ЭПТ торможение").
+    // The ЧС7's "[торможение]" and "[VЭ торможение]" were read as no
+    // position, and openRTS's valve stayed in II.
+    const auto position = [&](const std::string& hint) -> int {
+        // Lower case; brackets, quotes and dots off; tokens at spaces and "/".
         std::string s;
         for (const char c : hint)
-            if (c != '[' && c != ']' && c != '"' && c != ' ' && c != '.') s += c;
-        return core::fold_case(s);
-    };
-    const auto position = [&](const std::string& hint) -> int {
-        const auto s = word(hint);
-        // Roman numerals; the Cyrillic а / э of "Vа" / "VЭ" read as Latin.
-        auto roman = s;
-        for (const auto& [from, to] : {std::pair<const char*, const char*>{"\xd0\xb0", "a"}, {"\xd1\x8d", "e"}}) {
-            for (auto at = roman.find(from); at != std::string::npos; at = roman.find(from)) roman.replace(at, std::strlen(from), to);
+            if (c != '[' && c != ']' && c != '"' && c != '.') s += c;
+        s = core::fold_case(s);
+        std::vector<std::string> tokens;
+        std::string token;
+        for (const char c : s + " ") {
+            if (c == ' ' || c == '/' || c == '\t') {
+                if (!token.empty()) tokens.push_back(token);
+                token.clear();
+            } else {
+                token += c;
+            }
         }
-        if (roman == "i") return 0;
-        if (roman == "ii") return 1;
-        if (roman == "iii") return 2;
-        if (roman == "iv") return 3;
-        if (roman == "va" || roman == "ve" || roman == "v-a" || roman == "v-e") return 4;
-        if (roman == "v") return 5;
-        if (roman == "vi") return 6;
+        // A Roman numeral first; the Cyrillic а / э of "Vа" / "VЭ" read as Latin.
+        if (!tokens.empty()) {
+            auto roman = tokens.front();
+            for (const auto& [from, to] : {std::pair<const char*, const char*>{"\xd0\xb0", "a"}, {"\xd1\x8d", "e"}, {"-", ""}}) {
+                for (auto at = roman.find(from); at != std::string::npos; at = roman.find(from)) roman.replace(at, std::strlen(from), to);
+            }
+            if (roman == "i") return 0;
+            if (roman == "ii") return 1;
+            if (roman == "iii") return 2;
+            if (roman == "iv") return 3;
+            if (roman == "va" || roman == "ve") return 4;
+            if (roman == "v") return 5;
+            if (roman == "vi") return 6;
+        }
         // Words.
         const auto has = [&](const char* part) { return s.find(part) != std::string::npos; };
+        const bool braking = has("\xd1\x82\xd0\xbe\xd1\x80\xd0\xbc");                           // торм
         if (has("\xd1\x8d\xd0\xba\xd1\x81\xd1\x82\xd1\x80")) return 6;                       // экстр
+        if (has("\xd0\xb7\xd0\xb0\xd0\xbc\xd0\xb5\xd0\xb4\xd0\xbb")) return 4;               // замедл: Va
+        if (braking && has("\xd1\x8d\xd0\xbf\xd1\x82")) return 4;                            // торможение ЭПТ: VЭ
         if (has("\xd0\xbf\xd0\xbe\xd0\xb5\xd0\xb7\xd0\xb4")) return 1;                       // поезд
         if (has("\xd0\xbf\xd0\xb5\xd1\x80\xd0\xb5\xd0\xba\xd1\x80")) {                     // перекр
             return has("\xd0\xb1\xd0\xb5\xd0\xb7") ? 2 : 3;                                       // без питания: III
         }
         if (has("\xd0\xb7\xd0\xb0\xd1\x80\xd1\x8f\xd0\xb4") || has("\xd0\xbe\xd1\x82\xd0\xbf\xd1\x83\xd1\x81\xd0\xba")) return 0; // заряд, отпуск
-        if (has("\xd1\x81\xd0\xbb\xd1\x83\xd0\xb6")) return 5;                                 // служ
+        if (has("\xd1\x81\xd0\xbb\xd1\x83\xd0\xb6") || braking) return 5;                     // служебное, торможение: V
         return -1;
     };
     std::vector<std::int8_t> states;

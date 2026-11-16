@@ -6,6 +6,7 @@ add_library(openrts_viewer_core STATIC
     src/viewer_scene.cpp
     src/net_session.cpp
     src/console_panel.cpp
+    src/players_panel.cpp
     src/track_view.cpp
     src/crossing_view.cpp
     src/road_traffic.cpp
@@ -29,6 +30,7 @@ add_library(openrts_viewer_core STATIC
     src/head_motion.cpp
     src/activity_view.cpp
     src/graphics_settings.cpp
+    src/graphics_presets_ui.cpp
     src/controls_help.cpp
     src/window_mode.cpp
     src/discord_status.cpp
@@ -36,6 +38,8 @@ add_library(openrts_viewer_core STATIC
 openrts_configure_target(openrts_viewer_core)
 target_include_directories(openrts_viewer_core PUBLIC src)
 target_link_libraries(openrts_viewer_core PUBLIC openrts_assets openrts_formats openrts_renderer openrts_platform openrts_simulation openrts_audio openrts_trainplugin openrts_net_world)
+# The helper's cab streams (net_session.cpp) are zlib-packed.
+target_link_libraries(openrts_viewer_core PRIVATE ZLIB::ZLIB)
 
 if(OPENRTS_ENABLE_GLFW)
     target_link_libraries(openrts_viewer_core PUBLIC glfw)

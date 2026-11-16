@@ -228,6 +228,10 @@ struct EngineDefinition {
     std::string series;         // LocomotiveSeries (CanWorkWith)
     std::uint32_t num_engines{}; // NumEngines
     std::uint32_t num_axles{};   // NumAxles
+    // NumEngines ( n EngineAxles ( k a1 .. ak ) ... ): the axles (from 0)
+    // each traction motor turns. RTS checks each motor's force against its
+    // axles' adhesion and spins those wheels when it slips (0x424488).
+    std::vector<std::vector<std::uint8_t>> engine_axles;
     std::uint32_t max_slaves{};  // MaxNumSlaveLoco
     std::array<std::uint8_t, 2> sme_cable{}; // SMECable ( front rear ): multiple-unit control cable
     std::array<std::uint8_t, 2> hv_bus{};    // HVBus ( front rear )

@@ -108,6 +108,10 @@ struct EngineDemands {
     // Engine::Sanding: adhesion x the .eng's sanding factor (Adheasion's
     // third value) while the sand lasts (RTS 0x424488).
     bool sanding = false;
+    // Engine::EngineForce: each traction motor's share of `force` (the
+    // .eng's EngineAxles say whose axles); none: the locomotive as one.
+    std::array<float, 8> engine_forces{};
+    std::uint8_t engine_force_count = 0;
     // W the engine draws from the line (ElectricEngine::PowerConsuming);
     // < 0: its traction power |F v|.
     float power = -1.0f;
@@ -204,6 +208,7 @@ enum class TrainEventKind : std::uint8_t {
     end_of_track, // the train ran onto an end node and stopped
     coupler_break, // the coupler behind `car` broke (the owner uncouples there)
     derailment,
+    wheel_flat,    // a wheel set of `bogie` struck the rail at its flat (`amount`: the flat's depth, mm)
 };
 
 // Brake pipe ends of a car (ts.h Wagon flags byte 2).
@@ -246,8 +251,19 @@ inline constexpr std::uint8_t cable_hv_rear = 0x08;
 struct TrainEvent {
     TrainEventKind kind{};
     std::uint32_t car{};
-    std::uint8_t bogie{}; // 0 front, 1 rear
+    std::uint8_t bogie{}; // 0 front, 1 rear (wheel_flat: the car's own ends)
+    std::uint8_t axle{};  // wheel_flat: the bogie's axle, 0 or 1
+    float amount{};       // wheel_flat: mm
 };
+
+// Wheel flats (ползуны): a wheel set sliding locked (юз) wears a flat on
+// its treads, about 1 mm in 15 m at 20 t an axle, deeper the heavier the
+// axle, at most flat_deepest. It never wears away by itself: each turn after,
+// the bogie's wheel sets strike the rail at it (a knock, a kick to the body)
+// until they are changed (Train::replace_wheelsets).
+constexpr float flat_per_metre = 0.065f; // mm a metre slid, at 20 t an axle
+constexpr float flat_deepest = 12.0f;    // mm
+constexpr float flat_struck = 0.2f;      // mm: from here a flat strikes the rail
 
 // Front and rear bogie (or car end) positions of a car on the track.
 struct CarPlacement {
@@ -289,11 +305,26 @@ struct CarState {
     // (RTS takes them from the shape's BOGIE nodes); 0: 35 % of the length.
     float bogie_ahead{};
     float bogie_behind{};
-    bool wheelslip = false;
+    // Wheel slip under traction (боксование, RTS 0x424488): a bit per
+    // slipping axle (15: the whole locomotive), what the DLL reads as
+    // Engine::Wheelslip; and each axle's force over its adhesion (signed
+    // along the car's own front, as the force), which spins its wheels
+    // (0x4F5B34).
+    std::uint32_t wheelslip{};
+    std::array<float, 8> slip_ratio{};
     // The wheelsets (TrainSettings::axle_dynamics): their turning, rad/s, and
     // the slip at the rail, m/s (omega * the wheel's radius - the car's speed).
     std::array<float, 4> axle_omega{};
     std::array<float, 4> axle_slip{};
+    // The RTS air: the brake holds more than the adhesion, the wheels stand
+    // (RTS 0x4F5B34; the realistic air slides by bogie, shoe_state).
+    bool brake_locked = false;
+    // Wheel flats by bogie (its own front, rear), mm; where each of its two
+    // axles has its flat, a share of a turn; and `rolled` when they were
+    // last looked at.
+    std::array<float, 2> flat{};
+    std::array<std::array<float, 2>, 2> flat_phase{};
+    std::array<double, 2> flat_seen{};
     bool derailed = false;
     // Brake pipe ends (pipe_hose_*, pipe_cock_*). A train's end cars start
     // with the outer hose disconnected and its end cock closed.
@@ -353,6 +384,15 @@ struct CarState {
     std::array<ShoeState, 2> shoe_state{};
     float slid{};
     [[nodiscard]] bool sliding() const noexcept { return shoe_state[0].sliding || shoe_state[1].sliding; }
+    // How far each bogie's wheels (its own front, rear) have turned, m along
+    // the train front as `travelled`: a sliding bogie's wheels stand (юз).
+    std::array<double, 2> rolled{};
+    // Adds a run of `metres` to `travelled` and to the wheels that roll.
+    void run(const double metres) noexcept {
+        travelled += metres;
+        for (std::size_t b = 0; b < 2; ++b)
+            if (!shoe_state[b].sliding && !brake_locked) rolled[b] += metres;
+    }
 };
 
 
@@ -408,6 +448,11 @@ public:
     // New shoes of the same kind on car `car`'s bogie `bogie` (0 front, 1
     // rear): not worn, cold, dry, not alight.
     void replace_brake_shoes(std::size_t car, std::size_t bogie);
+    // New wheel sets under bogie `bogie` (its own end): no flats.
+    void replace_wheelsets(std::size_t car, std::size_t bogie) { set_wheel_flat(car, bogie, 0.0f); }
+    // A flat of `mm` there (a saved situation, a test); its axles' at two
+    // places of the turn.
+    void set_wheel_flat(std::size_t car, std::size_t bogie, float mm);
     // Car `car`'s air, atm (a DLL's Init sets it; RTS's cars start empty).
     struct Air {
         float pipe{}, charging_pipe{}, cylinder{}, auxiliary{}, control{}, main_reservoir{};
