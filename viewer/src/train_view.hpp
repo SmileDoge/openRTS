@@ -20,6 +20,7 @@
 
 #include <openrts/audio/audio_engine.hpp>
 #include <openrts/audio/interior_acoustics.hpp>
+#include <openrts/simulation/alsn.hpp>
 #include <openrts/formats/route_database.hpp>
 #include <openrts/audio/sound_bank.hpp>
 #include <openrts/audio/sound_instance.hpp>
@@ -582,6 +583,8 @@ public:
     void follow_train(std::uint64_t id);
     // The route's signals, for the test drivers (next signal and its aspect).
     void set_signals(const simulation::SignalSystem* signals) noexcept { signals_ = signals; }
+    // The ALSN codes the track gives the trains (viewer_scene updates it).
+    void set_alsn(const simulation::AlsnSystem* alsn) noexcept { alsn_ = alsn; }
     // Text about train `id`'s path: leg, reserved way, what it waits for.
     [[nodiscard]] std::string path_status(std::uint64_t id) const;
     // RTS's information keys (docs/reverse/dispatcher.md): F5 a page of the
@@ -847,6 +850,7 @@ private:
     simulation::LineSupply line_;   // the driven train's, last step
     bool line_engines_ = false;     // the driven train has electric engines
     const simulation::SignalSystem* signals_ = nullptr;
+    const simulation::AlsnSystem* alsn_ = nullptr; // the codes the track gives
     std::uint64_t follow_id_ = 0;
     std::size_t spawned_ = 0;
     std::uint32_t numbered_trains_ = 0; // RTS's train counter for car numbers

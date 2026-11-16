@@ -43,6 +43,7 @@
 #include <openrts/renderer/wide_lines.hpp>
 #include <openrts/net/world.hpp>
 #include <openrts/simulation/track_network.hpp>
+#include <openrts/simulation/alsn.hpp>
 
 #include "track_view.hpp"
 #include "crossing_view.hpp"
@@ -704,6 +705,11 @@ public:
             const auto trains = train_ ? train_->trains() : std::vector<const simulation::Train*>{};
             OPENRTS_ZONE("signals");
             signals_->update(clock.elapsed, train_ ? train_->train() : nullptr, trains, camera.eye());
+            if (signals_->system()) {
+                if (!alsn_) alsn_ = std::make_unique<simulation::AlsnSystem>();
+                alsn_->update(*signals_->system(), trains, clock.elapsed);
+            }
+            if (train_) train_->set_alsn(alsn_.get());
             if (snapshot_signals_ && signals_->system() && content_.snapshot()) {
                 snapshot_signals_ = false;
                 report_snapshot("signal heads set", net::apply_signals(*signals_->system(), *content_.snapshot()));
@@ -2036,6 +2042,7 @@ private:
     mutable bool track_profile_ = false; // Shift+F7
     mutable bool cab_labels_ = false;   // Alt held in the 3-D cab
     std::unique_ptr<SignalView> signals_;
+    std::unique_ptr<simulation::AlsnSystem> alsn_; // the codes along the route
     bool snapshot_signals_ = false; // the snapshot's aspects wait for the signals to load
     std::unique_ptr<CrossingView> crossings_;
     std::unique_ptr<RoadTraffic> roads_;

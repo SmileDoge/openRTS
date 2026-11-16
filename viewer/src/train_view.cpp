@@ -4031,6 +4031,7 @@ void TrainView::draw_hud() {
                     ImGui::Text(tr("Signal %s in %.0f m%s"), formats::to_string(next.aspect), next.distance,
                                 next.speed > 0.0f ? (", " + std::to_string(static_cast<int>(next.speed * 3.6f)) + " km/h").c_str() : "");
                 }
+                if (alsn_) ImGui::Text(tr("ALSN %s"), simulation::alsn_name(alsn_->code(train)));
             }
         }
         end_panel(limits_place_);
