@@ -1,0 +1,20 @@
+# openRTS render check: the sky towards the horizon (Chernyshevsk, from Chernyshevsk_RTS_20261101_123301.view)
+root = E:\Games\MDD_Launcher\rts_main
+mode = route
+content = ROUTES/Chernyshevsk_RTS
+tile_x = -4832
+tile_z = 15015
+x = 448.7944725
+y = 15.93468666
+z = 218.0270478
+target_x = 447.2034302
+target_y = 87.87252045
+target_z = -779.3807983
+yaw = 6.284780502
+pitch = -0.0720000267
+distance = 1000
+fly = 1
+time_of_day = 43394
+season = 1
+weather = 0
+experimental = 0

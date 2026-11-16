@@ -241,11 +241,11 @@ int main() {
         for (const auto& cab : cabs) {
             control.state_hints = cab.hints;
             const auto read = trainplugin::valve_states(control);
-            std::string got;
-            for (const auto r : read) got += std::to_string(r) + " ";
+            std::string listed;
+            for (const auto r : read) listed += std::to_string(r) + " ";
             bool same = read.size() == cab.positions.size();
             for (std::size_t i = 0; same && i < read.size(); ++i) same = read[i] == cab.positions[i];
-            check(same, std::string("the ") + cab.cab + "'s 395 by its hints: " + got);
+            check(same, std::string("the ") + cab.cab + "'s 395 by its hints: " + listed);
         }
     }
 
@@ -287,6 +287,37 @@ int main() {
         check(controls.read(ids, switches).blocked, "the 367 off cuts the valve off");
         switches[23].state = 2;
         check(!controls.read(ids, switches).blocked, "the 367 in its operating state");
+        // The ЭП2Д's КПТ (BR_KPTID1 2) beside its 395 (3): the handle moved
+        // last sets the position, the 395 at first.
+        {
+            formats::CabDescription ep2d;
+            formats::CabSwitch kpt;
+            kpt.id = 2;
+            kpt.num_states = 7;
+            kpt.state_hints = {"[VI Положение]", "[V Положение]", "[VЭ Положение]", "[IV Положение]",
+                               "[III Положение]", "[II Положение]", "[I Положение]"};
+            auto kran = kpt;
+            kran.id = 3;
+            ep2d.switches = {kpt, kran};
+            const formats::EngineDefinition::BrakesLibrary both{.present = true, .valve = 3, .controller = 2};
+            const auto handles = trainplugin::brake_cab_controls(both, ep2d);
+            std::vector<dllhost::SwitchState> s(4);
+            s[2].state = 3;
+            s[3].state = 3;
+            auto r = handles.read(both, s);
+            check(r.position == 3, "the ЭП2Д: the 395's IV at first");
+            s[3].state = 5;
+            r = handles.read(both, s, r);
+            check(r.position == 1, "the 395 to II");
+            s[2].state = 1;
+            r = handles.read(both, s, r);
+            check(r.position == 5, "the КПТ to V sets V");
+            r = handles.read(both, s, r);
+            check(r.position == 5, "V held while neither moves");
+            s[3].state = 0;
+            r = handles.read(both, s, r);
+            check(r.position == 6, "the 395 to VI after it");
+        }
     }
 
     if (failures == 0) std::cout << "dll air: all checks passed\n";

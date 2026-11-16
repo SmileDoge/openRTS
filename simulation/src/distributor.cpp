@@ -97,15 +97,12 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         s.auxiliary += charge;
         s.pipe = (std::max)(s.pipe - charge * zr_volume / car.pipe_volume, 0.0f);
     }
-    // ЭВР 305 with the EP brake working: the cylinder follows the wire.
-    if (car.kind == DistributorKind::evr305 && car.ep && ep >= 0.0f) {
-        const float target = (std::min)(ep, tc_max);
-        const float change = std::clamp(target - s.cylinder, -0.35f * h, 1.0f * h);
-        s.cylinder = (std::max)(s.cylinder + change, 0.0f);
-        s.braking = s.cylinder > 0.05f;
-        s.reference = s.auxiliary;
-        return;
-    }
+    // ЭВР 305 with the EP brake working: the wire holds the cylinder at its
+    // target (filled from the ЗР up to 1 atm/s, released at 0.35), and the
+    // 292 behind it answers the pipe all the same, the higher of the two
+    // kept. Until 2026-11-16 the wire alone set it: with the ЭПТ on a pipe
+    // reduction by the driver's valve braked nothing (the ЭП2Д, testers).
+    const float held = car.kind == DistributorKind::evr305 && car.ep && ep >= 0.0f ? (std::min)(ep, tc_max) : 0.0f;
     if (car.kind == DistributorKind::vr483) {
         // РК: charges from the pipe while released; follows a slow fall.
         if (!s.braking) {
@@ -154,9 +151,12 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         if (s.cylinder < target && s.auxiliary > s.cylinder) take_for_cylinder((std::min)(target - s.cylinder, rates.fill * h));
         // A rise above the ЗР releases fully.
         if (p >= s.auxiliary + release_292) s.braking = false;
-    } else if (s.cylinder > 0.0f) {
-        s.cylinder = (std::max)(s.cylinder - rates.release * h, 0.0f);
+    } else if (s.cylinder > held) {
+        // Released down to what the ЭПТ holds.
+        s.cylinder = (std::max)(s.cylinder - (held > 0.0f ? 0.35f : rates.release) * h, held);
     }
+    // The ЭПТ's wire (the 305): up to its target from the ЗР.
+    if (s.cylinder < held && s.auxiliary > s.cylinder) take_for_cylinder((std::min)(held - s.cylinder, 1.0f * h));
 }
 
 StandReport run_stand(const DistributorCar& car, ScriptDistributor* script) {

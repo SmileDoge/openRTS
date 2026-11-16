@@ -25,7 +25,7 @@ openrts-server --route Kuban_RTS --root D:\Games\MDDRTS --port 800 --season summ
 | `--route <папка>` | маршрут, папка в `ROUTES` (регистр не важен) |
 | `--root <папка>` | установка RTS (по умолчанию текущая папка) |
 | `--port <n>` | по умолчанию 800, как у `rts_server.exe` |
-| `--season`, `--weather` | `spring`..`winter` или 0..3; `clear`, `snow`, `rain` или 0..2 |
+| `--season`, `--weather` | `spring`..`winter` или 0..3; `clear`, `snow`, `rain` или 0..2, `storm` или 3: гроза openRTS (игрокам RTS — дождь, docs/weather.md) |
 | `--time HH:MM` | время суток на старте (12:00) |
 | `--no-admit` | не пускать новых игроков |
 | `--command "<строка>"` | строка консоли, выполняемая при старте (можно несколько) |

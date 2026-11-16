@@ -41,7 +41,8 @@ namespace openrts::server {
 // "HH:MM[:SS]" as seconds of the day.
 [[nodiscard]] std::optional<double> parse_time_of_day(std::string_view text);
 
-// The season's and weather's index from a name or a number.
+// The season's and weather's index from a name or a number; the weather's
+// 3 (storm, гроза) is openRTS's thunderstorm: rain with lightning.
 [[nodiscard]] std::optional<std::uint8_t> parse_season(std::string_view text);
 [[nodiscard]] std::optional<std::uint8_t> parse_weather(std::string_view text);
 // "Маршрут: <id>\r\nСезон: <season>", as rts_server.exe describes its game.

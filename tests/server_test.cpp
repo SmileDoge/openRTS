@@ -254,6 +254,10 @@ void game() {
     const auto reply = take_reply(rec, 1);
     check(reply && reply->version == 101 && reply->route == u"testroute" && reply->season == 1 && reply->weather == 0,
           "the login reply: version, route, season, weather");
+    check(server::parse_weather("storm") == 3 && server::parse_weather("rain") == 2 && !server::parse_weather("hail"), "weather names");
+    check(net::openrts_hello_storm(net::encode_openrts_hello(net::openrts_features, true)) &&
+              !net::openrts_hello_storm(net::encode_openrts_hello()) && net::decode_openrts_hello(net::encode_openrts_hello(1, true)) == 1,
+          "the hello's thunderstorm byte");
     check(reply && reply->counts[0] == 20 && reply->counts[1] == 0 && reply->counts[2] == 1 && reply->counts[3] == 2, "the route's four counts");
     check(reply && reply->description == u"Маршрут: TestRoute\r\nСезон: Лето", "the description");
     check(!rec.closed.contains(1), "Alice stays connected");

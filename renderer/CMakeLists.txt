@@ -10,6 +10,7 @@ add_library(openrts_renderer STATIC
     src/bc7.cpp
     src/bloom.cpp
     src/light_shafts.cpp
+    src/lightning.cpp
     src/depth_export.cpp
     src/frustum.cpp
     src/model_assets.cpp
@@ -26,6 +27,7 @@ add_library(openrts_renderer STATIC
     src/route_space.cpp
     src/route_streamer.cpp
     src/sky_renderer.cpp
+    src/sky_light.cpp
     src/native_sky.cpp
     src/terrain_renderer.cpp)
 openrts_configure_target(openrts_renderer)

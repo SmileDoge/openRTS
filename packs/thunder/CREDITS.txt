@@ -1,0 +1,23 @@
+openRTS thunder (the openrts-thunder pack) / гром openRTS (пак openrts-thunder)
+
+The claps are cut from these recordings (tools/sound/make_thunder.py: a
+stretch of each, mixed to one channel, filtered for its distance, faded in
+and out, levelled). Раскаты нарезаны из этих записей (отрезок каждой,
+сведённый в один канал, отфильтрованный по расстоянию, с плавным началом и
+концом, выровненный по громкости).
+
+"Thunder, Very Close, No Rain, C.wav" by InspectorJ (www.jshaw.co.uk) of Freesound.org
+    https://freesound.org/s/321654/
+    Creative Commons Attribution 4.0: https://creativecommons.org/licenses/by/4.0/
+    -> thunder_near_1, thunder_mid_1, thunder_far_3
+
+"Thunder, Very Close, Rain, A.wav" by InspectorJ (www.jshaw.co.uk) of Freesound.org
+    https://freesound.org/s/360328/
+    Creative Commons Attribution 4.0: https://creativecommons.org/licenses/by/4.0/
+    -> thunder_near_2, thunder_mid_2
+
+"Extreme Thunder Impact - Munich Trudering (Raw Excerpt from Field Recording) - 250702_001"
+by TSP-Talk of Freesound.org
+    https://freesound.org/s/844420/
+    Creative Commons 0: https://creativecommons.org/publicdomain/zero/1.0/
+    -> thunder_far_1, thunder_far_2

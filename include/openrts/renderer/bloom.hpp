@@ -27,6 +27,7 @@ namespace openrts::renderer {
 struct BloomSettings {
     bool textures = true; // at night the textures' brightest (bulbs, lit windows)
     float night = 0.0f;   // 0 day .. 1 night (the tone curve's)
+    bool linear = false;  // the scene frame and the lights' source hold linear light (frame_encoding())
 };
 
 class BloomRenderer {

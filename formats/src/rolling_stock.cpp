@@ -372,6 +372,7 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
                 for (const auto& p : a.parameters) {
                     const auto name = core::fold_case(p.name);
                     if (name == "br_395id1") brakes_dll.valve = static_cast<std::int32_t>(p.value);
+                    else if (name == "br_kptid1") brakes_dll.controller = static_cast<std::int32_t>(p.value);
                     else if (name == "br_manu1") brakes_dll.equalising_gauge = static_cast<std::int32_t>(p.value);
                     else if (name == "br_zarpress") brakes_dll.charging = p.value;
                     else if (name == "br_redid1") brakes_dll.reducer = static_cast<std::int32_t>(p.value);

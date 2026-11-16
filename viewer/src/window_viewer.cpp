@@ -8,6 +8,7 @@
 #include <openrts/renderer/forest_clearance.hpp>
 #include <openrts/renderer/glow_sprites.hpp>
 #include <openrts/renderer/native_sky.hpp>
+#include <openrts/renderer/lightning.hpp>
 #include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
 #include <openrts/renderer/screen_quads.hpp>
@@ -48,6 +49,7 @@
 #include "ui_slider.hpp"
 #include "ui_text.hpp"
 #include "rts_config.hpp"
+#include "thunder_view.hpp"
 #include "viewer_state.hpp"
 
 #include <webgpu/wgpu.h>
@@ -436,7 +438,7 @@ private:
         }
         if (renderer::scene_hdr()) {
             const WGPUTextureDescriptor hdr{
-                .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
+                .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopySrc,
                 .dimension = WGPUTextureDimension_2D,
                 .size = {.width = config_.width, .height = config_.height, .depthOrArrayLayers = 1},
                 .format = renderer::hdr_format,
@@ -455,6 +457,7 @@ public:
     }
     // The HDR frame the scene resolves into (null without HDR).
     [[nodiscard]] WGPUTextureView hdr_view() const noexcept { return hdr_view_; }
+    [[nodiscard]] WGPUTexture hdr_texture() const noexcept { return hdr_; }
 
 private:
 
@@ -667,6 +670,7 @@ struct PanelState {
     float night = 0.0f; // 0 day .. 1 night, from the sun (shown)
     float saturation = 1.0f;
     bool physical_light = false; // physical falloff of headlights and lamps (experimental renderer)
+    bool pbr = true;             // physically based light (experimental renderer, HDR; renderer::pbr_shading)
     float night_ambient = 1.0f;  // sky light at night, a factor (experimental renderer)
     float light_range = 0.0f;    // lamps lit within this distance, m; 0: RTS's MaxLightDistance (experimental renderer)
     float headlight_reach = 1.0f; // the trains' headlights reach this many times the .eng's (experimental renderer)
@@ -717,6 +721,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.effects = g.effects;
     panel.effects.show_occlusion = show_occlusion;
     panel.physical_light = g.physical_light;
+    panel.pbr = g.pbr;
     panel.light_range = g.light_range;
     panel.headlight_reach = g.headlight_reach;
     panel.night_ambient = g.night_ambient;
@@ -747,6 +752,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.effects = panel.effects;
     g.effects.show_occlusion = false;
     g.physical_light = panel.physical_light;
+    g.pbr = panel.pbr;
     g.light_range = panel.light_range;
     g.headlight_reach = panel.headlight_reach;
     g.night_ambient = panel.night_ambient;
@@ -774,6 +780,7 @@ struct ClockControls {
     double time_of_day = 12.0 * 3600.0;
     float speed = 1.0f;
     int season = static_cast<int>(renderer::rts::Season::summer);
+    // The RTS weather's order, then 3: a thunderstorm (rain with lightning).
     int weather = static_cast<int>(renderer::rts::Weather::clear);
 
     [[nodiscard]] SceneClock advance(const float elapsed) {
@@ -786,7 +793,8 @@ struct ClockControls {
             .elapsed = elapsed,
             .time_speed = speed,
             .season = static_cast<renderer::rts::Season>(season),
-            .weather = static_cast<renderer::rts::Weather>(weather),
+            .weather = weather == 3 ? renderer::rts::Weather::rain : static_cast<renderer::rts::Weather>(weather),
+            .storm = weather == 3,
         };
     }
 };
@@ -1172,7 +1180,7 @@ public:
                 remember("native_sky", panel.native_sky ? "1" : "0");
             if (panel.native_sky) {
                 ImGui::Indent();
-                if (ImGui::Checkbox(tr("Cloud cover by the weather (clear 42 %, snow 85 %, rain 92 %)"), &panel.cloud_cover_weather))
+                if (ImGui::Checkbox(tr("Cloud cover by the weather (clear 42 %, snow 85 %, rain 92 %, thunderstorm 97 %)"), &panel.cloud_cover_weather))
                     remember("cloud_cover_weather", panel.cloud_cover_weather ? "1" : "0");
                 ImGui::BeginDisabled(panel.cloud_cover_weather);
                 ImGui::SetNextItemWidth(220.0f);
@@ -1202,6 +1210,10 @@ public:
                 ImGui::SetNextItemWidth(220.0f);
                 if (ImGui::Combo(tr("Tone curve (experimental renderer)"), &panel.tone_curve, curves, 6))
                     remember("tone_mode", std::to_string(panel.tone_curve));
+                // Stage 0 of PBR (docs/experimental-effects.md, "The frame's
+                // encoding"): the experimental HDR frame linear or as before.
+                ImGui::Checkbox(tr("HDR frame in linear light (off: gamma 2.2, as before; a check)"), &renderer::linear_hdr());
+                ImGui::TextDisabled(renderer::frame_linear() ? tr("this frame: linear light") : tr("this frame: gamma 2.2"));
                 ImGui::SetNextItemWidth(220.0f);
                 if (slider_with_input(tr("Exposure"), &panel.exposure, 0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
                     remember("exposure", std::to_string(panel.exposure));
@@ -1220,6 +1232,30 @@ public:
         if (panel.tab == PanelState::Tab::graphics) {
             ImGui::SeparatorText(tr("Experimental renderer"));
             ImGui::BeginDisabled(!panel.experimental_supported);
+            // PBR stage 1 (docs/experimental-effects.md, "Physically based
+            // light"): it needs the HDR frame in linear light, so without it
+            // the choice is kept but greyed, the reason beside it.
+            {
+                const bool can_pbr = panel.hdr && renderer::linear_hdr();
+                ImGui::BeginDisabled(!can_pbr);
+                if (ImGui::Checkbox(tr("Physically based light (PBR: GGX reflections; off: as before)"), &panel.pbr))
+                    remember("pbr", panel.pbr ? "1" : "0");
+                ImGui::EndDisabled();
+                if (can_pbr && panel.pbr) {
+                    // PBR stage 2: the sky's light from its probe, or the old
+                    // one (a check, not kept).
+                    ImGui::Indent();
+                    ImGui::Checkbox(tr("Sky light from the sky itself (IBL; off: the old sky light, a check)"), &renderer::sky_light_from_probe());
+                    ImGui::Unindent();
+                }
+                if (!panel.hdr) {
+                    ImGui::TextDisabled("%s", tr("(needs HDR: turn it on in the start menu)"));
+                } else if (!renderer::linear_hdr()) {
+                    ImGui::TextDisabled("%s", tr("(needs the HDR frame in linear light, below)"));
+                } else if (renderer.shading_path() != renderer::ShadingPath::experimental) {
+                    ImGui::TextDisabled("%s", tr("(in effect in the experimental renderer)"));
+                }
+            }
             ImGui::SeparatorText(tr("Sun"));
             if (ImGui::Checkbox(tr("Sun shadows"), &panel.effects.shadows)) remember("effect_shadows", panel.effects.shadows ? "1" : "0");
             if (ImGui::IsItemHovered())
@@ -1355,6 +1391,10 @@ public:
                 remember("ground_bounce", std::to_string(panel.effects.ground_bounce));
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", tr("Light the sunlit ground throws back onto bogies and the underframe, as the ground's reflectance (ballast and grass about 0.2). 0: none."));
+            ImGui::SetNextItemWidth(200.0f);
+            if (slider_with_input(tr("Light in the cab by day"), &panel.effects.indoor_light, 0.0f, 1.0f, "%.2f", "%.2f"))
+                remember("indoor_light", std::to_string(panel.effects.indoor_light));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("The sun through the windows and the sky's light thrown about the cab or salon you are in, which the shadows alone leave dark. 0: none."));
             if (ImGui::Checkbox(tr("Light FullBright as ordinary surfaces"), &panel.light_fullbright))
                 remember("light_fullbright", panel.light_fullbright ? "1" : "0");
             if (ImGui::Checkbox(tr("A lamp throws no shadow of its own model"), &panel.lamp_own_model))
@@ -1557,9 +1597,25 @@ private:
 
         const char* seasons[] = {tr("Spring"), tr("Summer"), tr("Autumn"), tr("Winter")};
         ImGui::Combo(tr("Season"), &clock.season, seasons, 4);
-        // Order of the RTS weather variable: clear, snow, rain.
-        const char* weathers[] = {tr("Clear"), tr("Snow"), tr("Rain")};
-        ImGui::Combo(tr("Weather"), &clock.weather, weathers, 3);
+        // Order of the RTS weather variable: clear, snow, rain; then openRTS's thunderstorm.
+        const char* weathers[] = {tr("Clear"), tr("Snow"), tr("Rain"), tr("Thunderstorm")};
+        ImGui::Combo(tr("Weather"), &clock.weather, weathers, 4);
+        if (clock.weather == 3) {
+            if (ImGui::SliderFloat(tr("Lightning strikes a minute"), &renderer::lightning_rate(), 0.0f, 30.0f, "%.0f"))
+                remember("lightning_rate", std::to_string(renderer::lightning_rate()));
+            if (ImGui::SliderFloat(tr("Lightning brightness"), &renderer::lightning_brightness(), 0.0f, 3.0f, "%.1f"))
+                remember("lightning_brightness", std::to_string(renderer::lightning_brightness()));
+            if (ImGui::SliderFloat(tr("Thunder volume"), &thunder_volume(), 0.0f, 2.0f, "%.1f"))
+                remember("thunder_volume", std::to_string(thunder_volume()));
+            // A strike to try the light and the thunder at a distance.
+            static float test_distance = 2000.0f;
+            ImGui::SliderFloat(tr("Test lightning distance, m"), &test_distance, 100.0f, 12000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+            if (ImGui::Button(tr("Strike lightning ahead"))) renderer::lightning_test_request() = test_distance;
+            if (clock.speed <= 0.0f || clock.speed > 16.0f) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", tr("(no lightning while the clock stands or runs faster than x16)"));
+            }
+        }
     }
 
     // A system monospace font with Cyrillic (content names are often
@@ -2251,6 +2307,84 @@ struct FrameCapture {
 
 // The light shafts' image of a captured frame (RGBA16Float, scene-linear):
 // how bright they are, for tuning them by numbers.
+// The HDR frame's light (--capture with --hdr): its luminance in linear
+// light (a gamma 2.2 frame decoded, so the two encodings compare), over the
+// whole frame and its regions: the mean, the median, the 10th, 90th and 99th
+// percentiles and the most.
+void report_hdr_frame(const renderer::WgpuDeviceContext& context, const FrameCapture& shot, const bool linear) {
+    bool mapped = false, done = false;
+    struct State {
+        bool* mapped;
+        bool* done;
+    } state{&mapped, &done};
+    const WGPUBufferMapCallbackInfo callback{
+        .mode = WGPUCallbackMode_AllowProcessEvents,
+        .callback = [](const WGPUMapAsyncStatus status, WGPUStringView, void* data, void*) {
+            auto* s = static_cast<State*>(data);
+            *s->mapped = status == WGPUMapAsyncStatus_Success;
+            *s->done = true;
+        },
+        .userdata1 = &state,
+    };
+    const auto size = static_cast<std::size_t>(shot.row_bytes) * shot.height;
+    wgpuBufferMapAsync(shot.buffer, WGPUMapMode_Read, 0, size, callback);
+    for (int i = 0; i < 1000 && !done; ++i) {
+        wgpuDevicePoll(context.device(), true, nullptr);
+        wgpuInstanceProcessEvents(context.instance());
+    }
+    if (mapped) {
+        const auto* bytes = static_cast<const std::uint8_t*>(wgpuBufferGetConstMappedRange(shot.buffer, 0, size));
+        const auto half = [](const std::uint16_t h) {
+            const std::uint32_t sign = (h >> 15) & 1u, exponent = (h >> 10) & 31u, mantissa = h & 1023u;
+            float v = 0.0f;
+            if (exponent == 0) v = std::ldexp(static_cast<float>(mantissa), -24);
+            else if (exponent < 31) v = std::ldexp(static_cast<float>(mantissa | 1024u), static_cast<int>(exponent) - 25);
+            else v = 65504.0f;
+            return sign ? -v : v;
+        };
+        // Regions: the frame, its top, middle and bottom thirds, its middle ninth.
+        constexpr const char* names[] = {"frame", "top", "middle", "bottom", "centre"};
+        std::array<std::vector<float>, 5> values;
+        for (auto& v : values) v.reserve(static_cast<std::size_t>(shot.width) * shot.height / 3);
+        for (std::uint32_t y = 0; y < shot.height; ++y) {
+            const auto* line = bytes + static_cast<std::size_t>(y) * shot.row_bytes;
+            const std::size_t third = (std::min)(static_cast<std::size_t>(y) * 3 / shot.height, std::size_t{2});
+            for (std::uint32_t x = 0; x < shot.width; ++x) {
+                std::uint16_t c[3];
+                std::memcpy(c, line + static_cast<std::size_t>(x) * 8u, sizeof c);
+                float rgb[3];
+                for (int k = 0; k < 3; ++k) {
+                    const float stored = (std::max)(half(c[k]), 0.0f);
+                    rgb[k] = linear ? stored : std::pow(stored, 2.2f);
+                }
+                const float luma = 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
+                values[0].push_back(luma);
+                values[1 + third].push_back(luma);
+                if (x * 3 / shot.width == 1 && third == 1) values[4].push_back(luma);
+            }
+        }
+        std::cout << "hdr frame (" << (linear ? "linear" : "gamma 2.2, decoded") << ", linear luminance):";
+        for (std::size_t r = 0; r < values.size(); ++r) {
+            auto& v = values[r];
+            if (v.empty()) continue;
+            double sum = 0.0;
+            for (const float l : v) sum += l;
+            const auto at = [&v](const double share) {
+                const auto k = static_cast<std::size_t>(share * static_cast<double>(v.size() - 1));
+                std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(k), v.end());
+                return v[k];
+            };
+            const double mean = sum / static_cast<double>(v.size());
+            const float p10 = at(0.10), median = at(0.50), p90 = at(0.90), p99 = at(0.99);
+            const float most = *std::max_element(v.begin(), v.end());
+            std::printf(" %s mean %.4f median %.4f p10 %.4f p90 %.4f p99 %.4f max %.3f;", names[r], mean, median, p10, p90, p99, most);
+        }
+        std::cout << std::endl;
+        wgpuBufferUnmap(shot.buffer);
+    }
+    wgpuBufferRelease(shot.buffer);
+}
+
 void report_light_shafts(const renderer::WgpuDeviceContext& context, const FrameCapture& shot) {
     bool mapped = false, done = false;
     struct State {
@@ -2422,6 +2556,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
 
     renderer::render_sample_count() = renderer::supported_sample_count(context.context, options.msaa);
     renderer::scene_hdr() = options.hdr && !options.menu;
+    if (options.hdr_linear) renderer::linear_hdr() = *options.hdr_linear;
     if (renderer::scene_hdr()) std::cout << "HDR frame: Rgba16Float, tone curve (AgX in the experimental path)" << std::endl;
     const auto samples = renderer::render_sample_count();
     std::cout << "antialiasing: " << (samples > 1 ? std::to_string(samples) + "x MSAA, alpha-to-coverage" : "off");
@@ -2445,6 +2580,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     renderer.set_batching(options.batching);
     // The experimental path's shadows, lamps, occlusion and haze.
     renderer::SceneEffects effects(device);
+    // The sky's light from its probe (PBR stage 2).
+    renderer::SkyLight sky_light(device);
+    if (!sky_light.ready()) std::cerr << "The sky's light could not be made: the physically based light keeps the old sky light.\n";
     // Workers for the parallel recording: a cascade or the pre-pass each.
     renderer::TaskPool recording_pool((std::min)((std::max)(std::thread::hardware_concurrency(), 2u) - 1u, 5u));
     renderer.set_task_pool(&recording_pool);
@@ -2467,6 +2605,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // 2026-11-14: most players come from RTS; openRTS's for laptops).
     set_key_layout(remembered("key_layout").value_or("rts") == "openrts" ? KeyLayout::openrts : KeyLayout::rts);
     if (const auto throws = remembered("switch_throws")) set_switch_throws(std::strtof(throws->c_str(), nullptr));
+    // A thunderstorm's lightning as last set.
+    if (const auto rate = remembered("lightning_rate")) renderer::lightning_rate() = std::clamp(std::strtof(rate->c_str(), nullptr), 0.0f, 30.0f);
+    if (const auto brightness = remembered("lightning_brightness"))
+        renderer::lightning_brightness() = std::clamp(std::strtof(brightness->c_str(), nullptr), 0.0f, 3.0f);
+    if (const auto volume = remembered("thunder_volume")) thunder_volume() = std::clamp(std::strtof(volume->c_str(), nullptr), 0.0f, 2.0f);
     set_key_hints(remembered("key_hints").value_or("1") != "0");
     set_mouse_sensitivity(parse_mouse_sensitivity(remembered("mouse_sensitivity").value_or("1").c_str()));
     set_head_motion(parse_head_motion(remembered("head_motion").value_or("").c_str()));
@@ -2527,13 +2670,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     int capture_board_step = 0; // --capture-board: 1 at the door, then the presses of Enter
     bool capture_passed = false; // --capture-passage done
     double capture_reported = 0.0; // --capture-report: the last pick
+    int capture_path_switches = 0; // --capture-switch-path: switches made
     FrameLimiter limiter;
 
     ClockControls clock{
         .time_of_day = static_cast<double>(options.time_of_day),
         .speed = options.time_speed,
         .season = static_cast<int>(options.season),
-        .weather = static_cast<int>(options.weather),
+        .weather = options.storm ? 3 : static_cast<int>(options.weather),
     };
     surface.set_vsync(options.vsync);
     // Each pass's GPU time (renderer::GpuPassTimer): the renderer's passes
@@ -2579,6 +2723,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto kept = remembered("cab_near_plane")) panel.cab_near_plane = std::clamp(std::strtof(kept->c_str(), nullptr), 0.0f, 0.3f);
     set_panel_graphics(panel, panel.kept_graphics);
     if (options.reshade_depth) panel.reshade_depth = *options.reshade_depth;
+    if (options.pbr) panel.pbr = *options.pbr;
+    if (options.sky_light) renderer::sky_light_from_probe() = *options.sky_light;
+    if (options.native_sky) panel.native_sky = *options.native_sky;
     renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
     if (options.light_range) panel.light_range = std::clamp(*options.light_range, 0.0f, 3000.0f);
     if (options.headlight_reach) panel.headlight_reach = std::clamp(*options.headlight_reach, 1.0f, 5.0f);
@@ -2697,6 +2844,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             sound->set_background_gain(background ? background_sound_gain(background_sound()) : 1.0f);
         }
         renderer::physical_light_falloff() = panel.physical_light;
+        renderer::pbr_shading() = panel.pbr;
         renderer::native_water() = panel.native_water;
         renderer::native_sky() = panel.native_sky;
         renderer::signal_lights_real_size() = panel.signal_lights_real_size;
@@ -2853,10 +3001,28 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             const auto [id, state] = options.capture_switches[capture_switch_next++];
             scene.set_cab_switch(id, state);
         }
+        if (capture && options.capture_switch_path && panel.experimental_supported) {
+            const double since = glfwGetTime() - capture_start;
+            const int wanted = since >= options.capture_at * (2.0 / 3.0) ? 2 : since >= options.capture_at / 3.0 ? 1 : 0;
+            if (wanted > capture_path_switches) {
+                capture_path_switches = wanted;
+                renderer.set_shading_path(renderer.shading_path() == renderer::ShadingPath::rts_compatible ? renderer::ShadingPath::experimental
+                                                                                                          : renderer::ShadingPath::rts_compatible);
+                std::cout << "capture: the rendering path switched to "
+                          << (renderer.shading_path() == renderer::ShadingPath::experimental ? "experimental" : "RTS") << std::endl;
+            }
+        }
         if (const auto time = scene.take_time_of_day()) clock.time_of_day = *time;
         auto scene_clock = clock.advance(panel.paused || scene.paused() || loading.hold_time ? 0.0f : elapsed);
         scene_clock.background = background;
         camera.head_nod = camera.head_tilt = 0.0f;
+        // The frame's encoding (renderer::frame_encoding()), before any pass
+        // writes its uniforms: linear light on the experimental path's HDR
+        // frame, gamma 2.2 on the RTS path's and without HDR.
+        renderer::frame_encoding() = tone && surface.hdr_view() && renderer.shading_path() == renderer::ShadingPath::experimental
+                                             && renderer::linear_hdr()
+                                         ? renderer::FrameEncoding::linear
+                                         : renderer::FrameEncoding::gamma;
         scene.update(renderer, camera, scene_clock, frame_input);
         discord.update(scene);
         if (!scene.loading().done) loading_camera = camera;
@@ -2940,7 +3106,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                              .far_plane = camera.far_plane(),
                              .width = static_cast<std::uint32_t>(width),
                              .height = static_cast<std::uint32_t>(height)},
-                            environment.lighting, experimental, environment.cloud_shadow);
+                            environment.lighting, experimental, environment.cloud_shadow, [&] {
+                                 // The sky's light, made last frame (PBR only).
+                                 renderer::SkyLightView sky{};
+                                 if (renderer::frame_sky_light()) {
+                                     sky = sky_light.view();
+                                     sky.openness = environment.sky_openness;
+                                 }
+                                 return sky;
+                             }());
         frame.effects = effects.bind_group();
         frame.shadow_range = effects.shadow_range();
         frame.pool = &recording_pool;
@@ -2980,7 +3154,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                              .depth = surface.depth_view(),
                              .msaa = surface.msaa_view(),
                              .keep_depth = reshade_depth},
-                            environment.clear_colour, renderer::render_pass_timestamps(renderer::GpuPass::main), scene.occlusion_query_set());
+                            renderer::frame_linear()
+                                ? glm::vec4{glm::pow((glm::max)(glm::vec3{environment.clear_colour}, glm::vec3{0.0f}), glm::vec3{2.2f}),
+                                            environment.clear_colour.a}
+                                : environment.clear_colour,
+                            renderer::render_pass_timestamps(renderer::GpuPass::main), scene.occlusion_query_set());
         stage_clock.mark(FrameStage::begin, stages);
         scene.draw_background(pass, frame);
         stage_clock.mark(FrameStage::background, stages);
@@ -3018,6 +3196,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 .night = panel.night,
                 .night_exposure = panel.night_exposure * panel.exposure,
                 .saturation = panel.saturation,
+                .linear_scene = renderer::frame_linear(),
             };
             // The bloom (the experimental path): the scene's lights drawn once
             // more into its source against the camera's depth pre-pass, then
@@ -3035,7 +3214,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                         }
                     }
                     bloom_view = bloom->build(encoder, surface.hdr_view(), w, h,
-                                              {.textures = panel.effects.bloom_textures, .night = panel.night});
+                                              {.textures = panel.effects.bloom_textures, .night = panel.night, .linear = renderer::frame_linear()});
                     settings.bloom = 0.15f * panel.effects.bloom_strength;
                 }
             }
@@ -3077,6 +3256,16 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
 #endif
         }
         scene.after_main_pass(encoder);
+        // The sky's light from the probe the scene has just drawn (PBR stage
+        // 2), for the next frame: the sun (linear) and the ground's
+        // reflectance light the ground under the horizon.
+        if (renderer::frame_sky_light() && environment.sky_probe) {
+            const glm::vec3 sun = glm::pow((glm::max)(glm::vec3{environment.lighting.sun_diffuse}, glm::vec3{0.0f}), glm::vec3{2.2f});
+            sky_light.update(encoder, environment.sky_probe,
+                             {.to_sun = -glm::normalize(environment.lighting.sun_direction),
+                              .sun = sun,
+                              .ground_albedo = std::clamp(panel.effects.ground_bounce, 0.0f, 0.5f)});
+        }
 
         FrameCapture shot;
         FrameCapture depth_shot;
@@ -3084,6 +3273,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (capture_now && depth_copy && depth_export->texture())
             depth_shot = begin_capture(device, encoder, depth_export->texture(), static_cast<std::uint32_t>(width),
                                        static_cast<std::uint32_t>(height));
+        FrameCapture hdr_shot;
+        const bool hdr_linear = renderer::frame_linear();
+        if (capture_now && hdr && surface.hdr_texture())
+            hdr_shot = begin_capture(device, encoder, surface.hdr_texture(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 8);
         FrameCapture shafts_shot;
         if (capture_now && shafts && shafts->texture() && panel.effects.light_shafts)
             shafts_shot = begin_capture(device, encoder, shafts->texture(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 8);
@@ -3154,6 +3347,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 report_reshade_depth(context.context, depth_shot, near_plane, camera.far_plane());
             }
             if (shafts_shot.buffer) report_light_shafts(context.context, shafts_shot);
+            if (hdr_shot.buffer) report_hdr_frame(context.context, hdr_shot, hdr_linear);
+            if (renderer::frame_sky_light())
+                std::cout << "sky light: " << (sky_light.view().on() ? "from the probe" : "not made yet") << ", the sky open round the eye "
+                          << environment.sky_openness << std::endl;
             wgpuTextureRelease(frame_texture);
             return written ? exit_code::success : exit_code::device_failed;
         }

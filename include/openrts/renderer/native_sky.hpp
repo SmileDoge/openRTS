@@ -77,7 +77,20 @@ struct NativeSkyFrame {
     float coverage = 0.42f;             // the clouds' cover, 0..1 (the weather)
     glm::vec2 wind{6.0f, 0.0f};         // their drift (m/s, x east, z north)
     float elapsed = 0.0f;               // s since the last frame
+    // A thunderstorm (0..1): the layer lower and twice as thick, its base
+    // darker (little light from below gets in under a storm).
+    float storm = 0.0f;
+    // A lightning flash lighting the clouds round it (lightning.hpp): its
+    // place from the eye (m: x east, z north; y above sea), the strike (0:
+    // none; while it is the same the clouds' glow round it builds up over
+    // the frames) and its light now (0 between its strokes).
+    glm::vec3 flash_at{0.0f};
+    std::uint64_t flash_id = 0;
+    float flash = 0.0f;
 };
+
+// A lightning flash's colour on the clouds and the land (linear).
+inline const glm::vec3 lightning_colour{0.80f, 0.86f, 1.0f};
 
 #ifdef OPENRTS_HAS_WGPU
 class NativeSky {
@@ -101,6 +114,9 @@ public:
     // size each way, before the main pass: each frame marched with its own
     // jitter and blended into the last frames' (found again by direction),
     // so the march's steps leave no bands. render(frame_slot) reads them.
+    // A flash's light on them (NativeSkyFrame::flash) goes into a texture
+    // of its own, for a light of 1, built up the same way while the strike
+    // is the same, and is added by its light of the frame.
     void render_clouds(WGPUCommandEncoder encoder, const glm::mat4& projection, const glm::mat4& view, std::uint32_t width,
                        std::uint32_t height);
     // The sky where nothing is drawn yet: depth still at the far plane (a
@@ -109,6 +125,9 @@ public:
     // that far plane (the moon, SkyRenderer::render_satellites, over black):
     // it keeps what the clouds let through.
     void render(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, std::uint32_t slot);
+    // The clouds' base and top this frame (m above sea).
+    [[nodiscard]] float cloud_base() const noexcept;
+    [[nodiscard]] float cloud_top() const noexcept;
     // The average horizon's colour (display encoded), for RTS's fog colour.
     [[nodiscard]] glm::vec3 horizon_colour() const noexcept;
     // The horizon by direction, for the fog (FogRing).

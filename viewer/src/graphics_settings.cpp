@@ -82,7 +82,9 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"lamp_shadows", text(e.lamp_shadows)},
         {"lamps_daylight", text(e.lamps_in_daylight)},
         {"ground_bounce", text(e.ground_bounce)},
+        {"indoor_light", text(e.indoor_light)},
         {"light_falloff", s.physical_light ? "physical" : "rts"},
+        {"pbr", text(s.pbr)},
         {"light_range", text(s.light_range)},
         {"headlight_reach", text(s.headlight_reach)},
         {"night_ambient", text(s.night_ambient)},
@@ -142,7 +144,9 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
         whole(value_of, "lamp_shadows", static_cast<int>(e.lamp_shadows), 0, static_cast<int>(renderer::SceneEffects::max_lamp_shadows)));
     e.lamps_in_daylight = number(value_of, "lamps_daylight", e.lamps_in_daylight, 0.0f, 1.0f);
     e.ground_bounce = number(value_of, "ground_bounce", e.ground_bounce, 0.0f, 0.5f);
+    e.indoor_light = number(value_of, "indoor_light", e.indoor_light, 0.0f, 1.0f);
     if (const auto falloff = value_of("light_falloff")) s.physical_light = *falloff == "physical";
+    s.pbr = flag_not_zero(value_of, "pbr", s.pbr);
     s.light_range = number(value_of, "light_range", s.light_range, 0.0f, 3000.0f);
     s.headlight_reach = number(value_of, "headlight_reach", s.headlight_reach, 1.0f, 5.0f);
     s.night_ambient = number(value_of, "night_ambient", s.night_ambient, 0.5f, 8.0f);

@@ -88,12 +88,14 @@ int main() {
     remember("cloud_shadow_sharpness", "rubbish");
     remember("effect_ao_quality", "low");
     remember("light_falloff", "physical");
+    remember("pbr", "0");
     const auto clamped = load_graphics_settings();
     check(clamped.effects.shadow_cascades == 4, "cascades at most 4");
     check(clamped.effects.shadow_distance == 100.0f, "shadow distance at least 100 m");
     check(clamped.effects.shadow_map_size == 2048, "a size between is 2048");
     check(clamped.cloud_shadow_sharpness == GraphicsSettings{}.cloud_shadow_sharpness, "a broken number: the default");
     check(clamped.effects.occlusion_low && clamped.physical_light, "words read");
+    check(defaults.pbr && !clamped.pbr, "PBR on by default, off as kept");
 
     // A preset of one's own: its code and back, in a message, a file.
     OwnGraphicsPreset mine;

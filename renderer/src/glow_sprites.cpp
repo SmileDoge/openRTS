@@ -16,7 +16,7 @@ constexpr const char* glow_shader = R"(
 struct Frame {
     view_projection: mat4x4<f32>,
     right: vec4<f32>,  // xyz camera right, w: a pixel's size a metre away (m)
-    up: vec4<f32>,     // xyz camera up
+    up: vec4<f32>,     // xyz camera up, w: 1 the frame is linear (frame_encoding())
     eye: vec4<f32>,    // xyz eye, w: field of view / 45 degrees
 };
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -59,12 +59,30 @@ fn vs_main(@builtin(vertex_index) index: u32, @location(0) centre: vec3<f32>, @l
     return out;
 }
 
+// Added (rgb x alpha): into a linear frame the light it adds on black as the
+// display shows it, decoded.
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let texel = textureSample(light_texture, light_sampler, input.uv);
     let intensity = texel.a * input.colour.a;
-    // Premultiplied: added (rgb x alpha) or laid over by its alpha.
-    return vec4<f32>(texel.rgb * input.colour.rgb * intensity, intensity);
+    var light = texel.rgb * input.colour.rgb * intensity;
+    if (frame.up.w > 0.5) {
+        light = pow(max(light, vec3<f32>(0.0)), vec3<f32>(2.2));
+    }
+    return vec4<f32>(light, intensity);
+}
+
+// Laid over by its alpha (premultiplied): into a linear frame its colour
+// decoded, then premultiplied.
+@fragment
+fn fs_over(input: VertexOut) -> @location(0) vec4<f32> {
+    let texel = textureSample(light_texture, light_sampler, input.uv);
+    let intensity = texel.a * input.colour.a;
+    var colour = texel.rgb * input.colour.rgb;
+    if (frame.up.w > 0.5) {
+        colour = pow(max(colour, vec3<f32>(0.0)), vec3<f32>(2.2));
+    }
+    return vec4<f32>(colour * intensity, intensity);
 }
 )";
 
@@ -127,7 +145,7 @@ struct GlowSpriteRenderer::Impl {
         FrameUniform frame{
             .view_projection = projection * view,
             .right = glm::vec4{view[0][0], view[1][0], view[2][0], 0.0f},
-            .up = glm::vec4{view[0][1], view[1][1], view[2][1], 0.0f},
+            .up = glm::vec4{view[0][1], view[1][1], view[2][1], frame_linear() ? 1.0f : 0.0f},
             .eye = glm::vec4{glm::vec3{inverse[3]}, 0.0f},
         };
         // A pixel's size a metre away: the view's height over the pixels (the
@@ -181,7 +199,7 @@ GlowSpriteRenderer::GlowSpriteRenderer(const WGPUDevice device, const WGPUTextur
     impl.device = device;
     std::array<WGPUBindGroupLayoutEntry, 3> entries{};
     entries[0].binding = 0;
-    entries[0].visibility = WGPUShaderStage_Vertex;
+    entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment; // the fragment: the frame's encoding
     entries[0].buffer.type = WGPUBufferBindingType_Uniform;
     entries[0].buffer.minBindingSize = sizeof(FrameUniform);
     entries[1].binding = 1;
@@ -258,7 +276,8 @@ GlowSpriteRenderer::GlowSpriteRenderer(const WGPUDevice device, const WGPUTextur
     };
     for (const auto* blend : {&additive, &over}) {
         const WGPUColorTargetState target{.format = target_format, .blend = blend, .writeMask = WGPUColorWriteMask_All};
-        const WGPUFragmentState fragment{.module = shader, .entryPoint = wgsl_name("fs_main"), .targetCount = 1, .targets = &target};
+        const WGPUFragmentState fragment{
+            .module = shader, .entryPoint = wgsl_name(blend == &additive ? "fs_main" : "fs_over"), .targetCount = 1, .targets = &target};
         const WGPURenderPipelineDescriptor descriptor{
             .layout = pipeline_layout,
             .vertex = {.module = shader, .entryPoint = wgsl_name("vs_main"), .bufferCount = 1, .buffers = &vertex_layout},

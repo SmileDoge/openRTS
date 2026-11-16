@@ -266,6 +266,7 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
+#include <openrts/renderer/pbr.hpp>
 #include <array>
 #include <chrono>
 #include <cstring>
@@ -285,6 +286,7 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 
 #include "fog_ring_wgsl.hpp"
 #include "rts_light_shapes.hpp"
+#include "pbr_wgsl.hpp"
 #include "scene_effects_wgsl.hpp"
 
 namespace openrts::renderer {
@@ -319,9 +321,13 @@ struct FrameUniform {
     float fog_distance[4]; // x: start, y: end, w: physical falloff
     detail::GpuLight lights[ring_lights];
     std::int32_t ring_counts[12];
-    float shading[4]; // x: night_ambient_scale()
+    float shading[4]; // x: night_ambient_scale(), z: 1 the frame is linear (frame_encoding()), w: 1 PBR (frame_pbr())
     float fog_sun[4];            // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     float fog_ring[FogRing::count][4]; // the horizon's colour at each fog_ring_angle (display)
+    // The ground for the light (terrain_surface_material, renderer/pbr.hpp):
+    // roughness, metallic, a dielectric's F0, its specular factor. Last:
+    // the water's and the depth passes' Frame end before it.
+    float surface[4];
 };
 
 // Port of RTS terrain.vert/frag, the additional light sources included.
@@ -341,9 +347,10 @@ struct Frame {
     fog_distance: vec4<f32>,
     lights: array<Light, 90>, // nine a ring
     ring_counts: array<vec4<i32>, 3>,
-    shading: vec4<f32>, // x: the experimental path's night ambient factor
+    shading: vec4<f32>, // x: the experimental path's night ambient factor, z: 1 the frame is linear, w: 1 PBR
     fog_sun: vec4<f32>,             // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     fog_ring: array<vec4<f32>, 12>, // the horizon's colour at each fog_ring_angle (fog_ring.hpp)
+    surface: vec4<f32>,             // the ground: roughness, metallic, a dielectric's F0, specular factor (SurfaceMaterial)
 };
 
 // The experimental path (openRTS's shading, as the models': linear light,
@@ -493,7 +500,21 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
     let shadow = effects_shadow(input.world.xyz, n, input.clip);
     let ambient = sky_colour * (1.0 - 0.65 * sun_strength) * mix(0.55, 1.0, n.y * 0.5 + 0.5)
         * mix(1.0, frame.shading.x, 1.0 - sun_strength) * effects_ao(input.clip);
+    // Physically based light (frame.shading.w, frame_pbr(); PBR stage 1):
+    // the sun and the lamps by the BRDF (pbr_wgsl.hpp), the ground as
+    // frame.surface makes it (terrain_surface_material: as yet Lambert
+    // alone); the sky light Lambert on the albedo.
+    let pbr = frame.shading.w > 0.5;
+    let surface = pbr_surface(base, n, normalize(effects.eye.xyz - input.world.xyz), frame.surface);
+    let reflects = frame.surface.w > 0.0;
+    // The sky's own light (PBR stage 2, as the models'): Lambert by the
+    // sky's SH9, at least the environment's at night, near the eye as open
+    // as the sky round it; the reflection by the split sum.
+    let sky_light = pbr && effects.sky_light.x > 0.5;
+    let night_light = sky_colour * frame.shading.x * (1.0 - sun_strength);
+    let openness = effects_sky_openness(input.world.xyz);
     var lamps = vec3<f32>(0.0);
+    var lamps_out = vec3<f32>(0.0); // PBR: what the lamps send to the eye
     let physical = frame.fog_distance.w > 0.5; // physical_light_falloff()
     if (effects.flags.x != 0u) {
         let cluster = effects_cluster(input.clip, input.world.xyz);
@@ -503,7 +524,11 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
             let index = cluster_lights[first + i];
             let light = lamp_light(scene_lights[index], input.world, n, physical);
             if (any(light > vec3<f32>(0.0))) {
-                lamps = lamps + light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
+                let lit = light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
+                lamps = lamps + lit;
+                if (pbr) {
+                    lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(scene_lights[index], input.world), lit, reflects);
+                }
             }
         }
     } else {
@@ -512,17 +537,46 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
             let ring_light = frame.lights[input.ring * 9u + u32(i)];
             let light = lamp_light(ring_light, input.world, n, physical);
             if (any(light > vec3<f32>(0.0))) {
-                lamps = lamps + light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
+                let lit = light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
+                lamps = lamps + lit;
+                if (pbr) {
+                    lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(ring_light, input.world), lit, reflects);
+                }
             }
         }
     }
     lamps = lamps * (1.0 - effects.lamps.x); // weaker by day
+    lamps_out = lamps_out * (1.0 - effects.lamps.x);
     var colour = base * (ambient + sun_colour * facing * shadow + lamps);
+    if (pbr) {
+        var sky_ambient = ambient;
+        var sky = PbrSkyReflection(vec3<f32>(0.0), vec3<f32>(0.0));
+        if (sky_light) {
+            let occlusion = effects_ao(input.clip);
+            sky_ambient = max(effects_sky_light(n), night_light * mix(0.55, 1.0, n.y * 0.5 + 0.5)) * openness * occlusion;
+            if (reflects) {
+                sky = pbr_sky_reflection(surface, occlusion, night_light);
+                sky.light = sky.light * openness;
+            }
+        }
+        colour = surface.diffuse * sky_ambient * (vec3<f32>(1.0) - sky.taken) + sky.light
+            + pbr_lit(surface, to_sun, sun_colour * facing * shadow, reflects) + lamps_out;
+    }
     if (effects.flags.z != 0u) {
         colour = effects_aerial(colour, input.world.xyz);
     }
     if (effects.flags.y == 2u) {
-        return vec4<f32>(vec3<f32>(effects_ao(input.clip)), texel.w); // the occlusion itself (--effects show-ao)
+        // The occlusion itself (--effects show-ao), shown alike in either encoding.
+        let ao = vec3<f32>(effects_ao(input.clip));
+        return vec4<f32>(select(ao, pow(ao, vec3<f32>(2.2)), frame.shading.z > 0.5), texel.w);
+    }
+    // The linear HDR frame (frame_encoding()): the light as computed.
+    if (frame.shading.z > 0.5) {
+        var light = max(colour, vec3<f32>(0.0));
+        if (effects.flags.z == 0u && input.fog.w > 0.0) {
+            light = mix(light, to_linear(input.fog.xyz), input.fog.w);
+        }
+        return vec4<f32>(light, texel.w);
     }
     var display = to_display(select(shoulder(colour), max(colour, vec3<f32>(0.0)), hdr_output));
     if (effects.flags.z == 0u && input.fog.w > 0.0) {
@@ -557,6 +611,10 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         if (input.fog.w > 0.0) {
             color = vec4<f32>(((1.0 - input.fog.w) * color + input.fog.w * input.fog).xyz, color.w);
         }
+    }
+    // A linear frame: RTS's display colour as linear light.
+    if (frame.shading.z > 0.5) {
+        color = vec4<f32>(pow(max(color.xyz, vec3<f32>(0.0)), vec3<f32>(2.2)), color.w);
     }
     return color;
 }
@@ -725,6 +783,14 @@ fn fs_surface(input: SurfaceOut) -> @location(0) vec4<f32> {
     var display = water_display(select(water_shoulder(colour), max(colour, vec3<f32>(0.0)), hdr_output));
     if (!aerial && input.fog.w > 0.0) {
         display = mix(display, input.fog.xyz, input.fog.w);
+    }
+    // The linear HDR frame (frame_encoding()): the light as computed.
+    if (frame.shading.z > 0.5) {
+        var light = max(colour, vec3<f32>(0.0));
+        if (!aerial && input.fog.w > 0.0) {
+            light = mix(light, water_linear(input.fog.xyz), input.fog.w);
+        }
+        display = light;
     }
     // The shore: none of it where the ground meets the water.
     let shore = smoothstep(0.0, 0.35, input.depth);
@@ -1509,7 +1575,7 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
 
     // One module for both paths (the `experimental` override): both read
     // the effects (group 2), so both layouts have it.
-    const auto shader_code = std::string(detail::light_shapes_wgsl) + detail::effects_struct_wgsl + detail::effects_main_wgsl + detail::fog_ring_wgsl + terrain_shader;
+    const auto shader_code = std::string(detail::light_shapes_wgsl) + detail::effects_struct_wgsl + detail::effects_main_wgsl + detail::fog_ring_wgsl + detail::pbr_wgsl + terrain_shader;
     const WGPUShaderSourceWGSL source{
         .chain = {.sType = WGPUSType_ShaderSourceWGSL},
         .code = {.data = shader_code.data(), .length = shader_code.size()},
@@ -1882,13 +1948,19 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
 
     FrameUniform frame{};
     copy_vec4(frame.light_diffuse, lighting.sun_diffuse);
-    copy_vec4(frame.light_ambient, lighting.sun_ambient);
+    copy_vec4(frame.light_ambient, lighting.sun_ambient + lighting.flash);
     copy_vec4(frame.light_direction, glm::vec4{lighting.sun_direction, 0.0f});
     copy_vec4(frame.fog_colour, lighting.fog_colour);
     frame.fog_distance[0] = lighting.fog_start;
     frame.fog_distance[1] = lighting.fog_end;
     frame.fog_distance[3] = physical_light_falloff() ? 1.0f : 0.0f;
     frame.shading[0] = night_ambient_scale();
+    frame.shading[2] = frame_linear() ? 1.0f : 0.0f;
+    frame.shading[3] = frame_pbr() ? 1.0f : 0.0f;
+    frame.surface[0] = terrain_surface_material.roughness;
+    frame.surface[1] = terrain_surface_material.metallic;
+    frame.surface[2] = terrain_surface_material.reflectance;
+    frame.surface[3] = terrain_surface_material.specular;
     frame.fog_sun[0] = lighting.fog_ring.on ? lighting.fog_ring.sun.x : 0.0f;
     frame.fog_sun[1] = lighting.fog_ring.on ? lighting.fog_ring.sun.y : 0.0f;
     frame.fog_sun[2] = impl.eye.x;

@@ -110,7 +110,33 @@ InstallationConfig load_installation_config(const fs::path& root) {
     return config;
 }
 
+fs::path program_directory() {
+#ifdef _WIN32
+    std::wstring buffer(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+        if (length == 0) break;
+        if (length < buffer.size()) return fs::path(buffer.substr(0, length)).parent_path();
+        buffer.resize(buffer.size() * 2);
+    }
+#else
+    std::error_code error;
+    if (const auto self = fs::read_symlink("/proc/self/exe", error); !error) return self.parent_path();
+#endif
+    std::error_code error;
+    return fs::current_path(error);
+}
+
+fs::path own_packs_directory() {
+    return program_directory() / "PACKS";
+}
+
 void mount_installation(Vfs& vfs, const fs::path& root, const InstallationConfig& config) {
+    // openRTS's own packs first: the installation's packs, folders and mods
+    // win over them (a mod may replace the thunder).
+    if (std::error_code error; fs::is_directory(own_packs_directory(), error)) {
+        vfs.mount_pack_directory(own_packs_directory(), VfsLayer::base_pack);
+    }
     if (const auto packs = find_child(root, "PACKS")) {
         if (const auto base = find_child(*packs, "base")) vfs.mount_pack_directory(*base, VfsLayer::base_pack);
     }

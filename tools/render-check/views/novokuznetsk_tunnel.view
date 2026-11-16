@@ -1,0 +1,21 @@
+# openRTS render check: in the tunnel past mdd_portal_1.s (Novokuznetsk, tile -2964 +15045), 25 m in, looking out
+# openrts_viewer --window --view debug_views/render-check/novokuznetsk_tunnel.view
+root = E:\Games\MDD_Launcher\rts_main
+mode = route
+content = ROUTES/Novokuznetsk
+tile_x = -2964
+tile_z = 15045
+x = 705.5
+y = 238.6
+z = 518.4
+target_x = -166.5
+target_y = 238.6
+target_z = 1008.4
+yaw = 2.0824
+pitch = 0
+distance = 1000
+fly = 1
+time_of_day = 43200
+season = 1
+weather = 0
+experimental = 0

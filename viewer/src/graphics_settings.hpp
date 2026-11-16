@@ -43,6 +43,7 @@ struct GraphicsSettings {
     renderer::SceneEffectSettings effects;
     // Lamps and headlights (the new renderer).
     bool physical_light = false;    // light_falloff: physical / rts
+    bool pbr = true;                // pbr: physically based light (renderer::pbr_shading, with HDR)
     float light_range = 0.0f;       // m; 0: RTS's MaxLightDistance
     float headlight_reach = 1.0f;   // times the .eng's
     float night_ambient = 1.0f;     // the sky's light at night, a factor

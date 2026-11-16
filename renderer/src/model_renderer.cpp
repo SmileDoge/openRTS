@@ -7,6 +7,7 @@
 
 #ifdef OPENRTS_HAS_WGPU
 #include <openrts/renderer/depth.hpp>
+#include <openrts/renderer/pbr.hpp>
 #include <algorithm>
 #include <atomic>
 #include <array>
@@ -48,6 +49,7 @@
 #include <glm/gtc/matrix_inverse.hpp>
 
 #include "fog_ring_wgsl.hpp"
+#include "pbr_wgsl.hpp"
 #include "rts_light_shapes.hpp"
 #include "scene_effects_wgsl.hpp"
 #include <webgpu/wgpu.h>
@@ -81,11 +83,14 @@ struct MaterialUniform {
     std::int32_t named_shader;
     std::int32_t matrix_index; // into an animated instance's locals, -1: none
     float lod_bias;
+    // What the surface is for the light (SurfaceMaterial, renderer/pbr.hpp):
+    // roughness, metallic, a dielectric's F0, its specular factor.
+    float surface[4];
 };
 // The model's draws one after another in a storage buffer (WGSL array<Draw>,
-// stride 144): a binding serves every draw of the model with its texture.
+// stride 160): a binding serves every draw of the model with its texture.
 constexpr std::uint64_t material_stride = sizeof(MaterialUniform);
-static_assert(sizeof(MaterialUniform) == 144);
+static_assert(sizeof(MaterialUniform) == 160);
 
 // One instance of one draw call: the instance and the primitive it draws (its
 // slot in the model's draws). A multi-draw call covers several primitives of
@@ -142,12 +147,16 @@ struct FrameUniform {
     float fog_distance[4]; // x: start, y: end (<= 0 disables), z: interior lamps
     glm::mat4 view_projection;
     float eye[4]; // camera position (experimental path: view vector)
-    float shading[4]; // x: night_ambient_scale()
+    float shading[4]; // x: night_ambient_scale(), y: light_fullbright(), z: 1 the frame is linear (frame_encoding()), w: 1 PBR (frame_pbr())
     float fog_sun[4];            // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     float fog_ring[FogRing::count][4]; // the horizon's colour at each fog_ring_angle (display)
     // ModelPortal: centre, (across, half), (up, half), (eye) as columns.
     glm::mat4 portals[max_portals];
     glm::vec4 portal_doors[max_portals]; // far_door, near_door, door_half_across, door_half_up
+    // ModelRoom: world -> the room, its box (lower.w 1: there is one).
+    glm::mat4 room;
+    float room_lower[4];
+    float room_upper[4];
 };
 // WebGPU's least maxUniformBufferBindingSize.
 static_assert(sizeof(FrameUniform) <= 65536);
@@ -164,11 +173,14 @@ struct Frame {
     fog_distance: vec4<f32>,
     view_projection: mat4x4<f32>,
     eye: vec4<f32>,
-    shading: vec4<f32>, // x: the experimental path's night ambient factor
+    shading: vec4<f32>, // x: the experimental path's night ambient factor, y: FullBright lit, z: 1 the frame is linear, w: 1 PBR
     fog_sun: vec4<f32>,             // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     fog_ring: array<vec4<f32>, 12>, // the horizon's colour at each fog_ring_angle (fog_ring.hpp)
     portals: array<mat4x4<f32>, 2>, // centre, (across, half), (up, half), eye
     portal_doors: array<vec4<f32>, 2>, // far_door, near_door, the opening's half sizes
+    room: mat4x4<f32>,      // world -> the room the eye is in (ModelRoom)
+    room_lower: vec4<f32>,  // its box; w 1: there is one
+    room_upper: vec4<f32>,
 };
 
 // One primitive of the shape (static per model generation).
@@ -179,6 +191,7 @@ struct Draw {
     named_shader: i32,
     matrix_index: i32,
     lod_bias: f32,
+    surface: vec4<f32>, // roughness, metallic, a dielectric's F0, specular factor (SurfaceMaterial)
 };
 
 struct Instance {
@@ -481,6 +494,11 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             color = vec4<f32>(((1.0 - input.fog.w) * color + input.fog.w * input.fog).xyz, color.w);
         }
     }
+    // A linear frame (not the RTS path's own, frame_encoding()): RTS's
+    // display colour as linear light.
+    if (frame.shading.z > 0.5) {
+        color = vec4<f32>(pow(max(color.xyz, vec3<f32>(0.0)), vec3<f32>(2.2)), color.w);
+    }
 
     // Fixed-function alpha test of RTS: GL_GREATER 0.3; with MSAA its edge
     // as coverage.
@@ -504,7 +522,10 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 //  - ambient from the sky: full from above, darker towards the ground;
 //  - Lambert sun diffuse;
 //  - Blinn-Phong sun highlight, strength and sharpness by the MSTS light
-//    material (normal faint, LoShine, HiShine);
+//    material (normal faint, LoShine, HiShine); in a linear frame with PBR
+//    (frame_pbr(), stage 1) the sun and the lamps by GGX, Smith and Schlick
+//    instead (pbr_wgsl.hpp), the surface from the light material
+//    (renderer/pbr.hpp);
 //  - MSTS light materials: FullBright and the unlit shaders take the texture
 //    as is, HalfBright uses the vertex colour as ambient, DarkShade gets only
 //    the dimmed ambient as its light, vertex-colour emission adds the vertex
@@ -629,8 +650,29 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         // direction always shows; at night (no direct sun) it stays as given.
         // Full from above, 55 % from below.
         let sun_strength = clamp(dot(sun_colour, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-        var ambient = sky_colour * (1.0 - 0.65 * sun_strength) * mix(0.55, 1.0, n.y * 0.5 + 0.5)
-            * mix(1.0, frame.shading.x, 1.0 - sun_strength);
+        let hemisphere = mix(0.55, 1.0, n.y * 0.5 + 0.5);
+        var ambient = sky_colour * (1.0 - 0.65 * sun_strength) * hemisphere * mix(1.0, frame.shading.x, 1.0 - sun_strength);
+        // Physically based light (frame.shading.w, frame_pbr(); PBR stage 1):
+        // the sun and the lamps by the BRDF (pbr_wgsl.hpp), the surface as
+        // its light material makes it (draw.surface, SurfaceMaterial: some
+        // reflect nothing); the special materials as below.
+        let pbr = frame.shading.w > 0.5;
+        let surface = pbr_surface(base, n, view, draw.surface);
+        let reflects = draw.surface.w > 0.0;
+        // The sky's own light (PBR stage 2, effects.sky_light.x: SkyLight):
+        // the sky and the ground under it from the sky's probe, Lambert by
+        // its SH9 (the ground's bounce in it), the reflection by the split
+        // sum below; near the eye as open as the sky is round it. RTS's
+        // environment keeps its say at night: its sky light where its sun is
+        // gone (as the old path's at night, the night sky light's factor
+        // with it), where that is more than the sky's own (the moon and the
+        // night's glow openRTS's sky lacks), never added to it.
+        let sky_light = pbr && effects.sky_light.x > 0.5;
+        let openness = select(1.0, effects_sky_openness(input.world.xyz), sky_light);
+        let night_light = sky_colour * frame.shading.x * (1.0 - sun_strength);
+        if (sky_light) {
+            ambient = max(effects_sky_light(n), night_light * hemisphere) * openness;
+        }
         // The sun's shadow and the ambient occlusion (SceneEffects).
         let shadow = effects_shadow(input.world.xyz, n, input.clip);
         // Glass (blended) takes none: the occlusion at its pixel is of the
@@ -638,12 +680,31 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         // shading through it).
         let occlusion = select(effects_ao(input.clip), 1.0, blended);
         ambient = ambient * occlusion;
+        // Indoors (the cab or salon the eye is in): the sun come in through
+        // the windows and the sky's light, thrown about the room
+        // (SceneEffectSettings::indoor_light, effects.lamps.w); the shadows
+        // alone left it far darker than outside. The occlusion's corners
+        // kept. With the sky's own light, its light facing up, and none in a
+        // tunnel.
+        var in_room = false;
+        if (frame.room_lower.w > 0.5) {
+            let at = (frame.room * vec4<f32>(input.world.xyz, 1.0)).xyz;
+            in_room = all(at >= frame.room_lower.xyz) && all(at <= frame.room_upper.xyz);
+        }
+        if (in_room && effects.lamps.w > 0.0) {
+            let room_sky = select(sky_colour, effects_sky_up(), sky_light);
+            ambient = ambient + effects.lamps.w * (sun_colour * max(to_sun.y, 0.0) * 0.25 + room_sky * 0.35) * sqrt(occlusion) * openness;
+        }
         var diffuse = sun_colour * facing * shadow;
         // Light the ground throws back (SceneEffectSettings::ground_bounce):
         // the ground lit by the sun and the sky, onto surfaces turned down
-        // (all of it) or sideways (half); the occlusion keeps gaps dark.
+        // (all of it) or sideways (half); the occlusion keeps gaps dark. The
+        // sky's own light has it as its lower hemisphere.
         var bounce = effects.lamps.y * (sun_colour * max(to_sun.y, 0.0) + sky_colour * (1.0 - 0.65 * sun_strength))
             * (0.5 - 0.5 * n.y) * occlusion;
+        if (sky_light) {
+            bounce = vec3<f32>(0.0);
+        }
         var strength = 0.04;
         var sharpness = 16.0;
         if (material == -6) { // LoShine
@@ -668,6 +729,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         // in display space, as RTS's (its colour times the factor, then
         // linear): a bright middle fading out, not a flat disc.
         var lamps = vec3<f32>(0.0);
+        var lamps_out = vec3<f32>(0.0); // PBR: what the lamps send to the eye
         let physical = frame.fog_distance.w > 0.5; // physical_light_falloff()
         if (effects.flags.x != 0u) {
             // Every lamp of the fragment's cluster (SceneEffects).
@@ -678,7 +740,11 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                 let index = cluster_lights[first + i];
                 let light = lamp_light(scene_lights[index], input.world, n, physical);
                 if (any(light > vec3<f32>(0.0))) {
-                    lamps = lamps + light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
+                    let lit = light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
+                    lamps = lamps + lit;
+                    if (pbr) {
+                        lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(scene_lights[index], input.world), lit, reflects);
+                    }
                 }
             }
         } else {
@@ -688,27 +754,52 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                 let ring_light = frame.rings[input.ring * 9u + u32(i)];
                 let light = lamp_light(ring_light, input.world, n, physical);
                 if (any(light > vec3<f32>(0.0))) {
-                    lamps = lamps + light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
+                    let lit = light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
+                    lamps = lamps + lit;
+                    if (pbr) {
+                        lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(ring_light, input.world), lit, reflects);
+                    }
                 }
             }
         }
         // Weaker by day (SceneEffectSettings::lamps_in_daylight): the
         // headlights and the scenery's lamps out in the sun.
         lamps = lamps * (1.0 - effects.lamps.x);
+        lamps_out = lamps_out * (1.0 - effects.lamps.x);
         // The cab's and salon's lamps by day at least half as strong as at
         // night (effects.lamps.z): they shine indoors, out of the sun (until
         // 2026-11-15 faded with the others: with the setting at 0 a cab's
         // lights did nothing by day).
         var cab_lamps = vec3<f32>(0.0);
+        var cab_out = vec3<f32>(0.0);
         let interior_lights = min(i32(frame.fog_distance.z), 64);
         for (var i = 0; i < interior_lights; i = i + 1) {
             let factor = interior_factor(frame.interior[i], input.world, n);
             if (factor > 0.0) {
-                cab_lamps = cab_lamps + to_linear(frame.interior[i].diffuse.xyz * factor);
+                let lit = to_linear(frame.interior[i].diffuse.xyz * factor);
+                cab_lamps = cab_lamps + lit;
+                if (pbr) {
+                    cab_out = cab_out + pbr_lit(surface, pbr_lamp_way(frame.interior[i], input.world), lit, reflects);
+                }
             }
         }
         lamps = lamps + cab_lamps * (1.0 - effects.lamps.z);
-        colour = base * (ambient + diffuse + lamps + bounce) + highlight;
+        lamps_out = lamps_out + cab_out * (1.0 - effects.lamps.z);
+        if (pbr) {
+            // The sun's light (DarkShade's: the sky's, Lambert alone) by the
+            // BRDF; the sky's light Lambert on the albedo, less what its
+            // reflection takes. Indoors a surface reflects mostly the room:
+            // the sky's reflection there a third (about the windows' share).
+            var sky = PbrSkyReflection(vec3<f32>(0.0), vec3<f32>(0.0));
+            if (sky_light && reflects) {
+                sky = pbr_sky_reflection(surface, occlusion, night_light);
+                sky.light = sky.light * openness * select(1.0, 0.35, in_room);
+            }
+            colour = surface.diffuse * (ambient + bounce) * (vec3<f32>(1.0) - sky.taken) + sky.light
+                + pbr_lit(surface, to_sun, diffuse, reflects) + lamps_out;
+        } else {
+            colour = base * (ambient + diffuse + lamps + bounce) + highlight;
+        }
         if (material == -1) { // vertex colour emission
             colour = max(colour, base * to_linear(input.colour.xyz));
         }
@@ -719,7 +810,18 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         colour = effects_aerial(colour, input.world.xyz);
     }
     if (effects.flags.y == 2u) {
-        return vec4<f32>(vec3<f32>(effects_ao(input.clip)), coverage); // the occlusion itself (--effects show-ao)
+        // The occlusion itself (--effects show-ao), shown alike in either encoding.
+        let ao = vec3<f32>(effects_ao(input.clip));
+        return vec4<f32>(select(ao, pow(ao, vec3<f32>(2.2)), frame.shading.z > 0.5), coverage);
+    }
+    // The linear HDR frame (frame_encoding()): the light as computed, RTS's
+    // fog (aerial perspective off) mixed in linear light.
+    if (frame.shading.z > 0.5) {
+        var light = max(colour, vec3<f32>(0.0));
+        if (effects.flags.z == 0u && input.fog.w > 0.0) {
+            light = mix(light, to_linear(input.fog.xyz), input.fog.w);
+        }
+        return vec4<f32>(light, coverage);
     }
     var display = to_display(select(shoulder(colour), max(colour, vec3<f32>(0.0)), hdr_output));
     if (effects.flags.z == 0u && input.fog.w > 0.0) {
@@ -795,7 +897,7 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
     result.eye[3] = 1.0f;
     auto& sun = result.lights[0];
     copy_vec4(sun.diffuse, lighting.sun_diffuse);
-    copy_vec4(sun.ambient, lighting.sun_ambient);
+    copy_vec4(sun.ambient, lighting.sun_ambient + lighting.flash);
     sun.direction[0] = lighting.sun_direction.x;
     sun.direction[1] = lighting.sun_direction.y;
     sun.direction[2] = lighting.sun_direction.z;
@@ -815,12 +917,22 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
     result.fog_distance[3] = physical_light_falloff() ? 1.0f : 0.0f;
     result.shading[0] = night_ambient_scale();
     result.shading[1] = light_fullbright() ? 1.0f : 0.0f;
+    result.shading[2] = frame_linear() ? 1.0f : 0.0f;
+    result.shading[3] = frame_pbr() ? 1.0f : 0.0f;
     fill_fog_ring(result, lighting.fog_ring, eye);
     for (std::size_t i = 0; i < (std::min)(lighting.portals.size(), max_portals); ++i) {
         const auto& p = lighting.portals[i];
         result.portals[i] = glm::mat4{glm::vec4{p.centre, p.far_cut}, glm::vec4{p.across, p.half_across}, glm::vec4{p.up, p.half_up},
                                       glm::vec4{eye, p.near_cut}};
         result.portal_doors[i] = glm::vec4{p.far_door, p.near_door, p.door_half_across, p.door_half_up};
+    }
+    result.room = lighting.room ? lighting.room->to_room : glm::mat4{1.0f};
+    if (lighting.room) {
+        for (int i = 0; i < 3; ++i) {
+            result.room_lower[i] = lighting.room->lower[i];
+            result.room_upper[i] = lighting.room->upper[i];
+        }
+        result.room_lower[3] = 1.0f;
     }
     return result;
 }
@@ -911,7 +1023,7 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
 
 [[nodiscard]] WGPUShaderModule create_shader_module(const WGPUDevice device, const char* body, const bool effects = false) {
     auto code = std::string(detail::light_shapes_wgsl) + shader_interface + detail::fog_ring_wgsl;
-    if (effects) code += std::string(detail::effects_struct_wgsl) + detail::effects_main_wgsl;
+    if (effects) code += std::string(detail::effects_struct_wgsl) + detail::effects_main_wgsl + detail::pbr_wgsl;
     code += body;
     const WGPUShaderSourceWGSL source{
         .chain = {.sType = WGPUSType_ShaderSourceWGSL},
@@ -936,13 +1048,14 @@ struct DepthFrame {
     portals: array<mat4x4<f32>, 2>, // the camera's pass: as Frame.portals
     portal_doors: array<vec4<f32>, 2>,
 };
-struct Draw {
+struct Draw { // as the shading paths' (MaterialUniform)
     local: mat4x4<f32>,
     local_normal: mat4x4<f32>,
     light_material: i32,
     named_shader: i32,
     matrix_index: i32,
     lod_bias: f32,
+    surface: vec4<f32>,
 };
 struct Instance {
     transform: mat4x4<f32>,
@@ -1711,6 +1824,7 @@ struct ModelRenderer::Impl {
     }
     // A draw's MaterialUniform with the given light material.
     [[nodiscard]] static MaterialUniform material_uniform(const RenderModel::Impl::Draw& draw, const std::int32_t light_material) {
+        const auto surface = rts_surface_material(light_material);
         return {
             .local = draw.world,
             .local_normal = glm::transpose(glm::inverse(draw.world)),
@@ -1718,6 +1832,7 @@ struct ModelRenderer::Impl {
             .named_shader = static_cast<std::int32_t>(draw.material.shader_uniform),
             .matrix_index = draw.range.matrix_index,
             .lod_bias = draw.material.lod_bias,
+            .surface = {surface.roughness, surface.metallic, surface.reflectance, surface.specular},
         };
     }
 

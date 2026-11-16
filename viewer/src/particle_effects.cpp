@@ -70,7 +70,7 @@ void PrecipitationView::update(const float elapsed, const glm::vec3& eye, const 
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     const glm::vec3 low = eye - glm::vec3{box_half_width, box_half_height, box_half_width};
     const glm::vec3 high = eye + glm::vec3{box_half_width, box_half_height, box_half_width};
-    const auto count = static_cast<std::size_t>(static_cast<float>(precipitation_->density) * std::clamp(amount, 0.0f, 1.0f));
+    const auto count = static_cast<std::size_t>(static_cast<float>(precipitation_->density) * std::clamp(amount, 0.0f, 2.0f));
     while (drops_.size() < count) {
         drops_.push_back({low.x + unit(random_) * (high.x - low.x), low.y + unit(random_) * (high.y - low.y),
                           low.z + unit(random_) * (high.z - low.z)});

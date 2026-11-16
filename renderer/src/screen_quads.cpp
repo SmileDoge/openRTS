@@ -44,16 +44,21 @@ fn vs_main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @locati
 
 // Half a mip level sharper than the plain choice: a screen's small print
 // is read from the seat (testers, 2026-11-12: the ЭП20's БЛОК was blurry).
+// eye.w 1: the frame is linear (frame_encoding()): RTS's display colours decoded.
+fn encoded(c: vec3<f32>) -> vec3<f32> {
+    return select(c, pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2)), frame.eye.w > 0.5);
+}
+
 @fragment
 fn fs_blend(input: VertexOut) -> @location(0) vec4<f32> {
     let texel = textureSampleBias(screen_texture, screen_sampler, input.uv, -0.5) * input.colour;
-    return texel;
+    return vec4<f32>(encoded(texel.rgb), texel.a);
 }
 
 @fragment
 fn fs_opaque(input: VertexOut) -> @location(0) vec4<f32> {
     let texel = textureSampleBias(screen_texture, screen_sampler, input.uv, -0.5) * input.colour;
-    return vec4<f32>(texel.rgb, 1.0);
+    return vec4<f32>(encoded(texel.rgb), 1.0);
 }
 )";
 
@@ -167,7 +172,12 @@ fn to_display(c: vec3<f32>) -> vec3<f32> {
 fn fs_composite(input: VertexOut) -> @location(0) vec4<f32> {
     let texel = textureSampleBias(image, image_sampler, input.uv, -0.5);
     let straight = min(texel.rgb / max(texel.a, 0.00001), vec3<f32>(1.0));
-    return vec4<f32>(to_display(straight), texel.a);
+    var display = to_display(straight);
+    // A linear frame (eye.w 1): as the gamma 2.2 frame would show it, decoded.
+    if (frame.eye.w > 0.5) {
+        display = pow(display, vec3<f32>(2.2));
+    }
+    return vec4<f32>(display, texel.a);
 }
 )";
 
@@ -520,7 +530,7 @@ ScreenQuadRenderer::ScreenQuadRenderer(const WGPUDevice device, const WGPUTextur
     impl.textures.emplace_back();
     std::array<WGPUBindGroupLayoutEntry, 3> entries{};
     entries[0].binding = 0;
-    entries[0].visibility = WGPUShaderStage_Vertex;
+    entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment; // the fragment: the frame's encoding
     entries[0].buffer.type = WGPUBufferBindingType_Uniform;
     entries[0].buffer.minBindingSize = sizeof(FrameUniform);
     entries[1].binding = 1;
@@ -588,7 +598,7 @@ ScreenQuadRenderer::ScreenQuadRenderer(const WGPUDevice device, const WGPUTextur
         impl.texture_layout = wgpuDeviceCreateBindGroupLayout(device, &texture_descriptor);
         WGPUBindGroupLayoutEntry frame{};
         frame.binding = 0;
-        frame.visibility = WGPUShaderStage_Vertex;
+        frame.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment; // the fragment: the frame's encoding
         frame.buffer.type = WGPUBufferBindingType_Uniform;
         frame.buffer.minBindingSize = sizeof(FrameUniform);
         const WGPUBindGroupLayoutDescriptor frame_descriptor{.entryCount = 1, .entries = &frame};
@@ -799,7 +809,7 @@ void ScreenQuadRenderer::prepare(const WGPUCommandEncoder encoder) {
 void ScreenQuadRenderer::render(const WGPURenderPassEncoder pass, const glm::mat4& view_projection, const glm::vec3& eye) {
     auto& impl = *impl_;
     if (!ready() || impl.draws.empty() || !impl.vertices) return;
-    const FrameUniform frame{.view_projection = view_projection, .eye = glm::vec4{eye, 0.0f}};
+    const FrameUniform frame{.view_projection = view_projection, .eye = glm::vec4{eye, frame_linear() ? 1.0f : 0.0f}};
     const auto queue = wgpuDeviceGetQueue(impl.device);
     if (!queue) return;
     wgpuQueueWriteBuffer(queue, impl.uniform, 0, &frame, sizeof(frame));

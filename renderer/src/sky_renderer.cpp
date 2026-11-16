@@ -163,6 +163,11 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     if (input.fog.w > 0.0) {
         color = vec4<f32>(((1.0 - input.fog.w) * color + input.fog.w * input.fog).xyz, color.w);
     }
+    // Drawn into a linear frame (draw.padding 1, frame_encoding()): RTS's
+    // display colour as linear light.
+    if (draw.padding > 0.5) {
+        color = vec4<f32>(pow(max(color.xyz, vec3<f32>(0.0)), vec3<f32>(2.2)), color.w);
+    }
     return color;
 }
 )";
@@ -776,8 +781,12 @@ void SkyRenderer::Impl::draw(const WGPURenderPassEncoder pass, const glm::mat4& 
 
     const auto base = slot * self->draw_capacity * draw_uniform_stride;
     std::vector<std::byte> uniforms(emitted.size() * draw_uniform_stride);
+    // The frame's slot (0) in the frame's encoding; the probe's faces gamma 2.2.
+    const float linear = slot == 0 && frame_linear() ? 1.0f : 0.0f;
     for (std::size_t i = 0; i < emitted.size(); ++i) {
-        std::memcpy(uniforms.data() + i * draw_uniform_stride, &emitted[i].uniform, sizeof(DrawUniform));
+        auto uniform = emitted[i].uniform;
+        uniform.padding = linear;
+        std::memcpy(uniforms.data() + i * draw_uniform_stride, &uniform, sizeof(DrawUniform));
     }
     FrameUniform frame{};
     copy_vec4(frame.light_diffuse, state.lighting.sun_diffuse);

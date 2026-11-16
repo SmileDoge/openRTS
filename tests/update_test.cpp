@@ -10,6 +10,8 @@
 #include <utility>
 #include <vector>
 
+#include <openrts/core/vfs.hpp>
+#include <openrts/core/virtual_path.hpp>
 #include <openrts/core/zip_archive.hpp>
 
 #include "update.hpp"
@@ -155,6 +157,37 @@ void installing(const fs::path& work) {
     check(!fs::exists(folder / "openrts_game.exe.new"), "its unpacked files removed");
 }
 
+// openRTS's own packs (PACKS beside the program, docs/vfs.md): an update
+// from a version without them lays the folder down with its pack; a later one
+// replaces the pack while the running menu has it mounted (the VFS opens a
+// pack only while it reads it, so it can be renamed aside).
+void own_packs(const fs::path& work) {
+    const auto folder = work / "packs_game";
+    const auto old_list = work / "data" / "old_packs.txt";
+    write_file(folder / "openrts_game.exe", "old menu");
+    write_zip(work / "thunder1.zip", {{"SOUND/OPENRTS/THUNDER/thunder_near_1.wav", "one"}});
+    write_zip(work / "with_packs.zip", {{"openRTS-v9.9.11/openrts_game.exe", "new menu"},
+                                        {"openRTS-v9.9.11/PACKS/openrts-thunder.zip", read_file(work / "thunder1.zip")}});
+    std::string error;
+    check(install_archive(work / "with_packs.zip", folder, old_list, error), "an update from a version without packs: " + error);
+    check(read_file(folder / "PACKS" / "openrts-thunder.zip") == read_file(work / "thunder1.zip"), "the PACKS folder laid down with its pack");
+    const auto clap = *openrts::core::VirtualPath::parse("SOUND/OPENRTS/THUNDER/thunder_near_1.wav");
+    {
+        openrts::core::Vfs vfs;
+        vfs.mount_pack_directory(folder / "PACKS", openrts::core::VfsLayer::base_pack);
+        vfs.build_index();
+        check(vfs.read(clap).value_or("") == "one", "the pack mounted and read");
+        // The next release's pack while that one is mounted.
+        write_zip(work / "thunder2.zip", {{"SOUND/OPENRTS/THUNDER/thunder_near_1.wav", "two"}});
+        write_zip(work / "next.zip", {{"openRTS-v9.9.12/openrts_game.exe", "newer menu"},
+                                      {"openRTS-v9.9.12/PACKS/openrts-thunder.zip", read_file(work / "thunder2.zip")}});
+        check(install_archive(work / "next.zip", folder, old_list, error), "a pack replaced while it is mounted: " + error);
+        check(read_file(folder / "PACKS" / "openrts-thunder.zip") == read_file(work / "thunder2.zip"), "the new pack in place");
+    }
+    remove_old_files(old_list);
+    check(!fs::exists(folder / "PACKS" / "openrts-thunder.zip.old"), "the old pack deleted at the next start");
+}
+
 void folders(const fs::path& work) {
     check(folder_writable(work), "the test folder is writable");
     write_file(work / "dev" / "CMakeCache.txt", "");
@@ -173,6 +206,7 @@ int main() {
     versions();
     releases();
     installing(work);
+    own_packs(work);
     folders(work);
     fs::remove_all(work, error);
     if (failures == 0) std::cout << "update: all checks passed\n";

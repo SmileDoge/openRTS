@@ -51,6 +51,7 @@ struct WindowOptions {
     float time_speed = 1.0f;
     renderer::rts::Season season = renderer::rts::Season::summer;
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
+    bool storm = false; // --weather storm: a thunderstorm (the weather rain)
     bool vsync = true;
     // The FPS limit: 30..500 frames per second, 0 none (--fps-limit; else
     // the remembered "fps_limit", the start menu's and the panel's setting).
@@ -79,6 +80,22 @@ struct WindowOptions {
     bool discord = true;
     // HDR frame with a tone curve (AgX in the experimental path), --hdr.
     bool hdr = false;
+    // --hdr-encoding linear|gamma: the experimental HDR frame's encoding
+    // (renderer::linear_hdr(); linear by default).
+    std::optional<bool> hdr_linear;
+    // --pbr on|off: the experimental path's physically based light
+    // (renderer::pbr_shading(); the remembered choice otherwise).
+    std::optional<bool> pbr;
+    // --sky-light on|off: the sky's light from its probe (PBR stage 2,
+    // renderer::sky_light_from_probe(); on by default).
+    std::optional<bool> sky_light;
+    // --native-sky on|off: openRTS's sky or RTS's dome for this run (else
+    // the remembered choice).
+    std::optional<bool> native_sky;
+    // --capture-switch-path: with --capture, the rendering path switched at
+    // a third of capture_at and back at two thirds (a check that nothing of
+    // the other path's frames is left).
+    bool capture_switch_path = false;
     // --backend auto|vulkan|dx12|opengl: this run's graphics API, instead of
     // the remembered one (viewer_state.ini `backend`).
     std::optional<renderer::GraphicsBackend> backend;

@@ -27,6 +27,7 @@ From lowest to highest priority:
 
 | Layer | Source | Where | Purpose |
 |---|---|---|---|
+| 0 | openRTS's own packs | `PACKS/*.zip` beside the program | what openRTS brings (the thunder), below |
 | 1 | base packs | `PACKS/base/*.zip` | routes, trains, GLOBAL shipped as archives |
 | 2 | install folders | `ROUTES`, `TRAINS`, `GLOBAL`, `SOUND`, ... | classic installation, local edits |
 | 3 | patch packs | `PACKS/patch/*.zip` | updates and fixes to base packs or folders |
@@ -42,6 +43,25 @@ From lowest to highest priority:
   mod not in the list is not mounted. Later entries win.
 - `RTS/MODS` is RTS's own plugin folder (DLLs) and is unrelated; openRTS mods
   live in `MODS_OPENRTS` to avoid confusion.
+
+## openRTS's own packs (2026-11-16)
+
+What openRTS itself brings (the thunder, `openrts-thunder.zip`) lies in
+`PACKS` beside the program (`openrts_game.exe`, `openrts_viewer.exe`;
+`core::own_packs_directory()`), its ZIPs mounted before every layer of the
+installation, as base packs (layer 0 above): the installation's packs and
+folders and the mods win over them, so a mod replaces the thunder by giving
+the same paths. Nothing to install: the release's archive has the folder,
+and the build packs it there (`openrts_own_packs`, every build: the
+sources in `packs/<name>` packed by `openrts-pack pack packs/thunder --as
+SOUND/OPENRTS/THUNDER`; CI copies the folder into the release's archive).
+The start menu's update lays it down as every file of the archive, so a
+player updating from a version without it gets it; a later update replaces
+a pack the running menu has mounted (the VFS opens a pack only while it
+reads it, so it is renamed aside like the programs; `openrts.update`). A
+ZIP directly in the installation's `PACKS` is
+still not mounted (only when openRTS itself lies in the installation's
+root: then that is its own folder).
 
 ## Index
 

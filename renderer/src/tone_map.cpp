@@ -17,7 +17,7 @@ struct Settings {
     saturation: f32,
     bloom: f32,     // the bloom's strength (0: none)
     shafts: f32,    // 1: the light shafts added
-    pad2: f32,
+    linear_scene: f32, // 1: the scene frame holds linear light, 0: gamma 2.2 (frame_encoding())
 };
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> settings: Settings;
@@ -106,12 +106,16 @@ fn khronos_neutral(c_in: vec3<f32>) -> vec3<f32> {
 // The display-encoded picture through the chosen curve, the bloom's and
 // the light shafts' light (scene-linear, already weighed) added before the
 // exposure.
-fn curved(encoded: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
+fn curved(stored: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
+    let linear_frame = settings.linear_scene > 0.5;
     if (settings.curve == 0u) {
-        // The scene as drawn: the RTS look.
-        return clamp(encoded, vec3<f32>(0.0), vec3<f32>(1.0));
+        // The scene as drawn: the RTS look (a linear frame encoded back).
+        if (linear_frame) {
+            return pow(clamp(stored, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));
+        }
+        return clamp(stored, vec3<f32>(0.0), vec3<f32>(1.0));
     }
-    let scene_linear = pow(max(encoded, vec3<f32>(0.0)), vec3<f32>(2.2)) + bloom;
+    let scene_linear = select(pow(max(stored, vec3<f32>(0.0)), vec3<f32>(2.2)), max(stored, vec3<f32>(0.0)), linear_frame) + bloom;
     let linear = scene_linear * settings.exposure;
     if (settings.curve == 4u || settings.curve == 5u) {
         // Khronos keeps the day as authored (ACES: contrastier, its shade
@@ -176,7 +180,7 @@ struct SettingsUniform {
     float saturation = 1.0f;
     float bloom = 0.0f;
     float shafts = 0.0f;
-    float pad = 0.0f;
+    float linear_scene = 0.0f;
 };
 
 } // namespace
@@ -294,7 +298,8 @@ void ToneMapper::render(const WGPUCommandEncoder encoder, const WGPUTextureView 
                                    .night_exposure = tone.night_exposure,
                                    .saturation = tone.saturation,
                                    .bloom = bloom ? (std::max)(tone.bloom, 0.0f) : 0.0f,
-                                   .shafts = shafts && tone.shafts ? 1.0f : 0.0f};
+                                   .shafts = shafts && tone.shafts ? 1.0f : 0.0f,
+                                   .linear_scene = tone.linear_scene ? 1.0f : 0.0f};
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
         wgpuQueueWriteBuffer(queue, impl.settings, 0, &settings, sizeof(settings));
         wgpuQueueRelease(queue);

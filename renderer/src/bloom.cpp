@@ -19,7 +19,7 @@ struct Params {
     threshold: f32,    // what is over it blooms (scene-linear)
     knee: f32,         // the threshold's soft start
     night: f32,        // 0 day .. 1 night: the brightest texels bloom (see light_at)
-    pad0: f32,
+    linear: f32,       // 1: the scene and the lights' source hold linear light, 0: gamma 2.2
     pad1: vec2<f32>,
 };
 @group(0) @binding(0) var input_a: texture_2d<f32>; // the scene (the first pass), else the larger image
@@ -60,14 +60,18 @@ fn over(c: vec3<f32>) -> vec3<f32> {
 // painted on a platform stay below), as the night's eye sees them; and the
 // lights' glows.
 fn light_at(uv: vec2<f32>) -> vec3<f32> {
-    let encoded = max(textureSampleLevel(input_a, linear_clamp, uv, 0.0).rgb, vec3<f32>(0.0));
-    let scene = pow(encoded, vec3<f32>(2.2));
+    let stored = max(textureSampleLevel(input_a, linear_clamp, uv, 0.0).rgb, vec3<f32>(0.0));
+    let linear_frame = params.linear > 0.5;
+    let scene = select(pow(stored, vec3<f32>(2.2)), stored, linear_frame);
+    // How bright it is as displayed (the texture's own brightness).
+    let encoded = select(stored, pow(stored, vec3<f32>(1.0 / 2.2)), linear_frame);
     var light = over(scene);
     if (params.night > 0.0) {
         let top = max(encoded.r, max(encoded.g, encoded.b));
         light = max(light, scene * smoothstep(0.8, 1.0, top) * params.night);
     }
-    let glow = pow(max(textureSampleLevel(input_b, linear_clamp, uv, 0.0).rgb, vec3<f32>(0.0)), vec3<f32>(2.2));
+    let glow_stored = max(textureSampleLevel(input_b, linear_clamp, uv, 0.0).rgb, vec3<f32>(0.0));
+    let glow = select(pow(glow_stored, vec3<f32>(2.2)), glow_stored, linear_frame);
     return min(light + glow, vec3<f32>(1000.0));
 }
 
@@ -153,7 +157,7 @@ struct Params {
     float threshold = 1.0f;
     float knee = 0.5f;
     float night = 0.0f;
-    float pad0 = 0.0f;
+    float linear = 0.0f;
     float pad1[2]{};
 };
 static_assert(sizeof(Params) == 32);
@@ -395,6 +399,7 @@ WGPUTextureView BloomRenderer::build(const WGPUCommandEncoder encoder, const WGP
         p.texel[0] = 1.0f / static_cast<float>((std::max)(input_width, 1u));
         p.texel[1] = 1.0f / static_cast<float>((std::max)(input_height, 1u));
         p.night = night;
+        p.linear = settings.linear ? 1.0f : 0.0f;
         return slots++;
     };
     const auto first = add(width, height, settings.textures ? std::clamp(settings.night, 0.0f, 1.0f) : 0.0f);

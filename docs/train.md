@@ -297,8 +297,12 @@ built, against the proposal below:
   by load (3.8 / 3.0 / 1.5 atm over 60 / 35 t), flat release when the pipe
   is back within 0.06 atm of the РК (0.025 in the research made a 100-car
   train never release in II). 292: the ЗР as the reference with its
-  0.5 atm/min stability, full release at +0.12 above the ЗР. 305: the
-  cylinder follows the EP demand at 1 atm/s.
+  0.5 atm/min stability, full release at +0.12 above the ЗР. 305: with the
+  ЭПТ working the wire holds the cylinder at its demand (filled from the ЗР
+  at up to 1 atm/s, released at 0.35), and the 292 behind it answers the
+  pipe all the same, the higher of the two kept. Until 2026-11-16 the wire
+  alone set it: with the ЭПТ on, a pipe reduction by the driver's valve
+  braked nothing (the ЭП2Д, testers).
 - **Brake shoes** (`simulation/brake_shoes.hpp`, 2026-11-13): the shoes'
   friction changes with the speed and the pressing force by the formulas of
   the Russian traction rules (Правила тяговых расчётов), K the force on one
@@ -558,7 +562,11 @@ The other two choices take the air after the valve from the model:
   торможение]"), the 2ЭС6, 2ЭС4К, 2ТЭ10, ВЛ60пк and ВЛ82м the valve stayed
   in II when braking (testers: "на ЧС7 без ЭПТ УР не стравливает"), and the
   ЭП2Д's VI..I ("[VI Положение]") fell back to I..VI. Every Brakes.dll cab
-  of the MaDaDev install is in `openrts.dll_air`. The charging pressure is the cab's reducer
+  of the MaDaDev install is in `openrts.dll_air`. The ЭП2Д has a second
+  handle of the train brake, the КПТ (`BR_KPTID1`, its states named as its
+  395's; Brakes.dll works the pipe from either): the handle moved last sets
+  openRTS's valve, the 395 at first. Until 2026-11-16 the КПТ did nothing to
+  it (testers braked by it, the ТЦ empty). The charging pressure is the cab's reducer
   where Brakes.dll names one (`BR_REDID1`, its StateHints "[4.0]" ..
   "[5.9]"; the ВЛ80С's starts at 5.2), else `BR_ZARPRESS`, else 5.0. The
   blocking device усл. 367 (`BR_367ID1`, a KEY switch: 0 the key out, 1
@@ -572,6 +580,12 @@ The other two choices take the air after the valve from the model:
   already show the model's pressures (on the stand: the ТЦ, ТМ and main
   reservoir displays are the host's values). Brakes.dll's ЭПК, КЛУБ, САУТ
   and ЭПТ go on: its direct vents as above, its EPTvalue as it gives it.
+- At the start the pressures are those the DLLs set in Init; a pipe they
+  charged has its reservoirs charged with it (`enter_new_train`): Brakes.dll
+  sets the pipe (the ЭП2Д's 4.4) and leaves the ЗР and the РК at 0, so until
+  2026-11-16 the whole train's ЗР started empty under the realistic air and
+  charged for minutes, its cylinders filling no higher than it (the ЭП2Д
+  from a running start: 0.43 in emergency, a V nothing; RTS's own air too).
 - In both, the compressors are openRTS's (`compressor_rate`): the DLLs keep
   RTS's main reservoir (its huge volume never drains; the ЭД9М's DLLs never
   run a compressor and take their own air from it), and their

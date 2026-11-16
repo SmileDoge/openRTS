@@ -154,8 +154,9 @@ void set_text(std::array<char, N>& buffer, const std::string& text) {
 
 constexpr const char* season_keys[] = {"spring", "summer", "autumn", "winter"};
 constexpr const char* season_names[] = {"Spring", "Summer", "Autumn", "Winter"};
-constexpr const char* weather_keys[] = {"clear", "snow", "rain"};
-constexpr const char* weather_names[] = {"Clear", "Snow", "Rain"};
+// RTS's three, then openRTS's thunderstorm (rain with lightning).
+constexpr const char* weather_keys[] = {"clear", "snow", "rain", "storm"};
+constexpr const char* weather_names[] = {"Clear", "Snow", "Rain", "Thunderstorm"};
 constexpr const char* start_names[] = {"Running", "Switched on", "Cold"};
 // Where the player starts (--spawn); the last one: no train, a flight over the route.
 constexpr const char* spawn_names[] = {"In the cab", "Beside the car", "Above the train", "No train (fly over the route)"};
@@ -447,7 +448,7 @@ struct Launcher::State {
         set_root(folder);
         minutes = std::clamp(remembered_int("launcher_time", 12 * 60), 0, 24 * 60 - 1);
         season = std::clamp(remembered_int("launcher_season", 1), 0, 3);
-        weather = std::clamp(remembered_int("launcher_weather", 0), 0, 2);
+        weather = std::clamp(remembered_int("launcher_weather", 0), 0, 3);
         start = std::clamp(remembered_int("launcher_start", 0), 0, 2);
         sound = remembered_int("launcher_sound", 1) != 0;
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
@@ -1083,10 +1084,10 @@ void Launcher::State::draw_single(const float height) {
             for (int i = 0; i < 4; ++i) seasons[i] = tr(season_names[i]);
             form_row(tr("Season"));
             ImGui::Combo("##season", &season, seasons, 4);
-            const char* weathers[3];
-            for (int i = 0; i < 3; ++i) weathers[i] = tr(weather_names[i]);
+            const char* weathers[4];
+            for (int i = 0; i < 4; ++i) weathers[i] = tr(weather_names[i]);
             form_row(tr("Weather"));
-            ImGui::Combo("##weather", &weather, weathers, 3);
+            ImGui::Combo("##weather", &weather, weathers, 4);
             const char* starts[3];
             for (int i = 0; i < 3; ++i) starts[i] = tr(start_names[i]);
             form_row(tr("Train start"));
@@ -1711,6 +1712,9 @@ void Launcher::State::draw_graphics(const float height) {
             group_row(tr("Ground bounce"), Load::none, Load::negligible);
             viewer::slider_with_input("##ground_bounce", &e.ground_bounce, 0.0f, 0.5f, "%.2f", "%.2f");
             row_note(tr("Light the sunlit ground throws back onto bogies and the underframe, as the ground's reflectance (ballast and grass about 0.2). 0: none."));
+            group_row(tr("Light in the cab by day"), Load::none, Load::negligible);
+            viewer::slider_with_input("##indoor_light", &e.indoor_light, 0.0f, 1.0f, "%.2f", "%.2f");
+            row_note(tr("The sun through the windows and the sky's light thrown about the cab or salon you are in, which the shadows alone leave dark. 0: none."));
             group_row(tr("Light FullBright as ordinary surfaces"), Load::none, Load::none);
             ImGui::Checkbox("##fullbright", &g.light_fullbright);
             row_note(tr("MSTS FullBright surfaces (platforms, signs) take sun, sky and lamps; their darkened night textures are left out."));
@@ -1725,7 +1729,7 @@ void Launcher::State::draw_graphics(const float height) {
             group_row(tr("openRTS sky: atmosphere, volumetric clouds (not as in RTS)"), Load::negligible, Load::above_medium);
             ImGui::Checkbox("##native_sky", &g.native_sky);
             ImGui::BeginDisabled(!g.native_sky);
-            group_row(tr("Cloud cover by the weather (clear 42 %, snow 85 %, rain 92 %)"), Load::none, Load::none);
+            group_row(tr("Cloud cover by the weather (clear 42 %, snow 85 %, rain 92 %, thunderstorm 97 %)"), Load::none, Load::none);
             ImGui::Checkbox("##cloud_cover_weather", &g.cloud_cover_weather);
             ImGui::BeginDisabled(g.cloud_cover_weather);
             group_row(tr("Cloud cover"), Load::none, Load::negligible);

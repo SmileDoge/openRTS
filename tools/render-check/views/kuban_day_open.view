@@ -1,0 +1,20 @@
+# openRTS render check: an open stretch of Kuban by day (from Kuban_RTS_20261101_103037.view)
+root = E:\Games\MDD_Launcher\rts_main
+mode = route
+content = ROUTES/Kuban_RTS
+tile_x = -4549
+tile_z = 14592
+x = 389.3350744
+y = 7.242669106
+z = -336.1395626
+target_x = 798.8106079
+target_y = -112.4695358
+target_z = -1240.57251
+yaw = 5.858052731
+pitch = 0.1199999973
+distance = 1000
+fly = 1
+time_of_day = 43214
+season = 1
+weather = 0
+experimental = 0

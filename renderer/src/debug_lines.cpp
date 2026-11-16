@@ -11,6 +11,7 @@ namespace {
 constexpr const char* line_shader = R"(
 struct Frame {
     view_projection: mat4x4<f32>,
+    flags: vec4<f32>, // x: 1 the frame is linear (frame_encoding())
 };
 @group(0) @binding(0) var<uniform> frame: Frame;
 
@@ -29,9 +30,18 @@ fn vs_main(@location(0) position: vec3<f32>, @location(1) colour: vec4<f32>) -> 
 
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
+    if (frame.flags.x > 0.5) {
+        return vec4<f32>(pow(input.colour.rgb, vec3<f32>(2.2)), input.colour.a);
+    }
     return input.colour;
 }
 )";
+
+// The lines' uniform: the matrix and the frame's encoding.
+struct LineFrame {
+    glm::mat4 view_projection{1.0f};
+    glm::vec4 flags{0.0f};
+};
 
 [[nodiscard]] WGPUStringView wgsl_name(const char* name) {
     return {.data = name, .length = WGPU_STRLEN};
@@ -141,19 +151,19 @@ DebugLineRenderer::DebugLineRenderer(const WGPUDevice device, const WGPUTextureF
     impl_->device = device;
     WGPUBindGroupLayoutEntry entry{};
     entry.binding = 0;
-    entry.visibility = WGPUShaderStage_Vertex;
+    entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment; // the fragment: the frame's encoding
     entry.buffer.type = WGPUBufferBindingType_Uniform;
-    entry.buffer.minBindingSize = sizeof(glm::mat4);
+    entry.buffer.minBindingSize = sizeof(LineFrame);
     const WGPUBindGroupLayoutDescriptor layout_descriptor{.entryCount = 1, .entries = &entry};
     impl_->layout = wgpuDeviceCreateBindGroupLayout(device, &layout_descriptor);
 
     const WGPUBufferDescriptor uniform_descriptor{.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst,
-                                                  .size = sizeof(glm::mat4)};
+                                                  .size = sizeof(LineFrame)};
     impl_->uniform = wgpuDeviceCreateBuffer(device, &uniform_descriptor);
     WGPUBindGroupEntry binding{};
     binding.binding = 0;
     binding.buffer = impl_->uniform;
-    binding.size = sizeof(glm::mat4);
+    binding.size = sizeof(LineFrame);
     const WGPUBindGroupDescriptor group{.layout = impl_->layout, .entryCount = 1, .entries = &binding};
     impl_->binding = wgpuDeviceCreateBindGroup(device, &group);
 
@@ -186,7 +196,8 @@ void DebugLineRenderer::set_overlay(const std::vector<DebugVertex>& lines) {
 void DebugLineRenderer::render(const WGPURenderPassEncoder pass, const glm::mat4& view_projection) {
     if (!ready()) return;
     if (const auto queue = wgpuDeviceGetQueue(impl_->device)) {
-        wgpuQueueWriteBuffer(queue, impl_->uniform, 0, &view_projection, sizeof(view_projection));
+        const LineFrame frame{.view_projection = view_projection, .flags = {frame_linear() ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f}};
+        wgpuQueueWriteBuffer(queue, impl_->uniform, 0, &frame, sizeof(frame));
         wgpuQueueRelease(queue);
     }
     wgpuRenderPassEncoderSetBindGroup(pass, 0, impl_->binding, 0, nullptr);

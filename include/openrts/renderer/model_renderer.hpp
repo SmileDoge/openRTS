@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -122,9 +123,20 @@ inline constexpr std::size_t max_portals = 2;
 // desk lamps past the eighth stayed dark.
 inline constexpr std::size_t max_interior_lights = 64;
 
+// The room the eye is in (the cab, a salon): world -> its space, and its
+// box there. Its surfaces take the light indoors (SceneEffectSettings::indoor_light).
+struct ModelRoom {
+    glm::mat4 to_room{1.0f};
+    glm::vec3 lower{}, upper{};
+};
+
 struct ModelLighting {
     glm::vec4 sun_diffuse{1.0f};
     glm::vec4 sun_ambient{0.5f, 0.5f, 0.5f, 1.0f};
+    // A lightning flash's light this frame (lightning.hpp), as sun_ambient
+    // is encoded: added to it on every surface, shapes, terrain and haze
+    // alike; not daylight (the lamps by day stay as they are).
+    glm::vec4 flash{0.0f};
     // Direction the sunlight travels, in world space; see rts_sun_direction().
     glm::vec3 sun_direction{0.0f, -1.0f, 0.0f};
     glm::vec4 fog_colour{0.0f};
@@ -138,6 +150,8 @@ struct ModelLighting {
     std::vector<ModelExtraLight> interior_lights;
     // The doorways he looks through into the next cars (ModelPortal), up to 2.
     std::vector<ModelPortal> portals;
+    // The cab or salon he is in.
+    std::optional<ModelRoom> room;
 };
 
 // RTS sun direction from the environment's azimuth and elevation in degrees.

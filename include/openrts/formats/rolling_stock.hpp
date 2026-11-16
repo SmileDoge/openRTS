@@ -256,9 +256,12 @@ struct EngineDefinition {
     // charging pressure reducer (BR_REDID1), of the combined valve усл. 114
     // (BR_KKID1), of the blocking device усл. 367 (BR_367ID1) and the
     // state it works in (BR_367OPPOL); -1 / 0 when not given.
+    // BR_KPTID1: the КПТ, a second handle of the train brake (the ЭП2Д's,
+    // its states named as its 395's; Brakes.dll works the pipe from either).
     struct BrakesLibrary {
         bool present = false;
         std::int32_t valve = -1;
+        std::int32_t controller = -1;
         std::int32_t equalising_gauge = -1;
         float charging{};
         std::int32_t reducer = -1;

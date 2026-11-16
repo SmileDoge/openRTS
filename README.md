@@ -54,8 +54,9 @@ RTrainSim (RTS). Цель — запускать существующий кон
   - Vulkan, DirectX 12 или OpenGL на выбор; глубина для ReShade;
   - новый рендер (F10): тени от солнца (каскады и отдельная
     карта для кабины), тени от фонарей, затенение углов (GTAO), все фонари
-    сразу, свет, отражённый от земли, воздушная дымка; запись проходов в
-    несколько потоков.
+    сразу, свет, отражённый от земли, воздушная дымка, физически корректный
+    свет (PBR: отражения GGX, свет неба из его пробы, с HDR); запись проходов
+    в несколько потоков.
 - **Поезд:**
   - физика RTS, сцепки и автосцепка, удары и столкновения;
   - тормоза RTS: кран машиниста 395, ЭПТ, вспомогательный тормоз;
@@ -324,6 +325,9 @@ Redistributable (x64), см. «Готовая сборка».
 | `--backend auto\|vulkan\|dx12\|opengl` | графический API (на OpenGL — только рендер RTS) |
 | `--reshade-depth on\|off` | глубина для ReShade ([INSTALL.md](INSTALL.md#reshade)) |
 | `--experimental` | новый рендер вместо RTS |
+| `--pbr on\|off` | физически корректный свет нового рендера (с HDR) на этот запуск ([подробнее](docs/ru/experimental-effects.md)) |
+| `--sky-light on\|off` | свет неба из его пробы при физически корректном свете (выкл.: старый свет неба) на этот запуск |
+| `--native-sky on\|off` | небо openRTS или купол RTS на этот запуск |
 | `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | настройки нового рендера на один запуск ([подробнее](docs/experimental-effects.md)) |
 | `--capture <файл.ppm>` | снять кадр и выйти; `--capture-at <с>`, `--capture-car <n>`, `--capture-camera ex ey ez tx ty tz`, `--capture-cab` — когда и откуда |
 | `--mp-connect <адрес>[:порт]`, `--mp-nick <ник>` | зайти на сервер RTS (порт 800 по умолчанию); маршрут, сезон и погода — с сервера, `--route` не нужен |
@@ -430,6 +434,7 @@ RTS — с цифровым блоком (Num0, Num1, Num2, Num3), openRTS — �
 | `openrts-dllhost32 --probe <папка>` | версии и раскладки всех DLL локомотивов |
 | `openrts_asset_dump` | поиск ассетов так, как их ищет RTS; `--lights <маршрут\|all>` — фонари расставленных моделей по типам |
 | `openrts-net-dump` | снимок мира сервера RTS по пакетам; `--root`/`--route` — сверка с маршрутом |
+| `tools/render-check/render_check.py` | проверка рендера (Python): десять сцен в нескольких вариантах (кодировка кадра, PBR, свет неба, купол RTS, путь RTS), снимки в PNG, свет HDR-кадра по областям, время GPU, привязки, видеопамять (`docs/ru/experimental-effects.md`, «Кодировка кадра», «Физически корректный свет», «Свет неба») |
 
 ## Устройство
 
@@ -478,6 +483,8 @@ DLL RTS.
   как добавить зону;
 - [объекты мира](docs/ru/world-objects.md) — леса, переезды, автомобили,
   вода, осадки и дым, как их строит и ведёт RTS;
+- [погода](docs/ru/weather.md) — погода RTS и гроза openRTS: молнии, их свет
+  на облаках и сцене, канал до земли, одни и те же разряды у всех игроков;
 - [сеть](docs/ru/net.md) — игра на сервере RTS: протокол, свои и чужие
   поезда, сцепка, звук, электроснабжение;
 - [сервер](docs/ru/server.md) — сервер openRTS: запуск, команды
@@ -501,6 +508,12 @@ openRTS не связан с авторами RTrainSim и MSTS. Маршрут�
 Файлы `docs/RTSFileFormat.dat`, `docs/RTSFileReference.html`, `docs/export.pdf`
 и `docs/ext.pdf` — документация RTS, права на неё принадлежат её авторам; под
 лицензию openRTS они не подпадают.
+
+Звуки грома (пак `openrts-thunder`, `packs/thunder`) нарезаны из записей с
+Freesound.org: «Thunder, Very Close, No Rain, C.wav» и «Thunder, Very Close,
+Rain, A.wav» — InspectorJ (www.jshaw.co.uk), лицензия Creative Commons
+Attribution 4.0; «Extreme Thunder Impact - Munich Trudering» — TSP-Talk,
+Creative Commons 0. Подробности — в `packs/thunder/CREDITS.txt`.
 
 openRTS распространяется по лицензии **GNU General Public License v3.0**:
 программу можно свободно использовать, изучать, изменять и распространять, а

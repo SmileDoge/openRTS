@@ -41,7 +41,7 @@ void on_signal(int) { stop_requested = true; }
 
 constexpr const char* usage =
     "usage: openrts-server --route <folder> [--root <RTS installation>] [--port 800]\n"
-    "                      [--season spring|summer|autumn|winter] [--weather clear|snow|rain] [--time HH:MM]\n"
+    "                      [--season spring|summer|autumn|winter] [--weather clear|snow|rain|storm] [--time HH:MM]\n"
     "                      [--no-admit] [--run <seconds>] [--command \"<line>\"]...\n"
     "  --run       stop after so many seconds (tests); --command runs a console line at start\n"
     "  players get their trains from the dispatcher at the server's console\n";
@@ -194,7 +194,9 @@ int main(int argc, char** argv) {
     options.route_id = core::fold_case(route->route_id());
     options.description = server::game_description(route->route_id(), season);
     options.season = season;
-    options.weather = weather;
+    // A thunderstorm is rain to RTS (the login's weather), a storm to openRTS.
+    options.weather = weather == 3 ? std::uint8_t{2} : weather;
+    options.storm = weather == 3;
     options.counts = counts;
     options.time_of_day = time_of_day;
     options.admit = admit;

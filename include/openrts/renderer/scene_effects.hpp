@@ -22,6 +22,7 @@
 #include <webgpu/webgpu.h>
 
 #include <openrts/renderer/cloud_shadow.hpp>
+#include <openrts/renderer/sky_light.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/task_pool.hpp>
 
@@ -63,6 +64,13 @@ struct SceneEffectSettings {
     // (bogies, the underframe), as the ground's reflectance (0..0.5): the
     // ground taken as lit by the sun and the sky. 0: none.
     float ground_bounce = 0.2f;
+    // Light indoors by day (0..1; the experimental path): in the cab or salon
+    // the eye is in (ModelLighting::room) the sun come in through the
+    // windows and the sky's light, thrown about the room, on every surface.
+    // Without it the shadows left a cab several times darker than outside
+    // (testers, 2026-11-16: "кабина темновата из-за теней"); RTS, without
+    // shadows, lights the cab as if it had no roof. 0: none.
+    float indoor_light = 0.5f;
     // Lamps throwing shadows (0..4, with the clustered lights): those
     // lighting the shadow focus (the cab, else around the view) most, by
     // their power, where they shine and how far they reach, so a floodlight
@@ -152,8 +160,10 @@ public:
     // light lists (uploaded now). `active` false leaves every effect off
     // (the RTS-compatible path).
     // `clouds`: openRTS's clouds' shadow (NativeSky::cloud_shadow), with the
-    // sun's.
-    void begin_frame(const SceneEffectView& view, const ModelLighting& lighting, bool active, const CloudShadow& clouds = {});
+    // sun's. `sky`: the sky's light (SkyLight::view; PBR stage 2), read by
+    // the physically based light when it is on.
+    void begin_frame(const SceneEffectView& view, const ModelLighting& lighting, bool active, const CloudShadow& clouds = {},
+                     const SkyLightView& sky = {});
     // After begin_frame(), before recording: this frame's shadow focus
     // (nullopt: none). Its map is drawn in depth slot max_cascades + 1. It
     // also picks the lamps throwing shadows, drawn in depth slots

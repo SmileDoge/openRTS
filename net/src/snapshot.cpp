@@ -1274,10 +1274,18 @@ std::optional<OtherPlayer> decode_other_player(const ByteView body) {
     return p;
 }
 
-Bytes encode_openrts_hello(const std::uint16_t features) {
+Bytes encode_openrts_hello(const std::uint16_t features, const bool storm) {
     WireWriter w;
     w.u16(features);
+    w.u8(storm ? 1 : 0);
     return w.take();
+}
+
+bool openrts_hello_storm(const ByteView body) {
+    WireReader r(body);
+    (void)r.u16();
+    const auto storm = r.u8();
+    return r.ok() && storm == 1;
 }
 
 std::optional<std::uint16_t> decode_openrts_hello(const ByteView body) {

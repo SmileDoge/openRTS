@@ -392,7 +392,9 @@ Between openRTS's server and openRTS players; `rts1.exe` and
 `rts_server.exe` never see these packages.
 
 - **Hello** (`0x45F4 openrts_hello`, `u16` features, 1: players and
-  helpers). The client sends it right after its login. `rts_server.exe`
+  helpers; then, since 2026-11-16, `u8` 1 when the game is a thunderstorm,
+  the server's answer: its login said rain, docs/weather.md; a reader of
+  the features alone stops before it). The client sends it right after its login. `rts_server.exe`
   leaves an id it does not know to its main thread
   (`reverse/multiplayer.md`, "Routing"). openRTS's server answers it, and
   only then does the client send the packages below. An openRTS player on

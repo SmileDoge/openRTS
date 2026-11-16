@@ -47,6 +47,7 @@ struct DllAirSetting {
 struct CabBrakes {
     int position = -1; // the 395's (simulation::ValvePosition), -1 not known
     int raw = -1;      // its control's state
+    int controller_raw = -1; // the КПТ's (BR_KPTID1): the handle moved last sets the position
     float charging{};  // the reducer's charging pressure (BR_REDID1), atm; 0: none
     int combined = 0;  // the combined valve (BR_KKID1): 0 normal, 1 double traction (cut out), 2 emergency
     // The blocking device усл. 367 (BR_367ID1) out of its operating state
@@ -59,6 +60,7 @@ struct CabBrakes {
 // "Нормальное", "Экстренное").
 struct BrakeCabControls {
     std::vector<std::int8_t> valve;
+    std::vector<std::int8_t> controller; // the КПТ's, as the valve's
     std::vector<float> reducer;
     std::vector<std::int8_t> combined;
     // From the switches' states now; `last` the reading before (an unknown
