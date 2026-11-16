@@ -16,6 +16,7 @@ add_library(openrts_viewer_core STATIC
     src/signal_view.cpp
     src/track_control.cpp
     src/inspector.cpp
+    src/mod_files.cpp
     src/tape_view.cpp
     src/key_repeat.cpp
     src/file_dialog.cpp

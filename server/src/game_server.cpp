@@ -1,6 +1,7 @@
 #include <openrts/server/game_server.hpp>
 
 #include <algorithm>
+#include <random>
 #include <cmath>
 #include <cstdio>
 #include <set>
@@ -1006,6 +1007,7 @@ std::optional<std::uint32_t> GameServer::add_train(NewTrain made, std::string& e
     if (!made.name.empty()) t.record.names = std::array<std::u16string, 2>{made.name, u""};
     t.number = made.number;
     t.sim = std::make_unique<simulation::Train>(std::move(made.cars));
+    t.sim->scatter_ep_fill(std::random_device{}()); // its ЭПТ's own pace (the server's for everyone)
     if (!t.sim->place(impl.network, made.node, made.offset, made.forward, &error)) return std::nullopt;
     for (const auto& [other_id, other] : impl.trains) {
         if (!other.sim || !other.sim->placed()) continue;

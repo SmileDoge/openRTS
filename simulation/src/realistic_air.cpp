@@ -12,9 +12,27 @@ namespace {
 
 // Volumes, m³. The pipe is 1¼" (32 mm bore, 0.8 l per metre of car).
 constexpr float pipe_area = 0.0008f;
-// Flow between neighbouring pipe volumes: q = k · V · Δp. k sets the service
-// wave (a 100-car train feels a 1.5 atm reduction at the tail in about 8 s).
-constexpr float link_rate = 200.0f;        // 1/s
+// The pipe between two cars' centres as a line with the air's inertia and
+// the pipe's friction (2026-11-17): the flow q between them changes as
+//   dq/dt = (Δp - R·q) / I,   I = L / (c²·A),   R = r·L,
+// L the distance between the centres. A change runs down the pipe no
+// faster than sound (a closed end reflects it), and the friction spreads
+// it; the distributors' quick service carries the brake wave on. Until
+// then the flow was q = k·V·Δp (k = 200 1/s) alone: no front, a 16-car
+// train's tail braked 0.25 s after its head (1366 m/s), a 100-car freight
+// train's tail never released in II.
+// r from a 100-car loaded freight train with ВР 483 (openrts-train-check
+// --charge, docs/train.md): full service fills the first car's cylinder to
+// 90 % in 18.6 s and the last's in about 48 s (Крылов, table 9: 18 and 48
+// s to 0.35 MPa); II releases the last in about 41 s (60 s); its pipe
+// charges from empty in II to 4.5 at the tail in about 525 s (614 before).
+// Its brake wave is about 385 m/s (Крылов: 270), a 16-car passenger train's
+// about 550 (120): over 342 m the pipe passes a change in about a second,
+// and a stiffer pipe that slowed it would leave a long freight train
+// uncharged for half an hour.
+constexpr float sound_speed = 330.0f;      // m/s
+constexpr float pipe_resistance = 0.025f;  // atm·s/m³ per metre of pipe
+constexpr float max_substep = 1.0f / 600.0f; // s
 constexpr float wave_speed = 280.0f;       // m/s, the emergency accelerators' front
 constexpr float open_end_rate = 60.0f;     // 1/s, an open pipe end with its cock open
 constexpr float accelerator_time = 3.0f;    // s an emergency accelerator vents the pipe
@@ -65,6 +83,7 @@ float main_reservoir_volume(const formats::EngineDefinition& engine) {
 
 void RealisticAir::reset(const std::vector<CarState>& cars) {
     air_.assign(cars.size(), {});
+    link_flow_.assign(cars.empty() ? 0 : cars.size() - 1, 0.0f);
     for (std::size_t i = 0; i < cars.size(); ++i) {
         if (cars[i].definition) air_[i].type = distributor_kind(*cars[i].definition);
         air_[i].reference = cars[i].pipe;
@@ -94,19 +113,32 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
     for (std::size_t i = 0; i < n; ++i) volume[i] = car_length(cars[i]) * pipe_area;
     const auto& demands = *inputs.demands;
 
-    // Sub-steps: explicit flow needs dt < 1 / (2k).
-    const int steps = static_cast<int>(std::ceil(dt * link_rate * 3.0f));
+    // The distributor each car carries now (the car menu may change it).
+    for (std::size_t i = 0; i < n; ++i) {
+        if (cars[i].definition) air_[i].type = distributor_kind(*cars[i].definition);
+    }
+    // Sub-steps of under 2 ms (the distributors' quick service and
+    // thresholds; the line itself needs less than L / c).
+    const int steps = (std::max)(1, static_cast<int>(std::ceil(dt / max_substep)));
     const float h = dt / static_cast<float>(steps);
+    if (link_flow_.size() + 1 != n) link_flow_.assign(n > 0 ? n - 1 : 0, 0.0f);
     std::vector<float> flow(n);
     for (int s = 0; s < steps; ++s) {
         std::fill(flow.begin(), flow.end(), 0.0f);
-        // Pipe flow between joined neighbours (volume-weighted pressures).
+        // The pipe between joined neighbours: the flow follows the pressure
+        // difference against its inertia and friction (semi-implicit).
         for (std::size_t i = 0; i + 1 < n; ++i) {
-            if (!inputs.joined[i]) continue;
-            const float v = (std::min)(volume[i], volume[i + 1]);
-            const float q = link_rate * v * (cars[i].pipe - cars[i + 1].pipe) * h;
-            flow[i] -= q;
-            flow[i + 1] += q;
+            auto& q = link_flow_[i];
+            if (!inputs.joined[i]) {
+                q = 0.0f;
+                continue;
+            }
+            const float length = 0.5f * (car_length(cars[i]) + car_length(cars[i + 1]));
+            const float inertia = length / (sound_speed * sound_speed * pipe_area);
+            const float resistance = pipe_resistance * length;
+            q = (q + h * (cars[i].pipe - cars[i + 1].pipe) / inertia) / (1.0f + h * resistance / inertia);
+            flow[i] -= q * h;
+            flow[i + 1] += q * h;
         }
         for (std::size_t i = 0; i < n; ++i) {
             auto& car = cars[i];
@@ -201,26 +233,31 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                 .cylinder_volume = distributor_cylinder_volume,
                 .mass = car.definition->mass,
                 .ep = (car.definition->brakes.system & 2) != 0,
+                .ep_fill = car.ep_fill,
                 .load = load,
                 .mountain = car.distributor.mountain,
                 .plug = car.distributor.plug,
             };
-            DistributorState state{car.pipe, car.auxiliary, car.cylinder, a.reference, a.braking, a.emergency};
+            DistributorState state{car.pipe, car.auxiliary, car.cylinder, a.reference, a.braking, a.emergency, a.ep_chamber, a.ep_side, a.pipe_low};
             bool stepped = false;
-            if (a.script) {
+            // A built-in one named (the car menu, a mod) stands in for a script.
+            if (a.script && car.definition->brakes.distributor == formats::BrakeDistributor::inferred) {
                 std::string error;
-                stepped = a.script->step(state, device, rate, car.ep, h, error);
+                stepped = a.script->step(state, device, rate, car.ep, h, error, car.ep_command);
                 if (!stepped) {
                     report_once("brakes: " + car.definition->name + ": " + error + " (the built-in distributor takes over)");
                     a.script.reset();
                 }
             }
-            if (!stepped) step_distributor(state, device, rate, car.ep, h);
+            if (!stepped) step_distributor(state, device, rate, car.ep, h, car.ep_command);
             car.pipe = state.pipe;
             car.auxiliary = state.auxiliary;
             car.cylinder = state.cylinder;
             a.reference = state.reference;
             a.braking = state.braking;
+            a.ep_chamber = state.ep_chamber;
+            a.ep_side = state.ep_side;
+            a.pipe_low = state.pipe_low;
             // A script may start the emergency front itself.
             if (state.emergency) a.emergency = true;
             // Gone into emergency: its accelerator opens for 3 s.

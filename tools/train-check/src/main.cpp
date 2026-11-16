@@ -27,6 +27,7 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/ace_file.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/stock_rules.hpp>
 #include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/brake_shoes.hpp>
 #include <openrts/simulation/train.hpp>
@@ -77,7 +78,7 @@ int brake_ratio(const core::Vfs& vfs, const std::vector<std::string>& folders) {
             const auto name = std::string(entry.path.filename());
             if (entry.directory || name.size() < 5 || core::fold_case(name.substr(name.size() - 4)) != ".eng") continue;
             const auto stem = name.substr(0, name.size() - 4);
-            const auto wagon = formats::load_wagon(vfs, folder, stem, true);
+            const auto wagon = formats::load_wagon(vfs, folder, stem, true, simulation::StockRules::of(vfs));
             if (!wagon.ok() || wagon.mass <= 0.0f) continue;
             const auto& brakes = wagon.brakes;
             const float weight = wagon.mass * 10.0f;
@@ -127,7 +128,7 @@ int charge_test(const core::Vfs& vfs, std::vector<std::string> args) {
         (void)flipped;
         const auto slash = spec.find('/');
         if (slash == std::string::npos) return nullptr;
-        auto wagon = std::make_unique<formats::WagonDefinition>(formats::load_wagon(vfs, spec.substr(0, slash), spec.substr(slash + 1), engine));
+        auto wagon = std::make_unique<formats::WagonDefinition>(formats::load_wagon(vfs, spec.substr(0, slash), spec.substr(slash + 1), engine, simulation::StockRules::of(vfs)));
         if (!wagon->ok()) {
             std::fprintf(stderr, "%s: %s\n", spec.c_str(), wagon->error.c_str());
             return nullptr;
@@ -209,6 +210,80 @@ int charge_test(const core::Vfs& vfs, std::vector<std::string> args) {
                 train.cars().back().pipe, train.cars().back().auxiliary, train.cars().back().cylinder);
     driver->brake = simulation::DriverHandles::BrakeHandle::running;
     run("released after VI, the valve in II:");
+    // The service brake wave: charged 10 min more, then V for 1.6 s (the
+    // pipe down about 0.4) and III; when each wagon's cylinder passes 0.1,
+    // and the wave's speed from the first wagon to the last (Крылов: a
+    // 292-001's 120 m/s, a 483's 270).
+    for (int k = 0; k < static_cast<int>(600.0 / simulation::train_step); ++k) train.step();
+    driver->brake = simulation::DriverHandles::BrakeHandle::service;
+    std::vector<double> applied(n, -1.0);
+    double time = 0.0;
+    while (time < 60.0) {
+        if (time >= 1.6 && driver->brake == simulation::DriverHandles::BrakeHandle::service) {
+            driver->brake = simulation::DriverHandles::BrakeHandle::lap;
+        }
+        train.step();
+        time += simulation::train_step;
+        for (std::size_t k = 0; k < n; ++k)
+            if (applied[k] < 0.0 && train.cars()[k].cylinder > 0.1f) applied[k] = time;
+    }
+    const std::size_t first = n - count, last = n - 1;
+    float least = 99.0f, most = 0.0f;
+    for (std::size_t k = first; k <= last; ++k) {
+        least = (std::min)(least, train.cars()[k].cylinder);
+        most = (std::max)(most, train.cars()[k].cylinder);
+    }
+    const double span = std::abs(train.cars()[first].offset - train.cars()[last].offset);
+    std::printf("service step (V 1.6 s, then III): first wagon brakes at %.2f s, the middle one at %.2f s, the last at %.2f s",
+                applied[first], applied[(first + last) / 2], applied[last]);
+    if (applied[first] >= 0.0 && applied[last] > applied[first]) std::printf("; the wave %.0f m/s over %.0f m", span / (applied[last] - applied[first]), span);
+    std::printf("; after 60 s the wagons' cylinders %.2f..%.2f\n", least, most);
+    // Full service (V until the УР is 1.5 down, then III), then II: the
+    // first and last wagons' cylinders to 90 % of where they end, and the
+    // last one released (< 0.4) (Крылов, table 9, a 483-000's train: 18 s
+    // at the head, 48 s at the tail to 0.35 MPa; released in 60 s).
+    driver->brake = simulation::DriverHandles::BrakeHandle::running;
+    for (int k = 0; k < static_cast<int>(400.0 / simulation::train_step); ++k) train.step();
+    const float charged_ur = driver->equalising;
+    driver->brake = simulation::DriverHandles::BrakeHandle::service;
+    std::vector<std::vector<float>> history(n);
+    std::vector<double> first_applied(n, -1.0);
+    time = 0.0;
+    while (time < 90.0) {
+        if (driver->brake == simulation::DriverHandles::BrakeHandle::service && driver->equalising <= charged_ur - 1.5f) {
+            driver->brake = simulation::DriverHandles::BrakeHandle::lap;
+        }
+        train.step();
+        time += simulation::train_step;
+        for (std::size_t k = 0; k < n; ++k) {
+            history[k].push_back(train.cars()[k].cylinder);
+            if (first_applied[k] < 0.0 && train.cars()[k].cylinder > 0.1f) first_applied[k] = time;
+        }
+    }
+    const auto to90 = [&](const std::size_t k) {
+        const float end = history[k].back();
+        for (std::size_t s = 0; s < history[k].size(); ++s)
+            if (history[k][s] >= 0.9f * end) return (s + 1) * simulation::train_step;
+        return -1.0;
+    };
+    std::printf("full service: the wagons' cylinders %.2f (first) .. %.2f (last); to 90 %% of it: first %.1f s, last %.1f s",
+                history[first].back(), history[last].back(), to90(first), to90(last));
+    if (first_applied[first] >= 0.0 && first_applied[last] > first_applied[first])
+        std::printf("; the wave %.0f m/s", span / (first_applied[last] - first_applied[first]));
+    std::printf("\n");
+    driver->brake = simulation::DriverHandles::BrakeHandle::running;
+    std::vector<double> released(n, -1.0);
+    time = 0.0;
+    while (time < 300.0 && released[last] < 0.0) {
+        train.step();
+        time += simulation::train_step;
+        for (std::size_t k = 0; k < n; ++k)
+            if (released[k] < 0.0 && train.cars()[k].cylinder < 0.4f) released[k] = time;
+    }
+    std::printf("released by II: the first wagon %.1f s, the middle one %.1f s, the last %.1f s", released[first],
+                released[(first + last) / 2], released[last]);
+    if (released[first] >= 0.0 && released[last] > released[first]) std::printf("; the release wave %.0f m/s", span / (released[last] - released[first]));
+    std::printf("\n");
     return 0;
 }
 
@@ -256,7 +331,7 @@ int brake_test(const core::Vfs& vfs, const std::vector<core::VirtualPath>& consi
             return 2;
         }
         for (const auto& entry : consist.entries) {
-            auto wagon = std::make_unique<formats::WagonDefinition>(formats::load_wagon(vfs, entry.folder, entry.name, entry.engine));
+            auto wagon = std::make_unique<formats::WagonDefinition>(formats::load_wagon(vfs, entry.folder, entry.name, entry.engine, simulation::StockRules::of(vfs)));
             if (!wagon->ok()) {
                 std::fprintf(stderr, "%s/%s: %s\n", entry.folder.c_str(), entry.name.c_str(), wagon->error.c_str());
                 return 2;
@@ -565,7 +640,7 @@ int main(int argc, char** argv) {
                 continue;
             }
             auto [it, inserted] = stock.try_emplace(file.key());
-            if (inserted) it->second = formats::load_wagon(vfs, entry.folder, entry.name, entry.engine);
+            if (inserted) it->second = formats::load_wagon(vfs, entry.folder, entry.name, entry.engine, simulation::StockRules::of(vfs));
             if (!it->second.ok()) {
                 broken[file.str()] = it->second.error;
                 complete = false;

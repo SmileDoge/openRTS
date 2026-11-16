@@ -131,7 +131,7 @@ struct ContentTarget {
 // extra mod-layer source), `--no-hot-reload`, `--consist <name>` and `--path <name>` (a train to drive, on a
 // route path start, or by Track control), `--track-control` (open the
 // Track control window at start), (
-// the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|2|4|8` (default 4; 2 and 8 where the video card takes them, else 4), `--no-sound`, `--no-discord` (nothing in the Discord profile), `--sound-offline`, `--volume <0..1>` (default 0.5),
+// the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--realistic-air` (every train on the openRTS realistic air), `--no-vsync`, `--no-batching`, `--msaa 1|2|4|8` (default 4; 2 and 8 where the video card takes them, else 4), `--no-sound`, `--no-discord` (nothing in the Discord profile), `--sound-offline`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`, `--paused` (start paused),
 // `--window-mode windowed|borderless|fullscreen`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain|storm`.
@@ -305,6 +305,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     int start_state = -1;
     std::filesystem::path situation; // --situation
     int start_view = 0;              // --spawn
+    bool realistic_air = false;      // --realistic-air
     std::string save_situation;      // --save-situation
     std::filesystem::path mp_snapshot; // --mp-snapshot
     std::string mp_connect;          // --mp-connect host:port
@@ -355,6 +356,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             mp_snapshot = std::filesystem::path(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--save-situation" && has_value) {
             save_situation = std::string(flags[++i]);
+        } else if (flags[i] == "--realistic-air") {
+            realistic_air = true;
         } else if (flags[i] == "--spawn" && has_value) {
             const auto value = std::string(flags[++i]);
             start_view = value == "cab" ? 1 : value == "car" ? 2 : value == "above" ? 3 : 0;
@@ -681,7 +684,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
 
     const openrts::viewer::SceneContent content{
         .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control,
-        .start_state = start_state, .situation = situation, .start_view = start_view,
+        .start_state = start_state, .situation = situation, .start_view = start_view, .realistic_air = realistic_air,
         .save_situation = save_situation, .root = target->root, .snapshot = snapshot, .connection = connection,
         .early = std::move(early), .console = mp_console, .activity = activity, .activity_folder = activity_folder};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)

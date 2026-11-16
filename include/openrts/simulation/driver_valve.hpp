@@ -10,6 +10,15 @@
 // works the handle (the keyboard, a cab's control under a DLL) steps it.
 namespace openrts::simulation {
 
+// What the ЭПТ line tells the cars' ЭВР 305. A DLL (RTS's EPTvalue) gives a
+// cylinder pressure, a target; a 395's controller works the ЭВР's two
+// valves as the real line does (Крылов, «Автоматические тормоза подвижного
+// состава», 1983, §37, §39): in VЭ and V the application and hold valves
+// (the РК fills from the ЗР), in III and IV the hold valve alone (the РК
+// keeps its pressure), in I and II neither (the РК lets out through the
+// release valve). With the wire dead the valves let go as in I and II.
+enum class EpCommand : std::uint8_t { target, apply, hold, release };
+
 // Positions I, II, III, IV, VЭ (Va), V, VI, in that order (a cab's 395 control
 // has them as its states 0..6).
 enum class ValvePosition : std::uint8_t {
@@ -47,6 +56,9 @@ struct ValveOutput {
     float equalising{};     // the УР the pipe is to follow
     bool emergency = false; // VI: the pipe opened at the engine
     float ep_value = -1.0f; // the ЭПТ demand, < 0 none
+    // With the realistic air the valves' command (the cars' ЭВР fill, hold
+    // or let out at their own rates); else target (ep_value).
+    EpCommand ep_command = EpCommand::target;
     std::uint16_t systems = 1; // BrakeSystemsEngaged: 1, | 2 with the ЭПТ
 };
 

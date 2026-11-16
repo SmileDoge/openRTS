@@ -3,7 +3,7 @@
 // or one in Luau, through the standard program; its figures and, with
 // --table, the pressures every 10 s.
 //
-//   openrts-brake-stand [--kind 292|483|305] [--script file.luau]
+//   openrts-brake-stand [--kind 292|483|305|305-001] [--script file.luau]
 //                       [--mass kg] [--ratio r] [--full atm] [--table]
 //                       [--load empty|medium|loaded] [--mountain] [--plug К|Д|УВ]
 #include <algorithm>
@@ -68,7 +68,10 @@ int main(int raw_argc, char** raw_argv) {
         const bool has_value = i + 1 < argc;
         if (arg == "--kind" && has_value) {
             const std::string_view kind = argv(++i);
-            car.kind = kind == "483" ? DistributorKind::vr483 : kind == "305" ? DistributorKind::evr305 : DistributorKind::vr292;
+            car.kind = kind == "483"       ? DistributorKind::vr483
+                       : kind == "305-001" ? DistributorKind::evr305_001
+                       : kind == "305" || kind == "305-000" ? DistributorKind::evr305
+                                                            : DistributorKind::vr292;
         } else if (arg == "--script" && has_value) {
             script_path = argv(++i);
         } else if (arg == "--mass" && has_value) {
@@ -92,7 +95,7 @@ int main(int raw_argc, char** raw_argv) {
                        : value == "УВ" || value == "UV" || value == "uv" || value == "YB" ? DistributorPlug::no_accelerator
                                                                                           : DistributorPlug::short_train;
         } else {
-            std::cerr << "usage: openrts-brake-stand [--kind 292|483|305] [--script file.luau] [--mass kg] [--ratio r] [--full atm] [--table]\n"
+            std::cerr << "usage: openrts-brake-stand [--kind 292|483|305|305-001] [--script file.luau] [--mass kg] [--ratio r] [--full atm] [--table]\n"
                          "                           [--load empty|medium|loaded] [--mountain] [--plug К|Д|УВ]\n";
             return 2;
         }
@@ -122,7 +125,10 @@ int main(int raw_argc, char** raw_argv) {
     }
 
     const auto report = run_stand(car, script.get());
-    const char* kind = car.kind == DistributorKind::vr483 ? "483" : car.kind == DistributorKind::evr305 ? "305" : "292";
+    const char* kind = car.kind == DistributorKind::vr483        ? "483"
+                       : car.kind == DistributorKind::evr305     ? "305-000"
+                       : car.kind == DistributorKind::evr305_001 ? "305-001"
+                                                                 : "292";
     std::printf("ВР: %s; масса %.0f т, ТЦ полного %.2f, TripleValveRatio %.1f\n",
                 script ? script_path.c_str() : (std::string("встроенный ") + kind).c_str(), car.mass / 1000.0f, car.full_cylinder,
                 car.ratio);
@@ -139,7 +145,7 @@ int main(int raw_argc, char** raw_argv) {
         return 1;
     }
     const auto seconds = [](const float s) { return s < 0.0f ? std::string("не дошло") : std::to_string(static_cast<int>(s + 0.5f)) + " с"; };
-    std::printf("Зарядка ЗР до 4,9:                      %s\n", seconds(report.charged).c_str());
+    std::printf("Зарядка ЗР до 4,8:                      %s\n", seconds(report.charged).c_str());
     std::printf("Ступень 0,5: ТЦ                         %.2f, 95 %% за %s\n", report.step_cylinder, seconds(report.step_fill).c_str());
     std::printf("Отпуск после ступени до ТЦ < 0,4:       %s\n", seconds(report.release).c_str());
     std::printf("Полное служебное (ТМ 3,5): ТЦ           %.2f\n", report.full_cylinder);

@@ -12,14 +12,31 @@ namespace {
 
 // Distributor values (docs/train.md, the research table).
 constexpr float s483 = 0.3f / 60.0f;       // stability, atm/s
-constexpr float s292 = 0.5f / 60.0f;
+// 292: a fall from 0.5 to 0.45 MPa in 75 s or slower takes the ЗК and the
+// ЗР back into the pipe without braking (Крылов §31): 0.4 atm/min (0.5 by
+// ЧИПС until 2026-11-17).
+constexpr float s292 = 0.4f / 60.0f;
 constexpr float apply_483 = 0.15f;         // РК − pipe that starts an application
 constexpr float apply_292 = 0.10f;
-constexpr float quick_service = 0.12f;     // atm the quick-service valve takes locally
+constexpr float quick_service = 0.12f;     // atm the 483's quick service takes locally
+// The 292's КДР: a 1 l chamber the pipe empties into as the application
+// starts, "дополнительная разрядка магистрали в эту камеру на величину
+// 0,02-0,025 МПа" (Крылов §31): a car's pipe (19 l) drops by its share,
+// 0.25 at 5 atm. 0.06 atm until 2026-11-17.
+constexpr float kdr_292 = 0.001f;          // m³
+// The 483 in its flat mode releases fully on a rise of the pipe of
+// 0.015-0.03 MPa over where it stood braked, by the step (Крылов, table 9);
+// until 2026-11-17 only on the pipe's coming back within 0.06 of the РК, so
+// a long train's tail did not release in II for minutes.
+constexpr float rise_483 = 0.25f;
 constexpr float release_483 = 0.06f;       // flat mode: release once the pipe is back within this of РК
 constexpr float release_292 = 0.12f;       // a rise this far above the ЗР releases fully
-constexpr float tau_zr483 = 45.0f;         // s, ЗР charging time constant
-constexpr float tau_zr292 = 35.0f;
+// s, ЗР charging time constants, from the pipe held at 5.0: a 483's 78 l
+// to 4.8 in about 4.5 min (through 1.3 mm and its check valve, Асадченко,
+// Крылов §32); a 292's to 4.8 in 130-180 s (Крылов §31). 45 and 35 until
+// 2026-11-17 (145 s and 113 s).
+constexpr float tau_zr483 = 84.0f;
+constexpr float tau_zr292 = 48.0f;
 constexpr float tau_rk = 60.0f;            // s, РК charging, flat mode (3 min to 95 %)
 constexpr float tau_rk_mountain = 80.0f;   // s, mountain mode (4 min)
 constexpr float step_483 = 0.03f;          // mountain: a pipe rise below this releases nothing
@@ -36,7 +53,68 @@ PlugRates plug_rates(const DistributorPlug plug) {
 }
 
 const char* kind_name(const DistributorKind kind) {
-    return kind == DistributorKind::vr483 ? "483" : kind == DistributorKind::evr305 ? "305" : "292";
+    switch (kind) {
+    case DistributorKind::vr483: return "483";
+    case DistributorKind::evr305: return "305";
+    case DistributorKind::evr305_001: return "305-001";
+    default: return "292";
+    }
+}
+
+const char* command_name(const EpCommand command) {
+    switch (command) {
+    case EpCommand::apply: return "apply";
+    case EpCommand::hold: return "hold";
+    case EpCommand::release: return "release";
+    default: return "target";
+    }
+}
+
+// ЭВР 305 (Крылов §39). The application valve fills its РК (1.5 l) from the
+// ЗР through a 1.8 mm seat: 3 atm in 2.5-3.5 s, a step about 1 atm a second.
+// The release valve lets it out through 1.3 mm (305-000: from 3.5-4 atm to
+// 0.4 in 8-10 s) or 2.0 mm (305-001: 3.5-4.5 s), whatever the cylinder:
+// taken as the gauge pressure falling with a time constant (3.5 -> 0.4 in
+// 9 s and 4 s), at least 0.05 atm/s so it empties. Its relay keeps the ТЦ
+// at the РК, fed from the ЗР.
+constexpr float ep_relay = 4.0f;         // atm/s: the relay follows the РК
+constexpr float ep_chamber_volume = 0.0015f; // m³
+float ep_release_time(const DistributorKind kind) { return kind == DistributorKind::evr305_001 ? 1.84f : 4.15f; }
+
+// The 305's РК for a sub-step: its valves by the line's command or target.
+// The РК is held to the full service's cylinder: the book has it rise to the
+// charging pressure with the handle left in VЭ long, which testers dispute
+// (2026-11-16); kept at the full service until a source settles it.
+void step_ep_chamber(DistributorState& s, const DistributorCar& car, const float ep, const EpCommand command, const float h) {
+    bool apply = false, vent = false;
+    float upper = car.full_cylinder, lower = 0.0f;
+    if (!car.ep) {
+        vent = true; // not wired: nothing holds its РК
+    } else {
+        switch (command) {
+        case EpCommand::apply: apply = true; break;
+        case EpCommand::hold: break;
+        case EpCommand::release: vent = true; break;
+        default:
+            // A DLL's target; none (< 0): the wire is dead and its valves let go.
+            if (ep < 0.0f) {
+                vent = true;
+                break;
+            }
+            upper = lower = (std::min)(ep, car.full_cylinder);
+            apply = s.ep_chamber < upper;
+            vent = s.ep_chamber > lower;
+            break;
+        }
+    }
+    if (apply && s.ep_chamber < upper && s.auxiliary > s.ep_chamber) {
+        const float rise = (std::min)(upper - s.ep_chamber, car.ep_fill * h * (std::min)(1.0f, (s.auxiliary - s.ep_chamber) / 0.5f));
+        s.ep_chamber += rise;
+        s.auxiliary = (std::max)(s.auxiliary - rise * ep_chamber_volume / car.auxiliary_volume, 0.0f);
+    }
+    if (vent && s.ep_chamber > lower) {
+        s.ep_chamber = (std::max)(s.ep_chamber - (std::max)(s.ep_chamber / ep_release_time(car.kind), 0.05f) * h, lower);
+    }
 }
 
 } // namespace
@@ -60,6 +138,27 @@ float distributor_full_cylinder(const DistributorKind kind, const DistributorLoa
 }
 
 DistributorKind distributor_kind(const formats::WagonDefinition& definition) noexcept {
+    switch (definition.brakes.distributor) {
+    case formats::BrakeDistributor::vr483: return DistributorKind::vr483;
+    case formats::BrakeDistributor::vr292: return DistributorKind::vr292;
+    case formats::BrakeDistributor::evr305: return DistributorKind::evr305;
+    case formats::BrakeDistributor::evr305_001: return DistributorKind::evr305_001;
+    default: break;
+    }
+    return inferred_distributor_kind(definition);
+}
+
+DistributorKind default_distributor_kind(const formats::WagonDefinition& definition) noexcept {
+    switch (definition.brakes.default_distributor) {
+    case formats::BrakeDistributor::vr483: return DistributorKind::vr483;
+    case formats::BrakeDistributor::vr292: return DistributorKind::vr292;
+    case formats::BrakeDistributor::evr305: return DistributorKind::evr305;
+    case formats::BrakeDistributor::evr305_001: return DistributorKind::evr305_001;
+    default: return inferred_distributor_kind(definition);
+    }
+}
+
+DistributorKind inferred_distributor_kind(const formats::WagonDefinition& definition) noexcept {
     if (definition.brakes.equipment & 4 || definition.brakes.system & 2) return DistributorKind::evr305;
     if (definition.kind == formats::WagonKind::freight) return DistributorKind::vr483;
     return DistributorKind::vr292;
@@ -73,7 +172,8 @@ float brake_force_pressure(const formats::WagonDefinition& definition) noexcept 
            distributor_full_cylinder(DistributorKind::vr483, DistributorLoad::loaded);
 }
 
-void step_distributor(DistributorState& s, const DistributorCar& car, const float rate, const float ep, const float h) {
+void step_distributor(DistributorState& s, const DistributorCar& car, const float rate, const float ep, const float h,
+                      const EpCommand command) {
     (void)rate;
     const float p = s.pipe;
     const float zr_volume = car.auxiliary_volume;
@@ -88,21 +188,19 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         const float fill = (car.kind == DistributorKind::vr483 ? 0.45f : rates.emergency) * h;
         const float rise = (std::min)(tc_max - s.cylinder, fill);
         if (rise > 0.0f && s.auxiliary > s.cylinder) take_for_cylinder(rise);
+        if (s.cylinder >= s.ep_chamber) s.ep_side = false;
         return;
     }
-    // ЗР charging from the pipe (the air comes out of the pipe).
-    if (p > s.auxiliary && !(s.braking && car.kind == DistributorKind::vr292)) {
+    // ЗР charging from the pipe (the air comes out of the pipe): a 483
+    // through its check valve always, a 292 (a 305's too) only while
+    // released (Крылов §31, §39: the ЗР of a 305 is fed while its 292 stays
+    // released, so the ЭПТ is inexhaustible).
+    if (p > s.auxiliary && !(s.braking && car.kind != DistributorKind::vr483)) {
         const float tau = car.kind == DistributorKind::vr483 ? tau_zr483 : tau_zr292;
         const float charge = (p - s.auxiliary) * h / tau;
         s.auxiliary += charge;
         s.pipe = (std::max)(s.pipe - charge * zr_volume / car.pipe_volume, 0.0f);
     }
-    // ЭВР 305 with the EP brake working: the wire holds the cylinder at its
-    // target (filled from the ЗР up to 1 atm/s, released at 0.35), and the
-    // 292 behind it answers the pipe all the same, the higher of the two
-    // kept. Until 2026-11-16 the wire alone set it: with the ЭПТ on a pipe
-    // reduction by the driver's valve braked nothing (the ЭП2Д, testers).
-    const float held = car.kind == DistributorKind::evr305 && car.ep && ep >= 0.0f ? (std::min)(ep, tc_max) : 0.0f;
     if (car.kind == DistributorKind::vr483) {
         // РК: charges from the pipe while released; follows a slow fall.
         if (!s.braking) {
@@ -113,12 +211,16 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         if (!s.braking && drop >= apply_483) {
             s.braking = true;
             s.pipe = (std::max)(s.pipe - quick_service, 0.0f); // quick service
+            s.pipe_low = s.pipe;
         }
         if (s.braking) {
             const float target = (std::min)(tc_max, tc_max / 1.5f * drop);
-            if (s.cylinder < target && s.auxiliary > s.cylinder) {
-                take_for_cylinder((std::min)(target - s.cylinder, tc_max * 0.9f / 18.0f * h));
-            }
+            const bool filling = s.cylinder < target - 0.02f && s.auxiliary > s.cylinder;
+            if (filling) take_for_cylinder((std::min)(target - s.cylinder, tc_max * 0.9f / 18.0f * h));
+            // The pipe's level in lap: while it fills, where the pipe is (a
+            // rise then, the quick service's dip filling back, releases
+            // nothing); in lap, the lowest since.
+            s.pipe_low = filling ? p : (std::min)(s.pipe_low, p);
             if (car.mountain) {
                 // Mountain mode: graduated release; the ТЦ comes down to
                 // what the pipe's shortfall below РК gives, and is released
@@ -127,36 +229,68 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
                     s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * h, target);
                 }
                 if (drop < step_483) s.braking = false;
-            } else if (p >= s.reference - release_483) {
-                // Flat mode: no graduated release; back within this of РК releases fully.
+            } else if (p >= s.reference - release_483 || (!filling && p >= s.pipe_low + rise_483)) {
+                // Flat mode: no graduated release; a rise over the braked
+                // pipe, or the pipe back by the РК, releases fully, and the
+                // РК lets its air into the ЗК and the pipe (Крылов §32), so
+                // it charges again from where the pipe stands.
                 s.braking = false;
+                s.reference = (std::min)(s.reference, p);
             }
         } else if (s.cylinder > 0.0f) {
             s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * h, 0.0f);
         }
         return;
     }
+    // ЭВР 305: its РК by the line (step_ep_chamber). The 292 behind it
+    // answers the pipe all the same, and the switching valve keeps the ТЦ on
+    // the higher side. Until 2026-11-16 the wire alone set it (a pipe
+    // reduction with the ЭПТ on braked nothing: the ЭП2Д, testers), and the
+    // ЭПТ released at 0.35 atm/s, or at the 292 plug's rate once its demand
+    // was 0.
+    const bool evr = is_evr305(car.kind);
+    if (evr) step_ep_chamber(s, car, ep, command, h);
     // ВР 292: the ЗР is the reference; it flows back on a slow fall.
     if (!s.braking) {
         if (p < s.auxiliary) s.auxiliary -= (std::min)(s.auxiliary - p, s292 * h);
-        if (s.auxiliary - p >= apply_292 && p < 4.9f) {
+        // Any pipe level: until 2026-11-17 not above 4.9, so a first step
+        // from a charging pressure of 5.2-5.4 could brake nothing.
+        if (s.auxiliary - p >= apply_292) {
             s.braking = true;
             s.reference = s.auxiliary;
-            s.pipe = (std::max)(s.pipe - quick_service * 0.5f, 0.0f);
+            s.pipe = (std::max)(s.pipe - s.pipe * kdr_292 / (car.pipe_volume + kdr_292), 0.0f); // its КДР
         }
     }
+    float pneumatic = 0.0f; // the ТЦ the 292 asks for
     if (s.braking) {
         const float ratio = car.ratio > 0.5f ? car.ratio : 3.0f;
-        const float target = (std::min)(tc_max, ratio * (s.reference - p));
-        if (s.cylinder < target && s.auxiliary > s.cylinder) take_for_cylinder((std::min)(target - s.cylinder, rates.fill * h));
+        pneumatic = (std::min)(tc_max, ratio * (s.reference - p));
+        if (s.cylinder < pneumatic && s.auxiliary > s.cylinder) {
+            take_for_cylinder((std::min)(pneumatic - s.cylinder, rates.fill * h));
+            if (s.cylinder > s.ep_chamber) s.ep_side = false;
+        }
         // A rise above the ЗР releases fully.
         if (p >= s.auxiliary + release_292) s.braking = false;
-    } else if (s.cylinder > held) {
-        // Released down to what the ЭПТ holds.
-        s.cylinder = (std::max)(s.cylinder - (held > 0.0f ? 0.35f : rates.release) * h, held);
     }
-    // The ЭПТ's wire (the 305): up to its target from the ЗР.
-    if (s.cylinder < held && s.auxiliary > s.cylinder) take_for_cylinder((std::min)(held - s.cylinder, 1.0f * h));
+    if (!evr) {
+        if (!s.braking && s.cylinder > 0.0f) s.cylinder = (std::max)(s.cylinder - rates.release * h, 0.0f);
+        return;
+    }
+    if (s.ep_chamber > 0.0f && s.ep_chamber >= s.cylinder - 1e-4f) {
+        // The 305's side: its relay fills the ТЦ from the ЗР up to its РК.
+        if (s.ep_chamber > s.cylinder && s.auxiliary > s.cylinder) take_for_cylinder((std::min)(s.ep_chamber - s.cylinder, ep_relay * h));
+        s.ep_side = true;
+    } else if (s.ep_side) {
+        // Its relay lets the ТЦ out after its РК (the 305's own release
+        // time), down to what the 292 holds; there the 292's side has it.
+        const float floor = (std::max)(s.ep_chamber, s.braking ? pneumatic : 0.0f);
+        if (s.cylinder > floor) s.cylinder = (std::max)(s.cylinder - ep_relay * h, floor);
+        if (s.braking && s.cylinder <= pneumatic + 1e-4f) s.ep_side = false;
+        if (s.cylinder <= 0.0f) s.ep_side = false;
+    } else if (!s.braking && s.cylinder > s.ep_chamber) {
+        // The 292's side: let out at its plug's rate.
+        s.cylinder = (std::max)(s.cylinder - rates.release * h, s.ep_chamber);
+    }
 }
 
 StandReport run_stand(const DistributorCar& car, ScriptDistributor* script) {
@@ -199,7 +333,7 @@ StandReport run_stand(const DistributorCar& car, ScriptDistributor* script) {
                 report.samples.push_back({time, state.pipe, state.auxiliary, state.cylinder, state.reference, state.braking});
             }
             // The figures.
-            if (report.charged < 0.0f && phase == 0 && state.auxiliary >= 4.9f) report.charged = time;
+            if (report.charged < 0.0f && phase == 0 && state.auxiliary >= 4.8f) report.charged = time;
             if (phase == 1) report.step_cylinder = state.cylinder;
             if (phase == 3) report.full_cylinder = state.cylinder;
             if (phase == 5) {
@@ -255,7 +389,7 @@ std::unique_ptr<ScriptDistributor> ScriptDistributor::load(const std::string& so
 }
 
 bool ScriptDistributor::step(DistributorState& s, const DistributorCar& car, const float rate, const float ep, const float h,
-                             std::string& error) {
+                             std::string& error, const EpCommand command) {
     auto& vm = impl_->vm;
     lua_State* t = vm.thread();
     lua_getglobal(t, "step");
@@ -276,6 +410,8 @@ bool ScriptDistributor::step(DistributorState& s, const DistributorCar& car, con
     flag("braking", s.braking);
     flag("emergency", s.emergency);
     number("ep", ep);
+    lua_pushstring(t, command_name(command));
+    lua_setfield(t, -2, "ep_command");
     number("tc_max", car.full_cylinder);
     number("ratio", car.ratio);
     number("v_pipe", car.pipe_volume);

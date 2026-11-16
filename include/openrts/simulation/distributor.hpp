@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/driver_valve.hpp>
 
 // A car's brake distributor (ВР) in openRTS's realistic air model
 // (docs/train.md): the built-in ВР 483, ВР 292 and ЭВР 305, or one written
@@ -14,7 +15,14 @@
 // the driver's valve and the emergency wave stay the model's.
 namespace openrts::simulation {
 
-enum class DistributorKind : std::uint8_t { vr483, vr292, evr305 };
+// evr305: the ЭВР 305-000 of a locomotive's coaches; evr305_001: the
+// 305-001 of multiple units, the same but for its release valve (2.0 mm
+// against 1.3: a release from 3.5-4 atm in 3.5-4.5 s against 8-10, Крылов
+// §39). Both with a 292 behind them.
+enum class DistributorKind : std::uint8_t { vr483, vr292, evr305, evr305_001 };
+[[nodiscard]] constexpr bool is_evr305(const DistributorKind kind) noexcept {
+    return kind == DistributorKind::evr305 || kind == DistributorKind::evr305_001;
+}
 
 // The switches a hand sets at the car (the car menu at a bogie): the 483's
 // load mode and flat / mountain, the 292's plug К / Д / УВ (the 305's
@@ -37,9 +45,16 @@ struct DistributorModes {
 // ТЦ of a full application: a 483 by its load mode (1.5 / 3.0 / 3.8 atm),
 // 3.8 for the others.
 [[nodiscard]] float distributor_full_cylinder(DistributorKind kind, DistributorLoad load) noexcept;
-// The distributor a car gets: EP-equipped cars 305 (with a 292 behind it),
-// `Type ( Freight )` 483, everything else 292.
+// The distributor a car gets: the one its file (or a mod's companion, the
+// car menu's choice) names in ORTSBrakeDistributor, else EP-equipped cars
+// 305-000 (with a 292 behind it), `Type ( Freight )` 483, everything else
+// 292. RTS content cannot tell a multiple unit (305-001) from a coach.
 [[nodiscard]] DistributorKind distributor_kind(const formats::WagonDefinition& definition) noexcept;
+// The one inferred from the car alone (none named).
+[[nodiscard]] DistributorKind inferred_distributor_kind(const formats::WagonDefinition& definition) noexcept;
+// The one the car has with no companion naming one: its file's, else the
+// stock rules', else inferred (formats::BrakeEquipment::default_distributor).
+[[nodiscard]] DistributorKind default_distributor_kind(const formats::WagonDefinition& definition) noexcept;
 
 // The cylinder pressure (atm) at which the realistic air gives a car its
 // full brake force. RTS has no load modes: its content gives an empty car
@@ -63,6 +78,12 @@ struct DistributorState {
     float reference{};  // the level remembered: 483 its РК, 292 the ЗР when the application began
     bool braking = false;   // an application is on
     bool emergency = false; // the emergency front has reached the car
+    // ЭВР 305: its РК (1.5 l), which its relay keeps the ТЦ at, and whether
+    // the switching valve has the ТЦ on the 305's side (else the 292's).
+    float ep_chamber{};
+    bool ep_side = false;
+    // 483: the lowest the pipe stood while braking (its flat release).
+    float pipe_low{};
 };
 
 // What the car gives its distributor.
@@ -75,6 +96,9 @@ struct DistributorCar {
     float cylinder_volume = 0.008f;  // m³
     float mass{};               // kg
     bool ep = false;            // the ЭПТ wired (305 follows its target)
+    // atm/s its ЭВР 305 fills at (about 1, Крылов §39; a train's own,
+    // Train::scatter_ep_fill).
+    float ep_fill = 1.0f;
     // The switches (DistributorModes), the load resolved.
     DistributorLoad load = DistributorLoad::loaded;
     bool mountain = false;
@@ -86,8 +110,10 @@ struct DistributorCar {
 inline constexpr float distributor_cylinder_volume = 0.008f;
 
 // One sub-step of `h` s of a built-in distributor; the pipe changing at
-// `rate` atm/s, `ep` the ЭПТ target (atm, < 0: none).
-void step_distributor(DistributorState& state, const DistributorCar& car, float rate, float ep, float h);
+// `rate` atm/s, `ep` the ЭПТ target (atm, < 0: none) or, `command` not
+// target, the line powered with that command.
+void step_distributor(DistributorState& state, const DistributorCar& car, float rate, float ep, float h,
+                      EpCommand command = EpCommand::target);
 
 // A distributor in Luau: the script's `step(c, dt)` with the car's table
 // (docs/scripting.md). One per car: its `c.state` table is the car's own.
@@ -99,7 +125,8 @@ public:
     [[nodiscard]] static std::unique_ptr<ScriptDistributor> load(const std::string& source, const std::string& name,
                                                                  std::string& error);
     // false and the message on a script error (the car's built-in one takes over).
-    bool step(DistributorState& state, const DistributorCar& car, float rate, float ep, float h, std::string& error);
+    bool step(DistributorState& state, const DistributorCar& car, float rate, float ep, float h, std::string& error,
+              EpCommand command = EpCommand::target);
 
 private:
     ScriptDistributor();
@@ -120,7 +147,7 @@ struct StandSample {
 };
 struct StandReport {
     std::vector<StandSample> samples; // one a second
-    float charged = -1.0f;      // s until the ЗР is within 0.1 of 5.0 (-1: never)
+    float charged = -1.0f;      // s until the ЗР is at 4.8, the books' 0.48 MPa (-1: never)
     float step_cylinder{};      // ТЦ after the 0.5 step, at its end
     float step_fill = -1.0f;    // s from the step until 95 % of that
     float release = -1.0f;      // s from the release until ТЦ < 0.4

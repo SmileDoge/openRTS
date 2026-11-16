@@ -76,6 +76,12 @@ void key_bytes_checks() {
     check(bytes({"Shift+8"}) == std::array<int, 4>{'8', 1, 0, 0}, "Shift+8");
     check(bytes({"ctrl+alt+z"}) == std::array<int, 4>{'Z', 6, 0, 0}, "Ctrl+Alt, upper case");
     check(bytes({"Space"}) == std::array<int, 4>{0x20, 0, 0, 0}, "Space");
+    // VkKeyScanW's codes (RTS 0x45B008): the 2ES6's valve on ; ' and the
+    // 254 on [ ] (Brakes.dll polls them with GetAsyncKeyState).
+    check(bytes({";", "'"}) == std::array<int, 4>{0xBA, 0, 0xDE, 0}, "; and ': VK_OEM_1, VK_OEM_7");
+    check(bytes({"[", "]"}) == std::array<int, 4>{0xDB, 0, 0xDD, 0}, "[ and ]: VK_OEM_4, VK_OEM_6");
+    check(bytes({"Shift+,", "."}) == std::array<int, 4>{0xBC, 1, 0xBE, 0}, ", and .: VK_OEM_COMMA, VK_OEM_PERIOD");
+    check(bytes({"/", "-"}) == std::array<int, 4>{0xBF, 0, 0xBD, 0}, "/ and -");
 }
 
 int main(int argc, char** argv) {

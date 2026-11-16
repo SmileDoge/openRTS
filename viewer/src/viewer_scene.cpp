@@ -211,6 +211,7 @@ public:
     [[nodiscard]] int start_state() const noexcept { return content_.start_state; }
     [[nodiscard]] const std::filesystem::path& situation() const noexcept { return content_.situation; }
     [[nodiscard]] int start_view() const noexcept { return content_.start_view; }
+    [[nodiscard]] bool realistic_air() const noexcept { return content_.realistic_air; }
     [[nodiscard]] const std::string& save_situation() const noexcept { return content_.save_situation; }
     [[nodiscard]] const std::shared_ptr<const net::Snapshot>& snapshot() const noexcept { return content_.snapshot; }
     [[nodiscard]] const std::shared_ptr<net::RtsConnection>& connection() const noexcept { return content_.connection; }
@@ -421,6 +422,8 @@ public:
         if (track_) {
             train_ = std::make_unique<TrainView>(content_.vfs(), route_, origin_, track_->network());
             train_->set_rts_config(content_.rts_config());
+            train_->set_install_root(content_.root());
+            if (content_.realistic_air()) train_->set_realistic_air(true);
             // Not in a network game: there the server and its dispatchers
             // own the trains and the track (docs/net.md); but the
             // dispatcher's console is the map.

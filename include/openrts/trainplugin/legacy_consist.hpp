@@ -72,11 +72,19 @@ struct BrakeCabControls {
                                                   const formats::CabDescription& cab);
 
 // A switch's AssignKey keys as RTS keeps them in ActSwitch::Key (+72, the
-// loader 0x45AE90): per key, two at most, its character in upper case
-// (Space 0x20) and its modifiers (1 Shift, 2 Ctrl or Control, 4 Alt), the
-// parts joined by '+'. DLLs read them: the MaDaDev Brakes.dll's Run springs
-// the 254 handle back from its unfixed positions unless GetAsyncKeyState of
-// its key, or of the left mouse button, is down.
+// loader 0x45AE90): per key, two at most, its virtual-key code and its
+// modifiers (1 Shift, 2 Ctrl or Control, 4 Alt), the parts joined by '+'.
+// RTS takes the code as VkKeyScanW's low byte (0x45B008, 0x45B19C; Space
+// 0x20): a letter's upper case, a digit itself, ; ' [ ] , . / - = ` \ their
+// VK_OEM codes (0xBA...). openRTS gives the US layout's codes, the physical
+// keys its own key handling binds (RTS took the layout active at its start).
+// DLLs read them: the MaDaDev Brakes.dll's Run springs the 254 handle and
+// the driver's valve back from their unfixed positions unless
+// GetAsyncKeyState of its key, or of the left mouse button, is down. Before
+// 2026-11-16 openRTS gave the character itself, ';' 0x3B, ''' 0x27 (the
+// right arrow's code), '[' 0x5B (the Windows key's): the 2ES6's valve in I
+// and the 254 in its last position sprang back while held, the key's
+// repeat put them there again (testers: they jerked and crackled).
 void switch_key_bytes(const std::vector<std::string>& keys, std::uint8_t (&out)[4]);
 
 struct LegacyCar {
@@ -122,6 +130,10 @@ public:
     struct Outputs {
         std::vector<dllhost::CarOutput> cars;
         bool valid = false;
+        // Started cold (TrainState 0): the main reservoirs empty, and
+        // openRTS's compressors (the realistic air) off until a DLL reports
+        // a pantograph up, a diesel on, its own compressor or traction.
+        bool cold = false;
     };
 
     // nullptr (with `error`) when no car has a DLL or the host cannot start.
@@ -141,6 +153,8 @@ public:
     // Every car's air as the last enter() left it (Init writes the
     // pressures itself: RTS keeps them, LegacyCab::attach puts them in).
     [[nodiscard]] const std::vector<dllhost::CarAir>& entered_air() const noexcept { return entered_air_; }
+    // A train just made, started cold (enter_new_train): Outputs::cold.
+    void set_cold_start(bool cold) noexcept { outputs_->cold = cold; }
     // One round trip: the trains' state in (the player's first, as the
     // last reconsist ordered them), the DLLs' outputs out.
     bool step(double dt, const std::vector<const simulation::Train*>& trains, const LegacyWorld& world);

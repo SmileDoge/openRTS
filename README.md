@@ -312,6 +312,7 @@ Redistributable (x64), см. «Готовая сборка».
 | `--track-control` | сразу открыть Track control |
 | `--situation <имя\|файл>` | расставить поезда из сохранённой расстановки |
 | `--spawn cab\|car\|above` | начать в кабине, у вагона или над поездом |
+| `--realistic-air` | все поезда на реалистичном воздухе openRTS (как галочка в окне «Поезд») |
 | `--time 06:30:00`, `--speed <x>` | время суток и его скорость |
 | `--season spring\|summer\|autumn\|winter` | сезон |
 | `--weather clear\|snow\|rain` | погода |

@@ -100,9 +100,21 @@ ValveOutput step_valve_395(ValveState& state, const ValvePosition position, cons
     default:
         break;
     }
+    // Switched off, its demand is gone: the cars' ЭВР let their РК out, and
+    // switched on again in a lap they hold nothing (it used to come back).
+    if (!in.ep_on) target = 0.0f;
     if (in.ep_on && position != ValvePosition::emergency) {
         out.ep_value = target;
         out.systems = 1 | 2;
+        if (in.realistic) {
+            switch (position) {
+            case ValvePosition::charge:
+            case ValvePosition::running: out.ep_command = EpCommand::release; break;
+            case ValvePosition::lap:
+            case ValvePosition::lap_feed: out.ep_command = EpCommand::hold; break;
+            default: out.ep_command = EpCommand::apply; break;
+            }
+        }
     }
     return out;
 }

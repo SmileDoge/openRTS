@@ -317,6 +317,7 @@ The game can also be started directly:
 | `--track-control` | open Track control at once |
 | `--situation <name\|file>` | put the trains of a saved situation back |
 | `--spawn cab\|car\|above` | start in the cab, beside the car or above the train |
+| `--realistic-air` | every train on the openRTS realistic air (as the Train window's checkbox) |
 | `--time 06:30:00`, `--speed <x>` | time of day and how fast it runs |
 | `--season spring\|summer\|autumn\|winter` | season |
 | `--weather clear\|snow\|rain` | weather |

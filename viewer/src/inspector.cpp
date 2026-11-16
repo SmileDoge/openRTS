@@ -19,6 +19,7 @@
 #include <openrts/renderer/model_library.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 
+#include "mod_files.hpp"
 #include "train_view.hpp"
 #include "ui_text.hpp"
 #include "viewer_state.hpp"
@@ -32,7 +33,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr const char* default_mod = "openrts_edits";
+constexpr const char* default_mod = default_edits_mod;
 
 [[nodiscard]] std::string lower(std::string_view text) {
     std::string out(text);
@@ -128,72 +129,6 @@ struct Hit {
     }
     if (far_t < 0.0f) return std::nullopt;
     return Hit{.t = inside ? far_t : near_t, .inside = inside};
-}
-
-// Adds `mod` to the installation's openrts.ini [Mods] (after the others,
-// numbered when they are); false when it was there already.
-bool list_mod(const fs::path& root, const std::string& mod) {
-    const auto file = root / "openrts.ini";
-    std::string text;
-    {
-        std::ifstream in(file, std::ios::binary);
-        if (in) {
-            std::ostringstream all;
-            all << in.rdbuf();
-            text = all.str();
-        }
-    }
-    const bool crlf = text.find("\r\n") != std::string::npos;
-    std::vector<std::string> lines;
-    {
-        std::string line;
-        std::istringstream in(text);
-        while (std::getline(in, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            lines.push_back(line);
-        }
-    }
-    std::optional<std::size_t> section, last;
-    int highest = 0;
-    bool numbered = false;
-    for (std::size_t i = 0; i < lines.size(); ++i) {
-        std::string line = trim(lines[i]);
-        if (const auto comment = line.find(';'); comment != std::string::npos) line = trim(line.substr(0, comment));
-        if (line.empty()) continue;
-        if (line.front() == '[' && line.back() == ']') {
-            if (section && !last) last = section;
-            if (lower(trim(line.substr(1, line.size() - 2))) == "mods") {
-                section = i;
-                last.reset();
-            } else if (section) {
-                break;
-            }
-            continue;
-        }
-        if (!section) continue;
-        last = i;
-        std::string value = line;
-        if (const auto equals = line.find('='); equals != std::string::npos) {
-            numbered = true;
-            try {
-                highest = (std::max)(highest, std::stoi(trim(line.substr(0, equals))));
-            } catch (...) {
-            }
-            value = trim(line.substr(equals + 1));
-        }
-        if (lower(value) == lower(mod)) return false;
-    }
-    const std::string entry = numbered ? std::to_string(highest + 1) + " = " + mod : mod;
-    if (section) {
-        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>((last ? *last : *section) + 1), entry);
-    } else {
-        if (!lines.empty() && !trim(lines.back()).empty()) lines.emplace_back();
-        lines.emplace_back("[Mods]");
-        lines.push_back(entry);
-    }
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    for (const auto& line : lines) out << line << (crlf ? "\r\n" : "\n");
-    return true;
 }
 
 } // namespace

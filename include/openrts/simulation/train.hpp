@@ -75,6 +75,7 @@ struct EngineDemands {
     float main_reservoir_rate{}; // atm/s (MainResRate)
     float charging_rate{};       // second pipe (ChargingRate)
     float ep_value = -1.0f;      // EP brake target, <0: none (EPTvalue)
+    EpCommand ep_command = EpCommand::target; // the 395's ЭПТ command (realistic air), driver_valve.hpp
     float handbrake{};           // percent (HandbrakePercent)
     // The controller works the handbrake (a DLL: RTS sets HandbrakeValue =
     // HandbrakePercent / 100 every step, so the cab releases it); otherwise
@@ -169,6 +170,14 @@ struct DriverHandles {
 // on below 7.5 atm, off above 9; with the realistic air a КТ-6's 0.088
 // m³·atm/s into the real reservoir volume. The rate for MainResRate, atm/s.
 [[nodiscard]] float compressor_rate(bool& running, const EngineInputs& inputs);
+// The compressor governor of an engine, atm: {cut-in, cut-out}. The .eng's
+// AirBrakesCompressorRestartPressure and AirBrakesMainMaxAirPressure (a
+// ЭД4М's real one is 6.5-8.0, a locomotive's 7.5-9.0), else 7.5 / 9.0.
+struct CompressorRange {
+    float on = 7.5f;
+    float off = 9.0f;
+};
+[[nodiscard]] CompressorRange compressor_range(const formats::EngineDefinition* engine) noexcept;
 
 class KeyboardController final : public LocomotiveController {
 public:
@@ -286,6 +295,8 @@ struct CarState {
     // Brakes, atm.
     float pipe{}, auxiliary{}, cylinder{}, independent{}, control{}, charging_pipe{};
     float ep = -1.0f;
+    EpCommand ep_command = EpCommand::target; // with ep >= 0: the line's command (driver_valve.hpp)
+    float ep_fill = 1.0f; // atm/s its ЭВР 305 fills at (scatter_ep_fill)
     float handbrake{}; // 0..1
     float main_reservoir{}; // engines
     // Bogie positions from the car centre towards the train front / rear, m
@@ -425,6 +436,11 @@ public:
     void set_handbrake(std::size_t car, float value);
     // Car `car`'s distributor switches (the realistic air model reads them).
     void set_distributor_modes(std::size_t car, const DistributorModes& modes);
+    // Every train fills its cylinders by the ЭПТ at a pace of its own, so a
+    // driver gets used to each train's steps (testers, 2026-11-17): the
+    // train 0.8-1.2 atm/s, each car within 5 % of it, 0.75-1.25 in all.
+    // Drawn from `seed` (a new train: a random one); 1 atm/s until called.
+    void scatter_ep_fill(std::uint32_t seed);
     // The brake shoes of car `car`'s front and rear bogie (CarState::shoes);
     // a bogie whose shoes change gets new ones (shoe_state as new).
     void set_brake_shoes(std::size_t car, const std::array<formats::BrakeShoe, 2>& shoes);

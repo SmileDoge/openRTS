@@ -102,6 +102,41 @@ reservoirs (`docs/reverse/brakes.md`). On 1520 mm stock that pipe is the main
 reservoir pipe between locomotive sections. It is set on locomotives such as
 the ВЛ10к, not on wagons — PROBABLE.
 
+**From Крылов (13), 2026-11-16:**
+- ВР 483: the ЗР charges "непосредственно из магистрали через отверстие 41
+  диаметром 1,3 мм, обратный клапан 45": an overcharged ЗР does not flow
+  back into the pipe; stability takes only ЗК and РК back (through hole 40,
+  0.65 mm, a fall up to 0.02 MPa in 50 s) — CONFIRMED (3, 13).
+- ВР 292: the ЗР charges through three 1.25 mm holes in the main piston's
+  bush and a 2 mm one in the piston, 130–180 s to 0.48 MPa; a fall from 0.5
+  to 0.45 MPa in 75 s or slower takes the ЗК and the ЗР back into the pipe
+  through the same ways (≈0.4 atm/min) — CONFIRMED (4, 13).
+- ЭВР 305: the РК fills through a 1.8 mm seat, 0.3 MPa in 2.5–3.5 s, a step
+  about 0.1 MPa a second; the release valve's hole sets the release, 8–10 s
+  from 0.35–0.4 MPa with 1.3 mm (305-000, coaches of a locomotive's train),
+  3.5–4.5 s with 2.0 mm (305-001, multiple units, also ЭВР 170), whatever
+  the cylinder. The wire dead during an application: "частичный отпуск
+  тормозов до перехода на пневматическое торможение". Left in VЭ long the
+  ТЦ and ЗР may reach the charging pressure (disputed by testers) —
+  CONFIRMED (13).
+- ВР 483-000 against the 270-002 and 270-005-1 (Крылов, table 9, a
+  train's): brake wave 290 m/s in emergency, 270 in full service (160 for
+  the older ones); cylinder to 0.35 MPa in full service 18 s at the head
+  and 48 s at the tail (13 / 40 with the 0.9 mm hole 32), in emergency
+  16 / 38 (10 / 30); released by II after full service to 0.04 MPa at the
+  tail in 60 s; the least pipe reduction for a stable step 0.04 MPa; a
+  rise of the pipe of 0.015–0.03 MPa, by the step, releases fully (flat
+  mode) — CONFIRMED (13). In flat mode the РК lets its air into the ЗК and
+  the pipe as it releases (§32).
+- ВР 292-001: brake wave 190 m/s in emergency, 120 in service; its КДР (1
+  l) takes 0.02–0.025 MPa off the pipe as the application starts; the
+  slide valves move on a service reduction of 0.03 MPa or more —
+  CONFIRMED (13).
+- 395: in VЭ the 395-000-2, -000-4 (passenger locomotives) and -000-5
+  (multiple units) also lower the УР as in VA (0.75 mm, 0.5 to 0.45 MPa in
+  15–20 s); the 395-000 and 328 do not — CONFIRMED (13). The ЭПТ "как
+  правило" brakes without lowering the pipe.
+
 ## 5. Driver's valve 394/395
 
 The handle sets the pressure in the **УР** (уравнительный резервуар,
@@ -276,6 +311,10 @@ DLL known to be written for it.
     https://lokomo.ru/podvizhnoy-sostav/obsluzhivanie-tormoznogo-oborudovaniya.html
 12. Новые правила по тормозам (протокол № 83):
     https://prolokomotiv.ru/pravila-po-tormozam-protokol-83.html
+
+13. Крылов В. И., Крылов В. В., «Автоматические тормоза подвижного
+    состава», Транспорт, 1983 (a scan a tester recommended, 2026-11-16):
+    §25 (395), §31 (292), §32 (483, table 9), §37–39 (ЭПТ, ЭВР 305).
 
 Unreachable during the research: scbist.com (Асадченко ch. 21–23, ЭР2),
 rcit.su. Most sources are teaching material, not the manufacturer's

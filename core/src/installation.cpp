@@ -128,7 +128,15 @@ fs::path program_directory() {
 }
 
 fs::path own_packs_directory() {
-    return program_directory() / "PACKS";
+    const auto here = program_directory();
+    // The release's tools (tools/*.exe) use the programs' PACKS (the stock
+    // rules, openrts-train-check as the game sees the cars).
+    const auto folder = here.filename().u8string();
+    if (std::error_code error; !fs::is_directory(here / "PACKS", error) &&
+                               fold_case(std::string_view(reinterpret_cast<const char*>(folder.data()), folder.size())) == "tools") {
+        return here.parent_path() / "PACKS";
+    }
+    return here / "PACKS";
 }
 
 void mount_installation(Vfs& vfs, const fs::path& root, const InstallationConfig& config) {

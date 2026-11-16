@@ -38,6 +38,7 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/ace_file.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/stock_rules.hpp>
 
 #include "cab_screens.hpp"
 #include <openrts/simulation/train.hpp>
@@ -287,7 +288,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             engine = false;
             path = formats::wagon_path(entry.folder, name, false);
         }
-        auto def = std::make_unique<formats::WagonDefinition>(formats::load_wagon(vfs, entry.folder, name, engine));
+        auto def = std::make_unique<formats::WagonDefinition>(formats::load_wagon(vfs, entry.folder, name, engine, simulation::StockRules::of(vfs)));
         if (!def->ok()) {
             std::fprintf(stderr, "%s/%s: %s\n", folder.c_str(), name.c_str(), def->error.c_str());
             return 2;

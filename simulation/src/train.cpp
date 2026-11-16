@@ -9,6 +9,7 @@
 #include <openrts/simulation/brake_shoes.hpp>
 
 #include <algorithm>
+#include <random>
 #include <atomic>
 #include <cmath>
 #include <limits>
@@ -210,11 +211,24 @@ void equalise(std::vector<CarState>& cars, const std::size_t a, const std::size_
 // ---------------------------------------------------------------------------
 // Keyboard controller
 
+CompressorRange compressor_range(const formats::EngineDefinition* engine) noexcept {
+    CompressorRange range;
+    // Only a sensible governor (a few files give a cut-in above the cut-out).
+    if (!engine || engine->main_reservoir_max < 3.0f || engine->main_reservoir_max > 12.0f) return range;
+    range.off = engine->main_reservoir_max;
+    range.on = engine->compressor_restart >= 1.0f && engine->compressor_restart < range.off ? engine->compressor_restart
+                                                                                            : range.off - 1.5f;
+    return range;
+}
+
 float compressor_rate(bool& running, const EngineInputs& inputs) {
-    if (inputs.main_reservoir < 7.5f) running = true;
-    if (inputs.main_reservoir > 9.0f) running = false;
-    if (!running) return 0.0f;
     const auto* engine = inputs.definition && inputs.definition->engine ? &*inputs.definition->engine : nullptr;
+    // The governor by the .eng (until 2026-11-16 7.5 / 9.0 for every engine:
+    // an ЭД4М, 6.5-8.0 in life, held 9 atm; testers).
+    const auto range = compressor_range(engine);
+    if (inputs.main_reservoir < range.on) running = true;
+    if (inputs.main_reservoir >= range.off) running = false;
+    if (!running) return 0.0f;
     if (inputs.realistic_air && engine) {
         // A КТ-6 delivers about 5.3 m³ of free air a minute (0.088 m³·atm/s)
         // into the real main reservoir volume.
@@ -298,7 +312,10 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     demands.equalising = out.equalising;
     demands.emergency = out.emergency;
     demands.systems = out.systems;
-    if (out.ep_value >= 0.0f) demands.ep_value = out.ep_value;
+    if (out.ep_value >= 0.0f) {
+        demands.ep_value = out.ep_value;
+        demands.ep_command = out.ep_command;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +356,8 @@ Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
         car.control = 4.8f;
         car.charging_pipe = 0.0f;
         if (setup.definition && setup.definition->engine) {
-            car.main_reservoir = 8.5f;
+            // Charged to the governor's cut-out (a cold start empties it).
+            car.main_reservoir = compressor_range(&*setup.definition->engine).off;
             car.sand_left = setup.definition->engine->max_sanding_time;
         }
         cars_.push_back(car);
@@ -459,6 +477,13 @@ void Train::set_handbrake(const std::size_t car, const float value) {
     if (car >= cars_.size()) return;
     cars_[car].handbrake = std::clamp(value, 0.0f, 1.0f);
     asleep_ = false;
+}
+
+void Train::scatter_ep_fill(const std::uint32_t seed) {
+    std::mt19937 random(seed);
+    std::uniform_real_distribution<float> train_pace(0.8f, 1.2f), car_pace(0.95f, 1.05f);
+    const float pace = train_pace(random);
+    for (auto& car : cars_) car.ep_fill = std::clamp(pace * car_pace(random), 0.75f, 1.25f);
 }
 
 void Train::set_distributor_modes(const std::size_t car, const DistributorModes& modes) {
@@ -975,6 +1000,7 @@ void Train::step() {
         auto& car = cars_[i];
         car.force = 0.0f;
         car.ep = -1.0f;
+        car.ep_command = EpCommand::target;
         auto& demands = impl.demands[i];
         demands = {};
         // The slip found last step (RTS: Engine::Wheelslip as the DLL left it).
@@ -1080,13 +1106,17 @@ void Train::step() {
     for (std::size_t i = 0; i < n; ++i) {
         const auto& demands = impl.demands[i];
         if (!(demands.systems & 2) || demands.ep_value < 0.0f || !(cars_[i].definition->brakes.system & 2)) continue;
-        cars_[i].ep = demands.ep_value;
+        const auto feed = [&](CarState& car) {
+            car.ep = demands.ep_value;
+            car.ep_command = demands.ep_command;
+        };
+        feed(cars_[i]);
         // As far as the EP line runs: EP cars with the cables connected.
         const auto ep_joined = [&](const std::size_t k) {
             return !(cars_[k].pipe_ends & ep_cable_rear) && !(cars_[k + 1].pipe_ends & ep_cable_front);
         };
-        for (std::size_t k = i + 1; k < n && (cars_[k].definition->brakes.system & 2) && ep_joined(k - 1); ++k) cars_[k].ep = demands.ep_value;
-        for (std::size_t k = i; k-- > 0 && (cars_[k].definition->brakes.system & 2) && ep_joined(k);) cars_[k].ep = demands.ep_value;
+        for (std::size_t k = i + 1; k < n && (cars_[k].definition->brakes.system & 2) && ep_joined(k - 1); ++k) feed(cars_[k]);
+        for (std::size_t k = i; k-- > 0 && (cars_[k].definition->brakes.system & 2) && ep_joined(k);) feed(cars_[k]);
     }
 
     // 2. Brake force from the cylinders (before this step's air update, as RTS).
@@ -1340,7 +1370,7 @@ void Train::step() {
             // (on a single pipe: the reservoir) down with it, so it applies
             // nothing; a faster fall outruns it and brakes as before.
             if (settings_.distributor_stability && car.cylinder <= 0.0f && pipe_change < 0.0f) {
-                const float stability = (distributor_kind(*car.definition) == DistributorKind::vr483 ? 0.3f : 0.5f) / 60.0f;
+                const float stability = (distributor_kind(*car.definition) == DistributorKind::vr483 ? 0.3f : 0.4f) / 60.0f;
                 const float floor = car.pipe - 0.2f;
                 if (car.control > floor) {
                     car.control = (std::max)(floor, car.control - stability * dt);

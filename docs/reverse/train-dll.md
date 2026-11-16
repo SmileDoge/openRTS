@@ -559,9 +559,19 @@ without compliance and RTS refuses it too.
   Enter opened the piece and the door stayed shut).
 - **CONFIRMED `ActSwitch::Key` (`+72`, 4 bytes)** holds the `AssignKey`
   keys (`0x45AE90`, from the switch loader): per key, two at most, its
-  character in upper case (`Space` 0x20) and a byte of modifiers (1
-  `shift`, 2 `ctrl` or `control`, 4 `alt`), the parts joined by `+`; the
-  second key at `+74` / `+75`. The MaDaDev `Brakes.dll` reads them in its
+  virtual-key code and a byte of modifiers (1 `shift`, 2 `ctrl` or
+  `control`, 4 `alt`), the parts joined by `+`; the second key at `+74` /
+  `+75`. **CONFIRMED** the code is `VkKeyScanW`'s low byte of the key's
+  first character above a space (the calls at `0x45B008` and `0x45B19C`,
+  `mov [edx], al`; `Space` written as 0x20 outright): a letter's upper
+  case, a digit itself, `; ' [ ] , . / - = \` `` ` `` their `VK_OEM_*`
+  codes (0xBA, 0xDE, 0xDB, 0xDD, 0xBC, 0xBE, 0xBF, 0xBD, 0xBB, 0xDC, 0xC0
+  on the US layout). `VkKeyScanW` uses the layout active when RTS loads the
+  cab; openRTS gives the US layout's codes, the physical keys it binds.
+  Until 2026-11-16 openRTS gave the character itself: `'` 0x27 is the
+  right arrow's code, `[` 0x5B the Windows key's, `;` 0x3B none, so
+  Brakes.dll saw them never held (the 2ES6's valve on `;` `'` jerked out of
+  I, the 254 on `[` `]` crackled in its last position, testers). The MaDaDev `Brakes.dll` reads them in its
   `Run` (`0x416460`..`0x4168CF`): the auxiliary brake handle (`BR_254ID*`)
   in one of its unfixed positions springs back (the DLL sets it to 1, or
   from 5 to 4) unless `GetAsyncKeyState` of its `Key[2]` / `Key[0]` or of

@@ -32,6 +32,11 @@ Every script runs in a VM of its own:
 ORTSBrakeDistributor ( "my_vr.luau" )
 ```
 
+The built-in names `"483"`, `"292"`, `"305-000"` and `"305-001"` choose a
+built-in distributor instead (`docs/train.md`, "Choosing a car's
+distributor"); a built-in one named over a script (a mod's companion, the
+car menu) replaces it.
+
 The file lies next to the `.wag` / `.eng`. It works with the realistic air
 model (the Train window, "Realistic air (openRTS)"), which a train runs
 while none of its locomotives has an RTS DLL: those DLLs' driver's valves
@@ -53,12 +58,13 @@ sample. The script reads and changes the table:
 | `braking` | read, write | the distributor's position: braking (applying or lap) rather than release. The game only keeps it between steps; the brake force comes from `tc` |
 | `emergency` | read, write | the emergency front has reached the car; set it to start the front here |
 | `ep` | read | the ЭПТ target, atm (< 0: none) |
+| `ep_command` | read | the line's command: `"target"` (follow `ep`, a DLL's), `"apply"`, `"hold"`, `"release"` (the openRTS 395 under the realistic air) |
 | `ep_wired` | read | the car has the ЭПТ |
 | `tc_max` | read | ТЦ of a full application (483: by the load) |
 | `ratio` | read | `TripleValveRatio` |
 | `v_pipe`, `v_zr`, `v_tc` | read | volumes of the pipe at the car, the ЗР and the ТЦ, m³ |
 | `mass` | read | the car's mass, kg |
-| `kind` | read | the built-in distributor the car would have: `"292"`, `"483"`, `"305"` |
+| `kind` | read | the built-in distributor the car would have: `"292"`, `"483"`, `"305"`, `"305-001"` |
 | `load` | read | the 483's load mode: `"empty"`, `"medium"`, `"loaded"` (the car menu; by the mass until set) |
 | `mountain` | read | the 483's mountain mode (the car menu) |
 | `plug` | read | the 292's plug: `"short"` (К), `"long"` (Д), `"no_accelerator"` (УВ) (the car menu) |
@@ -71,6 +77,40 @@ emergency wave stay the model's.
 **A sample.** `sdk/luau/vr292.luau` is the built-in ВР 292 written in Luau,
 line for line (the test `openrts.distributor` checks that it gives the
 same ТЦ and ЗР as the C++ one). Start from it.
+
+## Stock rules (2026-11-16)
+
+RTS and MSTS content cannot say some things right: a multiple unit's cars
+are `Type ( Engine )` like a locomotive's, and most files give every engine
+the same compressor governor. A stock rule says it by the series, not file
+by file: a script in `TRAINS/OPENRTS/STOCK/*.luau` (any layer of the VFS: a
+mod's folder, a pack) sees every car as it loads (`formats::load_wagon`,
+`simulation::StockRules`) and may name:
+
+| Field | What |
+|---|---|
+| `distributor` | `"483"`, `"292"`, `"305-000"`, `"305-001"` |
+| `compressor_on`, `compressor_off` | the governor's cut-in and cut-out, atm |
+
+The script defines `car(c)`; `c` holds the car as read so far: `folder`,
+`file` (with its `.eng` / `.wag`), `name` (the file's Name), `engine` (an
+`.eng`), `type` (`"engine"`, `"passenger"`, `"freight"`, `"tender"`,
+`"other"`), `engine_type` (`"electric"`, `"diesel"`, `"steam"`), `ep` (the
+ЭПТ fitted), `mass` (t), and the three fields above as the file gives them
+(nil when it does not). Scripts run in their names' order, each seeing what
+the one before set; one that fails is said once and left out.
+
+Who wins: the file < the rules < the car's companion. A distributor the
+file names (or a Luau one) stays, the governor is the rules' over the
+file's, and the car menu's choice (kept in a mod's companion) wins over
+both.
+
+**openRTS's own one.** The pack `openrts-stock` (`PACKS/openrts-stock.zip`
+beside the program, from `packs/stock`) has `multiple_units.luau`: the cars
+whose folder or file names a multiple unit's series (ЭД2Т, ЭД4М, ЭД9, ЭР1,
+ЭР2, ЭР9, ЭТ2 as ED2T, ED4M, ...) get the governor 6.5–8.0 atm and, with
+the ЭПТ, the ЭВР 305-001 (`docs/train.md`). A mod replaces it by the same
+path, or adds its own script beside it.
 
 ## The stand
 
@@ -93,7 +133,7 @@ The program, from an empty car:
 
 | Time, s | Pipe | What is measured |
 |---|---|---|
-| 0–300 | charge to 5.0 | how long the ЗР takes to 4.9 |
+| 0–300 | charge to 5.0 | how long the ЗР takes to 4.8 (the books' 0.48 MPa) |
 | 300–360 | a step of 0.5 (4.5) | ТЦ, and how long it takes to 95 % of it |
 | 360–450 | release to 5.0 | how long until ТЦ < 0.4 |
 | 450–510 | full service (3.5) | ТЦ |

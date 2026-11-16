@@ -46,7 +46,8 @@ From lowest to highest priority:
 
 ## openRTS's own packs (2026-11-16)
 
-What openRTS itself brings (the thunder, `openrts-thunder.zip`) lies in
+What openRTS itself brings (the thunder, `openrts-thunder.zip`; the stock
+rules, `openrts-stock.zip`, `docs/scripting.md`) lies in
 `PACKS` beside the program (`openrts_game.exe`, `openrts_viewer.exe`;
 `core::own_packs_directory()`), its ZIPs mounted before every layer of the
 installation, as base packs (layer 0 above): the installation's packs and

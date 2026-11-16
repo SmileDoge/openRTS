@@ -2,7 +2,9 @@
 // stability, and the train ends staying a train length apart at a buffer stop.
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -14,6 +16,7 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/brake_shoes.hpp>
 #include <openrts/simulation/distributor.hpp>
+#include <openrts/simulation/stock_rules.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train.hpp>
 
@@ -857,6 +860,101 @@ void test_realistic_air(const Stock& stock) {
         check(r.train.cars().back().cylinder > 2.0f, "realistic: VI applies the whole train within 10 s");
     }
     {
+        // Passenger cars (305 with a 292), charged to 5.2: a first step of
+        // about 0.3 brakes them (the 292 braked nothing above a pipe of 4.9
+        // until 2026-11-17); I then II releases and nothing brakes again
+        // while the overcharge goes (what that limit was there for).
+        const Stock ep(true);
+        Run r(ep, settings, 1000.0);
+        r.driver->charging_pressure = 5.2f;
+        r.run(400.0);
+        r.driver->brake = Handle::service;
+        r.run(1.2);
+        r.driver->brake = Handle::lap;
+        r.run(15.0);
+        float least = 99.0f;
+        for (const auto& car : r.train.cars())
+            if (!car.definition->engine) least = (std::min)(least, car.cylinder);
+        check(least > 0.3f, "realistic, 5.2: a 0.3 step brakes every car (" + std::to_string(least) + ")");
+        r.driver->brake = Handle::charge;
+        r.run(6.0);
+        r.driver->brake = Handle::running;
+        r.run(60.0);
+        r.max_cylinder = 0.0f;
+        r.run(240.0);
+        float most = 0.0f;
+        for (const auto& car : r.train.cars())
+            if (!car.definition->engine) most = (std::max)(most, car.cylinder);
+        check(most < 0.05f, "realistic, 5.2: I then II releases, nothing brakes again (" + std::to_string(most) + ")");
+    }
+    {
+        // The pipe passes a change no faster than sound (2026-11-17: the
+        // flow alone had no front, a 16-car train braked all at once,
+        // 1366 m/s): the last car brakes later than the first by at least
+        // the distance at about 600 m/s (sound, and a closed end's
+        // reflection); and II releases a 60-car train's last car within a
+        // minute (its tail did not release in minutes before).
+        const auto network = simulation::straight_test_track(3000.0);
+        const auto run_for = [](simulation::Train& train, const double seconds, const std::function<void()>& each) {
+            for (int i = 0; i < static_cast<int>(seconds / simulation::train_step); ++i) {
+                train.step();
+                each();
+            }
+        };
+        std::string error;
+        {
+            simulation::Train t(stock.cars(16), settings);
+            check(t.place(*network, 1, 2000.0, true, &error), "16 cars placed: " + error);
+            const auto driver = simulation::attach_keyboard_driver(t);
+            run_for(t, 600.0, [] {});
+            double first = -1.0, last = -1.0, time = 0.0;
+            driver->brake = Handle::service;
+            run_for(t, 20.0, [&] {
+                time += simulation::train_step;
+                if (driver->brake == Handle::service && time >= 3.0) driver->brake = Handle::lap;
+                if (first < 0.0 && t.cars()[1].cylinder > 0.1f) first = time;
+                if (last < 0.0 && t.cars().back().cylinder > 0.1f) last = time;
+            });
+            const double span = std::abs(t.cars()[1].offset - t.cars().back().offset);
+            check(first > 0.0 && last > first + span / 600.0,
+                  "the brake wave no faster than sound (" + std::to_string(first) + " / " + std::to_string(last) + " s over " +
+                      std::to_string(span) + " m)");
+        }
+        simulation::Train t(stock.cars(60), settings);
+        check(t.place(*network, 1, 2000.0, true, &error), "60 cars placed: " + error);
+        const auto driver = simulation::attach_keyboard_driver(t);
+        const auto steps = [&](const double seconds, const std::function<void()>& each) { run_for(t, seconds, each); };
+        steps(900.0, [] {});
+        double time = 0.0;
+        driver->brake = Handle::service;
+        steps(30.0, [&] {
+            time += simulation::train_step;
+            if (driver->brake == Handle::service && time >= 3.0) driver->brake = Handle::lap;
+        });
+        driver->brake = Handle::running;
+        double released = -1.0;
+        time = 0.0;
+        steps(90.0, [&] {
+            time += simulation::train_step;
+            if (released < 0.0 && t.cars().back().cylinder < 0.4f) released = time;
+        });
+        check(released > 0.0 && released < 60.0, "II releases a 60-car train's last car within a minute (" + std::to_string(released) + " s)");
+    }
+    {
+        // A train's own ЭПТ pace: 0.75-1.25 atm/s, drawn per train.
+        const Stock ep(true);
+        simulation::Train a(ep.cars(4));
+        a.scatter_ep_fill(1);
+        simulation::Train b(ep.cars(4));
+        b.scatter_ep_fill(2);
+        bool within = true;
+        for (const auto* t : {&a, &b})
+            for (const auto& car : t->cars()) within = within && car.ep_fill >= 0.75f && car.ep_fill <= 1.25f;
+        check(within && a.cars()[1].ep_fill != b.cars()[1].ep_fill, "each train its ЭПТ pace, 0.75-1.25 atm/s");
+        simulation::Train c(ep.cars(4));
+        check(c.cars()[1].ep_fill == 1.0f, "1 atm/s until drawn");
+    }
+    {
         struct RtsValve final : simulation::LocomotiveController {
             void step(double, const simulation::EngineInputs&, simulation::EngineDemands&) override {}
             [[nodiscard]] bool rts_brakes() const override { return true; }
@@ -1213,6 +1311,30 @@ EngExtended (
     check(e.train_plugin == "cab/x.dll", "ORTSTrainPlugin");
     check(near(e.max_sanding_time, 600.0, 1e-6), "MaxSandingTime");
     check(near(engine.pantograph_raise_time, 3.0, 1e-6), "PantographRaiseTime defaults to 3 s");
+    {
+        // The compressor governor from the .eng (psi, or with a unit).
+        const auto emu = formats::parse_wagon(engine_text.substr(0, engine_text.size() - 1) +
+                                              "\n    AirBrakesMainMaxAirPressure ( 116 )\n    AirBrakesCompressorRestartPressure ( 6.5bar )\n)");
+        check(emu.engine && near(emu.engine->main_reservoir_max, 7.90, 0.01) && near(emu.engine->compressor_restart, 6.42, 0.01),
+              "AirBrakesMainMaxAirPressure in psi, AirBrakesCompressorRestartPressure in bar");
+        const auto range = simulation::compressor_range(emu.engine ? &*emu.engine : nullptr);
+        check(near(range.on, 6.42, 0.01) && near(range.off, 7.90, 0.01), "the governor by the .eng");
+        const auto none = simulation::compressor_range(engine.engine ? &*engine.engine : nullptr);
+        check(none.on == 7.5f && none.off == 9.0f, "no governor given: 7.5 / 9.0");
+        simulation::Train train({{.definition = &emu}});
+        check(near(train.cars()[0].main_reservoir, 7.90, 0.01), "a new engine's main reservoir at its cut-out");
+        simulation::EngineInputs in;
+        in.definition = &emu;
+        bool running = false;
+        in.main_reservoir = 7.0f;
+        check(simulation::compressor_rate(running, in) == 0.0f, "between the cut-in and the cut-out a stopped compressor stays off");
+        in.main_reservoir = 6.3f;
+        check(simulation::compressor_rate(running, in) > 0.0f && running, "below the cut-in it starts");
+        in.main_reservoir = 7.5f;
+        check(simulation::compressor_rate(running, in) > 0.0f, "and runs on to the cut-out");
+        in.main_reservoir = 7.95f;
+        check(simulation::compressor_rate(running, in) == 0.0f && !running, "at the cut-out it stops");
+    }
 
     const auto consist = formats::parse_consist(R"(SIMISA@@@@@@@@@@JINX0D0t______
 Train ( TrainCfg ( "c"
@@ -1228,6 +1350,90 @@ Train ( TrainCfg ( "c"
                                               " TripleValveRatio ( 2.5 )\n BrakeCylinderPressureForMaxBrakeBrakeForce ( 55 )\n)");
         check(near(own.brakes.realistic_brake_force, 74000.0, 1.0) && near(own.brakes.max_brake_force, 100000.0, 1.0),
               "ORTSBrakeForce beside MaxBrakeForce");
+    }
+    {
+        // ORTSBrakeDistributor: a built-in name, or a Luau file.
+        const auto named = formats::parse_wagon("Wagon ( w\n Type ( Carriage )\n ORTSBrakeDistributor ( \"305-001\" )\n)");
+        check(named.brakes.distributor == formats::BrakeDistributor::evr305_001 && named.brakes.distributor_script.empty(),
+              "ORTSBrakeDistributor ( 305-001 ): built in");
+        check(simulation::distributor_kind(named) == simulation::DistributorKind::evr305_001 &&
+                  simulation::inferred_distributor_kind(named) == simulation::DistributorKind::vr292,
+              "the named one wins over the inferred 292");
+        const auto freight = formats::parse_wagon("Wagon ( w\n Type ( Freight )\n ORTSBrakeDistributor ( VR292 )\n)");
+        check(simulation::distributor_kind(freight) == simulation::DistributorKind::vr292, "a freight car given a 292");
+        const auto scripted = formats::parse_wagon("Wagon ( w\n ORTSBrakeDistributor ( \"my.luau\" )\n)");
+        check(scripted.brakes.distributor == formats::BrakeDistributor::inferred && scripted.brakes.distributor_script == "my.luau",
+              "ORTSBrakeDistributor ( my.luau ): a script");
+        // The car menu's companion text: set, changed, taken out.
+        auto text = formats::set_override_distributor("", formats::BrakeDistributor::vr483);
+        check(text.find("ORTSBrakeDistributor ( \"483\" )") != std::string::npos && text.find("Wagon (") != std::string::npos,
+              "a companion written");
+        text = formats::set_override_distributor("Comment ( \"mine\" )\r\n" + text, formats::BrakeDistributor::evr305_001);
+        check(text.find("\"305-001\"") != std::string::npos && text.find("\"483\"") == std::string::npos && text.find("mine") != std::string::npos,
+              "a companion changed, the rest kept");
+        check(formats::set_override_distributor(text, formats::BrakeDistributor::inferred).empty(), "taken out: no file left");
+        const auto kept = formats::set_override_distributor("Wagon (\r\n\tORTSBrakeShoeType ( composite )\r\n)\r\n", formats::BrakeDistributor::inferred);
+        check(kept.find("ORTSBrakeShoeType") != std::string::npos, "taken out: another key kept");
+        // load_wagon: the companion (a mod's) over the file.
+        const auto work = std::filesystem::temp_directory_path() / "openrts-train-test-companion";
+        std::filesystem::remove_all(work);
+        std::filesystem::create_directories(work / "TRAINS" / "TRAINSET" / "f");
+        std::ofstream(work / "TRAINS" / "TRAINSET" / "f" / "w.wag", std::ios::binary)
+            << "SIMISA@@@@@@@@@@JINX0D0t______\r\nWagon ( w\r\n Type ( Carriage )\r\n Size ( 3m 4m 24m )\r\n Mass ( 50t )\r\n"
+               " TripleValveRatio ( 2.5 )\r\n ORTSBrakeDistributor ( \"my.luau\" )\r\n)\r\n";
+        std::ofstream(work / "TRAINS" / "TRAINSET" / "f" / "w.wag.openrts", std::ios::binary)
+            << formats::set_override_distributor("", formats::BrakeDistributor::vr483);
+        core::Vfs vfs;
+        vfs.mount_directory(work);
+        vfs.build_index();
+        const auto loaded = formats::load_wagon(vfs, "f", "w", false);
+        check(loaded.ok() && loaded.brakes.distributor == formats::BrakeDistributor::vr483 && loaded.brakes.distributor_script.empty(),
+              "load_wagon: the companion's distributor over the file's script (" + loaded.error + ")");
+        std::filesystem::remove_all(work);
+    }
+    {
+        // The stock rules (packs/stock/multiple_units.luau): an ЭД4М's car
+        // gets the 305-001 and the governor 6.5-8.0; a ВЛ80 nothing; a
+        // companion's distributor wins; a broken script is said and left out.
+        const auto work = std::filesystem::temp_directory_path() / "openrts-train-test-rules";
+        std::filesystem::remove_all(work);
+        const auto set = work / "TRAINS" / "TRAINSET";
+        std::filesystem::create_directories(set / "mdd_ED4M-0001");
+        std::filesystem::create_directories(set / "vl80");
+        std::filesystem::create_directories(work / "TRAINS" / "OPENRTS" / "STOCK");
+        auto eng = engine_text.substr(0, engine_text.size() - 1) +
+                   "\n    AirBrakesMainMaxAirPressure ( 130 )\n    AirBrakesCompressorRestartPressure ( 105 )\n)";
+        const std::string plain = "Wagon ( loco\n";
+        eng.replace(eng.find(plain), plain.size(), "Wagon ( loco\n BrakeEquipmentType ( \"Triple_valve, Auxilary_reservoir, EP_brake\" )\n");
+        std::ofstream(set / "mdd_ED4M-0001" / "mdd_ED4M-0001_G.eng", std::ios::binary) << eng;
+        std::ofstream(set / "mdd_ED4M-0001" / "mdd_ED4M-0001_M.eng", std::ios::binary) << eng;
+        std::ofstream(set / "mdd_ED4M-0001" / "mdd_ED4M-0001_M.eng.openrts", std::ios::binary)
+            << formats::set_override_distributor("", formats::BrakeDistributor::vr292);
+        std::ofstream(set / "vl80" / "vl80.eng", std::ios::binary) << eng;
+        std::filesystem::copy_file(std::filesystem::path(OPENRTS_SOURCE_DIR) / "packs" / "stock" / "multiple_units.luau",
+                                   work / "TRAINS" / "OPENRTS" / "STOCK" / "multiple_units.luau");
+        std::ofstream(work / "TRAINS" / "OPENRTS" / "STOCK" / "zz_broken.luau", std::ios::binary) << "function car(c) error('сломано') end\n";
+        core::Vfs vfs;
+        vfs.mount_directory(work);
+        vfs.build_index();
+        std::string messages;
+        const auto rules = simulation::StockRules::load(vfs, messages);
+        check(rules->scripts() == 2 && messages.empty(), "two stock rules scripts load (" + messages + ")");
+        const auto emu = formats::load_wagon(vfs, "mdd_ED4M-0001", "mdd_ED4M-0001_G", true, rules->hook());
+        check(emu.ok() && emu.brakes.distributor == formats::BrakeDistributor::evr305_001 &&
+                  emu.brakes.default_distributor == formats::BrakeDistributor::evr305_001 && !emu.brakes.distributor_in_companion,
+              "the rules: an ЭД4М's car with the ЭПТ gets the 305-001 (" + emu.error + ")");
+        check(emu.engine && near(emu.engine->compressor_restart, 6.5, 1e-4) && near(emu.engine->main_reservoir_max, 8.0, 1e-4),
+              "the rules: an ЭД4М's governor 6.5-8.0 over the file's 130 / 105 psi");
+        check(rules->take_messages().find("zz_broken.luau") != std::string::npos, "a broken script is said");
+        const auto chosen = formats::load_wagon(vfs, "mdd_ED4M-0001", "mdd_ED4M-0001_M", true, rules->hook());
+        check(chosen.brakes.distributor == formats::BrakeDistributor::vr292 && chosen.brakes.distributor_in_companion &&
+                  chosen.brakes.default_distributor == formats::BrakeDistributor::evr305_001,
+              "a companion's distributor wins over the rules");
+        const auto loco = formats::load_wagon(vfs, "vl80", "vl80", true, rules->hook());
+        check(loco.brakes.distributor == formats::BrakeDistributor::inferred && loco.engine && near(loco.engine->main_reservoir_max, 8.85, 0.01),
+              "the rules leave a ВЛ80 as its file gives it");
+        std::filesystem::remove_all(work);
     }
     const auto shod = formats::parse_consist(R"(SIMISA@@@@@@@@@@JINX0D0t______
 Train ( TrainCfg ( "c"
