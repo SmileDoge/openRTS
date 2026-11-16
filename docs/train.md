@@ -546,11 +546,19 @@ The other two choices take the air after the valve from the model:
   (`BR_MANU1`, a display) and the charging pressure (`BR_ZARPRESS`;
   `EngineDefinition::brakes_library`). The handle's state works openRTS's
   395 (VЭ as Va without the ЭПТ), each state as the cab's StateHints name
-  it (`trainplugin::valve_states`: "[I]" .. "[VI]", "[Vа]" / "[VЭ]", or
-  words such as "экстренное", "поездное", "перекрыша без питания"): cabs
-  order them either way, the ЭД9М's I..VI, the ВЛ80С's VI..I (read as
-  I..VI its II was a V, so the ВЛ80С braked from the start); without hints a
-  7-state control is I..VI. The charging pressure is the cab's reducer
+  it (`trainplugin::valve_states`): a Roman numeral first, alone or before
+  words ("[Vа]", "[VЭ Положение]", "[V торможение]"), else words:
+  "экстренное" VI, "замедленным темпом" and "торможение ЭПТ" Va / VЭ,
+  "поездное" II, "перекрыша без питания" III, "перекрыша с питанием" IV,
+  "зарядка" / "отпуск" I, "служебное" or a bare "торможение" V. Cabs order
+  them either way, the ЭД9М's I..VI, the ВЛ80С's VI..I (read as I..VI its II
+  was a V, so the ВЛ80С braked from the start); without hints a 7-state
+  control is I..VI. Until 2026-11-16 a numeral before words and a bare
+  "торможение" were not read: on the ЧС7 ("[торможение]", "[VЭ
+  торможение]"), the 2ЭС6, 2ЭС4К, 2ТЭ10, ВЛ60пк and ВЛ82м the valve stayed
+  in II when braking (testers: "на ЧС7 без ЭПТ УР не стравливает"), and the
+  ЭП2Д's VI..I ("[VI Положение]") fell back to I..VI. Every Brakes.dll cab
+  of the MaDaDev install is in `openrts.dll_air`. The charging pressure is the cab's reducer
   where Brakes.dll names one (`BR_REDID1`, its StateHints "[4.0]" ..
   "[5.9]"; the ВЛ80С's starts at 5.2), else `BR_ZARPRESS`, else 5.0. The
   blocking device усл. 367 (`BR_367ID1`, a KEY switch: 0 the key out, 1
