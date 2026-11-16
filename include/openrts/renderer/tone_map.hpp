@@ -33,6 +33,8 @@ struct ToneSettings {
     // The light shafts' light (render's `shafts`, LightShaftRenderer) added
     // the same way, as they are; false: none.
     bool shafts = false;
+    // The scene frame holds linear light (frame_encoding()); else gamma 2.2.
+    bool linear_scene = false;
 };
 
 // The HDR scene (scene_hdr(): drawn into hdr_format, gamma 2.2 encoded as

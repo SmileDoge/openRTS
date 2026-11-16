@@ -34,6 +34,7 @@
 #include <openrts/renderer/route_space.hpp>
 #include <openrts/renderer/route_streamer.hpp>
 #include <openrts/renderer/native_sky.hpp>
+#include <openrts/renderer/lightning.hpp>
 #include <openrts/renderer/sky_renderer.hpp>
 #include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/formats/ace_file.hpp>
@@ -59,6 +60,7 @@
 #include "console_panel.hpp"
 #include "activity_view.hpp"
 #include "train_view.hpp"
+#include "thunder_view.hpp"
 
 #ifdef OPENRTS_HAS_IMGUI
 #include <imgui.h>
@@ -380,6 +382,10 @@ public:
         if (!sky_renderer_->ready()) sky_renderer_.reset();
         native_sky_ = std::make_unique<renderer::NativeSky>(gpu.device, gpu.target_format);
         if (!native_sky_->ready()) native_sky_.reset();
+        lightning_ = std::make_unique<renderer::LightningRenderer>(gpu.device, gpu.target_format);
+        if (!lightning_->ready()) lightning_.reset();
+        thunder_ = std::make_unique<ThunderView>(content_.vfs());
+        test_strikes_.clear();
         terrain_ = std::make_unique<renderer::TerrainRenderer>(gpu.device, gpu.target_format, content_.vfs(), route_,
                                                                origin_, terrain_radius);
         if (!terrain_->ready()) terrain_.reset();
@@ -572,6 +578,8 @@ public:
         if (crossings_ && audio_) crossings_->stop_sound(*audio_);
         if (weather_sound_ && audio_) weather_sound_->stop(*audio_);
         weather_sound_.reset();
+        if (thunder_ && audio_) thunder_->stop(*audio_);
+        thunder_.reset();
         track_control_.reset();
         if (signals_) {
             signals_->set_authority({});
@@ -585,6 +593,8 @@ public:
         terrain_.reset();
         sky_renderer_.reset();
         native_sky_.reset();
+        lightning_.reset();
+        lightning_channels_.clear();
         wide_lines_.reset();
         screens_.reset();
         screen_textures_.clear();
@@ -730,6 +740,21 @@ public:
         if (sky_simulation_) {
             sky_state_ = sky_simulation_->update(clock.time_of_day_exact, clock.elapsed, camera_position.tile_z, clock.season);
         }
+        // A thunderstorm: the game's (or the server's) with the rain.
+        storm_ = clock.weather == renderer::rts::Weather::rain && (clock.storm || (net_ && net_->server_storm()));
+        take_probe_results();
+        {
+            // How open the sky is round the eye (sky_open_seen_): the flashes
+            // light the scene as much, up in half a second, down in two.
+            const float target = storm_ ? sky_open_seen_ : 1.0f;
+            const float speed = target > sky_open_ ? 3.0f : 0.7f;
+            sky_open_ += (target - sky_open_) * (1.0f - std::exp(-speed * clock.elapsed));
+            // The sky's light near the eye (PBR stage 2): open in half a
+            // second, closed in a second (a tunnel's mouth passed).
+            const float light_speed = sky_light_seen_ > sky_light_open_ ? 2.0f : 1.0f;
+            sky_light_open_ += (sky_light_seen_ - sky_light_open_) * (1.0f - std::exp(-light_speed * clock.elapsed));
+        }
+        update_lightning(clock, camera.eye(), camera.forward(), camera_position);
         if (native_sky_ && sky_state_) {
             // openRTS's own sky: RTS's lighting satellite as its sun (well
             // below the horizon while RTS hides it), the eye's place, the
@@ -743,6 +768,7 @@ public:
                              static_cast<double>(camera_position.tile_z) * formats::route_tile_size + camera_position.z};
             // The cover the player chose, else the weather's.
             sky.coverage = renderer::cloud_cover() >= 0.0f                    ? renderer::cloud_cover()
+                           : storm_                                         ? 0.97f
                            : clock.weather == renderer::rts::Weather::rain ? 0.92f
                            : clock.weather == renderer::rts::Weather::snow ? 0.85f
                                                                            : 0.42f;
@@ -757,6 +783,10 @@ public:
             // stopped, a time-lapse while it runs faster, up to 60 times (at
             // 600 or 3600 they would jump hundreds of metres a frame).
             sky.elapsed = clock.elapsed * std::clamp(clock.time_speed, 0.0f, 60.0f);
+            sky.storm = storm_ ? 1.0f : 0.0f;
+            sky.flash_id = sky_flash_id_;
+            sky.flash_at = sky_flash_at_;
+            sky.flash = sky_flash_;
             native_sky_->update(sky);
         }
 
@@ -831,13 +861,14 @@ public:
             // The light on a surface facing up, as RTS's prec / smoke shaders take it.
             const auto& lighting = environment().lighting;
             const float factor = std::clamp(-lighting.sun_direction.y * 2.0f, 0.0f, 1.0f);
-            const glm::vec4 light{glm::max(glm::max(lighting.sun_ambient, lighting.sun_diffuse * factor), glm::vec4{0.0f})};
+            const glm::vec4 light{glm::max(glm::max(lighting.sun_ambient, lighting.sun_diffuse * factor), glm::vec4{0.0f}) + lighting.flash};
             const glm::vec4 opaque{glm::vec3{light}, 1.0f};
             if (precipitation_) {
                 const auto forward = camera.forward();
                 glm::vec3 right{forward.z, 0.0f, -forward.x};
                 right = glm::length(right) > 1e-4f ? glm::normalize(right) : glm::vec3{1.0f, 0.0f, 0.0f};
-                precipitation_->update(clock.elapsed, camera.eye(), right, effects_.precipitation ? 1.0f : 0.0f, opaque);
+                // Under a thunderstorm heavier.
+                precipitation_->update(clock.elapsed, camera.eye(), right, effects_.precipitation ? (storm_ ? 1.7f : 1.0f) : 0.0f, opaque);
             }
             if (smoke_) {
                 std::vector<ExhaustSource> sources;
@@ -846,6 +877,8 @@ public:
             }
         }
         update_weather_sound(clock.elapsed, camera.eye(), outside_gain);
+        // The thunder of the strikes seen (update_lightning), as it comes.
+        if (thunder_) thunder_->update(clock.time_of_day_exact, outside_gain, audio_);
         update_loading();
     }
 
@@ -900,9 +933,13 @@ public:
         if (!sky_state_) return {};
         // The sky's fog block is shared by every RTS shader (terrain, shapes).
         auto lighting = sky_state_->lighting;
+        lighting.flash = flash_light_;
         lighting.light_rings = light_rings_;
         if (train_) lighting.interior_lights = train_->interior_lights();
         if (train_) lighting.portals = train_->portals();
+        if (train_) {
+            if (const auto room = train_->light_shaft_room()) lighting.room = renderer::ModelRoom{room->to_room, room->lower, room->upper};
+        }
         lighting.fog_colour = sky_state_->fog_colour;
         lighting.fog_start = sky_state_->fog_start;
         lighting.fog_end = sky_state_->fog_end;
@@ -925,6 +962,8 @@ public:
             .clear_colour = clear,
             .time_of_day_applies = true,
             .cloud_shadow = native_sky_on() ? native_sky_->cloud_shadow() : renderer::CloudShadow{},
+            .sky_probe = sky_renderer_ ? sky_renderer_->reflection_probe() : nullptr,
+            .sky_openness = sky_light_open_,
         };
     }
 
@@ -1076,6 +1115,8 @@ public:
     // where it lights from, often away from the bulb).
     void draw_bloom_sources(const WGPURenderPassEncoder pass, const FrameView& frame) override {
         if (!experimental_) return;
+        if (lightning_ && !lightning_->empty())
+            lightning_->render_bloom(pass, frame.projection * frame.view, {frame.viewport_height * frame.aspect, frame.viewport_height});
         if (signals_) signals_->draw_bloom(pass, frame, frame.viewport_height);
         if (train_glows_ && train_ && !train_->light_glows().empty())
             train_glows_->render_bloom(pass, frame.projection, frame.view, frame.viewport_height);
@@ -1090,6 +1131,9 @@ public:
         // the opaque models (what stands in it shows through), before the
         // translucent ones.
         if (native_sky_on()) native_sky_->render(pass, frame.projection, frame.view, renderer::NativeSky::frame_slot);
+        // Lightning over the sky, behind whatever stands in front of it.
+        if (lightning_ && !lightning_->empty())
+            lightning_->render(pass, frame.projection * frame.view, {frame.viewport_height * frame.aspect, frame.viewport_height});
         if (terrain_) terrain_->render_water(pass);
         if (signals_) signals_->draw(pass, frame, frame.viewport_height);
         if (track_) track_->draw(pass, frame.projection * frame.view, train_ && train_->placed() ? train_->head_position() : frame.eye);
@@ -1098,7 +1142,245 @@ public:
                                 {frame.viewport_height * frame.aspect, frame.viewport_height});
         }
         pending_lines_.clear();
-        if (probe_) probe_->draw(pass);
+        if (probe_) {
+            // The labels' tests (draw_world_labels) and, under a storm, how
+            // much of the view is sky: points on the far plane over the
+            // whole view pass only where nothing is drawn in front.
+            auto points = std::move(label_probe_points_);
+            auto keys = std::move(label_probe_keys_);
+            label_probe_points_.clear();
+            label_probe_keys_.clear();
+            std::size_t sky = 0;
+            if (storm_) {
+                for (int row = 0; row < sky_probe_rows; ++row) {
+                    for (int column = 0; column < sky_probe_columns; ++column) {
+                        if (points.size() >= renderer::OcclusionProbe::max_points) break;
+                        const float x = -0.9f + 1.8f * (static_cast<float>(column) + 0.5f) / static_cast<float>(sky_probe_columns);
+                        const float y = -0.8f + 1.75f * (static_cast<float>(row) + 0.5f) / static_cast<float>(sky_probe_rows);
+                        points.push_back({.ndc = {x, y}, .depth = 0.0f});
+                        ++sky;
+                    }
+                }
+            }
+            // The sky's openness round the eye for its light (PBR stage 2):
+            // ways of the view above the horizon, each tested twice, 6 m out
+            // (past the cab or salon round the eye: a way out through a
+            // window) and on the far plane (the sky itself). Of the ways
+            // out, the share that reach the sky; none out (looking down, at
+            // a wall close by): the last answer kept.
+            std::size_t sky_light_ways = 0;
+            if (renderer::frame_sky_light()) {
+                const glm::mat4 to_world = glm::inverse(frame.projection * frame.view);
+                const glm::vec4 out = frame.projection * glm::vec4{0.0f, 0.0f, -6.0f, 1.0f};
+                const float out_depth = out.w != 0.0f ? out.z / out.w : 0.0f;
+                for (int row = 0; row < sky_light_rows; ++row) {
+                    for (int column = 0; column < sky_light_columns; ++column) {
+                        if (points.size() + 2 > renderer::OcclusionProbe::max_points) break;
+                        const float x = -0.92f + 1.84f * (static_cast<float>(column) + 0.5f) / static_cast<float>(sky_light_columns);
+                        const float y = -0.9f + 1.85f * (static_cast<float>(row) + 0.5f) / static_cast<float>(sky_light_rows);
+                        const glm::vec4 far = to_world * glm::vec4{x, y, 0.5f, 1.0f};
+                        if (far.w == 0.0f) continue;
+                        const glm::vec3 way = glm::normalize(glm::vec3{far} / far.w - frame.eye);
+                        if (way.y < 0.05f) continue;
+                        points.push_back({.ndc = {x, y}, .depth = out_depth});
+                        points.push_back({.ndc = {x, y}, .depth = 0.0f});
+                        ++sky_light_ways;
+                    }
+                }
+            }
+            ++probe_tag_;
+            probe_->request(points, probe_tag_, {frame.viewport_height * frame.aspect, frame.viewport_height});
+            if (!points.empty()) probe_frames_.push_back({probe_tag_, std::move(keys), sky, sky_light_ways});
+            while (probe_frames_.size() > 8) probe_frames_.pop_front();
+            probe_->draw(pass);
+        }
+    }
+
+    // The probe's newest answer: the labels hidden behind the scene, the sky's share of the view.
+    void take_probe_results() {
+        if (!probe_) return;
+        std::uint64_t tag = 0;
+        std::vector<bool> visible;
+        if (!probe_->take(tag, visible)) return;
+        while (!probe_frames_.empty() && probe_frames_.front().tag < tag) probe_frames_.pop_front();
+        if (probe_frames_.empty() || probe_frames_.front().tag != tag) return;
+        const auto& asked = probe_frames_.front();
+        if (!asked.labels.empty()) {
+            hidden_labels_.clear();
+            for (std::size_t i = 0; i < asked.labels.size() && i < visible.size(); ++i) {
+                if (!visible[i]) hidden_labels_.insert(asked.labels[i]);
+            }
+        }
+        if (asked.sky > 0) {
+            std::size_t open = 0;
+            for (std::size_t i = asked.labels.size(); i < asked.labels.size() + asked.sky && i < visible.size(); ++i) open += visible[i] ? 1 : 0;
+            // A quarter of the view's sky (a field, a cab's windows: less) lights it all.
+            sky_open_seen_ = std::clamp(4.0f * static_cast<float>(open) / static_cast<float>(asked.sky), 0.0f, 1.0f);
+        }
+        if (asked.sky_light > 0) {
+            std::size_t out = 0;
+            std::size_t open = 0;
+            const std::size_t first = asked.labels.size() + asked.sky;
+            for (std::size_t k = 0; k < asked.sky_light; ++k) {
+                const std::size_t at = first + 2 * k;
+                if (at + 1 >= visible.size()) break;
+                if (!visible[at]) continue;
+                ++out;
+                open += visible[at + 1] ? 1 : 0;
+            }
+            // Half the ways out reaching the sky (a street, a station): all
+            // of its light; a twentieth or less (a tunnel): a tenth (what its
+            // mouths let in, thrown about; deep in it the train's lamps).
+            if (out >= 3) sky_light_seen_ = std::clamp(2.0f * static_cast<float>(open) / static_cast<float>(out) - 0.1f, 0.1f, 1.0f);
+        }
+        probe_frames_.pop_front();
+    }
+
+    // A thunderstorm's lightning (lightning.hpp): the strikes alight round
+    // the eye, their light on the scene (every one by its distance, as much
+    // as the sky round the eye is open: none deep in a tunnel), on the
+    // clouds (the one most seen, kept between its strokes) and their
+    // channels. None while the clock stands (a flash would stay lit) nor in a
+    // time-lapse past 16 times.
+    void update_lightning(const SceneClock& clock, const glm::vec3& eye, const glm::vec3& forward, const formats::RoutePosition& at) {
+        flash_light_ = glm::vec4{0.0f};
+        sky_flash_id_ = 0;
+        sky_flash_ = 0.0f;
+        std::vector<renderer::LightningStrip> strips;
+        // The panel's test strike: taken now, kept only under a running storm.
+        const auto test = renderer::lightning_test_request();
+        renderer::lightning_test_request().reset();
+        if (!storm_ || clock.time_speed <= 0.0f || clock.time_speed > 16.0f) {
+            lightning_channels_.clear();
+            test_strikes_.clear();
+            if (lightning_) lightning_->set_strips({});
+            return;
+        }
+        const glm::dvec2 eye_route{static_cast<double>(at.tile_x) * formats::route_tile_size + at.x,
+                                   static_cast<double>(at.tile_z) * formats::route_tile_size + at.z};
+        auto strikes = renderer::lightning_strikes(eye_route, clock.time_of_day_exact, renderer::lightning_rate());
+        if (test) {
+            // Straight ahead along the ground (scene x, z are the route's).
+            glm::dvec2 way{forward.x, forward.z};
+            way = glm::length(way) > 1e-4 ? glm::normalize(way) : glm::dvec2{0.0, 1.0};
+            ++test_strikes_made_;
+            renderer::LightningStrike strike;
+            strike.id = (0xF1ull << 56) | test_strikes_made_;
+            strike.ground = eye_route + way * static_cast<double>(std::clamp(*test, 50.0f, renderer::lightning_radius));
+            strike.start = clock.time_of_day_exact;
+            strike.to_ground = true;
+            strike.seed = static_cast<std::uint32_t>(test_strikes_made_ * 2654435761ull);
+            strike.strength = 1.0f;
+            test_strikes_.push_back(strike);
+            std::cout << "lightning: a test strike " << static_cast<int>(*test) << " m ahead" << std::endl;
+        }
+        std::erase_if(test_strikes_, [&clock](const renderer::LightningStrike& s) {
+            const double age = clock.time_of_day_exact - s.start;
+            return age < 0.0 || age >= renderer::lightning_duration;
+        });
+        strikes.insert(strikes.begin(), test_strikes_.begin(), test_strikes_.end());
+        const float brightness = std::clamp(renderer::lightning_brightness(), 0.0f, 3.0f);
+        // The clouds' base and top above sea (the last frame's).
+        const float base = native_sky_on() ? native_sky_->cloud_base() : static_cast<float>(at.y) + 1200.0f;
+        const float top = native_sky_on() ? native_sky_->cloud_top() : base + 2200.0f;
+        // The scene's height of the base (its y: the route's less the origin's).
+        const float scene_base = base - static_cast<float>(origin_.y);
+        // The frame's encoding (gamma 2.2) of the flash's colour.
+        const glm::vec3 encoded = glm::pow(renderer::lightning_colour, glm::vec3{1.0f / 2.2f});
+        float land = 0.0f;
+        float most_seen = 0.0f;
+        std::unordered_set<std::uint64_t> alive;
+        // The frame's span of the clock: each strike's brightest within it.
+        const double span = std::clamp(static_cast<double>(clock.elapsed) * clock.time_speed, 0.0, 0.1);
+        for (const auto& strike : strikes) {
+            alive.insert(strike.id);
+            const float light = renderer::lightning_flash_seen(strike, clock.time_of_day_exact - strike.start, span) * brightness;
+            const glm::dvec2 offset = strike.ground - eye_route;
+            const auto distance = static_cast<float>(glm::length(offset));
+            // The land lit by the clouds round it: falling off over kilometres.
+            const float near = 1.0f / (1.0f + (distance / 2500.0f) * (distance / 2500.0f));
+            land += light * (strike.to_ground ? 1.0f : 0.6f) * near;
+            const float seen = strike.strength / (1.0f + (distance / 4000.0f) * (distance / 4000.0f));
+            if (seen > most_seen) {
+                most_seen = seen;
+                sky_flash_id_ = strike.id;
+                sky_flash_ = light;
+                // A strike to the ground lights the cloud's base; one within
+                // the cloud, its middle.
+                const float height = strike.to_ground ? base + 300.0f : base + 0.4f * (top - base);
+                sky_flash_at_ = glm::vec3{static_cast<float>(offset.x), height, static_cast<float>(offset.y)};
+            }
+            // Its thunder: from the ground point (a strike to it), else from
+            // the flash in the cloud; heard once, when its sound arrives.
+            glm::vec3 foot{eye.x + static_cast<float>(offset.x), eye.y - 2.0f, eye.z + static_cast<float>(offset.y)};
+            if (train_) {
+                if (const auto ground = train_->ground_at(foot)) foot.y = *ground;
+            }
+            if (thunder_) {
+                const float up = strike.to_ground ? 0.0f : (std::max)(scene_base - eye.y, 0.0f);
+                thunder_->strike(strike, std::sqrt(distance * distance + up * up), foot + glm::vec3{0.0f, up, 0.0f});
+            }
+            if (!strike.to_ground || light <= 0.01f || !lightning_) continue;
+            // Its channel from the ground there up into the cloud's base.
+            auto& channel = lightning_channels_[strike.id];
+            if (channel.empty()) channel = renderer::lightning_channel(strike, (std::max)(scene_base - foot.y + 250.0f, 300.0f));
+            // Dimmed by the rain's haze over the way.
+            const float core = light * 7.0f * std::exp(-distance / 6000.0f);
+            for (const auto& piece : channel) {
+                renderer::LightningStrip strip;
+                strip.a = foot + piece.a;
+                strip.b = foot + piece.b;
+                strip.width = 1.5f * piece.width;
+                strip.light_a = glm::vec4{encoded * (core * piece.brightness_a), 1.0f};
+                strip.light_b = glm::vec4{encoded * (core * piece.brightness_b), 1.0f};
+                strips.push_back(strip);
+            }
+        }
+        std::erase_if(lightning_channels_, [&alive](const auto& entry) { return !alive.contains(entry.first); });
+        flash_light_ = glm::vec4{encoded * ((std::min)(land, 1.5f) * 0.45f * sky_open_), 0.0f};
+        // OPENRTS_LIGHTNING_TRACE: each strike as it begins, and its
+        // brightest moment's light on the scene and the channel drawn.
+        static const bool trace = [] {
+#ifdef _WIN32
+            char* value = nullptr;
+            std::size_t size = 0;
+            const bool set = _dupenv_s(&value, &size, "OPENRTS_LIGHTNING_TRACE") == 0 && value != nullptr;
+            std::free(value);
+            return set;
+#else
+            return std::getenv("OPENRTS_LIGHTNING_TRACE") != nullptr;
+#endif
+        }();
+        if (trace) {
+            for (const auto& strike : strikes) {
+                const auto [entry, fresh] = lightning_traced_.try_emplace(strike.id, 0.0f, std::size_t{0});
+                auto& seen = entry->second;
+                const float light = renderer::lightning_flash_seen(strike, clock.time_of_day_exact - strike.start, span) * brightness;
+                if (fresh) {
+                    const auto distance = glm::length(strike.ground - eye_route);
+                    std::cout << "lightning: strike " << (strike.id % 100000) << (strike.to_ground ? " to the ground" : " within the cloud")
+                              << " " << static_cast<int>(distance) << " m away, strength " << strike.strength << std::endl;
+                }
+                if (light > seen.first) seen.first = light;
+                seen.second = (std::max)(seen.second, strike.to_ground ? lightning_channels_[strike.id].size() : std::size_t{0});
+            }
+            for (auto it = lightning_traced_.begin(); it != lightning_traced_.end();) {
+                if (alive.contains(it->first)) {
+                    ++it;
+                    continue;
+                }
+                std::cout << "lightning: strike " << (it->first % 100000) << " out: brightest " << it->second.first << ", "
+                          << it->second.second << " pieces; the scene's flash now " << flash_light_.z << ", sky open " << sky_open_
+                          << " (seen " << sky_open_seen_ << ")" << std::endl;
+                it = lightning_traced_.erase(it);
+            }
+            if (flash_light_.z > lightning_traced_peak_) {
+                lightning_traced_peak_ = flash_light_.z;
+                std::cout << "lightning: the scene's flash up to " << flash_light_.z << " (sky open " << sky_open_ << ", strips "
+                          << strips.size() << ")" << std::endl;
+            }
+        }
+        if (lightning_) lightning_->set_strips(std::move(strips));
     }
 
     // The cab screens (КЛУБ, САУТ ...) after the whole cab, as RTS draws them
@@ -1168,8 +1450,10 @@ public:
         if (probe_) probe_->resolve(encoder);
         // openRTS's own sky's atmosphere, for the next frame.
         if (native_sky_on()) native_sky_->render_table(encoder);
-        // The sky the openRTS water reflects, for the next frame.
-        if (sky_renderer_ && sky_state_ && terrain_ && terrain_->draws_native_water()) {
+        // The sky the openRTS water reflects, and the sky's light is made
+        // from (PBR stage 2, the window's SkyLight), for the next frame.
+        const bool water_sky = terrain_ && terrain_->draws_native_water();
+        if (sky_renderer_ && sky_state_ && (water_sky || renderer::frame_sky_light())) {
             if (native_sky_on()) {
                 sky_renderer_->render_reflection_probe(
                     encoder, *sky_state_,
@@ -1890,9 +2174,43 @@ private:
     }
     std::unique_ptr<renderer::OcclusionProbe> probe_;
     mutable std::vector<renderer::WideLine> pending_lines_;
-    mutable std::deque<std::pair<std::uint64_t, std::vector<std::size_t>>> probe_frames_;
+    // A request of the probe: its tag, the labels tested first, then this
+    // many points of the sky.
+    struct ProbeFrame {
+        std::uint64_t tag = 0;
+        std::vector<std::size_t> labels;
+        std::size_t sky = 0;
+        std::size_t sky_light = 0; // ways tested for the sky's light, two points each, after the sky's
+    };
+    mutable std::deque<ProbeFrame> probe_frames_;
+    mutable std::vector<renderer::OcclusionProbe::Point> label_probe_points_; // this frame's labels to test
+    mutable std::vector<std::size_t> label_probe_keys_;
     mutable std::unordered_set<std::size_t> hidden_labels_;
     mutable std::uint64_t probe_tag_ = 0;
+    static constexpr int sky_probe_columns = 6;
+    static constexpr int sky_probe_rows = 4;
+    // A thunderstorm this frame, and its lightning (update_lightning).
+    bool storm_ = false;
+    float sky_open_seen_ = 1.0f; // the view's sky share the probe last saw (0..1, a quarter or more: 1)
+    float sky_open_ = 1.0f;      // that, eased
+    // The sky's openness round the eye for its light (PBR stage 2): the
+    // probe's last answer, and eased.
+    static constexpr int sky_light_columns = 8;
+    static constexpr int sky_light_rows = 6;
+    float sky_light_seen_ = 1.0f;
+    float sky_light_open_ = 1.0f;
+    std::unique_ptr<renderer::LightningRenderer> lightning_;
+    std::unique_ptr<ThunderView> thunder_;
+    std::vector<renderer::LightningStrike> test_strikes_; // the panel's, alight
+    std::uint64_t test_strikes_made_ = 0;
+    std::unordered_map<std::uint64_t, std::vector<renderer::LightningSegment>> lightning_channels_;
+    glm::vec4 flash_light_{0.0f};       // ModelLighting::flash
+    std::uint64_t sky_flash_id_ = 0;    // NativeSkyFrame's flash
+    glm::vec3 sky_flash_at_{0.0f};
+    float sky_flash_ = 0.0f;
+    // OPENRTS_LIGHTNING_TRACE: each strike's brightest light and pieces.
+    std::unordered_map<std::uint64_t, std::pair<float, std::size_t>> lightning_traced_;
+    float lightning_traced_peak_ = 0.0f;
 
     // Service labels over the 3D view (behind the panels), from the last
     // submitted frame's camera.
@@ -1955,23 +2273,9 @@ private:
 #ifdef OPENRTS_HAS_IMGUI
         const auto size = ImGui::GetIO().DisplaySize;
         auto* list = ImGui::GetBackgroundDrawList();
-        // An earlier frame's occlusion tests: a label is hidden when no part
-        // of a small square at its depth passed against the solid scene.
-        if (probe_) {
-            std::uint64_t tag = 0;
-            std::vector<bool> visible;
-            if (probe_->take(tag, visible)) {
-                while (!probe_frames_.empty() && probe_frames_.front().first < tag) probe_frames_.pop_front();
-                if (!probe_frames_.empty() && probe_frames_.front().first == tag) {
-                    hidden_labels_.clear();
-                    const auto& asked = probe_frames_.front().second;
-                    for (std::size_t i = 0; i < asked.size() && i < visible.size(); ++i) {
-                        if (!visible[i]) hidden_labels_.insert(asked[i]);
-                    }
-                    probe_frames_.pop_front();
-                }
-            }
-        }
+        // An earlier frame's occlusion tests (take_probe_results): a label is
+        // hidden when no part of a small square at its depth passed against
+        // the solid scene.
         std::vector<renderer::OcclusionProbe::Point> probe_points;
         std::vector<std::size_t> probe_labels;
         const auto label_key = [](const WorldLabel& label) {
@@ -2008,12 +2312,10 @@ private:
                                 alpha << 24, 3.0f);
             list->AddText(corner, label.colour, label.text.c_str());
         }
+        // Tested in this frame's scene pass (draw_before_translucent).
         if (probe_) {
-            ++probe_tag_;
-            const auto scale = ImGui::GetIO().DisplayFramebufferScale;
-            probe_->request(probe_points, probe_tag_, {size.x * scale.x, size.y * scale.y});
-            if (!probe_points.empty()) probe_frames_.emplace_back(probe_tag_, std::move(probe_labels));
-            while (probe_frames_.size() > 8) probe_frames_.pop_front();
+            label_probe_points_ = std::move(probe_points);
+            label_probe_keys_ = std::move(probe_labels);
         }
 #endif
     }

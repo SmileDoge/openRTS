@@ -76,6 +76,9 @@ struct EffectsUniform {
     glm::vec4 cloud_area{0.0f};
     glm::vec4 cloud_sun{0.0f};
     glm::vec4 cloud_edge{0.0f, 1.0f, 0.0f, 0.0f}; // xy: the edge band (smoothstep)
+    // The sky's light (SkyLightView): x 1 on, y the prefiltered cube's last
+    // mip, z the sky's openness round the eye.
+    glm::vec4 sky_light{0.0f};
 };
 static_assert(sizeof(EffectsUniform) % 16 == 0);
 
@@ -430,7 +433,7 @@ struct Texture {
 } // namespace
 
 WGPUBindGroupLayout create_scene_effects_layout(const WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, 10> entries{};
+    std::array<WGPUBindGroupLayoutEntry, 14> entries{};
     entries[0].binding = 0;
     entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     entries[0].buffer.type = WGPUBufferBindingType_Uniform;
@@ -465,6 +468,23 @@ WGPUBindGroupLayout create_scene_effects_layout(const WGPUDevice device) {
     entries[9].binding = 9;
     entries[9].visibility = WGPUShaderStage_Fragment;
     entries[9].sampler.type = WGPUSamplerBindingType_Filtering;
+    // The sky's light (SkyLight): the prefiltered cube, the split sum's
+    // table, their sampler, the SH9.
+    entries[10].binding = 10;
+    entries[10].visibility = WGPUShaderStage_Fragment;
+    entries[10].texture.sampleType = WGPUTextureSampleType_Float;
+    entries[10].texture.viewDimension = WGPUTextureViewDimension_Cube;
+    entries[11].binding = 11;
+    entries[11].visibility = WGPUShaderStage_Fragment;
+    entries[11].texture.sampleType = WGPUTextureSampleType_Float;
+    entries[11].texture.viewDimension = WGPUTextureViewDimension_2D;
+    entries[12].binding = 12;
+    entries[12].visibility = WGPUShaderStage_Fragment;
+    entries[12].sampler.type = WGPUSamplerBindingType_Filtering;
+    entries[13].binding = 13;
+    entries[13].visibility = WGPUShaderStage_Fragment;
+    entries[13].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+    entries[13].buffer.minBindingSize = sky_light_buffer_size;
     const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
     return wgpuDeviceCreateBindGroupLayout(device, &descriptor);
 }
@@ -494,6 +514,12 @@ struct SceneEffects::Impl {
     Texture cloud_stand_in;
     WGPUSampler cloud_sampler = nullptr;
     WGPUTextureView cloud_view = nullptr;
+    // The sky's light: SkyLight's (not ours), else stand-ins of nothing.
+    Texture sky_cube_stand_in;  // 1 x 1, six layers
+    Texture sky_brdf_stand_in;  // 1 x 1
+    WGPUBuffer sky_buffer_stand_in = nullptr;
+    WGPUSampler sky_sampler = nullptr;
+    SkyLightView sky;
 
     Texture shadow;          // the cascades, then the focus map (or a 1 x 1 stand-in)
     std::array<WGPUTextureView, max_cascades + 1> shadow_layers{};
@@ -574,7 +600,10 @@ struct SceneEffects::Impl {
         ao.release();
         cloud_stand_in.release();
         if (cloud_sampler) wgpuSamplerRelease(cloud_sampler);
-        for (const auto buffer : {uniform, lights, spheres, counts, indices}) {
+        sky_cube_stand_in.release();
+        sky_brdf_stand_in.release();
+        if (sky_sampler) wgpuSamplerRelease(sky_sampler);
+        for (const auto buffer : {uniform, lights, spheres, counts, indices, sky_buffer_stand_in}) {
             if (buffer) wgpuBufferRelease(buffer);
         }
         if (compare_sampler) wgpuSamplerRelease(compare_sampler);
@@ -698,11 +727,16 @@ struct SceneEffects::Impl {
         if (!groups_stale) return;
         release_groups();
         {
-            std::array<WGPUBindGroupEntry, 10> entries{};
+            std::array<WGPUBindGroupEntry, 14> entries{};
             entries[0] = {.binding = 0, .buffer = uniform, .size = sizeof(EffectsUniform)};
             entries[1] = {.binding = 1, .textureView = shadow.view};
             entries[8] = {.binding = 8, .textureView = cloud_view ? cloud_view : cloud_stand_in.view};
             entries[9] = {.binding = 9, .sampler = cloud_sampler};
+            const bool sky_on = sky.on();
+            entries[10] = {.binding = 10, .textureView = sky_on ? sky.prefiltered : sky_cube_stand_in.view};
+            entries[11] = {.binding = 11, .textureView = sky_on ? sky.brdf : sky_brdf_stand_in.view};
+            entries[12] = {.binding = 12, .sampler = sky_sampler};
+            entries[13] = {.binding = 13, .buffer = sky_on ? sky.irradiance : sky_buffer_stand_in, .size = sky_light_buffer_size};
             entries[7] = {.binding = 7, .textureView = lamp_shadow.view};
             entries[2] = {.binding = 2, .sampler = compare_sampler};
             entries[3] = {.binding = 3, .textureView = ao.view};
@@ -937,6 +971,26 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
             wgpuQueueRelease(queue);
         }
     }
+    {
+        // The sky's light until SkyLight gives its own: a black cube, a
+        // table of nothing, no SH (the shaders then keep the old sky light).
+        impl.sky_cube_stand_in = make_texture(device, WGPUTextureFormat_RGBA16Float, WGPUTextureUsage_TextureBinding, 1, 1, 6,
+                                              WGPUTextureViewDimension_Cube);
+        impl.sky_brdf_stand_in = make_texture(device, WGPUTextureFormat_RGBA16Float, WGPUTextureUsage_TextureBinding, 1, 1, 1,
+                                              WGPUTextureViewDimension_2D);
+        impl.sky_buffer_stand_in = make_buffer(device, WGPUBufferUsage_Storage, sky_light_buffer_size);
+        const WGPUSamplerDescriptor sky{
+            .addressModeU = WGPUAddressMode_ClampToEdge,
+            .addressModeV = WGPUAddressMode_ClampToEdge,
+            .addressModeW = WGPUAddressMode_ClampToEdge,
+            .magFilter = WGPUFilterMode_Linear,
+            .minFilter = WGPUFilterMode_Linear,
+            .mipmapFilter = WGPUMipmapFilterMode_Linear,
+            .lodMaxClamp = 32.0f,
+            .maxAnisotropy = 1,
+        };
+        impl.sky_sampler = wgpuDeviceCreateSampler(device, &sky);
+    }
     impl.ensure_shadow(false);
     impl.ensure_lamp_shadow(false);
     impl.ensure_ao(false, 1, 1);
@@ -959,13 +1013,16 @@ const SceneEffectSettings& SceneEffects::settings() const noexcept {
     return impl_->settings;
 }
 
-void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting& lighting, const bool active, const CloudShadow& clouds) {
+void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting& lighting, const bool active, const CloudShadow& clouds,
+                               const SkyLightView& sky) {
     OPENRTS_ZONE("effects: begin frame");
     auto& impl = *impl_;
     if (clouds.map != impl.cloud_view) {
         impl.cloud_view = clouds.map;
         impl.release_groups();
     }
+    if (sky.prefiltered != impl.sky.prefiltered || sky.brdf != impl.sky.brdf || sky.irradiance != impl.sky.irradiance) impl.release_groups();
+    impl.sky = sky;
     impl.view = view;
     impl.active = active;
     impl.frame = {};
@@ -1079,7 +1136,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     // haze.w: RTS's fog strength, its fog colour's alpha (the fog shaders
     // scale their fog by it; the sky makes it 0 once the sun is 2 degrees
     // down, rts_sky.cpp): the land's end turns into the fog colour only so far.
-    frame.haze = glm::vec4{linear(lighting.sun_ambient), glm::clamp(lighting.fog_colour.w, 0.0f, 1.0f)};
+    frame.haze = glm::vec4{linear(lighting.sun_ambient + lighting.flash), glm::clamp(lighting.fog_colour.w, 0.0f, 1.0f)};
     frame.horizon = glm::vec4{linear(lighting.fog_colour), lighting.fog_end};
 
     // Lamps by day: the brighter the sun or the sky (linear), the weaker,
@@ -1092,8 +1149,12 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
         const float strength = 1.0f - impl.daylight * (1.0f - std::clamp(s.lamps_in_daylight, 0.0f, 1.0f));
         // z: the cab's and salon's lamps, at least half (cab_lamps_in_daylight).
         const float cab_strength = 1.0f - impl.daylight * (1.0f - (std::max)(std::clamp(s.lamps_in_daylight, 0.0f, 1.0f), cab_lamps_in_daylight));
-        frame.lamps = glm::vec4{1.0f - strength, active ? std::clamp(s.ground_bounce, 0.0f, 0.5f) : 0.0f, 1.0f - cab_strength, 0.0f};
+        // w: the light indoors (SceneEffectSettings::indoor_light).
+        frame.lamps = glm::vec4{1.0f - strength, active ? std::clamp(s.ground_bounce, 0.0f, 0.5f) : 0.0f, 1.0f - cab_strength,
+                                active ? std::clamp(s.indoor_light, 0.0f, 1.0f) : 0.0f};
     }
+    frame.sky_light = glm::vec4{active && sky.on() ? 1.0f : 0.0f, static_cast<float>(sky_light_mips - 1),
+                                std::clamp(sky.openness, 0.0f, 1.0f), 0.0f};
 
     const auto queue = wgpuDeviceGetQueue(impl.device);
     wgpuQueueWriteBuffer(queue, impl.uniform, 0, &frame, sizeof(frame));

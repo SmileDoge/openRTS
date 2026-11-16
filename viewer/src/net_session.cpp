@@ -685,6 +685,8 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
     case P(net::Package::openrts_hello):
         if (!openrts_server_) std::cout << "net: the server is openRTS's: players and helpers" << std::endl;
         openrts_server_ = true;
+        if (net::openrts_hello_storm(body) && !server_storm_) std::cout << "net: the server's weather is a thunderstorm" << std::endl;
+        server_storm_ = net::openrts_hello_storm(body);
         return;
     case P(net::Package::player_pos):
         if (auto other = net::decode_other_player(body)) {

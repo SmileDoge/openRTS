@@ -483,7 +483,7 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         if (!net::decode_openrts_hello(body) || user->console) return;
         if (!user->openrts) impl.note("user " + utf8(user->nick) + " plays openRTS");
         user->openrts = true;
-        send_to(*user, framed(P(Package::openrts_hello), net::encode_openrts_hello()));
+        send_to(*user, framed(P(Package::openrts_hello), net::encode_openrts_hello(net::openrts_features, options_.storm)));
         return;
     }
 

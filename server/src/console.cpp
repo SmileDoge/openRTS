@@ -234,6 +234,7 @@ std::optional<std::uint8_t> parse_weather(const std::string_view text) {
     if (t == "0" || t == "clear") return 0;
     if (t == "1" || t == "snow") return 1;
     if (t == "2" || t == "rain") return 2;
+    if (t == "3" || t == "storm") return 3;
     return std::nullopt;
 }
 

@@ -81,6 +81,8 @@ public:
     // --- Players and helpers (docs/net.md, "Players and helpers").
     // The server is openRTS's: it answered openrts_hello (helpers need it).
     [[nodiscard]] bool openrts_server() const noexcept { return openrts_server_; }
+    // Its game is a thunderstorm (its answer to openrts_hello).
+    [[nodiscard]] bool server_storm() const noexcept { return server_storm_; }
     // A server train as the players know it: its name or number.
     [[nodiscard]] std::string train_label(std::uint32_t server_train) const;
     // The other players as the server relays their places (player_pos),
@@ -191,6 +193,7 @@ private:
     // Players and helpers.
     bool hello_sent_ = false;
     bool openrts_server_ = false;
+    bool server_storm_ = false;
     std::map<std::uint32_t, Player> players_;
     std::optional<Help> help_;
     std::vector<Helper> asking_, helpers_;

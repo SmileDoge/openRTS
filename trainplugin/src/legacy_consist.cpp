@@ -773,12 +773,21 @@ bool enter_new_train(LegacyConsist& consist, const std::size_t car, simulation::
     const auto& air = consist.entered_air();
     if (car >= air.size() || air.size() != count) return true;
     const auto& from = air[car];
+    // A pipe the DLL charged has its reservoirs charged with it: MaDaDev's
+    // Brakes.dll sets the pipe in Init (the ЭП2Д 4.4) and leaves the ЗР and
+    // the РК as given (0), so under the realistic air the whole train's ЗР
+    // started empty and charged for minutes: the cylinders filled no higher
+    // than it (the ЭП2Д's 0.43 in emergency, its V nothing; testers,
+    // 2026-11-16: "затормозил ... а ни на блоке, ни манометрами не набралось тц").
+    const auto charged = [&from](const float reservoir) {
+        return from.pipe > 0.5f && reservoir + 0.2f < from.pipe ? from.pipe : reservoir;
+    };
     for (std::size_t i = 0; i < count; ++i) {
         train.set_air(i, {.pipe = from.pipe,
                           .charging_pipe = from.charging_pipe,
                           .cylinder = from.cylinder,
-                          .auxiliary = from.auxiliary,
-                          .control = from.control,
+                          .auxiliary = charged(from.auxiliary),
+                          .control = charged(from.control),
                           .main_reservoir = air[i].main_reservoir > 0.0f ? air[i].main_reservoir : reservoirs[i]});
     }
     return true;
@@ -999,6 +1008,7 @@ BrakeCabControls brake_cab_controls(const formats::EngineDefinition::BrakesLibra
     BrakeCabControls controls;
     const auto control = [&](const std::int32_t id) { return id >= 0 ? cab.find_switch(static_cast<std::uint32_t>(id)) : nullptr; };
     if (const auto* valve = control(ids.valve)) controls.valve = valve_states(*valve);
+    if (const auto* controller = control(ids.controller)) controls.controller = valve_states(*controller);
     // The reducer: its hints are the pressures, "[4.0]" .. "[5.9]".
     if (const auto* reducer = control(ids.reducer)) {
         for (const auto& hint : reducer->state_hints) {
@@ -1029,14 +1039,25 @@ CabBrakes BrakeCabControls::read(const formats::EngineDefinition::BrakesLibrary&
     const auto state = [&](const std::int32_t id) -> int {
         return id >= 0 && static_cast<std::size_t>(id) < switches.size() ? static_cast<int>(switches[static_cast<std::size_t>(id)].state) : -1;
     };
-    // The 395: the cab's hints, else 0..6 are I..VI.
-    if (const int s = state(ids.valve); s >= 0) {
-        now.raw = s;
-        int known = -1;
-        if (valve.empty()) known = s <= 6 ? s : -1;
-        else if (static_cast<std::size_t>(s) < valve.size()) known = valve[static_cast<std::size_t>(s)];
-        if (known >= 0) now.position = known;
-    }
+    // The 395: the cab's hints, else 0..6 are I..VI. With a КПТ (BR_KPTID1,
+    // the ЭП2Д) the handle moved last sets the position, the 395 at first:
+    // until 2026-11-16 the КПТ did nothing to openRTS's valve, while
+    // Brakes.dll works the pipe from it (testers braked by it, the ТЦ empty).
+    const auto position_of = [](const std::vector<std::int8_t>& states, const int s) {
+        if (states.empty()) return s <= 6 ? s : -1;
+        return static_cast<std::size_t>(s) < states.size() ? static_cast<int>(states[static_cast<std::size_t>(s)]) : -1;
+    };
+    const int valve_state = state(ids.valve);
+    const int controller_state = state(ids.controller);
+    const bool valve_moved = valve_state >= 0 && valve_state != last.raw;
+    const bool controller_moved = controller_state >= 0 && last.controller_raw >= 0 && controller_state != last.controller_raw;
+    if (valve_state >= 0) now.raw = valve_state;
+    if (controller_state >= 0) now.controller_raw = controller_state;
+    int known = -1;
+    if (controller_moved) known = position_of(controller, controller_state);
+    else if (valve_moved) known = position_of(valve, valve_state);
+    else if (last.position < 0) known = valve_state >= 0 ? position_of(valve, valve_state) : controller_state >= 0 ? position_of(controller, controller_state) : -1;
+    if (known >= 0) now.position = known;
     if (const int s = state(ids.reducer); s >= 0 && static_cast<std::size_t>(s) < reducer.size() && reducer[static_cast<std::size_t>(s)] > 0.0f) {
         now.charging = reducer[static_cast<std::size_t>(s)];
     }

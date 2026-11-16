@@ -29,7 +29,8 @@ const char* gpu_pass_name(const GpuPass pass) noexcept {
     case GpuPass::light_shafts: return "light shafts";
     case GpuPass::tone: return "tone curve";
     case GpuPass::overlay: return "interface";
-    case GpuPass::reflection_probe: return "water's sky";
+    case GpuPass::reflection_probe: return "sky probe";
+    case GpuPass::sky_light: return "sky light";
     case GpuPass::count: break;
     }
     return "";

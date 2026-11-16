@@ -33,7 +33,7 @@ public:
     // The environment's precipitation (nullptr: none) and wind; textures from `folders`.
     void set_environment(const formats::EnvPrecipitation* precipitation, std::vector<formats::EnvWindLayer> wind,
                          const std::vector<core::VirtualPath>& folders);
-    // `amount` 0..1 (RTS's precipitation density); `light` the scene's
+    // `amount` 0..2 (RTS's precipitation density 1; a thunderstorm's more); `light` the scene's
     // light on a surface facing up (RGBA).
     void update(float elapsed, const glm::vec3& eye, const glm::vec3& right, float amount, const glm::vec4& light);
     void render(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, float viewport_height);

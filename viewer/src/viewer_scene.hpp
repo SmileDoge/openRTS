@@ -66,6 +66,9 @@ struct SceneClock {
     float time_speed = 1.0f;               // the clock's speed (0: time stopped; elapsed still runs)
     renderer::rts::Season season = renderer::rts::Season::summer;
     renderer::rts::Weather weather = renderer::rts::Weather::clear;
+    // A thunderstorm (openRTS's own, with the weather rain): lightning
+    // (lightning.hpp), the clouds lower and darker, heavier rain.
+    bool storm = false;
     // The window is in the background (frame_limiter.hpp: at most 30
     // frames/s): the streaming makes up for the fewer frames.
     bool background = false;
@@ -177,6 +180,11 @@ struct SceneEnvironment {
     glm::vec4 clear_colour{0.35f, 0.35f, 0.35f, 1.0f};
     bool time_of_day_applies = false;
     renderer::CloudShadow cloud_shadow; // openRTS's clouds on the ground (none: map null)
+    // The sky's probe (SkyRenderer::reflection_probe; null until drawn): the
+    // sky's light is made from it (renderer::SkyLight, PBR stage 2).
+    WGPUTextureView sky_probe = nullptr;
+    // How open the sky is round the eye (1 .. 0 deep in a tunnel; SkyLightView::openness).
+    float sky_openness = 1.0f;
 };
 
 // The start's loading screen: shown until the world around the camera and

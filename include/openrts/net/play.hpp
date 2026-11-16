@@ -302,10 +302,14 @@ struct OtherPlayer {
 [[nodiscard]] std::optional<OtherPlayer> decode_other_player(ByteView body);
 
 // openrts_hello: u16 the openRTS features the sender has (1: players and
-// helpers).
+// helpers), then (since 2026-11-16) u8 1 when the game is a thunderstorm
+// (the server's answer; its login says rain, all RTS knows). Older readers
+// stop after the u16.
 constexpr std::uint16_t openrts_features = 1;
-[[nodiscard]] Bytes encode_openrts_hello(std::uint16_t features = openrts_features);
+[[nodiscard]] Bytes encode_openrts_hello(std::uint16_t features = openrts_features, bool storm = false);
 [[nodiscard]] std::optional<std::uint16_t> decode_openrts_hello(ByteView body);
+// The answer says the game is a thunderstorm (no byte for it: no).
+[[nodiscard]] bool openrts_hello_storm(ByteView body);
 
 // helper (openRTS's own): a player becomes another's helper (помощник
 // машиниста), as RTS's 0x461F does through the dispatcher; here a player

@@ -42,6 +42,9 @@ struct ServerOptions {
     std::u16string description;    // "Маршрут: …\r\nСезон: …"
     std::uint8_t season = 1;       // 0 spring .. 3 winter
     std::uint8_t weather = 0;      // 0 clear, 1 snow, 2 rain
+    // A thunderstorm (openRTS's own; the weather is rain): told to openRTS
+    // players in the answer to their openrts_hello.
+    bool storm = false;
     RouteCounts counts;
     double time_of_day = 12.0 * 3600.0; // s
     // rts_server.exe sends the time every 300 s (live capture 2026-11-05).

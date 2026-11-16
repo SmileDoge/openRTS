@@ -27,9 +27,16 @@ struct InstallationConfig {
 
 [[nodiscard]] InstallationConfig load_installation_config(const std::filesystem::path& root);
 
-// Mounts an installation in the order of docs/vfs.md: PACKS/base, content
-// folders, PACKS/patch, then the mods in load order; builds the index.
+// Mounts an installation in the order of docs/vfs.md: openRTS's own packs
+// (the ZIPs in PACKS beside the program, own_packs_directory()), PACKS/base,
+// content folders, PACKS/patch, then the mods in load order; builds the index.
 void mount_installation(Vfs& vfs, const std::filesystem::path& root, const InstallationConfig& config);
+
+// The folder the running program is in.
+[[nodiscard]] std::filesystem::path program_directory();
+// openRTS's own packs: PACKS beside the program (the release's thunder,
+// openrts-thunder.zip), mounted below every layer of the installation.
+[[nodiscard]] std::filesystem::path own_packs_directory();
 
 // The installation a file or folder belongs to: the nearest ancestor holding
 // ROUTES, TRAINS, GLOBAL or PACKS.

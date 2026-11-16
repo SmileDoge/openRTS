@@ -70,6 +70,9 @@ jobs:
           Copy-Item sdk/luau/*.luau, docs/ru/scripting.md "$out/sdk/luau"
           Copy-Item docs/scripting.md "$out/sdk/luau/scripting_en.md"
           Copy-Item README.md, README_EN.md, INSTALL.md, INSTALL_EN.md, LICENSE $out
+          # openRTS's own packs (the thunder) and their authors.
+          Copy-Item build/game/Release/PACKS "$out/PACKS" -Recurse
+          Copy-Item packs/thunder/CREDITS.txt "$out/PACKS/openrts-thunder-CREDITS.txt"
           # What people miss first: the VC++ runtime and the RTS installation.
           @(
             'openRTS - перед запуском / before you start',

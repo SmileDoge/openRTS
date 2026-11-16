@@ -52,6 +52,47 @@ inline bool& scene_hdr() {
 }
 inline constexpr WGPUTextureFormat hdr_format = WGPUTextureFormat_RGBA16Float;
 
+// The scene frame's encoding this frame (docs/experimental-effects.md, "The
+// frame's encoding"): the experimental path's HDR frame holds linear light,
+// the RTS path's (and any frame without --hdr) RTS's display-encoded colours
+// (gamma 2.2), blended as RTS blends them. Set once a frame by the window,
+// before any pass writes its uniforms; every pass that writes the frame or
+// reads it takes it from here, so a frame has one encoding throughout.
+enum class FrameEncoding : std::uint8_t { gamma, linear };
+inline FrameEncoding& frame_encoding() {
+    static FrameEncoding encoding = FrameEncoding::gamma;
+    return encoding;
+}
+[[nodiscard]] inline bool frame_linear() {
+    return frame_encoding() == FrameEncoding::linear;
+}
+// The experimental HDR frame in linear light (on by default); off, as until
+// 2026-11-16, gamma 2.2: the switch to compare the two (--hdr-encoding).
+inline bool& linear_hdr() {
+    static bool on = true;
+    return on;
+}
+// The experimental path's physically based light (PBR stage 1: GGX, Smith,
+// Schlick, Lambert; renderer/pbr.hpp) instead of its Blinn-Phong: chosen
+// here (--pbr), in effect only in a linear frame, which its light needs.
+inline bool& pbr_shading() {
+    static bool on = true;
+    return on;
+}
+[[nodiscard]] inline bool frame_pbr() {
+    return pbr_shading() && frame_linear();
+}
+// The physically based light's sky light from the sky's probe (PBR stage 2,
+// SkyLight: SH9 and the prefiltered cube; on by default); off, the old sky
+// light with the BRDF (stage 1): the switch to compare (--sky-light).
+inline bool& sky_light_from_probe() {
+    static bool on = true;
+    return on;
+}
+[[nodiscard]] inline bool frame_sky_light() {
+    return frame_pbr() && sky_light_from_probe();
+}
+
 // The experimental path's physical falloff of the further lights (headlights,
 // scenery lamps): 1 / distance squared, a soft cone edge, Lambert; off: the
 // RTS light shapes. Read each frame (the frame uniforms' fog_distance.w).

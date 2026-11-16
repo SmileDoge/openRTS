@@ -25,6 +25,274 @@ read by the model and terrain shaders as bind group 2.
 4. The main pass: the experimental shaders read the shadow map, the
    occlusion, the clusters and the haze parameters.
 
+### The frame's encoding (2026-11-16, PBR stage 0)
+
+With `--hdr` the scene is drawn into an RGBA16F frame and a tone curve
+makes the screen's picture. Until 2026-11-16 that frame held display
+colours (gamma 2.2) on both paths: the experimental shaders computed in
+linear light and encoded their result, and the tone mapper decoded it again.
+Now the experimental path's HDR frame holds linear light (the ground for
+PBR: blending, MSAA's resolve, the bloom's filtering all in linear light);
+the RTS path's frame, and any frame without `--hdr`, keeps RTS's display
+colours, blended as RTS blends them. `renderer::frame_encoding()` says which
+for the frame: the window sets it once a frame before anything writes its
+uniforms (the HDR frame there, the experimental path, `linear_hdr()`), and
+every pass that writes the frame or reads it takes it from there, so a
+frame has one encoding throughout and the path can be switched at any frame.
+
+| Pass | In a linear frame | Otherwise |
+|---|---|---|
+| Models, experimental shader | the light as computed (no shoulder); RTS's fog (aerial perspective off) mixed in linear light | display-encoded, the shoulder without HDR |
+| Models, RTS shader | RTS's display colour decoded (`pow 2.2`) | as RTS |
+| Terrain (both shaders), the openRTS water | as the models | as before |
+| openRTS's sky, the frame's slot | its light as it is, over the moon by what the clouds let through | gamma 2.2; the water's probe faces always gamma |
+| RTS's sky dome and satellites | per draw (the draw uniform's `padding`, slot 0): decoded | as RTS; the probe faces gamma |
+| Light sprites (signals, headlights, rain, smoke) | added: `(texel x colour x alpha)^2.2`; laid over: `(texel x colour)^2.2 x alpha`, premultiplied | as before |
+| Track and signal lines, helper lines | the colour decoded (the line uniform; the wide lines on the CPU) | as before |
+| Cab screens (straight and supersampled) | the display colour decoded | as before |
+| Lightning | decoded | as before |
+| The clear colour | decoded | as given |
+| Bloom (reads the frame and its lights' source) | reads linear light; the night's "bright texture" test re-encodes | decodes `pow 2.2` |
+| Light shafts | their own scene-linear image, unchanged | |
+| Tone mapper | linear in; the curve "none" encodes again | decodes `pow 2.2` |
+
+The occlusion probe writes no colour; the panels are drawn on the screen
+after the tone curve; captures are taken of the screen. No pass keeps a
+history in the frame's encoding (the clouds' history and the lightning's
+glow hold their own light, the bloom and the light shafts are made anew
+each frame), so a switch of path leaves nothing behind.
+
+An opaque surface comes out the same in either encoding; what blends
+changes: glass, blended foliage edges, rain and smoke laid over, overlapping
+glows, the MSAA's edges, RTS's fog with the aerial perspective off.
+
+The switch to compare: the viewer panel's «HDR-кадр в линейном свете»
+beside the tone curve, or `--hdr-encoding linear|gamma` (linear by
+default); it goes once the PBR stages have been checked against it.
+`tools/render-check/render_check.py` runs the stage's eight scenes in each
+encoding and on the RTS path and prints the HDR frame's light by region
+(`--capture` with `--hdr` prints it: the luminance decoded to linear light
+whatever the encoding, so the two compare), the GPU's time, the bindings and
+the video memory; `--capture-switch-path` switches the path at a third of
+the capture's time and back at two thirds.
+
+Checked on 2026-11-16 (`render_check.py`, 1280 x 720, MSAA 4x): every
+scene in both encodings and on the RTS path without a WebGPU error. Linear
+against gamma 2.2, the mean linear luminance: the open stretch by day
++0.6 %, the shiny locomotive +1.0 %, the tunnel +4 % (a hundredth of the day's light), the works' lit
+windows at night 0 %, the sky +0.3 %, the station at night +1.6 % (its
+middle ninth +5 %: thin wires and lines resolved in linear light), the cab
+by day +1.4 %, the cab's glass in rain at dusk +3.4 %; the 99th percentile
+within 1 %, 3 % in the rain. Switched to the RTS path and back during a capture (day, cab,
+night) the frame came out as without the switch, to four decimals. Against
+v0.14.6 (the same scenes, the captured screens): the RTS path and the
+experimental path in gamma 2.2 the same but for a few pixels of the moving
+traffic and rain (the cab by day differs by the light in the cab, added the
+same day). The bindings and the textures of each scene are the same in
+either encoding; the GPU's time did not change beyond its run-to-run spread.
+
+### Physically based light (2026-11-16, PBR stage 1)
+
+In the linear HDR frame the experimental path lights a surface by a
+physically based BRDF instead of its Blinn-Phong: the sun, every lamp
+(clustered or RTS's rings, as given by their shapes and the physical
+falloff), and the cab's and salon's lamps. The reflection is GGX
+(Trowbridge-Reitz) with the height-correlated Smith visibility and Schlick's
+Fresnel; what is not reflected is Lambert. It is in the scene's light scale:
+a white Lambert surface facing a light shows that light (RTS's sun is about
+1 at noon), so Lambert is the albedo times the light and a reflection is the
+specular BRDF times pi. The way to a lamp is taken from its light space (the
+light at the origin, an orthogonal light along +z, an array's nearest
+element). The sky light, the ground bounce and the light in the cab by day
+stay Lambert on the albedo until the sky lights the scene itself (stage 2, below);
+FullBright and the unlit shaders, HalfBright, DarkShade and the vertex
+colour's emission keep their light as before.
+
+A surface's parameters are glTF's, so openRTS's own materials (stage 4) set
+the same fields and export as glTF would have them: roughness, metallic, a
+dielectric's F0 (4 %: IOR 1.5) and KHR_materials_specular's specularFactor
+(the Fresnel term times it, at grazing angles too; what is not reflected is
+Lambert). Until then they come from RTS's data alone, the primitive's light
+material (`include/openrts/renderer/pbr.hpp`, the per-draw `surface` of the
+models' draws and the terrain's frame):
+
+| RTS light material | Roughness | Specular | Why |
+|---|---|---|---|
+| HiShine (-7) | 0.35 | 1 | the highlight's peak as the old Blinn-Phong's (0.6): x1.1 |
+| LoShine (-6) | 0.5 | 1 | as its old one (0.25): x0.64, its width alike |
+| Normal (-5) and any other | 1 | 0.1 | matte; see below |
+| Circumference (-9), DarkShade (-12) | - | 0 | Lambert alone |
+| The ground (terrain) | 1 | 0 | Lambert alone; see below |
+
+Everything is a dielectric: nothing in RTS's data says metal. The first try
+gave every surface a full dielectric reflection, and the captures showed why
+that is wrong for RTS's content: the open stretch by day came out 23 %
+brighter (median), its trees and bushes white, and towards a low sun the
+ballast of the tracks a silver sheet. Trees, bushes and grass tufts are
+Circumference, their normals made to point up so they light evenly: a
+reflection on them is of a surface that is not there. The ground's and the
+ballast's textures show grass, earth and stones drawn on a flat face; their
+blades and stones hide most of their own reflection, while the flat face
+gives a smooth plane's sheen, which at grazing angles is many times the
+Lambert light (Fresnel and Smith grow there). Normal stands as much for such
+faces as for paint, so it is fully rough with a tenth of the reflection;
+the ground none, until a route's materials say more. The author chose the
+shine by the light material, so LoShine and HiShine reflect fully.
+
+Normal's values were first roughness 0.7 and a quarter of the reflection
+(the sun still showing on a painted side). At night under a lamp ahead the
+track's sleepers and ballast (Normal in MSTS's track shapes) then looked
+glossy and flat, their texture lost in an even sheen: at the lamp's grazing
+mirror angle the reflection came to about 1.2 of the lamp's light, against
+the ballast's own tenth or so. Fully rough with a tenth it is 0.06 there
+(`tests/pbr_material_test`), about the old faint highlight's, and the
+highlight at normal incidence is 2.5 % of the old Blinn-Phong one. Checked
+(2026-11-16, PBR on against off): the station at night +1.6 % (was +5.7 %),
+the cab's glass in rain at dusk +1 % (was +12 %), the ballast's spread of
+light as without PBR (its darkest 5 % no longer lifted).
+
+The switch: the panel's «Физически корректный свет (PBR: отражения GGX;
+выкл.: как раньше)» at the top of the new renderer's settings, kept as
+`pbr` (on by default); `--pbr on|off` for a run. It needs the HDR frame in
+linear light: without HDR, or with the frame in gamma 2.2, it is greyed and
+the reason shown beside it, and the path lights as before. Off, the light is
+computed exactly as before stage 1 (the old formula is kept apart, not
+rewritten).
+
+Checked on 2026-11-16 (`render_check.py --variants=linear,pbr`, with two
+scenes of a low sun added): every scene without a WebGPU error. The mean
+linear luminance with PBR against without: the open stretch by day -0.1 %,
+at a low sun +0.6 % (its middle third +3.7 %: the far tracks' ballast and
+the wires towards the sun), the shiny locomotive +0.3 %, at a low sun 0 %,
+the cab by day +0.5 %, the station at night +5 % (its middle ninth +11 %:
+the lamps' reflections on the locomotive and the rails), the cab's glass in
+rain at dusk +12 % (the station's lamps ahead on the wet-looking ballast),
+the tunnel and the works' windows at night 0 %, the sky's view -0.4 % (the
+ground -4 %: what is reflected away from the eye is taken from the Lambert
+part). Switched to the RTS path and back during a capture, the frame came
+out as without the switch. The RTS path, the experimental path in gamma
+2.2 and the linear one with PBR off against stage 0's captures: the same
+within two runs' own spread (93-99.98 % of the pixels identical, at most a
+few levels: the clouds and the traffic move between runs).
+
+### The sky's light (2026-11-16, PBR stage 2)
+
+With the physically based light the sky lights the scene itself, image
+based: what a surface takes from the sky and the ground under it is what
+the sky's probe shows (`include/openrts/renderer/sky_light.hpp`,
+`renderer::SkyLight`), no longer the environment's ambient colour with its
+corrections. Each frame, after the main pass:
+
+- **The probe** (`SkyRenderer::render_reflection_probe`, 128 x 128 a face,
+  one face a frame) is drawn while this light is on, not only for the
+  openRTS water: openRTS's sky (atmosphere, clouds, the moon) or RTS's
+  dome. It keeps the frame's encoding of the water's (gamma 2.2 in the HDR
+  format); the light is made from it decoded to linear light, every part
+  not a finite number dropped, each texel at most 16 (the sun's disc,
+  thousands of times the sky round it, is the direct light's).
+- **The ground** under the horizon: the probe holds the horizon's haze or
+  RTS's clear colour there, not the land. It is replaced by a Lambert plane
+  of the ground's reflectance (`ground_bounce`, 0.2 by default) lit by the
+  sun and by the sky over it, `ground_bounce * (sun * sun.y + sky up)`: the
+  ground's bounce as the lower hemisphere; the separate bounce term is off.
+- **SH9** (a compute pass, 64 x 64 ways a face, each by its solid angle):
+  the sky over the horizon as spherical harmonics of the 3rd order, the
+  ground added as its hemisphere's closed form. A surface's Lambert light
+  is their irradiance over pi (Ramamoorthi and Hanrahan).
+- **The prefiltered cube** (compute): the source (the probe linear with the
+  ground, 128 .. 1 in mips) prefiltered by GGX into five mips, roughness
+  0, 1/4, 1/2, 3/4, 1 (128 .. 8 a face), 48 samples a texel, each from the
+  source's mip its solid angle fits (filtered importance sampling).
+- **The split sum's table** (64 x 64, made once on the CPU): F0's scale and
+  bias at n.v and roughness, GGX with the height-correlated Smith
+  visibility as the direct light's.
+
+A surface then takes, in the model and terrain shaders:
+
+- Lambert: the SH9's light at its normal, times the ambient occlusion,
+  less the share its reflection takes;
+- its reflection: the prefiltered cube the way it reflects most (Lagarde's
+  dominant direction), times `specular * (F0 * A + B)` (the specular factor
+  of stage 1: Normal a tenth, Circumference and the ground none), less
+  what the occlusion hides of it (Lagarde's specular occlusion).
+
+**RTS's environment at night.** openRTS's sky gives almost nothing at night
+(the night's glow; the moon is a small disc in the probe), where RTS's
+environments give the night's sky light (Kuban: its moon's ambient), which
+the night sky light factor scales. That light, where the environment's sun
+is gone (`sky colour * night factor * (1 - the sun's strength)`), is the
+least the sky gives, Lambert and reflection: taken where it is more than the
+sky's own, never added to it. Nights look as before (the station at night
+and the works' windows: 0 %).
+
+**Units, checked by numbers** (`tests/sky_light_test`, R11). openRTS's sky
+is scaled so a white surface in the sun shows about 1 (`native_sky_sun`).
+Its light on a white surface facing up, clear sky, 300 m above the sea:
+
+| sun | light facing up (rgb) |
+|---|---|
+| 60 deg | 0.150 0.280 0.521 |
+| 30 deg | 0.145 0.258 0.452 |
+| 10 deg | 0.130 0.195 0.288 |
+| 2 deg | 0.087 0.084 0.092 |
+
+About a quarter of the sun's light, and blue: a hazy clear summer sky
+gives 0.1 .. 0.3 of the direct sun on a level surface. Kuban's summer
+environment (`Badlands_SummerClear.env`) has the sun ffffffff (1.0 linear)
+and the ambient 808080 (0.218); the experimental path's old sky light took
+35 % of it by full sun, 0.076 facing up: shadows a third as bright as the
+sky makes them. So by day the scene is brighter where the sky lights it:
+the open stretch's median +44 %, the cab's +34 %.
+
+**The sky round the eye.** The probe sees the sky from above the land; in a
+tunnel there is none of it. Ways of the view above the horizon (8 x 6 over
+the view) are tested by the occlusion probe twice each: 6 m out (past the
+cab or salon round the eye: a way out through a window) and on the far plane
+(the sky itself). Of the ways out, the share that reach the sky gives the
+openness, `clamp(2 * share - 0.1, 0.1, 1)`, eased (opening in about half a
+second, closing in one); none out (looking down, at a wall close by): the
+last answer kept. The sky's light is taken by it within 150 m of the eye,
+fading out to 400 m (the land beyond a tunnel's mouth keeps its light). A
+tenth at least: what a tunnel's mouths let in, thrown about; deep in it the
+train's lamps light it. In the cab or salon (its box, `ModelRoom`) the light
+thrown about the room (`indoor_light`) takes the sky's light facing up
+instead of the environment's ambient, and a surface's reflection of the sky
+is a third (it reflects mostly the room; about the windows' share).
+
+**The switch.** Under «Физически корректный свет»: «Свет неба от самого
+неба (IBL; выкл.: старый свет неба, для проверки)», not kept; `--sky-light
+on|off` for a run. Off, the light is stage 1's. `--native-sky on|off`
+chooses openRTS's sky or RTS's dome for a run.
+
+**Checked** on 2026-11-16 (`render_check.py`, variants `pbr1` the old sky
+light, `pbr` the sky's own, and `pbr1_dome` / `pbr_dome` under RTS's dome;
+1280 x 720, 4x MSAA): every scene without a WebGPU error. The median of the
+linear luminance, the sky's own against the old:
+
+| scene | openRTS's sky | RTS's dome |
+|---|---|---|
+| open stretch by day | 0.103 -> 0.148 (+44 %) | 0.101 -> 0.140 (+40 %) |
+| shiny locomotive by day | 0.108 -> 0.138 (+28 %) | 0.106 -> 0.132 (+25 %) |
+| cab by day | 0.049 -> 0.066 (+34 %) | 0.048 -> 0.064 (+33 %) |
+| open stretch, low sun | 0.076 -> 0.108 (+43 %) | |
+| locomotive, low sun | 0.065 -> 0.086 (+32 %) | |
+| station at night (mean) | 0.0203 -> 0.0204 | 0.0187 -> 0.0187 |
+| works' windows at night | 0 % | |
+| tunnel (mean) | 0.0027 -> 0.0027 | |
+| the sky's view (mean) | -0.3 % | |
+
+The openness measured: the open stretch, the cab by day and the cab in rain
+at dusk 1, the tunnel 0.1 (without the floor its walls went black). The
+probe costs 0.04 .. 0.11 ms of the GPU, the sky's light 0.16 .. 0.27 ms
+(RTX 4070 Ti SUPER). The shadows turn bluish and lighter, as under a real
+sky; the dome's probe gives about the same light as openRTS's sky.
+
+What it does not do yet: the openness is the eye's, so a tunnel's far walls
+past 400 m take the full sky; a cab reflects a fixed third of the sky, not
+what its windows show; the probe is a face a frame behind (six frames for a
+turn of the sun). Local probes (stations, tunnels) and screen-space
+reflections are later.
+
 ## Sun shadows
 
 By default three cascades of a 2048 x 2048 depth array up to 250 m from the
@@ -132,7 +400,7 @@ The viewer panel (experimental renderer): «Тени от солнца», «Вс
 света, кластеры», «Затенение углов, GTAO», «Атмосферная перспектива»,
 remembered in `viewer_state.ini` (`effect_shadows`, `effect_clusters`,
 `effect_ao`, `effect_aerial`; the occlusion's quality `effect_ao_quality`), the two ranges above (`light_range`,
-`headlight_reach`) and the ground bounce (`ground_bounce`, see below).
+`headlight_reach`), the ground bounce (`ground_bounce`, see below) and the light in the cab by day (`indoor_light`, below).
 `--effects shadows,clusters,ao,aerial,shafts | none` sets them for one run; `show-ao` shows the occlusion itself as the colour.
 
 The start menu's Graphics tab shows every one of them too, grouped, with
@@ -482,6 +750,22 @@ ED9M side on at the bogies, 12:00, mean luma 0..255: the band of the car
 side and the bogies 73.0 -> 79.5 (0.2) -> 83.1 (0.35), the darkest tenth of
 it (deep under the body) 14.9 -> 16.1 -> 17.0, the ground unchanged.
 
+### Light in the cab by day (2026-11-16)
+
+Testers: "кабина темновата из-за теней". By day the sky's ambient is cut to
+35 % in full sun (so the sun's direction shows outside); a cab is almost
+all in the shadow of its roof and walls, the GTAO darkens its corners, and
+nothing throws the light that comes in through the windows about the room:
+it was several times darker than outside (RTS, with no shadows, lights a
+cab as if it had no roof). Now the surfaces of the room the eye is in (the
+cab or salon shape's box, `ModelLighting::room`, the light shafts' room
+too) take `indoor_light * (sun * max(to_sun.y, 0) * 0.25 + sky * 0.35) *
+sqrt(occlusion)` more ambient: the sun come in and the sky's light,
+thrown about the room, the occlusion's corners kept a little. «Свет в
+кабине днём» (`indoor_light`, 0..1, 0.5; 0: as before), sent as
+`Effects.lamps.w`; at night both lights are small, so it hardly shows. Only
+the experimental path (the RTS path has no shadows).
+
 ### Bloom
 
 openRTS's own (2026-11-15, testers: "а bloom можно сделать?"), the HDR
@@ -645,6 +929,13 @@ shone white on them at sunset). Works on both paths
   alone moves them); history is dropped when the view's size changes, the
   sun turns more than half a degree or the eye jumps 300 m. One frame's
   march leaves bands where its steps fall; the frames together do not.
+  Only finite light is kept (2026-11-16): a part of this frame's march or
+  of the history that is not a finite number (NaN, infinity) is replaced,
+  the rest held within a half float's range. On a GTX 1050 under Vulkan
+  the sky died after a flight of two tiles, black with green blocks
+  flickering: once such a value was in the texture, every later frame's
+  blend kept it and the reprojection's filtering spread it (DirectX 12 on
+  the same card was fine; the value's origin is not known).
   Until 2026-11-09 the clouds were marched in the sky's own pass for every
   sky pixel at full size, 24 to 64 steps with a fixed jitter, and their
   steps showed as bands at the edges; the pass now costs about a fifth.
@@ -681,7 +972,8 @@ shone white on them at sunset). Works on both paths
   faded into the haze (a far cloud still hides it).
 - **Where it is drawn:** after the opaque objects, where the depth is still
   the far plane's (depth test equal), reading the clouds' texture; before
-  the translucent ones and the openRTS water. The water's sky probe draws
+  the translucent ones and the openRTS water. The sky's probe (the water's
+  reflection, and with the physically based light the sky's light) draws
   this sky too, its clouds marched there, one face of the six a frame.
 - **Fog:** RTS fogs from 300 m to its dome's edge less 100 m (2000 m on
   Novokuznetsk), in one colour made for the dome's lowest layer behind the

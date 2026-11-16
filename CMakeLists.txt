@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(openRTS
-    VERSION 0.14.6
+    VERSION 0.15.0
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
 
@@ -211,4 +211,28 @@ endif()
 if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
     # The tests are local work and are not tracked in the repository.
     add_subdirectory(tests)
+endif()
+
+# openRTS's own packs (docs/vfs.md, "openRTS's own packs"): packs/thunder
+# packed by openrts-pack into PACKS beside the game and the viewer, on every
+# build (a second).
+if(OPENRTS_BUILD_TOOLS AND TARGET openrts_pack)
+    set(openrts_pack_targets "")
+    foreach(program openrts_game openrts_viewer)
+        if(TARGET ${program})
+            list(APPEND openrts_pack_targets ${program})
+        endif()
+    endforeach()
+    set(openrts_pack_commands "")
+    foreach(program ${openrts_pack_targets})
+        list(APPEND openrts_pack_commands
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${program}>/PACKS"
+            COMMAND $<TARGET_FILE:openrts_pack> pack "${CMAKE_SOURCE_DIR}/packs/thunder" --as SOUND/OPENRTS/THUNDER
+                    -o "$<TARGET_FILE_DIR:${program}>/PACKS/openrts-thunder.zip" --method deflate --name openrts-thunder
+                    --kind global)
+    endforeach()
+    if(openrts_pack_commands)
+        add_custom_target(openrts_own_packs ALL ${openrts_pack_commands} VERBATIM)
+        add_dependencies(openrts_own_packs openrts_pack ${openrts_pack_targets})
+    endif()
 endif()

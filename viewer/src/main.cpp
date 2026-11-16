@@ -134,7 +134,7 @@ struct ContentTarget {
 // the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|2|4|8` (default 4; 2 and 8 where the video card takes them, else 4), `--no-sound`, `--no-discord` (nothing in the Discord profile), `--sound-offline`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`, `--paused` (start paused),
 // `--window-mode windowed|borderless|fullscreen`,
-// `--season spring|summer|autumn|winter` and `--weather clear|snow|rain`.
+// `--season spring|summer|autumn|winter` and `--weather clear|snow|rain|storm`.
 // A step of joining a server for the start menu (game/src/launcher.cpp reads
 // openrts.log): one line "status: <word> [detail]".
 void report_status(const std::string_view what) { std::cout << "status: " << what << std::endl; }
@@ -282,7 +282,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         options.time_of_day = view->time_of_day;
         options.time_speed = 0.0f;
         options.season = static_cast<openrts::renderer::rts::Season>(view->season);
-        options.weather = static_cast<openrts::renderer::rts::Weather>(view->weather);
+        options.weather = view->weather == 3 ? openrts::renderer::rts::Weather::rain : static_cast<openrts::renderer::rts::Weather>(view->weather);
+        options.storm = view->weather == 3;
         if (view->experimental) options.shading = openrts::renderer::ShadingPath::experimental;
         if (mode == "--view") {
             view_mode = "--" + view->mode;
@@ -415,6 +416,36 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.capture_camera = c;
         } else if (flags[i] == "--hdr") {
             options.hdr = true;
+        } else if (flags[i] == "--hdr-encoding" && has_value) {
+            const auto value = flags[++i];
+            if (value != "linear" && value != "gamma") {
+                std::cerr << "Unknown HDR encoding: " << value << " (linear or gamma)\n";
+                return exit_code::content_failed;
+            }
+            options.hdr_linear = value == "linear";
+        } else if (flags[i] == "--pbr" && has_value) {
+            const auto value = flags[++i];
+            if (value != "on" && value != "off") {
+                std::cerr << "Unknown --pbr value: " << value << " (on or off)\n";
+                return exit_code::content_failed;
+            }
+            options.pbr = value == "on";
+        } else if (flags[i] == "--native-sky" && has_value) {
+            const auto value = flags[++i];
+            if (value != "on" && value != "off") {
+                std::cerr << "Unknown --native-sky value: " << value << " (on or off)" << std::endl;
+                return exit_code::content_failed;
+            }
+            options.native_sky = value == "on";
+        } else if (flags[i] == "--sky-light" && has_value) {
+            const auto value = flags[++i];
+            if (value != "on" && value != "off") {
+                std::cerr << "Unknown --sky-light value: " << value << " (on or off)" << std::endl;
+                return exit_code::content_failed;
+            }
+            options.sky_light = value == "on";
+        } else if (flags[i] == "--capture-switch-path") {
+            options.capture_switch_path = true;
         } else if (flags[i] == "--reshade-depth" && has_value) {
             options.reshade_depth = std::string(flags[++i]) != "off";
         } else if (flags[i] == "--backend" && has_value) {
@@ -477,13 +508,16 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             season_given = true;
         } else if (flags[i] == "--weather" && has_value) {
             const auto value = flags[++i];
-            constexpr std::string_view weathers[] = {"clear", "snow", "rain"};
+            // storm: openRTS's thunderstorm, rain with lightning.
+            constexpr std::string_view weathers[] = {"clear", "snow", "rain", "storm"};
             const auto it = std::find(std::begin(weathers), std::end(weathers), value);
             if (it == std::end(weathers)) {
                 std::cerr << "Unknown weather: " << value << '\n';
                 return exit_code::content_failed;
             }
-            options.weather = static_cast<openrts::renderer::rts::Weather>(it - std::begin(weathers));
+            const auto index = it - std::begin(weathers);
+            options.storm = index == 3;
+            options.weather = options.storm ? openrts::renderer::rts::Weather::rain : static_cast<openrts::renderer::rts::Weather>(index);
             weather_given = true;
         } else {
             std::cerr << "Unknown viewer option: " << flags[i] << '\n';

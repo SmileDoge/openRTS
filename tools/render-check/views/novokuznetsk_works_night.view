@@ -1,0 +1,20 @@
+# openRTS render check: Novokuznetsk's works, lit windows at night (from novokuz_factory_sound.view)
+root = E:\Games\MDD_Launcher\rts_main
+mode = route
+content = ROUTES/Novokuznetsk
+tile_x = -2955
+tile_z = 15038
+x = -230
+y = 270
+z = 240
+target_x = -177
+target_y = 234
+target_z = 287
+yaw = 0.8
+pitch = 0.3
+distance = 100
+fly = 1
+time_of_day = 43200
+season = 1
+weather = 0
+experimental = 0

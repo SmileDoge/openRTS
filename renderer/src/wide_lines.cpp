@@ -133,6 +133,17 @@ void WideLineRenderer::render(const WGPURenderPassEncoder pass, const std::vecto
     if (!ready() || lines.empty() || viewport.x <= 0.0f || viewport.y <= 0.0f) return;
     auto& out = impl_->vertices;
     out.clear();
+    // A linear frame (frame_encoding()): the colours' RGB decoded (gamma 2.2).
+    const bool linear = frame_linear();
+    const auto decoded = [linear](const std::uint32_t colour) {
+        if (!linear) return colour;
+        std::uint32_t result = colour & 0xFF000000u;
+        for (int shift = 0; shift < 24; shift += 8) {
+            const float c = static_cast<float>((colour >> shift) & 0xFFu) / 255.0f;
+            result |= static_cast<std::uint32_t>(std::lround(std::pow(c, 2.2f) * 255.0f)) << shift;
+        }
+        return result;
+    };
     for (const auto& line : lines) {
         // A helper overlay never needs more; it keeps the buffer far below
         // the device's limit whatever a caller passes.
@@ -152,7 +163,7 @@ void WideLineRenderer::render(const WGPURenderPassEncoder pass, const std::vecto
         const auto corner = [&](const glm::vec4& c, const float side) {
             return StripVertex{glm::vec4{c.x + across.x * side * c.w, c.y + across.y * side * c.w,
                                          (std::min)(c.z * depth_pull, c.w), c.w},
-                               line.colour};
+                               decoded(line.colour)};
         };
         const auto a0 = corner(a, -1.0f), a1 = corner(a, 1.0f), b0 = corner(b, -1.0f), b1 = corner(b, 1.0f);
         out.insert(out.end(), {a0, a1, b1, a0, b1, b0});

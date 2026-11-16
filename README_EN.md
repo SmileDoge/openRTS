@@ -12,7 +12,7 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.14.6](../../releases/tag/v0.14.6):
+> Work in progress. The latest version is [v0.15.0](../../releases/tag/v0.15.0):
 > a nearly playable game. Driving from a 3-D cab with RTS's locomotive
 > DLLs, signalling, the Track control window, a living route (forests,
 > level crossings, road traffic, water, rain and snow, smoke), sound by the
@@ -55,8 +55,9 @@ Questions, discussion and bug reports: our
   - Vulkan, DirectX 12 or OpenGL to choose from; depth for ReShade;
   - experimental renderer (F10): sun shadows (cascades and a map of the cab's
     own), lamp shadows, ambient occlusion (GTAO), every lamp at once,
-    light bounced off the ground, aerial haze; passes recorded on several
-    threads.
+    light bounced off the ground, aerial haze, physically based light (PBR:
+    GGX reflections, the sky's light from its probe, with HDR); passes
+    recorded on several threads.
 - **Trains:**
   - RTS physics, couplers and automatic coupling, buffer hits and
     collisions;
@@ -210,7 +211,7 @@ menu, the game, the locomotive DLL host, the tools, `wgpu_native.dll`) are in
 **Releases**; how to install and run them is in [INSTALL_EN.md](INSTALL_EN.md):
 - **nightly** — a pre-release with the latest `master` build, replaced
   automatically; the window's title and the settings mark its version with
-  the commit, e.g. "openRTS 0.14.6 (nightly abc1234)";
+  the commit, e.g. "openRTS 0.15.0 (nightly abc1234)";
 - **vX.Y.Z** — versions; the release is created automatically when a version
   tag is pushed.
 
@@ -329,6 +330,9 @@ The game can also be started directly:
 | `--backend auto\|vulkan\|dx12\|opengl` | the graphics API (OpenGL: the RTS renderer only) |
 | `--reshade-depth on\|off` | depth for ReShade ([INSTALL_EN.md](INSTALL_EN.md#reshade)) |
 | `--experimental` | experimental renderer instead of RTS's |
+| `--pbr on\|off` | the experimental renderer's physically based light (with HDR) for one run ([details](docs/experimental-effects.md)) |
+| `--sky-light on\|off` | with the physically based light, the sky's light from its probe (off: the old sky light) for one run |
+| `--native-sky on\|off` | openRTS's sky or RTS's dome for one run |
 | `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | experimental renderer settings for one run ([details](docs/experimental-effects.md)) |
 | `--capture <file.ppm>` | take one frame and exit; `--capture-at <s>`, `--capture-car <n>`, `--capture-camera ex ey ez tx ty tz`, `--capture-cab` say when and from where |
 | `--mp-connect <address>[:port]`, `--mp-nick <nick>` | join an RTS server (port 800 by default); the route, season and weather are the server's, no `--route` needed |
@@ -436,6 +440,7 @@ the Train window)
 | `openrts-dllhost32 --probe <folder>` | versions and layouts of every locomotive DLL |
 | `openrts_asset_dump` | resolve assets the way RTS looks them up; `--lights <route\|all>` counts the placed shapes' lamps by kind |
 | `openrts-net-dump` | an RTS server's snapshot package by package; `--root`/`--route` check it against the route |
+| `tools/render-check/render_check.py` | render check (Python): ten scenes in several variants (the frame's encoding, PBR, the sky's light, RTS's dome, the RTS path), captures as PNG, the HDR frame's light by region, GPU time, bindings, video memory (`docs/experimental-effects.md`, "The frame's encoding", "Physically based light", "The sky's light") |
 
 ## Layout
 
@@ -476,6 +481,9 @@ RTS's DLLs.
 - `docs/profiling.md` — building with Tracy, what is marked, adding a zone;
 - `docs/world-objects.md` — forests, level crossings, road traffic, water,
   rain and snow and smoke, as RTS builds and runs them;
+- `docs/weather.md` — RTS's weather and openRTS's thunderstorm: lightning,
+  its light on the clouds and the scene, its channel, the same strikes for
+  every player;
 - `docs/net.md` — playing on an RTS server: the protocol, own and other
   players' trains, couplings, sound, the line;
 - `docs/server.md` — the openRTS server: running it, the dispatcher's
@@ -503,6 +511,12 @@ your own RTS installation. `docs/RTSFileFormat.dat`,
 `docs/RTSFileReference.html`, `docs/export.pdf` and `docs/ext.pdf` are RTS's
 documentation and belong to its authors; openRTS's licence does not cover
 them.
+
+The thunder (the `openrts-thunder` pack, `packs/thunder`) is cut from
+Freesound.org recordings: "Thunder, Very Close, No Rain, C.wav" and
+"Thunder, Very Close, Rain, A.wav" by InspectorJ (www.jshaw.co.uk), Creative
+Commons Attribution 4.0; "Extreme Thunder Impact - Munich Trudering" by
+TSP-Talk, Creative Commons 0. Details in `packs/thunder/CREDITS.txt`.
 
 openRTS is licensed under the **GNU General Public License v3.0**: you may
 use, study, change and share it, and modified versions only under the same

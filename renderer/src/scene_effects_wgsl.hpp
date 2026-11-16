@@ -42,6 +42,7 @@ struct Effects {
     cloud_area: vec4<f32>,               // the clouds' shadow map: xy its middle from the eye, z its half width, w the layer's middle above the eye (m)
     cloud_sun: vec4<f32>,                // xyz: towards the sun as the clouds are marched, w: strength (0: none)
     cloud_edge: vec4<f32>,               // xy: the light read taken through smoothstep(x, y) (the edge band)
+    sky_light: vec4<f32>,                // the sky's light (SkyLight): x 1 on, y the prefiltered cube's last mip, z the sky's openness round the eye
 };
 )";
 
@@ -56,6 +57,47 @@ inline constexpr char effects_main_wgsl[] = R"(
 @group(2) @binding(7) var lamp_shadow_map: texture_depth_2d_array;
 @group(2) @binding(8) var cloud_shadow_map: texture_2d<f32>;
 @group(2) @binding(9) var cloud_sampler: sampler;
+// The sky's light (SkyLight, PBR stage 2): the probe prefiltered by GGX (a
+// mip a quarter of roughness), the split sum's table, the SH9 of the sky and
+// the ground (then the ground's radiance, the sky's light facing up).
+@group(2) @binding(10) var sky_prefiltered: texture_cube<f32>;
+@group(2) @binding(11) var sky_brdf: texture_2d<f32>;
+@group(2) @binding(12) var sky_sampler: sampler;
+@group(2) @binding(13) var<storage, read> sky_irradiance: array<vec4<f32>, 12>;
+
+// What a white Lambert surface facing `n` shows lit by the sky and the
+// ground under it (irradiance / pi from the SH9; not below 0).
+fn effects_sky_light(n: vec3<f32>) -> vec3<f32> {
+    var light = sky_irradiance[0].xyz * 0.282095;
+    light = light + (sky_irradiance[1].xyz * n.y + sky_irradiance[2].xyz * n.z + sky_irradiance[3].xyz * n.x) * (0.488603 * 2.0 / 3.0);
+    light = light + (sky_irradiance[4].xyz * (1.092548 * n.x * n.y) + sky_irradiance[5].xyz * (1.092548 * n.y * n.z)
+        + sky_irradiance[6].xyz * (0.315392 * (3.0 * n.z * n.z - 1.0)) + sky_irradiance[7].xyz * (1.092548 * n.x * n.z)
+        + sky_irradiance[8].xyz * (0.546274 * (n.x * n.x - n.y * n.y))) * 0.25;
+    return max(light, vec3<f32>(0.0));
+}
+
+// The sky's own light on a white surface facing up (no ground).
+fn effects_sky_up() -> vec3<f32> {
+    return sky_irradiance[10].xyz;
+}
+
+// The sky and the ground as a surface of `roughness` reflects them that way.
+fn effects_sky_radiance(direction: vec3<f32>, roughness: f32) -> vec3<f32> {
+    return textureSampleLevel(sky_prefiltered, sky_sampler, direction, roughness * effects.sky_light.y).rgb;
+}
+
+// The split sum's scale and bias of F0 at n.v and roughness.
+fn effects_split_sum(n_dot_v: f32, roughness: f32) -> vec2<f32> {
+    return textureSampleLevel(sky_brdf, sky_sampler, vec2<f32>(n_dot_v, roughness), 0.0).xy;
+}
+
+// How much of the sky's light reaches `world`: near the eye, as open as the
+// sky is round it (a tunnel: little; the scene's sky probe), from 150 m on
+// all of it (the land beyond a tunnel's mouth keeps its light).
+fn effects_sky_openness(world: vec3<f32>) -> f32 {
+    let near = 1.0 - smoothstep(150.0, 400.0, distance(world, effects.eye.xyz));
+    return mix(1.0, effects.sky_light.z, near);
+}
 
 // The light openRTS's clouds let through to a point (cloud_shadow.hpp): the
 // point taken along the sun's way up to the layer's middle height, read
