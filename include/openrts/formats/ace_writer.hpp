@@ -10,6 +10,11 @@
 // A power-of-two image gets its mipmap chain (RTS's 2 x 2 box filter, as its
 // gluBuild2DMipmaps), options 5 / 21 so RTS takes a square one's levels; the
 // body zlib-packed (SIMISA@F) as most of RTS's files are, or plain.
+//
+// openRTS's own (RTS cannot read them): DXT3 / BC2 (0x20), DXT5 / BC3
+// (0x21), BC5 (0x22), BC7 (0x23), BC4 (0x24) as raw data, every level down
+// to 1 x 1 as blocks, any size given a chain (options 17, else 16);
+// channels R G B A, or R G (BC5), or R (BC4).
 
 #include <array>
 #include <cstdint>
@@ -18,7 +23,13 @@
 
 namespace openrts::formats {
 
-enum class AceFormat { dxt1, rgb, rgb_mask, rgba };
+enum class AceFormat { dxt1, rgb, rgb_mask, rgba, dxt3, dxt5, bc4, bc5, bc7 };
+
+// openRTS's formats (not RTS's): DXT3, DXT5, BC4, BC5, BC7.
+[[nodiscard]] constexpr bool openrts_only(const AceFormat format) noexcept {
+    return format == AceFormat::dxt3 || format == AceFormat::dxt5 || format == AceFormat::bc4 || format == AceFormat::bc5
+        || format == AceFormat::bc7;
+}
 
 struct AceWriteOptions {
     AceFormat format = AceFormat::dxt1;

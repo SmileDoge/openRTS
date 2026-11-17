@@ -12,6 +12,7 @@
 
 #include <openrts/formats/ace_file.hpp>
 #include <openrts/formats/ace_writer.hpp>
+#include <openrts/formats/block_compression.hpp>
 #include <openrts/formats/png_file.hpp>
 
 #include <zlib.h>
@@ -188,9 +189,121 @@ void ace_tests() {
 
 } // namespace
 
+// openRTS's block formats: BC7's tables, each format through its encoder and
+// decoder, and each written as an ACE and read back (its blocks kept for the
+// GPU, its levels down to 1 x 1).
+void block_tests() {
+    // BC7's partitions: texel 0 in part 0, every part present, each part's
+    // anchor in it (one for two parts, two for three).
+    bool tables = true;
+    for (int parts = 2; parts <= 3; ++parts) {
+        for (int p = 0; p < 64; ++p) {
+            int count[3] = {0, 0, 0};
+            int anchors[3] = {0, 0, 0};
+            for (int i = 0; i < 16; ++i) {
+                const int part = bc7_part(parts, p, i);
+                if (part < 0 || part >= parts) tables = false;
+                else ++count[part];
+                if (i > 0 && bc7_anchor(parts, p, i) && part >= 0 && part < parts) ++anchors[part];
+            }
+            if (bc7_part(parts, p, 0) != 0 || anchors[0] != 0) tables = false;
+            for (int k = 1; k < parts; ++k)
+                if (count[k] == 0 || anchors[k] != 1) tables = false;
+        }
+    }
+    check(tables, "BC7's partition and anchor tables agree");
+
+    // An image with a smooth gradient, grain, and alpha of three kinds:
+    // opaque, cut out, a soft ramp.
+    const std::uint32_t w = 64, h = 32;
+    std::mt19937 random(5);
+    std::vector<std::uint8_t> image(static_cast<std::size_t>(w) * h * 4);
+    for (std::uint32_t y = 0; y < h; ++y) {
+        for (std::uint32_t x = 0; x < w; ++x) {
+            auto* p = &image[(static_cast<std::size_t>(y) * w + x) * 4];
+            p[0] = static_cast<std::uint8_t>(40 + x * 2 + random() % 6);
+            p[1] = static_cast<std::uint8_t>(60 + y * 4 + random() % 6);
+            p[2] = static_cast<std::uint8_t>(120 + (x + y) % 40);
+            p[3] = static_cast<std::uint8_t>(x < 20 ? 255 : x < 40 ? (((x / 3 + y / 3) % 2) ? 255 : 0) : (y * 8));
+        }
+    }
+    // A channel's mean error; with `shown_only` over the texels BC1 keeps (alpha
+    // 128 and up: the others are its transparent black).
+    const auto channel_error = [&](const std::vector<std::uint8_t>& back, const int ch, const bool shown_only = false) {
+        double sum = 0.0;
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < image.size(); i += 4) {
+            if (shown_only && image[i + 3] < 128) continue;
+            sum += std::abs(double(image[i + static_cast<std::size_t>(ch)]) - back[i + static_cast<std::size_t>(ch)]);
+            ++count;
+        }
+        return count ? sum / static_cast<double>(count) : 0.0;
+    };
+    struct Case {
+        BlockFormat format;
+        AceFormat ace;
+        int channels;       // the colour channels checked
+        bool alpha;         // its alpha checked
+        double most_error;  // mean error a channel, of 255
+    };
+    const Case cases[] = {{BlockFormat::bc1, AceFormat::dxt1, 3, false, 6.0},  {BlockFormat::bc2, AceFormat::dxt3, 3, true, 6.0},
+                          {BlockFormat::bc3, AceFormat::dxt5, 3, true, 6.0},   {BlockFormat::bc4, AceFormat::bc4, 1, false, 2.0},
+                          {BlockFormat::bc5, AceFormat::bc5, 2, false, 2.0},   {BlockFormat::bc7, AceFormat::bc7, 3, true, 4.0}};
+    for (const auto& c : cases) {
+        const std::string name(block_format_name(c.format));
+        const auto blocks = encode_blocks(c.format, w, h, image.data());
+        check(blocks.size() == level_block_bytes(c.format, w, h), name + ": blocks of the image's size");
+        const auto back = decode_blocks(c.format, w, h, blocks.data(), blocks.size());
+        check(back.size() == image.size(), name + ": decoded");
+        if (back.size() != image.size()) continue;
+        double worst = 0.0;
+        for (int ch = 0; ch < c.channels; ++ch) worst = (std::max)(worst, channel_error(back, ch, c.format == BlockFormat::bc1));
+        if (c.alpha) worst = (std::max)(worst, channel_error(back, 3));
+        std::cout << name << ": mean error " << worst << " of 255\n";
+        check(worst < c.most_error, name + " close to the image (" + std::to_string(worst) + ")");
+        if (c.format == BlockFormat::bc1 || c.alpha) {
+            // The cut-out texels stay on their side of 128.
+            std::size_t flipped = 0;
+            for (std::uint32_t y = 0; y < h; ++y)
+                for (std::uint32_t x = 20; x < 40; ++x) {
+                    const auto i = (static_cast<std::size_t>(y) * w + x) * 4 + 3;
+                    if ((image[i] >= 128) != (back[i] >= 128)) ++flipped;
+                }
+            check(flipped == 0, name + ": the cut-out alpha kept (" + std::to_string(flipped) + " flipped)");
+        }
+        if (c.ace == AceFormat::dxt1) continue;
+        // As an ACE (packed), a chain down to 1 x 1, read back with its blocks.
+        const auto ace = encode_ace(w, h, image, {.format = c.ace});
+        check(ace.ok(), name + " ACE written: " + ace.error);
+        const auto read = decode_structured_ace_rgba(ace.bytes);
+        check(read.ok(), name + " ACE read: " + read.error);
+        if (!read.ok()) continue;
+        const auto& got = *read.image;
+        check(got.blocks.size() == 7 && got.block_format == c.format && got.mips.size() == 6 && got.mips_from_file,
+              name + " ACE: 7 levels of its blocks (" + std::to_string(got.blocks.size()) + ")");
+        check(got.pixels == back, name + " ACE: level 0 as the blocks decode");
+        check(!got.blocks.empty() && got.blocks[0] == blocks, name + " ACE: level 0's blocks as encoded");
+        // Without a chain: one level, its blocks left to the renderer's own chain.
+        const auto flat = decode_structured_ace_rgba(encode_ace(w, h, image, {.format = c.ace, .mipmaps = false, .zlib = false}).bytes);
+        check(flat.ok() && flat.image->blocks.empty() && flat.image->mips.size() == 6 && !flat.image->mips_from_file,
+              name + " ACE without a chain: decoded, mipmaps built");
+    }
+    // A side not of whole blocks (30 x 18): written and read, decoded right.
+    std::vector<std::uint8_t> odd(30 * 18 * 4, 200);
+    const auto odd_read = decode_structured_ace_rgba(encode_ace(30, 18, odd, {.format = AceFormat::bc7}).bytes);
+    check(odd_read.ok() && odd_read.image->width == 30 && odd_read.image->pixels.size() == odd.size()
+              && std::abs(int(odd_read.image->pixels[0]) - 200) <= 2,
+          "a 30 x 18 BC7 ACE read back");
+    // An unknown raw format is refused, not misread.
+    auto bad = encode_ace(w, h, image, {.format = AceFormat::bc7, .zlib = false}).bytes;
+    bad[16 + 16] = 0x2F;
+    check(!decode_structured_ace_rgba(bad).ok(), "an unknown raw format refused");
+}
+
 int main(int argc, char* argv[]) {
     png_tests();
     ace_tests();
+    block_tests();
     // A real DXT1 texture (an RTS root given): written again, read back alike.
     if (argc > 1) {
         const auto file = std::filesystem::path(argv[1]) / "GLOBAL" / "TEXTURES" / "7bridge2.ace";

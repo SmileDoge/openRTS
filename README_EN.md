@@ -433,7 +433,7 @@ the Train window)
 
 | Program | Purpose |
 |---|---|
-| `openrts-ace` | ACE textures to PNG and back (DXT1, RGB, RGB + mask, RGBA), a file or a folder; `--register`: a double click on an `.ace` shows it as PNG, PNG files and folders get "to ACE (openRTS)" (also a button in the menu's Settings; the format: `docs/reverse/ace.md`) |
+| `openrts-ace` | ACE textures to PNG and back (DXT1, RGB, RGB + mask, RGBA; openRTS only: BC7, DXT5, DXT3, BC5, BC4), a file or a folder; `--register`: a double click on an `.ace` shows it as PNG, PNG files and folders get "to ACE (openRTS)" (also a button in the menu's Settings; the format: `docs/reverse/ace.md`) |
 | `openrts-shape` | `export <file.s> [--out <folder>]`: a shape as glTF 2.0 with its textures as PNG for Substance Painter and Blender: nodes, a material per part and what openRTS's material files select it by ([openRTS materials](docs/pbr-materials.md)) |
 | `openrts-pack` | build and inspect content packs (`docs/vfs.md`) |
 | `openrts-track-check` | check the track network, `.pat` paths and speed posts |

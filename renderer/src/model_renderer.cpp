@@ -2195,10 +2195,30 @@ void ModelRenderer::Impl::ensure_capacity(const std::uint64_t instances,
 std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::VirtualPath& path, const formats::AceRgbaImage& image,
                                                               const bool normal_map) const {
     auto texture = std::make_shared<GpuTexture>();
+    // An openRTS ACE of blocks (DXT3, DXT5, BC4, BC5, BC7: formats/ace_file.hpp):
+    // its levels as they are.
+    if (!image.blocks.empty() && bc_textures) {
+        const auto format = image.block_format;
+        const WGPUTextureFormat gpu = format == BlockFormat::bc1   ? WGPUTextureFormat_BC1RGBAUnorm
+                                      : format == BlockFormat::bc2 ? WGPUTextureFormat_BC2RGBAUnorm
+                                      : format == BlockFormat::bc3 ? WGPUTextureFormat_BC3RGBAUnorm
+                                      : format == BlockFormat::bc4 ? WGPUTextureFormat_BC4RUnorm
+                                      : format == BlockFormat::bc5 ? WGPUTextureFormat_BC5RGUnorm
+                                                                   : WGPUTextureFormat_BC7RGBAUnorm;
+        texture->texture = upload_compressed_texture(device, image.width, image.height, image.blocks, std::string(path.filename()), gpu,
+                                                     formats::block_bytes(format));
+        if (texture->texture.ok()) {
+            for (const auto& level : image.blocks) texture->bytes += level.size();
+        } else {
+            std::cout << "texture '" << path.str() << "': " << formats::block_format_name(format) << ": " << texture->texture.error
+                      << "; decoded\n";
+        }
+    }
     // A train's DXT1 without its blocks' squares, kept in BC7 (renderer/bc7.hpp;
     // the Graphics panel's choice, openRTS's own).
     const auto path_key = path.key();
-    if (!image.bc1.empty() && bc_textures && smooth_train_textures() && path_key.rfind("trains/trainset/", 0) == 0) {
+    if (!texture->texture.ok() && !image.bc1.empty() && bc_textures && smooth_train_textures()
+        && path_key.rfind("trains/trainset/", 0) == 0) {
         const auto started = std::chrono::steady_clock::now();
         if (const auto levels = smoothed_bc7_levels(image.width, image.height, image.pixels, image.bc1.front())) {
             static std::atomic<int> told{0};
@@ -2225,7 +2245,8 @@ std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::Virtua
     // in BC5 (its x and y: the shader makes z): a quarter of RGBA8's memory
     // (renderer/bc7.hpp; the Graphics panel's choice, openRTS's own).
     const auto compression = texture_compression();
-    if (!texture->texture.ok() && image.bc1.empty() && bc_textures && compression != TextureCompression::off && image.width >= 8
+    if (!texture->texture.ok() && image.bc1.empty() && image.blocks.empty() && bc_textures && compression != TextureCompression::off
+        && image.width >= 8
         && image.height >= 8
         && image.width % 4 == 0 && image.height % 4 == 0) {
         const auto started = std::chrono::steady_clock::now();

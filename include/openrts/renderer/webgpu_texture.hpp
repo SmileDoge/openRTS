@@ -72,6 +72,10 @@ struct WgpuTextureUploadResult {
 [[nodiscard]] WgpuTextureUploadResult upload_bc7_texture(
     WGPUDevice device, std::uint32_t width, std::uint32_t height, const std::vector<std::vector<std::uint8_t>>& levels,
     std::string_view label = {});
+// Any BC format's levels (`block_bytes` a block: 8 for BC1 / BC4, else 16).
+[[nodiscard]] WgpuTextureUploadResult upload_compressed_texture(
+    WGPUDevice device, std::uint32_t width, std::uint32_t height, const std::vector<std::vector<std::uint8_t>>& levels,
+    std::string_view label, WGPUTextureFormat format, std::uint32_t block_bytes);
 // The same of BC5's (red and green, 16 bytes a block; renderer/bc7.hpp).
 [[nodiscard]] WgpuTextureUploadResult upload_bc5_texture(
     WGPUDevice device, std::uint32_t width, std::uint32_t height, const std::vector<std::vector<std::uint8_t>>& levels,

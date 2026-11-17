@@ -427,7 +427,7 @@ RTS — с цифровым блоком (Num0, Num1, Num2, Num3), openRTS — �
 
 | Программа | Назначение |
 |---|---|
-| `openrts-ace` | текстуры ACE в PNG и обратно (DXT1, RGB, RGB + маска, RGBA), файл или папка; `--register` — двойной щелчок по `.ace` показывает его как PNG, у PNG и папок в меню «в ACE (openRTS)» (то же — кнопка в «Настройках» меню; устройство формата — `docs/ru/reverse/ace.md`) |
+| `openrts-ace` | текстуры ACE в PNG и обратно (DXT1, RGB, RGB + маска, RGBA; только для openRTS — BC7, DXT5, DXT3, BC5, BC4), файл или папка; `--register` — двойной щелчок по `.ace` показывает его как PNG, у PNG и папок в меню «в ACE (openRTS)» (то же — кнопка в «Настройках» меню; устройство формата — `docs/ru/reverse/ace.md`) |
 | `openrts-shape` | `export <файл.s> [--out <папка>]` — модель в glTF 2.0 с текстурами в PNG для Substance Painter и Blender: узлы, материал на каждую часть и то, по чему её выбирают файлы материалов openRTS ([материалы openRTS](docs/ru/pbr-materials.md)) |
 | `openrts-pack` | сборка и проверка паков контента (`docs/vfs-tutorial-ru.md`) |
 | `openrts-track-check` | проверка сети путей, путей `.pat`, путевых знаков |

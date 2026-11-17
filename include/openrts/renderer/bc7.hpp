@@ -16,6 +16,8 @@
 #include <string_view>
 #include <vector>
 
+#include <openrts/formats/block_compression.hpp>
+
 namespace openrts::renderer {
 
 // The smoothing for TRAINS/TRAINSET's DXT1 textures (the Graphics panel's
@@ -79,7 +81,8 @@ struct TextureCacheSize {
 // already on the GPU stay; the next loads encode theirs again.
 TextureCacheSize clear_texture_cache(const std::filesystem::path& folder);
 
-enum class BlockFormat : std::uint8_t { bc7, bc5 };
+// BC7 or BC5 (formats/block_compression.hpp, where the encoders are).
+using BlockFormat = formats::BlockFormat;
 // An uncompressed texture (level 0 and its levels 1.., RGBA8; none: built
 // as RTS builds them) as BC7 or BC5 levels. With `disk`: from the disk
 // cache by a hash of its texels, else encoded and kept there; without:
