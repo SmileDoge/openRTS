@@ -65,6 +65,15 @@ struct WindowOptions {
     // The FPS limit: 30..500 frames per second, 0 none (--fps-limit; else
     // the remembered "fps_limit", the start menu's and the panel's setting).
     int fps_limit = 0;
+    // --fps-background: no 30 frames/s cap in the background (benchmarks run
+    // beside other windows; a capped GPU clocks down and its times grow).
+    bool fps_background = false;
+    // --shadow-cache-check: the sun's shadow cache compared with the cascades
+    // drawn whole every frame, the differing texels printed (SceneEffects).
+    bool shadow_cache_check = false;
+    // --fly-test <m/s> [deg/s]: the free camera flies on, turning (a check).
+    float fly_speed = 0.0f;
+    float fly_turn = 0.0f;
     // The window: in a window, borderless or full screen (--window-mode;
     // else the remembered "window_mode"; window_mode.hpp). A capture and the
     // start menu are always a window.

@@ -233,7 +233,7 @@ int main() {
     {
         constexpr float h = 1.0f / 300.0f;
         struct Times {
-            float fill = -1.0f, release = -1.0f, held{}, dead = -1.0f;
+            float fill = -1.0f, release = -1.0f, held{}, dead = -1.0f, empty = -1.0f;
         };
         const auto run = [&](const DistributorKind kind, const DistributorPlug plug, const float pace = 1.0f) {
             auto car = car_of(kind);
@@ -270,6 +270,13 @@ int main() {
                 t += h;
             }
             out.release = t;
+            // On to the air: the orifice's tail ends (2026-11-17).
+            while (s.cylinder > 0.01f && t < 30.0f) {
+                s.pipe = 5.0f;
+                step_distributor(s, car, 0.0f, 0.0f, h, EpCommand::release);
+                t += h;
+            }
+            out.empty = t;
             // Applied again, then the wire dead (no command, no target).
             step(EpCommand::release, 0.0f, 15.0f);
             step(EpCommand::apply, 0.0f, 3.0f);
@@ -294,6 +301,8 @@ int main() {
         check(std::abs(coach_long.release - coach.release) < 0.1f, "305: the release is the 305's, not the 292 plug's (Д " +
                                                                        std::to_string(coach_long.release) + " s)");
         check(emu.release >= 3.5f && emu.release <= 4.5f, "305-001: 3.5 to 0.4 in 3.5-4.5 s (" + std::to_string(emu.release) + " s)");
+        check(emu.empty < 6.5f, "305-001: 3.5 to the air within 6.5 s (" + std::to_string(emu.empty) + " s)");
+        check(coach.empty < 14.5f, "305-000: 3.5 to the air within 14.5 s (" + std::to_string(coach.empty) + " s)");
         check(coach.dead > 0.0f && coach.dead < 12.0f, "305: the wire dead, the brakes release (" + std::to_string(coach.dead) + " s)");
 
         // A DLL's target: the cylinder goes to it and back down to a lower one.

@@ -79,7 +79,19 @@ const char* command_name(const EpCommand command) {
 // at the РК, fed from the ЗР.
 constexpr float ep_relay = 4.0f;         // atm/s: the relay follows the РК
 constexpr float ep_chamber_volume = 0.0015f; // m³
-float ep_release_time(const DistributorKind kind) { return kind == DistributorKind::evr305_001 ? 1.84f : 4.15f; }
+// s: the 305's release valve as an orifice (Крылов: 305-000 1.3 mm, 305-001
+// 2.0 mm). Above 0.89 atm (1.89 absolute) the flow is choked and the
+// absolute pressure falls as e^(-t/τ); below, the flow goes as the root of
+// the overpressure, to the air in a finite time. τ keeps the book's 3.5-4 to
+// 0.4 atm in 8-10 s / 3.5-4.5 s. Until 2026-11-17 the gauge pressure fell
+// as e^(-t/τ) with τ 4.15 / 1.84 s, at least 0.05 atm/s: the 305-001 took
+// some 9 s from 4 to 0 (testers: "7 s, should be 4"; the book's time is to 0.4).
+float ep_release_time(const DistributorKind kind) { return kind == DistributorKind::evr305_001 ? 3.34f : 7.54f; }
+constexpr float ep_choked = 0.89f; // atm, gauge: the orifice's critical ratio, 1.89 absolute
+float ep_release_rate(const float chamber, const float tau) {
+    if (chamber >= ep_choked) return (chamber + 1.0f) / tau;
+    return (ep_choked + 1.0f) / tau * std::sqrt((std::max)(chamber, 0.0f) / ep_choked);
+}
 
 // The 305's РК for a sub-step: its valves by the line's command or target.
 // The РК is held to the full service's cylinder: the book has it rise to the
@@ -113,7 +125,7 @@ void step_ep_chamber(DistributorState& s, const DistributorCar& car, const float
         s.auxiliary = (std::max)(s.auxiliary - rise * ep_chamber_volume / car.auxiliary_volume, 0.0f);
     }
     if (vent && s.ep_chamber > lower) {
-        s.ep_chamber = (std::max)(s.ep_chamber - (std::max)(s.ep_chamber / ep_release_time(car.kind), 0.05f) * h, lower);
+        s.ep_chamber = (std::max)(s.ep_chamber - ep_release_rate(s.ep_chamber, ep_release_time(car.kind)) * h, lower);
     }
 }
 

@@ -480,6 +480,7 @@ void read_exhausts(std::string_view text, TextRange block, EngineDefinition& eng
     engine.main_reservoir_volume = static_cast<float>(values(text, "airbrakesmainresvolume").atof());
     engine.main_reservoir_max = pressure_atm(values(text, "airbrakesmainmaxairpressure").token());
     engine.compressor_restart = pressure_atm(values(text, "airbrakescompressorrestartpressure").token());
+    engine.compressor_capacity = (std::max)(static_cast<float>(values(text, "ortscompressorcapacity").atof()), 0.0f);
     engine.dynamic_brake_max_force = static_cast<float>(values(text, "dynamicbrakesmaximumforce").quantity());
     if (const auto controllers = rts_find(text, "enginecontrollers")) {
         if (const auto throttle = rts_find(text, "throttle", *controllers)) {
@@ -668,7 +669,7 @@ WagonDefinition load_wagon(const core::Vfs& vfs, const std::string_view folder, 
     // The distributor the file itself names (before openRTS's companion).
     const auto file_distributor = brake_distributor_from(values(*main, "ortsbrakedistributor").token());
     // openRTS's own companion (a mod's), over RTS's: its values come first.
-    bool own_distributor = false, own_compressor = false;
+    bool own_distributor = false, own_compressor = false, own_capacity = false;
     if (const auto own = wagon_override_path(folder, name, engine); vfs.exists(own)) {
         if (const auto own_bytes = vfs.read(own, &error)) {
             if (auto own_text = detail::rts_text(*own_bytes, error)) {
@@ -676,6 +677,7 @@ WagonDefinition load_wagon(const core::Vfs& vfs, const std::string_view folder, 
                 own_distributor = own_text->find("ortsbrakedistributor") != std::string::npos;
                 own_compressor = own_text->find("airbrakesmainmaxairpressure") != std::string::npos ||
                                  own_text->find("airbrakescompressorrestartpressure") != std::string::npos;
+                own_capacity = own_text->find("ortscompressorcapacity") != std::string::npos;
                 detail::rts_merge(*main, *own_text, {"wagon", "engine", "engextended"});
             }
         }
@@ -701,6 +703,7 @@ WagonDefinition load_wagon(const core::Vfs& vfs, const std::string_view folder, 
             if (given.compressor_off) wagon.engine->main_reservoir_max = *given.compressor_off;
             if (given.compressor_on) wagon.engine->compressor_restart = *given.compressor_on;
         }
+        if (wagon.engine && !own_capacity && given.compressor_capacity) wagon.engine->compressor_capacity = *given.compressor_capacity;
     }
     // openRTS: a distributor script, next to the file.
     if (auto& brakes = wagon.brakes; !brakes.distributor_script.empty()) {

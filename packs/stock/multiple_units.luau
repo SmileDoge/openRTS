@@ -11,6 +11,10 @@
 -- - With the ЭПТ, the ЭВР 305-001 of multiple units (Крылов §38-39): its
 --   release valve lets the cylinders out in 3.5-4.5 s, a coach's 305-000 in
 --   8-10.
+-- - The compressor's delivery 0.37 m³ of free air a minute (an ЭК-7В's,
+--   0.5 nominal, less at 7-8 atm): an ЭД4М's head car (340 l) from 7 to 8
+--   atm in 55 s (testers, 2026-11-17). Without it every car had a
+--   locomotive's КТ-6 (5.3 m³/min): 4 s.
 --
 -- A car the menu gave another distributor keeps it (the player's choice,
 -- in a mod, wins over these rules).
@@ -40,5 +44,6 @@ function car(c)
     if c.engine then
         c.compressor_on = 6.5
         c.compressor_off = 8.0
+        c.compressor_capacity = 0.37
     end
 end

@@ -22,9 +22,10 @@
 // ("electric", "diesel", "steam", nil), `ep` (the ЭПТ fitted), `mass` (t),
 // `distributor` (the one named so far: "483", "292", "305-000", "305-001",
 // nil), `compressor_on` / `compressor_off` (the governor, atm; nil when the
-// file gives none). The script sets `distributor`, `compressor_on`,
-// `compressor_off`; scripts run in their names' order, each seeing what the
-// one before set.
+// file gives none), `compressor_capacity` (m³ of free air a minute, nil: a
+// КТ-6). The script sets `distributor`, `compressor_on`, `compressor_off`,
+// `compressor_capacity`; scripts run in their names' order, each seeing what
+// the one before set.
 namespace openrts::simulation {
 
 class StockRules {

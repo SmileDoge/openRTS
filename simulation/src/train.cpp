@@ -230,9 +230,12 @@ float compressor_rate(bool& running, const EngineInputs& inputs) {
     if (inputs.main_reservoir >= range.off) running = false;
     if (!running) return 0.0f;
     if (inputs.realistic_air && engine) {
-        // A КТ-6 delivers about 5.3 m³ of free air a minute (0.088 m³·atm/s)
-        // into the real main reservoir volume.
-        return 0.088f / detail::main_reservoir_volume(*engine);
+        // Its delivery (m³ of free air a minute) into the real main reservoir
+        // volume: the .eng's or the stock rules' ORTSCompressorCapacity, else
+        // a КТ-6's 5.3 (0.088 m³·atm/s). Until 2026-11-17 a КТ-6 everywhere:
+        // an ЭД4М's head car went from 7 to 8 atm in 4 s (testers: 55).
+        const float capacity = engine->compressor_capacity > 0.0f ? engine->compressor_capacity / 60.0f : 0.088f;
+        return capacity / detail::main_reservoir_volume(*engine);
     }
     return 0.05f;
 }

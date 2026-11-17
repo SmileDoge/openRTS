@@ -421,6 +421,47 @@ distance,size,cascades,softness` for one run):
 Measured as below: off 2.57 ms, 250 m / 2048 / 3 / 1.0 3.83 ms, 100 m /
 1024 / 2 2.99 ms, 1000 m / 4096 / 4 4.28 ms; the softness costs nothing.
 
+Where the time goes (2026-11-17, Ultra 453 m / 4096 / 4, the 2ЭС6's cab by
+day, RTX 4070 Ti SUPER; the cascades' GPU pass 1.88 ms, the cab's map
+0.51): the terrain 0.17 ms of it, the models the rest, the alpha-tested
+ones (trees, fences: a texture read and a discard per fragment, layer over
+layer) 1.2 ms. The pass scales with the maps' texels (2048: 0.83 ms; three
+cascades: 1.18), not with the bytes: a 16-bit map gained nothing and was
+left. In each shadow pass the opaque casters go first, then the
+alpha-tested ones, each batch's instances nearest to the light first, so
+the depth already there turns fragments away before their shader runs
+(1.88 to 1.76 ms; the maps hold the same depths).
+
+**The shadow cache** (2026-11-17; «Кэш теней (неподвижное)», `shadow_cache`,
+`--shadow-cache on|off`, on): what does not move, the terrain and the
+world's objects, is drawn into a layer of its own a cascade and kept there
+toroidally, each texel of the light's plane at its place modulo the map's
+size. As the window moves (the camera, the view turning) only the strips it
+enters are drawn, each piece through a viewport and scissor of its own;
+every frame the working map is that layer read at the window's offset (a
+full-screen pass writing the depth), then what moves over it: trains, road
+traffic, crossing gates and switch blades (`ModelRenderer::set_moving`).
+Drawn whole again when the sun has turned (0.57 degrees: the cache keeps
+the basis it was drawn in until then), when the depth's anchor no longer
+holds the slice (150 m of room each way), when the window jumped a map or
+more, when the map is new, and every 30 frames or so a cascade (each its
+own period): objects whose model came in after their strip, a model at
+another distance level, signal arms. A cascade's map is no longer drawn
+with a tenth more room. Video memory: a map more a cascade (Ultra: 64 MB
+each, 256 in all; High: 16 each).
+
+Ultra (453 m / 4096 / 4), RTX 4070 Ti SUPER: the 2ЭС6's cab standing, the
+cascades 2.26 ms whole every frame against 1.17 + 0.05 (the cache's pieces)
+with the cache, 123 to 143 fps; flying at 28 m/s over the station
+(`--fly-test 28`), 2.06 against 0.76 + 0.17, 148 to 182 fps. Standing, what
+is left is the unwrap of four maps and the locomotive itself (it moves, so
+it is drawn every frame).
+
+`--shadow-cache-check` draws every cascade whole as well into a scratch
+array and counts the texels that differ, every 120 frames: standing 0; on
+the move and turning 0.0004-0.02 %, in bursts up to 0.15 % as models load
+(drawn whole again within half a second).
+
 ## Every lamp (clustered lights)
 
 RTS keeps nine further lights a ring (shape-rendering.md, Light rings). Here
@@ -431,6 +472,17 @@ cluster holding up to 64 lights whose sphere (the light's own reach and
 spread) reaches it, nearest first; at most 512 lights. A fragment loops over
 its cluster's lights with the same light shapes as the rings (lights.glsl,
 or the physical falloff). The cab's own lamps stay as they are.
+
+A cone light (headlights, searchlights, lamps shining down; one lamp, not
+an array) is kept out of the clusters its cone misses (2026-11-17): the
+cluster's bounding sphere against the cone from its apex (a spotlight's
+source radius moves the apex back to where its sides meet), its reach and
+the tangent of its half angle (Wronski, "Cull that cone!"). Before, its
+sphere was its whole reach round the lamp, so a headlight came into every
+cluster near the train and every pixel there tried it. At a night station
+with eight trains (56 lights) the main pass went from 5.8 to 3.6 ms
+(RTX 4070 Ti SUPER, 1440p, MSAA 4x), 110 to 159 fps; Novokuznetsk's works
+at night 7.9 to 4.9 ms. The pictures are the same (at most 1/255 apart).
 
 Two settings widen what lights the scene:
 - «Дальность света» (`light_range`, `--light-range <m>`): scenery lamps
@@ -621,8 +673,8 @@ The frames are the same. The GPU still runs the passes one after another
 (WebGPU has one queue): only the CPU side is shortened.
 
 Then (2026-11-02):
-- **Far cascades kept** («Кэш дальних каскадов», `shadow_cache`,
-  `--shadow-cache on|off`, on): the last two cascades of 3 or 4 (the last of
+- **Far cascades kept** (until 2026-11-17, now the shadow cache above;
+  `shadow_cache`, `--shadow-cache on|off`): the last two cascades of 3 or 4 (the last of
   2) are drawn with a tenth more room and kept; each is drawn again every
   other frame (the two alternating), and at once when its map no longer
   covers this frame's slice, the sun moved or the map was made again.
@@ -785,7 +837,14 @@ separate depth array, half the cascades' size, at least 1024):
   is left out, it would need six maps);
 - a parallel (box) lamp: orthographic along its axis over the sphere.
 Drawn in depth slots 6..13 (both renderers now have 14) with the shadow
-casters, out of view ones within 80 m too. In the lamp loops of the model
+casters, out of view ones within 80 m too. A map is drawn every other frame
+(the slots alternating, 2026-11-17), at once for a lamp new in its slot or
+when its lamp or the sphere moved a metre (a twentieth of the sphere) or
+more; between, the shaders take the matrix it was drawn with, as the far
+sun cascades do: a frame's lag of the shadows of things moving. At the
+night station with five shadowed lamps: their passes 1.0 to 0.5 ms of the
+GPU, their recording on the workers 2.6 to 0.8 ms; a standing picture is
+the same. In the lamp loops of the model
 and terrain shaders a lamp in that list is multiplied by
 `effects_lamp_shadow` (8 filtered compares; outside its map: lit). The
 shadow fades out over the last 6 % towards a map's edge and, in flight,

@@ -350,9 +350,13 @@ built, against the proposal below:
     ЭПТ's steps have to be learnt anew (testers, 2026-11-17); it lets out
     through the
     release valve: 305-000 (coaches, 1.3 mm) from 3.5–4 atm to 0.4 in
-    8–10 s, 305-001 (multiple units, 2.0 mm) in 3.5–4.5 s, taken as the
-    gauge pressure falling with a time constant of 4.15 s / 1.84 s (at
-    least 0.05 atm/s). Its relay keeps the ТЦ at the РК, fed from the ЗР;
+    8–10 s, 305-001 (multiple units, 2.0 mm) in 3.5–4.5 s, taken as an
+    orifice: above 0.89 atm the flow is choked and the absolute pressure
+    falls with a time constant of 7.54 s / 3.34 s, below it goes as the root
+    of the overpressure, so the РК reaches the air (305-001 from 4 atm in
+    about 6 s, 305-000 in about 14 s). Until 2026-11-17 the gauge pressure
+    fell with 4.15 s / 1.84 s (at least 0.05 atm/s), and the 305-001 took
+    some 9 s to 0 (testers). Its relay keeps the ТЦ at the РК, fed from the ЗР;
   - the 292 behind it answers the pipe all the same and the switching valve
     keeps the higher side; the ТЦ on the 292's side lets out at its plug's
     rate, on the 305's at the 305's whatever the plug;
@@ -599,7 +603,10 @@ built, against the proposal below:
   when above 100, else cubic feet: the install has 1 .. 84 ft³ and 175 ..
   2020 l; at a border of 50 the ВЛ80Т's 66 ft³ read as 66 l and its
   compressors cycled every few seconds) and a КТ-6 compressor
-  (0.088 m³·atm/s).
+  (0.088 m³·atm/s), or the delivery `ORTSCompressorCapacity ( m³ of free
+  air a minute )` gives (the .eng, a companion, the stock rules: the
+  multiple units' 0.37, an ЭД4М's head car 7 to 8 atm in 55 s, testers
+  2026-11-17; before, a КТ-6 everywhere took it there in 4 s).
   Its governor is the .eng's: `AirBrakesCompressorRestartPressure` cut-in,
   `AirBrakesMainMaxAirPressure` cut-out (psi unless the value names bar,
   kPa or inHg); 7.5 / 9.0 atm when not given or not sensible. A new

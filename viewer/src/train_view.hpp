@@ -201,7 +201,11 @@ public:
     // car type's distributor in a mod there.
     void set_install_root(std::filesystem::path root) { install_root_ = std::move(root); }
     // Every train made from now on runs the realistic air (--realistic-air).
-    void set_realistic_air(bool on) noexcept { realistic_air_ = on; }
+    // --realistic-air: for this run, over the remembered choice.
+    void set_realistic_air(bool on) noexcept {
+        realistic_air_ = on;
+        realistic_air_loaded_ = true;
+    }
     // Switch `id` of the player's cab to `state` (--capture-switch).
     void set_cab_switch(std::uint32_t id, std::uint32_t state) {
         if (legacy_) legacy_->set_switch(id, state);
@@ -1236,6 +1240,12 @@ private:
     // The car menu's distributor for car `car`'s type: kept in the edits mod
     // (formats::wagon_override_path) and given to every car of that type now.
     void choose_distributor(const Car& car, formats::BrakeDistributor distributor);
+    // The car menu's "on every car of the train": car `car`'s distributor
+    // for every car type of `unit` but the locomotives', kept the same way.
+    void choose_distributor_for_train(const Unit& unit, const Car& car);
+    // Writes the companion of `car`'s type and gives it to its cars; how many
+    // cars took it; `listed` when the mod was added to openrts.ini.
+    std::size_t keep_distributor(const Car& car, formats::BrakeDistributor distributor, bool& listed, std::string& error);
     glm::vec3 look_{0.0f, 0.0f, 1.0f}; // the camera's direction, for the cab labels
     // Outside he collides with the world's objects and stands on them
     // (platforms, ballast, bridges), or only with the ground and the trains.
@@ -1275,7 +1285,11 @@ private:
     std::uint32_t flat_random_ = 0x9E3779B9u;
     [[nodiscard]] float flat_uniform(float low, float high);
     int substeps_ = 1;
-    bool realistic_air_ = false; // openRTS realistic air for every train (BrakeModel::realistic)
+    // openRTS realistic air for every train (BrakeModel::realistic):
+    // remembered as realistic_air (the panel's checkbox, the launcher's),
+    // read at the first train; never by itself in a network game.
+    mutable bool realistic_air_ = false;
+    mutable bool realistic_air_loaded_ = false;
     // The RTS model with a distributor's stability (TrainSettings), remembered
     // as distributor_stability; read at the first train.
     mutable bool distributor_stability_ = false;

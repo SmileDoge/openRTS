@@ -324,6 +324,8 @@ The game can also be started directly:
 | `--no-sound`, `--volume 0..1` | no sound, volume |
 | `--msaa 1\|2\|4\|8`, `--no-vsync`, `--no-batching` | graphics settings |
 | `--fps-limit <30..500 \| 0>` | the FPS limit for this run (0: none), not remembered |
+| `--fps-background` | no 30 FPS cap in the background (for measurements beside other windows) |
+| `--fly-test <m/s> [deg/s]`, `--shadow-cache-check` | for checks: the free camera flies on and turns; the shadow cache compared with the cascades drawn whole, the differences logged |
 | `--multi-draw on\|off` | multi-draw indirect for models this run (on by default where the GPU has it) |
 | `--window-mode windowed\|borderless\|fullscreen` | the window for this run: in a window, borderless, full screen (else as in the settings) |
 | `--paused` | start paused (Pause resumes): nothing moves, not even a flashing signal; once the scene has loaded, captures repeat pixel for pixel |
@@ -478,6 +480,8 @@ RTS's DLLs.
   `docs/activities.md`, `docs/traffic.md`, `docs/sound.md`,
   `docs/electrification.md` — how the subsystems work;
 - `docs/train-dll.md` — the locomotive DLL bridge and the native plugin API;
+- `docs/dll-vs-real.md` — where the locomotive DLLs differ from real stock
+  (left as they are until openRTS's own systems) and what to tell a player;
 - `docs/experimental-effects.md` — the experimental renderer: what it does
   and what it costs;
 - `docs/profiling.md` — building with Tracy, what is marked, adding a zone;

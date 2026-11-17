@@ -1056,10 +1056,16 @@ public:
             }
 
             // Switch shapes follow their junction; other shapes stay at rest.
+            // Switch blades and crossing gates move: the sun's shadow cache
+            // draws them every frame.
             if (const auto blade = track_ ? track_->switch_frame(instance) : std::nullopt) {
+                renderer.set_moving(true);
                 renderer.submit(*model, instance.transform, *blade);
+                renderer.set_moving(false);
             } else if (const auto gates = crossings_ ? crossings_->adjustments(instance, *library_) : std::nullopt) {
+                renderer.set_moving(true);
                 renderer.submit(*model, instance.transform, *gates);
+                renderer.set_moving(false);
             } else if (const auto hidden = signals_ ? signals_->hidden_parts(instance, *library_)
                                                     : std::vector<renderer::NodeAdjustment>{};
                        !hidden.empty()) {
@@ -1071,12 +1077,15 @@ public:
             renderer.set_owner(owner);
             ++drawn_instances_;
         }
+        // Trains and road traffic move (the sun's shadow cache).
+        renderer.set_moving(true);
         if (train_) {
             train_->submit(renderer, *library_,
                            {.frustum = culling_ ? &frustum : nullptr, .eye = frame.eye, .draw_distance = culling_ ? draw_distance : 0.0f,
                             .shadow_range = frame.shadow_range});
         }
         if (roads_ && effects_.traffic) roads_->submit(renderer, *library_, culling_ ? &frustum : nullptr, frame.eye, culling_ ? draw_distance : 0.0f);
+        renderer.set_moving(false);
         if (signals_) signals_->collect_lights(streamer_->visible_instances(), *library_, frame.eye, draw_distance, frame.view_zoom);
     }
 

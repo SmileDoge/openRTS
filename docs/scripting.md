@@ -91,12 +91,13 @@ mod's folder, a pack) sees every car as it loads (`formats::load_wagon`,
 |---|---|
 | `distributor` | `"483"`, `"292"`, `"305-000"`, `"305-001"` |
 | `compressor_on`, `compressor_off` | the governor's cut-in and cut-out, atm |
+| `compressor_capacity` | the compressor's delivery under the realistic air, m³ of free air a minute (a КТ-6's 5.3 when none; the multiple units' 0.37) |
 
 The script defines `car(c)`; `c` holds the car as read so far: `folder`,
 `file` (with its `.eng` / `.wag`), `name` (the file's Name), `engine` (an
 `.eng`), `type` (`"engine"`, `"passenger"`, `"freight"`, `"tender"`,
 `"other"`), `engine_type` (`"electric"`, `"diesel"`, `"steam"`), `ep` (the
-ЭПТ fitted), `mass` (t), and the three fields above as the file gives them
+ЭПТ fitted), `mass` (t), and the four fields above as the file gives them
 (nil when it does not). Scripts run in their names' order, each seeing what
 the one before set; one that fails is said once and left out.
 

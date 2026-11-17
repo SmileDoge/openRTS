@@ -312,6 +312,11 @@ struct Launcher::State {
     bool sound = true;
     float volume = 0.5f;
     bool vsync = true;
+    // The brakes, the game's Train window's too: the realistic air
+    // ("realistic_air") and the air of trains with locomotive DLLs
+    // ("dll_air": 0 RTS's, 1 the DLL's valve, 2 openRTS's valve).
+    bool realistic_air = false;
+    int dll_air = 0;
     // The graphics settings, the game's panel's too (graphics_settings.hpp):
     // each change written at once, only what changed.
     viewer::GraphicsSettings graphics;
@@ -458,6 +463,8 @@ struct Launcher::State {
         viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
         viewer::set_body_motion_model(viewer::parse_body_motion_model(remembered("body_motion").value_or("openrts").c_str()));
         vsync = remembered_int("launcher_vsync", 1) != 0;
+        realistic_air = remembered_int("realistic_air", 0) != 0;
+        dll_air = std::clamp(remembered_int("dll_air", 0), 0, 2);
         load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
@@ -1349,6 +1356,28 @@ void Launcher::State::draw_settings(const float height) {
                                                   : tr("(each body on its own springs over its bogies: the track's errors under each bogie, rail joints and switches, hunting, curves; bounce, pitch, sway, yaw and roll)"));
             ImGui::EndTable();
         }
+        // The brakes (the game's Train window has the same; both remembered):
+        // set once here, not in the game every run (testers, 2026-11-17).
+        ImGui::Spacing();
+        ImGui::SeparatorText(tr("Brakes"));
+        if (begin_form("##brakes_form", label_width)) {
+            form_row(tr("Realistic air (openRTS)"));
+            if (ImGui::Checkbox("##realistic_air", &realistic_air)) remember("realistic_air", realistic_air ? "1" : "0");
+            ImGui::TextDisabled("%s", realistic_air ? tr("(flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed; not in network games)")
+                                                    : tr("(off: RTS's model, as RTS brakes)"));
+            form_row(tr("Trains with DLLs"));
+            const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),
+                                   tr("openRTS valve over Brakes.dll (experimental)")};
+            ImGui::BeginDisabled(!realistic_air);
+            ImGui::SetNextItemWidth(330.0f);
+            if (ImGui::Combo("##dll_air", &dll_air, modes, 3)) remember("dll_air", std::to_string(dll_air));
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("%s", tr(!realistic_air ? "(works with the realistic air on)"
+                                         : dll_air == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
+                                         : dll_air == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
+                                                        : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
+            ImGui::EndTable();
+        }
     }
     ImGui::EndChild();
     ImGui::SameLine();
@@ -1639,9 +1668,9 @@ void Launcher::State::draw_graphics(const float height) {
             }
             group_row(tr("Shadow softness"), Load::none, Load::negligible);
             viewer::slider_with_input("##shadow_softness", &e.shadow_softness, 0.5f, 4.0f, "%.1f", "%.1f");
-            group_row(tr("Keep the far cascades"), Load::negligible, Load::negligible);
+            group_row(tr("Shadow cache (what stays still)"), Load::negligible, Load::negligible);
             ImGui::Checkbox("##shadow_cache", &e.cache_far_cascades);
-            row_note(tr("The far cascades are drawn every other frame, and at once when the view leaves them."));
+            row_note(tr("The terrain, trees and buildings are drawn into the sun's shadows once and kept, only the strips the view moves into again; trains, cars and moving parts every frame. Video memory: a map a cascade more (64 MB at 4096)."));
             group_row(tr("Sharp shadows in the cab"), Load::medium, Load::medium);
             ImGui::Checkbox("##shadow_cab", &e.cab_shadows);
             row_note(tr("A shadow map of its own around the cab: sharp edges on the desk, one more pass."));

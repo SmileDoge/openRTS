@@ -1358,10 +1358,10 @@ public:
                 if (slider_with_input(tr("Shadow softness"), &panel.effects.shadow_softness, 0.5f, 4.0f, "%.1f", "%.1f"))
                     remember("shadow_softness", std::to_string(panel.effects.shadow_softness));
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("How blurred shadow edges are, in shadow map texels."));
-                if (ImGui::Checkbox(tr("Keep the far cascades"), &panel.effects.cache_far_cascades))
+                if (ImGui::Checkbox(tr("Shadow cache (what stays still)"), &panel.effects.cache_far_cascades))
                     remember("shadow_cache", panel.effects.cache_far_cascades ? "1" : "0");
                 if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", tr("The far cascades are drawn every other frame, and at once when the view leaves them."));
+                    ImGui::SetTooltip("%s", tr("The terrain, trees and buildings are drawn into the sun's shadows once and kept, only the strips the view moves into again; trains, cars and moving parts every frame. Video memory: a map a cascade more (64 MB at 4096)."));
                 if (ImGui::Checkbox(tr("Sharp shadows in the cab"), &panel.effects.cab_shadows))
                     remember("shadow_cab", panel.effects.cab_shadows ? "1" : "0");
                 if (ImGui::IsItemHovered())
@@ -2652,6 +2652,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     renderer.set_batching(options.batching);
     // The experimental path's shadows, lamps, occlusion and haze.
     renderer::SceneEffects effects(device);
+    effects.set_shadow_cache_check(options.shadow_cache_check);
     // The sky's light from its probe (PBR stage 2).
     renderer::SkyLight sky_light(device);
     if (!sky_light.ready()) std::cerr << "The sky's light could not be made: the physically based light keeps the old sky light.\n";
@@ -2873,8 +2874,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // the start loads: the world streams in a step a frame.
         // In the background (another window in front, or minimised): at most
         // 30 frames/s; in front again, the setting.
-        const bool background = glfwGetWindowAttrib(window.get(), GLFW_FOCUSED) == GLFW_FALSE
-                                || glfwGetWindowAttrib(window.get(), GLFW_ICONIFIED) == GLFW_TRUE;
+        const bool background = !options.fps_background
+                                && (glfwGetWindowAttrib(window.get(), GLFW_FOCUSED) == GLFW_FALSE
+                                    || glfwGetWindowAttrib(window.get(), GLFW_ICONIFIED) == GLFW_TRUE);
         limiter.set(frame_limit(panel.fps_limit, !loading.done, background));
         limiter.wait();
         stage_clock.start();
@@ -3118,6 +3120,16 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
         }
         if (const auto view_camera = capture_view()) camera = *view_camera;
+        // --fly-test: the free camera flies on level at a speed and turns (a
+        // moving view without a driver: the shadow cache's check, benchmarks).
+        if (options.fly_speed > 0.0f && scene.loading().done) {
+            camera.fly = true;
+            const auto ahead = camera.forward();
+            const auto level = glm::length(glm::vec2{ahead.x, ahead.z}) > 1e-4f ? glm::normalize(glm::vec3{ahead.x, 0.0f, ahead.z})
+                                                                               : glm::vec3{0.0f, 0.0f, -1.0f};
+            camera.position += level * options.fly_speed * elapsed;
+            camera.yaw += glm::radians(options.fly_turn) * elapsed;
+        }
         if (sound) {
             sound->set_listener(camera.eye(), camera.forward());
             sound->update();
@@ -3210,10 +3222,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer.prepare();
         stage_clock.mark(FrameStage::prepare, stages);
         const renderer::SceneEffects::DepthDraw depth_draw = [&](const WGPURenderPassEncoder depth_pass, const std::uint32_t slot,
-                                                                  const glm::mat4& view_projection, const renderer::DepthPassKind kind) {
-            scene.draw_depth(depth_pass, slot, view_projection, kind);
+                                                                  const glm::mat4& view_projection, const renderer::DepthPassKind kind,
+                                                                  const renderer::DepthCasters casters) {
+            // The terrain stays where it is.
+            if (casters != renderer::DepthCasters::moving) scene.draw_depth(depth_pass, slot, view_projection, kind);
             renderer.render_depth(depth_pass, slot, view_projection, kind,
-                                  renderer::lamp_skips_own_model() ? effects.depth_slot_owner(slot) : 0u);
+                                  renderer::lamp_skips_own_model() ? effects.depth_slot_owner(slot) : 0u, casters);
         };
         scene.prepare_depth();
         // In parallel the workers record and finish a command buffer each
@@ -3225,6 +3239,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         } else {
             effects.record(encoder, depth_draw);
         }
+        effects.record_check(encoder);
         scene.before_main_pass(encoder, frame);
         stage_clock.mark(FrameStage::effects, stages);
         const auto pass =
@@ -3389,6 +3404,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (const auto timing = pass_timer.finish()) submitted.push_back(timing);
         const auto queue = wgpuDeviceGetQueue(device);
         wgpuQueueSubmit(queue, submitted.size(), submitted.data());
+        if (const auto report = effects.shadow_cache_check_report(context.context.instance()); !report.empty()) std::cout << report << std::flush;
         for (const auto buffer : submitted)
             if (buffer != commands) wgpuCommandBufferRelease(buffer);
         pass_timer.submitted();
@@ -3483,10 +3499,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                       << " instances, " << gpu.draw_calls << " draw calls in " << gpu.draw_commands << " commands (multi-draw "
                       << (renderer.multi_draw() ? "on" : "off") << "), " << gpu.primitives << " primitives; "
                       << effect_stats.cascades << " cascades (" << effect_stats.cascades_drawn << " drawn), "
-                      << effect_stats.lamp_shadows << " lamp shadows, " << effect_stats.lights << " lights; workers' passes (ms):";
+                      << effect_stats.lamp_shadows << " lamp shadows (" << effect_stats.lamp_shadows_drawn << " drawn), " << effect_stats.lights
+                      << " lights; workers' passes (ms):";
             for (std::uint32_t i = 0; i < effect_stats.cascades; ++i) std::cout << " cascade" << i << ' ' << effect_stats.record_cascade_ms[i];
             std::cout << " focus " << effect_stats.record_focus_ms << " lamps " << effect_stats.record_lamps_ms << " camera "
-                      << effect_stats.record_camera_ms << "; renderer "
+                      << effect_stats.record_camera_ms;
+            if (effect_stats.still_cache)
+                std::cout << ", shadow cache " << effect_stats.still_full << " whole " << effect_stats.still_pieces << " pieces "
+                          << effect_stats.still_share * 100.0f << " %";
+            std::cout << "; renderer "
                       << (renderer.shading_path() == renderer::ShadingPath::experimental ? "experimental" : "RTS") << std::endl;
             if (panel.gpu_timing)
                 std::cout << "perf gpu: frame " << panel.stats.gpu_frame_ms() << " ms; " << panel.stats.gpu_report() << std::endl;

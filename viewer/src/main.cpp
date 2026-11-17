@@ -404,6 +404,14 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.capture_board.push_back(static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str())));
         } else if (flags[i] == "--capture-passage" && has_value) {
             options.capture_passage = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--fps-background") {
+            options.fps_background = true;
+        } else if (flags[i] == "--shadow-cache-check") {
+            options.shadow_cache_check = true;
+        } else if (flags[i] == "--fly-test" && has_value) {
+            options.fly_speed = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+            if (i + 1 < flags.size() && !flags[i + 1].empty() && flags[i + 1][0] != '-')
+                options.fly_turn = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--fps-limit" && has_value) {
             options.fps_limit = openrts::viewer::clamp_fps_limit(std::atoi(std::string(flags[++i]).c_str()));
             fps_given = true;

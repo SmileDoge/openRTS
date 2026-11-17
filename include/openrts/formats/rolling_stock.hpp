@@ -247,6 +247,10 @@ struct EngineDefinition {
     // bar / kPa / inHg); 0: not given.
     float main_reservoir_max{};
     float compressor_restart{};
+    // openRTS: ORTSCompressorCapacity ( m³ of free air a minute ), the
+    // compressor's delivery under the realistic air; 0: a КТ-6's 5.3 (the
+    // stock rules give the multiple units' theirs).
+    float compressor_capacity{};
     float dynamic_brake_max_force{};
     std::uint32_t throttle_notches{};
     std::string library_module; // EngExtended LibraryModule (legacy DLL), relative to the .eng folder
@@ -380,6 +384,7 @@ struct WagonDefinition {
 struct WagonOverrides {
     std::optional<BrakeDistributor> distributor;
     std::optional<float> compressor_on, compressor_off; // atm
+    std::optional<float> compressor_capacity;           // m³ of free air a minute
 };
 // The car as parsed, its folder, its file (with the extension), an .eng.
 using WagonRules = std::function<WagonOverrides(const struct WagonDefinition& car, std::string_view folder, std::string_view file,

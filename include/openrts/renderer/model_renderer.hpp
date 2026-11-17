@@ -170,6 +170,11 @@ class TaskPool;
 // What a depth-only pass is for (SceneEffects): a shadow cascade, or the
 // camera's pre-pass.
 enum class DepthPassKind { shadow, camera };
+// Which casters a depth pass draws: all, those that stay where they are (the
+// world's objects, the terrain), or those that move (ModelRenderer::set_moving:
+// trains, road traffic, crossing gates, switch blades). The sun's shadow cache
+// keeps the still ones' depth between frames (SceneEffects).
+enum class DepthCasters : std::uint8_t { all, still, moving };
 
 struct ModelFrameContext {
     glm::mat4 view_projection{1.0f};
@@ -381,6 +386,10 @@ public:
     // but through it beyond its far cut, 8 + k only through it between its
     // cuts (left out of the shadow passes), 0 as always.
     void set_portal(std::int32_t code);
+    // Instances submitted from here on move (true) or stay (false, the
+    // default): trains, road traffic, crossing gates, switch blades. The
+    // sun's shadow cache redraws only those every frame.
+    void set_moving(bool moving) noexcept;
     // Records the frame's draws. `before_translucent` is called once in the
     // pass after the opaque and alpha-tested geometry and before the
     // translucent pass (glass), for helpers that must show through glass but
@@ -394,11 +403,15 @@ public:
     void prepare();
     // Depth only, for SceneEffects (the experimental path): every surface
     // that writes depth and is not blended, from `view_projection`, in depth
-    // slot `slot` (< 12); a shadow pass takes the casters out of view too.
-    // `skip_owner`: the instances tagged so are left out (a lamp's own model
-    // in its shadow map; 0 none).
+    // slot `slot` (< depth_slots); a shadow pass takes the casters out of
+    // view too. `skip_owner`: the instances tagged so are left out (a lamp's
+    // own model in its shadow map; 0 none). `casters`: all, the still ones or
+    // the moving ones (set_moving).
     void render_depth(WGPURenderPassEncoder pass, std::uint32_t slot, const glm::mat4& view_projection, DepthPassKind kind,
-                      std::uint32_t skip_owner = 0);
+                      std::uint32_t skip_owner = 0, DepthCasters casters = DepthCasters::all);
+    // Depth slots: the cascades, the camera, the focus, 8 lamps, the shadow
+    // cache's pieces (8 a cascade) and its check (a cascade each).
+    static constexpr std::uint32_t depth_slots = 50;
     // An instance out of view that casts a shadow into it: shadow passes only.
     void submit_shadow_caster(RenderModel& model, const ModelTransform& transform);
     // Group 2 of the experimental path (SceneEffects::bind_group); nullptr: a

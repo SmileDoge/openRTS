@@ -103,6 +103,7 @@ formats::WagonOverrides StockRules::apply(const formats::WagonDefinition& car, c
     std::string distributor = formats::brake_distributor_name(car.brakes.distributor);
     float on = car.engine ? car.engine->compressor_restart : 0.0f;
     float off = car.engine ? car.engine->main_reservoir_max : 0.0f;
+    float capacity = car.engine ? car.engine->compressor_capacity : 0.0f;
     const bool ep = (car.brakes.equipment & 4) || (car.brakes.system & 2);
     for (auto& s : impl_->scripts) {
         if (s.broken) continue;
@@ -134,6 +135,7 @@ formats::WagonOverrides StockRules::apply(const formats::WagonDefinition& car, c
         if (!distributor.empty()) text("distributor", distributor);
         if (on > 0.0f) number("compressor_on", on);
         if (off > 0.0f) number("compressor_off", off);
+        if (capacity > 0.0f) number("compressor_capacity", capacity);
         lua_pushvalue(t, -1);
         const int table = lua_ref(t, -1);
         lua_pop(t, 1);
@@ -171,6 +173,7 @@ formats::WagonOverrides StockRules::apply(const formats::WagonDefinition& car, c
         };
         read("compressor_on", on, out.compressor_on);
         read("compressor_off", off, out.compressor_off);
+        read("compressor_capacity", capacity, out.compressor_capacity);
         lua_pop(t, 1);
     }
     return out;

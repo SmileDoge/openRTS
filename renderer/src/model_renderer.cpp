@@ -1787,6 +1787,7 @@ struct ModelRenderer::Impl {
         bool transfer = false;
         std::uint32_t owner = 0; // set_owner
         std::int32_t portal = 0; // set_portal
+        bool moving = false;     // set_moving
         // First of this instance's animated local matrices in
         // `frame_locals`, or -1 for the model's rest pose.
         std::ptrdiff_t matrices = -1;
@@ -1855,6 +1856,7 @@ struct ModelRenderer::Impl {
         WGPUBindGroup binding = nullptr;
         bool alpha_test = false;
         bool shadow_only = false; // a caster out of view: shadow passes only
+        bool moving = false;      // its instances move (set_moving)
         // Its instances: depth_instances[first, first + count), culled per
         // depth pass (render_depth).
         std::uint32_t first = 0;
@@ -1878,7 +1880,8 @@ struct ModelRenderer::Impl {
     TaskPool* pool = nullptr;
 
     // Depth-only passes: a view-projection per slot (dynamic offset).
-    static constexpr std::uint32_t depth_slots = 14; // cascades, the focus, 8 lamps
+    static constexpr std::uint32_t depth_slots = ModelRenderer::depth_slots;
+    bool submit_moving = false; // set_moving
     static constexpr std::uint64_t depth_stride = 256;
     WGPUBindGroupLayout depth_layout = nullptr;
     WGPUBuffer depth_buffer = nullptr;
@@ -2843,6 +2846,11 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) 
         }
     }
     impl_->queue.push_back({.model = model.impl_.get(), .transform = transform, .level = level});
+    impl_->queue.back().moving = impl_->submit_moving;
+}
+
+void ModelRenderer::set_moving(const bool moving) noexcept {
+    if (impl_) impl_->submit_moving = moving;
 }
 
 namespace {
@@ -3046,7 +3054,8 @@ void ModelRenderer::prepare() {
                 const auto binding = draw.binding;
                 // By primitive, binding, alpha test and whether only the shadows take it.
                 const auto fresh = static_cast<std::uint32_t>(batches.size());
-                const auto group = scratch.table.find_or_add(&draw, binding, (alpha_test ? 1u : 0u) | (queued.shadow_only ? 2u : 0u), fresh);
+                const auto group = scratch.table.find_or_add(
+                    &draw, binding, (alpha_test ? 1u : 0u) | (queued.shadow_only ? 2u : 0u) | (queued.moving ? 4u : 0u), fresh);
                 if (group == fresh) {
                     Impl::DepthBatch head;
                     head.draw = &draw;
@@ -3054,6 +3063,7 @@ void ModelRenderer::prepare() {
                     head.binding = binding;
                     head.alpha_test = alpha_test;
                     head.shadow_only = queued.shadow_only;
+                    head.moving = queued.moving;
                     batches.push_back(head);
                 }
                 ++batches[group].count;
@@ -3460,7 +3470,7 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function
 }
 
 void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::uint32_t slot, const glm::mat4& view_projection,
-                                 const DepthPassKind kind, const std::uint32_t skip_owner) {
+                                 const DepthPassKind kind, const std::uint32_t skip_owner, const DepthCasters casters) {
     if (!ready() || slot >= Impl::depth_slots) return;
     prepare();
     OPENRTS_ZONE("models: depth pass");
@@ -3500,6 +3510,7 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
     ids.reserve(impl.depth_id_total);
     for (const auto& batch : impl.depth_batches) {
         if (batch.shadow_only && !shadow) continue;
+        if ((casters == DepthCasters::still && batch.moving) || (casters == DepthCasters::moving && !batch.moving)) continue;
         // The camera's pass: the instances without a portal, then those with one.
         for (int with_portal = 0; with_portal < (shadow ? 1 : 2); ++with_portal) {
             const auto first = ids.size();
@@ -3520,6 +3531,30 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
         }
     }
     if (runs.empty()) return;
+    if (shadow) {
+        // Shadow maps (2026-11-17): the opaque casters first, then the
+        // alpha-tested ones (trees, fences), and in each batch the nearest
+        // to the light first. The depth so far then holds back the
+        // fragments behind it before their shader runs; the alpha test's
+        // discard costs a frame's sun shadows most (Ultra, 2ЭС6's cab by
+        // day: 1.2 of 1.9 ms). The map holds the same depths.
+        std::stable_partition(runs.begin(), runs.end(), [](const Run& run) { return !run.batch->alpha_test; });
+        const glm::vec4 along{view_projection[0][2], view_projection[1][2], view_projection[2][2], view_projection[3][2]};
+        const glm::vec4 w_row{view_projection[0][3], view_projection[1][3], view_projection[2][3], view_projection[3][3]};
+        const auto depth_of = [&](const IdEntry& entry) {
+            const glm::vec4 centre{glm::vec3{impl.instance_spheres[entry.instance]}, 1.0f};
+            return glm::dot(along, centre) / (std::max)(glm::dot(w_row, centre), 1e-4f);
+        };
+        std::vector<std::pair<float, IdEntry>> keyed;
+        for (const auto& run : runs) {
+            if (run.count < 2) continue;
+            const auto begin = ids.begin() + static_cast<std::ptrdiff_t>(run.first - base);
+            keyed.clear();
+            for (auto it = begin; it != begin + run.count; ++it) keyed.push_back({depth_of(*it), *it});
+            std::sort(keyed.begin(), keyed.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (std::size_t k = 0; k < keyed.size(); ++k) begin[static_cast<std::ptrdiff_t>(k)] = keyed[k].second;
+        }
+    }
     // The slot's indirect arguments, a region of its own (the passes may be
     // recorded on several threads at once).
     const bool multi = impl.use_multi_draw() && runs.size() <= 2 * impl.depth_batches.size();

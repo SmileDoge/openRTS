@@ -1425,13 +1425,15 @@ Train ( TrainCfg ( "c"
               "the rules: an ЭД4М's car with the ЭПТ gets the 305-001 (" + emu.error + ")");
         check(emu.engine && near(emu.engine->compressor_restart, 6.5, 1e-4) && near(emu.engine->main_reservoir_max, 8.0, 1e-4),
               "the rules: an ЭД4М's governor 6.5-8.0 over the file's 130 / 105 psi");
+        check(emu.engine && near(emu.engine->compressor_capacity, 0.37, 1e-4), "the rules: an ЭД4М's compressor 0.37 m³/min");
         check(rules->take_messages().find("zz_broken.luau") != std::string::npos, "a broken script is said");
         const auto chosen = formats::load_wagon(vfs, "mdd_ED4M-0001", "mdd_ED4M-0001_M", true, rules->hook());
         check(chosen.brakes.distributor == formats::BrakeDistributor::vr292 && chosen.brakes.distributor_in_companion &&
                   chosen.brakes.default_distributor == formats::BrakeDistributor::evr305_001,
               "a companion's distributor wins over the rules");
         const auto loco = formats::load_wagon(vfs, "vl80", "vl80", true, rules->hook());
-        check(loco.brakes.distributor == formats::BrakeDistributor::inferred && loco.engine && near(loco.engine->main_reservoir_max, 8.85, 0.01),
+        check(loco.brakes.distributor == formats::BrakeDistributor::inferred && loco.engine && near(loco.engine->main_reservoir_max, 8.85, 0.01)
+                  && loco.engine->compressor_capacity == 0.0f,
               "the rules leave a ВЛ80 as its file gives it");
         std::filesystem::remove_all(work);
     }

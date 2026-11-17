@@ -141,6 +141,7 @@ struct SceneEffectStats {
     float daylight = 0.0f;    // 0 night .. 1 full day, for the lamps
     float lamp_strength = 1.0f; // the lamps' strength this frame
     std::uint32_t lamp_shadows = 0; // lamps throwing shadows this frame
+    std::uint32_t lamp_shadows_drawn = 0; // of them, maps drawn this frame (the rest kept)
     std::uint32_t lamps_lighting = 0; // lamps lighting the place they are for (the ones chosen from)
     float lamp_radius = 0.0f;         // that place's radius (m)
     // The workers' passes (record_parallel) of the last frame, each from its
@@ -151,6 +152,12 @@ struct SceneEffectStats {
     float record_focus_ms = 0.0f;
     float record_lamps_ms = 0.0f;
     float record_camera_ms = 0.0f;
+    // The sun's shadow cache this frame: on, the cascades drawn whole into
+    // it, its pieces drawn, and the share of the cascades' texels they cover.
+    bool still_cache = false;
+    std::uint32_t still_full = 0;
+    std::uint32_t still_pieces = 0;
+    float still_share = 0.0f;
 };
 
 // The bind group layout of the effects (group 2), for pipelines that read them.
@@ -189,8 +196,10 @@ public:
     // Records the passes before the main pass: each shadow cascade and the
     // camera's depth pre-pass through `draw` (which draws every depth-writing
     // surface for that pass), then GTAO and the light clusters.
+    // `casters`: all of them, or (the sun's shadow cache) the still ones or
+    // the moving ones (ModelRenderer::set_moving; the terrain is still).
     using DepthDraw = std::function<void(WGPURenderPassEncoder pass, std::uint32_t slot, const glm::mat4& view_projection,
-                                         DepthPassKind kind)>;
+                                         DepthPassKind kind, DepthCasters casters)>;
     void record(WGPUCommandEncoder encoder, const DepthDraw& draw);
     // The same on `pool`'s threads: each shadow cascade, and the depth
     // pre-pass with GTAO and the clusters, into command buffers of their own
@@ -213,6 +222,16 @@ public:
     // shadow of, 0 for the other slots: its own model is left out.
     [[nodiscard]] std::uint32_t depth_slot_owner(std::uint32_t slot) const noexcept;
     [[nodiscard]] SceneEffectStats stats() const noexcept;
+    // The sun's shadow cache checked (--shadow-cache-check): every cascade
+    // also drawn whole into a scratch array each frame, and the texels that
+    // differ from the cached one counted on the GPU.
+    void set_shadow_cache_check(bool on);
+    // After record() / record_parallel(), in the frame's main encoder (after
+    // the workers' buffers): the comparison.
+    void record_check(WGPUCommandEncoder encoder);
+    // After the frame's submit: every 120 frames a line of the counts (read
+    // back, waiting for the GPU), else empty.
+    [[nodiscard]] std::string shadow_cache_check_report(WGPUInstance instance);
 
 private:
     struct Impl;

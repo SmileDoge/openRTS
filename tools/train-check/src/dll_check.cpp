@@ -269,10 +269,16 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         names.clear();
         for (const auto& e : entries) names.push_back(e.name);
     } else {
+        // A name "<folder>/<name>" takes its car from another folder (a
+        // locomotive with the cars of a passenger train).
         for (auto name : names) {
             const bool flipped = !name.empty() && name.back() == '!';
             if (flipped) name.pop_back();
-            entries.push_back({folder, name, flipped});
+            if (const auto slash = name.find('/'); slash != std::string::npos) {
+                entries.push_back({name.substr(0, slash), name.substr(slash + 1), flipped});
+            } else {
+                entries.push_back({folder, name, flipped});
+            }
         }
     }
 
@@ -290,7 +296,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         }
         auto def = std::make_unique<formats::WagonDefinition>(formats::load_wagon(vfs, entry.folder, name, engine, simulation::StockRules::of(vfs)));
         if (!def->ok()) {
-            std::fprintf(stderr, "%s/%s: %s\n", folder.c_str(), name.c_str(), def->error.c_str());
+            std::fprintf(stderr, "%s/%s: %s\n", entry.folder.c_str(), name.c_str(), def->error.c_str());
             return 2;
         }
         setups.push_back({def.get(), flipped, 0.0f});
