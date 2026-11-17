@@ -281,9 +281,13 @@ public:
     // the state variable `name` of activity_WagonStateVariables (BrakeCylinder,
     // Auxiliary, PipePressure, MainReservoir, IndependentBrake, Handbrake,
     // Velocity, Acceleration in kgf/cm2, %, m/s; SMSStream of its CABIN or
-    // WAGON sound).
+    // WAGON sound; Panto, LocoState and CABIN Switch from its DLL;
+    // PlayerInArea, PlayerInChair).
     [[nodiscard]] std::optional<double> activity_car_value(ActivityId train, std::int32_t number, bool by_id, std::string_view area,
                                                            std::string_view name, int idx, int sub) const;
+    // ReachReversePoint: the reverse points of its path the train has
+    // reached (the legs it finished); nullopt without a path.
+    [[nodiscard]] std::optional<std::size_t> activity_reverse_points(ActivityId train) const;
     // SendSoundTrigger: the scenario's sound object `object`, or (-1) the
     // sounds of car `number` of `train`.
     void activity_sound_trigger(std::int32_t object, std::uint32_t code, ActivityId train, std::int32_t number);
@@ -302,6 +306,32 @@ public:
     void activity_block_point(std::uint32_t service, std::int32_t point, bool enabled, double distance);
     void activity_modify_velocity(ActivityId train, float speed, float acceleration, float deceleration);
     void activity_wait_here(ActivityId train, double time);
+    // The cars of a scenario's train now (0: none in play).
+    [[nodiscard]] std::size_t activity_car_count(ActivityId train) const;
+    // UncoupleCars: a scenario's train cut in two since the last call: the
+    // id it had, its head and tail parts' cars, the cut's cars (the train
+    // they started in, their UiDs).
+    struct ActivityCut {
+        ActivityId train{};
+        std::size_t head{}, tail{};
+        std::vector<std::pair<ActivityId, std::uint32_t>> cut;
+    };
+    [[nodiscard]] std::vector<ActivityCut> take_activity_cuts() { return std::exchange(activity_cuts_, {}); }
+    // SetDefaultUncouple: a cut from `train` becomes `new_id` (standing:
+    // NewType STATIC); the part with `main` (its starting train, UiD) keeps
+    // the train's id.
+    struct UncoupleRule {
+        std::optional<ActivityId> new_id;
+        bool standing = false;
+        std::optional<std::pair<ActivityId, std::uint32_t>> main;
+    };
+    void activity_default_uncouple(ActivityId train, UncoupleRule rule) { uncouple_rules_[train] = std::move(rule); }
+    // ChangeServiceStartupType: the service's trains not started yet wait
+    // (NONE, `starts` false) or start at their times.
+    void activity_service_startup(std::uint32_t service, bool starts);
+    // SetSpeedLimit: the train's limit, m/s (not positive: none); the
+    // driven train's DLL and the speed panel see it, traffic keeps under it.
+    void activity_speed_limit(ActivityId train, float limit);
     // Situations: the trains on the route as they stand (roles, where each
     // front is, the cars in order), <situation_folder>/<name>.situation.
     [[nodiscard]] std::filesystem::path situation_folder() const;
@@ -693,6 +723,8 @@ private:
     std::vector<std::vector<std::uint32_t>> host_keys_; // each host train's car keys at the last reconsist
     // What car `i` of unit `u` gets from its DLL (none: not in the host).
     [[nodiscard]] const dllhost::CarOutput* dll_output(std::size_t u, std::size_t i) const;
+    // The track's limit for a unit, its scenario's SetSpeedLimit under it.
+    [[nodiscard]] simulation::SpeedLimit limit_of(const Unit& unit) const;
     [[nodiscard]] bool dll_car(std::size_t u, std::size_t i) const;
     [[nodiscard]] const std::array<float, 8>* dll_sound_variables(std::size_t u, std::size_t i) const;
     // The driven unit is one the host already runs (a part cut off): the
@@ -768,6 +800,10 @@ private:
     std::vector<std::future<renderer::StreamedModelAsset>> freight_loading_;
     std::shared_ptr<const formats::Activity> pending_activity_;
     std::vector<std::pair<ActivityId, ActivityId>> activity_couplings_; // take_activity_couplings
+    std::vector<ActivityCut> activity_cuts_;                             // take_activity_cuts
+    std::map<ActivityId, UncoupleRule> uncouple_rules_;                  // SetDefaultUncouple
+    std::set<std::uint32_t> services_held_;                              // ChangeServiceStartupType NONE
+    std::map<ActivityId, float> activity_speed_limits_;                  // SetSpeedLimit, m/s
     core::VirtualPath pending_activity_folder_;
     std::optional<core::VirtualPath> activity_folder_;
     std::vector<formats::TrainPath> activity_paths_;

@@ -7,6 +7,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -32,6 +33,23 @@ struct ActivityCarRef {
     ActivityTrainId train{};
     std::int32_t number = 0;
     bool by_id = false;
+};
+
+// A scenario's train cut in two (UncoupleCars): the id it had (the part
+// that keeps it), the cars of its head and tail parts, the IDs of the cars
+// of the part that went (the cut).
+struct ActivityUncoupling {
+    ActivityTrainId train{};
+    std::size_t head{}, tail{};
+    std::vector<ActivityCarRef> cut;
+};
+
+// SetDefaultUncouple: what a cut from the train becomes (its NewID and
+// NewType); MainWagon, the car that always stays in the train's own part.
+struct ActivityUncoupleRule {
+    std::optional<ActivityTrainId> new_id;
+    std::string new_type; // STATIC, TRAFFIC, ... as written (empty: as it was)
+    std::optional<ActivityCarRef> main_wagon;
 };
 
 // The world a scenario's events look at and act on: the trains by their
@@ -64,6 +82,22 @@ public:
     // ModifyWagons: a WagonGroup on the train's cars (RTS 0x4FA374): chocks,
     // hoses and end cocks at the group's ends, handbrakes on its cars.
     virtual void modify_wagons(ActivityTrainId train, const formats::ActivityWagonGroup& group) = 0;
+    // ReachReversePoint: the reverse points of its path the train has
+    // reached; nullopt without a path.
+    [[nodiscard]] virtual std::optional<std::size_t> reverse_points_reached(ActivityTrainId /*train*/) const { return std::nullopt; }
+    // The cars of the train now (a WagonState without WagonNum / WagonID
+    // looks at each of them).
+    [[nodiscard]] virtual std::size_t car_count(ActivityTrainId /*train*/) const { return 1; }
+    // The scenario's trains cut since the last call (UncoupleCars).
+    [[nodiscard]] virtual std::vector<ActivityUncoupling> take_uncouplings() { return {}; }
+    // SetDefaultUncouple: the ids of the cuts from `train` from now on.
+    virtual void set_default_uncouple(ActivityTrainId /*train*/, const ActivityUncoupleRule& /*rule*/) {}
+    // ChangeServiceStartupType: a service's trains not started yet start at
+    // their times (`starts`) or not at all (NONE).
+    virtual void set_service_startup(std::uint32_t /*service*/, bool /*starts*/) {}
+    // SetSpeedLimit: the train's speed limit (m/s) till another; not
+    // positive: none.
+    virtual void set_speed_limit(ActivityTrainId /*train*/, float /*limit*/) {}
     // Traffic (docs/traffic.md). The trains that came into play since the
     // last call (a traffic train started at its time: OnStart).
     [[nodiscard]] virtual std::vector<ActivityTrainId> take_started() { return {}; }
@@ -143,7 +177,15 @@ private:
         std::int32_t level = 1;  // ActivationLevel: armed above 0
         double armed_at{};       // the time it was enabled (ActivateByTimer)
         bool held = false;       // its condition held last time (a Permanent one fires as it comes true)
-        std::map<std::size_t, double> last; // WagonState: each relation's last value (the dynamic ones)
+        bool level_changed = false; // its level changed since the last look (OnActivationLevel)
+        // WagonState: each relation's last value (the dynamic ones), by car
+        // (by_id, the train, the number) and the relation.
+        std::map<std::tuple<bool, std::uint32_t, std::uint32_t, std::int32_t, std::size_t>, double> last;
+    };
+    // StartWagonStateTracking / CheckWagonState: the cars looked at (its
+    // WagonRange or WagonList), none given: every car of the train.
+    struct CarSet {
+        std::optional<std::vector<ActivityCarRef>> cars;
     };
     struct Script {
         const formats::ActivityEvent* event = nullptr;
@@ -168,7 +210,11 @@ private:
     bool run_outcome(Script& script, const formats::ActivityNode& outcome, ActivityWorld& world);
     void say(const formats::ActivityNode& outcome);
     // The events of the trains whose state CheckWagonState looks at now.
-    void check_wagons(ActivityTrainId train, ActivityWorld& world);
+    void check_wagons(ActivityTrainId train, const CarSet& cars, ActivityWorld& world);
+    // The cars a WagonRange / WagonList under `node` names in `train`.
+    [[nodiscard]] static CarSet car_set(const formats::ActivityNode& node, ActivityTrainId train);
+    // The cars a WagonState without WagonNum / WagonID looks at.
+    [[nodiscard]] std::vector<ActivityCarRef> cars_of(ActivityTrainId train, bool check_once, ActivityWorld& world) const;
 
     std::shared_ptr<const formats::Activity> activity_;
     bool started_ = false;
@@ -176,7 +222,9 @@ private:
     std::vector<EventState> events_;
     std::vector<Script> scripts_;
     std::set<std::uint32_t> services_;      // services with a train in play
-    std::set<ActivityTrainId> tracked_;     // StartWagonStateTracking
+    std::map<ActivityTrainId, CarSet> tracked_; // StartWagonStateTracking
+    const CarSet* checking_ = nullptr;          // CheckWagonState's cars while it looks
+    std::vector<ActivityUncoupling> uncouplings_; // this update's (UncoupleCars)
     ActivityTrainId player_{};               // the player's train
     std::int32_t main_menu_ = -1;
     std::vector<std::pair<std::int32_t, std::int32_t>> choices_;      // menu items picked, for the next update

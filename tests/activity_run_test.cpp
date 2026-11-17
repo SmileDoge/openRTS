@@ -54,6 +54,19 @@ struct FakeWorld final : viewer::ActivityWorld {
         bool enabled = false;
     };
     std::vector<Block> blocks; // ReleaseBlockPoint / EnableBlockPoint
+    std::optional<std::size_t> reversed; // the reverse points the player's train reached
+    std::size_t cars = 1;                         // the cars of every train (WagonState without WagonNum)
+    std::map<std::int32_t, double> drags;         // the chocks by car number (Drag)
+    std::vector<viewer::ActivityUncoupling> cuts; // to come (UncoupleCars)
+    std::optional<viewer::ActivityUncoupleRule> rule;
+    std::vector<std::pair<std::uint32_t, bool>> startups;
+    std::vector<float> limits;
+    [[nodiscard]] std::size_t car_count(ActivityTrainId) const override { return cars; }
+    [[nodiscard]] std::vector<viewer::ActivityUncoupling> take_uncouplings() override { return std::exchange(cuts, {}); }
+    void set_default_uncouple(ActivityTrainId, const viewer::ActivityUncoupleRule& r) override { rule = r; }
+    void set_service_startup(const std::uint32_t service, const bool starts) override { startups.emplace_back(service, starts); }
+    void set_speed_limit(ActivityTrainId, const float limit) override { limits.push_back(limit); }
+    [[nodiscard]] std::optional<std::size_t> reverse_points_reached(ActivityTrainId) const override { return reversed; }
     [[nodiscard]] bool released(const std::uint32_t service, const std::int32_t point) const {
         return std::any_of(blocks.begin(), blocks.end(), [&](const Block& b) { return b.service == service && b.point == point && !b.enabled; });
     }
@@ -76,6 +89,10 @@ struct FakeWorld final : viewer::ActivityWorld {
         if (name == "BrakeCylinder" && (car.number == 74 || all_cylinders)) return cylinder;
         if (name == "Velocity") return speed;
         if (name == "SMSStream") return radio;
+        if (name == "Drag") {
+            const auto d = drags.find(car.number);
+            return d == drags.end() ? 0.0 : d->second;
+        }
         return std::nullopt;
     }
     void sound_trigger(const std::int32_t object, const std::uint32_t code, const viewer::ActivityCarRef&) override {
@@ -169,6 +186,100 @@ Services ( Service ( ID ( 1 ) Name ( "Me" ) Type ( PLAYER ) Path ( A 1 ) Service
 )";
 
 std::size_t journal_count(const ActivityView& view, const std::string& text);
+
+// The timers as RTS's activities write them: Time ( ... ) inside.
+constexpr const char* timers = R"(SIMISA@@@@@@@@@@JINX0a1t______
+Tr_Activity_Header ( RouteID ( R ) Name ( "Timers" ) ActivityStarts ( 10:00:00 ) )
+GlobalEvents ( 4
+	ServiceEvent ( ID ( 1 ) Enabled ( 1 ) Action ( ActivateByTimer ( Time ( 5.0 ) ) ) Outcome ( PostMessage ( Text ( "five" ) ) EnableEvent ( -1 2 ) ) )
+	ServiceEvent ( ID ( 4 ) Enabled ( 1 ) Action ( ReachReversePoint ( PointID ( 1 ) ) ) Outcome ( PostMessage ( Text ( "reversed" ) ) ) )
+	ServiceEvent ( ID ( 2 ) Enabled ( 0 ) Action ( ActivateByTimer ( Time ( 3.0 ) ) ) Outcome ( PostMessage ( Text ( "three more" ) ) ) )
+	ServiceEvent ( ID ( 3 ) Enabled ( 1 ) Action ( ActivateOnTime ( Time ( 10:00:12 ) ) ) Outcome ( PostMessage ( Text ( "on time" ) ) ) )
+)
+Services ( Service ( ID ( 1 ) Name ( "Me" ) Type ( PLAYER ) Path ( A 1 ) ServiceTrains ( 1 Train ( ID ( 1 ) Consist ( A 1 ) TrainStartTime ( 10:00:00 ) ) ) ) )
+)";
+
+void test_timers() {
+    auto activity = std::make_shared<const formats::Activity>(formats::parse_activity(timers));
+    check(activity->ok() && activity->global_events.size() == 4, "the timers read");
+    ActivityView view(activity);
+    FakeWorld world;
+    double clock = 10 * 3600;
+    view.start(clock, world);
+    run(view, world, clock, 4.0, false);
+    check(journal_count(view, "five") == 0, "ActivateByTimer ( Time ( 5 ) ) waits 5 s");
+    run(view, world, clock, 1.5, false);
+    check(journal_count(view, "five") == 1, "ActivateByTimer ( Time ( 5 ) ) fires after 5 s");
+    run(view, world, clock, 2.0, false);
+    check(journal_count(view, "three more") == 0, "a timer counts from its EnableEvent");
+    run(view, world, clock, 1.5, false);
+    check(journal_count(view, "three more") == 1, "a timer fires its time after its EnableEvent");
+    check(journal_count(view, "on time") == 0, "ActivateOnTime ( Time ( 10:00:12 ) ) waits for the time");
+    run(view, world, clock, 4.0, false);
+    check(journal_count(view, "on time") == 1, "ActivateOnTime ( Time ( 10:00:12 ) ) fires at the time");
+    world.reversed = 1;
+    run(view, world, clock, 0.5, false);
+    check(journal_count(view, "reversed") == 0, "ReachReversePoint ( PointID ( 1 ) ): not at the first reverse point");
+    world.reversed = 2;
+    run(view, world, clock, 0.5, false);
+    check(journal_count(view, "reversed") == 1, "ReachReversePoint ( PointID ( 1 ) ): at the second");
+}
+
+// The Pavlovsk exam's engine: failures by OnActivationLevel, the stop
+// (ReachVelocity), the cut (SetDefaultUncouple, UncoupleCars), a WagonState
+// on each car, SetSpeedLimit, ChangeServiceStartupType.
+constexpr const char* exam = R"(SIMISA@@@@@@@@@@JINX0a1t______
+Tr_Activity_Header ( RouteID ( R ) Name ( "Exam" ) ActivityStarts ( 10:00:00 ) )
+GlobalEvents ( 2
+	ServiceEvent ( ID ( 3 ) ActivationLevel ( 0 ) Enabled ( 1 ) Permanent ( 1 ) Action ( OnActivationLevel ( WhenAbove ( 0 ) ) )
+		Outcome ( PostMessage ( Text ( "chocks left" ) ) SetActivationLevel ( -1 12 1 ) ) )
+	ServiceEvent ( ID ( 12 ) ActivationLevel ( 0 ) Enabled ( 1 ) Action ( OnActivationLevel ( WhenAbove ( 0 ) ) ) Outcome ( ActivityFailed (  ) ) )
+)
+Services ( Service ( ID ( 1 ) Name ( "Me" ) Type ( PLAYER ) Path ( A 1 ) ServiceTrains ( 1 Train ( ID ( 1 ) Consist ( A 1 ) TrainStartTime ( 10:00:00 ) ) )
+	ServiceEvents ( 4
+		ServiceEvent ( ID ( 0 ) Enabled ( 1 ) Action ( OnStart (  ) )
+			Outcome ( StartWagonStateTracking ( Enable ( 1 ) TrainID ( 1 1 ) ) SetSpeedLimit ( 11.9 ) ChangeServiceStartupType ( NewStartupType ( NONE ) TrainID ( 6 -1 ) ) ) )
+		ServiceEvent ( ID ( 1 ) Enabled ( 1 ) Action ( WagonState ( All (  ) AboveOrEqual ( WAGON Velocity 0 -1 0.5 ) Above ( WAGON Drag 0 -1 0 ) ) )
+			Outcome ( SetActivationLevel ( -1 3 1 ) ) )
+		ServiceEvent ( ID ( 2 ) Enabled ( 1 ) Action ( ReachVelocity ( SpeedNotAbove ( 0.0 ) ) )
+			Outcome ( PostMessage ( Text ( "stopped" ) ) SetDefaultUncouple ( NewID ( 2 1 ) NewType ( STATIC ) MainWagon ( 0001-0001-0000 ) ) EnableEvent ( 1 3 ) ) )
+		ServiceEvent ( ID ( 3 ) Enabled ( 0 ) Action ( UncoupleCars ( WagonRange ( 2 0 ) ) ) Outcome ( PostMessage ( Text ( "cut" ) ) ) )
+	) ) )
+)";
+
+void test_exam() {
+    auto activity = std::make_shared<const formats::Activity>(formats::parse_activity(exam));
+    check(activity->ok() && activity->global_events.size() == 2, "the exam reads");
+    ActivityView view(activity);
+    FakeWorld world;
+    world.cars = 3;
+    world.speed = 3.0;
+    double clock = 10 * 3600;
+    view.start(clock, world);
+    run(view, world, clock, 0.5, false);
+    check(world.limits.size() == 1 && std::abs(world.limits[0] - 11.9f) < 1e-4f, "SetSpeedLimit ( 11.9 ) to the world");
+    check(world.startups.size() == 1 && world.startups[0] == std::pair<std::uint32_t, bool>{6, false},
+          "ChangeServiceStartupType ( NONE TrainID ( 6 -1 ) ) holds service 6");
+    check(journal_count(view, "stopped") == 0, "ReachVelocity ( SpeedNotAbove ( 0 ) ): not on the move");
+    world.speed = 0.0;
+    run(view, world, clock, 0.5, false);
+    check(journal_count(view, "stopped") == 1, "ReachVelocity ( SpeedNotAbove ( 0 ) ): standing");
+    check(world.rule && world.rule->new_id && world.rule->new_id->service == 2 && world.rule->new_id->train == 1 && world.rule->main_wagon
+              && world.rule->main_wagon->by_id && world.rule->main_wagon->number == 0 && world.rule->new_type == "STATIC",
+          "SetDefaultUncouple: NewID, NewType, MainWagon");
+    world.cuts.push_back({.train = {1, 1}, .head = 3, .tail = 2, .cut = {}});
+    run(view, world, clock, 0.3, false);
+    check(journal_count(view, "cut") == 0, "UncoupleCars ( WagonRange ( 2 0 ) ): not after 3 cars");
+    world.cuts.push_back({.train = {1, 1}, .head = 2, .tail = 3, .cut = {}});
+    run(view, world, clock, 0.3, false);
+    check(journal_count(view, "cut") == 1, "UncoupleCars ( WagonRange ( 2 0 ) ): after the first 2 cars");
+    check(view.outcome() == ActivityView::Outcome::running, "no failure yet");
+    world.speed = 3.0;
+    world.drags[2] = 1.0;
+    run(view, world, clock, 1.0, false);
+    check(journal_count(view, "chocks left") == 1, "WagonState without WagonNum: car 2's chock seen; OnActivationLevel fires once");
+    check(view.outcome() == ActivityView::Outcome::failed, "SetActivationLevel ( -1 12 1 ): ActivityFailed");
+}
 
 void test_semantics() {
     auto activity = std::make_shared<const formats::Activity>(formats::parse_activity(semantics));
@@ -428,6 +539,8 @@ void test_vylnik(const std::filesystem::path& root) {
 int main(int argc, char* argv[]) {
     test_sample();
     test_semantics();
+    test_timers();
+    test_exam();
     if (argc > 1) {
         const std::filesystem::path root(std::u8string(reinterpret_cast<const char8_t*>(argv[1])));
         test_express(root);

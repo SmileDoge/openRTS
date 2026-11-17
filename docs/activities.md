@@ -109,10 +109,14 @@ Conditions run:
 | `OnMenuSelect ( MenuID MenuItemID )` | the item picked in the menu (F8) |
 | `OnCloseMessageBox ( MsgID ButtonID )` | the message closed by that button |
 | `PlayerBoardsTrain ( Area )` | the player in the train's cab (`CABIN`, `INTERIOR`, `SALON`; `EXTERIOR` not yet) |
-| `ReachLocation ( Location Radius Reach SpeedNotAbove SpeedNotBelow )` | `WAGON_ANY` (default), `WAGON_ALL`, `WAGON_FRONT`, `WAGON_BACK`, `WAGON_PLAYER` / `PLAYER` (the player's car); speeds in m/s |
+| `ReachLocation ( Location Radius ReachWith SpeedNotAbove SpeedNotBelow )` | `ReachWith` (activity.pdf; `Reach` read too): `WAGON_ANY` (default), `WAGON_ALL`, `WAGON_FRONT`, `WAGON_BACK`, `WAGON_PLAYER` / `PLAYER_POSITION` (the player's car); speeds in m/s |
 | `CoupleCars ( ConjTrainID )` | the event's train and that one coupled |
+| `ReachReversePoint ( PointID )` | the train reached reverse point `PointID` of its path (from 0; an `AssignService`'s path counts anew): it stood at its end of the leg and went on to the next |
 | `WagonState` | see below |
-| `ActivateOnTime`, `ActivateByTimer` | the time of day; s since the event was enabled |
+| `OnActivationLevel ( WhenAbove ( a ) WhenBelow ( b ) )` | as its level changes (`SetActivationLevel`, `IncreaseActivationLevel`), above `a` or below `b` (the exams' failures: an event at level 0 set to 1) |
+| `ReachVelocity ( SpeedNotAbove ( v1 ) SpeedNotBelow ( v2 ) )` | the train's speed at or below `v1` (0: standing; 0.01 m/s allowed) or above `v2` |
+| `UncoupleCars ( WagonRange ( StartNum EndNum ) WagonList ( … ) )` | the train cut in two: `StartNum` cars at its head (the head goes on as the train), or `EndNum` at its tail; the `WagonList` cars in the cut |
+| `ActivateOnTime ( Time ( hh:mm:ss ) )`, `ActivateByTimer ( Time ( s ) )` | the time of day; seconds since the event was enabled (a bare `( … )` is read too) |
 
 `WagonState` (activity.pdf 27): relations `Equal`, `NotEqual`, `Above`,
 `AboveOrEqual`, `Below`, `BelowOrEqual` (static) and `IncPast`, `DecPast`,
@@ -121,7 +125,12 @@ not), each `( Area Variable Idx SubIdx Value )`, all of them (`All`, the
 default) or any (`Any`). Looked at only while the train's state is tracked
 (`StartWagonStateTracking`) or once (`CheckWagonState`, the static ones).
 The car: `WagonNum` (from the head from 0, negative from the tail) or
-`WagonID`. Variables read (activity_WagonStateVariables): `BrakeCylinder`,
+`WagonID`; without either the relations are checked for each car looked
+at (activity.pdf 27: the tracking's or the check's `WagonRange` /
+`WagonList`, else every car of the train) and the event comes when one
+car meets them (openRTS took car 0 before: the exam's "moving on chocks"
+looked at the locomotive only). The tracking's `Interval` is not kept:
+openRTS looks every frame. Variables read (activity_WagonStateVariables): `BrakeCylinder`,
 `Auxiliary`, `PipePressure` (SubIdx 0 the brake pipe, 1 the feed pipe),
 `MainReservoir`, `IndependentBrake` (kgf/cm2), `Handbrake` (%),
 `Velocity`, `Acceleration` (Idx 0 the magnitude, 1 towards the head, 2
@@ -129,8 +138,24 @@ towards the tail; m/s), `SMSStream` (the car's `CABIN` or `WAGON` sound:
 SubIdx the stream, its value the trigger that last started a sound in it
 + 1 while the sound plays, 0 silent; PROBABLE: RTS's stream state, and
 Kuban's scenario waits on `CABIN SMSStream 0 24 1` for the radio's call
-to the station, stream 24 "Радиостанция", trigger 157). The others are
-not read yet (the log names them; the condition waits).
+to the station, stream 24 "Радиостанция", trigger 157), from the car's
+DLL: `Panto` (`WAGON` the raised pantographs, `CABIN` the ones the cab
+asks up; Idx 0 the bit mask, 1..8 one of them), `LocoState` (Idx 0 the
+reverser, 1 `Power`, 2 the UR, 4 `ALSNOn`, 5 `Wheelslip`, 6
+`ThrottlePosition`, 7 `MainSwitch`; 3, the battery charge, not yet),
+`CABIN Switch` (Idx the switch; SubIdx −1 its State, 0 its SetState, 1
+its frame); where the player is: `PlayerInArea` (Idx 2 the sound regions,
+the cab's `InteriorArea`s; the value the area he is in, −5 not in this
+car, −3 not in the object named, `CABIN` an engine's cab, `SALON` a salon,
+`WAGON` its outside, −1 in none, −2 asked another type: the doors, planes
+and ledges are not told apart yet; Idx 0 any type, 2000 + the area) and
+`PlayerInChair` (Idx 1 a cab's `Chair`, 2 a salon's `Seat`; the value its
+number, −4 not seated). With a SubIdx both give 0 / 1: in that one or
+not. The Pavlovsk exam waits on `CABIN PlayerInArea 2 -1 0..2` and
+`CABIN PlayerInChair 1 -1 0..1` for the engineer in the section;
+`Drag` (the chocks: Idx 0 the bit mask, 1 under the front bogie, 2 the
+rear, the train's way, as `PlaceDrag` and the car menu put them). The
+others are not read yet (the log names them; the condition waits).
 
 Outcomes run: `ShowMessage` (a window, `ShowModal` holding the game,
 `Buttons` MB_OK / MB_OKCANCEL / MB_YESNO / MB_YESNOCANCEL, `Expires`),
@@ -147,7 +172,16 @@ script), `AssignService` (the train is the new service's from then: its
 car; object −1: the car's own sounds), `ModifyWagons` (its groups as a
 train's `WagonParameters`, above), `ReleaseBlockPoint`,
 `EnableBlockPoint`, `ModifyVelocity`, `WaitHere` (`docs/traffic.md`),
-`SuccessfullyCompleteActivity`, `ActivityFailed`. An outcome's `TrainID`
+`SetDefaultUncouple ( NewID NewType MainWagon )` (a cut from the train
+takes `NewID`, standing with `NewType ( STATIC )`; the part with
+`MainWagon` keeps the train's id, else the driver's part),
+`ChangeServiceStartupType ( NewStartupType TrainID ( s -1 ) )` (`NONE`
+keeps service `s`'s trains not started yet back, `SINGLE` / `SERIAL`
+lets them start at their times), `SetSpeedLimit ( v )` (m/s till the next
+one, not positive none: the driven train's DLL and the speed panel take
+it under the track's limit, traffic keeps under it; it goes with the
+train through `AssignService`), `SuccessfullyCompleteActivity`,
+`ActivityFailed`. An outcome's `TrainID`
 names its train (default the event's).
 
 The interface: messages in the middle of the screen; F8 the report menu
@@ -240,11 +274,12 @@ that way: Novokuznetsk's "Скорый поезд 77" after the shunting, Kuban'
 - The timetable's conditions: `StopAtStation`, `DepartFromStation`,
   `TimetableCompleted` (RTS raises them as the boarding starts, ends and,
   at the last stop, runs out: events 22, 23 and 28; the station numbering
-  is UNKNOWN), `ReachReversePoint`, `ReachEndPoint`; the traffic's stops
-  (`AlignWhenStops`); a `NewPathLoad` path of `AssignService`.
-- `UncoupleCars` (the condition and the outcome), `SetDefaultUncouple`,
-  `DeliverCars`, `PickupEvent`, `WaitAtLocation`, `ReachVelocity`,
-  `RandomEvent`, `OnActivationLevel`, `PlayerBoardsTrain ( EXTERIOR )`.
+  is UNKNOWN), `ReachEndPoint`; the traffic's stops (`AlignWhenStops`); a
+  path `NewPathLoad` names (empty, it is the new service's own).
+- The `UncoupleCars` outcome (the scenario cutting cars itself) and its
+  `PreventRecoupling`, `ShutValves`, `LockCouplings`; `DeliverCars`,
+  `PickupEvent`, `WaitAtLocation`, `RandomEvent`, `PlayerBoardsTrain (
+  EXTERIOR )`.
 - Of a `WagonGroup`: the pressures, pantographs, sand, fuel and water,
   doors, cargo, `AIControlled`, the SME / HV cables, locked couplings; a
   static train's own `TrainState` (it stands with its pantographs down);

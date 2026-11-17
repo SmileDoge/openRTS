@@ -129,6 +129,37 @@ public:
     SceneActivityWorld(TrainView& trains, simulation::SignalSystem* signals) : trains_(trains), signals_(signals) {}
 
     [[nodiscard]] bool in_cab(const ActivityTrainId train) const override { return trains_.activity_in_cab({train.service, train.train}); }
+    [[nodiscard]] std::optional<std::size_t> reverse_points_reached(const ActivityTrainId train) const override {
+        return trains_.activity_reverse_points({train.service, train.train});
+    }
+    [[nodiscard]] std::size_t car_count(const ActivityTrainId train) const override {
+        return trains_.activity_car_count({train.service, train.train});
+    }
+    [[nodiscard]] std::vector<ActivityUncoupling> take_uncouplings() override {
+        std::vector<ActivityUncoupling> out;
+        for (const auto& cut : trains_.take_activity_cuts()) {
+            ActivityUncoupling u{.train = {cut.train.first, cut.train.second}, .head = cut.head, .tail = cut.tail, .cut = {}};
+            for (const auto& [origin, uid] : cut.cut)
+                u.cut.push_back({.train = {origin.first, origin.second}, .number = static_cast<std::int32_t>(uid), .by_id = true});
+            out.push_back(std::move(u));
+        }
+        return out;
+    }
+    void set_default_uncouple(const ActivityTrainId train, const ActivityUncoupleRule& rule) override {
+        TrainView::UncoupleRule own;
+        if (rule.new_id) own.new_id = TrainView::ActivityId{rule.new_id->service, rule.new_id->train};
+        std::string type = rule.new_type;
+        for (auto& c : type) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        own.standing = type == "static";
+        if (rule.main_wagon)
+            own.main = std::pair{TrainView::ActivityId{rule.main_wagon->train.service, rule.main_wagon->train.train},
+                                 static_cast<std::uint32_t>(rule.main_wagon->number)};
+        trains_.activity_default_uncouple({train.service, train.train}, std::move(own));
+    }
+    void set_service_startup(const std::uint32_t service, const bool starts) override { trains_.activity_service_startup(service, starts); }
+    void set_speed_limit(const ActivityTrainId train, const float limit) override {
+        trains_.activity_speed_limit({train.service, train.train}, limit);
+    }
     [[nodiscard]] bool near(const ActivityTrainId train, const formats::ActivityPoint& at, const double radius,
                             const std::string_view reach) const override {
         return trains_.activity_near({train.service, train.train}, route(at), radius, reach);

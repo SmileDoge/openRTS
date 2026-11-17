@@ -430,14 +430,158 @@ std::optional<double> TrainView::activity_car_value(const ActivityId train, cons
     if (key == "mainreservoir") return state.main_reservoir;
     if (key == "independentbrake") return state.independent;
     if (key == "handbrake") return state.handbrake * 100.0;
+    if (key == "drag") {
+        // The brake shoes (chocks): Idx 0 the bit mask (1 under the front
+        // bogie, 2 the rear: the train's way, as PlaceDrag and the car menu
+        // put them), 1 the front one, 2 the rear one.
+        const auto mask = static_cast<std::uint32_t>(state.chocks & (simulation::chock_front | simulation::chock_rear));
+        return idx == 1 ? static_cast<double>(mask & 1u) : idx == 2 ? static_cast<double>((mask >> 1) & 1u) : static_cast<double>(mask);
+    }
     if (key == "velocity") return signed_along(state.velocity);
     if (key == "acceleration") return signed_along(state.acceleration);
+    const auto where = lower(std::string(area));
     if (key == "smsstream") {
         const auto& car = unit->cars[index];
-        const auto* sound = lower(std::string(area)) == "cabin" ? car.cab_sound.get() : car.sound.get();
+        const auto* sound = where == "cabin" ? car.cab_sound.get() : car.sound.get();
         return sound && sub >= 0 ? static_cast<double>(sound->stream_sounding(static_cast<std::size_t>(sub))) : 0.0;
     }
+    const auto u = static_cast<std::size_t>(unit - units_.data());
+    const auto* out = dll_car(u, index) ? dll_output(u, index) : nullptr;
+    if (key == "panto") {
+        // WAGON: the raised pantographs; CABIN: the ones the cab asks up
+        // (the DLL's Engine Panto). Idx 0 the bit mask, 1..8 one of them.
+        const std::uint32_t mask = where == "cabin" && out ? out->engine.panto : unit->cars[index].pantograph_raised;
+        if (idx <= 0) return static_cast<double>(mask);
+        return idx <= 8 ? static_cast<double>((mask >> (idx - 1)) & 1u) : 0.0;
+    }
+    if (key == "locostate") {
+        // The locomotive's Engine, as its DLL set it: 0 the reverser,
+        // 1 Power, 2 UR, 4 ALSNOn, 5 Wheelslip, 6 ThrottlePosition,
+        // 7 MainSwitch (3, BatteryCharge, is not passed on by the host).
+        if (!out || !out->has_engine) return std::nullopt;
+        const auto& e = out->engine;
+        switch (idx) {
+        case 0: return static_cast<double>(e.reverse);
+        case 1: return static_cast<double>(e.power);
+        case 2: return static_cast<double>(e.equalising);
+        case 4: return static_cast<double>(e.alsn_on);
+        case 5: return static_cast<double>(e.wheelslip);
+        case 6: return static_cast<double>(e.throttle);
+        case 7: return static_cast<double>(e.main_switch);
+        default: return std::nullopt;
+        }
+    }
+    if (key == "switch") {
+        // CABIN Switch Idx: SubIdx -1 its State, 0 its SetState, 1 its frame.
+        if (where != "cabin" || !out || idx < 0 || static_cast<std::size_t>(idx) >= out->switches.size()) return std::nullopt;
+        const auto& s = out->switches[static_cast<std::size_t>(idx)];
+        return sub == 0 ? static_cast<double>(s.set_state) : sub == 1 ? static_cast<double>(s.current_frame) : static_cast<double>(s.state);
+    }
+    if (key == "playerinarea" || key == "playerinchair") {
+        // activity_WagonStateVariables: -5 the player not in this car, -3 in
+        // it but not in the object named (CABIN an engine's cab, SALON /
+        // INTERIOR a passenger salon, WAGON its outside). PlayerInArea's
+        // types: 2 the sound regions (InteriorArea), the others (-2
+        // ExteriorPlane, 1 doors, 9, 10 Ledge) not told apart here; -2 in
+        // another type, -1 in none. PlayerInChair's: 1 Chair (a cab's),
+        // 2 Seat (a salon's); -4 not seated, -2 in the other type. Idx 0
+        // (any type): type * 1000 + its index. The value: the index of the
+        // area or seat of that type he is in; with a SubIdx, whether it is
+        // that one (0 / 1).
+        const bool here = !units_.empty() && unit == &units_.front() && index == engineer_car_
+                          && (engineer_.inside() || engineer_.mode() == Engineer::Mode::on_car);
+        if (!here) return -5.0;
+        const auto* room = engineer_cab();
+        const bool outside = engineer_.mode() == Engineer::Mode::on_car;
+        const bool salon = room && room->salon();
+        const bool object = where == "wagon" ? outside : !outside && room && (where == "cabin" ? !salon : salon);
+        if (!object) return -3.0;
+        const auto answer = [&](const int type, const std::optional<std::size_t> at, const double other) -> double {
+            if (!at) return other;
+            const double value = idx == 0 ? type * 1000.0 + static_cast<double>(*at) : static_cast<double>(*at);
+            if (idx != 0 && idx != type) return -2.0;
+            return sub >= 0 ? (value == static_cast<double>(sub) ? 1.0 : 0.0) : value;
+        };
+        if (key == "playerinchair") {
+            if (outside || engineer_.mode() != Engineer::Mode::seated || engineer_.risen()) return -4.0;
+            if (const auto seat = engineer_.seat()) return answer(2, seat, -4.0);
+            return answer(1, engineer_.chair(), -4.0);
+        }
+        if (outside) return -1.0;
+        // Seated: where the chair or seat puts him; on foot: his feet.
+        glm::vec3 at = engineer_.feet();
+        const auto& description = room->description();
+        if (engineer_.mode() == Engineer::Mode::seated) {
+            if (const auto seat = engineer_.seat(); seat && *seat < description.seats.size()) {
+                const auto& p = description.seats[*seat].seated;
+                at = {p[0], p[1], p[2]};
+            } else if (engineer_.chair() < description.chairs.size()) {
+                const auto& p = description.chairs[engineer_.chair()].seated;
+                at = {p[0], p[1], p[2]};
+            }
+        }
+        std::optional<std::size_t> in;
+        for (std::size_t k = 0; k < description.areas.size() && !in; ++k) {
+            const auto& a = description.areas[k];
+            if (at.x >= (std::min)(a.x1, a.x2) && at.x <= (std::max)(a.x1, a.x2) && at.z >= (std::min)(a.z1, a.z2)
+                && at.z <= (std::max)(a.z1, a.z2))
+                in = k;
+        }
+        return answer(2, in, -1.0);
+    }
     return std::nullopt;
+}
+
+std::size_t TrainView::activity_car_count(const ActivityId train) const {
+    const auto unit = std::find_if(units_.begin(), units_.end(), [&](const Unit& u) { return u.activity_id == train; });
+    return unit == units_.end() || !unit->train ? 0 : unit->train->cars().size();
+}
+
+void TrainView::activity_service_startup(const std::uint32_t service, const bool starts) {
+    if (starts) {
+        services_held_.erase(service);
+    } else {
+        services_held_.insert(service);
+    }
+}
+
+void TrainView::activity_speed_limit(const ActivityId train, const float limit) {
+    if (limit > 0.0f) {
+        activity_speed_limits_[train] = limit;
+    } else {
+        activity_speed_limits_.erase(train);
+    }
+    std::cout << "activity: train " << train.first << ' ' << train.second << " speed limit "
+              << (limit > 0.0f ? std::to_string(static_cast<int>(std::lround(limit * 3.6f))) + " km/h" : std::string("off")) << std::endl;
+    // Traffic keeps under it; off, its own maximum again.
+    for (auto& unit : units_) {
+        if (unit.activity_id != train || !unit.traffic) continue;
+        auto& settings = unit.traffic->settings();
+        const auto* service = activity_ ? activity_->service(train.first) : nullptr;
+        const auto* own = service ? service->train(train.second) : nullptr;
+        const float written = own ? own->max_speed.value_or(0.0f) : settings.max_speed;
+        settings.max_speed = limit > 0.0f ? (written > 0.0f ? (std::min)(written, limit) : limit) : written;
+        unit.traffic_settings = settings;
+    }
+}
+
+simulation::SpeedLimit TrainView::limit_of(const Unit& unit) const {
+    auto limit = limits_->evaluate(*unit.train, unit.speed_category());
+    if (unit.activity_id) {
+        if (const auto own = activity_speed_limits_.find(*unit.activity_id); own != activity_speed_limits_.end()) {
+            if (limit.current < 0.0f || own->second < limit.current) limit.current = own->second;
+            if (limit.ahead >= 0.0f && own->second < limit.ahead) limit.ahead = -1.0f; // no lower post ahead under it
+        }
+    }
+    return limit;
+}
+
+std::optional<std::size_t> TrainView::activity_reverse_points(const ActivityId train) const {
+    const auto unit = std::find_if(units_.begin(), units_.end(), [&](const Unit& u) { return u.activity_id == train; });
+    if (unit == units_.end() || !unit->train) return std::nullopt;
+    const auto* progress = dispatcher_->progress(unit->train->id());
+    if (!progress) return std::nullopt;
+    return progress->leg;
 }
 
 void TrainView::activity_sound_trigger(const std::int32_t object, const std::uint32_t code, const ActivityId train, const std::int32_t number) {
@@ -490,6 +634,15 @@ void TrainView::apply_wagon_group(Unit& unit, const formats::ActivityWagonGroup&
 }
 
 void TrainView::retag_activity(const ActivityId from, const ActivityId to) {
+    // Its SetSpeedLimit and SetDefaultUncouple go with it.
+    if (const auto limit = activity_speed_limits_.find(from); limit != activity_speed_limits_.end() && from != to) {
+        activity_speed_limits_[to] = limit->second;
+        activity_speed_limits_.erase(from);
+    }
+    if (const auto rule = uncouple_rules_.find(from); rule != uncouple_rules_.end() && from != to) {
+        uncouple_rules_[to] = rule->second;
+        uncouple_rules_.erase(from);
+    }
     for (auto& unit : units_) {
         if (unit.activity_id != from) continue;
         unit.activity_id = to;
@@ -1777,6 +1930,7 @@ void TrainView::split(const std::size_t unit_index, const std::size_t index, con
         }
     }
     const auto from = unit.train->id();
+    const auto scenario_id = unit.activity_id;
     auto cut_train = unit.train->uncouple(index, close_cocks, keep_open);
     if (!cut_train) return;
     Unit cut;
@@ -1787,6 +1941,33 @@ void TrainView::split(const std::size_t unit_index, const std::size_t index, con
     // The driver goes with the master engine.
     const bool swapped = unit_index == 0 && master && *master >= index;
     if (swapped) std::swap(unit, cut);
+    if (scenario_id) {
+        // A scenario's train (activity.pdf 4.2 45, SetDefaultUncouple): the
+        // part with MainWagon keeps its id (else the driver's, else the
+        // head), the other is the rule's NewID; UncoupleCars hears of it.
+        const auto rule = uncouple_rules_.find(*scenario_id);
+        const auto has = [&](const Unit& part, const std::pair<ActivityId, std::uint32_t>& car) {
+            return std::any_of(part.cars.begin(), part.cars.end(), [&](const Car& c) { return c.activity_origin == car.first && c.uid == car.second; });
+        };
+        // `unit` is the driver's part when he drives this train, else the head.
+        bool unit_keeps = true;
+        if (rule != uncouple_rules_.end() && rule->second.main) unit_keeps = !has(cut, *rule->second.main);
+        auto& keeper = unit_keeps ? unit : cut;
+        auto& other = unit_keeps ? cut : unit;
+        keeper.activity_id = scenario_id;
+        other.activity_id = rule != uncouple_rules_.end() && rule->second.new_id ? rule->second.new_id : std::nullopt;
+        if (&other == &cut && rule != uncouple_rules_.end() && rule->second.standing) cut.role = Role::standing;
+        ActivityCut report{.train = *scenario_id, .head = swapped ? cut.cars.size() : unit.cars.size(),
+                           .tail = swapped ? unit.cars.size() : cut.cars.size(), .cut = {}};
+        for (const auto& c : other.cars) if (c.activity_origin) report.cut.emplace_back(*c.activity_origin, c.uid);
+        activity_cuts_.push_back(std::move(report));
+        if (activity_cuts_.size() > 16) activity_cuts_.erase(activity_cuts_.begin());
+        std::cout << "activity: train " << scenario_id->first << ' ' << scenario_id->second << " cut: " << keeper.cars.size()
+                  << " cars keep it, " << other.cars.size() << " are "
+                  << (other.activity_id ? std::to_string(other.activity_id->first) + ' ' + std::to_string(other.activity_id->second)
+                                        : std::string("unnamed"))
+                  << std::endl;
+    }
     if (announce) {
         cuts_.push_back({from, unit.train->id(), cut.train->id(), index, swapped});
         if (cuts_.size() > 16) cuts_.erase(cuts_.begin());
@@ -3313,6 +3494,8 @@ void TrainView::update_traffic() {
     const double now = day_time_;
     for (auto& plan : traffic_plans_) {
         if (plan.started || !due(now, plan.start)) continue;
+        // ChangeServiceStartupType NONE: its trains wait till it starts again.
+        if (services_held_.contains(plan.id.first)) continue;
         if (plan.remove && due(now, *plan.remove)) {
             plan.started = true; // its time is over before it could start
             continue;
@@ -3988,7 +4171,7 @@ void TrainView::draw_hud() {
     // Default places: 10 px from the side, 60 px from the top.
     const float margin_x = display.x > 0.0f ? 10.0f / display.x : 0.0f;
     const float margin_y = display.y > 0.0f ? 60.0f / display.y : 0.0f;
-    const auto limit = limits_->evaluate(train, unit->speed_category());
+    const auto limit = limit_of(*unit);
     const auto ordinate = limits_->ordinate(train);
     if (car_info_) {
         if (begin_panel("##car_info", car_info_place_, margin_x, margin_y)) {
@@ -4325,7 +4508,7 @@ void TrainView::draw_drive_panel(const Unit& unit) {
             else ImGui::SetWindowFontScale(1.0f);
         };
         const float speed = std::abs(static_cast<float>(train.speed())) * 3.6f;
-        const auto limit = limits_->evaluate(train, unit.speed_category());
+        const auto limit = limit_of(unit);
         const float allowed = limit.current * 3.6f;
         ImGui::TextUnformatted(speed > 0.3f ? tr("MOVING") : tr("STANDING"));
         ImGui::Separator();
@@ -7721,7 +7904,7 @@ simulation::TapeRecord TrainView::tape_record(const std::size_t u, const std::si
     // (100 m/s when the .trk has none).
     r.speed_limit = limits_ && limits_->route_limit() > 0.0f ? limits_->route_limit() : 100.0f;
     if (limits_) {
-        if (const auto now = limits_->evaluate(train, unit.speed_category()); now.current > 0.0f) r.speed_limit = now.current;
+        if (const auto now = limit_of(unit); now.current > 0.0f) r.speed_limit = now.current;
         if (const auto km = limits_->ordinate(train)) r.ordinate = static_cast<float>(*km);
     }
     const std::tm clock = local_now();
@@ -7807,7 +7990,7 @@ void TrainView::feed_world(const Unit& unit) {
     world.signal = {};
     world.event = {};
     const auto& train = *unit.train;
-    const auto limit = limits_->evaluate(train, unit.speed_category());
+    const auto limit = limit_of(unit);
     world.route = {.limit = limit.current,
                    .next_limit = limit.ahead,
                    .distance = limit.ahead >= 0.0f ? static_cast<float>(limit.ahead_distance) : -1.0f};
