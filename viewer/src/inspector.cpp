@@ -19,7 +19,9 @@
 #include <openrts/renderer/model_library.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 
+#include "mod_files.hpp"
 #include "train_view.hpp"
+#include "ui_slider.hpp"
 #include "ui_text.hpp"
 #include "viewer_state.hpp"
 
@@ -32,7 +34,7 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr const char* default_mod = "openrts_edits";
+constexpr const char* default_mod = default_edits_mod;
 
 [[nodiscard]] std::string lower(std::string_view text) {
     std::string out(text);
@@ -130,72 +132,6 @@ struct Hit {
     return Hit{.t = inside ? far_t : near_t, .inside = inside};
 }
 
-// Adds `mod` to the installation's openrts.ini [Mods] (after the others,
-// numbered when they are); false when it was there already.
-bool list_mod(const fs::path& root, const std::string& mod) {
-    const auto file = root / "openrts.ini";
-    std::string text;
-    {
-        std::ifstream in(file, std::ios::binary);
-        if (in) {
-            std::ostringstream all;
-            all << in.rdbuf();
-            text = all.str();
-        }
-    }
-    const bool crlf = text.find("\r\n") != std::string::npos;
-    std::vector<std::string> lines;
-    {
-        std::string line;
-        std::istringstream in(text);
-        while (std::getline(in, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            lines.push_back(line);
-        }
-    }
-    std::optional<std::size_t> section, last;
-    int highest = 0;
-    bool numbered = false;
-    for (std::size_t i = 0; i < lines.size(); ++i) {
-        std::string line = trim(lines[i]);
-        if (const auto comment = line.find(';'); comment != std::string::npos) line = trim(line.substr(0, comment));
-        if (line.empty()) continue;
-        if (line.front() == '[' && line.back() == ']') {
-            if (section && !last) last = section;
-            if (lower(trim(line.substr(1, line.size() - 2))) == "mods") {
-                section = i;
-                last.reset();
-            } else if (section) {
-                break;
-            }
-            continue;
-        }
-        if (!section) continue;
-        last = i;
-        std::string value = line;
-        if (const auto equals = line.find('='); equals != std::string::npos) {
-            numbered = true;
-            try {
-                highest = (std::max)(highest, std::stoi(trim(line.substr(0, equals))));
-            } catch (...) {
-            }
-            value = trim(line.substr(equals + 1));
-        }
-        if (lower(value) == lower(mod)) return false;
-    }
-    const std::string entry = numbered ? std::to_string(highest + 1) + " = " + mod : mod;
-    if (section) {
-        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>((last ? *last : *section) + 1), entry);
-    } else {
-        if (!lines.empty() && !trim(lines.back()).empty()) lines.emplace_back();
-        lines.emplace_back("[Mods]");
-        lines.push_back(entry);
-    }
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    for (const auto& line : lines) out << line << (crlf ? "\r\n" : "\n");
-    return true;
-}
-
 } // namespace
 
 Inspector::Inspector() {
@@ -290,6 +226,17 @@ std::string Inspector::report(const InspectorWorld& world) const {
         for (const auto& primitive : model->primitives())
             if (primitive.light_material == -8) ++fullbright;
         text += ", " + std::to_string(model->primitives().size()) + " primitive states (" + std::to_string(fullbright) + " FullBright)";
+        // openRTS's materials (PBR stage 4): the parts with layers over RTS's.
+        for (const auto& p : model->primitives()) {
+            if (p.material_layers.empty()) continue;
+            const auto& m = p.material;
+            char line[256];
+            std::snprintf(line, sizeof line, "; part %u %s: roughness %.2f metallic %.2f specular %.2f%s%s%s from", p.index, p.image.c_str(), m.roughness,
+                          m.metallic, m.specular, m.packed_maps() ? " ORM" : "", m.normal ? " normal" : "", m.emissive ? " emissive" : "");
+            text += line;
+            for (const auto& [layer, patch] : p.material_layers) text += std::string(" ") + formats::layer_name(layer);
+        }
+        for (const auto& message : model->material_messages()) text += "; " + message;
     }
     return text;
 }
@@ -347,6 +294,53 @@ void Inspector::save_edit(const InspectorWorld& world, const core::VirtualPath& 
     dirty_ = false;
     status_ = edited_.empty() ? trf("Removed: %s", utf8(relative).c_str()) : trf("Saved: %s", utf8(relative).c_str());
     if (added) status_ += std::string("\n") + tr("The mod was added to openrts.ini: it is mounted from the next start (here the change is on already).");
+}
+
+formats::ShapeMaterialFile& Inspector::material_file(const InspectorWorld& world, const core::VirtualPath& shape) {
+    if (material_shape_ != shape.key()) {
+        material_shape_ = shape.key();
+        material_ = world.vfs ? renderer::find_shape_material(*world.vfs, shape) : formats::ShapeMaterialFile{};
+        material_.error.clear();
+        material_.warnings.clear();
+        material_part_ = 0;
+        material_dirty_ = false;
+        material_status_.clear();
+    }
+    return material_;
+}
+
+void Inspector::apply_material(const InspectorWorld& world, const core::VirtualPath& shape) {
+    renderer::hold_shape_material(shape, material_);
+    if (world.library) world.library->notify_changes({renderer::shape_material_path(shape)});
+}
+
+void Inspector::save_material(const InspectorWorld& world, const core::VirtualPath& shape) {
+    std::string mod = trim(mod_);
+    if (mod.empty()) mod = default_mod;
+    if (mod.find_first_of("/\\:") != std::string::npos || mod == "." || mod == "..") {
+        material_status_ = tr("The mod's name is a folder name, without slashes.");
+        return;
+    }
+    const auto virtual_file = renderer::shape_material_path(shape).str();
+    const fs::path relative = fs::path("MODS_OPENRTS") / from_utf8(mod) / from_utf8(virtual_file);
+    const fs::path file = world.root / relative;
+    std::error_code error;
+    if (material_.empty()) {
+        fs::remove(file, error);
+    } else {
+        fs::create_directories(file.parent_path(), error);
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << formats::write_shape_material(material_);
+        if (!out) {
+            material_status_ = trf("Could not write %s", utf8(relative).c_str());
+            return;
+        }
+    }
+    const bool added = list_mod(world.root, mod);
+    remember("inspector_mod", mod);
+    material_dirty_ = false;
+    material_status_ = material_.empty() ? trf("Removed: %s", utf8(relative).c_str()) : trf("Saved: %s", utf8(relative).c_str());
+    if (added) material_status_ += std::string("\n") + tr("The mod was added to openrts.ini: it is mounted from the next start (here the change is on already).");
 }
 
 void Inspector::draw(const InspectorWorld& world) {
@@ -535,6 +529,7 @@ void Inspector::draw_properties(const InspectorWorld& world) {
         ImGui::EndTable();
     }
     draw_materials(world, chosen->shape);
+    draw_pbr_material(world, chosen->shape);
     ImGui::End();
 #else
     (void)world;
@@ -641,6 +636,142 @@ void Inspector::draw_materials(const InspectorWorld& world, const core::VirtualP
         ImGui::TextColored({1.0f, 0.75f, 0.3f, 1.0f}, "%s", tr("not saved"));
     }
     if (!status_.empty()) ImGui::TextWrapped("%s", status_.c_str());
+#else
+    (void)world;
+    (void)shape;
+#endif
+}
+
+void Inspector::draw_pbr_material(const InspectorWorld& world, const core::VirtualPath& shape) {
+#ifdef OPENRTS_HAS_IMGUI
+    if (!ImGui::CollapsingHeader(tr("PBR material (openRTS)"))) return;
+    auto* model = world.library ? world.library->find(shape) : nullptr;
+    if (!model || model->primitives().empty()) {
+        ImGui::TextDisabled("%s", tr("The shape is not loaded."));
+        return;
+    }
+    ImGui::TextWrapped("%s", tr("A part's material for the physically based light: RTS's, then the texture's file (beside it, <texture>.material.json5), "
+                                "then the shape's (<shape>.material.json5). The numbers here are written to the shape's file in the mod "
+                                "(docs/pbr-materials.md)."));
+    for (const auto& message : model->material_messages()) ImGui::TextColored({1.0f, 0.75f, 0.3f, 1.0f}, "%s", message.c_str());
+    auto& file = material_file(world, shape);
+    const auto& primitives = model->primitives();
+    if (material_part_ >= primitives.size()) material_part_ = 0;
+    const auto label = [&](const renderer::ModelPrimitive& p) {
+        std::string text = std::to_string(p.index) + "  " + (p.image.empty() ? std::string("-") : p.image);
+        if (!p.name.empty()) text += "  \"" + p.name + "\"";
+        if (!p.matrix.empty()) text += "  " + p.matrix;
+        return text;
+    };
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##material_part", label(primitives[material_part_]).c_str())) {
+        for (std::uint32_t i = 0; i < primitives.size(); ++i) {
+            if (ImGui::Selectable(label(primitives[i]).c_str(), i == material_part_)) material_part_ = i;
+        }
+        ImGui::EndCombo();
+    }
+    const auto& part = primitives[material_part_];
+    const auto& m = part.material;
+    // Where a field came from: the last layer that sets it, else RTS.
+    const auto source = [&](auto field) -> std::string {
+        std::string from = tr("RTS");
+        for (const auto& [layer, patch] : part.material_layers) {
+            if (field(patch)) from = tr(formats::layer_name(layer));
+        }
+        return from;
+    };
+    const auto map_text = [](const std::optional<formats::MaterialMap>& map) { return map ? map->path : std::string("-"); };
+    if (ImGui::BeginTable("##pbr_material", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableSetupColumn(tr("Field"), ImGuiTableColumnFlags_WidthFixed, 150.0f);
+        ImGui::TableSetupColumn(tr("Value"), ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn(tr("From"), ImGuiTableColumnFlags_WidthFixed, 110.0f);
+        ImGui::TableHeadersRow();
+        const auto row = [](const char* field, const std::string& value, const std::string& from) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(field);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(value.c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(from.c_str());
+        };
+        char text[128];
+        std::snprintf(text, sizeof text, "%.2f", m.roughness);
+        row(tr("roughness"), text, source([](const auto& p) { return p.roughness.has_value() || p.orm.has_value() || p.roughness_map.has_value(); }));
+        std::snprintf(text, sizeof text, "%.2f", m.metallic);
+        row(tr("metallic"), text, source([](const auto& p) { return p.metallic.has_value() || p.orm.has_value() || p.metallic_map.has_value(); }));
+        std::snprintf(text, sizeof text, "%.2f", m.specular);
+        row(tr("specular (reflection's share)"), text, source([](const auto& p) { return p.specular.has_value() || p.orm.has_value(); }));
+        std::snprintf(text, sizeof text, "%.2f %.2f %.2f %.2f", m.base_color_factor[0], m.base_color_factor[1], m.base_color_factor[2],
+                      m.base_color_factor[3]);
+        row(tr("base colour factor"), text, source([](const auto& p) { return p.base_color_factor.has_value(); }));
+        row(tr("base colour map"), map_text(m.base_color), source([](const auto& p) { return p.base_color.has_value(); }));
+        row(tr("ORM map"), m.packed_maps() ? map_text(m.orm) + " (" + formats::layout_name(m.layout) + ")" : std::string("-"),
+            source([](const auto& p) { return p.orm.has_value() || p.ao_map.has_value() || p.roughness_map.has_value() || p.metallic_map.has_value(); }));
+        std::snprintf(text, sizeof text, " (%s, x %.2f)", formats::normal_y_name(m.normal_y), m.normal_strength);
+        row(tr("normal map"), m.normal ? map_text(m.normal) + text : std::string("-"), source([](const auto& p) { return p.normal.has_value(); }));
+        std::snprintf(text, sizeof text, "%.2f %.2f %.2f x %.1f", m.emissive_factor[0], m.emissive_factor[1], m.emissive_factor[2], m.emissive_strength);
+        row(tr("emission"), (m.emissive ? map_text(m.emissive) + "  " : std::string()) + text,
+            source([](const auto& p) { return p.emissive.has_value() || p.emissive_factor.has_value() || p.emissive_strength.has_value(); }));
+        ImGui::EndTable();
+    }
+    // The inspector's numbers: an entry of the shape's file for this part,
+    // by its steadiest selector (name, else image and node, else index).
+    std::vector<formats::PrimitiveSignature> signatures;
+    signatures.reserve(primitives.size());
+    for (const auto& p : primitives) {
+        signatures.push_back({.index = p.index, .name = p.name, .image = p.image, .shader = p.shader, .matrix = p.matrix,
+                              .light_material = p.light_material});
+    }
+    const auto selector = formats::stable_selector(signatures, part.index);
+    auto entry = std::find_if(file.primitives.begin(), file.primitives.end(), [&](const auto& e) { return e.match == selector; });
+    float roughness = m.roughness, metallic = m.metallic, specular = m.specular;
+    bool changed = false;
+    ImGui::SetNextItemWidth(200.0f);
+    changed |= slider_with_input(tr("Roughness (0 mirror .. 1 matte)"), &roughness, 0.0f, 1.0f, "%.2f", "%.2f");
+    ImGui::SetNextItemWidth(200.0f);
+    changed |= slider_with_input(tr("Metallic (0 paint, glass .. 1 bare metal)"), &metallic, 0.0f, 1.0f, "%.2f", "%.2f");
+    ImGui::SetNextItemWidth(200.0f);
+    changed |= slider_with_input(tr("Reflection's share (specular)"), &specular, 0.0f, 1.0f, "%.2f", "%.2f");
+    if (changed) {
+        if (entry == file.primitives.end()) {
+            file.primitives.push_back({.match = selector});
+            entry = std::prev(file.primitives.end());
+        }
+        // With a map the number is its factor: set as shown.
+        entry->patch.roughness = roughness;
+        entry->patch.metallic = metallic;
+        entry->patch.specular = specular;
+        material_dirty_ = true;
+        apply_material(world, shape);
+    }
+    if (entry != file.primitives.end()) {
+        std::string text = tr("This part's entry in the shape's file:");
+        if (selector.name) text += " name \"" + *selector.name + "\"";
+        if (selector.image) text += " image \"" + *selector.image + "\"";
+        if (selector.matrix) text += " matrix \"" + *selector.matrix + "\"";
+        if (selector.index) text += " index " + std::to_string(*selector.index);
+        ImGui::TextDisabled("%s", text.c_str());
+        if (ImGui::Button(tr("Remove this part's entry"))) {
+            file.primitives.erase(entry);
+            material_dirty_ = true;
+            apply_material(world, shape);
+        }
+    }
+    ImGui::BeginDisabled(!material_dirty_);
+    if (ImGui::Button(tr("Save the material to the mod"))) save_material(world, shape);
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Undo the material's changes"))) {
+        renderer::hold_shape_material(shape, std::nullopt);
+        if (world.library) world.library->notify_changes({renderer::shape_material_path(shape)});
+        material_shape_.clear();
+    }
+    ImGui::EndDisabled();
+    if (material_dirty_) {
+        ImGui::SameLine();
+        ImGui::TextColored({1.0f, 0.75f, 0.3f, 1.0f}, "%s", tr("not saved"));
+    }
+    if (!material_status_.empty()) ImGui::TextWrapped("%s", material_status_.c_str());
 #else
     (void)world;
     (void)shape;

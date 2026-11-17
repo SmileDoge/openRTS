@@ -293,6 +293,107 @@ what its windows show; the probe is a face a frame behind (six frames for a
 turn of the sun). Local probes (stations, tunnels) and screen-space
 reflections are later.
 
+**Tuning it** (2026-11-17; under the switch, kept with the other effects,
+`SceneEffectSettings::sky_light_*`; for one run the flags):
+
+| Setting | Default | Flag | What |
+|---|---|---|---|
+| Sky light strength | 1 (0..2) | `--sky-light-strength` | the diffuse part, a factor |
+| Sky reflections strength | 1 (0..2) | `--sky-reflections` | the reflections, a factor |
+| Sky reflections in the cab and salon | 0.35 (0..1) | `--sky-reflections-indoors` | their share indoors (the third above) |
+| Sky light in a tunnel, at least | 0.1 (0..0.5) | `--sky-light-tunnel` | the least of it near the eye (the floor above) |
+
+"Sky light: defaults" puts all four back. The probe's openness is taken
+from 0 now; the floor is the setting's. Checked (`render_check.py`, the
+variants `pbr_sky_dim` 0.5 / 0.5 and `pbr_sky_bright` 1.5 / 1.5): the open
+stretch by day, the frame's median 0.077 / 0.105 / 0.134, the bottom
+0.058 / 0.079 / 0.101, the sky itself unchanged.
+
+### Auto exposure (2026-11-17, PBR stage 3)
+
+The eye getting used to the light: out of a tunnel the picture is too bright
+for a moment, in a cab by day the dashboard is seen without turning the
+exposure up by hand. On by default since 2026-11-17, gently (strength 0.15,
+the user's own tuning after a drive); it works with the experimental
+renderer, HDR and a tone curve only, the RTS path is drawn as before
+(«Автоэкспозиция» under the exposure in the HDR panel and in the start
+menu's Graphics; `--auto-exposure on|off` for one run). With it the night
+exposure's default went from 2 to 1.5: the auto exposure brightens a night
+by itself (a night by the station's lamps x 1.53, x 2.3 with the night
+exposure). All of it on the GPU, nothing waits for the frame to come back
+(`renderer::AutoExposure`, `renderer/src/auto_exposure.cpp`):
+
+- **Measuring.** A compute pass reads every few pixels of the HDR frame
+  (about 640 a row) and counts the log2 of their luminance in a histogram of
+  128 bins from 2^-14 to 2^6, black in a bin of its own; the middle of the
+  picture weighs three times its edges.
+- **The level.** A second pass takes the histogram's mean without the
+  darkest and the brightest tenth (a lamp or the sun in view does not
+  darken the whole picture, a black corner does not brighten it) and the
+  adapted level follows it, `adapted += (measured − adapted)(1 − e^(−dt·rate))`,
+  rate 3/s towards light and 1/s towards the dark (times the speed setting):
+  the eye is dazzled briefly and gets used to the dark slowly.
+- **The factor.** `2 ^ clamp(strength · (key − adapted), −down, up)`, key
+  −3.0, the log2 luminance the open stretch at noon measures: there the
+  exposure stays as set. The tone curve multiplies the set exposure (the
+  night's too) by it, read straight from the GPU's buffer; the Exposure
+  slider becomes a correction on top («Поправка экспозиции»).
+
+A strength under 1 keeps the scenes' own character: a tunnel or a night
+stays darker than a sunny field, only less so. While a route is loading the
+level starts from the frame at once (no bright flash after the loading
+screen's dark), and again each time it is turned on.
+
+| Setting | Default | Key in `viewer_state.ini` | What |
+|---|---|---|---|
+| Auto exposure | on | `auto_exposure` | on or off (`--auto-exposure on\|off`) |
+| How far it follows the light | 0.15 (0..1) | `auto_exposure_strength` | 1: every scene to the key (`--auto-exposure-strength`) |
+| Darkens a bright scene by at most | 1.5 stops (0..3) | `auto_exposure_down` | |
+| Brightens a dark scene by at most | 1 stop (0..3) | `auto_exposure_up` | the night curve already brightens a night twice |
+| How fast it gets used to the light | 1 (0.1..5) | `auto_exposure_speed` | a factor on both rates |
+
+The panel shows the factor now («сейчас: x 1.76 (+0.8 ступени)»), read a
+frame or two late without waiting; a capture's log has the measured and
+adapted levels and the factor (`auto exposure: ...`). Measured
+(`render_check.py`, the variant `pbr_ae` against `pbr`, the picture's mean
+on the screen, 0..255; the factor at the first tuning's strength 0.7 and at
+the default 0.15; the render check turns it off but in `pbr_ae`):
+
+| scene | measured log2 | factor, 0.7 | factor, 0.15 | the picture's mean, 0.7 |
+|---|---|---|---|---|
+| the open stretch at noon | −2.92 | 0.96 | 0.99 | 99.0 -> 97.1 |
+| shiny day | −3.18 | 1.09 | 1.02 | |
+| low sun | −3.62 | 1.35 | 1.07 | |
+| the cab by day | −4.16 | 1.76 | 1.13 | 57.9 -> 82.4 |
+| night, the station's lamps | −7.11 | 2 (the limit) | 1.53 | 16.2 -> 27.1 |
+| night, textures | −8.31 | 2 (the limit) | 1.74 | |
+| the cab in rain at dusk | −9.46 | 2 (the limit) | 1.96 | |
+
+At a strength this low the limits are not reached (the brightening's 1 stop
+takes a scene 6.7 stops under the key); they matter from about 0.5 up.
+
+It costs 0.033 .. 0.035 ms of the GPU (RTX 4070 Ti SUPER, 1920 x 1080; the
+pass «auto exposure» in the panel's Performance). `tests/auto_exposure_test.cpp`
+checks it on a headless device: a grey frame measures as its log2, the
+factor is 1 at the key, the limits hold, and the adaptation takes 95 % of
+the way towards light and 63 % towards the dark in a second.
+
+What it does not do yet: the factor is the frame's, not the eye's spot (a
+bright window in a dark cab is the frame's mean), and the dazzle out of a
+tunnel is the tone curve's, not a glare of its own.
+
+### openRTS materials (2026-11-17, PBR stage 4)
+
+Beyond RTS's light materials a surface's roughness, metallic, occlusion,
+normal map and emission come from openRTS's material files, JSON5 in the
+VFS: `body.material.json5` beside `body.ace` for every model drawing it,
+`loco.s.material.json5` beside a shape for some of its parts, merged field
+by field over RTS's. Without them nothing changes (checked: the eight
+scenes' captures before and after match to the frame's noise). The whole
+of it, the format, the tools (`openrts-shape export` to glTF, the
+inspector's "PBR material", the debug views `--material-view`) and how to
+make one: [pbr-materials.md](pbr-materials.md).
+
 ## Sun shadows
 
 By default three cascades of a 2048 x 2048 depth array up to 250 m from the
@@ -320,6 +421,64 @@ distance,size,cascades,softness` for one run):
 Measured as below: off 2.57 ms, 250 m / 2048 / 3 / 1.0 3.83 ms, 100 m /
 1024 / 2 2.99 ms, 1000 m / 4096 / 4 4.28 ms; the softness costs nothing.
 
+Where the time goes (2026-11-17, Ultra 453 m / 4096 / 4, the 2ЭС6's cab by
+day, RTX 4070 Ti SUPER; the cascades' GPU pass 1.88 ms, the cab's map
+0.51): the terrain 0.17 ms of it, the models the rest, the alpha-tested
+ones (trees, fences: a texture read and a discard per fragment, layer over
+layer) 1.2 ms. The pass scales with the maps' texels (2048: 0.83 ms; three
+cascades: 1.18), not with the bytes: a 16-bit map gained nothing and was
+left. In each shadow pass the opaque casters go first, then the
+alpha-tested ones, each batch's instances nearest to the light first, so
+the depth already there turns fragments away before their shader runs
+(1.88 to 1.76 ms; the maps hold the same depths).
+
+**The shadow cache** (2026-11-17; «Кэш теней (неподвижное)», `shadow_cache`,
+`--shadow-cache on|off`, on): what does not move, the terrain and the
+world's objects, is drawn into a layer of its own a cascade and kept there
+toroidally, each texel of the light's plane at its place modulo the map's
+size. As the window moves (the camera, the view turning) only the strips it
+enters are drawn, each piece through a viewport and scissor of its own;
+every frame the working map is that layer read at the window's offset (a
+full-screen pass writing the depth), then what moves over it: trains, road
+traffic, crossing gates and switch blades (`ModelRenderer::set_moving`).
+Drawn whole again when the sun has turned (0.57 degrees: the cache keeps
+the basis it was drawn in until then), when the depth's anchor no longer
+holds the slice (150 m of room each way), when the window jumped a map or
+more, when the map is new, and every 30 frames or so a cascade (each its
+own period): objects whose model came in after their strip, a model at
+another distance level, signal arms. A cascade's map is no longer drawn
+with a tenth more room. Video memory: a map more a cascade (Ultra: 64 MB
+each, 256 in all; High: 16 each).
+
+Ultra (453 m / 4096 / 4), RTX 4070 Ti SUPER: the 2ЭС6's cab standing, the
+cascades 2.26 ms whole every frame against 1.17 + 0.05 (the cache's pieces)
+with the cache, 123 to 143 fps; flying at 28 m/s over the station
+(`--fly-test 28`), 2.06 against 0.76 + 0.17, 148 to 182 fps. Standing, what
+is left is the unwrap of four maps and the locomotive itself (it moves, so
+it is drawn every frame).
+
+`--shadow-cache-check` draws every cascade whole as well into a scratch
+array and counts the texels that differ, every 120 frames: standing 0; on
+the move and turning 0.0004-0.02 %, in bursts up to 0.15 % as models load
+(drawn whole again within half a second).
+
+**Maps kept while nothing moves** (2026-11-17): the renderer hashes what
+moves (`ModelRenderer::moving_signature`: each moving instance's model,
+distance level, place and node poses, to a millimetre and a ten-thousandth).
+A cascade whose cache drew nothing this frame, whose window stayed and whose
+moving casters hashed the same keeps last frame's working map: no pass at
+all. The cab's interior (RTS pass 3: its needles and displays live every
+frame) is left out of that hash while the cab's map is on, which covers the
+cab and is looked up first there; the cab's map itself takes the full hash
+and is drawn again at least every 30 frames. The 2ЭС6's cab standing
+(Ultra): the cascades 1.22 ms to nothing, 143 to 158 fps; the cab's map
+(0.46 ms) is still drawn, its needles moving. Pictures as before.
+
+The sky's light and the light shafts measured for cheaper ways (the open
+stretch by day): without the sky's reflection the main pass is 0.16 ms
+shorter, with one SH coefficient instead of nine 0.14 ms, the shafts at
+24 steps instead of 32 0.08 ms; each changes the picture, none was taken.
+
 ## Every lamp (clustered lights)
 
 RTS keeps nine further lights a ring (shape-rendering.md, Light rings). Here
@@ -330,6 +489,17 @@ cluster holding up to 64 lights whose sphere (the light's own reach and
 spread) reaches it, nearest first; at most 512 lights. A fragment loops over
 its cluster's lights with the same light shapes as the rings (lights.glsl,
 or the physical falloff). The cab's own lamps stay as they are.
+
+A cone light (headlights, searchlights, lamps shining down; one lamp, not
+an array) is kept out of the clusters its cone misses (2026-11-17): the
+cluster's bounding sphere against the cone from its apex (a spotlight's
+source radius moves the apex back to where its sides meet), its reach and
+the tangent of its half angle (Wronski, "Cull that cone!"). Before, its
+sphere was its whole reach round the lamp, so a headlight came into every
+cluster near the train and every pixel there tried it. At a night station
+with eight trains (56 lights) the main pass went from 5.8 to 3.6 ms
+(RTX 4070 Ti SUPER, 1440p, MSAA 4x), 110 to 159 fps; Novokuznetsk's works
+at night 7.9 to 4.9 ms. The pictures are the same (at most 1/255 apart).
 
 Two settings widen what lights the scene:
 - «Дальность света» (`light_range`, `--light-range <m>`): scenery lamps
@@ -520,8 +690,8 @@ The frames are the same. The GPU still runs the passes one after another
 (WebGPU has one queue): only the CPU side is shortened.
 
 Then (2026-11-02):
-- **Far cascades kept** («Кэш дальних каскадов», `shadow_cache`,
-  `--shadow-cache on|off`, on): the last two cascades of 3 or 4 (the last of
+- **Far cascades kept** (until 2026-11-17, now the shadow cache above;
+  `shadow_cache`, `--shadow-cache on|off`): the last two cascades of 3 or 4 (the last of
   2) are drawn with a tenth more room and kept; each is drawn again every
   other frame (the two alternating), and at once when its map no longer
   covers this frame's slice, the sun moved or the map was made again.
@@ -684,7 +854,14 @@ separate depth array, half the cascades' size, at least 1024):
   is left out, it would need six maps);
 - a parallel (box) lamp: orthographic along its axis over the sphere.
 Drawn in depth slots 6..13 (both renderers now have 14) with the shadow
-casters, out of view ones within 80 m too. In the lamp loops of the model
+casters, out of view ones within 80 m too. A map is drawn every other frame
+(the slots alternating, 2026-11-17), at once for a lamp new in its slot or
+when its lamp or the sphere moved a metre (a twentieth of the sphere) or
+more; between, the shaders take the matrix it was drawn with, as the far
+sun cascades do: a frame's lag of the shadows of things moving. At the
+night station with five shadowed lamps: their passes 1.0 to 0.5 ms of the
+GPU, their recording on the workers 2.6 to 0.8 ms; a standing picture is
+the same. In the lamp loops of the model
 and terrain shaders a lamp in that list is multiplied by
 `effects_lamp_shadow` (8 filtered compares; outside its map: lit). The
 shadow fades out over the last 6 % towards a map's edge and, in flight,
@@ -880,6 +1057,59 @@ the cab's frame and the clouds stand in the air as beams of sunlight:
   with the sun as "Khronos by day, AgX by night" does (`tone_mode` 4), the
   night exposure as there: ACES's contrast and deep shade by day, AgX's
   holding of the dark tones at night.
+
+### Uncompressed textures and PBR maps compressed (BC7 / BC5, 2026-11-17)
+
+- **What was seen.** Testers' RTX 4060 (8 GB) at Kuban with a train of PBR
+  passenger cars: 14 fps, the GPU frame 69 ms; without the PBR maps 150 fps.
+  The passes slowed unevenly: those over big targets and the shadow maps
+  20-75 times (the tone curve 6 ms instead of 0.1), the fixed-size compute
+  barely. The Task Manager showed the card's 8.0 GB full and the 3D engine
+  at 17 %: the allocations past Windows's budget had been moved to system
+  memory and were read over PCIe 4.0 x8.
+- **Why.** RTS's raw ACE are RGBA8, 4 bytes a texel, and so were the
+  materials' PNG maps. Measured in the cab at Kuban with the testers' 14
+  cars: 2391 MB of textures, 2284 MB of them uncompressed. The cars' maps
+  alone (63 of 2048 x 2048, 22 of 1024 x 1024) are about 1.5 GB.
+- **The option.** «Несжатые текстуры и карты PBR (BC7, нормали BC5)» in
+  the Graphics tab and the launcher's Graphics (`compress_textures`):
+  «Не сжимать (как в RTS)» (0), «Сжимать, не сохраняя на диск» (1),
+  «Сжимать и сохранять на диск» (2, the default); `--compress-textures
+  off|memory|on` for a run. Applies to the textures loaded after it is
+  changed (`renderer/bc7.hpp`):
+  - An uncompressed texture with sides of whole 4 x 4 blocks, 8 x 8 and up,
+    goes to the GPU as BC7: 1 byte a texel, a quarter of RGBA8. DXT1 ACE
+    stay BC1 as before.
+  - Mode 6 (two RGBA colours on a line, 16 levels), or mode 5 for a block
+    whose alpha varies, whichever comes nearer: colour and alpha on lines of
+    their own, the alpha's ends in 8 bits, so a leaf's edge keeps its alpha
+    test exactly. A clear texel's colour counts by how opaque it is.
+  - A normal map goes as BC5: its x and y each between their own ends in 8
+    levels; the shader already makes z. 46 dB on a test bump map, against
+    BC7's single line.
+  - The file's own mipmaps are encoded as they are (none: built as RTS
+    builds them).
+  - Encoded at about 3 us a block on one thread (5 with alpha), several
+    threads a texture. Kept on disk: in `texture_cache/bc7` in the user
+    data folder (`.r7`, `.n5`), keyed by a hash of the texels; the first
+    load of a route or a train is longer, then it is read in milliseconds.
+    Not kept: encoded on every load, nothing written. Cold, the 14 PBR
+    cars at Kuban: textures loaded in about 52 s against 43 s
+    uncompressed.
+  - The cache's size is shown under the choice, in the Graphics tab and
+    the launcher («Кэш сжатых текстур на диске: N МБ, файлов: M»), with
+    «Очистить кэш»: it removes the cache's own files (`.bc7` of the
+    smoothing, `.r7`, `.n5`); the textures already loaded stay.
+  - Without BC on the device: RGBA8 as before.
+- **Measured** in the cab at Kuban, the 14 PBR cars behind a ChS2, at noon:
+  textures 2391 MB → 735 MB; the process's video memory 4018 → 2482 MB.
+  Tests: the leaves' alpha test keeps every texel, their colour 31 dB, a
+  normal map 46 dB (`openrts_bc7_test`).
+- **The video memory in the Performance tab.** «Видеопамять: X МБ из Y МБ,
+  что Windows даёт игре» (DXGI's `QueryVideoMemoryInfo` for the adapter
+  wgpu took: what is on the card, the budget, what spilled to shared
+  memory), with a warning in red past the budget, and how much of the
+  textures is uncompressed. The log has it every 10 s (`perf memory:`).
 
 ## openRTS sky (atmosphere, volumetric clouds)
 

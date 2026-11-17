@@ -26,6 +26,7 @@
 #include <openrts/audio/sound_instance.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/stock_rules.hpp>
 #include <openrts/formats/activity.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/train_path.hpp>
@@ -200,6 +201,12 @@ public:
     [[nodiscard]] glm::vec3 head_position() const;
     // RTS's config.ini (engineer.Height, engineer.velocity, ...): it is not in the VFS.
     void set_rts_config(std::string text) { rts_config_ = std::move(text); }
+    // The installation (MODS_OPENRTS, openrts.ini): the car menu keeps a
+    // car type's distributor in a mod there.
+    void set_install_root(std::filesystem::path root) { install_root_ = std::move(root); }
+    // The air is always the realistic one; --realistic-air is kept for
+    // older scripts and does nothing.
+    void set_realistic_air(bool on) noexcept { (void)on; }
     // Switch `id` of the player's cab to `state` (--capture-switch).
     void set_cab_switch(std::uint32_t id, std::uint32_t state) {
         if (legacy_) legacy_->set_switch(id, state);
@@ -1234,6 +1241,19 @@ private:
     void pass_to_next_car(std::size_t door);
     bool engineer_configured_ = false;
     std::string rts_config_; // RTS's config.ini text (set_rts_config)
+    std::filesystem::path install_root_; // set_install_root
+    // openRTS's stock rules in Luau (TRAINS/OPENRTS/STOCK), read once.
+    mutable std::shared_ptr<simulation::StockRules> stock_rules_;
+    [[nodiscard]] formats::WagonRules stock_rules() const;
+    // The car menu's distributor for car `car`'s type: kept in the edits mod
+    // (formats::wagon_override_path) and given to every car of that type now.
+    void choose_distributor(const Car& car, formats::BrakeDistributor distributor);
+    // The car menu's "on every car of the train": car `car`'s distributor
+    // for every car type of `unit` but the locomotives', kept the same way.
+    void choose_distributor_for_train(const Unit& unit, const Car& car);
+    // Writes the companion of `car`'s type and gives it to its cars; how many
+    // cars took it; `listed` when the mod was added to openrts.ini.
+    std::size_t keep_distributor(const Car& car, formats::BrakeDistributor distributor, bool& listed, std::string& error);
     glm::vec3 look_{0.0f, 0.0f, 1.0f}; // the camera's direction, for the cab labels
     // Outside he collides with the world's objects and stands on them
     // (platforms, ballast, bridges), or only with the ground and the trains.

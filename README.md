@@ -12,7 +12,7 @@ RTrainSim (RTS). Цель — запускать существующий кон
 разбору `rts1.exe`. Каждая находка помечена степенью уверенности
 (CONFIRMED / PROBABLE / UNKNOWN) в `docs/reverse/`.
 
-> Проект в разработке. Последняя версия — [v0.15.0](../../releases/tag/v0.15.0):
+> Проект в разработке. Последняя версия — [v0.19.0](../../releases/tag/v0.19.0):
 > почти игра. Вождение из 3D-кабины с DLL локомотивов RTS, сигнализация,
 > трек-контроль, живой маршрут (леса, переезды, автомобили, вода, осадки,
 > дым), звук по зонам кабины, сцепка и расцепка с DLL, сценарии RTS с
@@ -207,7 +207,7 @@ RTrainSim (RTS). Цель — запускать существующий кон
 **Releases** — как установить и запустить, описано в [INSTALL.md](INSTALL.md):
 - **nightly** — пререлиз с последней сборкой `master`, обновляется сам; в
   заголовке окна и в настройках у версии пометка с коммитом, например
-  «openRTS 0.15.0 (nightly abc1234)»;
+  «openRTS 0.19.0 (nightly abc1234)»;
 - **vX.Y.Z** — версии; релиз создаётся сам, когда в репозиторий приходит тег
   версии.
 
@@ -312,12 +312,16 @@ Redistributable (x64), см. «Готовая сборка».
 | `--track-control` | сразу открыть Track control |
 | `--situation <имя\|файл>` | расставить поезда из сохранённой расстановки |
 | `--spawn cab\|car\|above` | начать в кабине, у вагона или над поездом |
+| `--realistic-air` | все поезда на реалистичном воздухе openRTS (как галочка в окне «Поезд») |
 | `--time 06:30:00`, `--speed <x>` | время суток и его скорость |
 | `--season spring\|summer\|autumn\|winter` | сезон |
 | `--weather clear\|snow\|rain` | погода |
 | `--no-sound`, `--volume 0..1` | без звука, громкость |
 | `--msaa 1\|2\|4\|8`, `--no-vsync`, `--no-batching` | настройки графики |
 | `--fps-limit <30..500 \| 0>` | ограничение FPS на этот запуск (0 — без ограничения), не запоминается |
+| `--fps-background` | не ограничивать 30 FPS в фоне (для замеров рядом с другими окнами) |
+| `--compress-textures off\|memory\|on` | несжатые текстуры и карты PBR на этот запуск: не сжимать / сжимать без кэша на диске / сжимать и хранить на диске (по умолчанию — как в настройках) |
+| `--fly-test <м/с> [град/с]`, `--shadow-cache-check` | для проверок: свободная камера летит вперёд и поворачивает; кэш теней сверяется с отрисовкой целиком, расхождения в журнал |
 | `--multi-draw on\|off` | multi-draw indirect для моделей на этот запуск (по умолчанию включён, если видеокарта умеет) |
 | `--window-mode windowed\|borderless\|fullscreen` | окно на этот запуск: в окне, в окне без рамок, полноэкранный (иначе — как в настройках) |
 | `--paused` | начать на паузе (Pause снимает): ничего не движется, даже мигающие сигналы; когда сцена догрузилась, тестовые снимки повторяются попиксельно |
@@ -328,7 +332,7 @@ Redistributable (x64), см. «Готовая сборка».
 | `--pbr on\|off` | физически корректный свет нового рендера (с HDR) на этот запуск ([подробнее](docs/ru/experimental-effects.md)) |
 | `--sky-light on\|off` | свет неба из его пробы при физически корректном свете (выкл.: старый свет неба) на этот запуск |
 | `--native-sky on\|off` | небо openRTS или купол RTS на этот запуск |
-| `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | настройки нового рендера на один запуск ([подробнее](docs/experimental-effects.md)) |
+| `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5`, `--sky-light-strength 0..2`, `--sky-reflections 0..2`, `--sky-reflections-indoors 0..1`, `--sky-light-tunnel 0..0.5`, `--auto-exposure on\|off`, `--auto-exposure-strength 0..1`, `--material-view base\|roughness\|metallic\|normal\|ao\|emissive` | настройки нового рендера на один запуск ([подробнее](docs/experimental-effects.md)) |
 | `--capture <файл.ppm>` | снять кадр и выйти; `--capture-at <с>`, `--capture-car <n>`, `--capture-camera ex ey ez tx ty tz`, `--capture-cab` — когда и откуда |
 | `--mp-connect <адрес>[:порт]`, `--mp-nick <ник>` | зайти на сервер RTS (порт 800 по умолчанию); маршрут, сезон и погода — с сервера, `--route` не нужен |
 | `--mp-snapshot <файл>`, `--mp-save-snapshot <файл>` | открыть сохранённый снимок мира сервера без сети; сохранить полученный |
@@ -424,6 +428,7 @@ RTS — с цифровым блоком (Num0, Num1, Num2, Num3), openRTS — �
 | Программа | Назначение |
 |---|---|
 | `openrts-ace` | текстуры ACE в PNG и обратно (DXT1, RGB, RGB + маска, RGBA), файл или папка; `--register` — двойной щелчок по `.ace` показывает его как PNG, у PNG и папок в меню «в ACE (openRTS)» (то же — кнопка в «Настройках» меню; устройство формата — `docs/ru/reverse/ace.md`) |
+| `openrts-shape` | `export <файл.s> [--out <папка>]` — модель в glTF 2.0 с текстурами в PNG для Substance Painter и Blender: узлы, материал на каждую часть и то, по чему её выбирают файлы материалов openRTS ([материалы openRTS](docs/ru/pbr-materials.md)) |
 | `openrts-pack` | сборка и проверка паков контента (`docs/vfs-tutorial-ru.md`) |
 | `openrts-track-check` | проверка сети путей, путей `.pat`, путевых знаков |
 | `openrts-path-check` | прогон тестовых поездов по путям, бронирование, планировщик |
@@ -477,6 +482,8 @@ DLL RTS.
   как устроены подсистемы;
 - [DLL локомотивов](docs/ru/train-dll.md) — мост к DLL локомотивов и API
   нативных плагинов;
+- [DLL против реальности](docs/ru/dll-vs-real.md) — где DLL локомотивов
+  расходятся с настоящим подвижным составом и что сказать игроку;
 - [новый рендер](docs/ru/experimental-effects.md) — что делает и сколько
   стоит;
 - [профилирование](docs/ru/profiling.md) — сборка с Tracy, что размечено,

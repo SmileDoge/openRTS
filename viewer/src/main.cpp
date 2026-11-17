@@ -131,7 +131,7 @@ struct ContentTarget {
 // extra mod-layer source), `--no-hot-reload`, `--consist <name>` and `--path <name>` (a train to drive, on a
 // route path start, or by Track control), `--track-control` (open the
 // Track control window at start), (
-// the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--no-vsync`, `--no-batching`, `--msaa 1|2|4|8` (default 4; 2 and 8 where the video card takes them, else 4), `--no-sound`, `--no-discord` (nothing in the Discord profile), `--sound-offline`, `--volume <0..1>` (default 0.5),
+// the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--realistic-air` (every train on the openRTS realistic air), `--no-vsync`, `--no-batching`, `--msaa 1|2|4|8` (default 4; 2 and 8 where the video card takes them, else 4), `--no-sound`, `--no-discord` (nothing in the Discord profile), `--sound-offline`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`, `--paused` (start paused),
 // `--window-mode windowed|borderless|fullscreen`,
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain|storm`.
@@ -305,6 +305,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     int start_state = -1;
     std::filesystem::path situation; // --situation
     int start_view = 0;              // --spawn
+    bool realistic_air = false;      // --realistic-air
     std::string save_situation;      // --save-situation
     std::filesystem::path mp_snapshot; // --mp-snapshot
     std::string mp_connect;          // --mp-connect host:port
@@ -355,6 +356,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             mp_snapshot = std::filesystem::path(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--save-situation" && has_value) {
             save_situation = std::string(flags[++i]);
+        } else if (flags[i] == "--realistic-air") {
+            realistic_air = true;
         } else if (flags[i] == "--spawn" && has_value) {
             const auto value = std::string(flags[++i]);
             start_view = value == "cab" ? 1 : value == "car" ? 2 : value == "above" ? 3 : 0;
@@ -401,6 +404,14 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.capture_board.push_back(static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str())));
         } else if (flags[i] == "--capture-passage" && has_value) {
             options.capture_passage = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--fps-background") {
+            options.fps_background = true;
+        } else if (flags[i] == "--shadow-cache-check") {
+            options.shadow_cache_check = true;
+        } else if (flags[i] == "--fly-test" && has_value) {
+            options.fly_speed = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+            if (i + 1 < flags.size() && !flags[i + 1].empty() && flags[i + 1][0] != '-')
+                options.fly_turn = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--fps-limit" && has_value) {
             options.fps_limit = openrts::viewer::clamp_fps_limit(std::atoi(std::string(flags[++i]).c_str()));
             fps_given = true;
@@ -463,6 +474,9 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.vsync = false;
         } else if (flags[i] == "--shadow-cache" && has_value) {
             options.shadow_cache = std::string(flags[++i]) != "off";
+        } else if (flags[i] == "--compress-textures" && has_value) {
+            const std::string value(flags[++i]);
+            options.compress_textures = value == "off" ? 0 : value == "memory" ? 1 : 2;
         } else if (flags[i] == "--cab-shadows" && has_value) {
             options.cab_shadows = std::string(flags[++i]) != "off";
         } else if (flags[i] == "--window-mode" && has_value) {
@@ -483,6 +497,24 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.lamp_shadows = std::atoi(std::string(flags[++i]).c_str());
         } else if (flags[i] == "--ground-bounce" && has_value) {
             options.ground_bounce = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--material-view" && has_value) {
+            const std::string view(flags[++i]);
+            const char* names[] = {"none", "base", "roughness", "metallic", "normal", "ao", "emissive"};
+            for (int k = 0; k < 7; ++k) {
+                if (view == names[k]) options.material_view = k;
+            }
+        } else if (flags[i] == "--auto-exposure" && has_value) {
+            options.auto_exposure = std::string(flags[++i]) == "on";
+        } else if (flags[i] == "--auto-exposure-strength" && has_value) {
+            options.auto_exposure_strength = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--sky-light-strength" && has_value) {
+            options.sky_light_strength = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--sky-reflections" && has_value) {
+            options.sky_reflections = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--sky-reflections-indoors" && has_value) {
+            options.sky_reflections_indoors = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--sky-light-tunnel" && has_value) {
+            options.sky_light_tunnel = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--lamps-daylight" && has_value) {
             options.lamps_daylight = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--light-range" && has_value) {
@@ -681,7 +713,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
 
     const openrts::viewer::SceneContent content{
         .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control,
-        .start_state = start_state, .situation = situation, .start_view = start_view,
+        .start_state = start_state, .situation = situation, .start_view = start_view, .realistic_air = realistic_air,
         .save_situation = save_situation, .root = target->root, .snapshot = snapshot, .connection = connection,
         .early = std::move(early), .console = mp_console, .activity = activity, .activity_folder = activity_folder};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)

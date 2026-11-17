@@ -212,6 +212,7 @@ public:
     [[nodiscard]] int start_state() const noexcept { return content_.start_state; }
     [[nodiscard]] const std::filesystem::path& situation() const noexcept { return content_.situation; }
     [[nodiscard]] int start_view() const noexcept { return content_.start_view; }
+    [[nodiscard]] bool realistic_air() const noexcept { return content_.realistic_air; }
     [[nodiscard]] const std::string& save_situation() const noexcept { return content_.save_situation; }
     [[nodiscard]] const std::shared_ptr<const net::Snapshot>& snapshot() const noexcept { return content_.snapshot; }
     [[nodiscard]] const std::shared_ptr<net::RtsConnection>& connection() const noexcept { return content_.connection; }
@@ -422,6 +423,8 @@ public:
         if (track_) {
             train_ = std::make_unique<TrainView>(content_.vfs(), route_, origin_, track_->network());
             train_->set_rts_config(content_.rts_config());
+            train_->set_install_root(content_.root());
+            if (content_.realistic_air()) train_->set_realistic_air(true);
             // Not in a network game: there the server and its dispatchers
             // own the trains and the track (docs/net.md); but the
             // dispatcher's console is the map.
@@ -1061,10 +1064,16 @@ public:
             }
 
             // Switch shapes follow their junction; other shapes stay at rest.
+            // Switch blades and crossing gates move: the sun's shadow cache
+            // draws them every frame.
             if (const auto blade = track_ ? track_->switch_frame(instance) : std::nullopt) {
+                renderer.set_moving(true);
                 renderer.submit(*model, instance.transform, *blade);
+                renderer.set_moving(false);
             } else if (const auto gates = crossings_ ? crossings_->adjustments(instance, *library_) : std::nullopt) {
+                renderer.set_moving(true);
                 renderer.submit(*model, instance.transform, *gates);
+                renderer.set_moving(false);
             } else if (const auto hidden = signals_ ? signals_->hidden_parts(instance, *library_)
                                                     : std::vector<renderer::NodeAdjustment>{};
                        !hidden.empty()) {
@@ -1076,12 +1085,15 @@ public:
             renderer.set_owner(owner);
             ++drawn_instances_;
         }
+        // Trains and road traffic move (the sun's shadow cache).
+        renderer.set_moving(true);
         if (train_) {
             train_->submit(renderer, *library_,
                            {.frustum = culling_ ? &frustum : nullptr, .eye = frame.eye, .draw_distance = culling_ ? draw_distance : 0.0f,
                             .shadow_range = frame.shadow_range});
         }
         if (roads_ && effects_.traffic) roads_->submit(renderer, *library_, culling_ ? &frustum : nullptr, frame.eye, culling_ ? draw_distance : 0.0f);
+        renderer.set_moving(false);
         if (signals_) signals_->collect_lights(streamer_->visible_instances(), *library_, frame.eye, draw_distance, frame.view_zoom);
     }
 
@@ -1229,9 +1241,10 @@ public:
                 open += visible[at + 1] ? 1 : 0;
             }
             // Half the ways out reaching the sky (a street, a station): all
-            // of its light; a twentieth or less (a tunnel): a tenth (what its
-            // mouths let in, thrown about; deep in it the train's lamps).
-            if (out >= 3) sky_light_seen_ = std::clamp(2.0f * static_cast<float>(open) / static_cast<float>(out) - 0.1f, 0.1f, 1.0f);
+            // of its light; a twentieth or less (a tunnel): none here, the
+            // renderer keeps the least its mouths let in
+            // (SceneEffectSettings::sky_light_tunnel, a tenth by default).
+            if (out >= 3) sky_light_seen_ = std::clamp(2.0f * static_cast<float>(open) / static_cast<float>(out) - 0.1f, 0.0f, 1.0f);
         }
         probe_frames_.pop_front();
     }

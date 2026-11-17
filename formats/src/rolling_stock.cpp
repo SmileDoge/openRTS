@@ -21,6 +21,24 @@ using detail::TextRange;
 // psi to atmospheres as RTS converts brake values (1 / 14.69).
 constexpr double psi_to_atm = 0.06807351940095303158;
 
+// A pressure as MSTS writes it, in atm: psi unless the token names its unit
+// (bar, kPa, inHg; one AirBrakesCompressorRestartPressure of the installation
+// says "7.5bar"). 0 for none or nonsense.
+[[nodiscard]] float pressure_atm(const std::string_view token) {
+    std::size_t length = 0;
+    while (length < token.size() && (std::isdigit(static_cast<unsigned char>(token[length])) || token[length] == '.' || token[length] == '-'))
+        ++length;
+    if (length == 0) return 0.0f;
+    const double number = std::atof(std::string(token.substr(0, length)).c_str());
+    std::string unit(token.substr(length));
+    for (auto& c : unit) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    double atm = number * psi_to_atm;
+    if (unit.starts_with("bar")) atm = number * 0.98692327;
+    else if (unit.starts_with("kpa")) atm = number / 101.325;
+    else if (unit.starts_with("inhg")) atm = number * 0.0334211;
+    return atm > 0.0 ? static_cast<float>(atm) : 0.0f;
+}
+
 // Reads consecutive values of the block `keyword` found in `within`.
 class Values {
 public:
@@ -133,6 +151,10 @@ void read_brakes(std::string_view text, BrakeEquipment& brakes, std::string& err
         brakes.train_pipe_leak_rate = static_cast<float>(leak.atof() * psi_to_atm);
     }
     brakes.distributor_script = values(text, "ortsbrakedistributor").token();
+    if (const auto builtin = brake_distributor_from(brakes.distributor_script)) {
+        brakes.distributor = *builtin;
+        brakes.distributor_script.clear();
+    }
     brakes.shoe = brake_shoe_from(values(text, "ortsbrakeshoetype").token());
     if (auto force = values(text, "ortsbrakeforce"); force.found()) brakes.realistic_brake_force = (std::max)(static_cast<float>(force.quantity()), 0.0f);
     if (auto add = values(text, "addbrakeforce"); add.found()) brakes.max_brake_force += static_cast<float>(add.quantity());
@@ -456,6 +478,9 @@ void read_exhausts(std::string_view text, TextRange block, EngineDefinition& eng
     engine.sanding_speed = static_cast<float>(values(text, "sanding").quantity());
     if (auto sand = values(text, "maxsandingtime"); sand.found()) engine.max_sanding_time = static_cast<float>(sand.atof());
     engine.main_reservoir_volume = static_cast<float>(values(text, "airbrakesmainresvolume").atof());
+    engine.main_reservoir_max = pressure_atm(values(text, "airbrakesmainmaxairpressure").token());
+    engine.compressor_restart = pressure_atm(values(text, "airbrakescompressorrestartpressure").token());
+    engine.compressor_capacity = (std::max)(static_cast<float>(values(text, "ortscompressorcapacity").atof()), 0.0f);
     engine.dynamic_brake_max_force = static_cast<float>(values(text, "dynamicbrakesmaximumforce").quantity());
     if (const auto controllers = rts_find(text, "enginecontrollers")) {
         if (const auto throttle = rts_find(text, "throttle", *controllers)) {
@@ -624,7 +649,7 @@ namespace {
 } // namespace
 
 WagonDefinition load_wagon(const core::Vfs& vfs, const std::string_view folder, const std::string_view name,
-                           const bool engine) {
+                           const bool engine, const WagonRules& rules) {
     const auto path = wagon_path(folder, name, engine);
     std::string error;
     const auto bytes = vfs.read(path, &error);
@@ -641,12 +666,45 @@ WagonDefinition load_wagon(const core::Vfs& vfs, const std::string_view folder, 
             }
         }
     }
+    // The distributor the file itself names (before openRTS's companion).
+    const auto file_distributor = brake_distributor_from(values(*main, "ortsbrakedistributor").token());
+    // openRTS's own companion (a mod's), over RTS's: its values come first.
+    bool own_distributor = false, own_compressor = false, own_capacity = false;
+    if (const auto own = wagon_override_path(folder, name, engine); vfs.exists(own)) {
+        if (const auto own_bytes = vfs.read(own, &error)) {
+            if (auto own_text = detail::rts_text(*own_bytes, error)) {
+                detail::rts_blank_comments(*own_text);
+                own_distributor = own_text->find("ortsbrakedistributor") != std::string::npos;
+                own_compressor = own_text->find("airbrakesmainmaxairpressure") != std::string::npos ||
+                                 own_text->find("airbrakescompressorrestartpressure") != std::string::npos;
+                own_capacity = own_text->find("ortscompressorcapacity") != std::string::npos;
+                detail::rts_merge(*main, *own_text, {"wagon", "engine", "engextended"});
+            }
+        }
+    }
     // parse_wagon expects file bytes; the merged text is already decoded.
     auto wagon = parse_wagon(*main);
     // The merged companion text comes first in the Wagon block, so its
     // first token is no longer the name; the file name is.
     wagon.name = std::string(name);
     wagon.display_name = written_name(*bytes);
+    // openRTS's stock rules (Luau): the file < the rules < the companion.
+    auto& brakes_now = wagon.brakes;
+    brakes_now.distributor_in_companion = own_distributor;
+    brakes_now.default_distributor = file_distributor.value_or(BrakeDistributor::inferred);
+    if (rules) {
+        const auto file = path.filename();
+        const auto given = rules(wagon, folder, file, engine);
+        if (given.distributor && !file_distributor && brakes_now.distributor_script.empty() && !own_distributor) {
+            brakes_now.distributor = *given.distributor;
+        }
+        if (given.distributor && !file_distributor) brakes_now.default_distributor = *given.distributor;
+        if (wagon.engine && !own_compressor) {
+            if (given.compressor_off) wagon.engine->main_reservoir_max = *given.compressor_off;
+            if (given.compressor_on) wagon.engine->compressor_restart = *given.compressor_on;
+        }
+        if (wagon.engine && !own_capacity && given.compressor_capacity) wagon.engine->compressor_capacity = *given.compressor_capacity;
+    }
     // openRTS: a distributor script, next to the file.
     if (auto& brakes = wagon.brakes; !brakes.distributor_script.empty()) {
         const auto script = core::VirtualPath::parse(path.parent().str() + "/" + brakes.distributor_script);
@@ -678,6 +736,86 @@ const char* brake_shoe_name(const BrakeShoe shoe) noexcept {
     case BrakeShoe::wood: return "wood";
     default: return "";
     }
+}
+
+std::optional<BrakeDistributor> brake_distributor_from(const std::string_view name) {
+    const auto s = core::fold_case(std::string(name));
+    if (s == "483" || s == "vr483") return BrakeDistributor::vr483;
+    if (s == "292" || s == "vr292") return BrakeDistributor::vr292;
+    if (s == "305" || s == "305-000" || s == "evr305" || s == "evr305-000") return BrakeDistributor::evr305;
+    if (s == "305-001" || s == "evr305-001") return BrakeDistributor::evr305_001;
+    return std::nullopt;
+}
+
+const char* brake_distributor_name(const BrakeDistributor distributor) noexcept {
+    switch (distributor) {
+    case BrakeDistributor::vr483: return "483";
+    case BrakeDistributor::vr292: return "292";
+    case BrakeDistributor::evr305: return "305-000";
+    case BrakeDistributor::evr305_001: return "305-001";
+    default: return "";
+    }
+}
+
+core::VirtualPath wagon_override_path(const std::string_view folder, const std::string_view name, const bool engine) {
+    return core::VirtualPath::parse(wagon_path(folder, name, engine).str() + ".openrts").value_or(core::VirtualPath{});
+}
+
+std::string set_override_distributor(const std::string_view text, const BrakeDistributor distributor) {
+    // Line by line: the companion is openRTS's own small file, a block a line.
+    std::vector<std::string> lines;
+    {
+        std::size_t from = 0;
+        while (from <= text.size()) {
+            auto to = text.find('\n', from);
+            if (to == std::string_view::npos) to = text.size();
+            std::string line(text.substr(from, to - from));
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            lines.push_back(std::move(line));
+            from = to + 1;
+        }
+        while (!lines.empty() && lines.back().empty()) lines.pop_back();
+    }
+    // The line folded and without blanks, to compare.
+    const auto bare = [](const std::string& line) {
+        std::string out;
+        for (const char c : line) {
+            if (!std::isspace(static_cast<unsigned char>(c))) out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        return out;
+    };
+    std::erase_if(lines, [&](const std::string& line) { return bare(line).find("ortsbrakedistributor") != std::string::npos; });
+    if (distributor != BrakeDistributor::inferred) {
+        const std::string entry = std::string("\tORTSBrakeDistributor ( \"") + brake_distributor_name(distributor) + "\" )";
+        const auto opener = std::find_if(lines.begin(), lines.end(), [&](const std::string& line) { return bare(line) == "wagon("; });
+        if (opener != lines.end()) {
+            lines.insert(opener + 1, entry);
+        } else {
+            lines.emplace_back("Wagon (");
+            lines.push_back(entry);
+            lines.emplace_back(")");
+        }
+    } else {
+        // An emptied Wagon block goes too.
+        for (std::size_t i = 0; i + 1 < lines.size();) {
+            std::size_t next = i + 1;
+            while (next < lines.size() && bare(lines[next]).empty()) ++next;
+            if (bare(lines[i]) == "wagon(" && next < lines.size() && bare(lines[next]) == ")") {
+                lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i), lines.begin() + static_cast<std::ptrdiff_t>(next) + 1);
+            } else {
+                ++i;
+            }
+        }
+    }
+    // Nothing but blanks and comments left: no file.
+    const bool empty = std::all_of(lines.begin(), lines.end(), [&](const std::string& line) {
+        const auto b = bare(line);
+        return b.empty() || b.starts_with("comment(");
+    });
+    if (empty) return {};
+    std::string out;
+    for (const auto& line : lines) out += line + "\r\n";
+    return out;
 }
 
 ConsistDefinition parse_consist(const std::string_view bytes) {

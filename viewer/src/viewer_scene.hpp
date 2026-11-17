@@ -350,6 +350,9 @@ struct SceneContent {
     // camera at the route start), 1 the cab, 2 beside the cab car, 3 above
     // the train.
     int start_view = 0;
+    // Route scenes: every train on the openRTS realistic air (--realistic-air,
+    // the Train window's "Realistic air (openRTS)" from the start).
+    bool realistic_air = false;
     // Route scenes: save the situation under this name once the train
     // stands on the track (--save-situation).
     std::string save_situation;

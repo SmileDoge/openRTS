@@ -17,6 +17,41 @@
 
 namespace openrts::trainplugin {
 
+namespace {
+
+// VkKeyScanW's low byte on the US layout for a key's character.
+std::uint8_t virtual_key(const char c) {
+    const auto u = static_cast<unsigned char>(c);
+    if (u >= 'a' && u <= 'z') return static_cast<std::uint8_t>(u - 'a' + 'A');
+    if ((u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9')) return u;
+    switch (c) {
+    case ';': case ':': return 0xBA;
+    case '=': case '+': return 0xBB;
+    case ',': case '<': return 0xBC;
+    case '-': case '_': return 0xBD;
+    case '.': case '>': return 0xBE;
+    case '/': case '?': return 0xBF;
+    case '`': case '~': return 0xC0;
+    case '[': case '{': return 0xDB;
+    case '\\': case '|': return 0xDC;
+    case ']': case '}': return 0xDD;
+    case '\'': case '"': return 0xDE;
+    case '!': return '1';
+    case '@': return '2';
+    case '#': return '3';
+    case '$': return '4';
+    case '%': return '5';
+    case '^': return '6';
+    case '&': return '7';
+    case '*': return '8';
+    case '(': return '9';
+    case ')': return '0';
+    default: return u;
+    }
+}
+
+} // namespace
+
 void switch_key_bytes(const std::vector<std::string>& keys, std::uint8_t (&out)[4]) {
     out[0] = out[1] = out[2] = out[3] = 0;
     for (std::size_t k = 0; k < keys.size() && k < 2; ++k) {
@@ -40,7 +75,7 @@ void switch_key_bytes(const std::vector<std::string>& keys, std::uint8_t (&out)[
             } else if (lower == "space") {
                 key = 0x20;
             } else if (!part.empty()) {
-                key = static_cast<std::uint8_t>(std::toupper(static_cast<unsigned char>(part.front())));
+                key = virtual_key(part.front());
             }
             if (plus == std::string_view::npos) break;
             start = plus + 1;
@@ -216,8 +251,9 @@ public:
         }
         // The main reservoir is the model's: the DLLs keep RTS's (its huge
         // volume never drains, their compressors may never run, and they
-        // take their own air from it), so openRTS runs the compressors.
-        demands.main_reservoir_rate = simulation::compressor_rate(compressor_, inputs);
+        // take their own air from it), so openRTS runs the compressors, by
+        // the .eng's governor; started cold, not before the train has power.
+        demands.main_reservoir_rate = outputs->cold ? 0.0f : simulation::compressor_rate(compressor_, inputs);
         // The realistic air works the pipe. The DLL's TrainPipeRate counts
         // only as a direct vent (its VI, the ЭПК, a stop valve): faster than
         // 0.6 atm/s and faster than its own valve would vent, which follows
@@ -737,6 +773,20 @@ std::vector<CarInput> LegacyConsist::inputs(const std::vector<const simulation::
     return out;
 }
 
+namespace {
+
+// A DLL has power: a pantograph up, a diesel running, its own compressor
+// on, or traction (a cold start's compressors wait for it).
+bool has_power(const std::vector<CarOutput>& cars) {
+    return std::any_of(cars.begin(), cars.end(), [](const CarOutput& c) {
+        const auto& e = c.engine;
+        return c.has_engine && (e.panto != 0 || e.diesel_on != 0 || e.main_reservoir_rate > 0.0f || e.rpm > 0.0f || std::abs(e.force) > 1.0f);
+    });
+}
+
+} // namespace
+
+
 bool LegacyConsist::enter(std::size_t car, const simulation::Train& train, bool running, int state) {
     if (!host_ || !host_->alive()) return false;
     EnterRequest request;
@@ -753,6 +803,7 @@ bool LegacyConsist::enter(std::size_t car, const simulation::Train& train, bool 
     entered_air_ = std::move(reply.air);
     outputs_->cars = std::move(reply.cars);
     outputs_->valid = true;
+    if (outputs_->cold && has_power(outputs_->cars)) outputs_->cold = false;
     return true;
 }
 
@@ -773,6 +824,11 @@ bool enter_new_train(LegacyConsist& consist, const std::size_t car, simulation::
     const auto& air = consist.entered_air();
     if (car >= air.size() || air.size() != count) return true;
     const auto& from = air[car];
+    // Started cold (TrainState 0) the main reservoirs are as Init left them,
+    // empty unless a DLL fills them: openRTS put 8.5 back where Init left 0
+    // (the ЭД4М's cold start had air in them; testers, 2026-11-16).
+    const bool cold = state == 0;
+    consist.set_cold_start(cold);
     // A pipe the DLL charged has its reservoirs charged with it: MaDaDev's
     // Brakes.dll sets the pipe in Init (the ЭП2Д 4.4) and leaves the ЗР and
     // the РК as given (0), so under the realistic air the whole train's ЗР
@@ -788,7 +844,7 @@ bool enter_new_train(LegacyConsist& consist, const std::size_t car, simulation::
                           .cylinder = from.cylinder,
                           .auxiliary = charged(from.auxiliary),
                           .control = charged(from.control),
-                          .main_reservoir = air[i].main_reservoir > 0.0f ? air[i].main_reservoir : reservoirs[i]});
+                          .main_reservoir = cold || air[i].main_reservoir > 0.0f ? air[i].main_reservoir : reservoirs[i]});
     }
     return true;
 }
@@ -865,6 +921,7 @@ bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>&
     }
     outputs_->cars = std::move(reply.cars);
     outputs_->valid = true;
+    if (outputs_->cold && has_power(outputs_->cars)) outputs_->cold = false;
     items_wanted_ = reply.items_wanted;
     if (reply.tape_set) {
         tape_request_ = {.set = true, .restart = reply.tape_restart != 0, .car = reply.tape_car};
@@ -958,6 +1015,7 @@ bool LegacyConsist::reconsist(const core::Vfs& vfs, std::vector<std::vector<Lega
     player_ = player;
     outputs_->cars = std::move(reply.cars);
     outputs_->valid = true;
+    if (outputs_->cold && has_power(outputs_->cars)) outputs_->cold = false;
     return true;
 }
 

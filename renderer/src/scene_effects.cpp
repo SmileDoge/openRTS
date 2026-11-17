@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -20,6 +22,8 @@
 #include <glm/matrix.hpp>
 
 #include <openrts/renderer/depth.hpp>
+
+#include <webgpu/wgpu.h> // wgpuDevicePoll (the cache's check)
 
 #include "rts_light_shapes.hpp"
 #include "scene_effects_wgsl.hpp"
@@ -79,6 +83,11 @@ struct EffectsUniform {
     // The sky's light (SkyLightView): x 1 on, y the prefiltered cube's last
     // mip, z the sky's openness round the eye.
     glm::vec4 sky_light{0.0f};
+    // Its tuning (SceneEffectSettings): x the diffuse part, y the
+    // reflections, z the reflections indoors.
+    glm::vec4 sky_tune{1.0f, 1.0f, 0.35f, 0.0f};
+    // x: the material debug view (SceneEffectSettings::material_view).
+    glm::vec4 views{0.0f};
 };
 static_assert(sizeof(EffectsUniform) % 16 == 0);
 
@@ -294,10 +303,17 @@ fn blur(@builtin(global_invocation_id) id: vec3<u32>) {
 )";
 
 // Each cluster (a screen tile between two depths, as a view-space box) gets
-// the lights whose spheres reach it, nearest first, at most `clusters.w`.
+// the lights whose spheres reach it and, a cone's (headlights, searchlights,
+// lamps shining down), whose cone does, nearest first, at most `clusters.w`.
+// Until 2026-11-17 the sphere alone: a cone's sphere is its whole reach
+// round the lamp, so a headlight's 100 m came into every cluster near the
+// train, and every pixel there tried it (the night's main pass, testers).
 constexpr char cluster_wgsl[] = R"(
 @group(0) @binding(0) var<uniform> effects: Effects;
-@group(0) @binding(1) var<storage, read> spheres: array<vec4<f32>>; // view-space centre, radius
+// Three per light, view space: its sphere (centre, radius); its cone's apex
+// and reach from it (w < 0: no cone, the sphere alone); its axis and the
+// tangent of its half angle.
+@group(0) @binding(1) var<storage, read> spheres: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> counts: array<u32>;
 @group(0) @binding(3) var<storage, read_write> indices: array<u32>;
 
@@ -322,16 +338,31 @@ fn assign(@builtin(global_invocation_id) id: vec3<u32>) {
     let ys = vec4<f32>(y0 * near, y1 * near, y0 * far, y1 * far) * ty;
     let lo = vec3<f32>(min(min(xs.x, xs.y), min(xs.z, xs.w)), min(min(ys.x, ys.y), min(ys.z, ys.w)), -far);
     let hi = vec3<f32>(max(max(xs.x, xs.y), max(xs.z, xs.w)), max(max(ys.x, ys.y), max(ys.z, ys.w)), -near);
+    // The cluster's bounding sphere, for the cones.
+    let middle = 0.5 * (lo + hi);
+    let bound = 0.5 * length(hi - lo);
     var count = 0u;
     let base = cluster * grid.w;
     for (var i = 0u; i < effects.flags.w; i = i + 1u) {
-        let s = spheres[i];
+        if (count >= grid.w) { break; }
+        let s = spheres[3u * i];
         let closest = clamp(s.xyz, lo, hi);
         let d = closest - s.xyz;
-        if (dot(d, d) <= s.w * s.w && count < grid.w) {
-            indices[base + count] = i;
-            count = count + 1u;
+        if (dot(d, d) > s.w * s.w) { continue; }
+        let apex = spheres[3u * i + 1u];
+        if (apex.w >= 0.0) {
+            // The bounding sphere against the cone (Wronski, "Cull that
+            // cone!"): its centre's distance to the cone's side, past its
+            // reach, or behind its apex.
+            let cone = spheres[3u * i + 2u];
+            let v = middle - apex.xyz;
+            let along = dot(v, cone.xyz);
+            let side = sqrt(max(dot(v, v) - along * along, 0.0));
+            let cos_half = inverseSqrt(1.0 + cone.w * cone.w);
+            if (side * cos_half - along * cone.w * cos_half > bound || along > apex.w + bound || along < -bound) { continue; }
         }
+        indices[base + count] = i;
+        count = count + 1u;
     }
     counts[cluster] = count;
 }
@@ -362,6 +393,99 @@ fn assign(@builtin(global_invocation_id) id: vec3<u32>) {
         .compute = {.module = shader, .entryPoint = name(entry), .constantCount = constants.size(), .constants = constants.data()}};
     const auto pipeline = wgpuDeviceCreateComputePipeline(device, &descriptor);
     wgpuPipelineLayoutRelease(pipeline_layout);
+    wgpuShaderModuleRelease(shader);
+    return pipeline;
+}
+
+// The sun's shadow cache (2026-11-17): a cascade's working map from the
+// still casters' layer, kept toroidally (each global texel at its place
+// modulo the size), then the moving casters over it; a piece of the layer
+// drawn again first set to the far plane.
+constexpr char still_wgsl[] = R"(
+struct Unwrap {
+    at: array<vec4<u32>, 4>, // the window's offset in the layer (x, y), the layer, the size
+};
+@group(0) @binding(0) var<uniform> unwrap: Unwrap;
+@group(0) @binding(1) var still: texture_depth_2d_array;
+
+struct FullOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) which: u32,
+};
+
+@vertex
+fn vs_full(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> FullOut {
+    let xy = vec2<f32>(f32((v << 1u) & 2u), f32(v & 2u)) * 2.0 - 1.0;
+    var out: FullOut;
+    out.position = vec4<f32>(xy, 0.0, 1.0);
+    out.which = i;
+    return out;
+}
+
+@fragment
+fn fs_unwrap(input: FullOut) -> @builtin(frag_depth) f32 {
+    let a = unwrap.at[input.which];
+    let p = vec2<u32>(input.position.xy);
+    let at = vec2<u32>((p.x + a.x) % a.w, (p.y + a.y) % a.w);
+    return textureLoad(still, vec2<i32>(at), i32(a.z), 0);
+}
+)";
+
+constexpr char far_wgsl[] = R"(
+@vertex
+fn vs_full(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
+    let xy = vec2<f32>(f32((v << 1u) & 2u), f32(v & 2u)) * 2.0 - 1.0;
+    return vec4<f32>(xy, 0.0, 1.0);
+}
+
+@fragment
+fn fs_far() -> @builtin(frag_depth) f32 {
+    return 1.0;
+}
+)";
+
+// --shadow-cache-check: the texels of the working maps that differ from the
+// cascades drawn whole.
+constexpr char check_wgsl[] = R"(
+@group(0) @binding(0) var working: texture_depth_2d_array;
+@group(0) @binding(1) var whole: texture_depth_2d_array;
+@group(0) @binding(2) var<storage, read_write> counts: array<atomic<u32>, 8>;
+
+@compute @workgroup_size(8, 8)
+fn compare(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = textureDimensions(whole);
+    if (id.x >= size.x || id.y >= size.y) { return; }
+    let a = textureLoad(working, vec2<i32>(id.xy), i32(id.z), 0);
+    let b = textureLoad(whole, vec2<i32>(id.xy), i32(id.z), 0);
+    if (abs(a - b) > 2e-5) {
+        atomicAdd(&counts[id.z], 1u);
+    }
+    if (b < 1.0) {
+        atomicAdd(&counts[id.z + 4u], 1u);
+    }
+}
+)";
+
+[[nodiscard]] WGPURenderPipeline make_full_pipeline(const WGPUDevice device, const WGPUPipelineLayout layout, const std::string& code,
+                                                    const char* fragment_entry) {
+    const auto shader = make_shader(device, code);
+    const WGPUDepthStencilState depth{
+        .format = WGPUTextureFormat_Depth32Float,
+        .depthWriteEnabled = WGPUOptionalBool_True,
+        .depthCompare = WGPUCompareFunction_Always,
+        .stencilFront = {.compare = WGPUCompareFunction_Always},
+        .stencilBack = {.compare = WGPUCompareFunction_Always},
+    };
+    const WGPUFragmentState fragment{.module = shader, .entryPoint = name(fragment_entry), .targetCount = 0, .targets = nullptr};
+    const WGPURenderPipelineDescriptor descriptor{
+        .layout = layout,
+        .vertex = {.module = shader, .entryPoint = name("vs_full")},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+        .depthStencil = &depth,
+        .multisample = {.count = 1, .mask = ~0u},
+        .fragment = &fragment,
+    };
+    const auto pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
     wgpuShaderModuleRelease(shader);
     return pipeline;
 }
@@ -428,6 +552,38 @@ struct Texture {
         radius = std::sqrt(reach * reach + light.size.x * light.size.x + light.size.y * light.size.y);
     }
     return {position, radius};
+}
+
+// A cone light's cone for the clusters (kinds 1 and 4, one lamp): its apex,
+// axis (unit), reach from the apex and the tangent of its half angle, as
+// physical_light and light_factor bound it (d <= 1, 0 < z <= reach). A
+// spotlight's source radius (Size.w) moves the apex back to where its sides
+// meet. None for a light array (its lamps along a line) or a cone wider than
+// some 84 degrees each way.
+struct LightCone {
+    glm::vec3 apex;
+    glm::vec3 axis;
+    float reach;
+    float tangent;
+};
+[[nodiscard]] std::optional<LightCone> light_cone(const ModelExtraLight& light) {
+    const int kind = static_cast<int>(light.kind) & 31;
+    if ((kind != 1 && kind != 4) || light.array_count >= 2) return std::nullopt;
+    const float reach = (std::max)(light.size.z * (light.attenuation.y + light.attenuation.z), 0.0f);
+    const float tangent = kind == 1 ? std::abs(light.size.y) : (std::max)(std::abs(light.size.x), std::abs(light.size.y));
+    if (reach <= 0.0f || tangent > 10.0f) return std::nullopt;
+    const glm::mat4 to_world = glm::inverse(light.to_light);
+    const glm::vec3 along{to_world * glm::vec4{0.0f, 0.0f, 1.0f, 0.0f}};
+    if (glm::length(along) < 1e-6f) return std::nullopt;
+    const glm::vec3 axis = glm::normalize(along);
+    glm::vec3 apex{to_world[3]};
+    float back = 0.0f;
+    if (kind == 1 && light.size.w > 0.0f) {
+        if (tangent < 1e-4f) return std::nullopt; // a cylinder
+        back = light.size.w / tangent;
+    }
+    apex -= axis * back;
+    return LightCone{apex, axis, reach + back, tangent};
 }
 
 } // namespace
@@ -559,6 +715,28 @@ struct SceneEffects::Impl {
     std::array<glm::mat4, max_lamp_shadows> lamp_matrices{};
     std::array<std::uint32_t, max_lamp_shadows> lamp_owners{}; // each shadow's lamp's owner
     std::vector<glm::vec3> lamp_shadow_kept; // last frame's lamps, by position
+    // What each lamp's map holds (2026-11-17): the lamp, the sphere and the
+    // matrix it was drawn with. A map is drawn every other frame (the slots
+    // alternating), at once for a lamp new in its slot, a lamp or sphere
+    // moved a metre (a twentieth of the sphere) or more, or a new array;
+    // between, the shaders take the matrix it was drawn with (as the far sun
+    // cascades): half the lamps' passes, a frame's lag of their shadows of
+    // things moving. Until then every map every frame (8 on Ultra: about
+    // 1 ms of the GPU and 2.6 ms of the workers a frame at a night station).
+    struct LampKept {
+        glm::vec3 position{};
+        glm::vec3 centre{};
+        glm::mat4 matrix{1.0f};
+        float texel = 0.0f;
+        std::uint32_t owner = 0;
+        int kind = 0;
+        std::uint64_t generation = 0;
+        bool valid = false;
+    };
+    std::array<LampKept, max_lamp_shadows> lamp_kept{};
+    std::array<bool, max_lamp_shadows> lamp_redraw{};
+    std::uint64_t lamp_generation = 1; // grows when the lamps' array is made again
+    std::uint64_t lamp_frame = 0;
     void fit_focus(const std::optional<ShadowFocus>& focus);
     void choose_lamp_shadows(const std::optional<ShadowFocus>& focus, bool fade);
     [[nodiscard]] std::uint32_t lamp_map_size() const noexcept { return (std::max)(1024u, map_size() / 2); }
@@ -578,6 +756,136 @@ struct SceneEffects::Impl {
     std::array<bool, max_cascades> redraw{};
     std::uint64_t frame_index = 0;
     std::uint64_t shadow_generation = 1; // grows when the shadow array is made again
+
+    // The sun's shadow cache (2026-11-17, SceneEffectSettings::cache_far_cascades):
+    // what does not move (the terrain, the world's objects) kept in a layer
+    // of its own a cascade, toroidally: a global texel (of the light's plane,
+    // in the cascade's texels) at its place modulo the size. As the window
+    // moves only the strips it enters are drawn (viewport and scissor, each
+    // piece of a strip in a depth slot of its own); each frame the working
+    // map is the layer read at the window's offset, then the moving casters
+    // (ModelRenderer::set_moving) over it. Drawn whole again when the sun
+    // turns, the depth's anchor no longer holds the slice, the window jumps a
+    // map or more, the map is new, and every 30 frames or so (objects that
+    // came in meanwhile, signal arms; place_still). Until then the cascades were drawn
+    // whole every frame (the far two every other frame): the trees' alpha
+    // test over and over (Ultra: 1.9 ms of the GPU in a 2ES6 cab by day).
+    static constexpr std::uint32_t still_slot = lamp_slot + max_lamp_shadows;
+    static constexpr std::uint32_t still_pieces = 8; // a cascade's pieces a frame at most
+    static constexpr std::uint32_t check_slot = still_slot + max_cascades * still_pieces;
+    static_assert(check_slot + max_cascades == ModelRenderer::depth_slots, "the renderers' depth slots");
+    struct StillCache {
+        bool valid = false;
+        std::uint64_t generation = 0;
+        glm::dvec3 s{}, u{}, f{};                   // the light's basis it is drawn in
+        float radius = 0.0f;
+        std::int64_t col = 0, row = 0;             // the window's corner, global texels
+        std::int64_t phase_col = 0, phase_row = 0; // the global texel at the layer's (0, 0)
+        double z0 = 0.0, zr = 1.0;                 // its depth: (dot(f, p) - z0) / zr
+        std::uint64_t drawn = 0;                   // the frame it was last drawn whole
+    };
+    struct StillPiece {
+        glm::mat4 matrix{1.0f};
+        std::uint32_t x = 0, y = 0, width = 0, height = 0; // in the layer
+    };
+    std::array<StillCache, max_cascades> still{};
+    std::array<std::vector<StillPiece>, max_cascades> still_now{}; // this frame's, drawn into the cache
+    std::uint64_t still_generation = 1;
+    bool still_on = false;   // this frame's working maps come from the cache
+    std::uint32_t still_full = 0;
+    std::uint64_t still_texels = 0;
+    std::array<std::uint32_t, max_cascades * 4> unwrap_at{};
+    Texture shadow_still;
+    std::array<WGPUTextureView, max_cascades> still_layers{};
+    WGPUBindGroupLayout unwrap_layout = nullptr;
+    WGPURenderPipeline unwrap = nullptr;
+    WGPURenderPipeline fill_far = nullptr;
+    WGPUBuffer unwrap_params = nullptr;
+    WGPUBindGroup unwrap_group = nullptr;
+    // Maps kept while nothing in them changed (set_moving_signature): the
+    // cascades' working maps, then the cab's map.
+    struct MapKept {
+        bool valid = false;
+        std::uint64_t shadow_generation = 0, still_generation = 0, signature = 0, drawn = 0;
+        glm::mat4 matrix{1.0f};
+    };
+    std::array<MapKept, max_cascades + 1> map_kept{};
+    std::array<bool, max_cascades + 1> map_skip{};
+    // --shadow-cache-check: the cascades drawn whole, compared.
+    bool check_on = false;
+    Texture whole;
+    std::array<WGPUTextureView, max_cascades> whole_layers{};
+    WGPUBindGroupLayout check_layout = nullptr;
+    WGPUComputePipeline check = nullptr;
+    WGPUBuffer check_counts = nullptr;
+    std::uint64_t check_frames = 0;
+
+    void release_still() {
+        for (auto& layer : still_layers) {
+            if (layer) wgpuTextureViewRelease(layer);
+            layer = nullptr;
+        }
+        shadow_still.release();
+        if (unwrap_group) wgpuBindGroupRelease(unwrap_group);
+        unwrap_group = nullptr;
+        ++still_generation;
+    }
+    void release_whole() {
+        for (auto& layer : whole_layers) {
+            if (layer) wgpuTextureViewRelease(layer);
+            layer = nullptr;
+        }
+        whole.release();
+    }
+    void make_layers(const Texture& texture, std::array<WGPUTextureView, max_cascades>& layers) const {
+        for (std::uint32_t i = 0; i < texture.layers && i < max_cascades && texture.texture; ++i) {
+            const WGPUTextureViewDescriptor layer{
+                .format = shadow_format,
+                .dimension = WGPUTextureViewDimension_2D,
+                .baseMipLevel = 0,
+                .mipLevelCount = 1,
+                .baseArrayLayer = i,
+                .arrayLayerCount = 1,
+                .aspect = WGPUTextureAspect_DepthOnly,
+            };
+            layers[i] = wgpuTextureCreateView(texture.texture, &layer);
+        }
+    }
+    // The cache's layers, one a cascade at their size while it is wanted
+    // (64 MB a cascade at 4096, 16 at 2048), else none; the check's likewise.
+    void ensure_still(const bool wanted) {
+        const std::uint32_t size = map_size();
+        const std::uint32_t layers = cascades_wanted();
+        if (!wanted || !unwrap || !fill_far || !unwrap_params) {
+            if (shadow_still.texture) release_still();
+            if (whole.texture) release_whole();
+            return;
+        }
+        if (!shadow_still.texture || shadow_still.width != size || shadow_still.layers != layers) {
+            release_still();
+            shadow_still = make_texture(device, shadow_format, WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding, size, size,
+                                        layers, WGPUTextureViewDimension_2DArray);
+            make_layers(shadow_still, still_layers);
+            if (shadow_still.view) {
+                std::array<WGPUBindGroupEntry, 2> entries{};
+                entries[0] = {.binding = 0, .buffer = unwrap_params, .size = sizeof(unwrap_at)};
+                entries[1] = {.binding = 1, .textureView = shadow_still.view};
+                const WGPUBindGroupDescriptor descriptor{.layout = unwrap_layout, .entryCount = entries.size(), .entries = entries.data()};
+                unwrap_group = wgpuDeviceCreateBindGroup(device, &descriptor);
+            }
+        }
+        if (check_on && check && (!whole.texture || whole.width != size || whole.layers != layers)) {
+            release_whole();
+            whole = make_texture(device, shadow_format, WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding, size, size,
+                                 layers, WGPUTextureViewDimension_2DArray);
+            make_layers(whole, whole_layers);
+        } else if (!check_on && whole.texture) {
+            release_whole();
+        }
+    }
+    void place_still(std::uint32_t i, const glm::vec3& centre, float radius, float split, const glm::vec3& to_sun, std::uint32_t size);
+    void record_still(WGPUCommandEncoder encoder, std::uint32_t i, const DepthDraw& draw) const;
+    void record_working(WGPUCommandEncoder encoder, std::uint32_t i, const DepthDraw& draw) const;
     // record_parallel(): a command buffer a task, in submission order.
     std::vector<WGPUCommandBuffer> parallel_buffers;
     std::vector<float> parallel_ms; // by parallel_buffers' index: the pass's recording time
@@ -591,6 +899,18 @@ struct SceneEffects::Impl {
             if (layer) wgpuTextureViewRelease(layer);
         }
         shadow.release();
+        release_still();
+        release_whole();
+        for (const auto pipeline : {unwrap, fill_far}) {
+            if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        }
+        if (check) wgpuComputePipelineRelease(check);
+        for (const auto layout : {unwrap_layout, check_layout}) {
+            if (layout) wgpuBindGroupLayoutRelease(layout);
+        }
+        for (const auto buffer : {unwrap_params, check_counts}) {
+            if (buffer) wgpuBufferRelease(buffer);
+        }
         for (auto& layer : lamp_layers) {
             if (layer) wgpuTextureViewRelease(layer);
         }
@@ -667,6 +987,7 @@ struct SceneEffects::Impl {
         lamp_shadow.release();
         lamp_shadow = make_texture(device, shadow_format, WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding, size, size,
                                    layers, WGPUTextureViewDimension_2DArray);
+        ++lamp_generation;
         if (wanted && lamp_shadow.texture) {
             for (std::uint32_t i = 0; i < layers; ++i) {
                 const WGPUTextureViewDescriptor layer{
@@ -764,7 +1085,7 @@ struct SceneEffects::Impl {
         {
             std::array<WGPUBindGroupEntry, 4> entries{};
             entries[0] = {.binding = 0, .buffer = uniform, .size = sizeof(EffectsUniform)};
-            entries[1] = {.binding = 1, .buffer = spheres, .size = sizeof(glm::vec4) * max_lights};
+            entries[1] = {.binding = 1, .buffer = spheres, .size = sizeof(glm::vec4) * 3 * max_lights};
             entries[2] = {.binding = 2, .buffer = counts, .size = sizeof(std::uint32_t) * cluster_count};
             entries[3] = {.binding = 3, .buffer = indices, .size = sizeof(std::uint32_t) * cluster_count * cluster_capacity};
             const WGPUBindGroupDescriptor descriptor{.layout = cluster_layout, .entryCount = entries.size(), .entries = entries.data()};
@@ -799,6 +1120,11 @@ struct SceneEffects::Impl {
         // inside them a while.
         const std::uint32_t first_cached = settings.cache_far_cascades ? (cascade_count >= 3 ? cascade_count - 2 : cascade_count - 1) : cascade_count;
         ++frame_index;
+        still_on = settings.cache_far_cascades && shadow_still.texture && unwrap_group && unwrap && fill_far;
+        map_skip.fill(false);
+        still_full = 0;
+        still_texels = 0;
+        for (auto& pieces : still_now) pieces.clear();
         float previous = near;
         for (std::uint32_t i = 0; i < cascade_count; ++i) {
             const float t = static_cast<float>(i + 1) / static_cast<float>(cascade_count);
@@ -814,6 +1140,11 @@ struct SceneEffects::Impl {
                         radius = (std::max)(radius, glm::distance(corner, centre));
                     }
                 }
+            }
+            if (still_on) {
+                place_still(i, centre, std::ceil(radius * 4.0f) / 4.0f, split, to_sun, size);
+                previous = split;
+                continue;
             }
             const bool cacheable = i >= first_cached;
             if (cacheable) radius *= 1.1f;
@@ -856,6 +1187,11 @@ struct SceneEffects::Impl {
             kept = {.centre = centre, .radius = radius, .to_sun = to_sun, .texel = frame.texel[static_cast<int>(i)],
                     .generation = shadow_generation, .valid = true};
             previous = split;
+        }
+        if (still_on) {
+            const auto queue = wgpuDeviceGetQueue(device);
+            wgpuQueueWriteBuffer(queue, unwrap_params, 0, unwrap_at.data(), sizeof(unwrap_at));
+            wgpuQueueRelease(queue);
         }
     }
 };
@@ -929,10 +1265,51 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
     impl.blur_low = make_compute(device, impl.blur_layout, header + blur_wgsl, "blur",
                                  {{.key = name("scale"), .value = 2.0}, {.key = name("reach"), .value = 1.0}});
     impl.cluster = make_compute(device, impl.cluster_layout, header + cluster_wgsl, "assign");
+    {
+        // The sun's shadow cache: the unwrap (its offsets, the cache's
+        // layers) and the far plane's fill (nothing bound).
+        std::array<WGPUBindGroupLayoutEntry, 2> entries{};
+        entries[0].binding = 0;
+        entries[0].visibility = WGPUShaderStage_Fragment;
+        entries[0].buffer.type = WGPUBufferBindingType_Uniform;
+        entries[0].buffer.minBindingSize = sizeof(impl.unwrap_at);
+        entries[1].binding = 1;
+        entries[1].visibility = WGPUShaderStage_Fragment;
+        entries[1].texture.sampleType = WGPUTextureSampleType_Depth;
+        entries[1].texture.viewDimension = WGPUTextureViewDimension_2DArray;
+        const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
+        impl.unwrap_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+        const WGPUPipelineLayoutDescriptor with{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl.unwrap_layout};
+        const auto unwrap_layout = wgpuDeviceCreatePipelineLayout(device, &with);
+        impl.unwrap = make_full_pipeline(device, unwrap_layout, still_wgsl, "fs_unwrap");
+        wgpuPipelineLayoutRelease(unwrap_layout);
+        const WGPUPipelineLayoutDescriptor none{.bindGroupLayoutCount = 0, .bindGroupLayouts = nullptr};
+        const auto far_layout = wgpuDeviceCreatePipelineLayout(device, &none);
+        impl.fill_far = make_full_pipeline(device, far_layout, far_wgsl, "fs_far");
+        wgpuPipelineLayoutRelease(far_layout);
+        impl.unwrap_params = make_buffer(device, WGPUBufferUsage_Uniform, sizeof(impl.unwrap_at));
+    }
+    {
+        // --shadow-cache-check: the working maps against the cascades drawn whole.
+        std::array<WGPUBindGroupLayoutEntry, 3> entries{};
+        for (std::uint32_t b = 0; b < 2; ++b) {
+            entries[b].binding = b;
+            entries[b].visibility = WGPUShaderStage_Compute;
+            entries[b].texture.sampleType = WGPUTextureSampleType_Depth;
+            entries[b].texture.viewDimension = WGPUTextureViewDimension_2DArray;
+        }
+        entries[2].binding = 2;
+        entries[2].visibility = WGPUShaderStage_Compute;
+        entries[2].buffer.type = WGPUBufferBindingType_Storage;
+        const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
+        impl.check_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+        impl.check = make_compute(device, impl.check_layout, check_wgsl, "compare");
+        impl.check_counts = make_buffer(device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc, 8 * sizeof(std::uint32_t));
+    }
 
     impl.uniform = make_buffer(device, WGPUBufferUsage_Uniform, sizeof(EffectsUniform));
     impl.lights = make_buffer(device, WGPUBufferUsage_Storage, sizeof(detail::GpuLight) * max_lights);
-    impl.spheres = make_buffer(device, WGPUBufferUsage_Storage, sizeof(glm::vec4) * max_lights);
+    impl.spheres = make_buffer(device, WGPUBufferUsage_Storage, sizeof(glm::vec4) * 3 * max_lights);
     impl.counts = make_buffer(device, WGPUBufferUsage_Storage, sizeof(std::uint32_t) * cluster_count);
     impl.indices = make_buffer(device, WGPUBufferUsage_Storage, sizeof(std::uint32_t) * cluster_count * cluster_capacity);
     const WGPUSamplerDescriptor sampler{
@@ -1036,6 +1413,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     const float shadow_strength = sun_up * glm::clamp(sun_luma * 1.6f, 0.0f, 1.0f);
     const bool shadows = active && s.shadows && shadow_strength > 0.01f;
     impl.ensure_shadow(active && s.shadows);
+    impl.ensure_still(active && s.shadows && s.cache_far_cascades);
     impl.ensure_lamp_shadow(active && s.lamp_shadows > 0);
     impl.ensure_ao(active && (s.ambient_occlusion || s.bloom || s.light_shafts), (std::max)(view.width, 1u), (std::max)(view.height, 1u),
                    s.occlusion_low);
@@ -1094,12 +1472,16 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
         std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) { return a.distance < b.distance; });
         const auto count = (std::min)(candidates.size(), static_cast<std::size_t>(max_lights));
         std::vector<detail::GpuLight> packed(count);
-        std::vector<glm::vec4> spheres(count);
+        std::vector<glm::vec4> spheres(3 * count, glm::vec4{0.0f, 0.0f, 0.0f, -1.0f});
         impl.packed_lights.clear();
         for (std::size_t i = 0; i < count; ++i) {
             detail::pack_light(packed[i], *candidates[i].light);
             impl.packed_lights.push_back(*candidates[i].light);
-            spheres[i] = glm::vec4{glm::vec3(view.view * glm::vec4{candidates[i].centre, 1.0f}), candidates[i].radius};
+            spheres[3 * i] = glm::vec4{glm::vec3(view.view * glm::vec4{candidates[i].centre, 1.0f}), candidates[i].radius};
+            if (const auto cone = light_cone(*candidates[i].light)) {
+                spheres[3 * i + 1] = glm::vec4{glm::vec3(view.view * glm::vec4{cone->apex, 1.0f}), cone->reach};
+                spheres[3 * i + 2] = glm::vec4{glm::normalize(glm::vec3(view.view * glm::vec4{cone->axis, 0.0f})), cone->tangent};
+            }
         }
         impl.light_count = s.clustered_lights ? static_cast<std::uint32_t>(count) : 0u;
         if (impl.light_count > 0) {
@@ -1153,8 +1535,12 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
         frame.lamps = glm::vec4{1.0f - strength, active ? std::clamp(s.ground_bounce, 0.0f, 0.5f) : 0.0f, 1.0f - cab_strength,
                                 active ? std::clamp(s.indoor_light, 0.0f, 1.0f) : 0.0f};
     }
+    // The openness near the eye, not below the tunnel's least.
     frame.sky_light = glm::vec4{active && sky.on() ? 1.0f : 0.0f, static_cast<float>(sky_light_mips - 1),
-                                std::clamp(sky.openness, 0.0f, 1.0f), 0.0f};
+                                std::clamp((std::max)(sky.openness, std::clamp(s.sky_light_tunnel, 0.0f, 0.5f)), 0.0f, 1.0f), 0.0f};
+    frame.sky_tune = glm::vec4{std::clamp(s.sky_light_strength, 0.0f, 2.0f), std::clamp(s.sky_reflection_strength, 0.0f, 2.0f),
+                               std::clamp(s.sky_reflection_indoors, 0.0f, 1.0f), 0.0f};
+    frame.views = glm::vec4{static_cast<float>(std::clamp(s.material_view, 0, 6)), 0.0f, 0.0f, 0.0f};
 
     const auto queue = wgpuDeviceGetQueue(impl.device);
     wgpuQueueWriteBuffer(queue, impl.uniform, 0, &frame, sizeof(frame));
@@ -1213,6 +1599,7 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
     frame.lamp_focus = glm::vec4{0.0f};
     if (!lamp_shadows_wanted) {
         lamp_shadow_kept.clear();
+        for (auto& kept : lamp_kept) kept.valid = false;
         return;
     }
     glm::vec3 centre;
@@ -1270,9 +1657,43 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
     const auto wanted = (std::min)({static_cast<std::uint32_t>(picks.size()), settings.lamp_shadows, max_lamp_shadows});
     std::partial_sort(picks.begin(), picks.begin() + wanted, picks.end(), [](const Pick& a, const Pick& b) { return a.score > b.score; });
     lamp_shadow_kept.clear();
+    ++lamp_frame;
     const auto size = static_cast<float>(lamp_map_size());
+    // Each pick to a slot: the slot that drew its lamp (the same owner and
+    // kind, the nearest within a metre), else a free one.
+    std::array<int, max_lamp_shadows> slot_pick{};
+    slot_pick.fill(-1);
+    std::array<bool, max_lamp_shadows> matched{};
+    std::array<bool, max_lamp_shadows> placed{};
+    for (std::uint32_t p = 0; p < wanted; ++p) {
+        const auto& light = packed_lights[picks[p].index];
+        const glm::vec3 position{glm::inverse(light.to_light)[3]};
+        const int kind = static_cast<int>(light.kind) & 31;
+        int best = -1;
+        float best_distance = 1.0f;
+        for (std::uint32_t s = 0; s < wanted; ++s) {
+            const auto& kept = lamp_kept[s];
+            if (slot_pick[s] >= 0 || !kept.valid || kept.generation != lamp_generation || kept.owner != light.owner || kept.kind != kind) continue;
+            const float d = glm::distance(kept.position, position);
+            if (d < best_distance) {
+                best = static_cast<int>(s);
+                best_distance = d;
+            }
+        }
+        if (best >= 0) {
+            slot_pick[best] = static_cast<int>(p);
+            matched[best] = true;
+            placed[p] = true;
+        }
+    }
+    for (std::uint32_t p = 0, s = 0; p < wanted; ++p) {
+        if (placed[p]) continue;
+        while (slot_pick[s] >= 0) ++s;
+        slot_pick[s] = static_cast<int>(p);
+    }
     for (std::uint32_t k = 0; k < wanted; ++k) {
-        const auto& light = packed_lights[picks[k].index];
+        const auto& pick = picks[static_cast<std::size_t>(slot_pick[k])];
+        const auto& light = packed_lights[pick.index];
         lamp_owners[k] = light.owner;
         const glm::mat4 to_world = glm::inverse(light.to_light);
         const glm::vec3 position{to_world[3]};
@@ -1308,13 +1729,26 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
             matrix = glm::perspectiveRH_ZO(2.0f * (std::max)(half, glm::radians(5.0f)), 1.0f, 0.1f, reach) * light_view;
             texel = 2.0f * std::tan(half) / size;
         }
+        // Kept from its last drawing, or drawn this frame.
+        auto& kept = lamp_kept[k];
+        const float moved = (std::max)(glm::distance(kept.position, position), glm::distance(kept.centre, centre));
+        const bool turn = (lamp_frame + k) % 2 == 0;
+        if (matched[k] && kept.generation == lamp_generation && moved < (std::min)(1.0f, 0.05f * radius) && !turn) {
+            matrix = kept.matrix;
+            texel = kept.texel;
+            lamp_redraw[k] = false;
+        } else {
+            kept = LampKept{position, centre, matrix, texel, light.owner, kind, lamp_generation, true};
+            lamp_redraw[k] = true;
+        }
         lamp_matrices[k] = matrix;
         frame.lamp_shadows[k] = matrix;
-        frame.lamp_shadow_ids[k] = picks[k].index + 1;
+        frame.lamp_shadow_ids[k] = pick.index + 1;
         frame.lamp_shadow_keys[k] = glm::vec4{glm::vec3(light.to_light[3]), 1.0f};
         frame.lamp_shadow_texel[static_cast<int>(k)] = texel;
         lamp_shadow_kept.push_back(position);
     }
+    for (std::uint32_t k = wanted; k < max_lamp_shadows; ++k) lamp_kept[k].valid = false;
     lamp_shadow_count = wanted;
     lamps_lighting = static_cast<std::uint32_t>(picks.size());
     lamp_radius = radius;
@@ -1334,6 +1768,204 @@ void SceneEffects::set_focus(const std::optional<ShadowFocus>& focus, const std:
 }
 
 // One shadow map: a cascade or the focus.
+// The cascade's window this frame in the light's plane, from its slice's
+// sphere: what the cache has to draw (whole, or the strips the window moved
+// into), its working matrix and the unwrap's offset.
+void SceneEffects::Impl::place_still(const std::uint32_t i, const glm::vec3& centre, const float radius, const float split,
+                                     const glm::vec3& to_sun, const std::uint32_t size) {
+    constexpr double behind = 300.0; // m towards the sun for casters out of view, as the cascades
+    constexpr double margin = 150.0; // m the slice may move along the light before the depth is anchored again
+    // Frames between whole drawings, each cascade its own: objects whose
+    // model came in after their strip was drawn, a model at another distance
+    // level, signal arms, wait at most this (the check: on the move 0.1-0.6 %
+    // of the texels differed at 120 frames, in bursts as models loaded).
+    const std::uint64_t refresh = 30 + 7 * i;
+    auto& k = still[i];
+    const double t = 2.0 * static_cast<double>(radius) / static_cast<double>(size);
+    const glm::dvec3 c{centre};
+    const glm::dvec3 f = -glm::normalize(glm::dvec3{to_sun});
+    const glm::dvec3 up = std::abs(to_sun.y) > 0.99f ? glm::dvec3{0.0, 0.0, 1.0} : glm::dvec3{0.0, 1.0, 0.0};
+    const glm::dvec3 s = glm::normalize(glm::cross(f, up));
+    const glm::dvec3 u = glm::cross(s, f);
+    const auto n = static_cast<std::int64_t>(size);
+    const auto corner = [&](const glm::dvec3& across, const glm::dvec3& upward, std::int64_t& col, std::int64_t& row) {
+        col = static_cast<std::int64_t>(std::floor(glm::dot(across, c) / t)) - n / 2;
+        row = static_cast<std::int64_t>(std::floor(-glm::dot(upward, c) / t)) - n / 2;
+    };
+    bool full = !k.valid || k.generation != still_generation || k.radius != radius || glm::dot(k.f, f) < 0.99995
+                || frame_index - k.drawn >= refresh;
+    std::int64_t col = 0, row = 0;
+    if (!full) {
+        corner(k.s, k.u, col, row);
+        const double z = glm::dot(k.f, c);
+        full = std::llabs(col - k.col) >= n || std::llabs(row - k.row) >= n || z - (radius + behind) < k.z0 || z + radius > k.z0 + k.zr;
+    }
+    struct Rect {
+        std::int64_t c0, r0, c1, r1; // global texels, the ends past
+    };
+    std::array<Rect, 2> rects{};
+    std::size_t rect_count = 0;
+    if (full) {
+        corner(s, u, col, row);
+        const double z = glm::dot(f, c);
+        k = {.valid = true,
+             .generation = still_generation,
+             .s = s,
+             .u = u,
+             .f = f,
+             .radius = radius,
+             .col = col,
+             .row = row,
+             .phase_col = col,
+             .phase_row = row,
+             .z0 = z - (radius + behind) - margin,
+             .zr = 2.0 * radius + behind + 2.0 * margin,
+             .drawn = frame_index};
+        rects[rect_count++] = {col, row, col + n, row + n};
+        ++still_full;
+    } else {
+        // The columns and the rows the window moved into.
+        if (col > k.col) rects[rect_count++] = {k.col + n, row, col + n, row + n};
+        else if (col < k.col) rects[rect_count++] = {col, row, k.col, row + n};
+        if (row > k.row) rects[rect_count++] = {col, k.row + n, col + n, row + n};
+        else if (row < k.row) rects[rect_count++] = {col, row, col + n, k.row};
+        k.col = col;
+        k.row = row;
+    }
+    // World -> NDC over global texels [a0, a0 + w) x [b0, b0 + h); depth
+    // (dot(f, p) - z0) / zr. Columns grow along s, rows against u (the
+    // texture's v down, as the cascades' uv = xy * (0.5, -0.5) + 0.5).
+    const auto matrix = [&](const double a0, const double b0, const double w, const double h) {
+        glm::mat4 m{0.0f};
+        const glm::dvec3 rx = k.s * (2.0 / (t * w));
+        const glm::dvec3 ry = k.u * (2.0 / (t * h));
+        const glm::dvec3 rz = k.f / k.zr;
+        for (int a = 0; a < 3; ++a) {
+            m[a][0] = static_cast<float>(rx[a]);
+            m[a][1] = static_cast<float>(ry[a]);
+            m[a][2] = static_cast<float>(rz[a]);
+        }
+        m[3][0] = static_cast<float>(-2.0 * a0 / w - 1.0);
+        m[3][1] = static_cast<float>(1.0 + 2.0 * b0 / h);
+        m[3][2] = static_cast<float>(-k.z0 / k.zr);
+        m[3][3] = 1.0f;
+        return m;
+    };
+    const auto wrap = [n](const std::int64_t v) { return ((v % n) + n) % n; };
+    // A range of global texels as it lies in the layer: a piece, or two where it wraps.
+    const auto split_range = [&](const std::int64_t a, const std::int64_t b, const std::int64_t phase,
+                                 std::array<std::pair<std::int64_t, std::int64_t>, 2>& out) {
+        const auto first = (std::min)(b - a, n - wrap(a - phase));
+        out[0] = {a, a + first};
+        if (a + first < b) {
+            out[1] = {a + first, b};
+            return 2;
+        }
+        return 1;
+    };
+    auto& pieces = still_now[i];
+    bool overflow = false;
+    for (std::size_t r = 0; r < rect_count; ++r) {
+        const auto& rect = rects[r];
+        if (rect.c1 <= rect.c0 || rect.r1 <= rect.r0) continue;
+        std::array<std::pair<std::int64_t, std::int64_t>, 2> cols{}, rows{};
+        const int column_pieces = split_range(rect.c0, rect.c1, k.phase_col, cols);
+        const int row_pieces = split_range(rect.r0, rect.r1, k.phase_row, rows);
+        for (int a = 0; a < column_pieces; ++a) {
+            for (int b = 0; b < row_pieces; ++b) {
+                if (pieces.size() >= still_pieces) {
+                    overflow = true;
+                    continue;
+                }
+                const auto [c0, c1] = cols[static_cast<std::size_t>(a)];
+                const auto [r0, r1] = rows[static_cast<std::size_t>(b)];
+                const auto w = static_cast<double>(c1 - c0), h = static_cast<double>(r1 - r0);
+                pieces.push_back({.matrix = matrix(static_cast<double>(c0), static_cast<double>(r0), w, h),
+                                  .x = static_cast<std::uint32_t>(wrap(c0 - k.phase_col)),
+                                  .y = static_cast<std::uint32_t>(wrap(r0 - k.phase_row)),
+                                  .width = static_cast<std::uint32_t>(c1 - c0),
+                                  .height = static_cast<std::uint32_t>(r1 - r0)});
+                still_texels += static_cast<std::uint64_t>(c1 - c0) * static_cast<std::uint64_t>(r1 - r0);
+            }
+        }
+    }
+    if (overflow) k.valid = false; // drawn whole next frame
+    const auto working = matrix(static_cast<double>(col), static_cast<double>(row), static_cast<double>(n), static_cast<double>(n));
+    cascade_matrices[i] = working;
+    frame.cascades[i] = working;
+    frame.splits[static_cast<int>(i)] = split;
+    frame.texel[static_cast<int>(i)] = static_cast<float>(t);
+    redraw[i] = true;
+    unwrap_at[i * 4 + 0] = static_cast<std::uint32_t>(wrap(col - k.phase_col));
+    unwrap_at[i * 4 + 1] = static_cast<std::uint32_t>(wrap(row - k.phase_row));
+    unwrap_at[i * 4 + 2] = i;
+    unwrap_at[i * 4 + 3] = size;
+}
+
+// The cache's pieces of cascade `i`: each set to the far plane, then the
+// still casters drawn into it.
+void SceneEffects::Impl::record_still(const WGPUCommandEncoder encoder, const std::uint32_t i, const DepthDraw& draw) const {
+    const auto& pieces = still_now[i];
+    if (pieces.empty() || !still_layers[i] || !fill_far) return;
+    const WGPURenderPassDepthStencilAttachment attachment{
+        .view = still_layers[i],
+        .depthLoadOp = WGPULoadOp_Load,
+        .depthStoreOp = WGPUStoreOp_Store,
+        .depthClearValue = 1.0f,
+        .depthReadOnly = false,
+        .stencilLoadOp = WGPULoadOp_Undefined,
+        .stencilStoreOp = WGPUStoreOp_Undefined,
+        .stencilReadOnly = true,
+    };
+    const auto timestamps = render_pass_timestamps(GpuPass::sun_shadow_cache);
+    const WGPURenderPassDescriptor descriptor{.depthStencilAttachment = &attachment, .timestampWrites = timestamps ? &*timestamps : nullptr};
+    const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+    for (std::size_t k = 0; k < pieces.size(); ++k) {
+        const auto& piece = pieces[k];
+        wgpuRenderPassEncoderSetViewport(pass, static_cast<float>(piece.x), static_cast<float>(piece.y), static_cast<float>(piece.width),
+                                         static_cast<float>(piece.height), 0.0f, 1.0f);
+        wgpuRenderPassEncoderSetScissorRect(pass, piece.x, piece.y, piece.width, piece.height);
+        wgpuRenderPassEncoderSetPipeline(pass, fill_far);
+        wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+        if (draw) draw(pass, still_slot + i * still_pieces + static_cast<std::uint32_t>(k), piece.matrix, DepthPassKind::shadow, DepthCasters::still);
+    }
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+}
+
+// Cascade `i`'s working map: the cache's layer read at the window's offset,
+// then the moving casters; with the check, the cascade drawn whole too.
+void SceneEffects::Impl::record_working(const WGPUCommandEncoder encoder, const std::uint32_t i, const DepthDraw& draw) const {
+    const auto begin = [&](const WGPUTextureView view, const std::optional<GpuPass> timed) {
+        const WGPURenderPassDepthStencilAttachment attachment{
+            .view = view,
+            .depthLoadOp = WGPULoadOp_Clear,
+            .depthStoreOp = WGPUStoreOp_Store,
+            .depthClearValue = 1.0f,
+            .depthReadOnly = false,
+            .stencilLoadOp = WGPULoadOp_Undefined,
+            .stencilStoreOp = WGPUStoreOp_Undefined,
+            .stencilReadOnly = true,
+        };
+        const auto timestamps = timed ? render_pass_timestamps(*timed) : std::nullopt;
+        const WGPURenderPassDescriptor descriptor{.depthStencilAttachment = &attachment, .timestampWrites = timestamps ? &*timestamps : nullptr};
+        return wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+    };
+    const auto pass = begin(shadow_layers[i], GpuPass::sun_shadows);
+    wgpuRenderPassEncoderSetPipeline(pass, unwrap);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, unwrap_group, 0, nullptr);
+    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, i);
+    if (draw) draw(pass, i, cascade_matrices[i], DepthPassKind::shadow, DepthCasters::moving);
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+    if (check_on && whole_layers[i]) {
+        const auto checked = begin(whole_layers[i], std::nullopt);
+        if (draw) draw(checked, check_slot + i, cascade_matrices[i], DepthPassKind::shadow, DepthCasters::all);
+        wgpuRenderPassEncoderEnd(checked);
+        wgpuRenderPassEncoderRelease(checked);
+    }
+}
+
 void SceneEffects::Impl::record_shadow(const WGPUCommandEncoder encoder, const std::uint32_t layer, const std::uint32_t slot,
                                        const DepthDraw& draw) const {
     record_depth(encoder, shadow_layers[layer], cascade_matrices[layer], slot, draw,
@@ -1356,7 +1988,7 @@ void SceneEffects::Impl::record_depth(const WGPUCommandEncoder encoder, const WG
     const auto timestamps = render_pass_timestamps(timed);
     const WGPURenderPassDescriptor descriptor{.depthStencilAttachment = &attachment, .timestampWrites = timestamps ? &*timestamps : nullptr};
     const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
-    if (draw) draw(pass, slot, matrix, DepthPassKind::shadow);
+    if (draw) draw(pass, slot, matrix, DepthPassKind::shadow, DepthCasters::all);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
 }
@@ -1378,7 +2010,7 @@ void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const D
         const WGPURenderPassDescriptor descriptor{.depthStencilAttachment = &depth_attachment,
                                                   .timestampWrites = timestamps ? &*timestamps : nullptr};
         const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
-        if (draw) draw(pass, max_cascades, view.projection * view.view, DepthPassKind::camera);
+        if (draw) draw(pass, max_cascades, view.projection * view.view, DepthPassKind::camera, DepthCasters::all);
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
 
@@ -1422,11 +2054,16 @@ void SceneEffects::record(const WGPUCommandEncoder encoder, const DepthDraw& dra
     auto& impl = *impl_;
     if (!impl.active) return;
     for (std::uint32_t i = 0; i < impl.cascade_count; ++i) {
-        if (impl.redraw[i]) impl.record_shadow(encoder, i, i, draw);
+        if (impl.still_on) {
+            impl.record_still(encoder, i, draw);
+            if (!impl.map_skip[i]) impl.record_working(encoder, i, draw);
+        } else if (impl.redraw[i]) {
+            impl.record_shadow(encoder, i, i, draw);
+        }
     }
-    if (impl.focus_active) impl.record_shadow(encoder, impl.focus_layer, Impl::focus_slot, draw);
+    if (impl.focus_active && !impl.map_skip[max_cascades]) impl.record_shadow(encoder, impl.focus_layer, Impl::focus_slot, draw);
     for (std::uint32_t k = 0; k < impl.lamp_shadow_count; ++k) {
-        impl.record_depth(encoder, impl.lamp_layers[k], impl.lamp_matrices[k], Impl::lamp_slot + k, draw, GpuPass::lamp_shadows);
+        if (impl.lamp_redraw[k]) impl.record_depth(encoder, impl.lamp_layers[k], impl.lamp_matrices[k], Impl::lamp_slot + k, draw, GpuPass::lamp_shadows);
     }
     impl.record_camera(encoder, draw);
 }
@@ -1462,12 +2099,20 @@ void SceneEffects::record_parallel(const WGPUDevice device, TaskPool& pool, cons
     });
     for (std::uint32_t i = 0; i < impl.cascade_count; ++i) {
         if (!impl.redraw[i]) continue;
+        if (impl.still_on && impl.map_skip[i] && impl.still_now[i].empty()) continue;
         tasks.emplace_back([encode, &impl, i, draw] {
             static constexpr const char* names[] = {"sun cascade 1", "sun cascade 2", "sun cascade 3", "sun cascade 4"};
-            encode(i, names[i % 4], [&](const WGPUCommandEncoder encoder) { impl.record_shadow(encoder, i, i, draw); });
+            encode(i, names[i % 4], [&](const WGPUCommandEncoder encoder) {
+                if (impl.still_on) {
+                    impl.record_still(encoder, i, draw);
+                    if (!impl.map_skip[i]) impl.record_working(encoder, i, draw);
+                } else {
+                    impl.record_shadow(encoder, i, i, draw);
+                }
+            });
         });
     }
-    if (impl.focus_active) {
+    if (impl.focus_active && !impl.map_skip[max_cascades]) {
         tasks.emplace_back([encode, &impl, draw] {
             encode(impl.cascade_count, "cab focus", [&](const WGPUCommandEncoder encoder) {
                 impl.record_shadow(encoder, impl.focus_layer, Impl::focus_slot, draw);
@@ -1475,6 +2120,7 @@ void SceneEffects::record_parallel(const WGPUDevice device, TaskPool& pool, cons
         });
     }
     for (std::uint32_t k = 0; k < impl.lamp_shadow_count; ++k) {
+        if (!impl.lamp_redraw[k]) continue;
         tasks.emplace_back([encode, &impl, k, draw] {
             encode(impl.cascade_count + 1 + k, "lamp shadow", [&](const WGPUCommandEncoder encoder) {
                 impl.record_depth(encoder, impl.lamp_layers[k], impl.lamp_matrices[k], Impl::lamp_slot + k, draw, GpuPass::lamp_shadows);
@@ -1516,7 +2162,14 @@ bool SceneEffects::wants_depth() const noexcept {
 
 SceneEffectStats SceneEffects::stats() const noexcept {
     std::uint32_t drawn = 0;
-    for (std::uint32_t i = 0; i < impl_->cascade_count; ++i) drawn += impl_->redraw[i] ? 1u : 0u;
+    for (std::uint32_t i = 0; i < impl_->cascade_count; ++i) {
+        drawn += (impl_->still_on ? !impl_->still_now[i].empty() : impl_->redraw[i]) ? 1u : 0u;
+    }
+    std::uint32_t still_pieces = 0;
+    for (const auto& pieces : impl_->still_now) still_pieces += static_cast<std::uint32_t>(pieces.size());
+    const double cascade_texels = static_cast<double>(impl_->map_size()) * impl_->map_size() * (std::max)(impl_->cascade_count, 1u);
+    std::uint32_t lamps_drawn = 0;
+    for (std::uint32_t k = 0; k < impl_->lamp_shadow_count; ++k) lamps_drawn += impl_->lamp_redraw[k] ? 1u : 0u;
     // The workers' passes: cascades first, the focus, the lamps, the camera last.
     std::array<float, 4> cascade_ms{};
     float lamps_ms = 0.0f;
@@ -1535,12 +2188,125 @@ SceneEffectStats SceneEffects::stats() const noexcept {
             .daylight = impl_->daylight,
             .lamp_strength = 1.0f - impl_->frame.lamps.x,
             .lamp_shadows = impl_->lamp_shadow_count,
+            .lamp_shadows_drawn = lamps_drawn,
             .lamps_lighting = impl_->lamps_lighting,
             .lamp_radius = impl_->lamp_radius,
             .record_cascade_ms = cascade_ms,
             .record_focus_ms = impl_->parallel_ms.size() > impl_->cascade_count ? impl_->parallel_ms[impl_->cascade_count] : 0.0f,
             .record_lamps_ms = lamps_ms,
-            .record_camera_ms = impl_->parallel_ms.empty() ? 0.0f : impl_->parallel_ms.back()};
+            .record_camera_ms = impl_->parallel_ms.empty() ? 0.0f : impl_->parallel_ms.back(),
+            .still_cache = impl_->still_on,
+            .still_full = impl_->still_full,
+            .still_pieces = still_pieces,
+            .still_share = static_cast<float>(static_cast<double>(impl_->still_texels) / cascade_texels),
+            .maps_kept = static_cast<std::uint32_t>(std::count(impl_->map_skip.begin(), impl_->map_skip.end(), true))};
+}
+
+void SceneEffects::set_shadow_cache_check(const bool on) {
+    impl_->check_on = on && impl_->check && impl_->check_counts;
+}
+
+void SceneEffects::set_moving_signature(const std::uint64_t signature, const std::uint64_t outside) {
+    auto& impl = *impl_;
+    impl.map_skip.fill(false);
+    if (!impl.active || impl.check_on) return;
+    const auto keep = [&](const std::size_t slot, const glm::mat4& matrix, const bool unchanged, const std::uint64_t period,
+                          const std::uint64_t signature) {
+        auto& kept = impl.map_kept[slot];
+        const bool same = kept.valid && unchanged && kept.shadow_generation == impl.shadow_generation
+                          && kept.still_generation == impl.still_generation && kept.signature == signature && kept.matrix == matrix
+                          && impl.frame_index - kept.drawn < period;
+        if (same) {
+            impl.map_skip[slot] = true;
+            return;
+        }
+        kept = {.valid = true,
+                .shadow_generation = impl.shadow_generation,
+                .still_generation = impl.still_generation,
+                .signature = signature,
+                .drawn = impl.frame_index,
+                .matrix = matrix};
+    };
+    // A cascade: the cache drew nothing into it this frame (its own whole
+    // drawing every 30 frames or so redraws it too).
+    for (std::uint32_t i = 0; i < impl.cascade_count; ++i) {
+        if (impl.still_on) keep(i, impl.cascade_matrices[i], impl.still_now[i].empty(), ~0ull, impl.focus_active ? outside : signature);
+    }
+    // The cab's map holds the still casters too: drawn again at least every
+    // 30 frames (objects that came in).
+    if (impl.focus_active) keep(max_cascades, impl.cascade_matrices[impl.focus_layer], true, 30, signature);
+}
+
+void SceneEffects::record_check(const WGPUCommandEncoder encoder) {
+    auto& impl = *impl_;
+    if (!impl.check_on || !impl.still_on || !impl.whole.view || !impl.shadow.view || impl.cascade_count == 0) return;
+    std::array<WGPUBindGroupEntry, 3> entries{};
+    entries[0] = {.binding = 0, .textureView = impl.shadow.view};
+    entries[1] = {.binding = 1, .textureView = impl.whole.view};
+    entries[2] = {.binding = 2, .buffer = impl.check_counts, .size = 8 * sizeof(std::uint32_t)};
+    const WGPUBindGroupDescriptor descriptor{.layout = impl.check_layout, .entryCount = entries.size(), .entries = entries.data()};
+    const auto group = wgpuDeviceCreateBindGroup(impl.device, &descriptor);
+    const auto pass = wgpuCommandEncoderBeginComputePass(encoder, nullptr);
+    wgpuComputePassEncoderSetPipeline(pass, impl.check);
+    wgpuComputePassEncoderSetBindGroup(pass, 0, group, 0, nullptr);
+    const auto groups = (impl.map_size() + 7) / 8;
+    wgpuComputePassEncoderDispatchWorkgroups(pass, groups, groups, impl.cascade_count);
+    wgpuComputePassEncoderEnd(pass);
+    wgpuComputePassEncoderRelease(pass);
+    wgpuBindGroupRelease(group);
+}
+
+std::string SceneEffects::shadow_cache_check_report(const WGPUInstance instance) {
+    auto& impl = *impl_;
+    if (!impl.check_on || !impl.check_counts) return {};
+    if (++impl.check_frames % 120 != 0) return {};
+    constexpr std::uint64_t bytes = 8 * sizeof(std::uint32_t);
+    const WGPUBufferDescriptor read{.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst, .size = bytes};
+    const auto buffer = wgpuDeviceCreateBuffer(impl.device, &read);
+    if (!buffer) return {};
+    const auto queue = wgpuDeviceGetQueue(impl.device);
+    const auto encoder = wgpuDeviceCreateCommandEncoder(impl.device, nullptr);
+    wgpuCommandEncoderCopyBufferToBuffer(encoder, impl.check_counts, 0, buffer, 0, bytes);
+    const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
+    wgpuQueueSubmit(queue, 1, &commands);
+    wgpuCommandBufferRelease(commands);
+    wgpuCommandEncoderRelease(encoder);
+    bool done = false, mapped = false;
+    struct State {
+        bool* done;
+        bool* mapped;
+    } state{&done, &mapped};
+    const WGPUBufferMapCallbackInfo callback{
+        .mode = WGPUCallbackMode_AllowProcessEvents,
+        .callback = [](const WGPUMapAsyncStatus status, WGPUStringView, void* data, void*) {
+            auto* s = static_cast<State*>(data);
+            *s->mapped = status == WGPUMapAsyncStatus_Success;
+            *s->done = true;
+        },
+        .userdata1 = &state,
+    };
+    wgpuBufferMapAsync(buffer, WGPUMapMode_Read, 0, bytes, callback);
+    for (int k = 0; k < 1000 && !done; ++k) {
+        wgpuDevicePoll(impl.device, true, nullptr);
+        if (instance) wgpuInstanceProcessEvents(instance);
+    }
+    std::array<std::uint32_t, 8> counts{};
+    if (mapped) {
+        std::memcpy(counts.data(), wgpuBufferGetConstMappedRange(buffer, 0, bytes), bytes);
+        wgpuBufferUnmap(buffer);
+    }
+    wgpuBufferRelease(buffer);
+    const std::array<std::uint32_t, 8> zero{};
+    wgpuQueueWriteBuffer(queue, impl.check_counts, 0, zero.data(), bytes);
+    wgpuQueueRelease(queue);
+    std::ostringstream out;
+    out << "shadow cache check (120 frames):";
+    for (std::uint32_t i = 0; i < impl.cascade_count && i < max_cascades; ++i) {
+        const double casting = counts[i + 4];
+        out << " cascade " << i << ' ' << counts[i] << " texels differ of " << counts[i + 4] << " casting ("
+            << (casting > 0.0 ? 100.0 * counts[i] / casting : 0.0) << " %);";
+    }
+    return out.str() + "\n";
 }
 
 } // namespace openrts::renderer

@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -27,6 +28,26 @@ enum class BrakeShoe : std::uint8_t { unknown, cast_iron, composite, disc, wood 
 [[nodiscard]] BrakeShoe brake_shoe_from(std::string_view name);
 // Its name as written: "cast_iron", "composite", "disc", "wood", "" for unknown.
 [[nodiscard]] const char* brake_shoe_name(BrakeShoe shoe) noexcept;
+
+// The brake distributor (ВР) a car carries under the realistic air
+// (openRTS): ORTSBrakeDistributor's built-in names. inferred: none given,
+// the simulation infers it from the car (simulation::distributor_kind: EP
+// equipment 305, Type ( Freight ) 483, the rest 292). RTS and MSTS content
+// cannot tell a multiple unit's car from a locomotive's train, so a player
+// chooses it in the car menu, kept in a mod (docs/train.md).
+enum class BrakeDistributor : std::uint8_t {
+    inferred,
+    vr483,      // ВР 483 (freight)
+    vr292,      // ВР 292 (passenger)
+    evr305,     // ЭВР 305-000 with a 292: coaches of a locomotive's train
+    evr305_001, // ЭВР 305-001 with a 292: multiple units (a faster release)
+};
+// A built-in name in any case: "483" / "vr483", "292" / "vr292", "305" /
+// "305-000" / "evr305", "305-001" / "evr305-001"; anything else (a Luau
+// file) is none.
+[[nodiscard]] std::optional<BrakeDistributor> brake_distributor_from(std::string_view name);
+// Its name as written: "483", "292", "305-000", "305-001", "" for inferred.
+[[nodiscard]] const char* brake_distributor_name(BrakeDistributor distributor) noexcept;
 
 // ---- consists ---------------------------------------------------------------
 
@@ -114,9 +135,16 @@ struct BrakeEquipment {
     // realistic air's shoes, in place of MaxBrakeForce (which RTS's model
     // keeps); 0: not given. Not scaled by ScaleBrakeForce / AddBrakeForce.
     float realistic_brake_force{};
-    // openRTS: ORTSBrakeDistributor ( "file.lua" ), a brake distributor (ВР)
-    // in Luau for the realistic air model (docs/scripting.md), its file
-    // next to the .wag / .eng; the source as read (load_wagon), or why not.
+    // openRTS: ORTSBrakeDistributor ( "483" | "292" | "305-000" | "305-001" ),
+    // a built-in distributor (BrakeDistributor), or ( "file.luau" ), one in
+    // Luau for the realistic air model (docs/scripting.md), its file next to
+    // the .wag / .eng; the source as read (load_wagon), or why not.
+    BrakeDistributor distributor = BrakeDistributor::inferred;
+    // The one the car has with no companion naming one (the file's, else the
+    // stock rules', else inferred), and whether a companion names it (the
+    // car menu's choice, kept in a mod).
+    BrakeDistributor default_distributor = BrakeDistributor::inferred;
+    bool distributor_in_companion = false;
     std::string distributor_script;
     std::string distributor_source;
     std::string distributor_error;
@@ -214,6 +242,15 @@ struct EngineDefinition {
     float sanding_speed{};
     float max_sanding_time = -1.0f; // MaxSandingTime, s of sand (-1: unlimited)
     float main_reservoir_volume{};
+    // AirBrakesMainMaxAirPressure and AirBrakesCompressorRestartPressure: the
+    // compressor governor's cut-out and cut-in, atm (psi unless the file gives
+    // bar / kPa / inHg); 0: not given.
+    float main_reservoir_max{};
+    float compressor_restart{};
+    // openRTS: ORTSCompressorCapacity ( m³ of free air a minute ), the
+    // compressor's delivery under the realistic air; 0: a КТ-6's 5.3 (the
+    // stock rules give the multiple units' theirs).
+    float compressor_capacity{};
     float dynamic_brake_max_force{};
     std::uint32_t throttle_notches{};
     std::string library_module; // EngExtended LibraryModule (legacy DLL), relative to the .eng folder
@@ -338,10 +375,33 @@ struct WagonDefinition {
 // Parses one wagon / engine text (already merged with its companions).
 [[nodiscard]] WagonDefinition parse_wagon(std::string_view bytes);
 // TRAINS\TRAINSET\<folder>\<name>.wag or .eng with its .rtswag / .rtseng
-// companion and RTSInclude files merged as RTS does.
+// companion and RTSInclude files merged as RTS does, then openRTS's own
+// companion (wagon_override_path) merged the same way over them.
+// What openRTS's stock rules (simulation::StockRules, Luau) give a car over
+// its file: the file < the rules < the companion. A distributor the file
+// names (or a Luau one) stays; the compressor's governor goes over the
+// file's.
+struct WagonOverrides {
+    std::optional<BrakeDistributor> distributor;
+    std::optional<float> compressor_on, compressor_off; // atm
+    std::optional<float> compressor_capacity;           // m³ of free air a minute
+};
+// The car as parsed, its folder, its file (with the extension), an .eng.
+using WagonRules = std::function<WagonOverrides(const struct WagonDefinition& car, std::string_view folder, std::string_view file,
+                                                bool engine)>;
 [[nodiscard]] WagonDefinition load_wagon(const core::Vfs& vfs, std::string_view folder, std::string_view name,
-                                         bool engine);
+                                         bool engine, const WagonRules& rules = {});
 [[nodiscard]] core::VirtualPath wagon_path(std::string_view folder, std::string_view name, bool engine);
+// openRTS's companion of a .wag / .eng: <name>.wag.openrts / .eng.openrts,
+// in the file's syntax (Wagon ( ... ) / Engine ( ... ) blocks), merged as RTS
+// merges its .rtswag (its values found first). A mod carries it
+// (MODS_OPENRTS/<mod>/TRAINS/TRAINSET/<folder>/...), so a player's choice
+// (the car menu's distributor) changes nothing of the content's own files.
+[[nodiscard]] core::VirtualPath wagon_override_path(std::string_view folder, std::string_view name, bool engine);
+// `text` (a companion's, may be empty) with its Wagon block's
+// ORTSBrakeDistributor set to `distributor`, or taken out for inferred; the
+// rest kept. Empty when nothing is left in it.
+[[nodiscard]] std::string set_override_distributor(std::string_view text, BrakeDistributor distributor);
 
 // RTS value readers, exposed for tests.
 [[nodiscard]] double rts_quantity_value(std::string_view token);

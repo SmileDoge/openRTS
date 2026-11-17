@@ -30,6 +30,10 @@ struct AirCar {
     // car goes into emergency and closes after a few seconds; the car stays
     // in emergency (its distributor full on) until the pipe is charged again.
     float accelerator{};
+    // ЭВР 305: its РК and the switching valve's side (DistributorState).
+    float ep_chamber{};
+    bool ep_side = false;
+    float pipe_low{}; // 483: the pipe's lowest while braking
     // ORTSBrakeDistributor: the car's own distributor in Luau (null: the
     // built-in one; also after a script error, reported once).
     std::shared_ptr<ScriptDistributor> script;
@@ -56,6 +60,9 @@ public:
 
 private:
     std::vector<AirCar> air_;
+    // The pipe's flow between car i and i + 1, m³·atm/s towards i + 1: its
+    // air has inertia, so a change goes down the pipe no faster than sound.
+    std::vector<float> link_flow_;
 };
 
 } // namespace openrts::simulation::detail

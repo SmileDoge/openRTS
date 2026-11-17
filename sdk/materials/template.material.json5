@@ -1,0 +1,29 @@
+// openRTS material of a texture (docs/pbr-materials.md): beside the texture,
+// named after it: body.ace -> body.material.json5. For every model drawing
+// the texture; a mod puts it at the same path (MODS_OPENRTS/<mod>/...).
+// Every key may be left out: what is not set stays as RTS's material has it.
+{
+  format: "openrts-material/1",
+
+  // Numbers (without maps the value itself; with a map its factor).
+  roughness: 0.45,            // 0 a mirror .. 1 matte (paint 0.35-0.5, rusty iron ~0.7, rubber ~0.9, glass ~0.05)
+  metallic: 0,                // 0 paint, glass, wood .. 1 bare metal (a rail's head: 1, roughness ~0.2)
+  // specular: 1,             // the share of a dielectric's reflection, 0..1 (RTS's matte surfaces: 0.1)
+  // reflectance: 0.04,       // a dielectric's F0 (0.04: IOR 1.5)
+  // base_color_factor: [1, 1, 1, 1],  // times the texture (linear r, g, b, a)
+
+  // Maps, relative to this file's folder; PNG or ACE.
+  // orm: "body_orm.png",     // R occlusion, G roughness, B metallic (glTF; Substance "glTF PBR Metal Roughness")
+  // layout: "orm",           // "orm" | "mrao" (R metallic, G roughness, B occlusion) | "hdrp_mask" (Unity: R metallic, G occlusion, A smoothness)
+  // ao_map: "body_ao.png",   // or one map each (their red), over orm's channel
+  // roughness_map: "body_rough.png",
+  // metallic_map: "body_metal.png",
+  // ao_strength: 1,          // 0..1: how much the occlusion map darkens (indirect light only)
+  // normal: "body_n.png",    // a tangent-space normal map (MikkTSpace, as Blender and Substance bake)
+  // normal_y: "up",          // "up" (OpenGL, glTF, Blender) | "down" (DirectX, Unreal)
+  // normal_strength: 1,      // 0..2
+  // emissive: "body_e.png",  // what glows by itself (windows, lamps), gamma 2.2
+  // emissive_factor: [1, 1, 1],
+  // emissive_strength: 1,    // 0..100
+  // base_color: "body.png",  // instead of the texture itself (a repainted colour)
+}

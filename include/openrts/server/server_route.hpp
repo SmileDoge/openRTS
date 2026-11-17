@@ -11,6 +11,7 @@
 
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/stock_rules.hpp>
 #include <openrts/formats/train_path.hpp>
 #include <openrts/net/snapshot.hpp>
 #include <openrts/simulation/signals.hpp>
@@ -88,6 +89,7 @@ private:
     ServerRoute() = default;
 
     core::Vfs vfs_;
+    std::shared_ptr<simulation::StockRules> stock_rules_; // TRAINS/OPENRTS/STOCK, read with the first car
     core::VirtualPath route_;
     std::string folder_;
     std::string route_id_;

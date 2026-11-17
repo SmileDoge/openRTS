@@ -30,6 +30,15 @@ struct WindowOptions {
     std::optional<float> lamps_daylight;
     // --ground-bounce <0..0.5>: the ground's reflectance for this run.
     std::optional<float> ground_bounce;
+    // The sky's light tuned for one run (SceneEffectSettings::sky_light_*):
+    // --sky-light-strength, --sky-reflections, --sky-reflections-indoors,
+    // --sky-light-tunnel.
+    std::optional<float> sky_light_strength, sky_reflections, sky_reflections_indoors, sky_light_tunnel;
+    // Auto exposure for one run (--auto-exposure on|off, --auto-exposure-strength).
+    std::optional<bool> auto_exposure;
+    // A part of the models' material as the colour (--material-view, PBR stage 4).
+    std::optional<int> material_view;
+    std::optional<float> auto_exposure_strength;
     // --lamp-shadows <0..8>: lamps throwing shadows for this run.
     std::optional<int> lamp_shadows;
     // --shadow-settings distance,size,cascades,softness: this run's shadows.
@@ -45,6 +54,7 @@ struct WindowOptions {
     std::optional<bool> multi_draw;
     // --shadow-cache on|off: this run's far-cascade caching.
     std::optional<bool> shadow_cache;
+    std::optional<int> compress_textures; // --compress-textures off|memory|on (renderer/bc7.hpp: 0, 1, 2)
     // --cab-shadows on|off: this run's shadow map around the cab.
     std::optional<bool> cab_shadows;
     std::int32_t time_of_day = 12 * 3600; // seconds
@@ -56,6 +66,15 @@ struct WindowOptions {
     // The FPS limit: 30..500 frames per second, 0 none (--fps-limit; else
     // the remembered "fps_limit", the start menu's and the panel's setting).
     int fps_limit = 0;
+    // --fps-background: no 30 frames/s cap in the background (benchmarks run
+    // beside other windows; a capped GPU clocks down and its times grow).
+    bool fps_background = false;
+    // --shadow-cache-check: the sun's shadow cache compared with the cascades
+    // drawn whole every frame, the differing texels printed (SceneEffects).
+    bool shadow_cache_check = false;
+    // --fly-test <m/s> [deg/s]: the free camera flies on, turning (a check).
+    float fly_speed = 0.0f;
+    float fly_turn = 0.0f;
     // The window: in a window, borderless or full screen (--window-mode;
     // else the remembered "window_mode"; window_mode.hpp). A capture and the
     // start menu are always a window.

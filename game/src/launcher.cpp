@@ -46,6 +46,8 @@
 #include "ui_slider.hpp"
 #include "ui_text.hpp"
 #include "update.hpp"
+#include <openrts/renderer/bc7.hpp>
+
 #include "viewer_state.hpp"
 #include "window_mode.hpp"
 
@@ -312,6 +314,11 @@ struct Launcher::State {
     bool sound = true;
     float volume = 0.5f;
     bool vsync = true;
+    // The brakes, the game's Train window's too: the realistic air
+    // ("realistic_air") and the air of trains with locomotive DLLs
+    // ("dll_air": 0 RTS's, 1 the DLL's valve, 2 openRTS's valve).
+    bool realistic_air = false;
+    int dll_air = 0;
     // The graphics settings, the game's panel's too (graphics_settings.hpp):
     // each change written at once, only what changed.
     viewer::GraphicsSettings graphics;
@@ -458,6 +465,8 @@ struct Launcher::State {
         viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
         viewer::set_body_motion_model(viewer::parse_body_motion_model(remembered("body_motion").value_or("openrts").c_str()));
         vsync = remembered_int("launcher_vsync", 1) != 0;
+        realistic_air = remembered_int("realistic_air", 0) != 0;
+        dll_air = std::clamp(remembered_int("dll_air", 0), 0, 2);
         load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
@@ -1349,6 +1358,28 @@ void Launcher::State::draw_settings(const float height) {
                                                   : tr("(each body on its own springs over its bogies: the track's errors under each bogie, rail joints and switches, hunting, curves; bounce, pitch, sway, yaw and roll)"));
             ImGui::EndTable();
         }
+        // The brakes (the game's Train window has the same; both remembered):
+        // set once here, not in the game every run (testers, 2026-11-17).
+        ImGui::Spacing();
+        ImGui::SeparatorText(tr("Brakes"));
+        if (begin_form("##brakes_form", label_width)) {
+            form_row(tr("Realistic air (openRTS)"));
+            if (ImGui::Checkbox("##realistic_air", &realistic_air)) remember("realistic_air", realistic_air ? "1" : "0");
+            ImGui::TextDisabled("%s", realistic_air ? tr("(flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed; not in network games)")
+                                                    : tr("(off: RTS's model, as RTS brakes)"));
+            form_row(tr("Trains with DLLs"));
+            const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),
+                                   tr("openRTS valve over Brakes.dll (experimental)")};
+            ImGui::BeginDisabled(!realistic_air);
+            ImGui::SetNextItemWidth(330.0f);
+            if (ImGui::Combo("##dll_air", &dll_air, modes, 3)) remember("dll_air", std::to_string(dll_air));
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("%s", tr(!realistic_air ? "(works with the realistic air on)"
+                                         : dll_air == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
+                                         : dll_air == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
+                                                        : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
+            ImGui::EndTable();
+        }
     }
     ImGui::EndChild();
     ImGui::SameLine();
@@ -1593,6 +1624,14 @@ void Launcher::State::draw_graphics(const float height) {
                 ImGui::Combo("##tone", &g.tone_curve, curves, 6);
                 group_row(tr("Exposure"), Load::none, Load::none);
                 viewer::slider_with_input("##exposure", &g.exposure, 0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
+                group_row(tr("Auto exposure"), Load::none, Load::negligible);
+                ImGui::Checkbox("##auto_exposure", &g.auto_exposure.on);
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", tr("the picture gets used to the light, as an eye"));
+                if (g.auto_exposure.on) {
+                    group_row(tr("Auto exposure strength"), Load::none, Load::none);
+                    viewer::slider_with_input("##auto_exposure_strength", &g.auto_exposure.strength, 0.0f, 1.0f, "%.2f", "%.2f");
+                }
                 if (g.tone_curve == 4 || g.tone_curve == 5) {
                     group_row(tr("Night exposure"), Load::none, Load::none);
                     viewer::slider_with_input("##night_exposure", &g.night_exposure, 0.5f, 6.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
@@ -1631,9 +1670,9 @@ void Launcher::State::draw_graphics(const float height) {
             }
             group_row(tr("Shadow softness"), Load::none, Load::negligible);
             viewer::slider_with_input("##shadow_softness", &e.shadow_softness, 0.5f, 4.0f, "%.1f", "%.1f");
-            group_row(tr("Keep the far cascades"), Load::negligible, Load::negligible);
+            group_row(tr("Shadow cache (what stays still)"), Load::negligible, Load::negligible);
             ImGui::Checkbox("##shadow_cache", &e.cache_far_cascades);
-            row_note(tr("The far cascades are drawn every other frame, and at once when the view leaves them."));
+            row_note(tr("The terrain, trees and buildings are drawn into the sun's shadows once and kept, only the strips the view moves into again; trains, cars and moving parts every frame. Video memory: a map a cascade more (64 MB at 4096)."));
             group_row(tr("Sharp shadows in the cab"), Load::medium, Load::medium);
             ImGui::Checkbox("##shadow_cab", &e.cab_shadows);
             row_note(tr("A shadow map of its own around the cab: sharp edges on the desk, one more pass."));
@@ -1774,6 +1813,32 @@ void Launcher::State::draw_graphics(const float height) {
             group_row(tr("Smooth the compression blocks of the trains' textures (BC7, not as in RTS)"), Load::medium, Load::negligible);
             ImGui::Checkbox("##smooth_train_textures", &g.smooth_train_textures);
             row_note(tr("DXT1's 4x4 blocks in the shade of cars and cabs smoothed; the first load of a train a few seconds longer, then from the cache; twice the video memory for the trains."));
+            group_row(tr("Uncompressed textures and PBR maps (BC7, normals BC5)"), Load::none, Load::none);
+            {
+                const char* modes[] = {tr("Don't compress (as in RTS)"), tr("Compress, not kept on disk"), tr("Compress and keep on disk")};
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::Combo("##compress_textures", &g.compress_textures, modes, 3);
+            }
+            row_note(tr("Compressed: a quarter of their video memory, barely seen; for cards with 8 GB and less. Kept on disk: the first load of a route or train longer, then read from the cache. Not kept: every load longer, nothing written."));
+            {
+                // The disk cache (renderer/bc7.hpp): counted every 2 s while shown.
+                static renderer::TextureCacheSize cache_size;
+                static double counted_at = -100.0;
+                const auto folder = viewer::user_data_directory() / "texture_cache" / "bc7";
+                if (ImGui::GetTime() - counted_at > 2.0) {
+                    cache_size = renderer::texture_cache_size(folder);
+                    counted_at = ImGui::GetTime();
+                }
+                group_row(tr("The compressed textures' cache on disk"), Load::none, Load::none);
+                ImGui::Text(tr("%.0f MB, %llu files"), static_cast<double>(cache_size.bytes) / 1048576.0,
+                            static_cast<unsigned long long>(cache_size.files));
+                ImGui::SameLine();
+                if (ImGui::Button(tr("Clear the cache"))) {
+                    renderer::clear_texture_cache(folder);
+                    counted_at = -100.0;
+                }
+                row_note(tr("The trains' smoothed textures and the compressed ones; cleared, they are made again on the next load."));
+            }
             group_row(tr("Depth for ReShade"), Load::none, Load::negligible);
             ImGui::Checkbox("##reshade_depth", &g.reshade_depth);
             row_note(tr("Keeps the scene depth to the end of the frame and, with anti-aliasing, adds a copy ReShade can take. In ReShade: RESHADE_DEPTH_INPUT_IS_REVERSED 1, RESHADE_DEPTH_MULTIPLIER 20 (see INSTALL.md)."));

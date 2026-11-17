@@ -32,11 +32,11 @@ type Car = {
 	state: { [string]: any }, -- yours, kept between steps
 }
 
-local STABILITY = 0.5 / 60   -- atm/s the ЗР flows back on a slow fall: no braking
+local STABILITY = 0.4 / 60   -- atm/s the ЗР flows back on a slow fall: no braking (Крылов §31)
 local APPLY = 0.10           -- ЗР − ТМ that starts an application
-local QUICK_SERVICE = 0.06   -- atm the quick-service valve takes from the pipe
+local KDR = 0.001             -- m³, its КДР: the pipe empties into it as it applies (Крылов §31)
 local RELEASE = 0.12         -- a rise this far above the ЗР releases fully
-local ZR_CHARGE = 35         -- s, the ЗР's charging time constant
+local ZR_CHARGE = 48         -- s, the ЗР's charging time constant: to 4.8 in 130-180 s (Крылов §31)
 -- The spool's friction band: a pipe rise shorter than this does not move it,
 -- so the cylinder follows the drop only past it (with the 0.015 gap and the
 -- 0.05 lap it is where the 0.10 application threshold comes from).
@@ -78,10 +78,10 @@ function step(c: Car, dt: number)
 		if p < c.zr then
 			c.zr -= math.min(c.zr - p, STABILITY * dt)
 		end
-		if c.zr - p >= APPLY and p < 4.9 then
+		if c.zr - p >= APPLY then
 			c.braking = true
 			c.ref = c.zr
-			c.pipe = math.max(c.pipe - QUICK_SERVICE, 0)
+			c.pipe = math.max(c.pipe - c.pipe * KDR / (c.v_pipe + KDR), 0)
 		end
 	end
 	if c.braking then

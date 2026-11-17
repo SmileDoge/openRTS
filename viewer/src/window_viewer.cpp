@@ -12,6 +12,7 @@
 #include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
 #include <openrts/renderer/screen_quads.hpp>
+#include <openrts/renderer/auto_exposure.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/bloom.hpp>
 #include <openrts/renderer/light_shafts.hpp>
@@ -44,6 +45,7 @@
 #include "graphics_presets_ui.hpp"
 #include "graphics_settings.hpp"
 #include <openrts/renderer/gpu_pass_timer.hpp>
+#include <openrts/renderer/video_memory.hpp>
 #include "key_layout.hpp"
 #include "ui_fonts.hpp"
 #include "ui_slider.hpp"
@@ -629,6 +631,7 @@ struct PanelState {
     bool vsync_optional = false;
     int fps_limit = 0; // 0: none, else 30..500
     bool gpu_timing = false;
+    renderer::VideoMemory video_memory; // the card's memory, read twice a second
     audio::AudioEngine* sound = nullptr;
     bool save_view = false;
     std::string save_status;
@@ -666,7 +669,9 @@ struct PanelState {
     // day and AgX by night: in the experimental path.
     int tone_curve = 4;
     float exposure = 1.0f;
-    float night_exposure = 2.0f;
+    float night_exposure = 1.5f;
+    renderer::AutoExposureSettings auto_exposure; // PBR stage 3
+    float auto_exposure_factor = 1.0f;            // its factor now, for the panel
     float night = 0.0f; // 0 day .. 1 night, from the sun (shown)
     float saturation = 1.0f;
     bool physical_light = false; // physical falloff of headlights and lamps (experimental renderer)
@@ -688,6 +693,7 @@ struct PanelState {
     // The trains' DXT1 textures without the blocks' squares, kept in BC7
     // (renderer/bc7.hpp; openRTS's own; remembered as smooth_train_textures).
     bool smooth_train_textures = false;
+    int compress_textures = 2; // renderer/bc7.hpp: 0 not, 1 in memory, 2 kept on disk
     bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
     float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
     bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
@@ -716,10 +722,13 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.tone_curve = g.tone_curve;
     panel.exposure = g.exposure;
     panel.night_exposure = g.night_exposure;
+    panel.auto_exposure = g.auto_exposure;
     panel.saturation = g.saturation;
     const bool show_occlusion = panel.effects.show_occlusion;
+    const int material_view = panel.effects.material_view;
     panel.effects = g.effects;
     panel.effects.show_occlusion = show_occlusion;
+    panel.effects.material_view = material_view;
     panel.physical_light = g.physical_light;
     panel.pbr = g.pbr;
     panel.light_range = g.light_range;
@@ -741,6 +750,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.screen_supersampling = g.screen_supersampling;
     panel.reshade_depth = g.reshade_depth;
     panel.smooth_train_textures = g.smooth_train_textures;
+    panel.compress_textures = g.compress_textures;
 }
 
 [[nodiscard]] GraphicsSettings panel_graphics(const PanelState& panel) {
@@ -748,9 +758,11 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.tone_curve = panel.tone_curve;
     g.exposure = panel.exposure;
     g.night_exposure = panel.night_exposure;
+    g.auto_exposure = panel.auto_exposure;
     g.saturation = panel.saturation;
     g.effects = panel.effects;
     g.effects.show_occlusion = false;
+    g.effects.material_view = 0;
     g.physical_light = panel.physical_light;
     g.pbr = panel.pbr;
     g.light_range = panel.light_range;
@@ -772,6 +784,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.screen_supersampling = panel.screen_supersampling;
     g.reshade_depth = panel.reshade_depth;
     g.smooth_train_textures = panel.smooth_train_textures;
+    g.compress_textures = panel.compress_textures;
     return g;
 }
 
@@ -1169,6 +1182,29 @@ public:
             if (ImGui::Checkbox(tr("Smooth the compression blocks of the trains' textures (BC7, not as in RTS)"), &panel.smooth_train_textures))
                 remember("smooth_train_textures", panel.smooth_train_textures ? "1" : "0");
             ImGui::TextDisabled("%s", tr("(the DXT1 of cars and cabs: the squares of its 4x4 blocks smoothed where they meet, kept in BC7, twice the video memory of the trains; a train loaded after: the first time some seconds longer, then from the cache)"));
+            {
+                const char* modes[] = {tr("Don't compress (as in RTS)"), tr("Compress, not kept on disk"), tr("Compress and keep on disk")};
+                ImGui::SetNextItemWidth(260.0f);
+                if (ImGui::Combo(tr("Uncompressed textures and PBR maps (BC7, normals BC5)"), &panel.compress_textures, modes, 3))
+                    remember("compress_textures", std::to_string(panel.compress_textures));
+                ImGui::TextDisabled("%s", tr("(compressed: a quarter of their video memory, barely seen; on disk: the first load longer, then read from the cache; not kept: each load longer, nothing written; textures loaded after the change)"));
+                // The disk cache: counted every 2 s while shown, cleared on the button.
+                static renderer::TextureCacheSize cache_size;
+                static double counted_at = -100.0;
+                if (ImGui::GetTime() - counted_at > 2.0) {
+                    cache_size = renderer::texture_cache_size(renderer::texture_cache_directory());
+                    counted_at = ImGui::GetTime();
+                }
+                ImGui::Text(tr("The compressed textures' cache on disk: %.0f MB, %llu files"), static_cast<double>(cache_size.bytes) / 1048576.0,
+                            static_cast<unsigned long long>(cache_size.files));
+                ImGui::SameLine();
+                if (ImGui::Button(tr("Clear the cache"))) {
+                    const auto removed = renderer::clear_texture_cache(renderer::texture_cache_directory());
+                    std::cout << "texture cache: removed " << removed.files << " files, " << removed.bytes / 1048576 << " MB" << std::endl;
+                    counted_at = -100.0;
+                }
+                ImGui::TextDisabled("%s", tr("(the textures already loaded stay; the next loads compress theirs again)"));
+            }
             if (ImGui::Checkbox(tr("Sharp cab screens: drawn at a higher resolution (not as in RTS)"), &panel.screen_supersampling))
                 remember("screen_supersampling", panel.screen_supersampling ? "1" : "0");
             ImGui::TextDisabled("%s", tr("(each screen drawn into an image of its own and blended in linear light: thin lines keep their brightness, no steps on edges and needles)"));
@@ -1215,8 +1251,35 @@ public:
                 ImGui::Checkbox(tr("HDR frame in linear light (off: gamma 2.2, as before; a check)"), &renderer::linear_hdr());
                 ImGui::TextDisabled(renderer::frame_linear() ? tr("this frame: linear light") : tr("this frame: gamma 2.2"));
                 ImGui::SetNextItemWidth(220.0f);
-                if (slider_with_input(tr("Exposure"), &panel.exposure, 0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
+                if (slider_with_input(panel.auto_exposure.on ? tr("Exposure correction (with the auto exposure)") : tr("Exposure"), &panel.exposure,
+                                      0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
                     remember("exposure", std::to_string(panel.exposure));
+                // PBR stage 3 (docs/experimental-effects.md, "Auto exposure").
+                if (ImGui::Checkbox(tr("Auto exposure (the picture gets used to the light, as an eye)"), &panel.auto_exposure.on))
+                    remember("auto_exposure", panel.auto_exposure.on ? "1" : "0");
+                if (panel.auto_exposure.on) {
+                    auto& a = panel.auto_exposure;
+                    ImGui::Indent();
+                    ImGui::SetNextItemWidth(200.0f);
+                    if (slider_with_input(tr("How far it follows the light (1: all the way)"), &a.strength, 0.0f, 1.0f, "%.2f", "%.2f"))
+                        remember("auto_exposure_strength", std::to_string(a.strength));
+                    ImGui::SetNextItemWidth(200.0f);
+                    if (slider_with_input(tr("Darkens a bright scene by at most, stops"), &a.down, 0.0f, 3.0f, "%.1f", "%.1f"))
+                        remember("auto_exposure_down", std::to_string(a.down));
+                    ImGui::SetNextItemWidth(200.0f);
+                    if (slider_with_input(tr("Brightens a dark scene by at most, stops"), &a.up, 0.0f, 3.0f, "%.1f", "%.1f"))
+                        remember("auto_exposure_up", std::to_string(a.up));
+                    ImGui::SetNextItemWidth(200.0f);
+                    if (slider_with_input(tr("How fast it gets used to the light"), &a.speed, 0.1f, 5.0f, "%.1f", "%.1f", ImGuiSliderFlags_Logarithmic))
+                        remember("auto_exposure_speed", std::to_string(a.speed));
+                    if (renderer.shading_path() != renderer::ShadingPath::experimental) {
+                        ImGui::TextDisabled("%s", tr("(in effect in the experimental renderer)"));
+                    } else {
+                        ImGui::TextDisabled(tr("now: x %.2f (%+.1f stops)"), panel.auto_exposure_factor,
+                                            std::log2((std::max)(panel.auto_exposure_factor, 1e-3f)));
+                    }
+                    ImGui::Unindent();
+                }
                 if (panel.tone_curve == 4 || panel.tone_curve == 5) {
                     ImGui::SetNextItemWidth(220.0f);
                     if (slider_with_input(tr("Night exposure"), &panel.night_exposure, 0.5f, 6.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
@@ -1246,6 +1309,41 @@ public:
                     // one (a check, not kept).
                     ImGui::Indent();
                     ImGui::Checkbox(tr("Sky light from the sky itself (IBL; off: the old sky light, a check)"), &renderer::sky_light_from_probe());
+                    if (renderer::sky_light_from_probe()) {
+                        // Its tuning (SceneEffectSettings), kept.
+                        auto& e = panel.effects;
+                        ImGui::SetNextItemWidth(200.0f);
+                        if (slider_with_input(tr("Sky light strength (1: as the sky gives it)"), &e.sky_light_strength, 0.0f, 2.0f, "%.2f", "%.2f"))
+                            remember("sky_light_strength", std::to_string(e.sky_light_strength));
+                        ImGui::SetNextItemWidth(200.0f);
+                        if (slider_with_input(tr("Sky reflections strength (1: as the sky gives them)"), &e.sky_reflection_strength, 0.0f, 2.0f,
+                                              "%.2f", "%.2f"))
+                            remember("sky_reflection_strength", std::to_string(e.sky_reflection_strength));
+                        ImGui::SetNextItemWidth(200.0f);
+                        if (slider_with_input(tr("Sky reflections in the cab and salon (their share)"), &e.sky_reflection_indoors, 0.0f, 1.0f,
+                                              "%.2f", "%.2f"))
+                            remember("sky_reflection_indoors", std::to_string(e.sky_reflection_indoors));
+                        ImGui::SetNextItemWidth(200.0f);
+                        if (slider_with_input(tr("Sky light in a tunnel, at least (its share)"), &e.sky_light_tunnel, 0.0f, 0.5f, "%.2f", "%.2f"))
+                            remember("sky_light_tunnel", std::to_string(e.sky_light_tunnel));
+                        if (ImGui::Button(tr("Sky light: defaults"))) {
+                            const renderer::SceneEffectSettings defaults;
+                            e.sky_light_strength = defaults.sky_light_strength;
+                            e.sky_reflection_strength = defaults.sky_reflection_strength;
+                            e.sky_reflection_indoors = defaults.sky_reflection_indoors;
+                            e.sky_light_tunnel = defaults.sky_light_tunnel;
+                            remember("sky_light_strength", std::to_string(e.sky_light_strength));
+                            remember("sky_reflection_strength", std::to_string(e.sky_reflection_strength));
+                            remember("sky_reflection_indoors", std::to_string(e.sky_reflection_indoors));
+                            remember("sky_light_tunnel", std::to_string(e.sky_light_tunnel));
+                        }
+                    }
+                    // openRTS's materials (PBR stage 4, docs/pbr-materials.md):
+                    // a part of the models' material as the colour, a check.
+                    const char* material_views[] = {tr("the picture"), tr("base colour"), tr("roughness"), tr("metallic"),
+                                                    tr("normals"), tr("occlusion (the map's and GTAO's)"), tr("emission")};
+                    ImGui::SetNextItemWidth(200.0f);
+                    ImGui::Combo(tr("Show the material (a check)"), &panel.effects.material_view, material_views, 7);
                     ImGui::Unindent();
                 }
                 if (!panel.hdr) {
@@ -1288,10 +1386,10 @@ public:
                 if (slider_with_input(tr("Shadow softness"), &panel.effects.shadow_softness, 0.5f, 4.0f, "%.1f", "%.1f"))
                     remember("shadow_softness", std::to_string(panel.effects.shadow_softness));
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("How blurred shadow edges are, in shadow map texels."));
-                if (ImGui::Checkbox(tr("Keep the far cascades"), &panel.effects.cache_far_cascades))
+                if (ImGui::Checkbox(tr("Shadow cache (what stays still)"), &panel.effects.cache_far_cascades))
                     remember("shadow_cache", panel.effects.cache_far_cascades ? "1" : "0");
                 if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", tr("The far cascades are drawn every other frame, and at once when the view leaves them."));
+                    ImGui::SetTooltip("%s", tr("The terrain, trees and buildings are drawn into the sun's shadows once and kept, only the strips the view moves into again; trains, cars and moving parts every frame. Video memory: a map a cascade more (64 MB at 4096)."));
                 if (ImGui::Checkbox(tr("Sharp shadows in the cab"), &panel.effects.cab_shadows))
                     remember("shadow_cab", panel.effects.cab_shadows ? "1" : "0");
                 if (ImGui::IsItemHovered())
@@ -1476,8 +1574,20 @@ public:
             const auto gpu = renderer.stats();
             ImGui::Text(tr("GPU: %zu textures, %zu retired waiting, frame %llu done"), gpu.cached_textures, gpu.retired_pending,
                         static_cast<unsigned long long>(gpu.completed_frame));
-            ImGui::Text(tr("Textures on the GPU: %.0f MB, the trains' %.0f MB"), static_cast<double>(gpu.texture_bytes) / 1048576.0,
-                        static_cast<double>(gpu.train_texture_bytes) / 1048576.0);
+            ImGui::Text(tr("Textures on the GPU: %.0f MB, the trains' %.0f MB, uncompressed %.0f MB"),
+                        static_cast<double>(gpu.texture_bytes) / 1048576.0, static_cast<double>(gpu.train_texture_bytes) / 1048576.0,
+                        static_cast<double>(gpu.rgba8_texture_bytes) / 1048576.0);
+            // The card's memory as Windows counts it (renderer/video_memory.hpp).
+            if (const auto memory = panel.video_memory; memory.known) {
+                ImGui::Text(tr("Video memory: %.0f MB of the %.0f MB Windows lets the game keep (the card has %.0f MB), %.0f MB in shared memory"),
+                            static_cast<double>(memory.usage) / 1048576.0, static_cast<double>(memory.budget) / 1048576.0,
+                            static_cast<double>(memory.total) / 1048576.0, static_cast<double>(memory.shared_usage) / 1048576.0);
+                if (memory.over_budget()) {
+                    ImGui::TextColored(ImVec4{1.0f, 0.45f, 0.35f, 1.0f}, "%s",
+                                       tr("Video memory over its budget: part of it is moved to system memory and the frame slows down many "
+                                          "times. Lower the shadows' quality, the lamp shadows or the anti-aliasing."));
+                }
+            }
             ImGui::Text(tr("Models: %zu instances, %zu primitives, %zu draw calls"), gpu.instances, gpu.primitives, gpu.draw_calls);
             ImGui::Text(tr("Commands in the main pass: %zu"), gpu.draw_commands);
             ImGui::BeginDisabled(!renderer.multi_draw_supported());
@@ -2516,6 +2626,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     }
     const auto device = context.context.device();
     report_adapter(context.context.adapter());
+    // The card's memory budget (DXGI; Windows only).
+    std::unique_ptr<renderer::VideoMemoryProbe> video_memory_probe;
+    {
+        WGPUAdapterInfo info{};
+        wgpuAdapterGetInfo(context.context.adapter(), &info);
+        video_memory_probe = std::make_unique<renderer::VideoMemoryProbe>(info.vendorID, info.deviceID);
+        wgpuAdapterInfoFreeMembers(info);
+    }
+    double video_memory_at = 0.0;
     // OpenGL: the experimental path's compute shaders read depth textures
     // with textureLoad, which wgpu's GLSL output cannot do.
     const bool experimental_supported = renderer::adapter_backend_name(context.context.adapter()).substr(0, 6) != "OpenGL";
@@ -2569,6 +2688,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
 
     renderer::ModelRenderer renderer(device, surface.scene_format());
     std::unique_ptr<renderer::ToneMapper> tone;
+    std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
+    bool auto_exposure_was_on = false;
     if (renderer::scene_hdr()) tone = std::make_unique<renderer::ToneMapper>(device, surface.format());
     // The HDR frame's bloom (the experimental path; made on first use).
     std::unique_ptr<renderer::BloomRenderer> bloom;
@@ -2582,6 +2703,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     renderer.set_batching(options.batching);
     // The experimental path's shadows, lamps, occlusion and haze.
     renderer::SceneEffects effects(device);
+    effects.set_shadow_cache_check(options.shadow_cache_check);
     // The sky's light from its probe (PBR stage 2).
     renderer::SkyLight sky_light(device);
     if (!sky_light.ready()) std::cerr << "The sky's light could not be made: the physically based light keeps the old sky light.\n";
@@ -2733,10 +2855,18 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (options.headlight_reach) panel.headlight_reach = std::clamp(*options.headlight_reach, 1.0f, 5.0f);
     if (options.lamps_daylight) panel.effects.lamps_in_daylight = std::clamp(*options.lamps_daylight, 0.0f, 1.0f);
     if (options.ground_bounce) panel.effects.ground_bounce = std::clamp(*options.ground_bounce, 0.0f, 0.5f);
+    if (options.auto_exposure) panel.auto_exposure.on = *options.auto_exposure;
+    if (options.material_view) panel.effects.material_view = std::clamp(*options.material_view, 0, 6);
+    if (options.auto_exposure_strength) panel.auto_exposure.strength = std::clamp(*options.auto_exposure_strength, 0.0f, 1.0f);
+    if (options.sky_light_strength) panel.effects.sky_light_strength = std::clamp(*options.sky_light_strength, 0.0f, 2.0f);
+    if (options.sky_reflections) panel.effects.sky_reflection_strength = std::clamp(*options.sky_reflections, 0.0f, 2.0f);
+    if (options.sky_reflections_indoors) panel.effects.sky_reflection_indoors = std::clamp(*options.sky_reflections_indoors, 0.0f, 1.0f);
+    if (options.sky_light_tunnel) panel.effects.sky_light_tunnel = std::clamp(*options.sky_light_tunnel, 0.0f, 0.5f);
     constexpr int most_lamp_shadows = static_cast<int>(renderer::SceneEffects::max_lamp_shadows);
     if (options.lamp_shadows) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(*options.lamp_shadows, 0, most_lamp_shadows));
     if (const auto on = remembered("parallel_recording")) panel.parallel_recording = *on == "1";
     if (options.shadow_cache) panel.effects.cache_far_cascades = *options.shadow_cache;
+    if (options.compress_textures) panel.compress_textures = *options.compress_textures;
     if (options.cab_shadows) panel.effects.cab_shadows = *options.cab_shadows;
     if (options.parallel_recording) panel.parallel_recording = *options.parallel_recording;
     if (options.start_paused) panel.paused = true;
@@ -2796,8 +2926,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // the start loads: the world streams in a step a frame.
         // In the background (another window in front, or minimised): at most
         // 30 frames/s; in front again, the setting.
-        const bool background = glfwGetWindowAttrib(window.get(), GLFW_FOCUSED) == GLFW_FALSE
-                                || glfwGetWindowAttrib(window.get(), GLFW_ICONIFIED) == GLFW_TRUE;
+        const bool background = !options.fps_background
+                                && (glfwGetWindowAttrib(window.get(), GLFW_FOCUSED) == GLFW_FALSE
+                                    || glfwGetWindowAttrib(window.get(), GLFW_ICONIFIED) == GLFW_TRUE);
         limiter.set(frame_limit(panel.fps_limit, !loading.done, background));
         limiter.wait();
         stage_clock.start();
@@ -2861,6 +2992,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::light_fullbright() = panel.light_fullbright;
         renderer::night_textures() = panel.night_textures;
         renderer::smooth_train_textures() = panel.smooth_train_textures;
+        renderer::texture_compression() = static_cast<renderer::TextureCompression>(std::clamp(panel.compress_textures, 0, 2));
         renderer::lamp_skips_own_model() = panel.lamp_own_model;
         renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
         auto frame_input = scene_input(window.get(), input);
@@ -3041,6 +3173,16 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
         }
         if (const auto view_camera = capture_view()) camera = *view_camera;
+        // --fly-test: the free camera flies on level at a speed and turns (a
+        // moving view without a driver: the shadow cache's check, benchmarks).
+        if (options.fly_speed > 0.0f && scene.loading().done) {
+            camera.fly = true;
+            const auto ahead = camera.forward();
+            const auto level = glm::length(glm::vec2{ahead.x, ahead.z}) > 1e-4f ? glm::normalize(glm::vec3{ahead.x, 0.0f, ahead.z})
+                                                                               : glm::vec3{0.0f, 0.0f, -1.0f};
+            camera.position += level * options.fly_speed * elapsed;
+            camera.yaw += glm::radians(options.fly_turn) * elapsed;
+        }
         if (sound) {
             sound->set_listener(camera.eye(), camera.forward());
             sound->update();
@@ -3133,12 +3275,16 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer.prepare();
         stage_clock.mark(FrameStage::prepare, stages);
         const renderer::SceneEffects::DepthDraw depth_draw = [&](const WGPURenderPassEncoder depth_pass, const std::uint32_t slot,
-                                                                  const glm::mat4& view_projection, const renderer::DepthPassKind kind) {
-            scene.draw_depth(depth_pass, slot, view_projection, kind);
+                                                                  const glm::mat4& view_projection, const renderer::DepthPassKind kind,
+                                                                  const renderer::DepthCasters casters) {
+            // The terrain stays where it is.
+            if (casters != renderer::DepthCasters::moving) scene.draw_depth(depth_pass, slot, view_projection, kind);
             renderer.render_depth(depth_pass, slot, view_projection, kind,
-                                  renderer::lamp_skips_own_model() ? effects.depth_slot_owner(slot) : 0u);
+                                  renderer::lamp_skips_own_model() ? effects.depth_slot_owner(slot) : 0u, casters);
         };
         scene.prepare_depth();
+        // Nothing moving moved: the shadow maps may stay as they are.
+        effects.set_moving_signature(renderer.moving_signature(), renderer.moving_signature(false));
         // In parallel the workers record and finish a command buffer each
         // (the cascades, the pre-pass) while this thread records the main pass.
         renderer.set_multi_draw(panel.multi_draw);
@@ -3148,6 +3294,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         } else {
             effects.record(encoder, depth_draw);
         }
+        effects.record_check(encoder);
         scene.before_main_pass(encoder, frame);
         stage_clock.mark(FrameStage::effects, stages);
         const auto pass =
@@ -3240,7 +3387,25 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                     settings.shafts = shafts_view != nullptr;
                 }
             }
-            tone->render(encoder, surface.hdr_view(), frame_view, settings, bloom_view, shafts_view);
+            // The auto exposure (PBR stage 3): the frame's light measured on
+            // the GPU, the tone curve reads its factor from there.
+            WGPUBuffer exposure_state = nullptr;
+            if (experimental && settings.curve != renderer::ToneCurve::none && panel.auto_exposure.on) {
+                if (!auto_exposure) auto_exposure = std::make_unique<renderer::AutoExposure>(device);
+                if (auto_exposure->ready()) {
+                    // From the frame's light at once: turned on, or still loading
+                    // (no adapting from the loading screen's dark).
+                    if (!auto_exposure_was_on || !loading.done) auto_exposure->reset();
+                    auto_exposure->measure(encoder, surface.hdr_view(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+                                           renderer::frame_linear(), elapsed, panel.auto_exposure);
+                    exposure_state = auto_exposure->state();
+                    settings.auto_exposure = true;
+                    auto_exposure->copy_for_panel(encoder);
+                    panel.auto_exposure_factor = auto_exposure->latest().valid ? auto_exposure->latest().factor : 1.0f;
+                }
+            }
+            auto_exposure_was_on = exposure_state != nullptr;
+            tone->render(encoder, surface.hdr_view(), frame_view, settings, bloom_view, shafts_view, exposure_state);
 #ifdef OPENRTS_HAS_IMGUI
             const WGPURenderPassColorAttachment ui_colour{
                 .view = frame_view,
@@ -3294,9 +3459,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (const auto timing = pass_timer.finish()) submitted.push_back(timing);
         const auto queue = wgpuDeviceGetQueue(device);
         wgpuQueueSubmit(queue, submitted.size(), submitted.data());
+        if (const auto report = effects.shadow_cache_check_report(context.context.instance()); !report.empty()) std::cout << report << std::flush;
         for (const auto buffer : submitted)
             if (buffer != commands) wgpuCommandBufferRelease(buffer);
         pass_timer.submitted();
+        if (auto_exposure) auto_exposure->submitted();
         scene.frame_submitted();
         renderer.frame_submitted(queue);
         wgpuQueueRelease(queue);
@@ -3338,7 +3505,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             std::cout << "gpu frame " << panel.stats.gpu_frame_ms() << " ms: " << panel.stats.gpu_report() << std::endl;
             {
                 const auto gpu = renderer.stats();
-                std::cout << "textures on the GPU: " << gpu.cached_textures << ", " << gpu.texture_bytes / 1048576 << " MB, the trains' "
+                if (video_memory_probe) {
+                    const auto memory = video_memory_probe->query();
+                    if (memory.known)
+                        std::cout << "video memory: " << memory.usage / 1048576 << " of " << memory.budget / 1048576 << " MB budget, shared "
+                                  << memory.shared_usage / 1048576 << " MB" << std::endl;
+                }
+                std::cout << "textures on the GPU: " << gpu.cached_textures << ", " << gpu.texture_bytes / 1048576 << " MB (uncompressed "
+                          << gpu.rgba8_texture_bytes / 1048576 << " MB), the trains' "
                           << gpu.train_texture_bytes / 1048576 << " MB; model geometry " << gpu.geometry_bytes / 1048576
                           << " MB, the trains' " << gpu.train_geometry_bytes / 1048576 << " MB; all uploaded textures "
                           << renderer::uploaded_texture_bytes() / 1048576 << " MB; terrain tiles' buffers "
@@ -3350,6 +3524,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
             if (shafts_shot.buffer) report_light_shafts(context.context, shafts_shot);
             if (hdr_shot.buffer) report_hdr_frame(context.context, hdr_shot, hdr_linear);
+            if (auto_exposure && auto_exposure_was_on) {
+                const auto state = auto_exposure->read_state(context.context.instance());
+                std::cout << "auto exposure: measured log2 " << state.measured << ", adapted " << state.adapted << ", factor " << state.factor
+                          << (state.valid ? "" : " (not measured yet)") << std::endl;
+            }
             if (renderer::frame_sky_light())
                 std::cout << "sky light: " << (sky_light.view().on() ? "from the probe" : "not made yet") << ", the sky open round the eye "
                           << environment.sky_openness << std::endl;
@@ -3367,8 +3546,18 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             OPENRTS_PLOT("draw commands", static_cast<std::int64_t>(models.draw_commands));
             OPENRTS_PLOT("model instances", static_cast<std::int64_t>(models.instances));
         }
+        if (video_memory_probe && now >= video_memory_at) {
+            video_memory_at = now + 0.5;
+            panel.video_memory = video_memory_probe->query();
+        }
         if (!capture && !options.menu && now >= perf_at) {
             perf_at = now + 10.0;
+            if (const auto& memory = panel.video_memory; memory.known) {
+                std::cout << "perf memory: " << memory.usage / 1048576 << " of " << memory.budget / 1048576 << " MB budget (card "
+                          << memory.total / 1048576 << " MB), shared " << memory.shared_usage / 1048576 << " MB"
+                          << (memory.over_budget() ? " OVER BUDGET" : "") << "; textures " << renderer.stats().texture_bytes / 1048576
+                          << " MB, uncompressed " << renderer.stats().rgba8_texture_bytes / 1048576 << " MB" << std::endl;
+            }
             const auto& times = panel.stats.stage_ms();
             double work = 0.0;
             for (std::size_t i = 0; i < frame_stage_count; ++i)
@@ -3382,13 +3571,23 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                       << " instances, " << gpu.draw_calls << " draw calls in " << gpu.draw_commands << " commands (multi-draw "
                       << (renderer.multi_draw() ? "on" : "off") << "), " << gpu.primitives << " primitives; "
                       << effect_stats.cascades << " cascades (" << effect_stats.cascades_drawn << " drawn), "
-                      << effect_stats.lamp_shadows << " lamp shadows, " << effect_stats.lights << " lights; workers' passes (ms):";
+                      << effect_stats.lamp_shadows << " lamp shadows (" << effect_stats.lamp_shadows_drawn << " drawn), " << effect_stats.lights
+                      << " lights; workers' passes (ms):";
             for (std::uint32_t i = 0; i < effect_stats.cascades; ++i) std::cout << " cascade" << i << ' ' << effect_stats.record_cascade_ms[i];
             std::cout << " focus " << effect_stats.record_focus_ms << " lamps " << effect_stats.record_lamps_ms << " camera "
-                      << effect_stats.record_camera_ms << "; renderer "
+                      << effect_stats.record_camera_ms;
+            if (effect_stats.still_cache)
+                std::cout << ", shadow cache " << effect_stats.still_full << " whole " << effect_stats.still_pieces << " pieces "
+                          << effect_stats.still_share * 100.0f << " % " << effect_stats.maps_kept << " kept";
+            std::cout << "; renderer "
                       << (renderer.shading_path() == renderer::ShadingPath::experimental ? "experimental" : "RTS") << std::endl;
             if (panel.gpu_timing)
                 std::cout << "perf gpu: frame " << panel.stats.gpu_frame_ms() << " ms; " << panel.stats.gpu_report() << std::endl;
+            if (auto_exposure && auto_exposure_was_on && auto_exposure->latest().valid) {
+                const auto state = auto_exposure->latest();
+                std::cout << "perf exposure: measured " << state.measured << " adapted " << state.adapted << " (key " << renderer::auto_exposure_key
+                          << ", log2 luminance), factor x" << state.factor << std::endl;
+            }
         }
     }
     return exit_code::success;

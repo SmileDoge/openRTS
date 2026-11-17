@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(openRTS
-    VERSION 0.15.0
+    VERSION 0.19.1
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
 
@@ -73,6 +73,22 @@ FetchContent_Declare(miniaudio
     URL_HASH SHA256=bcb07bfb27e6fa94d34da73ba2d5642d4940b208ec2a660dbf4e52e6b7cd492f
     SOURCE_SUBDIR openrts-sources-only)
 FetchContent_MakeAvailable(miniaudio)
+
+# MikkTSpace (zlib): the tangents normal maps are baked with (Blender,
+# Substance Painter, glTF), for the models with an openRTS normal map
+# (PBR stage 4, docs/pbr-materials.md).
+FetchContent_Declare(mikktspace
+    URL https://github.com/mmikk/MikkTSpace/archive/3e895b49d05ea07e4c2133156cfa94369e19e409.tar.gz
+    URL_HASH SHA256=aeba65ddee85a679133d510d71d00b108f603752f90b15b9ecf7777033f6e351
+    SOURCE_SUBDIR openrts-sources-only)
+FetchContent_MakeAvailable(mikktspace)
+add_library(openrts_mikktspace STATIC "${mikktspace_SOURCE_DIR}/mikktspace.c")
+target_include_directories(openrts_mikktspace SYSTEM PUBLIC "${mikktspace_SOURCE_DIR}")
+if(MSVC)
+    target_compile_options(openrts_mikktspace PRIVATE /W0)
+else()
+    target_compile_options(openrts_mikktspace PRIVATE -w)
+endif()
 
 # Luau (MIT): the scripting language of openRTS's own modules (a brake
 # distributor now; train plugins later, docs/scripting.md). Its VM and
@@ -213,7 +229,8 @@ if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
     add_subdirectory(tests)
 endif()
 
-# openRTS's own packs (docs/vfs.md, "openRTS's own packs"): packs/thunder
+# openRTS's own packs (docs/vfs.md, "openRTS's own packs"): packs/thunder and
+# packs/stock (the stock rules in Luau, docs/scripting.md)
 # packed by openrts-pack into PACKS beside the game and the viewer, on every
 # build (a second).
 if(OPENRTS_BUILD_TOOLS AND TARGET openrts_pack)
@@ -229,7 +246,10 @@ if(OPENRTS_BUILD_TOOLS AND TARGET openrts_pack)
             COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${program}>/PACKS"
             COMMAND $<TARGET_FILE:openrts_pack> pack "${CMAKE_SOURCE_DIR}/packs/thunder" --as SOUND/OPENRTS/THUNDER
                     -o "$<TARGET_FILE_DIR:${program}>/PACKS/openrts-thunder.zip" --method deflate --name openrts-thunder
-                    --kind global)
+                    --kind global
+            COMMAND $<TARGET_FILE:openrts_pack> pack "${CMAKE_SOURCE_DIR}/packs/stock" --as TRAINS/OPENRTS/STOCK
+                    -o "$<TARGET_FILE_DIR:${program}>/PACKS/openrts-stock.zip" --method deflate --name openrts-stock
+                    --kind trains)
     endforeach()
     if(openrts_pack_commands)
         add_custom_target(openrts_own_packs ALL ${openrts_pack_commands} VERBATIM)

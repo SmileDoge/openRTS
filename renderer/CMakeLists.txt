@@ -7,6 +7,7 @@ add_library(openrts_renderer STATIC
     src/glow_sprites.cpp
     src/screen_quads.cpp
     src/tone_map.cpp
+    src/auto_exposure.cpp
     src/bc7.cpp
     src/bloom.cpp
     src/light_shafts.cpp
@@ -14,10 +15,12 @@ add_library(openrts_renderer STATIC
     src/depth_export.cpp
     src/frustum.cpp
     src/model_assets.cpp
+    src/model_materials.cpp
     src/transfer_shape.cpp
     src/forest_shape.cpp
     src/forest_clearance.cpp
     src/scene_effects.cpp
+    src/video_memory.cpp
     src/task_pool.cpp
     src/model_library.cpp
     src/model_lighting.cpp
@@ -34,6 +37,7 @@ openrts_configure_target(openrts_renderer)
 # Public renderer headers expose formats types (ShapeModel, RoutePosition).
 target_link_libraries(openrts_renderer PUBLIC openrts_core openrts_formats glm::glm)
 target_link_libraries(openrts_renderer PUBLIC openrts_assets)
+target_link_libraries(openrts_renderer PRIVATE openrts_mikktspace)
 
 if(OPENRTS_ENABLE_WGPU)
     if(NOT OPENRTS_WGPU_ROOT)
@@ -73,3 +77,8 @@ function(openrts_copy_wgpu_runtime target)
                 "$<TARGET_FILE:openrts_wgpu_native>" "$<TARGET_FILE_DIR:${target}>")
     endif()
 endfunction()
+
+# The video card's memory budget and use (video_memory.cpp: DXGI).
+if(WIN32)
+    target_link_libraries(openrts_renderer PRIVATE dxgi)
+endif()

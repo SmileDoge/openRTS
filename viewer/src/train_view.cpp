@@ -24,6 +24,8 @@
 #include <glm/geometric.hpp>
 
 #include <fstream>
+#include <iterator>
+#include <random>
 
 #include <openrts/formats/shape_file.hpp>
 #include <openrts/formats/sound.hpp>
@@ -38,6 +40,7 @@
 #endif
 
 #include "key_layout.hpp"
+#include "mod_files.hpp"
 #include "rts_config.hpp"
 #include "ui_fonts.hpp"
 #include "ui_text.hpp"
@@ -660,7 +663,7 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
     bool passenger = false;
     for (const auto& entry : entries) {
         auto wagon = std::make_unique<formats::WagonDefinition>(
-            formats::load_wagon(*vfs_, entry.folder, entry.name, entry.engine));
+            formats::load_wagon(*vfs_, entry.folder, entry.name, entry.engine, stock_rules()));
         if (!wagon->ok()) return entry.folder + "/" + entry.name + ": " + wagon->error;
         passenger = passenger || wagon->kind == formats::WagonKind::passenger;
         // The cargo's mass rides with the car (RTS counts it in the car's mass).
@@ -700,6 +703,8 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
     unit.freight = !passenger;
     unit.cars = std::move(cars);
     unit.train = std::make_unique<simulation::Train>(std::move(setups));
+    // Its ЭПТ's own pace (a new train, a new one).
+    unit.train->scatter_ep_fill(std::random_device{}());
     // The consist's PlaceDrag (RTS 0x477928): the cars' chocks from the start.
     for (std::size_t i = 0; i < entries.size() && i < unit.cars.size(); ++i)
         if (entries[i].place_drag != 0) unit.train->set_car_flags(i, simulation::Train::CarFlags::chocks, entries[i].place_drag, true);
@@ -1273,6 +1278,16 @@ void TrainView::attach_legacy() {
     // cold, its pantographs stay down.
     const int start = unit.start_state.value_or(start_state_);
     if (unit.start_state) pantographs_down_ = *unit.start_state == 0;
+    // A train just made and started cold: its main reservoirs empty (a DLL's
+    // Init may fill them; testers, 2026-11-16: the cold ЭД4М had 8.5 atm).
+    if (fresh_train_ && start == 0) {
+        auto& train = *unit.train;
+        for (std::size_t i = 0; i < train.cars().size(); ++i) {
+            const auto& c = train.cars()[i];
+            train.set_air(i, {.pipe = c.pipe, .charging_pipe = c.charging_pipe, .cylinder = c.cylinder, .auxiliary = c.auxiliary,
+                              .control = c.control, .main_reservoir = 0.0f});
+        }
+    }
     legacy_ = LegacyCab::attach(*vfs_, cars, *unit.train, legacy_status_, start, &route_, std::exchange(fresh_train_, false));
     // A new host: the driven train alone (the parts cut off before went with
     // the old one; their controllers turn inert).
@@ -6334,8 +6349,9 @@ std::string TrainView::systems_report() const {
         std::size_t lit = 0;
         for (const auto& car : unit.cars)
             for (const auto& l : car.lights) lit += l.level > 0.0f ? 1 : 0;
-        std::snprintf(line, sizeof line, "; %s (%s, %zu cars): lights %zu", unit.name.c_str(),
-                      unit.role == Role::driven ? "driven" : unit.role == Role::ai ? "ai" : "standing", unit.cars.size(), lit);
+        std::snprintf(line, sizeof line, "; %s (%s, %zu cars, %s air): lights %zu", unit.name.c_str(),
+                      unit.role == Role::driven ? "driven" : unit.role == Role::ai ? "ai" : "standing", unit.cars.size(),
+                      "realistic", lit);
         text += line;
         for (std::size_t i = 0; i < unit.cars.size() && i < states.size(); ++i) {
             const auto& c = states[i];
@@ -6544,6 +6560,40 @@ std::vector<TrainView::CarMenuItem> TrainView::car_menu_items(const CarMenu& men
                 default: items.push_back({42, "Distributor plug: УВ, accelerator off (switch to К)"}); break;
                 }
             }
+            // The distributor itself: RTS content cannot tell a multiple
+            // unit's car (305-001) from a coach (305-000), nor a freight
+            // locomotive's 483 from an EP one's 305. Chosen here for the
+            // car's type and kept in a mod (docs/train.md).
+            const bool chosen = car.definition->brakes.distributor_in_companion;
+            switch (simulation::distributor_kind(*car.definition)) {
+            case simulation::DistributorKind::vr483:
+                items.push_back({49, chosen ? "Distributor: 483, chosen in a mod (switch to 292)"
+                                            : "Distributor: 483, by the car's type (switch to 292, kept in a mod)"});
+                break;
+            case simulation::DistributorKind::vr292:
+                items.push_back({49, chosen ? "Distributor: 292, chosen in a mod (switch to EVR 305-000)"
+                                            : "Distributor: 292, by the car's type (switch to EVR 305-000, kept in a mod)"});
+                break;
+            case simulation::DistributorKind::evr305:
+                items.push_back({49, chosen ? "Distributor: EVR 305-000 with a 292, chosen in a mod (switch to 305-001, multiple units)"
+                                            : "Distributor: EVR 305-000 with a 292, by the car's type (switch to 305-001, multiple units, kept in a mod)"});
+                break;
+            default:
+                items.push_back({49, chosen ? "Distributor: EVR 305-001 with a 292 (multiple units), chosen in a mod (switch to 483)"
+                                            : "Distributor: EVR 305-001 with a 292 (multiple units), by the car's type (switch to 483, kept in a mod)"});
+                break;
+            }
+            // The same on every car of the train (the locomotives keep theirs).
+            if (car.definition->kind != formats::WagonKind::engine) {
+                switch (simulation::distributor_kind(*car.definition)) {
+                case simulation::DistributorKind::vr483: items.push_back({50, "Distributor 483 on every car of the train (as here, kept in a mod)"}); break;
+                case simulation::DistributorKind::vr292: items.push_back({50, "Distributor 292 on every car of the train (as here, kept in a mod)"}); break;
+                case simulation::DistributorKind::evr305:
+                    items.push_back({50, "EVR 305-000 on every car of the train (as here, kept in a mod)"});
+                    break;
+                default: items.push_back({50, "EVR 305-001 on every car of the train (as here, kept in a mod)"}); break;
+                }
+            }
         }
         // RTS: a freight car with cargo (FreightAnim with a mass or a cargo type).
         if (menu.car < unit->cars.size() && car.definition->kind == formats::WagonKind::freight) {
@@ -6682,6 +6732,134 @@ void TrainView::update_car_menu(const glm::vec3& eye) {
     }
 }
 
+formats::WagonRules TrainView::stock_rules() const {
+    if (!stock_rules_ && vfs_) {
+        std::string messages;
+        stock_rules_ = simulation::StockRules::load(*vfs_, messages);
+        if (!messages.empty()) std::fprintf(stderr, "%s", messages.c_str());
+        if (stock_rules_->scripts() > 0) std::fprintf(stderr, "stock rules: %zu scripts\n", stock_rules_->scripts());
+    }
+    if (!stock_rules_) return {};
+    if (const auto messages = stock_rules_->take_messages(); !messages.empty()) std::fprintf(stderr, "%s", messages.c_str());
+    return stock_rules_->hook();
+}
+
+void TrainView::choose_distributor(const Car& chosen, const formats::BrakeDistributor distributor) {
+    if (install_root_.empty()) {
+        message_ = tr("no installation to keep the mod in");
+        return;
+    }
+    bool listed = false;
+    std::string error;
+    const auto changed = keep_distributor(chosen, distributor, listed, error);
+    if (!error.empty()) {
+        message_ = error;
+        return;
+    }
+    const char* name = distributor == formats::BrakeDistributor::inferred ? tr("as its type gives") : formats::brake_distributor_name(distributor);
+    message_ = trf("%s: distributor %s on %zu cars, kept in MODS_OPENRTS/%s", chosen.file.c_str(), name, changed, edits_mod().c_str());
+    if (listed) message_ += std::string(" ") + tr("(the mod was added to openrts.ini)");
+}
+
+void TrainView::choose_distributor_for_train(const Unit& unit, const Car& chosen) {
+    if (install_root_.empty() || !chosen.definition) {
+        message_ = tr("no installation to keep the mod in");
+        return;
+    }
+    // Every car type of the train but the locomotives' (they keep their own,
+    // chosen on each): this car's distributor, as its own type gives it or
+    // in the mod's companion (testers, 2026-11-17: as the shoes are).
+    const auto kind = simulation::distributor_kind(*chosen.definition);
+    std::vector<const Car*> types;
+    for (const auto& car : unit.cars) {
+        if (!car.definition || car.definition->kind == formats::WagonKind::engine || !(car.definition->brakes.system & 5)) continue;
+        const bool seen = std::any_of(types.begin(), types.end(), [&](const Car* t) {
+            return t->engine == car.engine && core::fold_case(t->folder) == core::fold_case(car.folder) &&
+                   core::fold_case(t->file) == core::fold_case(car.file);
+        });
+        if (!seen) types.push_back(&car);
+    }
+    std::size_t changed = 0;
+    bool listed = false;
+    for (const auto* type : types) {
+        using K = simulation::DistributorKind;
+        const auto choice = kind == simulation::default_distributor_kind(*type->definition) ? formats::BrakeDistributor::inferred
+                            : kind == K::vr483                                               ? formats::BrakeDistributor::vr483
+                            : kind == K::vr292                                               ? formats::BrakeDistributor::vr292
+                            : kind == K::evr305                                              ? formats::BrakeDistributor::evr305
+                                                                                             : formats::BrakeDistributor::evr305_001;
+        std::string error;
+        bool added = false;
+        changed += keep_distributor(*type, choice, added, error);
+        listed = listed || added;
+        if (!error.empty()) {
+            message_ = error;
+            return;
+        }
+    }
+    const auto name = kind == simulation::DistributorKind::vr483    ? formats::BrakeDistributor::vr483
+                      : kind == simulation::DistributorKind::vr292  ? formats::BrakeDistributor::vr292
+                      : kind == simulation::DistributorKind::evr305 ? formats::BrakeDistributor::evr305
+                                                                    : formats::BrakeDistributor::evr305_001;
+    message_ = trf("distributor %s on %zu cars of %zu types, kept in MODS_OPENRTS/%s", formats::brake_distributor_name(name), changed, types.size(),
+                   edits_mod().c_str());
+    if (listed) message_ += std::string(" ") + tr("(the mod was added to openrts.ini)");
+}
+
+std::size_t TrainView::keep_distributor(const Car& chosen, const formats::BrakeDistributor distributor, bool& listed, std::string& error) {
+    // The edits mod's companion of the car's file, its other entries kept.
+    const auto virtual_file = formats::wagon_override_path(chosen.folder, chosen.file, chosen.engine).str();
+    const auto mod = edits_mod();
+    const auto file = mod_file(install_root_, mod, virtual_file);
+    std::string old;
+    {
+        std::ifstream in(file, std::ios::binary);
+        if (in) {
+            old.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        } else if (const auto path = core::VirtualPath::parse(virtual_file); path && vfs_) {
+            // Not in the mod yet: from the one in effect (another mod's, a
+            // pack's), so its other lines stay.
+            if (const auto text = vfs_->read(*path)) old = *text;
+        }
+    }
+    const auto text = formats::set_override_distributor(old, distributor);
+    std::error_code io_error;
+    if (text.empty()) {
+        std::filesystem::remove(file, io_error);
+    } else {
+        std::filesystem::create_directories(file.parent_path(), io_error);
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << text;
+        if (!out) {
+            error = trf("could not write %s", utf8_path(file).c_str());
+            return 0;
+        }
+    }
+    listed = list_mod(install_root_, mod);
+    remember("inspector_mod", mod);
+    // Every car of this type, in every train, at once (a mod listed now is
+    // mounted from the next start; its file is read then).
+    const auto same = [&](const Car& car) {
+        return car.engine == chosen.engine && core::fold_case(car.folder) == core::fold_case(chosen.folder) &&
+               core::fold_case(car.file) == core::fold_case(chosen.file);
+    };
+    std::size_t changed = 0;
+    for (auto& unit : units_) {
+        for (const auto& car : unit.cars) {
+            if (!car.definition || !same(car)) continue;
+            for (auto& owned : stock_) {
+                if (owned.get() != car.definition) continue;
+                // Back to its type's: the file's, the stock rules' or inferred.
+                owned->brakes.distributor = distributor == formats::BrakeDistributor::inferred ? owned->brakes.default_distributor : distributor;
+                owned->brakes.distributor_in_companion = distributor != formats::BrakeDistributor::inferred;
+                ++changed;
+                break;
+            }
+        }
+    }
+    return changed;
+}
+
 void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
     using Flags = simulation::Train::CarFlags;
     auto* unit = find_unit(menu.train);
@@ -6806,6 +6984,25 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
             modes.mountain = !modes.mountain;
             train.set_distributor_modes(i, modes);
             message_ = trf(modes.mountain ? "car %zu: distributor in mountain mode" : "car %zu: distributor in flat mode", i + 1);
+            break;
+        }
+        case 49: { // the distributor of the car's type: 483 -> 292 -> 305-000 -> 305-001 -> 483
+            if (i >= unit->cars.size()) break;
+            using K = simulation::DistributorKind;
+            const auto& definition = *cars[i].definition;
+            const auto now = simulation::distributor_kind(definition);
+            const auto next = now == K::vr483 ? K::vr292 : now == K::vr292 ? K::evr305 : now == K::evr305 ? K::evr305_001 : K::vr483;
+            // The one its type gives (its file, the stock rules) needs no mod's word.
+            const auto choice = next == simulation::default_distributor_kind(definition) ? formats::BrakeDistributor::inferred
+                                : next == K::vr483                                         ? formats::BrakeDistributor::vr483
+                                : next == K::vr292                                         ? formats::BrakeDistributor::vr292
+                                : next == K::evr305                                        ? formats::BrakeDistributor::evr305
+                                                                                           : formats::BrakeDistributor::evr305_001;
+            choose_distributor(unit->cars[i], choice);
+            break;
+        }
+        case 50: { // this car's distributor on every car of the train (not the locomotives)
+            if (i < unit->cars.size()) choose_distributor_for_train(*unit, unit->cars[i]);
             break;
         }
         case 42: { // the 292's plug: К -> Д -> УВ -> К

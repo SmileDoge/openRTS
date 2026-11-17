@@ -69,6 +69,11 @@ jobs:
           New-Item -ItemType Directory -Force "$out/sdk/luau" | Out-Null
           Copy-Item sdk/luau/*.luau, docs/ru/scripting.md "$out/sdk/luau"
           Copy-Item docs/scripting.md "$out/sdk/luau/scripting_en.md"
+          # openRTS materials: templates, a demo mod and the guide (PBR stage 4).
+          New-Item -ItemType Directory -Force "$out/sdk/materials" | Out-Null
+          Copy-Item sdk/materials/* "$out/sdk/materials" -Recurse
+          Copy-Item docs/ru/pbr-materials.md "$out/sdk/materials"
+          Copy-Item docs/pbr-materials.md "$out/sdk/materials/pbr-materials_en.md"
           Copy-Item README.md, README_EN.md, INSTALL.md, INSTALL_EN.md, LICENSE $out
           # openRTS's own packs (the thunder) and their authors.
           Copy-Item build/game/Release/PACKS "$out/PACKS" -Recurse

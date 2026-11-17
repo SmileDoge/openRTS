@@ -53,7 +53,8 @@
 
 ## Свои паки openRTS (2026-11-16)
 
-То, что openRTS приносит сам (гром, `openrts-thunder.zip`), лежит в `PACKS`
+То, что openRTS приносит сам (гром, `openrts-thunder.zip`; правила
+подвижного состава, `openrts-stock.zip`, `docs/ru/scripting.md`), лежит в `PACKS`
 рядом с программой (`openrts_game.exe`, `openrts_viewer.exe`;
 `core::own_packs_directory()`), его ZIP подключаются раньше всех слоёв
 установки, как базовые паки (слой 0 выше): паки и папки установки и моды

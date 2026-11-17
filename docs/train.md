@@ -230,6 +230,10 @@ same constants. It keeps the equalising reservoir in
 - As in RTS, the simulation spreads the demand from the engine to the
   neighbouring cars with EP brakes, as far as the EP line runs. Those cars
   follow it within their auxiliary reservoir and ignore the pipe.
+- Switched off, the demand is gone (since 2026-11-16: it used to come back
+  when the ЭПТ was switched on again in a lap, and braked the train). Under
+  the realistic air the valve works the cars' ЭВР by command instead (VЭ, V
+  apply; III, IV hold; I, II release; "Realistic pneumatics" below).
 
 **As in RTS:**
 - RTS does not use `TrainPipeLeakRate` (no reader in `rts1.exe`). So the
@@ -298,21 +302,91 @@ RTS's menu at a coupling or a bogie (`docs/reverse/car-menu.md`), in
 scripts only. A train with a legacy DLL can still let the DLL work its own
 pipe and valves ("Trains with DLLs" below). What is
 built, against the proposal below:
-- **Pipe:** per-car volumes (0.8 l per metre, a 32 mm bore), flow
-  `q = k · V · Δp` with k = 200 1/s between joined neighbours, about 30
-  sub-steps per 0.05 s, open ends venting, `TrainPipeLeakRate`.
-- **Distributor types** inferred as proposed (EP equipment → 305 with the
-  292 behind it, `Type ( Freight )` → 483, the rest → 292). 483: РК with its
+- **Pipe** (2026-11-17): per-car volumes (0.8 l per metre, a 32 mm bore),
+  between two cars' centres a line with the air's inertia and the pipe's
+  friction, `dq/dt = (Δp − R·q) / I`, `I = L / (c²·A)` (c = 330 m/s),
+  `R = 0.025 · L`; about 30 sub-steps per 0.05 s, open ends venting,
+  `TrainPipeLeakRate`. A change goes down the pipe no faster than sound (a
+  closed end reflects it); the distributors' quick service carries the
+  brake wave on. Until then the flow was `q = k · V · Δp` (k = 200 1/s)
+  alone, with no front. The resistance is set by a 100-car loaded freight
+  train with 483s (`openrts-train-check --charge`, now also measuring the
+  service brake wave, full service and its release):
+
+  | | before | now | Крылов |
+  |---|---|---|---|
+  | 2ЭС6 + 100 loaded gondolas (1445 m): full service, 90 % of the cylinder at the first / last car | 19.1 / 55.8 s | 18.6 / 48.2 s | 18 / 48 s to 0.35 MPa (table 9) |
+  | its brake wave | 187 m/s | 382 m/s | 270 m/s |
+  | II after full service: the last car released (< 0.4) | not in 300 s | 41 s (the first 32 s) | 60 s to 0.04 MPa |
+  | its pipe charged from empty in II, 4.5 at the tail | 614 s | 524 s | — |
+  | a step of 0.3 (V 1.6 s) | the middle and the tail never braked | the whole train, 0.69–0.75 | — |
+  | ЧС7 + 15 coaches (342 m): brake wave | 1366 m/s | 569 m/s | 120 m/s |
+  | its release wave in II | 621 m/s | 273 m/s | 50–70 (teaching material) |
+
+  A passenger train stays too quick: over 342 m the pipe passes a change
+  in about a second and reflects it at the closed tail, and a stiffer pipe
+  that would slow it to 120 m/s leaves a 100-car freight train uncharged
+  for half an hour (r = 0.15: never in 30 min). Which part of the 292's
+  120 m/s is its slide valves' and which the pipe's is open.
+- **Distributor types** inferred as proposed (EP equipment → 305-000 with
+  the 292 behind it, `Type ( Freight )` → 483, the rest → 292), unless the
+  car's file or a mod names one (`ORTSBrakeDistributor`, "Choosing a car's
+  distributor" below). 483: РК with its
   0.3 atm/min stability, application at 0.15, quick service, the cylinder
-  by load (3.8 / 3.0 / 1.5 atm over 60 / 35 t), flat release when the pipe
-  is back within 0.06 atm of the РК (0.025 in the research made a 100-car
-  train never release in II). 292: the ЗР as the reference with its
-  0.5 atm/min stability, full release at +0.12 above the ЗР. 305: with the
-  ЭПТ working the wire holds the cylinder at its demand (filled from the ЗР
-  at up to 1 atm/s, released at 0.35), and the 292 behind it answers the
-  pipe all the same, the higher of the two kept. Until 2026-11-16 the wire
-  alone set it: with the ЭПТ on, a pipe reduction by the driver's valve
-  braked nothing (the ЭП2Д, testers).
+  by load (3.8 / 3.0 / 1.5 atm over 60 / 35 t); flat mode releases fully
+  on a rise of the pipe of 0.25 over where it stood in lap (Крылов, table
+  9: 0.015–0.03 MPa by the step; a rise while the cylinder still fills,
+  the quick service's dip filling back, releases nothing), or with the pipe
+  back within 0.06 of the РК, and its РК then lets its air into the pipe
+  (charging again from there). Until 2026-11-17 only the pipe back by the
+  РК released, and a 100-car train's tail did not release in II for
+  minutes. 292: its КДР a 1 l chamber the pipe empties into as it applies,
+  0.25 off a car's pipe at 5 atm (Крылов §31: 0.02–0.025 MPa; 0.06 until
+  2026-11-17); the ЗР as the reference with its
+  0.4 atm/min stability (Крылов §31: a fall from 0.5 to 0.45 MPa in 75 s
+  or slower brakes nothing; 0.5 by ЧИПС until 2026-11-17), full release at
+  +0.12 above the ЗР, a step from any pipe level (until 2026-11-17 not
+  above 4.9: from a charging pressure of 5.2 a first step of 0.3 braked
+  nothing). The ЗР charge from the pipe held at 5.0: a 292's to 4.8 in
+  about 160 s (Крылов: 130–180 s), a 483's 78 l in about 4.5 min
+  (Асадченко; 145 s and 113 s before 2026-11-17). 305 (Крылов
+  В. И., Крылов В. В., «Автоматические тормоза подвижного состава», 1983,
+  §37–39):
+  - its РК (1.5 l) fills from the ЗР through the application valve's 1.8 mm
+    seat at about 1 atm/s (3 atm in 2.5–3.5 s); each train at a pace of its
+    own, drawn when it is made (`Train::scatter_ep_fill`): the train
+    0.8–1.2 atm/s, each car within 5 % of it, 0.75–1.25 in all, so the
+    ЭПТ's steps have to be learnt anew (testers, 2026-11-17); it lets out
+    through the
+    release valve: 305-000 (coaches, 1.3 mm) from 3.5–4 atm to 0.4 in
+    8–10 s, 305-001 (multiple units, 2.0 mm) in 3.5–4.5 s, taken as an
+    orifice: above 0.89 atm the flow is choked and the absolute pressure
+    falls with a time constant of 7.54 s / 3.34 s, below it goes as the root
+    of the overpressure, so the РК reaches the air (305-001 from 4 atm in
+    about 6 s, 305-000 in about 14 s). Until 2026-11-17 the gauge pressure
+    fell with 4.15 s / 1.84 s (at least 0.05 atm/s), and the 305-001 took
+    some 9 s to 0 (testers). Its relay keeps the ТЦ at the РК, fed from the ЗР;
+  - the 292 behind it answers the pipe all the same and the switching valve
+    keeps the higher side; the ТЦ on the 292's side lets out at its plug's
+    rate, on the 305's at the 305's whatever the plug;
+  - the ЗР is fed from the pipe while the 292 stays released (the ЭПТ is
+    inexhaustible), not while it brakes;
+  - the line: a DLL's EPTvalue is a target the РК fills or lets out to; the
+    openRTS 395 under the realistic air works the valves as the real line
+    does (`EpCommand`): VЭ and V apply, III and IV hold the РК where it is
+    (a graduated release by short moves to II), I and II release. With the
+    wire dead (the ЭПТ off, VI, a parted cable) the valves let go: the
+    brakes release at the 305's rate (Крылов: "частичный отпуск тормозов до
+    перехода на пневматическое торможение");
+  - the РК stops at the full service's cylinder (3.8). The book has the
+    ТЦ and the ЗР rise to the charging pressure with the handle left in VЭ
+    long; a tester says the ЭПТ must not fill the cylinders to the pipe's
+    charging pressure (a ЭД4М may be held to 4.2 and the tape's reading
+    flags it, 2026-11-16), so the cap stays.
+  Until 2026-11-16 the wire alone set the cylinder (with the ЭПТ on, a pipe
+  reduction braked nothing: the ЭП2Д, testers), and then it released at
+  0.35 atm/s, or at the 292 plug's rate once the demand was 0 (Д: about
+  19 s instead of 8–10).
 - **Brake shoes** (`simulation/brake_shoes.hpp`, 2026-11-13): the shoes'
   friction changes with the speed and the pressing force by the formulas of
   the Russian traction rules (Правила тяговых расчётов), K the force on one
@@ -505,6 +579,31 @@ built, against the proposal below:
     PROBABLE); УВ — as Д, and the car's accelerator does not vent the pipe
     (the front still passes on). A Luau distributor gets them as `c.load`,
     `c.mountain`, `c.plug` (`docs/scripting.md`).
+- **Choosing a car's distributor** (2026-11-16). RTS and MSTS content says
+  nothing of it: a multiple unit's cars are `Type ( Engine )` like a
+  locomotive's, the trailer cars often `.eng` too, and freight locomotives
+  (2ТЭ10, ВЛ10к, 2ЭС4к) carry the EP flag. A player chooses it in the car
+  menu at a bogie, with the realistic air: "Distributor: 292, by the car's
+  type (switch to EVR 305-000, kept in a mod)", stepping 483 → 292 →
+  305-000 → 305-001 → 483. The choice is the car's type's (its `.wag` /
+  `.eng`; "by the car's type" is the file's or the stock rules', the ЭД4М's
+  305-001): every car of that type changes at once, and it is written to the
+  edits mod (`MODS_OPENRTS/openrts_edits`, the inspector's; openrts.ini's
+  [Mods] gets it) as the file's openRTS companion
+  `TRAINS/TRAINSET/<folder>/<name>.wag.openrts`:
+  ```
+  Wagon (
+  	ORTSBrakeDistributor ( "305-001" )
+  )
+  ```
+  `formats::load_wagon` merges it as RTS merges a `.rtswag`, over it, so the
+  content's own files are not touched; the type's own choice takes the line
+  out (and the file when nothing is left). An author names one the same
+  way in the file: `ORTSBrakeDistributor ( "483" | "292" | "305-000" |
+  "305-001" )`, the built-in ones; any other value is a Luau file
+  (`docs/scripting.md`), which a built-in one named over it replaces.
+  A mod's companions can be shared as a mod: one for a route's multiple
+  units, say.
 - **Driver's valve 395:** the pipe follows the УР through the relay
   (20 l/(s·atm), 50 l·atm/s feed, 20 vent), fed from the main reservoir;
   VI vents at 50 l/(s·atm). The keyboard controller drops RTS's forced
@@ -513,7 +612,29 @@ built, against the proposal below:
   when above 100, else cubic feet: the install has 1 .. 84 ft³ and 175 ..
   2020 l; at a border of 50 the ВЛ80Т's 66 ft³ read as 66 l and its
   compressors cycled every few seconds) and a КТ-6 compressor
-  (0.088 m³·atm/s).
+  (0.088 m³·atm/s), or the delivery `ORTSCompressorCapacity ( m³ of free
+  air a minute )` gives (the .eng, a companion, the stock rules: the
+  multiple units' 0.37, an ЭД4М's head car 7 to 8 atm in 55 s, testers
+  2026-11-17; before, a КТ-6 everywhere took it there in 4 s).
+  Its governor is the .eng's: `AirBrakesCompressorRestartPressure` cut-in,
+  `AirBrakesMainMaxAirPressure` cut-out (psi unless the value names bar,
+  kPa or inHg); 7.5 / 9.0 atm when not given or not sensible. A new
+  engine's reservoir starts at the cut-out. Until 2026-11-16 every engine
+  ran 7.5–9.0 (a ЭД4М, 6.5–8.0 in life, testers). The installation's
+  files mostly give 105–130 psi (7.1–8.8 atm), MaDaDev's ЭД4М too:
+  openRTS's stock rule `multiple_units.luau` (the pack `openrts-stock`,
+  `docs/scripting.md`, "Stock rules") gives the multiple units (ЭД2Т,
+  ЭД4М, ЭД9, ЭР1, ЭР2, ЭР9, ЭТ2 by their series in the folder's name)
+  6.5–8.0 and, with the ЭПТ, the ЭВР 305-001; a companion
+  (`<name>.eng.openrts`) giving the two keys wins over it. Checked
+  (`openrts-train-check --dll`, MaDaDev's ЭД4М, realistic air): cold the
+  reservoirs stay at 0, the pantographs up they fill to 8.0 in 40 s.
+  **A cold start** (TrainState 0, the Train window's "cold") leaves the
+  main reservoirs empty: a DLL's Init fills them if it means to (the ЭД4М's
+  leaves them empty cold and sets 8.0 running), openRTS no longer puts 8.5
+  back where Init left 0 (testers, 2026-11-16). openRTS's compressors (the
+  realistic air with DLLs) wait until a DLL has power: a pantograph up, a
+  diesel running, its own compressor on or traction.
   Twin-pipe stock (`Air_twin_pipe`) has its feed pipe: the engines' main
   reservoirs along the cars whose second pipe is coupled are one volume (a
   multiple unit's compressors on its motor cars feed its cab's valve).
@@ -596,7 +717,8 @@ The other two choices take the air after the valve from the model:
   2026-11-16 the whole train's ЗР started empty under the realistic air and
   charged for minutes, its cylinders filling no higher than it (the ЭП2Д
   from a running start: 0.43 in emergency, a V nothing; RTS's own air too).
-- In both, the compressors are openRTS's (`compressor_rate`): the DLLs keep
+- In both, the compressors are openRTS's (`compressor_rate`, the .eng's
+  governor; after a cold start not before the train has power): the DLLs keep
   RTS's main reservoir (its huge volume never drains; the ЭД9М's DLLs never
   run a compressor and take their own air from it), and their
   MainResRate is not taken. An engine releasing its own brake (EngineFlags
@@ -715,7 +837,7 @@ table, marked there with their confidence.
   - Emergency: a pipe rate ≥ 0.8 atm/s gives TC_max at the emergency fill
     rate.
 - **ВР 292:**
-  - No РК: the reference is the ЗР. Stability `s₂₉₂ = 0.5 atm/min`: the ЗР
+  - No РК: the reference is the ЗР. Stability `s₂₉₂ = 0.4 atm/min` (0.5 in this proposal): the ЗР
     flows back to the pipe as fast as the pipe falls.
   - Application: quick-service takes the КДР volume (1 l) from the local
     segment. `TC = 3 · (ZR₀ − p)` (the ЗР : ТЦ ratio; from content

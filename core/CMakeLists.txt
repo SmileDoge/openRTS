@@ -2,6 +2,7 @@ add_library(openrts_core STATIC
     src/core.cpp
     src/directory_watcher.cpp
     src/installation.cpp
+    src/json5.cpp
     src/vfs.cpp
     src/virtual_path.cpp
     src/zip_archive.cpp)

@@ -1,0 +1,6 @@
+// openRTS demo material: the roof, weathered paint and dust.
+{
+  format: "openrts-material/1",
+  roughness: 0.75,
+  metallic: 0,
+}

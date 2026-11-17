@@ -12,7 +12,7 @@ RTS's behaviour is recovered from its documentation, the content files and
 analysis of `rts1.exe`. Every finding is marked with its confidence
 (CONFIRMED / PROBABLE / UNKNOWN) in `docs/reverse/`.
 
-> Work in progress. The latest version is [v0.15.0](../../releases/tag/v0.15.0):
+> Work in progress. The latest version is [v0.19.0](../../releases/tag/v0.19.0):
 > a nearly playable game. Driving from a 3-D cab with RTS's locomotive
 > DLLs, signalling, the Track control window, a living route (forests,
 > level crossings, road traffic, water, rain and snow, smoke), sound by the
@@ -211,7 +211,7 @@ menu, the game, the locomotive DLL host, the tools, `wgpu_native.dll`) are in
 **Releases**; how to install and run them is in [INSTALL_EN.md](INSTALL_EN.md):
 - **nightly** — a pre-release with the latest `master` build, replaced
   automatically; the window's title and the settings mark its version with
-  the commit, e.g. "openRTS 0.15.0 (nightly abc1234)";
+  the commit, e.g. "openRTS 0.19.0 (nightly abc1234)";
 - **vX.Y.Z** — versions; the release is created automatically when a version
   tag is pushed.
 
@@ -317,12 +317,16 @@ The game can also be started directly:
 | `--track-control` | open Track control at once |
 | `--situation <name\|file>` | put the trains of a saved situation back |
 | `--spawn cab\|car\|above` | start in the cab, beside the car or above the train |
+| `--realistic-air` | every train on the openRTS realistic air (as the Train window's checkbox) |
 | `--time 06:30:00`, `--speed <x>` | time of day and how fast it runs |
 | `--season spring\|summer\|autumn\|winter` | season |
 | `--weather clear\|snow\|rain` | weather |
 | `--no-sound`, `--volume 0..1` | no sound, volume |
 | `--msaa 1\|2\|4\|8`, `--no-vsync`, `--no-batching` | graphics settings |
 | `--fps-limit <30..500 \| 0>` | the FPS limit for this run (0: none), not remembered |
+| `--fps-background` | no 30 FPS cap in the background (for measurements beside other windows) |
+| `--compress-textures off\|memory\|on` | uncompressed textures and PBR maps for this run: not compressed / compressed, not cached on disk / compressed and cached on disk (default: as the settings say) |
+| `--fly-test <m/s> [deg/s]`, `--shadow-cache-check` | for checks: the free camera flies on and turns; the shadow cache compared with the cascades drawn whole, the differences logged |
 | `--multi-draw on\|off` | multi-draw indirect for models this run (on by default where the GPU has it) |
 | `--window-mode windowed\|borderless\|fullscreen` | the window for this run: in a window, borderless, full screen (else as in the settings) |
 | `--paused` | start paused (Pause resumes): nothing moves, not even a flashing signal; once the scene has loaded, captures repeat pixel for pixel |
@@ -333,7 +337,7 @@ The game can also be started directly:
 | `--pbr on\|off` | the experimental renderer's physically based light (with HDR) for one run ([details](docs/experimental-effects.md)) |
 | `--sky-light on\|off` | with the physically based light, the sky's light from its probe (off: the old sky light) for one run |
 | `--native-sky on\|off` | openRTS's sky or RTS's dome for one run |
-| `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | experimental renderer settings for one run ([details](docs/experimental-effects.md)) |
+| `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5`, `--sky-light-strength 0..2`, `--sky-reflections 0..2`, `--sky-reflections-indoors 0..1`, `--sky-light-tunnel 0..0.5`, `--auto-exposure on\|off`, `--auto-exposure-strength 0..1`, `--material-view base\|roughness\|metallic\|normal\|ao\|emissive` | experimental renderer settings for one run ([details](docs/experimental-effects.md)) |
 | `--capture <file.ppm>` | take one frame and exit; `--capture-at <s>`, `--capture-car <n>`, `--capture-camera ex ey ez tx ty tz`, `--capture-cab` say when and from where |
 | `--mp-connect <address>[:port]`, `--mp-nick <nick>` | join an RTS server (port 800 by default); the route, season and weather are the server's, no `--route` needed |
 | `--mp-snapshot <file>`, `--mp-save-snapshot <file>` | open a saved server snapshot offline; save the one received |
@@ -430,6 +434,7 @@ the Train window)
 | Program | Purpose |
 |---|---|
 | `openrts-ace` | ACE textures to PNG and back (DXT1, RGB, RGB + mask, RGBA), a file or a folder; `--register`: a double click on an `.ace` shows it as PNG, PNG files and folders get "to ACE (openRTS)" (also a button in the menu's Settings; the format: `docs/reverse/ace.md`) |
+| `openrts-shape` | `export <file.s> [--out <folder>]`: a shape as glTF 2.0 with its textures as PNG for Substance Painter and Blender: nodes, a material per part and what openRTS's material files select it by ([openRTS materials](docs/pbr-materials.md)) |
 | `openrts-pack` | build and inspect content packs (`docs/vfs.md`) |
 | `openrts-track-check` | check the track network, `.pat` paths and speed posts |
 | `openrts-path-check` | drive test trains along paths: reservations, the planner |
@@ -476,6 +481,8 @@ RTS's DLLs.
   `docs/activities.md`, `docs/traffic.md`, `docs/sound.md`,
   `docs/electrification.md` — how the subsystems work;
 - `docs/train-dll.md` — the locomotive DLL bridge and the native plugin API;
+- `docs/dll-vs-real.md` — where the locomotive DLLs differ from real stock
+  (left as they are until openRTS's own systems) and what to tell a player;
 - `docs/experimental-effects.md` — the experimental renderer: what it does
   and what it costs;
 - `docs/profiling.md` — building with Tracy, what is marked, adding a zone;

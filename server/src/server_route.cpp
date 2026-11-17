@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <openrts/server/server_route.hpp>
 
 #include <algorithm>
@@ -164,7 +165,13 @@ ConsistTrain ServerRoute::cars(const std::vector<formats::ConsistEntry>& entries
         const auto file = entry.folder + "\\" + entry.name + (entry.engine ? ".eng" : ".wag");
         auto& definition = wagons_[lower(file)];
         if (!definition) {
-            definition = std::make_unique<formats::WagonDefinition>(formats::load_wagon(vfs_, entry.folder, entry.name, entry.engine));
+            if (!stock_rules_) {
+                std::string messages;
+                stock_rules_ = simulation::StockRules::load(vfs_, messages);
+                if (!messages.empty()) std::fprintf(stderr, "%s", messages.c_str());
+            }
+            definition = std::make_unique<formats::WagonDefinition>(
+                formats::load_wagon(vfs_, entry.folder, entry.name, entry.engine, stock_rules_->hook()));
         }
         if (!definition->ok()) {
             out.error = file + ": " + definition->error;

@@ -24,7 +24,7 @@ struct ToneSettings {
     float night = 0.0f;
     // Exposure of the night curve: every filmic toe crushes the dark tones a
     // night in MSTS content lives in; about 2 keeps them as drawn.
-    float night_exposure = 2.0f;
+    float night_exposure = 1.5f;
     // Saturation of the final picture, 1 as drawn (any curve, also none).
     float saturation = 1.0f;
     // The bloom's light (render's `bloom`) times this, added to the scene
@@ -35,6 +35,9 @@ struct ToneSettings {
     bool shafts = false;
     // The scene frame holds linear light (frame_encoding()); else gamma 2.2.
     bool linear_scene = false;
+    // The exposure times the auto exposure's factor (render's `exposure`,
+    // AutoExposure::state(); PBR stage 3).
+    bool auto_exposure = false;
 };
 
 // The HDR scene (scene_hdr(): drawn into hdr_format, gamma 2.2 encoded as
@@ -49,10 +52,11 @@ public:
 
     [[nodiscard]] bool ready() const noexcept;
     // One full-screen pass from `scene` (sampled) into `output`, with the
-    // bloom's light (BloomRenderer::build; null: none) and the light
-    // shafts' (LightShaftRenderer::render, the frame's size; null: none).
+    // bloom's light (BloomRenderer::build; null: none), the light shafts'
+    // (LightShaftRenderer::render, the frame's size; null: none) and the
+    // auto exposure's state (AutoExposure::state(); null: none).
     void render(WGPUCommandEncoder encoder, WGPUTextureView scene, WGPUTextureView output, const ToneSettings& settings,
-                WGPUTextureView bloom = nullptr, WGPUTextureView shafts = nullptr);
+                WGPUTextureView bloom = nullptr, WGPUTextureView shafts = nullptr, WGPUBuffer exposure = nullptr);
 
 private:
     struct Impl;

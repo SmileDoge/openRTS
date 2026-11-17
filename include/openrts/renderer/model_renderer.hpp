@@ -19,6 +19,7 @@
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/formats/shape_description.hpp>
 #include <openrts/renderer/fog_ring.hpp>
+#include <openrts/formats/material.hpp>
 #include <openrts/renderer/model_assets.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
@@ -169,6 +170,11 @@ class TaskPool;
 // What a depth-only pass is for (SceneEffects): a shadow cascade, or the
 // camera's pre-pass.
 enum class DepthPassKind { shadow, camera };
+// Which casters a depth pass draws: all, those that stay where they are (the
+// world's objects, the terrain), or those that move (ModelRenderer::set_moving:
+// trains, road traffic, crossing gates, switch blades). The sun's shadow cache
+// keeps the still ones' depth between frames (SceneEffects).
+enum class DepthCasters : std::uint8_t { all, still, moving };
 
 struct ModelFrameContext {
     glm::mat4 view_projection{1.0f};
@@ -192,6 +198,11 @@ struct ModelPrimitive {
     std::int32_t light_material = -5;
     std::int32_t shape_light_material = -5; // before the override (openRTS's <shape>.openrts)
     std::uint32_t draws{};      // primitives drawing it, over every distance level
+    std::string name;           // the primitive state's label in the shape
+    std::string matrix;         // the node it hangs on (its vertex state's matrix)
+    // openRTS's material (PBR stage 4): as drawn, and the layers over RTS's.
+    formats::Material material;
+    std::vector<std::pair<formats::MaterialLayer, formats::MaterialPatch>> material_layers;
 };
 
 // A pose change of one shape node: `local` is applied in the node's own frame
@@ -241,6 +252,7 @@ struct ModelRendererStats {
     std::size_t cached_textures{};
     std::uint64_t texture_bytes{};       // the cached textures' levels on the GPU
     std::uint64_t train_texture_bytes{}; // of them, the stock's (TRAINS/)
+    std::uint64_t rgba8_texture_bytes{}; // of them, uncompressed (RGBA8: 4 bytes a texel; BC1 has a half)
     std::uint64_t geometry_bytes{};       // the models' vertex and index buffers alive
     std::uint64_t train_geometry_bytes{}; // of them, the stock's
     std::size_t retired_pending{}; // generations waiting for the GPU
@@ -285,6 +297,8 @@ public:
     [[nodiscard]] const std::vector<ModelPrimitive>& primitives() const noexcept;
     // Its distance levels (m), nearest first; empty for one level.
     [[nodiscard]] const std::vector<float>& level_distances() const noexcept;
+    // What was wrong with its material files (PBR stage 4), for the inspector.
+    [[nodiscard]] const std::vector<std::string>& material_messages() const noexcept;
 
 private:
     struct Impl;
@@ -373,6 +387,17 @@ public:
     // but through it beyond its far cut, 8 + k only through it between its
     // cuts (left out of the shadow passes), 0 as always.
     void set_portal(std::int32_t code);
+    // Instances submitted from here on move (true) or stay (false, the
+    // default): trains, road traffic, crossing gates, switch blades. The
+    // sun's shadow cache redraws only those every frame.
+    void set_moving(bool moving) noexcept;
+    // After prepare(): a hash of this frame's moving instances (set_moving):
+    // their models, distance levels, places and node poses, to a millimetre
+    // and a ten-thousandth. The same as last frame: nothing moving moved
+    // (the shadow maps may be kept, SceneEffects::set_moving_signature).
+    // Without the cab (RTS pass 3: its needles and displays live every
+    // frame) when `with_cab` is false.
+    [[nodiscard]] std::uint64_t moving_signature(bool with_cab = true) const noexcept;
     // Records the frame's draws. `before_translucent` is called once in the
     // pass after the opaque and alpha-tested geometry and before the
     // translucent pass (glass), for helpers that must show through glass but
@@ -386,11 +411,15 @@ public:
     void prepare();
     // Depth only, for SceneEffects (the experimental path): every surface
     // that writes depth and is not blended, from `view_projection`, in depth
-    // slot `slot` (< 12); a shadow pass takes the casters out of view too.
-    // `skip_owner`: the instances tagged so are left out (a lamp's own model
-    // in its shadow map; 0 none).
+    // slot `slot` (< depth_slots); a shadow pass takes the casters out of
+    // view too. `skip_owner`: the instances tagged so are left out (a lamp's
+    // own model in its shadow map; 0 none). `casters`: all, the still ones or
+    // the moving ones (set_moving).
     void render_depth(WGPURenderPassEncoder pass, std::uint32_t slot, const glm::mat4& view_projection, DepthPassKind kind,
-                      std::uint32_t skip_owner = 0);
+                      std::uint32_t skip_owner = 0, DepthCasters casters = DepthCasters::all);
+    // Depth slots: the cascades, the camera, the focus, 8 lamps, the shadow
+    // cache's pieces (8 a cascade) and its check (a cascade each).
+    static constexpr std::uint32_t depth_slots = 50;
     // An instance out of view that casts a shadow into it: shadow passes only.
     void submit_shadow_caster(RenderModel& model, const ModelTransform& transform);
     // Group 2 of the experimental path (SceneEffects::bind_group); nullptr: a
