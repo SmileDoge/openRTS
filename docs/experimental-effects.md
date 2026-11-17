@@ -248,10 +248,15 @@ the open stretch's median +44 %, the cab's +34 %.
 tunnel there is none of it. Ways of the view above the horizon (8 x 6 over
 the view) are tested by the occlusion probe twice each: 6 m out (past the
 cab or salon round the eye: a way out through a window) and on the far plane
-(the sky itself). Of the ways out, the share that reach the sky gives the
-openness, `clamp(2 * share - 0.1, 0.1, 1)`, eased (opening in about half a
-second, closing in one); none out (looking down, at a wall close by): the
-last answer kept. The sky's light is taken by it within 150 m of the eye,
+(the sky itself). Each way out counts for its bin round the eye in the
+world (12 azimuths by 3 heights above the horizon): the bin keeps the share
+of its ways that reached the sky and where the eye was. The openness is the
+bins' mean, those seen 30 m and more away weighing less (e^-d/30 m),
+`clamp(2 * mean - 0.1, 0.1, 1)`, eased (opening in about half a second,
+closing in one). Turning the head leaves it as it is; until 2026-11-17 it
+took the view's ways alone, and in a cab the sky's light dimmed looking at a
+dark corner and rose at the windows, an auto exposure the wrong way round
+(testers). The sky's light is taken by it within 150 m of the eye,
 fading out to 400 m (the land beyond a tunnel's mouth keeps its light). A
 tenth at least: what a tunnel's mouths let in, thrown about; deep in it the
 train's lamps light it. In the cab or salon (its box, `ModelRoom`) the light
@@ -313,8 +318,9 @@ stretch by day, the frame's median 0.077 / 0.105 / 0.134, the bottom
 
 The eye getting used to the light: out of a tunnel the picture is too bright
 for a moment, in a cab by day the dashboard is seen without turning the
-exposure up by hand. On by default since 2026-11-17, gently (strength 0.15,
-the user's own tuning after a drive); it works with the experimental
+exposure up by hand. On by default since 2026-11-17, gently (strength 0.21,
+at most 3 stops either way: the user's own tuning after a drive, 0.15, 1.5
+and 1 stops before; with the sky's openness held by direction, below); it works with the experimental
 renderer, HDR and a tone curve only, the RTS path is drawn as before
 («Автоэкспозиция» under the exposure in the HDR panel and in the start
 menu's Graphics; `--auto-exposure on|off` for one run). With it the night
@@ -347,9 +353,9 @@ screen's dark), and again each time it is turned on.
 | Setting | Default | Key in `viewer_state.ini` | What |
 |---|---|---|---|
 | Auto exposure | on | `auto_exposure` | on or off (`--auto-exposure on\|off`) |
-| How far it follows the light | 0.15 (0..1) | `auto_exposure_strength` | 1: every scene to the key (`--auto-exposure-strength`) |
-| Darkens a bright scene by at most | 1.5 stops (0..3) | `auto_exposure_down` | |
-| Brightens a dark scene by at most | 1 stop (0..3) | `auto_exposure_up` | the night curve already brightens a night twice |
+| How far it follows the light | 0.21 (0..1) | `auto_exposure_strength` | 1: every scene to the key (`--auto-exposure-strength`) |
+| Darkens a bright scene by at most | 3 stops (0..3) | `auto_exposure_down` | |
+| Brightens a dark scene by at most | 3 stops (0..3) | `auto_exposure_up` | the night curve already brightens a night twice |
 | How fast it gets used to the light | 1 (0.1..5) | `auto_exposure_speed` | a factor on both rates |
 
 The panel shows the factor now («сейчас: x 1.76 (+0.8 ступени)»), read a

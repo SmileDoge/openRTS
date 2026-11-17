@@ -1839,6 +1839,13 @@ void Launcher::State::draw_graphics(const float height) {
                 }
                 row_note(tr("The trains' smoothed textures and the compressed ones; cleared, they are made again on the next load."));
             }
+            group_row(tr("Relief by the materials' height maps (parallax, not as in RTS)"), Load::negligible, Load::none);
+            ImGui::Checkbox("##parallax", &g.effects.parallax);
+            ImGui::BeginDisabled(!g.effects.parallax);
+            group_row(tr("Relief out to"), Load::none, Load::none);
+            viewer::slider_with_input("##parallax_distance", &g.effects.parallax_distance, 5.0f, 100.0f, tr("%.0f m"), "%.0f");
+            ImGui::EndDisabled();
+            row_note(tr("Only materials with a height map: the image shifts where the eye's ray meets the relief (rivets, ribs, panel seams); the outline stays flat."));
             group_row(tr("Depth for ReShade"), Load::none, Load::negligible);
             ImGui::Checkbox("##reshade_depth", &g.reshade_depth);
             row_note(tr("Keeps the scene depth to the end of the frame and, with anti-aliasing, adds a copy ReShade can take. In ReShade: RESHADE_DEPTH_INPUT_IS_REVERSED 1, RESHADE_DEPTH_MULTIPLIER 20 (see INSTALL.md)."));

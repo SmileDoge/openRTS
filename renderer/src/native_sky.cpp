@@ -1497,7 +1497,16 @@ void NativeSky::render(const WGPURenderPassEncoder pass, const glm::mat4& projec
     impl.frame.clouds[3] = from_texture ? 1.0f : 0.0f;
     // The frame in its encoding; the water's probe stays gamma 2.2.
     impl.frame.eye[2] = slot == frame_slot && frame_linear() ? 1.0f : 0.0f;
+    // A probe's face marches its clouds with the samples where they are, not
+    // moved on each frame: nothing blends its frames together as the view's
+    // clouds are (fs_clouds), so the moved samples' noise came back new at
+    // each of a face's draws, and the sky's reflections on glossy paint and
+    // on water flickered with it (2026-11-17). Kept still, the noise stays
+    // put and the reflections' blur hides it.
+    const float moved = impl.frame.field[2];
+    if (slot != frame_slot) impl.frame.field[2] = 0.0f;
     impl.write_slot(slot);
+    impl.frame.field[2] = moved;
     impl.frame.clouds[3] = 0.0f;
     impl.frame.eye[2] = 0.0f;
     if (slot == frame_slot) impl.clouds_this_frame = false;

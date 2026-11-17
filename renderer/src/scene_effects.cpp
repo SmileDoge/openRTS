@@ -86,7 +86,8 @@ struct EffectsUniform {
     // Its tuning (SceneEffectSettings): x the diffuse part, y the
     // reflections, z the reflections indoors.
     glm::vec4 sky_tune{1.0f, 1.0f, 0.35f, 0.0f};
-    // x: the material debug view (SceneEffectSettings::material_view).
+    // x: the material debug view (SceneEffectSettings::material_view); y:
+    // the height maps' relief out to this many metres (0: off), z: its steps at most.
     glm::vec4 views{0.0f};
 };
 static_assert(sizeof(EffectsUniform) % 16 == 0);
@@ -1540,7 +1541,8 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
                                 std::clamp((std::max)(sky.openness, std::clamp(s.sky_light_tunnel, 0.0f, 0.5f)), 0.0f, 1.0f), 0.0f};
     frame.sky_tune = glm::vec4{std::clamp(s.sky_light_strength, 0.0f, 2.0f), std::clamp(s.sky_reflection_strength, 0.0f, 2.0f),
                                std::clamp(s.sky_reflection_indoors, 0.0f, 1.0f), 0.0f};
-    frame.views = glm::vec4{static_cast<float>(std::clamp(s.material_view, 0, 6)), 0.0f, 0.0f, 0.0f};
+    frame.views = glm::vec4{static_cast<float>(std::clamp(s.material_view, 0, 6)), s.parallax ? std::clamp(s.parallax_distance, 0.0f, 200.0f) : 0.0f,
+                            static_cast<float>(std::clamp(s.parallax_steps, 8, 64)), 0.0f};
 
     const auto queue = wgpuDeviceGetQueue(impl.device);
     wgpuQueueWriteBuffer(queue, impl.uniform, 0, &frame, sizeof(frame));

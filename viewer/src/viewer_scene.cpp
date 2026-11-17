@@ -1173,6 +1173,7 @@ public:
             // out, the share that reach the sky; none out (looking down, at
             // a wall close by): the last answer kept.
             std::size_t sky_light_ways = 0;
+            std::vector<std::uint8_t> sky_light_bins;
             if (renderer::frame_sky_light()) {
                 const glm::mat4 to_world = glm::inverse(frame.projection * frame.view);
                 const glm::vec4 out = frame.projection * glm::vec4{0.0f, 0.0f, -6.0f, 1.0f};
@@ -1189,12 +1190,18 @@ public:
                         points.push_back({.ndc = {x, y}, .depth = out_depth});
                         points.push_back({.ndc = {x, y}, .depth = 0.0f});
                         ++sky_light_ways;
+                        // Its bin: the azimuth in twelfths, the height in thirds of the way up.
+                        const float turn = (std::atan2(way.z, way.x) + 3.14159265f) / 6.2831853f;
+                        const int azimuth = std::clamp(static_cast<int>(turn * open_azimuths), 0, open_azimuths - 1);
+                        const int height = way.y < 0.35f ? 0 : way.y < 0.7f ? 1 : 2;
+                        sky_light_bins.push_back(static_cast<std::uint8_t>(height * open_azimuths + azimuth));
                     }
                 }
             }
             ++probe_tag_;
             probe_->request(points, probe_tag_, {frame.viewport_height * frame.aspect, frame.viewport_height});
-            if (!points.empty()) probe_frames_.push_back({probe_tag_, std::move(keys), sky, sky_light_ways});
+            if (!points.empty())
+                probe_frames_.push_back({probe_tag_, std::move(keys), sky, sky_light_ways, std::move(sky_light_bins), frame.eye});
             while (probe_frames_.size() > 8) probe_frames_.pop_front();
             probe_->draw(pass);
         }
@@ -1222,21 +1229,38 @@ public:
             sky_open_seen_ = std::clamp(4.0f * static_cast<float>(open) / static_cast<float>(asked.sky), 0.0f, 1.0f);
         }
         if (asked.sky_light > 0) {
-            std::size_t out = 0;
-            std::size_t open = 0;
+            // This answer's ways out by their bins: each bin seen now takes
+            // its share reaching the sky.
+            std::array<int, open_azimuths * open_heights> out{};
+            std::array<int, open_azimuths * open_heights> open{};
             const std::size_t first = asked.labels.size() + asked.sky;
-            for (std::size_t k = 0; k < asked.sky_light; ++k) {
+            for (std::size_t k = 0; k < asked.sky_light && k < asked.sky_light_bins.size(); ++k) {
                 const std::size_t at = first + 2 * k;
                 if (at + 1 >= visible.size()) break;
-                if (!visible[at]) continue;
-                ++out;
-                open += visible[at + 1] ? 1 : 0;
+                if (!visible[at]) continue; // a wall within 6 m: says nothing of the sky
+                const auto bin = asked.sky_light_bins[k];
+                ++out[bin];
+                open[bin] += visible[at + 1] ? 1 : 0;
             }
+            for (std::size_t b = 0; b < open_bins_.size(); ++b) {
+                if (out[b] == 0) continue;
+                open_bins_[b] = {.known = true, .open = static_cast<float>(open[b]) / static_cast<float>(out[b]), .where = asked.eye};
+            }
+            // The bins' mean, weighing less those seen 30 m and more off.
             // Half the ways out reaching the sky (a street, a station): all
             // of its light; a twentieth or less (a tunnel): none here, the
             // renderer keeps the least its mouths let in
             // (SceneEffectSettings::sky_light_tunnel, a tenth by default).
-            if (out >= 3) sky_light_seen_ = std::clamp(2.0f * static_cast<float>(open) / static_cast<float>(out) - 0.1f, 0.0f, 1.0f);
+            float sum = 0.0f, weight = 0.0f;
+            int known = 0;
+            for (const auto& bin : open_bins_) {
+                if (!bin.known) continue;
+                const float w = std::exp(-glm::distance(bin.where, asked.eye) / 30.0f);
+                sum += w * bin.open;
+                weight += w;
+                ++known;
+            }
+            if (known >= 2 && weight > 1e-6f) sky_light_seen_ = std::clamp(2.0f * sum / weight - 0.1f, 0.0f, 1.0f);
         }
         probe_frames_.pop_front();
     }
@@ -2185,6 +2209,8 @@ private:
         std::vector<std::size_t> labels;
         std::size_t sky = 0;
         std::size_t sky_light = 0; // ways tested for the sky's light, two points each, after the sky's
+        std::vector<std::uint8_t> sky_light_bins; // each way's bin round the eye (open_bins_)
+        glm::vec3 eye{};                          // where the eye was
     };
     mutable std::deque<ProbeFrame> probe_frames_;
     mutable std::vector<renderer::OcclusionProbe::Point> label_probe_points_; // this frame's labels to test
@@ -2203,6 +2229,21 @@ private:
     static constexpr int sky_light_rows = 6;
     float sky_light_seen_ = 1.0f;
     float sky_light_open_ = 1.0f;
+    // What the probe last saw each way round the eye in the world (azimuth
+    // by height above the horizon): the share of its ways out that reached
+    // the sky, and where the eye was then. The openness is their mean, those
+    // seen from further off weighing less, so turning the head leaves it as
+    // it is (it took the view's ways alone until 2026-11-17: in a cab the
+    // sky's light dimmed looking at a dark corner and rose at the windows,
+    // as an auto exposure turned the wrong way round, testers).
+    static constexpr int open_azimuths = 12;
+    static constexpr int open_heights = 3;
+    struct OpenBin {
+        bool known = false;
+        float open = 1.0f;
+        glm::vec3 where{};
+    };
+    std::array<OpenBin, open_azimuths * open_heights> open_bins_{};
     std::unique_ptr<renderer::LightningRenderer> lightning_;
     std::unique_ptr<ThunderView> thunder_;
     std::vector<renderer::LightningStrike> test_strikes_; // the panel's, alight

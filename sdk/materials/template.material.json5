@@ -25,5 +25,8 @@
   // emissive: "body_e.png",  // what glows by itself (windows, lamps), gamma 2.2
   // emissive_factor: [1, 1, 1],
   // emissive_strength: 1,    // 0..100
+  // height: "body_h.png",    // relief (parallax): white its top, black height_scale under it
+  // height_scale: 0.01,      // the relief's depth, metres (rivets 0.003, ribs and seams 0.01)
+  // height_reference: 1,     // the map's level the model's surface lies at: 1 cut-in relief, the sheet's grey when it stands out
   // base_color: "body.png",  // instead of the texture itself (a repainted colour)
 }

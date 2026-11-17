@@ -100,6 +100,14 @@ struct SceneEffectSettings {
     // the camera's depth pre-pass too. Off by default (openRTS's own).
     bool light_shafts = false;
     float light_shafts_strength = 1.0f;
+    // Relief by the materials' height maps (parallax occlusion mapping,
+    // docs/pbr-materials.md): the image shifted where the eye's ray meets
+    // the relief, up to `parallax_distance` m from the eye (faded out over
+    // its last quarter), `parallax_steps` steps at most along a ray seen
+    // edgewise. openRTS's own; only materials with a height map have it.
+    bool parallax = true;
+    float parallax_distance = 30.0f;
+    int parallax_steps = 32;
     bool show_occlusion = false;    // debug: the occlusion as the colour
     // Debug (PBR stage 4, docs/pbr-materials.md): the models' material as
     // the colour: 0 the picture, 1 the base colour, 2 roughness, 3 metallic,

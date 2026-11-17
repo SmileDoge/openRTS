@@ -50,6 +50,7 @@
 #include "ui_fonts.hpp"
 #include "ui_slider.hpp"
 #include "ui_text.hpp"
+#include "log_console.hpp"
 #include "rts_config.hpp"
 #include "thunder_view.hpp"
 #include "viewer_state.hpp"
@@ -642,6 +643,7 @@ struct PanelState {
     // performance, the keys.
     enum class Tab : std::uint8_t { general, graphics, train, world, performance, controls };
     Tab tab = Tab::general;
+    LogConsole console; // F2: the game's messages (log_console.hpp)
     // The frame rate in a corner of the screen, the panel shown or not
     // (remembered as fps_counter).
     bool fps_counter = false;
@@ -865,6 +867,9 @@ public:
         ImGui_ImplWGPU_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        // The console (F2): the game's messages, on every screen (the
+        // loading's too).
+        draw_log_console(panel.console);
 
         if (panel.menu) {
             scene.draw_overlay(camera);
@@ -979,6 +984,18 @@ public:
         }
 
         if (panel.tab == PanelState::Tab::general) {
+            // The console: the game's messages (also F2).
+            if (ImGui::Button(panel.console.open ? tr("Console (F2): close") : tr("Console (F2): the game's messages, warnings, errors")))
+                panel.console.open = !panel.console.open;
+            {
+                const auto counts = log_counts();
+                if (counts.errors > 0 || counts.warnings > 0) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(counts.errors > 0 ? ImVec4{1.0f, 0.45f, 0.40f, 1.0f} : ImVec4{1.0f, 0.82f, 0.35f, 1.0f},
+                                       tr("%llu errors, %llu warnings"), static_cast<unsigned long long>(counts.errors),
+                                       static_cast<unsigned long long>(counts.warnings));
+                }
+            }
             // Language of the interface (Russian by default), remembered.
             int language = ui_language() == UiLanguage::russian ? 0 : 1;
             const char* languages[] = {"Русский", "English"};
@@ -1205,6 +1222,15 @@ public:
                 }
                 ImGui::TextDisabled("%s", tr("(the textures already loaded stay; the next loads compress theirs again)"));
             }
+            // The materials' height maps (SceneEffectSettings::parallax).
+            if (ImGui::Checkbox(tr("Relief by the materials' height maps (parallax, not as in RTS)"), &panel.effects.parallax))
+                remember("parallax", panel.effects.parallax ? "1" : "0");
+            if (panel.effects.parallax) {
+                ImGui::SetNextItemWidth(220.0f);
+                if (slider_with_input(tr("Relief out to"), &panel.effects.parallax_distance, 5.0f, 100.0f, tr("%.0f m"), "%.0f"))
+                    remember("parallax_distance", std::to_string(panel.effects.parallax_distance));
+            }
+            ImGui::TextDisabled("%s", tr("(only materials with a height map: the image shifts where the eye's ray meets the relief; the outline stays flat)"));
             if (ImGui::Checkbox(tr("Sharp cab screens: drawn at a higher resolution (not as in RTS)"), &panel.screen_supersampling))
                 remember("screen_supersampling", panel.screen_supersampling ? "1" : "0");
             ImGui::TextDisabled("%s", tr("(each screen drawn into an image of its own and blended in linear light: thin lines keep their brightness, no steps on edges and needles)"));
@@ -1275,8 +1301,17 @@ public:
                     if (renderer.shading_path() != renderer::ShadingPath::experimental) {
                         ImGui::TextDisabled("%s", tr("(in effect in the experimental renderer)"));
                     } else {
-                        ImGui::TextDisabled(tr("now: x %.2f (%+.1f stops)"), panel.auto_exposure_factor,
-                                            std::log2((std::max)(panel.auto_exposure_factor, 1e-3f)));
+                        const float stops = std::log2((std::max)(panel.auto_exposure_factor, 1e-3f));
+                        ImGui::TextDisabled(tr("now: x %.2f (%+.1f stops)"), panel.auto_exposure_factor, stops);
+                        // At a limit: the setting holding it, named (it reads as "not changing" else).
+                        const auto& ae = panel.auto_exposure;
+                        if (ae.up > 0.0f && stops >= ae.up - 0.02f) {
+                            ImGui::SameLine();
+                            ImGui::TextColored({1.0f, 0.82f, 0.35f, 1.0f}, "%s", tr("at the limit of \"brightens a dark scene\""));
+                        } else if (ae.down > 0.0f && stops <= -ae.down + 0.02f) {
+                            ImGui::SameLine();
+                            ImGui::TextColored({1.0f, 0.82f, 0.35f, 1.0f}, "%s", tr("at the limit of \"darkens a bright scene\""));
+                        }
                     }
                     ImGui::Unindent();
                 }
@@ -2864,6 +2899,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (options.lamp_shadows) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(*options.lamp_shadows, 0, most_lamp_shadows));
     if (const auto on = remembered("parallel_recording")) panel.parallel_recording = *on == "1";
     if (options.shadow_cache) panel.effects.cache_far_cascades = *options.shadow_cache;
+    if (options.parallax) panel.effects.parallax = *options.parallax;
     if (options.compress_textures) panel.compress_textures = *options.compress_textures;
     if (options.cab_shadows) panel.effects.cab_shadows = *options.cab_shadows;
     if (options.parallel_recording) panel.parallel_recording = *options.parallel_recording;

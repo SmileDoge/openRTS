@@ -1246,7 +1246,7 @@ bool TrainView::keep_attached(const DrivenKeys& keep) {
     if (legacy_) {
         unit.host = true;
         if (!reconsist_host()) {
-            std::fprintf(stderr, "locomotive DLLs: the consist changed, starting them again\n");
+            std::cerr << "locomotive DLLs: the consist changed, starting them again" << std::endl;
             return false;
         }
         // The cab's car is the player's engine (or one without a DLL).
@@ -1265,7 +1265,7 @@ bool TrainView::keep_attached(const DrivenKeys& keep) {
         if (engineer_car_ == cab_car_) visit_cab_.reset();
     }
     attach_native();
-    if (legacy_) std::fprintf(stderr, "locomotive DLLs: kept through the change, the player is in car %zu\n", legacy_->player() + 1);
+    if (legacy_) std::cerr << "locomotive DLLs: kept through the change, the player is in car " << legacy_->player() + 1 << std::endl;
     return true;
 }
 
@@ -1311,12 +1311,12 @@ void TrainView::attach_legacy() {
             units_[u].host = true;
             more = true;
         }
-        if (more && !reconsist_host()) std::fprintf(stderr, "locomotive DLLs: the player's other trains not taken in\n");
+        if (more && !reconsist_host()) std::cerr << "locomotive DLLs: the player's other trains not taken in" << std::endl;
     }
     attach_cab(legacy_ ? legacy_->player() : SIZE_MAX);
     if (!legacy_status_.empty()) {
         message_ = tr("locomotive DLLs: ") + legacy_status_;
-        std::fprintf(stderr, "locomotive DLLs: %s\n", legacy_status_.c_str());
+        std::cerr << "locomotive DLLs: " << legacy_status_ << std::endl;
     }
     if (legacy_) std::fprintf(stderr, "locomotive DLLs: running, the player is in car %zu\n", legacy_->player() + 1);
     attach_native();

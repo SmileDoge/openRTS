@@ -71,7 +71,7 @@ bool decode_bc7_block(const std::uint8_t* block, std::uint8_t* rgba);
 void decode_bc5_block(const std::uint8_t* block, std::uint8_t* rgba);
 
 // The disk cache's files in a folder (the smoothed trains' .bc7, the
-// compressed textures' .r7 / .n5, half-written ones): how many, how big.
+// compressed textures' .r7 / .n5 / .h4, half-written ones): how many, how big.
 struct TextureCacheSize {
     std::uint64_t files = 0;
     std::uint64_t bytes = 0;
@@ -84,7 +84,7 @@ TextureCacheSize clear_texture_cache(const std::filesystem::path& folder);
 // BC7 or BC5 (formats/block_compression.hpp, where the encoders are).
 using BlockFormat = formats::BlockFormat;
 // An uncompressed texture (level 0 and its levels 1.., RGBA8; none: built
-// as RTS builds them) as BC7 or BC5 levels. With `disk`: from the disk
+// as RTS builds them) as BC7, BC5 (a normal map) or BC4 (a height map) levels. With `disk`: from the disk
 // cache by a hash of its texels, else encoded and kept there; without:
 // encoded. Level 0's sides must be whole blocks (else nullopt).
 [[nodiscard]] std::optional<std::vector<std::vector<std::uint8_t>>> compressed_levels(

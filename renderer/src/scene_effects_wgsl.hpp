@@ -44,7 +44,7 @@ struct Effects {
     cloud_edge: vec4<f32>,               // xy: the light read taken through smoothstep(x, y) (the edge band)
     sky_light: vec4<f32>,                // the sky's light (SkyLight): x 1 on, y the prefiltered cube's last mip, z the sky's openness round the eye
     sky_tune: vec4<f32>,                 // its tuning: x the diffuse part, y the reflections, z the reflections indoors (factors)
-    views: vec4<f32>,                    // x: the material debug view (0 none, 1 base colour .. 6 emission)
+    views: vec4<f32>,                    // x: the material debug view (0 none, 1 base colour .. 6 emission), y: the relief's reach (m, 0 off), z: its steps at most
 };
 )";
 

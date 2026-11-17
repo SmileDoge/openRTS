@@ -54,7 +54,7 @@ constexpr int flat_most = 14;
 }
 
 std::optional<std::vector<std::vector<std::uint8_t>>> read_cache(const std::filesystem::path& file, const std::uint32_t width,
-                                                                 const std::uint32_t height) {
+                                                                 const std::uint32_t height, const std::uint32_t block_bytes = 16) {
     std::ifstream in(file, std::ios::binary);
     if (!in) return std::nullopt;
     char magic[4]{};
@@ -67,7 +67,7 @@ std::optional<std::vector<std::vector<std::uint8_t>>> read_cache(const std::file
     std::vector<std::vector<std::uint8_t>> levels(head[3]);
     for (std::uint32_t k = 0; k < head[3]; ++k) {
         const auto w = (std::max)(width >> k, 1u), h = (std::max)(height >> k, 1u);
-        levels[k].resize(static_cast<std::size_t>((w + 3) / 4) * ((h + 3) / 4) * 16);
+        levels[k].resize(static_cast<std::size_t>((w + 3) / 4) * ((h + 3) / 4) * block_bytes);
         in.read(reinterpret_cast<char*>(levels[k].data()), static_cast<std::streamsize>(levels[k].size()));
         if (!in) return std::nullopt;
     }
@@ -248,7 +248,7 @@ namespace {
 // One of the cache's own files (not anything else put in the folder).
 [[nodiscard]] bool cache_file(const std::filesystem::path& file) {
     const auto extension = file.extension().string();
-    if (extension == ".bc7" || extension == ".r7" || extension == ".n5") return true;
+    if (extension == ".bc7" || extension == ".r7" || extension == ".n5" || extension == ".h4") return true;
     return extension.rfind(".part", 0) == 0;
 }
 
@@ -297,16 +297,17 @@ std::optional<std::vector<std::vector<std::uint8_t>>> compressed_levels(const st
     if (const auto& folder = texture_cache_directory(); disk && !folder.empty()) {
         auto hash = hash_words(rgba.data(), rgba.size(), 1469598103934665603ull);
         for (const auto& level : levels_in) hash = hash_words(level.data(), level.size(), hash);
-        const std::uint32_t tag[5] = {width, height, cache_version, format == BlockFormat::bc5 ? 1u : 0u,
+        const std::uint32_t tag[5] = {width, height, cache_version, format == BlockFormat::bc5 ? 1u : format == BlockFormat::bc4 ? 2u : 0u,
                                       static_cast<std::uint32_t>(levels_in.size())};
         hash = hash_words(reinterpret_cast<const std::uint8_t*>(tag), sizeof tag, hash);
         char name[32];
-        std::snprintf(name, sizeof name, "%016llx.%s", static_cast<unsigned long long>(hash), format == BlockFormat::bc5 ? "n5" : "r7");
+        std::snprintf(name, sizeof name, "%016llx.%s", static_cast<unsigned long long>(hash),
+                      format == BlockFormat::bc5 ? "n5" : format == BlockFormat::bc4 ? "h4" : "r7");
         file = folder / name;
-        if (auto cached = read_cache(file, width, height)) return cached;
+        if (auto cached = read_cache(file, width, height, formats::block_bytes(format))) return cached;
     }
     const auto encode = [&](const std::uint32_t w, const std::uint32_t h, const std::uint8_t* texels) {
-        return format == BlockFormat::bc5 ? encode_bc5(w, h, texels) : encode_bc7(w, h, texels);
+        return formats::encode_blocks(format, w, h, texels);
     };
     std::vector<std::vector<std::uint8_t>> levels;
     levels.push_back(encode(width, height, rgba.data()));

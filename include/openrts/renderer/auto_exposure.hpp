@@ -25,9 +25,11 @@ namespace openrts::renderer {
 
 struct AutoExposureSettings {
     bool on = true;          // on since 2026-11-17 (the experimental renderer with HDR and a tone curve only)
-    float strength = 0.15f;  // 0..1: how far the exposure follows the light (1: all the way to the key)
-    float down = 1.5f;       // the most it darkens a bright scene, stops (0..3)
-    float up = 1.0f;         // the most it brightens a dark one, stops (0..3; the night curve already brightens a night twice)
+    // The user's tuning of 2026-11-17 (a cab's dark corner and its windows,
+    // the sky's openness no longer following the view): 0.15 / 1.5 / 1 before.
+    float strength = 0.21f;  // 0..1: how far the exposure follows the light (1: all the way to the key)
+    float down = 3.0f;       // the most it darkens a bright scene, stops (0..3)
+    float up = 3.0f;         // the most it brightens a dark one, stops (0..3; the night curve already brightens a night twice)
     float speed = 1.0f;      // a factor on the adaptation's pace (towards light 3 stops/s-ish, towards dark 1)
     bool operator==(const AutoExposureSettings&) const = default;
 };

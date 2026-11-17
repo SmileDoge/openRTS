@@ -74,6 +74,9 @@ void MaterialPatch::merge(const MaterialPatch& over) {
     take(emissive, over.emissive);
     take(emissive_factor, over.emissive_factor);
     take(emissive_strength, over.emissive_strength);
+    take(height, over.height);
+    take(height_scale, over.height_scale);
+    take(height_reference, over.height_reference);
     take(alpha_mode, over.alpha_mode);
     take(alpha_cutoff, over.alpha_cutoff);
     take(double_sided, over.double_sided);
@@ -109,6 +112,9 @@ Material resolve_material(const Material& rts, const std::span<const MaterialPat
         m.emissive_factor = {1.0f, 1.0f, 1.0f};
     }
     if (merged.emissive_strength) m.emissive_strength = *merged.emissive_strength;
+    if (merged.height) m.height = merged.height;
+    if (merged.height_scale) m.height_scale = *merged.height_scale;
+    if (merged.height_reference) m.height_reference = *merged.height_reference;
     if (merged.wet) m.wet = *merged.wet;
     return m;
 }
@@ -171,6 +177,12 @@ public:
             if (const auto c = colour<3>(key, value, 0.0f, 1.0f, false)) patch.emissive_factor = std::array<float, 3>{(*c)[0], (*c)[1], (*c)[2]};
         } else if (key == "emissive_strength") {
             patch.emissive_strength = number(key, value, 0.0f, 100.0f);
+        } else if (key == "height") {
+            patch.height = map(key, value);
+        } else if (key == "height_scale") {
+            patch.height_scale = number(key, value, 0.0f, 0.1f);
+        } else if (key == "height_reference") {
+            patch.height_reference = number(key, value, 0.0f, 1.0f);
         } else if (key == "alpha_mode") {
             if (const auto text = word(key, value, {"opaque", "mask", "blend"})) {
                 patch.alpha_mode = *text == "opaque" ? AlphaMode::opaque : *text == "mask" ? AlphaMode::mask : AlphaMode::blend;
@@ -405,6 +417,9 @@ void write_patch(std::ostream& out, const MaterialPatch& p) {
     if (p.emissive) field("emissive", json5::quote(p.emissive->path));
     if (p.emissive_factor) field("emissive_factor", colour(*p.emissive_factor, 3));
     if (p.emissive_strength) field("emissive_strength", num(*p.emissive_strength));
+    if (p.height) field("height", json5::quote(p.height->path));
+    if (p.height_scale) field("height_scale", num(*p.height_scale));
+    if (p.height_reference) field("height_reference", num(*p.height_reference));
     if (p.wet) field("wet", *p.wet ? "true" : "false");
 }
 

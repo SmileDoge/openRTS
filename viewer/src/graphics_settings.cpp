@@ -92,6 +92,8 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"sky_reflection_strength", text(e.sky_reflection_strength)},
         {"sky_reflection_indoors", text(e.sky_reflection_indoors)},
         {"sky_light_tunnel", text(e.sky_light_tunnel)},
+        {"parallax", text(e.parallax)},
+        {"parallax_distance", text(e.parallax_distance)},
         {"light_falloff", s.physical_light ? "physical" : "rts"},
         {"pbr", text(s.pbr)},
         {"light_range", text(s.light_range)},
@@ -164,6 +166,8 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     e.sky_reflection_strength = number(value_of, "sky_reflection_strength", e.sky_reflection_strength, 0.0f, 2.0f);
     e.sky_reflection_indoors = number(value_of, "sky_reflection_indoors", e.sky_reflection_indoors, 0.0f, 1.0f);
     e.sky_light_tunnel = number(value_of, "sky_light_tunnel", e.sky_light_tunnel, 0.0f, 0.5f);
+    e.parallax = flag_one(value_of, "parallax", e.parallax);
+    e.parallax_distance = number(value_of, "parallax_distance", e.parallax_distance, 5.0f, 100.0f);
     if (const auto falloff = value_of("light_falloff")) s.physical_light = *falloff == "physical";
     s.pbr = flag_not_zero(value_of, "pbr", s.pbr);
     s.light_range = number(value_of, "light_range", s.light_range, 0.0f, 3000.0f);

@@ -14,6 +14,7 @@
 #include <openrts/assets/assets.hpp>
 #include <openrts/renderer/renderer.hpp>
 
+#include "log_console.hpp"
 #include "exit_codes.hpp"
 #include "frame_limiter.hpp"
 
@@ -474,6 +475,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.vsync = false;
         } else if (flags[i] == "--shadow-cache" && has_value) {
             options.shadow_cache = std::string(flags[++i]) != "off";
+        } else if (flags[i] == "--parallax" && has_value) {
+            options.parallax = std::string(flags[++i]) != "off";
         } else if (flags[i] == "--compress-textures" && has_value) {
             const std::string value(flags[++i]);
             options.compress_textures = value == "off" ? 0 : value == "memory" ? 1 : 2;
@@ -737,6 +740,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
 } // namespace
 
 int main(const int argc, char* argv[]) {
+    // The console's lines (F2) from the first one on.
+    openrts::viewer::start_log_capture();
     openrts::viewer::install_crash_report();
     print_banner();
 

@@ -79,12 +79,22 @@ void material_checks() {
   metallic: 2,          // out of range: left out
   colour: 1,            // unknown
   emissive: "body_e.png", emissive_strength: 4,
+  height: "body_h.png", height_scale: 0.015, height_reference: 0.11,
 })", "TRAINS/TRAINSET/LOCO/body.material.json5");
     check(file.ok(), "a material file reads: " + file.error);
     check(file.patch.orm && file.patch.orm->path == "body_orm.png" && file.patch.orm->from == "TRAINS/TRAINSET/LOCO/body.material.json5",
           "a map and its file");
     check(file.patch.layout == OrmLayout::mrao && file.patch.normal_y == NormalY::down, "layout and normal_y");
     check(file.patch.roughness == 0.8f && !file.patch.metallic, "a value out of range left out");
+    check(file.patch.height && file.patch.height->path == "body_h.png" && file.patch.height_scale == 0.015f
+              && file.patch.height_reference == 0.11f,
+          "the height map and its depth and level");
+    {
+        const auto resolved = resolve_material(Material{}, std::vector<MaterialPatch>{file.patch});
+        check(resolved.height && resolved.height_scale == 0.015f && resolved.height_reference == 0.11f, "the height resolved");
+        check(Material{}.height_scale == 0.01f && Material{}.height_reference == 1.0f, "a height map's defaults: 1 cm, white the surface");
+        check(!parse_material("{ format: 'openrts-material/1', height_scale: 0.5 }", "x").patch.height_scale, "a depth over 0.1 m left out");
+    }
     check(file.warnings.size() == 2, "two warnings (" + std::to_string(file.warnings.size()) + ")");
     check(!parse_material("{ format: 'openrts-material/2' }", "x").ok(), "another major version is not taken");
     check(parse_material("{ format: 'openrts-material/1.3' }", "x").ok(), "a minor version is");
