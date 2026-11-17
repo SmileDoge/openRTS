@@ -1516,6 +1516,18 @@ void TrainView::native_operate(const std::uint32_t id, const int direction) {
     if (!native_->operate(static_cast<OrtsHandle>(id), static_cast<float>(target))) message_ = tr("the locomotive refuses that");
 }
 
+std::optional<CabView::AirGauges> TrainView::air_gauges(const Unit& unit, const std::size_t car) const {
+    if (!gauges_air_loaded_) {
+        gauges_air_loaded_ = true;
+        gauges_air_ = remembered("gauges_openrts_air").value_or("1") == "1";
+    }
+    if (!gauges_air_ || !realistic_air_ || !unit.train || unit.train->brake_model() != simulation::BrakeModel::realistic) return std::nullopt;
+    const auto& cars = unit.train->cars();
+    if (car >= cars.size()) return std::nullopt;
+    const auto& state = cars[car];
+    return CabView::AirGauges{.pipe = state.pipe, .cylinder = state.cylinder, .main_reservoir = state.main_reservoir};
+}
+
 const dllhost::CarOutput* TrainView::cab_state(const std::size_t car) const {
     if (helping_) return interior_output(car);
     if (native_ && car == native_car_) return &native_output_;
@@ -4048,7 +4060,20 @@ void TrainView::draw_hud() {
                         }
                         if (state.derailed) marks += tr(" [DERAILED]");
                         // Wheel slide and the shoes (the realistic air, adhesion.hpp).
-                        if (state.wheelslip != 0) marks += tr(" [WHEEL SLIP]");
+                        if (state.wheelslip != 0) {
+                            std::string slipping;
+                            for (std::uint32_t a = 0; a < 32; ++a)
+                                if (state.wheelslip & (1u << a)) slipping += (slipping.empty() ? "" : ",") + std::to_string(a + 1);
+                            marks += state.wheelslip == 15 && state.axles == 0 ? tr(" [WHEEL SLIP]") : trf(" [WHEEL SLIP: axles %s]", slipping.c_str());
+                        }
+                        // openRTS's limit: each axle's force as a share of its grip (the first of a bogie the most).
+                        if (state.axles > 0 && std::abs(state.force) > 1.0f) {
+                            std::string shares;
+                            for (std::size_t a = 0; a < state.axles; ++a)
+                                shares += (a == 0 ? "" : " ") + std::to_string(static_cast<int>(std::lround(std::abs(state.slip_ratio[a]) * 100.0f)))
+                                          + ((state.wheelslip & (1u << a)) ? "*" : "");
+                            marks += trf(" [grip by axle %s %%]", shares.c_str());
+                        }
                         if (const float flat = (std::max)(state.flat[0], state.flat[1]); flat >= 0.1f) marks += trf(" [wheel flat %.1f mm]", flat);
                         if (state.sliding()) marks += tr(" [WHEEL SLIDE]");
                         else if (state.slid >= 0.5f) marks += trf(" [slid %.0f m]", state.slid);
@@ -9049,8 +9074,9 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 adjustments.clear();
                 const CabView::Blend blend{&cab_switch_frames_before_, &cab_display_values_before_, alpha(),
                                            legacy_ ? legacy_->dragged_switch() : std::nullopt};
+                const auto gauges = air_gauges(unit, i);
                 inside->adjustments(&unit == &units_.front() ? cab_state(i) : nullptr, adjustments, signal_aspect(unit),
-                                    i == cab_before_car_ ? &blend : nullptr);
+                                    i == cab_before_car_ ? &blend : nullptr, gauges ? &*gauges : nullptr);
                 const glm::mat4 to_scene = transform * inside->placement();
                 // TextureChanges a DLL switched on (TexChange SetState): the
                 // cab's image TexID drawn as the change's file.
@@ -9204,7 +9230,8 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 const auto code = static_cast<std::int32_t>(room.portal + 1);
                 renderer.set_portal(-code);
                 std::vector<renderer::NodeAdjustment> room_adjustments;
-                room_cab->adjustments(cab_state(i), room_adjustments, signal_aspect(unit), nullptr);
+                const auto room_gauges = air_gauges(unit, i);
+                room_cab->adjustments(cab_state(i), room_adjustments, signal_aspect(unit), nullptr, room_gauges ? &*room_gauges : nullptr);
                 renderer.submit(*room_model, transform * room_cab->placement(), room_adjustments);
                 renderer.set_portal(code);
             }
@@ -9562,6 +9589,10 @@ void TrainView::draw_panel() {
         }
         ImGui::SameLine();
         ImGui::TextDisabled(substeps_ == 1 ? "(RTS)" : "(experimental)");
+        if (!gauges_air_loaded_) {
+            gauges_air_loaded_ = true;
+            gauges_air_ = remembered("gauges_openrts_air").value_or("1") == "1";
+        }
         if (ImGui::Checkbox(tr("Realistic air (openRTS)"), &realistic_air_)) {
             realistic_air_loaded_ = true;
             remember("realistic_air", realistic_air_ ? "1" : "0");
@@ -9591,6 +9622,15 @@ void TrainView::draw_panel() {
                                          : dll_air_ == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
                                          : dll_air_ == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
                                                          : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
+            // The cab's gauges of the pipe, the cylinders and the main
+            // reservoir from the model's air (CabView::AirGauges).
+            ImGui::BeginDisabled(!realistic_air_);
+            if (ImGui::Checkbox(tr("Cab gauges show openRTS's air (pipe, cylinders, main reservoir)"), &gauges_air_))
+                remember("gauges_openrts_air", gauges_air_ ? "1" : "0");
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("%s", tr(!realistic_air_ ? "(works with the realistic air on; without it the gauges are the DLL's, as in RTS)"
+                                         : gauges_air_ ? "(the gauges named DTM, DTC1, DTC2, DGR show what F5 shows; the others stay the DLL's)"
+                                                       : "(as the DLL draws them: its own needles, which may lag or run ahead of F5)"));
         }
         {
             // The rails' adhesion (adhesion.hpp): traction and, with the realistic

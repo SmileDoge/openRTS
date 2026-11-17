@@ -195,12 +195,13 @@ void write_screen_images(const core::Vfs& vfs, const trainplugin::LegacyCar& car
 
 int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std::vector<std::string>& args) {
     if (args.empty()) {
-        std::fprintf(stderr, "--dll <TRAINSET folder> <eng|wag>[!] ... [--script <file>] [--seconds <s>] [--start cold|on|running] [--cars [--light-defs]] [--triggers] [--body]\n");
+        std::fprintf(stderr, "--dll <TRAINSET folder> <eng|wag>[!] ... [--script <file>] [--seconds <s>] [--start cold|on|running] [--rails dry|wet|snow|ice|leaves] [--cars [--light-defs]] [--triggers] [--body]\n");
         return 2;
     }
     const std::string folder = args[0];
     std::vector<std::string> names;
     std::string script_path;
+    auto rails = simulation::RailCondition::rts;
     double seconds = 30.0;
     bool per_car = false;
     bool show_triggers = false; // --triggers: every SMS trigger a DLL posts
@@ -224,6 +225,15 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         } else if (args[i] == "--air" && i + 1 < args.size()) {
             const auto& value = args[++i];
             air = value == "dll" ? trainplugin::DllAir::dll_valve : value == "own" ? trainplugin::DllAir::own_valve : trainplugin::DllAir::rts;
+        } else if (args[i] == "--rails" && i + 1 < args.size()) {
+            // The rails' state (adhesion.hpp): openRTS's traction limit; RTS's by default.
+            const auto& value = args[++i];
+            rails = value == "dry"    ? simulation::RailCondition::dry
+                  : value == "wet"    ? simulation::RailCondition::wet
+                  : value == "snow"   ? simulation::RailCondition::snow
+                  : value == "ice"    ? simulation::RailCondition::ice
+                  : value == "leaves" ? simulation::RailCondition::leaves
+                                      : simulation::RailCondition::rts;
         } else if (args[i] == "--cars") {
             per_car = true;
         } else if (args[i] == "--triggers") {
@@ -315,6 +325,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     m.status == 0 ? "loaded" : "REFUSED", m.version[1]);
 
     simulation::Train train(setups);
+    train.set_rails(rails);
     if (show_body) train.set_body_motion(simulation::BodyMotionModel::openrts); // the game's by default
     auto network = simulation::straight_test_track(30000.0);
     if (!network || !train.place(*network, 1, 15000.0, true, &error)) {

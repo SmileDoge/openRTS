@@ -453,7 +453,34 @@ built, against the proposal below:
   faster than the run (RTS `0x4F5B34`); F5 marks "[БОКСОВАНИЕ]". Until
   then a slipping locomotive kept a quarter of its force and its DLL never
   knew. In RTS's air a car braked over its adhesion has its wheels stand,
-  as RTS draws them.
+  as RTS draws them. All this with the rails "as RTS" only; with any other
+  state (by the weather, the default) openRTS's own limit, below.
+- **Wheel slip axle by axle** (openRTS's, 2026-11-17; the rails other than
+  "as RTS"). RTS's limit takes the .eng's `Adheasion` as the adhesion: the
+  2ES6's 0.9 and the 2TE10L's 0.8 are never reached, and the 2ES6's "once
+  slipping" factor 1.3 let the slip go the next step, so its wheels hardly
+  turned (testers: "it shows, the wheels do not spin"). Instead
+  (`axle_traction`, `simulation/src/train.cpp`):
+  - The adhesion by the speed (Curtius and Kniffler, 0.33 standing, 0.25 at
+    40 km/h) times the rails (their state, the treads), a quarter more on
+    sand.
+  - Each axle's weight shifted by the pull: in each bogie the leading axle
+    lighter by 0.12 of the bogie's force and the trailing one heavier, the
+    leading bogie lighter by 0.06 of the whole force. A Bo-Bo at its
+    starting force keeps some 86 % on its lightest axle, so the first axle
+    of each bogie lets go first, then the others (as SimRail shows it).
+  - An axle over its adhesion slips: it keeps 0.6 of its adhesion, its
+    wheels spin, and it grips again once its force is under 0.75 of it.
+    The DLL reads the slipping axles in `Engine::Wheelslip` as before.
+  - The axles' forces: the DLL's motors over the axles each turns
+    (`EngineAxles`), else the force shared evenly (the engines without a
+    DLL slip too; their controller no longer keeps within RTS's limit).
+    `NumAxles`, else `NumWheels`, else 4 axles (at most 8), in bogies of two
+    (three for six).
+  - F5: "[БОКСОВАНИЕ: оси 1,3]" and, under traction, each axle's force as a
+    share of its grip, "[сцепление по осям 93 81 88 76 %]" (* slipping).
+  - `openrts-train-check <root> --dll … --rails dry|wet|snow|ice|leaves`
+    runs the DLLs with it.
 - **Adhesion, wheel slide and the shoes' warmth** (`simulation/adhesion.hpp`,
   2026-11-13; the Train window's "Rails"):
   - The rails: as RTS (no weather), by the weather (rain wet, snow snow), or
@@ -645,6 +672,18 @@ are a cab control's states 0..6. VЭ without the ЭПТ is a lap without feed
 Brakes.dll's.
 
 #### Realistic air with DLL locomotives
+
+**The cab's air gauges** (2026-11-17; "Cab gauges show openRTS's air", on
+by default, remembered as `gauges_openrts_air`; the Train window and the
+launcher's Brakes): with the realistic air the needles MaDaDev's cabs name
+`DTM` (the brake pipe), `DTC1` / `DTC2` (the brake cylinders) and `DGR`
+(the main reservoir; 36 cabs of the 2026-11 install) take the car's
+pressures from the model, as F5 shows them, instead of the DLL's display
+values: its needles lagged (a cylinder long released still falling) and
+ran ahead (the pipe leaping at position I) of the model's air (testers).
+The DLL's logic is not touched, only what those needles show; the `DURA`
+(УР) and every other gauge stay the DLL's. Off, or with RTS's air: the
+DLL's needles, as in RTS.
 
 (2026-11-13; the Train window's "Trains with DLLs", remembered as
 `dll_air`; works with the realistic air on, never with Legacy;

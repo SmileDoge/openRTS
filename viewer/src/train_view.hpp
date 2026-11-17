@@ -1299,6 +1299,11 @@ private:
     // remembered as dll_air; read at the first update.
     int dll_air_ = 0;
     bool dll_air_loaded_ = false;
+    // The cab's air gauges (DTM, DTC1/2, DGR) from the realistic air's model
+    // (CabView::AirGauges); remembered as gauges_openrts_air, on by default.
+    mutable bool gauges_air_ = true;
+    mutable bool gauges_air_loaded_ = false;
+    [[nodiscard]] std::optional<CabView::AirGauges> air_gauges(const Unit& unit, std::size_t car) const;
     // The rails' state for the adhesion (simulation::RailCondition): 0 as
     // RTS, 1 by the weather (rain wet, snow snow), 2 dry, 3 wet, 4 snow, 5
     // ice, 6 leaves; remembered as rails, read at the first update.

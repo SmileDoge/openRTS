@@ -310,6 +310,10 @@ struct CarState {
     // (0x4F5B34).
     std::uint32_t wheelslip{};
     std::array<float, 8> slip_ratio{};
+    // With the rails other than "as RTS" (openRTS's traction limit): every
+    // axle's force over its adhesion in slip_ratio, this many of them (0:
+    // RTS's limit, slip_ratio for the slipping axles alone).
+    std::uint8_t axles{};
     // The RTS air: the brake holds more than the adhesion, the wheels stand
     // (RTS 0x4F5B34; the realistic air slides by bogie, shoe_state).
     bool brake_locked = false;

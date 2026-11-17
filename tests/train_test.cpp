@@ -462,11 +462,14 @@ void test_adhesion(const Stock& stock) {
           "wet composite shoes lose more than cast iron");
     // An emergency on ice: wheels slide; they roll again by the stop.
     {
-        Run r(stock, {.rails = RailCondition::ice}, 1500.0);
+        // Away on dry rails (on ice the full throttle slips its axles and
+        // the train hardly gets going), the ice for the braking.
+        Run r(stock, {.rails = RailCondition::dry}, 1500.0);
         r.train.set_brake_model(simulation::BrakeModel::realistic);
         r.driver->reverser = 1;
         r.driver->throttle = r.driver->notches;
         r.run(60.0);
+        r.train.set_rails(RailCondition::ice);
         r.driver->throttle = 0;
         r.driver->brake = simulation::DriverHandles::BrakeHandle::emergency;
         bool slid = false;
@@ -497,6 +500,37 @@ void test_adhesion(const Stock& stock) {
         check(slid && distance > 1.0f, "an emergency on ice slides the wheels");
         check(!still, "standing, no wheel slides");
     }
+    // Wheel slip with openRTS's limit (rails other than "as RTS"): full
+    // throttle on ice slips the axles, the first of each bogie the most
+    // loaded against its grip; the force falls; let go, they grip again.
+    {
+        Run r(stock, {.rails = RailCondition::ice}, 1500.0);
+        r.driver->reverser = 1;
+        r.driver->throttle = r.driver->notches;
+        r.run(3.0);
+        const auto& engine = r.train.cars().front();
+        check(engine.axles >= 2 && engine.wheelslip != 0, "full throttle on ice slips the axles (" + std::to_string(engine.axles) + " axles, bits "
+                                                          + std::to_string(engine.wheelslip) + ")");
+        if (engine.axles >= 4) {
+            const bool flipped = engine.flipped;
+            const float lead = std::abs(engine.slip_ratio[flipped ? 1 : 0]), trail = std::abs(engine.slip_ratio[flipped ? 0 : 1]);
+            check(lead > trail, "the bogie's first axle the nearest its grip (" + std::to_string(lead) + " against " + std::to_string(trail) + ")");
+        }
+        Run dry(stock, {.rails = RailCondition::dry}, 1500.0);
+        dry.driver->reverser = 1;
+        dry.driver->throttle = dry.driver->notches;
+        dry.run(3.0);
+        check(std::abs(dry.train.cars().front().force) > std::abs(r.train.cars().front().force) * 1.5f, "on ice the slipping engine pulls far less");
+        r.driver->throttle = 0;
+        r.run(1.0);
+        check(r.train.cars().front().wheelslip == 0, "the throttle off, the wheels grip again");
+        // As RTS: its own limit, the axles' shares not given.
+        Run rts(stock, {.rails = RailCondition::rts}, 1500.0);
+        rts.driver->reverser = 1;
+        rts.driver->throttle = rts.driver->notches;
+        rts.run(3.0);
+        check(rts.train.cars().front().axles == 0, "with the rails as RTS, RTS's limit");
+    }
     // Dry rails, the same emergency: no slide.
     {
         Run r(stock, {.rails = RailCondition::dry}, 1500.0);
@@ -521,7 +555,11 @@ void test_adhesion(const Stock& stock) {
         r.run(240.0);
         r.driver->reverser = 1;
         r.driver->throttle = r.driver->notches;
+        // Away on dry rails (wet ones slip the full throttle's axles); the
+        // shoes dry over minutes, a minute leaves them soaked.
+        r.train.set_rails(RailCondition::dry);
         r.run(60.0);
+        r.train.set_rails(RailCondition::wet);
         const float soaked = r.train.cars()[3].shoe_state[0].wet;
         check(soaked > 0.8f, "rain soaks the shoes while they do not brake");
         r.driver->throttle = 0;
@@ -1238,11 +1276,12 @@ void test_wheel_slip(const Stock& stock) {
 // bogie's axles strikes the rail once; new wheel sets end it.
 void test_wheel_flats(const Stock& stock) {
     using simulation::RailCondition;
-    Run r(stock, {.rails = RailCondition::ice}, 1500.0);
+    Run r(stock, {.rails = RailCondition::dry}, 1500.0);
     r.train.set_brake_model(simulation::BrakeModel::realistic);
     r.driver->reverser = 1;
     r.driver->throttle = r.driver->notches;
     r.run(60.0);
+    r.train.set_rails(RailCondition::ice);
     r.driver->throttle = 0;
     r.driver->brake = simulation::DriverHandles::BrakeHandle::emergency;
     for (int i = 0; i < 6000 && r.train.speed() > 0.05; ++i) r.train.step();
