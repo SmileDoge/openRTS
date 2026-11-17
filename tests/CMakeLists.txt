@@ -154,6 +154,13 @@ if(OPENRTS_ENABLE_WGPU)
     openrts_copy_wgpu_runtime(openrts_occlusion_probe_test)
     add_test(NAME openrts.occlusion_probe COMMAND openrts_occlusion_probe_test)
 
+    # Auto exposure (PBR stage 3): the measured light and the factor.
+    add_executable(openrts_auto_exposure_test auto_exposure_test.cpp)
+    openrts_configure_target(openrts_auto_exposure_test)
+    target_link_libraries(openrts_auto_exposure_test PRIVATE openrts_renderer)
+    openrts_copy_wgpu_runtime(openrts_auto_exposure_test)
+    add_test(NAME openrts.auto_exposure COMMAND openrts_auto_exposure_test)
+
     # Every scene shader builds into its pipelines (models, terrain, tone pass).
     add_executable(openrts_shader_compile_test shader_compile_test.cpp)
     openrts_configure_target(openrts_shader_compile_test)

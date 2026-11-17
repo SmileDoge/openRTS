@@ -293,6 +293,95 @@ what its windows show; the probe is a face a frame behind (six frames for a
 turn of the sun). Local probes (stations, tunnels) and screen-space
 reflections are later.
 
+**Tuning it** (2026-11-17; under the switch, kept with the other effects,
+`SceneEffectSettings::sky_light_*`; for one run the flags):
+
+| Setting | Default | Flag | What |
+|---|---|---|---|
+| Sky light strength | 1 (0..2) | `--sky-light-strength` | the diffuse part, a factor |
+| Sky reflections strength | 1 (0..2) | `--sky-reflections` | the reflections, a factor |
+| Sky reflections in the cab and salon | 0.35 (0..1) | `--sky-reflections-indoors` | their share indoors (the third above) |
+| Sky light in a tunnel, at least | 0.1 (0..0.5) | `--sky-light-tunnel` | the least of it near the eye (the floor above) |
+
+"Sky light: defaults" puts all four back. The probe's openness is taken
+from 0 now; the floor is the setting's. Checked (`render_check.py`, the
+variants `pbr_sky_dim` 0.5 / 0.5 and `pbr_sky_bright` 1.5 / 1.5): the open
+stretch by day, the frame's median 0.077 / 0.105 / 0.134, the bottom
+0.058 / 0.079 / 0.101, the sky itself unchanged.
+
+### Auto exposure (2026-11-17, PBR stage 3)
+
+The eye getting used to the light: out of a tunnel the picture is too bright
+for a moment, in a cab by day the dashboard is seen without turning the
+exposure up by hand. On by default since 2026-11-17, gently (strength 0.15,
+the user's own tuning after a drive); it works with the experimental
+renderer, HDR and a tone curve only, the RTS path is drawn as before
+(«Автоэкспозиция» under the exposure in the HDR panel and in the start
+menu's Graphics; `--auto-exposure on|off` for one run). With it the night
+exposure's default went from 2 to 1.5: the auto exposure brightens a night
+by itself (a night by the station's lamps x 1.53, x 2.3 with the night
+exposure). All of it on the GPU, nothing waits for the frame to come back
+(`renderer::AutoExposure`, `renderer/src/auto_exposure.cpp`):
+
+- **Measuring.** A compute pass reads every few pixels of the HDR frame
+  (about 640 a row) and counts the log2 of their luminance in a histogram of
+  128 bins from 2^-14 to 2^6, black in a bin of its own; the middle of the
+  picture weighs three times its edges.
+- **The level.** A second pass takes the histogram's mean without the
+  darkest and the brightest tenth (a lamp or the sun in view does not
+  darken the whole picture, a black corner does not brighten it) and the
+  adapted level follows it, `adapted += (measured − adapted)(1 − e^(−dt·rate))`,
+  rate 3/s towards light and 1/s towards the dark (times the speed setting):
+  the eye is dazzled briefly and gets used to the dark slowly.
+- **The factor.** `2 ^ clamp(strength · (key − adapted), −down, up)`, key
+  −3.0, the log2 luminance the open stretch at noon measures: there the
+  exposure stays as set. The tone curve multiplies the set exposure (the
+  night's too) by it, read straight from the GPU's buffer; the Exposure
+  slider becomes a correction on top («Поправка экспозиции»).
+
+A strength under 1 keeps the scenes' own character: a tunnel or a night
+stays darker than a sunny field, only less so. While a route is loading the
+level starts from the frame at once (no bright flash after the loading
+screen's dark), and again each time it is turned on.
+
+| Setting | Default | Key in `viewer_state.ini` | What |
+|---|---|---|---|
+| Auto exposure | on | `auto_exposure` | on or off (`--auto-exposure on\|off`) |
+| How far it follows the light | 0.15 (0..1) | `auto_exposure_strength` | 1: every scene to the key (`--auto-exposure-strength`) |
+| Darkens a bright scene by at most | 1.5 stops (0..3) | `auto_exposure_down` | |
+| Brightens a dark scene by at most | 1 stop (0..3) | `auto_exposure_up` | the night curve already brightens a night twice |
+| How fast it gets used to the light | 1 (0.1..5) | `auto_exposure_speed` | a factor on both rates |
+
+The panel shows the factor now («сейчас: x 1.76 (+0.8 ступени)»), read a
+frame or two late without waiting; a capture's log has the measured and
+adapted levels and the factor (`auto exposure: ...`). Measured
+(`render_check.py`, the variant `pbr_ae` against `pbr`, the picture's mean
+on the screen, 0..255; the factor at the first tuning's strength 0.7 and at
+the default 0.15; the render check turns it off but in `pbr_ae`):
+
+| scene | measured log2 | factor, 0.7 | factor, 0.15 | the picture's mean, 0.7 |
+|---|---|---|---|---|
+| the open stretch at noon | −2.92 | 0.96 | 0.99 | 99.0 -> 97.1 |
+| shiny day | −3.18 | 1.09 | 1.02 | |
+| low sun | −3.62 | 1.35 | 1.07 | |
+| the cab by day | −4.16 | 1.76 | 1.13 | 57.9 -> 82.4 |
+| night, the station's lamps | −7.11 | 2 (the limit) | 1.53 | 16.2 -> 27.1 |
+| night, textures | −8.31 | 2 (the limit) | 1.74 | |
+| the cab in rain at dusk | −9.46 | 2 (the limit) | 1.96 | |
+
+At a strength this low the limits are not reached (the brightening's 1 stop
+takes a scene 6.7 stops under the key); they matter from about 0.5 up.
+
+It costs 0.033 .. 0.035 ms of the GPU (RTX 4070 Ti SUPER, 1920 x 1080; the
+pass «auto exposure» in the panel's Performance). `tests/auto_exposure_test.cpp`
+checks it on a headless device: a grey frame measures as its log2, the
+factor is 1 at the key, the limits hold, and the adaptation takes 95 % of
+the way towards light and 63 % towards the dark in a second.
+
+What it does not do yet: the factor is the frame's, not the eye's spot (a
+bright window in a dark cab is the frame's mean), and the dazzle out of a
+tunnel is the tone curve's, not a glare of its own.
+
 ## Sun shadows
 
 By default three cascades of a 2048 x 2048 depth array up to 250 m from the

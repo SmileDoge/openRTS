@@ -329,7 +329,7 @@ Redistributable (x64), см. «Готовая сборка».
 | `--pbr on\|off` | физически корректный свет нового рендера (с HDR) на этот запуск ([подробнее](docs/ru/experimental-effects.md)) |
 | `--sky-light on\|off` | свет неба из его пробы при физически корректном свете (выкл.: старый свет неба) на этот запуск |
 | `--native-sky on\|off` | небо openRTS или купол RTS на этот запуск |
-| `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5` | настройки нового рендера на один запуск ([подробнее](docs/experimental-effects.md)) |
+| `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5`, `--sky-light-strength 0..2`, `--sky-reflections 0..2`, `--sky-reflections-indoors 0..1`, `--sky-light-tunnel 0..0.5`, `--auto-exposure on\|off`, `--auto-exposure-strength 0..1` | настройки нового рендера на один запуск ([подробнее](docs/experimental-effects.md)) |
 | `--capture <файл.ppm>` | снять кадр и выйти; `--capture-at <с>`, `--capture-car <n>`, `--capture-camera ex ey ez tx ty tz`, `--capture-cab` — когда и откуда |
 | `--mp-connect <адрес>[:порт]`, `--mp-nick <ник>` | зайти на сервер RTS (порт 800 по умолчанию); маршрут, сезон и погода — с сервера, `--route` не нужен |
 | `--mp-snapshot <файл>`, `--mp-save-snapshot <файл>` | открыть сохранённый снимок мира сервера без сети; сохранить полученный |

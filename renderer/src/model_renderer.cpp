@@ -793,7 +793,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             var sky = PbrSkyReflection(vec3<f32>(0.0), vec3<f32>(0.0));
             if (sky_light && reflects) {
                 sky = pbr_sky_reflection(surface, occlusion, night_light);
-                sky.light = sky.light * openness * select(1.0, 0.35, in_room);
+                sky.light = sky.light * openness * select(1.0, effects.sky_tune.z, in_room);
             }
             colour = surface.diffuse * (ambient + bounce) * (vec3<f32>(1.0) - sky.taken) + sky.light
                 + pbr_lit(surface, to_sun, diffuse, reflects) + lamps_out;

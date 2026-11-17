@@ -71,6 +71,16 @@ struct SceneEffectSettings {
     // (testers, 2026-11-16: "кабина темновата из-за теней"); RTS, without
     // shadows, lights the cab as if it had no roof. 0: none.
     float indoor_light = 0.5f;
+    // PBR stage 2, the sky's own light (docs/experimental-effects.md, "The
+    // sky's light"), to tune it: its diffuse part and its reflections as
+    // factors (0..2; 1: as the sky gives them), the sky's reflection on the
+    // surfaces of the cab or salon the eye is in (0..1, their windows let
+    // only some of it in), and the least of the sky's light near the eye in
+    // a tunnel (0..0.5, what its mouths let in).
+    float sky_light_strength = 1.0f;
+    float sky_reflection_strength = 1.0f;
+    float sky_reflection_indoors = 0.35f;
+    float sky_light_tunnel = 0.1f;
     // Lamps throwing shadows (0..4, with the clustered lights): those
     // lighting the shadow focus (the cab, else around the view) most, by
     // their power, where they shine and how far they reach, so a floodlight

@@ -41,6 +41,7 @@ enum class GpuPass : std::uint8_t {
     overlay,         // the panels over HDR
     reflection_probe, // the sky's probe (the water's reflection, the sky's light): a face a frame
     sky_light,        // the sky's light from the probe: SH9, the prefiltered cube (SkyLight)
+    exposure,         // auto exposure: the frame's light measured and adapted (AutoExposure)
     count
 };
 inline constexpr std::size_t gpu_pass_count = static_cast<std::size_t>(GpuPass::count);

@@ -486,6 +486,18 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.lamp_shadows = std::atoi(std::string(flags[++i]).c_str());
         } else if (flags[i] == "--ground-bounce" && has_value) {
             options.ground_bounce = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--auto-exposure" && has_value) {
+            options.auto_exposure = std::string(flags[++i]) == "on";
+        } else if (flags[i] == "--auto-exposure-strength" && has_value) {
+            options.auto_exposure_strength = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--sky-light-strength" && has_value) {
+            options.sky_light_strength = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--sky-reflections" && has_value) {
+            options.sky_reflections = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--sky-reflections-indoors" && has_value) {
+            options.sky_reflections_indoors = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--sky-light-tunnel" && has_value) {
+            options.sky_light_tunnel = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--lamps-daylight" && has_value) {
             options.lamps_daylight = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--light-range" && has_value) {

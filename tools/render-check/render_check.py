@@ -62,6 +62,13 @@ VARIANTS = {
     # Physically based light with the sky's light from its probe (stage 2).
     "pbr": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on"],
     # The same under RTS's dome (the probe holds the dome's layers).
+    # The sky's light tuned (SceneEffectSettings::sky_light_*): weaker and stronger.
+    "pbr_sky_dim": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on",
+                    "--sky-light-strength", "0.5", "--sky-reflections", "0.5"],
+    "pbr_sky_bright": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on",
+                       "--sky-light-strength", "1.5", "--sky-reflections", "1.5"],
+    # Auto exposure (PBR stage 3) on.
+    "pbr_ae": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on", "--auto-exposure", "on"],
     "pbr_dome": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on", "--native-sky", "off"],
     "pbr1_dome": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "off", "--native-sky", "off"],
     "rts": ["--hdr"],
@@ -92,7 +99,8 @@ def ppm_to_png(ppm, png):
 def run(viewer, root, out, scene, variant):
     ppm = os.path.join(out, "%s_%s.ppm" % (scene, variant))
     # `--window` first, then `--view <file>` or `--route <name>` (the viewer's main).
-    args = [viewer, "--window"] + SCENES[scene] + ["--root", root] + VARIANTS[variant] + COMMON + ["--capture", ppm]
+    # The auto exposure off unless the variant turns it on (on by default since 2026-11-17).
+    args = [viewer, "--window"] + SCENES[scene] + ["--root", root] + ["--auto-exposure", "off"] + VARIANTS[variant] + COMMON + ["--capture", ppm]
     try:
         result = subprocess.run(args, cwd=os.path.dirname(viewer), capture_output=True, timeout=300)
         log = result.stdout.decode("utf-8", errors="replace") + result.stderr.decode("utf-8", errors="replace")

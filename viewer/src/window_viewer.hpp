@@ -30,6 +30,13 @@ struct WindowOptions {
     std::optional<float> lamps_daylight;
     // --ground-bounce <0..0.5>: the ground's reflectance for this run.
     std::optional<float> ground_bounce;
+    // The sky's light tuned for one run (SceneEffectSettings::sky_light_*):
+    // --sky-light-strength, --sky-reflections, --sky-reflections-indoors,
+    // --sky-light-tunnel.
+    std::optional<float> sky_light_strength, sky_reflections, sky_reflections_indoors, sky_light_tunnel;
+    // Auto exposure for one run (--auto-exposure on|off, --auto-exposure-strength).
+    std::optional<bool> auto_exposure;
+    std::optional<float> auto_exposure_strength;
     // --lamp-shadows <0..8>: lamps throwing shadows for this run.
     std::optional<int> lamp_shadows;
     // --shadow-settings distance,size,cascades,softness: this run's shadows.

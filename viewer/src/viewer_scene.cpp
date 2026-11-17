@@ -1224,9 +1224,10 @@ public:
                 open += visible[at + 1] ? 1 : 0;
             }
             // Half the ways out reaching the sky (a street, a station): all
-            // of its light; a twentieth or less (a tunnel): a tenth (what its
-            // mouths let in, thrown about; deep in it the train's lamps).
-            if (out >= 3) sky_light_seen_ = std::clamp(2.0f * static_cast<float>(open) / static_cast<float>(out) - 0.1f, 0.1f, 1.0f);
+            // of its light; a twentieth or less (a tunnel): none here, the
+            // renderer keeps the least its mouths let in
+            // (SceneEffectSettings::sky_light_tunnel, a tenth by default).
+            if (out >= 3) sky_light_seen_ = std::clamp(2.0f * static_cast<float>(open) / static_cast<float>(out) - 0.1f, 0.0f, 1.0f);
         }
         probe_frames_.pop_front();
     }

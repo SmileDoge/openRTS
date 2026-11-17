@@ -31,6 +31,7 @@ const char* gpu_pass_name(const GpuPass pass) noexcept {
     case GpuPass::overlay: return "interface";
     case GpuPass::reflection_probe: return "sky probe";
     case GpuPass::sky_light: return "sky light";
+    case GpuPass::exposure: return "auto exposure";
     case GpuPass::count: break;
     }
     return "";

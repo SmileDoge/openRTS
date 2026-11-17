@@ -12,6 +12,7 @@
 #include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
 #include <openrts/renderer/screen_quads.hpp>
+#include <openrts/renderer/auto_exposure.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/bloom.hpp>
 #include <openrts/renderer/light_shafts.hpp>
@@ -666,7 +667,9 @@ struct PanelState {
     // day and AgX by night: in the experimental path.
     int tone_curve = 4;
     float exposure = 1.0f;
-    float night_exposure = 2.0f;
+    float night_exposure = 1.5f;
+    renderer::AutoExposureSettings auto_exposure; // PBR stage 3
+    float auto_exposure_factor = 1.0f;            // its factor now, for the panel
     float night = 0.0f; // 0 day .. 1 night, from the sun (shown)
     float saturation = 1.0f;
     bool physical_light = false; // physical falloff of headlights and lamps (experimental renderer)
@@ -716,6 +719,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.tone_curve = g.tone_curve;
     panel.exposure = g.exposure;
     panel.night_exposure = g.night_exposure;
+    panel.auto_exposure = g.auto_exposure;
     panel.saturation = g.saturation;
     const bool show_occlusion = panel.effects.show_occlusion;
     panel.effects = g.effects;
@@ -748,6 +752,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.tone_curve = panel.tone_curve;
     g.exposure = panel.exposure;
     g.night_exposure = panel.night_exposure;
+    g.auto_exposure = panel.auto_exposure;
     g.saturation = panel.saturation;
     g.effects = panel.effects;
     g.effects.show_occlusion = false;
@@ -1215,8 +1220,35 @@ public:
                 ImGui::Checkbox(tr("HDR frame in linear light (off: gamma 2.2, as before; a check)"), &renderer::linear_hdr());
                 ImGui::TextDisabled(renderer::frame_linear() ? tr("this frame: linear light") : tr("this frame: gamma 2.2"));
                 ImGui::SetNextItemWidth(220.0f);
-                if (slider_with_input(tr("Exposure"), &panel.exposure, 0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
+                if (slider_with_input(panel.auto_exposure.on ? tr("Exposure correction (with the auto exposure)") : tr("Exposure"), &panel.exposure,
+                                      0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
                     remember("exposure", std::to_string(panel.exposure));
+                // PBR stage 3 (docs/experimental-effects.md, "Auto exposure").
+                if (ImGui::Checkbox(tr("Auto exposure (the picture gets used to the light, as an eye)"), &panel.auto_exposure.on))
+                    remember("auto_exposure", panel.auto_exposure.on ? "1" : "0");
+                if (panel.auto_exposure.on) {
+                    auto& a = panel.auto_exposure;
+                    ImGui::Indent();
+                    ImGui::SetNextItemWidth(200.0f);
+                    if (slider_with_input(tr("How far it follows the light (1: all the way)"), &a.strength, 0.0f, 1.0f, "%.2f", "%.2f"))
+                        remember("auto_exposure_strength", std::to_string(a.strength));
+                    ImGui::SetNextItemWidth(200.0f);
+                    if (slider_with_input(tr("Darkens a bright scene by at most, stops"), &a.down, 0.0f, 3.0f, "%.1f", "%.1f"))
+                        remember("auto_exposure_down", std::to_string(a.down));
+                    ImGui::SetNextItemWidth(200.0f);
+                    if (slider_with_input(tr("Brightens a dark scene by at most, stops"), &a.up, 0.0f, 3.0f, "%.1f", "%.1f"))
+                        remember("auto_exposure_up", std::to_string(a.up));
+                    ImGui::SetNextItemWidth(200.0f);
+                    if (slider_with_input(tr("How fast it gets used to the light"), &a.speed, 0.1f, 5.0f, "%.1f", "%.1f", ImGuiSliderFlags_Logarithmic))
+                        remember("auto_exposure_speed", std::to_string(a.speed));
+                    if (renderer.shading_path() != renderer::ShadingPath::experimental) {
+                        ImGui::TextDisabled("%s", tr("(in effect in the experimental renderer)"));
+                    } else {
+                        ImGui::TextDisabled(tr("now: x %.2f (%+.1f stops)"), panel.auto_exposure_factor,
+                                            std::log2((std::max)(panel.auto_exposure_factor, 1e-3f)));
+                    }
+                    ImGui::Unindent();
+                }
                 if (panel.tone_curve == 4 || panel.tone_curve == 5) {
                     ImGui::SetNextItemWidth(220.0f);
                     if (slider_with_input(tr("Night exposure"), &panel.night_exposure, 0.5f, 6.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic))
@@ -1246,6 +1278,35 @@ public:
                     // one (a check, not kept).
                     ImGui::Indent();
                     ImGui::Checkbox(tr("Sky light from the sky itself (IBL; off: the old sky light, a check)"), &renderer::sky_light_from_probe());
+                    if (renderer::sky_light_from_probe()) {
+                        // Its tuning (SceneEffectSettings), kept.
+                        auto& e = panel.effects;
+                        ImGui::SetNextItemWidth(200.0f);
+                        if (slider_with_input(tr("Sky light strength (1: as the sky gives it)"), &e.sky_light_strength, 0.0f, 2.0f, "%.2f", "%.2f"))
+                            remember("sky_light_strength", std::to_string(e.sky_light_strength));
+                        ImGui::SetNextItemWidth(200.0f);
+                        if (slider_with_input(tr("Sky reflections strength (1: as the sky gives them)"), &e.sky_reflection_strength, 0.0f, 2.0f,
+                                              "%.2f", "%.2f"))
+                            remember("sky_reflection_strength", std::to_string(e.sky_reflection_strength));
+                        ImGui::SetNextItemWidth(200.0f);
+                        if (slider_with_input(tr("Sky reflections in the cab and salon (their share)"), &e.sky_reflection_indoors, 0.0f, 1.0f,
+                                              "%.2f", "%.2f"))
+                            remember("sky_reflection_indoors", std::to_string(e.sky_reflection_indoors));
+                        ImGui::SetNextItemWidth(200.0f);
+                        if (slider_with_input(tr("Sky light in a tunnel, at least (its share)"), &e.sky_light_tunnel, 0.0f, 0.5f, "%.2f", "%.2f"))
+                            remember("sky_light_tunnel", std::to_string(e.sky_light_tunnel));
+                        if (ImGui::Button(tr("Sky light: defaults"))) {
+                            const renderer::SceneEffectSettings defaults;
+                            e.sky_light_strength = defaults.sky_light_strength;
+                            e.sky_reflection_strength = defaults.sky_reflection_strength;
+                            e.sky_reflection_indoors = defaults.sky_reflection_indoors;
+                            e.sky_light_tunnel = defaults.sky_light_tunnel;
+                            remember("sky_light_strength", std::to_string(e.sky_light_strength));
+                            remember("sky_reflection_strength", std::to_string(e.sky_reflection_strength));
+                            remember("sky_reflection_indoors", std::to_string(e.sky_reflection_indoors));
+                            remember("sky_light_tunnel", std::to_string(e.sky_light_tunnel));
+                        }
+                    }
                     ImGui::Unindent();
                 }
                 if (!panel.hdr) {
@@ -2567,6 +2628,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
 
     renderer::ModelRenderer renderer(device, surface.scene_format());
     std::unique_ptr<renderer::ToneMapper> tone;
+    std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
+    bool auto_exposure_was_on = false;
     if (renderer::scene_hdr()) tone = std::make_unique<renderer::ToneMapper>(device, surface.format());
     // The HDR frame's bloom (the experimental path; made on first use).
     std::unique_ptr<renderer::BloomRenderer> bloom;
@@ -2731,6 +2794,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (options.headlight_reach) panel.headlight_reach = std::clamp(*options.headlight_reach, 1.0f, 5.0f);
     if (options.lamps_daylight) panel.effects.lamps_in_daylight = std::clamp(*options.lamps_daylight, 0.0f, 1.0f);
     if (options.ground_bounce) panel.effects.ground_bounce = std::clamp(*options.ground_bounce, 0.0f, 0.5f);
+    if (options.auto_exposure) panel.auto_exposure.on = *options.auto_exposure;
+    if (options.auto_exposure_strength) panel.auto_exposure.strength = std::clamp(*options.auto_exposure_strength, 0.0f, 1.0f);
+    if (options.sky_light_strength) panel.effects.sky_light_strength = std::clamp(*options.sky_light_strength, 0.0f, 2.0f);
+    if (options.sky_reflections) panel.effects.sky_reflection_strength = std::clamp(*options.sky_reflections, 0.0f, 2.0f);
+    if (options.sky_reflections_indoors) panel.effects.sky_reflection_indoors = std::clamp(*options.sky_reflections_indoors, 0.0f, 1.0f);
+    if (options.sky_light_tunnel) panel.effects.sky_light_tunnel = std::clamp(*options.sky_light_tunnel, 0.0f, 0.5f);
     constexpr int most_lamp_shadows = static_cast<int>(renderer::SceneEffects::max_lamp_shadows);
     if (options.lamp_shadows) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(*options.lamp_shadows, 0, most_lamp_shadows));
     if (const auto on = remembered("parallel_recording")) panel.parallel_recording = *on == "1";
@@ -3238,7 +3307,25 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                     settings.shafts = shafts_view != nullptr;
                 }
             }
-            tone->render(encoder, surface.hdr_view(), frame_view, settings, bloom_view, shafts_view);
+            // The auto exposure (PBR stage 3): the frame's light measured on
+            // the GPU, the tone curve reads its factor from there.
+            WGPUBuffer exposure_state = nullptr;
+            if (experimental && settings.curve != renderer::ToneCurve::none && panel.auto_exposure.on) {
+                if (!auto_exposure) auto_exposure = std::make_unique<renderer::AutoExposure>(device);
+                if (auto_exposure->ready()) {
+                    // From the frame's light at once: turned on, or still loading
+                    // (no adapting from the loading screen's dark).
+                    if (!auto_exposure_was_on || !loading.done) auto_exposure->reset();
+                    auto_exposure->measure(encoder, surface.hdr_view(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+                                           renderer::frame_linear(), elapsed, panel.auto_exposure);
+                    exposure_state = auto_exposure->state();
+                    settings.auto_exposure = true;
+                    auto_exposure->copy_for_panel(encoder);
+                    panel.auto_exposure_factor = auto_exposure->latest().valid ? auto_exposure->latest().factor : 1.0f;
+                }
+            }
+            auto_exposure_was_on = exposure_state != nullptr;
+            tone->render(encoder, surface.hdr_view(), frame_view, settings, bloom_view, shafts_view, exposure_state);
 #ifdef OPENRTS_HAS_IMGUI
             const WGPURenderPassColorAttachment ui_colour{
                 .view = frame_view,
@@ -3295,6 +3382,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         for (const auto buffer : submitted)
             if (buffer != commands) wgpuCommandBufferRelease(buffer);
         pass_timer.submitted();
+        if (auto_exposure) auto_exposure->submitted();
         scene.frame_submitted();
         renderer.frame_submitted(queue);
         wgpuQueueRelease(queue);
@@ -3348,6 +3436,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
             if (shafts_shot.buffer) report_light_shafts(context.context, shafts_shot);
             if (hdr_shot.buffer) report_hdr_frame(context.context, hdr_shot, hdr_linear);
+            if (auto_exposure && auto_exposure_was_on) {
+                const auto state = auto_exposure->read_state(context.context.instance());
+                std::cout << "auto exposure: measured log2 " << state.measured << ", adapted " << state.adapted << ", factor " << state.factor
+                          << (state.valid ? "" : " (not measured yet)") << std::endl;
+            }
             if (renderer::frame_sky_light())
                 std::cout << "sky light: " << (sky_light.view().on() ? "from the probe" : "not made yet") << ", the sky open round the eye "
                           << environment.sky_openness << std::endl;

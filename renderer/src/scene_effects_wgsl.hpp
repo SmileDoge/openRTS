@@ -43,6 +43,7 @@ struct Effects {
     cloud_sun: vec4<f32>,                // xyz: towards the sun as the clouds are marched, w: strength (0: none)
     cloud_edge: vec4<f32>,               // xy: the light read taken through smoothstep(x, y) (the edge band)
     sky_light: vec4<f32>,                // the sky's light (SkyLight): x 1 on, y the prefiltered cube's last mip, z the sky's openness round the eye
+    sky_tune: vec4<f32>,                 // its tuning: x the diffuse part, y the reflections, z the reflections indoors (factors)
 };
 )";
 
@@ -73,17 +74,17 @@ fn effects_sky_light(n: vec3<f32>) -> vec3<f32> {
     light = light + (sky_irradiance[4].xyz * (1.092548 * n.x * n.y) + sky_irradiance[5].xyz * (1.092548 * n.y * n.z)
         + sky_irradiance[6].xyz * (0.315392 * (3.0 * n.z * n.z - 1.0)) + sky_irradiance[7].xyz * (1.092548 * n.x * n.z)
         + sky_irradiance[8].xyz * (0.546274 * (n.x * n.x - n.y * n.y))) * 0.25;
-    return max(light, vec3<f32>(0.0));
+    return max(light, vec3<f32>(0.0)) * effects.sky_tune.x;
 }
 
 // The sky's own light on a white surface facing up (no ground).
 fn effects_sky_up() -> vec3<f32> {
-    return sky_irradiance[10].xyz;
+    return sky_irradiance[10].xyz * effects.sky_tune.x;
 }
 
 // The sky and the ground as a surface of `roughness` reflects them that way.
 fn effects_sky_radiance(direction: vec3<f32>, roughness: f32) -> vec3<f32> {
-    return textureSampleLevel(sky_prefiltered, sky_sampler, direction, roughness * effects.sky_light.y).rgb;
+    return textureSampleLevel(sky_prefiltered, sky_sampler, direction, roughness * effects.sky_light.y).rgb * effects.sky_tune.y;
 }
 
 // The split sum's scale and bias of F0 at n.v and roughness.

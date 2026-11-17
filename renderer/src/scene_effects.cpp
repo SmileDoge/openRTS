@@ -79,6 +79,9 @@ struct EffectsUniform {
     // The sky's light (SkyLightView): x 1 on, y the prefiltered cube's last
     // mip, z the sky's openness round the eye.
     glm::vec4 sky_light{0.0f};
+    // Its tuning (SceneEffectSettings): x the diffuse part, y the
+    // reflections, z the reflections indoors.
+    glm::vec4 sky_tune{1.0f, 1.0f, 0.35f, 0.0f};
 };
 static_assert(sizeof(EffectsUniform) % 16 == 0);
 
@@ -1153,8 +1156,11 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
         frame.lamps = glm::vec4{1.0f - strength, active ? std::clamp(s.ground_bounce, 0.0f, 0.5f) : 0.0f, 1.0f - cab_strength,
                                 active ? std::clamp(s.indoor_light, 0.0f, 1.0f) : 0.0f};
     }
+    // The openness near the eye, not below the tunnel's least.
     frame.sky_light = glm::vec4{active && sky.on() ? 1.0f : 0.0f, static_cast<float>(sky_light_mips - 1),
-                                std::clamp(sky.openness, 0.0f, 1.0f), 0.0f};
+                                std::clamp((std::max)(sky.openness, std::clamp(s.sky_light_tunnel, 0.0f, 0.5f)), 0.0f, 1.0f), 0.0f};
+    frame.sky_tune = glm::vec4{std::clamp(s.sky_light_strength, 0.0f, 2.0f), std::clamp(s.sky_reflection_strength, 0.0f, 2.0f),
+                               std::clamp(s.sky_reflection_indoors, 0.0f, 1.0f), 0.0f};
 
     const auto queue = wgpuDeviceGetQueue(impl.device);
     wgpuQueueWriteBuffer(queue, impl.uniform, 0, &frame, sizeof(frame));

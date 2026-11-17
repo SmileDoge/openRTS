@@ -18,12 +18,17 @@ struct Settings {
     bloom: f32,     // the bloom's strength (0: none)
     shafts: f32,    // 1: the light shafts added
     linear_scene: f32, // 1: the scene frame holds linear light, 0: gamma 2.2 (frame_encoding())
+    auto_exposure: f32, // 1: the exposure times the auto exposure's factor
+    pad0: f32,
+    pad1: f32,
+    pad2: f32,
 };
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> settings: Settings;
 @group(0) @binding(2) var bloom_image: texture_2d<f32>; // scene-linear (BloomRenderer), or 1 x 1 black
 @group(0) @binding(3) var bloom_sampler: sampler;
 @group(0) @binding(4) var shafts_image: texture_2d<f32>; // scene-linear (LightShaftRenderer), or 1 x 1 black
+@group(0) @binding(5) var<storage, read> exposure_state: vec4<f32>; // AutoExposure: adapted, factor, measured, valid
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -116,7 +121,9 @@ fn curved(stored: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
         return clamp(stored, vec3<f32>(0.0), vec3<f32>(1.0));
     }
     let scene_linear = select(pow(max(stored, vec3<f32>(0.0)), vec3<f32>(2.2)), max(stored, vec3<f32>(0.0)), linear_frame) + bloom;
-    let linear = scene_linear * settings.exposure;
+    // The auto exposure (PBR stage 3): the set exposure is its correction.
+    let adapted = select(1.0, exposure_state.y, settings.auto_exposure > 0.5 && exposure_state.w > 0.5);
+    let linear = scene_linear * settings.exposure * adapted;
     if (settings.curve == 4u || settings.curve == 5u) {
         // Khronos keeps the day as authored (ACES: contrastier, its shade
         // deeper); AgX, brighter, holds the night.
@@ -130,7 +137,7 @@ fn curved(stored: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
         if (settings.night <= 0.0) {
             return day;
         }
-        let night = agx(scene_linear * settings.night_exposure);
+        let night = agx(scene_linear * settings.night_exposure * adapted);
         return mix(day, night, settings.night);
     }
     if (settings.curve == 1u) {
@@ -176,12 +183,15 @@ struct SettingsUniform {
     std::uint32_t curve{};
     float exposure = 1.0f;
     float night = 0.0f;
-    float night_exposure = 2.0f;
+    float night_exposure = 1.5f;
     float saturation = 1.0f;
     float bloom = 0.0f;
     float shafts = 0.0f;
     float linear_scene = 0.0f;
+    float auto_exposure = 0.0f;
+    float pad[3]{};
 };
+static_assert(sizeof(SettingsUniform) == 48);
 
 } // namespace
 
@@ -193,8 +203,10 @@ struct ToneMapper::Impl {
     WGPUSampler sampler = nullptr;
     WGPUTexture black = nullptr; // the bloom when there is none
     WGPUTextureView black_view = nullptr;
+    WGPUBuffer no_exposure = nullptr; // the auto exposure's state when there is none (not valid)
 
     ~Impl() {
+        if (no_exposure) wgpuBufferRelease(no_exposure);
         if (black_view) wgpuTextureViewRelease(black_view);
         if (black) wgpuTextureRelease(black);
         if (sampler) wgpuSamplerRelease(sampler);
@@ -207,7 +219,11 @@ struct ToneMapper::Impl {
 ToneMapper::ToneMapper(const WGPUDevice device, const WGPUTextureFormat output_format) : impl_(std::make_unique<Impl>()) {
     auto& impl = *impl_;
     impl.device = device;
-    std::array<WGPUBindGroupLayoutEntry, 5> entries{};
+    std::array<WGPUBindGroupLayoutEntry, 6> entries{};
+    entries[5].binding = 5;
+    entries[5].visibility = WGPUShaderStage_Fragment;
+    entries[5].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+    entries[5].buffer.minBindingSize = 16;
     entries[0].binding = 0;
     entries[0].visibility = WGPUShaderStage_Fragment;
     entries[0].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
@@ -262,6 +278,14 @@ ToneMapper::ToneMapper(const WGPUDevice device, const WGPUTextureFormat output_f
     impl.layout = wgpuDeviceCreateBindGroupLayout(device, &layout_descriptor);
     const WGPUBufferDescriptor buffer{.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, .size = sizeof(SettingsUniform)};
     impl.settings = wgpuDeviceCreateBuffer(device, &buffer);
+    const WGPUBufferDescriptor no_exposure{.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst, .size = 16};
+    impl.no_exposure = wgpuDeviceCreateBuffer(device, &no_exposure);
+    if (impl.no_exposure) {
+        const float state[4] = {0.0f, 1.0f, 0.0f, 0.0f};
+        const auto queue = wgpuDeviceGetQueue(device);
+        wgpuQueueWriteBuffer(queue, impl.no_exposure, 0, state, sizeof(state));
+        wgpuQueueRelease(queue);
+    }
 
     const WGPUShaderSourceWGSL source{.chain = {.sType = WGPUSType_ShaderSourceWGSL}, .code = wgsl_name(tone_shader)};
     const WGPUShaderModuleDescriptor shader_descriptor{.nextInChain = &source.chain};
@@ -285,11 +309,11 @@ ToneMapper::ToneMapper(const WGPUDevice device, const WGPUTextureFormat output_f
 ToneMapper::~ToneMapper() = default;
 
 bool ToneMapper::ready() const noexcept {
-    return impl_->pipeline && impl_->layout && impl_->settings && impl_->sampler && impl_->black_view;
+    return impl_->pipeline && impl_->layout && impl_->settings && impl_->sampler && impl_->black_view && impl_->no_exposure;
 }
 
 void ToneMapper::render(const WGPUCommandEncoder encoder, const WGPUTextureView scene, const WGPUTextureView output,
-                        const ToneSettings& tone, const WGPUTextureView bloom, const WGPUTextureView shafts) {
+                        const ToneSettings& tone, const WGPUTextureView bloom, const WGPUTextureView shafts, const WGPUBuffer exposure) {
     auto& impl = *impl_;
     if (!ready() || !scene || !output) return;
     const SettingsUniform settings{.curve = static_cast<std::uint32_t>(tone.curve),
@@ -299,12 +323,16 @@ void ToneMapper::render(const WGPUCommandEncoder encoder, const WGPUTextureView 
                                    .saturation = tone.saturation,
                                    .bloom = bloom ? (std::max)(tone.bloom, 0.0f) : 0.0f,
                                    .shafts = shafts && tone.shafts ? 1.0f : 0.0f,
-                                   .linear_scene = tone.linear_scene ? 1.0f : 0.0f};
+                                   .linear_scene = tone.linear_scene ? 1.0f : 0.0f,
+                                   .auto_exposure = tone.auto_exposure && exposure ? 1.0f : 0.0f};
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
         wgpuQueueWriteBuffer(queue, impl.settings, 0, &settings, sizeof(settings));
         wgpuQueueRelease(queue);
     }
-    std::array<WGPUBindGroupEntry, 5> entries{};
+    std::array<WGPUBindGroupEntry, 6> entries{};
+    entries[5].binding = 5;
+    entries[5].buffer = exposure ? exposure : impl.no_exposure;
+    entries[5].size = 16;
     entries[0].binding = 0;
     entries[0].textureView = scene;
     entries[1].binding = 1;

@@ -7,6 +7,7 @@ add_library(openrts_renderer STATIC
     src/glow_sprites.cpp
     src/screen_quads.cpp
     src/tone_map.cpp
+    src/auto_exposure.cpp
     src/bc7.cpp
     src/bloom.cpp
     src/light_shafts.cpp

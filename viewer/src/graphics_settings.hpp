@@ -12,6 +12,7 @@
 #include <string_view>
 #include <vector>
 
+#include <openrts/renderer/auto_exposure.hpp>
 #include <openrts/renderer/scene_effects.hpp>
 
 namespace openrts::viewer {
@@ -34,12 +35,17 @@ struct GraphicsSettings {
     // exposure, night_exposure, saturation.
     int tone_curve = 4;
     float exposure = 1.0f;
-    float night_exposure = 2.0f;
+    float night_exposure = 1.5f;
     float saturation = 1.0f;
+    // Auto exposure (PBR stage 3): auto_exposure, auto_exposure_strength,
+    // auto_exposure_down, auto_exposure_up, auto_exposure_speed.
+    renderer::AutoExposureSettings auto_exposure;
     // The new renderer's effects: effect_shadows, effect_clusters, effect_ao,
     // effect_ao_quality, effect_aerial, shadow_distance, shadow_quality,
     // shadow_cascades, shadow_softness, shadow_cache, shadow_cab,
-    // lamp_shadows, lamps_daylight, ground_bounce.
+    // lamp_shadows, lamps_daylight, ground_bounce, indoor_light,
+    // sky_light_strength, sky_reflection_strength, sky_reflection_indoors,
+    // sky_light_tunnel.
     renderer::SceneEffectSettings effects;
     // Lamps and headlights (the new renderer).
     bool physical_light = false;    // light_falloff: physical / rts

@@ -62,6 +62,11 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"tone_mode", text(s.tone_curve)},
         {"exposure", text(s.exposure)},
         {"night_exposure", text(s.night_exposure)},
+        {"auto_exposure", text(s.auto_exposure.on)},
+        {"auto_exposure_strength", text(s.auto_exposure.strength)},
+        {"auto_exposure_down", text(s.auto_exposure.down)},
+        {"auto_exposure_up", text(s.auto_exposure.up)},
+        {"auto_exposure_speed", text(s.auto_exposure.speed)},
         {"saturation", text(s.saturation)},
         {"effect_shadows", text(e.shadows)},
         {"effect_clusters", text(e.clustered_lights)},
@@ -83,6 +88,10 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"lamps_daylight", text(e.lamps_in_daylight)},
         {"ground_bounce", text(e.ground_bounce)},
         {"indoor_light", text(e.indoor_light)},
+        {"sky_light_strength", text(e.sky_light_strength)},
+        {"sky_reflection_strength", text(e.sky_reflection_strength)},
+        {"sky_reflection_indoors", text(e.sky_reflection_indoors)},
+        {"sky_light_tunnel", text(e.sky_light_tunnel)},
         {"light_falloff", s.physical_light ? "physical" : "rts"},
         {"pbr", text(s.pbr)},
         {"light_range", text(s.light_range)},
@@ -120,6 +129,11 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     s.tone_curve = whole(value_of, "tone_mode", s.tone_curve, 0, 5);
     s.exposure = number(value_of, "exposure", s.exposure, 0.25f, 4.0f);
     s.night_exposure = number(value_of, "night_exposure", s.night_exposure, 0.5f, 6.0f);
+    s.auto_exposure.on = flag_one(value_of, "auto_exposure", s.auto_exposure.on);
+    s.auto_exposure.strength = number(value_of, "auto_exposure_strength", s.auto_exposure.strength, 0.0f, 1.0f);
+    s.auto_exposure.down = number(value_of, "auto_exposure_down", s.auto_exposure.down, 0.0f, 3.0f);
+    s.auto_exposure.up = number(value_of, "auto_exposure_up", s.auto_exposure.up, 0.0f, 3.0f);
+    s.auto_exposure.speed = number(value_of, "auto_exposure_speed", s.auto_exposure.speed, 0.1f, 5.0f);
     s.saturation = number(value_of, "saturation", s.saturation, 0.5f, 1.8f);
     e.shadows = flag_one(value_of, "effect_shadows", e.shadows);
     e.clustered_lights = flag_one(value_of, "effect_clusters", e.clustered_lights);
@@ -145,6 +159,10 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     e.lamps_in_daylight = number(value_of, "lamps_daylight", e.lamps_in_daylight, 0.0f, 1.0f);
     e.ground_bounce = number(value_of, "ground_bounce", e.ground_bounce, 0.0f, 0.5f);
     e.indoor_light = number(value_of, "indoor_light", e.indoor_light, 0.0f, 1.0f);
+    e.sky_light_strength = number(value_of, "sky_light_strength", e.sky_light_strength, 0.0f, 2.0f);
+    e.sky_reflection_strength = number(value_of, "sky_reflection_strength", e.sky_reflection_strength, 0.0f, 2.0f);
+    e.sky_reflection_indoors = number(value_of, "sky_reflection_indoors", e.sky_reflection_indoors, 0.0f, 1.0f);
+    e.sky_light_tunnel = number(value_of, "sky_light_tunnel", e.sky_light_tunnel, 0.0f, 0.5f);
     if (const auto falloff = value_of("light_falloff")) s.physical_light = *falloff == "physical";
     s.pbr = flag_not_zero(value_of, "pbr", s.pbr);
     s.light_range = number(value_of, "light_range", s.light_range, 0.0f, 3000.0f);

@@ -1593,6 +1593,14 @@ void Launcher::State::draw_graphics(const float height) {
                 ImGui::Combo("##tone", &g.tone_curve, curves, 6);
                 group_row(tr("Exposure"), Load::none, Load::none);
                 viewer::slider_with_input("##exposure", &g.exposure, 0.25f, 4.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
+                group_row(tr("Auto exposure"), Load::none, Load::negligible);
+                ImGui::Checkbox("##auto_exposure", &g.auto_exposure.on);
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", tr("the picture gets used to the light, as an eye"));
+                if (g.auto_exposure.on) {
+                    group_row(tr("Auto exposure strength"), Load::none, Load::none);
+                    viewer::slider_with_input("##auto_exposure_strength", &g.auto_exposure.strength, 0.0f, 1.0f, "%.2f", "%.2f");
+                }
                 if (g.tone_curve == 4 || g.tone_curve == 5) {
                     group_row(tr("Night exposure"), Load::none, Load::none);
                     viewer::slider_with_input("##night_exposure", &g.night_exposure, 0.5f, 6.0f, "%.2f", "%.2f", ImGuiSliderFlags_Logarithmic);
