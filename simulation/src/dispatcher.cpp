@@ -202,8 +202,11 @@ void Dispatcher::update(const std::span<const Train* const> trains) {
                 head = (std::max)(*at_front, *at_rear);
                 tail = (std::min)(*at_front, *at_rear);
             } else {
-                front_leads = at_front.has_value();
-                head = at_front ? *at_front : *at_rear;
+                // One end is off the leg: the train's front has run past the
+                // leg's end (or its tail is still short of the start). Keep the
+                // orientation the train has: turning it around here would make
+                // the driver run back along the path it has just covered.
+                head = at_front ? *at_front : *at_rear + train->length();
                 tail = (std::max)(0.0, head - train->length());
             }
             return true;
