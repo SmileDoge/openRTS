@@ -1,0 +1,8 @@
+// openRTS demo material (docs/pbr-materials.md): the VL80s-606's body
+// paint. Numbers only, no maps: the texture keeps its look, the paint shines
+// as fresh enamel does (roughness 0.35..0.5 for paint).
+{
+  format: "openrts-material/1",
+  roughness: 0.42,
+  metallic: 0,
+}

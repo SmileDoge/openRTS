@@ -15,6 +15,7 @@ add_library(openrts_renderer STATIC
     src/depth_export.cpp
     src/frustum.cpp
     src/model_assets.cpp
+    src/model_materials.cpp
     src/transfer_shape.cpp
     src/forest_shape.cpp
     src/forest_clearance.cpp
@@ -35,6 +36,7 @@ openrts_configure_target(openrts_renderer)
 # Public renderer headers expose formats types (ShapeModel, RoutePosition).
 target_link_libraries(openrts_renderer PUBLIC openrts_core openrts_formats glm::glm)
 target_link_libraries(openrts_renderer PUBLIC openrts_assets)
+target_link_libraries(openrts_renderer PRIVATE openrts_mikktspace)
 
 if(OPENRTS_ENABLE_WGPU)
     if(NOT OPENRTS_WGPU_ROOT)

@@ -152,6 +152,8 @@ formats::ShapeOverride find_shape_override(const core::Vfs& vfs, const core::Vir
 std::vector<std::string> StreamedModelAsset::dependency_keys() const {
     std::vector<std::string> keys{source_path.key(), source_path.with_extension(".sd").key(), shape_override_path(source_path).key()};
     for (const auto& source : sources) keys.push_back(source.key());
+    keys.push_back(shape_material_path(source_path).key());
+    for (const auto& file : material_files) keys.push_back(file.key());
     for (const auto& texture : textures) {
         for (const auto& candidate : texture.candidates) keys.push_back(candidate.key());
     }
@@ -308,6 +310,8 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
         }
         result.textures.push_back(resolve_texture(vfs, name, shape_texture_candidates(shape, name, texture_directories), folders, cache));
     }
+    // openRTS's materials (PBR stage 4).
+    load_model_materials(vfs, result, cache);
     return result;
 }
 

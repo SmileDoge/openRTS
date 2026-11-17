@@ -86,11 +86,19 @@ struct MaterialUniform {
     // What the surface is for the light (SurfaceMaterial, renderer/pbr.hpp):
     // roughness, metallic, a dielectric's F0, its specular factor.
     float surface[4];
+    // openRTS's material (PBR stage 4, formats/material.hpp): the base
+    // colour's factor (linear), the emission (rgb: factor times strength,
+    // linear; w 1: an emissive map), the maps (x the occlusion map's
+    // strength, y the normal map's, z 1: an ORM map, w 1: a normal map with
+    // tangents).
+    float base_color[4];
+    float emissive[4];
+    float maps[4];
 };
 // The model's draws one after another in a storage buffer (WGSL array<Draw>,
-// stride 160): a binding serves every draw of the model with its texture.
+// stride 208): a binding serves every draw of the model with its texture.
 constexpr std::uint64_t material_stride = sizeof(MaterialUniform);
-static_assert(sizeof(MaterialUniform) == 160);
+static_assert(sizeof(MaterialUniform) == 208);
 
 // One instance of one draw call: the instance and the primitive it draws (its
 // slot in the model's draws). A multi-draw call covers several primitives of
@@ -192,6 +200,9 @@ struct Draw {
     matrix_index: i32,
     lod_bias: f32,
     surface: vec4<f32>, // roughness, metallic, a dielectric's F0, specular factor (SurfaceMaterial)
+    base_color: vec4<f32>, // openRTS's material: the base colour's factor (linear)
+    emissive: vec4<f32>,   // rgb the emission (linear), w 1: an emissive map
+    maps: vec4<f32>,       // x the occlusion map's strength, y the normal map's, z 1: an ORM map, w 1: a normal map
 };
 
 struct Instance {
@@ -231,6 +242,12 @@ fn coverage_alpha(alpha: f32, cutoff: f32, width: f32, mip: f32) -> f32 {
 @group(0) @binding(1) var source_sampler: sampler;
 // The model's primitives, by slot; each id says which one it draws.
 @group(0) @binding(2) var<storage, read> draws: array<Draw>;
+// openRTS's material maps (PBR stage 4): occlusion, roughness, metallic
+// (ORM); the normal map (green up); the emission (gamma 2.2). Without one a
+// 1 x 1 stand-in (white, flat, black), read only where the draw says so.
+@group(0) @binding(3) var orm_texture: texture_2d<f32>;
+@group(0) @binding(4) var normal_texture: texture_2d<f32>;
+@group(0) @binding(5) var emissive_texture: texture_2d<f32>;
 @group(1) @binding(0) var<uniform> frame: Frame;
 @group(1) @binding(1) var<storage, read> instances: array<Instance>;
 // Per draw call a contiguous run of (instance, primitive) entries, starting at
@@ -265,6 +282,7 @@ struct VertexIn {
     @location(2) uv: vec2<f32>,
     @location(3) colour1: vec4<f32>,
     @location(4) colour2: vec4<f32>,
+    /*TANGENT_IN*/
     @builtin(instance_index) instance: u32,
 };
 
@@ -278,6 +296,7 @@ struct VertexOut {
     @location(5) @interpolate(flat) ring: u32, // the instance's ring of further lights
     @location(6) @interpolate(flat) draw_slot: u32, // the primitive (draws[])
     @location(7) @interpolate(flat) portal: i32,    // the instance's portal (set_portal)
+    @location(8) tangent: vec4<f32>,                // a normal map's (xyz world, w the bitangent's sign); 0: none
 };
 
 // openRTS: does the line from the eye to `world` pass through portal `p`
@@ -554,6 +573,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
     if (draw.light_material == -9) { // Circumference
         out.normal = vec3<f32>(0.0, 1.0, 0.0);
     }
+    /*TANGENT_OUT*/
     // HalfBright: ambient from the first vertex colour; emission: the second.
     out.colour = vec4<f32>(0.0);
     if (draw.light_material == -11) {
@@ -590,6 +610,13 @@ fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> v
     return vec3<f32>(0.0);
 }
 
+// A debug view of the material (effects.views.x): the value shown as it is
+// on the screen, in either frame encoding.
+fn debug_view(value: vec3<f32>, coverage: f32) -> vec4<f32> {
+    let shown = clamp(value, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(select(shown, pow(shown, vec3<f32>(2.2)), frame.shading.z > 0.5), coverage);
+}
+
 // Linear up to the knee, then an exponential roll-off towards 1.
 fn shoulder(c: vec3<f32>) -> vec3<f32> {
     let knee = 0.6;
@@ -605,7 +632,12 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
     draw = draws[input.draw_slot];
-    let texel = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
+    // The material's base colour factor (openRTS's material; 1 without one).
+    let sampled = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
+    let texel = vec4<f32>(sampled.xyz, sampled.w * draw.base_color.w);
+    // The material's maps are read with these gradients (in any branch).
+    let uv_dx = dpdx(input.uv) * exp2(draw.lod_bias);
+    let uv_dy = dpdy(input.uv) * exp2(draw.lod_bias);
     let alpha_width = fwidth(texel.w);
     let texels = input.uv * vec2<f32>(textureDimensions(source_texture));
     let texels_dx = dpdx(texels);
@@ -628,8 +660,12 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     // FullBright is unlit unless the panel lights it (frame.shading.y, light_fullbright()).
     // A night texture (-16) is self-lit whatever the panel says.
     let unlit = shader == 1 || shader == 3 || shader == 6 || (material == -8 && frame.shading.y < 0.5) || material == -16;
-    let base = to_linear(texel.xyz);
+    let base = to_linear(texel.xyz) * draw.base_color.xyz;
     var colour = base;
+    if (effects.views.x > 0.5 && effects.views.x < 1.5) {
+        // Debug view: the base colour (the texture times the factor).
+        return debug_view(base, coverage);
+    }
     if (!unlit) {
         let sun = frame.lights[0];
         let sun_colour = to_linear(sun.diffuse.xyz);
@@ -639,7 +675,38 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         // MSTS trees and many buildings point their normals up on purpose
         // (Circumference), and turning them would darken everything above
         // the camera's height.
-        let n = normalize(input.normal);
+        var n = normalize(input.normal);
+        // openRTS's material: its normal map (tangents from MikkTSpace, the
+        // bitangent up the image) and its ORM map's occlusion, roughness and
+        // metallic, times the numbers.
+        var material_surface = draw.surface;
+        var material_ao = 1.0;
+        if (draw.maps.z > 0.5) {
+            let orm = textureSampleGrad(orm_texture, source_sampler, input.uv, uv_dx, uv_dy).xyz;
+            material_surface.x = material_surface.x * orm.y;
+            material_surface.y = material_surface.y * orm.z;
+            material_ao = mix(1.0, orm.x, draw.maps.x);
+        }
+        if (draw.maps.w > 0.5 && material != -9 && dot(input.tangent.xyz, input.tangent.xyz) > 1e-10) {
+            let mapped = textureSampleGrad(normal_texture, source_sampler, input.uv, uv_dx, uv_dy).xy * 2.0 - 1.0;
+            let xy = mapped * draw.maps.y;
+            let z = sqrt(max(1.0 - dot(mapped, mapped), 0.0));
+            let t = normalize(input.tangent.xyz - n * dot(n, input.tangent.xyz));
+            let b = cross(n, t) * input.tangent.w;
+            n = normalize(t * xy.x + b * xy.y + n * z);
+        }
+        if (effects.views.x > 1.5) {
+            // Debug views: roughness, metallic, the normal, the occlusion.
+            if (effects.views.x < 2.5) {
+                return debug_view(vec3<f32>(material_surface.x), coverage);
+            } else if (effects.views.x < 3.5) {
+                return debug_view(vec3<f32>(material_surface.y), coverage);
+            } else if (effects.views.x < 4.5) {
+                return debug_view(n * 0.5 + 0.5, coverage);
+            } else if (effects.views.x < 5.5) {
+                return debug_view(vec3<f32>(min(select(effects_ao(input.clip), 1.0, blended), material_ao)), coverage);
+            }
+        }
         let to_sun = -normalize(sun.direction);
         let facing = max(dot(n, to_sun), 0.0);
 
@@ -657,8 +724,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         // its light material makes it (draw.surface, SurfaceMaterial: some
         // reflect nothing); the special materials as below.
         let pbr = frame.shading.w > 0.5;
-        let surface = pbr_surface(base, n, view, draw.surface);
-        let reflects = draw.surface.w > 0.0;
+        let surface = pbr_surface(base, n, view, material_surface);
+        let reflects = material_surface.w > 0.0;
         // The sky's own light (PBR stage 2, effects.sky_light.x: SkyLight):
         // the sky and the ground under it from the sky's probe, Lambert by
         // its SH9 (the ground's bounce in it), the reflection by the split
@@ -678,7 +745,9 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         // Glass (blended) takes none: the occlusion at its pixel is of the
         // surface behind it (a sticker on a door's glass showed the seats'
         // shading through it).
-        let occlusion = select(effects_ao(input.clip), 1.0, blended);
+        // The material's occlusion map with it, the darker of the two (not
+        // both: the same corners darkened twice); indirect light only.
+        let occlusion = min(select(effects_ao(input.clip), 1.0, blended), material_ao);
         ambient = ambient * occlusion;
         // Indoors (the cab or salon the eye is in): the sun come in through
         // the windows and the sky's light, thrown about the room
@@ -803,6 +872,18 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         if (material == -1) { // vertex colour emission
             colour = max(colour, base * to_linear(input.colour.xyz));
         }
+    }
+    // openRTS's material: its emission, lit or not.
+    if (any(draw.emissive.xyz > vec3<f32>(0.0))) {
+        var glow = draw.emissive.xyz;
+        if (draw.emissive.w > 0.5) {
+            glow = glow * to_linear(textureSampleGrad(emissive_texture, source_sampler, input.uv, uv_dx, uv_dy).xyz);
+        }
+        colour = colour + glow;
+    }
+    if (effects.views.x > 5.5) {
+        // Debug view: the emission.
+        return debug_view(colour * select(0.0, 1.0, any(draw.emissive.xyz > vec3<f32>(0.0))), coverage);
     }
 
     if (effects.flags.z != 0u) {
@@ -938,7 +1019,14 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
 }
 
 [[nodiscard]] WGPUBindGroupLayout create_material_layout(const WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, 3> entries{};
+    std::array<WGPUBindGroupLayoutEntry, 6> entries{};
+    // openRTS's material maps (ORM, normal, emissive).
+    for (std::uint32_t i = 3; i < 6; ++i) {
+        entries[i].binding = i;
+        entries[i].visibility = WGPUShaderStage_Fragment;
+        entries[i].texture.sampleType = WGPUTextureSampleType_Float;
+        entries[i].texture.viewDimension = WGPUTextureViewDimension_2D;
+    }
     entries[0].binding = 0;
     entries[0].visibility = WGPUShaderStage_Fragment;
     entries[0].texture.sampleType = WGPUTextureSampleType_Float;
@@ -1021,10 +1109,22 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
     return wgpuDeviceCreateSampler(device, &descriptor);
 }
 
-[[nodiscard]] WGPUShaderModule create_shader_module(const WGPUDevice device, const char* body, const bool effects = false) {
+[[nodiscard]] WGPUShaderModule create_shader_module(const WGPUDevice device, const char* body, const bool effects = false,
+                                                  const bool tangents = false) {
     auto code = std::string(detail::light_shapes_wgsl) + shader_interface + detail::fog_ring_wgsl;
     if (effects) code += std::string(detail::effects_struct_wgsl) + detail::effects_main_wgsl + detail::pbr_wgsl;
     code += body;
+    // A model with a normal map (PBR stage 4): its tangents as a second
+    // vertex buffer, in the world with the bitangent's sign (a mirroring
+    // placement flips it).
+    const auto put = [&](const std::string_view marker, const std::string_view text) {
+        if (const auto at = code.find(marker); at != std::string::npos) code.replace(at, marker.size(), text);
+    };
+    put("/*TANGENT_IN*/", tangents ? "@location(5) tangent: vec4<f32>," : "");
+    put("/*TANGENT_OUT*/",
+        tangents ? "let basis = mat3x3<f32>(place.model[0].xyz, place.model[1].xyz, place.model[2].xyz);\n"
+                   "    out.tangent = vec4<f32>(basis * input.tangent.xyz, input.tangent.w * select(1.0, -1.0, determinant(basis) < 0.0));"
+                 : "");
     const WGPUShaderSourceWGSL source{
         .chain = {.sType = WGPUSType_ShaderSourceWGSL},
         .code = {.data = code.data(), .length = code.size()},
@@ -1056,6 +1156,9 @@ struct Draw { // as the shading paths' (MaterialUniform)
     matrix_index: i32,
     lod_bias: f32,
     surface: vec4<f32>,
+    base_color: vec4<f32>,
+    emissive: vec4<f32>,
+    maps: vec4<f32>,
 };
 struct Instance {
     transform: mat4x4<f32>,
@@ -1256,7 +1359,8 @@ constexpr std::size_t shading_path_count = 2;
                                                  const WGPUShaderModule shader,
                                                  const WGPUTextureFormat target_format,
                                                  const PipelineKey key,
-                                                 const bool cull_back_faces) {
+                                                 const bool cull_back_faces,
+                                                 const bool tangents = false) {
     const std::array<WGPUVertexAttribute, 5> attributes{{
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(GpuVertex, position), .shaderLocation = 0},
         {.format = WGPUVertexFormat_Float32x3, .offset = offsetof(GpuVertex, normal), .shaderLocation = 1},
@@ -1264,12 +1368,23 @@ constexpr std::size_t shading_path_count = 2;
         {.format = WGPUVertexFormat_Unorm8x4, .offset = offsetof(GpuVertex, colour1), .shaderLocation = 3},
         {.format = WGPUVertexFormat_Unorm8x4, .offset = offsetof(GpuVertex, colour2), .shaderLocation = 4},
     }};
-    const WGPUVertexBufferLayout vertex_layout{
-        .stepMode = WGPUVertexStepMode_Vertex,
-        .arrayStride = sizeof(GpuVertex),
-        .attributeCount = attributes.size(),
-        .attributes = attributes.data(),
-    };
+    // A normal-mapped model's tangents (PBR stage 4): a buffer of their own,
+    // so other models' vertices stay as they are.
+    const WGPUVertexAttribute tangent_attribute{.format = WGPUVertexFormat_Float32x4, .offset = 0, .shaderLocation = 5};
+    const std::array<WGPUVertexBufferLayout, 2> vertex_layouts{{
+        {
+            .stepMode = WGPUVertexStepMode_Vertex,
+            .arrayStride = sizeof(GpuVertex),
+            .attributeCount = attributes.size(),
+            .attributes = attributes.data(),
+        },
+        {
+            .stepMode = WGPUVertexStepMode_Vertex,
+            .arrayStride = sizeof(float) * 4,
+            .attributeCount = 1,
+            .attributes = &tangent_attribute,
+        },
+    }};
 
     constexpr WGPUStencilFaceState keep_stencil{
         .compare = WGPUCompareFunction_Always,
@@ -1320,8 +1435,8 @@ constexpr std::size_t shading_path_count = 2;
         .vertex = {
             .module = shader,
             .entryPoint = wgsl_name("vs_main"),
-            .bufferCount = 1,
-            .buffers = &vertex_layout,
+            .bufferCount = tangents ? 2u : 1u,
+            .buffers = vertex_layouts.data(),
         },
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList,
                       .frontFace = WGPUFrontFace_CW,
@@ -1466,6 +1581,7 @@ std::atomic<std::uint64_t> live_train_geometry_bytes{0};
 struct GpuGeometry {
     WGPUBuffer vertices = nullptr;
     WGPUBuffer indices = nullptr;
+    WGPUBuffer tangents = nullptr; // a normal-mapped model's (PBR stage 4), else none
     std::uint64_t bytes{};
     bool train = false; // a TRAINS/ shape's
 
@@ -1475,6 +1591,7 @@ struct GpuGeometry {
     ~GpuGeometry() {
         live_geometry_bytes -= bytes;
         if (train) live_train_geometry_bytes -= bytes;
+        if (tangents) wgpuBufferRelease(tangents);
         if (indices) wgpuBufferRelease(indices);
         if (vertices) wgpuBufferRelease(vertices);
     }
@@ -1508,12 +1625,24 @@ struct RenderModel::Impl {
         glm::vec3 center{};
         std::uint32_t image = UINT32_MAX; // the shape image it samples
         std::uint32_t slot{};             // its MaterialUniform slot (draws[] in the shaders)
+        // openRTS's material (PBR stage 4): with one, its surface, factors and
+        // maps (stand-ins without); without one, RTS's by the light material.
+        bool has_material = false;
+        SurfaceMaterial surface;
+        glm::vec4 base_color{1.0f};
+        glm::vec4 emissive{0.0f};
+        glm::vec4 maps{1.0f, 1.0f, 0.0f, 0.0f};
+        WGPUTextureView orm_view = nullptr;
+        WGPUTextureView normal_view = nullptr;
+        WGPUTextureView emissive_view = nullptr;
     };
     // The model's bindings, one per texture, sampler filter and unlit (the
     // draws' own, a TextureOverride's, an unlit node's), made when first
     // asked for; each Draw::binding is one of them. The textures of the
     // overrides stay alive with the generation.
-    mutable std::map<std::tuple<WGPUTextureView, int, bool>, WGPUBindGroup> bindings;
+    mutable std::map<std::tuple<WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, int, bool>, WGPUBindGroup> bindings;
+    // The material maps' textures (PBR stage 4), alive with the generation.
+    std::vector<std::shared_ptr<const GpuTexture>> material_textures;
     mutable std::vector<std::shared_ptr<const GpuTexture>> variant_textures;
     // The draws' MaterialUniforms with the unlit light material, made for the
     // first unlit node.
@@ -1532,6 +1661,7 @@ struct RenderModel::Impl {
     bool fullbright_day = false;
     std::vector<formats::ShapeLight> lights;
     std::vector<ModelPrimitive> primitives;
+    std::vector<std::string> material_messages; // what was wrong with its material files
     // Matrices, hierarchy and animations, kept when the shape is animated so
     // instances can be drawn at their own frame.
     std::shared_ptr<const formats::ShapeModel> rig;
@@ -1610,6 +1740,11 @@ const std::vector<float>& RenderModel::level_distances() const noexcept {
     return impl_ ? impl_->level_distances : none;
 }
 
+const std::vector<std::string>& RenderModel::material_messages() const noexcept {
+    static const std::vector<std::string> none;
+    return impl_ ? impl_->material_messages : none;
+}
+
 const std::vector<std::string>& RenderModel::texture_key() const noexcept {
     static const std::vector<std::string> none;
     return impl_ ? impl_->texture_key : none;
@@ -1670,6 +1805,15 @@ struct ModelRenderer::Impl {
     // cache and the samplers made on first use are shared, under this lock.
     mutable std::mutex shared_mutex;
     WgpuTextureUploadResult black_texture;
+    // The material maps' stand-ins (PBR stage 4): ORM white (the numbers as
+    // they are), a flat normal.
+    WgpuTextureUploadResult white_texture;
+    WgpuTextureUploadResult flat_normal_texture;
+    WGPUTextureView white_view = nullptr;
+    WGPUTextureView flat_normal_view = nullptr;
+    // The experimental path's pipelines for models with tangents.
+    std::array<WGPURenderPipeline, pipeline_variant_count> tangent_pipelines{};
+    std::array<WGPURenderPipeline, pipeline_variant_count> tangent_pipelines_two_sided{};
     WGPUTextureView black_view = nullptr;
 
     // Per-frame data: lights and camera, the drawn instances, the instance
@@ -1824,7 +1968,7 @@ struct ModelRenderer::Impl {
     }
     // A draw's MaterialUniform with the given light material.
     [[nodiscard]] static MaterialUniform material_uniform(const RenderModel::Impl::Draw& draw, const std::int32_t light_material) {
-        const auto surface = rts_surface_material(light_material);
+        const auto surface = draw.has_material ? draw.surface : rts_surface_material(light_material);
         return {
             .local = draw.world,
             .local_normal = glm::transpose(glm::inverse(draw.world)),
@@ -1833,6 +1977,9 @@ struct ModelRenderer::Impl {
             .matrix_index = draw.range.matrix_index,
             .lod_bias = draw.material.lod_bias,
             .surface = {surface.roughness, surface.metallic, surface.reflectance, surface.specular},
+            .base_color = {draw.base_color.x, draw.base_color.y, draw.base_color.z, draw.base_color.w},
+            .emissive = {draw.emissive.x, draw.emissive.y, draw.emissive.z, draw.emissive.w},
+            .maps = {draw.maps.x, draw.maps.y, draw.maps.z, draw.maps.w},
         };
     }
 
@@ -1865,7 +2012,7 @@ struct ModelRenderer::Impl {
             model.unlit_materials = create_buffer(device, WGPUBufferUsage_Storage, materials.size(), materials.data());
             if (!model.unlit_materials) return draw.binding;
         }
-        const auto binding = model_binding(model, texture ? texture->view : draw.view, draw.material.filter, unlit);
+        const auto binding = model_binding(model, texture ? texture->view : draw.view, draw, unlit);
         if (held && std::find(model.variant_textures.begin(), model.variant_textures.end(), held) == model.variant_textures.end())
             model.variant_textures.push_back(held);
         return binding ? binding : draw.binding;
@@ -1873,12 +2020,22 @@ struct ModelRenderer::Impl {
     // A model's binding for a texture, filter and unlit: every draw of the
     // model with them shares it (made when first asked for).
     [[nodiscard]] WGPUBindGroup model_binding(const RenderModel::Impl& model, const WGPUTextureView view,
-                                              const rts::TextureFilter filter, const bool unlit) {
-        const auto key = std::tuple{view, static_cast<int>(filter), unlit};
+                                              const RenderModel::Impl::Draw& draw, const bool unlit) {
+        const auto filter = draw.material.filter;
+        const auto orm = draw.orm_view ? draw.orm_view : white_view;
+        const auto normal = draw.normal_view ? draw.normal_view : flat_normal_view;
+        const auto emissive = draw.emissive_view ? draw.emissive_view : black_view;
+        const auto key = std::tuple{view, orm, normal, emissive, static_cast<int>(filter), unlit};
         if (const auto it = model.bindings.find(key); it != model.bindings.end()) return it->second;
         const auto buffer = unlit ? model.unlit_materials : model.materials;
         if (!buffer || !view) return nullptr;
-        std::array<WGPUBindGroupEntry, 3> entries{};
+        std::array<WGPUBindGroupEntry, 6> entries{};
+        entries[3].binding = 3;
+        entries[3].textureView = orm;
+        entries[4].binding = 4;
+        entries[4].textureView = normal;
+        entries[5].binding = 5;
+        entries[5].textureView = emissive;
         entries[0].binding = 0;
         entries[0].textureView = view;
         entries[1].binding = 1;
@@ -1916,6 +2073,13 @@ struct ModelRenderer::Impl {
             if (buffer) wgpuBufferRelease(buffer);
         }
         if (black_view) wgpuTextureViewRelease(black_view);
+        if (white_view) wgpuTextureViewRelease(white_view);
+        if (flat_normal_view) wgpuTextureViewRelease(flat_normal_view);
+        for (const auto* set : {&tangent_pipelines, &tangent_pipelines_two_sided}) {
+            for (const auto pipeline : *set) {
+                if (pipeline) wgpuRenderPipelineRelease(pipeline);
+            }
+        }
         for (const auto& [_, sampler] : samplers) {
             if (sampler) wgpuSamplerRelease(sampler);
         }
@@ -1931,7 +2095,7 @@ struct ModelRenderer::Impl {
     }
 
     [[nodiscard]] bool ready() const noexcept {
-        return material_layout && frame_layout && frame_buffer && black_view
+        return material_layout && frame_layout && frame_buffer && black_view && white_view && flat_normal_view
             && std::all_of(pipelines.begin(), pipelines.end(), [](const auto& variants) {
                    return std::all_of(variants.begin(), variants.end(), [](auto pipeline) { return pipeline; });
                });
@@ -1951,7 +2115,9 @@ struct ModelRenderer::Impl {
     // Texture of one shape image: the cached generation, or a fresh upload.
     [[nodiscard]] TextureAvailability texture_for(const StreamedTextureAsset& asset,
                                                   std::shared_ptr<const GpuTexture>& texture);
-    void create_draws(RenderModel::Impl& gpu, const formats::ShapeModel& model);
+    void create_draws(RenderModel::Impl& gpu, const StreamedModelAsset& asset);
+    // A material map's texture (PBR stage 4): the cached one, or a fresh upload.
+    [[nodiscard]] std::shared_ptr<const GpuTexture> material_texture(const MaterialMapAsset& map);
     // Texture a primitive samples, or nullopt when RTS-equivalent drawing skips it.
     [[nodiscard]] std::optional<WGPUTextureView> primitive_texture(const RenderModel::Impl& gpu,
                                                                    const formats::ShapeModel& model,
@@ -2113,8 +2279,40 @@ std::optional<WGPUTextureView> ModelRenderer::Impl::primitive_texture(const Rend
 
 // Creates one draw per shape draw range and computes the model's bounding sphere
 // from the transformed vertices actually referenced by those draws.
-void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const formats::ShapeModel& model) {
+std::shared_ptr<const GpuTexture> ModelRenderer::Impl::material_texture(const MaterialMapAsset& map) {
+    if (!map.image || !map.image->ok()) return nullptr;
+    {
+        const std::lock_guard lock(shared_mutex);
+        if (const auto it = texture_cache.find(map.key); it != texture_cache.end()) {
+            if (auto texture = it->second.lock()) return texture;
+        }
+    }
+    static const auto label = core::VirtualPath::parse("OPENRTS/MATERIALS/map").value_or(core::VirtualPath{});
+    auto made = upload(label, *map.image->image);
+    if (!made) return nullptr;
+    const std::lock_guard lock(shared_mutex);
+    if (const auto it = texture_cache.find(map.key); it != texture_cache.end()) {
+        if (auto texture = it->second.lock()) return texture;
+    }
+    texture_cache[map.key] = made;
+    return made;
+}
+
+void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedModelAsset& asset) {
+    const auto& model = asset.model;
     gpu.model_flags = rts::model_flags(model);
+    // openRTS's materials (PBR stage 4): their maps' textures.
+    std::vector<std::shared_ptr<const GpuTexture>> maps(asset.material_maps.size());
+    for (std::size_t i = 0; i < maps.size(); ++i) {
+        maps[i] = material_texture(asset.material_maps[i]);
+        if (maps[i]) gpu.material_textures.push_back(maps[i]);
+    }
+    const auto map_view = [&](const std::int32_t index) -> WGPUTextureView {
+        return index >= 0 && static_cast<std::size_t>(index) < maps.size() && maps[static_cast<std::size_t>(index)]
+            ? maps[static_cast<std::size_t>(index)]->view
+            : nullptr;
+    };
+    const bool tangents = gpu.geometry && gpu.geometry->tangents;
     gpu.level_distances = model.level_distances;
 
     BoundsAccumulator bounds;
@@ -2144,10 +2342,27 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const formats::Sh
             draw.center = glm::vec3{draw.world * glm::vec4{local_sum / static_cast<float>(point_count), 1.0f}};
         }
 
-        const auto view = primitive_texture(gpu, model, state);
+        auto view = primitive_texture(gpu, model, state);
         if (!view) continue;
         if (state.texture_count > 0 && state.texture_index < model.textures.size())
             draw.image = model.textures[state.texture_index].image_index;
+        if (range.primitive_state_index < asset.materials.size() && !asset.materials[range.primitive_state_index].layers.empty()) {
+            const auto& m = asset.materials[range.primitive_state_index];
+            const auto& f = m.material;
+            draw.has_material = true;
+            draw.surface = {.roughness = f.roughness, .metallic = f.metallic, .reflectance = f.reflectance, .specular = f.specular};
+            draw.base_color = {f.base_color_factor[0], f.base_color_factor[1], f.base_color_factor[2], f.base_color_factor[3]};
+            draw.orm_view = map_view(m.orm);
+            draw.normal_view = tangents ? map_view(m.normal) : nullptr;
+            draw.emissive_view = map_view(m.emissive);
+            const glm::vec3 glow{f.emissive_factor[0], f.emissive_factor[1], f.emissive_factor[2]};
+            draw.emissive = {glow * f.emissive_strength, draw.emissive_view ? 1.0f : 0.0f};
+            // An emissive map that failed: no glow from its factor alone.
+            if (m.emissive >= 0 && !draw.emissive_view) draw.emissive = glm::vec4{0.0f};
+            if (f.emissive && m.emissive < 0) draw.emissive = glm::vec4{0.0f};
+            draw.maps = {f.ao_strength, f.normal_strength, draw.orm_view ? 1.0f : 0.0f, draw.normal_view ? 1.0f : 0.0f};
+            if (const auto base = map_view(m.base_color)) view = base;
+        }
         gpu.draws.push_back(draw);
         views.push_back(*view);
     }
@@ -2178,7 +2393,7 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const formats::Sh
         auto& draw = gpu.draws[i];
         draw.slot = static_cast<std::uint32_t>(i);
         draw.view = views[i];
-        draw.binding = model_binding(gpu, views[i], draw.material.filter, false);
+        draw.binding = model_binding(gpu, views[i], draw, false);
     }
     std::erase_if(gpu.draws, [](const auto& draw) { return draw.binding == nullptr; });
     for (std::uint32_t i = 0; i < gpu.draws.size(); ++i) {
@@ -2200,6 +2415,13 @@ ModelRenderer::ModelRenderer(const WGPUDevice device, const WGPUTextureFormat ta
     static const std::vector<std::uint8_t> black_pixel{0, 0, 0, 255};
     impl_->black_texture = upload_rgba8_texture(device, {.width = 1, .height = 1, .pixels = &black_pixel}, "rts-unbound");
     if (impl_->black_texture.ok()) impl_->black_view = wgpuTextureCreateView(impl_->black_texture.texture.get(), nullptr);
+    static const std::vector<std::uint8_t> white_pixel{255, 255, 255, 255};
+    static const std::vector<std::uint8_t> flat_normal_pixel{128, 128, 255, 255};
+    impl_->white_texture = upload_rgba8_texture(device, {.width = 1, .height = 1, .pixels = &white_pixel}, "material-orm-none");
+    if (impl_->white_texture.ok()) impl_->white_view = wgpuTextureCreateView(impl_->white_texture.texture.get(), nullptr);
+    impl_->flat_normal_texture = upload_rgba8_texture(device, {.width = 1, .height = 1, .pixels = &flat_normal_pixel}, "material-normal-none");
+    if (impl_->flat_normal_texture.ok())
+        impl_->flat_normal_view = wgpuTextureCreateView(impl_->flat_normal_texture.texture.get(), nullptr);
 
     impl_->effects_layout = create_scene_effects_layout(device);
     const std::array<WGPUBindGroupLayout, 3> layouts{impl_->material_layout, impl_->frame_layout, impl_->effects_layout};
@@ -2220,6 +2442,21 @@ ModelRenderer::ModelRenderer(const WGPUDevice device, const WGPUTextureFormat ta
                         create_pipeline(device, pipeline_layout, shader, target_format, key, true);
                     impl_->pipelines_two_sided[path_index(path)][key.index()] =
                         create_pipeline(device, pipeline_layout, shader, target_format, key, false);
+                }
+            }
+        }
+        wgpuShaderModuleRelease(shader);
+    }
+    // The experimental path for models with tangents (a normal map).
+    {
+        const auto shader = create_shader_module(device, experimental_shader_body, true, true);
+        for (const bool blend : {false, true}) {
+            for (const bool depth_write : {false, true}) {
+                for (const bool alpha_test : {false, true}) {
+                    const PipelineKey key{.blend = blend, .depth_write = depth_write, .alpha_test = alpha_test};
+                    impl_->tangent_pipelines[key.index()] = create_pipeline(device, experimental_layout, shader, target_format, key, true, true);
+                    impl_->tangent_pipelines_two_sided[key.index()] =
+                        create_pipeline(device, experimental_layout, shader, target_format, key, false, true);
                 }
             }
         }
@@ -2326,14 +2563,27 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     gpu->texture_key = asset.texture_key;
     gpu->lights = asset.lights;
     gpu->dependencies = asset.dependency_keys();
+    gpu->material_messages = asset.material_messages;
     gpu->primitives.reserve(model.primitive_states.size());
     for (std::size_t i = 0; i < model.primitive_states.size(); ++i) {
         const auto& state = model.primitive_states[i];
         ModelPrimitive p{.index = static_cast<std::uint32_t>(i), .image = formats::primitive_image(model, static_cast<std::uint32_t>(i))};
         if (state.shader_index < model.shader_names.size()) p.shader = model.shader_names[state.shader_index];
-        if (state.vertex_state_index >= 0 && static_cast<std::size_t>(state.vertex_state_index) < model.vertex_states.size())
-            p.light_material = model.vertex_states[static_cast<std::size_t>(state.vertex_state_index)].light_material_index;
+        if (state.vertex_state_index >= 0 && static_cast<std::size_t>(state.vertex_state_index) < model.vertex_states.size()) {
+            const auto& vertex_state = model.vertex_states[static_cast<std::size_t>(state.vertex_state_index)];
+            p.light_material = vertex_state.light_material_index;
+            if (vertex_state.matrix_index >= 0 && static_cast<std::size_t>(vertex_state.matrix_index) < model.matrices.size())
+                p.matrix = model.matrices[static_cast<std::size_t>(vertex_state.matrix_index)].name;
+        }
         p.shape_light_material = i < asset.original_light.size() ? asset.original_light[i] : p.light_material;
+        // openRTS's material (PBR stage 4) and where its fields came from.
+        p.name = state.name;
+        if (i < asset.materials.size()) {
+            p.material = asset.materials[i].material;
+            p.material_layers = asset.materials[i].layers;
+        } else {
+            p.material = rts_material(p.light_material);
+        }
         for (const auto& draw : model.draws)
             if (draw.primitive_state_index == i) ++p.draws;
         gpu->primitives.push_back(std::move(p));
@@ -2366,6 +2616,11 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
         impl_->device, WGPUBufferUsage_Index, model.indices.size() * sizeof(std::uint32_t), model.indices.data());
     if (!geometry->vertices || !geometry->indices) return result;
     geometry->bytes = vertices.size() * sizeof(GpuVertex) + model.indices.size() * sizeof(std::uint32_t);
+    if (asset.tangents.size() == model.vertices.size()) {
+        geometry->tangents = create_buffer(impl_->device, WGPUBufferUsage_Vertex, asset.tangents.size() * sizeof(asset.tangents[0]),
+                                           asset.tangents.data());
+        if (geometry->tangents) geometry->bytes += asset.tangents.size() * sizeof(asset.tangents[0]);
+    }
     geometry->train = asset.source_path.key().rfind("trains/", 0) == 0;
     live_geometry_bytes += geometry->bytes;
     if (geometry->train) live_train_geometry_bytes += geometry->bytes;
@@ -2382,7 +2637,7 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     gpu->night_unlit = (asset.alternative_texture & 0x100u) != 0 && has(asset.texture_folders, "NIGHT");
     gpu->fullbright_day = has(asset.texture_key, "fullbright-day");
 
-    impl_->create_draws(*gpu, model);
+    impl_->create_draws(*gpu, asset);
     if (gpu->draws.empty()) return result;
 
     result.impl_ = std::move(gpu);
@@ -3169,16 +3424,26 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function
             bound_draw = nullptr;
             bind_frame();
         }
-        if (bound_pipeline != batch.pipeline.index()) {
+        // A normal-mapped model's tangents (PBR stage 4): the experimental
+        // path's pipelines with them, their buffer.
+        const bool tangents = experimental && batch.model->geometry->tangents;
+        const auto pipeline_index = batch.pipeline.index() + (tangents ? pipeline_variant_count : 0);
+        if (bound_pipeline != pipeline_index) {
             flush();
-            bound_pipeline = batch.pipeline.index();
-            const auto& set = impl_->face_culling ? impl_->pipelines : impl_->pipelines_two_sided;
-            wgpuRenderPassEncoderSetPipeline(pass, set[path_index(impl_->shading)][*bound_pipeline]);
+            bound_pipeline = pipeline_index;
+            if (tangents) {
+                const auto& set = impl_->face_culling ? impl_->tangent_pipelines : impl_->tangent_pipelines_two_sided;
+                wgpuRenderPassEncoderSetPipeline(pass, set[batch.pipeline.index()]);
+            } else {
+                const auto& set = impl_->face_culling ? impl_->pipelines : impl_->pipelines_two_sided;
+                wgpuRenderPassEncoderSetPipeline(pass, set[path_index(impl_->shading)][*bound_pipeline]);
+            }
         }
         if (bound_model != batch.model) {
             flush();
             bound_model = batch.model;
             wgpuRenderPassEncoderSetVertexBuffer(pass, 0, bound_model->geometry->vertices, 0, WGPU_WHOLE_SIZE);
+            if (tangents) wgpuRenderPassEncoderSetVertexBuffer(pass, 1, bound_model->geometry->tangents, 0, WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderSetIndexBuffer(pass, bound_model->geometry->indices, WGPUIndexFormat_Uint32, 0,
                                                 WGPU_WHOLE_SIZE);
         }

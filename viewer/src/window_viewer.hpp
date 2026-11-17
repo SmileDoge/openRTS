@@ -36,6 +36,8 @@ struct WindowOptions {
     std::optional<float> sky_light_strength, sky_reflections, sky_reflections_indoors, sky_light_tunnel;
     // Auto exposure for one run (--auto-exposure on|off, --auto-exposure-strength).
     std::optional<bool> auto_exposure;
+    // A part of the models' material as the colour (--material-view, PBR stage 4).
+    std::optional<int> material_view;
     std::optional<float> auto_exposure_strength;
     // --lamp-shadows <0..8>: lamps throwing shadows for this run.
     std::optional<int> lamp_shadows;

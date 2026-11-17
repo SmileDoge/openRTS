@@ -101,6 +101,11 @@ struct SceneEffectSettings {
     bool light_shafts = false;
     float light_shafts_strength = 1.0f;
     bool show_occlusion = false;    // debug: the occlusion as the colour
+    // Debug (PBR stage 4, docs/pbr-materials.md): the models' material as
+    // the colour: 0 the picture, 1 the base colour, 2 roughness, 3 metallic,
+    // 4 the normal (after its map), 5 the occlusion (the map's and GTAO's),
+    // 6 the emission. Not kept.
+    int material_view = 0;
     bool operator==(const SceneEffectSettings&) const = default;
 };
 

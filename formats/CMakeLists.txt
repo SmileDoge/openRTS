@@ -7,6 +7,7 @@ add_library(openrts_formats STATIC
     src/shape_binary.cpp
     src/shape_file.cpp
     src/shape_override.cpp
+    src/material.cpp
     src/shape_text.cpp
     src/sound.cpp
     src/shape_description.cpp

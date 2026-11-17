@@ -382,6 +382,18 @@ What it does not do yet: the factor is the frame's, not the eye's spot (a
 bright window in a dark cab is the frame's mean), and the dazzle out of a
 tunnel is the tone curve's, not a glare of its own.
 
+### openRTS materials (2026-11-17, PBR stage 4)
+
+Beyond RTS's light materials a surface's roughness, metallic, occlusion,
+normal map and emission come from openRTS's material files, JSON5 in the
+VFS: `body.material.json5` beside `body.ace` for every model drawing it,
+`loco.s.material.json5` beside a shape for some of its parts, merged field
+by field over RTS's. Without them nothing changes (checked: the eight
+scenes' captures before and after match to the frame's noise). The whole
+of it, the format, the tools (`openrts-shape export` to glTF, the
+inspector's "PBR material", the debug views `--material-view`) and how to
+make one: [pbr-materials.md](pbr-materials.md).
+
 ## Sun shadows
 
 By default three cascades of a 2048 x 2048 depth array up to 250 m from the

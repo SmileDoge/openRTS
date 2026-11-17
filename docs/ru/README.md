@@ -30,6 +30,7 @@
 | [world-objects.md](world-objects.md) | леса, переезды, автомобили, вода, осадки и дым |
 | [weather.md](weather.md) | погода и гроза: молнии, их свет на облаках и сцене, канал, сеть |
 | [experimental-effects.md](experimental-effects.md) | новый рендер: что делает и сколько стоит |
+| [pbr-materials.md](pbr-materials.md) | материалы openRTS (PBR): файлы JSON5, карты, выгрузка модели в glTF, инспектор |
 | [profiling.md](profiling.md) | профилирование с Tracy: сборка, что размечено, как добавить зону |
 | [vfs.md](vfs.md) | виртуальная файловая система, паки и моды |
 | [inspector.md](inspector.md) | инспектор (F12): объекты карты, свойства, переопределения моделей |

@@ -69,6 +69,12 @@ VARIANTS = {
                        "--sky-light-strength", "1.5", "--sky-reflections", "1.5"],
     # Auto exposure (PBR stage 3) on.
     "pbr_ae": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on", "--auto-exposure", "on"],
+    # Materials (PBR stage 4): a part of the models' material as the colour.
+    "view_base": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on", "--material-view", "base"],
+    "view_roughness": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on", "--material-view", "roughness"],
+    "view_metallic": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on", "--material-view", "metallic"],
+    "view_normal": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on", "--material-view", "normal"],
+    "view_ao": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on", "--material-view", "ao"],
     "pbr_dome": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on", "--native-sky", "off"],
     "pbr1_dome": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "off", "--native-sky", "off"],
     "rts": ["--hdr"],

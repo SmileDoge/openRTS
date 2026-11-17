@@ -74,6 +74,22 @@ FetchContent_Declare(miniaudio
     SOURCE_SUBDIR openrts-sources-only)
 FetchContent_MakeAvailable(miniaudio)
 
+# MikkTSpace (zlib): the tangents normal maps are baked with (Blender,
+# Substance Painter, glTF), for the models with an openRTS normal map
+# (PBR stage 4, docs/pbr-materials.md).
+FetchContent_Declare(mikktspace
+    URL https://github.com/mmikk/MikkTSpace/archive/3e895b49d05ea07e4c2133156cfa94369e19e409.tar.gz
+    URL_HASH SHA256=aeba65ddee85a679133d510d71d00b108f603752f90b15b9ecf7777033f6e351
+    SOURCE_SUBDIR openrts-sources-only)
+FetchContent_MakeAvailable(mikktspace)
+add_library(openrts_mikktspace STATIC "${mikktspace_SOURCE_DIR}/mikktspace.c")
+target_include_directories(openrts_mikktspace SYSTEM PUBLIC "${mikktspace_SOURCE_DIR}")
+if(MSVC)
+    target_compile_options(openrts_mikktspace PRIVATE /W0)
+else()
+    target_compile_options(openrts_mikktspace PRIVATE -w)
+endif()
+
 # Luau (MIT): the scripting language of openRTS's own modules (a brake
 # distributor now; train plugins later, docs/scripting.md). Its VM and
 # compiler only.

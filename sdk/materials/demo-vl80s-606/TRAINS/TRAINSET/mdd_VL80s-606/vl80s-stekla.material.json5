@@ -1,0 +1,7 @@
+// openRTS demo material: the windows' glass, a mirror-smooth dielectric.
+{
+  format: "openrts-material/1",
+  roughness: 0.05,
+  metallic: 0,
+  specular: 1,
+}

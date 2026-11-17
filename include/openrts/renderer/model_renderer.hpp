@@ -19,6 +19,7 @@
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/formats/shape_description.hpp>
 #include <openrts/renderer/fog_ring.hpp>
+#include <openrts/formats/material.hpp>
 #include <openrts/renderer/model_assets.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
@@ -192,6 +193,11 @@ struct ModelPrimitive {
     std::int32_t light_material = -5;
     std::int32_t shape_light_material = -5; // before the override (openRTS's <shape>.openrts)
     std::uint32_t draws{};      // primitives drawing it, over every distance level
+    std::string name;           // the primitive state's label in the shape
+    std::string matrix;         // the node it hangs on (its vertex state's matrix)
+    // openRTS's material (PBR stage 4): as drawn, and the layers over RTS's.
+    formats::Material material;
+    std::vector<std::pair<formats::MaterialLayer, formats::MaterialPatch>> material_layers;
 };
 
 // A pose change of one shape node: `local` is applied in the node's own frame
@@ -285,6 +291,8 @@ public:
     [[nodiscard]] const std::vector<ModelPrimitive>& primitives() const noexcept;
     // Its distance levels (m), nearest first; empty for one level.
     [[nodiscard]] const std::vector<float>& level_distances() const noexcept;
+    // What was wrong with its material files (PBR stage 4), for the inspector.
+    [[nodiscard]] const std::vector<std::string>& material_messages() const noexcept;
 
 private:
     struct Impl;

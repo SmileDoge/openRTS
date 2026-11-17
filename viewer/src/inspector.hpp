@@ -19,6 +19,7 @@
 
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/route_world.hpp>
+#include <openrts/formats/material.hpp>
 #include <openrts/formats/shape_override.hpp>
 #include <openrts/renderer/route_streamer.hpp>
 #include <openrts/renderer/wide_lines.hpp>
@@ -85,6 +86,12 @@ private:
     void draw_tree(const InspectorWorld& world);
     void draw_properties(const InspectorWorld& world);
     void draw_materials(const InspectorWorld& world, const core::VirtualPath& shape);
+    // openRTS's material of a part (PBR stage 4): as drawn, where each field
+    // came from, the inspector's numbers (the shape's material file).
+    void draw_pbr_material(const InspectorWorld& world, const core::VirtualPath& shape);
+    formats::ShapeMaterialFile& material_file(const InspectorWorld& world, const core::VirtualPath& shape);
+    void apply_material(const InspectorWorld& world, const core::VirtualPath& shape);
+    void save_material(const InspectorWorld& world, const core::VirtualPath& shape);
     void fly_to(const InspectorWorld& world);
     // The shape's override being edited: read once when a shape is chosen.
     formats::ShapeOverride& edited(const InspectorWorld& world, const core::VirtualPath& shape);
@@ -103,6 +110,13 @@ private:
     formats::ShapeOverride edited_;
     bool dirty_ = false;
     std::string status_;
+    // The shape's material entries being edited (PBR stage 4), of
+    // `material_shape_`; the part chosen; `material_dirty_`: not saved.
+    std::string material_shape_;
+    formats::ShapeMaterialFile material_;
+    std::uint32_t material_part_ = 0;
+    bool material_dirty_ = false;
+    std::string material_status_;
 };
 
 } // namespace openrts::viewer

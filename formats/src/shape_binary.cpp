@@ -708,6 +708,7 @@ constexpr std::uint32_t token_dlevel_selection = 35;
                                    .shader_index = *shader,
                                    .vertex_state_index = static_cast<std::int32_t>(*vertex_state),
                                    .z_bias = *z_bias};
+        parsed.name = block_label(body, *state);
         if (state_offset + 4 <= state->end) {
             const auto alpha = read_u32(body, state_offset, state->end);
             if (!alpha) return std::nullopt;

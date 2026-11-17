@@ -486,6 +486,12 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.lamp_shadows = std::atoi(std::string(flags[++i]).c_str());
         } else if (flags[i] == "--ground-bounce" && has_value) {
             options.ground_bounce = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--material-view" && has_value) {
+            const std::string view(flags[++i]);
+            const char* names[] = {"none", "base", "roughness", "metallic", "normal", "ao", "emissive"};
+            for (int k = 0; k < 7; ++k) {
+                if (view == names[k]) options.material_view = k;
+            }
         } else if (flags[i] == "--auto-exposure" && has_value) {
             options.auto_exposure = std::string(flags[++i]) == "on";
         } else if (flags[i] == "--auto-exposure-strength" && has_value) {

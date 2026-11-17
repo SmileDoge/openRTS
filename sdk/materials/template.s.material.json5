@@ -1,0 +1,19 @@
+// openRTS materials of some of a shape's parts (docs/pbr-materials.md):
+// beside the shape, named after it: loco.s -> loco.s.material.json5. For
+// one texture that needs another look on this model (the glass of a texture
+// shared with the body). openrts-shape export puts each part's `match` in
+// the glTF's extras.openrts; the inspector (F12) shows and writes it.
+{
+  format: "openrts-shape-material/1",
+  primitives: [
+    // By the part's name (its prim_state label in the shape), when no other part has it.
+    { match: { name: "Glass_BlendATexDiff" }, roughness: 0.05, metallic: 0 },
+    // By its texture and the node it hangs on.
+    { match: { image: "body.ace", matrix: "BODY" }, orm: "body_orm.png" },
+    // By its index and texture (the index alone is not steady).
+    { match: { index: 12, image: "lamp.ace" }, emissive: "lamp_e.png", emissive_strength: 4 },
+    // Several parts at once only when said so: matching more than one
+    // otherwise applies to none (a warning names them).
+    { match: { image: "bogie.ace", all: true }, roughness: 0.8 },
+  ],
+}

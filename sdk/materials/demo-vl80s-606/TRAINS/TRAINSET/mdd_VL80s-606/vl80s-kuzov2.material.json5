@@ -1,0 +1,6 @@
+// openRTS demo material: the VL80s-606's body, its other half.
+{
+  format: "openrts-material/1",
+  roughness: 0.42,
+  metallic: 0,
+}

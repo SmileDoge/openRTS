@@ -64,6 +64,13 @@ openrts_configure_target(openrts_vfs_test)
 target_link_libraries(openrts_vfs_test PRIVATE openrts_core)
 add_test(NAME openrts.vfs COMMAND openrts_vfs_test)
 
+# openRTS's materials: JSON5, the material files, merging and selectors.
+add_executable(openrts_material_test material_test.cpp)
+openrts_configure_target(openrts_material_test)
+target_link_libraries(openrts_material_test PRIVATE openrts_renderer)
+target_compile_definitions(openrts_material_test PRIVATE OPENRTS_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME openrts.material COMMAND openrts_material_test)
+
 add_executable(openrts_retire_queue_test retire_queue_test.cpp)
 openrts_configure_target(openrts_retire_queue_test)
 add_test(NAME openrts.retire_queue COMMAND openrts_retire_queue_test)

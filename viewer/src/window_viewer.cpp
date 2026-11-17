@@ -722,8 +722,10 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.auto_exposure = g.auto_exposure;
     panel.saturation = g.saturation;
     const bool show_occlusion = panel.effects.show_occlusion;
+    const int material_view = panel.effects.material_view;
     panel.effects = g.effects;
     panel.effects.show_occlusion = show_occlusion;
+    panel.effects.material_view = material_view;
     panel.physical_light = g.physical_light;
     panel.pbr = g.pbr;
     panel.light_range = g.light_range;
@@ -756,6 +758,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.saturation = panel.saturation;
     g.effects = panel.effects;
     g.effects.show_occlusion = false;
+    g.effects.material_view = 0;
     g.physical_light = panel.physical_light;
     g.pbr = panel.pbr;
     g.light_range = panel.light_range;
@@ -1307,6 +1310,12 @@ public:
                             remember("sky_light_tunnel", std::to_string(e.sky_light_tunnel));
                         }
                     }
+                    // openRTS's materials (PBR stage 4, docs/pbr-materials.md):
+                    // a part of the models' material as the colour, a check.
+                    const char* material_views[] = {tr("the picture"), tr("base colour"), tr("roughness"), tr("metallic"),
+                                                    tr("normals"), tr("occlusion (the map's and GTAO's)"), tr("emission")};
+                    ImGui::SetNextItemWidth(200.0f);
+                    ImGui::Combo(tr("Show the material (a check)"), &panel.effects.material_view, material_views, 7);
                     ImGui::Unindent();
                 }
                 if (!panel.hdr) {
@@ -2795,6 +2804,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (options.lamps_daylight) panel.effects.lamps_in_daylight = std::clamp(*options.lamps_daylight, 0.0f, 1.0f);
     if (options.ground_bounce) panel.effects.ground_bounce = std::clamp(*options.ground_bounce, 0.0f, 0.5f);
     if (options.auto_exposure) panel.auto_exposure.on = *options.auto_exposure;
+    if (options.material_view) panel.effects.material_view = std::clamp(*options.material_view, 0, 6);
     if (options.auto_exposure_strength) panel.auto_exposure.strength = std::clamp(*options.auto_exposure_strength, 0.0f, 1.0f);
     if (options.sky_light_strength) panel.effects.sky_light_strength = std::clamp(*options.sky_light_strength, 0.0f, 2.0f);
     if (options.sky_reflections) panel.effects.sky_reflection_strength = std::clamp(*options.sky_reflections, 0.0f, 2.0f);

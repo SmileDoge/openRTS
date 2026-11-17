@@ -93,6 +93,7 @@ struct ShapePrimitiveState {
     float z_bias{};
     std::uint32_t alpha_test_mode{};
     std::uint32_t z_buffer_mode{1};
+    std::string name; // the prim_state block's label (materials select by it)
 };
 
 struct ShapeDrawRange {

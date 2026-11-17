@@ -66,6 +66,19 @@ OpenRTSShapeOverride ( 1
   (`formats::apply_shape_override`). The override file is one of the
   model's dependencies: changed in a mounted mod, the model reloads.
 
+## PBR material (openRTS)
+
+Under the materials, "PBR material (openRTS)" (2026-11-17, PBR stage 4):
+a part of the shape (its index, texture, name and node), its material as
+drawn with each field's source (RTS, the texture's file, its variant's, the
+shape's, the inspector), what was wrong with the material files, and
+sliders for roughness, metallic and the reflection's share. A change shows
+at once; "Save the material to the mod" writes the shape's material file
+(`<shape path>.material.json5`) into the same mod, machine-written, by the
+part's steadiest `match` (its name, else its texture and node, else its
+index and texture). The format and the rest: [pbr-materials.md](pbr-materials.md).
+`--capture-inspect` lists the parts with an openRTS material.
+
 ## Code
 
 `viewer/src/inspector.*` (the windows, choosing, the box, saving),

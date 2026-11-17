@@ -334,7 +334,7 @@ The game can also be started directly:
 | `--pbr on\|off` | the experimental renderer's physically based light (with HDR) for one run ([details](docs/experimental-effects.md)) |
 | `--sky-light on\|off` | with the physically based light, the sky's light from its probe (off: the old sky light) for one run |
 | `--native-sky on\|off` | openRTS's sky or RTS's dome for one run |
-| `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5`, `--sky-light-strength 0..2`, `--sky-reflections 0..2`, `--sky-reflections-indoors 0..1`, `--sky-light-tunnel 0..0.5`, `--auto-exposure on\|off`, `--auto-exposure-strength 0..1` | experimental renderer settings for one run ([details](docs/experimental-effects.md)) |
+| `--effects shadows,clusters,ao,aerial,shafts\|none`, `--cab-shadows on\|off`, `--lamp-shadows 0..4`, `--lamps-daylight 0..1`, `--ground-bounce 0..0.5`, `--sky-light-strength 0..2`, `--sky-reflections 0..2`, `--sky-reflections-indoors 0..1`, `--sky-light-tunnel 0..0.5`, `--auto-exposure on\|off`, `--auto-exposure-strength 0..1`, `--material-view base\|roughness\|metallic\|normal\|ao\|emissive` | experimental renderer settings for one run ([details](docs/experimental-effects.md)) |
 | `--capture <file.ppm>` | take one frame and exit; `--capture-at <s>`, `--capture-car <n>`, `--capture-camera ex ey ez tx ty tz`, `--capture-cab` say when and from where |
 | `--mp-connect <address>[:port]`, `--mp-nick <nick>` | join an RTS server (port 800 by default); the route, season and weather are the server's, no `--route` needed |
 | `--mp-snapshot <file>`, `--mp-save-snapshot <file>` | open a saved server snapshot offline; save the one received |
@@ -431,6 +431,7 @@ the Train window)
 | Program | Purpose |
 |---|---|
 | `openrts-ace` | ACE textures to PNG and back (DXT1, RGB, RGB + mask, RGBA), a file or a folder; `--register`: a double click on an `.ace` shows it as PNG, PNG files and folders get "to ACE (openRTS)" (also a button in the menu's Settings; the format: `docs/reverse/ace.md`) |
+| `openrts-shape` | `export <file.s> [--out <folder>]`: a shape as glTF 2.0 with its textures as PNG for Substance Painter and Blender: nodes, a material per part and what openRTS's material files select it by ([openRTS materials](docs/pbr-materials.md)) |
 | `openrts-pack` | build and inspect content packs (`docs/vfs.md`) |
 | `openrts-track-check` | check the track network, `.pat` paths and speed posts |
 | `openrts-path-check` | drive test trains along paths: reservations, the planner |
