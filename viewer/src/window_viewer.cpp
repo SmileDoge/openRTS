@@ -45,6 +45,7 @@
 #include "graphics_presets_ui.hpp"
 #include "graphics_settings.hpp"
 #include <openrts/renderer/gpu_pass_timer.hpp>
+#include <openrts/renderer/video_memory.hpp>
 #include "key_layout.hpp"
 #include "ui_fonts.hpp"
 #include "ui_slider.hpp"
@@ -630,6 +631,7 @@ struct PanelState {
     bool vsync_optional = false;
     int fps_limit = 0; // 0: none, else 30..500
     bool gpu_timing = false;
+    renderer::VideoMemory video_memory; // the card's memory, read twice a second
     audio::AudioEngine* sound = nullptr;
     bool save_view = false;
     std::string save_status;
@@ -691,6 +693,7 @@ struct PanelState {
     // The trains' DXT1 textures without the blocks' squares, kept in BC7
     // (renderer/bc7.hpp; openRTS's own; remembered as smooth_train_textures).
     bool smooth_train_textures = false;
+    int compress_textures = 2; // renderer/bc7.hpp: 0 not, 1 in memory, 2 kept on disk
     bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
     float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
     bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
@@ -747,6 +750,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.screen_supersampling = g.screen_supersampling;
     panel.reshade_depth = g.reshade_depth;
     panel.smooth_train_textures = g.smooth_train_textures;
+    panel.compress_textures = g.compress_textures;
 }
 
 [[nodiscard]] GraphicsSettings panel_graphics(const PanelState& panel) {
@@ -780,6 +784,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.screen_supersampling = panel.screen_supersampling;
     g.reshade_depth = panel.reshade_depth;
     g.smooth_train_textures = panel.smooth_train_textures;
+    g.compress_textures = panel.compress_textures;
     return g;
 }
 
@@ -1177,6 +1182,29 @@ public:
             if (ImGui::Checkbox(tr("Smooth the compression blocks of the trains' textures (BC7, not as in RTS)"), &panel.smooth_train_textures))
                 remember("smooth_train_textures", panel.smooth_train_textures ? "1" : "0");
             ImGui::TextDisabled("%s", tr("(the DXT1 of cars and cabs: the squares of its 4x4 blocks smoothed where they meet, kept in BC7, twice the video memory of the trains; a train loaded after: the first time some seconds longer, then from the cache)"));
+            {
+                const char* modes[] = {tr("Don't compress (as in RTS)"), tr("Compress, not kept on disk"), tr("Compress and keep on disk")};
+                ImGui::SetNextItemWidth(260.0f);
+                if (ImGui::Combo(tr("Uncompressed textures and PBR maps (BC7, normals BC5)"), &panel.compress_textures, modes, 3))
+                    remember("compress_textures", std::to_string(panel.compress_textures));
+                ImGui::TextDisabled("%s", tr("(compressed: a quarter of their video memory, barely seen; on disk: the first load longer, then read from the cache; not kept: each load longer, nothing written; textures loaded after the change)"));
+                // The disk cache: counted every 2 s while shown, cleared on the button.
+                static renderer::TextureCacheSize cache_size;
+                static double counted_at = -100.0;
+                if (ImGui::GetTime() - counted_at > 2.0) {
+                    cache_size = renderer::texture_cache_size(renderer::texture_cache_directory());
+                    counted_at = ImGui::GetTime();
+                }
+                ImGui::Text(tr("The compressed textures' cache on disk: %.0f MB, %llu files"), static_cast<double>(cache_size.bytes) / 1048576.0,
+                            static_cast<unsigned long long>(cache_size.files));
+                ImGui::SameLine();
+                if (ImGui::Button(tr("Clear the cache"))) {
+                    const auto removed = renderer::clear_texture_cache(renderer::texture_cache_directory());
+                    std::cout << "texture cache: removed " << removed.files << " files, " << removed.bytes / 1048576 << " MB" << std::endl;
+                    counted_at = -100.0;
+                }
+                ImGui::TextDisabled("%s", tr("(the textures already loaded stay; the next loads compress theirs again)"));
+            }
             if (ImGui::Checkbox(tr("Sharp cab screens: drawn at a higher resolution (not as in RTS)"), &panel.screen_supersampling))
                 remember("screen_supersampling", panel.screen_supersampling ? "1" : "0");
             ImGui::TextDisabled("%s", tr("(each screen drawn into an image of its own and blended in linear light: thin lines keep their brightness, no steps on edges and needles)"));
@@ -1546,8 +1574,20 @@ public:
             const auto gpu = renderer.stats();
             ImGui::Text(tr("GPU: %zu textures, %zu retired waiting, frame %llu done"), gpu.cached_textures, gpu.retired_pending,
                         static_cast<unsigned long long>(gpu.completed_frame));
-            ImGui::Text(tr("Textures on the GPU: %.0f MB, the trains' %.0f MB"), static_cast<double>(gpu.texture_bytes) / 1048576.0,
-                        static_cast<double>(gpu.train_texture_bytes) / 1048576.0);
+            ImGui::Text(tr("Textures on the GPU: %.0f MB, the trains' %.0f MB, uncompressed %.0f MB"),
+                        static_cast<double>(gpu.texture_bytes) / 1048576.0, static_cast<double>(gpu.train_texture_bytes) / 1048576.0,
+                        static_cast<double>(gpu.rgba8_texture_bytes) / 1048576.0);
+            // The card's memory as Windows counts it (renderer/video_memory.hpp).
+            if (const auto memory = panel.video_memory; memory.known) {
+                ImGui::Text(tr("Video memory: %.0f MB of the %.0f MB Windows lets the game keep (the card has %.0f MB), %.0f MB in shared memory"),
+                            static_cast<double>(memory.usage) / 1048576.0, static_cast<double>(memory.budget) / 1048576.0,
+                            static_cast<double>(memory.total) / 1048576.0, static_cast<double>(memory.shared_usage) / 1048576.0);
+                if (memory.over_budget()) {
+                    ImGui::TextColored(ImVec4{1.0f, 0.45f, 0.35f, 1.0f}, "%s",
+                                       tr("Video memory over its budget: part of it is moved to system memory and the frame slows down many "
+                                          "times. Lower the shadows' quality, the lamp shadows or the anti-aliasing."));
+                }
+            }
             ImGui::Text(tr("Models: %zu instances, %zu primitives, %zu draw calls"), gpu.instances, gpu.primitives, gpu.draw_calls);
             ImGui::Text(tr("Commands in the main pass: %zu"), gpu.draw_commands);
             ImGui::BeginDisabled(!renderer.multi_draw_supported());
@@ -2584,6 +2624,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     }
     const auto device = context.context.device();
     report_adapter(context.context.adapter());
+    // The card's memory budget (DXGI; Windows only).
+    std::unique_ptr<renderer::VideoMemoryProbe> video_memory_probe;
+    {
+        WGPUAdapterInfo info{};
+        wgpuAdapterGetInfo(context.context.adapter(), &info);
+        video_memory_probe = std::make_unique<renderer::VideoMemoryProbe>(info.vendorID, info.deviceID);
+        wgpuAdapterInfoFreeMembers(info);
+    }
+    double video_memory_at = 0.0;
     // OpenGL: the experimental path's compute shaders read depth textures
     // with textureLoad, which wgpu's GLSL output cannot do.
     const bool experimental_supported = renderer::adapter_backend_name(context.context.adapter()).substr(0, 6) != "OpenGL";
@@ -2815,6 +2864,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (options.lamp_shadows) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(*options.lamp_shadows, 0, most_lamp_shadows));
     if (const auto on = remembered("parallel_recording")) panel.parallel_recording = *on == "1";
     if (options.shadow_cache) panel.effects.cache_far_cascades = *options.shadow_cache;
+    if (options.compress_textures) panel.compress_textures = *options.compress_textures;
     if (options.cab_shadows) panel.effects.cab_shadows = *options.cab_shadows;
     if (options.parallel_recording) panel.parallel_recording = *options.parallel_recording;
     if (options.start_paused) panel.paused = true;
@@ -2940,6 +2990,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::light_fullbright() = panel.light_fullbright;
         renderer::night_textures() = panel.night_textures;
         renderer::smooth_train_textures() = panel.smooth_train_textures;
+        renderer::texture_compression() = static_cast<renderer::TextureCompression>(std::clamp(panel.compress_textures, 0, 2));
         renderer::lamp_skips_own_model() = panel.lamp_own_model;
         renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
         auto frame_input = scene_input(window.get(), input);
@@ -3230,6 +3281,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                   renderer::lamp_skips_own_model() ? effects.depth_slot_owner(slot) : 0u, casters);
         };
         scene.prepare_depth();
+        // Nothing moving moved: the shadow maps may stay as they are.
+        effects.set_moving_signature(renderer.moving_signature(), renderer.moving_signature(false));
         // In parallel the workers record and finish a command buffer each
         // (the cascades, the pre-pass) while this thread records the main pass.
         renderer.set_multi_draw(panel.multi_draw);
@@ -3450,7 +3503,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             std::cout << "gpu frame " << panel.stats.gpu_frame_ms() << " ms: " << panel.stats.gpu_report() << std::endl;
             {
                 const auto gpu = renderer.stats();
-                std::cout << "textures on the GPU: " << gpu.cached_textures << ", " << gpu.texture_bytes / 1048576 << " MB, the trains' "
+                if (video_memory_probe) {
+                    const auto memory = video_memory_probe->query();
+                    if (memory.known)
+                        std::cout << "video memory: " << memory.usage / 1048576 << " of " << memory.budget / 1048576 << " MB budget, shared "
+                                  << memory.shared_usage / 1048576 << " MB" << std::endl;
+                }
+                std::cout << "textures on the GPU: " << gpu.cached_textures << ", " << gpu.texture_bytes / 1048576 << " MB (uncompressed "
+                          << gpu.rgba8_texture_bytes / 1048576 << " MB), the trains' "
                           << gpu.train_texture_bytes / 1048576 << " MB; model geometry " << gpu.geometry_bytes / 1048576
                           << " MB, the trains' " << gpu.train_geometry_bytes / 1048576 << " MB; all uploaded textures "
                           << renderer::uploaded_texture_bytes() / 1048576 << " MB; terrain tiles' buffers "
@@ -3484,8 +3544,18 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             OPENRTS_PLOT("draw commands", static_cast<std::int64_t>(models.draw_commands));
             OPENRTS_PLOT("model instances", static_cast<std::int64_t>(models.instances));
         }
+        if (video_memory_probe && now >= video_memory_at) {
+            video_memory_at = now + 0.5;
+            panel.video_memory = video_memory_probe->query();
+        }
         if (!capture && !options.menu && now >= perf_at) {
             perf_at = now + 10.0;
+            if (const auto& memory = panel.video_memory; memory.known) {
+                std::cout << "perf memory: " << memory.usage / 1048576 << " of " << memory.budget / 1048576 << " MB budget (card "
+                          << memory.total / 1048576 << " MB), shared " << memory.shared_usage / 1048576 << " MB"
+                          << (memory.over_budget() ? " OVER BUDGET" : "") << "; textures " << renderer.stats().texture_bytes / 1048576
+                          << " MB, uncompressed " << renderer.stats().rgba8_texture_bytes / 1048576 << " MB" << std::endl;
+            }
             const auto& times = panel.stats.stage_ms();
             double work = 0.0;
             for (std::size_t i = 0; i < frame_stage_count; ++i)
@@ -3506,11 +3576,16 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                       << effect_stats.record_camera_ms;
             if (effect_stats.still_cache)
                 std::cout << ", shadow cache " << effect_stats.still_full << " whole " << effect_stats.still_pieces << " pieces "
-                          << effect_stats.still_share * 100.0f << " %";
+                          << effect_stats.still_share * 100.0f << " % " << effect_stats.maps_kept << " kept";
             std::cout << "; renderer "
                       << (renderer.shading_path() == renderer::ShadingPath::experimental ? "experimental" : "RTS") << std::endl;
             if (panel.gpu_timing)
                 std::cout << "perf gpu: frame " << panel.stats.gpu_frame_ms() << " ms; " << panel.stats.gpu_report() << std::endl;
+            if (auto_exposure && auto_exposure_was_on && auto_exposure->latest().valid) {
+                const auto state = auto_exposure->latest();
+                std::cout << "perf exposure: measured " << state.measured << " adapted " << state.adapted << " (key " << renderer::auto_exposure_key
+                          << ", log2 luminance), factor x" << state.factor << std::endl;
+            }
         }
     }
     return exit_code::success;

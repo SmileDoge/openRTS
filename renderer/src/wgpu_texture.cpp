@@ -197,4 +197,9 @@ WgpuTextureUploadResult upload_bc7_texture(const WGPUDevice device, const std::u
     return upload_block_texture(device, width, height, levels, label, WGPUTextureFormat_BC7RGBAUnorm, 16);
 }
 
+WgpuTextureUploadResult upload_bc5_texture(const WGPUDevice device, const std::uint32_t width, const std::uint32_t height,
+                                           const std::vector<std::vector<std::uint8_t>>& levels, const std::string_view label) {
+    return upload_block_texture(device, width, height, levels, label, WGPUTextureFormat_BC5RGUnorm, 16);
+}
+
 } // namespace openrts::renderer

@@ -158,6 +158,9 @@ struct SceneEffectStats {
     std::uint32_t still_full = 0;
     std::uint32_t still_pieces = 0;
     float still_share = 0.0f;
+    // Of the cascades' working maps and the cab's map, those kept from the
+    // last frame (nothing in them changed).
+    std::uint32_t maps_kept = 0;
 };
 
 // The bind group layout of the effects (group 2), for pipelines that read them.
@@ -226,6 +229,14 @@ public:
     // also drawn whole into a scratch array each frame, and the texels that
     // differ from the cached one counted on the GPU.
     void set_shadow_cache_check(bool on);
+    // Between begin_frame() / set_focus() and record(): the frame's moving
+    // signature (ModelRenderer::moving_signature). With it a cascade whose
+    // cache did not change and whose window stayed keeps its working map,
+    // and the cab's map stays while its matrix does (drawn again at least
+    // every 30 frames): nothing is drawn while nothing moves. `outside`:
+    // the signature without the cab, for the cascades while the cab's map
+    // covers the cab (looked up first there); `signature` with it.
+    void set_moving_signature(std::uint64_t signature, std::uint64_t outside);
     // After record() / record_parallel(), in the frame's main encoder (after
     // the workers' buffers): the comparison.
     void record_check(WGPUCommandEncoder encoder);

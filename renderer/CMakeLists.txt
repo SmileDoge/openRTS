@@ -20,6 +20,7 @@ add_library(openrts_renderer STATIC
     src/forest_shape.cpp
     src/forest_clearance.cpp
     src/scene_effects.cpp
+    src/video_memory.cpp
     src/task_pool.cpp
     src/model_library.cpp
     src/model_lighting.cpp
@@ -76,3 +77,8 @@ function(openrts_copy_wgpu_runtime target)
                 "$<TARGET_FILE:openrts_wgpu_native>" "$<TARGET_FILE_DIR:${target}>")
     endif()
 endfunction()
+
+# The video card's memory budget and use (video_memory.cpp: DXGI).
+if(WIN32)
+    target_link_libraries(openrts_renderer PRIVATE dxgi)
+endif()

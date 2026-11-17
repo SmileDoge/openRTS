@@ -3,11 +3,14 @@
 // left), and on an installation's 2ES6 body the blocks' edges brought down
 // to the texture's own grain.
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -168,11 +171,123 @@ void content(const std::filesystem::path& root) {
     check(changed > 30.0, "the texture otherwise as it was");
 }
 
+// The uncompressed textures' encoders (compressed_levels): mode 5 where a
+// block's alpha varies (a leaf's edge: clear by opaque, the alpha kept
+// exact), BC5 of a normal map's x and y; and how fast they go.
+void uncompressed() {
+    const std::uint32_t w = 256, h = 256;
+    std::mt19937 random(7);
+    std::vector<std::uint8_t> leaves(static_cast<std::size_t>(w) * h * 4), normals(leaves.size());
+    for (std::uint32_t y = 0; y < h; ++y) {
+        for (std::uint32_t x = 0; x < w; ++x) {
+            auto* p = &leaves[(static_cast<std::size_t>(y) * w + x) * 4];
+            // Green leaves of some shades, clear (black) between them.
+            const bool leaf = ((x / 3 + y / 5 + (x * y) % 7) % 3) != 0;
+            p[0] = static_cast<std::uint8_t>(leaf ? 40 + random() % 30 : 0);
+            p[1] = static_cast<std::uint8_t>(leaf ? 90 + random() % 60 : 0);
+            p[2] = static_cast<std::uint8_t>(leaf ? 20 + random() % 20 : 0);
+            p[3] = leaf ? 255 : 0;
+            // A bumpy normal map: x and y of a slope that turns.
+            auto* n = &normals[(static_cast<std::size_t>(y) * w + x) * 4];
+            n[0] = static_cast<std::uint8_t>(128 + 100 * std::sin(x * 0.11) * std::cos(y * 0.07));
+            n[1] = static_cast<std::uint8_t>(128 + 100 * std::cos(x * 0.05 + y * 0.13));
+            n[2] = 255;
+            n[3] = 255;
+        }
+    }
+    const auto blocks = renderer::encode_bc7(w, h, leaves.data());
+    std::vector<std::uint8_t> back(leaves.size());
+    std::size_t mode5 = 0, alpha_wrong = 0;
+    bool decoded = true;
+    for (std::uint32_t by = 0; by < h / 4; ++by) {
+        for (std::uint32_t bx = 0; bx < w / 4; ++bx) {
+            const auto* block = &blocks[(static_cast<std::size_t>(by) * (w / 4) + bx) * 16];
+            if ((block[0] & 0x3Fu) == 0x20u) ++mode5;
+            std::uint8_t texels[64];
+            if (!renderer::decode_bc7_block(block, texels)) decoded = false;
+            for (std::uint32_t i = 0; i < 16; ++i) {
+                const auto at = ((static_cast<std::size_t>(by) * 4 + i / 4) * w + bx * 4 + i % 4) * 4;
+                for (int ch = 0; ch < 4; ++ch) back[at + ch] = texels[i * 4 + ch];
+                if ((back[at + 3] >= 128) != (leaves[at + 3] >= 128)) ++alpha_wrong;
+            }
+        }
+    }
+    check(decoded, "every BC7 block of the leaves decodes (mode 5 or 6)");
+    check(mode5 > 0, "blocks with clear and opaque texels take mode 5");
+    check(alpha_wrong == 0, "the leaves' alpha test keeps every texel (" + std::to_string(alpha_wrong) + " flipped)");
+    // The colour where it shows (opaque texels).
+    double sum = 0.0;
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < leaves.size(); i += 4) {
+        if (leaves[i + 3] < 128) continue;
+        for (int ch = 0; ch < 3; ++ch) sum += (double(leaves[i + ch]) - back[i + ch]) * (double(leaves[i + ch]) - back[i + ch]);
+        count += 3;
+    }
+    const double leaf_psnr = 10.0 * std::log10(255.0 * 255.0 / (std::max)(sum / static_cast<double>(count), 1e-9));
+    check(leaf_psnr > 30.0, "the leaves' colour within 30 dB (" + std::to_string(leaf_psnr) + ")");
+
+    const auto bc5 = renderer::encode_bc5(w, h, normals.data());
+    double nsum = 0.0;
+    for (std::uint32_t by = 0; by < h / 4; ++by) {
+        for (std::uint32_t bx = 0; bx < w / 4; ++bx) {
+            std::uint8_t texels[64];
+            renderer::decode_bc5_block(&bc5[(static_cast<std::size_t>(by) * (w / 4) + bx) * 16], texels);
+            for (std::uint32_t i = 0; i < 16; ++i) {
+                const auto at = ((static_cast<std::size_t>(by) * 4 + i / 4) * w + bx * 4 + i % 4) * 4;
+                for (int ch = 0; ch < 2; ++ch) nsum += (double(normals[at + ch]) - texels[i * 4 + ch]) * (double(normals[at + ch]) - texels[i * 4 + ch]);
+            }
+        }
+    }
+    const double normal_psnr = 10.0 * std::log10(255.0 * 255.0 / (std::max)(nsum / (w * h * 2.0), 1e-9));
+    check(normal_psnr > 40.0, "BC5 keeps a normal map's x and y within 40 dB (" + std::to_string(normal_psnr) + ")");
+
+    // How fast: blocks a second on one thread.
+    const auto started = std::chrono::steady_clock::now();
+    const auto timed = renderer::encode_bc7(w, h, leaves.data(), 1);
+    const auto opaque_started = std::chrono::steady_clock::now();
+    std::vector<std::uint8_t> opaque = leaves;
+    for (std::size_t i = 3; i < opaque.size(); i += 4) opaque[i] = 255;
+    const auto timed_opaque = renderer::encode_bc7(w, h, opaque.data(), 1);
+    const auto ended = std::chrono::steady_clock::now();
+    const double leaf_us = std::chrono::duration<double, std::micro>(opaque_started - started).count() / (w * h / 16.0);
+    const double opaque_us = std::chrono::duration<double, std::micro>(ended - opaque_started).count() / (w * h / 16.0);
+    std::cout << "bc7: " << leaf_us << " us a block with alpha, " << opaque_us << " us opaque (one thread); " << mode5 << " of "
+              << w * h / 16 << " blocks in mode 5; leaves " << leaf_psnr << " dB, normals (BC5) " << normal_psnr << " dB\n";
+    (void)timed;
+    (void)timed_opaque;
+}
+
+// The disk cache counted and cleared: its own files only.
+void cache_folder() {
+    const auto folder = std::filesystem::temp_directory_path() / "openrts_bc7_cache_test";
+    std::error_code ec;
+    std::filesystem::remove_all(folder, ec);
+    std::filesystem::create_directories(folder, ec);
+    const auto put = [&](const char* name, const std::size_t bytes) {
+        std::ofstream(folder / name, std::ios::binary) << std::string(bytes, 'x');
+    };
+    put("a.r7", 100);
+    put("b.n5", 50);
+    put("c.bc7", 25);
+    put("d.r7.part123", 5);
+    put("notes.txt", 7);
+    const auto size = renderer::texture_cache_size(folder);
+    check(size.files == 4 && size.bytes == 180, "the cache counts its 4 files, 180 bytes (" + std::to_string(size.files) + ", " +
+                                                    std::to_string(size.bytes) + ")");
+    const auto removed = renderer::clear_texture_cache(folder);
+    check(removed.files == 4 && removed.bytes == 180, "clearing removes the 4");
+    check(renderer::texture_cache_size(folder).files == 0, "nothing of the cache left");
+    check(std::filesystem::exists(folder / "notes.txt"), "a file not the cache's stays");
+    std::filesystem::remove_all(folder, ec);
+}
+
 } // namespace
 
 int main(const int argc, char** argv) {
     codec();
     smoothing();
+    uncompressed();
+    cache_folder();
     if (argc > 1) content(argv[1]);
     if (failures == 0) std::cout << "bc7: all checks passed\n";
     return failures == 0 ? 0 : 1;

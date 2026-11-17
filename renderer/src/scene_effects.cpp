@@ -802,6 +802,15 @@ struct SceneEffects::Impl {
     WGPURenderPipeline fill_far = nullptr;
     WGPUBuffer unwrap_params = nullptr;
     WGPUBindGroup unwrap_group = nullptr;
+    // Maps kept while nothing in them changed (set_moving_signature): the
+    // cascades' working maps, then the cab's map.
+    struct MapKept {
+        bool valid = false;
+        std::uint64_t shadow_generation = 0, still_generation = 0, signature = 0, drawn = 0;
+        glm::mat4 matrix{1.0f};
+    };
+    std::array<MapKept, max_cascades + 1> map_kept{};
+    std::array<bool, max_cascades + 1> map_skip{};
     // --shadow-cache-check: the cascades drawn whole, compared.
     bool check_on = false;
     Texture whole;
@@ -1112,6 +1121,7 @@ struct SceneEffects::Impl {
         const std::uint32_t first_cached = settings.cache_far_cascades ? (cascade_count >= 3 ? cascade_count - 2 : cascade_count - 1) : cascade_count;
         ++frame_index;
         still_on = settings.cache_far_cascades && shadow_still.texture && unwrap_group && unwrap && fill_far;
+        map_skip.fill(false);
         still_full = 0;
         still_texels = 0;
         for (auto& pieces : still_now) pieces.clear();
@@ -2046,12 +2056,12 @@ void SceneEffects::record(const WGPUCommandEncoder encoder, const DepthDraw& dra
     for (std::uint32_t i = 0; i < impl.cascade_count; ++i) {
         if (impl.still_on) {
             impl.record_still(encoder, i, draw);
-            impl.record_working(encoder, i, draw);
+            if (!impl.map_skip[i]) impl.record_working(encoder, i, draw);
         } else if (impl.redraw[i]) {
             impl.record_shadow(encoder, i, i, draw);
         }
     }
-    if (impl.focus_active) impl.record_shadow(encoder, impl.focus_layer, Impl::focus_slot, draw);
+    if (impl.focus_active && !impl.map_skip[max_cascades]) impl.record_shadow(encoder, impl.focus_layer, Impl::focus_slot, draw);
     for (std::uint32_t k = 0; k < impl.lamp_shadow_count; ++k) {
         if (impl.lamp_redraw[k]) impl.record_depth(encoder, impl.lamp_layers[k], impl.lamp_matrices[k], Impl::lamp_slot + k, draw, GpuPass::lamp_shadows);
     }
@@ -2089,19 +2099,20 @@ void SceneEffects::record_parallel(const WGPUDevice device, TaskPool& pool, cons
     });
     for (std::uint32_t i = 0; i < impl.cascade_count; ++i) {
         if (!impl.redraw[i]) continue;
+        if (impl.still_on && impl.map_skip[i] && impl.still_now[i].empty()) continue;
         tasks.emplace_back([encode, &impl, i, draw] {
             static constexpr const char* names[] = {"sun cascade 1", "sun cascade 2", "sun cascade 3", "sun cascade 4"};
             encode(i, names[i % 4], [&](const WGPUCommandEncoder encoder) {
                 if (impl.still_on) {
                     impl.record_still(encoder, i, draw);
-                    impl.record_working(encoder, i, draw);
+                    if (!impl.map_skip[i]) impl.record_working(encoder, i, draw);
                 } else {
                     impl.record_shadow(encoder, i, i, draw);
                 }
             });
         });
     }
-    if (impl.focus_active) {
+    if (impl.focus_active && !impl.map_skip[max_cascades]) {
         tasks.emplace_back([encode, &impl, draw] {
             encode(impl.cascade_count, "cab focus", [&](const WGPUCommandEncoder encoder) {
                 impl.record_shadow(encoder, impl.focus_layer, Impl::focus_slot, draw);
@@ -2187,11 +2198,43 @@ SceneEffectStats SceneEffects::stats() const noexcept {
             .still_cache = impl_->still_on,
             .still_full = impl_->still_full,
             .still_pieces = still_pieces,
-            .still_share = static_cast<float>(static_cast<double>(impl_->still_texels) / cascade_texels)};
+            .still_share = static_cast<float>(static_cast<double>(impl_->still_texels) / cascade_texels),
+            .maps_kept = static_cast<std::uint32_t>(std::count(impl_->map_skip.begin(), impl_->map_skip.end(), true))};
 }
 
 void SceneEffects::set_shadow_cache_check(const bool on) {
     impl_->check_on = on && impl_->check && impl_->check_counts;
+}
+
+void SceneEffects::set_moving_signature(const std::uint64_t signature, const std::uint64_t outside) {
+    auto& impl = *impl_;
+    impl.map_skip.fill(false);
+    if (!impl.active || impl.check_on) return;
+    const auto keep = [&](const std::size_t slot, const glm::mat4& matrix, const bool unchanged, const std::uint64_t period,
+                          const std::uint64_t signature) {
+        auto& kept = impl.map_kept[slot];
+        const bool same = kept.valid && unchanged && kept.shadow_generation == impl.shadow_generation
+                          && kept.still_generation == impl.still_generation && kept.signature == signature && kept.matrix == matrix
+                          && impl.frame_index - kept.drawn < period;
+        if (same) {
+            impl.map_skip[slot] = true;
+            return;
+        }
+        kept = {.valid = true,
+                .shadow_generation = impl.shadow_generation,
+                .still_generation = impl.still_generation,
+                .signature = signature,
+                .drawn = impl.frame_index,
+                .matrix = matrix};
+    };
+    // A cascade: the cache drew nothing into it this frame (its own whole
+    // drawing every 30 frames or so redraws it too).
+    for (std::uint32_t i = 0; i < impl.cascade_count; ++i) {
+        if (impl.still_on) keep(i, impl.cascade_matrices[i], impl.still_now[i].empty(), ~0ull, impl.focus_active ? outside : signature);
+    }
+    // The cab's map holds the still casters too: drawn again at least every
+    // 30 frames (objects that came in).
+    if (impl.focus_active) keep(max_cascades, impl.cascade_matrices[impl.focus_layer], true, 30, signature);
 }
 
 void SceneEffects::record_check(const WGPUCommandEncoder encoder) {

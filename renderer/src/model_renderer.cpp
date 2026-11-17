@@ -1603,6 +1603,7 @@ struct GpuTexture {
     WGPUTextureView view = nullptr;
     std::uint64_t bytes{}; // its levels on the GPU
     bool train = false;    // a TRAINS/ texture
+    bool rgba8 = false;    // uncompressed
 
     GpuTexture() = default;
     GpuTexture(const GpuTexture&) = delete;
@@ -1789,8 +1790,9 @@ struct ModelRenderer::Impl {
         std::int32_t portal = 0; // set_portal
         bool moving = false;     // set_moving
         // First of this instance's animated local matrices in
-        // `frame_locals`, or -1 for the model's rest pose.
+        // `frame_locals`, or -1 for the model's rest pose; how many.
         std::ptrdiff_t matrices = -1;
+        std::size_t matrix_count = 0;
     };
 
     WGPUDevice device = nullptr;
@@ -1882,6 +1884,8 @@ struct ModelRenderer::Impl {
     // Depth-only passes: a view-projection per slot (dynamic offset).
     static constexpr std::uint32_t depth_slots = ModelRenderer::depth_slots;
     bool submit_moving = false; // set_moving
+    std::uint64_t moving_signature = 0;
+    std::uint64_t moving_signature_outside = 0; // without the cab (RTS pass 3)
     static constexpr std::uint64_t depth_stride = 256;
     WGPUBindGroupLayout depth_layout = nullptr;
     WGPUBuffer depth_buffer = nullptr;
@@ -2114,7 +2118,8 @@ struct ModelRenderer::Impl {
     // Grows the per-frame storage buffers (and rebuilds the frame binding).
     void ensure_capacity(std::uint64_t instances, std::uint64_t ids, std::uint64_t locals, std::uint64_t indirect_draws);
 
-    [[nodiscard]] std::shared_ptr<const GpuTexture> upload(const core::VirtualPath& path, const formats::AceRgbaImage& image) const;
+    [[nodiscard]] std::shared_ptr<const GpuTexture> upload(const core::VirtualPath& path, const formats::AceRgbaImage& image,
+                                                           bool normal_map = false) const;
     // Texture of one shape image: the cached generation, or a fresh upload.
     [[nodiscard]] TextureAvailability texture_for(const StreamedTextureAsset& asset,
                                                   std::shared_ptr<const GpuTexture>& texture);
@@ -2187,8 +2192,8 @@ void ModelRenderer::Impl::ensure_capacity(const std::uint64_t instances,
     depth_binding = wgpuDeviceCreateBindGroup(device, &depth_descriptor);
 }
 
-std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::VirtualPath& path,
-                                                              const formats::AceRgbaImage& image) const {
+std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::VirtualPath& path, const formats::AceRgbaImage& image,
+                                                              const bool normal_map) const {
     auto texture = std::make_shared<GpuTexture>();
     // A train's DXT1 without its blocks' squares, kept in BC7 (renderer/bc7.hpp;
     // the Graphics panel's choice, openRTS's own).
@@ -2216,6 +2221,30 @@ std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::Virtua
             std::cout << "texture '" << path.str() << "': as BC1: " << texture->texture.error << "; as RGBA8\n";
         }
     }
+    // An uncompressed one (a raw ACE, a material's map) in BC7, a normal map
+    // in BC5 (its x and y: the shader makes z): a quarter of RGBA8's memory
+    // (renderer/bc7.hpp; the Graphics panel's choice, openRTS's own).
+    const auto compression = texture_compression();
+    if (!texture->texture.ok() && image.bc1.empty() && bc_textures && compression != TextureCompression::off && image.width >= 8
+        && image.height >= 8
+        && image.width % 4 == 0 && image.height % 4 == 0) {
+        const auto started = std::chrono::steady_clock::now();
+        if (const auto levels = compressed_levels(image.width, image.height, image.pixels, image.mips,
+                                                  normal_map ? BlockFormat::bc5 : BlockFormat::bc7, compression == TextureCompression::disk)) {
+            static std::atomic<int> told{0};
+            const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            if (told++ < 3 || ms > 1500.0)
+                std::cout << "texture '" << path.str() << "': " << image.width << "x" << image.height << (normal_map ? " BC5" : " BC7") << " in "
+                          << static_cast<int>(ms) << " ms\n";
+            texture->texture = normal_map ? upload_bc5_texture(device, image.width, image.height, *levels, std::string(path.filename()))
+                                          : upload_bc7_texture(device, image.width, image.height, *levels, std::string(path.filename()));
+            if (texture->texture.ok()) {
+                for (const auto& level : *levels) texture->bytes += level.size();
+            } else {
+                std::cout << "texture '" << path.str() << "': compressed: " << texture->texture.error << "; as RGBA8\n";
+            }
+        }
+    }
     if (!texture->texture.ok()) {
         texture->texture = upload_rgba8_texture(device,
                                                 {.width = image.width, .height = image.height, .pixels = &image.pixels,
@@ -2223,6 +2252,7 @@ std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::Virtua
                                                 std::string(path.filename()));
         texture->bytes = static_cast<std::uint64_t>(image.pixels.size());
         for (const auto& level : image.mips) texture->bytes += level.size();
+        texture->rgba8 = true;
     }
     if (!texture->texture.ok()) {
         std::cout << "texture '" << path.str() << "': upload failed (" << texture->texture.error << ")\n";
@@ -2291,7 +2321,7 @@ std::shared_ptr<const GpuTexture> ModelRenderer::Impl::material_texture(const Ma
         }
     }
     static const auto label = core::VirtualPath::parse("OPENRTS/MATERIALS/map").value_or(core::VirtualPath{});
-    auto made = upload(label, *map.image->image);
+    auto made = upload(label, *map.image->image, map.kind == MaterialMapKind::normal);
     if (!made) return nullptr;
     const std::lock_guard lock(shared_mutex);
     if (const auto it = texture_cache.find(map.key); it != texture_cache.end()) {
@@ -2787,7 +2817,7 @@ std::string ModelRenderer::draw_report(const std::size_t top) const {
 ModelRendererStats ModelRenderer::stats() const {
     if (!impl_) return {};
     std::size_t live = 0;
-    std::uint64_t bytes = 0, train_bytes = 0;
+    std::uint64_t bytes = 0, train_bytes = 0, rgba8_bytes = 0;
     {
         const std::lock_guard lock(impl_->shared_mutex);
         for (const auto& [_, weak] : impl_->texture_cache) {
@@ -2796,12 +2826,14 @@ ModelRendererStats ModelRenderer::stats() const {
             ++live;
             bytes += texture->bytes;
             if (texture->train) train_bytes += texture->bytes;
+            if (texture->rgba8) rgba8_bytes += texture->bytes;
         }
     }
     return {
         .cached_textures = live,
         .texture_bytes = bytes,
         .train_texture_bytes = train_bytes,
+        .rgba8_texture_bytes = rgba8_bytes,
         .geometry_bytes = live_geometry_bytes.load(),
         .train_geometry_bytes = live_train_geometry_bytes.load(),
         .retired_pending = impl_->retired.pending(),
@@ -2851,6 +2883,10 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) 
 
 void ModelRenderer::set_moving(const bool moving) noexcept {
     if (impl_) impl_->submit_moving = moving;
+}
+
+std::uint64_t ModelRenderer::moving_signature(const bool with_cab) const noexcept {
+    return impl_ ? (with_cab ? impl_->moving_signature : impl_->moving_signature_outside) : 0;
 }
 
 namespace {
@@ -2908,6 +2944,7 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform, 
     append_locals(impl_->frame_locals, local, rig->hierarchy);
     submit(model, transform);
     impl_->queue.back().matrices = first;
+    impl_->queue.back().matrix_count = local.size();
 }
 
 void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform, const std::span<const NodeAdjustment> adjustments,
@@ -2985,6 +3022,7 @@ void ModelRenderer::submit_posed(RenderModel& model, const ModelTransform& trans
     append_locals(impl_->frame_locals, local, rig->hierarchy);
     submit(model, transform);
     impl_->queue.back().matrices = first;
+    impl_->queue.back().matrix_count = local.size();
 }
 
 void ModelRenderer::submit(RenderModel& model) {
@@ -3299,6 +3337,52 @@ void ModelRenderer::prepare() {
     impl_->depth_id_base = ids.size();
     if (depth_on_worker) impl_->pool->wait();
     part.open("models: instances");
+    {
+        // The moving instances' signature (moving_signature): the model, its
+        // level, a caster out of view or not, its place and its nodes' poses,
+        // rounded so a body's settling by a hair does not count.
+        std::uint64_t h = 1469598103934665603ull;
+        const auto mix = [&h](const std::uint64_t v) {
+            h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+        };
+        const auto mix_matrix = [&mix](const glm::mat4& m) {
+            for (int c = 0; c < 4; ++c) {
+                for (int r = 0; r < 4; ++r) {
+                    const float q = c == 3 ? 1000.0f : 10000.0f; // the translation to a millimetre
+                    mix(static_cast<std::uint64_t>(static_cast<std::int64_t>(std::llround(static_cast<double>(m[c][r]) * q))));
+                }
+            }
+        };
+        // The cab (RTS pass 3, its needles and displays alive every frame)
+        // in the full signature only.
+        for (const auto& queued : impl_->queue) {
+            if (!queued.moving || queued.last_pass) continue;
+            mix(reinterpret_cast<std::uintptr_t>(queued.model));
+            mix((static_cast<std::uint64_t>(queued.level) << 1) | (queued.shadow_only ? 1u : 0u));
+            mix_matrix(queued.transform);
+            if (queued.matrices >= 0) {
+                for (std::size_t m = 0; m < queued.matrix_count && static_cast<std::size_t>(queued.matrices) + m < impl_->frame_locals.size(); ++m)
+                    mix_matrix(impl_->frame_locals[static_cast<std::size_t>(queued.matrices) + m].matrix);
+            }
+            for (std::uint32_t k = 0; k < queued.hidden_count && queued.hidden + k < impl_->frame_hidden.size(); ++k)
+                mix(static_cast<std::uint64_t>(impl_->frame_hidden[queued.hidden + k]));
+        }
+        // The cab's own, after the rest.
+        const auto without_cab = h;
+        for (const auto& queued : impl_->queue) {
+            if (!queued.moving || !queued.last_pass) continue;
+            mix(reinterpret_cast<std::uintptr_t>(queued.model));
+            mix_matrix(queued.transform);
+            if (queued.matrices >= 0) {
+                for (std::size_t m = 0; m < queued.matrix_count && static_cast<std::size_t>(queued.matrices) + m < impl_->frame_locals.size(); ++m)
+                    mix_matrix(impl_->frame_locals[static_cast<std::size_t>(queued.matrices) + m].matrix);
+            }
+            for (std::uint32_t k = 0; k < queued.hidden_count && queued.hidden + k < impl_->frame_hidden.size(); ++k)
+                mix(static_cast<std::uint64_t>(impl_->frame_hidden[queued.hidden + k]));
+        }
+        impl_->moving_signature = h;
+        impl_->moving_signature_outside = without_cab;
+    }
 
     const auto count = impl_->queue.size();
     auto& instances = impl_->frame_instances;

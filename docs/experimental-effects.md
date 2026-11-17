@@ -462,6 +462,23 @@ array and counts the texels that differ, every 120 frames: standing 0; on
 the move and turning 0.0004-0.02 %, in bursts up to 0.15 % as models load
 (drawn whole again within half a second).
 
+**Maps kept while nothing moves** (2026-11-17): the renderer hashes what
+moves (`ModelRenderer::moving_signature`: each moving instance's model,
+distance level, place and node poses, to a millimetre and a ten-thousandth).
+A cascade whose cache drew nothing this frame, whose window stayed and whose
+moving casters hashed the same keeps last frame's working map: no pass at
+all. The cab's interior (RTS pass 3: its needles and displays live every
+frame) is left out of that hash while the cab's map is on, which covers the
+cab and is looked up first there; the cab's map itself takes the full hash
+and is drawn again at least every 30 frames. The 2ЭС6's cab standing
+(Ultra): the cascades 1.22 ms to nothing, 143 to 158 fps; the cab's map
+(0.46 ms) is still drawn, its needles moving. Pictures as before.
+
+The sky's light and the light shafts measured for cheaper ways (the open
+stretch by day): without the sky's reflection the main pass is 0.16 ms
+shorter, with one SH coefficient instead of nine 0.14 ms, the shafts at
+24 steps instead of 32 0.08 ms; each changes the picture, none was taken.
+
 ## Every lamp (clustered lights)
 
 RTS keeps nine further lights a ring (shape-rendering.md, Light rings). Here
@@ -1040,6 +1057,59 @@ the cab's frame and the clouds stand in the air as beams of sunlight:
   with the sun as "Khronos by day, AgX by night" does (`tone_mode` 4), the
   night exposure as there: ACES's contrast and deep shade by day, AgX's
   holding of the dark tones at night.
+
+### Uncompressed textures and PBR maps compressed (BC7 / BC5, 2026-11-17)
+
+- **What was seen.** Testers' RTX 4060 (8 GB) at Kuban with a train of PBR
+  passenger cars: 14 fps, the GPU frame 69 ms; without the PBR maps 150 fps.
+  The passes slowed unevenly: those over big targets and the shadow maps
+  20-75 times (the tone curve 6 ms instead of 0.1), the fixed-size compute
+  barely. The Task Manager showed the card's 8.0 GB full and the 3D engine
+  at 17 %: the allocations past Windows's budget had been moved to system
+  memory and were read over PCIe 4.0 x8.
+- **Why.** RTS's raw ACE are RGBA8, 4 bytes a texel, and so were the
+  materials' PNG maps. Measured in the cab at Kuban with the testers' 14
+  cars: 2391 MB of textures, 2284 MB of them uncompressed. The cars' maps
+  alone (63 of 2048 x 2048, 22 of 1024 x 1024) are about 1.5 GB.
+- **The option.** «Несжатые текстуры и карты PBR (BC7, нормали BC5)» in
+  the Graphics tab and the launcher's Graphics (`compress_textures`):
+  «Не сжимать (как в RTS)» (0), «Сжимать, не сохраняя на диск» (1),
+  «Сжимать и сохранять на диск» (2, the default); `--compress-textures
+  off|memory|on` for a run. Applies to the textures loaded after it is
+  changed (`renderer/bc7.hpp`):
+  - An uncompressed texture with sides of whole 4 x 4 blocks, 8 x 8 and up,
+    goes to the GPU as BC7: 1 byte a texel, a quarter of RGBA8. DXT1 ACE
+    stay BC1 as before.
+  - Mode 6 (two RGBA colours on a line, 16 levels), or mode 5 for a block
+    whose alpha varies, whichever comes nearer: colour and alpha on lines of
+    their own, the alpha's ends in 8 bits, so a leaf's edge keeps its alpha
+    test exactly. A clear texel's colour counts by how opaque it is.
+  - A normal map goes as BC5: its x and y each between their own ends in 8
+    levels; the shader already makes z. 46 dB on a test bump map, against
+    BC7's single line.
+  - The file's own mipmaps are encoded as they are (none: built as RTS
+    builds them).
+  - Encoded at about 3 us a block on one thread (5 with alpha), several
+    threads a texture. Kept on disk: in `texture_cache/bc7` in the user
+    data folder (`.r7`, `.n5`), keyed by a hash of the texels; the first
+    load of a route or a train is longer, then it is read in milliseconds.
+    Not kept: encoded on every load, nothing written. Cold, the 14 PBR
+    cars at Kuban: textures loaded in about 52 s against 43 s
+    uncompressed.
+  - The cache's size is shown under the choice, in the Graphics tab and
+    the launcher («Кэш сжатых текстур на диске: N МБ, файлов: M»), with
+    «Очистить кэш»: it removes the cache's own files (`.bc7` of the
+    smoothing, `.r7`, `.n5`); the textures already loaded stay.
+  - Without BC on the device: RGBA8 as before.
+- **Measured** in the cab at Kuban, the 14 PBR cars behind a ChS2, at noon:
+  textures 2391 MB → 735 MB; the process's video memory 4018 → 2482 MB.
+  Tests: the leaves' alpha test keeps every texel, their colour 31 dB, a
+  normal map 46 dB (`openrts_bc7_test`).
+- **The video memory in the Performance tab.** «Видеопамять: X МБ из Y МБ,
+  что Windows даёт игре» (DXGI's `QueryVideoMemoryInfo` for the adapter
+  wgpu took: what is on the card, the budget, what spilled to shared
+  memory), with a warning in red past the budget, and how much of the
+  textures is uncompressed. The log has it every 10 s (`perf memory:`).
 
 ## openRTS sky (atmosphere, volumetric clouds)
 

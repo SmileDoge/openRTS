@@ -67,6 +67,11 @@ VARIANTS = {
                     "--sky-light-strength", "0.5", "--sky-reflections", "0.5"],
     "pbr_sky_bright": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on",
                        "--sky-light-strength", "1.5", "--sky-reflections", "1.5"],
+    # Uncompressed textures and PBR maps as RGBA8 or in BC7 / BC5 (renderer/bc7.hpp): how much it changes.
+    "pbr_uncompressed": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on",
+                         "--compress-textures", "off"],
+    "pbr_compressed": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on",
+                       "--compress-textures", "on"],
     # Auto exposure (PBR stage 3) on.
     "pbr_ae": ["--experimental", "--hdr", "--hdr-encoding", "linear", "--pbr", "on", "--sky-light", "on", "--auto-exposure", "on"],
     # Materials (PBR stage 4): a part of the models' material as the colour.

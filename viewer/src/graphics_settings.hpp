@@ -77,6 +77,10 @@ struct GraphicsSettings {
     // The trains' DXT1 textures smoothed and kept as BC7 (renderer/bc7.hpp,
     // smooth_train_textures; openRTS's own, not as in RTS).
     bool smooth_train_textures = false;
+    // RTS's uncompressed textures and the materials' maps in BC7 / BC5
+    // (renderer/bc7.hpp: a quarter of the video memory; openRTS's own):
+    // 0 not (as RTS), 1 encoded each load, 2 kept on disk too.
+    int compress_textures = 2;
 
     bool operator==(const GraphicsSettings&) const = default;
 };

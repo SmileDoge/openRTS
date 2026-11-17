@@ -113,6 +113,7 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"screen_supersampling", text(s.screen_supersampling)},
         {"reshade_depth", text(s.reshade_depth)},
         {"smooth_train_textures", text(s.smooth_train_textures)},
+        {"compress_textures", text(s.compress_textures)},
     };
 }
 
@@ -184,6 +185,7 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     s.screen_supersampling = flag_not_zero(value_of, "screen_supersampling", s.screen_supersampling);
     s.reshade_depth = flag_one(value_of, "reshade_depth", s.reshade_depth);
     s.smooth_train_textures = flag_one(value_of, "smooth_train_textures", s.smooth_train_textures);
+    s.compress_textures = whole(value_of, "compress_textures", s.compress_textures, 0, 2);
 }
 
 // Characters a file name may not have, and control characters: "_".

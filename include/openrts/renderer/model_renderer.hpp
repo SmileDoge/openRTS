@@ -252,6 +252,7 @@ struct ModelRendererStats {
     std::size_t cached_textures{};
     std::uint64_t texture_bytes{};       // the cached textures' levels on the GPU
     std::uint64_t train_texture_bytes{}; // of them, the stock's (TRAINS/)
+    std::uint64_t rgba8_texture_bytes{}; // of them, uncompressed (RGBA8: 4 bytes a texel; BC1 has a half)
     std::uint64_t geometry_bytes{};       // the models' vertex and index buffers alive
     std::uint64_t train_geometry_bytes{}; // of them, the stock's
     std::size_t retired_pending{}; // generations waiting for the GPU
@@ -390,6 +391,13 @@ public:
     // default): trains, road traffic, crossing gates, switch blades. The
     // sun's shadow cache redraws only those every frame.
     void set_moving(bool moving) noexcept;
+    // After prepare(): a hash of this frame's moving instances (set_moving):
+    // their models, distance levels, places and node poses, to a millimetre
+    // and a ten-thousandth. The same as last frame: nothing moving moved
+    // (the shadow maps may be kept, SceneEffects::set_moving_signature).
+    // Without the cab (RTS pass 3: its needles and displays live every
+    // frame) when `with_cab` is false.
+    [[nodiscard]] std::uint64_t moving_signature(bool with_cab = true) const noexcept;
     // Records the frame's draws. `before_translucent` is called once in the
     // pass after the opaque and alpha-tested geometry and before the
     // translucent pass (glass), for helpers that must show through glass but

@@ -46,6 +46,8 @@
 #include "ui_slider.hpp"
 #include "ui_text.hpp"
 #include "update.hpp"
+#include <openrts/renderer/bc7.hpp>
+
 #include "viewer_state.hpp"
 #include "window_mode.hpp"
 
@@ -1811,6 +1813,32 @@ void Launcher::State::draw_graphics(const float height) {
             group_row(tr("Smooth the compression blocks of the trains' textures (BC7, not as in RTS)"), Load::medium, Load::negligible);
             ImGui::Checkbox("##smooth_train_textures", &g.smooth_train_textures);
             row_note(tr("DXT1's 4x4 blocks in the shade of cars and cabs smoothed; the first load of a train a few seconds longer, then from the cache; twice the video memory for the trains."));
+            group_row(tr("Uncompressed textures and PBR maps (BC7, normals BC5)"), Load::none, Load::none);
+            {
+                const char* modes[] = {tr("Don't compress (as in RTS)"), tr("Compress, not kept on disk"), tr("Compress and keep on disk")};
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::Combo("##compress_textures", &g.compress_textures, modes, 3);
+            }
+            row_note(tr("Compressed: a quarter of their video memory, barely seen; for cards with 8 GB and less. Kept on disk: the first load of a route or train longer, then read from the cache. Not kept: every load longer, nothing written."));
+            {
+                // The disk cache (renderer/bc7.hpp): counted every 2 s while shown.
+                static renderer::TextureCacheSize cache_size;
+                static double counted_at = -100.0;
+                const auto folder = viewer::user_data_directory() / "texture_cache" / "bc7";
+                if (ImGui::GetTime() - counted_at > 2.0) {
+                    cache_size = renderer::texture_cache_size(folder);
+                    counted_at = ImGui::GetTime();
+                }
+                group_row(tr("The compressed textures' cache on disk"), Load::none, Load::none);
+                ImGui::Text(tr("%.0f MB, %llu files"), static_cast<double>(cache_size.bytes) / 1048576.0,
+                            static_cast<unsigned long long>(cache_size.files));
+                ImGui::SameLine();
+                if (ImGui::Button(tr("Clear the cache"))) {
+                    renderer::clear_texture_cache(folder);
+                    counted_at = -100.0;
+                }
+                row_note(tr("The trains' smoothed textures and the compressed ones; cleared, they are made again on the next load."));
+            }
             group_row(tr("Depth for ReShade"), Load::none, Load::negligible);
             ImGui::Checkbox("##reshade_depth", &g.reshade_depth);
             row_note(tr("Keeps the scene depth to the end of the frame and, with anti-aliasing, adds a copy ReShade can take. In ReShade: RESHADE_DEPTH_INPUT_IS_REVERSED 1, RESHADE_DEPTH_MULTIPLIER 20 (see INSTALL.md)."));

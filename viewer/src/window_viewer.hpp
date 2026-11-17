@@ -54,6 +54,7 @@ struct WindowOptions {
     std::optional<bool> multi_draw;
     // --shadow-cache on|off: this run's far-cascade caching.
     std::optional<bool> shadow_cache;
+    std::optional<int> compress_textures; // --compress-textures off|memory|on (renderer/bc7.hpp: 0, 1, 2)
     // --cab-shadows on|off: this run's shadow map around the cab.
     std::optional<bool> cab_shadows;
     std::int32_t time_of_day = 12 * 3600; // seconds
