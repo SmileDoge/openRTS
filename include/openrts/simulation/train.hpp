@@ -16,6 +16,7 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/body_motion.hpp>
+#include <openrts/simulation/cab_brakes.hpp>
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/state_text.hpp>
 #include <openrts/simulation/track_traveller.hpp>
@@ -99,6 +100,9 @@ struct EngineDemands {
     bool emergency = false;
     // The relay may feed the pipe (not in III: ValveOutput::feed).
     bool pipe_feed = true;
+    // openRTS's cab brake devices in place of a DLL's (cab_brakes.hpp): what
+    // they did this step, for the cab's gauges and lamps.
+    std::optional<CabBrakeOutput> cab_brakes;
     // Engine::Sanding: adhesion x the .eng's sanding factor (Adheasion's
     // third value) while the sand lasts (RTS 0x424488).
     bool sanding = false;

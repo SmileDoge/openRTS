@@ -33,3 +33,7 @@ Then, without IDA:
   `brakes_users.txt`, which `BRAKES` offsets each DLL touches and how.
 - `python golden_report.py run.tsv [--car N] [--floats 24,40] [--flags 4,8,32]`:
   a golden run (`openrts-train-check --dll ... --record`) phase by phase.
+- `python golden_compare.py golden.tsv openrts.tsv [--car N] [--displays 2,3,21]`:
+  a run with openRTS's cab brake devices (`--brakes openrts`) against a
+  golden run of Brakes.dll, phase by phase: the УР, the brake asked (the
+  independent brake or the ЭПТ), the pipe, the cylinder and the displays.

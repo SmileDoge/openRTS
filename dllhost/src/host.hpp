@@ -65,6 +65,7 @@ struct AuxMirror {
     abi::SMSObject sound{};
     bool has_sound = false;
     std::array<std::uint32_t, 8> pairs{}; // its SMSObject::PairedFlags once a pair code came
+    std::uint32_t exchange_before{};      // var + 32 as its last Run found it (AuxExchange)
 };
 
 struct CarMirror {

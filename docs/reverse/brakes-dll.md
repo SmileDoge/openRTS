@@ -349,7 +349,7 @@ against the golden runs (§9).
 | IV | at most MR | as III, and fed while below: += (min(УР, MR) − pipe) / 2, within ±1.5 | hold |
 | VЭ | −0.03 atm/s | += УР − pipe (+0.05 when the УР is 0.1 over the pipe), at least −0.4 | hold, apply |
 | V | −0.22 atm/s | as VЭ | hold, apply |
-| VI | −0.4 atm/s | = −1.2 | hold, apply |
+| VI | −0.4 atm/s | = −1.2 | none (the code sets hold and apply, but the ЭД9М's golden run builds no EP pressure in VI) |
 
 - **T** is the charging pressure: `BR_ZARPRESS` − 0.1 (5.0 when it is not
   given), or with a reducer switch (`BR_REDID`) 3.9 + 0.1 × its state.
@@ -418,7 +418,7 @@ the ППТ `BR_PPTID` off and air in the main reservoir).
   EPTValue above −1 (then `var + 4` `0x80000`, dropped once the cylinder
   is under 0.1).
 - **Commands:**
-  - the handle (III, IV hold; VЭ, V, VI hold and apply);
+  - the handle (III, IV hold; VЭ, V hold and apply; VI in the code too, but no EP pressure in the golden run);
   - the КПТ, the 334, the buttons;
   - the train DLLs' bits (§5).
 

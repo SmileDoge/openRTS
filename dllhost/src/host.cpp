@@ -167,6 +167,13 @@ float advance_switch(const float from, const float target, float distance, const
     return at;
 }
 
+// An AuxLibrary's var + 32 (protocol AuxExchange).
+std::uint32_t exchange_word(const AuxMirror& info) {
+    std::uint32_t word = 0;
+    if (info.var.size() > 8) std::memcpy(&word, &info.var[8], sizeof(word));
+    return word;
+}
+
 } // namespace
 
 const wchar_t* keep(std::deque<std::wstring>& strings, std::u16string_view text) {
@@ -1465,6 +1472,7 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
         if (am.failed || !am.run) continue;
         for (const auto& call : car.aux_info[i].calls) {
             if (call.event != aux_run || call.order >= 0) continue;
+            car.aux_info[i].exchange_before = exchange_word(car.aux_info[i]);
             car.aux[i].lib_flags &= ~1u;
             auto* fn = reinterpret_cast<abi::AuxRunFn>(am.run);
             abi::Locomotive* v = view(car, &am);
@@ -1485,6 +1493,7 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
         if (am.failed || !am.run) continue;
         for (const auto& call : car.aux_info[i].calls) {
             if (call.event != aux_run || call.order < 0) continue;
+            car.aux_info[i].exchange_before = exchange_word(car.aux_info[i]);
             car.aux[i].lib_flags |= 1u;
             auto* fn = reinterpret_cast<abi::AuxRunFn>(am.run);
             abi::Locomotive* v = view(car, &am);
@@ -2075,6 +2084,11 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
         if (!info.has_sound) continue;
         drain(info.sound, o.triggers);
         vars(info.sound, o.vars);
+    }
+    // Each library's var + 32 (AuxExchange).
+    out.aux_exchange.resize(car.aux_info.size());
+    for (std::size_t i = 0; i < car.aux_info.size(); ++i) {
+        out.aux_exchange[i] = {car.aux_info[i].exchange_before, exchange_word(car.aux_info[i])};
     }
     // The golden runs: each library's whole variable stack.
     out.aux_vars.clear();

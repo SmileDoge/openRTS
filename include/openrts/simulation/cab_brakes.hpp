@@ -45,6 +45,9 @@ struct CabBrakeNumbers {
     // The ЭПТ's voltmeter and ammeter (BR_VOLT, BR_AMP): V in I and II,
     // V in III .. VI; A in a lap, A braking.
     float ept_volts_release{}, ept_volts_brake{}, ept_amps_lap{}, ept_amps_brake{};
+    // The ЭПТ's level for cars on RTS's air (CabBrakeOutput::ep_value): up
+    // applying, down released, atm/s, to 4.3 atm.
+    float ep_apply{}, ep_release{};
     // The needles: the ТЦ's moves at most `cylinder_needle_near` atm/s
     // within `cylinder_needle_band` of the pressure, `cylinder_needle_far`
     // beyond; the ТМ's follows a rise at once and a fall at most

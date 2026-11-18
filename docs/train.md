@@ -736,6 +736,33 @@ the pipe in III as in IV, so no leak showed there.
 
 #### Realistic air with DLL locomotives
 
+**openRTS's cab brakes over Brakes.dll** (2026-11-18, experimental; the
+Train window's "Brakes: Brakes.dll / openRTS" and "Brake numbers: as
+Brakes.dll / openRTS (from the books)", remembered as `own_brakes` and
+`brake_numbers`, Brakes.dll and "as Brakes.dll" by default; with the
+realistic air and "Trains with DLLs" not as RTS;
+`trainplugin::DllAirSetting::own_brakes`,
+docs/brakes-dll-replacement.md). openRTS's devices
+(`simulation/cab_brakes.hpp`) work the cab's 395 or 130, 254 or 224, 4ВК,
+367, combined valve, separating cock, ОТ, ЭТ, stop valves and ЭПТ instead
+of MaDaDev's Brakes.dll:
+- they give the model the УР, the independent brake's target and the
+  ЭПТ's command;
+- the cab's Brakes.dll gauges and lamps (`BR_MAN*`, `BR_LAMP*`,
+  `BR_VOLT`, `BR_AMP`) show theirs;
+- Brakes.dll's other cars of a multiple unit (`BR_MODE` 1) brake by the
+  ЭПТ's line, not by their own independent brake.
+
+Brakes.dll goes on running for the КЛУБ, the ЭПК, its springs and sounds:
+its ЭПК trip (`var + 32` bit 1) opens the pipe, and the train's DLL's
+requests (`var + 32` before Brakes.dll's `Run`: the ЭПТ's hold and apply,
+the handle taken as IV, the УР kept; protocol 14's `AuxExchange`) reach
+openRTS's devices. A locomotive whose Brakes.dll has a parameter openRTS
+does not know (a 334, a custom 292, the ЭП2Д's ППТ, `BR_KID`, the ВЛ82м's
+`BR_OTID` without its cab) keeps Brakes.dll; the Train window says which.
+`openrts-train-check --dll ... --brakes openrts [--numbers books]` runs
+them in the harness.
+
 **The cab's air gauges** (2026-11-17; "Cab gauges show openRTS's air", on
 by default, remembered as `gauges_openrts_air`; the Train window and the
 launcher's Brakes): with the realistic air the needles MaDaDev's cabs name

@@ -1734,10 +1734,28 @@ std::optional<CabView::AirGauges> TrainView::air_gauges(const Unit& unit, const 
     return CabView::AirGauges{.pipe = state.pipe, .cylinder = state.cylinder, .main_reservoir = state.main_reservoir};
 }
 
+const trainplugin::BrakesParameters& TrainView::brakes_parameters_of(const formats::EngineDefinition& engine) const {
+    auto [at, made] = brakes_parameters_.try_emplace(&engine);
+    if (made) at->second = trainplugin::brakes_parameters(engine);
+    return at->second;
+}
+
 const dllhost::CarOutput* TrainView::cab_state(const std::size_t car) const {
     if (helping_) return interior_output(car);
     if (native_ && car == native_car_) return &native_output_;
     const auto* out = legacy_ ? legacy_->output(car) : nullptr;
+    // openRTS's cab brake devices: Brakes.dll's gauges and lamps show theirs.
+    if (out && !units_.empty() && car < units_.front().cars.size()) {
+        const auto* definition = units_.front().cars[car].definition;
+        const auto* asked = units_.front().train->demands_of(car);
+        if (definition && definition->engine && asked && asked->cab_brakes) {
+            const auto& parameters = brakes_parameters_of(*definition->engine);
+            patched_output_ = *out;
+            trainplugin::show_cab_brakes(parameters, trainplugin::working_cab(definition->engine->brakes_library, out->switches),
+                                         *asked->cab_brakes, patched_output_.displays);
+            return &patched_output_;
+        }
+    }
     // openRTS's valve over Brakes.dll: its УР gauge (BR_MANU1) shows the
     // valve's УР, not the one the DLL keeps for itself.
     if (out && legacy_->air() == trainplugin::DllAir::own_valve && !units_.empty() && car < units_.front().cars.size()) {
@@ -5603,6 +5621,12 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         dll_air_ = std::clamp(std::atoi(remembered("dll_air").value_or("0").c_str()), 0, 2);
     }
     if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
+    if (!own_brakes_loaded_) {
+        own_brakes_loaded_ = true;
+        own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("0").c_str()), 0, 1);
+        brake_numbers_ = std::clamp(std::atoi(remembered("brake_numbers").value_or("0").c_str()), 0, 1);
+    }
+    if (legacy_) legacy_->set_own_brakes(own_brakes_ == 1, brake_numbers_ == 1);
     if (network_ && network_->rail_joints().layout() != rail_joint_layout()) network_->set_rail_joint_layout(rail_joint_layout());
     // The rails' state (the Train window's choice, or the weather's).
     if (!rails_loaded_) {
@@ -10720,6 +10744,44 @@ void TrainView::draw_panel() {
                                          : dll_air_ == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
                                          : dll_air_ == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
                                                          : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
+            // Brakes.dll's brakes or openRTS's devices in their place
+            // (docs/brakes-dll-replacement.md), and whose numbers.
+            const bool can_own = realistic_air_ && dll_air_ != 0;
+            ImGui::BeginDisabled(!can_own);
+            const char* owners[] = {tr("Brakes.dll"), tr("openRTS (experimental)")};
+            ImGui::SetNextItemWidth(330.0f);
+            if (ImGui::Combo(tr("Brakes##own_brakes"), &own_brakes_, owners, 2)) {
+                own_brakes_loaded_ = true;
+                remember("own_brakes", std::to_string(own_brakes_));
+            }
+            const char* numbers[] = {tr("as Brakes.dll"), tr("openRTS (from the books)")};
+            ImGui::SetNextItemWidth(330.0f);
+            if (ImGui::Combo(tr("Brake numbers##brake_numbers"), &brake_numbers_, numbers, 2)) {
+                own_brakes_loaded_ = true;
+                remember("brake_numbers", std::to_string(brake_numbers_));
+            }
+            ImGui::EndDisabled();
+            if (legacy_) legacy_->set_own_brakes(own_brakes_ == 1, brake_numbers_ == 1);
+            ImGui::TextDisabled("%s", tr(!can_own ? "(works with the realistic air on and Trains with DLLs not as RTS)"
+                                         : own_brakes_ == 0 ? "(MaDaDev's Brakes.dll works the 395, the 254, the cocks and the ЭПТ)"
+                                         : brake_numbers_ == 0 ? "(openRTS's 395, 254, cocks and ЭПТ with Brakes.dll's numbers; Brakes.dll keeps the КЛУБ, the ЭПК and the sounds)"
+                                                               : "(openRTS's 395, 254, cocks and ЭПТ with the books' numbers; Brakes.dll keeps the КЛУБ, the ЭПК and the sounds)"));
+            // The player's locomotive: openRTS's devices, or why it keeps Brakes.dll.
+            if (can_own && own_brakes_ == 1 && !units_.empty()) {
+                const auto& player_train = *units_.front().train;
+                const auto player_car = driven_car();
+                if (player_car != SIZE_MAX && player_car < player_train.cars().size() && player_train.cars()[player_car].definition &&
+                    player_train.cars()[player_car].definition->engine) {
+                    const auto& parameters = brakes_parameters_of(*player_train.cars()[player_car].definition->engine);
+                    if (!parameters.present) {
+                        ImGui::TextUnformatted(tr("This locomotive has no Brakes.dll."));
+                    } else if (!parameters.understood()) {
+                        ImGui::Text(tr("This locomotive keeps Brakes.dll: openRTS does not know its %s."), parameters.unknown.c_str());
+                    } else {
+                        ImGui::TextUnformatted(tr("This locomotive's brakes are openRTS's."));
+                    }
+                }
+            }
             // The cab's gauges of the pipe, the cylinders and the main
             // reservoir from the model's air (CabView::AirGauges).
             ImGui::BeginDisabled(!realistic_air_);
@@ -10889,7 +10951,9 @@ void TrainView::draw_panel() {
         const auto ur = equalising_of(0, driven);
         const auto mode = legacy_ ? legacy_->air() : trainplugin::DllAir::rts;
         const bool realistic = train.brake_model() == simulation::BrakeModel::realistic;
+        const auto* asked = train.demands_of(driven);
         const char* valve = !realistic ? tr("the DLL's valve, RTS air")
+                          : asked && asked->cab_brakes ? tr("openRTS brakes")
                           : mode == trainplugin::DllAir::own_valve && train.cars()[driven].definition->engine->brakes_library.valve >= 0
                               ? tr("openRTS valve over Brakes.dll")
                               : tr("the DLL's valve");

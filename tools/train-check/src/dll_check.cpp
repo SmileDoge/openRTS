@@ -27,6 +27,11 @@
 // the library's whole variable stack as raw 32-bit words (hex: some are
 // floats, some flags).
 //
+// --brakes openrts [--numbers books]: openRTS's cab brake devices in place
+// of Brakes.dll's (docs/brakes-dll-replacement.md, step 2) on the realistic
+// air; a record then has their УР, independent brake, ЭПТ, gauges and
+// lamps (tools/reverse/golden_compare.py sets it against a Brakes.dll run).
+//
 // Exit code 0: every expectation held; 1: one failed; 2: could not run.
 
 #include <algorithm>
@@ -228,6 +233,11 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     // --air rts|dll|own: the realistic air with the DLL's valve (its УР), or
     // openRTS's 395 over Brakes.dll (docs/train.md); rts: as RTS.
     trainplugin::DllAir air = trainplugin::DllAir::rts;
+    // --brakes openrts: openRTS's cab brake devices in place of Brakes.dll's
+    // (docs/brakes-dll-replacement.md, step 2; the realistic air, --air own
+    // unless given); --numbers books: the books' numbers, not Brakes.dll's.
+    bool own_brakes = false;
+    bool book_numbers = false;
     for (std::size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "--script" && i + 1 < args.size()) {
             script_path = args[++i];
@@ -237,6 +247,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         } else if (args[i] == "--air" && i + 1 < args.size()) {
             const auto& value = args[++i];
             air = value == "dll" ? trainplugin::DllAir::dll_valve : value == "own" ? trainplugin::DllAir::own_valve : trainplugin::DllAir::rts;
+        } else if (args[i] == "--brakes" && i + 1 < args.size()) {
+            own_brakes = args[++i] == "openrts";
+        } else if (args[i] == "--numbers" && i + 1 < args.size()) {
+            book_numbers = args[++i] == "books";
         } else if (args[i] == "--rails" && i + 1 < args.size()) {
             // The rails' state (adhesion.hpp): openRTS's traction limit; RTS's by default.
             const auto& value = args[++i];
@@ -355,10 +369,23 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             if (player == SIZE_MAX) player = i;
         }
     }
+    if (own_brakes && air == trainplugin::DllAir::rts) air = trainplugin::DllAir::own_valve;
     consist->set_air(air);
+    consist->set_own_brakes(own_brakes, book_numbers);
     if (air != trainplugin::DllAir::rts) {
         train.set_brake_model(simulation::BrakeModel::realistic);
         std::printf("realistic air, %s\n", air == trainplugin::DllAir::own_valve ? "openRTS's valve over Brakes.dll" : "the DLL's valve");
+    }
+    if (own_brakes) {
+        std::printf("openRTS's cab brake devices, %s numbers\n", book_numbers ? "the books'" : "Brakes.dll's");
+        for (std::size_t i = 0; i < legacy.size(); ++i) {
+            const auto* definition = train.cars()[i].definition;
+            if (!definition || !definition->engine) continue;
+            const auto parameters = trainplugin::brakes_parameters(*definition->engine);
+            if (!parameters.present) continue;
+            if (parameters.understood()) std::printf("  car %zu: openRTS's\n", i);
+            else std::printf("  car %zu keeps Brakes.dll: %s\n", i, parameters.unknown.c_str());
+        }
     }
     // Its air from Init, as the game's first entering (RTS's).
     if (!trainplugin::enter_new_train(*consist, player, train, true, start_state)) {
@@ -646,6 +673,21 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     return text.empty() ? std::string("-") : text;
                 };
                 const auto l = static_cast<std::size_t>(lib);
+                // openRTS's cab brake devices in place of Brakes.dll's: their
+                // УР, independent brake, ЭПТ, gauges and lamps.
+                float ur = e.equalising, independent = e.independent_brake, ep = e.ep_value;
+                unsigned systems = e.systems;
+                std::vector<dllhost::DisplayState> shown_displays = out->displays;
+                if (const auto* asked = train.demands_of(i); asked && asked->cab_brakes && s.definition && s.definition->engine) {
+                    const auto& r = *asked->cab_brakes;
+                    ur = r.equalising_kept;
+                    independent = r.independent_brake;
+                    ep = r.ep_value;
+                    systems = r.systems;
+                    trainplugin::show_cab_brakes(trainplugin::brakes_parameters(*s.definition->engine),
+                                                 trainplugin::working_cab(s.definition->engine->brakes_library, out->switches), r,
+                                                 shown_displays);
+                }
                 std::string switches;
                 auto& seen = recorded_switches[i];
                 seen.resize(out->switches.size(), ~0u);
@@ -657,9 +699,9 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 // Displays: a change of state, or of value by over 0.005.
                 std::string displays;
                 auto& shown = recorded_displays[i];
-                shown.resize(out->displays.size(), {~0u, -1e9f});
-                for (std::size_t k = 0; k < out->displays.size(); ++k) {
-                    const auto& d = out->displays[k];
+                shown.resize(shown_displays.size(), {~0u, -1e9f});
+                for (std::size_t k = 0; k < shown_displays.size(); ++k) {
+                    const auto& d = shown_displays[k];
                     if (d.state == shown[k].first && std::abs(d.value - shown[k].second) <= 0.005f) continue;
                     shown[k] = {d.state, d.value};
                     char text[48];
@@ -667,9 +709,9 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     displays += text;
                 }
                 std::fprintf(record, "%.2f\t%zu\t%.3f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%u\t%u\t%u\t%s\t%s\t%s\t%s\t",
-                             time, i, train.speed() * 3.6, s.pipe, s.cylinder, s.independent, s.auxiliary, s.main_reservoir, e.equalising,
-                             e.independent_brake, e.train_pipe_rate, e.auxiliary_rate, e.main_reservoir_rate, e.ep_value,
-                             static_cast<unsigned>(e.systems), static_cast<unsigned>(e.alsn_on), e.engine_flags,
+                             time, i, train.speed() * 3.6, s.pipe, s.cylinder, s.independent, s.auxiliary, s.main_reservoir, ur,
+                             independent, e.train_pipe_rate, e.auxiliary_rate, e.main_reservoir_rate, ep, systems,
+                             static_cast<unsigned>(e.alsn_on), e.engine_flags,
                              l < out->aux_sound.size() ? list(out->aux_sound[l].triggers).c_str() : "-", list(out->sound_ext).c_str(),
                              list(out->sound_cab).c_str(), switches.empty() ? "-" : switches.c_str());
                 std::fprintf(record, "%s\t", displays.empty() ? "-" : displays.c_str());

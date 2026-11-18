@@ -42,5 +42,9 @@
 393  switch 2 1
 395.5 switch 23 1
 396  switch 23 0
+# On the realistic air (--brakes openrts) the cylinders let out later and
+# the КЛУБ asks after they have, about 400 s: answered then too.
+402.5 switch 23 1
+403  switch 23 0
 430  expect pipe > 4
 430  expect alive == 1

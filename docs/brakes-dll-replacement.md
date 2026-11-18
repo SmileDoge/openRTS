@@ -1,8 +1,9 @@
 # Replacing Brakes.dll (plan)
 
-Status: under way (2026-11-18): steps 0 and 1 done; step 2's devices
-built and tested (`simulation/cab_brakes.hpp`), not yet in the game. The
-developer's request:
+Status: under way (2026-11-18): steps 0, 1 and 2 done; step 2's devices
+(`simulation/cab_brakes.hpp`) in the game as an experimental setting
+(docs/train.md, "openRTS's cab brakes over Brakes.dll"), Brakes.dll by
+default. The developer's request:
 stop patching openRTS around MaDaDev's `Brakes.dll` and replace it, after
 learning how a train's DLL talks to it.
 
@@ -179,15 +180,25 @@ openRTS around a running Brakes.dll, as now, is what this replaces.
      (`step_cab_brakes`, `tests/cab_brakes_test.cpp`): the 395 and 130,
      the 254, 224 and 4ВК, the cocks, the ЭПТ's commands, the gauges and
      lamps, the 418; two sets of numbers (below).
-   - 2.3: the host and the controller: the devices work the realistic
-     air instead of Brakes.dll's valve; the train's DLL's `var + 32` bits
-     before Brakes.dll's `Run` reach them; the cab's gauges and lamps
-     (`BR_MAN*`, `BR_LAMP*`) show theirs; Brakes.dll's ЭПК trip opens the
-     pipe. Brakes.dll's springs (the 254's I) and its air sounds stay its
-     own until step 5.
-   - 2.4: the harness (`--brakes openrts`) against the golden runs.
-   - 2.5: the two settings in the Train window; a car with a
+   - 2.3 (done): the host and the controller: the devices work the
+     realistic air instead of Brakes.dll's valve; the train's DLL's
+     `var + 32` bits before Brakes.dll's `Run` reach them (protocol 14,
+     `AuxExchange`); the cab's gauges and lamps (`BR_MAN*`, `BR_LAMP*`)
+     show theirs; Brakes.dll's ЭПК trip opens the pipe. Brakes.dll's
+     springs (the 254's I) and its air sounds stay its own until step 5.
+   - 2.4 (done): the harness (`--brakes openrts [--numbers books]`) and
+     `tools/reverse/golden_compare.py` against the golden runs. The ЭД9М
+     and the ЭП20 match them in the УР, the independent brake and the
+     ЭПТ; the pipe and the cylinders differ by the air (RTS's in the
+     golden runs). In III the УР follows the realistic pipe down as the
+     ЭПТ's reservoirs refill from it (the book: the УР follows the pipe
+     in III). In VI Brakes.dll applies the ЭПТ only once the pipe is under
+     0.1 atm; openRTS's devices not at all (the pneumatic emergency brakes
+     fully).
+   - 2.5 (done): the two settings in the Train window; a car with a
      `BR_334ID`, `BR_292CUSTOM` or a parameter not known keeps Brakes.dll.
+   - Left for testers: the ЭД9М and the ЭП20 in the game with
+     "Brakes: openRTS"; the differences below.
 3. **КЛУБ-У on one locomotive** (the ЭД9М), as its own module:
    - the map from the track items;
    - the permitted speed and the braking curve;
@@ -244,9 +255,10 @@ where those fall within what the books give, else the books'. Sources:
 In IV the pipe follows it, so a 483 in flat mode may release (it releases
 on a rise of 0.015–0.03 MPa).
 
-The ЭПТ's level for cars on RTS's air (`ep_value`) fills at about 1 atm/s
-and lets out 0.35 atm/s (the ЭВР 305, docs/reverse/air-brakes-real.md);
-on the realistic air the cars' ЭВР take only the command. The 418's
+The ЭПТ's level for cars on RTS's air (`ep_value`) fills at 1 atm/s and
+lets out 0.65 atm/s, as Brakes.dll's on the ЭД9М (its golden run); on the
+realistic air the cars' ЭВР take only the command and fill and let out at
+their own rates (docs/reverse/air-brakes-real.md). The 418's
 numbers stay Brakes.dll's: the device came after the book.
 
 ## Open

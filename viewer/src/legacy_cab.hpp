@@ -132,6 +132,11 @@ public:
         if (consist_) consist_->set_air(mode);
     }
     [[nodiscard]] trainplugin::DllAir air() const { return consist_ ? consist_->air() : trainplugin::DllAir::rts; }
+    // openRTS's cab brake devices (LegacyConsist::set_own_brakes).
+    void set_own_brakes(const bool own, const bool books) {
+        if (consist_) consist_->set_own_brakes(own, books);
+    }
+    [[nodiscard]] bool own_brakes() const { return consist_ && consist_->own_brakes(); }
     [[nodiscard]] std::size_t take_restored() { return consist_ ? consist_->take_restored() : 0; }
     bool reconsist(const core::Vfs& vfs, const std::vector<std::vector<LegacyCarRef>>& trains,
                    const std::vector<simulation::Train*>& sims);

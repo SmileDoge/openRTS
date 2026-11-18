@@ -234,8 +234,9 @@ void add_shortcuts(const core::Vfs& vfs, const core::VirtualPath& cabin, const f
 class LegacyController final : public simulation::LocomotiveController {
 public:
     LegacyController(std::weak_ptr<const LegacyConsist::Outputs> outputs, std::size_t car, std::shared_ptr<const DllAirSetting> air,
-                     BrakeCabControls cab)
-        : outputs_(std::move(outputs)), car_(car), air_(std::move(air)), cab_(std::move(cab)) {}
+                     BrakeCabControls cab, BrakesParameters brakes = {}, int brakes_library = -1)
+        : outputs_(std::move(outputs)), car_(car), air_(std::move(air)), cab_(std::move(cab)), brakes_(std::move(brakes)),
+          brakes_library_(brakes_library) {}
     void step(double dt, const simulation::EngineInputs& inputs, simulation::EngineDemands& demands) override {
         const auto outputs = outputs_.lock();
         if (!outputs || !outputs->valid || car_ >= outputs->cars.size() || !outputs->cars[car_].has_engine) {
@@ -247,6 +248,7 @@ public:
         const auto mode = air_ ? air_->mode : DllAir::rts;
         if (mode == DllAir::rts || !inputs.realistic_air) {
             valve_started_ = false;
+            brakes_started_ = false;
             dll_ur_known_ = false;
             return;
         }
@@ -275,6 +277,22 @@ public:
         const bool cut_off = (out.loco_flags & 1u) != 0 && dll_ur < 0.5f;
         const bool vent = rate <= -0.6f && (rate < -(excess + 0.3f) || ur_rate < -0.6f || cut_off);
         demands.emergency = vent;
+        // openRTS's cab brake devices in place of Brakes.dll's
+        // (DllAirSetting::own_brakes): Brakes.dll's brake outputs are not
+        // used on any car it runs on. A car not driven (a multiple unit's
+        // other cars, BR_MODE 1, take the ЭПТ in their independent brake
+        // from the head car's Brakes.dll) gets the driven cab's ЭПТ through
+        // the line and no brake of its own.
+        const bool own_brakes = air_->own_brakes && brakes_.understood();
+        if (!own_brakes) brakes_started_ = false;
+        if (own_brakes && (out.loco_flags & 1u) == 0) {
+            demands.independent_brake = 0.0f;
+            demands.ep_value = -1.0f;
+            demands.systems = static_cast<std::uint16_t>(demands.systems & ~2u);
+            demands.release_train_brake = demands.release_independent_brake = false;
+            brakes_started_ = false;
+            return;
+        }
         // Only the cab driven (LocoFlags 1) works the pipe: the DLLs of the
         // other cars of a multiple unit keep a УР of their own.
         if ((out.loco_flags & 1u) == 0) return;
@@ -290,6 +308,10 @@ public:
         if (cab != last_cab_) {
             last_cab_ = cab;
             valve_started_ = false; // the other cab's valve, from where the pipe stands
+        }
+        if (own_brakes) {
+            step_own_brakes(dt, inputs, demands, out, ids, cab, vent);
+            return;
         }
         const auto valve = ids.valve;
         if (mode == DllAir::own_valve && valve >= 0 && static_cast<std::size_t>(valve) < out.switches.size()) {
@@ -355,13 +377,64 @@ public:
     void save(simulation::StateWriter& out, const std::string_view prefix) const override {
         const std::string p(prefix);
         out.put(p + "valve", state_.equalising, state_.ep_target, valve_started_, compressor_, last_dll_ur_, dll_ur_known_);
+        const auto& b = brakes_state_;
+        out.put(p + "cab_brakes", brakes_started_, b.valve.equalising, b.valve.ep_target, b.independent, b.cylinder_needle,
+                b.pipe_needle, b.sensor418_time, b.sensor418, b.last_pipe, b.started);
     }
     void restore(const simulation::StateReader& in, const std::string_view prefix) override {
         const std::string p(prefix);
         in.get(p + "valve", state_.equalising, state_.ep_target, valve_started_, compressor_, last_dll_ur_, dll_ur_known_);
+        auto& b = brakes_state_;
+        in.get(p + "cab_brakes", brakes_started_, b.valve.equalising, b.valve.ep_target, b.independent, b.cylinder_needle,
+               b.pipe_needle, b.sensor418_time, b.sensor418, b.last_pipe, b.started);
     }
 
 private:
+    // openRTS's cab brake devices (simulation/cab_brakes.hpp) on the
+    // working cab's handles: they work the realistic air instead of
+    // Brakes.dll's valve, its ЭПТ and its independent brake. Brakes.dll's
+    // ЭПК trip (var + 32 bit 1), its direct vents and the train's DLL's
+    // requests (var + 32 before its Run) reach them.
+    void step_own_brakes(const double dt, const simulation::EngineInputs& inputs, simulation::EngineDemands& demands,
+                         const dllhost::CarOutput& out, const formats::EngineDefinition::BrakesLibrary& ids, const std::size_t cab,
+                         const bool vent) {
+        const auto& table = cab_.of_cab(cab);
+        controls_ = table.read(ids, out.switches, controls_);
+        CabBrakes valve = controls_;
+        // Without the cab's names for the handle's states, BR_FLIPCABS numbers them.
+        if (table.valve.empty() && table.controller.empty()) valve.position = -1;
+        const auto exchange = brakes_library_ >= 0 && static_cast<std::size_t>(brakes_library_) < out.aux_exchange.size()
+                                  ? out.aux_exchange[static_cast<std::size_t>(brakes_library_)]
+                                  : dllhost::AuxExchange{};
+        const auto controls = cab_brake_controls(brakes_, cab, out.switches, valve, exchange, out.engine.systems);
+        if (!brakes_started_) {
+            // From where the DLL's valve stood.
+            brakes_state_ = {};
+            brakes_state_.valve.equalising = out.engine.equalising > 0.5f ? out.engine.equalising
+                                                                          : (std::min)(inputs.train_pipe, controls.charging);
+            brakes_started_ = true;
+        }
+        const simulation::CabBrakeAir air{
+            .pipe = inputs.train_pipe,
+            .main_reservoir = inputs.main_reservoir,
+            .cylinder = inputs.cylinder,
+            .independent = inputs.independent,
+        };
+        const auto numbers = air_->book_numbers ? simulation::CabBrakeNumbers::openrts() : simulation::CabBrakeNumbers::brakes_dll();
+        const auto r = simulation::step_cab_brakes(brakes_state_, controls, air, numbers, static_cast<float>(dt));
+        demands.equalising = r.equalising;
+        demands.equalising_kept = r.equalising_kept;
+        demands.emergency = r.emergency || vent;
+        demands.pipe_feed = r.feed;
+        demands.ep_value = r.ep_value;
+        demands.ep_command = r.ep_command;
+        demands.systems = static_cast<std::uint16_t>((demands.systems & 4u) | r.systems);
+        demands.independent_brake = r.independent_brake;
+        demands.release_train_brake = r.release_train_brake;
+        demands.release_independent_brake = false;
+        demands.cab_brakes = r;
+    }
+
     std::weak_ptr<const LegacyConsist::Outputs> outputs_;
     std::size_t car_;
     std::shared_ptr<const DllAirSetting> air_;
@@ -373,6 +446,10 @@ private:
     bool compressor_ = false;
     float last_dll_ur_{};      // the DLL's УР at the last step
     bool dll_ur_known_ = false;
+    BrakesParameters brakes_;      // its Brakes.dll's (own_brakes)
+    int brakes_library_ = -1;      // that library in the host
+    simulation::CabBrakeState brakes_state_;
+    bool brakes_started_ = false;
 };
 
 } // namespace
@@ -1277,7 +1354,10 @@ std::unique_ptr<simulation::LocomotiveController> LegacyConsist::controller(std:
     if (at < cars_.size() && at < cabs_.size() && cars_[at].definition && cars_[at].definition->engine) {
         cab = brake_cab_controls(cars_[at].definition->engine->brakes_library, cabs_[at]);
     }
-    return std::make_unique<LegacyController>(outputs_, at, air_, std::move(cab));
+    // Its Brakes.dll's parameters, for openRTS's cab brake devices.
+    BrakesParameters brakes;
+    if (at < cars_.size() && cars_[at].definition && cars_[at].definition->engine) brakes = brakes_parameters(*cars_[at].definition->engine);
+    return std::make_unique<LegacyController>(outputs_, at, air_, std::move(cab), std::move(brakes), aux_library(at, "BRAKES"));
 }
 
 std::vector<std::int8_t> valve_states(const formats::CabSwitch& control) {
@@ -1348,8 +1428,10 @@ std::vector<std::int8_t> valve_states(const formats::CabSwitch& control) {
 std::unique_ptr<simulation::LocomotiveController> make_legacy_controller(std::weak_ptr<const LegacyConsist::Outputs> outputs,
                                                                          const std::size_t car,
                                                                          std::shared_ptr<const DllAirSetting> air,
-                                                                         BrakeCabControls cab) {
-    return std::make_unique<LegacyController>(std::move(outputs), car, std::move(air), std::move(cab));
+                                                                         BrakeCabControls cab, BrakesParameters brakes,
+                                                                         const int brakes_library) {
+    return std::make_unique<LegacyController>(std::move(outputs), car, std::move(air), std::move(cab), std::move(brakes),
+                                              brakes_library);
 }
 
 } // namespace openrts::trainplugin

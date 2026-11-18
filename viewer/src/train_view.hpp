@@ -1428,6 +1428,16 @@ private:
     // remembered as dll_air; read at the first update.
     int dll_air_ = 0;
     bool dll_air_loaded_ = false;
+    // The Train window's "Brakes": Brakes.dll's (0) or openRTS's cab brake
+    // devices (1); "Brake numbers": as Brakes.dll (0) or the books' (1)
+    // (docs/brakes-dll-replacement.md). Remembered as own_brakes and
+    // brake_numbers.
+    int own_brakes_ = 0;
+    int brake_numbers_ = 0;
+    bool own_brakes_loaded_ = false;
+    // Each engine's Brakes.dll parameters (trainplugin::brakes_parameters).
+    mutable std::unordered_map<const formats::EngineDefinition*, trainplugin::BrakesParameters> brakes_parameters_;
+    [[nodiscard]] const trainplugin::BrakesParameters& brakes_parameters_of(const formats::EngineDefinition& engine) const;
     // The cab's air gauges (DTM, DTC1/2, DGR) from the realistic air's model
     // (CabView::AirGauges); remembered as gauges_openrts_air, on by default.
     mutable bool gauges_air_ = true;

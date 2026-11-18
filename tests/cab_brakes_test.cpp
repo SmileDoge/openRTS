@@ -169,6 +169,10 @@ void ept() {
     rig.run(dt);
     check(rig.out.ep_command == EpCommand::apply, "the apply button");
     rig.controls.ep_apply_button = false;
+    rig.controls.valve = ValvePosition::emergency;
+    rig.run(dt);
+    check(rig.out.ep_value < 0.0f && rig.out.emergency, "VI takes the ЭПТ's demand away");
+    rig.controls.valve = ValvePosition::running;
     rig.controls.emergency = true;
     rig.run(dt);
     check(rig.out.ep_value < 0.0f && rig.out.emergency, "an emergency takes the ЭПТ's demand away");

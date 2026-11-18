@@ -29,6 +29,9 @@ CabBrakeNumbers CabBrakeNumbers::brakes_dll() {
     n.ept_volts_brake = 40.0f;
     n.ept_amps_lap = 4.0f;
     n.ept_amps_brake = 5.0f;
+    // The ЭД9М's golden run: 0.25 atm in 0.25 s up, 0.16 down.
+    n.ep_apply = 1.0f;
+    n.ep_release = 0.65f;
     n.cylinder_needle_near = 0.2f;
     n.cylinder_needle_far = 1.0f;
     n.cylinder_needle_band = 0.5f;
@@ -173,15 +176,16 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
         if (c.ep_hold_asked) hold = true;
         if (c.ep_apply_asked) apply = true;
         if (c.ep_release_button && !handle_hold) hold = false;
-        // An emergency (ЭТ, a stop valve, the ЭПК) takes the ЭПТ's demand
-        // away (Brakes.dll's EPTValue -1): the ВР brake on the pipe.
+        // An emergency (VI, ЭТ, a stop valve, the ЭПК) takes the ЭПТ's
+        // demand away (Brakes.dll's EPTValue -1; in VI the ЭД9М's golden run
+        // builds no EP pressure): the ВР brake on the pipe.
         out.systems = 1 | 2;
-        if (!c.emergency) {
+        if (!out.emergency) {
             auto& level = s.valve.ep_target;
-            // Its level, for cars on RTS's air: the ЭВР 305 about 1 atm/s
-            // filling, 3.5 to 0.4 atm in 8-10 s letting out.
-            if (apply) level = (std::min)(level + 1.0f * dt, 4.3f);
-            else if (!hold) level = (std::max)(level - 0.35f * dt, 0.0f);
+            // Its level, for cars on RTS's air (the realistic air's ЭВР take
+            // the command and fill and let out at their own rates).
+            if (apply) level = (std::min)(level + n.ep_apply * dt, 4.3f);
+            else if (!hold) level = (std::max)(level - n.ep_release * dt, 0.0f);
             out.ep_value = level;
             out.ep_command = apply ? EpCommand::apply : hold ? EpCommand::hold : EpCommand::release;
         }

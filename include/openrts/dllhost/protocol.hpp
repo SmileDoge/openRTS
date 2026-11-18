@@ -22,7 +22,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 13;
+inline constexpr std::uint32_t protocol_version = 14;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -525,6 +525,16 @@ struct AuxVarsOutput {
     std::vector<float> var;
 };
 
+// The word at an AuxLibrary's var + 32: MaDaDev's Brakes.dll's exchange
+// with the train's DLLs (docs/reverse/brakes-dll.md §5). `before`: as its
+// Run found it, the train's DLL's requests (Brakes.dll clears 0x10 ..
+// 0x8000 at the end of its Run); `after`: after the step (bit 1 the ЭПК
+// tripped, 2 the 418, 8 САУТ). openRTS's cab brake devices take them
+// (docs/brakes-dll-replacement.md, step 2).
+struct AuxExchange {
+    std::uint32_t before{}, after{};
+};
+
 // A diesel's ExhaustContr (RTSGetLocoObject ot_exhaust): what its DLL says
 // the smoke of exhaust n is (rts1.exe 0x50D3B4 takes it instead of the .eng).
 struct ExhaustOutput {
@@ -559,6 +569,8 @@ struct CarOutput {
     std::vector<ExhaustOutput> exhausts;
     // Per AuxLibrary (the host's numbering), its variable stack, when asked.
     std::vector<AuxVarsOutput> aux_vars;
+    // Per AuxLibrary, its var + 32 word (AuxExchange).
+    std::vector<AuxExchange> aux_exchange;
 };
 
 // A car's air as the DLLs left it in its Wagon (enter only: Init writes
@@ -834,6 +846,7 @@ inline void write(Writer& w, const CarOutput& c) {
     write_pod_list(w, c.doors);
     write_pod_list(w, c.exhausts);
     write_list(w, c.aux_vars);
+    write_pod_list(w, c.aux_exchange);
 }
 inline void read(Reader& r, CarOutput& c) {
     c.has_engine = r.get<std::uint8_t>() != 0; c.engine = r.get<EngineOutput>();
@@ -848,6 +861,7 @@ inline void read(Reader& r, CarOutput& c) {
     read_pod_list(r, c.doors, 4096);
     read_pod_list(r, c.exhausts, 16);
     read_list(r, c.aux_vars, 64);
+    read_pod_list(r, c.aux_exchange, 64);
 }
 
 inline void write(Writer& w, const StepReply& s) {
