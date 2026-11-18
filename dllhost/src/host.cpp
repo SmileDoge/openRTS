@@ -1314,6 +1314,7 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
     set_direction_ = 0;
     items_wanted_ = 0.0f;
     tape_car_ = request.tape_car;
+    want_aux_vars_ = request.want_aux_vars != 0;
     tape_set_ = tape_started_ = false;
     mark_tape();
     // The route database's signals, the track items and the player's
@@ -2063,6 +2064,12 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
         if (!info.has_sound) continue;
         drain(info.sound, o.triggers);
         vars(info.sound, o.vars);
+    }
+    // The golden runs: each library's whole variable stack.
+    out.aux_vars.clear();
+    if (want_aux_vars_) {
+        out.aux_vars.resize(car.aux_info.size());
+        for (std::size_t i = 0; i < car.aux_info.size(); ++i) out.aux_vars[i].var = car.aux_info[i].var;
     }
     out.light_flags.resize(car.lights.size());
     for (std::size_t i = 0; i < car.lights.size(); ++i) out.light_flags[i] = car.lights[i].flags;

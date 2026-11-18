@@ -131,6 +131,9 @@ struct LegacyWorld {
     // The speed posts' limits without the routes' +3 km/h
     // (simulation::without_tolerance) in RTSGetTrackItems too.
     bool limits_without_tolerance = false;
+    // Every car's auxiliary libraries' variable stacks in its output
+    // (CarOutput::aux_vars): the golden runs (openrts-train-check --record).
+    bool record_aux_vars = false;
     // RTSGetTrackItems: the player's train's items (RTS 0x4808DC) and how
     // far ahead and behind the list reaches.
     std::vector<dllhost::TrackItemEntry> track_items;
@@ -266,6 +269,13 @@ private:
     std::vector<std::uint32_t> train_types_;
     std::size_t restored_ = 0;
     std::string messages_;
+public:
+    // The host's number of car `car`'s auxiliary library `name` (AuxLibraryName,
+    // case ignored), -1 when it has none or its module was not found: its
+    // index in CarOutput::aux_vars and aux_sound.
+    [[nodiscard]] int aux_library(std::size_t car, std::string_view name) const;
+
+private:
     // Per car: each AuxLibrary of the .eng as the host numbers them (only
     // the ones whose module was found), -1 missing.
     std::vector<std::vector<std::int16_t>> aux_index_;

@@ -861,6 +861,19 @@ bool LegacyConsist::enter(std::size_t car, const simulation::Train& train, bool 
     return true;
 }
 
+int LegacyConsist::aux_library(const std::size_t car, const std::string_view name) const {
+    if (car >= cars_.size() || car >= aux_index_.size() || !cars_[car].definition || !cars_[car].definition->engine) return -1;
+    const auto& libraries = cars_[car].definition->engine->aux_libraries;
+    for (std::size_t k = 0; k < libraries.size() && k < aux_index_[car].size(); ++k) {
+        const auto& own = libraries[k].name;
+        const bool same = own.size() == name.size() && std::equal(own.begin(), own.end(), name.begin(), [](const char a, const char b) {
+                              return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+                          });
+        if (same) return aux_index_[car][k];
+    }
+    return -1;
+}
+
 bool LegacyConsist::save_state(std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>& states) {
     states.clear();
     if (!host_ || !host_->alive()) return false;
@@ -976,6 +989,7 @@ bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>&
     request.track_items = world.track_items;
     request.items_range = world.items_range;
     request.tape_car = world.tape_car;
+    request.want_aux_vars = world.record_aux_vars ? 1 : 0;
     // The libraries' sounds by the host's numbering of the libraries.
     for (const auto& p : world.sound_pairs) {
         auto q = p;

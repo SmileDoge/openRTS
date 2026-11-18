@@ -18,6 +18,15 @@
 //                             # pipe, mr, ur, alive)
 //   20   screen 180 24 043    # a cab screen's label text (or shown / hidden)
 //
+// --record <file> [--record-library <AuxLibraryName>]: a golden run
+// (docs/brakes-dll-replacement.md, step 1): every step, for every car with
+// that auxiliary library (BRAKES by default), a tab-separated row: the
+// time, the car, the speed, its air, its Engine's brake outputs, the SMS
+// triggers of that library and of the locomotive, the cab switches and
+// displays (gauges, lamps) that changed (a display: id=state/value), and
+// the library's whole variable stack as raw 32-bit words (hex: some are
+// floats, some flags).
+//
 // Exit code 0: every expectation held; 1: one failed; 2: could not run.
 
 #include <algorithm>
@@ -26,6 +35,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -212,6 +222,8 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     bool show_screens = false;  // --screens: the cab screens' shown objects and texts, each second
     bool show_light_defs = false; // --light-defs: with --cars, each lit exterior light's .eng definition
     std::string screens_image;  // --screens-image <dir>: the cab screens as RTS lays them out, at the end (PPM)
+    std::string record_path;    // --record <file>: the golden run (above)
+    std::string record_library = "BRAKES";
     int start_state = -1; // --start cold|on|running
     // --air rts|dll|own: the realistic air with the DLL's valve (its УР), or
     // openRTS's 395 over Brakes.dll (docs/train.md); rts: as RTS.
@@ -244,6 +256,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             show_screens = true;
         } else if (args[i] == "--light-defs") {
             show_light_defs = true;
+        } else if (args[i] == "--record" && i + 1 < args.size()) {
+            record_path = args[++i];
+        } else if (args[i] == "--record-library" && i + 1 < args.size()) {
+            record_library = args[++i];
         } else if (args[i] == "--screens-image" && i + 1 < args.size()) {
             screens_image = args[++i];
         } else if (args[i] == "--seconds" && i + 1 < args.size()) {
@@ -353,6 +369,24 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
 
     trainplugin::LegacyWorld world;
     const auto* cab = consist->cab(player);
+    // The golden run's file and what it last saw of each car's switches.
+    std::FILE* record = nullptr;
+    std::vector<std::vector<std::uint32_t>> recorded_switches;
+    std::vector<std::vector<std::pair<std::uint32_t, float>>> recorded_displays;
+    if (!record_path.empty()) {
+#ifdef _WIN32
+        if (fopen_s(&record, record_path.c_str(), "w") != 0) record = nullptr;
+#else
+        record = std::fopen(record_path.c_str(), "w");
+#endif
+        if (!record) {
+            std::fprintf(stderr, "cannot write %s\n", record_path.c_str());
+            return 2;
+        }
+        world.record_aux_vars = true;
+        std::fprintf(record, "t\tcar\tkmh\tpipe\tcyl\tind\taux\tmr\tur\te_ind\te_pipe_rate\te_aux_rate\te_mr_rate\te_ept\te_systems\te_alsn\t"
+                             "e_flags\tsnd_lib\tsnd_ext\tsnd_cab\tswitches\tdisplays\tvar\n");
+    }
     int failures = 0;
     double time = 0.0;
     double next_print = 0.0;
@@ -597,6 +631,58 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         if (const auto text = consist->take_messages(); !text.empty()) std::printf("%s", text.c_str());
         train.step();
         if (cut_train) cut_train->step();
+        if (record) {
+            recorded_switches.resize(legacy.size());
+            recorded_displays.resize(legacy.size());
+            for (std::size_t i = 0; i < legacy.size(); ++i) {
+                const auto* out = consist->output(i);
+                const int lib = consist->aux_library(i, record_library);
+                if (!out || lib < 0) continue;
+                const auto& s = train.cars()[i];
+                const auto& e = out->engine;
+                const auto list = [](const std::vector<std::uint16_t>& codes) {
+                    std::string text;
+                    for (const auto c : codes) text += (text.empty() ? "" : " ") + std::to_string(c);
+                    return text.empty() ? std::string("-") : text;
+                };
+                const auto l = static_cast<std::size_t>(lib);
+                std::string switches;
+                auto& seen = recorded_switches[i];
+                seen.resize(out->switches.size(), ~0u);
+                for (std::size_t k = 0; k < out->switches.size(); ++k) {
+                    if (out->switches[k].state == seen[k]) continue;
+                    seen[k] = out->switches[k].state;
+                    switches += (switches.empty() ? "" : " ") + std::to_string(k) + "=" + std::to_string(seen[k]);
+                }
+                // Displays: a change of state, or of value by over 0.005.
+                std::string displays;
+                auto& shown = recorded_displays[i];
+                shown.resize(out->displays.size(), {~0u, -1e9f});
+                for (std::size_t k = 0; k < out->displays.size(); ++k) {
+                    const auto& d = out->displays[k];
+                    if (d.state == shown[k].first && std::abs(d.value - shown[k].second) <= 0.005f) continue;
+                    shown[k] = {d.state, d.value};
+                    char text[48];
+                    std::snprintf(text, sizeof text, "%s%zu=%u/%.3g", displays.empty() ? "" : " ", k, d.state, d.value);
+                    displays += text;
+                }
+                std::fprintf(record, "%.2f\t%zu\t%.3f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%u\t%u\t%u\t%s\t%s\t%s\t%s\t",
+                             time, i, train.speed() * 3.6, s.pipe, s.cylinder, s.independent, s.auxiliary, s.main_reservoir, e.equalising,
+                             e.independent_brake, e.train_pipe_rate, e.auxiliary_rate, e.main_reservoir_rate, e.ep_value,
+                             static_cast<unsigned>(e.systems), static_cast<unsigned>(e.alsn_on), e.engine_flags,
+                             l < out->aux_sound.size() ? list(out->aux_sound[l].triggers).c_str() : "-", list(out->sound_ext).c_str(),
+                             list(out->sound_cab).c_str(), switches.empty() ? "-" : switches.c_str());
+                std::fprintf(record, "%s\t", displays.empty() ? "-" : displays.c_str());
+                if (l < out->aux_vars.size()) {
+                    for (const float v : out->aux_vars[l].var) {
+                        std::uint32_t bits = 0;
+                        std::memcpy(&bits, &v, sizeof bits);
+                        std::fprintf(record, "%08X ", bits);
+                    }
+                }
+                std::fprintf(record, "\n");
+            }
+        }
         if (show_body) {
             body_most.resize(train.cars().size());
             for (std::size_t i = 0; i < train.cars().size(); ++i) {
@@ -742,6 +828,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         ++failures;
     }
     if (!screens_image.empty()) write_screen_images(vfs, legacy[player], consist->cab(player), consist->output(player), screens_image);
+    if (record) std::fclose(record);
     std::printf("%s\n", failures ? "FAILED" : "ok");
     return failures ? 1 : 0;
 }

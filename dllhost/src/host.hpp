@@ -283,6 +283,7 @@ private:
     // The tape (RTSGetInteger / RTSSetIntegerG 7): the car it rolls on, -1
     // none; what the DLLs changed this step (a start always opens a new file).
     std::int32_t tape_car_ = -1;
+    bool want_aux_vars_ = false; // StepRequest::want_aux_vars
     bool tape_set_ = false;
     bool tape_started_ = false;
     void mark_tape();

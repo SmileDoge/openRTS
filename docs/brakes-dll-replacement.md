@@ -105,12 +105,17 @@ CONFIRMED where an address is given.
      - `+24` the vigilance timer: whistle at 5 s, ЭПК at 12 s;
      - `+336` a limit of its own.
 
-Not traced yet:
-- how a train's DLL learns Brakes.dll's state (an ЭПК tripped, the КЛУБ
-  powered: testers say the ЭД9М does not make its circuit without the ЭПК
-  key and the КЛУБ's power): through `Engine`, the switches or `var`;
-- which other DLLs reach into `BRAKES` as ed9m.dll does;
-- `_Run`'s whole map of `var`.
+Step 0 (done 2026-11-18, `docs/reverse/brakes-dll.md`) answered the
+rest:
+- 34 of the installation's DLLs reach into `BRAKES` as ed9m.dll does.
+  `var + 32` is their exchange word: they set bit 4 (the safety devices
+  powered) and their ЭПТ and other commands, one step each.
+- They read its bits back to cut traction: 1 the ЭПК tripped, 2 the 418,
+  8 САУТ's braking. That is why the ЭД9М will not make its circuit
+  without the ЭПК and the КЛУБ.
+- What it writes of `Engine`, its functions by system, its parameters and
+  sound triggers are mapped there; `_Run`'s brakes inside are left for
+  step 2.
 
 ## The way: an openRTS "BRAKES" in the host
 
@@ -135,7 +140,16 @@ openRTS around a running Brakes.dll, as now, is what this replaces.
   - all on the realistic air.
 - **A switch per locomotive:** Brakes.dll or openRTS's. Any car whose
   parameters openRTS does not understand keeps Brakes.dll, so nothing that
-  works breaks.
+  works breaks. Brakes.dll stays the default until testers have had
+  openRTS's on the ЭД9М and the ЭП20.
+- **A second setting, its numbers** (the user's, 2026-11-18): "as
+  Brakes.dll" (the default) or "openRTS".
+  - With openRTS's brakes it picks the coefficients: the rates, the
+    pressures, the times.
+  - "As Brakes.dll" takes them from `docs/reverse/brakes-dll.md` §10.
+  - "openRTS" takes the real devices' where the books or testers' videos
+    differ, each difference listed for the user to decide.
+  - Brakes.dll's own numbers cannot change without changing its code.
 
 ## Steps
 
@@ -145,7 +159,8 @@ openRTS around a running Brakes.dll, as now, is what this replaces.
    MaDaDev DLLs (search for `BRAKES` in each), where they reach into it.
    Notes describe behaviour and interfaces; no MaDaDev code goes into the
    repo.
-1. **Golden runs.**
+1. **Golden runs** (done 2026-11-18, `docs/reverse/brakes-dll.md` §9:
+   `--record`, `tests/data/golden/`, `tools/reverse/golden_report.py`).
    - Scripted drives through `openrts-train-check --dll ... --script` with
      Brakes.dll (`tests/data/*.script`, as `ep20_cabs`).
    - Each run records its `var`, `Engine`'s outputs, sounds and the
