@@ -406,6 +406,11 @@ car's sound is made.
   Started and released in one update, the sound stops at once (the ChS4t's
   auxiliary compressor above 7 atm: silent, as in RTS).
 - **`Fade`:** a started loop fades in, a released loop fades out and stops.
+  A one-shot starts at its volume (CONFIRMED, `0x4A8C00`: `PlayOneShot`
+  sets no fade timer, `StartLoop` and `StartLoopRelease` set both to the
+  action's `Fade`). openRTS faded one-shots in until 2026-11-18: the ЭД9М's
+  doors (`PlayOneShot ( ... Fade ( 2.0 ) )`) swelled for two seconds
+  (testers).
 - **`EnableStream` / `DisableStream` / `SuspendStream` (index from 1):** a
   disabled stream stops its voices; a suspended one keeps them but its
   triggers pause.

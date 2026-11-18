@@ -772,6 +772,15 @@ The other two choices take the air after the valve from the model:
   the DLL's valve vented the pipe towards its own УР, still 0 after an
   emergency, which openRTS took for its ЭПК (testers: "ТМ моментально до
   0 почти падает").
+  A locomotive with several cabs in one car (`BR_NUMCABS`; the ЭП20:
+  `BR_395ID2 ( 200 )`, `BR_367ID2 ( 206 )` ... for its second) has each
+  cab's switches read (`BrakesLibrary::cabs`), and the working cab is the
+  first whose 367 stands in `BR_367OPPOL`, as Brakes.dll's `Run` finds it
+  (decompiled 2026-11-18; the 367 is a KEY switch, state 0 its key out).
+  Until then openRTS's valve read the first cab's handle: the ЭП20 started
+  "on" works from its second cab, the first's handle stands at 0, VI on its
+  130 valve (states VI .. I), and the УР and pipe stayed at 0 (testers;
+  test `dll_ep20_cabs`).
   The mode "the DLL's valve" reads the same cocks: its УР reaches the
   pipe only with the separating cock open and the 367 in its operating
   state. Until 2026-11-18 the pipe followed it through both shut (a cab

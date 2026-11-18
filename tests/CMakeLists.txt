@@ -351,6 +351,10 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.dll_ed9m_rear COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_ED9M-0062 mdd_ED9M-0062_G mdd_ED9M-0062_M mdd_ED9M-0062_P mdd_ED9M-0062_GR
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/ed9m_rear.script" --seconds 11)
+    # The EP20's two cabs: openRTS's valve takes the working one's handle.
+    add_test(NAME openrts.content.dll_ep20_cabs COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_EP20-063 mdd_EP20-063 --start on --air own
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/ep20_cabs.script" --seconds 11)
     # Changing ends on a six-car ED9M: the new cab's ЭПК key and КЛУБ.
     add_test(NAME openrts.content.dll_ed9m_change_ends COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR

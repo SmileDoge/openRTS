@@ -320,6 +320,22 @@ float compressor_rate(bool& running, const EngineInputs& inputs) {
     return 0.05f;
 }
 
+void KeyboardController::save(StateWriter& out, const std::string_view prefix) const {
+    const std::string p(prefix);
+    const auto& h = *handles_;
+    out.put(p + "handles", h.throttle, h.reverser, h.brake, h.independent, h.charging_pressure, h.equalising, h.ep_brake, h.sanding,
+            h.ep_target);
+    out.put(p + "compressor", compressor_);
+}
+
+void KeyboardController::restore(const StateReader& in, const std::string_view prefix) {
+    const std::string p(prefix);
+    auto& h = *handles_;
+    in.get(p + "handles", h.throttle, h.reverser, h.brake, h.independent, h.charging_pressure, h.equalising, h.ep_brake, h.sanding,
+           h.ep_target);
+    in.get(p + "compressor", compressor_);
+}
+
 KeyboardController::KeyboardController(std::shared_ptr<DriverHandles> handles, const bool master)
     : handles_(std::move(handles)), master_(master) {}
 
@@ -1044,6 +1060,72 @@ void Train::set_line_load(const std::size_t car, const float current, const floa
     cars_[car].line_current = current;
     cars_[car].line_heat = heat;
     cars_[car].line_burnt = burnt;
+}
+
+void Train::save_state(StateWriter& out) const {
+    const auto& impl = *impl_;
+    const auto end = [&](const char* key, const std::optional<TrackTraveller>& t) {
+        if (t) out.put(key, t->node(), t->offset(), t->forward());
+    };
+    end("head", impl.head);
+    end("tail", impl.tail);
+    out.put("travel", impl.moving_backward, impl.against, impl.stopped_at_end, asleep_);
+    for (std::size_t i = 0; i < cars_.size(); ++i) {
+        const auto& c = cars_[i];
+        const std::string p = "c" + std::to_string(i) + ".";
+        out.put(p + "motion", c.offset, c.velocity, c.travelled, c.rolled[0], c.rolled[1]);
+        out.put(p + "air", c.pipe, c.auxiliary, c.cylinder, c.independent, c.control, c.charging_pipe, c.ep, c.ep_command, c.ep_fill,
+                c.main_reservoir);
+        out.put(p + "hand", c.handbrake, c.pipe_ends, c.coupler_open, c.cables, c.valves, c.chocks);
+        out.put(p + "distributor", c.distributor.load, c.distributor.mountain, c.distributor.plug);
+        out.put(p + "flat", c.flat[0], c.flat[1], c.flat_phase[0][0], c.flat_phase[0][1], c.flat_phase[1][0], c.flat_phase[1][1],
+                c.flat_seen[0], c.flat_seen[1]);
+        out.put(p + "shoes", c.shoe_state[0].wet, c.shoe_state[0].heat, c.shoe_state[0].wear, c.shoe_state[0].burning,
+                c.shoe_state[1].wet, c.shoe_state[1].heat, c.shoe_state[1].wear, c.shoe_state[1].burning, c.slid);
+        out.put(p + "sand", c.sand_left, c.sand_travel);
+    }
+    impl.air.save(out);
+    for (std::size_t i = 0; i < impl.controllers.size(); ++i) {
+        if (impl.controllers[i]) impl.controllers[i]->save(out, "k" + std::to_string(i) + ".");
+    }
+}
+
+void Train::restore_state(const StateReader& in) {
+    auto& impl = *impl_;
+    if (network_) {
+        const auto end = [&](const char* key, std::optional<TrackTraveller>& t) {
+            std::uint32_t node{};
+            double offset{};
+            bool forward = true;
+            if (in.get(key, node, offset, forward) && network_->node(node)) t = TrackTraveller(*network_, node, offset, forward);
+        };
+        end("head", impl.head);
+        end("tail", impl.tail);
+    }
+    bool asleep = asleep_;
+    in.get("travel", impl.moving_backward, impl.against, impl.stopped_at_end, asleep);
+    for (std::size_t i = 0; i < cars_.size(); ++i) {
+        auto& c = cars_[i];
+        const std::string p = "c" + std::to_string(i) + ".";
+        in.get(p + "motion", c.offset, c.velocity, c.travelled, c.rolled[0], c.rolled[1]);
+        in.get(p + "air", c.pipe, c.auxiliary, c.cylinder, c.independent, c.control, c.charging_pipe, c.ep, c.ep_command, c.ep_fill,
+               c.main_reservoir);
+        in.get(p + "hand", c.handbrake, c.pipe_ends, c.coupler_open, c.cables, c.valves, c.chocks);
+        in.get(p + "distributor", c.distributor.load, c.distributor.mountain, c.distributor.plug);
+        in.get(p + "flat", c.flat[0], c.flat[1], c.flat_phase[0][0], c.flat_phase[0][1], c.flat_phase[1][0], c.flat_phase[1][1],
+               c.flat_seen[0], c.flat_seen[1]);
+        in.get(p + "shoes", c.shoe_state[0].wet, c.shoe_state[0].heat, c.shoe_state[0].wear, c.shoe_state[0].burning,
+               c.shoe_state[1].wet, c.shoe_state[1].heat, c.shoe_state[1].wear, c.shoe_state[1].burning, c.slid);
+        in.get(p + "sand", c.sand_left, c.sand_travel);
+        c.acceleration = 0.0f;
+        c.body[0] = c.body[1] = c.body[2] = 0.0f;
+        c.body_rate[0] = c.body_rate[1] = c.body_rate[2] = 0.0f;
+    }
+    impl.air.restore(in);
+    for (std::size_t i = 0; i < impl.controllers.size(); ++i) {
+        if (impl.controllers[i]) impl.controllers[i]->restore(in, "k" + std::to_string(i) + ".");
+    }
+    asleep_ = asleep;
 }
 
 void Train::set_asleep(const bool asleep) noexcept {

@@ -166,6 +166,14 @@ public:
     void set_on_foot(bool on) noexcept { on_foot_ = on; }
     [[nodiscard]] bool on_foot() const noexcept { return on_foot_; }
     [[nodiscard]] bool alive() const { return consist_ && consist_->alive(); }
+    // A saved game: the DLLs' state by car key (LegacyConsist::save_state /
+    // restore_state). False: no DLLs running, or the host failed.
+    [[nodiscard]] bool save_state(std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>& states) {
+        return consist_ && consist_->save_state(states);
+    }
+    bool restore_state(const std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>& states) {
+        return consist_ && consist_->restore_state(states);
+    }
 
     // A helper's hands on the engineer's cab (docs/net.md, "Players and
     // helpers"): no DLLs here; the cab is what the engineer's DLLs showed

@@ -1,6 +1,8 @@
 #include "activity_view.hpp"
 
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -153,6 +155,183 @@ void ActivityView::start(const double time_of_day, ActivityWorld& world) {
     step_scripts(world);
     std::cout << "activity: started at " << clock_text(time_of_day) << ", the player's train " << player_.service << ' '
               << player_.train << ", " << events_.size() << " events" << std::endl;
+}
+
+namespace {
+
+[[nodiscard]] std::string escape_line(const std::string& text) {
+    std::string out;
+    for (const char c : text) {
+        if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\t') out += "\\t";
+        else if (c != '\r') out += c;
+    }
+    return out;
+}
+
+[[nodiscard]] std::string unescape_line(const std::string& text) {
+    std::string out;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\\' && i + 1 < text.size()) {
+            const char n = text[++i];
+            out += n == 'n' ? '\n' : n == 't' ? '\t' : n;
+        } else {
+            out += text[i];
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] std::vector<std::string> split_tabs(const std::string& value) {
+    std::vector<std::string> fields;
+    std::size_t start = 0;
+    for (;;) {
+        const auto tab = value.find('\t', start);
+        fields.push_back(value.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
+        if (tab == std::string::npos) break;
+        start = tab + 1;
+    }
+    return fields;
+}
+
+} // namespace
+
+std::string ActivityView::save() const {
+    std::ostringstream out;
+    out << std::setprecision(17);
+    out << "now=" << now_ << "\noutcome=" << static_cast<int>(outcome_) << "\nmain_menu=" << main_menu_ << "\nplayer=" << player_.service
+        << ' ' << player_.train << '\n';
+    for (std::size_t i = 0; i < events_.size(); ++i) {
+        const auto& e = events_[i];
+        out << "event=" << i << ' ' << (e.enabled ? 1 : 0) << ' ' << e.level << ' ' << e.armed_at << ' ' << (e.held ? 1 : 0) << ' '
+            << (e.level_changed ? 1 : 0) << '\n';
+        for (const auto& [where, value] : e.last) {
+            out << "last=" << i << ' ' << (std::get<0>(where) ? 1 : 0) << ' ' << std::get<1>(where) << ' ' << std::get<2>(where) << ' '
+                << std::get<3>(where) << ' ' << std::get<4>(where) << ' ' << value << '\n';
+        }
+    }
+    for (const auto& script : scripts_) {
+        std::size_t index = events_.size();
+        for (std::size_t i = 0; i < events_.size(); ++i)
+            if (events_[i].event == script.event && events_[i].service == script.service) index = i;
+        if (index == events_.size()) continue;
+        out << "script=" << index << ' ' << script.service << ' ' << script.train.service << ' ' << script.train.train << ' ' << script.next
+            << ' ' << script.wait << '\n';
+    }
+    for (const auto service : services_) out << "service=" << service << '\n';
+    for (const auto& [train, set] : tracked_) {
+        out << "tracked=" << train.service << ' ' << train.train << ' ' << (set.cars ? 1 : 0);
+        if (set.cars)
+            for (const auto& car : *set.cars) out << ' ' << car.train.service << ' ' << car.train.train << ' ' << car.number << ' ' << (car.by_id ? 1 : 0);
+        out << '\n';
+    }
+    for (const auto& entry : journal_) out << "journal=" << entry.time << '\t' << escape_line(entry.title) << '\t' << escape_line(entry.text) << '\n';
+    for (const auto& window : windows_) {
+        std::string buttons;
+        for (const auto& b : window.buttons) buttons += (buttons.empty() ? "" : ",") + b;
+        out << "window=" << window.id << ' ' << (window.modal ? 1 : 0) << ' ' << window.expires << '\t' << window.entry.time << '\t'
+            << escape_line(window.entry.title) << '\t' << escape_line(window.entry.text) << '\t' << buttons << '\n';
+    }
+    return out.str();
+}
+
+void ActivityView::load(const std::string& text) {
+    started_ = true;
+    scripts_.clear();
+    services_.clear();
+    tracked_.clear();
+    journal_.clear();
+    windows_.clear();
+    std::istringstream input(text);
+    for (std::string line; std::getline(input, line);) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const auto equals = line.find('=');
+        if (equals == std::string::npos) continue;
+        const auto key = line.substr(0, equals);
+        const auto value = line.substr(equals + 1);
+        std::istringstream fields(value);
+        if (key == "now") {
+            fields >> now_;
+        } else if (key == "outcome") {
+            int outcome = 0;
+            if (fields >> outcome) outcome_ = static_cast<Outcome>(std::clamp(outcome, 0, 2));
+        } else if (key == "main_menu") {
+            fields >> main_menu_;
+        } else if (key == "player") {
+            fields >> player_.service >> player_.train;
+        } else if (key == "event") {
+            std::size_t i{};
+            int enabled = 1, held = 0, changed = 0;
+            std::int32_t level = 1;
+            double armed_at = 0.0;
+            if (fields >> i >> enabled >> level >> armed_at >> held >> changed && i < events_.size()) {
+                auto& e = events_[i];
+                e.enabled = enabled != 0;
+                e.level = level;
+                e.armed_at = armed_at;
+                e.held = held != 0;
+                e.level_changed = changed != 0;
+                e.last.clear();
+            }
+        } else if (key == "last") {
+            std::size_t i{}, relation{};
+            int by_id = 0;
+            std::uint32_t service{}, train{};
+            std::int32_t number{};
+            double last = 0.0;
+            if (fields >> i >> by_id >> service >> train >> number >> relation >> last && i < events_.size())
+                events_[i].last[{by_id != 0, service, train, number, relation}] = last;
+        } else if (key == "script") {
+            std::size_t i{};
+            Script script;
+            if (fields >> i >> script.service >> script.train.service >> script.train.train >> script.next >> script.wait && i < events_.size()) {
+                script.event = events_[i].event;
+                scripts_.push_back(script);
+            }
+        } else if (key == "service") {
+            std::uint32_t service{};
+            if (fields >> service) services_.insert(service);
+        } else if (key == "tracked") {
+            ActivityTrainId train;
+            int has_cars = 0;
+            if (!(fields >> train.service >> train.train >> has_cars)) continue;
+            CarSet set;
+            if (has_cars) {
+                set.cars.emplace();
+                ActivityCarRef car;
+                int by_id = 0;
+                while (fields >> car.train.service >> car.train.train >> car.number >> by_id) {
+                    car.by_id = by_id != 0;
+                    set.cars->push_back(car);
+                }
+            }
+            tracked_[train] = std::move(set);
+        } else if (key == "journal") {
+            const auto parts = split_tabs(value);
+            if (parts.size() < 3) continue;
+            journal_.push_back({.time = std::atof(parts[0].c_str()), .title = unescape_line(parts[1]), .text = unescape_line(parts[2])});
+        } else if (key == "window") {
+            const auto parts = split_tabs(value);
+            if (parts.size() < 5) continue;
+            Window window;
+            std::istringstream head(parts[0]);
+            int modal = 0;
+            head >> window.id >> modal >> window.expires;
+            window.modal = modal != 0;
+            window.entry = {.time = std::atof(parts[1].c_str()), .title = unescape_line(parts[2]), .text = unescape_line(parts[3])};
+            std::size_t start = 0;
+            while (start <= parts[4].size() && !parts[4].empty()) {
+                const auto comma = parts[4].find(',', start);
+                window.buttons.push_back(parts[4].substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+            windows_.push_back(std::move(window));
+        }
+    }
+    std::cout << "activity: put back at " << clock_text(now_) << ", " << scripts_.size() << " scripts waiting, " << services_.size()
+              << " services in play" << std::endl;
 }
 
 void ActivityView::choose(const std::int32_t menu, const std::int32_t item) {

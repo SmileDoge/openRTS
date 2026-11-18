@@ -278,14 +278,26 @@ public:
         // other cars of a multiple unit keep a УР of their own.
         if ((out.loco_flags & 1u) == 0) return;
         const auto* engine = inputs.definition && inputs.definition->engine ? &*inputs.definition->engine : nullptr;
-        const auto valve = engine ? engine->brakes_library.valve : -1;
+        // The cab the driver works (several in one car: the one whose 367 is
+        // on, as Brakes.dll finds it). Until 2026-11-18 the first cab's
+        // handle was read: from the ЭП20's second cab openRTS's valve took
+        // the first's, standing in VI, and the УР and pipe stayed at 0
+        // (testers).
+        const std::size_t cab = engine ? working_cab(engine->brakes_library, out.switches) : 0;
+        const auto ids = engine ? (cab == 0 ? engine->brakes_library : engine->brakes_library.for_cab(cab))
+                                : formats::EngineDefinition::BrakesLibrary{};
+        if (cab != last_cab_) {
+            last_cab_ = cab;
+            valve_started_ = false; // the other cab's valve, from where the pipe stands
+        }
+        const auto valve = ids.valve;
         if (mode == DllAir::own_valve && valve >= 0 && static_cast<std::size_t>(valve) < out.switches.size()) {
             // openRTS's 395 on Brakes.dll's handle, its states as the cab
             // names them (valve_states; VЭ as Va without the ЭПТ); a state
             // not known keeps the last position. Its ЭПТ demand stays the DLL's.
             // The charging pressure: the cab's reducer (BR_REDID1), else
             // BR_ZARPRESS, else 5.0.
-            controls_ = cab_.read(engine->brakes_library, out.switches, controls_);
+            controls_ = cab_.of_cab(cab).read(ids, out.switches, controls_);
             if (controls_.position < 0) controls_.position = static_cast<int>(simulation::ValvePosition::running);
             const auto position = static_cast<simulation::ValvePosition>(controls_.position);
             const float charging = controls_.charging > 0.0f                    ? controls_.charging
@@ -328,13 +340,24 @@ public:
         // cock and the 367 shut (testers: a cab changed, both cocks shut, the
         // pipe charged as the handle went to II).
         if (out.engine.equalising > 0.5f) {
-            if (engine) controls_ = cab_.read(engine->brakes_library, out.switches, controls_);
+            if (engine) controls_ = cab_.of_cab(cab).read(ids, out.switches, controls_);
             const bool connected = controls_.combined != 1 && !controls_.blocked && !controls_.separated;
             if (connected) demands.equalising = out.engine.equalising;
             demands.equalising_kept = out.engine.equalising;
         }
     }
     [[nodiscard]] bool rts_brakes() const override { return !air_ || air_->mode == DllAir::rts; }
+    // A saved game: openRTS's valve over the DLL (its УР, its ЭПТ demand),
+    // the compressor's governor and the DLL УР last seen. The DLL's own
+    // state goes with LegacyConsist::save_state.
+    void save(simulation::StateWriter& out, const std::string_view prefix) const override {
+        const std::string p(prefix);
+        out.put(p + "valve", state_.equalising, state_.ep_target, valve_started_, compressor_, last_dll_ur_, dll_ur_known_);
+    }
+    void restore(const simulation::StateReader& in, const std::string_view prefix) override {
+        const std::string p(prefix);
+        in.get(p + "valve", state_.equalising, state_.ep_target, valve_started_, compressor_, last_dll_ur_, dll_ur_known_);
+    }
 
 private:
     std::weak_ptr<const LegacyConsist::Outputs> outputs_;
@@ -344,6 +367,7 @@ private:
     CabBrakes controls_;
     simulation::ValveState state_;
     bool valve_started_ = false;
+    std::size_t last_cab_ = 0; // the working cab at the last step
     bool compressor_ = false;
     float last_dll_ur_{};      // the DLL's УР at the last step
     bool dll_ur_known_ = false;
@@ -1127,12 +1151,26 @@ CabBrakes LegacyConsist::cab_brakes(const std::size_t train, const std::size_t c
     const auto* definition = cars_[at].definition;
     if (!definition || !definition->engine || !definition->engine->brakes_library.present) return {};
     // As the controller reads them (LegacyController).
-    const auto& ids = definition->engine->brakes_library;
+    const auto& all = definition->engine->brakes_library;
+    const auto cab = working_cab(all, outputs_->cars[at].switches);
+    const auto ids = cab == 0 ? all : all.for_cab(cab);
     return brake_cab_controls(ids, cabs_[at]).read(ids, outputs_->cars[at].switches);
+}
+
+std::size_t working_cab(const formats::EngineDefinition::BrakesLibrary& ids, const std::vector<dllhost::SwitchState>& switches) {
+    if (ids.cabs.size() <= 1 || ids.block_operating < 0) return 0;
+    for (std::size_t k = 0; k < ids.cabs.size(); ++k) {
+        const auto block = ids.cabs[k].block;
+        if (block >= 0 && static_cast<std::size_t>(block) < switches.size()
+            && static_cast<std::int32_t>(switches[static_cast<std::size_t>(block)].state) == ids.block_operating)
+            return k;
+    }
+    return 0;
 }
 
 BrakeCabControls brake_cab_controls(const formats::EngineDefinition::BrakesLibrary& ids, const formats::CabDescription& cab) {
     BrakeCabControls controls;
+    for (std::size_t k = 1; k < ids.cabs.size(); ++k) controls.more.push_back(brake_cab_controls(ids.for_cab(k), cab));
     const auto control = [&](const std::int32_t id) { return id >= 0 ? cab.find_switch(static_cast<std::uint32_t>(id)) : nullptr; };
     if (const auto* valve = control(ids.valve)) controls.valve = valve_states(*valve);
     if (const auto* controller = control(ids.controller)) controls.controller = valve_states(*controller);

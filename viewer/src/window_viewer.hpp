@@ -57,6 +57,9 @@ struct WindowOptions {
     std::optional<bool> parallax; // --parallax on|off: the height maps' relief
     std::optional<int> compress_textures; // --compress-textures off|memory|on (renderer/bc7.hpp: 0, 1, 2)
     std::optional<int> texture_size;      // --texture-size full|1024|512|256 (GraphicsSettings::texture_size: 0..3)
+    // --save-game-after <s> <name>: save the game once, that long after the
+    // loading ended (scripted checks of the saved games).
+    std::optional<std::pair<double, std::string>> save_game_after;
     // --cab-shadows on|off: this run's shadow map around the cab.
     std::optional<bool> cab_shadows;
     std::int32_t time_of_day = 12 * 3600; // seconds

@@ -638,6 +638,15 @@ struct PanelState {
     std::string save_status;
     // RTS's Pause key (0x402FC3): the world stands still, the camera moves.
     bool paused = false;
+    // Saved games (ViewerScene::save_game / load_game): the panel asks, the
+    // frame loop does it (the scene is not changed while the panel is drawn).
+    std::array<char, 96> save_name{};
+    int save_choice = -1;
+    std::string save_request;                 // a name to save as
+    std::optional<std::filesystem::path> load_request;
+    std::string game_status;                  // the last save's or load's outcome
+    double game_status_until = 0.0;
+    bool quick_save_key_down = false;         // F2
     // The panel's tab (testers, 2026-11-14: the sections one under another
     // lost what one looked for): general, graphics, train, world,
     // performance, the keys.
@@ -1066,6 +1075,35 @@ public:
                 ImGui::TextDisabled("%s", tr("(1: a smooth push of the bogie, harder with the speed and on the diverging route; 0: none)"));
             }
             ImGui::Checkbox(tr("Pause (Pause or F1)"), &panel.paused);
+            if (const auto folder = scene.saves_folder(); !folder.empty()) {
+                // Saved games: as RTS, F2 saves at once (the quick save).
+                ImGui::SeparatorText(tr("Saved games"));
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::InputTextWithHint("##save_name", tr("save name"), panel.save_name.data(), panel.save_name.size());
+                ImGui::SameLine();
+                if (ImGui::Button(tr("Save##game"))) panel.save_request = panel.save_name.data();
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", tr("(F2: quick save)"));
+                const auto saves = scene.saved_games();
+                if (saves.empty()) {
+                    ImGui::TextDisabled("%s", tr("(no saves on this route yet)"));
+                } else {
+                    panel.save_choice = std::clamp(panel.save_choice, 0, static_cast<int>(saves.size()) - 1);
+                    ImGui::SetNextItemWidth(220.0f);
+                    if (ImGui::BeginCombo("##saves", saves[static_cast<std::size_t>(panel.save_choice)].c_str())) {
+                        for (std::size_t i = 0; i < saves.size(); ++i) {
+                            if (ImGui::Selectable(saves[i].c_str(), static_cast<int>(i) == panel.save_choice)) panel.save_choice = static_cast<int>(i);
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button(tr("Load##game"))) {
+                        const auto& name = saves[static_cast<std::size_t>(panel.save_choice)];
+                        panel.load_request = folder / std::filesystem::path(std::u8string(name.begin(), name.end())).replace_extension(".save");
+                    }
+                }
+                if (!panel.game_status.empty() && ImGui::GetTime() < panel.game_status_until) ImGui::TextWrapped("%s", panel.game_status.c_str());
+            }
         }
 
         if (panel.tab == PanelState::Tab::graphics) {
@@ -2174,6 +2212,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.cursor_x = static_cast<float>(input.cursor_x);
         in.cursor_y = static_cast<float>(input.cursor_y);
         in.click_shift = shift;
+        in.click_ctrl = ctrl;
         in.scroll = pointer ? static_cast<float>(scroll) : 0.0f;
         in.walk_forward = down(GLFW_KEY_UP) || (wasd && down(GLFW_KEY_W));
         in.walk_back = down(GLFW_KEY_DOWN) || (wasd && down(GLFW_KEY_S));
@@ -2978,11 +3017,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         panel.effects.light_shafts = has("shafts");
     }
     // The field of view: the panel's, else RTS's (config.ini FOV, vertical, degrees).
+    // Num* brings back RTS's (else the default).
+    float base_fov = default_fov_degrees;
+    if (const auto rts = rts_config_value(read_rts_config(options.identity.root), "fov")) base_fov = std::clamp(*rts, 15.0f, 100.0f);
     if (const auto fov = remembered("fov")) {
         panel.fov = std::clamp(static_cast<float>(std::atof(fov->c_str())), 15.0f, 100.0f);
-    } else if (const auto rts = rts_config_value(read_rts_config(options.identity.root), "fov")) {
-        panel.fov = std::clamp(*rts, 15.0f, 100.0f);
+    } else {
+        panel.fov = base_fov;
     }
+    bool fov_reset_down = false; // Num* held
     StageClock stage_clock;
     StageTimes stages{};
     FovKeys fov_keys;
@@ -2991,6 +3034,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // the menu runs the game): what a frame waits on, without the panel.
     double perf_at = last_time + 10.0;
     DiscordStatus discord(options.discord && !capture);
+    double scripted_save_loaded_at = -1.0; // --save-game-after
+    bool scripted_save_done = false;
     while (!glfwWindowShouldClose(window.get())) {
         // The start's loading (as the last update left it): its screen, no
         // input for the scene, and for a start in the cab no time passing.
@@ -3035,6 +3080,21 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const bool fov_keyboard_free = true;
 #endif
         if (update_fov_keys(window.get(), fov_keys, panel.fov, elapsed, fov_keyboard_free)) remember("fov", std::to_string(panel.fov));
+        {
+            // Num*, or Ctrl+0 without a keypad (no cab assigns it): the field
+            // of view back to where it starts and Ctrl+wheel's zoom off
+            // (testers 2026-11-18; Num+ / Num- move it, as in RTS).
+            const auto held = [&](const int key) { return glfwGetKey(window.get(), key) == GLFW_PRESS; };
+            const bool reset = fov_keyboard_free
+                               && (held(GLFW_KEY_KP_MULTIPLY)
+                                   || ((held(GLFW_KEY_LEFT_CONTROL) || held(GLFW_KEY_RIGHT_CONTROL)) && held(GLFW_KEY_0)));
+            if (reset && !fov_reset_down) {
+                panel.fov = base_fov;
+                camera.view_zoom = 1.0f;
+                remember("fov", std::to_string(panel.fov));
+            }
+            fov_reset_down = reset;
+        }
         last_time = now;
 
         toggle_shading_from_keyboard(window.get(), input, renderer);
@@ -3233,6 +3293,39 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
         }
         if (const auto time = scene.take_time_of_day()) clock.time_of_day = *time;
+        if (const auto saved = scene.take_saved_clock()) {
+            // A loaded game's clock, season and weather.
+            clock.time_of_day = saved->time_of_day;
+            clock.season = std::clamp(saved->season, 0, 3);
+            clock.weather = saved->storm ? 3 : std::clamp(saved->weather, 0, 2);
+        }
+        {
+            // Saved games: the panel's requests and F2 (RTS: F2 saves the game).
+            const bool f2 = !imgui_has_keyboard() && glfwGetKey(window.get(), GLFW_KEY_F2) == GLFW_PRESS;
+            if (f2 && !panel.quick_save_key_down && !scene.saves_folder().empty()) panel.save_request = tr("quick save");
+            panel.quick_save_key_down = f2;
+            // --save-game-after: once, that long after the loading ended.
+            if (scene.loading().done && scripted_save_loaded_at < 0.0) scripted_save_loaded_at = now;
+            if (options.save_game_after && !scripted_save_done && scripted_save_loaded_at >= 0.0
+                && now - scripted_save_loaded_at >= options.save_game_after->first) {
+                panel.save_request = options.save_game_after->second;
+                scripted_save_done = true;
+            }
+            if (!panel.save_request.empty()) {
+                const auto name = std::exchange(panel.save_request, {});
+                const auto error = scene.save_game(name);
+                panel.game_status = error.empty() ? trf("saved: %s", name.c_str()) : error;
+                panel.game_status_until = ImGui::GetTime() + 8.0;
+                if (error.empty()) panel.save_choice = 0;
+            }
+            if (panel.load_request) {
+                const auto file = *std::exchange(panel.load_request, std::nullopt);
+                const auto error = scene.load_game(file);
+                const auto stem = file.stem().u8string();
+                panel.game_status = error.empty() ? trf("loading: %s", std::string(stem.begin(), stem.end()).c_str()) : error;
+                panel.game_status_until = ImGui::GetTime() + 8.0;
+            }
+        }
         auto scene_clock = clock.advance(panel.paused || scene.paused() || loading.hold_time ? 0.0f : elapsed);
         scene_clock.background = background;
         camera.head_nod = camera.head_tilt = 0.0f;

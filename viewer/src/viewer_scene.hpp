@@ -167,6 +167,7 @@ struct SceneInput {
     bool held = false;                 // the left button is down (a cab control is dragged)
     float cursor_x{}, cursor_y{};      // the cursor in window pixels (y down)
     bool click_shift = false;
+    bool click_ctrl = false; // Ctrl held with the click (placements: one more train)
     float scroll{};
     std::vector<KeyEvent> keys;   // every key press and release this frame (not repeats)
 };
@@ -282,6 +283,21 @@ public:
     [[nodiscard]] virtual std::string world_report() const { return {}; }
     // A time of day the scene sets (an RTS server's clock), taken once.
     [[nodiscard]] virtual std::optional<double> take_time_of_day() { return std::nullopt; }
+    // Saved games (docs/saves.md): `name` written into saves_folder() (an
+    // error, or empty); a file put back over this game (the same route and
+    // scenario); the names there. Empty folder: this scene has no saves.
+    [[nodiscard]] virtual std::filesystem::path saves_folder() const { return {}; }
+    [[nodiscard]] virtual std::vector<std::string> saved_games() const { return {}; }
+    [[nodiscard]] virtual std::string save_game(const std::string& /*name*/) { return "nothing to save"; }
+    [[nodiscard]] virtual std::string load_game(const std::filesystem::path& /*file*/) { return "nothing to load into"; }
+    // A loaded game's clock, once: the window's clock takes it.
+    struct SavedClock {
+        double time_of_day{};
+        int season{};
+        int weather{};
+        bool storm = false;
+    };
+    [[nodiscard]] virtual std::optional<SavedClock> take_saved_clock() { return std::nullopt; }
     // The game is paused from outside (a network server): no time passes.
     [[nodiscard]] virtual bool paused() const { return false; }
     // The start's loading, as the last update left it.
@@ -378,6 +394,11 @@ struct SceneContent {
     // docs/activities.md) and the folder of its own files (RTS_ACT/<name>).
     std::shared_ptr<const formats::Activity> activity;
     core::VirtualPath activity_folder;
+    // Route scenes: a saved game to start from (--load, docs/saves.md), put
+    // back once the world is loaded (the scenario's state before its start).
+    std::filesystem::path load_game;
+    // The scenario as --activity named it (a save keeps it to start again).
+    std::string activity_name;
 };
 
 [[nodiscard]] SceneLoadResult load_shape_scene(SceneContent content, const core::VirtualPath& shape);

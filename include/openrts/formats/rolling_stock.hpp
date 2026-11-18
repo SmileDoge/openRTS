@@ -309,6 +309,30 @@ struct EngineDefinition {
         // "Кран тормозной магистрали" on the ЭД9М): only with BR_RAZOBSHK
         // non-zero; open while its switch is not 0 (Brakes.dll Run).
         std::int32_t separating = -1;
+        // A locomotive with several cabs in one car (BR_NUMCABS; the ЭП20:
+        // BR_395ID2 ( 200 ) ... for its second): each cab's switches
+        // (BR_...ID1, ID2, ...). The fields above are the first cab's.
+        struct CabIds {
+            std::int32_t valve = -1, controller = -1, equalising_gauge = -1, reducer = -1, combined = -1, block = -1,
+                         separating = -1;
+        };
+        std::vector<CabIds> cabs;
+        // These settings with cab `k`'s switches (k from 0), no `cabs`.
+        [[nodiscard]] BrakesLibrary for_cab(const std::size_t k) const {
+            BrakesLibrary one = *this;
+            one.cabs.clear();
+            if (k < cabs.size()) {
+                const auto& c = cabs[k];
+                one.valve = c.valve;
+                one.controller = c.controller;
+                one.equalising_gauge = c.equalising_gauge;
+                one.reducer = c.reducer;
+                one.combined = c.combined;
+                one.block = c.block;
+                one.separating = separating >= 0 || c.separating >= 0 ? c.separating : -1;
+            }
+            return one;
+        }
     };
     BrakesLibrary brakes_library;
     // EngExtended WorksOnLineVoltages: the supplies it works on, in file

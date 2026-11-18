@@ -66,6 +66,10 @@ struct BrakeCabControls {
     std::vector<std::int8_t> controller; // the КПТ's, as the valve's
     std::vector<float> reducer;
     std::vector<std::int8_t> combined;
+    // The tables of the locomotive's other cabs (BrakesLibrary::cabs from
+    // the second on): the same cab file, their own switches.
+    std::vector<BrakeCabControls> more;
+    [[nodiscard]] const BrakeCabControls& of_cab(const std::size_t k) const { return k == 0 || k > more.size() ? *this : more[k - 1]; }
     // From the switches' states now; `last` the reading before (an unknown
     // state keeps its value).
     [[nodiscard]] CabBrakes read(const formats::EngineDefinition::BrakesLibrary& ids,
@@ -73,6 +77,12 @@ struct BrakeCabControls {
 };
 [[nodiscard]] BrakeCabControls brake_cab_controls(const formats::EngineDefinition::BrakesLibrary& ids,
                                                   const formats::CabDescription& cab);
+// Brakes.dll's working cab of a locomotive with several in one car
+// (BR_NUMCABS, the ЭП20's): the first whose blocking device 367
+// (BR_367ID<k>) stands in BR_367OPPOL, as Brakes.dll's Run looks for it
+// (decompiled, 2026-11-18); none: the first (k from 0).
+[[nodiscard]] std::size_t working_cab(const formats::EngineDefinition::BrakesLibrary& ids,
+                                      const std::vector<dllhost::SwitchState>& switches);
 
 // A switch's AssignKey keys as RTS keeps them in ActSwitch::Key (+72, the
 // loader 0x45AE90): per key, two at most, its virtual-key code and its

@@ -161,6 +161,12 @@ public:
     [[nodiscard]] Outcome outcome() const noexcept { return outcome_; }
     [[nodiscard]] std::size_t open_messages() const noexcept { return windows_.size(); }
     [[nodiscard]] ActivityTrainId player() const noexcept { return player_; }
+    // A saved game: the scenario where it stands - its clock, each event's
+    // state, the scripts waiting, the services in play, the cars tracked,
+    // the journal and the messages open. load() puts it back over this
+    // scenario made anew (not started: its start events do not run again).
+    [[nodiscard]] std::string save() const;
+    void load(const std::string& text);
 
 private:
     struct Window {

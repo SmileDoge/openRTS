@@ -367,6 +367,36 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) Distance ( 500 ) ) Str
     check(sink.voices.size() == 3 && sink.seeks.size() == 1, "one-shots start at 0");
 }
 
+// Fade on a start: a loop comes in over it, a one-shot starts at its
+// volume (rts1.exe 0x4A8C00 sets the fade timer for StartLoop and
+// StartLoopRelease only). The ЭД9М's doors (PlayOneShot ... Fade ( 2.0 ))
+// swelled for two seconds (testers 2026-11-18).
+void test_one_shot_fade() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) Distance ( 500 ) ) Streams ( 2
+    Stream ( Triggers ( 1 Discrete_Trigger ( 105 PlayOneShot ( 1 File ( "door.wav" -1 ) SelectionMethod ( SequentialSelection ) Fade ( 2.0 ) ) ) ) )
+    Stream ( Triggers ( 1 Discrete_Trigger ( 7 StartLoop ( 1 File ( "loop.wav" -1 ) Fade ( 2.0 ) ) ) ) ) ) ) ))"));
+    const auto clip = test_clip();
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string&) { return clip; }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::external;
+    inputs[SoundVariable::distance] = 10;
+    sound.update(0.1f, inputs, sink);
+    const std::uint32_t codes[] = {105, 7};
+    inputs.discrete = std::span(codes, 2);
+    sound.update(0.1f, inputs, sink);
+    inputs.discrete = {};
+    check(sink.voices.size() == 2, "the door and the loop started");
+    const auto* door = sink.voices.count(1) ? &sink.voices.at(1) : nullptr;
+    const auto* loop = sink.voices.count(2) ? &sink.voices.at(2) : nullptr;
+    if (door && door->playback != audio::VoicePlayback::once) std::swap(door, loop);
+    check(door && door->playback == audio::VoicePlayback::once && door->volume > 0.9f,
+          ("a one-shot with Fade starts at its volume (" + std::to_string(door ? door->volume : -1.0f) + ")").c_str());
+    check(loop && loop->volume < 0.2f, ("a loop with Fade comes in over it (" + std::to_string(loop ? loop->volume : -1.0f) + ")").c_str());
+}
+
 // Going into the cab and out again (RTS 0x4A9CF4 / 0x4A9BA8): the loop a
 // discrete trigger started outside comes back where it was, the initial
 // trigger does not fire again, and a code that came while in the cab runs
@@ -1136,6 +1166,7 @@ int main(int argc, char** argv) {
     test_default_distances();
     test_crossed_distances();
     test_loop_phase();
+    test_one_shot_fade();
     test_cab_round_trip();
     test_past_codes();
     test_world_fade();

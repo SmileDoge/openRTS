@@ -307,6 +307,10 @@ struct Launcher::State {
     int spawn = 0;                          // spawn_names
     std::vector<std::string> situations;    // saved for the chosen route (the game's Train window)
     int situation = -1;                     // -1: none
+    // Saved games of the chosen route (the game's panel, F2), the newest
+    // first: one chosen starts the game from it, as RTS's Load did.
+    std::vector<std::string> saves;
+    int save = -1;                          // -1: a new game
     // The chosen route's RTS scenarios (RTS_ACT/*.act); one chosen sets the
     // trains, the time, season and weather and the start (-1: none).
     std::vector<formats::ActivityFile> activities;
@@ -619,6 +623,31 @@ struct Launcher::State {
         return found;
     }
 
+    [[nodiscard]] fs::path saves_folder() const {
+        return route < 0 ? fs::path{} : viewer::user_data_directory() / "saves" / routes[static_cast<std::size_t>(route)];
+    }
+    // The chosen route's saved games by name, the newest first.
+    [[nodiscard]] std::vector<std::string> scan_saves() const {
+        std::vector<std::pair<fs::file_time_type, std::string>> found;
+        std::error_code error;
+        if (route < 0) return {};
+        for (const auto& entry : fs::directory_iterator(saves_folder(), error))
+            if (entry.path().extension() == ".save") found.emplace_back(entry.last_write_time(error), utf8(entry.path().stem()));
+        std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::vector<std::string> names;
+        for (auto& [_, name] : found) names.push_back(std::move(name));
+        return names;
+    }
+    void refresh_saves() {
+        auto found = scan_saves();
+        if (found == saves) return;
+        const auto chosen = save >= 0 && save < static_cast<int>(saves.size()) ? saves[static_cast<std::size_t>(save)] : std::string();
+        saves = std::move(found);
+        save = -1;
+        for (std::size_t i = 0; i < saves.size() && !chosen.empty(); ++i)
+            if (saves[i] == chosen) save = static_cast<int>(i);
+    }
+
     // The route's saved situations, the remembered one chosen again.
     void load_situations() {
         situations = scan_situations();
@@ -643,8 +672,8 @@ struct Launcher::State {
 
     // A consist is wanted: not when the trains come from a scenario or a
     // situation, or there is no train.
-    [[nodiscard]] bool consist_used() const noexcept { return spawn != no_train && situation < 0 && activity < 0; }
-    [[nodiscard]] bool ready() const noexcept { return route >= 0 && (!consist_used() || consist >= 0); }
+    [[nodiscard]] bool consist_used() const noexcept { return spawn != no_train && situation < 0 && activity < 0 && save < 0; }
+    [[nodiscard]] bool ready() const noexcept { return route >= 0 && (save >= 0 || !consist_used() || consist >= 0); }
     [[nodiscard]] const formats::ActivityFile* chosen_activity() const noexcept {
         return activity >= 0 && activity < static_cast<int>(activities.size()) ? &activities[static_cast<std::size_t>(activity)] : nullptr;
     }
@@ -662,6 +691,8 @@ struct Launcher::State {
 
     void load_paths() {
         load_situations();
+        saves = scan_saves();
+        save = -1;
         paths.clear();
         path = -1;
         activities.clear();
@@ -705,7 +736,11 @@ struct Launcher::State {
             }
         } else {
             args.insert(args.end(), {"--route", routes[static_cast<std::size_t>(route)], "--root", utf8(root)});
-            if (const auto* chosen = chosen_activity()) {
+            if (save >= 0 && save < static_cast<int>(saves.size())) {
+                // A saved game: its scenario, trains, clock and weather are in
+                // the file (the game reads them from it).
+                args.insert(args.end(), {"--load", utf8(saves_folder() / (saves[static_cast<std::size_t>(save)] + ".save"))});
+            } else if (const auto* chosen = chosen_activity()) {
                 // The scenario sets the trains, the start, the time, season
                 // and weather (the game reads them from it).
                 args.insert(args.end(), {"--activity", chosen->file});
@@ -718,7 +753,7 @@ struct Launcher::State {
                     args.push_back(paths[static_cast<std::size_t>(path)].file);
                 }
             }
-            if (!chosen_activity()) {
+            if (!chosen_activity() && save < 0) {
                 if (spawn != no_train) args.insert(args.end(), {"--spawn", spawn_keys[spawn]});
                 char time[16];
                 std::snprintf(time, sizeof time, "%02d:%02d", minutes / 60, minutes % 60);
@@ -890,6 +925,7 @@ struct Launcher::State {
         if (const auto now = std::chrono::steady_clock::now(); now >= next_situation_scan) {
             next_situation_scan = now + std::chrono::milliseconds(1500);
             refresh_situations();
+            refresh_saves();
         }
 #ifdef _WIN32
         if (!process) return;
@@ -1043,6 +1079,23 @@ void Launcher::State::draw_single(const float height) {
         const float label_width = std::clamp(options_width * 0.48f, 190.0f, 240.0f);
         ImGui::SeparatorText(tr("Trip"));
         const auto* scenario = chosen_activity();
+        if (begin_form("##saved_game_form", label_width)) {
+            // A saved game (as RTS's Load): it sets everything below.
+            form_row(tr("Saved game"));
+            const auto fresh = std::string(tr("(a new game)"));
+            const auto& shown = save >= 0 && save < static_cast<int>(saves.size()) ? saves[static_cast<std::size_t>(save)] : fresh;
+            ImGui::BeginDisabled(saves.empty());
+            if (ImGui::BeginCombo("##saved_game", shown.c_str())) {
+                if (ImGui::Selectable(fresh.c_str(), save < 0)) save = -1;
+                for (int i = 0; i < static_cast<int>(saves.size()); ++i)
+                    if (ImGui::Selectable(saves[static_cast<std::size_t>(i)].c_str(), save == i)) save = i;
+                ImGui::EndCombo();
+            }
+            ImGui::EndDisabled();
+            ImGui::EndTable();
+        }
+        if (save >= 0) hint(tr("The saved game sets the scenario, the trains, the time and the weather: the choices below wait."));
+        ImGui::BeginDisabled(save >= 0);
         if (begin_form("##scenario_form", label_width)) {
             // The route's RTS scenarios (RTS_ACT): one sets everything below.
             form_row(tr("Scenario"));
@@ -1133,6 +1186,7 @@ void Launcher::State::draw_single(const float height) {
                 hint(tr("Situations are saved in the game: Train window, Situations."));
             }
         }
+        ImGui::EndDisabled(); // the choices a saved game sets
     }
     ImGui::EndChild();
 }

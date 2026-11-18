@@ -13,7 +13,11 @@
 #include <cmath>
 #include <thread>
 #include <iostream>
+#include <cstdio>
+#include <fstream>
+#include <iomanip>
 #include <map>
+#include <sstream>
 #include <optional>
 
 #include <glm/common.hpp>
@@ -251,6 +255,8 @@ public:
     [[nodiscard]] std::vector<net::ReceivedPackage> take_early() { return std::exchange(content_.early, {}); }
     [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
     [[nodiscard]] const std::shared_ptr<const formats::Activity>& activity() const noexcept { return content_.activity; }
+    [[nodiscard]] const std::string& activity_name() const noexcept { return content_.activity_name; }
+    [[nodiscard]] const std::filesystem::path& load_game() const noexcept { return content_.load_game; }
     [[nodiscard]] const core::VirtualPath& activity_folder() const noexcept { return content_.activity_folder; }
     [[nodiscard]] const std::filesystem::path& root() const noexcept { return content_.root; }
     [[nodiscard]] bool track_control() const noexcept { return content_.track_control; }
@@ -645,6 +651,7 @@ public:
     }
 
     void update(ModelRenderer&, ViewerCamera& camera, const SceneClock& clock, const SceneInput& input) override {
+        last_clock_ = clock;
         OPENRTS_ZONE("scene: update");
         if (input.toggle_labels) labels_ = !labels_;
         rebase_near(camera);
@@ -762,7 +769,18 @@ public:
                 net_->update(track_->network(), signals_ ? signals_->system() : nullptr, *train_,
                              renderer::route_position(camera.eye(), origin_));
             }
+            // Placements: a click in the free flight picks trains.
+            if (train_->selecting() && input.click && input.pointer && !train_->walking())
+                train_->select_at(last_eye_, last_view_projection_, {input.pointer_x, input.pointer_y}, input.click_ctrl, input.click_shift);
             train_->update(input, camera, clock.elapsed, *library_, audio_);
+            // --load: the saved game once the world stands (a scenario's
+            // trains placed, its start not run: the save has its state).
+            if (!content_.load_game().empty() && !start_game_loaded_ && loading_.done
+                && (!activity_ || train_->activity_started())) {
+                start_game_loaded_ = true;
+                if (const auto error = load_game(content_.load_game()); !error.empty())
+                    std::cout << "saved game: " << content_.load_game().string() << ": " << error << std::endl;
+            }
             if (activity_) {
                 // The start's events once the trains stand and the loading
                 // screen is gone; then the events every frame.
@@ -1567,6 +1585,105 @@ public:
     [[nodiscard]] std::optional<double> take_time_of_day() override {
         return net_ ? net_->take_time_of_day() : std::nullopt;
     }
+
+    // --- saved games (docs/saves.md) ---------------------------------------
+    // One text file: a header (route, scenario, clock), then parts after
+    // "@@ <part>" lines: the junctions, the trains (TrainView::save_game),
+    // the scenario (ActivityView::save).
+    [[nodiscard]] std::filesystem::path saves_folder() const override {
+        if (!train_ || net_) return {};
+        return user_data_directory() / "saves" / std::string(route_.filename());
+    }
+    [[nodiscard]] std::vector<std::string> saved_games() const override {
+        std::vector<std::pair<std::filesystem::file_time_type, std::string>> found;
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator(saves_folder(), error)) {
+            if (entry.path().extension() != ".save") continue;
+            const auto stem = entry.path().stem().u8string();
+            found.emplace_back(entry.last_write_time(error), std::string(stem.begin(), stem.end()));
+        }
+        std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::vector<std::string> names;
+        for (auto& [_, name] : found) names.push_back(std::move(name));
+        return names;
+    }
+    [[nodiscard]] std::string save_game(const std::string& name) override {
+        if (net_) return tr("saving is not available in a network game yet");
+        if (!train_ || !track_) return tr("there is no game to save");
+        if (train_->loading_game()) return tr("the saved game is still being put back");
+        std::string clean;
+        for (const char c : name) clean += (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') ? '_' : c;
+        if (clean.empty()) return tr("give the save a name");
+        std::ostringstream out;
+        out << std::setprecision(17);
+        out << "# openRTS saved game\nversion=1\nroute=" << route_.filename() << '\n';
+        if (activity_) out << "activity=" << activity_->activity().name << "\nactivity_file=" << content_.activity_name() << '\n';
+        out << "time=" << last_clock_.time_of_day_exact << "\nseason=" << static_cast<int>(last_clock_.season) << "\nweather="
+            << static_cast<int>(last_clock_.weather) << "\nstorm=" << (last_clock_.storm ? 1 : 0) << '\n';
+        out << "@@ junctions\n";
+        const auto& network = track_->network();
+        for (std::uint32_t node = 0; node < network.node_count(); ++node) {
+            if (const auto* junction = network.junction(node)) out << "junction=" << node << ' ' << junction->selected << '\n';
+        }
+        out << "@@ trains\n" << train_->save_game();
+        if (activity_) out << "@@ activity\n" << activity_->save();
+        std::error_code fs_error;
+        std::filesystem::create_directories(saves_folder(), fs_error);
+        const auto file = saves_folder() / std::filesystem::path(std::u8string(clean.begin(), clean.end())).replace_extension(".save");
+        std::ofstream output(file, std::ios::binary | std::ios::trunc);
+        output << out.str();
+        if (!output) return tr("the save could not be written");
+        std::cout << "saved game: " << file.string() << std::endl;
+        return {};
+    }
+    [[nodiscard]] std::string load_game(const std::filesystem::path& file) override {
+        if (net_) return tr("loading is not available in a network game");
+        if (!train_ || !track_) return tr("there is no game to load into");
+        std::ifstream input(file, std::ios::binary);
+        if (!input) return tr("the save could not be read");
+        std::map<std::string, std::string> header;
+        std::map<std::string, std::string> parts;
+        std::string part;
+        for (std::string line; std::getline(input, line);) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.starts_with("@@ ")) {
+                part = line.substr(3);
+                continue;
+            }
+            if (part.empty()) {
+                const auto equals = line.find('=');
+                if (equals != std::string::npos && !line.starts_with('#')) header[line.substr(0, equals)] = line.substr(equals + 1);
+            } else {
+                parts[part] += line + '\n';
+            }
+        }
+        if (header["route"] != std::string(route_.filename())) return trf("the save is from another route (%s)", header["route"].c_str());
+        const std::string scenario = activity_ ? activity_->activity().name : std::string();
+        if (header["activity"] != scenario) {
+            return header["activity"].empty() ? std::string(tr("the save is from a free run: start the route without a scenario"))
+                                              : trf("the save is from the scenario \"%s\": start it first", header["activity"].c_str());
+        }
+        auto& network = track_->network();
+        std::istringstream junctions(parts["junctions"]);
+        std::size_t thrown = 0;
+        for (std::string line; std::getline(junctions, line);) {
+            std::uint32_t node{}, selected{};
+            if (!line.starts_with("junction=")) continue;
+            std::istringstream fields(line.substr(9));
+            if (!(fields >> node >> selected)) continue;
+            const auto* junction = network.junction(node);
+            if (junction && junction->selected != selected && network.throw_junction(node, selected)) ++thrown;
+        }
+        if (const auto error = train_->load_game(parts["trains"]); !error.empty()) return error;
+        if (activity_ && parts.contains("activity")) activity_->load(parts["activity"]);
+        saved_clock_ = SavedClock{.time_of_day = std::atof(header["time"].c_str()),
+                                  .season = std::atoi(header["season"].c_str()),
+                                  .weather = std::atoi(header["weather"].c_str()),
+                                  .storm = header["storm"] == "1"};
+        std::cout << "saved game: " << file.string() << " put back (" << thrown << " junctions thrown)" << std::endl;
+        return {};
+    }
+    [[nodiscard]] std::optional<SavedClock> take_saved_clock() override { return std::exchange(saved_clock_, std::nullopt); }
     void close_activity_message() override {
         if (activity_) activity_->close_message();
     }
@@ -1761,6 +1878,7 @@ public:
             inspector_.draw(world);
             inspector_.add_selection_lines(world, pending_lines_);
         }
+        if (train_) train_->add_placement_lines(pending_lines_);
         if (track_control_) {
             bool open = track_control_->is_open();
             if (ImGui::Checkbox(tr("Track control (Ctrl+Alt+F7)"), &open)) track_control_->toggle();
@@ -2488,6 +2606,9 @@ private:
     std::unique_ptr<ActivityView> activity_; // a scenario (--activity)
     std::set<std::int32_t> reported_;        // --capture-report: the menus picked from
     std::unique_ptr<NetSession> net_; // --mp-connect: the server's game
+    SceneClock last_clock_;                // the last update's (a save takes it)
+    bool start_game_loaded_ = false;        // --load's save put back
+    std::optional<SavedClock> saved_clock_; // a loaded game's, for the window's clock
 #ifdef OPENRTS_HAS_IMGUI
     mutable ConsolePanel console_panel_; // --mp-console: the dispatcher's window
 #endif

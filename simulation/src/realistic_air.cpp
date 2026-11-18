@@ -81,6 +81,29 @@ float main_reservoir_volume(const formats::EngineDefinition& engine) {
     return v > 100.0f ? v * 0.001f : v * 0.0283f;
 }
 
+void RealisticAir::save(StateWriter& out) const {
+    for (std::size_t i = 0; i < air_.size(); ++i) {
+        const auto& a = air_[i];
+        out.put("a" + std::to_string(i) + ".state", a.braking, a.emergency, a.reference, a.last_pipe, a.wave, a.accelerator, a.ep_chamber,
+                a.ep_side, a.pipe_low);
+    }
+    out.put_list("air.links", link_flow_);
+}
+
+void RealisticAir::restore(const StateReader& in) {
+    for (std::size_t i = 0; i < air_.size(); ++i) {
+        auto& a = air_[i];
+        in.get("a" + std::to_string(i) + ".state", a.braking, a.emergency, a.reference, a.last_pipe, a.wave, a.accelerator, a.ep_chamber,
+               a.ep_side, a.pipe_low);
+    }
+    std::vector<float> links;
+    if (in.get_list("air.links", links) && links.size() == link_flow_.size()) {
+        link_flow_ = std::move(links);
+    } else {
+        std::fill(link_flow_.begin(), link_flow_.end(), 0.0f);
+    }
+}
+
 void RealisticAir::reset(const std::vector<CarState>& cars) {
     air_.assign(cars.size(), {});
     link_flow_.assign(cars.empty() ? 0 : cars.size() - 1, 0.0f);

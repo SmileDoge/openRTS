@@ -17,6 +17,7 @@
 #include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/body_motion.hpp>
 #include <openrts/simulation/distributor.hpp>
+#include <openrts/simulation/state_text.hpp>
 #include <openrts/simulation/track_traveller.hpp>
 
 namespace openrts::simulation {
@@ -134,6 +135,11 @@ public:
     // The controller's valve is made for RTS's triple valve (legacy DLLs):
     // the train keeps BrakeModel::rts.
     [[nodiscard]] virtual bool rts_brakes() const { return false; }
+    // A saved game (Train::save_state): what the controller keeps between
+    // steps (its handles, its valve, its compressor's governor), under keys
+    // starting with `prefix`. Nothing by default.
+    virtual void save(StateWriter& /*out*/, std::string_view /*prefix*/) const {}
+    virtual void restore(const StateReader& /*in*/, std::string_view /*prefix*/) {}
 };
 
 // Driver's handles shared by every engine of a train (multiple-unit
@@ -189,6 +195,8 @@ public:
 
     KeyboardController(std::shared_ptr<DriverHandles> handles, bool master);
     void step(double dt, const EngineInputs& inputs, EngineDemands& demands) override;
+    void save(StateWriter& out, std::string_view prefix) const override;
+    void restore(const StateReader& in, std::string_view prefix) override;
 
 private:
     std::shared_ptr<DriverHandles> handles_;
@@ -500,6 +508,15 @@ public:
     // were. It still occupies the track, couples and is hit like any train;
     // the owner wakes it when something moves it (RTS: it becomes LOOSE).
     void set_asleep(bool asleep) noexcept;
+    // A saved game: what changes as the train runs - where its ends stand,
+    // each car's motion, air, flats, hoses, cocks, chocks and shoes, the
+    // realistic air's distributors and the controllers' handles and valves
+    // (state_text.hpp; keys "head", "c3.pipe", "a3.braking", "k0.throttle").
+    // restore_state() puts it back into a train placed with the same cars;
+    // a key missing keeps what is there. The bodies' sway, a derailment and
+    // the wire's heat are not kept: they start at rest.
+    void save_state(StateWriter& out) const;
+    void restore_state(const StateReader& in);
     [[nodiscard]] bool asleep() const noexcept { return asleep_; }
     // A traffic train (RTS train type TRAFFIC, 0x424488, docs/traffic.md):
     // one rigid body on the track. Each step its speed changes by the

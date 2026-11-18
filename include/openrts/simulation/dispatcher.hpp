@@ -77,6 +77,9 @@ public:
     // A leg ended (the train stands at its reverse point): continue on the
     // next one. False on the last leg.
     bool next_leg(std::uint64_t id);
+    // A saved game: the train back on leg `leg` with marks before `next_mark`
+    // reached (its place on the leg is found at the next update).
+    void restore_progress(std::uint64_t id, std::size_t leg, std::size_t next_mark);
     // Marks the leg's next mark as reached (a waiting point after the wait).
     void pass_mark(std::uint64_t id);
     // Block points: where they lie on a train's route (replacing its list),

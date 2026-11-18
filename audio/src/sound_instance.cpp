@@ -354,7 +354,12 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
         }
         sink.set(id, 0.0f, 1.0f, inputs.position); // real values follow in this update
         const bool region = playback == VoicePlayback::loop_region && clip->has_loop();
-        return {.id = id, .volume = volume, .clip = std::move(clip), .fade_in = action.fade, .start_frame = start_frame,
+        // Fade brings a started loop in; a one-shot starts at its volume
+        // (rts1.exe 0x4A8C00: PlayOneShot sets no fade timer, StartLoop and
+        // StartLoopRelease do). The ЭД9М's doors, PlayOneShot with Fade ( 2.0 ),
+        // swelled for two seconds (testers 2026-11-18).
+        const float fade_in = playback == VoicePlayback::once ? 0.0f : action.fade;
+        return {.id = id, .volume = volume, .clip = std::move(clip), .fade_in = fade_in, .start_frame = start_frame,
                 .file = action.files[choice].name, .region = region};
     };
     const auto here = static_cast<std::size_t>(&stream - streams_.data());

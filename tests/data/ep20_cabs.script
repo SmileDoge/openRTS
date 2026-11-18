@@ -1,0 +1,13 @@
+# EP20-063 started "on": its DLL makes the second cab the working one (its
+# 367 key, switch 206, at BR_367OPPOL 3; its handle, 200, at II), the first
+# cab's key out and its handle at 0, which on the EP20's 130 valve is VI
+# (its states run VI .. I). Brakes.dll finds the working cab by the 367
+# (decompiled, 2026-11-18); openRTS's valve read the first cab's handle and
+# kept the УР and the pipe at 0 (testers).
+#
+#   openrts-train-check <RTS root> --dll mdd_EP20-063 mdd_EP20-063 --start on --air own --script tests/data/ep20_cabs.script
+1    voltage 25000 50
+1.5  expect sw206 == 3
+1.5  expect sw0 == 0
+10   expect ur > 4.9
+10   expect pipe > 4.9

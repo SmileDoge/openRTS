@@ -340,6 +340,54 @@ void test_sway(const Stock& stock) {
 // Each such step made the rear the lead: the signals ahead ran as the other
 // end's, closed under a path, the ALSN read К, until the train moved on
 // (testers 2026-11-18). A real move back turns it.
+// A saved game (Train::save_state / restore_state): a train saved while it
+// runs and brakes, put back into a new one placed elsewhere, goes on exactly
+// as the first: the same place, speed, pipe and cylinders, step by step.
+void test_save_restore(const Stock& stock, const simulation::BrakeModel model) {
+    simulation::TrainSettings settings;
+    Run a(stock, settings, 1500.0);
+    a.train.set_brake_model(model);
+    a.driver->reverser = 1;
+    a.driver->throttle = a.driver->notches;
+    a.run(20.0);
+    a.driver->throttle = 0;
+    a.driver->brake = simulation::DriverHandles::BrakeHandle::service;
+    a.run(3.0);
+    a.driver->brake = simulation::DriverHandles::BrakeHandle::lap;
+    a.run(2.0);
+    simulation::StateWriter saved;
+    a.train.save_state(saved);
+
+    Run b(stock, settings, 900.0);
+    b.train.set_brake_model(model);
+    b.train.restore_state(simulation::StateReader(saved.text()));
+    check(b.driver->brake == simulation::DriverHandles::BrakeHandle::lap && b.driver->reverser == 1,
+          "restored: the driver's handles");
+    check(std::abs(b.train.speed() - a.train.speed()) < 1e-6, "restored: the speed");
+    check(b.train.front_end() && a.train.front_end() && b.train.front_end()->node() == a.train.front_end()->node()
+              && std::abs(b.train.front_end()->offset() - a.train.front_end()->offset()) < 1e-9,
+          "restored: the front where it was");
+    double worst = 0.0;
+    float worst_air = 0.0f;
+    for (int i = 0; i < static_cast<int>(30.0 / simulation::train_step); ++i) {
+        if (i == static_cast<int>(10.0 / simulation::train_step)) {
+            a.driver->brake = b.driver->brake = simulation::DriverHandles::BrakeHandle::running;
+        }
+        a.train.step();
+        b.train.step();
+        worst = (std::max)(worst, std::abs(a.train.front_end()->offset() - b.train.front_end()->offset()));
+        for (std::size_t k = 0; k < a.train.cars().size(); ++k) {
+            worst_air = (std::max)({worst_air, std::abs(a.train.cars()[k].pipe - b.train.cars()[k].pipe),
+                                    std::abs(a.train.cars()[k].cylinder - b.train.cars()[k].cylinder)});
+        }
+    }
+    const char* name = model == simulation::BrakeModel::realistic ? "realistic air" : "RTS air";
+    std::cerr << "  save and restore (" << name << "): front apart at most " << worst * 1000.0 << " mm, air " << worst_air << " atm"
+              << std::endl;
+    check(worst < 1e-3, std::string("restored (") + name + "): it runs on as the saved one, within a millimetre");
+    check(worst_air < 1e-3f, std::string("restored (") + name + "): its air the same");
+}
+
 void test_travel_after_stop(const Stock& stock) {
     Run r(stock, {}, 1500.0);
     const auto leads_front = [&] {
@@ -1591,6 +1639,8 @@ int main() {
     test_sway(stock);
     test_body_settles(stock);
     test_travel_after_stop(stock);
+    test_save_restore(stock, simulation::BrakeModel::rts);
+    test_save_restore(stock, simulation::BrakeModel::realistic);
     test_rail_joints(stock);
     test_slide_off(stock);
     test_overturn(stock);

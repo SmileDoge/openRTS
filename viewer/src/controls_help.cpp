@@ -98,6 +98,7 @@ void draw_controls_help() {
         row("Wheel at the chair", "off the controls: the head nearer to what the cursor points at, or back");
         row("Ctrl+wheel", "zoom (in the cab too)");
         row("Num+ / Num-", "field of view narrower / wider, as RTS (15..90 degrees)");
+        row("Num* / Ctrl+0", "field of view back as it started, the zoom off");
         row("Alt", "captions of the cab's controls");
         ImGui::EndTable();
     }
