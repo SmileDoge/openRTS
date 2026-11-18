@@ -6,6 +6,7 @@ RTS knows three weathers, the activity's and the server's `weather`: clear
 falling round the eye (`world_precipitation`, `PrecipitationView`), its
 sound (`rain_ex.sms`, `snow_ex.sms`) and the cover of openRTS's own clouds
 (clear 42 %, snow 85 %, rain 92 %; experimental-effects.md, "openRTS sky").
+openRTS's dynamic weather (below) changes it by itself.
 
 ## Thunderstorm (openRTS's own, 2026-11-16)
 
@@ -174,3 +175,75 @@ The login's weather byte stays RTS's: the server sends rain. An openRTS
 server adds a byte to its answer to `openrts_hello` (docs/net.md): 1 when
 the game is a thunderstorm. An openRTS player then plays it (with the rain
 it was given). Older players read only the features.
+
+## Dynamic weather (openRTS's own, 2026-11-18)
+
+Testers' proposal: a weather that changes by itself, by the season, and
+can be changed in the game. RTS keeps one weather for the whole game.
+`viewer/src/weather_cycle.hpp`; the panel's «Динамическая погода» under
+«Погода» (off by default: as RTS), remembered (`weather_dynamic` and the
+settings below). Single player: in a network game the server's weather
+stands.
+
+**What a weather is** (`WeatherMix`): the clouds' cover (0..1), the
+precipitation (0..1, rain, or snow in winter) and a thunderstorm's
+strength (0..1). The scene makes of it:
+- RTS's weather once 8 % falls (rain, or snow in winter), else clear: the
+  environment file, the seasonal and snow textures, the falling drops and
+  their sound, the rails by the weather. That switch is a step, as RTS's
+  is when a scenario changes the weather; the rest comes gradually;
+- the clouds' cover of openRTS's sky (the player's own cover, «Облачность
+  по погоде» off, still wins);
+- the drops: 0.3 + 1.4 x the precipitation times RTS's density (a light
+  rain 0.4, a downpour 1.7, a thunderstorm's as before), its sound 0.3 ..
+  1.1 as loud;
+- a thunderstorm (lightning, thunder) once its strength is 0.3 with rain;
+  the clouds darken as it gathers (`NativeSkyFrame::storm`), the lightning
+  strikes «Молний в минуту» x its strength.
+
+**How it goes** (`weather_at(time, seed, settings, season)`): the game's
+time cut into spells of «Погода держится» (10..240 game minutes, 45),
+each beginning up to half a spell late and turning into the next over
+«Сменяется за» (1..60, 12; at most half a spell), smoothly. A spell's
+weather is drawn from the seed and its number (splitmix64, the same on
+every compiler) by the climate: with the share «Доля времени с осадками»
+it rains or snows (0.25..1 of it, the clouds 85..97 %), and of those rains
+«Доля гроз среди дождей» are thunderstorms (0.6..1 strong, heavy rain,
+97 %); else the clouds are about «Обычная облачность» (±30 %, 5..85 %).
+Snow in winter, rain otherwise; no thunderstorms in winter. «По сезону»
+(on by default) takes the season's climate instead of the sliders:
+
+| Season | Usual cover | With rain or snow | Thunderstorms among the rains |
+|---|---|---|---|
+| winter | 70 % | 35 % (snow) | none |
+| spring | 55 % | 30 % | 10 % |
+| summer | 40 % | 25 % | 35 % |
+| autumn | 70 % | 40 % | 5 % |
+
+The same seed and time give the same weather, as the lightning does: a
+server can later give every player the same weather with its seed and
+clock alone. A new seed each run; «другая погода» draws another.
+
+**Its clock** runs with the game's: stopped while it stands, 60 times as
+fast at x60. The weather shown eases towards the cycle's over some 20
+game seconds (also while the clock stands), so a slider moved by hand
+does not make it jump. It starts from the weather chosen (the start menu,
+a scenario, a save) and holds it a spell, then goes its own way.
+
+**By hand:** «Сменить сейчас на» ясно (15 % clouds) / облачно (80 %) /
+дождь or снег (60 %) / гроза: from what is shown to it over a change, held
+a spell, then back to the cycle over another change. The panel shows the
+weather now and when the next one begins to come.
+
+**Saved games** keep its clock and seed (`weather_cycle=` in the header,
+docs/saves.md): it goes on as it was.
+
+Checked: `tests/weather_cycle_test.cpp` (the same seed and time, the same
+weather; a summer week a second at a time changes at most 0.2 % a second,
+rains 30 % of the time, storms 10 %, never snows; winter snows, never
+rains or storms; a dry climate never rains, an all-wet one always; a
+change by hand comes, holds and goes back). In the game
+(`OPENRTS_WEATHER_CHECK`: on for the run, 600 times as fast, the weather
+logged every game hour; Kuban, 30 game hours): clouds 12..97 %, rains of
+1700..3300 drops, a thunderstorm of 0.91, the environment switched between
+clear and rain again and again.

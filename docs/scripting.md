@@ -64,6 +64,7 @@ sample. The script reads and changes the table:
 | `ratio` | read | `TripleValveRatio` |
 | `v_pipe`, `v_zr`, `v_tc` | read | volumes of the pipe at the car, the ЗР and the ТЦ, m³ |
 | `mass` | read | the car's mass, kg |
+| `pace`, `sensitivity` | read | its wear (the brakes' condition, docs/train.md): its fill and release as a factor on the book's, and the pipe's fall that applies it as a factor (1, 1: as new) |
 | `kind` | read | the built-in distributor the car would have: `"292"`, `"483"`, `"305"`, `"305-001"` |
 | `load` | read | the 483's load mode: `"empty"`, `"medium"`, `"loaded"` (the car menu; by the mass until set) |
 | `mountain` | read | the 483's mountain mode (the car menu) |

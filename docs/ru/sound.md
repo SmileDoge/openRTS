@@ -387,6 +387,32 @@ PROBABLE: ветка для неизвестного режима, `dword_61D31C
   §19).
 - **`Event_Trigger`:** события `WagonOnJoint` / `WagonOnJunction` /
   `WagonOnAnyJoint` от поезда.
+- **`ORTSDay_Trigger` / `ORTSNight_Trigger`** (openRTS, 2026-11-18): триггер
+  с действиями, как любой другой; срабатывает, когда наступает день или
+  ночь, а при включении звука — тот, что соответствует текущему времени.
+  Ночь — как у ночных текстур: от заката до восхода по окружению
+  (`RtsSkyState::night`). Работает у источников `.ws` маршрута; другим
+  звукам время не сообщается, и ни один из двух не срабатывает. Если время
+  сменилось, пока звук был выключен (слушатель далеко), это учитывается при
+  его включении: поток, который последним стоял на одном из них, берёт
+  триггер текущего времени. RTS их не знает и пропускает (номер триггера
+  сохраняется), так что скрипт с ними там всё равно загружается. Птицы днём
+  и сверчки ночью:
+
+  ```
+  Streams ( 2
+      Stream ( Triggers ( 2
+          ORTSDay_Trigger ( StartLoop ( 1 File ( "birds.wav" -1 ) SelectionMethod ( SequentialSelection ) Fade ( 5 ) ) )
+          ORTSNight_Trigger ( ReleaseLoopRelease ( Fade ( 5 ) ) ) ) )
+      Stream ( Triggers ( 2
+          ORTSNight_Trigger ( StartLoop ( 1 File ( "crickets.wav" -1 ) SelectionMethod ( SequentialSelection ) Fade ( 5 ) ) )
+          ORTSDay_Trigger ( ReleaseLoopRelease ( Fade ( 5 ) ) ) ) ) )
+  ```
+
+  `Fade` плавно вводит один звук и уводит другой за пять секунд. Подходит
+  любое действие: `PlayOneShot` (петух на рассвете), `EnableTrigger` /
+  `DisableTrigger` (`Random_Trigger` с лаем собак только ночью). Тест:
+  `test_day_night` в `tests/sound_test.cpp`.
 - **Номера:** `EnableTrigger` / `DisableTrigger` считают с 1, как нумерует
   их `ingame.sms`.
 - **CONFIRMED двери и окна кабины** (`0x438708`, `0x46AF1C`):

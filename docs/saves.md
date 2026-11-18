@@ -22,7 +22,9 @@ and starts it again from there, as RTS's save and Load did (RTS saves on F2,
 ## What is kept
 
 - **The header:** the route, the scenario (its name and the file
-  `--activity` takes), the time of day, season, weather and thunderstorm.
+  `--activity` takes), the time of day, season, weather and thunderstorm;
+  with the dynamic weather its clock and seed (`weather_cycle=`,
+  docs/weather.md).
 - **The junctions:** every junction's branch.
 - **The trains** (`TrainView::save_game`): each one as a situation keeps it
   (its name, role, front, the cars with their keys and brake shoes), and:

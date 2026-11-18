@@ -538,7 +538,8 @@ built, against the proposal below:
     rails as RTS, no brake force limit, the distributors as RTS) and
     "realistic (openRTS)" (the realistic air, openRTS's valve over
     Brakes.dll, the model's gauges, the rails by the weather, the limit
-    and the distributors' stability on) set the six settings at once; any
+    and the distributors' stability on, the brakes' condition 6, the
+    pressing 100 %; RTS's: no condition) set the eight settings at once; any
     of them changed by hand makes "my own", remembered as `brakes_custom`
     and given back when it is chosen again.
   - "Limit the brake force to real stock's" (the Train window, on by
@@ -553,6 +554,44 @@ built, against the proposal below:
     43 t, the trailer's 39.5 t) slid and wore flats, its 64 t motor cars
     not, and the whole train stopped at 2.8 m/s² (testers: "будто якорь
     скинул").
+  - **Brake condition** (the Train window, 2026-11-18, testers' proposal;
+    `Train::set_brake_condition`, remembered as `brake_condition`; the
+    realistic air only): 10 as from the works, 6 in service (the realistic
+    preset's), 1 due for an overhaul, "off" every car as its files give it
+    (the RTS preset's). Each car's wear (`CarState::wear`, `BrakeWear`) is
+    drawn from the train's own seed and the condition: the train's wear w =
+    (10 - condition) / 9, each car's within ±(0.06 + 0.24 w) of it, each
+    figure of a car a draw of its own about the car's (a leaky pipe beside
+    a good distributor). From a car's wear x:
+    - its pipe leaks 0.01 + 0.5 x² atm/min by itself at 5 atm (with the
+      pressure), over the file's `TrainPipeLeakRate`;
+    - an engine's main reservoir 0.01 + 0.25 x² atm/min at 9 atm;
+    - its cylinder 0.005 + 0.4 x² atm/min at 3.8 atm. A 483 keeps it
+      filled from its ЗР and the ЗР from the pipe, so a braked train's pipe
+      leaks more; a 292 does not (its piston stays in lap, the cylinder
+      falls); a 305 on its side does (its relay); an engine's independent
+      brake from the main reservoir;
+    - its distributor's fill and release 0.6 .. 1.15 of the book's
+      (`DistributorCar::pace`), the pipe's fall that applies it 0.8 .. 1.6
+      of it (`sensitivity`): the worse, the less alike;
+    - its rigging's share of the shoes' force (`rigging`, 0.55 .. 1), the
+      hand brake's too.
+    At 10 the cars still differ a little (pace within about 3 %, the pipe
+    0.01 atm/min). A save keeps every car's wear and the train's seed; the
+    setting changed, every train draws again from its own seed. Checked
+    (`openrts-train-check --charge 60` ВЛ80к, loaded gondolas, `--condition`):
+    a minute in III the pipe falls 0.03 atm at 10, 0.14 at 6 (the rules
+    allow 0.2), 0.6 at 1, where the cars brake by themselves (up to 0.9
+    atm); after a service step and a minute in III the cylinders stand at
+    0.77, 0.90 and 1.5; the brake pressing 41, 38 and 34 tf per 100 tf.
+  - **Brake pressing** (the Train window, remembered as `brake_pressing`,
+    50 .. 150 %, `TrainSettings::brake_force_factor`; the realistic air):
+    every car's shoe force as a factor. Shift+F5 and the Train window show
+    the train's brake pressing (`Train::brake_pressing`): its cars' full
+    shoe force at 40 km/h as cast-iron shoes would need to press for it
+    (their design friction 0.27 · 140 / 300 = 0.126 there), in tonnes-force
+    per 100 tonnes of weight, as the brake certificate counts it (a freight
+    train needs at least 33).
   - `ORTSBrakeForce ( 74kN )` in a `.wag` / `.eng` (or its `.rts*`
     companion): the brake force at the full cylinder
     (`BrakeCylinderPressureForMaxBrakeBrakeForce`) at 40 km/h that the
@@ -690,7 +729,10 @@ release of the engine's own brake (`EngineDemands::equalising`,
 RTS model takes its pipe rate instead. Positions I, II, III, IV, VЭ, V, VI
 are a cab control's states 0..6. VЭ without the ЭПТ is a lap without feed
 (the ЭР9Т), or with `slow_service` a Va: the УР down 0.03 atm/s, as
-Brakes.dll's.
+Brakes.dll's. In III (lap without feed) the realistic air's relay may let
+the pipe out but not feed it (`ValveOutput::feed`, `EngineDemands::pipe_feed`):
+its leaks are not made up, as IV makes them up. Until 2026-11-18 it held
+the pipe in III as in IV, so no leak showed there.
 
 #### Realistic air with DLL locomotives
 

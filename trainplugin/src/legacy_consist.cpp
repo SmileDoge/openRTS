@@ -333,6 +333,7 @@ public:
             // leapt from 0 to the DLL's 1.71).
             demands.equalising_kept = valve_out.equalising;
             demands.emergency = (connected && valve_out.emergency) || controls_.combined == 2 || vent;
+            demands.pipe_feed = valve_out.feed;
             return;
         }
         // The DLL's valve: its УР, through the cab's cocks as openRTS's valve

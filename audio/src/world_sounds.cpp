@@ -103,7 +103,7 @@ void WorldSounds::set_origin(const formats::RoutePosition& origin) {
 }
 
 void WorldSounds::update(const float dt, const glm::vec3& listener, const SoundCamera camera, VoiceSink& sink,
-                         const float gain) {
+                         const float gain, const std::optional<bool> night) {
     // Tiles around the listener.
     const auto tile_x = origin_.tile_x + static_cast<std::int32_t>(std::floor((listener.x + origin_.x) / formats::route_tile_size + 0.5));
     const auto tile_z = origin_.tile_z + static_cast<std::int32_t>(std::floor((listener.z + origin_.z) / formats::route_tile_size + 0.5));
@@ -128,6 +128,7 @@ void WorldSounds::update(const float dt, const glm::vec3& listener, const SoundC
             inputs.gain = gain;
             inputs[formats::SoundVariable::distance] = glm::distance(listener, source.position);
             inputs.fades_with_distance = true; // object flag 0x20 (0x41B6D0)
+            inputs.night = night;
             source.instance->update(dt, inputs, sink);
         }
     }

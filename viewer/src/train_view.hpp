@@ -82,6 +82,8 @@ public:
         int rails = 0;          // rails
         bool limit = false;     // limit_brake_force
         bool stability = false; // distributor_stability
+        int condition = 0;      // brake_condition (0: none)
+        int pressing = 100;     // brake_pressing, %
         bool operator==(const BrakeSet&) const = default;
     };
     // Who drives a train: the keyboard, the test driver along its path, or
@@ -1438,6 +1440,12 @@ private:
     bool rails_loaded_ = false;
     // TrainSettings::limit_brake_force, remembered as limit_brake_force.
     bool limit_brake_force_ = false;
+    // The brakes' condition of every train (Train::set_brake_condition: 0
+    // none, 10 from the works .. 1 due for an overhaul) and the brake
+    // pressing (TrainSettings::brake_force_factor, %), remembered as
+    // brake_condition and brake_pressing; read with the rails.
+    int brake_condition_ = 0;
+    int brake_pressing_ = 100;
     [[nodiscard]] BrakeSet brake_set() const noexcept;
     void apply_brake_set(const BrakeSet& set);
     std::string brake_custom_code_; // the own set as last remembered

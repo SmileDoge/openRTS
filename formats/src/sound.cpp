@@ -266,6 +266,10 @@ struct Reader {
             result.kind = SoundTriggerKind::random;
             min_max(find(node, "delay_min_max"), result.minimum, result.maximum);
             min_max(find(node, "volume_min_max"), result.volume_minimum, result.volume_maximum);
+        } else if (node.name == "ortsday_trigger" || node.name == "ortsnight_trigger") {
+            // openRTS: fired when day or night comes (docs/sound.md).
+            result.kind = SoundTriggerKind::time_of_day;
+            result.night = node.name == "ortsnight_trigger";
         } else if (node.name == "event_trigger") {
             result.kind = SoundTriggerKind::event;
             const auto event = node.values.empty() ? std::string{} : node.values.front();

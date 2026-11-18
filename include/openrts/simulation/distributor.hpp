@@ -103,6 +103,10 @@ struct DistributorCar {
     DistributorLoad load = DistributorLoad::loaded;
     bool mountain = false;
     DistributorPlug plug = DistributorPlug::short_train;
+    // Its wear (BrakeWear): its fill and release as a factor, and the
+    // pipe's fall that applies it.
+    float pace = 1.0f;
+    float sensitivity = 1.0f;
 };
 
 // ЗР volumes of the built-in distributors, m³.

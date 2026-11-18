@@ -291,6 +291,12 @@ openrts_copy_wgpu_runtime(openrts_graphics_settings_test)
 target_link_libraries(openrts_graphics_settings_test PRIVATE openrts_renderer ZLIB::ZLIB)
 add_test(NAME openrts.graphics_settings COMMAND openrts_graphics_settings_test)
 
+# openRTS's dynamic weather: deterministic, without jumps, by the season, a change by hand.
+add_executable(openrts_weather_cycle_test weather_cycle_test.cpp ../viewer/src/weather_cycle.cpp)
+openrts_configure_target(openrts_weather_cycle_test)
+target_include_directories(openrts_weather_cycle_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_test(NAME openrts.weather_cycle COMMAND openrts_weather_cycle_test)
+
 # The start menu's updates: versions, the release JSON, an archive laid over a folder.
 if(TARGET openrts_update)
     add_executable(openrts_update_test update_test.cpp)

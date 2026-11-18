@@ -388,6 +388,81 @@ void test_save_restore(const Stock& stock, const simulation::BrakeModel model) {
     check(worst_air < 1e-3f, std::string("restored (") + name + "): its air the same");
 }
 
+// The brakes' condition (docs/train.md "Brake condition"): drawn per car
+// from the seed, worse with a lower condition, kept by a save; the pipe
+// left in III loses more the worse; the pressing follows the rigging and
+// the factor.
+void test_brake_condition(const Stock& stock) {
+    using Handle = simulation::DriverHandles::BrakeHandle;
+    simulation::TrainSettings settings;
+    settings.brake_model = simulation::BrakeModel::realistic;
+    const auto mean = [](const simulation::Train& train, float simulation::BrakeWear::*field) {
+        double sum = 0.0;
+        for (const auto& car : train.cars()) sum += car.wear.*field;
+        return sum / static_cast<double>(train.cars().size());
+    };
+    const auto spread = [](const simulation::Train& train, float simulation::BrakeWear::*field) {
+        float least = 9.0f, most = 0.0f;
+        for (const auto& car : train.cars()) {
+            least = (std::min)(least, car.wear.*field);
+            most = (std::max)(most, car.wear.*field);
+        }
+        return most - least;
+    };
+    simulation::Train fresh(stock.cars(10), settings), worn(stock.cars(10), settings), again(stock.cars(10), settings);
+    for (const auto& car : fresh.cars()) check(car.wear == simulation::BrakeWear{}, "condition: none until set");
+    fresh.set_brake_condition(10, 7u);
+    worn.set_brake_condition(1, 7u);
+    again.set_brake_condition(1, 7u);
+    bool same = true;
+    for (std::size_t i = 0; i < worn.cars().size(); ++i) same = same && worn.cars()[i].wear == again.cars()[i].wear;
+    check(same, "condition: the same seed, the same cars");
+    again.set_brake_condition(1, 8u);
+    check(!(worn.cars()[1].wear == again.cars()[1].wear), "condition: another seed, other cars");
+    std::cerr << "  condition 10 / 1: pipe leak " << mean(fresh, &simulation::BrakeWear::pipe_leak) << " / "
+              << mean(worn, &simulation::BrakeWear::pipe_leak) << " atm/min, pace spread " << spread(fresh, &simulation::BrakeWear::pace)
+              << " / " << spread(worn, &simulation::BrakeWear::pace) << ", rigging " << mean(fresh, &simulation::BrakeWear::rigging)
+              << " / " << mean(worn, &simulation::BrakeWear::rigging) << ", pressing " << fresh.brake_pressing() << " / "
+              << worn.brake_pressing() << std::endl;
+    check(mean(worn, &simulation::BrakeWear::pipe_leak) > 10.0 * mean(fresh, &simulation::BrakeWear::pipe_leak), "condition 1 leaks far more");
+    check(spread(fresh, &simulation::BrakeWear::pace) > 0.0f, "condition 10: the cars still differ a little");
+    check(spread(worn, &simulation::BrakeWear::pace) > 3.0f * spread(fresh, &simulation::BrakeWear::pace), "condition 1: far less alike");
+    check(worn.brake_pressing() < 0.9 * fresh.brake_pressing(), "condition 1: the rigging presses less");
+    const double pressing = fresh.brake_pressing();
+    fresh.set_brake_force_factor(1.5f);
+    check(near(fresh.brake_pressing(), 1.5 * pressing, 1e-6 * pressing), "the pressing factor scales the pressing");
+    fresh.set_brake_condition(0);
+    for (const auto& car : fresh.cars()) check(car.wear == simulation::BrakeWear{}, "condition 0: none again");
+
+    // Charged, then III for a minute: the pipe's fall.
+    const auto lap_fall = [&](const int condition) {
+        Run r(stock, settings, 1000.0);
+        r.train.set_brake_condition(condition, 11u);
+        r.run(400.0);
+        const float before = r.train.cars().back().pipe;
+        r.driver->brake = Handle::lap;
+        r.run(60.0);
+        return before - r.train.cars().back().pipe;
+    };
+    const float f10 = lap_fall(10), f6 = lap_fall(6), f1 = lap_fall(1);
+    std::cerr << "  III for 60 s, the tail's pipe falls: condition 10 " << f10 << ", 6 " << f6 << ", 1 " << f1 << " atm" << std::endl;
+    check(f10 < 0.05f, "condition 10: the pipe holds in III");
+    check(f6 > f10 && f6 < 0.25f, "condition 6: within the rules' 0.2 atm a minute, about");
+    check(f1 > 0.3f, "condition 1: the pipe falls fast in III");
+
+    // A save keeps each car's wear and the train's condition.
+    Run a(stock, settings, 1000.0);
+    a.train.set_brake_condition(3, 99u);
+    simulation::StateWriter saved;
+    a.train.save_state(saved);
+    Run b(stock, settings, 1000.0);
+    b.train.set_brake_condition(8, 5u);
+    b.train.restore_state(simulation::StateReader(saved.text()));
+    same = b.train.brake_condition() == 3 && b.train.brake_seed() == 99u;
+    for (std::size_t i = 0; i < a.train.cars().size(); ++i) same = same && near(a.train.cars()[i].wear.pace, b.train.cars()[i].wear.pace, 1e-6);
+    check(same, "condition: a save keeps it, car by car");
+}
+
 void test_travel_after_stop(const Stock& stock) {
     Run r(stock, {}, 1500.0);
     const auto leads_front = [&] {
@@ -1652,6 +1727,7 @@ int main() {
     test_contacts(stock);
     test_ept();
     test_realistic_air(stock);
+    test_brake_condition(stock);
     test_distributor_stability(stock);
     test_car_menu(stock);
     test_broken_and_sand(stock);

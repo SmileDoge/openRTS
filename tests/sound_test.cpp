@@ -397,6 +397,68 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) Distance ( 500 ) ) Str
     check(loop && loop->volume < 0.2f, ("a loop with Fade comes in over it (" + std::to_string(loop ? loop->volume : -1.0f) + ")").c_str());
 }
 
+// ORTSDay_Trigger / ORTSNight_Trigger (openRTS): the one of the time fires
+// as the sound comes on, the other when the time changes; nothing without
+// the time told; a change while the sound is off waits for it to come back.
+void test_day_night() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+SIMISA@@@@@@@@@@JINX0x1t______
+Tr_SMS ( ScalabiltyGroup ( 0 Activation ( ExternalCam ( ) Distance ( 300 ) ) Deactivation ( ExternalCam ( ) Distance ( 350 ) ) Streams ( 2
+    Stream ( Triggers ( 2
+        ORTSDay_Trigger ( StartLoop ( 1 File ( "birds.wav" -1 ) SelectionMethod ( SequentialSelection ) ) )
+        ORTSNight_Trigger ( ReleaseLoopRelease ( ) ) ) )
+    Stream ( Triggers ( 2
+        ORTSNight_Trigger ( StartLoop ( 1 File ( "crickets.wav" -1 ) SelectionMethod ( SequentialSelection ) ) )
+        ORTSDay_Trigger ( ReleaseLoopRelease ( ) ) ) ) ) ) ))"));
+    check(script->ok() && script->unknown.empty(), "day and night triggers parse");
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips{{"birds.wav", test_clip()}, {"crickets.wav", test_clip()}};
+    const auto playing = [&](RecordingSink& sink, const std::string& name) {
+        for (const auto& [id, voice] : sink.voices)
+            if (voice.clip == clips.at(name) && sink.playing(id) && !voice.released) return true;
+        return false;
+    };
+    {
+        audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::world,
+                                   [&](const std::string& name) { return clips.at(name); }, 3);
+        RecordingSink sink;
+        audio::SoundInputs inputs;
+        inputs.camera = audio::SoundCamera::external;
+        inputs[SoundVariable::distance] = 10;
+        sound.update(0.1f, inputs, sink);
+        check(sink.voices.empty(), "day and night: nothing while the time is not told");
+        inputs.night = false;
+        sound.update(0.1f, inputs, sink);
+        check(playing(sink, "birds.wav") && !playing(sink, "crickets.wav"), "by day: the birds");
+        inputs.night = true;
+        sound.update(0.1f, inputs, sink);
+        sink.advance();
+        sound.update(0.1f, inputs, sink);
+        check(!playing(sink, "birds.wav") && playing(sink, "crickets.wav"), "night comes: the crickets, the birds let go");
+        // Walked away (off), day came, back: the birds, not the crickets.
+        inputs[SoundVariable::distance] = 1000;
+        sound.update(0.1f, inputs, sink);
+        inputs.night = false;
+        sound.update(0.1f, inputs, sink);
+        inputs[SoundVariable::distance] = 10;
+        sound.update(0.1f, inputs, sink);
+        sink.advance();
+        sound.update(0.1f, inputs, sink);
+        check(playing(sink, "birds.wav") && !playing(sink, "crickets.wav"), "back by day after night: the birds again");
+    }
+    {
+        // Coming on at night: the crickets at once.
+        audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::world,
+                                   [&](const std::string& name) { return clips.at(name); }, 3);
+        RecordingSink sink;
+        audio::SoundInputs inputs;
+        inputs.camera = audio::SoundCamera::external;
+        inputs[SoundVariable::distance] = 10;
+        inputs.night = true;
+        sound.update(0.1f, inputs, sink);
+        check(playing(sink, "crickets.wav") && !playing(sink, "birds.wav"), "on at night: the crickets");
+    }
+}
+
 // Going into the cab and out again (RTS 0x4A9CF4 / 0x4A9BA8): the loop a
 // discrete trigger started outside comes back where it was, the initial
 // trigger does not fire again, and a code that came while in the cab runs
@@ -1167,6 +1229,7 @@ int main(int argc, char** argv) {
     test_crossed_distances();
     test_loop_phase();
     test_one_shot_fade();
+    test_day_night();
     test_cab_round_trip();
     test_past_codes();
     test_world_fade();

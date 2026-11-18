@@ -66,6 +66,7 @@
 #include "activity_view.hpp"
 #include "train_view.hpp"
 #include "thunder_view.hpp"
+#include "weather_cycle.hpp"
 
 #ifdef OPENRTS_HAS_IMGUI
 #include <imgui.h>
@@ -650,7 +651,11 @@ public:
         streamer_.reset();
     }
 
-    void update(ModelRenderer&, ViewerCamera& camera, const SceneClock& clock, const SceneInput& input) override {
+    void update(ModelRenderer&, ViewerCamera& camera, const SceneClock& given, const SceneInput& input) override {
+        // The dynamic weather (weather_cycle.hpp) decides the weather this
+        // frame: RTS's weather and the storm from it.
+        SceneClock clock = given;
+        apply_dynamic_weather(clock);
         last_clock_ = clock;
         OPENRTS_ZONE("scene: update");
         if (input.toggle_labels) labels_ = !labels_;
@@ -833,8 +838,9 @@ public:
             sky.altitude = static_cast<float>(camera_position.y);
             sky.eye_route = {static_cast<double>(camera_position.tile_x) * formats::route_tile_size + camera_position.x,
                              static_cast<double>(camera_position.tile_z) * formats::route_tile_size + camera_position.z};
-            // The cover the player chose, else the weather's.
+            // The cover the player chose, else the dynamic weather's, else the weather's.
             sky.coverage = renderer::cloud_cover() >= 0.0f                    ? renderer::cloud_cover()
+                           : dynamic_weather_                               ? weather_cycle().shown.cloud
                            : storm_                                         ? 0.97f
                            : clock.weather == renderer::rts::Weather::rain ? 0.92f
                            : clock.weather == renderer::rts::Weather::snow ? 0.85f
@@ -850,7 +856,8 @@ public:
             // stopped, a time-lapse while it runs faster, up to 60 times (at
             // 600 or 3600 they would jump hundreds of metres a frame).
             sky.elapsed = clock.elapsed * std::clamp(clock.time_speed, 0.0f, 60.0f);
-            sky.storm = storm_ ? 1.0f : 0.0f;
+            // The dynamic weather's storm darkens the clouds as it gathers.
+            sky.storm = dynamic_weather_ ? std::clamp(weather_cycle().shown.storm, 0.0f, 1.0f) : storm_ ? 1.0f : 0.0f;
             sky.flash_id = sky_flash_id_;
             sky.flash_at = sky_flash_at_;
             sky.flash = sky_flash_;
@@ -924,7 +931,9 @@ public:
         // they pass its doors and windows (docs/sound.md).
         const float outside_gain = train_ ? train_->outside_gain() : 1.0f;
         if (world_sounds_ && audio_) {
-            world_sounds_->update(clock.elapsed, camera.eye(), audio::SoundCamera::external, *audio_, outside_gain);
+            // Night as the night textures have it (the environment's sunset to sunrise).
+            const auto night = sky_state_ ? std::optional<bool>(sky_state_->night) : std::nullopt;
+            world_sounds_->update(clock.elapsed, camera.eye(), audio::SoundCamera::external, *audio_, outside_gain, night);
         }
         if (crossings_) {
             const auto trains = train_ ? train_->trains() : std::vector<const simulation::Train*>{};
@@ -941,8 +950,9 @@ public:
                 const auto forward = camera.forward();
                 glm::vec3 right{forward.z, 0.0f, -forward.x};
                 right = glm::length(right) > 1e-4f ? glm::normalize(right) : glm::vec3{1.0f, 0.0f, 0.0f};
-                // Under a thunderstorm heavier.
-                precipitation_->update(clock.elapsed, camera.eye(), right, effects_.precipitation ? (storm_ ? 1.7f : 1.0f) : 0.0f, opaque);
+                // Under a thunderstorm heavier; the dynamic weather's by its amount.
+                const float amount = dynamic_weather_ ? 0.3f + 1.4f * weather_cycle().shown.precipitation : storm_ ? 1.7f : 1.0f;
+                precipitation_->update(clock.elapsed, camera.eye(), right, effects_.precipitation ? amount : 0.0f, opaque);
             }
             if (smoke_) {
                 std::vector<ExhaustSource> sources;
@@ -1366,7 +1376,9 @@ public:
         }
         const glm::dvec2 eye_route{static_cast<double>(at.tile_x) * formats::route_tile_size + at.x,
                                    static_cast<double>(at.tile_z) * formats::route_tile_size + at.z};
-        auto strikes = renderer::lightning_strikes(eye_route, clock.time_of_day_exact, renderer::lightning_rate());
+        // The dynamic weather's storm strikes as often as it is strong.
+        const float rate = renderer::lightning_rate() * (dynamic_weather_ ? std::clamp(weather_cycle().shown.storm, 0.0f, 1.0f) : 1.0f);
+        auto strikes = renderer::lightning_strikes(eye_route, clock.time_of_day_exact, rate);
         if (test) {
             // Straight ahead along the ground (scene x, z are the route's).
             glm::dvec2 way{forward.x, forward.z};
@@ -1620,6 +1632,8 @@ public:
         if (activity_) out << "activity=" << activity_->activity().name << "\nactivity_file=" << content_.activity_name() << '\n';
         out << "time=" << last_clock_.time_of_day_exact << "\nseason=" << static_cast<int>(last_clock_.season) << "\nweather="
             << static_cast<int>(last_clock_.weather) << "\nstorm=" << (last_clock_.storm ? 1 : 0) << '\n';
+        // The dynamic weather's clock and seed: it goes on as it was.
+        if (dynamic_weather_) out << "weather_cycle=" << weather_cycle().time << ' ' << weather_cycle().seed << '\n';
         out << "@@ junctions\n";
         const auto& network = track_->network();
         for (std::uint32_t node = 0; node < network.node_count(); ++node) {
@@ -1676,6 +1690,19 @@ public:
         }
         if (const auto error = train_->load_game(parts["trains"]); !error.empty()) return error;
         if (activity_ && parts.contains("activity")) activity_->load(parts["activity"]);
+        if (const auto cycle = header.find("weather_cycle"); cycle != header.end()) {
+            std::istringstream fields(cycle->second);
+            double time = 0.0;
+            std::uint64_t seed = 0;
+            if (fields >> time >> seed) {
+                auto& weather = weather_cycle();
+                weather.time = time;
+                weather.seed = seed;
+                weather.forced.reset();
+                weather.shown_valid = false;
+                weather_started_ = true;
+            }
+        }
         saved_clock_ = SavedClock{.time_of_day = std::atof(header["time"].c_str()),
                                   .season = std::atoi(header["season"].c_str()),
                                   .weather = std::atoi(header["weather"].c_str()),
@@ -2050,7 +2077,8 @@ private:
         }
         if (!weather_sound_) return;
         audio::SoundInputs inputs{.camera = audio::SoundCamera::external, .position = eye};
-        inputs.gain = gain;
+        // The dynamic weather's light rain is quieter, its heavy one louder.
+        inputs.gain = gain * (dynamic_weather_ ? std::clamp(0.3f + 0.8f * weather_cycle().shown.precipitation, 0.3f, 1.1f) : 1.0f);
         weather_sound_->update(elapsed, inputs, *audio_);
     }
 
@@ -2428,6 +2456,72 @@ private:
     static constexpr int sky_probe_rows = 4;
     // A thunderstorm this frame, and its lightning (update_lightning).
     bool storm_ = false;
+    // The dynamic weather runs (weather_cycle.hpp: on, and not a network
+    // game, whose weather is the server's); begun from the weather chosen.
+    bool dynamic_weather_ = false;
+    bool weather_started_ = false;
+    // The weather this frame from the dynamic weather: its clock on by the
+    // game's, the mix shown eased towards the cycle's (a setting changed by
+    // hand comes over some 20 game seconds, also with the clock stopped).
+    // It starts from the weather chosen (the start menu's, a scenario's),
+    // held a spell, then the cycle's.
+    void apply_dynamic_weather(SceneClock& clock) {
+        auto& cycle = weather_cycle();
+        // OPENRTS_WEATHER_CHECK set: on for this run, 600 times as fast,
+        // what it shows logged every game hour.
+        static const bool check = [] {
+#ifdef _WIN32
+            char* value = nullptr;
+            std::size_t size = 0;
+            const bool set = _dupenv_s(&value, &size, "OPENRTS_WEATHER_CHECK") == 0 && value != nullptr;
+            std::free(value);
+            return set;
+#else
+            return std::getenv("OPENRTS_WEATHER_CHECK") != nullptr;
+#endif
+        }();
+        if (check) cycle.settings.dynamic = true;
+        dynamic_weather_ = cycle.settings.dynamic && !content_.connection();
+        if (!dynamic_weather_) {
+            cycle.shown_valid = false;
+            weather_started_ = false;
+            return;
+        }
+        if (!weather_started_) {
+            weather_started_ = true;
+            WeatherMix chosen;
+            chosen.snow = clock.season == renderer::rts::Season::winter;
+            if (clock.weather == renderer::rts::Weather::rain || clock.weather == renderer::rts::Weather::snow) {
+                chosen.snow = clock.weather == renderer::rts::Weather::snow;
+                chosen.cloud = clock.storm ? 0.97f : chosen.snow ? 0.85f : 0.92f;
+                chosen.precipitation = clock.storm ? 0.85f : 0.6f;
+                chosen.storm = clock.storm ? 0.9f : 0.0f;
+            }
+            cycle.shown = chosen;
+            cycle.shown_valid = true;
+            cycle.force(chosen);
+        }
+        const double before = cycle.time;
+        const float pace = (std::max)(clock.time_speed, 0.0f) * (check ? 600.0f : 1.0f);
+        cycle.time += static_cast<double>(clock.elapsed) * pace;
+        if (check && std::floor(cycle.time / 3600.0) != std::floor(before / 3600.0))
+            std::cout << "weather check: hour " << std::floor(cycle.time / 3600.0) << ": clouds " << cycle.shown.cloud << ", precipitation "
+                      << cycle.shown.precipitation << ", storm " << cycle.shown.storm << ", rts weather " << static_cast<int>(clock.weather)
+                      << (clock.storm ? " (storm)" : "") << ", drops " << (precipitation_ ? precipitation_->drops() : 0) << std::endl;
+        const auto target = cycle.now(clock.season);
+        if (!cycle.shown_valid) {
+            cycle.shown = target;
+            cycle.shown_valid = true;
+        } else {
+            const float k = 1.0f - std::exp(-clock.elapsed * (std::max)(pace, 1.0f) / 20.0f);
+            cycle.shown = blend(cycle.shown, target, k);
+            // Gone: none (not a trace of it for ever).
+            if (cycle.shown.precipitation < 1e-4f) cycle.shown.precipitation = 0.0f;
+            if (cycle.shown.storm < 1e-4f) cycle.shown.storm = 0.0f;
+        }
+        clock.weather = rts_weather(cycle.shown);
+        clock.storm = storming(cycle.shown);
+    }
     float sky_open_seen_ = 1.0f; // the view's sky share the probe last saw (0..1, a quarter or more: 1)
     float sky_open_ = 1.0f;      // that, eased
     // The sky's openness round the eye for its light (PBR stage 2): the

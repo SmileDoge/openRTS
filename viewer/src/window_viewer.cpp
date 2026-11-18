@@ -18,6 +18,7 @@
 #include <openrts/renderer/light_shafts.hpp>
 #include <openrts/renderer/depth_export.hpp>
 #include <algorithm>
+#include <random>
 #include <array>
 #include <cfloat>
 #include <chrono>
@@ -44,6 +45,7 @@
 #include "frame_limiter.hpp"
 #include "graphics_presets_ui.hpp"
 #include "graphics_settings.hpp"
+#include "weather_cycle.hpp"
 #include <openrts/renderer/gpu_pass_timer.hpp>
 #include <openrts/renderer/video_memory.hpp>
 #include "key_layout.hpp"
@@ -1798,8 +1800,16 @@ private:
         ImGui::Combo(tr("Season"), &clock.season, seasons, 4);
         // Order of the RTS weather variable: clear, snow, rain; then openRTS's thunderstorm.
         const char* weathers[] = {tr("Clear"), tr("Snow"), tr("Rain"), tr("Thunderstorm")};
+        auto& cycle = weather_cycle();
+        ImGui::BeginDisabled(cycle.settings.dynamic);
         ImGui::Combo(tr("Weather"), &clock.weather, weathers, 4);
-        if (clock.weather == 3) {
+        ImGui::EndDisabled();
+        if (cycle.settings.dynamic) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", tr("(the dynamic weather began from it)"));
+        }
+        draw_dynamic_weather(clock.season);
+        if (clock.weather == 3 || (cycle.settings.dynamic && cycle.settings.by_season ? clock.season != 3 : cycle.settings.dynamic && cycle.settings.climate.storms > 0.0f)) {
             if (ImGui::SliderFloat(tr("Lightning strikes a minute"), &renderer::lightning_rate(), 0.0f, 30.0f, "%.0f"))
                 remember("lightning_rate", std::to_string(renderer::lightning_rate()));
             if (ImGui::SliderFloat(tr("Lightning brightness"), &renderer::lightning_brightness(), 0.0f, 3.0f, "%.1f"))
@@ -1814,6 +1824,76 @@ private:
                 ImGui::SameLine();
                 ImGui::TextDisabled("%s", tr("(no lightning while the clock stands or runs faster than x16)"));
             }
+        }
+    }
+
+    // The dynamic weather (weather_cycle.hpp, docs/weather.md): on or off,
+    // what it is now and what comes, its climate (the season's or the
+    // sliders'), how long a weather lasts and turns, and a change by hand.
+    static void draw_dynamic_weather(const int season) {
+        auto& cycle = weather_cycle();
+        auto& s = cycle.settings;
+        if (ImGui::Checkbox(tr("Dynamic weather (openRTS)"), &s.dynamic)) remember("weather_dynamic", s.dynamic ? "1" : "0");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr(s.dynamic ? "(clouds, rain or snow and thunderstorms change by themselves; not in network games, where the server's weather stands)"
+                                               : "(off: the weather chosen stays, as in RTS)"));
+        if (!s.dynamic) return;
+        if (cycle.shown_valid) {
+            const auto& m = cycle.shown;
+            ImGui::Text(tr("Now: clouds %.0f %%, %s %.0f %%, thunderstorm %.0f %%"), m.cloud * 100.0f, m.snow ? tr("snow") : tr("rain"),
+                        m.precipitation * 100.0f, m.storm * 100.0f);
+            if (const auto next = cycle.next_change()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled(tr("(the next weather begins to come in %.0f game minutes)"), *next / 60.0);
+            } else if (cycle.forced) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", tr("(changed by hand: it holds a spell, then the weather goes on by itself)"));
+            }
+        }
+        if (ImGui::Checkbox(tr("By the season##weather"), &s.by_season)) remember("weather_by_season", s.by_season ? "1" : "0");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr(s.by_season ? "(winter overcast with snow; spring and autumn rainy; summer clearer, with thunderstorms)"
+                                                 : "(the climate below)"));
+        ImGui::BeginDisabled(s.by_season);
+        float cloudiness = s.climate.cloudiness * 100.0f, wet = s.climate.wet * 100.0f, storms = s.climate.storms * 100.0f;
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat(tr("Usual cloud cover"), &cloudiness, 0.0f, 100.0f, "%.0f %%")) {
+            s.climate.cloudiness = cloudiness / 100.0f;
+            remember("weather_cloudiness", std::to_string(s.climate.cloudiness));
+        }
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat(tr("Spells with rain or snow"), &wet, 0.0f, 100.0f, "%.0f %%")) {
+            s.climate.wet = wet / 100.0f;
+            remember("weather_wet", std::to_string(s.climate.wet));
+        }
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat(tr("Thunderstorms among the rains"), &storms, 0.0f, 100.0f, "%.0f %%")) {
+            s.climate.storms = storms / 100.0f;
+            remember("weather_storms", std::to_string(s.climate.storms));
+        }
+        ImGui::EndDisabled();
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat(tr("A weather lasts, game minutes"), &s.spell_minutes, 10.0f, 240.0f, "%.0f"))
+            remember("weather_spell", std::to_string(s.spell_minutes));
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat(tr("Turns into the next over, game minutes"), &s.change_minutes, 1.0f, 60.0f, "%.0f"))
+            remember("weather_change", std::to_string(s.change_minutes));
+        ImGui::TextDisabled("%s", tr("(at most half a weather's time; the clock's x60 runs it 60 times as fast)"));
+        // A change by hand: to it over a change, held a spell.
+        const bool winter = season == static_cast<int>(renderer::rts::Season::winter);
+        ImGui::TextUnformatted(tr("Change now to:"));
+        const auto button = [&](const char* label, const WeatherMix& mix) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(label)) cycle.force(mix);
+        };
+        button(tr("clear##now"), {.cloud = 0.15f, .precipitation = 0.0f, .storm = 0.0f, .snow = winter});
+        button(tr("cloudy##now"), {.cloud = 0.8f, .precipitation = 0.0f, .storm = 0.0f, .snow = winter});
+        button(winter ? tr("snow##now") : tr("rain##now"), {.cloud = 0.92f, .precipitation = 0.6f, .storm = 0.0f, .snow = winter});
+        if (!winter) button(tr("thunderstorm##now"), {.cloud = 0.97f, .precipitation = 0.9f, .storm = 0.9f, .snow = false});
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("another weather##now"))) {
+            cycle.seed = static_cast<std::uint64_t>(std::random_device{}()) << 32 | std::random_device{}();
+            cycle.forced.reset();
         }
     }
 
@@ -2840,6 +2920,21 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto throws = remembered("switch_throws")) set_switch_throws(std::strtof(throws->c_str(), nullptr));
     // A thunderstorm's lightning as last set.
     if (const auto rate = remembered("lightning_rate")) renderer::lightning_rate() = std::clamp(std::strtof(rate->c_str(), nullptr), 0.0f, 30.0f);
+    {
+        // The dynamic weather's settings, and a seed of its own each run.
+        auto& weather = weather_cycle();
+        const auto number = [](const char* key, float& out, const float least, const float most) {
+            if (const auto value = remembered(key)) out = std::clamp(std::strtof(value->c_str(), nullptr), least, most);
+        };
+        weather.settings.dynamic = remembered("weather_dynamic").value_or("0") == "1";
+        weather.settings.by_season = remembered("weather_by_season").value_or("1") == "1";
+        number("weather_cloudiness", weather.settings.climate.cloudiness, 0.0f, 1.0f);
+        number("weather_wet", weather.settings.climate.wet, 0.0f, 1.0f);
+        number("weather_storms", weather.settings.climate.storms, 0.0f, 1.0f);
+        number("weather_spell", weather.settings.spell_minutes, 10.0f, 240.0f);
+        number("weather_change", weather.settings.change_minutes, 1.0f, 60.0f);
+        weather.seed = static_cast<std::uint64_t>(std::random_device{}()) << 32 | std::random_device{}();
+    }
     if (const auto brightness = remembered("lightning_brightness"))
         renderer::lightning_brightness() = std::clamp(std::strtof(brightness->c_str(), nullptr), 0.0f, 3.0f);
     if (const auto volume = remembered("thunder_volume")) thunder_volume() = std::clamp(std::strtof(volume->c_str(), nullptr), 0.0f, 2.0f);

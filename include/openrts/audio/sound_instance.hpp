@@ -102,6 +102,9 @@ struct SoundInputs {
     // Attenuation, the default rule when it has none (0x4A7764), unless its
     // volume curve is controlled by the distance (0x4A78A0).
     bool fades_with_distance = false;
+    // Night or day for ORTSDay_Trigger / ORTSNight_Trigger (openRTS); none:
+    // the caller does not tell, neither fires.
+    std::optional<bool> night;
 
     [[nodiscard]] float& operator[](formats::SoundVariable variable) {
         return variables[static_cast<std::size_t>(variable)];
@@ -202,6 +205,8 @@ private:
     std::array<std::optional<float>, formats::sound_variable_count> overrides_{};
     bool active_ = false;
     bool activated_once_ = false; // Initial_Triggers fire on the first activation only
+    // The time of day the ORTSDay / ORTSNight triggers last fired for (none yet).
+    std::optional<bool> night_fired_;
     // Discrete codes that came while inactive: RTS keeps them in the object's
     // 96-entry queue and runs them at its next active update; openRTS takes
     // only the states they leave (catch_up).

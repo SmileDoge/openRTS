@@ -2623,31 +2623,41 @@ namespace {
 // realistic air with openRTS's valve over Brakes.dll, the model's gauges,
 // the weather's rails, the brake force at most real stock's and the
 // distributors' stability.
-constexpr TrainView::BrakeSet rts_brakes{.realistic = false, .dll_air = 0, .gauges = false, .rails = 0, .limit = false, .stability = false};
-constexpr TrainView::BrakeSet real_brakes{.realistic = true, .dll_air = 2, .gauges = true, .rails = 1, .limit = true, .stability = true};
+// The realistic set has brakes in service (condition 6, testers'
+// proposal); RTS's has no wear.
+constexpr TrainView::BrakeSet rts_brakes{.realistic = false, .dll_air = 0, .gauges = false, .rails = 0, .limit = false, .stability = false,
+                                         .condition = 0, .pressing = 100};
+constexpr TrainView::BrakeSet real_brakes{.realistic = true, .dll_air = 2, .gauges = true, .rails = 1, .limit = true, .stability = true,
+                                          .condition = 6, .pressing = 100};
 
 [[nodiscard]] std::string brake_set_code(const TrainView::BrakeSet& s) {
     return std::to_string(s.realistic ? 1 : 0) + ',' + std::to_string(s.dll_air) + ',' + std::to_string(s.gauges ? 1 : 0) + ',' +
-           std::to_string(s.rails) + ',' + std::to_string(s.limit ? 1 : 0) + ',' + std::to_string(s.stability ? 1 : 0);
+           std::to_string(s.rails) + ',' + std::to_string(s.limit ? 1 : 0) + ',' + std::to_string(s.stability ? 1 : 0) + ',' +
+           std::to_string(s.condition) + ',' + std::to_string(s.pressing);
 }
 
+// Six figures (before the condition and pressing, 2026-11-18) or eight.
 [[nodiscard]] std::optional<TrainView::BrakeSet> brake_set_from(const std::string& code) {
-    int v[6]{};
+    int v[8]{0, 0, 0, 0, 0, 0, 0, 100};
     std::istringstream fields(code);
     char comma = ',';
-    for (int k = 0; k < 6; ++k) {
-        if (k > 0 && !(fields >> comma)) return std::nullopt;
+    int read = 0;
+    for (int k = 0; k < 8; ++k) {
+        if (k > 0 && !(fields >> comma)) break;
         if (comma != ',' || !(fields >> v[k])) return std::nullopt;
+        ++read;
     }
+    if (read != 6 && read != 8) return std::nullopt;
     return TrainView::BrakeSet{.realistic = v[0] != 0, .dll_air = std::clamp(v[1], 0, 2), .gauges = v[2] != 0,
-                               .rails = std::clamp(v[3], 0, 6), .limit = v[4] != 0, .stability = v[5] != 0};
+                               .rails = std::clamp(v[3], 0, 6), .limit = v[4] != 0, .stability = v[5] != 0,
+                               .condition = std::clamp(v[6], 0, 10), .pressing = std::clamp(v[7], 50, 150)};
 }
 
 } // namespace
 
 TrainView::BrakeSet TrainView::brake_set() const noexcept {
     return {.realistic = realistic_air_, .dll_air = dll_air_, .gauges = gauges_air_, .rails = rails_, .limit = limit_brake_force_,
-            .stability = distributor_stability_};
+            .stability = distributor_stability_, .condition = brake_condition_, .pressing = brake_pressing_};
 }
 
 void TrainView::apply_brake_set(const BrakeSet& set) {
@@ -2673,6 +2683,10 @@ void TrainView::apply_brake_set(const BrakeSet& set) {
     remember("distributor_stability", distributor_stability_ ? "1" : "0");
     for (auto& unit : units_)
         if (unit.train) unit.train->set_distributor_stability(distributor_stability_);
+    brake_condition_ = set.condition;
+    brake_pressing_ = set.pressing;
+    remember("brake_condition", std::to_string(brake_condition_));
+    remember("brake_pressing", std::to_string(brake_pressing_));
 }
 
 std::filesystem::path TrainView::situation_folder() const {
@@ -4950,6 +4964,9 @@ void TrainView::draw_hud() {
                                     ur ? trf("%.2f", *ur).c_str() : "-", state.cylinder);
                     }
                 }
+                if (train.brake_model() == simulation::BrakeModel::realistic)
+                    ImGui::Text(tr("Brake pressing %.0f tf per 100 tf of weight (as cast-iron shoes), brakes' condition %s"),
+                                train.brake_pressing(), train.brake_condition() == 0 ? tr("none (as the files)") : std::to_string(train.brake_condition()).c_str());
                 std::size_t chocked = 0;
                 for (const auto& state : train.cars())
                     if (state.chocks != 0) ++chocked;
@@ -5589,6 +5606,11 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         // light cars of an ЭД9М slid and wore flats, the heavy motor cars not
         // ("будто якорь скинул", testers).
         limit_brake_force_ = remembered("limit_brake_force").value_or("1") == "1";
+        // The brakes' condition: in service (6) with the realistic air,
+        // none with RTS's, until chosen (2026-11-18).
+        const bool realistic = remembered("realistic_air").value_or("0") == "1";
+        brake_condition_ = std::clamp(std::atoi(remembered("brake_condition").value_or(realistic ? "6" : "0").c_str()), 0, 10);
+        brake_pressing_ = std::clamp(std::atoi(remembered("brake_pressing").value_or("100").c_str()), 50, 150);
     }
     const auto rails = rails_now();
     for (auto& unit : units_) {
@@ -5597,6 +5619,13 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         if (unit.train) {
             unit.train->set_rails(rails);
             unit.train->set_limit_brake_force(limit_brake_force_);
+            unit.train->set_brake_force_factor(static_cast<float>(brake_pressing_) / 100.0f);
+            // Each train its own cars' wear (a seed of its own, kept when
+            // the condition changes).
+            if (unit.train->brake_condition() != brake_condition_ || (brake_condition_ != 0 && unit.train->brake_seed() == 0)) {
+                const auto seed = unit.train->brake_seed();
+                unit.train->set_brake_condition(brake_condition_, seed != 0 ? seed : std::random_device{}() | 1u);
+            }
         }
     }
     if (!pending_load_.empty()) {
@@ -10711,6 +10740,56 @@ void TrainView::draw_panel() {
         ImGui::TextDisabled("%s", tr(limit_brake_force_
                                          ? "(with the realistic air: at most what real stock with its shoes gives; some content brakes 3x harder and slides on dry rails)"
                                          : "(off: the brake force as the stock's files give it)"));
+        {
+            // The brakes' condition and pressing (realistic air; docs/train.md
+            // "Brake condition", testers' proposal 2026-11-17).
+            ImGui::BeginDisabled(!realistic_air_);
+            std::array<std::string, 11> names;
+            names[0] = tr("off: as the files give it");
+            for (int c = 1; c <= 10; ++c) names[static_cast<std::size_t>(c)] = std::to_string(c);
+            names[1] = tr("1: due for an overhaul");
+            names[6] = tr("6: in service");
+            names[10] = tr("10: from the works");
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::BeginCombo(tr("Brake condition##condition"), names[static_cast<std::size_t>(brake_condition_)].c_str())) {
+                for (int c = 0; c <= 10; ++c) {
+                    if (ImGui::Selectable(names[static_cast<std::size_t>(c)].c_str(), c == brake_condition_)) {
+                        brake_condition_ = c;
+                        remember("brake_condition", std::to_string(c));
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", tr(!realistic_air_ ? "(works with the realistic air on)"
+                                         : brake_condition_ == 0
+                                             ? "(every car as its files give it: no leaks of its own, its distributor as the book's)"
+                                             : "(the worse, the more the pipe, cylinders and main reservoir leak, the slower and less alike the distributors, the weaker the rigging; even at 10 the cars differ a little)"));
+            // What the driven train has now.
+            if (realistic_air_ && brake_condition_ != 0 && !units_.empty() && units_.front().train) {
+                const auto& cars = units_.front().train->cars();
+                float leak = 0.0f, slow = 9.0f, fast = 0.0f, weak = 9.0f, strong = 0.0f;
+                for (const auto& car : cars) {
+                    leak += car.wear.pipe_leak;
+                    slow = (std::min)(slow, car.wear.pace);
+                    fast = (std::max)(fast, car.wear.pace);
+                    weak = (std::min)(weak, car.wear.rigging);
+                    strong = (std::max)(strong, car.wear.rigging);
+                }
+                if (!cars.empty())
+                    ImGui::TextDisabled(tr("(this train: the pipe leaks %.2f atm/min by itself, the distributors' pace %.0f-%.0f %%, the rigging %.0f-%.0f %%)"),
+                                        leak / static_cast<float>(cars.size()), slow * 100.0f, fast * 100.0f, weak * 100.0f, strong * 100.0f);
+            }
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::SliderInt(tr("Brake pressing##pressing"), &brake_pressing_, 50, 150, "%d %%")) remember("brake_pressing", std::to_string(brake_pressing_));
+            ImGui::SameLine();
+            if (realistic_air_ && !units_.empty() && units_.front().train)
+                ImGui::TextDisabled(tr("(the shoes' force of every car; the driven train now %.0f tf per 100 tf of weight, as cast-iron shoes)"),
+                                    units_.front().train->brake_pressing());
+            else
+                ImGui::TextDisabled("%s", tr("(the shoes' force of every car, as a factor; works with the realistic air on)"));
+            ImGui::EndDisabled();
+        }
         if (ImGui::Checkbox(tr("Distributor stability in the RTS model (openRTS)"), &distributor_stability_)) {
             distributor_stability_loaded_ = true;
             remember("distributor_stability", distributor_stability_ ? "1" : "0");
