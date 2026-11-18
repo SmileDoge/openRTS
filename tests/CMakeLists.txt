@@ -258,6 +258,11 @@ add_test(NAME openrts.dll_air COMMAND openrts_dll_air_test)
 
 # Brake distributors: the built-in ones on the stand, the Luau 292 as the
 # built-in one, Luau's sandbox and time limit.
+add_executable(openrts_cab_brakes_test cab_brakes_test.cpp)
+openrts_configure_target(openrts_cab_brakes_test)
+target_link_libraries(openrts_cab_brakes_test PRIVATE openrts_simulation)
+add_test(NAME openrts.cab_brakes COMMAND openrts_cab_brakes_test)
+
 add_executable(openrts_distributor_test distributor_test.cpp)
 openrts_configure_target(openrts_distributor_test)
 target_link_libraries(openrts_distributor_test PRIVATE openrts_simulation openrts_script)

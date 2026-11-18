@@ -8,6 +8,7 @@ add_library(openrts_simulation STATIC
     src/stock_rules.cpp
     src/brake_shoes.cpp
     src/adhesion.cpp
+    src/cab_brakes.cpp
     src/driver_valve.cpp
     src/track_traveller.cpp
     src/train.cpp

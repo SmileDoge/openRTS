@@ -1,6 +1,8 @@
 # Replacing Brakes.dll (plan)
 
-Status: a plan (2026-11-18), nothing built yet. The developer's request:
+Status: under way (2026-11-18): steps 0 and 1 done; step 2's devices
+built and tested (`simulation/cab_brakes.hpp`), not yet in the game. The
+developer's request:
 stop patching openRTS around MaDaDev's `Brakes.dll` and replace it, after
 learning how a train's DLL talks to it.
 
@@ -172,6 +174,20 @@ openRTS around a running Brakes.dll, as now, is what this replaces.
    - In "openRTS brakes" mode Brakes.dll still runs for the КЛУБ and the
      rest, and its brake outputs are not used.
    - First on the ЭД9М and the ЭП20, whose cabs differ most.
+   - 2.1 (done): `_Run`'s brakes read (`docs/reverse/brakes-dll.md` §10).
+   - 2.2 (done): the devices as `simulation/cab_brakes.hpp`
+     (`step_cab_brakes`, `tests/cab_brakes_test.cpp`): the 395 and 130,
+     the 254, 224 and 4ВК, the cocks, the ЭПТ's commands, the gauges and
+     lamps, the 418; two sets of numbers (below).
+   - 2.3: the host and the controller: the devices work the realistic
+     air instead of Brakes.dll's valve; the train's DLL's `var + 32` bits
+     before Brakes.dll's `Run` reach them; the cab's gauges and lamps
+     (`BR_MAN*`, `BR_LAMP*`) show theirs; Brakes.dll's ЭПК trip opens the
+     pipe. Brakes.dll's springs (the 254's I) and its air sounds stay its
+     own until step 5.
+   - 2.4: the harness (`--brakes openrts`) against the golden runs.
+   - 2.5: the two settings in the Train window; a car with a
+     `BR_334ID`, `BR_292CUSTOM` or a parameter not known keeps Brakes.dll.
 3. **КЛУБ-У on one locomotive** (the ЭД9М), as its own module:
    - the map from the track items;
    - the permitted speed and the braking curve;
@@ -188,6 +204,50 @@ Each step keeps the switch back to Brakes.dll.
 
 In a network game the modules run in `simulation`, so the server can run
 them later as it does the air.
+
+## The numbers
+
+`CabBrakeNumbers::brakes_dll()` and `openrts()`. openRTS's are Brakes.dll's
+where those fall within what the books give, else the books'. Sources:
+Крылов В. И., Крылов В. В., «Автоматические тормоза подвижного состава»,
+1983 (the book's pages); `docs/reverse/air-brakes-real.md`.
+
+| What | Brakes.dll | The books | openRTS |
+|---|---|---|---|
+| V: the УР down | 0.22 atm/s | 0.5 → 0.4 MPa in 4–6 s, 0.17–0.25 (p. 102) | 0.22 |
+| VЭ (Va): the УР down | 0.03 atm/s | 0.5 → 0.45 MPa in 15–20 s, 0.025–0.033 (p. 103) | 0.03 |
+| II: the stabiliser | 0.002 atm/s | 6.0 → 5.8 in 80–120 s, 0.0017–0.0025 (air-brakes-real, 9) | 0.002 |
+| 254: III, VI | 1, 4 atm | 1.0–1.3, 3.8–4.0 atm (p. 115) | 1, 4 |
+| I: the УР up | 0.18 atm/s at most | through a 1.6 mm hole, no time given (p. 99) | 0.18 |
+| III: the УР after the pipe | 0.1 atm/s | through the 1.6 mm hole, down only (p. 100) | 0.1 |
+| VI: the УР out | 0.4 atm/s | through wide channels, no time given (p. 103) | 0.4 |
+
+**The differences** (the user decides on each):
+1. **The charging pressure.** Brakes.dll holds the УР 0.1 atm below the
+   one `BR_ZARPRESS` or the reducer's label names (the ЭД9М's 4.6 gives
+   4.5, the ЭП20's 5.1 gives 5.0). The reducer holds what it is set to,
+   within 0.005 MPa (p. 100). openRTS: the pressure named.
+2. **The 254's I.** It lets the engine's own train brake off (p. 114);
+   Brakes.dll does so only with `BR_BUFERKVT` (0 on the ЭД9М and the
+   ЭП20). openRTS: always.
+3. **The 254's II.** Brakes.dll lowers its target 0.1 a step (about
+   3 atm/s); openRTS drops it at once and the cylinder lets out at the
+   engine's own rate (the book: fully released within 13 s, p. 114). In
+   the game they look alike.
+4. **The gauges' needles.** Brakes.dll's lag: the ТЦ 0.2 atm/s within 0.5
+   of the pressure and 1 atm/s beyond, the ТМ falling 0.5 atm/s. openRTS:
+   the pressures as they are, as the cab gauges under openRTS's air
+   already show them (testers, 2026-11-17).
+
+**Not modelled, for a decision:** the УР warms after a braking and gains
+0.005–0.01 MPa after a step and 0.02–0.03 MPa after full service (p. 103).
+In IV the pipe follows it, so a 483 in flat mode may release (it releases
+on a rise of 0.015–0.03 MPa).
+
+The ЭПТ's level for cars on RTS's air (`ep_value`) fills at about 1 atm/s
+and lets out 0.35 atm/s (the ЭВР 305, docs/reverse/air-brakes-real.md);
+on the realistic air the cars' ЭВР take only the command. The 418's
+numbers stay Brakes.dll's: the device came after the book.
 
 ## Open
 
