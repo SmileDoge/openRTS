@@ -346,6 +346,8 @@ TrainView::TrainView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath rou
     dispatcher_ = std::make_unique<simulation::Dispatcher>(network);
     const auto definition = formats::load_route_definition(*vfs_, route_);
     limits_ = std::make_unique<simulation::SpeedLimits>(network, definition.ok() ? definition.speed_limit : 0.0f);
+    limits_without_tolerance_ = remembered("limits_without_tolerance").value_or("0") == "1";
+    limits_->set_without_tolerance(limits_without_tolerance_);
     route_tolerance_ = definition.ok() ? definition.timetable_tolerance : 0.0f;
     electrification_ = simulation::Electrification::load(*vfs_, route_, network);
     if (!electrification_->data().error.empty()) std::cout << "electrification: " << electrification_->data().error << '\n';
@@ -8786,6 +8788,7 @@ void TrainView::feed_world(const Unit& unit) {
     world.day_time = day_time_;
     world.night = night_;
     world.route_speed_limit = limits_ ? limits_->route_limit() : 0.0f;
+    world.limits_without_tolerance = limits_without_tolerance_;
     // RTSGetTrackItems (RTS 0x4808DC): the items from the train's rear
     // forward over its length and further, and back from the rear; the
     // distance from the front (negative under the train, item_under) or the
@@ -10633,6 +10636,14 @@ void TrainView::draw_panel() {
         ImGui::SliderFloat(tr("Body sway"), &sway_scale_, 0.0f, 10.0f, "%.1f");
         ImGui::SameLine();
         ImGui::TextDisabled(tr("(1 = RTS model; RTS shows it in the cab only)"));
+        if (ImGui::Checkbox(tr("Speed limits without the route's +3 km/h"), &limits_without_tolerance_)) {
+            remember("limits_without_tolerance", limits_without_tolerance_ ? "1" : "0");
+            limits_->set_without_tolerance(limits_without_tolerance_);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr(limits_without_tolerance_
+                                         ? "(103 is 100, 83 is 80, 28 is 25: the order's limit, as a real КЛУБ-У's map has it; for the monitor, F5, the drivers and the DLLs. MaDaDev's КЛУБ then blinks from 3 km/h below the limit, sounds from 2 below and whistles over it: the route's +3 hid that)"
+                                         : "(as the route gives them: many give 3 km/h over the order's, 103 for 100)"));
         ImGui::Checkbox(tr("Car loops start at random points"), &random_loop_phase_);
         ImGui::SameLine();
         ImGui::TextDisabled(tr("(openRTS: identical loops on many cars do not add up in phase; RTS starts them together)"));

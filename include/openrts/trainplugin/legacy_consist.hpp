@@ -128,6 +128,9 @@ struct LegacyWorld {
     const formats::RouteDatabase* route_database = nullptr;
     const formats::TrackDatabase* tdb = nullptr;
     float route_speed_limit = 0.0f;
+    // The speed posts' limits without the routes' +3 km/h
+    // (simulation::without_tolerance) in RTSGetTrackItems too.
+    bool limits_without_tolerance = false;
     // RTSGetTrackItems: the player's train's items (RTS 0x4808DC) and how
     // far ahead and behind the list reaches.
     std::vector<dllhost::TrackItemEntry> track_items;

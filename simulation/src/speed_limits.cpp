@@ -22,6 +22,20 @@ namespace {
 
 } // namespace
 
+float without_tolerance(const float speed) noexcept {
+    if (speed <= 0.0f) return speed;
+    const float kmh = speed * 3.6f;
+    const float whole = std::round(kmh);
+    if (std::abs(kmh - whole) > 0.05f || whole < 8.0f) return speed;
+    if (static_cast<int>(whole) % 5 != 3) return speed;
+    return (whole - 3.0f) / 3.6f;
+}
+
+float SpeedLimits::speed_of(const SpeedPostOnTrack& on) const noexcept {
+    if (on.post.resume) return route_limit_;
+    return without_tolerance_ ? simulation::without_tolerance(on.post.speed) : on.post.speed;
+}
+
 SpeedLimits::SpeedLimits(const TrackNetwork& network, const float route_limit)
     : network_(&network), route_limit_(route_limit > 0.0f ? route_limit : -1.0f) {
     const auto& items = network.database().items;
@@ -71,7 +85,7 @@ float SpeedLimits::limit_at(const std::uint32_t node, const double offset, const
         const auto* on = post(found.item);
         // The walk goes the other way: travel on that node is the opposite.
         if (!on || !applies(*on, !found.facing_forward, category)) continue;
-        return on->post.resume ? route_limit_ : on->post.speed;
+        return speed_of(*on);
     }
     return route_limit_;
 }
@@ -86,7 +100,7 @@ std::vector<std::pair<float, double>> SpeedLimits::limits_ahead(const Train& tra
     for (const auto& found : ahead.items) {
         const auto* on = post(found.item);
         if (!on || !applies(*on, found.facing_forward, category)) continue;
-        result.emplace_back(on->post.resume ? route_limit_ : on->post.speed, found.distance);
+        result.emplace_back(speed_of(*on), found.distance);
         if (result.size() >= count) break;
     }
     return result;
@@ -137,7 +151,7 @@ SpeedLimit SpeedLimits::evaluate(const Train& train, const TrainCategory categor
     for (const auto& found : ahead.items) {
         const auto* on = post(found.item);
         if (!on || !applies(*on, found.facing_forward, category)) continue;
-        result.ahead = on->post.resume ? route_limit_ : on->post.speed;
+        result.ahead = speed_of(*on);
         result.ahead_distance = found.distance;
         break;
     }

@@ -1440,6 +1440,10 @@ private:
     bool rails_loaded_ = false;
     // TrainSettings::limit_brake_force, remembered as limit_brake_force.
     bool limit_brake_force_ = false;
+    // The speed posts' limits without the routes' +3 km/h
+    // (SpeedLimits::set_without_tolerance), remembered as
+    // limits_without_tolerance.
+    bool limits_without_tolerance_ = false;
     // The brakes' condition of every train (Train::set_brake_condition: 0
     // none, 10 from the works .. 1 due for an overhaul) and the brake
     // pressing (TrainSettings::brake_force_factor, %), remembered as

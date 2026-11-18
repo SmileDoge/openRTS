@@ -242,6 +242,37 @@ or mph (flag 0x100), passenger / freight / both (0x20 / 0x40 / 0x80).
 - **In force:** the nearest applicable post behind the train's front; a
   higher limit only once the rear has passed its post too.
 - **Ahead:** the next applicable post within 3 km.
+- **Without the route's +3 km/h** (openRTS, 2026-11-18, testers; the Train
+  window's "Ограничения скорости без допуска маршрута +3 км/ч", off by
+  default, remembered as `limits_without_tolerance`). Many routes give a
+  limit 3 km/h over the order's: Pavlovsk's posts say 123, 103, 83, 63, 28,
+  Kuban's 143, 123, 103, 83, Novokuznetsk's and Chernyshevsk's 43, 83, 93,
+  103, ДЖД's 53, 23, 13; Lviv's are round (120, 100, 80). A real КЛУБ-У's
+  electronic map has the order's 100 where these routes say 103. With the
+  option a post's speed of 5n + 3 km/h is 3 less (`without_tolerance`:
+  103 is 100, 28 is 25, 8 is 5), any other as it is, so a route with round
+  limits does not change. It goes for every limit openRTS gives: the
+  monitor, F5 and Ctrl+F5, the drivers and the traffic, the speed in force
+  a DLL reads, and the speed posts of `RTSGetTrackItems`, from which a
+  КЛУБ builds its map (`LegacyWorld::limits_without_tolerance`). Not a
+  scenario's own limits. Test: `test_speed_limits` in `tests/path_test.cpp`.
+  MaDaDev's `Brakes.dll` adds no tolerance of its own (IDA, 2026-11-18):
+  its `_ALSN` (`0x402828`) keeps the limit RTS passes as `|limit| x 3.6`
+  km/h (aux `+80`), `updateKLUB` (`0x406658`) makes the permitted speed of
+  it (aux `+140`, or the braking curve's below it) and sets its whistle
+  flag (aux `+8`, `0x10000000`) as soon as the speed is over it, by any
+  amount. Before it (`updateKLUB`, the whole km/h of the speed against
+  the permitted speed): from 3 below it its display blinks, from 2 below
+  it sets a warning flag (aux `+8`, `0x800000`; testers hear a tone there);
+  above it asks for vigilance (aux `+8` bit 8, its timer aux `+24` at 4.9 s),
+  and `_Run` whistles at 5 s and, unanswered by 12 s, vents the pipe (ЭПК:
+  `TrainPipeRate` -1.2). So the routes' +3 moves that zone up to the
+  order's limit: at an order's 100 (the post's 103) it only blinks from
+  100; with round posts (Lviv, or the option) it blinks from 97, sounds
+  from 98 and whistles over 100. Its line of the next object shows a speed post's speed as
+  `(int)(v x 3.6) + 1` (a float's 102.99999 of 103 shown right): where
+  the float lands above, one more (100 and 140 as 101 and 141, 123 as
+  124); left as it is (a DLL's own).
 
 ## AI trains
 

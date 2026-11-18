@@ -12,6 +12,7 @@
 #include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/sound.hpp>
 #include <openrts/simulation/driver_valve.hpp>
+#include <openrts/simulation/speed_limits.hpp>
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/formats/shape_file.hpp>
 
@@ -447,7 +448,7 @@ std::optional<core::VirtualPath> in(const core::VirtualPath& folder, const std::
 }
 
 // RTS's TrackItem and its kind's fields (0x482680) from the TDB item.
-TrackItemSpec item_spec(const formats::TrackItem& item, const float route_speed_limit) {
+TrackItemSpec item_spec(const formats::TrackItem& item, const float route_speed_limit, const bool without_tolerance) {
     using formats::TrackItemKind;
     TrackItemSpec s;
     s.id = item.id;
@@ -499,7 +500,11 @@ TrackItemSpec item_spec(const formats::TrackItem& item, const float route_speed_
         }
         s.off = next();
         s.value = std::abs(s.value);
-        if (!(flags & 1u)) s.value *= (flags & 0x100u) ? 0.4469444444f : 1.0f / 3.6f;
+        if (!(flags & 1u)) {
+            s.value *= (flags & 0x100u) ? 0.4469444444f : 1.0f / 3.6f;
+            // The order's limit, as openRTS's own (the КЛУБ's map, testers).
+            if (without_tolerance) s.value = simulation::without_tolerance(s.value);
+        }
         break;
     }
     case 3:
@@ -984,7 +989,7 @@ bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>&
     if (world.tdb) {
         for (const auto& e : world.track_items) {
             if (e.item >= world.tdb->items.size() || !items_sent_.insert(e.item).second) continue;
-            request.items.push_back(item_spec(world.tdb->items[e.item], world.route_speed_limit));
+            request.items.push_back(item_spec(world.tdb->items[e.item], world.route_speed_limit, world.limits_without_tolerance));
         }
     }
     if (world.route_database) {

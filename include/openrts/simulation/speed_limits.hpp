@@ -34,6 +34,13 @@ struct SpeedLimit {
     double ahead_distance = 0.0; // m from the leading end
 };
 
+// The limit as the order gives it (openRTS, testers 2026-11-18): many RTS
+// routes give a limit 3 km/h over the order's, 103 for 100, 28 for 25 (the
+// MaDaDev routes; Lviv's are round), where a real КЛУБ-У's electronic map
+// has the order's own. A speed of 5n + 3 km/h less 3, any other as it is
+// (m/s in and out).
+[[nodiscard]] float without_tolerance(float speed) noexcept;
+
 // A train's category for speed posts: the ТЧД console's "Прочий" /
 // "Пассажирский" / "Грузовой" (RTS train byte +1, from the server's 0x4607 /
 // 0x4605 in a network game).
@@ -55,6 +62,11 @@ public:
     // `offset`: the nearest applicable post behind, else the route's limit.
     [[nodiscard]] float limit_at(std::uint32_t node, double offset, bool forward, TrainCategory category) const;
     [[nodiscard]] float route_limit() const noexcept { return route_limit_; }
+    // The posts' limits without the routes' +3 km/h (without_tolerance) from
+    // now on: every limit this gives (the monitor, F5, the drivers, the speed
+    // in force a DLL reads).
+    void set_without_tolerance(bool on) noexcept { without_tolerance_ = on; }
+    [[nodiscard]] bool without_tolerance() const noexcept { return without_tolerance_; }
     // The limits ahead of the train within `distance` m: (speed m/s, metres
     // from the leading end), nearest first, at most `count` (Ctrl+F5).
     [[nodiscard]] std::vector<std::pair<float, double>> limits_ahead(const Train& train, TrainCategory category, double distance,
@@ -74,8 +86,12 @@ public:
     [[nodiscard]] static bool applies(const SpeedPostOnTrack& post, bool forward, TrainCategory category);
 
 private:
+    // A post's limit for a train passing it: its own, the route's where it ends one.
+    [[nodiscard]] float speed_of(const SpeedPostOnTrack& on) const noexcept;
+
     const TrackNetwork* network_;
     float route_limit_;
+    bool without_tolerance_ = false;
     std::vector<SpeedPostOnTrack> posts_;
     std::unordered_map<std::uint32_t, std::size_t> by_item_;
     std::unordered_map<std::uint32_t, float> mileposts_; // item -> the kilometre (or mile) it shows

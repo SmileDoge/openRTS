@@ -530,6 +530,20 @@ void test_speed_limits() {
     const auto post = formats::speed_post(net->database().items[0]);
     check(post && post->limit && !post->resume && near(post->speed, 40.0 / 3.6, 1e-4), "speed post data as RTS reads it");
 
+    // Without the routes' +3 km/h (testers 2026-11-18): 5n + 3 less 3, the rest as it is.
+    const auto order = [](const double kmh) { return simulation::without_tolerance(static_cast<float>(kmh / 3.6)) * 3.6; };
+    check(near(order(103.0), 100.0, 1e-3) && near(order(83.0), 80.0, 1e-3) && near(order(28.0), 25.0, 1e-3) && near(order(8.0), 5.0, 1e-3),
+          "without the tolerance: 103, 83, 28, 8 are 100, 80, 25, 5");
+    check(near(order(100.0), 100.0, 1e-3) && near(order(120.0), 120.0, 1e-3) && near(order(125.0), 125.0, 1e-3) && near(order(3.0), 3.0, 1e-3)
+              && near(order(101.5), 101.5, 1e-3),
+          "without the tolerance: round limits stay");
+    check(near(limits.limit_at(4, 300.0, true, simulation::TrainCategory::passenger), 40.0 / 3.6, 1e-3), "a 40 post stays 40 either way");
+    limits.set_without_tolerance(true);
+    check(near(limits.limit_at(4, 300.0, true, simulation::TrainCategory::passenger), 40.0 / 3.6, 1e-3)
+              && near(limits.limit_at(4, 100.0, true, simulation::TrainCategory::passenger), 25.0, 1e-3),
+          "without the tolerance: a round post and the route's limit as they are");
+    limits.set_without_tolerance(false);
+
     // Which posts a train obeys by its category (rts1.exe 0x47F7B4).
     using C = simulation::TrainCategory;
     const auto obeys = [](const std::uint32_t flags, const C category) {
