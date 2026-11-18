@@ -130,6 +130,7 @@ struct CarMirror {
     alignas(4) std::array<std::uint8_t, 1024> wag_type{};
 
     abi::Wagon* wagon() { return reinterpret_cast<abi::Wagon*>(object.data()); }
+    [[nodiscard]] const abi::Wagon* wagon() const { return reinterpret_cast<const abi::Wagon*>(object.data()); }
     abi::Locomotive* loco() { return reinterpret_cast<abi::Locomotive*>(object.data()); }
     abi::ElectricLocomotive* electric() { return reinterpret_cast<abi::ElectricLocomotive*>(object.data()); }
     abi::DieselLocomotive* diesel() { return reinterpret_cast<abi::DieselLocomotive*>(object.data()); }

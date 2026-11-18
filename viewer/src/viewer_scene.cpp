@@ -774,6 +774,10 @@ public:
                 net_->update(track_->network(), signals_ ? signals_->system() : nullptr, *train_,
                              renderer::route_position(camera.eye(), origin_));
             }
+            // OPENRTS_SPAWN_CHECK=<consist>: with no train, 3 s after the
+            // loading one put on the track as Track control would, and for 6 s
+            // what holds the keyboard from the free camera, logged.
+            spawn_check(clock, camera);
             // Placements: a click in the free flight picks trains.
             if (train_->selecting() && input.click && input.pointer && !train_->walking())
                 train_->select_at(last_eye_, last_view_projection_, {input.pointer_x, input.pointer_y}, input.click_ctrl, input.click_shift);
@@ -2454,6 +2458,44 @@ private:
     mutable std::uint64_t probe_tag_ = 0;
     static constexpr int sky_probe_columns = 6;
     static constexpr int sky_probe_rows = 4;
+    double spawn_check_time_ = 0.0;
+    bool spawn_check_done_ = false;
+    void spawn_check(const SceneClock& clock, const ViewerCamera& camera) {
+        static const std::string consist = [] {
+#ifdef _WIN32
+            char* value = nullptr;
+            std::size_t size = 0;
+            std::string text;
+            if (_dupenv_s(&value, &size, "OPENRTS_SPAWN_CHECK") == 0 && value) text = value;
+            std::free(value);
+            return text;
+#else
+            const char* value = std::getenv("OPENRTS_SPAWN_CHECK");
+            return std::string(value ? value : "");
+#endif
+        }();
+        if (consist.empty() || !train_ || !track_ || !loading_.done) return;
+        spawn_check_time_ += clock.elapsed;
+        if (!spawn_check_done_ && spawn_check_time_ > 3.0) {
+            spawn_check_done_ = true;
+            const auto& network = track_->network();
+            simulation::TrackLocation where{};
+            for (std::uint32_t node = 1; node < network.node_count(); ++node) {
+                const auto* n = network.node(node);
+                if (n && n->kind == formats::TrackNodeKind::vector && n->length > 600.0) {
+                    where = {node, n->length * 0.5, true};
+                    break;
+                }
+            }
+            const auto error = train_->spawn(consist, where, TrainView::Role::standing, std::nullopt, -1);
+            std::cout << "spawn check: " << consist << " at node " << where.node << ": " << (error.empty() ? "put down" : error) << std::endl;
+        }
+        if (spawn_check_done_ && spawn_check_time_ < 9.5 && std::fmod(spawn_check_time_, 1.0) < clock.elapsed) {
+            std::cout << "spawn check: " << spawn_check_time_ << " s: keyboard captured " << keyboard_captured() << ", on foot "
+                      << engineer_on_foot() << ", walking " << train_->walking() << ", camera fly " << camera.fly << " at "
+                      << camera.position.x << " " << camera.position.y << " " << camera.position.z << std::endl;
+        }
+    }
     // A thunderstorm this frame, and its lightning (update_lightning).
     bool storm_ = false;
     // The dynamic weather runs (weather_cycle.hpp: on, and not a network

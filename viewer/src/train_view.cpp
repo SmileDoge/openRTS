@@ -2523,8 +2523,13 @@ std::string TrainView::spawn(const std::string_view consist, const simulation::T
     units_.push_back(std::move(unit));
     attach_role(units_.back());
     // Without a train of the player's own (the menu's "no train"), the first
-    // one put on the route becomes theirs.
-    if (first) return set_role(units_.front().train->id(), Role::driven);
+    // one put on the route becomes theirs. The camera stays the free one it
+    // was put down from: following it from behind (the default with no start
+    // view) left it unable to move, only to turn (testers, 2026-11-18).
+    if (first) {
+        follow_ = false;
+        return set_role(units_.front().train->id(), Role::driven);
+    }
     return {};
 }
 

@@ -120,7 +120,13 @@ train, else the driven one):
     (its DLLs' Init gets TrainState 1), or cold (TrainState 0: no air in the
     pipe, the reservoirs or the main reservoirs, the pantographs down), when
     the player takes it (`TrainView::spawn`; a network game's server places
-    it as it does);
+    it as it does). Running but standing, its DLLs' `Init` sees it moving
+    forward at 0.01 m/s (docs/reverse/train-dll.md: the ЭП1 readied no cab
+    before 2026-11-18). With no train of the player's own, the first one put down
+    becomes his and the camera stays the free one it was put down from
+    (`OPENRTS_SPAWN_CHECK=<consist>` puts one down 3 s after the loading and
+    logs what holds the keyboard; until 2026-11-18 the camera followed it
+    from behind and could only turn);
   - **placing a consist** (after choosing it) shows a preview first:
     - every car at its true length, the front car orange with an arrow the
       way the train will face, engines pale orange; the front of car 0 at

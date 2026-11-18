@@ -1043,6 +1043,16 @@ bool Host::init_car(CarMirror& car, std::uint32_t state) {
     Module& m = *car.module;
     bool ok = true;
     prepare_fpu();
+    // Running (State bit 1) is a moving train's state in RTS (0x468C74 sets
+    // it from the train's speed). A train put down running stands: Init
+    // sees it moving forward at 0.01 m/s and then it stands again. The
+    // ЭП1's DLL picks its working cab by the sign of the speed when
+    // running, and standing readied neither cab while the air and the
+    // breaker were up (testers, 2026-11-18: the 367 would not go in).
+    abi::Wagon* w = car.wagon();
+    const float speed = w->velocity;
+    const bool nudged = (state & 2u) != 0 && std::abs(speed) < 0.01f;
+    if (nudged) w->velocity = 0.01f;
     if (m.init) {
         auto* fn = reinterpret_cast<abi::InitFn>(m.init);
         abi::Locomotive* v = view(car, &m);
@@ -1068,6 +1078,7 @@ bool Host::init_car(CarMirror& car, std::uint32_t state) {
             }
         }
     }
+    if (nudged) car.wagon()->velocity = speed;
     if (!ok) {
         log(L"DLL " + m.path + L": Init returned false for car " + std::to_wstring(car.index));
         return false;
