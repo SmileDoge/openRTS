@@ -325,6 +325,7 @@ The game can also be started directly:
 | `--msaa 1\|2\|4\|8`, `--no-vsync`, `--no-batching` | graphics settings |
 | `--fps-limit <30..500 \| 0>` | the FPS limit for this run (0: none), not remembered |
 | `--fps-background` | no 30 FPS cap in the background (for measurements beside other windows) |
+| `--parallax on\|off` | the materials' height-map relief for this run |
 | `--compress-textures off\|memory\|on` | uncompressed textures and PBR maps for this run: not compressed / compressed, not cached on disk / compressed and cached on disk (default: as the settings say) |
 | `--fly-test <m/s> [deg/s]`, `--shadow-cache-check` | for checks: the free camera flies on and turns; the shadow cache compared with the cascades drawn whole, the differences logged |
 | `--multi-draw on\|off` | multi-draw indirect for models this run (on by default where the GPU has it) |
@@ -410,6 +411,7 @@ the Train window)
 | Ctrl+Num5 / Ctrl + the key left of `1` | the tape, as in RTS: start it on the locomotive driven / stop it; the files go to `%LOCALAPPDATA%\openRTS\RTS_TAPES`, RTS's `lenta.xls` reads them; next to it openRTS's brake log `…_openrts.csv`: the valve's position, the УР, the ЭПТ, every car's pressures (`docs/tape.md`) |
 | Num5 | while the tape rolls: which locomotive it records |
 | Ctrl+F9 | the speed recorder tape (openRTS): the tapes on a paper in the manner of the 3СЛ-2М — the speed and the limit, the time, the signal, the pressures, the path and the kilometres; the one rolling as it is written |
+| F2 | the console: the game's messages (as in `openrts.log`), warnings yellow, errors red, a filter and copying |
 | F12 | the inspector: a tree of the map's objects and trains, the chosen one's properties, the shape's materials (FullBright as ordinary, into a mod), `docs/inspector.md` |
 | RMB + mouse | look round |
 | Mouse | click works a control, the wheel moves a handle a step (never a button or a switch), dragging moves handles and blinds |
@@ -433,7 +435,7 @@ the Train window)
 
 | Program | Purpose |
 |---|---|
-| `openrts-ace` | ACE textures to PNG and back (DXT1, RGB, RGB + mask, RGBA), a file or a folder; `--register`: a double click on an `.ace` shows it as PNG, PNG files and folders get "to ACE (openRTS)" (also a button in the menu's Settings; the format: `docs/reverse/ace.md`) |
+| `openrts-ace` | ACE textures to PNG and back (DXT1, RGB, RGB + mask, RGBA; openRTS only: BC7, DXT5, DXT3, BC5, BC4), a file or a folder; `--register`: a double click on an `.ace` shows it as PNG, PNG files and folders get "to ACE (openRTS)" (also a button in the menu's Settings; the format: `docs/reverse/ace.md`) |
 | `openrts-shape` | `export <file.s> [--out <folder>]`: a shape as glTF 2.0 with its textures as PNG for Substance Painter and Blender: nodes, a material per part and what openRTS's material files select it by ([openRTS materials](docs/pbr-materials.md)) |
 | `openrts-pack` | build and inspect content packs (`docs/vfs.md`) |
 | `openrts-track-check` | check the track network, `.pat` paths and speed posts |

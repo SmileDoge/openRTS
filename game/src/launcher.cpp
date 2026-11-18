@@ -319,6 +319,7 @@ struct Launcher::State {
     // ("dll_air": 0 RTS's, 1 the DLL's valve, 2 openRTS's valve).
     bool realistic_air = false;
     int dll_air = 0;
+    bool gauges_air = true; // gauges_openrts_air: the cab's air gauges from the realistic air
     // The graphics settings, the game's panel's too (graphics_settings.hpp):
     // each change written at once, only what changed.
     viewer::GraphicsSettings graphics;
@@ -467,6 +468,7 @@ struct Launcher::State {
         vsync = remembered_int("launcher_vsync", 1) != 0;
         realistic_air = remembered_int("realistic_air", 0) != 0;
         dll_air = std::clamp(remembered_int("dll_air", 0), 0, 2);
+        gauges_air = remembered_int("gauges_openrts_air", 1) != 0;
         load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
@@ -1378,6 +1380,13 @@ void Launcher::State::draw_settings(const float height) {
                                          : dll_air == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
                                          : dll_air == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
                                                         : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
+            form_row(tr("Cab gauges"));
+            ImGui::BeginDisabled(!realistic_air);
+            if (ImGui::Checkbox(tr("show openRTS's air (pipe, cylinders, main reservoir)"), &gauges_air)) remember("gauges_openrts_air", gauges_air ? "1" : "0");
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("%s", tr(!realistic_air ? "(works with the realistic air on; without it the gauges are the DLL's, as in RTS)"
+                                         : gauges_air ? "(the gauges named DTM, DTC1, DTC2, DGR show what F5 shows; the others stay the DLL's)"
+                                                      : "(as the DLL draws them: its own needles, which may lag or run ahead of F5)"));
             ImGui::EndTable();
         }
     }
@@ -1839,6 +1848,13 @@ void Launcher::State::draw_graphics(const float height) {
                 }
                 row_note(tr("The trains' smoothed textures and the compressed ones; cleared, they are made again on the next load."));
             }
+            group_row(tr("Relief by the materials' height maps (parallax, not as in RTS)"), Load::negligible, Load::none);
+            ImGui::Checkbox("##parallax", &g.effects.parallax);
+            ImGui::BeginDisabled(!g.effects.parallax);
+            group_row(tr("Relief out to"), Load::none, Load::none);
+            viewer::slider_with_input("##parallax_distance", &g.effects.parallax_distance, 5.0f, 100.0f, tr("%.0f m"), "%.0f");
+            ImGui::EndDisabled();
+            row_note(tr("Only materials with a height map: the image shifts where the eye's ray meets the relief (rivets, ribs, panel seams); the outline stays flat."));
             group_row(tr("Depth for ReShade"), Load::none, Load::negligible);
             ImGui::Checkbox("##reshade_depth", &g.reshade_depth);
             row_note(tr("Keeps the scene depth to the end of the frame and, with anti-aliasing, adds a copy ReShade can take. In ReShade: RESHADE_DEPTH_INPUT_IS_REVERSED 1, RESHADE_DEPTH_MULTIPLIER 20 (see INSTALL.md)."));

@@ -214,13 +214,22 @@ void ActivityView::update(const float elapsed, const double time_of_day, Activit
         }
     }
     const auto couplings = world.take_couplings();
+    uncouplings_ = world.take_uncouplings();
+    for (const auto& u : uncouplings_)
+        std::cout << "activity: train " << u.train.service << ' ' << u.train.train << " uncoupled: " << u.head << " + " << u.tail << " cars"
+                  << std::endl;
     for (auto& state : events_) {
+        // A level change is looked at once (OnActivationLevel).
+        const bool changed = std::exchange(state.level_changed, false);
         if (!armed(state)) continue;
+        state.level_changed = changed;
         const bool now = holds_now(state, world, couplings, false);
+        state.level_changed = false;
         // Permanent: again each time it comes true, not every frame it holds.
         if (now && (!state.event->permanent || !state.held)) fire(state);
         state.held = now;
     }
+    uncouplings_.clear();
     step_scripts(world);
 }
 
@@ -230,55 +239,101 @@ std::optional<bool> ActivityView::wagon_state(EventState& state, const formats::
     // or once (CheckWagonState); the dynamic relations only while tracked.
     const auto train = train_in(c, own);
     if (!check_once && !tracked_.contains(train)) return false;
-    ActivityCarRef car{.train = train, .number = static_cast<std::int32_t>(number(c.child("wagonnum"), 0, 0))};
+    // activity.pdf 27: with WagonID or WagonNum the relations are checked
+    // for that car only, else for each car looked at (the tracking's or the
+    // check's WagonRange / WagonList, else every car): the event comes when
+    // one car meets them (all of them, or one with Any).
+    std::vector<ActivityCarRef> cars;
     if (const auto id = c.text("wagonid"); !id.empty()) {
-        if (auto parsed = wagon_id(id)) car = *parsed;
+        if (auto parsed = wagon_id(id)) cars.push_back(*parsed);
+    } else if (const auto* num = c.child("wagonnum")) {
+        cars.push_back({.train = train, .number = static_cast<std::int32_t>(number(num, 0, 0))});
+    } else {
+        cars = cars_of(train, check_once, world);
     }
     const bool any = c.child("any") != nullptr;
-    bool tested = false, result = !any;
-    for (std::size_t k = 0; k < c.children.size(); ++k) {
-        const auto& test = c.children[k];
-        const auto& op = test.name;
-        const bool dynamic = op == "incpast" || op == "decpast" || op == "setto" || op == "setnotto";
-        const bool fixed = op == "equal" || op == "notequal" || op == "above" || op == "aboveorequal" || op == "below" || op == "beloworequal";
-        if (!dynamic && !fixed) continue;
-        if (test.values.size() < 5) continue;
-        const auto value = world.car_value(car, test.values[0], test.values[1], static_cast<int>(number(&test, 2)), static_cast<int>(number(&test, 3)));
-        if (!value) {
-            if (not_run_.insert("WagonState " + test.values[1]).second)
-                std::cout << "activity: WagonState " << test.values[1] << " not known here" << std::endl;
-            return false;
-        }
-        const double want = number(&test, 4);
-        bool ok = false;
-        if (dynamic) {
-            const auto before = state.last.find(k);
-            const bool first = before == state.last.end();
-            const double was = first ? *value : before->second;
-            state.last[k] = *value;
-            if (check_once || first) {
-                ok = false;
-            } else if (op == "incpast") {
-                ok = was < want && *value >= want;
-            } else if (op == "decpast") {
-                ok = was > want && *value <= want;
-            } else if (op == "setto") {
-                ok = std::abs(was - want) >= 1e-3 && std::abs(*value - want) < 1e-3;
-            } else {
-                ok = std::abs(was - want) < 1e-3 && std::abs(*value - want) >= 1e-3;
+    bool met = false;
+    for (const auto& car : cars) {
+        bool tested = false, result = !any, unknown = false;
+        for (std::size_t k = 0; k < c.children.size(); ++k) {
+            const auto& test = c.children[k];
+            const auto& op = test.name;
+            const bool dynamic = op == "incpast" || op == "decpast" || op == "setto" || op == "setnotto";
+            const bool fixed = op == "equal" || op == "notequal" || op == "above" || op == "aboveorequal" || op == "below" || op == "beloworequal";
+            if (!dynamic && !fixed) continue;
+            if (test.values.size() < 5) continue;
+            const auto value = world.car_value(car, test.values[0], test.values[1], static_cast<int>(number(&test, 2)), static_cast<int>(number(&test, 3)));
+            if (!value) {
+                if (not_run_.insert("WagonState " + test.values[1]).second)
+                    std::cout << "activity: WagonState " << test.values[1] << " not known here" << std::endl;
+                // Unknown: never met (Any looks at the others).
+                unknown = true;
+                continue;
             }
-        } else {
-            ok = op == "equal"          ? std::abs(*value - want) < 1e-3
-               : op == "notequal"       ? std::abs(*value - want) >= 1e-3
-               : op == "above"          ? *value > want
-               : op == "aboveorequal"   ? *value >= want
-               : op == "below"          ? *value < want
-                                        : *value <= want;
+            const double want = number(&test, 4);
+            bool ok = false;
+            if (dynamic) {
+                auto& last = state.last;
+                const auto key = std::make_tuple(car.by_id, car.train.service, car.train.train, car.number, k);
+                const auto before = last.find(key);
+                const bool first = before == last.end();
+                const double was = first ? *value : before->second;
+                last[key] = *value;
+                if (check_once || first) {
+                    ok = false;
+                } else if (op == "incpast") {
+                    ok = was < want && *value >= want;
+                } else if (op == "decpast") {
+                    ok = was > want && *value <= want;
+                } else if (op == "setto") {
+                    ok = std::abs(was - want) >= 1e-3 && std::abs(*value - want) < 1e-3;
+                } else {
+                    ok = std::abs(was - want) < 1e-3 && std::abs(*value - want) >= 1e-3;
+                }
+            } else {
+                ok = op == "equal"          ? std::abs(*value - want) < 1e-3
+                   : op == "notequal"       ? std::abs(*value - want) >= 1e-3
+                   : op == "above"          ? *value > want
+                   : op == "aboveorequal"   ? *value >= want
+                   : op == "below"          ? *value < want
+                                            : *value <= want;
+            }
+            tested = true;
+            result = any ? (result || ok) : (result && ok);
         }
-        tested = true;
-        result = any ? (result || ok) : (result && ok);
+        // Every car is looked at: the dynamic relations keep each car's last value.
+        if (tested && result && (any || !unknown)) met = true;
     }
-    return tested && result;
+    return met;
+}
+
+ActivityView::CarSet ActivityView::car_set(const formats::ActivityNode& node, const ActivityTrainId train) {
+    CarSet set;
+    if (const auto* range = node.child("wagonrange"); range && range->values.size() >= 2) {
+        std::vector<ActivityCarRef> cars;
+        const auto a = static_cast<std::int32_t>(number(range, 0)), b = static_cast<std::int32_t>(number(range, 1));
+        for (auto n = (std::min)(a, b); n <= (std::max)(a, b); ++n) cars.push_back({.train = train, .number = n});
+        set.cars = std::move(cars);
+    } else if (const auto* list = node.child("wagonlist")) {
+        std::vector<ActivityCarRef> cars;
+        for (const auto& wagon : list->children)
+            if (wagon.name == "wagon" || wagon.name == "wagonid")
+                if (!wagon.values.empty())
+                    if (auto id = wagon_id(wagon.values.front())) cars.push_back(*id);
+        set.cars = std::move(cars);
+    }
+    return set;
+}
+
+std::vector<ActivityCarRef> ActivityView::cars_of(const ActivityTrainId train, const bool check_once, ActivityWorld& world) const {
+    const CarSet* set = check_once ? checking_ : nullptr;
+    if (!check_once)
+        if (const auto tracked = tracked_.find(train); tracked != tracked_.end()) set = &tracked->second;
+    if (set && set->cars) return *set->cars;
+    std::vector<ActivityCarRef> cars;
+    const auto count = world.car_count(train); // 0: the train is not in play
+    for (std::size_t n = 0; n < count; ++n) cars.push_back({.train = train, .number = static_cast<std::int32_t>(n)});
+    return cars;
 }
 
 bool ActivityView::holds_now(EventState& state, ActivityWorld& world,
@@ -299,7 +354,12 @@ bool ActivityView::holds_now(EventState& state, ActivityWorld& world,
         } else if (c.name == "reachlocation") {
             const auto at = point(c.child("location"));
             const auto train = train_in(c, own);
-            if (!at || !world.near(train, *at, number(c.child("radius"), 0, 10.0), c.text("reach"))) return false;
+            // activity.pdf 3: ReachWith ( WAGON_ANY ... PLAYER_POSITION );
+            // Reach read too.
+            auto reach = c.text("reachwith");
+            if (reach.empty()) reach = c.text("reach");
+            if (lower(reach) == "player_position") reach = "PLAYER";
+            if (!at || !world.near(train, *at, number(c.child("radius"), 0, 10.0), reach)) return false;
             const auto* not_above = c.child("speednotabove");
             const auto* not_below = c.child("speednotbelow");
             if (not_above || not_below) {
@@ -320,11 +380,72 @@ bool ActivityView::holds_now(EventState& state, ActivityWorld& world,
         } else if (c.name == "wagonstate") {
             const auto met = wagon_state(state, c, own, world, check_once);
             if (!met || !*met) return false;
-        } else if (c.name == "activateontime") {
-            const auto at = formats::parse_activity_time(c.values.empty() ? std::string_view{} : std::string_view(c.values.front()));
-            if (!at || now_ < *at) return false;
-        } else if (c.name == "activatebytimer") {
-            if (now_ - state.armed_at < number(&c, 0)) return false;
+        } else if (c.name == "onactivationlevel") {
+            // activity.pdf 11: as its level changes, above WhenAbove or
+            // below WhenBelow (the exams' failures: SetActivationLevel ( -1 n 1 )).
+            if (!state.level_changed) return false;
+            const auto* above = c.child("whenabove");
+            const auto* below = c.child("whenbelow");
+            const bool up = above && state.level > number(above, 0);
+            const bool down = below && state.level < number(below, 0);
+            if (!up && !down) return false;
+        } else if (c.name == "reachvelocity") {
+            // activity.pdf 21: SpeedNotAbove, the speed it comes below (0:
+            // standing); SpeedNotBelow, the speed it comes above.
+            const auto speed = world.car_value({.train = train_in(c, own)}, "WAGON", "Velocity", 0, -1);
+            if (!speed) return false;
+            const auto* not_above = c.child("speednotabove");
+            const auto* not_below = c.child("speednotbelow");
+            if (!not_above && !not_below) return false;
+            if (not_above && std::abs(*speed) > number(not_above, 0) + 0.01) return false;
+            if (not_below && std::abs(*speed) <= number(not_below, 0)) return false;
+        } else if (c.name == "uncouplecars") {
+            // activity.pdf 2: the train cut in two. WagonRange ( StartNum
+            // EndNum ): StartNum cars at its head (the head part goes on as
+            // the train), or EndNum at its tail (the tail part does);
+            // WagonList: the cars that must be in the cut.
+            const auto mine = train_in(c, own);
+            const auto* range = c.child("wagonrange");
+            const auto* list = c.child("wagonlist");
+            const auto wanted = list ? car_set(c, mine).cars : std::nullopt;
+            const bool met = std::any_of(uncouplings_.begin(), uncouplings_.end(), [&](const ActivityUncoupling& u) {
+                if (u.train != mine) return false;
+                if (range && range->values.size() >= 2) {
+                    const auto head = static_cast<std::size_t>((std::max)(0.0, number(range, 0)));
+                    const auto tail = static_cast<std::size_t>((std::max)(0.0, number(range, 1)));
+                    if (head > 0 && u.head != head) return false;
+                    if (head == 0 && tail > 0 && u.tail != tail) return false;
+                }
+                if (wanted) {
+                    for (const auto& w : *wanted) {
+                        const bool in = std::any_of(u.cut.begin(), u.cut.end(), [&](const ActivityCarRef& car) {
+                            return car.train == w.train && car.number == w.number;
+                        });
+                        if (!in) return false;
+                    }
+                }
+                return true;
+            });
+            if (!met) return false;
+        } else if (c.name == "reachreversepoint") {
+            // activity.pdf 16: PointID, the reverse point's number on the
+            // player's path from 0 (an AssignService's path counts anew).
+            const auto reached = world.reverse_points_reached(train_in(c, own));
+            const auto point = static_cast<std::size_t>((std::max)(0.0, number(c.child("pointid"), 0, 0.0)));
+            if (!reached || *reached <= point) return false;
+        } else if (c.name == "activateontime" || c.name == "activatebytimer") {
+            // Both keep their time in Time ( ... ), as all of RTS's
+            // installed activities write them (ActivateByTimer ( Time ( 30.0 ) )).
+            // Read as a bare value, the timers fired at once and
+            // ActivateOnTime never; a bare ( ... ) still works.
+            const auto* time = c.child("time");
+            const auto* holder = time ? time : &c;
+            if (c.name == "activateontime") {
+                const auto at = formats::parse_activity_time(holder->values.empty() ? std::string_view{} : std::string_view(holder->values.front()));
+                if (!at || now_ < *at) return false;
+            } else if (now_ - state.armed_at < number(holder, 0)) {
+                return false;
+            }
         } else {
             if (not_run_.insert(c.name).second) std::cout << "activity: condition " << c.name << " not run yet" << std::endl;
             return false;
@@ -333,7 +454,8 @@ bool ActivityView::holds_now(EventState& state, ActivityWorld& world,
     return true;
 }
 
-void ActivityView::check_wagons(const ActivityTrainId train, ActivityWorld& world) {
+void ActivityView::check_wagons(const ActivityTrainId train, const CarSet& cars, ActivityWorld& world) {
+    checking_ = &cars;
     for (auto& state : events_) {
         if (!armed(state) || !has_condition(*state.event, "wagonstate")) continue;
         const auto own = train_of(state.service);
@@ -342,6 +464,7 @@ void ActivityView::check_wagons(const ActivityTrainId train, ActivityWorld& worl
             if (c.name == "wagonstate" && train_in(c, own) == train) mine = true;
         if (mine && holds_now(state, world, {}, true)) fire(state);
     }
+    checking_ = nullptr;
 }
 
 void ActivityView::step_scripts(ActivityWorld& world) {
@@ -439,10 +562,10 @@ bool ActivityView::run_outcome(Script& script, const formats::ActivityNode& o, A
                 state.enabled = name == "enableevent";
                 state.armed_at = now_;
                 state.held = false;
-            } else if (name == "increaseactivationlevel") {
-                state.level += static_cast<std::int32_t>(amount);
-            } else if (name == "setactivationlevel") {
-                state.level = static_cast<std::int32_t>(amount);
+            } else if (name == "increaseactivationlevel" || name == "setactivationlevel") {
+                const auto was = state.level;
+                state.level = name == "setactivationlevel" ? static_cast<std::int32_t>(amount) : state.level + static_cast<std::int32_t>(amount);
+                if (state.level != was) state.level_changed = true;
             } else {
                 // ActivateEvent: a suspended run goes on; else, enabled, it fires.
                 bool resumed = false;
@@ -490,7 +613,11 @@ bool ActivityView::run_outcome(Script& script, const formats::ActivityNode& o, A
         const auto from = script.train;
         world.reassign(from, to);
         if (player_ == from) player_ = to;
-        if (tracked_.erase(from) > 0) tracked_.insert(to);
+        if (const auto tracked = tracked_.find(from); tracked != tracked_.end()) {
+            auto cars = tracked->second;
+            tracked_.erase(tracked);
+            tracked_[to] = std::move(cars);
+        }
         services_.erase(script.service);
         script.train = to;
         std::cout << "activity: train " << from.service << ' ' << from.train << " is now service " << to.service << "'s train "
@@ -520,15 +647,46 @@ bool ActivityView::run_outcome(Script& script, const formats::ActivityNode& o, A
         return true;
     }
     if (name == "startwagonstatetracking") {
+        // activity.pdf 4.2 48: its WagonRange / WagonList, else every car
+        // (the Interval: openRTS looks every frame).
         if (number(o.child("enable"), 0, 1.0) != 0.0) {
-            tracked_.insert(train);
+            tracked_[train] = car_set(o, train);
         } else {
             tracked_.erase(train);
         }
         return true;
     }
     if (name == "checkwagonstate") {
-        check_wagons(train, world);
+        check_wagons(train, car_set(o, train), world);
+        return true;
+    }
+    if (name == "setdefaultuncouple") {
+        // activity.pdf 4.2 45: what the cuts from this train become.
+        ActivityUncoupleRule rule;
+        if (const auto* id = o.child("newid"); id && id->values.size() >= 2 && number(id, 0) >= 0.0 && number(id, 1) >= 0.0)
+            rule.new_id = ActivityTrainId{static_cast<std::uint32_t>(number(id, 0)), static_cast<std::uint32_t>(number(id, 1))};
+        rule.new_type = o.text("newtype");
+        if (const auto main = o.text("mainwagon"); !main.empty()) rule.main_wagon = wagon_id(main);
+        world.set_default_uncouple(train, rule);
+        std::cout << "activity: cuts from train " << train.service << ' ' << train.train << " become "
+                  << (rule.new_id ? std::to_string(rule.new_id->service) + ' ' + std::to_string(rule.new_id->train) : std::string("unnamed"))
+                  << (rule.new_type.empty() ? std::string() : ' ' + rule.new_type) << std::endl;
+        return true;
+    }
+    if (name == "changeservicestartuptype") {
+        // activity.pdf 4.2 22: NewStartupType SERIAL / SINGLE start the
+        // service's trains (at their times), NONE keeps them back. TrainID
+        // ( ServiceID TrainID ) names the service.
+        std::uint32_t service = script.service;
+        if (const auto* id = o.child("trainid"); id && !id->values.empty()) service = service_in(number(id, 0), script.service);
+        const auto type = lower(o.text("newstartuptype"));
+        world.set_service_startup(service, type != "none");
+        std::cout << "activity: service " << service << " starts " << (type.empty() ? std::string("single") : type) << std::endl;
+        return true;
+    }
+    if (name == "setspeedlimit") {
+        // activity.pdf 4.2 29: till another; not positive, none (m/s).
+        world.set_speed_limit(train, static_cast<float>(number(&o, 0, 0.0)));
         return true;
     }
     if (name == "sendsoundtrigger") {

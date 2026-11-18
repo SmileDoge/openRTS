@@ -57,7 +57,7 @@ struct TextureVariant {
 // GPU takes it: RGBA8 with its mip levels. ORM is always occlusion,
 // roughness, metallic (repacked from the file's layout, single maps put in
 // their channels); a normal map's green points up (a "down" one flipped).
-enum class MaterialMapKind : std::uint8_t { base_color, orm, normal, emissive };
+enum class MaterialMapKind : std::uint8_t { base_color, orm, normal, emissive, height };
 struct MaterialMapAsset {
     MaterialMapKind kind{};
     std::string key; // the files and how they were packed: the GPU cache's key
@@ -70,7 +70,7 @@ struct PrimitiveMaterialAsset {
     formats::Material material;
     std::vector<std::pair<formats::MaterialLayer, formats::MaterialPatch>> layers;
     // Into StreamedModelAsset::material_maps; -1: none.
-    std::int32_t base_color = -1, orm = -1, normal = -1, emissive = -1;
+    std::int32_t base_color = -1, orm = -1, normal = -1, emissive = -1, height = -1;
 };
 
 // CPU-resident model assembled by a worker thread. Creating the RenderModel

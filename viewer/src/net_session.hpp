@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <optional>
@@ -195,6 +196,9 @@ private:
     bool openrts_server_ = false;
     bool server_storm_ = false;
     std::map<std::uint32_t, Player> players_;
+    // Each player's places of the last seconds (heard time, place): one in
+    // a train drawn behind by its delay is shown as far behind (players()).
+    std::map<std::uint32_t, std::deque<std::pair<double, formats::RoutePosition>>> player_trails_;
     std::optional<Help> help_;
     std::vector<Helper> asking_, helpers_;
     void helper_note(const net::HelperNote& note, TrainView& trains);

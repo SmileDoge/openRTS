@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <map>
 #include <set>
@@ -70,6 +71,19 @@ namespace openrts::viewer {
 // collide as RTS decides (simulation::resolve_contacts).
 class TrainView {
 public:
+    // The brakes' presets (the Train window, testers 2026-11-18: not three or
+    // four settings to switch each time): RTS's, openRTS's realistic, or the
+    // player's own (any of them changed by hand), remembered as
+    // brakes_custom and given back when chosen again.
+    struct BrakeSet {
+        bool realistic = false; // realistic_air
+        int dll_air = 0;        // DllAir
+        bool gauges = false;    // gauges_openrts_air
+        int rails = 0;          // rails
+        bool limit = false;     // limit_brake_force
+        bool stability = false; // distributor_stability
+        bool operator==(const BrakeSet&) const = default;
+    };
     // Who drives a train: the keyboard, the test driver along its path, or
     // nobody (it stands with its brakes as they are).
     enum class Role : std::uint8_t { driven, ai, standing };
@@ -171,6 +185,8 @@ public:
     // The player's cab keys are on (a locomotive DLL's cab): the viewer's
     // camera and default driving keys are off.
     [[nodiscard]] bool keyboard_captured() const noexcept;
+    // Standing in a cab, outside or on a car (not in a chair).
+    [[nodiscard]] bool engineer_on_foot() const noexcept { return engineer_.on_foot(); }
     // Whether the driving keys (the DLL's cab keys, openRTS's handles) reach
     // the driven cab: not while the engineer is on foot out of the driven car
     // (on the platform, in another car). With the engineer off (an outside
@@ -193,6 +209,13 @@ public:
     [[nodiscard]] bool is_player(std::uint64_t id) const noexcept;
     // Every train on the track (the driven one first).
     [[nodiscard]] std::vector<const simulation::Train*> trains() const;
+    // The shapes (core::VirtualPath::key()) the trains use now: their cabs'
+    // and those of the cars within train_keep_range; the world's models let
+    // go (RouteStreamer::take_released_models) keep these.
+    [[nodiscard]] std::unordered_set<std::string> shapes_in_use() const;
+    // Whether something else keeps a shape the trains no longer need (the
+    // route's, for a static car in the world): left in the library then.
+    void set_shape_keeper(std::function<bool(const std::string&)> keeper) { shape_keeper_ = std::move(keeper); }
     // Every diesel exhaust of every train this frame (SmokeView).
     void collect_exhausts(std::vector<ExhaustSource>& out) const;
     // A traveller at the end of the train that leads (by the motion, else
@@ -282,9 +305,13 @@ public:
     // the state variable `name` of activity_WagonStateVariables (BrakeCylinder,
     // Auxiliary, PipePressure, MainReservoir, IndependentBrake, Handbrake,
     // Velocity, Acceleration in kgf/cm2, %, m/s; SMSStream of its CABIN or
-    // WAGON sound).
+    // WAGON sound; Panto, LocoState and CABIN Switch from its DLL;
+    // PlayerInArea, PlayerInChair).
     [[nodiscard]] std::optional<double> activity_car_value(ActivityId train, std::int32_t number, bool by_id, std::string_view area,
                                                            std::string_view name, int idx, int sub) const;
+    // ReachReversePoint: the reverse points of its path the train has
+    // reached (the legs it finished); nullopt without a path.
+    [[nodiscard]] std::optional<std::size_t> activity_reverse_points(ActivityId train) const;
     // SendSoundTrigger: the scenario's sound object `object`, or (-1) the
     // sounds of car `number` of `train`.
     void activity_sound_trigger(std::int32_t object, std::uint32_t code, ActivityId train, std::int32_t number);
@@ -303,6 +330,32 @@ public:
     void activity_block_point(std::uint32_t service, std::int32_t point, bool enabled, double distance);
     void activity_modify_velocity(ActivityId train, float speed, float acceleration, float deceleration);
     void activity_wait_here(ActivityId train, double time);
+    // The cars of a scenario's train now (0: none in play).
+    [[nodiscard]] std::size_t activity_car_count(ActivityId train) const;
+    // UncoupleCars: a scenario's train cut in two since the last call: the
+    // id it had, its head and tail parts' cars, the cut's cars (the train
+    // they started in, their UiDs).
+    struct ActivityCut {
+        ActivityId train{};
+        std::size_t head{}, tail{};
+        std::vector<std::pair<ActivityId, std::uint32_t>> cut;
+    };
+    [[nodiscard]] std::vector<ActivityCut> take_activity_cuts() { return std::exchange(activity_cuts_, {}); }
+    // SetDefaultUncouple: a cut from `train` becomes `new_id` (standing:
+    // NewType STATIC); the part with `main` (its starting train, UiD) keeps
+    // the train's id.
+    struct UncoupleRule {
+        std::optional<ActivityId> new_id;
+        bool standing = false;
+        std::optional<std::pair<ActivityId, std::uint32_t>> main;
+    };
+    void activity_default_uncouple(ActivityId train, UncoupleRule rule) { uncouple_rules_[train] = std::move(rule); }
+    // ChangeServiceStartupType: the service's trains not started yet wait
+    // (NONE, `starts` false) or start at their times.
+    void activity_service_startup(std::uint32_t service, bool starts);
+    // SetSpeedLimit: the train's limit, m/s (not positive: none); the
+    // driven train's DLL and the speed panel see it, traffic keeps under it.
+    void activity_speed_limit(ActivityId train, float limit);
     // Situations: the trains on the route as they stand (roles, where each
     // front is, the cars in order), <situation_folder>/<name>.situation.
     [[nodiscard]] std::filesystem::path situation_folder() const;
@@ -698,6 +751,8 @@ private:
     std::vector<std::vector<std::uint32_t>> host_keys_; // each host train's car keys at the last reconsist
     // What car `i` of unit `u` gets from its DLL (none: not in the host).
     [[nodiscard]] const dllhost::CarOutput* dll_output(std::size_t u, std::size_t i) const;
+    // The track's limit for a unit, its scenario's SetSpeedLimit under it.
+    [[nodiscard]] simulation::SpeedLimit limit_of(const Unit& unit) const;
     [[nodiscard]] bool dll_car(std::size_t u, std::size_t i) const;
     [[nodiscard]] const std::array<float, 8>* dll_sound_variables(std::size_t u, std::size_t i) const;
     // The driven unit is one the host already runs (a part cut off): the
@@ -766,6 +821,7 @@ private:
     void let_go_far_shapes(renderer::ModelLibrary& library);
     std::optional<glm::vec3> camera_eye_; // the last update's
     std::unordered_map<std::string, core::VirtualPath> train_shapes_; // car and freight shapes asked of the library
+    std::function<bool(const std::string&)> shape_keeper_;
     std::chrono::steady_clock::time_point shapes_checked_{};
     // Shapes of cars and of their freight asked of the loader (by key): one
     // load each for every train; the freight's loads on their way.
@@ -773,6 +829,10 @@ private:
     std::vector<std::future<renderer::StreamedModelAsset>> freight_loading_;
     std::shared_ptr<const formats::Activity> pending_activity_;
     std::vector<std::pair<ActivityId, ActivityId>> activity_couplings_; // take_activity_couplings
+    std::vector<ActivityCut> activity_cuts_;                             // take_activity_cuts
+    std::map<ActivityId, UncoupleRule> uncouple_rules_;                  // SetDefaultUncouple
+    std::set<std::uint32_t> services_held_;                              // ChangeServiceStartupType NONE
+    std::map<ActivityId, float> activity_speed_limits_;                  // SetSpeedLimit, m/s
     core::VirtualPath pending_activity_folder_;
     std::optional<core::VirtualPath> activity_folder_;
     std::vector<formats::TrainPath> activity_paths_;
@@ -920,6 +980,7 @@ private:
     // The car view (F3) and the camera the engineer keeps meanwhile.
     enum class CarView : std::uint8_t { off, head, tail };
     CarView car_view_ = CarView::off;
+    bool car_view_tail_first_ = false; // F3 starts at the last car: the player sits nearer it
     ViewerCamera person_camera_{};
     // Each car's view as it was left (by Car::key): the angle from the
     // car's heading, so the same side of it is seen again.
@@ -1306,6 +1367,14 @@ private:
     // remembered as dll_air; read at the first update.
     int dll_air_ = 0;
     bool dll_air_loaded_ = false;
+    // The cab's air gauges (DTM, DTC1/2, DGR) from the realistic air's model
+    // (CabView::AirGauges); remembered as gauges_openrts_air, on by default.
+    mutable bool gauges_air_ = true;
+    mutable bool gauges_air_loaded_ = false;
+    // The realistic air is the only brake model (TrainSettings has none):
+    // kept for the presets' bookkeeping, always on.
+    bool realistic_air_ = true;
+    [[nodiscard]] std::optional<CabView::AirGauges> air_gauges(const Unit& unit, std::size_t car) const;
     // The rails' state for the adhesion (simulation::RailCondition): 0 as
     // RTS, 1 by the weather (rain wet, snow snow), 2 dry, 3 wet, 4 snow, 5
     // ice, 6 leaves; remembered as rails, read at the first update.
@@ -1313,6 +1382,9 @@ private:
     bool rails_loaded_ = false;
     // TrainSettings::limit_brake_force, remembered as limit_brake_force.
     bool limit_brake_force_ = false;
+    [[nodiscard]] BrakeSet brake_set() const noexcept;
+    void apply_brake_set(const BrakeSet& set);
+    std::string brake_custom_code_; // the own set as last remembered
     [[nodiscard]] simulation::RailCondition rails_now() const noexcept;
     // cab_state() with openRTS's valve over Brakes.dll: the DLL's output with
     // its УР gauge showing the valve's УР.

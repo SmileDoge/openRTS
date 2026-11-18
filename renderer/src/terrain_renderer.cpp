@@ -730,23 +730,35 @@ fn fs_surface(input: SurfaceOut) -> @location(0) vec4<f32> {
     // whole sixhundredths, so the clock's wrap is not seen); the middle one
     // turned to hide the map's repeat, its slopes turned back.
     let turned = vec2<f32>(p.x * 0.8 - p.y * 0.6, p.x * 0.6 + p.y * 0.8);
+    // A long swell under them (2026-11-17): its waves (about 9 m) stay
+    // seen four times as far as the 37 m octave's.
+    let d = wave(turned / 150.0 + vec2<f32>(0.005, -0.005) * time);
     let a = wave(p / 37.0 + vec2<f32>(0.010, 0.005) * time);
     let b = wave(turned / 13.0 + vec2<f32>(-0.015, 0.010) * time);
     let c = wave(p / 4.3 + vec2<f32>(0.025, -0.030) * time);
     let b_slope = vec2<f32>(b.x * 0.8 + b.y * 0.6, -b.x * 0.6 + b.y * 0.8);
+    let d_slope = vec2<f32>(d.x * 0.8 + d.y * 0.6, -d.x * 0.6 + d.y * 0.8);
     // The water a pixel covers (m, the longer way: at a slant, along the
     // view). An octave whose ripples (about its map's size / 16) are under
     // a few pixels there only flickers: at a grazing angle the reflection
     // jumps between a cloud and the blue from frame to frame, the mipmaps
-    // keeping the ripples across the view. It fades out; far off the water
-    // is a calm mirror of the sky, as it is seen.
+    // keeping the ripples across the view. It fades out, and what it took
+    // away roughens the reflection instead (below): far off the water is the
+    // sky blurred by ripples too small to see, not a mirror.
     let footprint = max(length(dpdx(p)), length(dpdy(p)));
+    let keep_d = 1.0 - smoothstep(150.0 / 64.0, 150.0 / 16.0, footprint);
     let keep_a = 1.0 - smoothstep(37.0 / 64.0, 37.0 / 16.0, footprint);
     let keep_b = 1.0 - smoothstep(13.0 / 64.0, 13.0 / 16.0, footprint);
     let keep_c = 1.0 - smoothstep(4.3 / 64.0, 4.3 / 16.0, footprint);
-    let slope = (a.xy * keep_a + b_slope * keep_b + c.xy * 0.7 * keep_c) * draw.params.z;
+    let strength = draw.params.z;
+    let slope = (d_slope * 0.6 * keep_d + a.xy * keep_a + b_slope * keep_b + c.xy * 0.7 * keep_c) * strength;
     let n = normalize(vec3<f32>(slope.x, 1.0, slope.y));
-    let toksvig = clamp((length(a) + length(b) + length(c)) / 3.0, 0.05, 1.0);
+    let toksvig = clamp((length(a) + length(b) + length(c) + length(d)) / 4.0, 0.05, 1.0);
+    // The slopes faded out: each octave's (the map's are 0.35 root mean
+    // square) as a spread of the reflection's way, a surface of this
+    // roughness (GGX, perceptual) in the sky light's prefiltered cube.
+    let lost = ((1.0 - keep_d) * 0.36 + (1.0 - keep_a) + (1.0 - keep_b) + (1.0 - keep_c) * 0.49) * 0.1225 * strength * strength;
+    let ripple_roughness = sqrt(clamp(sqrt(lost), 0.0, 1.0));
 
     let to_eye = draw.eye.xyz - input.world;
     let v = to_eye / max(length(to_eye), 1e-3);
@@ -754,7 +766,15 @@ fn fs_surface(input: SurfaceOut) -> @location(0) vec4<f32> {
     let fresnel = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
     var r = reflect(-v, n);
     r.y = max(r.y, 0.01); // a steep ripple turned below the horizon: the horizon
-    let reflected = sky_towards(normalize(r));
+    var reflected = sky_towards(normalize(r));
+    // With the sky's light (SkyLight: PBR, the sky's own light), the ripples
+    // too small to see blur it: from the mirror near to the cube's mip for
+    // their roughness (its reflections' strength setting left out: the
+    // water's own).
+    if (draw.params.x > 0.5 && effects.sky_light.x > 0.5) {
+        let blurred = effects_sky_radiance(normalize(r), ripple_roughness) / max(effects.sky_tune.y, 1e-3);
+        reflected = mix(reflected, blurred, smoothstep(0.05, 0.25, ripple_roughness));
+    }
 
     let sun_colour = water_linear(frame.light_diffuse.xyz);
     let sky_light = water_linear(frame.light_ambient.xyz);

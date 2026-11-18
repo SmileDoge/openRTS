@@ -3,7 +3,8 @@
 //   openrts-ace <file.ace>                     PNG beside it, opened in the image viewer
 //                                              (what a double click does once registered)
 //   openrts-ace to-png <file.ace | folder> [--out <folder>] [--mips] [--recursive]
-//   openrts-ace to-ace <file.png | folder> [--out <folder>] [--format dxt1|rgb|rgb-mask|rgba|auto]
+//   openrts-ace to-ace <file.png | folder> [--out <folder>]
+//                      [--format dxt1|rgb|rgb-mask|rgba|auto | dxt3|dxt5|bc4|bc5|bc7 (openRTS only)]
 //                                          [--no-mips] [--no-zlib] [--recursive]
 //   openrts-ace <file.png | folder>            to-ace, asking for the format
 //   openrts-ace --register | --unregister      .ace opened with it; "to ACE" on PNGs and folders,
@@ -70,6 +71,11 @@ bool write_file(const fs::path& file, const std::string& bytes) {
     case AceFormat::rgb: return "RGB";
     case AceFormat::rgb_mask: return "RGB + маска";
     case AceFormat::rgba: return "RGBA";
+    case AceFormat::dxt3: return "DXT3 / BC2, только openRTS";
+    case AceFormat::dxt5: return "DXT5 / BC3, только openRTS";
+    case AceFormat::bc4: return "BC4, только openRTS";
+    case AceFormat::bc5: return "BC5, только openRTS";
+    case AceFormat::bc7: return "BC7, только openRTS";
     }
     return "";
 }
@@ -80,6 +86,12 @@ bool write_file(const fs::path& file, const std::string& bytes) {
     if (word == "rgb") return std::optional<AceFormat>{AceFormat::rgb};
     if (word == "rgb-mask" || word == "mask") return std::optional<AceFormat>{AceFormat::rgb_mask};
     if (word == "rgba") return std::optional<AceFormat>{AceFormat::rgba};
+    if (word == "bc1") return std::optional<AceFormat>{AceFormat::dxt1};
+    if (word == "dxt3" || word == "bc2") return std::optional<AceFormat>{AceFormat::dxt3};
+    if (word == "dxt5" || word == "bc3") return std::optional<AceFormat>{AceFormat::dxt5};
+    if (word == "bc4") return std::optional<AceFormat>{AceFormat::bc4};
+    if (word == "bc5") return std::optional<AceFormat>{AceFormat::bc5};
+    if (word == "bc7") return std::optional<AceFormat>{AceFormat::bc7};
     if (word == "auto") return std::optional<AceFormat>{};
     return std::nullopt;
 }
@@ -126,7 +138,15 @@ std::optional<fs::path> ace_to_png(const fs::path& input, const Options& options
         std::cout << utf8(input) << ": " << decoded.error << '\n';
         return std::nullopt;
     }
-    const auto& image = *decoded.image;
+    auto image = *decoded.image;
+    // A BC4's one channel (heights, roughness) as grey, not red.
+    if (!image.blocks.empty() && image.block_format == openrts::formats::BlockFormat::bc4) {
+        const auto grey = [](std::vector<std::uint8_t>& pixels) {
+            for (std::size_t i = 0; i + 3 < pixels.size(); i += 4) pixels[i + 1] = pixels[i + 2] = pixels[i];
+        };
+        grey(image.pixels);
+        for (auto& level : image.mips) grey(level);
+    }
     auto target = output_for(input, options, ".png");
     if (!write_file(target, openrts::formats::encode_png(image.width, image.height, image.pixels))) {
         // A folder that cannot be written to (the game's own): the temp folder.
@@ -153,6 +173,8 @@ std::optional<fs::path> ace_to_png(const fs::path& input, const Options& options
     }
     return target;
 }
+
+using openrts::formats::openrts_only;
 
 bool png_to_ace(const fs::path& input, const Options& options) {
     const auto decoded = openrts::formats::decode_png_path(input);
@@ -182,10 +204,12 @@ bool png_to_ace(const fs::path& input, const Options& options) {
     }
     std::cout << utf8(input) << " -> " << utf8(target) << " (" << format_name(write.format) << ", " << image.width << " x "
               << image.height << ", " << encoded.bytes.size() / 1024 << " КБ)\n";
+    if (openrts_only(write.format)) std::cout << "  формат только для openRTS: RTS этот файл не откроет\n";
     for (const auto& note : encoded.notes) {
         // The writer's notes (English), as the player reads them.
         if (note.rfind("not a power of two", 0) == 0) std::cout << "  размер не степень двойки: без мипмапов (RTS построит их сам)\n";
         else if (note.rfind("RGB: its transparency", 0) == 0) std::cout << "  RGB: прозрачность отброшена\n";
+        else if (note.rfind("sides not of whole", 0) == 0) std::cout << "  стороны не кратны 4: openRTS прочтёт, но на видеокарту пойдёт без сжатия\n";
         else std::cout << "  " << note << '\n';
     }
     return true;
@@ -198,6 +222,12 @@ bool png_to_ace(const fs::path& input, const Options& options) {
               << "  2 - RGB без сжатия, без прозрачности\n"
               << "  3 - RGB + маска: без потерь цвета, прозрачность 0/1\n"
               << "  4 - RGBA: без сжатия, полная прозрачность (стёкла, дым)\n"
+              << "  Только openRTS (RTS такой файл не откроет):\n"
+              << "  5 - BC7: сжатие вчетверо, лучшее качество, полная прозрачность\n"
+              << "  6 - DXT5 / BC3: сжатие вчетверо, плавная прозрачность\n"
+              << "  7 - DXT3 / BC2: сжатие вчетверо, прозрачность 16 уровнями\n"
+              << "  8 - BC5: два канала (карты нормалей)\n"
+              << "  9 - BC4: один канал (карты высот, шероховатости)\n"
               << "  Enter - сам: DXT1, а если есть полупрозрачное - RGBA\n> " << std::flush;
     std::string line;
     std::getline(std::cin, line);
@@ -205,6 +235,11 @@ bool png_to_ace(const fs::path& input, const Options& options) {
     if (line == "2") return AceFormat::rgb;
     if (line == "3") return AceFormat::rgb_mask;
     if (line == "4") return AceFormat::rgba;
+    if (line == "5") return AceFormat::bc7;
+    if (line == "6") return AceFormat::dxt5;
+    if (line == "7") return AceFormat::dxt3;
+    if (line == "8") return AceFormat::bc5;
+    if (line == "9") return AceFormat::bc4;
     return std::nullopt;
 }
 
@@ -332,6 +367,7 @@ void usage() {
                  "  openrts-ace <файл.ace>                 PNG рядом и открыть его\n"
                  "  openrts-ace to-png <файл.ace | папка> [--out <папка>] [--mips] [--recursive]\n"
                  "  openrts-ace to-ace <файл.png | папка> [--out <папка>] [--format dxt1|rgb|rgb-mask|rgba|auto]\n"
+                 "                                         (только openRTS: --format bc7|dxt5|dxt3|bc5|bc4)\n"
                  "                                         [--no-mips] [--no-zlib] [--recursive]\n"
                  "  openrts-ace <файл.png | папка>         в ACE, спросив формат\n"
                  "  openrts-ace --register | --unregister  открывать .ace этой программой, пункты в меню\n"
@@ -418,7 +454,7 @@ int main(int argc, char* argv[]) {
         } else if (a == "--format" && i + 1 < args.size()) {
             const auto format = parse_format(args[++i]);
             if (!format) {
-                std::cout << "Неизвестный формат: " << args[i] << " (dxt1, rgb, rgb-mask, rgba, auto)\n";
+                std::cout << "Неизвестный формат: " << args[i] << " (dxt1, rgb, rgb-mask, rgba, auto; только openRTS: dxt3, dxt5, bc4, bc5, bc7)\n";
                 return 1;
             }
             options.format = *format;

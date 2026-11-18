@@ -105,6 +105,10 @@ struct EngineDemands {
     // (the pipe follows it through the relay; < 0: this engine's valve is
     // not working the pipe), and position VI.
     float equalising = -1.0f;
+    // The УР that valve keeps whether or not it works the pipe (the cab's
+    // УР gauge, F5, the tape): cut off the pipe by double traction or the
+    // 367 it goes on holding its own УР. < 0: no valve of the model here.
+    float equalising_kept = -1.0f;
     bool emergency = false;
     // Engine::Sanding: adhesion x the .eng's sanding factor (Adheasion's
     // third value) while the sand lasts (RTS 0x424488).
@@ -327,6 +331,10 @@ struct CarState {
     // the slip at the rail, m/s (omega * the wheel's radius - the car's speed).
     std::array<float, 4> axle_omega{};
     std::array<float, 4> axle_slip{};
+    // With the rails other than "as RTS" (openRTS's traction limit): every
+    // axle's force over its adhesion in slip_ratio, this many of them (0:
+    // RTS's limit, slip_ratio for the slipping axles alone).
+    std::uint8_t axles{};
     // The RTS air: the brake holds more than the adhesion, the wheels stand
     // (RTS 0x4F5B34; the realistic air slides by bogie, shoe_state).
     bool brake_locked = false;
@@ -531,6 +539,9 @@ public:
     // half of RTS's CF, the force each car gets.
     [[nodiscard]] std::vector<float> joint_forces() const;
     [[nodiscard]] std::vector<CarPlacement> placements() const;
+    // Each car's ends on the track, coupler to coupler (`front` towards the
+    // train front): the whole car, where placements() gives its bogies.
+    [[nodiscard]] std::vector<CarPlacement> car_ends() const;
     // A traveller at the centre of each car, facing the train front; empty
     // while the train is not on the track.
     [[nodiscard]] std::vector<TrackTraveller> car_centres() const;

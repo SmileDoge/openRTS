@@ -53,6 +53,9 @@ struct CabBrakes {
     // The blocking device усл. 367 (BR_367ID1) out of its operating state
     // (BR_367OPPOL): the 395 is cut off the pipe.
     bool blocked = false;
+    // The separating cock (BR_RAZID1 with BR_RAZOBSHK) shut: the 395 off the
+    // brake pipe (Brakes.dll charges the pipe only while it is not 0).
+    bool separated = false;
 };
 // The cab's controls read once (brake_cab_controls): per state, the 395's
 // position (valve_states; empty: I..VI), the reducer's pressure ("[4.0]" ..
@@ -176,6 +179,13 @@ public:
     // Cars with a DLL that came back from the parked ones (by their keys)
     // since the last call: their DLLs as they left them.
     [[nodiscard]] std::size_t take_restored() { return std::exchange(restored_, std::size_t{0}); }
+    // A saved game (RTS 0x57194C, docs/reverse/train-dll.md §20): each
+    // locomotive's DLL state by its car's key (LegacyCar::key), opaque bytes
+    // to keep; restore_state() puts them back into the cars with those keys
+    // (after the trains are set up and the player entered: RTS runs Init and
+    // then writes the saved state over it). False: no host, or it failed.
+    [[nodiscard]] bool save_state(std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>& states);
+    bool restore_state(const std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>& states);
     bool reconsist(const core::Vfs& vfs, std::vector<LegacyCar> cars, const simulation::Train& train);
     [[nodiscard]] std::size_t trains() const noexcept { return train_first_.size() - 1; }
     [[nodiscard]] std::size_t train_size(std::size_t train) const noexcept {

@@ -261,6 +261,9 @@ public:
     // The scene takes the keyboard (a cab's own keys): the camera and the
     // default driving keys stay off.
     [[nodiscard]] virtual bool keyboard_captured() const { return false; }
+    // The engineer on his feet (standing in a cab, outside, on a car), not
+    // in a chair: W A S D walk him (key_layout.hpp, wasd_walking).
+    [[nodiscard]] virtual bool engineer_on_foot() const { return false; }
     // The scene is done: its window closes (the start menu, updated, starts again).
     [[nodiscard]] virtual bool wants_close() const { return false; }
     // Esc closes something of the scene's this frame (the car menu, a

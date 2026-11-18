@@ -71,6 +71,9 @@ struct MaterialPatch {
     std::optional<MaterialMap> emissive;
     std::optional<std::array<float, 3>> emissive_factor; // linear
     std::optional<float> emissive_strength;              // 0..100
+    std::optional<MaterialMap> height;    // relief: white the surface, black `height_scale` under it (parallax)
+    std::optional<float> height_scale;    // the relief's depth, m (0..0.1)
+    std::optional<float> height_reference; // the map's level the model's surface lies at (0..1; 1 white)
     std::optional<AlphaMode> alpha_mode;  // read, not applied yet
     std::optional<float> alpha_cutoff;    // read, not applied yet
     std::optional<bool> double_sided;     // read, not applied yet
@@ -107,6 +110,9 @@ struct Material {
     std::optional<MaterialMap> emissive;
     std::array<float, 3> emissive_factor{0.0f, 0.0f, 0.0f};
     float emissive_strength = 1.0f;
+    std::optional<MaterialMap> height;
+    float height_scale = 0.01f;
+    float height_reference = 1.0f;
     bool wet = false;
 
     [[nodiscard]] bool packed_maps() const noexcept { return orm || ao_map || roughness_map || metallic_map; }

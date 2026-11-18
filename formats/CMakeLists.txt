@@ -1,6 +1,7 @@
 add_library(openrts_formats STATIC
     src/ace_file.cpp
     src/ace_writer.cpp
+    src/block_compression.cpp
     src/png_file.cpp
     src/formats.cpp
     src/shape_animation.cpp

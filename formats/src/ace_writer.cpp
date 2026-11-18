@@ -6,6 +6,7 @@
 #include <limits>
 
 #include <openrts/formats/ace_file.hpp>
+#include <openrts/formats/block_compression.hpp>
 
 #include <zlib.h>
 
@@ -229,6 +230,93 @@ AceFormat suggested_ace_format(const std::vector<std::uint8_t>& rgba) {
     return AceFormat::dxt1;
 }
 
+namespace {
+
+// The body as the file: plain, or zlib-packed (SIMISA@F).
+void envelope(AceEncodeResult& result, const std::string& body, const bool zlib) {
+    if (!zlib) {
+        result.bytes = "SIMISA@@@@@@@@@@" + body;
+        return;
+    }
+    uLongf packed_size = compressBound(static_cast<uLong>(body.size()));
+    std::string packed(packed_size, '\0');
+    if (compress2(reinterpret_cast<Bytef*>(packed.data()), &packed_size, reinterpret_cast<const Bytef*>(body.data()),
+                  static_cast<uLong>(body.size()), 9) != Z_OK) {
+        result.error = "zlib failed to pack the texture";
+        return;
+    }
+    packed.resize(packed_size);
+    result.bytes = "SIMISA@F";
+    put_u32(result.bytes, static_cast<std::uint32_t>(body.size()));
+    result.bytes += "@@@@";
+    result.bytes += packed;
+}
+
+// openRTS's block formats: a table of every level's offset, then each a
+// byte count and its blocks, down to 1 x 1.
+AceEncodeResult encode_block_ace(const std::uint32_t width, const std::uint32_t height, const std::vector<std::uint8_t>& rgba,
+                                 const AceWriteOptions& options) {
+    AceEncodeResult result;
+    if (width == 0 || height == 0 || width > 16384 || height > 16384 || rgba.size() != static_cast<std::size_t>(width) * height * 4) {
+        result.error = "the image's size is not 1..16384 or its pixels do not match it";
+        return result;
+    }
+    BlockFormat block = BlockFormat::bc7;
+    std::vector<std::uint64_t> channels{channel_red, channel_green, channel_blue, channel_alpha};
+    switch (options.format) {
+    case AceFormat::dxt3: block = BlockFormat::bc2; break;
+    case AceFormat::dxt5: block = BlockFormat::bc3; break;
+    case AceFormat::bc4:
+        block = BlockFormat::bc4;
+        channels = {channel_red};
+        break;
+    case AceFormat::bc5:
+        block = BlockFormat::bc5;
+        channels = {channel_red, channel_green};
+        break;
+    default: break;
+    }
+    if (width % 4 != 0 || height % 4 != 0) result.notes.push_back("sides not of whole 4 x 4 blocks: openRTS reads it, a GPU takes it decoded");
+    const auto mips = options.mipmaps ? build_rgba_mipmaps(width, height, rgba) : std::vector<std::vector<std::uint8_t>>{};
+
+    std::string body;
+    put_u32(body, 1);
+    put_u32(body, options.mipmaps ? 17u : 16u);
+    put_u32(body, width);
+    put_u32(body, height);
+    put_u32(body, ace_format_code(block));
+    put_u32(body, static_cast<std::uint32_t>(channels.size()));
+    {
+        std::string creator(128, '\0');
+        const std::string text = "openRTS openrts-ace";
+        std::memcpy(creator.data() + 4, text.data(), text.size());
+        body += creator;
+    }
+    for (const auto channel : channels) {
+        put_u64(body, 8);
+        put_u64(body, channel);
+    }
+    const std::size_t levels = 1 + mips.size();
+    const auto table = body.size();
+    body.append(levels * 4, '\0');
+    for (std::size_t k = 0; k < levels; ++k) {
+        const auto w = (std::max)(width >> k, 1u), h = (std::max)(height >> k, 1u);
+        const auto& pixels = k == 0 ? rgba : mips[k - 1];
+        if (pixels.size() != static_cast<std::size_t>(w) * h * 4) {
+            result.error = "a mipmap level has the wrong size";
+            return result;
+        }
+        set_u32(body, table + k * 4, static_cast<std::uint32_t>(body.size()));
+        const auto blocks = encode_blocks(block, w, h, pixels.data());
+        put_u32(body, static_cast<std::uint32_t>(blocks.size()));
+        body.append(reinterpret_cast<const char*>(blocks.data()), blocks.size());
+    }
+    envelope(result, body, options.zlib);
+    return result;
+}
+
+} // namespace
+
 AceEncodeResult encode_ace(const std::uint32_t width, const std::uint32_t height, const std::vector<std::uint8_t>& rgba,
                            const AceWriteOptions& options) {
     AceEncodeResult result;
@@ -236,6 +324,7 @@ AceEncodeResult encode_ace(const std::uint32_t width, const std::uint32_t height
         result.error = "the image's size is not 1..16384 or its pixels do not match it";
         return result;
     }
+    if (openrts_only(options.format)) return encode_block_ace(width, height, rgba, options);
     bool mipmaps = options.mipmaps;
     if (mipmaps && (!power_of_two(width) || !power_of_two(height))) {
         mipmaps = false;
@@ -261,6 +350,7 @@ AceEncodeResult encode_ace(const std::uint32_t width, const std::uint32_t height
         channels.push_back(channel_mask);
         channels.push_back(channel_alpha);
         break;
+    default: break; // openRTS's: encode_block_ace
     }
     const bool raw = options.format == AceFormat::dxt1;
     const std::uint32_t flags = raw ? (mipmaps ? 21u : 16u) : (mipmaps ? 5u : 0u);
@@ -332,22 +422,7 @@ AceEncodeResult encode_ace(const std::uint32_t width, const std::uint32_t height
         for (std::size_t r = 0; r < starts.size(); ++r) set_u32(body, table + r * 4, static_cast<std::uint32_t>(starts[r]));
     }
 
-    if (!options.zlib) {
-        result.bytes = "SIMISA@@@@@@@@@@" + body;
-        return result;
-    }
-    uLongf packed_size = compressBound(static_cast<uLong>(body.size()));
-    std::string packed(packed_size, '\0');
-    if (compress2(reinterpret_cast<Bytef*>(packed.data()), &packed_size, reinterpret_cast<const Bytef*>(body.data()),
-                  static_cast<uLong>(body.size()), 9) != Z_OK) {
-        result.error = "zlib failed to pack the texture";
-        return result;
-    }
-    packed.resize(packed_size);
-    result.bytes = "SIMISA@F";
-    put_u32(result.bytes, static_cast<std::uint32_t>(body.size()));
-    result.bytes += "@@@@";
-    result.bytes += packed;
+    envelope(result, body, options.zlib);
     return result;
 }
 

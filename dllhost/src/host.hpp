@@ -154,6 +154,14 @@ public:
     // Cars coupled or cut off (ReconsistRequest): the mirrors move with
     // their cars, then the groups are made again. Fills `reply` like a step's.
     bool reconsist(const ReconsistRequest& request, StepReply& reply);
+    // A saved game (RTS 0x57194C / 0x57CD78, docs/reverse/train-dll.md §20):
+    // each locomotive's Locomotive and Engine fields, its variable stack and
+    // every auxiliary library's (by name), its cab's switches and doors, its
+    // lights. Restoring writes them over what setup and enter made (RTS binds
+    // and runs Init with State 0 first) and groups the train again by the
+    // master bits restored.
+    [[nodiscard]] std::vector<CarDllState> save_state();
+    bool restore_state(const std::vector<CarDllState>& states, StepReply& reply);
     bool step(const StepRequest& request, StepReply& reply);
     bool can_switch(const CanSwitchRequest& request, bool& allowed);
     bool drag_switch(const DragSwitchRequest& request, bool& moved);

@@ -275,6 +275,19 @@ so the index never trusts them alone.
 - On shutdown or device loss the queue is drained after the device is idle.
 - The same queue serves normal streaming eviction (tiles leaving the view),
   not only hot reload.
+- **What leaves the memory as the camera moves on** (2026-11-18):
+  - the terrain's tiles more than one tile past the radius;
+  - the world's models (shapes, forests, transfers) no loaded tile around
+    has placed for 30 s (`RouteStreamer::take_released_models`): asked
+    for again if such a tile comes back, kept while a train within 6 km
+    or the road traffic uses them (a static car of the route and a
+    train's car can share a shape). Until then they stayed for the whole
+    run, so the memory grew all along the line. The log:
+    `world: N models of tiles left behind let go`;
+  - the trains' shapes once no train within 6 km uses them (in a network
+    game the other players' trains too; `trains: N shapes ... let go`);
+  - textures with the last model that uses them (the texture cache holds
+    them weakly).
 - Terrain, sky (ENV) and world files can use the same mechanism later. The
   first version covers models and textures.
 

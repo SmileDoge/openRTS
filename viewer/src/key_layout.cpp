@@ -10,6 +10,7 @@ namespace {
 
 KeyLayout current = KeyLayout::rts;
 bool hints = true;
+bool wasd = true;
 bool panels = false;
 float sensitivity = 1.0f;
 float head = default_head_motion;
@@ -27,6 +28,10 @@ void set_key_layout(const KeyLayout layout) noexcept { current = layout; }
 bool key_hints() noexcept { return hints; }
 
 void set_key_hints(const bool shown) noexcept { hints = shown; }
+
+bool wasd_walking() noexcept { return wasd; }
+
+void set_wasd_walking(const bool on) noexcept { wasd = on; }
 
 bool panels_shown() noexcept { return panels; }
 

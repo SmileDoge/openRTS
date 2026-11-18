@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
+#include <type_traits>
 #include <utility>
 
 namespace openrts::dllhost {
@@ -405,6 +407,255 @@ void Host::add_sound_tables(const std::vector<SoundTableSpec>& tables) {
 }
 
 // --- coupling and cutting (0x469ED8, 0x469858) ------------------------------------
+
+// --- a saved game (RTS 0x57194C / 0x57CD78) --------------------------------------
+
+namespace {
+
+constexpr std::uint32_t saved_car_magic = 0x31534C44; // "DLS1"
+
+struct SavedBytes {
+    std::vector<std::uint8_t> data;
+    template <class T>
+    void put(const T& value) {
+        static_assert(std::is_trivially_copyable_v<T>);
+        raw(&value, sizeof(T));
+    }
+    void raw(const void* source, const std::size_t size) {
+        const auto* bytes = static_cast<const std::uint8_t*>(source);
+        data.insert(data.end(), bytes, bytes + size);
+    }
+    void floats(const std::vector<float>& list) {
+        put(static_cast<std::uint32_t>(list.size()));
+        raw(list.data(), list.size() * sizeof(float));
+    }
+    void text(const wchar_t* value) {
+        const std::size_t n = value ? std::wcslen(value) : 0;
+        put(static_cast<std::uint32_t>(n));
+        raw(value, n * sizeof(wchar_t));
+    }
+};
+
+struct SavedReader {
+    const std::vector<std::uint8_t>& data;
+    std::size_t at = 0;
+    bool failed = false;
+    template <class T>
+    T get() {
+        static_assert(std::is_trivially_copyable_v<T>);
+        T value{};
+        raw(&value, sizeof(T));
+        return value;
+    }
+    bool raw(void* target, const std::size_t size) {
+        if (failed || size > data.size() - at) {
+            failed = true;
+            return false;
+        }
+        std::memcpy(target, data.data() + at, size);
+        at += size;
+        return true;
+    }
+    // A list of floats into `into`, as many as both have; the rest skipped.
+    void floats(float* into, const std::size_t have) {
+        const auto n = get<std::uint32_t>();
+        if (failed || n > (data.size() - at) / sizeof(float)) {
+            failed = true;
+            return;
+        }
+        const std::size_t taken = (std::min)(static_cast<std::size_t>(n), have);
+        if (taken) std::memcpy(into, data.data() + at, taken * sizeof(float));
+        at += static_cast<std::size_t>(n) * sizeof(float);
+    }
+    std::wstring text() {
+        const auto n = get<std::uint32_t>();
+        if (failed || n > (data.size() - at) / sizeof(wchar_t)) {
+            failed = true;
+            return {};
+        }
+        std::wstring value(n, L'\0');
+        raw(value.data(), n * sizeof(wchar_t));
+        return value;
+    }
+};
+
+// The Engine's own fields RTS saves, its pointers left out: Power, Force,
+// BrakeForce; IndependentBrakeValue .. CurrentMilepost (the rates, UR,
+// battery, flags, Reverse, Wheelslip, ThrottlePosition); not GlobalMsg, a
+// queue the host drains.
+constexpr std::size_t engine_a_begin = offsetof(abi::Engine, power);
+constexpr std::size_t engine_a_end = offsetof(abi::Engine, engine_voltage);
+constexpr std::size_t engine_b_begin = offsetof(abi::Engine, independent_brake_value);
+constexpr std::size_t engine_b_end = offsetof(abi::Engine, global_msg);
+
+} // namespace
+
+std::vector<CarDllState> Host::save_state() {
+    std::vector<CarDllState> out;
+    for (std::size_t i = 0; i < cars_.size(); ++i) {
+        CarMirror& car = *cars_[i];
+        if (!car.is_loco()) continue;
+        SavedBytes b;
+        b.put(saved_car_magic);
+        b.put(static_cast<std::uint8_t>(car.spec.kind));
+        b.put(static_cast<std::uint8_t>(car.initialised ? 1 : 0));
+        abi::Locomotive* l = car.loco();
+        b.put(l->loco_flags);
+        b.put(l->main_res_pressure);
+        b.put(l->sand_left);
+        b.put(l->last_sanding);
+        b.put(l->panto_burn_timer);
+        b.put(car.wagon()->panto_raised);
+        const auto* engine = car.engine.data();
+        b.raw(engine + engine_a_begin, engine_a_end - engine_a_begin);
+        b.raw(engine + engine_b_begin, engine_b_end - engine_b_begin);
+        // ElectricEngine: the pantographs, the main switch, the power drawn;
+        // DieselEngine: the diesel running, fuel, rpm (not its exhaust pointer).
+        const std::size_t extra_end = car.spec.kind == car_electric ? sizeof(abi::ElectricEngine) : offsetof(abi::DieselEngine, ex);
+        b.raw(engine + sizeof(abi::Engine), extra_end - sizeof(abi::Engine));
+        b.floats(car.engine_voltage);
+        b.floats(car.engine_current);
+        b.floats(car.engine_force);
+        b.floats(car.var);
+        b.put(static_cast<std::uint32_t>(car.aux.size()));
+        for (std::size_t k = 0; k < car.aux.size(); ++k) {
+            b.text(car.aux[k].name);
+            b.floats(k < car.aux_info.size() ? car.aux_info[k].var : std::vector<float>{});
+        }
+        b.put(static_cast<std::uint32_t>(car.switches.size()));
+        for (const auto& s : car.switches) {
+            b.put(s.state);
+            b.put(s.set_state);
+            b.put(s.fixed_state);
+            b.put(s.current_frame);
+        }
+        for (const auto* doors : {&car.doors, &car.cab_doors}) {
+            b.put(static_cast<std::uint32_t>(doors->size()));
+            for (const auto& d : *doors) {
+                b.put(d.state);
+                b.put(d.set_state);
+            }
+        }
+        b.put(static_cast<std::uint32_t>(car.lights.size()));
+        for (const auto& light : car.lights) b.put(light.flags);
+        b.put(static_cast<std::uint32_t>(car.internal_lights.size()));
+        for (const auto& lamp : car.internal_lights) b.put(lamp.state);
+        b.put(static_cast<std::uint32_t>(car.tex_changes.size()));
+        for (const auto& change : car.tex_changes) {
+            b.put(change.state);
+            b.put(change.set_state);
+        }
+        out.push_back({.car = static_cast<std::uint32_t>(i), .bytes = std::move(b.data)});
+    }
+    return out;
+}
+
+bool Host::restore_state(const std::vector<CarDllState>& states, StepReply& reply) {
+    std::size_t restored = 0;
+    for (const auto& state : states) {
+        if (state.car >= cars_.size()) continue;
+        CarMirror& car = *cars_[state.car];
+        SavedReader r{state.bytes};
+        if (r.get<std::uint32_t>() != saved_car_magic || r.failed) {
+            log(L"restore: car " + std::to_wstring(state.car) + L": not a saved DLL state");
+            continue;
+        }
+        const auto kind = r.get<std::uint8_t>();
+        const bool was_initialised = r.get<std::uint8_t>() != 0;
+        if (!car.is_loco() || kind != static_cast<std::uint8_t>(car.spec.kind)) {
+            log(L"restore: car " + std::to_wstring(state.car) + L": another kind of car than saved");
+            continue;
+        }
+        abi::Locomotive* l = car.loco();
+        // The master bit (and direction, sanding, the burnt pantograph) as
+        // saved; in the player's join, cold, the cab, the script, the cab
+        // loaded and AI stay as setup and enter made them.
+        const auto flags = r.get<std::uint32_t>();
+        constexpr std::uint32_t kept = 0xFCu;
+        l->loco_flags = (flags & ~kept) | (l->loco_flags & kept);
+        l->main_res_pressure = r.get<float>();
+        l->sand_left = r.get<float>();
+        l->last_sanding = r.get<float>();
+        l->panto_burn_timer = r.get<float>();
+        car.wagon()->panto_raised = r.get<decltype(car.wagon()->panto_raised)>();
+        auto* engine = car.engine.data();
+        r.raw(engine + engine_a_begin, engine_a_end - engine_a_begin);
+        r.raw(engine + engine_b_begin, engine_b_end - engine_b_begin);
+        const std::size_t extra_end = car.spec.kind == car_electric ? sizeof(abi::ElectricEngine) : offsetof(abi::DieselEngine, ex);
+        r.raw(engine + sizeof(abi::Engine), extra_end - sizeof(abi::Engine));
+        r.floats(car.engine_voltage.data(), car.engine_voltage.size());
+        r.floats(car.engine_current.data(), car.engine_current.size());
+        r.floats(car.engine_force.data(), car.engine_force.size());
+        // RTS cuts a stack longer than the DLL's StackSize now (0x57CD78).
+        r.floats(car.var.data(), car.var.size());
+        const auto aux_count = r.get<std::uint32_t>();
+        for (std::uint32_t k = 0; k < aux_count && !r.failed; ++k) {
+            const auto name = r.text();
+            std::size_t found = car.aux.size();
+            for (std::size_t m = 0; m < car.aux.size(); ++m)
+                if (car.aux[m].name && _wcsicmp(car.aux[m].name, name.c_str()) == 0) found = m;
+            if (found < car.aux_info.size()) {
+                auto& var = car.aux_info[found].var;
+                r.floats(var.data(), var.size());
+            } else {
+                r.floats(nullptr, 0);
+            }
+        }
+        const auto switch_count = r.get<std::uint32_t>();
+        for (std::uint32_t k = 0; k < switch_count && !r.failed; ++k) {
+            const auto s = r.get<decltype(abi::ActSwitch::state)>();
+            const auto set = r.get<decltype(abi::ActSwitch::set_state)>();
+            const auto fixed = r.get<decltype(abi::ActSwitch::fixed_state)>();
+            const auto frame = r.get<float>();
+            if (k >= car.switches.size()) continue;
+            auto& sw = car.switches[k];
+            sw.state = s;
+            sw.set_state = set;
+            sw.fixed_state = fixed;
+            sw.current_frame = frame;
+        }
+        for (auto* doors : {&car.doors, &car.cab_doors}) {
+            const auto n = r.get<std::uint32_t>();
+            for (std::uint32_t k = 0; k < n && !r.failed; ++k) {
+                const auto s = r.get<decltype(abi::ActDoor::state)>();
+                const auto set = r.get<decltype(abi::ActDoor::set_state)>();
+                if (k < doors->size()) {
+                    (*doors)[k].state = s;
+                    (*doors)[k].set_state = set;
+                }
+            }
+        }
+        const auto light_count = r.get<std::uint32_t>();
+        for (std::uint32_t k = 0; k < light_count && !r.failed; ++k) {
+            const auto f = r.get<std::uint32_t>();
+            if (k < car.lights.size()) car.lights[k].flags = f;
+        }
+        const auto lamp_count = r.get<std::uint32_t>();
+        for (std::uint32_t k = 0; k < lamp_count && !r.failed; ++k) {
+            const auto s = r.get<std::uint32_t>();
+            if (k < car.internal_lights.size()) car.internal_lights[k].state = s;
+        }
+        const auto change_count = r.get<std::uint32_t>();
+        for (std::uint32_t k = 0; k < change_count && !r.failed; ++k) {
+            const auto s = r.get<std::uint16_t>();
+            const auto set = r.get<std::uint16_t>();
+            if (k < car.tex_changes.size()) {
+                car.tex_changes[k].state = s;
+                car.tex_changes[k].set_state = set;
+            }
+        }
+        if (r.failed) log(L"restore: car " + std::to_wstring(state.car) + L": its saved state is cut short");
+        if (was_initialised && !car.initialised)
+            log(L"restore: car " + std::to_wstring(state.car) + L": saved with its DLL running, which has not started now");
+        ++restored;
+    }
+    // The groups by the master bits as saved (RTS 0x4F995C).
+    if (restored) regroup();
+    log(L"restore: " + std::to_wstring(restored) + L" of " + std::to_wstring(states.size()) + L" cars' DLL state put back");
+    collect(reply);
+    collect_air(reply);
+    return true;
+}
 
 bool Host::reconsist(const ReconsistRequest& request, StepReply& reply) {
     names_changed();
@@ -919,7 +1170,18 @@ void Host::group(CarMirror& player, const bool players) {
     std::uint32_t slaves = static_cast<std::uint32_t>(last - first);
     player.slaves.clear();
     if (!(slaves && is_master)) slaves = 0;
-    for (std::size_t m = first; m <= last; ++m) {
+    // The group from the player's locomotive outward, nearest first, as RTS
+    // follows it both ways from him (0x468C74). ed9m.dll's Run takes the
+    // other head car as Slaves[NumSlaves - 1] and the car next to the cab as
+    // Slaves[0] (decompiled, 2026-11-18): only this order gives both from
+    // either cab. Listed in train order, the ЭД9М's rear cab took itself for
+    // the other head car: its passenger doors never opened and its lamps
+    // read the far end (testers).
+    std::vector<std::size_t> order;
+    for (std::size_t m = at + 1; m <= last; ++m) order.push_back(m);
+    for (std::size_t m = at; m-- > first;) order.push_back(m);
+    if (at >= first && at <= last) order.insert(order.begin(), at);
+    for (const std::size_t m : order) {
         CarMirror& c = *cars_[m];
         if (c.is_loco()) {
             c.loco()->first_in_group = const_cast<abi::Wagon**>(&train.wagons[first - train.first]);
@@ -995,6 +1257,7 @@ void Host::write_inputs(const std::vector<CarInput>& inputs) {
         if (car.is_loco() && car.initialised && in.clear_engine_flags) car.eng()->engine_flags &= ~in.clear_engine_flags;
         // The slip the game found after the last step: the DLL reads it in Run.
         if (car.is_loco() && car.initialised) car.eng()->wheelslip = in.wheelslip;
+        if (car.is_loco() && car.initialised && in.equalising >= 0.0f) car.eng()->ur = in.equalising;
         if (car.spec.kind == car_electric) {
             // RTS 0x503CE4 sets these before Run (the current from the last
             // step's PowerConsuming); a burnt pantograph is LocoFlags 0x200.
@@ -1426,6 +1689,33 @@ void Host::aux_change_loco(CarMirror& car, bool lost, const abi::Locomotive* oth
 }
 
 bool Host::allows_switch(CarMirror& car, const std::uint32_t id, const std::uint32_t state) {
+    // While the DLL decides, the train's other switches still on their way
+    // (State behind SetState until their animation ends and Switched, RTS
+    // 0x5288CC) show where they are going: interlocks read the other
+    // handle's State, and the ЭД9М's (the controller only with the reverser
+    // at 1 or 3, the reverser only with the controller at 0) let both go at
+    // once, the reverser to 0 and the controller to traction, and then
+    // neither could move again (testers 2026-11-18). openRTS's choice; RTS
+    // reads State as it is (PROBABLE: the same race there).
+    struct Shown {
+        abi::ActSwitch* sw;
+        std::uint32_t state;  // its own
+        std::uint32_t target; // shown
+    };
+    std::vector<Shown> shown;
+    for (auto& c : cars_) {
+        if (c->train != car.train) continue;
+        for (std::size_t k = 0; k < c->switches.size(); ++k) {
+            auto& other = c->switches[k];
+            if ((c.get() == &car && k == id) || other.state == other.set_state) continue;
+            shown.push_back({&other, other.state, other.set_state});
+            other.state = other.set_state;
+        }
+    }
+    const auto put_back = [&] {
+        for (const auto& s : shown)
+            if (s.sw->state == s.target) s.sw->state = s.state; // unless the DLL set it meanwhile
+    };
     bool allowed = true;
     if (car.initialised && car.module && !car.module->failed) {
         prepare_fpu();
@@ -1445,6 +1735,7 @@ bool Host::allows_switch(CarMirror& car, const std::uint32_t id, const std::uint
         }
         if (allowed) allowed = aux_event(car, aux_can_switch, true, id, state);
     }
+    put_back();
     return allowed;
 }
 

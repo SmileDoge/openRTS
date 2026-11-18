@@ -25,3 +25,10 @@ its own). What openRTS itself does wrong goes to its own document instead.
 - ЭД4М, cold start: in the head cab put the ППТ at «Головной», in the tail
   cab leave «Хвостовой»; the К lamp lights, and the reverser trips nothing.
 - ЭП1, changing cabs: switch the ЭПК off in the cab left.
+- ЭД9М / ЭД4М, changing ends: the new cab starts cold. In the cab left:
+  the reverser key to neutral and out, ППТ «Хвостовой». In the new cab:
+  ППТ «Головной», the key in, the ЭПК key on and both КЛУБ powers on.
+  Without the ЭПК key or the КЛУБ the controller moves and nothing
+  pulls: `ed9m.dll` hands the controller to the motor cars only with
+  them on (decompiled, 2026-11-18; test `dll_ed9m_change_ends`). Its
+  Init sets them in the cab the train starts in.

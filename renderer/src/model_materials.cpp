@@ -157,8 +157,9 @@ std::optional<Rgba> decode_map(const core::Vfs& vfs, const core::VirtualPath& fi
     return result;
 }
 
-// One of a material's maps, made from its files.
-std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, const MaterialMapKind kind, const formats::Material& m) {
+// One of a material's maps, made from its files; `note` a warning about them.
+std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, const MaterialMapKind kind, const formats::Material& m,
+                                                          std::string& note) {
     std::string error;
     const auto one = [&](const formats::MaterialMap& map) -> std::optional<Rgba> {
         const auto file = map_path(map);
@@ -180,6 +181,16 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
         if (!image) return failed(error);
         for (std::size_t i = 0; i < image->pixels.size(); i += 4) {
             if (m.normal_y == formats::NormalY::down) image->pixels[i + 1] = static_cast<std::uint8_t>(255 - image->pixels[i + 1]);
+            image->pixels[i + 3] = 255;
+        }
+        return finished(std::move(*image));
+    }
+    case MaterialMapKind::height: {
+        // Its red (a grey image's level) in every channel.
+        auto image = one(*m.height);
+        if (!image) return failed(error);
+        for (std::size_t i = 0; i < image->pixels.size(); i += 4) {
+            image->pixels[i + 1] = image->pixels[i + 2] = image->pixels[i];
             image->pixels[i + 3] = 255;
         }
         return finished(std::move(*image));
@@ -217,6 +228,23 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
             const auto image = resample(*single, width, height);
             for (std::size_t i = 0; i < texels; ++i) out.pixels[i * 4 + target] = image.pixels[i * 4];
         };
+        // A roughness map whose red is black all over while its other
+        // channels are not: a packed map named as a single one (Trainz's
+        // _p: metallic, roughness, occlusion), every texel a mirror.
+        if (roughness && m.roughness_map) {
+            int red = 0, rest_low = 255, rest_high = 0;
+            for (std::size_t i = 0; i < roughness->pixels.size(); i += 4) {
+                red = (std::max)(red, static_cast<int>(roughness->pixels[i]));
+                for (int c = 1; c < 3; ++c) {
+                    rest_low = (std::min)(rest_low, static_cast<int>(roughness->pixels[i + c]));
+                    rest_high = (std::max)(rest_high, static_cast<int>(roughness->pixels[i + c]));
+                }
+            }
+            if (red <= 3 && rest_high - rest_low > 16)
+                note = m.roughness_map->from + ": warning: the roughness map \"" + m.roughness_map->path
+                       + "\" has its red 0 everywhere (a mirror) and its other channels not: a packed map? Then orm: \""
+                       + m.roughness_map->path + "\" with its layout (Trainz's _p: layout: \"mrao\")";
+        }
         channel(ao, 0);
         channel(roughness, 1);
         channel(metallic, 2);
@@ -236,6 +264,7 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
     case MaterialMapKind::base_color: return "material base " + file(m.base_color);
     case MaterialMapKind::emissive: return "material emissive " + file(m.emissive);
     case MaterialMapKind::normal: return std::string("material normal ") + formats::normal_y_name(m.normal_y) + " " + file(m.normal);
+    case MaterialMapKind::height: return "material height " + file(m.height);
     case MaterialMapKind::orm:
         return std::string("material orm ") + formats::layout_name(m.layout) + " " + file(m.orm) + " " + file(m.ao_map) + " "
             + file(m.roughness_map) + " " + file(m.metallic_map);
@@ -460,11 +489,13 @@ void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, Textu
                 if (const auto it = cache->find(cache_key); it != cache->end()) image = it->second;
             }
             if (!image) {
-                image = build_map(vfs, kind, m);
+                std::string note;
+                image = build_map(vfs, kind, m, note);
+                if (!note.empty()) messages.push_back(note);
                 if (cache) cache->emplace(cache_key, image);
             }
             // The maps' files are dependencies whether they load or not.
-            for (const auto* map : {&m.base_color, &m.orm, &m.ao_map, &m.roughness_map, &m.metallic_map, &m.normal, &m.emissive}) {
+            for (const auto* map : {&m.base_color, &m.orm, &m.ao_map, &m.roughness_map, &m.metallic_map, &m.normal, &m.emissive, &m.height}) {
                 if (*map) {
                     if (const auto path = map_path(**map)) asset.material_files.push_back(*path);
                 }
@@ -499,6 +530,7 @@ void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, Textu
             if (m.packed_maps()) out.orm = add_map(MaterialMapKind::orm, m);
             if (m.normal) out.normal = add_map(MaterialMapKind::normal, m);
             if (m.emissive) out.emissive = add_map(MaterialMapKind::emissive, m);
+            if (m.height) out.height = add_map(MaterialMapKind::height, m);
         }
 
         // Tangents for the primitives with a normal map.

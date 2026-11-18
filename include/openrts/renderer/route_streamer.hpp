@@ -1,6 +1,8 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
@@ -60,6 +62,17 @@ public:
     // fills in; more behind a loading screen).
     void set_task_limit(std::size_t tasks) noexcept;
     [[nodiscard]] std::vector<StreamedModelAsset> take_ready_models();
+    // The models handed out by take_ready_models() that no loaded tile around
+    // the camera has placed for `linger` (the camera going back and forth
+    // over a tile's edge does not load them again and again): forgotten here,
+    // asked for again if a tile that places them comes back. The caller lets
+    // them go (ModelLibrary::remove) unless something else uses them.
+    [[nodiscard]] std::vector<core::VirtualPath> take_released_models(std::chrono::steady_clock::duration linger);
+    // Whether the route keeps the model `key` (core::VirtualPath::key()):
+    // handed out or on its way, and not let go.
+    [[nodiscard]] bool holds_model(const std::string& key) const;
+    // The models handed out and not let go.
+    [[nodiscard]] std::size_t held_models() const noexcept;
     // Instances of the loaded tiles around the camera. The list is rebuilt
     // only when that set of tiles changes; the reference stays valid until
     // the next update() or poll().

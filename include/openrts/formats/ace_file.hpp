@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/block_compression.hpp>
 
 namespace openrts::formats {
 
@@ -52,7 +53,25 @@ struct AceRgbaImage {
     // for a texture with a mask; a maskless one using it (none in the 2026-11
     // content) is not kept. Empty otherwise.
     std::vector<std::vector<std::uint8_t>> bc1;
+    // An openRTS ACE of block-compressed levels (raw data, format codes
+    // 0x20-0x24, docs/reverse/ace.md; RTS cannot read them): the file's
+    // blocks of level 0 and of each level down to 1 x 1 (rows of ceil(w/4)
+    // blocks of `block_format`), for a GPU to take as they are; `pixels` and
+    // `mips` decoded from them. Empty otherwise.
+    std::vector<std::vector<std::uint8_t>> blocks;
+    BlockFormat block_format = BlockFormat::bc7;
 };
+
+// The raw-data ACE format codes: DXT1 (RTS's) and openRTS's block formats.
+inline constexpr std::uint32_t ace_format_dxt1 = 0x12;
+inline constexpr std::uint32_t ace_format_bc2 = 0x20; // DXT3
+inline constexpr std::uint32_t ace_format_bc3 = 0x21; // DXT5
+inline constexpr std::uint32_t ace_format_bc5 = 0x22;
+inline constexpr std::uint32_t ace_format_bc7 = 0x23;
+inline constexpr std::uint32_t ace_format_bc4 = 0x24;
+// The block format of an openRTS code (nullopt: none of them).
+[[nodiscard]] std::optional<BlockFormat> ace_block_format(std::uint32_t format_code) noexcept;
+[[nodiscard]] std::uint32_t ace_format_code(BlockFormat format) noexcept;
 
 // Mipmap levels 1.. of an RGBA8 image: each a 2x2 box filter of the level
 // before, rounded, the way gluBuild2DMipmaps makes them (a side already 1
@@ -74,7 +93,7 @@ struct AceDecodeResult {
 
 // Decodes a narrow compressed or uncompressed structured ACE into RGBA8, with
 // its mipmap chain (AceRgbaImage::mips). Raw ACE files are decoded when they
-// hold DXT1 blocks.
+// hold DXT1 blocks or openRTS's (BC2, BC3, BC4, BC5, BC7).
 [[nodiscard]] AceDecodeResult decode_structured_ace_rgba(std::string_view bytes);
 [[nodiscard]] AceDecodeResult decode_structured_ace_rgba_path(const std::filesystem::path& file);
 [[nodiscard]] AceDecodeResult decode_ace_rgba(const core::Vfs& vfs, const core::VirtualPath& file);

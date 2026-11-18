@@ -16,6 +16,8 @@
 #include <string_view>
 #include <vector>
 
+#include <openrts/formats/block_compression.hpp>
+
 namespace openrts::renderer {
 
 // The smoothing for TRAINS/TRAINSET's DXT1 textures (the Graphics panel's
@@ -35,6 +37,15 @@ enum class TextureCompression : std::uint8_t { off, memory, disk };
 inline TextureCompression& texture_compression() {
     static TextureCompression chosen = TextureCompression::disk;
     return chosen;
+}
+// The models' textures at most this many texels a side (the Graphics
+// panel's choice, openRTS's own; 0: as the files give them): the levels
+// above it are left out when a texture is put on the card, a quarter of
+// the memory for each, the rest of the chain as it was. For a card short of
+// video memory (testers 2026-11-18, before a network event): 1024, 512, 256.
+inline std::uint32_t& texture_size_limit() {
+    static std::uint32_t limit = 0;
+    return limit;
 }
 inline std::filesystem::path& texture_cache_directory() {
     static std::filesystem::path folder;
@@ -69,7 +80,7 @@ bool decode_bc7_block(const std::uint8_t* block, std::uint8_t* rgba);
 void decode_bc5_block(const std::uint8_t* block, std::uint8_t* rgba);
 
 // The disk cache's files in a folder (the smoothed trains' .bc7, the
-// compressed textures' .r7 / .n5, half-written ones): how many, how big.
+// compressed textures' .r7 / .n5 / .h4, half-written ones): how many, how big.
 struct TextureCacheSize {
     std::uint64_t files = 0;
     std::uint64_t bytes = 0;
@@ -79,9 +90,10 @@ struct TextureCacheSize {
 // already on the GPU stay; the next loads encode theirs again.
 TextureCacheSize clear_texture_cache(const std::filesystem::path& folder);
 
-enum class BlockFormat : std::uint8_t { bc7, bc5 };
+// BC7 or BC5 (formats/block_compression.hpp, where the encoders are).
+using BlockFormat = formats::BlockFormat;
 // An uncompressed texture (level 0 and its levels 1.., RGBA8; none: built
-// as RTS builds them) as BC7 or BC5 levels. With `disk`: from the disk
+// as RTS builds them) as BC7, BC5 (a normal map) or BC4 (a height map) levels. With `disk`: from the disk
 // cache by a hash of its texels, else encoded and kept there; without:
 // encoded. Level 0's sides must be whole blocks (else nullopt).
 [[nodiscard]] std::optional<std::vector<std::vector<std::uint8_t>>> compressed_levels(

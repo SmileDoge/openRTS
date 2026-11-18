@@ -203,6 +203,10 @@ void RoadTraffic::prepare(Spawner& spawner) {
     spawner.failed = false;
 }
 
+bool RoadTraffic::holds_shape(const std::string& key) const {
+    return std::any_of(models_.begin(), models_.end(), [&](const TypeModel& model) { return model.requested && model.shape && model.shape->key() == key; });
+}
+
 void RoadTraffic::request_model(const std::size_t type, renderer::ModelLibrary& library) {
     auto& model = models_[type];
     if (!model.shape) return;

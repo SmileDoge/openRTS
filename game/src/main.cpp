@@ -24,6 +24,7 @@
 #include <openrts/core/core.hpp>
 
 #include "launcher.hpp"
+#include "log_console.hpp"
 #include "update.hpp"
 #include "window_viewer.hpp"
 
@@ -42,6 +43,8 @@ std::filesystem::path executable_folder(const char* argv0) {
 } // namespace
 
 int main(int argc, char* argv[]) {
+    // The console's lines (F2) from the first one on.
+    openrts::viewer::start_log_capture();
     const auto folder = executable_folder(argv[0]);
     openrts::game::Launcher menu(folder);
     const std::vector<std::string_view> args(argv + 1, argv + argc);

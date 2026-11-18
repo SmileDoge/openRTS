@@ -166,6 +166,18 @@ int serve(const std::wstring& name, DWORD parent_pid) {
             write(out, reply);
             break;
         }
+        case Command::save_state: {
+            write_list(out, host.save_state());
+            break;
+        }
+        case Command::restore_state: {
+            std::vector<CarDllState> states;
+            read_list(in, states);
+            StepReply reply;
+            if (in.failed() || !host.restore_state(states, reply)) status = -1;
+            write(out, reply);
+            break;
+        }
         case Command::reconsist: {
             ReconsistRequest request;
             read(in, request);

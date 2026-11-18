@@ -78,3 +78,50 @@ entries (three rounds). `7bridge2.ace` (DXT1 with a mask) written again
 reads back within 0.01 of 255 a channel on average
 (`tests/ace_png_test.cpp`). UNKNOWN: whether RTS reads options 16 (raw
 without a chain); every DXT1 file in the content has one.
+
+## openRTS's block formats (2026-11-17)
+
+Not RTS's: openRTS reads and writes them, RTS cannot open such a file (keep
+them out of content meant for RTS). Raw data (options bit 4) like DXT1,
+with new format codes:
+
+| Kind | Format | Channels | Block |
+|---|---|---|---|
+| DXT3 / BC2 | 0x20 | R G B A | 16 bytes: a 4-bit alpha a texel, BC1's colour |
+| DXT5 / BC3 | 0x21 | R G B A | 16 bytes: BC4's alpha, BC1's colour |
+| BC5 | 0x22 | R G | 16 bytes: two BC4 (a normal map's x and y) |
+| BC7 | 0x23 | R G B A | 16 bytes: 8 modes, 1-3 parts a block |
+| BC4 | 0x24 | R | 8 bytes: one channel (heights, roughness) |
+
+- The layout as DXT1's: the header, the 128 bytes of text, the channels
+  (each 8 bits), a table of u32 level offsets, each level a u32 byte count
+  then its blocks row by row (rows of ceil(w / 4)).
+- Every level is blocks, down to 1 x 1 (a level under 4 x 4 is one block
+  row, its texels past the side repeated): no plain rows as DXT1's 2 x 2
+  and 1 x 1 have.
+- Options 17 (bit 0: a chain, every level to 1 x 1, any size) or 16 (one
+  level). A side need not be a power of two; a GPU takes the blocks as they
+  are when level 0's sides are whole blocks (multiples of 4), else the
+  decoded texels.
+- Reading (`formats/src/ace_file.cpp`): each level's byte count must be its
+  blocks' size. The levels are decoded for the CPU (`formats/src/block_compression.cpp`)
+  and kept as blocks (`AceRgbaImage::blocks`); the renderer uploads them as
+  they are (BC2/BC3/BC4/BC5/BC7 UNORM). A file without a chain gives its
+  level 0 decoded, the renderer making the chain (and compressing it as its
+  choice of «Несжатые текстуры» says).
+- Checked: BC7 decodes to the bit as a GPU does, every mode and partition
+  (`tests/bc_gpu_test.cpp`, random blocks read back through a compute
+  shader on D3D12). BC1-BC5's levels between the ends are the vendor's:
+  measured on NVIDIA, BC1's green up to 5 steps off the ideal
+  (2a + b) / 3, BC4's weights floor(k * 64 / 7) and floor(k * 64 / 5) of 64,
+  up to 7 steps; the CPU keeps the ideal ones. The testers' 14 PBR cars
+  (raw RGBA ACE) written as BC7: the trains' textures on the GPU 795 MB to
+  325 MB, a capture beside them 64.8 dB from the originals.
+
+`openrts-ace to-ace --format bc7|dxt5|dxt3|bc5|bc4` writes them (also
+`bc1`, `bc2`, `bc3` for DXT1 / DXT3 / DXT5; asked in the console: 5-9), and
+says the file is openRTS's only. The encoders: BC7 mode 6 (one RGBA line,
+16 levels) or mode 5 where a block's alpha varies (colour and alpha on
+lines of their own, the alpha's ends exact, so a cut-out edge stays), BC4
+between the block's least and most in 8 levels, BC1's colour as DXT1's.
+`to-png` reads them back (a BC4 as grey).

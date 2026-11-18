@@ -1,6 +1,7 @@
 #include "cab_view.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <cctype>
 #include <cstdio>
 #include <cmath>
@@ -861,7 +862,7 @@ std::optional<glm::vec3> CabView::display_point(const std::size_t display_index)
 }
 
 void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer::NodeAdjustment>& out,
-                          const std::uint32_t aspect, const Blend* blend) const {
+                          const std::uint32_t aspect, const Blend* blend, const AirGauges* air) const {
     const auto between = [&](const std::vector<float>* before, const std::uint32_t id, const float now) {
         if (!blend || !before || id >= before->size()) return now;
         const float was = (*before)[id];
@@ -914,6 +915,18 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             value = state->displays[d.id].value;
             if (d.type == formats::CabDisplayType::arrow) value = between(blend ? blend->display_values : nullptr, d.id, value);
             lit = state->displays[d.id].state;
+        }
+        // The air gauges by their names (AirGauges), the model's air.
+        if (air && d.type == formats::CabDisplayType::arrow) {
+            const auto named = [&](const char* name) {
+                if (d.name.size() != std::strlen(name)) return false;
+                for (std::size_t c = 0; c < d.name.size(); ++c)
+                    if (std::toupper(static_cast<unsigned char>(d.name[c])) != name[c]) return false;
+                return true;
+            };
+            if (named("DTM")) value = air->pipe;
+            else if (named("DTC1") || named("DTC2")) value = air->cylinder;
+            else if (named("DGR")) value = air->main_reservoir;
         }
         // RTS 0x525DB0: with a blink the display is hidden for the second
         // half of each 2 x blink period.

@@ -54,6 +54,14 @@ void set_background_sound(BackgroundSound sound) noexcept;
 [[nodiscard]] bool key_hints() noexcept;
 void set_key_hints(bool shown) noexcept;
 
+// Walking on W A S D as well as the arrows while the engineer is on his
+// feet (standing in a cab, outside, on a car): those four letters then
+// work no cab key. Seated in a chair they are the cab's again (testers,
+// 2026-11-18). On unless turned off in the panel's General (remembered as
+// wasd_walk).
+[[nodiscard]] bool wasd_walking() noexcept;
+void set_wasd_walking(bool on) noexcept;
+
 // The openRTS panel and the DLL cab window: hidden until Esc shows them
 // (testers, 2026-11-12: they cluttered the top of the picture); Esc hides
 // them again. Each start begins with them hidden.

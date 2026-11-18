@@ -249,6 +249,16 @@ bool LegacyHost::reconsist(const ReconsistRequest& request, StepReply& reply) {
         Command::reconsist, [&](Writer& w) { write(w, request); }, [&](Reader& r) { read(r, reply); }, 20000);
 }
 
+bool LegacyHost::save_state(std::vector<CarDllState>& states) {
+    return call(
+        Command::save_state, [](Writer&) {}, [&](Reader& r) { read_list(r, states); }, 20000);
+}
+
+bool LegacyHost::restore_state(const std::vector<CarDllState>& states, StepReply& reply) {
+    return call(
+        Command::restore_state, [&](Writer& w) { write_list(w, states); }, [&](Reader& r) { read(r, reply); }, 20000);
+}
+
 bool LegacyHost::step(const StepRequest& request, StepReply& reply) {
     return call(
         Command::step, [&](Writer& w) { write(w, request); }, [&](Reader& r) { read(r, reply); }, step_timeout_);

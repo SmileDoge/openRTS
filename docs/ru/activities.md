@@ -111,10 +111,14 @@
 | `OnMenuSelect ( MenuID MenuItemID )` | выбран пункт меню (F8) |
 | `OnCloseMessageBox ( MsgID ButtonID )` | сообщение закрыто этой кнопкой |
 | `PlayerBoardsTrain ( Area )` | игрок в кабине поезда (`CABIN`, `INTERIOR`, `SALON`; `EXTERIOR` пока нет) |
-| `ReachLocation ( Location Radius Reach SpeedNotAbove SpeedNotBelow )` | `WAGON_ANY` (по умолчанию), `WAGON_ALL`, `WAGON_FRONT`, `WAGON_BACK`, `WAGON_PLAYER` / `PLAYER` (вагон игрока); скорости в м/с |
+| `ReachLocation ( Location Radius ReachWith SpeedNotAbove SpeedNotBelow )` | `ReachWith` (activity.pdf; читается и `Reach`): `WAGON_ANY` (по умолчанию), `WAGON_ALL`, `WAGON_FRONT`, `WAGON_BACK`, `WAGON_PLAYER` / `PLAYER_POSITION` (вагон игрока); вагон в радиусе, если в нём любая его часть, от сцепки до сцепки (точки у светофоров — место светофора на пути: кабина, заехавшая за него свесом, его проехала); скорости в м/с |
 | `CoupleCars ( ConjTrainID )` | поезд события и этот сцепились |
+| `ReachReversePoint ( PointID )` | поезд дошёл до точки реверса `PointID` своего пути (с 0; путь от `AssignService` считается заново): встал в конце отрезка и перешёл на следующий |
 | `WagonState` | см. ниже |
-| `ActivateOnTime`, `ActivateByTimer` | время суток; с с момента включения события |
+| `OnActivationLevel ( WhenAbove ( a ) WhenBelow ( b ) )` | при смене его уровня (`SetActivationLevel`, `IncreaseActivationLevel`) выше `a` или ниже `b` (провалы экзаменов: событие с уровнем 0, которому ставят 1) |
+| `ReachVelocity ( SpeedNotAbove ( v1 ) SpeedNotBelow ( v2 ) )` | скорость поезда не выше `v1` (0 — стоит; допуск 0,01 м/с) или выше `v2` |
+| `UncoupleCars ( WagonRange ( StartNum EndNum ) WagonList ( … ) )` | поезд расцеплен: `StartNum` вагонов в голове (голова остаётся поездом) или `EndNum` в хвосте; вагоны `WagonList` — в отцепе |
+| `ActivateOnTime ( Time ( чч:мм:сс ) )`, `ActivateByTimer ( Time ( с ) )` | время суток; секунды с момента включения события (читается и просто `( … )`) |
 
 `WagonState` (activity.pdf, п. 27): соотношения `Equal`, `NotEqual`,
 `Above`, `AboveOrEqual`, `Below`, `BelowOrEqual` (статические) и
@@ -123,7 +127,13 @@
 Переменная Idx SubIdx Значение )`; все (`All`, по умолчанию) или любое
 (`Any`). Проверяются только пока отслеживается состояние поезда
 (`StartWagonStateTracking`) или однократно (`CheckWagonState`, статические).
-Вагон: `WagonNum` (с головы от 0, отрицательный — с хвоста) или `WagonID`.
+Вагон: `WagonNum` (с головы от 0, отрицательный — с хвоста) или `WagonID`;
+без них соотношения проверяются для каждого смотримого вагона
+(activity.pdf, п. 27: `WagonRange` / `WagonList` отслеживания или
+проверки, иначе все вагоны поезда), и событие наступает, когда им
+отвечает один вагон (раньше openRTS брал вагон 0: «движение на башмаках»
+экзамена смотрело только локомотив). `Interval` отслеживания не
+соблюдается: openRTS смотрит каждый кадр.
 Читаемые переменные (activity_WagonStateVariables): `BrakeCylinder`,
 `Auxiliary`, `PipePressure` (SubIdx 0 — тормозная магистраль, 1 —
 напорная), `MainReservoir`, `IndependentBrake` (кгс/см²), `Handbrake`
@@ -132,8 +142,24 @@
 поток, значение — триггер, последним запустивший звук в нём, + 1, пока
 звук играет, 0 — тишина; PROBABLE: это состояние потока RTS, а сценарий
 Кубани ждёт по `CABIN SMSStream 0 24 1` вызов ДСП по радио — поток 24
-«Радиостанция», триггер 157). Остальные пока не читаются (журнал их
-называет; условие ждёт).
+«Радиостанция», триггер 157); от DLL вагона: `Panto` (`WAGON` — поднятые
+токоприёмники, `CABIN` — те, подъём которых включён в кабине; Idx 0 —
+битовая маска, 1..8 — один из них), `LocoState` (Idx 0 — реверс, 1 —
+`Power`, 2 — УР, 4 — `ALSNOn`, 5 — `Wheelslip`, 6 — `ThrottlePosition`,
+7 — `MainSwitch`; 3, заряд батареи, пока нет), `CABIN Switch` (Idx —
+переключатель; SubIdx −1 — его State, 0 — SetState, 1 — кадр); где
+игрок: `PlayerInArea` (Idx 2 — звуковые регионы, `InteriorArea` кабины;
+значение — область, где он стоит, −5 — не в этом вагоне, −3 — не в
+названном объекте: `CABIN` — кабина локомотива, `SALON` — салон,
+`WAGON` — снаружи вагона, −1 — ни в одной, −2 — спрошен другой тип:
+двери, плоскости и уступы пока не различаются; Idx 0 — любой тип,
+2000 + область) и `PlayerInChair` (Idx 1 — `Chair` кабины, 2 — `Seat`
+салона; значение — номер, −4 — не сидит). С SubIdx обе дают 0 / 1: в
+этой или нет. Экзамен Павловска ждёт по `CABIN PlayerInArea 2 -1 0..2` и
+`CABIN PlayerInChair 1 -1 0..1` машиниста в секции; `Drag` (тормозные
+башмаки: Idx 0 — битовая маска, 1 — под передней тележкой, 2 — под
+задней, по ходу поезда, как их кладут `PlaceDrag` и меню вагона).
+Остальные пока не читаются (журнал их называет; условие ждёт).
 
 Выполняемые исходы: `ShowMessage` (окно, `ShowModal` держит игру,
 `Buttons` MB_OK / MB_OKCANCEL / MB_YESNO / MB_YESNOCANCEL, `Expires`),
@@ -149,7 +175,15 @@
 пока игрок в этом вагоне; объект −1 — собственные звуки вагона),
 `ModifyWagons` (его группы — как `WagonParameters` поезда, выше),
 `ReleaseBlockPoint`, `EnableBlockPoint`, `ModifyVelocity`,
-`WaitHere` (`docs/ru/traffic.md`), `SuccessfullyCompleteActivity`,
+`WaitHere` (`docs/ru/traffic.md`), `SetDefaultUncouple ( NewID NewType
+MainWagon )` (отцеп от поезда получает `NewID` и стоит при `NewType (
+STATIC )`; часть с `MainWagon` сохраняет номер поезда, иначе — часть
+машиниста), `ChangeServiceStartupType ( NewStartupType TrainID ( s -1 ) )`
+(`NONE` придерживает ещё не вышедшие поезда сервиса `s`, `SINGLE` /
+`SERIAL` выпускает их по их времени), `SetSpeedLimit ( v )` (м/с до
+следующего, неположительное — снять: DLL ведомого поезда и панель
+скорости берут его под ограничением пути, трафик держится под ним;
+переходит с поездом при `AssignService`), `SuccessfullyCompleteActivity`,
 `ActivityFailed`. `TrainID` исхода называет его поезд (по умолчанию поезд
 события).
 
@@ -245,12 +279,13 @@
 - Условий расписания: `StopAtStation`, `DepartFromStation`,
   `TimetableCompleted` (RTS поднимает их, когда посадка начинается,
   кончается и, на последней остановке, когда выходит её время: события 22,
-  23 и 28; нумерация станций — UNKNOWN), `ReachReversePoint`,
-  `ReachEndPoint`; остановок трафика (`AlignWhenStops`); пути из
-  `NewPathLoad` у `AssignService`.
-- `UncoupleCars` (условие и исход), `SetDefaultUncouple`, `DeliverCars`,
-  `PickupEvent`, `WaitAtLocation`, `ReachVelocity`, `RandomEvent`,
-  `OnActivationLevel`, `PlayerBoardsTrain ( EXTERIOR )`.
+  23 и 28; нумерация станций — UNKNOWN), `ReachEndPoint`; остановок
+  трафика (`AlignWhenStops`); пути, названного в `NewPathLoad` (пустой —
+  путь нового сервиса).
+- Исхода `UncoupleCars` (сценарий сам отцепляет вагоны) и его
+  `PreventRecoupling`, `ShutValves`, `LockCouplings`; `DeliverCars`,
+  `PickupEvent`, `WaitAtLocation`, `RandomEvent`, `PlayerBoardsTrain (
+  EXTERIOR )`.
 - Из `WagonGroup`: давлений, токоприёмников, песка, топлива и воды,
   дверей, груза, `AIControlled`, кабелей СМЕ / ВВ, блокировки сцепок;
   собственного `TrainState` статического поезда (он стоит с опущенными

@@ -1,4 +1,6 @@
 #include <openrts/renderer/model_library.hpp>
+
+#include <openrts/renderer/bc7.hpp>
 #include <openrts/renderer/depth.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
@@ -234,6 +236,14 @@ void ModelLibrary::reload_extension(const std::string_view extension) {
     for (const auto& [_, model] : impl.models) {
         if (core::fold_case(model.source().extension()) == wanted) impl.variant_reloads.push_back(model.source());
     }
+}
+
+void ModelLibrary::reload_textures() {
+    auto& impl = *impl_;
+    impl.renderer.forget_textures();
+    for (const auto& [_, model] : impl.models) impl.variant_reloads.push_back(model.source());
+    std::cout << "textures: largest side " << texture_size_limit() << " (0: as the files): " << impl.models.size() << " model(s) to reload"
+              << std::endl;
 }
 
 void ModelLibrary::update(const std::size_t uploads) {

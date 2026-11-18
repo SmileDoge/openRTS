@@ -50,6 +50,7 @@
 #include "ui_fonts.hpp"
 #include "ui_slider.hpp"
 #include "ui_text.hpp"
+#include "log_console.hpp"
 #include "rts_config.hpp"
 #include "thunder_view.hpp"
 #include "viewer_state.hpp"
@@ -642,6 +643,7 @@ struct PanelState {
     // performance, the keys.
     enum class Tab : std::uint8_t { general, graphics, train, world, performance, controls };
     Tab tab = Tab::general;
+    LogConsole console; // F2: the game's messages (log_console.hpp)
     // The frame rate in a corner of the screen, the panel shown or not
     // (remembered as fps_counter).
     bool fps_counter = false;
@@ -694,6 +696,7 @@ struct PanelState {
     // (renderer/bc7.hpp; openRTS's own; remembered as smooth_train_textures).
     bool smooth_train_textures = false;
     int compress_textures = 2; // renderer/bc7.hpp: 0 not, 1 in memory, 2 kept on disk
+    int texture_size = 0;      // renderer::texture_size_limit: 0 as the files, 1 1024, 2 512, 3 256
     bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
     float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
     bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
@@ -751,6 +754,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.reshade_depth = g.reshade_depth;
     panel.smooth_train_textures = g.smooth_train_textures;
     panel.compress_textures = g.compress_textures;
+    panel.texture_size = g.texture_size;
 }
 
 [[nodiscard]] GraphicsSettings panel_graphics(const PanelState& panel) {
@@ -785,6 +789,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.reshade_depth = panel.reshade_depth;
     g.smooth_train_textures = panel.smooth_train_textures;
     g.compress_textures = panel.compress_textures;
+    g.texture_size = panel.texture_size;
     return g;
 }
 
@@ -865,6 +870,9 @@ public:
         ImGui_ImplWGPU_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        // The console (F2): the game's messages, on every screen (the
+        // loading's too).
+        draw_log_console(panel.console);
 
         if (panel.menu) {
             scene.draw_overlay(camera);
@@ -979,6 +987,18 @@ public:
         }
 
         if (panel.tab == PanelState::Tab::general) {
+            // The console: the game's messages (also F2).
+            if (ImGui::Button(panel.console.open ? tr("Console (F2): close") : tr("Console (F2): the game's messages, warnings, errors")))
+                panel.console.open = !panel.console.open;
+            {
+                const auto counts = log_counts();
+                if (counts.errors > 0 || counts.warnings > 0) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(counts.errors > 0 ? ImVec4{1.0f, 0.45f, 0.40f, 1.0f} : ImVec4{1.0f, 0.82f, 0.35f, 1.0f},
+                                       tr("%llu errors, %llu warnings"), static_cast<unsigned long long>(counts.errors),
+                                       static_cast<unsigned long long>(counts.warnings));
+                }
+            }
             // Language of the interface (Russian by default), remembered.
             int language = ui_language() == UiLanguage::russian ? 0 : 1;
             const char* languages[] = {"Русский", "English"};
@@ -999,6 +1019,11 @@ public:
             if (ImGui::Checkbox(tr("Key hints at the bottom of the screen"), &hints)) {
                 set_key_hints(hints);
                 remember("key_hints", hints ? "1" : "0");
+            }
+            bool wasd = wasd_walking();
+            if (ImGui::Checkbox(tr("Walk on W A S D while standing (seated: the cab's keys)"), &wasd)) {
+                set_wasd_walking(wasd);
+                remember("wasd_walk", wasd ? "1" : "0");
             }
             float sensitivity = mouse_sensitivity();
             ImGui::SetNextItemWidth(220.0f);
@@ -1188,6 +1213,14 @@ public:
                 if (ImGui::Combo(tr("Uncompressed textures and PBR maps (BC7, normals BC5)"), &panel.compress_textures, modes, 3))
                     remember("compress_textures", std::to_string(panel.compress_textures));
                 ImGui::TextDisabled("%s", tr("(compressed: a quarter of their video memory, barely seen; on disk: the first load longer, then read from the cache; not kept: each load longer, nothing written; textures loaded after the change)"));
+                const char* sizes[] = {tr("as the files give them (as in RTS)"), "1024", "512", "256"};
+                ImGui::SetNextItemWidth(260.0f);
+                if (ImGui::Combo(tr("Textures' largest side##texture_size"), &panel.texture_size, sizes, 4))
+                    remember("texture_size", std::to_string(panel.texture_size));
+                ImGui::TextDisabled("%s", tr(panel.texture_size == 0   ? "(full size: as much video memory as the content takes)"
+                                             : panel.texture_size == 1 ? "(2048 ones at 1024: a quarter of their memory, near objects a little softer)"
+                                             : panel.texture_size == 2 ? "(at 512: a quarter of 1024's; cabs and near cars blurred)"
+                                                                       : "(at 256: the least memory; everything near blurred)"));
                 // The disk cache: counted every 2 s while shown, cleared on the button.
                 static renderer::TextureCacheSize cache_size;
                 static double counted_at = -100.0;
@@ -1205,6 +1238,15 @@ public:
                 }
                 ImGui::TextDisabled("%s", tr("(the textures already loaded stay; the next loads compress theirs again)"));
             }
+            // The materials' height maps (SceneEffectSettings::parallax).
+            if (ImGui::Checkbox(tr("Relief by the materials' height maps (parallax, not as in RTS)"), &panel.effects.parallax))
+                remember("parallax", panel.effects.parallax ? "1" : "0");
+            if (panel.effects.parallax) {
+                ImGui::SetNextItemWidth(220.0f);
+                if (slider_with_input(tr("Relief out to"), &panel.effects.parallax_distance, 5.0f, 100.0f, tr("%.0f m"), "%.0f"))
+                    remember("parallax_distance", std::to_string(panel.effects.parallax_distance));
+            }
+            ImGui::TextDisabled("%s", tr("(only materials with a height map: the image shifts where the eye's ray meets the relief; the outline stays flat)"));
             if (ImGui::Checkbox(tr("Sharp cab screens: drawn at a higher resolution (not as in RTS)"), &panel.screen_supersampling))
                 remember("screen_supersampling", panel.screen_supersampling ? "1" : "0");
             ImGui::TextDisabled("%s", tr("(each screen drawn into an image of its own and blended in linear light: thin lines keep their brightness, no steps on edges and needles)"));
@@ -1275,8 +1317,17 @@ public:
                     if (renderer.shading_path() != renderer::ShadingPath::experimental) {
                         ImGui::TextDisabled("%s", tr("(in effect in the experimental renderer)"));
                     } else {
-                        ImGui::TextDisabled(tr("now: x %.2f (%+.1f stops)"), panel.auto_exposure_factor,
-                                            std::log2((std::max)(panel.auto_exposure_factor, 1e-3f)));
+                        const float stops = std::log2((std::max)(panel.auto_exposure_factor, 1e-3f));
+                        ImGui::TextDisabled(tr("now: x %.2f (%+.1f stops)"), panel.auto_exposure_factor, stops);
+                        // At a limit: the setting holding it, named (it reads as "not changing" else).
+                        const auto& ae = panel.auto_exposure;
+                        if (ae.up > 0.0f && stops >= ae.up - 0.02f) {
+                            ImGui::SameLine();
+                            ImGui::TextColored({1.0f, 0.82f, 0.35f, 1.0f}, "%s", tr("at the limit of \"brightens a dark scene\""));
+                        } else if (ae.down > 0.0f && stops <= -ae.down + 0.02f) {
+                            ImGui::SameLine();
+                            ImGui::TextColored({1.0f, 0.82f, 0.35f, 1.0f}, "%s", tr("at the limit of \"darkens a bright scene\""));
+                        }
                     }
                     ImGui::Unindent();
                 }
@@ -1827,6 +1878,7 @@ struct CameraInput {
     std::array<bool, 14> train_keys_down{};
     std::vector<KeyEvent> key_events; // since the last scene_input()
     bool keyboard_captured = false;   // the scene takes the keyboard (cab keys)
+    bool on_foot = false;             // the engineer stands or walks (not in a chair): W A S D walk
     double cursor_x = 0.0;
     double cursor_y = 0.0;
     // The cursor was captured or let go in this poll: its moves do not turn
@@ -2024,6 +2076,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     }
     input.toggle_key_down = toggle;
     if (input.keyboard_captured) return; // the cab has the letter keys
+    if (input.on_foot && wasd_walking()) return; // W A S D walk the engineer
 
     camera.move(
         {
@@ -2087,6 +2140,15 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const int clicks = std::exchange(input.clicks, 0);
     const int releases = std::exchange(input.releases, 0);
     const double scroll = std::exchange(input.scroll, 0.0);
+    // W A S D walk the engineer on his feet (key_layout.hpp): not the cab's
+    // then, nor the free camera's.
+    const bool wasd = wasd_walking() && input.on_foot && !ctrl && !alt;
+    const auto walk_keys_out = [&](std::vector<KeyEvent>& keys) {
+        if (!wasd_walking() || !input.on_foot) return;
+        std::erase_if(keys, [](const KeyEvent& e) {
+            return !e.ctrl && !e.alt && (e.key == GLFW_KEY_W || e.key == GLFW_KEY_A || e.key == GLFW_KEY_S || e.key == GLFW_KEY_D);
+        });
+    };
     const auto engineer = [&](SceneInput& in) {
         in.cab_window = kp0;
         in.head_out = kp1;
@@ -2107,10 +2169,10 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.cursor_y = static_cast<float>(input.cursor_y);
         in.click_shift = shift;
         in.scroll = pointer ? static_cast<float>(scroll) : 0.0f;
-        in.walk_forward = down(GLFW_KEY_UP);
-        in.walk_back = down(GLFW_KEY_DOWN);
-        in.walk_left = down(GLFW_KEY_LEFT);
-        in.walk_right = down(GLFW_KEY_RIGHT);
+        in.walk_forward = down(GLFW_KEY_UP) || (wasd && down(GLFW_KEY_W));
+        in.walk_back = down(GLFW_KEY_DOWN) || (wasd && down(GLFW_KEY_S));
+        in.walk_left = down(GLFW_KEY_LEFT) || (wasd && down(GLFW_KEY_A));
+        in.walk_right = down(GLFW_KEY_RIGHT) || (wasd && down(GLFW_KEY_D));
         in.walk_run = shift;
         in.walk_slow = down(GLFW_KEY_END);
         // Alt+Enter is the window's (full screen / window), not a door.
@@ -2137,6 +2199,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         };
         engineer(captured);
         captured.keys = std::exchange(input.key_events, {});
+        walk_keys_out(captured.keys);
         return captured;
     }
     SceneInput result{
@@ -2177,6 +2240,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     };
     engineer(result);
     result.keys = std::exchange(input.key_events, {});
+    walk_keys_out(result.keys);
     return result;
 }
 
@@ -2735,6 +2799,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::lightning_brightness() = std::clamp(std::strtof(brightness->c_str(), nullptr), 0.0f, 3.0f);
     if (const auto volume = remembered("thunder_volume")) thunder_volume() = std::clamp(std::strtof(volume->c_str(), nullptr), 0.0f, 2.0f);
     set_key_hints(remembered("key_hints").value_or("1") != "0");
+    set_wasd_walking(remembered("wasd_walk").value_or("1") != "0");
     set_mouse_sensitivity(parse_mouse_sensitivity(remembered("mouse_sensitivity").value_or("1").c_str()));
     set_head_motion(parse_head_motion(remembered("head_motion").value_or("").c_str()));
     set_background_sound(parse_background_sound(remembered("background_sound").value_or("").c_str()));
@@ -2866,7 +2931,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (options.lamp_shadows) panel.effects.lamp_shadows = static_cast<std::uint32_t>(std::clamp(*options.lamp_shadows, 0, most_lamp_shadows));
     if (const auto on = remembered("parallel_recording")) panel.parallel_recording = *on == "1";
     if (options.shadow_cache) panel.effects.cache_far_cascades = *options.shadow_cache;
+    if (options.parallax) panel.effects.parallax = *options.parallax;
     if (options.compress_textures) panel.compress_textures = *options.compress_textures;
+    if (options.texture_size) panel.texture_size = *options.texture_size;
     if (options.cab_shadows) panel.effects.cab_shadows = *options.cab_shadows;
     if (options.parallel_recording) panel.parallel_recording = *options.parallel_recording;
     if (options.start_paused) panel.paused = true;
@@ -2952,6 +3019,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         stages = {};
         const auto elapsed = static_cast<float>((std::min)(now - last_time, max_frame_seconds));
         input.keyboard_captured = scene.keyboard_captured();
+        input.on_foot = scene.engineer_on_foot();
         if (scene.wants_close()) glfwSetWindowShouldClose(window.get(), GLFW_TRUE);
         input.scene_takes_scroll = scene.takes_scroll();
         update_camera_from_keyboard(window.get(), input, elapsed);
@@ -2993,6 +3061,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::night_textures() = panel.night_textures;
         renderer::smooth_train_textures() = panel.smooth_train_textures;
         renderer::texture_compression() = static_cast<renderer::TextureCompression>(std::clamp(panel.compress_textures, 0, 2));
+        {
+            constexpr std::uint32_t sides[] = {0, 1024, 512, 256};
+            renderer::texture_size_limit() = sides[std::clamp(panel.texture_size, 0, 3)];
+        }
         renderer::lamp_skips_own_model() = panel.lamp_own_model;
         renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
         auto frame_input = scene_input(window.get(), input);

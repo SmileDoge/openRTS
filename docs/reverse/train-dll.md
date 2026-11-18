@@ -201,6 +201,33 @@ after (event 8).
   A section cut off and coupled back is a slave again and follows the
   controller, but pulls only after the driver gives those commands again.
 
+**openRTS, the other end's cab** (2026-11-18, the ЭД9М driven from its rear
+head car; `openrts-train-check … --dll` with `enter 5`):
+- The master's `Slaves` go from the player's locomotive outward, nearest
+  first. CONFIRMED by `ed9m.dll` (decompiled): `Run` (`0x405E2C`) takes the
+  other head car as `Slaves[NumSlaves - 1]` and its door and lamp logic
+  (`0x403804`) reads the car next to the cab as `Slaves[0]` (L_05
+  "Напряжение сети", L_12, L_11 by its engine's `Flags2` bits). Only the
+  order from the master outward gives both from either cab. In train order
+  the rear cab had a motor car last: the "other" head car was the cab
+  itself, so its passenger doors never opened, and its lamps read the far
+  head car.
+- The train's direction (`train +4` bit 0x40) is the way the player's cab
+  faces: its car turned, or its `Cabin ( x 1 )` turned in it. It gives
+  the leading cab the signal (`Cabin::Signal`), `RTS_TRAINDIR` and
+  `Run`'s `reversed`. openRTS sent 1 always.
+- Checked: both ends alike (start at G and walk to GR, or the train
+  turned round and the other way); the rear cab's buffer lights switch
+  white / red by its own switches. The cab walked into keeps what its
+  `Init` without the player left (doors' control, the cocks, the ЭПК key,
+  КЛУБ off): the driver sets it up, as on the real train.
+- The ЭД9М's passenger doors (`0x403804`): only with the engine's
+  `MainResPressure` above 2.0, and a cab works them only while its door
+  control (switches 7, 8; 9, 10) is on and the other head car's is off.
+  So the front cab's door control goes off before the driver changes
+  ends. `ChangeLoco` (`0x407004`): master when there is no previous one or
+  its key (switch 1) is out. Test: `openrts.content.dll_ed9m_rear`.
+
 **openRTS** (`dllhost::Command::reconsist`, `LegacyConsist::reconsist`):
 - after a coupling or a cut the host gets the new car list. The mirrors of
   the cars that stay move with them, new cars get new mirrors, and the
@@ -596,6 +623,15 @@ without compliance and RTS refuses it too.
   - openRTS used to set `SetState` after an allowed call, overwriting the
     DLL's choice. The controller then stayed at 11 and the next step went
     into the field-weakening sector.
+  - **openRTS's choice (2026-11-18):** during `CanSwitch` the train's other
+    switches still moving (State behind SetState until their animation
+    ends) show the State they are going to, and get their own back after.
+    Interlocks read the other handle's State: the ЭД9М's (`ed9m.dll`
+    `0x405FC0`: the controller only with the reverser at 1 or 3, the
+    reverser only with the controller at 5) let the reverser go to 0 and
+    the controller to traction at once, and then neither could move
+    (testers). RTS reads State as it is (PROBABLE: the same race there).
+    Test: `openrts.content.dll_ed9m_rear`.
 - **`KEY` switches** have a "key out" state 0 below their positions: the
   first press inserts the key at `InitialState + 1`; Shift with the key
   there takes it out (CONFIRMED `0x437AA4`, `+56`; an earlier note here
@@ -1345,6 +1381,40 @@ per train (skipped when train byte `+5` bit 0 is set).
   - `ALSN` gets the first head's; `Cabin::Signal` the next signal's.
 - **openRTS:** `formats::rts_signal_units`, sent to the host once per
   unit. On Kuban the signals ahead at the start all have one.
+
+## 20. A locomotive in a saved game (2026-11-18)
+
+**CONFIRMED** (`rts1.exe`: the train record writer `0x57194C`, a car read
+back `0x57CD78`; the saved game, the multiplayer recovery file
+`multRecoveryData.dat` and the situation share it). For a locomotive
+(car kind 1 or 2) RTS keeps what its DLL sees, whole:
+- the `Locomotive` fields: `LocoFlags` (`+388`), `MainResPressure`,
+  `SandLeft`, `LastSanding`, `PantoBurnTimer` (`+404`..`+416`);
+- the `Engine` (`0x4523`): the "running" byte (`+208`), `+212`, `+216`,
+  `Power`, `Force`, `BrakeForce`, `IndependentBrakeValue` and the rates
+  (`+52`..`+80`), `+88`, `+92`, `BrakeSystemsEngaged`, `ALSNOn`,
+  `Sanding` (`+104`..`+108`), `EngineFlags` (`+116`), `Reverse` (`+128`),
+  `Wheelslip` (`+132`), `ThrottlePosition` (`+136`), `UR` (`+84`),
+  `BatteryCharge` (`+96`, a double), `Flags` / `Flags2` (`+120`, `+124`);
+- **the DLL's variable stack whole** (`0x4531`: `4 x StackSize` bytes from
+  `Engine::var`);
+- the cab's sound object (`0x4526`, `0x576000`: its variables and
+  triggers);
+- **every auxiliary library** (`0x4569`, `0x56E4C4`): per library
+  (`0x456A`) its name (UTF-16), **its whole variable stack** (`0x4531`
+  from `AuxLibrary::var`, `StackSize` at `+28`) and its sound object;
+- the cab's switches (204-byte records: states, frame, the state hints),
+  its displays, the car's lights (164 bytes each), doors (60 bytes).
+
+**Reading back** (`0x57CD78`): a locomotive whose saved `LocoFlags` has
+`0x10` gets its cab loaded again; with `0x20` (its DLL was bound) RTS binds
+it again and runs `Init` with `State` 0 (`0x5026FC(…, 0, 0, 0)`), then the
+records that follow overwrite the fields and the stacks: a stack longer
+than the DLL's `StackSize` now is cut to it. So the DLL goes on as it was,
+whatever its `Init` did.
+
+openRTS (2026-11-18): a situation keeps the trains' places and brake shoes
+only; the DLLs' state is not saved yet.
 
 ## Open questions
 

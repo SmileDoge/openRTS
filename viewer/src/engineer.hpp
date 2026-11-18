@@ -116,6 +116,8 @@ public:
     }
     // In a salon's passenger seat (not a cab's chair).
     [[nodiscard]] bool in_passenger_seat() const noexcept { return mode_ == Mode::seated && seat_.has_value(); }
+    // The salon seat he sits in (InteriorSeats), if any.
+    [[nodiscard]] std::optional<std::size_t> seat() const noexcept { return seat_; }
     // Going along a trajectory (a ladder, a door's way, a climb onto a box).
     [[nodiscard]] bool passing() const noexcept { return passage_.active(); }
 

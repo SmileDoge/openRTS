@@ -309,8 +309,17 @@ public:
             // The combined valve: double traction cuts the valve off the pipe
             // (its УР goes on), emergency vents the pipe. The 367 out of its
             // operating state cuts it off too.
-            const bool connected = controls_.combined != 1 && !controls_.blocked;
+            // The separating cock (Кран тормозной магистрали) shut cuts it off too:
+            // until 2026-11-18 openRTS's valve charged the pipe through a shut
+            // cock (testers: shut, the pipe charged; open, Brakes.dll's own valve
+            // vented it).
+            const bool connected = controls_.combined != 1 && !controls_.blocked && !controls_.separated;
             if (connected) demands.equalising = valve_out.equalising;
+            // Its gauge shows that УР all the same: until 2026-11-18 a valve
+            // cut off showed the УР the DLL kept for itself (testers: after
+            // an emergency, the main reservoir pipe's cock closed, the УР
+            // leapt from 0 to the DLL's 1.71).
+            demands.equalising_kept = valve_out.equalising;
             demands.emergency = (connected && valve_out.emergency) || controls_.combined == 2 || vent;
             return;
         }
@@ -749,6 +758,12 @@ std::vector<CarInput> LegacyConsist::inputs(const std::vector<const simulation::
         in.handbrake = c.handbrake;
         in.main_reservoir = c.main_reservoir;
         in.wheelslip = c.wheelslip;
+        // openRTS's 395 over Brakes.dll (own_valve; its demands of the last
+        // step): the DLL's own valve gets its УР, which it keeps in
+        // Engine::UR. Left to itself it drifted (after an emergency the
+        // ЭД9М's held 0) and, its cocks opened, vented the pipe towards it:
+        // taken for its ЭПК, the pipe fell to 0 (testers 2026-11-18).
+        if (const auto* asked = trains[t]->demands_of(i); asked && asked->equalising_kept >= 0.0f) in.equalising = asked->equalising_kept;
         // RTS (0x5031D8): a release bit of EngineFlags is cleared once its
         // cylinder has bled empty (docs/reverse/brakes.md, section 7).
         if (const auto at = train_first_[t] + i; outputs_ && outputs_->valid && at < outputs_->cars.size() && outputs_->cars[at].has_engine) {
@@ -807,6 +822,37 @@ bool LegacyConsist::enter(std::size_t car, const simulation::Train& train, bool 
     return true;
 }
 
+bool LegacyConsist::save_state(std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>& states) {
+    states.clear();
+    if (!host_ || !host_->alive()) return false;
+    std::vector<CarDllState> saved;
+    const bool ok = host_->save_state(saved);
+    messages_ += host_->take_messages();
+    if (!ok) return false;
+    for (auto& s : saved) {
+        if (s.car < cars_.size() && cars_[s.car].key != 0) states.emplace_back(cars_[s.car].key, std::move(s.bytes));
+    }
+    return true;
+}
+
+bool LegacyConsist::restore_state(const std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>& states) {
+    if (!host_ || !host_->alive()) return false;
+    std::vector<CarDllState> by_index;
+    for (const auto& [key, bytes] : states) {
+        if (key == 0) continue;
+        for (std::size_t i = 0; i < cars_.size(); ++i)
+            if (cars_[i].key == key) by_index.push_back({.car = static_cast<std::uint32_t>(i), .bytes = bytes});
+    }
+    if (by_index.empty()) return true;
+    StepReply reply;
+    const bool ok = host_->restore_state(by_index, reply);
+    messages_ += host_->take_messages();
+    if (!ok) return false;
+    outputs_->cars = std::move(reply.cars);
+    outputs_->valid = true;
+    return true;
+}
+
 bool enter_new_train(LegacyConsist& consist, const std::size_t car, simulation::Train& train, const bool running, const int state) {
     const std::size_t count = train.cars().size();
     // The main reservoirs the train had: an engine whose DLL Init does not
@@ -861,7 +907,21 @@ bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>&
     request.dt = static_cast<float>(dt);
     request.air_temperature = world.air_temperature;
     request.night = world.night ? 1 : 0;
+    // RTS's train direction (train +4 bit 0x40): the way the player's cab
+    // faces, its car turned or its Cabin ( x 1 ) turned in it. The leading
+    // cab gets the signal (Cabin::Signal), and DLLs read it (RTS_TRAINDIR,
+    // Run's `reversed`): the ЭД9М's rear cab, driven with car 0's front
+    // ahead, took its own end for the head of the group, saw no motor car
+    // behind it and lit "Напряжение сети", its doors and ЭПТ dead (testers
+    // 2026-11-18); with the train turned round it works as the front cab.
     request.train_direction = 1;
+    if (!trains.empty() && trains[0] && player_ >= train_first_[0] && player_ < train_first_[1] && player_ < cars_.size()) {
+        const auto& cars = trains[0]->cars();
+        const std::size_t i = player_ - train_first_[0];
+        const auto* definition = cars_[player_].definition;
+        const bool cab_turned = definition && definition->engine && !definition->engine->cabin.empty() && definition->engine->cabin_param == 1;
+        if (i < cars.size() && cars[i].flipped != cab_turned) request.train_direction = 0;
+    }
     request.cars = inputs(trains, &world);
     request.route = world.route;
     request.signal = world.signal;
@@ -1123,6 +1183,7 @@ CabBrakes BrakeCabControls::read(const formats::EngineDefinition::BrakesLibrary&
         now.combined = combined[static_cast<std::size_t>(s)];
     }
     if (const int s = state(ids.block); s >= 0 && ids.block_operating >= 0) now.blocked = s != ids.block_operating;
+    if (const int s = state(ids.separating); s >= 0) now.separated = s == 0;
     return now;
 }
 

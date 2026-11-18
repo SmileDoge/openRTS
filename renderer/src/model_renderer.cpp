@@ -94,11 +94,14 @@ struct MaterialUniform {
     float base_color[4];
     float emissive[4];
     float maps[4];
+    // The height map's relief (parallax): x its depth (m), y 1: a height
+    // map, z the map's level the model's surface lies at (0..1).
+    float height[4];
 };
 // The model's draws one after another in a storage buffer (WGSL array<Draw>,
-// stride 208): a binding serves every draw of the model with its texture.
+// stride 224): a binding serves every draw of the model with its texture.
 constexpr std::uint64_t material_stride = sizeof(MaterialUniform);
-static_assert(sizeof(MaterialUniform) == 208);
+static_assert(sizeof(MaterialUniform) == 224);
 
 // One instance of one draw call: the instance and the primitive it draws (its
 // slot in the model's draws). A multi-draw call covers several primitives of
@@ -203,6 +206,7 @@ struct Draw {
     base_color: vec4<f32>, // openRTS's material: the base colour's factor (linear)
     emissive: vec4<f32>,   // rgb the emission (linear), w 1: an emissive map
     maps: vec4<f32>,       // x the occlusion map's strength, y the normal map's, z 1: an ORM map, w 1: a normal map
+    height: vec4<f32>,     // x the height map's depth (m), y 1: a height map, z the map's level the surface lies at
 };
 
 struct Instance {
@@ -248,6 +252,8 @@ fn coverage_alpha(alpha: f32, cutoff: f32, width: f32, mip: f32) -> f32 {
 @group(0) @binding(3) var orm_texture: texture_2d<f32>;
 @group(0) @binding(4) var normal_texture: texture_2d<f32>;
 @group(0) @binding(5) var emissive_texture: texture_2d<f32>;
+// Its height map (white the surface; without one a white stand-in).
+@group(0) @binding(6) var height_texture: texture_2d<f32>;
 @group(1) @binding(0) var<uniform> frame: Frame;
 @group(1) @binding(1) var<storage, read> instances: array<Instance>;
 // Per draw call a contiguous run of (instance, primitive) entries, starting at
@@ -626,18 +632,94 @@ fn shoulder(c: vec3<f32>) -> vec3<f32> {
     return select(c, rolled, c > vec3<f32>(knee));
 }
 
+// The height map's relief (parallax occlusion mapping, docs/pbr-materials.md):
+// where the eye's ray meets the relief (white its top, black `depth` metres
+// under it; the model's surface at the map's level `reference`, so what is
+// brighter stands out of it), as texture coordinates. A step on
+// the surface is mapped to one in the image by the screen's derivatives
+// (world_dx / world_dy against uv_step_x / uv_step_y), so it needs no
+// tangents and a mirrored image shifts the right way. More steps the more
+// edgewise the surface is seen (8 square on, `steps_most` edgewise).
+fn parallax_uv(uv: vec2<f32>, view: vec3<f32>, n: vec3<f32>, depth: f32, reference: f32, world_dx: vec3<f32>, world_dy: vec3<f32>,
+               uv_step_x: vec2<f32>, uv_step_y: vec2<f32>, uv_dx: vec2<f32>, uv_dy: vec2<f32>, steps_most: f32) -> vec2<f32> {
+    let facing = dot(view, n);
+    if (facing <= 0.0 || depth <= 0.0) {
+        return uv;
+    }
+    // The ray's way along the surface down to the full depth (m), kept short
+    // where the surface is seen nearly edgewise.
+    let along = -(view - n * facing) * (depth / max(facing, 0.25));
+    // In the image: along = a * world_dx + b * world_dy (least squares).
+    let xx = dot(world_dx, world_dx);
+    let xy = dot(world_dx, world_dy);
+    let yy = dot(world_dy, world_dy);
+    let det = xx * yy - xy * xy;
+    if (det <= 1e-20) {
+        return uv;
+    }
+    let px = dot(along, world_dx);
+    let py = dot(along, world_dy);
+    let shift = uv_step_x * ((px * yy - py * xy) / det) + uv_step_y * ((py * xx - px * xy) / det);
+    let count = i32(clamp(mix(steps_most, 8.0, facing), 8.0, 64.0));
+    let layer_step = 1.0 / f32(count);
+    let uv_step = shift * layer_step;
+    // From the relief's top: above the surface by (1 - reference) of the
+    // depth, the ray that far back towards the eye.
+    var layer = 0.0;
+    var at = uv - shift * (1.0 - clamp(reference, 0.0, 1.0));
+    var below = 1.0 - textureSampleGrad(height_texture, source_sampler, at, uv_dx, uv_dy).x;
+    var previous_at = at;
+    var previous_gap = below;
+    for (var i = 0; i < count; i = i + 1) {
+        if (layer >= below) {
+            break;
+        }
+        previous_at = at;
+        previous_gap = below - layer;
+        at = at + uv_step;
+        layer = layer + layer_step;
+        below = 1.0 - textureSampleGrad(height_texture, source_sampler, at, uv_dx, uv_dy).x;
+    }
+    // Between the last step above the relief and the first under it.
+    let gap = below - layer;
+    let weight = clamp(gap / min(gap - previous_gap, -1e-6), 0.0, 1.0);
+    return mix(at, previous_at, weight);
+}
+
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     if (!portal_keeps(input.portal, input.world.xyz)) {
         discard;
     }
     draw = draws[input.draw_slot];
+    // The texture as RTS reads it (its LOD bias); the material's maps with
+    // these gradients (in any branch).
+    var sampled = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
+    let uv_step_x = dpdx(input.uv);
+    let uv_step_y = dpdy(input.uv);
+    let uv_dx = uv_step_x * exp2(draw.lod_bias);
+    let uv_dy = uv_step_y * exp2(draw.lod_bias);
+    let world_dx = dpdx(input.world.xyz);
+    let world_dy = dpdy(input.world.xyz);
+    // The height map's relief (effects.views.y its reach, faded out over its
+    // last quarter): every map read where the eye's ray meets it, the
+    // texture's colour again with the unshifted gradients (the shifted
+    // coordinates' own would jump at the relief's steps). Its alpha stays
+    // the unshifted one: a cut-out (a body's windows) is the model's edge,
+    // as the depth pre-pass has it. Not for blended surfaces (glass).
+    var uv = input.uv;
+    if (!blended && draw.height.y > 0.5 && effects.views.y > 0.0) {
+        let to_eye = frame.eye.xyz - input.world.xyz;
+        let distance = length(to_eye);
+        let fade = 1.0 - smoothstep(effects.views.y * 0.75, effects.views.y, distance);
+        if (fade > 0.0) {
+            uv = parallax_uv(input.uv, to_eye / max(distance, 1e-4), normalize(input.normal), draw.height.x * fade, draw.height.z, world_dx,
+                             world_dy, uv_step_x, uv_step_y, uv_dx, uv_dy, effects.views.z);
+            sampled = vec4<f32>(textureSampleGrad(source_texture, source_sampler, uv, uv_dx, uv_dy).xyz, sampled.w);
+        }
+    }
     // The material's base colour factor (openRTS's material; 1 without one).
-    let sampled = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
     let texel = vec4<f32>(sampled.xyz, sampled.w * draw.base_color.w);
-    // The material's maps are read with these gradients (in any branch).
-    let uv_dx = dpdx(input.uv) * exp2(draw.lod_bias);
-    let uv_dy = dpdy(input.uv) * exp2(draw.lod_bias);
     let alpha_width = fwidth(texel.w);
     let texels = input.uv * vec2<f32>(textureDimensions(source_texture));
     let texels_dx = dpdx(texels);
@@ -682,13 +764,13 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         var material_surface = draw.surface;
         var material_ao = 1.0;
         if (draw.maps.z > 0.5) {
-            let orm = textureSampleGrad(orm_texture, source_sampler, input.uv, uv_dx, uv_dy).xyz;
+            let orm = textureSampleGrad(orm_texture, source_sampler, uv, uv_dx, uv_dy).xyz;
             material_surface.x = material_surface.x * orm.y;
             material_surface.y = material_surface.y * orm.z;
             material_ao = mix(1.0, orm.x, draw.maps.x);
         }
         if (draw.maps.w > 0.5 && material != -9 && dot(input.tangent.xyz, input.tangent.xyz) > 1e-10) {
-            let mapped = textureSampleGrad(normal_texture, source_sampler, input.uv, uv_dx, uv_dy).xy * 2.0 - 1.0;
+            let mapped = textureSampleGrad(normal_texture, source_sampler, uv, uv_dx, uv_dy).xy * 2.0 - 1.0;
             let xy = mapped * draw.maps.y;
             let z = sqrt(max(1.0 - dot(mapped, mapped), 0.0));
             let t = normalize(input.tangent.xyz - n * dot(n, input.tangent.xyz));
@@ -877,7 +959,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     if (any(draw.emissive.xyz > vec3<f32>(0.0))) {
         var glow = draw.emissive.xyz;
         if (draw.emissive.w > 0.5) {
-            glow = glow * to_linear(textureSampleGrad(emissive_texture, source_sampler, input.uv, uv_dx, uv_dy).xyz);
+            glow = glow * to_linear(textureSampleGrad(emissive_texture, source_sampler, uv, uv_dx, uv_dy).xyz);
         }
         colour = colour + glow;
     }
@@ -1019,9 +1101,9 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
 }
 
 [[nodiscard]] WGPUBindGroupLayout create_material_layout(const WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, 6> entries{};
-    // openRTS's material maps (ORM, normal, emissive).
-    for (std::uint32_t i = 3; i < 6; ++i) {
+    std::array<WGPUBindGroupLayoutEntry, 7> entries{};
+    // openRTS's material maps (ORM, normal, emissive, height).
+    for (std::uint32_t i = 3; i < 7; ++i) {
         entries[i].binding = i;
         entries[i].visibility = WGPUShaderStage_Fragment;
         entries[i].texture.sampleType = WGPUTextureSampleType_Float;
@@ -1159,6 +1241,7 @@ struct Draw { // as the shading paths' (MaterialUniform)
     base_color: vec4<f32>,
     emissive: vec4<f32>,
     maps: vec4<f32>,
+    height: vec4<f32>,
 };
 struct Instance {
     transform: mat4x4<f32>,
@@ -1633,15 +1716,18 @@ struct RenderModel::Impl {
         glm::vec4 base_color{1.0f};
         glm::vec4 emissive{0.0f};
         glm::vec4 maps{1.0f, 1.0f, 0.0f, 0.0f};
+        glm::vec4 height{0.0f};
         WGPUTextureView orm_view = nullptr;
         WGPUTextureView normal_view = nullptr;
         WGPUTextureView emissive_view = nullptr;
+        WGPUTextureView height_view = nullptr;
     };
     // The model's bindings, one per texture, sampler filter and unlit (the
     // draws' own, a TextureOverride's, an unlit node's), made when first
     // asked for; each Draw::binding is one of them. The textures of the
     // overrides stay alive with the generation.
-    mutable std::map<std::tuple<WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, int, bool>, WGPUBindGroup> bindings;
+    mutable std::map<std::tuple<WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, int, bool>, WGPUBindGroup>
+        bindings;
     // The material maps' textures (PBR stage 4), alive with the generation.
     std::vector<std::shared_ptr<const GpuTexture>> material_textures;
     mutable std::vector<std::shared_ptr<const GpuTexture>> variant_textures;
@@ -1987,6 +2073,7 @@ struct ModelRenderer::Impl {
             .base_color = {draw.base_color.x, draw.base_color.y, draw.base_color.z, draw.base_color.w},
             .emissive = {draw.emissive.x, draw.emissive.y, draw.emissive.z, draw.emissive.w},
             .maps = {draw.maps.x, draw.maps.y, draw.maps.z, draw.maps.w},
+            .height = {draw.height.x, draw.height.y, draw.height.z, draw.height.w},
         };
     }
 
@@ -2032,11 +2119,14 @@ struct ModelRenderer::Impl {
         const auto orm = draw.orm_view ? draw.orm_view : white_view;
         const auto normal = draw.normal_view ? draw.normal_view : flat_normal_view;
         const auto emissive = draw.emissive_view ? draw.emissive_view : black_view;
-        const auto key = std::tuple{view, orm, normal, emissive, static_cast<int>(filter), unlit};
+        const auto height = draw.height_view ? draw.height_view : white_view;
+        const auto key = std::tuple{view, orm, normal, emissive, height, static_cast<int>(filter), unlit};
         if (const auto it = model.bindings.find(key); it != model.bindings.end()) return it->second;
         const auto buffer = unlit ? model.unlit_materials : model.materials;
         if (!buffer || !view) return nullptr;
-        std::array<WGPUBindGroupEntry, 6> entries{};
+        std::array<WGPUBindGroupEntry, 7> entries{};
+        entries[6].binding = 6;
+        entries[6].textureView = height;
         entries[3].binding = 3;
         entries[3].textureView = orm;
         entries[4].binding = 4;
@@ -2118,8 +2208,10 @@ struct ModelRenderer::Impl {
     // Grows the per-frame storage buffers (and rebuilds the frame binding).
     void ensure_capacity(std::uint64_t instances, std::uint64_t ids, std::uint64_t locals, std::uint64_t indirect_draws);
 
+    // What an uncompressed texture is for: its compression (BC7, BC5, BC4).
+    enum class MapUse : std::uint8_t { colour, normal, height };
     [[nodiscard]] std::shared_ptr<const GpuTexture> upload(const core::VirtualPath& path, const formats::AceRgbaImage& image,
-                                                           bool normal_map = false) const;
+                                                           MapUse use = MapUse::colour) const;
     // Texture of one shape image: the cached generation, or a fresh upload.
     [[nodiscard]] TextureAvailability texture_for(const StreamedTextureAsset& asset,
                                                   std::shared_ptr<const GpuTexture>& texture);
@@ -2192,13 +2284,67 @@ void ModelRenderer::Impl::ensure_capacity(const std::uint64_t instances,
     depth_binding = wgpuDeviceCreateBindGroup(device, &depth_descriptor);
 }
 
-std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::VirtualPath& path, const formats::AceRgbaImage& image,
-                                                              const bool normal_map) const {
+namespace {
+
+// `image` at most `limit` texels a side (texture_size_limit): its levels
+// from the first that fits, the files' blocks with them; an image without
+// levels (not from an ACE) halved till it fits. Nothing when it fits.
+[[nodiscard]] std::optional<formats::AceRgbaImage> limited(const formats::AceRgbaImage& image, const std::uint32_t limit) {
+    if (limit == 0 || (std::max)(image.width, image.height) <= limit) return std::nullopt;
+    std::size_t k = 0;
+    while ((std::max)((std::max)(image.width >> k, 1u), (std::max)(image.height >> k, 1u)) > limit) ++k;
+    formats::AceRgbaImage out;
+    out.width = (std::max)(image.width >> k, 1u);
+    out.height = (std::max)(image.height >> k, 1u);
+    out.mips_from_file = image.mips_from_file;
+    out.block_format = image.block_format;
+    const auto texels = static_cast<std::size_t>(out.width) * out.height * 4;
+    if (image.mips.size() >= k && image.mips[k - 1].size() == texels) {
+        out.pixels = image.mips[k - 1];
+        out.mips.assign(image.mips.begin() + static_cast<std::ptrdiff_t>(k), image.mips.end());
+    } else {
+        const auto built = formats::build_rgba_mipmaps(image.width, image.height, image.pixels);
+        if (built.size() < k || built[k - 1].size() != texels) return std::nullopt;
+        out.pixels = built[k - 1];
+        out.mips.assign(built.begin() + static_cast<std::ptrdiff_t>(k), built.end());
+    }
+    if (image.bc1.size() > k) out.bc1.assign(image.bc1.begin() + static_cast<std::ptrdiff_t>(k), image.bc1.end());
+    if (image.blocks.size() > k) out.blocks.assign(image.blocks.begin() + static_cast<std::ptrdiff_t>(k), image.blocks.end());
+    return out;
+}
+
+} // namespace
+
+std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::VirtualPath& path, const formats::AceRgbaImage& given,
+                                                              const MapUse use) const {
+    // The Graphics panel's limit on the textures' size.
+    const auto smaller = limited(given, texture_size_limit());
+    const formats::AceRgbaImage& image = smaller ? *smaller : given;
     auto texture = std::make_shared<GpuTexture>();
+    // An openRTS ACE of blocks (DXT3, DXT5, BC4, BC5, BC7: formats/ace_file.hpp):
+    // its levels as they are.
+    if (!image.blocks.empty() && bc_textures) {
+        const auto format = image.block_format;
+        const WGPUTextureFormat gpu = format == BlockFormat::bc1   ? WGPUTextureFormat_BC1RGBAUnorm
+                                      : format == BlockFormat::bc2 ? WGPUTextureFormat_BC2RGBAUnorm
+                                      : format == BlockFormat::bc3 ? WGPUTextureFormat_BC3RGBAUnorm
+                                      : format == BlockFormat::bc4 ? WGPUTextureFormat_BC4RUnorm
+                                      : format == BlockFormat::bc5 ? WGPUTextureFormat_BC5RGUnorm
+                                                                   : WGPUTextureFormat_BC7RGBAUnorm;
+        texture->texture = upload_compressed_texture(device, image.width, image.height, image.blocks, std::string(path.filename()), gpu,
+                                                     formats::block_bytes(format));
+        if (texture->texture.ok()) {
+            for (const auto& level : image.blocks) texture->bytes += level.size();
+        } else {
+            std::cout << "texture '" << path.str() << "': " << formats::block_format_name(format) << ": " << texture->texture.error
+                      << "; decoded\n";
+        }
+    }
     // A train's DXT1 without its blocks' squares, kept in BC7 (renderer/bc7.hpp;
     // the Graphics panel's choice, openRTS's own).
     const auto path_key = path.key();
-    if (!image.bc1.empty() && bc_textures && smooth_train_textures() && path_key.rfind("trains/trainset/", 0) == 0) {
+    if (!texture->texture.ok() && !image.bc1.empty() && bc_textures && smooth_train_textures()
+        && path_key.rfind("trains/trainset/", 0) == 0) {
         const auto started = std::chrono::steady_clock::now();
         if (const auto levels = smoothed_bc7_levels(image.width, image.height, image.pixels, image.bc1.front())) {
             static std::atomic<int> told{0};
@@ -2222,22 +2368,26 @@ std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::Virtua
         }
     }
     // An uncompressed one (a raw ACE, a material's map) in BC7, a normal map
-    // in BC5 (its x and y: the shader makes z): a quarter of RGBA8's memory
-    // (renderer/bc7.hpp; the Graphics panel's choice, openRTS's own).
+    // in BC5 (its x and y: the shader makes z), a height map in BC4: a
+    // quarter (BC4 an eighth) of RGBA8's memory (renderer/bc7.hpp; the
+    // Graphics panel's choice, openRTS's own).
     const auto compression = texture_compression();
-    if (!texture->texture.ok() && image.bc1.empty() && bc_textures && compression != TextureCompression::off && image.width >= 8
-        && image.height >= 8
-        && image.width % 4 == 0 && image.height % 4 == 0) {
+    if (!texture->texture.ok() && image.bc1.empty() && image.blocks.empty() && bc_textures && compression != TextureCompression::off
+        && image.width >= 8 && image.height >= 8 && image.width % 4 == 0 && image.height % 4 == 0) {
+        const auto format = use == MapUse::normal ? BlockFormat::bc5 : use == MapUse::height ? BlockFormat::bc4 : BlockFormat::bc7;
         const auto started = std::chrono::steady_clock::now();
-        if (const auto levels = compressed_levels(image.width, image.height, image.pixels, image.mips,
-                                                  normal_map ? BlockFormat::bc5 : BlockFormat::bc7, compression == TextureCompression::disk)) {
+        if (const auto levels = compressed_levels(image.width, image.height, image.pixels, image.mips, format,
+                                                  compression == TextureCompression::disk)) {
             static std::atomic<int> told{0};
             const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             if (told++ < 3 || ms > 1500.0)
-                std::cout << "texture '" << path.str() << "': " << image.width << "x" << image.height << (normal_map ? " BC5" : " BC7") << " in "
-                          << static_cast<int>(ms) << " ms\n";
-            texture->texture = normal_map ? upload_bc5_texture(device, image.width, image.height, *levels, std::string(path.filename()))
-                                          : upload_bc7_texture(device, image.width, image.height, *levels, std::string(path.filename()));
+                std::cout << "texture '" << path.str() << "': " << image.width << "x" << image.height << " " << formats::block_format_name(format)
+                          << " in " << static_cast<int>(ms) << " ms\n";
+            const WGPUTextureFormat gpu = format == BlockFormat::bc5 ? WGPUTextureFormat_BC5RGUnorm
+                                          : format == BlockFormat::bc4 ? WGPUTextureFormat_BC4RUnorm
+                                                                       : WGPUTextureFormat_BC7RGBAUnorm;
+            texture->texture = upload_compressed_texture(device, image.width, image.height, *levels, std::string(path.filename()), gpu,
+                                                         formats::block_bytes(format));
             if (texture->texture.ok()) {
                 for (const auto& level : *levels) texture->bytes += level.size();
             } else {
@@ -2321,7 +2471,10 @@ std::shared_ptr<const GpuTexture> ModelRenderer::Impl::material_texture(const Ma
         }
     }
     static const auto label = core::VirtualPath::parse("OPENRTS/MATERIALS/map").value_or(core::VirtualPath{});
-    auto made = upload(label, *map.image->image, map.kind == MaterialMapKind::normal);
+    auto made = upload(label, *map.image->image,
+                       map.kind == MaterialMapKind::normal   ? MapUse::normal
+                       : map.kind == MaterialMapKind::height ? MapUse::height
+                                                             : MapUse::colour);
     if (!made) return nullptr;
     const std::lock_guard lock(shared_mutex);
     if (const auto it = texture_cache.find(map.key); it != texture_cache.end()) {
@@ -2394,6 +2547,10 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
             if (m.emissive >= 0 && !draw.emissive_view) draw.emissive = glm::vec4{0.0f};
             if (f.emissive && m.emissive < 0) draw.emissive = glm::vec4{0.0f};
             draw.maps = {f.ao_strength, f.normal_strength, draw.orm_view ? 1.0f : 0.0f, draw.normal_view ? 1.0f : 0.0f};
+            // The relief needs no tangents: the shader maps a step on the
+            // surface to one in the image by the screen's derivatives.
+            draw.height_view = map_view(m.height);
+            draw.height = {f.height_scale, draw.height_view ? 1.0f : 0.0f, f.height_reference, 0.0f};
             if (const auto base = map_view(m.base_color)) view = base;
         }
         gpu.draws.push_back(draw);
@@ -2683,6 +2840,12 @@ std::shared_ptr<const void> ModelRenderer::replace_texture(const core::VirtualPa
     const std::lock_guard lock(impl_->shared_mutex);
     if (texture) impl_->texture_cache[path.key()] = texture;
     return texture;
+}
+
+void ModelRenderer::forget_textures() {
+    if (!impl_) return;
+    const std::lock_guard lock(impl_->shared_mutex);
+    impl_->texture_cache.clear();
 }
 
 void ModelRenderer::forget_texture(const core::VirtualPath& path) {

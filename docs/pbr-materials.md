@@ -86,6 +86,9 @@ map with no factor anywhere takes 1; without a map nothing glows.
 | `emissive` | a file | what glows by itself, gamma 2.2 |
 | `emissive_factor` | [r, g, b], 0..1 | |
 | `emissive_strength` | 0..100 | |
+| `height` | a file | relief: white its top, black `height_scale` under it (below) |
+| `height_scale` | 0..0.1 | the relief's depth, metres (0.01 default) |
+| `height_reference` | 0..1 | the map's level the model's surface lies at (1 default: white) |
 | `alpha_mode`, `alpha_cutoff`, `double_sided`, `wet` | | read, not applied yet (a warning says so) |
 
 Files are relative to the material file's folder (no absolute paths, no
@@ -104,6 +107,12 @@ Inside openRTS a packed map is always ORM; others are repacked when loaded:
 | `mrao` | metallic | roughness | occlusion | - |
 | `hdrp_mask` (Unity HDRP mask) | metallic | occlusion | detail mask (unused) | smoothness (roughness = 1 - smoothness) |
 
+Trainz's PBR materials (`m.pbrmetal`, `m.pbrmetalmasked`) keep a `_p` map of
+R metallic, G roughness, B occlusion: `orm: "body_p.png", layout: "mrao"`. Named as
+`roughness_map` and `metallic_map` instead, both take its red (metallic, mostly
+0) and the surface becomes a mirror; a roughness map whose red is 0 all over
+while its other channels are not gets a warning in the log (the console, F2).
+
 Substance Painter's "Unreal Engine 4 (Packed)" preset writes the same
 channels as ORM (R occlusion, G roughness, B metallic) but its normal map is
 DirectX's: `normal_y: "down"`. Check the preset's output channels in its
@@ -111,6 +120,36 @@ export window before relying on it.
 
 Colour maps (`base_color`, `emissive`) are sRGB (taken as gamma 2.2, as the
 ACE textures); ORM and normal maps are linear data.
+
+### Height maps (relief, parallax)
+
+A grey image in the same texture coordinates as the colour: white the
+relief's top, black its bottom, `height_scale` metres apart (rivets
+2-5 mm, ribs and panel seams 5-15 mm). The model's own surface lies at
+the map's level `height_reference`: 1 (white) when the relief is cut into
+the surface (seams, grooves), the base sheet's level when things stand out
+of it (rivets, ribs; a map whose sheet is a dark grey of 28 has 0.11).
+What is brighter than it stands out, what is darker sinks.
+
+- openRTS shifts every map of the part (colour, ORM, normal, emission)
+  where the eye's ray meets the relief (parallax occlusion mapping: 8 steps
+  seen square on, up to 32 seen edgewise, the last two steps interpolated).
+  The outline stays flat, and the relief casts no shadow of its own.
+- It needs no tangents: a step on the surface is mapped to one in the image
+  by the screen's derivatives, so mirrored images and parts without a normal
+  map take it too.
+- A cut-out part (alpha test: a body's windows) keeps its alpha where it is
+  not shifted (the cut-out is the model's edge); glass (blended) takes no
+  relief.
+- Out to «Рельеф до» metres from the eye (30 by default), faded out over
+  its last quarter; the Graphics setting «Рельеф по картам высот материалов
+  (parallax, не как в RTS)» turns it off (`parallax`, `parallax_distance`;
+  `--parallax on|off`).
+- Stored in BC4 (one channel, an eighth of RGBA8) when the textures are
+  compressed (`.h4` in the cache).
+- A height map is the heights themselves: flat areas one grey, a rib a
+  bright band as wide as the rib. An image of the details' outlines (an
+  edge or curvature bake) lifts only the outlines and shows little.
 
 ## The shape's file
 
@@ -205,9 +244,10 @@ your own elsewhere is never changed (the mod's copy wins over it).
 ## How it is drawn
 
 - The part's numbers and factors go to the GPU in its draw's uniform
-  (208 bytes, was 160); its maps are bound beside its texture (bindings 3-5
+  (224 bytes, was 160); its maps are bound beside its texture (bindings 3-6
   of the model's group), 1 x 1 stand-ins without (ORM white, the normal
-  flat, the emission black), read only where the part has them.
+  flat, the emission black, the height white), read only where the part has
+  them.
 - Occlusion from the map darkens indirect light only (the sky, the bounce,
   the light in the cab), together with GTAO by the darker of the two (not
   both: the same corners twice); the sky's reflection takes it as specular
@@ -226,6 +266,6 @@ your own elsewhere is never changed (the mod's copy wins over it).
 
 - `alpha_mode`, `alpha_cutoff`, `double_sided` (the pipelines are RTS's).
 - Wetness (`wet`): the rain's darkening and gloss.
-- DDS maps (with ready BC blocks); normal maps in BC5 (they are RGBA8).
+- DDS maps (an ACE of openRTS's block formats is read, `docs/reverse/ace.md`).
 - Materials of the ground (terrain), and of transfers and forests.
 - glTF back into a shape (export only).

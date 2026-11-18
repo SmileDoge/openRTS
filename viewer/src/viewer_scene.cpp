@@ -4,6 +4,7 @@
 #include "rts_config.hpp"
 
 #include "ui_text.hpp"
+#include "key_layout.hpp"
 
 #ifdef OPENRTS_HAS_WGPU
 #include <algorithm>
@@ -25,6 +26,7 @@
 #include <openrts/audio/world_sounds.hpp>
 #include <deque>
 #include <unordered_set>
+#include <openrts/renderer/bc7.hpp>
 #include <openrts/renderer/depth.hpp>
 #include <openrts/renderer/forest_clearance.hpp>
 #include <openrts/renderer/occlusion_probe.hpp>
@@ -130,6 +132,37 @@ public:
     SceneActivityWorld(TrainView& trains, simulation::SignalSystem* signals) : trains_(trains), signals_(signals) {}
 
     [[nodiscard]] bool in_cab(const ActivityTrainId train) const override { return trains_.activity_in_cab({train.service, train.train}); }
+    [[nodiscard]] std::optional<std::size_t> reverse_points_reached(const ActivityTrainId train) const override {
+        return trains_.activity_reverse_points({train.service, train.train});
+    }
+    [[nodiscard]] std::size_t car_count(const ActivityTrainId train) const override {
+        return trains_.activity_car_count({train.service, train.train});
+    }
+    [[nodiscard]] std::vector<ActivityUncoupling> take_uncouplings() override {
+        std::vector<ActivityUncoupling> out;
+        for (const auto& cut : trains_.take_activity_cuts()) {
+            ActivityUncoupling u{.train = {cut.train.first, cut.train.second}, .head = cut.head, .tail = cut.tail, .cut = {}};
+            for (const auto& [origin, uid] : cut.cut)
+                u.cut.push_back({.train = {origin.first, origin.second}, .number = static_cast<std::int32_t>(uid), .by_id = true});
+            out.push_back(std::move(u));
+        }
+        return out;
+    }
+    void set_default_uncouple(const ActivityTrainId train, const ActivityUncoupleRule& rule) override {
+        TrainView::UncoupleRule own;
+        if (rule.new_id) own.new_id = TrainView::ActivityId{rule.new_id->service, rule.new_id->train};
+        std::string type = rule.new_type;
+        for (auto& c : type) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        own.standing = type == "static";
+        if (rule.main_wagon)
+            own.main = std::pair{TrainView::ActivityId{rule.main_wagon->train.service, rule.main_wagon->train.train},
+                                 static_cast<std::uint32_t>(rule.main_wagon->number)};
+        trains_.activity_default_uncouple({train.service, train.train}, std::move(own));
+    }
+    void set_service_startup(const std::uint32_t service, const bool starts) override { trains_.activity_service_startup(service, starts); }
+    void set_speed_limit(const ActivityTrainId train, const float limit) override {
+        trains_.activity_speed_limit({train.service, train.train}, limit);
+    }
     [[nodiscard]] bool near(const ActivityTrainId train, const formats::ActivityPoint& at, const double radius,
                             const std::string_view reach) const override {
         return trains_.activity_near({train.service, train.train}, route(at), radius, reach);
@@ -424,6 +457,8 @@ public:
             train_ = std::make_unique<TrainView>(content_.vfs(), route_, origin_, track_->network());
             train_->set_rts_config(content_.rts_config());
             train_->set_install_root(content_.root());
+            // A shape the route places too stays while the route keeps it.
+            train_->set_shape_keeper([this](const std::string& key) { return streamer_ && streamer_->holds_model(key); });
             if (content_.realistic_air()) train_->set_realistic_air(true);
             // Not in a network game: there the server and its dispatchers
             // own the trains and the track (docs/net.md); but the
@@ -799,6 +834,7 @@ public:
         streamer_->set_task_limit(loading_.done && !clock.background ? 4 : (std::max)(4u, std::thread::hardware_concurrency() / 2 + 2));
         streamer_->poll();
         for (auto& asset : streamer_->take_ready_models()) library_->add(std::move(asset));
+        let_go_world_models();
 
         // GPU uploads stay on the render thread; one model per frame keeps the
         // frame time bounded while a tile fills in. Hot-reload batches are
@@ -811,6 +847,12 @@ public:
                                                .fullbright_lit = experimental_ && renderer::light_fullbright()};
         library_->set_texture_variant(variant);
         streamer_->set_texture_variant(variant);
+        // The textures' size limit changed: every loaded model again, its
+        // textures uploaded anew at the new size.
+        if (const auto limit = renderer::texture_size_limit(); !texture_limit_ || *texture_limit_ != limit) {
+            if (texture_limit_) library_->reload_textures();
+            texture_limit_ = limit;
+        }
         // The forests' clearance changed: the loaded forests are built again.
         if (const float distance = renderer::forest_clearance_distance(); distance != forest_distance_) {
             forest_distance_ = distance;
@@ -1181,6 +1223,7 @@ public:
             // out, the share that reach the sky; none out (looking down, at
             // a wall close by): the last answer kept.
             std::size_t sky_light_ways = 0;
+            std::vector<std::uint8_t> sky_light_bins;
             if (renderer::frame_sky_light()) {
                 const glm::mat4 to_world = glm::inverse(frame.projection * frame.view);
                 const glm::vec4 out = frame.projection * glm::vec4{0.0f, 0.0f, -6.0f, 1.0f};
@@ -1197,12 +1240,18 @@ public:
                         points.push_back({.ndc = {x, y}, .depth = out_depth});
                         points.push_back({.ndc = {x, y}, .depth = 0.0f});
                         ++sky_light_ways;
+                        // Its bin: the azimuth in twelfths, the height in thirds of the way up.
+                        const float turn = (std::atan2(way.z, way.x) + 3.14159265f) / 6.2831853f;
+                        const int azimuth = std::clamp(static_cast<int>(turn * open_azimuths), 0, open_azimuths - 1);
+                        const int height = way.y < 0.35f ? 0 : way.y < 0.7f ? 1 : 2;
+                        sky_light_bins.push_back(static_cast<std::uint8_t>(height * open_azimuths + azimuth));
                     }
                 }
             }
             ++probe_tag_;
             probe_->request(points, probe_tag_, {frame.viewport_height * frame.aspect, frame.viewport_height});
-            if (!points.empty()) probe_frames_.push_back({probe_tag_, std::move(keys), sky, sky_light_ways});
+            if (!points.empty())
+                probe_frames_.push_back({probe_tag_, std::move(keys), sky, sky_light_ways, std::move(sky_light_bins), frame.eye});
             while (probe_frames_.size() > 8) probe_frames_.pop_front();
             probe_->draw(pass);
         }
@@ -1230,21 +1279,38 @@ public:
             sky_open_seen_ = std::clamp(4.0f * static_cast<float>(open) / static_cast<float>(asked.sky), 0.0f, 1.0f);
         }
         if (asked.sky_light > 0) {
-            std::size_t out = 0;
-            std::size_t open = 0;
+            // This answer's ways out by their bins: each bin seen now takes
+            // its share reaching the sky.
+            std::array<int, open_azimuths * open_heights> out{};
+            std::array<int, open_azimuths * open_heights> open{};
             const std::size_t first = asked.labels.size() + asked.sky;
-            for (std::size_t k = 0; k < asked.sky_light; ++k) {
+            for (std::size_t k = 0; k < asked.sky_light && k < asked.sky_light_bins.size(); ++k) {
                 const std::size_t at = first + 2 * k;
                 if (at + 1 >= visible.size()) break;
-                if (!visible[at]) continue;
-                ++out;
-                open += visible[at + 1] ? 1 : 0;
+                if (!visible[at]) continue; // a wall within 6 m: says nothing of the sky
+                const auto bin = asked.sky_light_bins[k];
+                ++out[bin];
+                open[bin] += visible[at + 1] ? 1 : 0;
             }
+            for (std::size_t b = 0; b < open_bins_.size(); ++b) {
+                if (out[b] == 0) continue;
+                open_bins_[b] = {.known = true, .open = static_cast<float>(open[b]) / static_cast<float>(out[b]), .where = asked.eye};
+            }
+            // The bins' mean, weighing less those seen 30 m and more off.
             // Half the ways out reaching the sky (a street, a station): all
             // of its light; a twentieth or less (a tunnel): none here, the
             // renderer keeps the least its mouths let in
             // (SceneEffectSettings::sky_light_tunnel, a tenth by default).
-            if (out >= 3) sky_light_seen_ = std::clamp(2.0f * static_cast<float>(open) / static_cast<float>(out) - 0.1f, 0.0f, 1.0f);
+            float sum = 0.0f, weight = 0.0f;
+            int known = 0;
+            for (const auto& bin : open_bins_) {
+                if (!bin.known) continue;
+                const float w = std::exp(-glm::distance(bin.where, asked.eye) / 30.0f);
+                sum += w * bin.open;
+                weight += w;
+                ++known;
+            }
+            if (known >= 2 && weight > 1e-6f) sky_light_seen_ = std::clamp(2.0f * sum / weight - 0.1f, 0.0f, 1.0f);
         }
         probe_frames_.pop_front();
     }
@@ -1485,6 +1551,7 @@ public:
     }
 
     [[nodiscard]] bool keyboard_captured() const override { return train_ && train_->keyboard_captured(); }
+    [[nodiscard]] bool engineer_on_foot() const override { return train_ && train_->engineer_on_foot(); }
     [[nodiscard]] bool takes_scroll() const override { return train_ && train_->viewing_inside(); }
     [[nodiscard]] std::optional<double> take_time_of_day() override {
         return net_ ? net_->take_time_of_day() : std::nullopt;
@@ -1673,7 +1740,7 @@ public:
         // where the camera is; off, the free camera.
         if (train_) {
             bool walking = train_->walking();
-            if (ImGui::Checkbox(tr("On foot (arrows walk, Enter at a cab door gets in)"), &walking)) {
+            if (ImGui::Checkbox(tr(wasd_walking() ? "On foot (arrows or W A S D walk, Enter at a cab door gets in)" : "On foot (arrows walk, Enter at a cab door gets in)"), &walking)) {
                 train_->set_walking(walking, last_eye_);
             }
         }
@@ -2148,6 +2215,33 @@ private:
     std::vector<Pick> picks_;
     std::vector<renderer::RenderModel*> model_cache_;
     std::uint64_t model_cache_generation_ = ~std::uint64_t{0};
+    // The world's models no loaded tile around has placed for half a minute
+    // leave the library (and the card), unless a train or the road traffic
+    // uses them: they stayed for the whole run, so the memory grew all along
+    // the line (testers 2026-11-18, a multiplayer event coming).
+    static constexpr auto world_model_linger = std::chrono::seconds(30);
+    std::chrono::steady_clock::time_point world_models_checked_{};
+    std::optional<std::uint32_t> texture_limit_; // renderer::texture_size_limit() at the last update
+    std::size_t world_models_let_go_ = 0;
+    void let_go_world_models() {
+        const auto now = std::chrono::steady_clock::now();
+        if (!streamer_ || !library_ || now - world_models_checked_ < std::chrono::seconds(2)) return;
+        world_models_checked_ = now;
+        const auto released = streamer_->take_released_models(world_model_linger);
+        if (released.empty()) return;
+        const auto trains = train_ ? train_->shapes_in_use() : std::unordered_set<std::string>{};
+        std::size_t let_go = 0;
+        for (const auto& path : released) {
+            const auto key = path.key();
+            if (trains.contains(key) || (roads_ && roads_->holds_shape(key))) continue;
+            library_->remove(path);
+            ++let_go;
+        }
+        world_models_let_go_ += let_go;
+        if (let_go > 0)
+            std::cout << "world: " << let_go << " models of tiles left behind let go (" << world_models_let_go_ << " in all; the route keeps "
+                      << streamer_->held_models() << ", the library " << library_->stats().models << ")" << std::endl;
+    }
     bool experimental_ = false; // the renderer's shading path, from the last frame
     float max_light_distance_ = 0.0f; // RTS config MaxLightDistance, m (0: none)
     float view_distance_ = 0.0f;      // RTS config ViewDistance, m (RTS: 1000 without it)
@@ -2194,6 +2288,8 @@ private:
         std::vector<std::size_t> labels;
         std::size_t sky = 0;
         std::size_t sky_light = 0; // ways tested for the sky's light, two points each, after the sky's
+        std::vector<std::uint8_t> sky_light_bins; // each way's bin round the eye (open_bins_)
+        glm::vec3 eye{};                          // where the eye was
     };
     mutable std::deque<ProbeFrame> probe_frames_;
     mutable std::vector<renderer::OcclusionProbe::Point> label_probe_points_; // this frame's labels to test
@@ -2212,6 +2308,21 @@ private:
     static constexpr int sky_light_rows = 6;
     float sky_light_seen_ = 1.0f;
     float sky_light_open_ = 1.0f;
+    // What the probe last saw each way round the eye in the world (azimuth
+    // by height above the horizon): the share of its ways out that reached
+    // the sky, and where the eye was then. The openness is their mean, those
+    // seen from further off weighing less, so turning the head leaves it as
+    // it is (it took the view's ways alone until 2026-11-17: in a cab the
+    // sky's light dimmed looking at a dark corner and rose at the windows,
+    // as an auto exposure turned the wrong way round, testers).
+    static constexpr int open_azimuths = 12;
+    static constexpr int open_heights = 3;
+    struct OpenBin {
+        bool known = false;
+        float open = 1.0f;
+        glm::vec3 where{};
+    };
+    std::array<OpenBin, open_azimuths * open_heights> open_bins_{};
     std::unique_ptr<renderer::LightningRenderer> lightning_;
     std::unique_ptr<ThunderView> thunder_;
     std::vector<renderer::LightningStrike> test_strikes_; // the panel's, alight

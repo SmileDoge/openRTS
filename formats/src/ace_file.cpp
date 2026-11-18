@@ -34,7 +34,6 @@ namespace {
     return offset <= total && size <= total - offset;
 }
 
-constexpr std::uint32_t ace_format_dxt1 = 0x12;
 constexpr std::uint64_t ace_mask_channel = 2;
 
 // Expands a 5:6:5 colour to 8 bits per channel.
@@ -141,12 +140,46 @@ void decode_dxt1_block(const std::string_view block, const bool punch_through, s
 // definitions; each level is a u32 byte count followed by compressed blocks.
 // Only DXT1 occurs in content. RTS uploads the file's levels when the options
 // are 17 or 21 (0x44F554); a square texture's chain goes down to 1x1.
+// openRTS's block formats (codes 0x20-0x24): every level, down to 1 x 1, a
+// u32 byte count and its blocks; a chain when the options' bit 0 is set,
+// any size. Decoded for the CPU, the blocks kept for the GPU.
+[[nodiscard]] AceDecodeResult decode_block_ace(const std::string_view payload, const std::size_t header_offset, const AceHeader& header,
+                                                const BlockFormat format) {
+    const auto table_offset = header_offset + 24 + 128 + static_cast<std::size_t>(header.channel_count) * 16;
+    std::uint32_t levels = 1;
+    if ((header.options & 1u) != 0)
+        for (auto side = (std::max)(header.width, header.height); side > 1; side /= 2) ++levels;
+    if (!range_fits(table_offset, static_cast<std::size_t>(levels) * 4, payload.size())) return {.error = "Truncated ACE level table."};
+    AceRgbaImage image{.width = header.width, .height = header.height};
+    image.block_format = format;
+    for (std::uint32_t k = 0; k < levels; ++k) {
+        const auto w = (std::max)(header.width >> k, 1u), h = (std::max)(header.height >> k, 1u);
+        const auto at = header_offset + read_u32_le(payload, table_offset + static_cast<std::size_t>(k) * 4);
+        const auto size = level_block_bytes(format, w, h);
+        if (!range_fits(at, 4, payload.size()) || read_u32_le(payload, at) != size || !range_fits(at + 4, size, payload.size()))
+            return {.error = "ACE level " + std::to_string(k) + " is not " + std::string(block_format_name(format)) + " blocks of its size."};
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(payload.data() + at + 4);
+        auto pixels = decode_blocks(format, w, h, bytes, size);
+        if (k == 0) image.pixels = std::move(pixels);
+        else image.mips.push_back(std::move(pixels));
+        image.blocks.emplace_back(bytes, bytes + size);
+    }
+    if (levels > 1) {
+        image.mips_from_file = true;
+    } else {
+        image.mips = build_rgba_mipmaps(image.width, image.height, image.pixels);
+        image.blocks.clear(); // one level: the GPU's chain is made from the pixels
+    }
+    return {.image = std::move(image)};
+}
+
 [[nodiscard]] AceDecodeResult decode_raw_ace(const std::string_view payload,
                                               const std::size_t header_offset,
                                               const AceHeader& header,
                                               const bool has_mask_channel) {
+    if (const auto block = ace_block_format(header.format_code)) return decode_block_ace(payload, header_offset, header, *block);
     if (header.format_code != ace_format_dxt1) {
-        return {.error = "Raw ACE format " + std::to_string(header.format_code) + " is not supported (only DXT1)."};
+        return {.error = "Raw ACE format " + std::to_string(header.format_code) + " is not supported (DXT1, openRTS's 0x20-0x24)."};
     }
 
     const auto table_offset = header_offset + 24 + 128 + static_cast<std::size_t>(header.channel_count) * 16;
@@ -199,6 +232,29 @@ void decode_dxt1_block(const std::string_view block, const bool punch_through, s
 }
 
 } // namespace
+
+std::optional<BlockFormat> ace_block_format(const std::uint32_t format_code) noexcept {
+    switch (format_code) {
+    case ace_format_bc2: return BlockFormat::bc2;
+    case ace_format_bc3: return BlockFormat::bc3;
+    case ace_format_bc5: return BlockFormat::bc5;
+    case ace_format_bc7: return BlockFormat::bc7;
+    case ace_format_bc4: return BlockFormat::bc4;
+    default: return std::nullopt;
+    }
+}
+
+std::uint32_t ace_format_code(const BlockFormat format) noexcept {
+    switch (format) {
+    case BlockFormat::bc1: return ace_format_dxt1;
+    case BlockFormat::bc2: return ace_format_bc2;
+    case BlockFormat::bc3: return ace_format_bc3;
+    case BlockFormat::bc4: return ace_format_bc4;
+    case BlockFormat::bc5: return ace_format_bc5;
+    case BlockFormat::bc7: return ace_format_bc7;
+    }
+    return 0;
+}
 
 std::string_view to_string(const AceRepresentation representation) noexcept {
     switch (representation) {

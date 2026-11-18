@@ -53,6 +53,86 @@ using formats::WagonDefinition;
     return (std::max)(car.definition->mass, 1.0f);
 }
 
+// openRTS's traction limit, axle by axle (docs/train.md "Wheel slip"; with
+// the rails other than "as RTS"). RTS takes the .eng's Adheasion as the
+// adhesion (the 2ES6's 0.9, never reached) and its "once slipping" factor
+// (the 2ES6's 1.3: the slip let go the next step, the wheels hardly
+// turned; testers 2026-11-17). Here:
+//  - the adhesion by the speed (Curtius and Kniffler, 0.33 standing) times
+//    the rails (their state, the treads), a quarter more on sand;
+//  - each axle's weight shifted by the pull: in each bogie the leading axle
+//    lighter by 0.12 of the bogie's force and the trailing one heavier, the
+//    leading bogie lighter by 0.06 of the whole force (a Bo-Bo at its
+//    starting force keeps some 86 % on its lightest axle), so the first
+//    axle of each bogie lets go first;
+//  - an axle over its adhesion slips: it keeps 0.6 of its adhesion, and
+//    grips again once its force is under 0.75 of it;
+//  - the axles' forces: the DLL's motors over the axles each turns
+//    (EngineAxles), else the force shared evenly; NumAxles, else NumWheels,
+//    else 4 axles (at most 8), in bogies of two (three for six).
+// Gives the force left; sets the slipping axles' bits and every axle's
+// force over its adhesion.
+[[nodiscard]] float axle_traction(CarState& car, const EngineDemands& demands, const float force, const float rails_grip, const bool sanded,
+                                  const std::uint32_t slipped) {
+    const auto& definition = *car.definition;
+    const auto& engine = *definition.engine;
+    const float mu = wheel_rail_adhesion(std::abs(car.velocity) * 3.6f) * rails_grip * (sanded ? 1.25f : 1.0f);
+    std::size_t axles = engine.num_axles > 0 ? engine.num_axles : definition.wheels >= 2 && definition.wheels <= 12 ? definition.wheels : 4;
+    axles = (std::min)(axles, car.slip_ratio.size());
+    const std::size_t per_bogie = axles == 6 ? 3 : axles % 2 == 0 ? 2 : axles;
+    const std::size_t bogies = axles / per_bogie;
+    std::array<float, 8> axle_force{};
+    bool by_motor = false;
+    const std::size_t motors = (std::min)(static_cast<std::size_t>(demands.engine_force_count), engine.engine_axles.size());
+    if (engine.num_engines > 0) {
+        for (std::size_t m = 0; m < motors; ++m) {
+            const auto& turned = engine.engine_axles[m];
+            if (turned.empty()) continue;
+            for (const auto a : turned) {
+                if (a >= axles) continue;
+                axle_force[a] += demands.engine_forces[m] / static_cast<float>(turned.size());
+                by_motor = true;
+            }
+        }
+    }
+    if (!by_motor)
+        for (std::size_t a = 0; a < axles; ++a) axle_force[a] = force / static_cast<float>(axles);
+    float pull = 0.0f;
+    for (std::size_t a = 0; a < axles; ++a) pull += axle_force[a];
+    // Pulling towards the car's own front (axle 0's end) or back.
+    const bool forward = pull >= 0.0f;
+    const float even = static_cast<float>(mass_of(car)) * gravity / static_cast<float>(axles);
+    std::array<float, 8> load{};
+    for (std::size_t b = 0; b < bogies; ++b) {
+        float bogie_force = 0.0f;
+        for (std::size_t k = 0; k < per_bogie; ++k) bogie_force += std::abs(axle_force[b * per_bogie + k]);
+        const std::size_t leading = forward ? 0 : bogies - 1;
+        const std::size_t trailing = forward ? bogies - 1 : 0;
+        float body = 0.0f;
+        if (bogies > 1 && b == leading) body = -0.06f * std::abs(pull) / static_cast<float>(per_bogie);
+        if (bogies > 1 && b == trailing) body = 0.06f * std::abs(pull) / static_cast<float>(per_bogie);
+        for (std::size_t k = 0; k < per_bogie; ++k) {
+            const std::size_t from_front = forward ? k : per_bogie - 1 - k;
+            float within = 0.0f;
+            if (per_bogie > 1 && from_front == 0) within = -0.12f * bogie_force;
+            if (per_bogie > 1 && from_front == per_bogie - 1) within = 0.12f * bogie_force;
+            load[b * per_bogie + k] = (std::max)(even + body + within, 0.05f * even);
+        }
+    }
+    float lost = 0.0f;
+    for (std::size_t a = 0; a < axles; ++a) {
+        const bool was = (slipped & (1u << a)) != 0;
+        const float grip = mu * load[a] * (was ? 0.75f : 1.0f);
+        const float f = axle_force[a];
+        car.slip_ratio[a] = grip > 0.0f ? f / grip : 0.0f;
+        if (std::abs(f) <= grip) continue;
+        car.wheelslip |= 1u << a;
+        lost += f - std::copysign(0.6f * grip, f);
+    }
+    car.axles = static_cast<std::uint8_t>(axles);
+    return force - lost;
+}
+
 // Gap of the joint between car j and car j+1 with extra displacements:
 // centre distance minus half lengths and half r0 of both ends (r0 once more
 // for a rigid end); 0 at rest.
@@ -411,6 +491,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     handles_->ep_target = state.ep_target;
     demands.train_pipe_rate = out.pipe_rate;
     demands.equalising = out.equalising;
+    demands.equalising_kept = out.equalising;
     demands.emergency = out.emergency;
     demands.systems = out.systems;
     if (out.ep_value >= 0.0f) {
@@ -439,7 +520,11 @@ struct Train::Impl {
     bool stopped_at_end = false;
     // Junctions the tail passed facing, still held for their ClearanceDist.
     std::vector<std::uint32_t> clearing;
+    // The way the train travels (leading_end / trailing_end: the signals,
+    // speed posts and ALSN ahead), and how far it has gone against it since
+    // it last moved that way.
     bool moving_backward = false;
+    double against = 0.0;
     detail::RealisticAir air;
 };
 
@@ -698,6 +783,7 @@ bool Train::turn_around() {
     impl_->tail = tail;
     reverse_cars();
     impl_->moving_backward = false;
+    impl_->against = 0.0;
     impl_->stopped_at_end = false;
     move_and_update(0.0, 0.0);
     return true;
@@ -835,6 +921,7 @@ std::unique_ptr<Train> Train::uncouple(const std::size_t index, const bool close
     rear->impl_->head = rear_head;
     rear->impl_->tail = *impl_->tail;
     rear->impl_->moving_backward = impl_->moving_backward;
+    rear->impl_->against = impl_->against;
     impl_->tail = front_tail;
 
     const auto split = static_cast<std::ptrdiff_t>(index);
@@ -1016,6 +1103,22 @@ std::vector<CarPlacement> Train::placements() const {
     return result;
 }
 
+std::vector<CarPlacement> Train::car_ends() const {
+    std::vector<CarPlacement> result;
+    if (!impl_->tail || cars_.empty()) return result;
+    const auto& last = cars_.back();
+    result.resize(cars_.size());
+    for (std::size_t i = 0; i < cars_.size(); ++i) {
+        const auto& car = cars_[i];
+        TrackTraveller rear = *impl_->tail;
+        rear.move(length_of(last) * 0.5 + car.offset - length_of(car) * 0.5);
+        TrackTraveller front = rear;
+        front.move(length_of(car));
+        result[i] = {front.pose(), rear.pose()};
+    }
+    return result;
+}
+
 std::vector<TrackTraveller> Train::car_centres() const {
     std::vector<TrackTraveller> result;
     if (!impl_->tail || cars_.empty()) return result;
@@ -1107,6 +1210,7 @@ void Train::step() {
         // The slip found last step (RTS: Engine::Wheelslip as the DLL left it).
         const auto slipped = std::exchange(car.wheelslip, 0u);
         car.slip_ratio = {};
+        car.axles = 0;
         if (!car.definition->engine || !impl.controllers[i]) continue;
         const float direction = car.flipped ? -1.0f : 1.0f;
         // The rails' adhesion for the traction: their state, the treads
@@ -1124,7 +1228,9 @@ void Train::step() {
             .independent = car.independent,
             .flipped = car.flipped,
             .definition = car.definition,
-            .adhesion = rails_grip,
+            // The default controller keeps its force within RTS's limit;
+            // with openRTS's (below) its axles may slip as any engine's.
+            .adhesion = settings_.rails == RailCondition::rts ? rails_grip : 0.0f,
             .line_voltage = car.line_voltage,
             .line_frequency = car.line_frequency,
         };
@@ -1160,7 +1266,8 @@ void Train::step() {
                 if (car.sand_travel > car.definition->length) car.sand_travel = -1.0f;
             }
         }
-        if ((car.sanding || car.sand_travel >= 0.0f) && car.definition->adhesion[2] > 0.0f) mu *= car.definition->adhesion[2];
+        const bool sanded = car.sanding || car.sand_travel >= 0.0f;
+        if (sanded && car.definition->adhesion[2] > 0.0f) mu *= car.definition->adhesion[2];
         mu *= rails_grip;
         if (settings_.axle_dynamics) {
             // The wheelsets pull at the creep their own turning allows.
@@ -1172,7 +1279,10 @@ void Train::step() {
             if (slipped != 0 && car.definition->adhesion[0] > 0.0f) mu *= car.definition->adhesion[0];
             const float limit = mass_of(car) * gravity * mu;
             const auto& engine = *car.definition->engine;
-            if (mu > 0.0f && force != 0.0f && engine.num_engines > 0) {
+            if (settings_.rails != RailCondition::rts) {
+                // openRTS's adhesion: every axle of its own, slipping alone.
+                if (force != 0.0f) force = axle_traction(car, demands, force, rails_grip, sanded, slipped);
+            } else if (mu > 0.0f && force != 0.0f && engine.num_engines > 0) {
                 // Each motor against its axles' share of the weight: a slipping
                 // one's axles spin and its force falls to a quarter (RTS: a
                 // random 10..40 %; a quarter keeps runs the same). As RTS, a
@@ -1653,7 +1763,17 @@ void Train::sway() {
                 float swinging = 0.0f;
                 for (int axis = 0; axis < 3; ++axis)
                     swinging = (std::max)({swinging, std::abs(motion.shift_rate[axis]), std::abs(motion.turn_rate[axis])});
-                if (swinging < 1e-3f) {
+                // And near its rest pose: at a swing's far end the rates are 0
+                // too, and settling there snapped the body (and the cab camera
+                // on it) back to rest at once after a stop (testers
+                // 2026-11-18: the nod died away, the head's place jumped).
+                BodyMotion settled = motion;
+                settle_body(settled);
+                float away = 0.0f;
+                for (int axis = 0; axis < 3; ++axis)
+                    away = (std::max)({away, std::abs(motion.pose_shift[axis] - settled.pose_shift[axis]),
+                                       std::abs(motion.pose_turn[axis] - settled.pose_turn[axis])});
+                if (swinging < 1e-3f && away < 2e-4f) {
                     settle_body(motion);
                     for (int axis = 0; axis < 3; ++axis) {
                         car.body[axis] = motion.pose_shift[axis];
@@ -1762,7 +1882,21 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
     auto& impl = *impl_;
     if (front_moved != 0.0 || rear_moved != 0.0) {
         const bool forward = front_moved > 0.0 || (front_moved == 0.0 && rear_moved > 0.0);
-        impl.moving_backward = !forward;
+        // The way it travels turns only after half a metre the other way:
+        // a train coming to rest rolls back some centimetres as its squeezed
+        // couplers ease, and each such step made the rear the lead. The
+        // signals ahead then ran as its other end's (closed under a path, the
+        // ALSN read К) until it moved on (testers 2026-11-18).
+        constexpr double turn_after = 0.5; // m
+        if (forward != impl.moving_backward) {
+            impl.against = 0.0;
+        } else {
+            impl.against += std::abs(front_moved != 0.0 ? front_moved : rear_moved);
+            if (impl.against > turn_after) {
+                impl.moving_backward = !forward;
+                impl.against = 0.0;
+            }
+        }
         MoveResult front_result;
         MoveResult rear_result;
         // The leading end moves first; when it stops short (end of track), the
