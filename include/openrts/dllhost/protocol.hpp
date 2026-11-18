@@ -37,6 +37,11 @@ enum class Command : std::uint32_t {
     shutdown = 6,
     drag_switch = 7, // the player drags a switch with the mouse -> moved
     reconsist = 8,   // cars coupled or cut off: the new car list, the DLLs keep their state
+    // A saved game (docs/reverse/train-dll.md §20): what RTS keeps of each
+    // locomotive's DLL (0x57194C), and that put back after setup and enter
+    // (0x57CD78), the DLL going on as it was.
+    save_state = 9,
+    restore_state = 10,
 };
 
 struct Header {
@@ -398,6 +403,10 @@ struct CarInput {
     // its slave's bit through the train wires and never clears it (the
     // ВЛ80Т's 254 in release: the second section's cylinder bled for good).
     std::uint32_t clear_engine_flags{};
+    // Engine::UR written before Run (openRTS's 395 over Brakes.dll, the cab
+    // driven): the DLL's own valve keeps its УР in that field, and left to
+    // itself it drifts from openRTS's; < 0 leaves the DLL's.
+    float equalising = -1.0f;
 };
 
 struct EnterRequest {
@@ -434,6 +443,14 @@ struct ReconsistRequest {
     std::vector<ReconsistTrain> trains;       // [0] the player's
     bool running = false;                     // Init's State bit 1 for engines bound now (the train moves)
     std::vector<CarInput> inputs;             // every train's cars in order (their cables decide the groups)
+};
+
+// One car's DLL state as a saved game keeps it (Host::save_state): opaque
+// bytes the game stores and gives back (restore_state) to the car at the
+// same index of the same consist.
+struct CarDllState {
+    std::uint32_t car{};
+    std::vector<std::uint8_t> bytes;
 };
 
 struct StepRequest {
@@ -826,6 +843,15 @@ inline void read(Reader& r, StepReply& s) {
     read_list(r, s.cars, 2000); s.set_direction = r.get<std::int32_t>(); s.items_wanted = r.get<float>();
     read_pod_list(r, s.air, 2000);
     s.tape_set = r.get<std::uint8_t>(); s.tape_restart = r.get<std::uint8_t>(); s.tape_car = r.get<std::int32_t>();
+}
+
+inline void write(Writer& w, const CarDllState& s) {
+    w.put(s.car);
+    write_pod_list(w, s.bytes);
+}
+inline void read(Reader& r, CarDllState& s) {
+    s.car = r.get<std::uint32_t>();
+    read_pod_list(r, s.bytes, 1u << 22);
 }
 
 } // namespace openrts::dllhost

@@ -56,6 +56,9 @@ public:
     // Reloads every model whose path has this extension (".forest" when the
     // forests' clearance changes), on the worker thread.
     void reload_extension(std::string_view extension);
+    // Every model reloaded with textures of its own, on the worker thread
+    // (texture_size_limit() changed).
+    void reload_textures();
     // Publishes a finished reload batch, starts the next one and takes the
     // streamed models in. With models_made_off_thread() (depth.hpp) a model
     // is made (buffers, textures, bindings) on a task of its own, up to

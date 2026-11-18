@@ -59,6 +59,10 @@ EngExtended (
                 BR_395ID1 ( 2 )
                 BR_MANU1 ( 3 )
                 BR_ZARPRESS ( 5.0 )
+                BR_367ID1 ( 4 )
+                BR_367OPPOL ( 1 )
+                BR_RAZID1 ( 5 )
+                BR_RAZOBSHK ( 1 )
             )
         )
     )
@@ -89,6 +93,8 @@ struct Rig {
         cab.loco_flags = 1; // the cab driven
         cab.switches.resize(8);
         cab.switches[2].state = 1; // the 395 in II
+        cab.switches[4].state = 1; // the 367 in its operating state
+        cab.switches[5].state = 1; // the separating cock open
         cab.engine.equalising = 5.0f;
         air->mode = mode;
         train->set_controller(0, trainplugin::make_legacy_controller(outputs, 0, air));
@@ -120,7 +126,24 @@ int main() {
             const auto& lib = engine.engine->brakes_library;
             check(lib.present && lib.valve == 2 && lib.equalising_gauge == 3 && std::abs(lib.charging - 5.0f) < 1e-4f,
                   "Brakes.dll's BR_395ID1, BR_MANU1, BR_ZARPRESS");
+            check(lib.block == 4 && lib.block_operating == 1 && lib.separating == 5, "BR_367ID1 / BR_367OPPOL, BR_RAZID1 with BR_RAZOBSHK");
         }
+    }
+
+    // EngineAxles ( count axle ... ) in EngExtended: each motor its own
+    // axles (the ЭД9М's four, one axle each; until 2026-11-18 all read as
+    // axle 1, the count), and a motor of two axles.
+    {
+        const auto motors = formats::parse_wagon("Wagon ( m\n Type ( Engine )\n Mass ( 64t )\n" + common + R"()
+Engine ( m Type ( Electric ) MaxPower ( 900kW ) MaxForce ( 200kN ) )
+EngExtended ( NumAxles ( 4 ) NumEngines ( 4 EngineAxles ( 1 0 ) EngineAxles ( 1 1 ) EngineAxles ( 1 2 ) EngineAxles ( 1 3 ) ) ))");
+        const auto pairs = formats::parse_wagon("Wagon ( m\n Type ( Engine )\n Mass ( 64t )\n" + common + R"()
+Engine ( m Type ( Electric ) MaxPower ( 900kW ) MaxForce ( 200kN ) )
+EngExtended ( NumAxles ( 4 ) NumEngines ( 2 EngineAxles ( 2 0 1 ) EngineAxles ( 2 2 3 ) ) ))");
+        using Axles = std::vector<std::vector<std::uint8_t>>;
+        check(motors.engine && motors.engine->num_engines == 4 && motors.engine->engine_axles == Axles{{0}, {1}, {2}, {3}},
+              "EngineAxles ( 1 0 ) .. ( 1 3 ): a motor on each axle");
+        check(pairs.engine && pairs.engine->engine_axles == Axles{{0, 1}, {2, 3}}, "EngineAxles ( 2 0 1 ) ( 2 2 3 ): two axles each");
     }
 
     // As RTS: the DLL's valve is made for RTS's triple valve.
@@ -169,6 +192,28 @@ int main() {
         rig.cab().switches[2].state = 6; // VI
         rig.run(10.0);
         check(rig.train->cars().back().cylinder > 2.0f, "own: VI brakes the whole train in emergency");
+        // The 367 off cuts the valve off the pipe; its УР gauge still shows
+        // the valve's УР, not the one the DLL kept (testers: 0 leapt to 1.71).
+        const float vented = rig.train->demands_of(0) ? rig.train->demands_of(0)->equalising_kept : -1.0f;
+        rig.cab().engine.equalising = 1.71f;
+        rig.cab().switches[4].state = 0;
+        rig.run(1.0);
+        asked = rig.train->demands_of(0);
+        check(asked && asked->equalising < 0.0f, "own: the 367 off: the valve no longer works the pipe");
+        check(asked && vented >= 0.0f && vented < 0.5f && std::abs(asked->equalising_kept - vented) < 0.3f,
+              "own: the 367 off: the gauge keeps the valve's УР (" + std::to_string(asked ? asked->equalising_kept : -1.0f) + ")");
+        rig.cab().switches[4].state = 1;
+        // The separating cock (BR_RAZID1 with BR_RAZOBSHK, the ЭД9М's
+        // "Кран тормозной магистрали") shut: the valve off the pipe too.
+        rig.cab().switches[5].state = 0;
+        rig.run(1.0);
+        asked = rig.train->demands_of(0);
+        check(asked && asked->equalising < 0.0f && asked->equalising_kept >= 0.0f,
+              "own: the separating cock shut: the valve off the pipe, its УР still on the gauge");
+        rig.cab().switches[5].state = 1;
+        rig.run(1.0);
+        asked = rig.train->demands_of(0);
+        check(asked && asked->equalising >= 0.0f, "own: the separating cock open: the valve works the pipe");
         rig.cab().switches[2].state = 1; // II: the pipe charges again and every car releases
         rig.run(240.0);
         check(rig.train->cars().back().pipe > 4.5f, "own: after VI, II charges the pipe again (" +

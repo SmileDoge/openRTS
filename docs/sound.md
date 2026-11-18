@@ -681,6 +681,10 @@ no room.
   position in the engineer's cab or salon (openRTS choice; RTS takes the
   player's position, PROBABLY the same while he sits or walks). Doors and
   windows count as far as their nodes have opened (`CabView`).
+- **The cab script's points** are taken as written: the listener is in the
+  cab's own frame, where a turned cab's turn already is. Until 2026-11-18
+  openRTS turned them once more, and a turned cab (the ЭД9М's rear one)
+  heard its reverser, controller and switches from its back wall, muffled.
 - **The share** goes to every car's sound, the library sounds, the world
   sounds, crossings and the weather. The cab script gets its sources and
   the window rule.

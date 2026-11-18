@@ -2284,8 +2284,42 @@ void ModelRenderer::Impl::ensure_capacity(const std::uint64_t instances,
     depth_binding = wgpuDeviceCreateBindGroup(device, &depth_descriptor);
 }
 
-std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::VirtualPath& path, const formats::AceRgbaImage& image,
+namespace {
+
+// `image` at most `limit` texels a side (texture_size_limit): its levels
+// from the first that fits, the files' blocks with them; an image without
+// levels (not from an ACE) halved till it fits. Nothing when it fits.
+[[nodiscard]] std::optional<formats::AceRgbaImage> limited(const formats::AceRgbaImage& image, const std::uint32_t limit) {
+    if (limit == 0 || (std::max)(image.width, image.height) <= limit) return std::nullopt;
+    std::size_t k = 0;
+    while ((std::max)((std::max)(image.width >> k, 1u), (std::max)(image.height >> k, 1u)) > limit) ++k;
+    formats::AceRgbaImage out;
+    out.width = (std::max)(image.width >> k, 1u);
+    out.height = (std::max)(image.height >> k, 1u);
+    out.mips_from_file = image.mips_from_file;
+    out.block_format = image.block_format;
+    const auto texels = static_cast<std::size_t>(out.width) * out.height * 4;
+    if (image.mips.size() >= k && image.mips[k - 1].size() == texels) {
+        out.pixels = image.mips[k - 1];
+        out.mips.assign(image.mips.begin() + static_cast<std::ptrdiff_t>(k), image.mips.end());
+    } else {
+        const auto built = formats::build_rgba_mipmaps(image.width, image.height, image.pixels);
+        if (built.size() < k || built[k - 1].size() != texels) return std::nullopt;
+        out.pixels = built[k - 1];
+        out.mips.assign(built.begin() + static_cast<std::ptrdiff_t>(k), built.end());
+    }
+    if (image.bc1.size() > k) out.bc1.assign(image.bc1.begin() + static_cast<std::ptrdiff_t>(k), image.bc1.end());
+    if (image.blocks.size() > k) out.blocks.assign(image.blocks.begin() + static_cast<std::ptrdiff_t>(k), image.blocks.end());
+    return out;
+}
+
+} // namespace
+
+std::shared_ptr<const GpuTexture> ModelRenderer::Impl::upload(const core::VirtualPath& path, const formats::AceRgbaImage& given,
                                                               const MapUse use) const {
+    // The Graphics panel's limit on the textures' size.
+    const auto smaller = limited(given, texture_size_limit());
+    const formats::AceRgbaImage& image = smaller ? *smaller : given;
     auto texture = std::make_shared<GpuTexture>();
     // An openRTS ACE of blocks (DXT3, DXT5, BC4, BC5, BC7: formats/ace_file.hpp):
     // its levels as they are.
@@ -2806,6 +2840,12 @@ std::shared_ptr<const void> ModelRenderer::replace_texture(const core::VirtualPa
     const std::lock_guard lock(impl_->shared_mutex);
     if (texture) impl_->texture_cache[path.key()] = texture;
     return texture;
+}
+
+void ModelRenderer::forget_textures() {
+    if (!impl_) return;
+    const std::lock_guard lock(impl_->shared_mutex);
+    impl_->texture_cache.clear();
 }
 
 void ModelRenderer::forget_texture(const core::VirtualPath& path) {

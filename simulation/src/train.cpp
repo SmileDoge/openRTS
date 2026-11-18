@@ -393,6 +393,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     handles_->ep_target = state.ep_target;
     demands.train_pipe_rate = out.pipe_rate;
     demands.equalising = out.equalising;
+    demands.equalising_kept = out.equalising;
     demands.emergency = out.emergency;
     demands.systems = out.systems;
     if (out.ep_value >= 0.0f) {
@@ -421,7 +422,11 @@ struct Train::Impl {
     bool stopped_at_end = false;
     // Junctions the tail passed facing, still held for their ClearanceDist.
     std::vector<std::uint32_t> clearing;
+    // The way the train travels (leading_end / trailing_end: the signals,
+    // speed posts and ALSN ahead), and how far it has gone against it since
+    // it last moved that way.
     bool moving_backward = false;
+    double against = 0.0;
     detail::RealisticAir air;
 };
 
@@ -679,6 +684,7 @@ bool Train::turn_around() {
     impl_->tail = tail;
     reverse_cars();
     impl_->moving_backward = false;
+    impl_->against = 0.0;
     impl_->stopped_at_end = false;
     move_and_update(0.0, 0.0);
     return true;
@@ -816,6 +822,7 @@ std::unique_ptr<Train> Train::uncouple(const std::size_t index, const bool close
     rear->impl_->head = rear_head;
     rear->impl_->tail = *impl_->tail;
     rear->impl_->moving_backward = impl_->moving_backward;
+    rear->impl_->against = impl_->against;
     impl_->tail = front_tail;
 
     const auto split = static_cast<std::ptrdiff_t>(index);
@@ -992,6 +999,22 @@ std::vector<CarPlacement> Train::placements() const {
         rear.move(centre - behind);
         TrackTraveller front = rear;
         front.move(ahead + behind);
+        result[i] = {front.pose(), rear.pose()};
+    }
+    return result;
+}
+
+std::vector<CarPlacement> Train::car_ends() const {
+    std::vector<CarPlacement> result;
+    if (!impl_->tail || cars_.empty()) return result;
+    const auto& last = cars_.back();
+    result.resize(cars_.size());
+    for (std::size_t i = 0; i < cars_.size(); ++i) {
+        const auto& car = cars_[i];
+        TrackTraveller rear = *impl_->tail;
+        rear.move(length_of(last) * 0.5 + car.offset - length_of(car) * 0.5);
+        TrackTraveller front = rear;
+        front.move(length_of(car));
         result[i] = {front.pose(), rear.pose()};
     }
     return result;
@@ -1271,7 +1294,14 @@ void Train::step() {
         for (auto& car : cars_) {
             const float mu = car.definition ? car.definition->adhesion[1] * grip : 0.0f;
             car.brake_locked = !realistic_air && mu > 0.0f && car.brake_force > mass_of(car) * gravity * mu && std::abs(car.velocity) > 0.01f;
-            if (car.brake_locked) {
+            // The flats are openRTS's own (RTS has none): worn only where the
+            // brake beats the wheel's real grip on the rail (adhesion.hpp),
+            // not RTS's Adheasion threshold. The ЭД9М's head cars give 0.1
+            // there (42 kN for 43 t): every service application "stood" them
+            // and wore flats on the head cars and engines alone, the cars
+            // between never (testers 2026-11-18).
+            const float rail_grip = wheel_rail_adhesion(std::abs(car.velocity) * 3.6f) * grip * mass_of(car) * gravity;
+            if (car.brake_locked && car.brake_force > rail_grip) {
                 const auto index = static_cast<std::size_t>(&car - cars_.data());
                 for (std::size_t b = 0; b < 2; ++b) grow_flat(car, b, std::abs(car.velocity) * dt, index);
             }
@@ -1798,7 +1828,17 @@ void Train::sway() {
                 float swinging = 0.0f;
                 for (int axis = 0; axis < 3; ++axis)
                     swinging = (std::max)({swinging, std::abs(motion.shift_rate[axis]), std::abs(motion.turn_rate[axis])});
-                if (swinging < 1e-3f) {
+                // And near its rest pose: at a swing's far end the rates are 0
+                // too, and settling there snapped the body (and the cab camera
+                // on it) back to rest at once after a stop (testers
+                // 2026-11-18: the nod died away, the head's place jumped).
+                BodyMotion settled = motion;
+                settle_body(settled);
+                float away = 0.0f;
+                for (int axis = 0; axis < 3; ++axis)
+                    away = (std::max)({away, std::abs(motion.pose_shift[axis] - settled.pose_shift[axis]),
+                                       std::abs(motion.pose_turn[axis] - settled.pose_turn[axis])});
+                if (swinging < 1e-3f && away < 2e-4f) {
                     settle_body(motion);
                     for (int axis = 0; axis < 3; ++axis) {
                         car.body[axis] = motion.pose_shift[axis];
@@ -1907,7 +1947,21 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
     auto& impl = *impl_;
     if (front_moved != 0.0 || rear_moved != 0.0) {
         const bool forward = front_moved > 0.0 || (front_moved == 0.0 && rear_moved > 0.0);
-        impl.moving_backward = !forward;
+        // The way it travels turns only after half a metre the other way:
+        // a train coming to rest rolls back some centimetres as its squeezed
+        // couplers ease, and each such step made the rear the lead. The
+        // signals ahead then ran as its other end's (closed under a path, the
+        // ALSN read К) until it moved on (testers 2026-11-18).
+        constexpr double turn_after = 0.5; // m
+        if (forward != impl.moving_backward) {
+            impl.against = 0.0;
+        } else {
+            impl.against += std::abs(front_moved != 0.0 ? front_moved : rear_moved);
+            if (impl.against > turn_after) {
+                impl.moving_backward = !forward;
+                impl.against = 0.0;
+            }
+        }
         MoveResult front_result;
         MoveResult rear_result;
         // The leading end moves first; when it stops short (end of track), the

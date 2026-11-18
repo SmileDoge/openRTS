@@ -111,7 +111,7 @@
 | `OnMenuSelect ( MenuID MenuItemID )` | выбран пункт меню (F8) |
 | `OnCloseMessageBox ( MsgID ButtonID )` | сообщение закрыто этой кнопкой |
 | `PlayerBoardsTrain ( Area )` | игрок в кабине поезда (`CABIN`, `INTERIOR`, `SALON`; `EXTERIOR` пока нет) |
-| `ReachLocation ( Location Radius ReachWith SpeedNotAbove SpeedNotBelow )` | `ReachWith` (activity.pdf; читается и `Reach`): `WAGON_ANY` (по умолчанию), `WAGON_ALL`, `WAGON_FRONT`, `WAGON_BACK`, `WAGON_PLAYER` / `PLAYER_POSITION` (вагон игрока); скорости в м/с |
+| `ReachLocation ( Location Radius ReachWith SpeedNotAbove SpeedNotBelow )` | `ReachWith` (activity.pdf; читается и `Reach`): `WAGON_ANY` (по умолчанию), `WAGON_ALL`, `WAGON_FRONT`, `WAGON_BACK`, `WAGON_PLAYER` / `PLAYER_POSITION` (вагон игрока); вагон в радиусе, если в нём любая его часть, от сцепки до сцепки (точки у светофоров — место светофора на пути: кабина, заехавшая за него свесом, его проехала); скорости в м/с |
 | `CoupleCars ( ConjTrainID )` | поезд события и этот сцепились |
 | `ReachReversePoint ( PointID )` | поезд дошёл до точки реверса `PointID` своего пути (с 0; путь от `AssignService` считается заново): встал в конце отрезка и перешёл на следующий |
 | `WagonState` | см. ниже |

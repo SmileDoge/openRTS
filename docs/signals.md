@@ -218,8 +218,13 @@ Each answer goes into `docs/reverse/signals.md` with its confidence.
     route. Continue until `SignalNumClearAhead` of the first NORMAL head + 2
     NORMAL signals. Evaluate from far to near with `enabled` set, as
     `0x508520`.
-  - **Which end:** the end the train last moved towards (it stays so while
-    the train stands). The player's train (`SignalSystem::set_player`, the
+  - **Which end:** the end the train last moved towards, once it has gone
+    half a metre that way (`Train::leading_end`, 2026-11-18): a train
+    coming to rest rolls back some centimetres as its squeezed couplers
+    ease (17 cm on the test train). Each such step made the rear the lead:
+    the signals ahead ran as its other end's, closed under a path, went
+    dark and the ALSN read К until the train moved on (testers). It stays
+    so while the train stands. The player's train (`SignalSystem::set_player`, the
     keyboard-driven one in the viewer) also runs the pass ahead of its other
     end every step, as RTS does for train types 1 and 4; with a path, that
     pass runs with `enabled` 0. What the train obeys and passes comes from

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <map>
 #include <set>
@@ -69,6 +70,19 @@ namespace openrts::viewer {
 // collide as RTS decides (simulation::resolve_contacts).
 class TrainView {
 public:
+    // The brakes' presets (the Train window, testers 2026-11-18: not three or
+    // four settings to switch each time): RTS's, openRTS's realistic, or the
+    // player's own (any of them changed by hand), remembered as
+    // brakes_custom and given back when chosen again.
+    struct BrakeSet {
+        bool realistic = false; // realistic_air
+        int dll_air = 0;        // DllAir
+        bool gauges = false;    // gauges_openrts_air
+        int rails = 0;          // rails
+        bool limit = false;     // limit_brake_force
+        bool stability = false; // distributor_stability
+        bool operator==(const BrakeSet&) const = default;
+    };
     // Who drives a train: the keyboard, the test driver along its path, or
     // nobody (it stands with its brakes as they are).
     enum class Role : std::uint8_t { driven, ai, standing };
@@ -167,6 +181,8 @@ public:
     // The player's cab keys are on (a locomotive DLL's cab): the viewer's
     // camera and default driving keys are off.
     [[nodiscard]] bool keyboard_captured() const noexcept;
+    // Standing in a cab, outside or on a car (not in a chair).
+    [[nodiscard]] bool engineer_on_foot() const noexcept { return engineer_.on_foot(); }
     // Whether the driving keys (the DLL's cab keys, openRTS's handles) reach
     // the driven cab: not while the engineer is on foot out of the driven car
     // (on the platform, in another car). With the engineer off (an outside
@@ -189,6 +205,13 @@ public:
     [[nodiscard]] bool is_player(std::uint64_t id) const noexcept;
     // Every train on the track (the driven one first).
     [[nodiscard]] std::vector<const simulation::Train*> trains() const;
+    // The shapes (core::VirtualPath::key()) the trains use now: their cabs'
+    // and those of the cars within train_keep_range; the world's models let
+    // go (RouteStreamer::take_released_models) keep these.
+    [[nodiscard]] std::unordered_set<std::string> shapes_in_use() const;
+    // Whether something else keeps a shape the trains no longer need (the
+    // route's, for a static car in the world): left in the library then.
+    void set_shape_keeper(std::function<bool(const std::string&)> keeper) { shape_keeper_ = std::move(keeper); }
     // Every diesel exhaust of every train this frame (SmokeView).
     void collect_exhausts(std::vector<ExhaustSource>& out) const;
     // A traveller at the end of the train that leads (by the motion, else
@@ -793,6 +816,7 @@ private:
     void let_go_far_shapes(renderer::ModelLibrary& library);
     std::optional<glm::vec3> camera_eye_; // the last update's
     std::unordered_map<std::string, core::VirtualPath> train_shapes_; // car and freight shapes asked of the library
+    std::function<bool(const std::string&)> shape_keeper_;
     std::chrono::steady_clock::time_point shapes_checked_{};
     // Shapes of cars and of their freight asked of the loader (by key): one
     // load each for every train; the freight's loads on their way.
@@ -950,6 +974,7 @@ private:
     // The car view (F3) and the camera the engineer keeps meanwhile.
     enum class CarView : std::uint8_t { off, head, tail };
     CarView car_view_ = CarView::off;
+    bool car_view_tail_first_ = false; // F3 starts at the last car: the player sits nearer it
     ViewerCamera person_camera_{};
     // Each car's view as it was left (by Car::key): the angle from the
     // car's heading, so the same side of it is seen again.
@@ -1347,6 +1372,9 @@ private:
     bool rails_loaded_ = false;
     // TrainSettings::limit_brake_force, remembered as limit_brake_force.
     bool limit_brake_force_ = false;
+    [[nodiscard]] BrakeSet brake_set() const noexcept;
+    void apply_brake_set(const BrakeSet& set);
+    std::string brake_custom_code_; // the own set as last remembered
     [[nodiscard]] simulation::RailCondition rails_now() const noexcept;
     // cab_state() with openRTS's valve over Brakes.dll: the DLL's output with
     // its УР gauge showing the valve's УР.

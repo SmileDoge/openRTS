@@ -56,6 +56,7 @@ struct WindowOptions {
     std::optional<bool> shadow_cache;
     std::optional<bool> parallax; // --parallax on|off: the height maps' relief
     std::optional<int> compress_textures; // --compress-textures off|memory|on (renderer/bc7.hpp: 0, 1, 2)
+    std::optional<int> texture_size;      // --texture-size full|1024|512|256 (GraphicsSettings::texture_size: 0..3)
     // --cab-shadows on|off: this run's shadow map around the cab.
     std::optional<bool> cab_shadows;
     std::int32_t time_of_day = 12 * 3600; // seconds

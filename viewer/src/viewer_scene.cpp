@@ -4,6 +4,7 @@
 #include "rts_config.hpp"
 
 #include "ui_text.hpp"
+#include "key_layout.hpp"
 
 #ifdef OPENRTS_HAS_WGPU
 #include <algorithm>
@@ -25,6 +26,7 @@
 #include <openrts/audio/world_sounds.hpp>
 #include <deque>
 #include <unordered_set>
+#include <openrts/renderer/bc7.hpp>
 #include <openrts/renderer/depth.hpp>
 #include <openrts/renderer/forest_clearance.hpp>
 #include <openrts/renderer/occlusion_probe.hpp>
@@ -454,6 +456,8 @@ public:
             train_ = std::make_unique<TrainView>(content_.vfs(), route_, origin_, track_->network());
             train_->set_rts_config(content_.rts_config());
             train_->set_install_root(content_.root());
+            // A shape the route places too stays while the route keeps it.
+            train_->set_shape_keeper([this](const std::string& key) { return streamer_ && streamer_->holds_model(key); });
             if (content_.realistic_air()) train_->set_realistic_air(true);
             // Not in a network game: there the server and its dispatchers
             // own the trains and the track (docs/net.md); but the
@@ -822,6 +826,7 @@ public:
         streamer_->set_task_limit(loading_.done && !clock.background ? 4 : (std::max)(4u, std::thread::hardware_concurrency() / 2 + 2));
         streamer_->poll();
         for (auto& asset : streamer_->take_ready_models()) library_->add(std::move(asset));
+        let_go_world_models();
 
         // GPU uploads stay on the render thread; one model per frame keeps the
         // frame time bounded while a tile fills in. Hot-reload batches are
@@ -834,6 +839,12 @@ public:
                                                .fullbright_lit = experimental_ && renderer::light_fullbright()};
         library_->set_texture_variant(variant);
         streamer_->set_texture_variant(variant);
+        // The textures' size limit changed: every loaded model again, its
+        // textures uploaded anew at the new size.
+        if (const auto limit = renderer::texture_size_limit(); !texture_limit_ || *texture_limit_ != limit) {
+            if (texture_limit_) library_->reload_textures();
+            texture_limit_ = limit;
+        }
         // The forests' clearance changed: the loaded forests are built again.
         if (const float distance = renderer::forest_clearance_distance(); distance != forest_distance_) {
             forest_distance_ = distance;
@@ -1532,6 +1543,7 @@ public:
     }
 
     [[nodiscard]] bool keyboard_captured() const override { return train_ && train_->keyboard_captured(); }
+    [[nodiscard]] bool engineer_on_foot() const override { return train_ && train_->engineer_on_foot(); }
     [[nodiscard]] bool takes_scroll() const override { return train_ && train_->viewing_inside(); }
     [[nodiscard]] std::optional<double> take_time_of_day() override {
         return net_ ? net_->take_time_of_day() : std::nullopt;
@@ -1720,7 +1732,7 @@ public:
         // where the camera is; off, the free camera.
         if (train_) {
             bool walking = train_->walking();
-            if (ImGui::Checkbox(tr("On foot (arrows walk, Enter at a cab door gets in)"), &walking)) {
+            if (ImGui::Checkbox(tr(wasd_walking() ? "On foot (arrows or W A S D walk, Enter at a cab door gets in)" : "On foot (arrows walk, Enter at a cab door gets in)"), &walking)) {
                 train_->set_walking(walking, last_eye_);
             }
         }
@@ -2194,6 +2206,33 @@ private:
     std::vector<Pick> picks_;
     std::vector<renderer::RenderModel*> model_cache_;
     std::uint64_t model_cache_generation_ = ~std::uint64_t{0};
+    // The world's models no loaded tile around has placed for half a minute
+    // leave the library (and the card), unless a train or the road traffic
+    // uses them: they stayed for the whole run, so the memory grew all along
+    // the line (testers 2026-11-18, a multiplayer event coming).
+    static constexpr auto world_model_linger = std::chrono::seconds(30);
+    std::chrono::steady_clock::time_point world_models_checked_{};
+    std::optional<std::uint32_t> texture_limit_; // renderer::texture_size_limit() at the last update
+    std::size_t world_models_let_go_ = 0;
+    void let_go_world_models() {
+        const auto now = std::chrono::steady_clock::now();
+        if (!streamer_ || !library_ || now - world_models_checked_ < std::chrono::seconds(2)) return;
+        world_models_checked_ = now;
+        const auto released = streamer_->take_released_models(world_model_linger);
+        if (released.empty()) return;
+        const auto trains = train_ ? train_->shapes_in_use() : std::unordered_set<std::string>{};
+        std::size_t let_go = 0;
+        for (const auto& path : released) {
+            const auto key = path.key();
+            if (trains.contains(key) || (roads_ && roads_->holds_shape(key))) continue;
+            library_->remove(path);
+            ++let_go;
+        }
+        world_models_let_go_ += let_go;
+        if (let_go > 0)
+            std::cout << "world: " << let_go << " models of tiles left behind let go (" << world_models_let_go_ << " in all; the route keeps "
+                      << streamer_->held_models() << ", the library " << library_->stats().models << ")" << std::endl;
+    }
     bool experimental_ = false; // the renderer's shading path, from the last frame
     float max_light_distance_ = 0.0f; // RTS config MaxLightDistance, m (0: none)
     float view_distance_ = 0.0f;      // RTS config ViewDistance, m (RTS: 1000 without it)

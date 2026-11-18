@@ -696,6 +696,9 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
             p.train = other->train;
             p.at = {.tile_x = other->tile_x, .tile_z = other->tile_z, .x = other->x, .y = other->y, .z = other->z};
             p.heard = now;
+            auto& trail = player_trails_[other->user];
+            trail.emplace_back(now, p.at);
+            while (trail.size() > 2 && now - trail.front().first > 6.0) trail.pop_front();
         }
         return;
     case P(net::Package::helper):
@@ -783,7 +786,32 @@ std::vector<NetSession::Player> NetSession::players() const {
     std::vector<Player> out;
     const double t = now();
     for (const auto& [_, p] : players_) {
-        if (t - p.heard <= 20.0) out.push_back(p);
+        if (t - p.heard > 20.0) continue;
+        out.push_back(p);
+        // A player in another client's train: his place as far back as the
+        // train is drawn (RemoteMotion::delay, a package interval and a
+        // margin), so his name rides with it. Shown as heard, it ran ahead
+        // of the train by its speed x 1.75 s (testers 2026-11-18: 30 m at
+        // 60 km/h).
+        const auto remote = p.train != 0 ? remotes_.find(p.train) : remotes_.end();
+        const auto trail = player_trails_.find(p.user);
+        if (remote == remotes_.end() || remote->second.train == 0 || trail == player_trails_.end() || trail->second.empty()) continue;
+        const double when = t - remote->second.motion.delay();
+        const auto& samples = trail->second;
+        if (when <= samples.front().first) {
+            out.back().at = samples.front().second;
+            continue;
+        }
+        for (std::size_t k = 1; k < samples.size(); ++k) {
+            if (samples[k].first < when) continue;
+            const auto& [ta, a] = samples[k - 1];
+            const auto& [tb, b] = samples[k];
+            const double s = tb > ta ? (when - ta) / (tb - ta) : 1.0;
+            // Across tiles: b in a's tile, then the share of the way.
+            const double bx = (b.tile_x - a.tile_x) * 2048.0 + b.x, bz = (b.tile_z - a.tile_z) * 2048.0 + b.z;
+            out.back().at = {.tile_x = a.tile_x, .tile_z = a.tile_z, .x = a.x + (bx - a.x) * s, .y = a.y + (b.y - a.y) * s, .z = a.z + (bz - a.z) * s};
+            break;
+        }
     }
     return out;
 }

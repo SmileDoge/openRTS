@@ -305,6 +305,10 @@ struct EngineDefinition {
         std::int32_t combined = -1;
         std::int32_t block = -1;
         std::int32_t block_operating = -1;
+        // The separating cock between the 395 and the brake pipe (BR_RAZID1,
+        // "Кран тормозной магистрали" on the ЭД9М): only with BR_RAZOBSHK
+        // non-zero; open while its switch is not 0 (Brakes.dll Run).
+        std::int32_t separating = -1;
     };
     BrakesLibrary brakes_library;
     // EngExtended WorksOnLineVoltages: the supplies it works on, in file

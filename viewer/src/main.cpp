@@ -480,6 +480,9 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         } else if (flags[i] == "--compress-textures" && has_value) {
             const std::string value(flags[++i]);
             options.compress_textures = value == "off" ? 0 : value == "memory" ? 1 : 2;
+        } else if (flags[i] == "--texture-size" && has_value) {
+            const std::string value(flags[++i]);
+            options.texture_size = value == "1024" ? 1 : value == "512" ? 2 : value == "256" ? 3 : 0;
         } else if (flags[i] == "--cab-shadows" && has_value) {
             options.cab_shadows = std::string(flags[++i]) != "off";
         } else if (flags[i] == "--window-mode" && has_value) {

@@ -191,6 +191,28 @@ int main(int argc, char** argv) {
         check(reply.cars[1].engine.throttle == 3, "the slave follows the master's throttle");
         check(std::abs(reply.cars[1].engine.force - 3000.0f) < 1e-3f, "the slave pulls too");
     }
+    // A saved game (RTS 0x57194C / 0x57CD78): saved with the throttle at 3,
+    // moved to 1, put back: the DLL goes on from 3.
+    {
+        std::vector<dllhost::CarDllState> saved;
+        check(host->save_state(saved) && saved.size() == 2, "save_state: both engines");
+        bool turned = false;
+        check(host->can_switch({0, 0, 1}, turned) && turned, "the throttle to 1 after saving");
+        for (int i = 0; i < 20; ++i) host->step(step, reply);
+        check(reply.cars.size() == 3 && reply.cars[0].engine.throttle == 1, "the throttle at 1");
+        StepReply back;
+        check(host->restore_state(saved, back), "restore_state");
+        check(back.cars.size() == 3 && back.cars[0].switches[0].state == 3 && back.cars[0].engine.throttle == 3,
+              "restored: switch 0 and the throttle at 3 as saved");
+        std::vector<dllhost::CarDllState> again;
+        check(host->save_state(again) && again.size() == saved.size() && !again.empty() && again[0].bytes == saved[0].bytes,
+              "saved again after restoring: the same bytes");
+        for (int i = 0; i < 20; ++i) host->step(step, reply);
+        check(reply.cars.size() == 3 && reply.cars[0].switches[0].state == 3 && reply.cars[1].engine.throttle == 3,
+              "after restoring the DLLs go on from the saved state, the slave too");
+        std::vector<dllhost::CarDllState> broken{{.car = 0, .bytes = {1, 2, 3}}};
+        check(host->restore_state(broken, back), "a broken saved state is left out, not a failure");
+    }
     // Dragging a switch (RTS 0x437E64 / 0x527190): the frame follows in
     // states, crossing a whole state fires Switched, the DLL can refuse,
     // and let go a controller takes the nearest state.

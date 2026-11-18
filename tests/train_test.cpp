@@ -335,6 +335,90 @@ void test_sway(const Stock& stock) {
     check(longitudinal > 0.0f && longitudinal < 0.2f, "acceleration nods the body");
 }
 
+// The way a train travels (leading_end: the signals, speed posts and ALSN
+// ahead) after a stop: its couplers ease and the front creeps back a little.
+// Each such step made the rear the lead: the signals ahead ran as the other
+// end's, closed under a path, the ALSN read К, until the train moved on
+// (testers 2026-11-18). A real move back turns it.
+void test_travel_after_stop(const Stock& stock) {
+    Run r(stock, {}, 1500.0);
+    const auto leads_front = [&] {
+        const auto lead = r.train.leading_end();
+        const auto front = r.train.front_end();
+        return lead && front && lead->node() == front->node() && lead->forward() == front->forward()
+               && std::abs(lead->offset() - front->offset()) < 1e-6;
+    };
+    r.driver->reverser = 1;
+    r.driver->throttle = r.driver->notches;
+    for (int i = 0; i < static_cast<int>(25.0 / simulation::train_step); ++i) r.train.step();
+    r.driver->throttle = 0;
+    r.driver->brake = simulation::DriverHandles::BrakeHandle::emergency;
+    bool stood = false, kept = true;
+    for (int i = 0; i < static_cast<int>(60.0 / simulation::train_step); ++i) {
+        r.train.step();
+        if (r.train.speed() <= 0.0) stood = true;
+        if (stood) kept = kept && leads_front();
+    }
+    check(stood, "the train stops");
+    check(kept, "coming to rest the front stays the lead");
+    // The brakes released: the couplers squeezed by the stop ease and the
+    // front rolls back some 17 cm at up to 6 cm/s, then a little forward.
+    const auto start = *r.train.front_end();
+    double back = 0.0;
+    r.driver->brake = simulation::DriverHandles::BrakeHandle::charge;
+    for (int i = 0; i < static_cast<int>(20.0 / simulation::train_step); ++i) {
+        r.train.step();
+        back = (std::max)(back, start.offset() - r.train.front_end()->offset());
+        kept = kept && leads_front();
+    }
+    std::cerr << "  released after the stop: the front rolled back up to " << back * 1000.0 << " mm" << std::endl;
+    check(back > 0.02 && back < 0.5, "released, it rolls back some centimetres");
+    check(kept, "and the front stays the lead all along");
+    // Backing off for real turns the lead to the rear.
+    r.driver->brake = simulation::DriverHandles::BrakeHandle::running;
+    r.driver->reverser = -1;
+    r.driver->throttle = r.driver->notches;
+    bool turned = false;
+    for (int i = 0; i < static_cast<int>(40.0 / simulation::train_step) && !turned; ++i) {
+        r.train.step();
+        turned = !leads_front();
+    }
+    check(turned, "backing off turns the lead to the rear");
+}
+
+// openRTS's body motion after a stop: the body swings back on its springs
+// and comes to rest smoothly. It was settled (put at rest at once) as soon
+// as its rates were small, which a swing's far end is too: the body and the
+// cab camera on it jumped back (testers 2026-11-18).
+void test_body_settles(const Stock& stock) {
+    Run r(stock, {}, 1500.0);
+    r.train.set_body_motion(simulation::BodyMotionModel::openrts);
+    r.driver->reverser = 1;
+    r.driver->throttle = r.driver->notches;
+    for (int i = 0; i < static_cast<int>(25.0 / simulation::train_step); ++i) r.train.step();
+    r.driver->throttle = 0;
+    r.driver->brake = simulation::DriverHandles::BrakeHandle::emergency;
+    bool stood = false;
+    float jump = 0.0f, swing = 0.0f;
+    std::array<float, 3> last{};
+    for (int i = 0; i < static_cast<int>(60.0 / simulation::train_step); ++i) {
+        r.train.step();
+        const auto& car = r.train.cars()[1];
+        if (stood) {
+            for (int a = 0; a < 3; ++a) {
+                jump = (std::max)(jump, std::abs(car.body[a] - last[static_cast<std::size_t>(a)]));
+                swing = (std::max)(swing, std::abs(car.body[a]));
+            }
+        }
+        if (r.train.speed() == 0.0) stood = true;
+        for (int a = 0; a < 3; ++a) last[static_cast<std::size_t>(a)] = car.body[a];
+    }
+    std::cerr << "  body after the stop: swing " << swing * 1000.0f << " mm, largest step " << jump * 1000.0f << " mm" << '\n';
+    check(stood, "the train stops");
+    check(jump < 0.004f, "after the stop the body swings back with no jump");
+    check(std::abs(r.train.cars()[1].body_rate[2]) < 1e-3f, "and comes to rest");
+}
+
 // openRTS's rail joints on the 3000 m (welded) test node: a bogie's joint
 // events come in a span's bursts, 12.5 m apart, with a string between.
 void test_rail_joints(const Stock& stock) {
@@ -1505,6 +1589,8 @@ int main() {
     test_buffer_stop(stock);
     test_turn_around(stock);
     test_sway(stock);
+    test_body_settles(stock);
+    test_travel_after_stop(stock);
     test_rail_joints(stock);
     test_slide_off(stock);
     test_overturn(stock);

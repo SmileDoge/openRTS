@@ -2,10 +2,14 @@
 // (ESD_LightSources): the folder rule, the .sd reader, and with an installed
 // Kuban_RTS (argument: the installation) a lamp's images by night and day.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <memory>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include <openrts/core/installation.hpp>
@@ -19,6 +23,7 @@
 #include <openrts/formats/car_spawn.hpp>
 #include <openrts/renderer/forest_clearance.hpp>
 #include <openrts/renderer/model_assets.hpp>
+#include <openrts/renderer/route_streamer.hpp>
 #include <openrts/simulation/track_geometry.hpp>
 #include <openrts/simulation/track_network.hpp>
 
@@ -407,6 +412,53 @@ void test_content(const std::filesystem::path& root) {
 
 }
 
+// The world's models let go (RouteStreamer::take_released_models): a Kuban
+// tile's models in, the camera far away, then all of them released and asked
+// for again when it comes back (they stayed for the whole run: the memory
+// grew all along the line, testers 2026-11-18).
+void test_route_letting_go(const std::filesystem::path& root) {
+    auto vfs = std::make_shared<core::Vfs>();
+    core::mount_installation(*vfs, root, core::load_installation_config(root));
+    const auto route = core::VirtualPath::parse("ROUTES/Kuban_RTS");
+    if (!route || !vfs->exists(*core::VirtualPath::parse("ROUTES/Kuban_RTS/WORLD/w-004493+014583.w"))) {
+        std::cout << "Kuban_RTS world: not installed, skipped\n";
+        return;
+    }
+    const formats::RoutePosition here{.tile_x = -4493, .tile_z = 14583};
+    renderer::RouteStreamer streamer(vfs, *route, here, 0);
+    streamer.set_task_limit(8);
+    const auto load = [&](const formats::RoutePosition& at) {
+        std::unordered_set<std::string> taken;
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+        while (std::chrono::steady_clock::now() < until) {
+            streamer.update(at);
+            streamer.poll();
+            for (const auto& asset : streamer.take_ready_models()) taken.insert(asset.source_path.key());
+            const auto stats = streamer.stats();
+            if (stats.waiting_tiles == 0 && stats.pending_model_assets == 0 && stats.loaded_tiles > 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        return taken;
+    };
+    const auto first = load(here);
+    std::cout << "  Kuban tile -4493 14583: " << first.size() << " models\n";
+    check(first.size() > 10, "route streaming: a tile's models come in");
+    check(streamer.take_released_models(std::chrono::seconds(0)).empty() && streamer.take_released_models(std::chrono::seconds(0)).empty(),
+          "route streaming: none let go while its tile is around");
+    // Far off (no world file there): the tile leaves.
+    const formats::RoutePosition away{.tile_x = -4493 + 40, .tile_z = 14583 + 40};
+    streamer.update(away);
+    streamer.poll();
+    check(streamer.take_released_models(std::chrono::seconds(30)).empty(), "route streaming: kept while they linger");
+    const auto released = streamer.take_released_models(std::chrono::seconds(0));
+    std::cout << "  the camera far away: " << released.size() << " let go, " << streamer.held_models() << " kept\n";
+    check(released.size() == first.size() && streamer.held_models() == 0, "route streaming: all of them let go once the tile is gone");
+    check(std::none_of(released.begin(), released.end(), [&](const core::VirtualPath& path) { return streamer.holds_model(path.key()); }),
+          "route streaming: and forgotten");
+    const auto again = load(here);
+    check(again == first, "route streaming: asked for again when the tile comes back");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -414,6 +466,7 @@ int main(int argc, char** argv) {
     test_clearance();
     test_description();
     if (argc > 1) test_content(argv[1]);
+    if (argc > 1) test_route_letting_go(argv[1]);
     std::cout << (failures ? "FAILED" : "passed") << '\n';
     return failures ? 1 : 0;
 }

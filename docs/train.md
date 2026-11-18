@@ -425,7 +425,10 @@ built, against the proposal below:
     freight cars (composite) from 60 km/h in 394 m (393 m).
 - **Wheel flats (ползуны)**, openRTS's own (2026-11-15; RTS has none):
   - A bogie's wheel sets sliding locked (юз; under RTS's air, a car braked
-    over its adhesion) wear a flat: about 1 mm in 15 m slid at 20 t an
+    over its adhesion and over the wheel's real grip on the rail: RTS's
+    `Adheasion` threshold alone, 0.1 on the ЭД9М's head cars, wore flats on
+    them and on engines at every service application until 2026-11-18,
+    and never on the cars between) wear a flat: about 1 mm in 15 m slid at 20 t an
     axle, deeper the heavier the axle (√ of it), at most 12 mm. It does not
     wear away by itself (`CarState::flat`, by the car's own ends).
   - From 0.2 mm each of the bogie's two axles strikes the rail once a turn
@@ -477,6 +480,11 @@ built, against the proposal below:
     DLL slip too; their controller no longer keeps within RTS's limit).
     `NumAxles`, else `NumWheels`, else 4 axles (at most 8), in bogies of two
     (three for six).
+  - `EngineAxles ( count axle … )`: until 2026-11-18 the count was read
+    for every axle, so each motor of the ЭД9М's `( 1 0 )` .. `( 1 3 )` turned
+    axle 1 ("оси 2"), which slipped under the whole car's force at any
+    speed (testers: "[сцепление по осям 0 284* 0 0 %]"). RTS's own limit
+    checks each motor by itself and only marked the wrong axles.
   - F5: "[БОКСОВАНИЕ: оси 1,3]" and, under traction, each axle's force as a
     share of its grip, "[сцепление по осям 93 81 88 76 %]" (* slipping).
   - `openrts-train-check <root> --dll … --rails dry|wet|snow|ice|leaves`
@@ -525,13 +533,26 @@ built, against the proposal below:
     42 km/h, so both sections slide in an emergency (157 m of 401). Its
     `AirBrakesMainResVolume 900` lies outside every section of the `.rtseng`
     and RTS's merge leaves it out: the .eng's 66 ft³ count.
-  - "Limit the brake force to real stock's" (the Train window, off by
-    default, `TrainSettings::limit_brake_force`): a bogie's full brake force
+  - **The brakes' presets** (the Train window's "Brakes", 2026-11-18): "as
+    RTS" (RTS's air, the DLL trains on RTS's air, their own gauges, the
+    rails as RTS, no brake force limit, the distributors as RTS) and
+    "realistic (openRTS)" (the realistic air, openRTS's valve over
+    Brakes.dll, the model's gauges, the rails by the weather, the limit
+    and the distributors' stability on) set the six settings at once; any
+    of them changed by hand makes "my own", remembered as `brakes_custom`
+    and given back when it is chosen again.
+  - "Limit the brake force to real stock's" (the Train window, on by
+    default since 2026-11-18, `TrainSettings::limit_brake_force`): a bogie's full brake force
     is at most what real stock with its shoes gives, its stop at about half
     the dry adhesion (0.165 of the weight at no speed, as a locomotive's shoe
     pressing gives): at 40 km/h cast iron 0.077 of the weight, composite
     0.136, disc pads 0.165 (`shoe_force_limit`). For content that brakes far
-    harder than the real thing, until its files are put right.
+    harder than the real thing, until its files are put right. Off by default
+    until 2026-11-18: MaDaDev's ЭД9М gives every car 98 kN whatever its weight
+    and cast iron doubles it at a stop, so its light cars (the head cars'
+    43 t, the trailer's 39.5 t) slid and wore flats, its 64 t motor cars
+    not, and the whole train stopped at 2.8 m/s² (testers: "будто якорь
+    скинул").
   - `ORTSBrakeForce ( 74kN )` in a `.wag` / `.eng` (or its `.rts*`
     companion): the brake force at the full cylinder
     (`BrakeCylinderPressureForMaxBrakeBrakeForce`) at 40 km/h that the
@@ -741,6 +762,16 @@ The other two choices take the air after the valve from the model:
   already show the model's pressures (on the stand: the ТЦ, ТМ and main
   reservoir displays are the host's values). Brakes.dll's ЭПК, КЛУБ, САУТ
   and ЭПТ go on: its direct vents as above, its EPTvalue as it gives it.
+  The separating cock (`BR_RAZID1` with `BR_RAZOBSHK` non-zero, the ЭД9М's
+  "Кран тормозной магистрали"; Brakes.dll's `Run` charges the pipe only
+  while its switch is not 0, decompiled 2026-11-18) shut cuts the valve off
+  the pipe too; its УР goes on, on the gauge. And the DLL's own valve gets
+  openRTS's УР in `Engine::UR` before each `Run` (`CarInput::equalising`):
+  left to itself its УР drifted from openRTS's. Until 2026-11-18 the cock
+  was not read: shut, openRTS's valve charged the pipe through it; open,
+  the DLL's valve vented the pipe towards its own УР, still 0 after an
+  emergency, which openRTS took for its ЭПК (testers: "ТМ моментально до
+  0 почти падает").
 - At the start the pressures are those the DLLs set in Init; a pipe they
   charged has its reservoirs charged with it (`enter_new_train`): Brakes.dll
   sets the pipe (the ЭП2Д's 4.4) and leaves the ЗР and the РК at 0, so until

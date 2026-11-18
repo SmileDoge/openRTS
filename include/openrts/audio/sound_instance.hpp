@@ -162,6 +162,12 @@ public:
     // The trigger pairs' states; none before the object's first pair code
     // (RTS allocates PairedFlags then).
     [[nodiscard]] std::optional<TriggerPairState> trigger_pairs() const;
+    // The discrete codes the last update let through its trigger pairs (the
+    // codes queued while it was off too, at its activation): what a network
+    // game sends of this object. A DLL that posts a pair's On code every step
+    // while the pair is on has it sent once, as rts1.exe (its ED9M sent 27
+    // codes in 10 s where openRTS sent every one, 600).
+    [[nodiscard]] const std::vector<std::uint32_t>& passed() const noexcept { return passed_; }
     [[nodiscard]] std::size_t voices() const noexcept;
     [[nodiscard]] const formats::SoundGroup& group() const noexcept { return *group_; }
 
@@ -191,6 +197,7 @@ private:
     std::vector<std::int8_t> pair_state_; // DiscreteTriggerPairs: -1 not known yet, 0 off, 1 on
     bool pairs_seen_ = false;             // a pair code came (RTS: PairedFlags allocated)
     std::vector<std::uint32_t> posted_; // PostTrigger codes for the next update
+    std::vector<std::uint32_t> passed_; // passed(): the last update's codes through the pairs
     // SetVariableValue / IncreaseVariableValue: replace the input from then on.
     std::array<std::optional<float>, formats::sound_variable_count> overrides_{};
     bool active_ = false;

@@ -109,7 +109,7 @@ Conditions run:
 | `OnMenuSelect ( MenuID MenuItemID )` | the item picked in the menu (F8) |
 | `OnCloseMessageBox ( MsgID ButtonID )` | the message closed by that button |
 | `PlayerBoardsTrain ( Area )` | the player in the train's cab (`CABIN`, `INTERIOR`, `SALON`; `EXTERIOR` not yet) |
-| `ReachLocation ( Location Radius ReachWith SpeedNotAbove SpeedNotBelow )` | `ReachWith` (activity.pdf; `Reach` read too): `WAGON_ANY` (default), `WAGON_ALL`, `WAGON_FRONT`, `WAGON_BACK`, `WAGON_PLAYER` / `PLAYER_POSITION` (the player's car); speeds in m/s |
+| `ReachLocation ( Location Radius ReachWith SpeedNotAbove SpeedNotBelow )` | `ReachWith` (activity.pdf; `Reach` read too): `WAGON_ANY` (default), `WAGON_ALL`, `WAGON_FRONT`, `WAGON_BACK`, `WAGON_PLAYER` / `PLAYER_POSITION` (the player's car); a car is in the radius when any of it is, coupler to coupler (the points at signals are the signal's place on the track: a cab past it by its overhang has passed it); speeds in m/s |
 | `CoupleCars ( ConjTrainID )` | the event's train and that one coupled |
 | `ReachReversePoint ( PointID )` | the train reached reverse point `PointID` of its path (from 0; an `AssignService`'s path counts anew): it stood at its end of the leg and went on to the next |
 | `WagonState` | see below |

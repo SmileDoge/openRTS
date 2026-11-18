@@ -38,6 +38,15 @@ inline TextureCompression& texture_compression() {
     static TextureCompression chosen = TextureCompression::disk;
     return chosen;
 }
+// The models' textures at most this many texels a side (the Graphics
+// panel's choice, openRTS's own; 0: as the files give them): the levels
+// above it are left out when a texture is put on the card, a quarter of
+// the memory for each, the rest of the chain as it was. For a card short of
+// video memory (testers 2026-11-18, before a network event): 1024, 512, 256.
+inline std::uint32_t& texture_size_limit() {
+    static std::uint32_t limit = 0;
+    return limit;
+}
 inline std::filesystem::path& texture_cache_directory() {
     static std::filesystem::path folder;
     return folder;

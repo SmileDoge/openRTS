@@ -116,6 +116,7 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"reshade_depth", text(s.reshade_depth)},
         {"smooth_train_textures", text(s.smooth_train_textures)},
         {"compress_textures", text(s.compress_textures)},
+        {"texture_size", text(s.texture_size)},
     };
 }
 
@@ -190,6 +191,7 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     s.reshade_depth = flag_one(value_of, "reshade_depth", s.reshade_depth);
     s.smooth_train_textures = flag_one(value_of, "smooth_train_textures", s.smooth_train_textures);
     s.compress_textures = whole(value_of, "compress_textures", s.compress_textures, 0, 2);
+    s.texture_size = whole(value_of, "texture_size", s.texture_size, 0, 3);
 }
 
 // Characters a file name may not have, and control characters: "_".

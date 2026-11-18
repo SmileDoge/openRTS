@@ -24,6 +24,11 @@ struct HeadMotion {
 
     // At rest on the body at `at`.
     void reset(const glm::vec3& at);
+    // A long frame (a load, a hitch): the body now at `at`, the head
+    // keeping its lag and losing its speed, not thrown by the frame nor
+    // snapped back to rest (a reset there looked like the camera jumping,
+    // most on a stop's nod).
+    void hold(const glm::vec3& at);
     // One frame of `elapsed` s: the body's offset on its springs now
     // (car axes, m; moving evenly from the last one over the frame) and the
     // train's own acceleration (car axes, m/s^2: towards the curve's

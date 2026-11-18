@@ -106,6 +106,7 @@ int main() {
     mine.settings.exposure = 1.25f;
     mine.settings.msaa = 8;
     mine.settings.smooth_train_textures = true;
+    mine.settings.texture_size = 2;
     mine.settings.native_water = false;
     const auto code = graphics_preset_code(mine);
     check(code.starts_with("openRTS-graphics:1:"), "the code's prefix: " + code.substr(0, 24));

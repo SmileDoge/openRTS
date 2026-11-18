@@ -41,6 +41,16 @@ void HeadMotion::reset(const glm::vec3& at) {
     started = true;
 }
 
+void HeadMotion::hold(const glm::vec3& at) {
+    if (!started) {
+        reset(at);
+        return;
+    }
+    position = at + (position - body);
+    body = at;
+    velocity = {};
+}
+
 void HeadMotion::step(const glm::vec3& at, const glm::vec3& carried, const float elapsed) {
     if (!started) reset(at);
     if (!(elapsed > 0.0f)) return;

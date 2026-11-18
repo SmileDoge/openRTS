@@ -491,6 +491,11 @@ void test_layout_preview() {
     const auto& cars = train.cars();
     const double head = cars.front().offset + cars.front().definition->length * 0.5;
     const auto placed = train.placements();
+    const auto ends = train.car_ends();
+    check(ends.size() == cars.size(), "each car's ends");
+    const auto apart = [](const simulation::TrackPoint& a, const simulation::TrackPoint& b) {
+        return std::hypot((a.tile_x - b.tile_x) * 2048.0 + a.x - b.x, (a.tile_z - b.tile_z) * 2048.0 + a.z - b.z);
+    };
     double last_rear = 0.0;
     for (std::size_t i = 0; i < cars.size(); ++i) {
         const double length = cars[i].definition->length;
@@ -503,6 +508,12 @@ void test_layout_preview() {
         const double z = (car.front.tile_z * 2048.0 + car.front.z + car.rear.tile_z * 2048.0 + car.rear.z) * 0.5;
         check(std::hypot(at.tile_x * 2048.0 + at.x - x, at.tile_z * 2048.0 + at.z - z) < 0.05,
               "preview car " + std::to_string(i) + " is where the train puts it");
+        // Coupler to coupler: the front end `front` m back from the head.
+        simulation::TrackTraveller nose(*net, 4, 500.0, true), tail(*net, 4, 500.0, true);
+        check(nose.move(-front).ok() && tail.move(-(front + length)).ok(), "car ends on the track");
+        check(i < ends.size() && apart(ends[i].front, nose.pose()) < 0.05 && apart(ends[i].rear, tail.pose()) < 0.05,
+              "car " + std::to_string(i) + "'s ends are its couplers (car_ends), its bogies within them");
+        check(i < ends.size() && apart(ends[i].front, ends[i].rear) > apart(car.front, car.rear) + 1.0, "car " + std::to_string(i) + " longer than its bogies");
         last_rear = front + length;
     }
     check(std::abs(last_rear - train.length()) < 1e-6, "the preview is as long as the train");

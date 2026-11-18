@@ -347,6 +347,9 @@ public:
     [[nodiscard]] std::shared_ptr<const void> replace_texture(const core::VirtualPath& path,
                                                               const formats::AceRgbaImage& image);
     void forget_texture(const core::VirtualPath& path);
+    // Every texture forgotten: the models made from now on upload their own
+    // (texture_size_limit() changed; those loaded keep theirs till reloaded).
+    void forget_textures();
     void replace(RenderModel& slot, RenderModel&& next);
     void retire(RenderModel&& model);
     // Call after each queue submit, then collect_retired() once per frame.

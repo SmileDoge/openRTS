@@ -81,6 +81,10 @@ struct GraphicsSettings {
     // (renderer/bc7.hpp: a quarter of the video memory; openRTS's own):
     // 0 not (as RTS), 1 encoded each load, 2 kept on disk too.
     int compress_textures = 2;
+    // The models' textures at most so many texels a side
+    // (renderer::texture_size_limit; openRTS's own): 0 as the files give
+    // them, 1 1024, 2 512, 3 256.
+    int texture_size = 0;
 
     bool operator==(const GraphicsSettings&) const = default;
 };

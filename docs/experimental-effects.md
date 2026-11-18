@@ -1073,6 +1073,16 @@ the cab's frame and the clouds stand in the air as beams of sunlight:
   barely. The Task Manager showed the card's 8.0 GB full and the 3D engine
   at 17 %: the allocations past Windows's budget had been moved to system
   memory and were read over PCIe 4.0 x8.
+- **Textures' largest side** (2026-11-18, the Graphics tab, `texture_size`,
+  `--texture-size full|1024|512|256`; openRTS's own): a model's texture
+  (the world's, the trains', the cabs') goes to the card from its first
+  level that fits, the levels above it left out: a quarter of the memory
+  for each, no resampling (an ACE has its levels; an image without them is
+  halved first). The files' DXT1 and block levels are cut the same way.
+  Changed in a run, the loaded models load again (`ModelLibrary::
+  reload_textures`). For a card short of video memory before a network
+  event. Checked: the fly along Kuban's line north (150 m/s), textures on
+  the card 128-211 MB in full, 63-97 MB at 512.
 - **Why.** RTS's raw ACE are RGBA8, 4 bytes a texel, and so were the
   materials' PNG maps. Measured in the cab at Kuban with the testers' 14
   cars: 2391 MB of textures, 2284 MB of them uncompressed. The cars' maps

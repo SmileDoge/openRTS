@@ -64,6 +64,9 @@ public:
     void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const renderer::Frustum* frustum,
                 const glm::vec3& eye, float draw_distance);
     [[nodiscard]] std::size_t cars() const noexcept;
+    // Whether a car type's shape `key` (core::VirtualPath::key()) was asked
+    // of the library here: the world's models let go keep it.
+    [[nodiscard]] bool holds_shape(const std::string& key) const;
     [[nodiscard]] std::size_t spawners() const noexcept { return spawners_.size(); }
     // Each spawner: its cars (standing ones), the first car's place and
     // speed, the level crossings on its road with their states (the log).

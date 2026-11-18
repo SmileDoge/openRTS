@@ -246,7 +246,9 @@ void SoundInstance::catch_up(const SoundInputs& inputs, VoiceSink& sink) {
     for (int round = 0; round < 8 && (!incoming.empty() || !posted_.empty()); ++round) {
         incoming.insert(incoming.end(), posted_.begin(), posted_.end());
         posted_.clear();
-        run_codes(pass_pairs(incoming), inputs, sink);
+        const auto codes = pass_pairs(incoming);
+        passed_.insert(passed_.end(), codes.begin(), codes.end());
+        run_codes(codes, inputs, sink);
         incoming.clear();
     }
     catching_up_ = false;
@@ -536,6 +538,7 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
 }
 
 void SoundInstance::update(const float dt, const SoundInputs& raw_inputs, VoiceSink& sink) {
+    passed_.clear();
     update_streams(dt, raw_inputs, sink);
     for (auto& stream : streams_) {
         bool playing = stream.loop.id && sink.playing(stream.loop.id);
@@ -615,6 +618,7 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
     incoming.insert(incoming.end(), posted_.begin(), posted_.end());
     posted_.clear();
     const auto codes = pass_pairs(incoming);
+    passed_.insert(passed_.end(), codes.begin(), codes.end());
 
     for (auto& stream : streams_) {
         if (!stream.running) continue;

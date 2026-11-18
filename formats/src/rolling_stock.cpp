@@ -52,6 +52,12 @@ public:
         return block_ ? text_.substr(at_, block_->end - at_) : std::string_view{};
     }
     double atof() { return take(rts_atof(here())); }
+    // The next whole number (negative read as 0), as read_uint, moving on.
+    std::uint32_t uint() {
+        const auto value = static_cast<std::uint32_t>((std::max)(0, rts_atoi(here())));
+        advance();
+        return value;
+    }
     double quantity() { return take(rts_quantity(here())); }
     double product() { return take(rts_product(here())); }
     std::string token() {
@@ -302,9 +308,13 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
         engine.engine_axles.clear();
         for (const auto& block : blocks(text, "engineaxles", *motors)) {
             Values v(text, block);
-            const auto count = (std::min)(read_uint(v), 32u);
+            // EngineAxles ( count axle ... ). read_uint took a copy and read
+            // the count each time: until 2026-11-18 every motor of the ЭД9М
+            // ( 1 0 ) .. ( 1 3 ) turned axle 1, which slipped under the whole
+            // car's force with the axles' adhesion (testers: "0 284* 0 0").
+            const auto count = (std::min)(v.uint(), 32u);
             std::vector<std::uint8_t> axles;
-            for (std::uint32_t k = 0; k < count; ++k) axles.push_back(static_cast<std::uint8_t>((std::min)(read_uint(v), 31u)));
+            for (std::uint32_t k = 0; k < count; ++k) axles.push_back(static_cast<std::uint8_t>((std::min)(v.uint(), 31u)));
             engine.engine_axles.push_back(std::move(axles));
         }
     }
@@ -391,6 +401,8 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
             if (module == "brakes.dll" || (module.size() > 11 && (module.ends_with("/brakes.dll") || module.ends_with("\\brakes.dll")))) {
                 auto& brakes_dll = engine.brakes_library;
                 brakes_dll.present = true;
+                std::int32_t separating_id = -1;
+                bool separating_fitted = false;
                 for (const auto& p : a.parameters) {
                     const auto name = core::fold_case(p.name);
                     if (name == "br_395id1") brakes_dll.valve = static_cast<std::int32_t>(p.value);
@@ -401,7 +413,10 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
                     else if (name == "br_kkid1") brakes_dll.combined = static_cast<std::int32_t>(p.value);
                     else if (name == "br_367id1") brakes_dll.block = static_cast<std::int32_t>(p.value);
                     else if (name == "br_367oppol") brakes_dll.block_operating = static_cast<std::int32_t>(p.value);
+                    else if (name == "br_razid1") separating_id = static_cast<std::int32_t>(p.value);
+                    else if (name == "br_razobshk") separating_fitted = p.value != 0.0f;
                 }
+                if (separating_fitted) brakes_dll.separating = separating_id;
             }
             engine.aux_libraries.push_back(std::move(a));
         }

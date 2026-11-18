@@ -8,6 +8,8 @@
 #include <future>
 #include <map>
 #include <set>
+#include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -57,6 +59,10 @@ struct RouteStreamer::Impl {
     std::map<TileKey, TileState> tiles;
     std::map<std::string, std::future<StreamedModelAsset>> model_tasks;
     std::set<std::string> requested_models;
+    // The models handed out (take_ready_models) and, for those no loaded tile
+    // around the camera places any more, since when (take_released_models).
+    std::unordered_map<std::string, core::VirtualPath> held_models;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> unwanted_since;
     std::deque<core::VirtualPath> pending_models;
     std::vector<StreamedModelAsset> ready_models;
     std::size_t task_limit = max_concurrent_model_tasks;
@@ -168,7 +174,10 @@ struct RouteStreamer::Impl {
             }
 
             auto asset = it->second.get();
-            if (asset.ok()) ready_models.push_back(std::move(asset));
+            if (asset.ok()) {
+                held_models.emplace(asset.source_path.key(), asset.source_path);
+                ready_models.push_back(std::move(asset));
+            }
             it = model_tasks.erase(it);
         }
     }
@@ -287,6 +296,46 @@ void RouteStreamer::poll() {
 
 std::vector<StreamedModelAsset> RouteStreamer::take_ready_models() {
     return std::exchange(impl_->ready_models, {});
+}
+
+std::vector<core::VirtualPath> RouteStreamer::take_released_models(const std::chrono::steady_clock::duration linger) {
+    auto& impl = *impl_;
+    std::vector<core::VirtualPath> released;
+    if (impl.held_models.empty()) return released;
+    std::unordered_set<std::string> wanted;
+    for (const auto& [_, state] : impl.tiles) {
+        // A tile still being read keeps nothing: its models are asked for
+        // again when it is in, if they were let go meanwhile.
+        if (!state.desired || !state.loaded) continue;
+        for (const auto& instance : state.instances)
+            if (!instance.source_path.empty()) wanted.insert(instance.source_path.key());
+    }
+    const auto now = std::chrono::steady_clock::now();
+    for (auto it = impl.held_models.begin(); it != impl.held_models.end();) {
+        if (wanted.contains(it->first)) {
+            impl.unwanted_since.erase(it->first);
+            ++it;
+            continue;
+        }
+        const auto [since, first] = impl.unwanted_since.try_emplace(it->first, now);
+        if (first || now - since->second < linger) {
+            ++it;
+            continue;
+        }
+        impl.unwanted_since.erase(since);
+        impl.requested_models.erase(it->first);
+        released.push_back(std::move(it->second));
+        it = impl.held_models.erase(it);
+    }
+    return released;
+}
+
+bool RouteStreamer::holds_model(const std::string& key) const {
+    return impl_->held_models.contains(key) || impl_->requested_models.contains(key);
+}
+
+std::size_t RouteStreamer::held_models() const noexcept {
+    return impl_->held_models.size();
 }
 
 const std::vector<StreamedInstance>& RouteStreamer::visible_instances() const {

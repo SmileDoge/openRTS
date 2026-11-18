@@ -238,7 +238,8 @@ void test_system() {
     check(system.block_state(0) == 1, "its block is occupied");
     check(system.ahead(train).object == 1, "the next signal is the middle one");
 
-    // Backing off a little: the train last moved towards its rear. Another
+    // Backing off a metre: the train last moved towards its rear (half a
+    // metre turns it; less is a creep, Train::move_and_update). Another
     // train then leaves the middle signal to the free run (next_sig_lr gives
     // STOP: APPROACH_1); the player's train still runs the pass ahead of its
     // front (0x508520), so the signal keeps its aspect for the train
@@ -246,7 +247,7 @@ void test_system() {
     driver->throttle = 0;
     driver->reverser = 0;
     train.add_velocity(-static_cast<float>(train.speed()) - 0.5f);
-    for (int i = 0; i < 10; ++i) train.step();
+    for (int i = 0; i < 40; ++i) train.step();
     train.add_velocity(-static_cast<float>(train.speed()));
     system.update(trains, simulation::train_step);
     check(system.heads()[1].aspect() == SignalAspect::approach_1, "not the player's: the middle signal runs free (APPROACH_1)");

@@ -550,6 +550,19 @@ Streams ( 1 Stream ( Triggers ( 2
     const auto halted = sound.trigger_pairs();
     check(halted && halted->known[0] == 1u && halted->on[0] == 0u, "Halt sets the pair off");
     check(send(45), "On passes again after Halt");
+    // What a network game sends: the codes through the pairs, once per
+    // change (a DLL posting On every step while on: rts1.exe sends it once).
+    const std::vector<std::uint32_t> steps{50, 50, 50, 9, 51, 51};
+    std::vector<std::uint32_t> sent;
+    for (const auto code : steps) {
+        inputs.discrete = std::span(&code, 1);
+        sound.update(0.01f, inputs, sink);
+        inputs.discrete = {};
+        sent.insert(sent.end(), sound.passed().begin(), sound.passed().end());
+    }
+    check(sent == std::vector<std::uint32_t>{50, 9, 51}, "passed(): a pair's repeated On and Off once, other codes each time");
+    sound.update(0.01f, inputs, sink);
+    check(sound.passed().empty(), "passed(): nothing on an update without codes");
 }
 
 // A stream plays one sound at a time (RTS 0x4A8C00): one-shots wait for a

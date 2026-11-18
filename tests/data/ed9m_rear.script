@@ -1,0 +1,46 @@
+# ED9M-0062 driven from its rear head car (GR, car 3), as a driver changes
+# ends: the front cab's door control off and its key out, then into the
+# rear cab. ed9m.dll's Run takes the other head car as its master's last
+# slave (Slaves[NumSlaves - 1]) and lets a cab work the doors only while
+# the other head car's door control is off (decompiled, 2026-11-18). The
+# host listed the slaves in train order: from the rear cab the last was a
+# motor car, the doors, the ЭПТ lamp and "Напряжение сети" went by the cab
+# itself and the passenger doors never opened (testers). From the master
+# outward the far head car is last, as at the front.
+#
+#   openrts-train-check <RTS root> --dll mdd_ED9M-0062 mdd_ED9M-0062_G mdd_ED9M-0062_M mdd_ED9M-0062_P mdd_ED9M-0062_GR --script tests/data/ed9m_rear.script
+1    voltage 25000 50
+# Both handles at once (testers 2026-11-18): the reverser to neutral and,
+# while it still moves, the controller to traction. ed9m.dll's CanSwitch
+# lets the controller go only with the reverser at 1 or 3 and reads its
+# State, which follows at the end of the animation: both went, and then
+# neither could move. The host shows the moving one where it is going.
+1.2  switch 1 2
+1.2  switch 0 6
+1.4  expect key0 == 5
+1.4  expect key1 == 2
+1.45 switch 1 3
+# The front cab: its door control (A_03, A_02) off, the key to neutral and out.
+1.5  switch 7 0
+1.7  switch 8 0
+2    switch 1 2
+2.5  switch 1 0
+# ChangeLoco makes the rear head car master once the front key is out.
+3    enter 3
+3.5  expect key1 == 0
+4    switch 1 2
+4.5  switch 35 1
+# Its door control on, the left doors (A_00, its own left) open.
+5    switch 7 1
+5.2  switch 8 1
+6    switch 25 0
+# Every car's left doors seen from the rear cab: the other side than the
+# front cab opens with the same switch.
+10   door 0 4 open
+10   door 1 2 open
+10   door 2 2 open
+10   door 3 2 open
+10   door 1 0 closed
+# The lamps (L_05 "Напряжение сети", L_12, L_11) read the first slave, the
+# car next to the cab: here the trailer P, so they stay lit as the DLL
+# means them to (the 0060's rear cab has its motor car MR there).

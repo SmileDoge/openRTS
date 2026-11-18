@@ -58,6 +58,17 @@ int main() {
         }
         std::cerr << "  at the stop it swings back " << -back * 1000.0f << " mm\n";
         check(back < -0.003f, "at the stop it nods back once");
+        {
+            // A long frame there (a load, a hitch): the head keeps its lag,
+            // no jump back to rest, no throw; then it settles as before.
+            HeadMotion held = head;
+            const auto before = held.lag();
+            held.hold(glm::vec3{});
+            check(glm::length(held.lag() - before) < 1e-6f && glm::length(held.velocity) == 0.0f,
+                  "a long frame: the lag kept, its speed gone (no jump)");
+            run(held, glm::vec3{}, glm::vec3{}, 3.0f, 60.0f);
+            check(std::abs(held.lag().z) < 0.001f, "and it settles from there");
+        }
         run(head, {}, {}, 6.0f, 60.0f);
         check(std::abs(head.lag().z) < 0.001f, "and settles");
     }
