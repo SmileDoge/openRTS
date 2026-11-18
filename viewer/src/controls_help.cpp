@@ -54,11 +54,12 @@ void draw_controls_help() {
         row("Q / E", "down / up");
         row("Shift", "faster");
         row("F", "free / orbit camera");
+        row("Ctrl+F", "from the cab (or on foot) to the free camera; again: back into the cab");
         row("V", "the camera follows the train");
         row("T", "track diagram (yellow lines) on / off");
         row("L", "switch and signal labels");
         row("F10", "renderer: RTS / experimental");
-        row("Pause", "pause");
+        row("Pause / F1", "pause");
         row("Alt+Enter", "full screen / window");
         ImGui::EndTable();
     }

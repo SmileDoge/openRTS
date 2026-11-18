@@ -363,7 +363,8 @@ const std::unordered_map<std::string_view, const char*>& russian() {
          "(как в RTS: одно качание, растущее со скоростью, вбок и вверх-вниз)"},
         {"(each body on its own springs over its bogies: the track's errors under each bogie, rail joints and switches, hunting, curves; bounce, pitch, sway, yaw and roll)",
          "(каждый кузов на своих рессорах над тележками: неровности пути под каждой тележкой, стыки и стрелки, виляние, кривые; подпрыгивание, галопирование, относ, виляние и крен)"},
-        {"Pause (Pause)", "Пауза (Pause)"},
+        {"Pause (Pause or F1)", "Пауза (Pause или F1)"},
+        {"from the cab (or on foot) to the free camera; again: back into the cab", "из кабины (или пешком) в свободную камеру; ещё раз — обратно в кабину"},
         // The start menu (openrts_game).
         {"RTS folder", "Папка RTS"},
         {"Read", "Прочитать"},
@@ -812,7 +813,7 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"When the dispatcher assigns your train, you sit at its desk.", "Когда диспетчер назначит поезд, вы сядете за его пульт."},
         {"When the dispatcher assigns your train, the camera follows it from above.", "Когда диспетчер назначит поезд, камера будет следить за ним сверху."},
         {"%d frames/s", "%d кадров/с"},
-        {"PAUSE (Pause)", "ПАУЗА (Pause)"},
+        {"PAUSE (Pause or F1)", "ПАУЗА (Pause или F1)"},
         {"Loading", "Загрузка"},
         {"Loading the route", "Загрузка маршрута"},
         {"Loading the train", "Загрузка поезда"},

@@ -323,8 +323,16 @@ public:
             demands.emergency = (connected && valve_out.emergency) || controls_.combined == 2 || vent;
             return;
         }
-        // The DLL's valve: its УР.
-        if (out.engine.equalising > 0.5f) demands.equalising = out.engine.equalising;
+        // The DLL's valve: its УР, through the cab's cocks as openRTS's valve
+        // goes: until 2026-11-18 the pipe followed it with the separating
+        // cock and the 367 shut (testers: a cab changed, both cocks shut, the
+        // pipe charged as the handle went to II).
+        if (out.engine.equalising > 0.5f) {
+            if (engine) controls_ = cab_.read(engine->brakes_library, out.switches, controls_);
+            const bool connected = controls_.combined != 1 && !controls_.blocked && !controls_.separated;
+            if (connected) demands.equalising = out.engine.equalising;
+            demands.equalising_kept = out.engine.equalising;
+        }
     }
     [[nodiscard]] bool rts_brakes() const override { return !air_ || air_->mode == DllAir::rts; }
 

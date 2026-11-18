@@ -900,7 +900,7 @@ public:
         }
         if (panel.paused) {
             // As RTS writes it over the picture.
-            const char* text = tr("PAUSE (Pause)");
+            const char* text = tr("PAUSE (Pause or F1)");
             const auto display = ImGui::GetIO().DisplaySize;
             const auto size = ImGui::CalcTextSize(text);
             auto* list = ImGui::GetForegroundDrawList();
@@ -1065,7 +1065,7 @@ public:
                 }
                 ImGui::TextDisabled("%s", tr("(1: a smooth push of the bogie, harder with the speed and on the diverging route; 0: none)"));
             }
-            ImGui::Checkbox(tr("Pause (Pause)"), &panel.paused);
+            ImGui::Checkbox(tr("Pause (Pause or F1)"), &panel.paused);
         }
 
         if (panel.tab == PanelState::Tab::graphics) {
@@ -1871,6 +1871,7 @@ struct CameraInput {
     bool kp7_down = false;
     bool inspector_key_down = false;
     bool tape_window_key_down = false; // F9
+    bool free_camera_key_down = false; // Ctrl+F
     int clicks = 0;            // left clicks in fly mode since the last scene_input()
     int releases = 0;          // left button let go (anywhere, over a panel too)
     double scroll = 0.0;       // wheel since the last scene_input()
@@ -2065,8 +2066,10 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const auto down = [window, typing](const int key) { return !typing && glfwGetKey(window, key) == GLFW_PRESS; };
     auto& camera = *input.camera;
 
-    // F is a cab key when the cab has the keyboard.
-    const bool toggle = down(GLFW_KEY_F) && !input.keyboard_captured;
+    // F is a cab key when the cab has the keyboard; Ctrl+F is the scene's
+    // (SceneInput::free_camera).
+    const bool ctrl = down(GLFW_KEY_LEFT_CONTROL) || down(GLFW_KEY_RIGHT_CONTROL);
+    const bool toggle = down(GLFW_KEY_F) && !ctrl && !input.keyboard_captured;
     if (toggle && !input.toggle_key_down) {
         camera.toggle_fly();
         if (!camera.fly) {
@@ -2111,6 +2114,9 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool f12 = pressed(GLFW_KEY_F12, input.inspector_key_down);
     // Ctrl+F9 the tape window (F9 alone is RTS's objectives, 0x402C88).
     const bool f9 = pressed(GLFW_KEY_F9, input.tape_window_key_down);
+    // Ctrl+F: no cab of the installed content assigns it (their letters,
+    // F among them, may all be the cab's; testers 2026-11-18).
+    const bool free_camera = pressed(GLFW_KEY_F, input.free_camera_key_down) && ctrl && !alt;
     const bool enter_now = down(GLFW_KEY_ENTER) || down(GLFW_KEY_KP_ENTER);
     const bool enter = enter_now && !input.enter_key_down;
     input.enter_key_down = enter_now;
@@ -2195,6 +2201,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
             .activity_menu = pressed(GLFW_KEY_F8, input.menu_key_down),
             .tape_window = f9 && ctrl,
+            .free_camera = free_camera,
         };
         engineer(captured);
         captured.keys = std::exchange(input.key_events, {});
@@ -2235,6 +2242,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
         .activity_menu = pressed(GLFW_KEY_F8, input.menu_key_down),
         .tape_window = f9 && ctrl,
+        .free_camera = free_camera,
     };
     engineer(result);
     result.keys = std::exchange(input.key_events, {});
@@ -3033,7 +3041,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (!panel.experimental_supported) renderer.set_shading_path(renderer::ShadingPath::rts_compatible);
         {
             // Pause: trains, DLLs, the clock and the sound stop; the free camera still flies.
-            const bool pause_key = !imgui_has_keyboard() && glfwGetKey(window.get(), GLFW_KEY_PAUSE) == GLFW_PRESS;
+            // Pause, as RTS; F1 too (openRTS's), for keyboards without Pause
+            // (laptops, testers 2026-11-18): no cab of the installed content
+            // assigns an F key, and RTS's F1 works only with Shift
+            // (0x402C88).
+            const bool shift = glfwGetKey(window.get(), GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
+                               || glfwGetKey(window.get(), GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+            const bool pause_key = !imgui_has_keyboard()
+                                   && (glfwGetKey(window.get(), GLFW_KEY_PAUSE) == GLFW_PRESS
+                                       || (glfwGetKey(window.get(), GLFW_KEY_F1) == GLFW_PRESS && !shift));
             if (pause_key && !input.pause_key_down) panel.paused = !panel.paused;
             input.pause_key_down = pause_key;
         }

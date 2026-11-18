@@ -772,6 +772,21 @@ The other two choices take the air after the valve from the model:
   the DLL's valve vented the pipe towards its own УР, still 0 after an
   emergency, which openRTS took for its ЭПК (testers: "ТМ моментально до
   0 почти падает").
+  The mode "the DLL's valve" reads the same cocks: its УР reaches the
+  pipe only with the separating cock open and the 367 in its operating
+  state. Until 2026-11-18 the pipe followed it through both shut (a cab
+  changed, both cocks shut, the handle at II: the pipe charged).
+  Checked (`openrts-train-check --air own|dll`, ED9M-0060, six cars):
+  after a vent, the pressure line's cock opened, then the brake pipe's,
+  the pipe charges from 0 in about 4 s and the main reservoir (the head
+  cars' `AirBrakesMainResVolume( 340 )` in litres, 2 x 170 l as the
+  real ЭД4М, joined by the feed pipe) falls 0.8 atm, as testers know
+  the real one (about an atmosphere). Kept as Brakes.dll does it: the
+  ЭД9М's "Кран напорной магистрали" sits in the 367's place
+  (`BR_367ID1 ( 75 )`), and a 367 off cuts the valve from the pipe, not
+  from the main reservoir, so its УР charges with that cock shut (the
+  real cock feeds the valve); the ТЭМ2 and ТУ2 map a real 367 and a
+  separating cock the same way.
 - At the start the pressures are those the DLLs set in Init; a pipe they
   charged has its reservoirs charged with it (`enter_new_train`): Brakes.dll
   sets the pipe (the ЭП2Д's 4.4) and leaves the ЗР and the РК at 0, so until

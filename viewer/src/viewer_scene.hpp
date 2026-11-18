@@ -146,6 +146,9 @@ struct SceneInput {
     bool activity_journal = false; // F11 (RTS): the scenario's messages
     bool activity_menu = false;    // F8 (RTS): the scenario's menu (reports)
     bool tape_window = false;      // Ctrl+F9 (openRTS): the tape window open or shut
+    // Ctrl+F (openRTS): from the engineer (in a cab, on foot) to the free
+    // camera where his eyes are; again, back into the driving cab (edge).
+    bool free_camera = false;
     // The engineer on foot (engineer.hpp), with the cab keys or without.
     bool walk_forward = false, walk_back = false, walk_left = false, walk_right = false; // arrows held
     bool walk_run = false;             // Shift held

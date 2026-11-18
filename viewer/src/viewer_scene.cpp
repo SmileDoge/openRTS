@@ -695,6 +695,25 @@ public:
             inspector_.pick(last_eye_, *direction, inspector_world());
             click = false;
         }
+        // Ctrl+F (openRTS): from the engineer to the free camera where his
+        // eyes are, as the inspector's "fly to" leaves him; again, back by
+        // the chair of the driving cab. In a cab with a DLL every letter may
+        // be the cab's, F among them, and nothing let the player out but the
+        // panel (testers 2026-11-18).
+        if (input.free_camera && train_) {
+            if (train_->walking()) {
+                const auto eye = camera.eye();
+                train_->set_walking(false, last_eye_);
+                train_->stop_following();
+                camera.fly = true;
+                camera.position = eye;
+                camera.target = eye + camera.forward() * camera.distance;
+            } else if (train_->has_driving_cab()) {
+                train_->enter_cab();
+            } else {
+                camera.toggle_fly();
+            }
+        }
         if (const auto fly = inspector_.take_fly_to()) {
             if (train_) {
                 if (train_->walking()) train_->set_walking(false, last_eye_);

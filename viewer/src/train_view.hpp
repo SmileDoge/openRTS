@@ -148,6 +148,8 @@ public:
     void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view = {});
     // The engineer into the driving cab's seat (--capture-cab).
     void enter_cab() { set_engineer(true); }
+    // Whether the player's train has a cab to go back into (Ctrl+F).
+    [[nodiscard]] bool has_driving_cab() const noexcept { return cab_ != nullptr; }
     // Walking is the player's, not a train's (the main panel's "On foot"):
     // on, he stands on the ground under `eye` and walks, into a cab of his
     // train by its door; off, the free camera.

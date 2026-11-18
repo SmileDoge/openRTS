@@ -171,6 +171,18 @@ EngExtended ( NumAxles ( 4 ) NumEngines ( 2 EngineAxles ( 2 0 1 ) EngineAxles ( 
         rig.run(10.0);
         check(rig.train->cars().back().cylinder > 2.0f, "dll: its fast vent brakes the whole train in emergency");
         check(rig.train->cars().front().main_reservoir > 6.0f, "dll: the compressor keeps the main reservoir");
+        // Its УР reaches the pipe through the cab's cocks, as openRTS's
+        // valve: the separating cock shut, the pipe stays vented (testers
+        // 2026-11-18: a cab changed, both cocks shut, the pipe charged).
+        rig.cab().engine.train_pipe_rate = 0.0f;
+        rig.cab().switches[5].state = 0;
+        rig.run(30.0);
+        auto* asked = rig.train->demands_of(0);
+        check(asked && asked->equalising < 0.0f && rig.train->cars().back().pipe < 0.5f,
+              "dll: the separating cock shut: its УР does not charge the pipe (" + std::to_string(rig.train->cars().back().pipe) + ")");
+        rig.cab().switches[5].state = 1;
+        rig.run(120.0);
+        check(rig.train->cars().back().pipe > 4.5f, "dll: open, the pipe charges to its УР (" + std::to_string(rig.train->cars().back().pipe) + ")");
     }
 
     // openRTS's valve on Brakes.dll's handle (switch 2: states I..VI).
