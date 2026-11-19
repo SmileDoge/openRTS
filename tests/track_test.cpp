@@ -340,7 +340,7 @@ void test_profile() {
                                           + end_node(10, pin(1, 1)) + end_node(11, pin(1, 0)),
                                       "", 11, 0));
     TrackTraveller lead(*net, 1, 50.0, true);
-    const auto profile = simulation::track_profile(lead, 500.0, 40.0, 10.0);
+    const auto profile = simulation::track_profile(*net, lead, 500.0, 40.0);
     check(near(profile.behind, 40.0) && near(profile.ahead, 150.0), "the profile stops at the end of the track");
     check(!profile.points.empty() && near(profile.points.front().distance, -40.0) && near(profile.points.back().distance, 150.0),
           "the profile runs from behind to ahead");
@@ -348,17 +348,22 @@ void test_profile() {
     const double up = profile.grade(60.0, 140.0);
     check(up > 3.9 && up < 4.1, "the rising part: about +4 per mille");
     TrackTraveller back(*net, 1, 150.0, false);
-    const auto reverse = simulation::track_profile(back, 40.0, 0.0, 10.0);
+    const auto reverse = simulation::track_profile(*net, back, 40.0, 0.0);
     check(reverse.grade(0.0, 40.0) < -3.9, "the other way it falls");
     // Its elements: level, then rising, the boundary at the sections' joint
     // (offset 100 on the node, 50 m ahead of the lead).
-    const auto elements = profile.elements(0.5, 30.0);
+    const auto elements = profile.elements();
     check(elements.size() == 2 && std::abs(elements[0].grade) < 0.1 && elements[1].grade > 3.9 && elements[1].grade < 4.1 &&
               near(elements[0].to, 50.0),
           "two elements: level to 50 m ahead, then about +4 per mille");
-    // On a span where 100 m is too short to write a number: one element, its chord.
-    const auto merged = profile.elements(0.5, 150.0);
-    check(merged.size() == 1 && merged[0].grade > 1.0 && merged[0].grade < 3.0, "too short: joined into one, the chord's grade");
+    // Tied to the track: 20 m further on the joint is 20 m nearer, the
+    // grades the same (they were the train's chords before, testers: they
+    // changed as the train came near).
+    TrackTraveller further(*net, 1, 70.0, true);
+    const auto moved = simulation::track_profile(*net, further, 500.0, 40.0).elements();
+    check(moved.size() == 2 && near(moved[0].to, 30.0) && std::abs(moved[1].grade - elements[1].grade) < 1e-6 &&
+              std::abs(moved[0].grade - elements[0].grade) < 1e-6,
+          "the elements stay with the track as the train moves");
 }
 
 int main() {

@@ -5,37 +5,62 @@
 
 namespace openrts::simulation {
 
-TrackProfile track_profile(const TrackTraveller& lead, const double ahead, const double behind, const double step) {
-    TrackProfile profile;
-    const double pace = (std::max)(step, 1.0);
-    std::vector<TrackProfilePoint> back;
-    {
-        // Behind: the same end turned round, its distances negative.
-        TrackTraveller walker = lead;
-        walker.reverse();
-        double travelled = 0.0;
-        while (travelled < behind) {
-            const auto moved = walker.move((std::min)(pace, behind - travelled));
-            travelled += moved.moved;
-            if (moved.moved <= 1e-6) break;
-            back.push_back({-travelled, walker.pose().y});
-            if (!moved.ok()) break;
-        }
-        profile.behind = travelled;
+namespace {
+
+// Metres from the traveller to the next joint of sections the way it goes
+// (0 at the end of its node: the move goes on into the next one).
+double to_joint(const TrackNetwork& network, const TrackTraveller& t) {
+    const auto* node = network.node(t.node());
+    if (!node || node->sections.empty()) return 0.0;
+    const auto& sections = node->sections;
+    const auto s = (std::min)(t.section(), sections.size() - 1);
+    // At a joint section() gives the section that starts there.
+    if (t.forward()) {
+        double left = sections[s].start + sections[s].length - t.offset();
+        if (left < 1e-4 && s + 1 < sections.size()) left = sections[s + 1].start + sections[s + 1].length - t.offset();
+        return (std::max)(left, 0.0);
     }
-    profile.points.reserve(back.size() + static_cast<std::size_t>(ahead / pace) + 2);
-    for (auto it = back.rbegin(); it != back.rend(); ++it) profile.points.push_back(*it);
-    profile.points.push_back({0.0, lead.pose().y});
-    TrackTraveller walker = lead;
+    double left = t.offset() - sections[s].start;
+    if (left < 1e-4 && s > 0) left = t.offset() - sections[s - 1].start;
+    return (std::max)(left, 0.0);
+}
+
+// From `start` the way it faces, joint by joint, to `limit` m: the points
+// at (sign × distance), the last one at the end.
+double walk(const TrackNetwork& network, TrackTraveller walker, const double limit, const double sign,
+            std::vector<TrackProfilePoint>& points) {
     double travelled = 0.0;
-    while (travelled < ahead) {
-        const auto moved = walker.move((std::min)(pace, ahead - travelled));
+    while (travelled < limit) {
+        double step = to_joint(network, walker);
+        // A joint under a centimetre (or a node's end): a centimetre on.
+        if (step < 0.01) step = 0.01;
+        step = (std::min)(step, limit - travelled);
+        const auto moved = walker.move(step);
         travelled += moved.moved;
-        if (moved.moved <= 1e-6) break;
-        profile.points.push_back({travelled, walker.pose().y});
+        if (moved.moved <= 1e-9) break;
+        const TrackProfilePoint point{sign * travelled, walker.pose().y};
+        // Within a few centimetres of the last one: the same joint.
+        if (!points.empty() && std::abs(points.back().distance - point.distance) < 0.05) points.back() = point;
+        else points.push_back(point);
         if (!moved.ok()) break;
     }
-    profile.ahead = travelled;
+    return travelled;
+}
+
+} // namespace
+
+TrackProfile track_profile(const TrackNetwork& network, const TrackTraveller& lead, const double ahead, const double behind) {
+    TrackProfile profile;
+    std::vector<TrackProfilePoint> back;
+    TrackTraveller turned = lead;
+    turned.reverse();
+    profile.behind = walk(network, turned, behind, -1.0, back);
+    for (auto it = back.rbegin(); it != back.rend(); ++it) profile.points.push_back(*it);
+    if (profile.points.empty() || std::abs(profile.points.back().distance) >= 0.05) profile.points.push_back({0.0, lead.pose().y});
+    std::vector<TrackProfilePoint> front;
+    profile.ahead = walk(network, lead, ahead, 1.0, front);
+    for (const auto& point : front)
+        if (point.distance > profile.points.back().distance + 0.05) profile.points.push_back(point);
     return profile;
 }
 
@@ -59,48 +84,21 @@ double TrackProfile::grade(const double from, const double to) const {
     return (height_at(high) - height_at(low)) / (high - low) * 1000.0;
 }
 
-std::vector<TrackProfileElement> TrackProfile::elements(const double tolerance, const double min_length) const {
+std::vector<TrackProfileElement> TrackProfile::elements(const double tolerance) const {
     std::vector<TrackProfileElement> result;
-    if (points.size() < 2) return result;
-    const auto chord = [&](const double from, const double to) { return grade(from, to); };
     for (std::size_t i = 1; i < points.size(); ++i) {
         const double from = points[i - 1].distance, to = points[i].distance;
         if (to - from <= 1e-6) continue;
         const double step = (points[i].height - points[i - 1].height) / (to - from) * 1000.0;
-        if (!result.empty() && std::abs(step - result.back().grade) <= tolerance) {
+        if (!result.empty() && (std::abs(step - result.back().grade) <= tolerance || to - from < 1.0)) {
             result.back().to = to;
-            result.back().grade = chord(result.back().from, to);
+            result.back().grade = grade(result.back().from, to);
+        } else if (!result.empty() && result.back().to - result.back().from < 1.0) {
+            // The one before was under a metre: this one takes it.
+            result.back().to = to;
+            result.back().grade = grade(result.back().from, to);
         } else {
             result.push_back({from, to, step});
-        }
-    }
-    // The short ones into a neighbour, the shortest first.
-    while (result.size() > 1) {
-        std::size_t shortest = 0;
-        for (std::size_t k = 1; k < result.size(); ++k)
-            if (result[k].to - result[k].from < result[shortest].to - result[shortest].from) shortest = k;
-        if (result[shortest].to - result[shortest].from >= min_length) break;
-        std::size_t other;
-        if (shortest == 0) other = 1;
-        else if (shortest + 1 == result.size()) other = shortest - 1;
-        else {
-            const double g = result[shortest].grade;
-            other = std::abs(result[shortest - 1].grade - g) <= std::abs(result[shortest + 1].grade - g) ? shortest - 1 : shortest + 1;
-        }
-        const std::size_t low = (std::min)(shortest, other), high = (std::max)(shortest, other);
-        result[low].to = result[high].to;
-        result[low].grade = chord(result[low].from, result[low].to);
-        result.erase(result.begin() + static_cast<std::ptrdiff_t>(high));
-        // Neighbours of one grade now: one element.
-        if (low + 1 < result.size() && std::abs(result[low + 1].grade - result[low].grade) <= tolerance) {
-            result[low].to = result[low + 1].to;
-            result[low].grade = chord(result[low].from, result[low].to);
-            result.erase(result.begin() + static_cast<std::ptrdiff_t>(low + 1));
-        }
-        if (low > 0 && std::abs(result[low - 1].grade - result[low].grade) <= tolerance) {
-            result[low - 1].to = result[low].to;
-            result[low - 1].grade = chord(result[low - 1].from, result[low - 1].to);
-            result.erase(result.begin() + static_cast<std::ptrdiff_t>(low));
         }
     }
     return result;

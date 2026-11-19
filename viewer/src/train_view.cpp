@@ -4840,12 +4840,12 @@ void TrainView::draw_profile_strip(const Unit& unit) {
         if (!lead) {
             profile_ = {};
         } else {
-            // A little more than shown, each way; a point every 10 m up to 5
-            // km shown, every 20 m beyond.
+            // A little more than shown, each way: the track's joints.
             const double margin = 0.25 * strip.span();
             const double ahead = (std::max)(right + margin, 100.0);
             const double behind = (std::max)(-left + margin, (std::max)(train.length(), 100.0) + 100.0);
-            profile_ = simulation::track_profile(*lead, ahead, behind, strip.span() > 5000.0 ? 20.0 : 10.0);
+            profile_ = simulation::track_profile(*network_, *lead, ahead, behind);
+            profile_elements_ = profile_.elements();
             profile_left_ = -profile_.behind;
             profile_right_ = profile_.ahead;
             for (const auto& [km, distance] : limits_->mileposts_along(*lead, ahead, behind)) {
@@ -4879,12 +4879,6 @@ void TrainView::draw_profile_strip(const Unit& unit) {
                 profile_marks_.push_back({place.siding ? ProfileMark::Kind::siding : ProfileMark::Kind::station, place.distance, place.name, 0});
             }
         }
-    }
-    // The elements for the span shown (again when it changed).
-    const double shortest = strip.shortest_element();
-    if (profile_built_at_ == now || std::abs(shortest - profile_element_length_) > 1e-6) {
-        profile_element_length_ = shortest;
-        profile_elements_ = profile_.elements(0.5, shortest);
     }
     ProfileView view;
     view.profile = &profile_;
@@ -5321,8 +5315,6 @@ void TrainView::draw_hud() {
         }
         end_panel(limits_place_);
     }
-    if (!drive_panel_) drive_panel_ = remembered("drive_panel").value_or("1") != "0";
-    if (*drive_panel_) draw_drive_panel(*unit);
     if (!profile_strip_on_) profile_strip_on_ = remembered("profile_strip").value_or("0") == "1";
     if (*profile_strip_on_) draw_profile_strip(*unit);
     if (stations_panel_) {
@@ -5368,137 +5360,6 @@ void TrainView::draw_hud() {
         }
         end_panel(stations_place_);
     }
-#endif
-}
-
-void TrainView::toggle_drive_panel() {
-    drive_panel_ = !drive_panel_.value_or(true);
-    remember("drive_panel", *drive_panel_ ? "1" : "0");
-}
-
-void TrainView::draw_drive_panel(const Unit& unit) {
-#ifdef OPENRTS_HAS_IMGUI
-    const auto& train = *unit.train;
-    const auto display = ImGui::GetIO().DisplaySize;
-    const float margin_x = display.x > 0.0f ? 10.0f / display.x : 0.0f;
-    const float margin_y = display.y > 0.0f ? 60.0f / display.y : 0.0f;
-    if (begin_panel("##drive", drive_place_, 1.0f - margin_x, margin_y)) {
-        const ImVec4 dim{0.62f, 0.66f, 0.70f, 1.0f};
-        const auto caption = [&](const char* text) { ImGui::TextColored(dim, "%s", text); };
-        const auto big = [&](ImFont* font, const ImVec4& colour, const char* text) {
-            if (font) ImGui::PushFont(font);
-            else ImGui::SetWindowFontScale(1.8f);
-            ImGui::TextColored(colour, "%s", text);
-            if (font) ImGui::PopFont();
-            else ImGui::SetWindowFontScale(1.0f);
-        };
-        const float speed = std::abs(static_cast<float>(train.speed())) * 3.6f;
-        const auto limit = limit_of(unit);
-        const float allowed = limit.current * 3.6f;
-        ImGui::TextUnformatted(speed > 0.3f ? tr("MOVING") : tr("STANDING"));
-        ImGui::Separator();
-        // The speed and its limit: green within it, amber close, red over.
-        if (ImGui::BeginTable("##drive_speed", 2, ImGuiTableFlags_SizingFixedFit)) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            caption(tr("speed"));
-            char text[32];
-            std::snprintf(text, sizeof text, "%.0f", speed);
-            const ImVec4 colour = allowed > 0.0f && speed > allowed + 0.5f ? ImVec4{1.0f, 0.3f, 0.25f, 1.0f}
-                                  : allowed > 0.0f && speed > allowed - 3.0f ? ImVec4{1.0f, 0.75f, 0.2f, 1.0f}
-                                                                             : ImVec4{0.55f, 0.95f, 0.35f, 1.0f};
-            big(title_font(), colour, text);
-            const auto i = &unit == &units_.front() ? driven_car() : 0;
-            const float accel = i < train.cars().size() ? train.cars()[i].acceleration : 0.0f;
-            ImGui::TextColored(dim, tr("%+.2f m/s2"), accel);
-            ImGui::TableNextColumn();
-            ImGui::Dummy({16.0f, 0.0f});
-            ImGui::SameLine();
-            ImGui::BeginGroup();
-            caption(tr("limit"));
-            std::snprintf(text, sizeof text, allowed > 0.0f ? "%.0f" : "-", allowed);
-            big(title_font(), ImVec4{0.95f, 0.95f, 0.95f, 1.0f}, text);
-            if (limit.ahead > 0.0f && limit.ahead * 3.6f < allowed - 0.5f) {
-                ImGui::TextColored(dim, tr("%.0f in %.0f m"), limit.ahead * 3.6f, limit.ahead_distance);
-            }
-            ImGui::EndGroup();
-            ImGui::EndTable();
-        }
-        ImGui::Separator();
-        // The driven car's pressures, kgf/cm2 (atm).
-        if (const auto i = &unit == &units_.front() ? driven_car() : SIZE_MAX; i < train.cars().size()) {
-            const auto& state = train.cars()[i];
-            const auto ur = equalising_of(0, i);
-            if (ImGui::BeginTable("##drive_air", 4, ImGuiTableFlags_SizingStretchSame)) {
-                for (const char* name : {tr("TM"), tr("TC"), tr("UR"), tr("GR")}) {
-                    ImGui::TableNextColumn();
-                    caption(name);
-                }
-                const float values[4] = {state.pipe, (std::max)(state.cylinder, state.independent), ur.value_or(-1.0f), state.main_reservoir};
-                for (const float v : values) {
-                    ImGui::TableNextColumn();
-                    char text[16];
-                    std::snprintf(text, sizeof text, v >= 0.0f ? "%.1f" : "-", v);
-                    big(large_font(), ImVec4{0.95f, 0.95f, 0.95f, 1.0f}, text);
-                }
-                ImGui::EndTable();
-            }
-            caption(tr("pressure, kgf/cm2"));
-            ImGui::Separator();
-        }
-        // The next signal: its colour, its name (литера) or aspect, how far.
-        caption(tr("next signal"));
-        if (const auto next = signals_ ? signals_->ahead(train) : simulation::SignalAhead{}; next.valid) {
-            using formats::SignalAspect;
-            const ImVec4 colour = next.aspect == SignalAspect::stop ? ImVec4{1.0f, 0.25f, 0.2f, 1.0f}
-                                  : next.aspect == SignalAspect::stop_and_proceed || next.aspect == SignalAspect::restricting
-                                      ? ImVec4{0.9f, 0.9f, 0.95f, 1.0f}
-                                  : next.aspect == SignalAspect::clear_1 || next.aspect == SignalAspect::clear_2 ? ImVec4{0.3f, 0.9f, 0.35f, 1.0f}
-                                                                                                                  : ImVec4{1.0f, 0.82f, 0.2f, 1.0f};
-            auto* list = ImGui::GetWindowDrawList();
-            const auto at = ImGui::GetCursorScreenPos();
-            const float h = ImGui::GetTextLineHeight();
-            list->AddCircleFilled({at.x + h * 0.4f, at.y + h * 0.5f}, h * 0.32f, ImGui::GetColorU32(colour));
-            ImGui::Dummy({h * 0.9f, h});
-            ImGui::SameLine();
-            std::string name = signal_names_ ? signal_names_(next.object) : std::string{};
-            if (name.empty()) name = formats::to_string(next.aspect);
-            ImGui::TextUnformatted(name.c_str());
-            ImGui::SameLine();
-            char text[32];
-            std::snprintf(text, sizeof text, next.distance >= 1000.0 ? tr("%.2f km") : tr("%.0f m"),
-                          next.distance >= 1000.0 ? next.distance / 1000.0 : next.distance);
-            ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize(text).x));
-            ImGui::TextUnformatted(text);
-        } else {
-            ImGui::TextColored(dim, "%s", tr("none ahead"));
-        }
-        ImGui::Separator();
-        // The next platform.
-        caption(tr("platform"));
-        const auto places = stations_ahead(unit);
-        const auto platform = std::find_if(places.begin(), places.end(), [](const PlaceAhead& p) { return !p.siding; });
-        if (platform != places.end()) {
-            ImGui::TextUnformatted(platform->name.c_str());
-            ImGui::TextColored(dim, platform->distance >= 1000.0 ? tr("%.2f km") : tr("%.0f m"),
-                               platform->distance >= 1000.0 ? platform->distance / 1000.0 : platform->distance);
-        } else {
-            ImGui::TextColored(dim, "%s", tr("none within 40 km"));
-        }
-        ImGui::Separator();
-        // The time of day and the frame rate.
-        const auto seconds = static_cast<long long>(day_time_) % 86400;
-        ImGui::Text("%lld:%02lld:%02lld", seconds / 3600, seconds % 3600 / 60, seconds % 60);
-        ImGui::SameLine();
-        char fps[24];
-        std::snprintf(fps, sizeof fps, "%.0f FPS", ImGui::GetIO().Framerate);
-        ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX() + 12.0f, ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize(fps).x));
-        ImGui::TextColored(dim, "%s", fps);
-        ImGui::TextColored(dim, "%s", tr("F4: hide"));
-    }
-    end_panel(drive_place_);
-#else
-    (void)unit;
 #endif
 }
 

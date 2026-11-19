@@ -35,7 +35,7 @@ ImU32 grade_colour(const double grade, const int alpha) {
 }
 #endif
 
-// "−0,4": one decimal, the comma, a true minus.
+// "-0,4": one decimal, the comma.
 std::string grade_text(const double grade) {
     const double shown = std::round(grade * 10.0) / 10.0;
     char buffer[32];
@@ -43,7 +43,8 @@ std::string grade_text(const double grade) {
     std::string text = buffer;
     for (auto& c : text)
         if (c == '.') c = ',';
-    if (shown < 0.0) return "\xE2\x88\x92" + text;
+    // A hyphen for the minus: the panels' font has no U+2212 (testers: "?9,9").
+    if (shown < 0.0) return "-" + text;
     if (shown > 0.0) return "+" + text;
     return text;
 }
@@ -57,18 +58,6 @@ float ProfileStrip::height() {
     return ImGui::GetFontSize() * 9.8f;
 #else
     return 0.0f;
-#endif
-}
-
-double ProfileStrip::shortest_element() const {
-#ifdef OPENRTS_HAS_IMGUI
-    const float width = ImGui::GetIO().DisplaySize.x - ImGui::GetFontSize() * 1.2f;
-    if (width <= 1.0f) return span();
-    // A number like "−12,5" and a little room either side.
-    const float label = ImGui::CalcTextSize("â" "12,5").x + ImGui::GetFontSize() * 0.6f;
-    return span() * static_cast<double>(label / width);
-#else
-    return span();
 #endif
 }
 
@@ -113,43 +102,34 @@ void ProfileStrip::draw(const ProfileView& view) {
             low = (std::min)(low, p.height);
             high = (std::max)(high, p.height);
         }
-        if (low > high) low = high = profile.height_at(0.0);
+        // The joints are far apart: the edges' heights too.
+        for (const double edge : {left, right}) {
+            low = (std::min)(low, profile.height_at(edge));
+            high = (std::max)(high, profile.height_at(edge));
+        }
         const double middle = (low + high) * 0.5;
         const double range = (std::max)(high - low, 6.0) * 1.15;
         low = middle - range * 0.5;
         high = middle + range * 0.5;
         const auto y_of = [&](const double h) { return bottom - static_cast<float>((h - low) / (high - low)) * (bottom - top); };
 
-        // Slightly smoothed: the mean of two points either side.
+        // The line through the track's joints as they are (each stretch of
+        // one grade), by its grade's colour.
         const auto& points = profile.points;
-        const auto smoothed = [&](const std::size_t i) {
-            const std::size_t from = i >= 2 ? i - 2 : 0, to = (std::min)(i + 2, points.size() - 1);
-            double sum = 0.0;
-            for (std::size_t k = from; k <= to; ++k) sum += points[k].height;
-            return sum / static_cast<double>(to - from + 1);
-        };
         draw->PushClipRect(ImVec2(x0, top - font), ImVec2(x1, bottom), true);
         for (std::size_t i = 1; i < points.size(); ++i) {
             const auto& a = points[i - 1];
             const auto& b = points[i];
             if (b.distance < left || a.distance > right) continue;
-            const double grade = profile.grade((a.distance + b.distance) * 0.5 - 50.0, (a.distance + b.distance) * 0.5 + 50.0);
-            const ImVec2 pa(x_of(a.distance), y_of(smoothed(i - 1)));
-            const ImVec2 pb(x_of(b.distance), y_of(smoothed(i)));
+            const double grade = profile.grade(a.distance, b.distance);
+            // Cut to the strip (a joint may be kilometres off).
+            const double from = (std::max)(a.distance, left - 1.0), to = (std::min)(b.distance, right + 1.0);
+            const ImVec2 pa(x_of(from), y_of(profile.height_at(from)));
+            const ImVec2 pb(x_of(to), y_of(profile.height_at(to)));
             draw->AddQuadFilled(pa, pb, ImVec2(pb.x, bottom), ImVec2(pa.x, bottom), grade_colour(grade, 45));
             draw->AddLine(pa, pb, grade_colour(grade, 255), 2.0f);
         }
-        const auto line_y = [&](const double d) {
-            // The smoothed line's height at d.
-            const auto after = std::lower_bound(points.begin(), points.end(), d,
-                                                [](const simulation::TrackProfilePoint& p, const double v) { return p.distance < v; });
-            if (after == points.begin()) return y_of(smoothed(0));
-            if (after == points.end()) return y_of(smoothed(points.size() - 1));
-            const auto i = static_cast<std::size_t>(after - points.begin());
-            const double span = points[i].distance - points[i - 1].distance;
-            const double t = span > 1e-9 ? (d - points[i - 1].distance) / span : 1.0;
-            return y_of(smoothed(i - 1) + (smoothed(i) - smoothed(i - 1)) * t);
-        };
+        const auto line_y = [&](const double d) { return y_of(profile.height_at(d)); };
         // The kilometre posts: a faint line and the kilometre under it.
         float km_end = -1e9f;
         for (const auto& mark : view.marks) {
