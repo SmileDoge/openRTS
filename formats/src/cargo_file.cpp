@@ -257,7 +257,7 @@ CargoCatalog parse_cargo_catalog(const std::string_view bytes) {
     }
     TextNode root;
     if (!detail::read_text_tree(*text_value, root)) {
-        catalog.error = "the cargo file has no blocks";
+        complete_catalog(catalog);
         return catalog;
     }
     if (const auto* types = find(root, "cargotypes")) {
