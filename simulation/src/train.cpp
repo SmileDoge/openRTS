@@ -7,6 +7,7 @@
 #include "realistic_air.hpp"
 
 #include <openrts/simulation/brake_shoes.hpp>
+#include <openrts/simulation/track_geometry.hpp>
 
 #include <algorithm>
 #include <random>
@@ -1935,9 +1936,8 @@ void Train::sway() {
             if (motion.seed == 0) motion.seed = next_body_seed();
             const auto modes = body_modes(*car.definition, mass_of(car), motion.seed);
             motion.input.speed = std::abs(car.velocity);
-            // The curve's pull; the track has no cant here, and a line's
-            // cant takes about half of it at its usual speeds.
-            motion.input.lateral_acceleration = 0.5f * car.velocity * car.velocity * car.curvature;
+            motion.input.lateral_acceleration =
+                car.velocity * car.velocity * car.curvature * std::cos(car.cant) - 9.81f * std::sin(car.cant);
             motion.input.acceleration = car.acceleration;
             const float ahead = car.bogie_ahead > 0.0f ? car.bogie_ahead : car.definition->length * 0.35f;
             const float behind = car.bogie_behind > 0.0f ? car.bogie_behind : car.definition->length * 0.35f;
@@ -1963,7 +1963,8 @@ void Train::sway() {
         const float v = car.velocity;
         const auto* q = wagon.frame_osc_correction;
         // Lateral: outwards of the curve, the body moves against the turn.
-        const float centrifugal = -q[0] * m * v * v * car.curvature;
+        const float centrifugal =
+            -q[0] * m * (v * v * car.curvature * std::cos(car.cant) - 9.81f * std::sin(car.cant));
         const float hunting = std::sin(car.hunting_phase) * (v * 0.008f * (std::max)(wagon.mass, 1.0f) * q[0]);
         car.hunting_phase += v * 0.3f * m * dt * q[1] / damping;
         if (car.hunting_phase > 3.14159265f) car.hunting_phase -= 6.28318531f;
@@ -2149,6 +2150,12 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
             if (turn > pi * 0.5) turn -= pi;
             if (turn < -pi * 0.5) turn += pi;
             car.curvature = distance > 0.5 ? static_cast<float>(turn / distance) : 0.0f;
+        }
+        {
+            const float target = cant_angle(car.curvature, car.radius, settings_.cant_reference);
+            const float pace = (std::max)(std::abs(car.velocity), 5.0f);
+            const float alpha = 1.0f - std::exp(-pace * static_cast<float>(train_step) / 25.0f);
+            car.cant += (target - car.cant) * alpha;
         }
         // Rail joints (RTS 0x4F5B34): a junction event when a bogie changes
         // node; a joint event when it passes a rail joint along the node,

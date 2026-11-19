@@ -61,6 +61,7 @@ struct TrainSettings {
     BodyMotionModel body_motion = BodyMotionModel::rts;
     // openRTS's body motion: the push aside at switches, a factor (0: none).
     float switch_throws = 1.0f;
+    float cant_reference = 25.0f;
     // openRTS: the rails' state for the wheels' adhesion (adhesion.hpp): rts
     // keeps RTS's traction limit; any other scales it, and under the
     // realistic air the brakes slide (юз) and the shoes wet and warm.
@@ -339,6 +340,7 @@ struct CarState {
     float coupler_force{}; // to the car behind, first sub-step
     float pitch{};       // rad, positive uphill towards the train front
     float radius{};      // curve radius under the car, 0 straight
+    float cant{};
     // Brakes, atm.
     float pipe{}, auxiliary{}, cylinder{}, independent{}, control{}, charging_pipe{};
     float ep = -1.0f;
@@ -646,6 +648,7 @@ public:
     void set_body_motion(BodyMotionModel model) noexcept;
     // TrainSettings::switch_throws.
     void set_switch_throws(float factor) noexcept { settings_.switch_throws = factor; }
+    void set_cant_reference(float metres_per_second) noexcept { settings_.cant_reference = metres_per_second; }
     [[nodiscard]] CouplerModel coupler_model() const noexcept { return settings_.coupler_model; }
     [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
 
