@@ -151,6 +151,53 @@ EngExtended ( AuxLibraries ( AuxLibrary (
         check(with(" KLUB_PCOUNT ( 4 ) KLUB_PIT1 ( 104 ) KLUB_PIT1 ( 93 ) KLUB_PIT1 ( 94 ) KLUB_PIT1 ( 54 )") == std::vector<std::int32_t>{104},
               "ЧС7: KLUB_PIT1 the first given, 2 .. 4 missing (on)");
         check(with(" KLUB_PCOUNT ( 2 ) KLUB_PIT1 ( 58 ) KLUB_PIT2 ( 59 )") == (std::vector<std::int32_t>{58, 59}), "ЭД9М: both given");
+        // The assistant's ALSN lamps, KLUB_B1POM1 .. KLUB_B8POM1 (the ЧС7's
+        // 190 .. 197): until 2026-11-19 none was read, so openRTS's КЛУБ never
+        // lit them and Brakes.dll's last stayed on.
+        const auto text = "Wagon ( loco\n Type ( Engine )\n Mass ( 100t )\n" + common + R"()
+Engine ( loco Type ( Electric ) MaxPower ( 3000kW ) MaxForce ( 300kN ) )
+EngExtended ( AuxLibraries ( AuxLibrary (
+    AuxLibraryName ( "BRAKES" )
+    AuxLibraryModule ( "../mdd_Libraries/Brakes/Brakes.dll" )
+    AuxLibraryParameters ( 9 PB_SETUP ( 7 ) KLUB_B1POM1 ( 190 ) KLUB_B2POM1 ( 191 ) KLUB_B3POM1 ( 192 ) KLUB_B4POM1 ( 193 )
+        KLUB_B5POM1 ( 194 ) KLUB_B6POM1 ( 195 ) KLUB_B7POM1 ( 196 ) KLUB_B8POM1 ( 197 ) )
+) ) ))";
+        const auto engine = formats::parse_wagon(text);
+        const auto lamps = engine.engine ? trainplugin::klub_parameters(*engine.engine).cabs[0].lamps
+                                         : decltype(trainplugin::KlubCabParameters::lamps){};
+        bool all = true;
+        for (std::size_t k = 0; k < lamps.size(); ++k) all = all && lamps[k] == static_cast<std::int32_t>(190 + k);
+        check(all, "ЧС7: KLUB_B1POM1 .. KLUB_B8POM1 read as the lamps 190 .. 197");
+    }
+
+    // Two cabs (the ЭП2К-025's ids): each cab's KLUB_*<n> and PB_*<n>, and
+    // the working one by its 367 in BR_367OPPOL (Brakes.dll's SwitchKLUB).
+    {
+        const auto text = "Wagon ( loco\n Type ( Engine )\n Mass ( 100t )\n" + common + R"()
+Engine ( loco Type ( Electric ) MaxPower ( 3000kW ) MaxForce ( 300kN ) )
+EngExtended ( AuxLibraries ( AuxLibrary (
+    AuxLibraryName ( "BRAKES" )
+    AuxLibraryModule ( "../mdd_Libraries/Brakes/Brakes.dll" )
+    AuxLibraryParameters ( 14 PB_SETUP ( 7 ) BR_NUMCABS ( 2 ) BR_367OPPOL ( 2 ) BR_367ID1 ( 79 ) BR_367ID2 ( 78 )
+        PB_EPKKEY1 ( 102 ) PB_EPKKEY2 ( 2 ) KLUB_DBIL1 ( 180 ) KLUB_DBIL2 ( 181 ) KLUB_BKID1 ( 402 ) KLUB_BKID2 ( 432 )
+        KLUB_B1POM1 ( 98 ) KLUB_B1POM2 ( 106 ) PB_RB2 ( 37 ) )
+) ) ))";
+        const auto engine = formats::parse_wagon(text);
+        const auto p = engine.engine ? trainplugin::klub_parameters(*engine.engine) : trainplugin::KlubParameters{};
+        check(p.cabs.size() == 2, "ЭП2К: two cabs");
+        if (p.cabs.size() == 2) {
+            check(p.cabs[0].screen == 180 && p.cabs[1].screen == 181 && p.cabs[0].epk_key == 102 && p.cabs[1].epk_key == 2 &&
+                      p.cabs[0].lamps[0] == 98 && p.cabs[1].lamps[0] == 106 && p.cabs[1].rb == 37 && p.cabs[0].rb == -1,
+                  "ЭП2К: each cab's ids");
+            const auto* k1 = p.cabs[0].key(402);
+            const auto* k2 = p.cabs[1].key(432);
+            check(k1 && k2 && k1->key == simulation::KlubKey::command && k2->key == simulation::KlubKey::command && !p.cabs[0].key(432),
+                  "ЭП2К: each cab's keys");
+            std::vector<dllhost::SwitchState> switches(200);
+            check(p.working_cab(switches) == -1, "ЭП2К: no 367 at 2, no working cab");
+            switches[78].state = 2;
+            check(p.working_cab(switches) == 1, "ЭП2К: the second cab's 367 at 2, the second works");
+        }
     }
 
     // EngineAxles ( count axle ... ) in EngExtended: each motor its own

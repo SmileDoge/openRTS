@@ -383,6 +383,21 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.klub_ed9m_modes COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_klub_modes.script" --klub shadow)
+    # Its screens beside Brakes.dll's: the БЛОК (2ЭС6, ЭП20), KLUB_BILTYPE 2
+    # (ЭП2К), two cabs (ЭП20, ЭП2К, ЭП1), САУТ's speed (ЭП1); standing, the
+    # ЭК, К799 and the aspects (tests/data/golden/klub_*.script).
+    add_test(NAME openrts.content.klub_2es6 COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_2ES6-114 mdd_2ES6-114a mdd_2ES6-114b --start on --seconds 66
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/klub_2es6.script" --klub shadow)
+    add_test(NAME openrts.content.klub_ep20 COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_EP20-001 mdd_EP20-001 --start on --seconds 66
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/klub_ep20.script" --klub shadow)
+    add_test(NAME openrts.content.klub_ep2k COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_EP2K-025 mdd_EP2k-025 --start on --seconds 66
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/klub_ep2k.script" --klub shadow)
+    add_test(NAME openrts.content.klub_ep1 COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_EP1-002 mdd_EP1-002_RTS --start on --seconds 66
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/klub_ep1.script" --klub shadow)
     # The same in the game's way: openRTS's КЛУБ in place of Brakes.dll's
     # (Brakes.dll's switched off), on the realistic air and openRTS's brakes.
     add_test(NAME openrts.content.klub_ed9m_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"

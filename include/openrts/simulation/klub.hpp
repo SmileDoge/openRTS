@@ -54,6 +54,8 @@ struct KlubSettings {
     bool has_screen = true;      // KLUB_DBIL given (the target's beep)
     bool cassette_given = false; // KLUB_KASS given: ВВОД's confirmation needs the cassette in
     bool block_mode = false;     // BLOCK_MODE (the БЛОК's whistle codes)
+    std::uint32_t screen_type = 0;  // KLUB_BILTYPE (2: the ЭП2К's screen)
+    bool block_scale_150 = false;   // BLOCK_MODE 1: the БЛОК's bars to 150 km/h (else 300)
 };
 
 // What the КЛУБ gets this step.
@@ -147,7 +149,11 @@ struct KlubState {
     float kon_timer{};                    // + 16, s
     bool kon_vented = false;              // + 20
     bool epk_bit = false;                 // var + 32 bit 1
-    bool saut_rules = false;              // САУТ's speed in place of the КЛУБ's (the screen's "С")
+    bool saut_rules = false;              // САУТ's speed in place of the КЛУБ's (the screen's "С", "САУТ" on the БЛОК)
+    // Command 799 waits for its speed: on white only once it is entered (the
+    // real КЛУБ-У's way; Brakes.dll's is on white at once, at the speed
+    // before). openRTS's own, not Brakes.dll's.
+    bool white_799_entry = false;
     std::uint32_t drawn_flags = klub_flag::train_mode; // `flags` where the redraw shows the request (before its overspeed check)
     bool started = false;
 };

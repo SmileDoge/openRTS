@@ -58,6 +58,8 @@
 // --klub openrts: openRTS's КЛУБ in place of Brakes.dll's, as the game's
 // setting has it (LegacyConsist::set_own_klub; step 3.4): Brakes.dll's
 // switched off, the realistic air (--air own unless given).
+// A script line `klub openrts` / `klub brakes` switches it on the way
+// (with --air own or bpm).
 //
 // Exit code 0: every expectation held; 1: one failed; 2: could not run.
 
@@ -72,6 +74,7 @@
 #include <fstream>
 #include <optional>
 #include <sstream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -525,12 +528,14 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             return 2;
         }
         world.record_aux_vars = true;
-        std::printf("openRTS's КЛУБ beside Brakes.dll's: PB_SETUP %u, ALSN_DELAY %.1f, KLUB_GRSPD %.0f, %zu keys\n", klub.settings.setup,
-                    klub.settings.alsn_delay, klub.settings.green_speed, klub.keys.size());
+        std::printf("openRTS's КЛУБ beside Brakes.dll's: PB_SETUP %u, ALSN_DELAY %.1f, KLUB_GRSPD %.0f, %zu cabs, %zu keys\n",
+                    klub.settings.setup, klub.settings.alsn_delay, klub.settings.green_speed, klub.cabs.size(), klub.cabs[0].keys.size());
     }
     simulation::KlubState klub_state;
     simulation::KlubOutput klub_out;
-    simulation::KlubScreen klub_screen;
+    std::vector<simulation::KlubScreen> klub_screens(klub.cabs.size()); // a cab's each
+    bool klub_alsn_on = false; // Engine::ALSNOn: the ЭПК key last turned, of any cab
+    bool klub_799_settling = false; // command 799's speed entered, the screen not redrawn since
     float klub_last_ur = 0.0f, klub_last_gauge = 0.0f; // the last step's (updateKLUB draws before the brakes run)
     std::vector<simulation::KlubPress> klub_keys;
     // The cab's switches as they stood in the step before: what Brakes.dll
@@ -547,8 +552,11 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     const auto operated = [&](const std::uint32_t id, const std::uint32_t state) {
         if (!klub_shadow) return;
         const auto i = static_cast<std::int32_t>(id);
-        if (state != 0)
-            if (const auto* press = klub.key(i)) klub_keys.push_back(*press);
+        // The working cab's keys only (Brakes.dll's SwitchKLUB).
+        const auto* now = consist->output(player);
+        const int cab = now ? klub.working_cab(now->switches) : 0;
+        if (state != 0 && cab >= 0)
+            if (const auto* press = klub.cabs[static_cast<std::size_t>(cab)].key(i)) klub_keys.push_back(*press);
     };
     // One step of openRTS's КЛУБ after the host's, on what Brakes.dll had.
     const auto shadow_step = [&](const double now) {
@@ -566,7 +574,8 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         const auto state_in = [](const std::vector<dllhost::SwitchState>& list, const std::int32_t id) {
             return id >= 0 && static_cast<std::size_t>(id) < list.size() ? list[static_cast<std::size_t>(id)].state : 0u;
         };
-        if (klub_switches.empty()) klub_switches = out->switches; // the first step: as they stand
+        const bool first_step = klub_switches.empty();
+        if (first_step) klub_switches = out->switches; // the first step: as they stand
         const auto on = [&](const std::int32_t id) { return state_in(klub_switches, id) != 0; };
         // Switched after this step's Run: a switch whose state changed.
         const auto moved = [&](const std::int32_t id) { return state_in(klub_switches, id) != state_in(out->switches, id); };
@@ -600,23 +609,40 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         in.limit = limit;
         in.next_limit = world.next_limit;
         in.next_limit_distance = world.next_limit_distance;
+        // Powered unless one of its switches is there and at 0 (0x4015A4).
         in.powered = true;
-        for (const auto id : klub.power) in.powered = in.powered && on(id);
-        in.epk_key = on(klub.epk_key);
-        in.rb_held = on(klub.rb);
-        in.tskbm = on(klub.tskbm);
-        in.saut = (klub.settings.setup & 1) && on(klub.saut);
+        for (const auto id : klub.power) {
+            const bool there = id >= 0 && static_cast<std::size_t>(id) < klub_switches.size();
+            in.powered = in.powered && (!there || on(id));
+        }
+        // The working cab's devices; the РБ, the РБС and the ЭПК key of any
+        // (Switched), the key last turned setting Engine::ALSNOn.
+        const int working = klub.working_cab(klub_switches);
+        const auto& wc = klub.cabs[static_cast<std::size_t>(working < 0 ? 0 : working)];
+        if (first_step) {
+            klub_alsn_on = false;
+            for (const auto& c : klub.cabs) klub_alsn_on = klub_alsn_on || on(c.epk_key);
+        }
+        in.epk_key = klub_alsn_on;
+        for (const auto& c : klub.cabs) {
+            in.rb_held = in.rb_held || on(c.rb);
+            in.rb = in.rb || moved(c.rb);
+            in.rbs = in.rbs || moved(c.rbs);
+            if (moved(c.epk_key)) {
+                in.epk_key_turned = true;
+                in.epk_key_to = state_in(out->switches, c.epk_key) != 0;
+            }
+        }
+        if (in.epk_key_turned) klub_alsn_on = in.epk_key_to;
+        in.tskbm = on(wc.tskbm);
+        in.saut = (bits(4) & 0x40u) != 0; // САУТ's own "on" (Brakes.dll's var + 4 bit 0x40)
         in.saut_permitted = at(256); // САУТ is not openRTS's yet: Brakes.dll's
         in.wheelslip = out->engine.wheelslip != 0;
         const auto& car = train.cars()[player];
         in.cylinder = (std::max)(car.cylinder, car.independent);
         in.day_time = world.day_time;
-        in.cassette = on(klub.cassette);
+        in.cassette = on(wc.cassette);
         in.keys = klub_keys;
-        in.rb = moved(klub.rb);
-        in.rbs = moved(klub.rbs);
-        in.epk_key_turned = moved(klub.epk_key);
-        in.epk_key_to = state_in(out->switches, klub.epk_key) != 0;
         // The ЭПК key turned on at Init (the train's DLL sets it: Switched,
         // its 903 and the КЛУБ's beep in the first step).
         if (shadow_steps == 0 && in.epk_key) in.epk_key_turned = in.epk_key_to = true;
@@ -625,7 +651,15 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         klub_switches = out->switches;
         ++shadow_steps;
         // Set against Brakes.dll's (docs/reverse/brakes-dll.md §11's offsets).
+        // While command 799 waits for its speed openRTS's КЛУБ is not on
+        // white yet and Brakes.dll's is (KlubState::white_799_entry), and
+        // once it is entered until its screen redraws (the lamps, the beep
+        // of the new aspect): only the entry is set against it then.
+        if (klub_state.white_799_entry) klub_799_settling = true;
+        else if (klub_799_settling && klub_state.redraw == 0.0f) klub_799_settling = false;
+        const bool own_799 = klub_state.white_799_entry || klub_799_settling;
         const auto differ = [&](const char* name, const double golden, const double ours, const double within) {
+            if (own_799 && std::strcmp(name, "entry") != 0) return;
             if (std::abs(golden - ours) <= within) return;
             auto& d = shadow_diffs[name];
             if (d.steps++ == 0) {
@@ -653,14 +687,19 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         differ("wagons", bits(176), s.wagons, 0.0);
         differ("entry", bits(132), s.entry, 0.0);
         differ("epk_bit", bits(32) & 1, s.epk_bit ? 1 : 0, 0.0);
-        // The screen, drawn from the КЛУБ's state, against Brakes.dll's
-        // (simulation/klub_screen.hpp).
-        {
+        // The screens, drawn from the КЛУБ's state, against Brakes.dll's
+        // (simulation/klub_screen.hpp): each cab's (updateKLUB draws them
+        // all), named c<n>. when there are more.
+        for (std::size_t c = 0; c < klub.cabs.size(); ++c) {
+            const auto& ids = klub.cabs[c];
+            auto& drawn = klub_screens[c];
+            const std::string prefix = klub.cabs.size() > 1 ? "c" + std::to_string(c + 1) + "." : std::string();
             simulation::KlubScreenInputs si;
             si.powered = in.powered;
             si.epk_key = in.epk_key;
+            si.working_cab = static_cast<int>(c) == working;
             si.speed = in.speed;
-            si.direction = klub.flip == 0 ? -1 : 1; // PB_FLIP is the cab (from 0) whose forward is the other way
+            si.direction = klub.flip == static_cast<std::int32_t>(c) ? -1 : 1; // PB_FLIP is the cab (from 0) whose forward is the other way
             si.pipe = klub_last_gauge > 0.0f ? klub_last_gauge : car.pipe;
             si.cylinder = in.cylinder;
             si.equalising = klub_last_ur;
@@ -668,52 +707,50 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             si.line_frequency = world.line_frequency;
             si.wheelslip = in.wheelslip;
             si.day_time = world.day_time;
-            si.cassette = in.cassette;
-            si.cassette_given = klub.cassette >= 0;
-            simulation::draw_klub(klub_state, klub.settings, si, klub_screen);
-            const formats::CabDisplay* display = nullptr;
-            if (const auto* cab_now = consist->cab(player))
-                for (const auto& dd : cab_now->displays)
-                    if (static_cast<std::int32_t>(dd.id) == klub.screen) display = &dd;
-            for (const auto& screen : out->screens) {
-                if (static_cast<std::int32_t>(screen.display) != klub.screen) continue;
-                for (std::size_t k = 0; k < klub_screen.bil.size() && k < screen.objects.size(); ++k) {
-                    const auto& o = klub_screen.bil[k];
-                    const auto& g = screen.objects[k];
-                    char name[24];
-                    if (o.state_set) {
-                        std::snprintf(name, sizeof name, "bil%zu.state", k);
-                        differ(name, g.state, o.state, 0.0);
-                    }
-                    if (o.value_set) {
-                        std::snprintf(name, sizeof name, "bil%zu.value", k);
-                        differ(name, g.value, o.value, 0.001);
-                    }
-                    if (o.blink_set) {
-                        std::snprintf(name, sizeof name, "bil%zu.blink", k);
-                        differ(name, g.fade[2], o.blink, 0.001);
-                    }
-                    if (o.text_set && k < screen.texts.size()) {
-                        auto ours = o.text;
-                        if (display && k < display->screen.objects.size() && ours.size() > display->screen.objects[k].max_length)
-                            ours.resize(display->screen.objects[k].max_length);
-                        if (ours != screen.texts[k]) {
-                            std::snprintf(name, sizeof name, "bil%zu.text", k);
-                            if (shadow_printed < 30) {
-                                std::printf("%6.2f КЛУБ %s: Brakes.dll '%s', openRTS '%s'\n", now, name,
-                                            trainplugin::utf16_to_utf8(screen.texts[k]).c_str(), trainplugin::utf16_to_utf8(ours).c_str());
+            si.cassette = on(ids.cassette);
+            si.cassette_given = ids.cassette >= 0;
+            si.saut_coefficient = ids.saut >= 0 && on(ids.saut) ? static_cast<float>(out->engine.flags) * 0.01f : -1.0f;
+            si.tskbm_timer = at(12);
+            si.block_value = at(296);
+            si.saut_distance = at(308);
+            simulation::draw_klub(klub_state, klub.settings, si, drawn);
+            const auto compare = [&](const std::int32_t id, std::span<const simulation::KlubScreenObject> objects, const char* what) {
+                if (id < 0) return;
+                const formats::CabDisplay* display = nullptr;
+                if (const auto* cab_now = consist->cab(player))
+                    for (const auto& dd : cab_now->displays)
+                        if (static_cast<std::int32_t>(dd.id) == id) display = &dd;
+                for (const auto& screen : out->screens) {
+                    if (static_cast<std::int32_t>(screen.display) != id) continue;
+                    for (std::size_t k = 0; k < objects.size() && k < screen.objects.size(); ++k) {
+                        const auto& o = objects[k];
+                        const auto& g = screen.objects[k];
+                        const auto name = [&](const char* field) { return prefix + what + std::to_string(k) + "." + field; };
+                        if (o.state_set) differ(name("state").c_str(), g.state, o.state, 0.0);
+                        if (o.value_set) differ(name("value").c_str(), g.value, o.value, 0.001);
+                        if (o.blink_set) differ(name("blink").c_str(), g.fade[2], o.blink, 0.001);
+                        const auto* def = display && k < display->screen.objects.size() ? &display->screen.objects[k] : nullptr;
+                        if (o.text_set && k < screen.texts.size() && (!def || (def->char_width[1] > 0.0f && def->max_length > 0))) {
+                            auto ours = o.text;
+                            if (def && ours.size() > def->max_length) ours.resize(def->max_length);
+                            if (ours != screen.texts[k] && !own_799) {
+                                if (shadow_printed < 30) {
+                                    std::printf("%6.2f КЛУБ %s: Brakes.dll '%s', openRTS '%s'\n", now, name("text").c_str(),
+                                                trainplugin::utf16_to_utf8(screen.texts[k]).c_str(), trainplugin::utf16_to_utf8(ours).c_str());
+                                }
+                                differ(name("text").c_str(), 0.0, 1.0, 0.0);
                             }
-                            differ(name, 0.0, 1.0, 0.0);
                         }
                     }
                 }
-            }
-            for (std::size_t k = 0; k < klub.lamps.size(); ++k) {
-                const auto id = klub.lamps[k];
+            };
+            compare(ids.screen, drawn.bil, "bil");
+            compare(ids.dals, drawn.dals, "dals");
+            compare(ids.dpom, drawn.dpom, "dpom");
+            for (std::size_t k = 0; k < ids.lamps.size(); ++k) {
+                const auto id = ids.lamps[k];
                 if (id < 0 || static_cast<std::size_t>(id) >= out->displays.size()) continue;
-                char name[24];
-                std::snprintf(name, sizeof name, "lamp%zu", k + 1);
-                differ(name, out->displays[static_cast<std::size_t>(id)].state, klub_screen.lamps[k], 0.0);
+                differ((prefix + "lamp" + std::to_string(k + 1)).c_str(), out->displays[static_cast<std::size_t>(id)].state, drawn.lamps[k], 0.0);
             }
         }
         klub_last_ur = out->engine.equalising;
@@ -722,6 +759,13 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         std::vector<std::uint16_t> golden_sounds;
         if (static_cast<std::size_t>(lib) < out->aux_sound.size())
             for (const auto c : out->aux_sound[static_cast<std::size_t>(lib)].triggers)
+                if (c == 56 || c == 57 || (c >= 3192 && c <= 3199) || c == 3956 || c == 3957) golden_sounds.push_back(c);
+        // Without its own SMS, on the locomotive's (TRANS_SOUND 1, or the
+        // train's DLL's var + 32 bit 0x100): its outside SMS's.
+        const bool to_loco = klub.trans_sound || (static_cast<std::size_t>(lib) < out->aux_exchange.size() &&
+                                                  (out->aux_exchange[static_cast<std::size_t>(lib)].before & 0x100u));
+        if (golden_sounds.empty() && to_loco)
+            for (const auto c : out->sound_ext)
                 if (c == 56 || c == 57 || (c >= 3192 && c <= 3199) || c == 3956 || c == 3957) golden_sounds.push_back(c);
         if (golden_sounds != klub_out.sounds) {
             const auto join = [](const std::vector<std::uint16_t>& list) {
@@ -926,6 +970,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 // press <switch id>...: momentary keys, one a step, each to 1
                 // and back to 0 the step after (the КЛУБ's keys: Switched on 1)
                 for (const auto& a : c.args) presses.push_back(static_cast<std::uint32_t>(std::atoi(a.c_str())));
+            } else if (c.verb == "klub" && !c.args.empty()) {
+                // klub openrts | brakes: switch the КЛУБ on the way, as the
+                // Train window's setting does (needs the realistic air)
+                consist->set_own_klub(c.args[0] == "openrts");
             } else if (c.verb == "voltage" && !c.args.empty()) {
                 world.line_voltage = static_cast<float>(std::atof(c.args[0].c_str()));
                 world.line_frequency = c.args.size() > 1 ? static_cast<float>(std::atof(c.args[1].c_str())) : 0.0f;

@@ -232,6 +232,9 @@ void test_commands() {
     rig.press(KlubKey::digit, 9);
     rig.press(KlubKey::digit, 9);
     rig.press(KlubKey::enter);
+    rig.run(0.6f);
+    check(!(rig.state.flags & f::white_799) && (rig.state.flags & f::white_entry) && rig.state.signal.aspect[0] != 2,
+          "К 799: the speed asked first, not on white yet");
     rig.press(KlubKey::digit, 2);
     rig.press(KlubKey::digit, 5);
     rig.press(KlubKey::enter);

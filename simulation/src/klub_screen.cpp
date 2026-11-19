@@ -4,6 +4,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <iterator>
 
 // updateKLUB's drawing for the КЛУБ-У (docs/reverse/brakes-dll.md §11,
 // "Its screen"), in its order; the strings as it formats them.
@@ -81,9 +82,11 @@ std::uint32_t whole(const double x) { return static_cast<std::uint32_t>(static_c
 
 void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs& in, KlubScreen& screen) {
     auto& b = screen.bil;
-    if (b.size() < 45) b.resize(45);
+    if (b.size() < 128) b.resize(128);
     screen.drawn = true;
     const bool redraw = s.redraw == 0.0f;
+    const bool block = (k.setup & 8) != 0;              // the БЛОК's screen
+    const bool bil2 = !block && k.screen_type == 2;     // KLUB_BILTYPE 2
     const std::uint32_t aspect = s.signal.aspect[0];
     screen.lamp = 0;
     screen.backlight = 0;
@@ -95,6 +98,12 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
             if (j != 25) text(b[j], u"");
         text(b[43], u"");
         text(b[44], u"");
+        if (block) {
+            for (const int j : {35, 36, 38, 39, 40, 41, 42}) hide(b[static_cast<std::size_t>(j)]);
+            text(b[37], u"");
+        } else if (bil2) {
+            for (std::size_t j = 35; j <= 127; ++j) hide(b[j]);
+        }
         text(b[34], u"");
         for (auto& o : screen.dpom) hide(o);
         for (auto& o : screen.dals) hide(o);
@@ -267,28 +276,68 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     // updateKLUB has it this step (whole km/h; + 20 a second of slip).
     std::uint32_t shown = whole(std::abs(static_cast<double>(in.speed) * 3.6));
     if (in.wheelslip) shown = static_cast<std::uint32_t>(static_cast<std::int64_t>(static_cast<float>(shown) + 20.0f * s.slip_time));
-    if (message[0] != u' ' || (s.flags & f::lamp_test) || s.slip_time > 0.3f || !(s.track & 0x7F)) {
+    // The БЛОК keeps lines 21 / 22 and shows the message in 6 and 8.
+    if (!block && (message[0] != u' ' || (s.flags & f::lamp_test) || s.slip_time > 0.3f || !(s.track & 0x7F))) {
         kind = message;
         what = message_value;
     }
+    const float block_scale = k.block_scale_150 ? 150.0f : 300.0f; // its bars: BLOCK_MODE 1 to 150 km/h, else 300
+    if (block) {
+        // Its start: the picture 0 for 20 s after power-on, nothing else.
+        if (s.powered_time < 20.0f) {
+            show(b[0], 1);
+            return;
+        }
+        for (const int j : {0, 1, 2, 3, 4, 5, 6, 8, 36}) show(b[static_cast<std::size_t>(j)]);
+        if (!(s.device & d::saut_on)) show(b[40]);
+        if (!s.alsen_table || s.alsen_table >= 5) show(b[41]);
+        value(b[2], in.cylinder);
+        value(b[3], in.pipe);
+        value(b[4], in.equalising);
+        show(b[42], (s.flags & f::kgf) ? 1 : 0);
+        text(b[1], (s.flags & f::kgf) ? ascii("%0.1f", static_cast<double>(in.cylinder)) : ascii("%0.2f", 0.1 * static_cast<double>(in.cylinder)));
+        text(b[5], in.saut_distance >= 10000.0f ? std::u16string() : ascii("%0.0f", static_cast<double>(in.saut_distance)) + u" М");
+        text(b[6], message);
+        text(b[8], message_value);
+        if (in.tskbm_timer < 15.0f && in.tskbm_timer >= 7.0f) show(b[36], 1);
+        if (in.tskbm_timer < 7.0f) show(b[35]);
+        show(b[37]);
+        text(b[37], ascii("%03d", static_cast<int>(static_cast<std::int64_t>(in.block_value))));
+    }
     text(b[23], ascii("%03d", static_cast<int>(static_cast<std::int64_t>(s.shown_speed))));
-    show(b[25]);
-    value(b[25], static_cast<float>(whole(s.shown_speed <= 0.0f ? 1.0f : s.shown_speed)));
+    if (block) {
+        show(b[7]);
+        value(b[7], s.shown_speed);
+    } else {
+        show(b[25]);
+        value(b[25], static_cast<float>(whole(s.shown_speed <= 0.0f ? 1.0f : s.shown_speed)));
+        if (bil2) {
+            // The speed as a bar of 5 km/h segments.
+            show(b[37]);
+            for (std::uint32_t j = 0; j < whole(s.shown_speed) / 5 && 38 + j < b.size(); ++j) show(b[38 + j]);
+        }
+    }
+    if (bil2) show(b[(s.flags & f::second_set) ? 36 : 35]);
     if (s.track & 0x7F) {
         text(b[16], u"ЭК");
-        text(b[17], ascii("%d", static_cast<int>(s.track & 0x7F)) + ((s.track & 0x80) ? u"ПР" : u"НП"));
+        text(b[17], ascii("%d", static_cast<int>(s.track & 0x7F)) + (block ? u" " : u"") + ((s.track & 0x80) ? u"ПР" : u"НП"));
     } else {
         text(b[16], (s.alsen_table && s.alsen_table < 5) ? u"ЕН" : in.line_frequency == 0.0f ? u"50ГЦ" : u"25ГЦ");
         text(b[17], u"0");
     }
     if ((s.device & d::saut_on) && (k.setup & 1) && !(s.flags & f::white_799) && (!(s.flags & f::white_809) || aspect != 2) &&
         (s.flags & f::train_mode) && s.saut_rules)
-        text(b[16], u"С");
+        text(b[16], block ? u"САУТ" : u"С");
+    // The БЛОК blinks the ALSN's kind over it.
+    if (s.blink > 1.0f && block)
+        text(b[16], (s.alsen_table && s.alsen_table < 5) ? u"ЕН" : in.line_frequency == 0.0f ? u"50ГЦ" : u"25ГЦ");
     if (!s.alsen_table || s.alsen_table >= 5) {
-        text(b[34], u"Х       ");
+        if (!block) text(b[34], u"Х       ");
     } else {
-        if (aspect == 4 || aspect == 5 || aspect == 6) show(b[1]);
-        else show(b[0]);
+        if (!block) {
+            if (aspect == 4 || aspect == 5 || aspect == 6) show(b[1]);
+            else show(b[0]);
+        }
         static constexpr const char16_t* counts[] = {u"1ЕН     ", u"2ЕН     ", u"3ЕН     ", u"4ЕН     "};
         text(b[34], counts[(std::min)(s.alsen_table, 4u) - 1]);
     }
@@ -302,22 +351,69 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     }
     if (in.epk_key && in.working_cab) {
         blink(b[23], 0.0f);
-        text(b[24], ascii("%03.0f", static_cast<double>(s.permitted)));
+        if (bil2) {
+            // Its line 24: how far under the permitted speed, within 9 km/h.
+            const double margin = static_cast<double>(s.permitted - s.shown_speed);
+            text(b[24], margin <= 9.0 && margin > 0.0 ? ascii("%1.0f", margin) : std::u16string());
+        } else {
+            text(b[24], ascii("%03.0f", static_cast<double>(s.permitted)));
+        }
         if (static_cast<double>(shown) > 0.1) {
             if (static_cast<float>(in.direction) * in.speed > 0.0f) show(b[30]);
             else if (static_cast<float>(in.direction) * in.speed < 0.0f) show(b[31]);
         }
-        if (!(s.target_speed >= s.permitted || s.target_distance >= 2000.0f))
+        if (s.target_speed >= s.permitted || s.target_distance >= 2000.0f) {
+            if (block) {
+                show(b[33]);
+                value(b[33], s.permitted);
+            }
+        } else if (block) {
+            show(b[38]);
+            value(b[38], block_scale - s.target_speed);
+        } else {
             show(b[33], static_cast<std::int32_t>(static_cast<std::int64_t>(0.2 * static_cast<double>(s.target_speed))));
-        show(b[32], static_cast<std::int32_t>(static_cast<std::int64_t>(0.2 * static_cast<double>(s.permitted))));
-        if (s.drawn_flags & f::vigilance) show(b[29]);
-        if (static_cast<double>(s.permitted) - shown <= 3.0 && shown) blink(b[23], 0.5f);
-        else blink(b[23], 0.0f);
-    } else {
+        }
+        if (block) {
+            value(b[39], block_scale - s.permitted);
+            show(b[39]);
+        } else {
+            show(b[32], static_cast<std::int32_t>(static_cast<std::int64_t>(0.2 * static_cast<double>(s.permitted))));
+        }
+        if ((s.drawn_flags & f::vigilance) || in.tskbm_timer < 7.0f) show(b[29]);
+        if (block) {
+            show(b[23]);
+            show(b[7]);
+        }
+        if (static_cast<double>(s.permitted) - shown <= 3.0 && shown) {
+            if (block) {
+                show(b[9]);
+                if (s.blink > 1.5f || (s.blink < 1.0f && s.blink > 0.5f)) {
+                    show(b[23], 1);
+                    show(b[7], 1);
+                }
+            } else {
+                blink(b[23], 0.5f);
+            }
+        } else if (!block) {
+            blink(b[23], 0.0f);
+        }
+    } else if (!block) {
         blink(b[23], 0.5f);
     }
-    // The coordinate, km with three decimals, the integer part of four digits.
-    {
+    if (block) {
+        // The coordinate: km, the picket and metres.
+        const double at = static_cast<double>(in.milepost) + 0.1;
+        const auto km = static_cast<std::int64_t>(at);
+        const auto picket = static_cast<std::int64_t>(at * 10.0) % 10;
+        const auto metres = static_cast<std::int64_t>(at * 1000.0) % 100;
+        // (ascii() takes ASCII only: the letters added.)
+        if (picket)
+            text(b[28], ascii("%d", static_cast<int>(km)) + u"км " + ascii("%d", static_cast<int>(picket)) + u"пк" +
+                            ascii("%d", static_cast<int>(metres)) + u"м");
+        else
+            text(b[28], ascii("%d", static_cast<int>(km - 1)) + u"км10пк" + ascii("%d", static_cast<int>(metres)) + u"м");
+    } else {
+        // The coordinate, km with three decimals, the integer part of four digits.
         const double km = static_cast<double>(in.milepost - 1.0f);
         const double at = km >= 0.0 ? km : 0.0;
         const char* zeros = km < 10.0 ? "000" : km < 100.0 ? "00" : km < 1000.0 ? "0" : "";
@@ -326,17 +422,30 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     {
         const auto t = static_cast<std::int64_t>(in.day_time);
         const auto h = t / 3600, m = std::abs((t % 3600) / 60), sec = std::abs(t - 3600 * h - 60 * m);
-        text(b[26], ascii("%02d.%02d.%02d", static_cast<int>(h), static_cast<int>(m), static_cast<int>(sec)));
+        text(b[26], ascii(block ? "%02d:%02d:%02d" : "%02d.%02d.%02d", static_cast<int>(h), static_cast<int>(m), static_cast<int>(sec)));
     }
     text(b[18], ascii("%0.1f", static_cast<double>(std::abs(in.acceleration))));
     if ((k.setup & 1) && in.saut_coefficient >= 0.0f && in.working_cab) text(b[19], ascii("%0.2f", static_cast<double>(in.saut_coefficient)));
-    if (in.working_cab) {
-        if (!(s.flags & f::command_mode) && !s.field && s.alsen_table != 5 && (s.track & 0x7F) && s.time_shown == -1.0f && !in.wheelslip)
-            text(b[20], next >= 10000.0f ? std::u16string() : ascii("%04.0f", static_cast<double>(next)));
-        if (s.flags & f::kgf) text(b[15], ascii("0%0.1f", static_cast<double>(in.equalising)));
+    else if (block) text(b[19], u"0.67");
+    if (in.working_cab || block) {
+        if ((!(s.flags & f::command_mode) && !s.field && s.alsen_table != 5 && (s.track & 0x7F) && s.time_shown == -1.0f && !in.wheelslip) ||
+            (bil2 && (s.track & 0x7F))) {
+            if (next >= 10000.0f) text(b[20], std::u16string());
+            else text(b[20], block ? ascii("%0.0f", static_cast<double>(next)) + u" М" : ascii("%04.0f", static_cast<double>(next)));
+            if (bil2 && next < 10000.0f) {
+                // The distance as a bar: a segment from each step reached.
+                static constexpr float steps[] = {0,    10,   20,   30,   40,   50,   60,   70,   80,   90,   100,  233,  366,  500,
+                                                  600,  700,  800,  900,  1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000, 3500,
+                                                  4000, 4500, 5000, 5500, 6000, 6500, 7000, 7500, 8000, 8500, 9000, 9500, 10000};
+                for (std::size_t j = 0; j < std::size(steps); ++j)
+                    if (next >= steps[j]) show(b[87 + j]);
+            }
+        }
+        const char* kgf_zero = block ? "" : "0";
+        if (s.flags & f::kgf) text(b[15], ascii("%s%0.1f", kgf_zero, static_cast<double>(in.equalising)));
         else text(b[15], ascii("%0.2f", 0.1 * static_cast<double>(in.equalising)));
-        const float line14 = (s.flags & f::line14_cylinder) ? in.cylinder : in.pipe;
-        if (s.flags & f::kgf) text(b[14], ascii("0%0.1f", static_cast<double>(line14)));
+        const float line14 = (s.flags & f::line14_cylinder) && !block ? in.cylinder : in.pipe;
+        if (s.flags & f::kgf) text(b[14], ascii("%s%0.1f", kgf_zero, static_cast<double>(line14)));
         else text(b[14], ascii("%0.2f", static_cast<double>(line14) * 0.1));
     }
     // The ALSN's lights.
@@ -364,9 +473,10 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
             default: break;
             }
         };
-        // (KLUB_DALS / KLUB_DPOM object, KLUB_DBIL object, KLUB_B<n>POM)
+        // (KLUB_DALS / KLUB_DPOM object, KLUB_DBIL object, KLUB_B<n>POM;
+        // the БЛОК has none of its own)
         lights([&](const int dals, const int bil, const int lamp) {
-            show(b[static_cast<std::size_t>(bil)]);
+            if (!block) show(b[static_cast<std::size_t>(bil)]);
             show(screen.dpom[static_cast<std::size_t>(dals)]);
             show(screen.dals[static_cast<std::size_t>(dals)]);
             screen.lamps[static_cast<std::size_t>(lamp - 1)] = 1;
@@ -377,6 +487,11 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     else show(b[10]);
     blink(b[11], (s.flags & f::double_traction) ? 0.5f : 0.0f);
     if (in.cassette_given && in.cassette) show(b[12]);
+    // The БЛОК blinks the vigilance sign and 35.
+    if (block && (s.blink > 1.5f || (s.blink > 0.5f && s.blink < 1.0f))) {
+        hide(b[29]);
+        hide(b[35]);
+    }
 }
 
 } // namespace openrts::simulation

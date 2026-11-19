@@ -422,16 +422,19 @@ struct AuxParameterSet {
 
 // A 32-bit word of an auxiliary library's variable stack written this step
 // just before that library's own Run (after the main DLL's for an AuxCall
-// order of 0 and on): var[offset / 4] = (var & ~mask) | (bits & mask)
-// (floats by their bits). openRTS's КЛУБ writes what Brakes.dll's would
-// have written in that Run, for the train's DLL to read in its next one
-// (var + 32 bits 1 and 4, the limits, the timer); the rest of that Run
-// (Brakes.dll's other parts) goes on over it as before.
+// order of 0 and on), or just after it (after_run): var[offset / 4] =
+// (var & ~mask) | (bits & mask) (floats by their bits). openRTS's КЛУБ
+// writes what Brakes.dll's would have written in that Run, for the train's
+// DLL to read in its next one (var + 32 bits 1 and 4, the limits, the
+// timer); the rest of that Run (Brakes.dll's other parts) goes on over it
+// as before. After it: what those parts read before the КЛУБ wrote it
+// (САУТ reads _ALSN's limits, Brakes.dll's КЛУБ then puts its own there).
 struct AuxVarWrite {
     std::uint32_t car{};
     std::uint16_t library{};
     std::uint16_t offset{};
     std::uint32_t mask{}, bits{};
+    std::uint32_t after_run{}; // 0 before the library's Run, 1 after it
 };
 
 struct EnterRequest {
@@ -521,6 +524,7 @@ struct EngineOutput {
     float charging_rate{}, handbrake_percent{}, dynamic_brake_percent{}, ep_value{}, equalising{};
     std::uint16_t systems{}, alsn_on{}, sanding{};
     std::uint32_t engine_flags{};
+    std::uint32_t flags{}; // Engine::Flags (+120): Brakes.dll's САУТ puts its braking coefficient there, × 100
     std::int32_t reverse{};
     std::uint32_t wheelslip{}, throttle{};
     // Engine::EngineForce[NumEngines]: each traction motor's force, N

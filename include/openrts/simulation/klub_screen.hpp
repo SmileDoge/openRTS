@@ -13,8 +13,10 @@
 // KLUB_DPOM, the KLUB_B1POM .. B8POM lamps) and its lamp and backlight as
 // Brakes.dll's updateKLUB draws them from its state
 // (docs/reverse/brakes-dll.md §11, "Its screen"): cleared and drawn again
-// at every redraw (0.5 s), cleared every step while unpowered, kept
-// between. The БЛОК's screen (PB_SETUP 8) and KLUB_BILTYPE 2 are not drawn.
+// at every redraw (0.5 s; 0.33 s on the БЛОК), cleared every step while
+// unpowered, kept between. The БЛОК's screen (PB_SETUP 8: objects 0 .. 9
+// and 35 .. 42 its own way) and KLUB_BILTYPE 2's (the ЭП2К's: the speed and
+// the distance as bars, 35 .. 127) as it draws them too.
 namespace openrts::simulation {
 
 // A track item as RTSGetTrackItems gives it, for the screen's lines.
@@ -47,6 +49,10 @@ struct KlubScreenInputs {
     bool cassette = false;      // KLUB_KASS's switch on
     bool cassette_given = false;
     float saut_coefficient = -1.0f; // САУТ on (PB_SETUP 1): its braking coefficient, else < 0
+    // Brakes.dll's own parts, which go on running beside openRTS's КЛУБ:
+    float tskbm_timer = 100.0f;     // ТСКБМ's (var + 12; under 7 the vigilance sign, the БЛОК's 35 / 36)
+    float block_value{};            // var + 296 (the ЭП20's DLL writes it): the БЛОК's object 37
+    float saut_distance{};          // САУТ's distance (var + 308): the БЛОК's object 5
     std::u16string signal_name; // the target signal's (RTSSignalData)
     // RTSGetTrackItems' entries of the player's train (the leading cab's
     // ahead first), and mdd_Libraries/Brakes/ChangeStanc.bto's names: a
@@ -67,7 +73,7 @@ struct KlubScreenObject {
 };
 
 struct KlubScreen {
-    std::vector<KlubScreenObject> bil = std::vector<KlubScreenObject>(45); // KLUB_DBIL's objects 0 .. 44
+    std::vector<KlubScreenObject> bil = std::vector<KlubScreenObject>(128); // KLUB_DBIL's objects 0 .. 127
     std::array<KlubScreenObject, 8> dals{}, dpom{};                         // KLUB_DALS, KLUB_DPOM
     std::array<std::int8_t, 8> lamps{};   // KLUB_B1POM .. B8POM: 0 off, 1 lit
     std::int8_t lamp = 0;                 // KLUB_PLAMP

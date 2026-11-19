@@ -98,10 +98,13 @@ struct LegacyConsist::KlubCar {
     bool resume = false;  // a saved state put back: no fresh start
     simulation::KlubState state;
     simulation::KlubOutput out;
-    simulation::KlubScreen screen;
+    std::vector<simulation::KlubScreen> screens; // a cab's each (its KLUB_*<n>)
     std::vector<simulation::KlubPress> keys;     // pressed since the last step
     std::vector<SwitchState> switches;           // the cab's after the last step
+    // Engine::ALSNOn: the ЭПК key last turned, of any cab (Brakes.dll's Switched).
+    bool alsn_on = false;
     float last_ur = 0.0f, last_pipe = 0.0f;      // the last step's (updateKLUB draws before the brakes)
+    float last_gauge = 0.0f;                     // the ТМ gauge's, Brakes.dll's var + 28, the last step's
 };
 
 namespace {
@@ -1536,7 +1539,11 @@ void LegacyConsist::klub_key(const std::size_t at, const std::uint32_t id) {
     if (at >= cars_.size()) return;
     const auto found = klub_.find(cars_[at].key);
     if (found == klub_.end() || !found->second || !found->second->on) return;
-    if (const auto* press = found->second->parameters.key(static_cast<std::int32_t>(id))) found->second->keys.push_back(*press);
+    // The working cab's keys only (Brakes.dll's SwitchKLUB).
+    const auto& p = found->second->parameters;
+    const int cab = at < outputs_->cars.size() ? p.working_cab(outputs_->cars[at].switches) : 0;
+    if (cab < 0) return;
+    if (const auto* press = p.cabs[static_cast<std::size_t>(cab)].key(static_cast<std::int32_t>(id))) found->second->keys.push_back(*press);
 }
 
 LegacyConsist::KlubCar* LegacyConsist::klub_car(const std::size_t i) {
@@ -1546,12 +1553,11 @@ LegacyConsist::KlubCar* LegacyConsist::klub_car(const std::size_t i) {
     if (!key || !definition || !definition->engine) return nullptr;
     auto found = klub_.find(key);
     if (found == klub_.end()) {
-        // A КЛУБ of Brakes.dll that openRTS's takes: PB_SETUP 2, one cab
-        // (the other cabs' KLUB_*<n> are step 4).
+        // A КЛУБ of Brakes.dll that openRTS's takes: PB_SETUP 2, in each
+        // of its cabs (KLUB_*<n>).
         std::unique_ptr<KlubCar> made;
         auto parameters = klub_parameters(*definition->engine);
-        if (parameters.present && (parameters.settings.setup & 2) && parameters.setup_index >= 0 &&
-            brakes_parameters(*definition->engine).cabs.size() <= 1) {
+        if (parameters.present && (parameters.settings.setup & 2) && parameters.setup_index >= 0) {
             made = std::make_unique<KlubCar>();
             made->parameters = std::move(parameters);
         }
@@ -1581,7 +1587,7 @@ void LegacyConsist::klub_before(StepRequest& request) {
         }
         if (!car->on && !car->resume) {
             car->state = {};
-            car->screen = {};
+            car->screens.clear();
             car->switches.clear();
         }
         car->on = true;
@@ -1595,13 +1601,14 @@ void LegacyConsist::klub_before(StepRequest& request) {
         // parts go on over it as they did): docs/reverse/brakes-dll.md §5, §6.
         if (!car->state.started) continue;
         const auto& s = car->state;
-        const auto put = [&](const std::uint16_t offset, const std::uint32_t mask, const std::uint32_t bits) {
-            request.aux_writes.push_back({index, lib, offset, mask, bits});
+        const auto put = [&](const std::uint16_t offset, const std::uint32_t mask, const std::uint32_t bits,
+                             const bool after_run = false) {
+            request.aux_writes.push_back({index, lib, offset, mask, bits, after_run ? 1u : 0u});
         };
-        const auto put_float = [&](const std::uint16_t offset, const float v) {
+        const auto put_float = [&](const std::uint16_t offset, const float v, const bool after_run = false) {
             std::uint32_t bits = 0;
             std::memcpy(&bits, &v, sizeof bits);
-            put(offset, ~0u, bits);
+            put(offset, ~0u, bits, after_run);
         };
         // Bit 4 every step (updateKLUB clears and sets it); bit 1 only when
         // the КЛУБ wrote it (its trip, an answer, the ЭПК key off): set by
@@ -1611,9 +1618,15 @@ void LegacyConsist::klub_before(StepRequest& request) {
         put(8, ~0x10u, s.flags); // (0x10 is ТСКБМ's, which runs on in Brakes.dll)
         put(4, 0x600u, s.device); // КОН, and its vent
         put_float(24, s.timer);
-        put_float(80, s.limit);
-        put_float(116, s.target_speed);
-        put_float(120, s.target_distance);
+        // The ЭПК part's last aspect: a float, 0 unpowered, every step the
+        // ALSN is on (docs/reverse/brakes-dll.md §6).
+        put_float(48, static_cast<float>(s.epk_aspect));
+        // The limit and the next target after that Run: САУТ (0x4022A0)
+        // runs in it before the КЛУБ and reads them as _ALSN gave them this
+        // step; Brakes.dll's КЛУБ puts its own there after.
+        put_float(80, s.limit, true);
+        put_float(116, s.target_speed, true);
+        put_float(120, s.target_distance, true);
         put_float(140, s.permitted);
         put_float(144, s.signal_metres);
         put(148, ~0u, s.white_speed);
@@ -1626,6 +1639,9 @@ void LegacyConsist::klub_before(StepRequest& request) {
         put(240, ~0u, s.alsen_table);
         put(244, ~0u, s.alsen_count);
     }
+    // Its screens read what Brakes.dll's other parts keep (ТСКБМ's timer,
+    // САУТ's distance, the ЭП20's var + 296): the library's variables back.
+    if (klub_working_) request.want_aux_vars = 1;
 }
 
 void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& world) {
@@ -1682,7 +1698,8 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
         auto& out = outputs_->cars[i];
         const auto& input = request.cars[i];
         const auto& p = car.parameters;
-        if (car.switches.empty()) car.switches = out.switches; // the first step: as they stand
+        const bool first_step = car.switches.empty();
+        if (first_step) car.switches = out.switches; // the first step: as they stand
         const auto state_in = [](const std::vector<SwitchState>& list, const std::int32_t id) {
             return id >= 0 && static_cast<std::size_t>(id) < list.size() ? list[static_cast<std::size_t>(id)].state : 0u;
         };
@@ -1715,45 +1732,89 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
             const bool there = id >= 0 && static_cast<std::size_t>(id) < car.switches.size();
             in.powered = in.powered && (!there || on(id));
         }
-        in.epk_key = on(p.epk_key);
-        in.rb_held = on(p.rb);
-        in.tskbm = on(p.tskbm);
-        in.saut = false; // САУТ's permitted speed (Brakes.dll's var + 256) does not reach it yet
+        // Brakes.dll's variables after this step (klub_before asks for them):
+        // what its other parts keep (САУТ, ТСКБМ).
+        const int brakes = aux_library(i, "BRAKES");
+        const auto var_at = [&](const std::size_t offset, const float otherwise) {
+            if (brakes < 0 || static_cast<std::size_t>(brakes) >= out.aux_vars.size()) return otherwise;
+            const auto& var = out.aux_vars[static_cast<std::size_t>(brakes)].var;
+            return offset / 4 < var.size() ? var[offset / 4] : otherwise;
+        };
+        const auto var_bits = [&](const std::size_t offset) {
+            std::uint32_t u = 0;
+            const float v = var_at(offset, 0.0f);
+            std::memcpy(&u, &v, sizeof u);
+            return u;
+        };
+        // The cabs: the working one's devices; the РБ, the РБС and the ЭПК
+        // key of any (Brakes.dll's Switched goes through them all), the
+        // ЭПК key last turned setting Engine::ALSNOn.
+        const int working = p.working_cab(car.switches);
+        const auto& wc = p.cabs[static_cast<std::size_t>(working < 0 ? 0 : working)];
+        if (first_step) {
+            car.alsn_on = false;
+            for (const auto& c : p.cabs) car.alsn_on = car.alsn_on || on(c.epk_key);
+        }
+        in.epk_key = car.alsn_on;
+        in.rb_held = false;
+        for (const auto& c : p.cabs) {
+            in.rb_held = in.rb_held || on(c.rb);
+            in.rb = in.rb || moved(c.rb);
+            in.rbs = in.rbs || moved(c.rbs);
+            if (moved(c.epk_key)) {
+                in.epk_key_turned = true;
+                in.epk_key_to = state_in(out.switches, c.epk_key) != 0;
+            }
+        }
+        if (in.epk_key_turned) car.alsn_on = in.epk_key_to;
+        in.tskbm = on(wc.tskbm);
+        // САУТ goes on in Brakes.dll: its own "on" (var + 4 bit 0x40) and
+        // its permitted speed (var + 256).
+        in.saut = (var_bits(4) & 0x40u) != 0;
+        in.saut_permitted = var_at(256, 0.0f);
         in.wheelslip = input.wheelslip != 0;
         in.cylinder = (std::max)(input.brake_cylinder, input.independent);
         in.day_time = request.day_time;
-        in.cassette = on(p.cassette);
+        in.cassette = on(wc.cassette);
         in.keys = car.keys;
-        in.rb = moved(p.rb);
-        in.rbs = moved(p.rbs);
-        in.epk_key_turned = moved(p.epk_key);
-        in.epk_key_to = state_in(out.switches, p.epk_key) != 0;
         // Switched on with the ЭПК key in (its Init's Switched, or the
         // setting turned on): the КЛУБ's beep.
         if (!car.state.started && in.epk_key) in.epk_key_turned = in.epk_key_to = true;
         simulation::step_klub(car.state, p.settings, in, car.out);
         car.keys.clear();
-        // The screen and the lamps.
+        // The screens and the lamps: each cab's (updateKLUB draws them all).
+        car.screens.resize(p.cabs.size());
         simulation::KlubScreenInputs si;
         si.powered = in.powered;
         si.epk_key = in.epk_key;
         si.speed = in.speed;
-        si.direction = p.flip == 0 ? -1 : 1;
-        si.pipe = car.last_pipe;
+        // The ТМ gauge as Brakes.dll's last step left it, else the pipe.
+        si.pipe = car.last_gauge > 0.0f ? car.last_gauge : (car.last_pipe > 0.0f ? car.last_pipe : input.train_pipe);
         si.cylinder = in.cylinder;
         si.equalising = car.last_ur;
         si.acceleration = input.acceleration;
         si.line_frequency = input.line_frequency;
         si.wheelslip = in.wheelslip;
         si.day_time = request.day_time;
-        si.cassette = in.cassette;
-        si.cassette_given = p.cassette >= 0;
         si.signal_name = signal_name;
         si.items = items;
         si.station_names = station_names_;
-        simulation::draw_klub(car.state, p.settings, si, car.screen);
+        for (std::size_t c = 0; c < p.cabs.size(); ++c) {
+            si.working_cab = static_cast<int>(c) == working;
+            si.direction = p.flip == static_cast<std::int32_t>(c) ? -1 : 1; // PB_FLIP: the cab (from 0) the other way
+            si.cassette = on(p.cabs[c].cassette);
+            si.cassette_given = p.cabs[c].cassette >= 0;
+            // САУТ's braking coefficient, its SAUT_SWID<n> given and on
+            // (Brakes.dll's САУТ goes on running: Engine::Flags / 100).
+            si.saut_coefficient = p.cabs[c].saut >= 0 && on(p.cabs[c].saut) ? static_cast<float>(out.engine.flags) * 0.01f : -1.0f;
+            si.tskbm_timer = var_at(12, 100.0f);
+            si.block_value = var_at(296, 0.0f);
+            si.saut_distance = var_at(308, 0.0f);
+            simulation::draw_klub(car.state, p.settings, si, car.screens[c]);
+        }
         car.last_ur = out.engine.equalising;
         car.last_pipe = input.train_pipe;
+        car.last_gauge = var_at(28, 0.0f);
         car.switches = out.switches;
         // Its drawing over the outputs (the screen keeps what it drew).
         const auto* cab = i < cabs_.size() ? &cabs_[i] : nullptr;
@@ -1777,27 +1838,34 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
                         g.fade[1] = 0.0f;
                         g.fade[2] = o.blink;
                     }
-                    if (o.text_set && k < screen.texts.size()) {
+                    // A label RTS gives no text buffer (no character width or
+                    // length in the cab, screen_object_spec) takes no text.
+                    const auto* def = display && k < display->screen.objects.size() ? &display->screen.objects[k] : nullptr;
+                    if (o.text_set && k < screen.texts.size() && (!def || (def->char_width[1] > 0.0f && def->max_length > 0))) {
                         auto text = o.text;
-                        if (display && k < display->screen.objects.size() && text.size() > display->screen.objects[k].max_length)
-                            text.resize(display->screen.objects[k].max_length);
+                        if (def && text.size() > def->max_length) text.resize(def->max_length);
                         screen.texts[k] = std::move(text);
                     }
                 }
             }
         };
-        apply(p.screen, car.screen.bil);
-        apply(p.dals, car.screen.dals);
-        apply(p.dpom, car.screen.dpom);
-        for (std::size_t k = 0; k < p.lamps.size(); ++k) {
-            const auto id = p.lamps[k];
-            if (id >= 0 && static_cast<std::size_t>(id) < out.displays.size())
-                out.displays[static_cast<std::size_t>(id)].state = static_cast<std::uint32_t>(car.screen.lamps[k]);
+        for (std::size_t c = 0; c < p.cabs.size(); ++c) {
+            const auto& ids = p.cabs[c];
+            const auto& drawn = car.screens[c];
+            apply(ids.screen, drawn.bil);
+            apply(ids.dals, drawn.dals);
+            apply(ids.dpom, drawn.dpom);
+            for (std::size_t k = 0; k < ids.lamps.size(); ++k) {
+                const auto id = ids.lamps[k];
+                if (id >= 0 && static_cast<std::size_t>(id) < out.displays.size())
+                    out.displays[static_cast<std::size_t>(id)].state = static_cast<std::uint32_t>(drawn.lamps[k]);
+            }
         }
+        const auto& shown = car.screens.front();
         if (p.lamp >= 0 && static_cast<std::size_t>(p.lamp) < out.displays.size())
-            out.displays[static_cast<std::size_t>(p.lamp)].state = static_cast<std::uint32_t>(car.screen.lamp);
+            out.displays[static_cast<std::size_t>(p.lamp)].state = static_cast<std::uint32_t>(shown.lamp);
         if (p.backlight >= 0 && static_cast<std::size_t>(p.backlight) < out.tex_changes.size())
-            out.tex_changes[static_cast<std::size_t>(p.backlight)] = static_cast<std::uint16_t>(car.screen.backlight);
+            out.tex_changes[static_cast<std::size_t>(p.backlight)] = static_cast<std::uint16_t>(shown.backlight);
         out.cab_aspect = car.state.signal.aspect[0];
         // Its sounds on Brakes.sms in place of Brakes.dll's КЛУБ's.
         const int library = aux_library(i, "BRAKES");
@@ -1805,6 +1873,14 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
             auto& triggers = out.aux_sound[static_cast<std::size_t>(library)].triggers;
             triggers.erase(std::remove_if(triggers.begin(), triggers.end(), klub_sound), triggers.end());
             triggers.insert(triggers.end(), car.out.sounds.begin(), car.out.sounds.end());
+        }
+        // On the locomotive's SMS too with TRANS_SOUND 1, or the train's DLL
+        // asking for it (var + 32 bit 0x100), as Brakes.dll does (0x404B10).
+        const bool to_loco = p.trans_sound || (library >= 0 && static_cast<std::size_t>(library) < out.aux_exchange.size() &&
+                                               (out.aux_exchange[static_cast<std::size_t>(library)].before & 0x100u));
+        if (to_loco) {
+            out.sound_ext.insert(out.sound_ext.end(), car.out.sounds.begin(), car.out.sounds.end());
+            out.sound_cab.insert(out.sound_cab.end(), car.out.sounds.begin(), car.out.sounds.end());
         }
         outputs_->klub_vent[i] = car.out.vent ? 1 : 0;
     }
@@ -1832,7 +1908,7 @@ void LegacyConsist::klub_restore(const std::size_t i, std::vector<std::uint8_t>&
     if (size == sizeof(simulation::KlubState)) {
         if (auto* car = klub_car(i)) {
             std::memcpy(&car->state, bytes.data() + at, size);
-            car->screen = {};
+            car->screens.clear();
             car->switches.clear();
             car->resume = true;
         }

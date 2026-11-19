@@ -184,7 +184,9 @@ traction: "bits 1, 2 or 8", the 2ТЭ10's also "bit 4 off"):
 | `+32` | all | the exchange word (§5) |
 | `+40` | `_Run` | the EP pressure (to 4.3 atm) |
 | `+44` | `_Run` | the periodic vigilance timer (whistle at 35 s; over 42 s `+4` bit `0x10`) |
+| `+48` | the КЛУБ's ЭПК part of `_Run` | the aspect it last saw, a float (0 unpowered), every step the cab's ALSN is on (CONFIRMED) |
 | `+80` | `_ALSN`, the КЛУБ | the limit, km/h (`abs(limit) × 3.6`) |
+| `+100` | САУТ (`0x4022A0`) | its target speed, km/h (CONFIRMED) |
 | `+84` | `_ALSN` | the signal's distance − 50 m |
 | `+88` | `_ALSN`, the КЛУБ | flags (`0x4000`: the signal's limit 0) |
 | `+116`, `+120` | `_ALSN`, the КЛУБ | the next target speed (km/h) and its distance |
@@ -194,7 +196,14 @@ traction: "bits 1, 2 or 8", the 2ТЭ10's also "bit 4 off"):
 | `+160` .. `+184` | `SwitchKLUB` | the КЛУБ's entry: digits, flags, the numbers entered, the mode |
 | `+232`, `+236` | `_Init` | the EP release and apply rates |
 | `+244` | `_ALSN` | signals counted ahead (0..4) |
+| `+256` | САУТ | its speed shown, following `+100` at 10 km/h a second; the ЧС7's and 2ЭС6's own screens show it (CONFIRMED) |
 | `+336` | `_ALSN` | a limit of its own (km/h) |
+
+**The order inside `_Run`** (CONFIRMED): САУТ (`PB_SETUP` 1), then
+`updateKLUB` (2), then `0x40D2B4` (4). So САУТ reads `+80`, `+116` and
+`+120` as `_ALSN` gave them this step, and the КЛУБ puts its own there
+after. openRTS's КЛУБ (`set_own_klub`) writes those three after
+Brakes.dll's `Run` for that reason, the rest before it.
 
 The rest (`+16` .. `+76`, `+92` .. `+112`, `+188` .. `+220`, `+228`, `+248` ..
 `+348`) is used inside one function each. UNKNOWN until step 2 reads
@@ -749,13 +758,43 @@ No К282 (the testers' command) in this library.
 ### Its screen (`KLUB_DBIL<cab>`, a screen display; `RTSGetCabObject` 11)
 
 **When it is drawn:**
-- every 0.5 s (0.33 on the БЛОК; `+284`);
-- unpowered, or not the working cab: every object hidden, the
-  `KLUB_DPOM` / `KLUB_DALS` lights off, the `KLUB_B*POM` lamps 0;
+- every 0.5 s (0.33 on the БЛОК; `+284`): every cab's screen
+  (`KLUB_DBIL1 .. KLUB_DBIL<BR_NUMCABS>`), cleared first;
+- unpowered: every object hidden, the `KLUB_DPOM` / `KLUB_DALS` lights
+  off, the `KLUB_B*POM` lamps 0;
 - the station name (27) appears 20 s after power-on (`+304`).
 
-The БЛОК (`PB_SETUP` 8) draws objects 0 .. 8 and 35 .. 44 its own way
-(not traced). The КЛУБ-У's:
+**The cabs** (2026-11-19, CONFIRMED by the ЭП1's, ЭП20's and ЭП2К's runs):
+- The working cab: the only one, else the first whose `BR_367ID<n>`
+  stands in `BR_367OPPOL`.
+- Only there: lines 21 / 22 (and 43 / 44), the permitted speed and the
+  target (24, 30 .. 33), the ALSN's lights and lamps. Lines 14, 15, 20
+  there too, or on every cab of the БЛОК. The rest on every cab.
+- `SwitchKLUB` takes the working cab's keys only (`KLUB_B*ID<n>`), none
+  without a working cab. `Switched` takes the РБ, the РБС and the ЭПК key
+  of any cab (`PB_RB<n>`, `PB_RBS<n>`, `PB_EPKKEY<n>`). The key last
+  turned sets `Engine::ALSNOn`.
+- `PB_FLIP` is the cab (from 0) whose arrows (30 / 31) are the other way.
+
+**What it shows of Brakes.dll's other parts:**
+- САУТ's braking coefficient: `Engine +120` × 0.01 (САУТ writes it;
+  `_Init` 67, "0.67").
+- ТСКБМ's timer `+12` (`_Init` 100): under 7 the vigilance sign 29.
+- САУТ's distance `+308` (its global `0x42D134`): the БЛОК's 5.
+- `+296` (the ЭП20's DLL writes it): the БЛОК's 37.
+
+**A label's text** goes only where RTS gave it a buffer (a character
+width and a length in the cab; the host's `+80` is the length + 1): an
+ЭП2К's 15, 17, 18 stay empty.
+
+**САУТ's speed in the drawing** (CONFIRMED, PROBABLE as to the cabs):
+with САУТ on, the train mode, no 799 and no 809 on Б, the КЛУБ-У takes
+`+256` + 5 when that is below the permitted speed and shows "С" in 16; the
+БЛОК takes `+256` itself when the permitted speed is above it and shows
+"САУТ". The code reads as doing it in the first cab drawn only, yet the
+ЭП1's run shows "С" on both cabs: openRTS shows it on every cab.
+
+The КЛУБ-У's:
 
 | Object | Shows |
 |---|---|
@@ -806,6 +845,58 @@ The БЛОК (`PB_SETUP` 8) draws objects 0 .. 8 and 35 .. 44 its own way
 | 7 (З) | `B4POM`, with АЛС-ЕН `B5POM` and `B3POM`, `B2POM`, `B1POM` for 2, 3, 4 greens ahead |
 
 `KLUB_PLAMP` lights while powered.
+
+**Its sounds** (`0x404B10`): on its own SMS (`AuxLibrarySound`), and on
+the locomotive's outside and cab SMS (`RTSGetLocoObject` 17, 0 and 1)
+with `TRANS_SOUND` 1 or the train's DLL's `var + 32` bit `0x100`: the
+ЭП2К has no Brakes.sms and `TRANS_SOUND` 1.
+
+### The БЛОК's screen (`PB_SETUP` 8; the ЭП20, the 2ЭС6)
+
+CONFIRMED (updateKLUB's drawing; openRTS's matches Brakes.dll's on the
+2ЭС6's and the ЭП20's runs, `openrts.content.klub_2es6`, `_ep20`). The
+КЛУБ-У's objects where not said otherwise; `BLOCK_MODE` 1 makes its bars
+150 km/h, else 300.
+
+| Object | Shows |
+|---|---|
+| 0 | state 1 (its start picture) for 20 s after power-on (`+304`), nothing else drawn; then 0 |
+| 1 | the ТЦ (the higher cylinder), as line 14 |
+| 2, 3, 4 | the ТЦ, the ТМ gauge (`+28`), the УР as values |
+| 5 | САУТ's distance (`+308`), `%0.0f М`; empty at 10 000 or more |
+| 6, 8 | the message and its value (the КЛУБ-У's 21 / 22 then; 21 / 22 keep the next object) |
+| 7 | the speed (`+220`) as a value; state 1 with 23 in the blink near the permitted speed |
+| 9 | the speed within 3 of the permitted |
+| 16 | "САУТ" for "С"; the ALSN's kind ("ЕН", "50ГЦ", "25ГЦ") while the blink timer `+300` is over 1 |
+| 17 | the track number, a space, "ПР" / "НП" |
+| 19 | САУТ's coefficient, else "0.67" |
+| 20 | the distance, `%0.0f М` |
+| 26 | the time, `%02d:%02d:%02d` |
+| 28 | `Engine::CurrentMilepost` + 0.1 as "<km>км <picket>пк<m>м" (picket 0: the km before, "10пк") |
+| 29, 35 | hidden in the blink (`+300` over 1.5, or 0.5 .. 1) |
+| 33 | with no lower target within 2000 m: the permitted speed as a value |
+| 35 | ТСКБМ's timer `+12` under 7 |
+| 36 | state 1 with `+12` from 7 to 15, else 0 |
+| 37 | `+296`, `%03d` |
+| 38 | a lower target within 2000 m: the bar's length less the target |
+| 39 | the bar's length less the permitted speed |
+| 40 | САУТ off (`+4` bit `0x40` clear) |
+| 41 | no АЛС-ЕН |
+| 42 | state 1 in kgf/cm² (command 123) |
+
+No ALSN lights of its own on the screen (2 .. 9 as above); `KLUB_DPOM`,
+`KLUB_DALS` and the lamps as the КЛУБ-У's.
+
+### `KLUB_BILTYPE` 2 (the ЭП2К)
+
+CONFIRMED (`openrts.content.klub_ep2k`). The КЛУБ-У's screen and:
+- 35 .. 127 cleared at each redraw;
+- 35, or 36 with the second set (command 46);
+- 37 and 38 .. 37 + speed / 5: the speed as a bar;
+- 24: the permitted speed less the speed when 1 .. 9 above it, else empty;
+- 20 with a track number whatever else is open; 87 .. 127, one shown for
+  each step the distance reaches: 0, 10 .. 100 by 10, 233, 366, 500 ..
+  1000 by 100, 1250 .. 3000 by 250, 3500 .. 10 000 by 500.
 
 ### The track number and the map
 

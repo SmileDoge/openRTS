@@ -1,0 +1,25 @@
+# openRTS's КЛУБ beside Brakes.dll's (--klub shadow) on the ЭП1-002: two cabs (the second working), the КЛУБ-У's screen, САУТ,
+# every step: its state, each cab's screen, the ALSN's lights and lamps,
+# its sounds. The keys of every cab are pressed; only the working cab's
+# act (SwitchKLUB). Standing: the track entered (the ЭК), К799 (on white
+# at 35, openRTS's own way: not set against Brakes.dll until it is
+# entered), К800, aspects 3, 1, 0, 7.
+0    voltage 3000 0
+0    line_limit 100
+0    line_signal S1 800 7
+0    line_signal S2 1800 3
+# cab 1: П 1 ВВОД, ПРИЗН. ПРАВ. 1 ВВОД; К 799 ВВОД 35 ВВОД; К 800 ВВОД
+23    press 404 416 408 416 408
+41    press 402 414 420 420 408
+45    press 422 418 408
+53    press 402 417 413 413 408
+# cab 2: П 1 ВВОД, ПРИЗН. ПРАВ. 1 ВВОД; К 799 ВВОД 35 ВВОД; К 800 ВВОД
+24    press 434 446 438 446 438
+42    press 432 444 450 450 438
+46    press 452 448 438
+54    press 432 447 443 443 438
+28   screen 181 17 1ПР
+30   line_aspect S1 3
+36   line_aspect S1 1
+58   line_aspect S1 0
+62   line_aspect S1 7
