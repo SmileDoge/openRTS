@@ -38,13 +38,6 @@ struct TrackPoint {
 // Absolute heading difference in radians, wrapped to [0, pi].
 [[nodiscard]] double heading_difference(float a, float b);
 
-inline constexpr float track_gauge = 1.52f;
-
-// The cant of the track through a curve, radians, positive the way the curve
-// turns: laid for `design_speed` m/s, less 0.05 m of underbalance, at most
-// 0.15 m at `track_gauge`; straight track has none.
-[[nodiscard]] float cant_angle(float curvature, float radius, float design_speed) noexcept;
-
 inline constexpr double tile_size = 2048.0;
 
 } // namespace openrts::simulation

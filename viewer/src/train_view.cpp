@@ -909,7 +909,6 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
     unit.freight = !passenger;
     unit.cars = std::move(cars);
     unit.train = std::make_unique<simulation::Train>(std::move(setups));
-    unit.train->set_cant_reference(limits_->route_limit());
     // Its ЭПТ's own pace (a new train, a new one).
     unit.train->scatter_ep_fill(std::random_device{}());
     // The consist's PlaceDrag (RTS 0x477928): the cars' chocks from the start.
@@ -10649,7 +10648,6 @@ std::optional<TrainView::BodyPose> TrainView::body_pose(const Unit& unit, const 
     transform = glm::translate(transform, centre);
     transform = glm::rotate(transform, body_heading, glm::vec3{0.0f, 1.0f, 0.0f});
     transform = glm::rotate(transform, -up, glm::vec3{1.0f, 0.0f, 0.0f});
-    transform = glm::rotate(transform, -state.cant, glm::vec3{0.0f, 0.0f, 1.0f});
     transform = transform * motion * flip;
     return BodyPose{.transform = transform, .here = here, .heading = body_heading, .motion = glm::inverse(flip) * motion * flip};
 }
