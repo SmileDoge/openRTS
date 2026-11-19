@@ -37,3 +37,6 @@ Then, without IDA:
   a run with openRTS's cab brake devices (`--brakes openrts`) against a
   golden run of Brakes.dll, phase by phase: the УР, the brake asked (the
   independent brake or the ЭПТ), the pipe, the cylinder and the displays.
+- `openrts-train-check ... --script tests/data/golden/ed9m_klub.script --klub shadow`
+  (no Python): openRTS's КЛУБ-У beside Brakes.dll's in the same run, every
+  step set against Brakes.dll's variables; prints the steps that differ.

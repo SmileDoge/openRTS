@@ -763,6 +763,36 @@ does not know (a 334, a custom 292, the ЭП2Д's ППТ, `BR_KID`, the ВЛ82м
 `openrts-train-check --dll ... --brakes openrts [--numbers books]` runs
 them in the harness.
 
+**openRTS's КЛУБ-У over Brakes.dll** (2026-11-19, experimental; the Train
+window's "КЛУБ: Brakes.dll / openRTS", remembered as `own_klub`, Brakes.dll
+by default; with the realistic air and "Trains with DLLs" not as RTS;
+`LegacyConsist::set_own_klub`, docs/brakes-dll-replacement.md step 3).
+openRTS's КЛУБ (`simulation/klub.hpp`, `klub_screen.hpp`) does what
+Brakes.dll's does, step for step (docs/reverse/brakes-dll.md §11):
+- **Brakes.dll's КЛУБ is switched off.** On the player's train's cars
+  whose Brakes.dll has one (`PB_SETUP` 2) and one cab, the host gives
+  Brakes.dll a `PB_SETUP` without 2 (protocol 15's `AuxParameterSet`).
+  Brakes.dll's brakes, САУТ and ТСКБМ go on.
+- **What openRTS's КЛУБ works:**
+  - it takes the keys (`KLUB_B*ID`), the РБ, the ЭПК key and the power;
+  - its ЭПК and КОН open the pipe;
+  - it draws the screen (`KLUB_DBIL`) and the ALSN's lights and lamps;
+  - its beeps and whistle go on Brakes.sms.
+- **For the train's DLL** it writes into Brakes.dll's variables what
+  Brakes.dll's КЛУБ would leave there (protocol 15's `AuxVarWrite`: `var +
+  32` bits 1 and 4, the limits, the target, the permitted speed, the
+  timer, the flags).
+- **Switched on, it starts afresh:** the track number and the train's
+  data are entered again. A saved game keeps its state with the car's DLL
+  state.
+- **Not yet:**
+  - САУТ's permitted speed does not reach it;
+  - two-cab engines (the ЭП20) keep Brakes.dll's КЛУБ;
+  - `Engine::CurrentMilepost` is not given, so the coordinate shows 0.
+
+`openrts-train-check ... --klub openrts` runs it, `--klub shadow` sets it
+against Brakes.dll's step by step.
+
 **The cab's air gauges** (2026-11-17; "Cab gauges show openRTS's air", on
 by default, remembered as `gauges_openrts_air`; the Train window and the
 launcher's Brakes): with the realistic air the needles MaDaDev's cabs name

@@ -1435,6 +1435,9 @@ private:
     int own_brakes_ = 0;
     int brake_numbers_ = 0;
     bool own_brakes_loaded_ = false;
+    // The Train window's "КЛУБ": Brakes.dll's (0) or openRTS's (1)
+    // (docs/brakes-dll-replacement.md, step 3); remembered as own_klub.
+    int own_klub_ = 0;
     // Each engine's Brakes.dll parameters (trainplugin::brakes_parameters).
     mutable std::unordered_map<const formats::EngineDefinition*, trainplugin::BrakesParameters> brakes_parameters_;
     [[nodiscard]] const trainplugin::BrakesParameters& brakes_parameters_of(const formats::EngineDefinition& engine) const;

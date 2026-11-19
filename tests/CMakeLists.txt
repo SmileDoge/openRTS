@@ -263,6 +263,11 @@ openrts_configure_target(openrts_cab_brakes_test)
 target_link_libraries(openrts_cab_brakes_test PRIVATE openrts_simulation)
 add_test(NAME openrts.cab_brakes COMMAND openrts_cab_brakes_test)
 
+add_executable(openrts_klub_test klub_test.cpp)
+openrts_configure_target(openrts_klub_test)
+target_link_libraries(openrts_klub_test PRIVATE openrts_simulation)
+add_test(NAME openrts.klub COMMAND openrts_klub_test)
+
 add_executable(openrts_distributor_test distributor_test.cpp)
 openrts_configure_target(openrts_distributor_test)
 target_link_libraries(openrts_distributor_test PRIVATE openrts_simulation openrts_script)
@@ -370,6 +375,22 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.dll_ed9m_change_ends COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/ed9m_change_ends.script" --seconds 35)
+    # openRTS's КЛУБ-У beside Brakes.dll's on the ED9M, step by step
+    # (docs/brakes-dll-replacement.md, step 3): with the ЭК, and its modes.
+    add_test(NAME openrts.content.klub_ed9m COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_klub.script" --klub shadow)
+    add_test(NAME openrts.content.klub_ed9m_modes COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_klub_modes.script" --klub shadow)
+    # The same in the game's way: openRTS's КЛУБ in place of Brakes.dll's
+    # (Brakes.dll's switched off), on the realistic air and openRTS's brakes.
+    add_test(NAME openrts.content.klub_ed9m_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_klub.script" --klub openrts --brakes openrts)
+    add_test(NAME openrts.content.klub_ed9m_modes_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_klub_modes.script" --klub openrts --brakes openrts)
     # The start state: the ED9M started cold.
     add_test(NAME openrts.content.dll_ed9m_cold COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_ED9M-0062 mdd_ED9M-0062_G mdd_ED9M-0062_GR --start cold

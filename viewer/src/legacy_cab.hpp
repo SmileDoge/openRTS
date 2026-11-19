@@ -137,6 +137,11 @@ public:
         if (consist_) consist_->set_own_brakes(own, books);
     }
     [[nodiscard]] bool own_brakes() const { return consist_ && consist_->own_brakes(); }
+    // openRTS's КЛУБ-У (LegacyConsist::set_own_klub).
+    void set_own_klub(const bool own) {
+        if (consist_) consist_->set_own_klub(own);
+    }
+    [[nodiscard]] std::size_t klub_cars() const { return consist_ ? consist_->klub_cars() : 0; }
     [[nodiscard]] std::size_t take_restored() { return consist_ ? consist_->take_restored() : 0; }
     bool reconsist(const core::Vfs& vfs, const std::vector<std::vector<LegacyCarRef>>& trains,
                    const std::vector<simulation::Train*>& sims);

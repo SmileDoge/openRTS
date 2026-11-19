@@ -1,9 +1,12 @@
 # Replacing Brakes.dll (plan)
 
-Status: under way (2026-11-18): steps 0, 1 and 2 done; step 2's devices
+Status: under way (2026-11-19): steps 0, 1 and 2 done; step 2's devices
 (`simulation/cab_brakes.hpp`) in the game as an experimental setting
 (docs/train.md, "openRTS's cab brakes over Brakes.dll"), Brakes.dll by
-default. The developer's request:
+default. Step 3: 3.1 .. 3.4 done, the КЛУБ-У (`simulation/klub.hpp`)
+step for step with Brakes.dll's, in the game as an experimental setting
+(docs/train.md, "openRTS's КЛУБ-У over Brakes.dll"). The developer's
+request:
 stop patching openRTS around MaDaDev's `Brakes.dll` and replace it, after
 learning how a train's DLL talks to it.
 
@@ -206,7 +209,56 @@ openRTS around a running Brakes.dll, as now, is what this replaces.
    - modes, keys, screens, sounds.
 
    Compared to the golden runs and testers' recordings. The +3 km/h
-   option becomes the КЛУБ's own setting.
+   option becomes the КЛУБ's own setting. The developer's choice
+   (2026-11-19): first the КЛУБ as Brakes.dll has it, the real КЛУБ-У's
+   features (the ЭК by track numbers, the ALSN's frequency, the shunting
+   codes) later as openRTS's settings.
+   - 3.1 (done): `_ALSN`, `updateKLUB`, `SwitchKLUB` and the КЛУБ's parts
+     of `_Run` and `Switched` read: docs/reverse/brakes-dll.md §11. Brakes.dll
+     keeps no map and no track numbers: a number entered only switches the
+     "ЭК" mode on, and the КЛУБ follows what RTS's ALSN gives along the
+     set path. openRTS needs none either.
+   - 3.2 (done): the harness's line (`line_signal`, `line_post`,
+     `line_aspect`, `when` / `then` by the front's metres, `press` for the
+     keys; the record gains the cab's aspect and the screens' texts) and
+     two golden scripts: `tests/data/golden/ed9m_klub.script` (the ЭК, the
+     train's data, the curves, a КЖ stopped at, the red passed with the
+     ВК, an overspeed that vents the ЭПК) and `ed9m_klub_modes.script`
+     (commands, 799 / 800, the МП's shunting mode, the ЭПК key, the
+     КЛУБ's power, "РЕЖИМ БЕЗ ЭК", КОН).
+   - 3.3 (done): `simulation/klub.hpp` (`step_klub`), its tests
+     (`tests/klub_test.cpp`) and `openrts-train-check --klub shadow`:
+     openRTS's КЛУБ beside Brakes.dll's on the same inputs, every step
+     set against Brakes.dll's variables (the aspect, the limits, the
+     target, the permitted speed, the vigilance timer, the flags, the
+     track number, the entry, the ЭПК, the КЛУБ's sounds). Both scripts:
+     every step the same (openrts.content.klub_ed9m,
+     openrts.content.klub_ed9m_modes). Brakes.dll's arithmetic matters
+     there: its km/h are a double product kept in a float (the own limit
+     at a signal is let go past it only so).
+   - 3.4 (done): in the game: the Train window's "КЛУБ: Brakes.dll /
+     openRTS".
+     - Brakes.dll's КЛУБ is switched off by its `PB_SETUP` without 2
+       (protocol 15, `AuxParameterSet`).
+     - The module's ЭПК and КОН vent the pipe.
+     - The screen (`KLUB_DBIL`) and the lamps are drawn from the module's
+       state (`simulation/klub_screen.hpp`); the shadow sets them against
+       Brakes.dll's too, every object the same on both scripts.
+     - Its sounds go on Brakes.sms.
+     - What the train's DLL reads of a КЛУБ is written into Brakes.dll's
+       variables (protocol 15, `AuxVarWrite`).
+     - Both scripts pass that way too (openrts.content.klub_ed9m_own,
+       openrts.content.klub_ed9m_modes_own).
+     - The +3 km/h option stays the game's own (the limits reach the КЛУБ
+       through it).
+   - 3.5 (in part, 2026-11-19): what the testers told of the real
+     КЛУБ-У set against Brakes.dll's ("The real КЛУБ-У against
+     Brakes.dll's" below); their recordings (the approach to a signal,
+     К282) not posted yet.
+   - Not in it yet: САУТ (its permitted speed is taken from Brakes.dll's
+     in the shadow, not at all in the game), ТСКБМ, the БЛОК's screens and
+     `KLUB_BILTYPE` 2, two-cab engines, `Engine::CurrentMilepost` (the
+     coordinate).
 4. **The other cabs**, by the `KLUB_*` and `BR_*` ids of each family; then
    the recorder, САУТ, ТСКБМ.
 5. **Brakes.dll not loaded** for a locomotive switched to openRTS's.
@@ -260,6 +312,34 @@ lets out 0.65 atm/s, as Brakes.dll's on the ЭД9М (its golden run); on the
 realistic air the cars' ЭВР take only the command and fill and let out at
 their own rates (docs/reverse/air-brakes-real.md). The 418's
 numbers stay Brakes.dll's: the device came after the book.
+
+## The real КЛУБ-У against Brakes.dll's (step 3.5)
+
+What the testers, drivers of real КЛУБ-У, told (the Discord thread,
+2026-11-18 .. 19) against what Brakes.dll's КЛУБ does
+(docs/reverse/brakes-dll.md §11), and so openRTS's (step 3 repeats it).
+Their recordings (the approach to a signal, К282) are not posted yet.
+
+| The real КЛУБ-У (testers) | Brakes.dll's (and openRTS's) |
+|---|---|
+| The position by GPS against the electronic map (ЭК) of its section; "ЭК" in the ALSN line | no map: a track number entered switches the "ЭК" mode on |
+| The target comes from the map by the track number entered, even when the train is on another track | the next signal on the path the train takes (its switches as set); the number chooses nothing |
+| Entered before the entry signal: the target is the entry Н, then the track's signal (Н3, НМ3); after the exit, the first block signal | the next signal ahead: the same where the number matches the route |
+| НМ21, НМ31, НМ41 along the main track need no new number; a switch onto another track does | no chains: always the next signal |
+| A red at the target: the braking curve to the signal of the track entered | a straight curve, 0.08 km/h a metre (12.5 m a km/h) to the next signal; the real curve's shape not told |
+| Without the ЭК (no number, or not in the map): no target, no distance, the aspect's top speed | `KLUB_GRSPD` (the ЭД9М's 120); after a yellow `KLUB_YLSPD` (60), after КЖ 20, at `KLUB_BLUCH` (1000 m); "РЕЖИМ БЕЗ ЭК" |
+| Back to the ЭК by itself once the number entered is on the map ahead (track 3 at the next station) | the mode stays as long as a number is entered |
+| The +3 km/h depends on the depot; without it the speed blinks from 97, sounds from 98, whistles over 100 | the same with round limits (the routes' +3 taken off by the game's option) |
+| The ALSN's frequency: no codes off the section's | "50ГЦ" / "25ГЦ" shown by the line's current (DC / AC); no frequency logic |
+| The shunting mode: the signal ahead keeps giving КЖ (the testers' wish) | the shunting mode (МП on Б) shows Б at 60, whatever the codes |
+| К282 | not in Brakes.dll |
+
+So the real КЛУБ-У's map (a target by the track number) and the ALSN's
+frequency are openRTS's to add later as settings (the developer's choice,
+2026-11-19). The route database's signal letters (`.rtsdb`, filled on some
+routes only) and its stations' routes could make the map. Open with the testers: the frequency
+of a section; the shunting mode (how it comes on, its speed, vigilance, the
+way out); side tracks; К282.
 
 ## Open
 

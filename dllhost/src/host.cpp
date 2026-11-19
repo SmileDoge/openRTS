@@ -1243,6 +1243,26 @@ void Host::group(CarMirror& player, const bool players) {
 
 // --- each step ---------------------------------------------------------------------
 
+void Host::write_aux(const StepRequest& request) {
+    for (const auto& p : request.aux_parameters) {
+        if (p.car >= cars_.size()) continue;
+        auto& car = *cars_[p.car];
+        if (p.library >= car.aux_info.size() || p.index >= car.aux_info[p.library].params.size()) continue;
+        car.aux_info[p.library].params[p.index].value = p.value;
+    }
+    for (const auto& w : request.aux_writes) {
+        if (w.car >= cars_.size()) continue;
+        auto& car = *cars_[w.car];
+        if (w.library >= car.aux_info.size()) continue;
+        auto& var = car.aux_info[w.library].var;
+        if (w.offset % 4 != 0 || w.offset / 4u >= var.size()) continue;
+        std::uint32_t word = 0;
+        std::memcpy(&word, &var[w.offset / 4u], sizeof word);
+        word = (word & ~w.mask) | (w.bits & w.mask);
+        std::memcpy(&var[w.offset / 4u], &word, sizeof word);
+    }
+}
+
 void Host::write_inputs(const std::vector<CarInput>& inputs) {
     const std::size_t n = (std::min)(inputs.size(), cars_.size());
     for (std::size_t i = 0; i < n; ++i) {
@@ -1373,6 +1393,7 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
         sound->paired_flags = block->data();
     }
     write_inputs(request.cars);
+    write_aux(request);
     // A control cable connected or parted (the car menu): the multiple-unit
     // groups again (RTS 0x4F995C).
     {

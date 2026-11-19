@@ -22,7 +22,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 14;
+inline constexpr std::uint32_t protocol_version = 15;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -409,6 +409,28 @@ struct CarInput {
     float equalising = -1.0f;
 };
 
+// An auxiliary library's AuxLibraryParameters entry given another value
+// (by its index in AuxLibrarySpec::parameters; it keeps it until the next
+// one): openRTS's КЛУБ in place of Brakes.dll's gives Brakes.dll a PB_SETUP
+// without its КЛУБ (docs/brakes-dll-replacement.md, step 3.4).
+struct AuxParameterSet {
+    std::uint32_t car{};      // in StepRequest::cars' order
+    std::uint16_t library{};  // the car's AuxLibrary, in .eng order
+    std::uint16_t index{};
+    float value{};
+};
+
+// A 32-bit word of an auxiliary library's variable stack written before the
+// car's DLLs run this step: var[offset / 4] = (var & ~mask) | (bits & mask)
+// (floats by their bits). openRTS's КЛУБ writes what Brakes.dll's would for
+// the train's DLL to read (var + 32 bits 1 and 4, the limits, the timer).
+struct AuxVarWrite {
+    std::uint32_t car{};
+    std::uint16_t library{};
+    std::uint16_t offset{};
+    std::uint32_t mask{}, bits{};
+};
+
 struct EnterRequest {
     std::uint32_t car{};          // the locomotive the player takes
     bool running = true;          // State bit 1 (the train starts running); bit 0 "has cars" is the host's
@@ -482,6 +504,9 @@ struct StepRequest {
     // The car whose tape rolls (simulation/tape.hpp), -1 none: RTSGetInteger
     // 7 answers from it, its LocoFlags get 0x10000 (RTS 0x414B40).
     std::int32_t tape_car = -1;
+    // Auxiliary libraries' parameters set and variables written before Run.
+    std::vector<AuxParameterSet> aux_parameters;
+    std::vector<AuxVarWrite> aux_writes;
     // Every AuxLibrary's variable stack in the reply (CarOutput::aux_vars):
     // the golden runs of docs/brakes-dll-replacement.md; not in the game.
     std::uint8_t want_aux_vars = 0;
@@ -786,6 +811,7 @@ inline void write(Writer& w, const StepRequest& s) {
     write_list(w, s.signal_units); write_pod_list(w, s.sound_pairs);
     write_list(w, s.items); write_pod_list(w, s.track_items); w.put(s.items_range);
     w.put(s.tape_car); w.put(s.want_aux_vars);
+    write_pod_list(w, s.aux_parameters); write_pod_list(w, s.aux_writes);
 }
 inline void read(Reader& r, StepRequest& s) {
     s.day_time = r.get<double>(); s.dt = r.get<float>(); s.air_temperature = r.get<float>();
@@ -798,6 +824,7 @@ inline void read(Reader& r, StepRequest& s) {
     read_list(r, s.items, 200000); read_pod_list(r, s.track_items, 200000); s.items_range = r.get<float>();
     s.tape_car = r.get<std::int32_t>();
     s.want_aux_vars = r.get<std::uint8_t>();
+    read_pod_list(r, s.aux_parameters, 4096); read_pod_list(r, s.aux_writes, 4096);
 }
 
 inline void write(Writer& w, const ReconsistCar& c) { w.put(c.from); write(w, c.spec); }

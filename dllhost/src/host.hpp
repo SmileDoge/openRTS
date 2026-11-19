@@ -225,6 +225,8 @@ private:
     void regroup();
     void regroup(CarMirror& master, bool player);
     void write_inputs(const std::vector<CarInput>& inputs);
+    // StepRequest::aux_parameters and aux_writes, before the DLLs run.
+    void write_aux(const StepRequest& request);
     void write_cabs(const StepRequest& request);
     void run_car(CarMirror& car, float dt, float air_temperature);
     void signals(const StepRequest& request);

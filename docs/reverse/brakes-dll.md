@@ -214,8 +214,10 @@ The rest (`+16` .. `+76`, `+92` .. `+112`, `+188` .. `+220`, `+228`, `+248` ..
 
 ## 8. Open
 
-- **Inside `_Run`:** the brakes system by system (395, 254, 367, 130 /
-  224, ЭПТ, gauges): step 2 reads them, with golden runs (step 1).
+- **Inside `_Run`:** the brakes system by system: read in §10 (step 2).
+- **The КЛУБ** (§11): the БЛОК's screen (`PB_SETUP` 8), ТСКБМ's own
+  logic (`0x40EAA8`), САУТ (`0x4033D0`), where `0x406540` writes the
+  train's data.
 - **The train DLLs' bits** `0x40` .. `0x8000` and `var + 312`.
 - **What else** the train DLLs read of `Engine` that Brakes.dll wrote.
 
@@ -461,3 +463,357 @@ Instead of RTS's triple valve (AuxilaryRate 0, EngineFlags 1):
 | 134 / 135 | the ЭПТ |
 
 Matches the golden runs' sequences.
+
+## 11. The КЛУБ-У (step 3.1, 2026-11-19)
+
+Read in `_ALSN` (`0x402828`), `updateKLUB` (`0x406658`), `SwitchKLUB`
+(`0x40D52C`), the КЛУБ's part of `_Run` ("EPK KLUB") and of `Switched`
+(`0x4239C0`). CONFIRMED unless marked. Speeds in km/h, distances in m.
+
+### What turns it on
+
+- **`PB_SETUP`** (the ЭД9М's 7) picks the devices. Bit 1: САУТ
+  (`0x4033D0`). Bit 2: the КЛУБ (`updateKLUB` and the ЭПК part of
+  `_Run`). Bit 4: ТСКБМ (`0x40EAA8`) and the КЛУБ's periodic vigilance.
+  Bit 8: the БЛОК's screens and sounds (3195 / 3196 for 3199 / 3198,
+  `BLOCK_MODE`). The ЭД9М is a КЛУБ-У without the БЛОК. Without bit 2 none
+  of the КЛУБ runs: `updateKLUB`, `SwitchKLUB` (from `_CanSwitch`), the ЭПК
+  part of `_Run`, the РБ's beep; `_ALSN` and the ALSN delay still do
+  (openRTS's КЛУБ switches Brakes.dll's off so, step 3.4).
+- **Powered** (`0x402658`): every `KLUB_PIT1 .. KLUB_PIT<KLUB_PCOUNT>`
+  switch on (the ЭД9М's 58 and 59). Unpowered: no permitted speed, no
+  screens, and with the ЭПК key on the vigilance timer is held at 5 s or
+  more, so the ЭПК vents 7 s later.
+- **The ЭПК key** (`PB_EPKKEY`) writes its state into `Engine::ALSNOn`
+  (`+106`). The ЭПК part of `_Run` and the signal lines of the screen work
+  only with it on.
+- **Only the working cab** counts (its 367 in `BR_367OPPOL`, or
+  `BR_NUMCABS` 1); another cab's screen is cleared.
+- **When things happen in a step** (checked step by step against the
+  golden runs, step 3.3):
+  - the keys act at the click: `_CanSwitch` calls `SwitchKLUB` for a
+    move to a state other than 0, the КЛУБ powered;
+  - the РБ, the РБС and the ЭПК key act in `Switched`, on any move, after
+    the step's `Run` (RTS moves a cab switch after the DLLs' `Run`);
+  - `Run` reads the switches (the power, the ЭПК key's `ALSNOn`) as they
+    stood before the step's moves.
+- **ТСКБМ** (`0x40EAA8`, its switch `TSKBM_SW`, off on the ЭД9М) sets
+  `var + 4` bit 8 while on: the КЛУБ's periodic vigilance stops; its own
+  timer is `+12`.
+- **`_Init`:**
+  - the aspect is green (7);
+  - the train mode is on (`var + 8` `0x400`);
+  - the speed on white is 40 (`+148`);
+  - the time display is off (`+208` −1).
+
+### The signal (`_ALSN`, every step before `Run`)
+
+- **Which signal.** The array of the running direction: ahead, or behind
+  when the cab (`PB_FLIP`, `BR_254DID1`, the engine's reverser) runs the
+  other way. The first signal object with a NORMAL head (flag 1) is the
+  target. Its `Aspect[0]` is the cab's aspect (`Cabin::Signal +112`), its
+  distance `+108`, its speed limit `+132` (m/s), its data `+136`.
+- **No codes:**
+  - aspect 8 when the signal is beyond an obstruction (flag `0x10`);
+  - aspect 8 when there are cars ahead of the locomotive in the running
+    direction (`RTSGetInteger` 2 and 4 with the direction): only the
+    leading locomotive gets codes.
+- **Aspect 0 (stop) or 8.** It becomes 2 (Б) with 40 km/h (11.12 m/s) and
+  flag `0x20`, unless the last aspect was 1 (`var + 4` `0x100000`, set
+  while it is 1). After КЖ the red stays.
+- **A DISTANCE head** (flag 2) at 2 (restricting) before the first normal
+  head: Б with 40 and flag `0x20` too (`var + 4` `0x200000`).
+- **Aspect 1 (КЖ):**
+  - the signal's limit is 0;
+  - the КЛУБ's limit is 63 at most.
+- **Aspects 3 .. 5** without a limit of their own: 60 km/h (16.667 m/s).
+- **The АЛС-ЕН count** (`+244`), with the table of command 137 (`+240`
+  1..4): the first normal signal and those after it at 6 or 7 in a row,
+  at most 4.
+
+**The limits:**
+- `+80` = |limit| × 3.6: the lowest of the train's limits RTS passes.
+- **`+336`, a limit of its own.** It is set to the train's limit when the
+  signal is under 5 m ahead (passed) and the limit is higher. At a speed
+  post under 5 m it is set to the next limit. It is dropped once the
+  train's limit is over it. While it is set, `+80` is it. A signal's
+  lower limit does not lower the КЛУБ's: only the speed posts and the
+  aspects do.
+- **The next limit** `+116` = |x| × 3.6 at `+120` = y (none: `+80` at
+  100 000 m).
+- **The signal's limit in its place.** The signal's limit (if ≥ 0) at its
+  distance takes the next limit's place when:
+  - the signal is nearer than the speed post, or
+  - (d_signal − d_post) × 0.08 < v_post − v_signal.
+
+  `+116` is at most 255.
+- `+84` = the signal's distance − 50 (0 past 9999); `+144` its whole
+  metres; `+88` `0x4000` when the signal's limit is 0.
+
+### `_Run` before the КЛУБ
+
+- **`ALSN_DELAY`** (the ЭД9М's 5 s). A new aspect, or a new АЛС-ЕН count,
+  is held back until it has stood that long. Meanwhile the cab shows the
+  last accepted one (`+72` / `+248`, the timer `+68`). `_Init` starts the
+  timer at the delay, so the first change is taken a step on.
+
+  Accepting it restarts the yellow's distance (`+332`, below).
+- **Б after КЖ is К.** An accepted 2 after a 1 (`+64`) is shown as 0.
+
+### The permitted speed (`updateKLUB`, every step)
+
+**Rising limits wait for the train.** When `+80` rises over the last
+accepted `+192` and a length in wagons is entered (`+176`):
+- the old limit holds until the train has run `+176` × 14 m (`BR_EPT` 0)
+  or × 25 m (`BR_EPT` 1);
+- the distance is counted in `+188`;
+- `+88` `0x40000` is set meanwhile;
+- a beep sounds when it lets go.
+
+`KLUB_GRSPD` (the ЭД9М's 120) caps it.
+
+**Without the ЭК** (no track number, `+160` & 0x7F = 0, "РЕЖИМ БЕЗ ЭК"):
+the limits of the route are not used. `+80` = `KLUB_GRSPD`, and:
+
+| Aspect | Target (`+116` at `+120`) |
+|---|---|
+| 3 .. 5 (Ж) | `KLUB_YLSPD` (60) at `KLUB_BLUCH` (1000) − the distance run since the aspect came (`+332`, at most `KLUB_BLUCH`) |
+| 1 (КЖ) | 20 at the same |
+| others | `KLUB_GRSPD` at 10 000; `+332` = 0 |
+
+**The curve** is straight: 0.08 km/h per metre, 12.5 m a km/h.
+
+| Case | `+140`, the permitted speed |
+|---|---|
+| К or КЖ, powered, with the ЭК | `+80` if (int)`+80` × 12.5 ≤ the signal's whole metres (`+144`); else 0.08 × `+144`, beep once (`+128` bit 2) |
+| otherwise, powered | `+80` if L ≤ `+116`, or (int)(L − `+116`) × 12.5 ≤ `+120`, or (flag `0x20` and `+116` ≤ 0), where L = 40 with flag `0x20`, else `+80`; else `+116` + 0.08 × `+120`, beep once |
+
+Then, in this order:
+
+1. **КЖ:** the signal's limit 0, `+140` at most 60.
+2. **At least 10.**
+3. **The 20 km/h permission** (`var + 8` `0x1000`). It is dropped at
+   aspects 2 .. 7. On К (0, 8) and КЖ it gives 20; without it, К (0, 8)
+   gives 0.
+4. **The white permission** (`var + 8` `0x2000000`), on К (0, 8): Б at 40.
+   It is dropped at any other aspect.
+5. **`var + 8` `0x10000000`** is set while the speed is over `+140` as
+   it stands here, before the rules below. The РБ does not answer while
+   it is set (golden run: on Б after the last signal a post at 15 keeps
+   it set under Б's 43, and a periodic request vents the ЭПК).
+6. **Commands 799 / 809.**
+   - Command 799 (`var + 8` `0x40`): Б at the speed on white (`+148`).
+   - Command 809 (`0x80`) on Б: the same speed.
+7. **The shunting mode** (`var + 8` `0x400` clear): Б at 60.
+8. **САУТ** (`PB_SETUP` 1, САУТ on: `var + 4` `0x40`).
+   - Its permitted speed (`+256`) + 5, when lower, replaces `+140`; the
+     screen shows "С".
+   - On the БЛОК it is − 3, shown as "САУТ".
+
+   It applies in the train mode, unless command 799, or 809 with Б, is
+   in force.
+
+### Vigilance and the ЭПК
+
+**Requests** (`var + 8` bit 8, the timer `+24` set to at least 4.9 s):
+
+- **Over the permitted speed.**
+  - When: (int)`+140` − the whole speed < 0, at the screen's redraw
+    (every 0.5 s; 0.33 on the БЛОК).
+  - Not in the first 10 s of a wheel slip (`Engine::wheelslip`, its
+    timer `+216`), nor in double traction (`0x800`).
+  - Also sets `0x400000`, the blinking.
+  - The zone before it, at the redraw:
+    - within 3 of `+140` the speed blinks;
+    - within 2 it sets `0x800000`, and a beep (3199) sounds every 0.5 s
+      while the speed is not over `+140`.
+- **Moving on К** (0, or 8 above 1 km/h; not in double traction) over
+  0.5 km/h: a request every step, and `var + 4` `0x400` ("СРЫВ ЭПК КОН").
+  - While `0x400` stands the РБ does not answer while moving, so the ЭПК
+    vents about 7 s on.
+  - After standing on КЖ within 200 m of the signal (`0x80000`, below)
+    the first 20 km/h are free: the red passed after a stop.
+- **КЖ:**
+  - standing within 200 m of the signal sets `0x80000`;
+  - over 1.5 km/h a request, once per start (`+128` bit 4).
+- **Б** (not in the shunting, 799 or 809 modes, nor double traction):
+  - the speed at the start is kept (`+196`);
+  - the permitted speed falls from it + 5 by 0.02 km/h a metre run
+    (`+200`), to 43 at least;
+  - over 1.5 km/h a request once (`+128` bit `0x20`; on the БЛОК only
+    without САУТ).
+- **The aspect changes** (the ЭПК part of `_Run`, `+48` the last).
+  - A beep 3198.
+  - To 0, 1, 2 or 8 above 1 m/s: a request with the timer at 4.95 s.
+
+    So the whistle comes at once and the ЭПК after 7 s.
+  - A new АЛС-ЕН count beeps too.
+- **Periodic** (`PB_SETUP` 4), moving over 0.1 m/s.
+  - The timer `+152`: a request after 90 s on Б or green (2, 6, 7),
+    40 s on the others.
+  - The РБ, the ЭПК key and an aspect change set it to 0.
+
+**The timer** `+24` runs while bit 8 is set, or while unpowered with the
+ЭПК key on:
+- at 5 s the whistle, sound 56 (3956 on the БЛОК);
+- at 12 s the ЭПК:
+  - the timer 45;
+  - `var + 4` `0x400`, `var + 8` `0x01000000`;
+  - `TrainPipeRate` −1.2, `EPTValue` −1;
+  - `var + 32` bit 1.
+
+  It stays tripped until the ЭПК key goes off.
+
+**Answers:**
+- **The РБ** (`PB_RB`; timer under 12, powered; not over the permitted
+  speed, `0x10000000`, nor ТСКБМ's `0x10`; standing, or no КОН `0x400`).
+  So over the permitted speed only braking helps: the ЭПК vents 7 s after
+  the first request (golden run, step 3.2).
+  It:
+  - clears bit 8 and the timers;
+  - whistle off (57) if it was over 5;
+  - a beep 3199.
+- **The РБС** (`PB_RBS`): the same, without the КОН and ТСКБМ
+  conditions, and clears ТСКБМ's `0x10`.
+- **The ЭПК key off:**
+  - clears the request and the timers;
+  - 57 if it was over 5;
+  - `ALSNOn` 0.
+
+  On again: a beep 3198.
+- **КОН.** Moving with the ЭПК key off (`ALSNOn` 0) and powered, the
+  cylinders under 0.7 atm (Wagon `+52`, `+96`):
+  - after 10 s (`+16`) the ЭПК vents;
+  - `var + 4` `0x200`;
+  - the timer 45.
+
+### Keys (`SwitchKLUB`, `KLUB_B*ID<cab>`; each beeps 3197 and 3199; ВВОД's refusal 3198)
+
+| Key | Does |
+|---|---|
+| `B0` .. `B9` | a digit onto the entry `+132` (× 10 + d); after a field opens (`var + 8` `0x4000000`) the first digit starts it afresh |
+| `BPL` / `BMN` | `+132` + 1 / − 1; `BSB` sets it to 0 |
+| `BK` (К) | the command mode on / off (`var + 8` bit 1), the entry 0 |
+| `BVV` (ВВОД) | takes the entry: a command in the command mode, else the open field (below) |
+| `BP` (П) | the track number field (`0x8000`) |
+| `BL` | standing: the train's data, field by field (`+184` 1 .. 5) |
+| `BVK` (ВК) | drops the 20 km/h permission; then standing on КЖ gives it (`0x1000`); standing on К (0, 8) with the РБ held, the white permission (`0x2000000`) |
+| `BMP` (МП) | drops the double traction (`0x800`, `0x100000`); then standing with the РБ held in the train mode turns it on; else standing on Б switches the train / shunting mode (`0x400`) |
+| `BPS` | the backlight (`0x20000`: `KLUB_TCHNUM`'s texture 1) |
+| `BI` | a beep only |
+| `BSP`, `BSO`, `BSC`, `BSK` | САУТ's keys (`SAUT_PODID`, `OTPID`, `OCID`, `K20ID`) |
+
+**Fields** (ВВОД takes `+132`):
+- **The track number.**
+  - `+160` = the entry, at most 127; 0 is none.
+  - Then "ПРИЗН. ПРАВ." (`0x10000`): a non-zero entry sets `+160`
+    `0x80`, the right track ("ПР"), 0 the wrong one ("НП").
+- **The train's data** (`BL`, `+184`): the driver's number (`+164`), the
+  train's (`+168`), its length in axles (`+172`), in wagons (`+176`), its
+  mass (`+180`). Each field opens with its last value. After the mass
+  `0x406540` writes them out (UNKNOWN where to; nothing else reads them).
+- **The speed on white** (799, 809): `+148`.
+- **The АЛС-ЕН table** (137): `+240` = 0 .. 4.
+- With `KLUB_KASS` given and its switch at 0 (no cassette) the
+  confirmation is the refusing beep (3198); the value is taken all the
+  same.
+
+**Commands** (`K` number `ВВОД`; `+136` = 0 shows its message for 2 s):
+
+| Command | Does |
+|---|---|
+| 4 | the time (`+208` = `RTSGetInteger` 1) |
+| 7 | the train's data, as `BL` (the БЛОК only) |
+| 10, 45, 46, 47, 1000, 1001, 1037, 1038 | messages: the firmware, "КАБИНА 1 / 2", "КОМПЛЕКТ 1 / 2", "АКТ. ДАТЧИК 1 / 2", the distance of the rising limit, the ТМ, the run (`+224`) |
+| 71 / 70 | the lamp test on / off (`var + 8` 4) |
+| 80 / 81 | line 14: the ТМ / the ТЦ (`0x20`) |
+| 92 / 91 | the second set (`0x100`) |
+| 122 / 123 | MPa / kgf/cm² (`2`) |
+| 137 | the АЛС-ЕН table field |
+| 257 / 258 | the ЭПК test: a request at once (`0x200000`, the timer 4.7) / its end |
+| 259 / 260 | САУТ's diagnostics (`0x4000`) |
+| 262 | with the double traction: `0x100000` |
+| 799 / 800 | move on white at a speed entered (`0x40`, the field opens with `+148`) / off (also clears 809) |
+| 809 | the same for Б (`0x80`) |
+| 1036 | "ПЕРЕХ. НА ДПС" (`0x200`) |
+
+No К282 (the testers' command) in this library.
+
+### Its screen (`KLUB_DBIL<cab>`, a screen display; `RTSGetCabObject` 11)
+
+**When it is drawn:**
+- every 0.5 s (0.33 on the БЛОК; `+284`);
+- unpowered, or not the working cab: every object hidden, the
+  `KLUB_DPOM` / `KLUB_DALS` lights off, the `KLUB_B*POM` lamps 0;
+- the station name (27) appears 20 s after power-on (`+304`).
+
+The БЛОК (`PB_SETUP` 8) draws objects 0 .. 8 and 35 .. 44 its own way
+(not traced). The КЛУБ-У's:
+
+| Object | Shows |
+|---|---|
+| 2 .. 9 | the ALSN's lights: 9 Б, 8 К (0, 8), 7 КЖ, 6 Ж (3 .. 5), 5 З (6, 7); with АЛС-ЕН 6 also on green, and 4, 3, 2 for 2, 3, 4 greens ahead (7) |
+| 10 / 11 | the shunting / the train mode; 11 blinking in double traction |
+| 12 | the cassette in (`KLUB_KASS`'s switch) |
+| 13 | САУТ's ЭПК trip |
+| 14 | the ТМ (its gauge's `+28`), or the ТЦ after command 81; MPa `%0.2f`, or kgf/cm² `%0.1f` after command 123 |
+| 15 | the УР (`Engine::UR`) |
+| 16 | "ЭК" with a track number; else the ALSN's carrier: "ЕН" (АЛС-ЕН), "50ГЦ" (the line's frequency 0) or "25ГЦ"; "С" while САУТ's speed rules |
+| 17 | the track number with "ПР" / "НП"; "0" without |
+| 18 | \|Wagon `+72`\| (the acceleration), `%0.1f` |
+| 19 | САУТ's braking coefficient (`Engine +120` × 0.01) with САУТ on (`PB_SETUP` 1) |
+| 20 | the next object's distance, `%04.0f` (with the ЭК; no field, command or message open) |
+| 21, 22 | a message and its value if one is up (the field being entered, the command's message, "РЕЖИМ БЕЗ ЭК", "СРЫВ ЭПК КОН / САУТ / ТСКБМ", "БОКСОВАНИЕ", the time); else the next object's kind and name: "СВЕТОФОР" and the signal's name, "ПЛАТФОРМА", "ПЕРЕЕЗД" with its km, "ОГРАНИЧ. СКОР." with its speed |
+| 23 | the speed, refreshed every 0.5 s (`+220`; + 20 × the slip's seconds while slipping), blinking within 3 of the permitted |
+| 24 | the permitted speed, `%03.0f` |
+| 25 | the speed as the object's value (at least 1) |
+| 26 | the time, `%02d.%02d.%02d` |
+| 27 | the station: a platform under the train, else the first ahead within 7000 m, whose name is not a stop's ("ПЛ.", "О.П.", "ОП "), or a siding's without `%`; renamed by `mdd_Libraries/Brakes/ChangeStanc.bto` (lines "name<TAB>shown", "SKIP" to leave one out) |
+| 28 | the coordinate, `Engine::CurrentMilepost` − 1, `%0.3f` km with leading zeros |
+| 29 | the vigilance request (with bit 8, or `+12` under 7) |
+| 30 / 31 | moving forward / back |
+| 32, 33 | the permitted and the target speeds as states (× 0.2; the target only when lower and within 2000 m) |
+| 34 | АЛС-ЕН: "1ЕН" .. "4ЕН", else "Х" |
+| 43, 44 | the target signal's name and distance when 21 / 22 show another object |
+
+**The next object** (21, 22, 20):
+- With a track number and the ЭПК key on: the target signal and its
+  distance.
+- **PROBABLE:** a nearer platform, level crossing (`Engine +140` km) or
+  speed post within 500 m (`RTSGetTrackItems` 4000 m ahead) replaces it
+  only when the track number is odd (the code tests its bit 0;
+  disassembly checked).
+
+**The ALSN lights:**
+- `KLUB_DALS<cab>` and `KLUB_DPOM<cab>` objects;
+- `KLUB_B1POM` .. `KLUB_B8POM` lamps (the ЭД9М's 55 .. 62, its cab
+  signal), one per aspect:
+
+| Aspect | Lamp |
+|---|---|
+| 0, 8 (К) | `B7POM` |
+| 1 (КЖ) | `B6POM` |
+| 2 (Б) | `B8POM` |
+| 3 .. 5 (Ж) | `B5POM` |
+| 6 (З) | `B4POM`, with АЛС-ЕН also `B5POM` |
+| 7 (З) | `B4POM`, with АЛС-ЕН `B5POM` and `B3POM`, `B2POM`, `B1POM` for 2, 3, 4 greens ahead |
+
+`KLUB_PLAMP` lights while powered.
+
+### The track number and the map
+
+The КЛУБ in Brakes.dll has no map of its own and no track numbers of the
+route.
+- **The number does not choose a track.** The number the driver enters
+  (1 .. 127) switches on the "ЭК" mode and is shown with ПР / НП. The
+  number itself chooses nothing.
+- **With any number**, the КЛУБ uses what RTS gives through `ALSN` along
+  the path the train will take (its switches as set):
+  - the train's limit and the next speed post's;
+  - the next signal's aspect, distance and limit.
+- **Without one** it keeps to `KLUB_GRSPD` and the aspect, and to
+  `KLUB_YLSPD` / 20 km/h over `KLUB_BLUCH` metres after a yellow / КЖ.
+- **`RTSGetTrackItems`** is used for the screen only: the station's name,
+  the platforms, the crossings and the speed posts' values.
+- **So openRTS needs no track numbers** to do what it does: its signal
+  pass and limits along the set path are enough.

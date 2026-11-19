@@ -1,0 +1,219 @@
+# Golden run of Brakes.dll's КЛУБ-У on a six-car ЭД9М, its other modes
+# (docs/brakes-dll-replacement.md step 3.2; ed9m_klub.script has the ЭК):
+# commands К 123 (kgf/cm²) and К 81 (line 14: the ТЦ); К 799 with 25 km/h
+# on white, the МП's shunting mode and back, К 800; the ЭПК key off and on;
+# the КЛУБ's power off with the ЭПК key on (the ЭПК vents 7 s on) and back;
+# then without a track number ("РЕЖИМ БЕЗ ЭК"): a green, a speed post, a
+# yellow (60 km/h over KLUB_BLUCH), a КЖ (20 km/h) stopped at; off again
+# and the ЭПК key off on the move: КОН vents the pipe. The РБ
+# (23) every 5 s. RTS's air.
+#
+# Keys as in ed9m_klub.script: 402 К, 406 МП, 408 ВВОД, 413 0, 416 1,
+# 419 2, 422 3, 415 4, 418 5, 421 6, 414 7, 417 8, 420 9. The КЛУБ's power
+# 58 and 59, the ЭПК key 26.
+#
+#   openrts-train-check <RTS root> --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P
+#       mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR --script tests/data/golden/ed9m_klub_modes.script
+#       [--record ed9m_klub_modes.tsv | --klub shadow]
+0    voltage 25000 50
+0    line_limit 100
+0    line_signal S1 800 7
+0    line_post 1200 80
+0    line_signal S2 1600 3
+0    line_signal S3 2600 1
+0    line_signal S4 3400 7
+1    switch 2 1
+2    switch 35 1
+# К 123 ВВОД, К 81 ВВОД.
+4    press 402 416 419 422 408
+6    press 402 417 416 408
+7.2  screen 180 21 ДАВЛЕНИЕ В ТЦ
+# К 799 ВВОД 25 ВВОД: on white at 25; the МП: shunting, again: back; К 800.
+8    press 402 414 420 420 408
+10   press 419 418 408
+12   expect var140 == 25
+13   press 406
+14   expect var140 == 60
+15   press 406
+16   press 402 417 413 413 408
+# The ЭПК key off and on.
+18   switch 26 0
+20   switch 26 1
+# The КЛУБ's power off with the ЭПК key on: the ЭПК vents; power back, the
+# key off and on clears it.
+22   switch 58 0
+32   expect var24 == 45
+33   switch 58 1
+35   switch 26 0
+37   switch 26 1
+39   expect var24 == 0
+# Off without a track number.
+40   switch 1 3
+41   switch 0 5
+# (on the realistic air the cylinders let out by 50 s)
+50   switch 0 7
+70   switch 0 5
+0    when 2250 switch 2 5
+0    then 1.3 switch 2 2
+0    then 20 expect speed < 0.5
+0    then 22 switch 2 1
+# Standing on КЖ: S3 cleared, off again; on the move the ЭПК key off:
+# КОН vents the pipe 10 s on (the ЭД9М takes no power without the key).
+0    then 24 line_aspect S3 7
+0    then 30 switch 0 7
+0    then 38 switch 0 5
+0    when 2400 switch 26 0
+0    then 13 expect bits4 & 0x200
+0    then 13 expect var24 == 45
+# The РБ every 5 s.
+45  press 23
+50  press 23
+55  press 23
+60  press 23
+65  press 23
+70  press 23
+75  press 23
+80  press 23
+85  press 23
+90  press 23
+95  press 23
+100  press 23
+105  press 23
+110  press 23
+115  press 23
+120  press 23
+125  press 23
+130  press 23
+135  press 23
+140  press 23
+145  press 23
+150  press 23
+155  press 23
+160  press 23
+165  press 23
+170  press 23
+175  press 23
+180  press 23
+185  press 23
+190  press 23
+195  press 23
+200  press 23
+205  press 23
+210  press 23
+215  press 23
+220  press 23
+225  press 23
+230  press 23
+235  press 23
+240  press 23
+245  press 23
+250  press 23
+255  press 23
+260  press 23
+265  press 23
+270  press 23
+275  press 23
+280  press 23
+285  press 23
+290  press 23
+295  press 23
+300  press 23
+305  press 23
+310  press 23
+315  press 23
+320  press 23
+325  press 23
+330  press 23
+335  press 23
+340  press 23
+345  press 23
+350  press 23
+355  press 23
+360  press 23
+365  press 23
+370  press 23
+375  press 23
+380  press 23
+385  press 23
+390  press 23
+395  press 23
+400  press 23
+405  press 23
+410  press 23
+415  press 23
+420  press 23
+425  press 23
+430  press 23
+435  press 23
+440  press 23
+445  press 23
+450  press 23
+455  press 23
+460  press 23
+465  press 23
+470  press 23
+475  press 23
+480  press 23
+485  press 23
+490  press 23
+495  press 23
+500  press 23
+505  press 23
+510  press 23
+515  press 23
+520  press 23
+525  press 23
+530  press 23
+535  press 23
+540  press 23
+545  press 23
+550  press 23
+555  press 23
+560  press 23
+565  press 23
+570  press 23
+575  press 23
+580  press 23
+585  press 23
+590  press 23
+595  press 23
+600  press 23
+605  press 23
+610  press 23
+615  press 23
+620  press 23
+625  press 23
+630  press 23
+635  press 23
+640  press 23
+645  press 23
+650  press 23
+655  press 23
+660  press 23
+665  press 23
+670  press 23
+675  press 23
+680  press 23
+685  press 23
+690  press 23
+695  press 23
+700  press 23
+705  press 23
+710  press 23
+715  press 23
+720  press 23
+725  press 23
+730  press 23
+735  press 23
+740  press 23
+745  press 23
+750  press 23
+755  press 23
+760  press 23
+765  press 23
+770  press 23
+775  press 23
+780  press 23
+785  press 23
+790  press 23
+795  press 23

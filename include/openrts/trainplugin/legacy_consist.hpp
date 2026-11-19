@@ -10,6 +10,7 @@
 // train.step(). The consist must outlive the train's controllers' use of it
 // (they turn inert when it is gone).
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -28,6 +29,7 @@
 #include <openrts/formats/route_database.hpp>
 #include <openrts/formats/track_database.hpp>
 #include <openrts/simulation/cab_brakes.hpp>
+#include <openrts/simulation/klub.hpp>
 #include <openrts/simulation/train.hpp>
 #include <openrts/trainplugin/legacy_host.hpp>
 
@@ -122,6 +124,28 @@ struct BrakesParameters {
     [[nodiscard]] bool understood() const noexcept { return present && unknown.empty(); }
 };
 [[nodiscard]] BrakesParameters brakes_parameters(const formats::EngineDefinition& engine);
+
+// Brakes.dll's КЛУБ as openRTS's КЛУБ takes it (simulation/klub.hpp;
+// docs/reverse/brakes-dll.md §11): its settings and the first cab's
+// switches (KLUB_*1, PB_*1); an id of -1 is none.
+struct KlubParameters {
+    bool present = false;
+    simulation::KlubSettings settings;
+    std::vector<std::pair<std::int32_t, simulation::KlubPress>> keys; // KLUB_B*ID1
+    std::vector<std::int32_t> power;                                  // KLUB_PIT1 .. KLUB_PIT<KLUB_PCOUNT>
+    std::int32_t rb = -1, rbs = -1, epk_key = -1, cassette = -1, tskbm = -1, saut = -1;
+    std::int32_t flip = -1;                       // PB_FLIP: the cab whose forward is the car's back (from 0)
+    std::int32_t setup_index = -1;                // PB_SETUP's index in the library's parameters
+    // Its displays: the screen (KLUB_DBIL1), the ALSN's lights (KLUB_DALS1,
+    // KLUB_DPOM1 screens; KLUB_B1POM1 .. B8POM1 lamps), its lamp
+    // (KLUB_PLAMP) and the cab's texture change for the backlight (KLUB_TCHNUM).
+    std::int32_t screen = -1, dals = -1, dpom = -1, lamp = -1, backlight = -1;
+    std::array<std::int32_t, 8> lamps{-1, -1, -1, -1, -1, -1, -1, -1};
+    [[nodiscard]] const simulation::KlubPress* key(std::int32_t id) const noexcept;
+};
+[[nodiscard]] KlubParameters klub_parameters(const formats::EngineDefinition& engine);
+// mdd_Libraries/Brakes/ChangeStanc.bto: the КЛУБ's station names (upper case).
+[[nodiscard]] std::vector<std::pair<std::u16string, std::u16string>> load_klub_station_names(const core::Vfs& vfs);
 // The working cab's devices for step_cab_brakes, as its switches stand.
 // `valve`: its driver's valve's position as CabBrakes reads it (-1 not
 // known: the state by BR_FLIPCABS); `exchange`: Brakes.dll's var + 32
@@ -204,6 +228,9 @@ public:
         // openRTS's compressors (the realistic air) off until a DLL reports
         // a pantograph up, a diesel on, its own compressor or traction.
         bool cold = false;
+        // openRTS's КЛУБ's ЭПК or КОН venting the pipe at a car (by the
+        // index of `cars`; set_own_klub).
+        std::vector<std::uint8_t> klub_vent;
     };
 
     // nullptr (with `error`) when no car has a DLL or the host cannot start.
@@ -302,8 +329,36 @@ public:
         air_->book_numbers = books;
     }
     [[nodiscard]] bool own_brakes() const noexcept { return air_->own_brakes; }
+    // openRTS's КЛУБ-У in place of Brakes.dll's (simulation/klub.hpp;
+    // docs/brakes-dll-replacement.md, step 3.4), with the air not as RTS's:
+    // on the player's train's cars whose Brakes.dll has a КЛУБ (PB_SETUP 2)
+    // and one cab, Brakes.dll's is switched off (its PB_SETUP without 2)
+    // and openRTS's works the ЭПК (Outputs::klub_vent), draws the screen and
+    // the lamps, sounds its beeps and whistle on Brakes.sms and leaves in
+    // Brakes.dll's variables what the train's DLL reads of a КЛУБ. Switched
+    // on, it starts afresh: the track and the train's data to be entered.
+    void set_own_klub(const bool own) noexcept { own_klub_ = own; }
+    [[nodiscard]] bool own_klub() const noexcept { return own_klub_; }
+    // The cars it works on in the last step.
+    [[nodiscard]] std::size_t klub_cars() const noexcept { return klub_working_; }
+    // Its state on a car (nullptr: not there).
+    [[nodiscard]] const simulation::KlubState* klub_state(std::size_t car) const;
 
 private:
+    struct KlubCar;
+    void klub_before(dllhost::StepRequest& request);
+    void klub_after(const dllhost::StepRequest& request, const LegacyWorld& world);
+    void klub_key(std::size_t at, std::uint32_t id);
+    KlubCar* klub_car(std::size_t at);
+    void klub_save(std::uint32_t key, std::vector<std::uint8_t>& bytes) const;
+    void klub_restore(std::size_t at, std::vector<std::uint8_t>& bytes);
+    // By the car's key; nullptr: no КЛУБ of Brakes.dll that openRTS's can take.
+    std::unordered_map<std::uint32_t, std::unique_ptr<KlubCar>> klub_;
+    bool own_klub_ = false;
+    std::size_t klub_working_ = 0;
+    // mdd_Libraries/Brakes/ChangeStanc.bto (the КЛУБ's station names).
+    std::vector<std::pair<std::u16string, std::u16string>> station_names_;
+
     LegacyConsist() = default;
     std::vector<dllhost::CarInput> inputs(const std::vector<const simulation::Train*>& trains, const LegacyWorld* world) const;
     std::vector<dllhost::CarInput> inputs(const simulation::Train& train, const LegacyWorld* world) const {

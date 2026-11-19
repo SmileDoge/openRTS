@@ -5625,8 +5625,10 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         own_brakes_loaded_ = true;
         own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("0").c_str()), 0, 1);
         brake_numbers_ = std::clamp(std::atoi(remembered("brake_numbers").value_or("0").c_str()), 0, 1);
+        own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("0").c_str()), 0, 1);
     }
     if (legacy_) legacy_->set_own_brakes(own_brakes_ == 1, brake_numbers_ == 1);
+    if (legacy_) legacy_->set_own_klub(own_klub_ == 1);
     if (network_ && network_->rail_joints().layout() != rail_joint_layout()) network_->set_rail_joint_layout(rail_joint_layout());
     // The rails' state (the Train window's choice, or the weather's).
     if (!rails_loaded_) {
@@ -10760,12 +10762,24 @@ void TrainView::draw_panel() {
                 own_brakes_loaded_ = true;
                 remember("brake_numbers", std::to_string(brake_numbers_));
             }
+            ImGui::SetNextItemWidth(330.0f);
+            if (ImGui::Combo(tr("КЛУБ##own_klub"), &own_klub_, owners, 2)) {
+                own_brakes_loaded_ = true;
+                remember("own_klub", std::to_string(own_klub_));
+            }
             ImGui::EndDisabled();
+            if (legacy_) legacy_->set_own_klub(own_klub_ == 1);
             if (legacy_) legacy_->set_own_brakes(own_brakes_ == 1, brake_numbers_ == 1);
             ImGui::TextDisabled("%s", tr(!can_own ? "(works with the realistic air on and Trains with DLLs not as RTS)"
                                          : own_brakes_ == 0 ? "(MaDaDev's Brakes.dll works the 395, the 254, the cocks and the ЭПТ)"
                                          : brake_numbers_ == 0 ? "(openRTS's 395, 254, cocks and ЭПТ with Brakes.dll's numbers; Brakes.dll keeps the КЛУБ, the ЭПК and the sounds)"
                                                                : "(openRTS's 395, 254, cocks and ЭПТ with the books' numbers; Brakes.dll keeps the КЛУБ, the ЭПК and the sounds)"));
+            ImGui::TextDisabled("%s", tr(!can_own ? "(works with the realistic air on and Trains with DLLs not as RTS)"
+                                         : own_klub_ == 0 ? "(MaDaDev's Brakes.dll's КЛУБ-У)"
+                                                          : "(openRTS's КЛУБ-У as Brakes.dll's: the ЭПК, the screen, the lamps; switched on, the track and the train's data are entered again)"));
+            if (can_own && own_klub_ == 1 && legacy_)
+                ImGui::TextUnformatted(legacy_->klub_cars() ? tr("This train's КЛУБ is openRTS's.")
+                                                            : tr("This train keeps Brakes.dll's КЛУБ (none, or a locomotive with two cabs)."));
             // The player's locomotive: openRTS's devices, or why it keeps Brakes.dll.
             if (can_own && own_brakes_ == 1 && !units_.empty()) {
                 const auto& player_train = *units_.front().train;
