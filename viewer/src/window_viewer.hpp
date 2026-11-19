@@ -187,6 +187,8 @@ struct WindowOptions {
     // its window opens (Ctrl+F9); it rolls until the capture ends, when the
     // window's tape is printed.
     bool capture_tape = false;
+    bool capture_profile = false; // the profile strip (Ctrl+F4) on at 0.2 of capture_at
+    bool capture_ui = false;      // the panels in the capture too (they are left out otherwise)
     // --capture-boarding: at 0.4 of capture_at the boarding key (Ctrl+Num7)
     // at a scenario's stop; the timetable is printed when the capture ends.
     bool capture_boarding = false;

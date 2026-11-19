@@ -43,6 +43,7 @@
 #include "rts_config.hpp"
 #include "ui_fonts.hpp"
 #include "ui_text.hpp"
+#include "profile_strip.hpp"
 #include "viewer_state.hpp"
 
 namespace openrts::viewer {
@@ -4815,6 +4816,82 @@ namespace {
 
 } // namespace
 
+void TrainView::toggle_profile_strip() {
+    if (!profile_strip_on_) profile_strip_on_ = remembered("profile_strip").value_or("0") == "1";
+    profile_strip_on_ = !*profile_strip_on_;
+    remember("profile_strip", *profile_strip_on_ ? "1" : "0");
+    profile_built_at_ = -1e9;
+}
+
+void TrainView::draw_profile_strip(const Unit& unit) {
+#ifdef OPENRTS_HAS_IMGUI
+    if (!profile_strip_) profile_strip_ = std::make_unique<ProfileStrip>();
+    auto& strip = *profile_strip_;
+    const auto& train = *unit.train;
+    const double now = ImGui::GetTime();
+    (void)strip.take_changed(); // a new span or shift: built again below when it goes past the built way
+    const double left = strip.left(), right = strip.right();
+    const bool outside = left < profile_left_ || right > profile_right_;
+    if (now - profile_built_at_ >= 1.0 || outside || profile_train_ != train.id()) {
+        profile_built_at_ = now;
+        profile_train_ = train.id();
+        profile_marks_.clear();
+        const auto lead = train.leading_end();
+        if (!lead) {
+            profile_ = {};
+        } else {
+            // A little more than shown, each way; a point every 10 m up to 5
+            // km shown, every 20 m beyond.
+            const double margin = 0.25 * strip.span();
+            const double ahead = (std::max)(right + margin, 100.0);
+            const double behind = (std::max)(-left + margin, (std::max)(train.length(), 100.0) + 100.0);
+            profile_ = simulation::track_profile(*lead, ahead, behind, strip.span() > 5000.0 ? 20.0 : 10.0);
+            profile_left_ = -profile_.behind;
+            profile_right_ = profile_.ahead;
+            for (const auto& [km, distance] : limits_->mileposts_along(*lead, ahead, behind)) {
+                char text[16];
+                std::snprintf(text, sizeof text, "%.0f", km);
+                profile_marks_.push_back({ProfileMark::Kind::kilometre, distance, text, 0});
+            }
+            for (const auto& [speed, distance] : limits_->limits_ahead(train, unit.speed_category(), ahead, 64)) {
+                char text[16];
+                std::snprintf(text, sizeof text, "%.0f", speed * 3.6f);
+                profile_marks_.push_back({ProfileMark::Kind::limit, distance, text, 0});
+            }
+            if (signals_) {
+                // The chain ahead of the end that leads.
+                const auto front = train.front_end();
+                const bool front_leads = !front || (front->node() == lead->node() && std::abs(front->offset() - lead->offset()) < 1e-3);
+                for (const auto& at : signals_->positions(train, front_leads)) {
+                    if (!(at.flags & 1u) || at.distance > ahead) continue; // a normal head
+                    // The lamp of its normal heads' strongest aspect.
+                    const auto aspect = at.aspect[0];
+                    const std::uint32_t colour = aspect <= 1 ? IM_COL32(230, 50, 40, 255)
+                                                 : aspect == 2 ? IM_COL32(240, 240, 240, 255)
+                                                 : aspect <= 5 ? IM_COL32(250, 210, 40, 255)
+                                                 : aspect <= 7 ? IM_COL32(60, 210, 90, 255)
+                                                               : IM_COL32(120, 120, 120, 255);
+                    profile_marks_.push_back({ProfileMark::Kind::signal, at.distance, signal_names_ ? signal_names_(at.object) : std::string(), colour});
+                }
+            }
+            for (const auto& place : stations_ahead(unit)) {
+                if (place.distance > ahead) continue;
+                profile_marks_.push_back({place.siding ? ProfileMark::Kind::siding : ProfileMark::Kind::station, place.distance, place.name, 0});
+            }
+        }
+    }
+    ProfileView view;
+    view.profile = &profile_;
+    view.marks = profile_marks_;
+    view.train_length = train.length();
+    view.mass_tonnes = train.mass() / 1000.0;
+    view.cars = unit.cars.size();
+    strip.draw(view);
+#else
+    (void)unit;
+#endif
+}
+
 std::vector<TrainView::PlaceAhead> TrainView::stations_ahead(const Unit& unit) const {
     std::vector<PlaceAhead> result;
     const auto& items = network_->database().items;
@@ -4903,7 +4980,8 @@ bool TrainView::begin_panel(const char* id, HudPanel& place, const float default
     // gets wider or narrower.
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove
         | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
-    ImGui::SetNextWindowPos(ImVec2(place.x * display.x, place.y * display.y), ImGuiCond_Always, ImVec2(place.pivot_x, 0.0f));
+    // Kept below the profile strip while it is shown.
+    ImGui::SetNextWindowPos(ImVec2(place.x * display.x, (std::max)(place.y * display.y, hud_top_)), ImGuiCond_Always, ImVec2(place.pivot_x, 0.0f));
     ImGui::SetNextWindowBgAlpha(0.75f);
     const bool open = ImGui::Begin(id, nullptr, flags);
     if (open && display.x > 0.0f && display.y > 0.0f) {
@@ -4961,6 +5039,8 @@ void TrainView::draw_hud() {
     if (!unit) return;
     const auto& train = *unit->train;
     const auto display = ImGui::GetIO().DisplaySize;
+    if (!profile_strip_on_) profile_strip_on_ = remembered("profile_strip").value_or("0") == "1";
+    hud_top_ = *profile_strip_on_ ? ProfileStrip::height() + 4.0f : 0.0f;
     // Default places: 10 px from the side, 60 px from the top.
     const float margin_x = display.x > 0.0f ? 10.0f / display.x : 0.0f;
     const float margin_y = display.y > 0.0f ? 60.0f / display.y : 0.0f;
@@ -5236,6 +5316,8 @@ void TrainView::draw_hud() {
     }
     if (!drive_panel_) drive_panel_ = remembered("drive_panel").value_or("1") != "0";
     if (*drive_panel_) draw_drive_panel(*unit);
+    if (!profile_strip_on_) profile_strip_on_ = remembered("profile_strip").value_or("0") == "1";
+    if (*profile_strip_on_) draw_profile_strip(*unit);
     if (stations_panel_) {
         if (begin_panel("##stations", stations_place_, 1.0f - margin_x, 0.45f)) {
             if (!timetable_.empty() && unit == &units_.front()) {

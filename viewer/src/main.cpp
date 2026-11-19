@@ -398,6 +398,10 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.capture_report = true;
         } else if (flags[i] == "--capture-tape") {
             options.capture_tape = true;
+        } else if (flags[i] == "--capture-profile") {
+            options.capture_profile = true;
+        } else if (flags[i] == "--capture-ui") {
+            options.capture_ui = true;
         } else if (flags[i] == "--capture-boarding") {
             options.capture_boarding = true;
         } else if (flags[i] == "--capture-minimise") {

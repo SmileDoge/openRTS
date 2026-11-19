@@ -27,6 +27,7 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/stock_rules.hpp>
+#include <openrts/simulation/track_profile.hpp>
 #include <openrts/formats/activity.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/train_path.hpp>
@@ -60,6 +61,7 @@
 #include "head_motion.hpp"
 #include "legacy_cab.hpp"
 #include "particle_effects.hpp"
+#include "profile_strip.hpp"
 #include "viewer_scene.hpp"
 
 namespace openrts::viewer {
@@ -741,6 +743,8 @@ public:
     void toggle_limits_panel() noexcept { limits_panel_ = !limits_panel_; }
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
     void toggle_drive_panel();
+    // Ctrl+F4: the profile strip at the top (profile_strip.hpp); remembered as profile_strip.
+    void toggle_profile_strip();
     // The names of signal objects (the route database's), for the F4 panel.
     void set_signal_names(std::function<std::string(std::uint32_t object)> names) { signal_names_ = std::move(names); }
     void draw_hud();
@@ -1081,6 +1085,17 @@ private:
     // On at first; remembered as drive_panel.
     std::optional<bool> drive_panel_;
     void draw_drive_panel(const Unit& unit);
+    // The profile strip (Ctrl+F4): built again every second, or when its
+    // span or shift goes past what was built.
+    std::optional<bool> profile_strip_on_;
+    std::unique_ptr<ProfileStrip> profile_strip_;
+    simulation::TrackProfile profile_;
+    std::vector<ProfileMark> profile_marks_;
+    double profile_built_at_ = -1e9;               // ImGui's time
+    double profile_left_ = 0.0, profile_right_ = 0.0; // the way built, m from the leading end
+    std::uint64_t profile_train_ = 0;
+    float hud_top_ = 0.0f; // px the panels keep below (the profile strip's)
+    void draw_profile_strip(const Unit& unit);
     std::function<std::string(std::uint32_t)> signal_names_;
     bool service_marks_ = false;       // F6 shows the "%n ..." marks too (remembered as f6_service_marks)
     bool service_marks_loaded_ = false;

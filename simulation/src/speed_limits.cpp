@@ -126,6 +126,22 @@ std::optional<double> SpeedLimits::ordinate(const Train& train) const {
     return last + direction * from_last / 1000.0;
 }
 
+std::vector<std::pair<double, double>> SpeedLimits::mileposts_along(const TrackTraveller& lead, const double ahead,
+                                                                      const double behind) const {
+    std::vector<std::pair<double, double>> result;
+    if (mileposts_.empty()) return result;
+    const auto is_post = [&](const formats::TrackItem& item) { return mileposts_.contains(item.id); };
+    const auto back = look_ahead(*network_, lead.node(), lead.offset(), !lead.forward(), behind, is_post, 64);
+    for (auto it = back.items.rbegin(); it != back.items.rend(); ++it) result.emplace_back(mileposts_.at(it->item), -it->distance);
+    const auto front = look_ahead(*network_, lead.node(), lead.offset(), lead.forward(), ahead, is_post, 256);
+    for (const auto& found : front.items) {
+        // A post right under the end is found both ways.
+        if (found.distance <= 1e-6 && !result.empty() && result.back().second >= -1e-6) continue;
+        result.emplace_back(mileposts_.at(found.item), found.distance);
+    }
+    return result;
+}
+
 SpeedLimit SpeedLimits::evaluate(const Train& train, const TrainCategory category, const double distance) const {
     SpeedLimit result;
     const auto lead = train.leading_end();

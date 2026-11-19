@@ -2271,7 +2271,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .car_info_shift = shift,
             .limits_panel = f5 && ctrl,
             .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
-            .drive_panel = f4,
+            .drive_panel = f4 && !ctrl,
+            .profile_strip = f4 && ctrl,
             .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
             .signal_names = f7 && ctrl && !alt,
             .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -2312,7 +2313,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .car_info_shift = shift,
         .limits_panel = f5 && ctrl,
         .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
-        .drive_panel = f4,
+        .drive_panel = f4 && !ctrl,
+        .profile_strip = f4 && ctrl,
         .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
         .signal_names = f7 && ctrl && !alt,
         .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -2948,6 +2950,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     int capture_inspect_step = 0; // --capture-inspect: 1 opened, 2 clicked
     bool capture_driven = false;
     bool capture_taped = false;
+    bool capture_profiled = false;
     bool capture_boarded = false;
     int capture_minimise_step = 0; // --capture-minimise: 1 minimised, 2 back
     double capture_minimise_log = 0.0;
@@ -3294,6 +3297,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             capture_reported = glfwGetTime();
             scene.report_activity();
         }
+        if (capture && options.capture_profile && !capture_profiled && glfwGetTime() - capture_start >= options.capture_at * 0.2) {
+            frame_input.profile_strip = true;
+            capture_profiled = true;
+        }
         if (capture && options.capture_tape && !capture_taped && glfwGetTime() - capture_start >= options.capture_at * 0.2) {
             frame_input.tape = true;
             frame_input.tape_window = true;
@@ -3559,7 +3566,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         stage_clock.mark(FrameStage::models, stages);
         scene.draw_foreground(pass, frame);
 #ifdef OPENRTS_HAS_IMGUI
-        if (!hdr && !capture) overlay.render(pass);
+        if (!hdr && (!capture || options.capture_ui)) overlay.render(pass);
 #endif
         stage_clock.mark(FrameStage::foreground, stages);
         wgpuRenderPassEncoderEnd(pass);
@@ -3660,7 +3667,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             const WGPURenderPassDescriptor ui_descriptor{
                 .colorAttachmentCount = 1, .colorAttachments = &ui_colour, .timestampWrites = ui_timestamps ? &*ui_timestamps : nullptr};
             const auto ui = wgpuCommandEncoderBeginRenderPass(encoder, &ui_descriptor);
-            if (!capture) overlay.render(ui);
+            if (!capture || options.capture_ui) overlay.render(ui);
             wgpuRenderPassEncoderEnd(ui);
             wgpuRenderPassEncoderRelease(ui);
 #endif

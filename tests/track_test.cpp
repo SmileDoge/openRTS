@@ -5,6 +5,7 @@
 
 #include <openrts/formats/shape_animation.hpp>
 #include <openrts/formats/track_database.hpp>
+#include <openrts/simulation/track_profile.hpp>
 #include <openrts/formats/track_sections.hpp>
 #include <openrts/simulation/track_geometry.hpp>
 #include <openrts/simulation/track_network.hpp>
@@ -330,7 +331,29 @@ void test_animation() {
 
 } // namespace
 
+// The profile strip's heights (simulation/track_profile.hpp): a line of a
+// flat 100 m and a 100 m rising about 4 per mille (a pitch of -0.004: RTS
+// lowers the end for a positive one), from the end node 10 to 11.
+void test_profile() {
+    const std::string rising = "1 0 0 0 0 1 1 00 0 0 0 0 100 -0.004 0 0 ";
+    const auto net = network(database(vector_node(1, section(1, 0, 0) + rising, 2, pin(10, 1) + pin(11, 1))
+                                          + end_node(10, pin(1, 1)) + end_node(11, pin(1, 0)),
+                                      "", 11, 0));
+    TrackTraveller lead(*net, 1, 50.0, true);
+    const auto profile = simulation::track_profile(lead, 500.0, 40.0, 10.0);
+    check(near(profile.behind, 40.0) && near(profile.ahead, 150.0), "the profile stops at the end of the track");
+    check(!profile.points.empty() && near(profile.points.front().distance, -40.0) && near(profile.points.back().distance, 150.0),
+          "the profile runs from behind to ahead");
+    check(near(profile.height_at(0.0), 0.0) && near(profile.grade(-40.0, 40.0), 0.0), "the flat part: grade 0");
+    const double up = profile.grade(60.0, 140.0);
+    check(up > 3.9 && up < 4.1, "the rising part: about +4 per mille");
+    TrackTraveller back(*net, 1, 150.0, false);
+    const auto reverse = simulation::track_profile(back, 40.0, 0.0, 10.0);
+    check(reverse.grade(0.0, 40.0) < -3.9, "the other way it falls");
+}
+
 int main() {
+    test_profile();
     test_formats();
     test_geometry();
     test_junctions();
