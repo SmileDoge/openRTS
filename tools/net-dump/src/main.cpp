@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <tuple>
 #include <set>
 #include <string>
 #include <vector>
@@ -89,6 +90,12 @@ void print_world(const net::Snapshot& s) {
     for (const auto& h : s.signals) ++aspects[static_cast<int>(h.state)];
     std::printf("signal heads: %zu; by aspect:", s.signals.size());
     for (const auto& [aspect, count] : aspects) std::printf(" %d:%zu", aspect, count);
+    std::printf("\n");
+    // Which draw states (what is lit) go with each aspect, and the mode.
+    std::map<std::tuple<int, int, int>, std::size_t> drawn;
+    for (const auto& h : s.signals) ++drawn[{static_cast<int>(h.state), static_cast<int>(h.draw_state), static_cast<int>(h.mode)}];
+    std::printf("signal heads by aspect / draw state / mode:");
+    for (const auto& [key, count] : drawn) std::printf(" %d/%d/%d:%zu", std::get<0>(key), std::get<1>(key), std::get<2>(key), count);
     std::printf("\n");
     for (const auto& x : s.substations) {
         std::printf("substation %u: %.0f V%s (flags %u)\n", x.id, x.voltage, (x.flags & 1u) ? ", switched off" : "", x.flags);
@@ -243,17 +250,20 @@ int check_route(const net::Snapshot& s, const std::filesystem::path& root, const
 
 int main(const int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: openrts-net-dump <snapshot> [--packages] [--root <game folder> --route <name>]\n");
+        std::fprintf(stderr, "usage: openrts-net-dump <snapshot> [--packages] [--heads] [--root <game folder> --route <name>]\n");
         return 2;
     }
     const std::filesystem::path file = argv[1];
     bool packages = false;
+    bool heads = false;
     std::filesystem::path root;
     std::string route;
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--packages") {
             packages = true;
+        } else if (arg == "--heads") {
+            heads = true;
         } else if (arg == "--root" && i + 1 < argc) {
             root = argv[++i];
         } else if (arg == "--route" && i + 1 < argc) {
@@ -274,6 +284,13 @@ int main(const int argc, char** argv) {
     const auto read = net::read_snapshot(bytes);
     for (const auto& problem : read.problems) std::printf("problem: %s\n", problem.c_str());
     print_world(read.snapshot);
+    if (heads) {
+        // One line a head: its TDB item, aspect, draw state, mode (as the
+        // server's console command "heads" prints them, to compare).
+        for (const auto& h : read.snapshot.signals) {
+            std::printf("head %u %d %d %d\n", h.item, static_cast<int>(h.state), static_cast<int>(h.draw_state), static_cast<int>(h.mode));
+        }
+    }
     const bool same = net::write_snapshot(read.snapshot) == bytes;
     std::printf("written back: %s\n", same ? "the same bytes" : "DIFFERENT bytes");
     int problems = static_cast<int>(read.problems.size()) + (same ? 0 : 1);

@@ -198,8 +198,67 @@ public:
     // as set_route's; the distance left goes to everyone as 0x4619 every 0.5
     // s while it changes, -1 when it ends.
     bool lay_route(std::uint32_t train, double length, bool rear_first, std::string& result);
+    // The train's route along the junctions as they stand from its head (its
+    // rear when `rear_first`) to `to` (the console's map); false when `to` is
+    // not ahead of it.
+    bool lay_route_to(std::uint32_t train, const simulation::TrackLocation& to, bool rear_first, std::string& result);
     // The junctions a train's route holds (TDB nodes), in its order.
     [[nodiscard]] std::vector<std::uint32_t> route_junctions(std::uint32_t train) const;
+    // For a map: each car's ends where the server has the train (empty when
+    // it is not on its track), and the way its route was laid.
+    [[nodiscard]] std::vector<simulation::CarPlacement> train_cars(std::uint32_t train) const;
+    // Where the train's head stands facing the way it goes (its rear facing
+    // back when `rear`: running rear first); nothing when not on the track.
+    [[nodiscard]] std::optional<simulation::TrackLocation> train_end(std::uint32_t train, bool rear) const;
+    [[nodiscard]] std::optional<simulation::RouteLeg> route_leg(std::uint32_t train) const;
+
+    // The station routes segments are made of (ServerRoute::station_routes;
+    // it must outlive the server). Without them there are no segments.
+    void set_station_routes(const StationRoutes* routes) noexcept;
+    // A segment of a train's route, a station route of the route database
+    // (rts_server.exe's "Сборка маршрута поезда", 0x450B; docs/server.md,
+    // "Station routes").
+    struct SegmentRequest {
+        std::uint32_t train{};
+        std::uint32_t route{};  // the station route's ID
+        bool reverse = false;   // run from its end to its start
+        bool hold = false;      // the train's next segment waits
+        bool reversed = false;  // the train runs it rear first
+        std::uint32_t priority{};
+    };
+    struct SegmentSummary {
+        std::uint32_t id{};
+        std::uint32_t train{};
+        std::uint32_t route{};
+        std::string name;    // the station route's
+        std::string station;
+        bool reverse = false, hold = false, reversed = false;
+        std::uint32_t priority{};
+        std::uint8_t state{}; // 0 waiting, 1 set, 2 set part of the way, 3 the train on it, 4 left
+        std::uint16_t thrown{};
+        std::size_t junctions{};
+        float length{};
+    };
+    // Checked as rts_server.exe checks a segment (0x469804: the train, an
+    // oncoming route on the stretch it leads to, a way from the train's
+    // previous segment) and queued by its priority (0x41F520); each step
+    // sets those whose turn it is (0x46A348). Its id, or why not.
+    std::optional<std::uint32_t> add_segment(const SegmentRequest& request, std::string& error);
+    // Cancelled (0x469C68): the train's route goes (to its previous
+    // segment's end when it has one).
+    bool cancel_segment(std::uint32_t id, std::string& error);
+    [[nodiscard]] std::vector<SegmentSummary> segments() const;
+    // Where a train's next segment is looked for from (rts_server.exe's
+    // "Собрать маршрут", StationRoutes::available): the end of its last
+    // segment, else its head; `back` the other way ("Направление": it
+    // reverses there, or starts rear first).
+    struct NextFrom {
+        simulation::TrackLocation at;
+        bool rear_first = false;               // the segment run so
+        double behind = 0.0;                   // m back to look for the point a train stands at
+        std::optional<std::uint32_t> after;    // the segment it follows, nothing from the train
+    };
+    [[nodiscard]] std::optional<NextFrom> next_from(std::uint32_t train, bool back) const;
     void set_admit(bool admit) noexcept { options_.admit = admit; }
     [[nodiscard]] bool admits() const noexcept { return options_.admit; }
     // What a console's command line (console_command) runs: the server's
@@ -220,6 +279,11 @@ private:
     struct Impl;
     // 0x4619 to everyone, kept in the train's record for the snapshot.
     void send_route_left(std::uint32_t train, float left, bool rear_first);
+    // The segments' step (0x46A348).
+    void step_segments();
+    // A segment's packages to the consoles: 0x450B, 0x450E, 0x450D.
+    void send_segment(std::size_t index, std::uint16_t package);
+    [[nodiscard]] net::RouteSegment segment_record(std::size_t index) const;
     // A coupling or a cut, a player's (`sender`, not sent back to them) or
     // the server's own (sender 0: to everyone). The cut's part is named to
     // its sender as `local_part` (0x4610).

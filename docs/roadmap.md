@@ -320,16 +320,24 @@ yet. Each stage ends with something that runs and is checked:
       them; the console's signal actions. A placed train's exit signal no
       longer clears by itself. The consoles' `0x4618`, the types shown as
       normal, "set as defaults" and saving them (into the server's own
-      folder) followed the same day. Left: the station routes (`0x450B`).
+      folder) followed the same day, then the station routes (`0x450B`):
+      the route database's points, routes and paths, the segments of a
+      train's route checked, queued and set as RTS does, the consoles'
+      packages. Step 1 done.
    2. Track control as a module of its own (the map: track, junctions,
       signals and their names, places, trains, routes; actions as
       callbacks), for the viewer, the server's console and later the
-      remote one and the scenario editor.
+      remote one and the scenario editor. **Done (2026-11-19):**
+      `trackmap/` (`trackmap::TrackMap`: the map, picking, tooltips; its
+      owner gives the trains, lines and marks and handles the clicks) and
+      `ui/` (texts, fonts); the viewer's Track control draws on it.
    3. The server's window: the start form and the map console on that
       module, with `rts_server.exe`'s actions (trains: place, assign,
       route, start / stop, remove; signals; junctions; players: message,
       kick, admit; time, pause; the log). The text commands stay for runs
-      without a window (`--run`, `--command`).
+      without a window (`--run`, `--command`). **Done (2026-11-19,
+      `server.md` "The window"),** but starting and stopping a train,
+      which waits for the server driving trains (step 7).
    4. `rts1.exe` on it, live.
    Left after that:
    - One program for players and dispatchers, the Legacy switch and its

@@ -681,6 +681,124 @@ std::optional<SignalControl> decode_signal_control(const ByteView body) {
     return c;
 }
 
+namespace {
+
+// u16 n, then n UTF-16 units and a zero when n > 0 (rts_server.exe's
+// station name in 0x450B, a reason in 0x450C).
+void write_text_z(WireWriter& w, const std::u16string& text) {
+    w.u16(static_cast<std::uint16_t>(text.size()));
+    if (text.empty()) return;
+    for (const auto c : text) w.u16(static_cast<std::uint16_t>(c));
+    w.u16(0);
+}
+
+std::u16string read_text_z(WireReader& r) {
+    const auto n = r.u16();
+    std::u16string text;
+    if (n == 0) return text;
+    for (std::uint16_t i = 0; i < n; ++i) text.push_back(static_cast<char16_t>(r.u16()));
+    r.u16();
+    return text;
+}
+
+} // namespace
+
+std::optional<RouteSegment> decode_route_segment(const ByteView body) {
+    RouteSegment s;
+    if (!parse_body(body, [&](WireReader& r) {
+            s.id = r.u32();
+            s.train = r.u32();
+            s.route = r.u32();
+            s.station = read_text_z(r);
+            s.tile_x = static_cast<std::int16_t>(r.u16());
+            s.tile_z = static_cast<std::int16_t>(r.u16());
+            s.reverse = r.u8();
+            s.hold = r.u8();
+            s.reversed = r.u8();
+            s.length = r.f32();
+            s.priority = r.u32();
+            s.state = r.u8();
+            s.path = r.u16();
+            s.thrown = r.u16();
+        })) {
+        return std::nullopt;
+    }
+    return s;
+}
+
+Bytes encode_route_segment(const RouteSegment& value) {
+    WireWriter w;
+    w.u32(value.id);
+    w.u32(value.train);
+    w.u32(value.route);
+    write_text_z(w, value.station);
+    w.u16(static_cast<std::uint16_t>(value.tile_x));
+    w.u16(static_cast<std::uint16_t>(value.tile_z));
+    w.u8(value.reverse);
+    w.u8(value.hold);
+    w.u8(value.reversed);
+    w.f32(value.length);
+    w.u32(value.priority);
+    w.u8(value.state);
+    w.u16(value.path);
+    w.u16(value.thrown);
+    return w.take();
+}
+
+std::optional<RouteSegmentReply> decode_route_segment_reply(const ByteView body) {
+    RouteSegmentReply reply;
+    WireReader r(body);
+    reply.request = r.u32();
+    reply.id = r.u32();
+    reply.ok = r.u8();
+    if (!r.ok()) return std::nullopt;
+    // The reason, when there is one: UTF-16 to a zero.
+    while (r.remaining() >= 2) {
+        const auto c = r.u16();
+        if (c == 0) break;
+        reply.text.push_back(static_cast<char16_t>(c));
+    }
+    return reply;
+}
+
+Bytes encode_route_segment_reply(const RouteSegmentReply& value) {
+    WireWriter w;
+    w.u32(value.request);
+    w.u32(value.id);
+    w.u8(value.ok);
+    if (!value.text.empty()) {
+        for (const auto c : value.text) w.u16(static_cast<std::uint16_t>(c));
+        w.u16(0);
+    }
+    return w.take();
+}
+
+std::optional<RouteSegment> decode_route_segment_state(const ByteView body) {
+    RouteSegment s;
+    if (!parse_body(body, [&](WireReader& r) {
+            s.id = r.u32();
+            s.state = r.u8();
+            s.path = r.u16();
+            s.priority = r.u32();
+            s.length = r.f32();
+            s.thrown = r.u16();
+        })) {
+        return std::nullopt;
+    }
+    return s;
+}
+
+Bytes encode_route_segment_state(const RouteSegment& value) {
+    WireWriter w;
+    w.u32(value.id);
+    w.u8(value.state);
+    w.u16(value.path);
+    w.u32(value.priority);
+    w.f32(value.length);
+    w.u16(value.thrown);
+    return w.take();
+}
+
 Bytes encode_signal_control(const SignalControl& value) {
     WireWriter w;
     w.u32(value.unit);

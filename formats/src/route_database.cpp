@@ -66,6 +66,81 @@ RouteDatabase parse_route_database(const std::string_view bytes) {
         within.begin = block->end + 1;
         if (within.begin >= within.end) break;
     }
+    // A position and the number after it: tile_x tile_z x y z value.
+    const auto place = [&](const TextRange range) {
+        RouteTrackPlace out;
+        const auto v = tokens(t, range);
+        if (v.size() >= 5) {
+            out.position = {.tile_x = std::atoi(v[0].c_str()),
+                            .tile_z = std::atoi(v[1].c_str()),
+                            .x = std::atof(v[2].c_str()),
+                            .y = std::atof(v[3].c_str()),
+                            .z = std::atof(v[4].c_str())};
+        }
+        if (v.size() >= 6) out.value = static_cast<std::uint32_t>(std::strtoul(v[5].c_str(), nullptr, 10));
+        return out;
+    };
+    const auto text_of = [&](const TextRange block, const std::string_view keyword) {
+        const auto found = rts_find(t, keyword, block);
+        return found ? rts_token(o, found->begin, found->end) : std::string();
+    };
+    const auto number_of = [&](const TextRange block, const std::string_view keyword, const int base) {
+        const auto found = rts_find(t, keyword, block);
+        return found ? static_cast<std::uint32_t>(std::strtoul(rts_token(t, found->begin, found->end).c_str(), nullptr, base)) : 0u;
+    };
+    const auto places_in = [&](const TextRange block, const std::string_view list) {
+        std::vector<RouteTrackPlace> out;
+        const auto found = rts_find(t, list, block);
+        if (!found) return out;
+        for (TextRange from = *found; const auto point = rts_find(t, "point", from);) {
+            out.push_back(place(*point));
+            from.begin = point->end + 1;
+            if (from.begin >= from.end) break;
+        }
+        return out;
+    };
+    if (const auto points = rts_find(t, "routepoints")) {
+        for (TextRange from = *points; const auto block = rts_find(t, "routepoint", from);) {
+            RoutePoint point;
+            point.name = text_of(*block, "name");
+            point.type = number_of(*block, "pointtype", 10);
+            point.flags = number_of(*block, "flags", 16);
+            point.station = text_of(*block, "stationname");
+            if (const auto p1 = rts_find(t, "point1", *block)) point.point1 = place(*p1);
+            if (const auto p2 = rts_find(t, "point2", *block)) point.point2 = place(*p2);
+            point.junctions = places_in(*block, "junctions");
+            database.points.push_back(std::move(point));
+            from.begin = block->end + 1;
+            if (from.begin >= from.end) break;
+        }
+    }
+    if (const auto routes = rts_find(t, "routetrainroutes")) {
+        for (TextRange from = *routes; const auto block = rts_find(t, "trainroute", from);) {
+            StationRoute route;
+            route.id = number_of(*block, "id", 10);
+            route.name = text_of(*block, "name");
+            route.flags = number_of(*block, "flags", 16);
+            route.station = text_of(*block, "stationname");
+            route.start = text_of(*block, "start");
+            route.end = text_of(*block, "end");
+            database.routes.push_back(std::move(route));
+            from.begin = block->end + 1;
+            if (from.begin >= from.end) break;
+        }
+    }
+    if (const auto paths = rts_find(t, "routetrainpaths")) {
+        for (TextRange from = *paths; const auto block = rts_find(t, "trainpath", from);) {
+            StationPath path;
+            path.route = number_of(*block, "routeid", 10);
+            path.name = text_of(*block, "name");
+            path.priority = number_of(*block, "priority", 10);
+            path.start = number_of(*block, "start", 16);
+            path.junctions = places_in(*block, "points");
+            database.paths.push_back(std::move(path));
+            from.begin = block->end + 1;
+            if (from.begin >= from.end) break;
+        }
+    }
     for (TextRange from{0, t.size()}; const auto type = rts_find(t, "signaltypeshownasnormal", from);) {
         if (auto name = rts_token(o, type->begin, type->end); !name.empty()) database.shown_as_normal.push_back(std::move(name));
         from.begin = type->end + 1;

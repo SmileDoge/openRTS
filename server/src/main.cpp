@@ -19,7 +19,11 @@
 #include <openrts/server/console.hpp>
 #include <openrts/server/game_server.hpp>
 #include <openrts/server/server_route.hpp>
+#include <openrts/server/session.hpp>
 #include <openrts/server/transport.hpp>
+#ifdef OPENRTS_SERVER_WINDOW
+#include "server_window.hpp"
+#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -42,9 +46,11 @@ std::atomic<bool> stop_requested = false;
 void on_signal(int) { stop_requested = true; }
 
 constexpr const char* usage =
-    "usage: openrts-server --route <folder> [--root <RTS installation>] [--port 800]\n"
+    "usage: openrts-server [--route <folder>] [--root <RTS installation>] [--port 800]\n"
     "                      [--season spring|summer|autumn|winter] [--weather clear|snow|rain|storm] [--time HH:MM]\n"
-    "                      [--no-admit] [--data <folder>] [--run <seconds>] [--command \"<line>\"]...\n"
+    "                      [--no-admit] [--data <folder>] [--run <seconds>] [--command \"<line>\"]... [--no-window]\n"
+    "  without --no-window (or --run) the server's window opens: its start form, then its map console;\n"
+    "  --no-window runs it at the console (--route needed)\n"
     "  --data      where the server keeps its files (openRTS's user data folder by default)\n"
     "  --run       stop after so many seconds (tests); --command runs a console line at start\n"
     "  players get their trains from the dispatcher at the server's console\n";
@@ -126,6 +132,9 @@ int main(int argc, char** argv) {
     fs::path data;
     double run_for = -1.0;
     std::vector<std::string> commands;
+    bool no_window = false;
+    fs::path capture;          // the window's picture to this file (a check), then it closes
+    double capture_at = 3.0;   // s after the start
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& a = args[i];
         const bool has_value = i + 1 < args.size();
@@ -166,69 +175,50 @@ int main(int argc, char** argv) {
             run_for = std::stod(args[++i]);
         } else if (a == "--command" && has_value) {
             commands.push_back(args[++i]);
+        } else if (a == "--no-window") {
+            no_window = true;
+        } else if (a == "--capture" && has_value) {
+            const auto& text = args[++i];
+            capture = fs::path(std::u8string(text.begin(), text.end()));
+        } else if (a == "--capture-at" && has_value) {
+            capture_at = std::stod(args[++i]);
         } else {
             std::cerr << usage;
             return 2;
         }
     }
+    server::SessionSettings settings{.root = root, .route = route_name, .data = data, .port = port, .season = season,
+                                     .weather = weather, .time_of_day = time_of_day, .admit = admit};
+#ifdef OPENRTS_SERVER_WINDOW
+    // The window (as rts_server.exe: its start form, then its map console),
+    // unless the console is asked for or a test runs it.
+    if (!no_window && run_for < 0.0) return server::run_server_window(settings, commands, capture, capture_at);
+#endif
     if (route_name.empty()) {
         std::cerr << usage;
         return 2;
     }
 
     std::cout << "openRTS server " << core::version_text() << ": loading " << route_name << " from " << root.string() << std::endl;
-    const auto loading = std::chrono::steady_clock::now();
     std::string error;
-    if (data.empty()) data = core::find_user_data_directory();
-    auto route = server::ServerRoute::load(root, route_name, error, data);
-    if (!route) {
+    std::vector<std::string> lines;
+    auto session = server::ServerSession::start(settings, error, lines);
+    for (const auto& line : lines) std::cout << line << std::endl;
+    if (!session) {
         std::cerr << "error: " << error << std::endl;
         return 1;
     }
-    for (const auto& note : route->notes()) std::cout << "note: " << note << std::endl;
-    const auto& counts = route->counts();
-    std::cout << "route " << route->folder() << " (RouteID " << route->route_id() << "): " << counts.nodes << " track nodes, "
-              << counts.items << " track items, " << counts.substations << " substations, " << counts.sections << " electrosections; "
-              << (route->signals() ? std::to_string(route->signals()->heads().size()) + " signal heads" : std::string("no signals")) << ", "
-              << route->paths().size() << " paths; "
-              << std::chrono::duration<double>(std::chrono::steady_clock::now() - loading).count() << " s" << std::endl;
-    if (!route->signal_modes().empty()) std::cout << "signals: " << route->signal_modes() << std::endl;
-
-    server::TcpServer tcp;
-    if (!tcp.listen(port, error)) {
-        std::cerr << "error: " << error << std::endl;
-        return 1;
-    }
-    server::ServerOptions options;
-    options.route_id = core::fold_case(route->route_id());
-    options.description = server::game_description(route->route_id(), season);
-    options.season = season;
-    // A thunderstorm is rain to RTS (the login's weather), a storm to openRTS.
-    options.weather = weather == 3 ? std::uint8_t{2} : weather;
-    options.storm = weather == 3;
-    options.counts = counts;
-    options.time_of_day = time_of_day;
-    options.admit = admit;
-    server::GameServer game(tcp, options, route->network(), route->signals());
-    // A console's commands are the server's own, but "quit".
-    game.set_console_commands([&game, &route](const std::string_view line) {
-        const auto words = server::command_words(line);
-        if (!words.empty() && (core::fold_case(words[0]) == "quit" || core::fold_case(words[0]) == "exit")) return std::string("not from a console");
-        bool ignored = false;
-        return server::run_command(game, *route, line, ignored);
-    });
-    game.set_console_place([&game, &route](const net::ConsolePlace& place) { return server::place_cars(game, *route, place); });
-    std::cout << "listening on port " << tcp.port() << "; type \"help\" for the dispatcher's commands" << std::endl;
+    std::cout << "type \"help\" for the dispatcher's commands" << std::endl;
 
     std::signal(SIGINT, on_signal);
     std::mutex lines_mutex;
-    std::vector<std::string> lines(commands.begin(), commands.end());
+    std::vector<std::string> typed_lines(commands.begin(), commands.end());
     // The console: lines typed at the server. Detached: std::getline blocks.
-    std::thread([&lines_mutex, &lines] {
+    std::thread([&lines_mutex, &typed_lines] {
         std::string line;
         while (read_line(line)) {
             std::lock_guard lock(lines_mutex);
-            lines.push_back(line);
+            typed_lines.push_back(line);
         }
     }).detach();
 
@@ -237,27 +227,20 @@ int main(int argc, char** argv) {
     while (!quit && !stop_requested) {
         const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         if (run_for >= 0.0 && now >= run_for) break;
-        for (auto& event : tcp.take_events()) {
-            switch (event.kind) {
-            case server::NetEvent::Kind::connected: game.connected(event.connection, std::move(event.address)); break;
-            case server::NetEvent::Kind::package: game.received(event.connection, event.id, event.body); break;
-            case server::NetEvent::Kind::closed: game.closed(event.connection); break;
-            }
-        }
         std::vector<std::string> typed;
         {
             std::lock_guard lock(lines_mutex);
-            typed.swap(lines);
+            typed.swap(typed_lines);
         }
         for (const auto& line : typed) {
-            const auto answer = server::run_command(game, *route, line, quit);
+            const auto answer = session->command(line, quit);
             if (!answer.empty()) std::cout << answer << (answer.back() == '\n' ? "" : "\n") << std::flush;
         }
-        game.tick(now);
-        for (const auto& line : game.take_log()) std::cout << stamp() << ' ' << line << std::endl;
+        session->step(now);
+        for (const auto& line : session->game().take_log()) std::cout << stamp() << ' ' << line << std::endl;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+    session.reset();
     std::cout << "server stopped" << std::endl;
-    tcp.stop();
     return 0;
 }

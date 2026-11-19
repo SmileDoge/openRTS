@@ -218,7 +218,7 @@ endif()
 
 # A scenario's events run on a made-up world; with the content, Novokuznetsk's
 # "Скорый поезд 77" played through when it is installed.
-add_executable(openrts_activity_run_test activity_run_test.cpp ../viewer/src/activity_view.cpp ../viewer/src/ui_text.cpp)
+add_executable(openrts_activity_run_test activity_run_test.cpp ../viewer/src/activity_view.cpp ../ui/src/text.cpp)
 openrts_configure_target(openrts_activity_run_test)
 target_link_libraries(openrts_activity_run_test PRIVATE openrts_formats openrts_simulation)
 add_test(NAME openrts.activity_run COMMAND openrts_activity_run_test)
@@ -315,7 +315,7 @@ if(TARGET openrts_update)
     add_test(NAME openrts.update COMMAND openrts_update_test)
 endif()
 
-add_executable(openrts_ui_text_test ui_text_test.cpp ../viewer/src/ui_text.cpp)
+add_executable(openrts_ui_text_test ui_text_test.cpp ../ui/src/text.cpp)
 openrts_configure_target(openrts_ui_text_test)
 target_link_libraries(openrts_ui_text_test PRIVATE openrts_core)
 add_test(NAME openrts.ui_text COMMAND openrts_ui_text_test)
@@ -407,7 +407,7 @@ endif()
 # doors, gets off and climbs in.
 if(OPENRTS_TEST_ROOT AND TARGET openrts_viewer)
     add_executable(openrts_engineer_test engineer_test.cpp
-        ../viewer/src/cab_view.cpp ../viewer/src/cab_screens.cpp ../viewer/src/engineer.cpp ../viewer/src/walk_rules.cpp ../viewer/src/key_layout.cpp ../viewer/src/camera.cpp ../viewer/src/ui_text.cpp)
+        ../viewer/src/cab_view.cpp ../viewer/src/cab_screens.cpp ../viewer/src/engineer.cpp ../viewer/src/walk_rules.cpp ../viewer/src/key_layout.cpp ../viewer/src/camera.cpp ../ui/src/text.cpp)
     openrts_configure_target(openrts_engineer_test)
     target_link_libraries(openrts_engineer_test PRIVATE openrts_assets openrts_audio openrts_formats openrts_renderer openrts_trainplugin)
     add_test(NAME openrts.content.engineer_vl10k COMMAND openrts_engineer_test "${OPENRTS_TEST_ROOT}")

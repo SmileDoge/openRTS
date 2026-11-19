@@ -1433,12 +1433,13 @@ std::optional<UnitDefaults> SignalSystem::defaults(const std::uint32_t unit) con
 void SignalSystem::restore_defaults(const std::uint32_t unit) {
     const auto& d = impl_->dispatch;
     if (!dispatched_ || unit >= d.defaults.size() || !d.defaults[unit]) return;
-    const auto value = *d.defaults[unit];
-    if (value.mode == UnitMode::manual) {
-        hold_aspect(unit, value.aspect, false);
-    } else {
-        set_unit_mode(unit, value.mode);
-    }
+    // 0x41F39C sets the mode and runs the unit once (0x40CD40); a manual
+    // one's DefaultAspect goes to 0x40C714, which holds an aspect on the
+    // unit the console has selected (dword_54C70C), not on this one: none
+    // at the load, so a manual unit shows what its scripts give with mode 0
+    // (Kuban: STOP_AND_PROCEED, red). CONFIRMED by the live capture's
+    // snapshot 40 s after the start: no head dark (-1), 932 at aspect 1.
+    set_unit_mode(unit, d.defaults[unit]->mode);
 }
 
 std::vector<std::uint32_t> SignalSystem::take_closed() {

@@ -22,7 +22,6 @@ add_library(openrts_viewer_core STATIC
     src/key_repeat.cpp
     src/file_dialog.cpp
     src/viewer_state.cpp
-    src/ui_text.cpp
     src/legacy_cab.cpp
     src/cab_view.cpp
     src/cab_screens.cpp
@@ -51,7 +50,7 @@ if(OPENRTS_ENABLE_GLFW)
 endif()
 
 if(TARGET openrts_imgui)
-    target_link_libraries(openrts_viewer_core PUBLIC openrts_imgui)
+    target_link_libraries(openrts_viewer_core PUBLIC openrts_imgui openrts_ui openrts_trackmap)
     target_compile_definitions(openrts_viewer_core PUBLIC OPENRTS_HAS_IMGUI=1)
 endif()
 

@@ -15,6 +15,7 @@
 #include <openrts/formats/route_database.hpp>
 #include <openrts/formats/train_path.hpp>
 #include <openrts/net/snapshot.hpp>
+#include <openrts/server/station_routes.hpp>
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/track_traveller.hpp>
@@ -88,6 +89,9 @@ public:
     [[nodiscard]] std::vector<std::uint32_t> signal_items(std::string_view name) const;
     // Every signal name with its items, by name.
     [[nodiscard]] const std::vector<std::pair<std::string, std::uint32_t>>& signal_names() const noexcept { return signal_names_; }
+    // The route database's station routes on the network (the dispatcher's
+    // segments, GameServer::add_segment).
+    [[nodiscard]] const StationRoutes& station_routes() const noexcept { return station_routes_; }
     // How the signals' modes were set at the load (from the route database).
     [[nodiscard]] const std::string& signal_modes() const noexcept { return signal_modes_; }
     // The route database the server writes and reads first:
@@ -123,6 +127,7 @@ private:
     std::optional<core::VirtualPath> database_file_; // the installation's
     formats::RouteDatabase route_database_;          // as read (the saved one when there is one)
     std::vector<std::int32_t> unit_records_;         // by signal unit: its SignalUnit in route_database_, -1 none
+    StationRoutes station_routes_;                   // points into route_database_
     std::vector<std::string> notes_;
 };
 

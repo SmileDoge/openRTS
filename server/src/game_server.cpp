@@ -11,6 +11,7 @@
 #include <openrts/net/packages.hpp>
 #include <openrts/net/play.hpp>
 #include <openrts/net/world.hpp>
+#include <openrts/simulation/track_traveller.hpp>
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train.hpp>
@@ -152,6 +153,89 @@ struct GameServer::Impl {
             signals->set_unit_mode(*unit, simulation::UnitMode::open);
             route.opened.push_back(*unit);
         }
+    }
+    // The dispatcher's segments (station routes, 0x450B) in their queue's
+    // order (rts_server.exe's list at dword_54C630).
+    struct Segment {
+        std::uint32_t id{};
+        std::uint32_t train{};
+        std::size_t route{}; // StationRoutes::routes() index
+        bool reverse = false, hold = false, reversed = false;
+        std::uint32_t priority{};
+        std::uint8_t state{};
+        const StationRoutes::Path* path = nullptr; // the path it was set by (+36)
+        std::uint16_t thrown{};
+        float length{};
+        bool left = false; // state 4 announced: dropped at the next step
+    };
+    std::vector<Segment> segments;
+    const StationRoutes* station_routes = nullptr;
+    [[nodiscard]] const StationRoutes::Route& route_of(const Segment& s) const { return station_routes->routes()[s.route]; }
+    [[nodiscard]] static const simulation::RouteLeg* leg_of(const StationRoutes::Path* path, const bool reverse) {
+        if (!path) return nullptr;
+        const auto& leg = reverse ? path->backward : path->forward;
+        return leg ? &*leg : nullptr;
+    }
+    // The route points it runs from and to.
+    [[nodiscard]] std::optional<std::size_t> start_point(const Segment& s) const {
+        return s.reverse ? route_of(s).end : route_of(s).start;
+    }
+    [[nodiscard]] std::optional<std::size_t> end_point(const Segment& s) const {
+        return s.reverse ? route_of(s).start : route_of(s).end;
+    }
+    // The train's segment before `index` in the queue (0x46A06C).
+    [[nodiscard]] std::optional<std::size_t> previous_segment(const std::size_t index) const {
+        for (std::size_t i = index; i-- > 0;) {
+            if (segments[i].train == segments[index].train) return i;
+        }
+        return std::nullopt;
+    }
+    // Where a train stands on the server's network: per vector node, the
+    // stretch it covers.
+    struct Covered {
+        std::uint32_t node{};
+        double low{}, high{};
+    };
+    [[nodiscard]] std::vector<Covered> extent(const simulation::Train& train) const {
+        std::vector<Covered> out;
+        const auto rear = train.rear_end();
+        if (!rear) return out;
+        auto node = rear->node();
+        auto offset = rear->offset();
+        bool forward = rear->forward();
+        double remaining = train.length();
+        for (int guard = 0; guard < 200 && remaining > 1e-6; ++guard) {
+            const auto* info = network.node(node);
+            if (!info) break;
+            const double available = forward ? info->length - offset : offset;
+            const double take = (std::min)(available, remaining);
+            out.push_back(forward ? Covered{node, offset, offset + take} : Covered{node, offset - take, offset});
+            remaining -= take;
+            if (remaining <= 1e-6) break;
+            simulation::MoveStop stop = simulation::MoveStop::completed;
+            const auto step = simulation::next_vector_node(network, node, forward, stop);
+            if (!step) break;
+            node = step->node;
+            forward = step->forward;
+            const auto* next = network.node(node);
+            offset = forward ? 0.0 : (next ? next->length : 0.0);
+        }
+        return out;
+    }
+    // Whether a train covers any of the leg between leg distances `from` and `to`.
+    [[nodiscard]] bool covers(const std::vector<Covered>& covered, const simulation::RouteLeg& leg, const double from, const double to) const {
+        for (const auto& span : leg.spans) {
+            const double a = (std::max)(from, span.start);
+            const double b = (std::min)(to, span.start + span.length());
+            if (b < a) continue;
+            const double o1 = span.forward ? span.from + (a - span.start) : span.from - (a - span.start);
+            const double o2 = span.forward ? span.from + (b - span.start) : span.from - (b - span.start);
+            const double low = (std::min)(o1, o2), high = (std::max)(o1, o2);
+            for (const auto& c : covered) {
+                if (c.node == span.node && c.high >= low && c.low <= high) return true;
+            }
+        }
+        return false;
     }
     // Its end or cancellation closes those still open (0x4098F4).
     void close_signals(const HeldRoute& route) {
@@ -569,10 +653,16 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         }
         if (paused_) s.pause = 1;
         send_to(*user, net::write_snapshot(s));
-        // A console gets every signal unit's 0x4618 (rts_server.exe 0x41733C).
+        // A console gets every signal unit's 0x4618 and every segment's
+        // 0x450B (rts_server.exe 0x41733C).
         if (user->console && impl.signals && impl.signals->dispatched()) {
             for (std::uint32_t u = 0; u < impl.signals->unit_count(); ++u) {
                 send_to(*user, framed(P(Package::signal_control), net::encode_signal_control(impl.control_of(u))));
+            }
+        }
+        if (user->console) {
+            for (std::size_t i = 0; i < impl.segments.size(); ++i) {
+                send_to(*user, framed(P(Package::route_segment), net::encode_route_segment(segment_record(i))));
             }
         }
         user->playing = true;
@@ -622,6 +712,53 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
             impl.note(utf8(user->nick) + ": " + error);
             send_to(*user, package(P(Package::console_reply), [&](net::WireWriter& w) { w.text_u32(net::from_utf8("error: " + error)); }));
         }
+        return;
+    }
+    // A console's segment (0x450B, rts_server.exe 0x454194 / 0x469804): its
+    // station route by ID, checked against the route database by its
+    // station and its start point's tile; the answer is 0x450C.
+    if (user->console && id == P(Package::route_segment)) {
+        const auto segment = net::decode_route_segment(body);
+        if (!segment) return;
+        std::string error;
+        std::optional<std::uint32_t> made;
+        const auto* route = impl.station_routes ? impl.station_routes->route(segment->route) : nullptr;
+        bool same = route != nullptr && net::from_utf8(route->data->station) == segment->station;
+        if (same && route->start) {
+            const auto& position = impl.station_routes->points()[*route->start].data->point1.position;
+            same = static_cast<std::int16_t>(position.tile_x) == segment->tile_x && static_cast<std::int16_t>(position.tile_z) == segment->tile_z;
+        }
+        if (!same) {
+            error = "station route " + std::to_string(segment->route) + " of " + utf8(segment->station) + " is not this route database's";
+        } else {
+            made = add_segment({.train = segment->train,
+                                .route = segment->route,
+                                .reverse = segment->reverse != 0,
+                                .hold = segment->hold != 0,
+                                .reversed = segment->reversed != 0,
+                                .priority = segment->priority},
+                               error);
+        }
+        if (!made) impl.note(utf8(user->nick) + ": " + error);
+        send_to(*user, framed(P(Package::route_segment_reply),
+                              net::encode_route_segment_reply({.request = segment->id,
+                                                               .id = made.value_or(0),
+                                                               .ok = static_cast<std::uint8_t>(made ? 1 : 0),
+                                                               .text = made ? std::u16string{} : net::from_utf8(error)})));
+        return;
+    }
+    // Its cancel (0x450D, 0x469C68): the answer is 0x450C.
+    if (user->console && id == P(Package::route_segment_cancel)) {
+        net::WireReader r(body);
+        const auto segment = r.u32();
+        if (!r.ok()) return;
+        std::string error;
+        const bool ok = cancel_segment(segment, error);
+        send_to(*user, framed(P(Package::route_segment_reply),
+                              net::encode_route_segment_reply({.request = segment,
+                                                               .id = 0,
+                                                               .ok = static_cast<std::uint8_t>(ok ? 1 : 0),
+                                                               .text = ok ? std::u16string{} : net::from_utf8(error)})));
         return;
     }
     if (user->console && id == P(Package::junction)) {
@@ -963,6 +1100,8 @@ void GameServer::tick(const double now) {
         t.sim->add_velocity(static_cast<float>(speed) - static_cast<float>(t.sim->speed()));
     }
 
+    step_segments();
+
     // A route's junctions are freed once the train's trailing end has
     // passed them (and their clearance, 30 m); the distance its head has
     // left goes to everyone (0x4619, every 0.5 s while it changes, as
@@ -1181,6 +1320,11 @@ bool GameServer::remove_train(const std::uint32_t train, std::string& error) {
     if (const auto route = impl.routes.find(train); route != impl.routes.end()) {
         impl.close_signals(route->second);
         impl.routes.erase(route);
+    }
+    for (std::size_t i = impl.segments.size(); i-- > 0;) {
+        if (impl.segments[i].train != train) continue;
+        send_segment(i, P(Package::route_segment_cancel));
+        impl.segments.erase(impl.segments.begin() + static_cast<std::ptrdiff_t>(i));
     }
     impl.trains.erase(train);
     const auto bytes = package(P(Package::train_remove), [&](net::WireWriter& w) {
@@ -1759,6 +1903,26 @@ bool GameServer::set_route(const std::uint32_t train, const std::vector<std::vec
     return true;
 }
 
+std::vector<simulation::CarPlacement> GameServer::train_cars(const std::uint32_t train) const {
+    const auto it = impl_->trains.find(train);
+    if (it == impl_->trains.end() || !it->second.sim || !it->second.sim->placed()) return {};
+    return it->second.sim->car_ends();
+}
+
+std::optional<simulation::TrackLocation> GameServer::train_end(const std::uint32_t train, const bool rear) const {
+    const auto it = impl_->trains.find(train);
+    if (it == impl_->trains.end() || !it->second.sim || !it->second.sim->placed()) return std::nullopt;
+    const auto end = rear ? it->second.sim->rear_end() : it->second.sim->front_end();
+    if (!end) return std::nullopt;
+    return simulation::TrackLocation{end->node(), end->offset(), rear ? !end->forward() : end->forward()};
+}
+
+std::optional<simulation::RouteLeg> GameServer::route_leg(const std::uint32_t train) const {
+    const auto it = impl_->routes.find(train);
+    if (it == impl_->routes.end()) return std::nullopt;
+    return it->second.leg;
+}
+
 std::vector<std::uint32_t> GameServer::route_junctions(const std::uint32_t train) const {
     std::vector<std::uint32_t> out;
     if (const auto it = impl_->routes.find(train); it != impl_->routes.end()) {
@@ -2004,6 +2168,463 @@ bool GameServer::set_helper(const std::string_view nick, const std::optional<std
     end_helping(*user, net::HelperState::ended);
     start_helping(*user, *train);
     return true;
+}
+
+// ---- the dispatcher's segments: station routes (rts_server.exe 0x450B) -------------
+
+void GameServer::set_station_routes(const StationRoutes* routes) noexcept {
+    impl_->station_routes = routes;
+}
+
+namespace {
+
+constexpr double stretch_reach = 50000.0; // m: as far as rts_server.exe looks (0x40D1D8, 0x436510)
+constexpr std::uint16_t kind_traffic = 2;
+
+} // namespace
+
+std::optional<std::uint32_t> GameServer::add_segment(const SegmentRequest& request, std::string& error) {
+    auto& impl = *impl_;
+    if (!impl.station_routes || impl.station_routes->routes().empty()) {
+        error = "the route database has no station routes";
+        return std::nullopt;
+    }
+    const auto route = impl.station_routes->route_index(request.route);
+    if (!route) {
+        error = "no station route " + std::to_string(request.route);
+        return std::nullopt;
+    }
+    // 0x469804: the train.
+    const auto* t = impl.train(request.train);
+    if (!t) {
+        error = "no train " + std::to_string(request.train);
+        return std::nullopt;
+    }
+    if (!t->sim || !t->sim->placed()) {
+        error = "train " + std::to_string(request.train) + " is not on the server's track";
+        return std::nullopt;
+    }
+    Impl::Segment s{.train = request.train,
+                    .route = *route,
+                    .reverse = request.reverse,
+                    .hold = request.hold,
+                    .reversed = request.reversed,
+                    .priority = request.priority};
+    const auto* path = impl.station_routes->path_of(impl.route_of(s), s.reverse);
+    const auto* leg = Impl::leg_of(path, s.reverse);
+    if (!leg) {
+        error = "station route " + std::to_string(request.route) + " has no way laid " + (s.reverse ? "from its end" : "from its start");
+        return std::nullopt;
+    }
+    s.length = static_cast<float>(leg->length());
+    // A stretch beyond its end: no route for an oncoming train there.
+    const auto end = impl.end_point(s);
+    if (end && (impl.station_routes->points()[*end].data->flags & 2u)) {
+        if (const auto at = leg->at(leg->length())) {
+            if (const auto far = impl.station_routes->point_beyond(impl.network, *at, stretch_reach, end)) {
+                for (const auto& other : impl.segments) {
+                    if (other.train != s.train && impl.end_point(other) == far) {
+                        error = "a route for an oncoming train is set on the stretch";
+                        return std::nullopt;
+                    }
+                }
+            }
+        }
+    }
+    // A way from the train's previous segment's end to this one's start.
+    std::optional<std::size_t> previous;
+    for (std::size_t i = impl.segments.size(); i-- > 0;) {
+        if (impl.segments[i].train == s.train) {
+            previous = i;
+            break;
+        }
+    }
+    if (previous) {
+        const auto& p = impl.segments[*previous];
+        const auto* p_leg = Impl::leg_of(impl.station_routes->path_of(impl.route_of(p), p.reverse), p.reverse);
+        const auto from = p_leg ? p_leg->at(p_leg->length()) : std::nullopt;
+        const auto to = leg->at(0.0);
+        // On from that end the way the train goes (0x435278 from the
+        // previous route's end; PROBABLE that it looks only ahead).
+        bool way = false;
+        if (from && to) {
+            simulation::PathPlan plan;
+            plan.name = "segments";
+            plan.start = *from;
+            plan.points = {{.kind = simulation::PlanPointKind::end, .node = to->node, .offset = to->offset}};
+            const auto built = simulation::build_route(impl.network, plan);
+            way = built.ok() && built.legs.size() == 1 && built.legs[0].length() < stretch_reach;
+        }
+        if (!way) {
+            error = "no way from the previous segment's end to the new route";
+            return std::nullopt;
+        }
+    }
+    // Queued (0x41F520): a new id; after the last segment, moved before
+    // other trains' segments of a larger priority number.
+    std::uint32_t id = 1;
+    for (const auto& other : impl.segments) id = (std::max)(id, other.id + 1);
+    s.id = id;
+    std::size_t at = impl.segments.size();
+    while (at > 0 && impl.segments[at - 1].train != s.train && s.priority < impl.segments[at - 1].priority) --at;
+    impl.segments.insert(impl.segments.begin() + static_cast<std::ptrdiff_t>(at), s);
+    send_segment(at, P(Package::route_segment));
+    impl.note("segment " + std::to_string(id) + ": train " + std::to_string(s.train) + ", station route " + std::to_string(request.route) +
+              " (" + impl.route_of(s).data->name + ")" + (s.reverse ? " from its end" : ""));
+    return id;
+}
+
+std::optional<GameServer::NextFrom> GameServer::next_from(const std::uint32_t train, const bool back) const {
+    const auto& impl = *impl_;
+    std::optional<std::size_t> last;
+    for (std::size_t i = 0; i < impl.segments.size(); ++i) {
+        if (impl.segments[i].train == train) last = i;
+    }
+    if (last && impl.station_routes) {
+        const auto& s = impl.segments[*last];
+        const auto* leg = Impl::leg_of(impl.station_routes->path_of(impl.route_of(s), s.reverse), s.reverse);
+        const auto at = leg ? leg->at(leg->length()) : std::nullopt;
+        if (!at) return std::nullopt;
+        NextFrom out{.at = *at, .rear_first = s.reversed, .after = s.id};
+        if (back) {
+            out.at.forward = !out.at.forward;
+            out.rear_first = !out.rear_first;
+        }
+        return out;
+    }
+    const auto end = train_end(train, back);
+    if (!end) return std::nullopt;
+    // A train standing past its track's point (its head beyond the point by
+    // the signal) still takes its routes.
+    return NextFrom{.at = *end, .rear_first = back, .behind = 300.0};
+}
+
+bool GameServer::cancel_segment(const std::uint32_t id, std::string& error) {
+    auto& impl = *impl_;
+    std::optional<std::size_t> index;
+    for (std::size_t i = 0; i < impl.segments.size(); ++i) {
+        if (impl.segments[i].id == id) index = i;
+    }
+    if (!index) {
+        error = "no segment " + std::to_string(id);
+        return false;
+    }
+    const auto s = impl.segments[*index];
+    // Set: the train's route goes; to the end of its previous segment when
+    // that one is set (0x469C68).
+    if (s.state >= 1) {
+        if (const auto route = impl.routes.find(s.train); route != impl.routes.end()) {
+            const bool rear_first = route->second.rear_first;
+            impl.close_signals(route->second);
+            impl.routes.erase(route);
+            send_route_left(s.train, -1.0f, rear_first);
+        }
+        if (const auto previous = impl.previous_segment(*index)) {
+            const auto& p = impl.segments[*previous];
+            const auto* leg = Impl::leg_of(p.path, p.reverse);
+            if (leg && (p.state == 1 || p.state == 3)) {
+                if (const auto to = leg->at(leg->length())) {
+                    std::string result;
+                    lay_route_to(p.train, *to, p.reversed, result);
+                }
+            }
+        }
+    }
+    send_segment(*index, P(Package::route_segment_cancel));
+    impl.segments.erase(impl.segments.begin() + static_cast<std::ptrdiff_t>(*index));
+    impl.note("segment " + std::to_string(id) + " cancelled");
+    return true;
+}
+
+std::vector<GameServer::SegmentSummary> GameServer::segments() const {
+    std::vector<SegmentSummary> out;
+    const auto& impl = *impl_;
+    for (const auto& s : impl.segments) {
+        const auto& route = impl.route_of(s);
+        const auto* path = s.path ? s.path : impl.station_routes->path_of(route, s.reverse);
+        out.push_back({.id = s.id,
+                       .train = s.train,
+                       .route = route.data->id,
+                       .name = route.data->name,
+                       .station = route.data->station,
+                       .reverse = s.reverse,
+                       .hold = s.hold,
+                       .reversed = s.reversed,
+                       .priority = s.priority,
+                       .state = s.state,
+                       .thrown = s.thrown,
+                       .junctions = path ? path->junctions.size() : 0,
+                       .length = s.length});
+    }
+    return out;
+}
+
+bool GameServer::lay_route_to(const std::uint32_t train, const simulation::TrackLocation& to, const bool rear_first, std::string& result) {
+    auto& impl = *impl_;
+    const auto* t = impl.train(train);
+    if (!t || !t->sim || !t->sim->placed()) {
+        result = "train " + std::to_string(train) + " is not on the server's track";
+        return false;
+    }
+    const auto end = rear_first ? t->sim->rear_end() : t->sim->front_end();
+    if (!end) {
+        result = "train " + std::to_string(train) + " has no end on the track";
+        return false;
+    }
+    simulation::TrackLocation from{end->node(), end->offset(), rear_first ? !end->forward() : end->forward()};
+    auto distance = net::track_distance(impl.network, from, to, stretch_reach);
+    if (!distance || *distance <= 0.5) {
+        // The other way along the node the head stands on.
+        from.forward = !from.forward;
+        const auto back = net::track_distance(impl.network, from, to, stretch_reach);
+        if (!back || *back <= 0.5) {
+            result = "the place is not ahead of train " + std::to_string(train);
+            return false;
+        }
+        result = "the place is behind train " + std::to_string(train);
+        return false;
+    }
+    return lay_route(train, *distance, rear_first, result);
+}
+
+net::RouteSegment GameServer::segment_record(const std::size_t index) const {
+    const auto& impl = *impl_;
+    const auto& s = impl.segments[index];
+    const auto& route = impl.route_of(s);
+    net::RouteSegment record{.id = s.id,
+                             .train = s.train,
+                             .route = route.data->id,
+                             .station = net::from_utf8(route.data->station),
+                             .reverse = static_cast<std::uint8_t>(s.reverse ? 1 : 0),
+                             .hold = static_cast<std::uint8_t>(s.hold ? 1 : 0),
+                             .reversed = static_cast<std::uint8_t>(s.reversed ? 1 : 0),
+                             .length = s.length,
+                             .priority = s.priority,
+                             .state = s.state,
+                             .path = static_cast<std::uint16_t>(s.path ? s.path->index + 1 : 0),
+                             .thrown = s.thrown};
+    if (route.start) {
+        const auto& position = impl.station_routes->points()[*route.start].data->point1.position;
+        record.tile_x = static_cast<std::int16_t>(position.tile_x);
+        record.tile_z = static_cast<std::int16_t>(position.tile_z);
+    }
+    return record;
+}
+
+void GameServer::send_segment(const std::size_t index, const std::uint16_t package_id) {
+    auto& impl = *impl_;
+    if (index >= impl.segments.size()) return;
+    const auto record = segment_record(index);
+    net::Bytes body;
+    if (package_id == P(Package::route_segment)) {
+        body = net::encode_route_segment(record);
+    } else if (package_id == P(Package::route_segment_state)) {
+        body = net::encode_route_segment_state(record);
+    } else {
+        net::WireWriter w;
+        w.u32(record.id);
+        body = w.take();
+    }
+    const auto bytes = framed(package_id, body);
+    for (const auto& [_, user] : impl.users) {
+        if (user.console && user.playing && user.connection) transport_.send(user.connection, bytes);
+    }
+}
+
+// rts_server.exe 0x46A348, every step: each segment in the queue's order.
+void GameServer::step_segments() {
+    auto& impl = *impl_;
+    if (impl.segments.empty() || !impl.station_routes) return;
+    // Left ones go (announced with state 4 the step before).
+    for (std::size_t i = impl.segments.size(); i-- > 0;) {
+        if (!impl.segments[i].left) continue;
+        send_segment(i, P(Package::route_segment_cancel));
+        impl.segments.erase(impl.segments.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+    // Where every train stands.
+    std::map<std::uint32_t, std::vector<Impl::Covered>> covered;
+    for (const auto& [id, t] : impl.trains) {
+        if (t.sim && t.sim->placed()) covered[id] = impl.extent(*t.sim);
+    }
+    const auto others_on = [&](const std::uint32_t train, const simulation::RouteLeg& leg, const double from, const double to, const bool movers) {
+        for (const auto& [id, c] : covered) {
+            if (id == train) continue;
+            if (movers) {
+                const auto* t = impl.train(id);
+                if (!t || (t->record.kind != kind_player && t->record.kind != kind_traffic)) continue;
+            }
+            if (impl.covers(c, leg, from, to)) return true;
+        }
+        return false;
+    };
+    for (std::size_t i = 0; i < impl.segments.size(); ++i) {
+        auto& s = impl.segments[i];
+        const auto before = std::pair{s.state, s.thrown};
+        const auto& route = impl.route_of(s);
+        const auto* t = impl.train(s.train);
+        if (!t || !t->sim || !t->sim->placed()) continue;
+        if (s.state == 1 || s.state == 3) {
+            const auto* leg = Impl::leg_of(s.path, s.reverse);
+            // A junction its train's route holds thrown elsewhere: back to waiting.
+            bool broken = false;
+            if (s.path) {
+                for (const auto& [node, branch] : s.path->junctions) {
+                    const auto* state = impl.network.junction(node);
+                    if (state && impl.holder(node) == s.train && state->selected != branch) broken = true;
+                }
+            }
+            if (broken || !leg) {
+                s.state = 0;
+            } else {
+                const bool on = impl.covers(covered[s.train], *leg, 0.0, leg->length());
+                if (on && s.state != 3) {
+                    s.state = 3;
+                } else if (!on && s.state == 3) {
+                    s.state = 4;
+                    s.left = true;
+                }
+            }
+        } else if (s.state == 0 || s.state == 2) {
+            // Its turn: the train's previous segment set and not holding it.
+            if (const auto previous = impl.previous_segment(i)) {
+                const auto& p = impl.segments[*previous];
+                if (!((p.state == 1 || p.state == 3) && !p.hold)) continue;
+            }
+            const auto* path = impl.station_routes->path_of(route, s.reverse);
+            const auto* leg = Impl::leg_of(path, s.reverse);
+            if (!leg) continue;
+            const auto start = impl.start_point(s);
+            const auto end = impl.end_point(s);
+            const auto& points = impl.station_routes->points();
+            bool go = true;
+            // A stretch beyond its end: no oncoming route waiting for it, no
+            // train on it coming this way.
+            if (s.state == 0 && end && (points[*end].data->flags & 2u)) {
+                if (const auto at = leg->at(leg->length())) {
+                    const auto far = impl.station_routes->point_beyond(impl.network, *at, stretch_reach, end);
+                    if (far) {
+                        for (const auto& other : impl.segments) {
+                            if (other.train != s.train && impl.end_point(other) == far) go = false;
+                        }
+                        const auto& place = points[*far].place1 ? points[*far].place1 : points[*far].place2;
+                        if (go && place) {
+                            simulation::PathPlan plan;
+                            plan.name = "stretch";
+                            plan.start = *at;
+                            plan.points = {{.kind = simulation::PlanPointKind::end, .node = place->node, .offset = place->offset}};
+                            const auto stretch = simulation::build_route(impl.network, plan);
+                            if (stretch.ok() && stretch.legs.size() == 1) {
+                                const auto& way = stretch.legs[0];
+                                for (const auto& [id, c] : covered) {
+                                    if (id == s.train || !impl.covers(c, way, 0.0, way.length())) continue;
+                                    // Coming this way: its head facing against the stretch.
+                                    const auto* other = impl.train(id);
+                                    const auto head = other && other->sim ? other->sim->front_end() : std::nullopt;
+                                    if (!head) continue;
+                                    for (const auto& span : way.spans) {
+                                        if (span.node == head->node() && span.forward != head->forward()) go = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // A point to start from: no other driven train between the
+            // train (or its previous segment's end) and it.
+            if (go && s.state == 0 && start && points[*start].data->type == 1 && !(route.data->flags & 4u)) {
+                std::optional<simulation::TrackLocation> from;
+                if (const auto previous = impl.previous_segment(i)) {
+                    const auto& p = impl.segments[*previous];
+                    if (const auto* p_leg = Impl::leg_of(p.path, p.reverse)) from = p_leg->at(p_leg->length());
+                } else if (const auto head = s.reversed ? t->sim->rear_end() : t->sim->front_end()) {
+                    from = simulation::TrackLocation{head->node(), head->offset(), s.reversed ? !head->forward() : head->forward()};
+                }
+                const auto to = leg->at(0.0);
+                if (from && to) {
+                    simulation::PathPlan plan;
+                    plan.name = "approach";
+                    plan.start = *from;
+                    plan.points = {{.kind = simulation::PlanPointKind::end, .node = to->node, .offset = to->offset}};
+                    const auto approach = simulation::build_route(impl.network, plan);
+                    if (approach.ok() && approach.legs.size() == 1 &&
+                        others_on(s.train, approach.legs[0], 0.0, approach.legs[0].length(), true)) {
+                        go = false;
+                    }
+                }
+            }
+            if (!go) continue;
+            // Its junctions (0x46A10C): none locked or held for another
+            // train's route; with the checks on, no other train on the track
+            // between them.
+            const bool check = !(end && (points[*end].data->flags & 4u)) && !(route.data->flags & 4u);
+            const bool partial = (route.data->flags & 8u) != 0;
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> junctions = path->junctions;
+            if (s.reverse) std::reverse(junctions.begin(), junctions.end());
+            std::size_t free = 0;
+            for (std::size_t k = 0; k < junctions.size(); ++k) {
+                const auto node = junctions[k].first;
+                const auto holder = impl.holder(node);
+                if (impl.locked.contains(node) || (holder && *holder != s.train)) break;
+                if (check && k + 1 < junctions.size()) {
+                    double a = -1.0, b = -1.0;
+                    for (const auto& j : leg->junctions) {
+                        if (j.junction == node && a < 0.0) a = j.distance;
+                        if (j.junction == junctions[k + 1].first && b < 0.0) b = j.distance;
+                    }
+                    if (a >= 0.0 && b > a && others_on(s.train, *leg, a + 1.0, b - 1.0, false)) break;
+                }
+                ++free;
+            }
+            const bool whole = free == junctions.size();
+            if (!whole && !partial) continue;
+            // Thrown to their branches (to everyone, 0x460A).
+            std::size_t thrown = 0;
+            for (std::size_t k = 0; k < free; ++k) {
+                const auto [node, branch] = junctions[k];
+                const auto* state = impl.network.junction(node);
+                if (!state) break;
+                if (state->selected != branch) {
+                    if (!impl.network.throw_junction(node, branch)) break;
+                    const auto bytes = junction_package({.index = node - 1, .branch = branch,
+                                                         .lock = static_cast<std::uint8_t>(impl.locked.contains(node) ? 1 : 0)});
+                    for (const auto& [_, user] : impl.users) {
+                        if (user.playing && user.connection) transport_.send(user.connection, bytes);
+                    }
+                }
+                ++thrown;
+            }
+            s.thrown = static_cast<std::uint16_t>(thrown);
+            // The train's route to its end (0x40918C), or, set part of the
+            // way, to the last route point before the first junction not set.
+            std::optional<simulation::TrackLocation> to;
+            if (thrown == junctions.size()) {
+                to = leg->at(leg->length());
+            } else {
+                double limit = leg->length();
+                for (const auto& j : leg->junctions) {
+                    if (j.junction == junctions[thrown].first) {
+                        limit = j.distance;
+                        break;
+                    }
+                }
+                double best = -1.0;
+                for (const auto& point : points) {
+                    for (const auto& place : {point.place1, point.place2}) {
+                        if (!place) continue;
+                        if (const auto d = leg->locate(place->node, place->offset); d && *d > best && *d < limit - 1.0) best = *d;
+                    }
+                }
+                if (best > 1.0) to = leg->at(best);
+            }
+            std::string result;
+            if (to && lay_route_to(s.train, *to, s.reversed, result)) {
+                s.path = path;
+                s.state = thrown == junctions.size() ? 1 : 2;
+            }
+        }
+        if (std::pair{s.state, s.thrown} != before) send_segment(i, P(Package::route_segment_state));
+    }
 }
 
 } // namespace openrts::server

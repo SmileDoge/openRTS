@@ -121,6 +121,8 @@ std::unique_ptr<ServerRoute> ServerRoute::load(const std::filesystem::path& root
         if (!r.route_database_.ok()) r.notes_.push_back("route database: " + r.route_database_.error);
     }
     const auto& route_database = r.route_database_;
+    r.station_routes_ = StationRoutes::build(*r.network_, route_database);
+    if (!route_database.routes.empty()) r.notes_.push_back("station routes: " + r.station_routes_.summary());
     // The signals' names from the route database, on their TDB items as
     // the game shows them (Ctrl+F7: RTS's match, else the nearest item).
     for (const auto& [item, unit] : formats::match_signal_units(database_of(*r.network_), route_database)) {

@@ -55,6 +55,16 @@ constexpr const char* help_text =
     "                                 (its name, \"литера\", from the route database), through the others in turn\n"
     "  route <train> cancel           free the route's junctions\n"
     "  signals [text]                 the signals' names and how many of each\n"
+    "  stations [text]                the stations of the route database's station routes, with how many\n"
+    "  routes <station> [text]        a station's routes: ID, name, from, to, flags, whether its way is laid\n"
+    "  heads                          every signal head as the players get it: item, aspect, draw state, mode\n"
+    "  next <train> [back]            the station routes the train can take next (\"Собрать маршрут\"): from its last\n"
+    "                                 segment's end, else its head (back: the other way); then segment <train> <ID> ...\n"
+    "  segment <train> <route ID> [back] [hold] [rear] [priority N]  a segment of the train's route: the\n"
+    "                                 station route (back: from its end; hold: the train's next segment waits;\n"
+    "                                 rear: the train runs it rear first), set when its turn comes\n"
+    "  segment cancel <id>            a segment cancelled (the train's route back to its previous one's end)\n"
+    "  segments                       the queue: id, train, station route, state, junctions set\n"
     "  junction <node> [branch] [lock|unlock]  throw or lock a junction (TDB node)\n"
     "  signal <item|name> [what]      a signal (TDB item, or its name if only one has it): its mode and aspect,\n"
     "                                 or: <aspect> hold it there (manual, a route leaves it so), open (until a\n"
@@ -419,6 +429,115 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         std::string result;
         const bool ok = server.set_route(*train, stops, result);
         return ok ? result : "error: " + result;
+    }
+    if (command == "stations") {
+        const auto filter = lower(arg(1));
+        for (const auto& [station, count] : route.station_routes().stations()) {
+            if (!filter.empty() && lower(station).find(filter) == std::string::npos) continue;
+            out << station << " (" << count << ")\n";
+        }
+        return out.str().empty() ? "no station routes" : out.str();
+    }
+    if (command == "next") {
+        if (words.size() < 2) return "usage: next <train> [back]";
+        const auto train = static_cast<std::uint32_t>(std::stoul(std::string(arg(1))));
+        const bool back = words.size() > 2 && lower(arg(2)) == "back";
+        const auto from = server.next_from(train, back);
+        if (!from) return "error: train " + std::to_string(train) + " is not on the server's track";
+        const auto& routes = route.station_routes();
+        const auto choices = routes.available(route.network(), from->at, 60000.0, from->behind);
+        for (const auto& c : choices) {
+            const auto& r = routes.routes()[c.route];
+            const auto last = c.reverse ? r.start : r.end;
+            out << r.data->id << "  " << r.data->station << ": " << r.data->name << (c.reverse ? " (back: segment ... back)" : "");
+            if (last) {
+                const auto& point = routes.points()[*last];
+                if (point.data->flags & point_flag::platform) out << " [П]";
+                if (point.length > 0.0) out << ' ' << static_cast<int>(point.length) << " m";
+                if (point.data->flags & point_flag::wrong_way) out << " (onto a wrong track)";
+            }
+            if (r.data->flags & route_flag::main_track) out << " (main track)";
+            if (c.distance > 50.0) out << ", in " << static_cast<int>(c.distance) << " m";
+            out << '\n';
+        }
+        out << (from->after ? "from the end of segment " + std::to_string(*from->after) : std::string("from the train"))
+            << (back ? ", back" : "") << (from->rear_first ? " (rear first: segment ... rear)" : "") << '\n';
+        return out.str();
+    }
+    if (command == "routes") {
+        if (words.size() < 2) return "usage: routes <station> [text]";
+        // The station: its name, else the only one containing the text.
+        const auto wanted = lower(arg(1));
+        std::vector<std::string> found;
+        for (const auto& [station, _] : route.station_routes().stations()) {
+            if (lower(station) == wanted) {
+                found = {station};
+                break;
+            }
+            if (lower(station).find(wanted) != std::string::npos) found.push_back(station);
+        }
+        if (found.empty()) return "error: no station " + std::string(arg(1)) + " (see: stations)";
+        if (found.size() > 1) {
+            std::string list;
+            for (const auto& s : found) list += (list.empty() ? "" : ", ") + s;
+            return "error: several stations: " + list;
+        }
+        const auto filter = lower(arg(2));
+        const auto& routes = route.station_routes();
+        for (const auto& r : routes.routes()) {
+            if (r.data->station != found.front()) continue;
+            if (!filter.empty() && lower(r.data->name).find(filter) == std::string::npos) continue;
+            char flags[16];
+            std::snprintf(flags, sizeof flags, "%x", r.data->flags);
+            const bool forward = routes.path_of(r, false) != nullptr;
+            const bool backward = routes.path_of(r, true) != nullptr;
+            out << r.data->id << "  " << r.data->name << ": " << r.data->start << " -> " << r.data->end << " (flags " << flags << ")"
+                << (forward ? "" : backward ? " (laid only from its end)" : " (its way is not laid)") << '\n';
+        }
+        return out.str().empty() ? "no routes" : out.str();
+    }
+    if (command == "segments") {
+        static constexpr const char* states[] = {"waiting", "set", "set part of the way", "the train on it", "left"};
+        for (const auto& s : server.segments()) {
+            out << s.id << "  train " << s.train << ": " << s.route << " " << s.name << " (" << s.station << ")"
+                << (s.reverse ? " from its end" : "") << (s.hold ? ", holds the next" : "") << (s.reversed ? ", rear first" : "")
+                << ", priority " << s.priority << ": " << (s.state < 5 ? states[s.state] : "?") << ", " << s.thrown << " of "
+                << s.junctions << " junctions set, " << static_cast<int>(s.length) << " m\n";
+        }
+        return out.str().empty() ? "no segments" : out.str();
+    }
+    if (command == "segment") {
+        const std::string usage = "usage: segment <train> <route ID> [back] [hold] [rear] [priority N] | segment cancel <id>";
+        if (lower(arg(1)) == "cancel") {
+            const auto id = number_of(arg(2));
+            if (!id) return usage;
+            return done(server.cancel_segment(*id, error), "segment " + std::to_string(*id) + " cancelled");
+        }
+        const auto train = number_of(arg(1));
+        const auto id = number_of(arg(2));
+        if (!train || !id) return usage;
+        GameServer::SegmentRequest request{.train = *train, .route = *id};
+        for (std::size_t i = 3; i < words.size(); ++i) {
+            const auto w = lower(words[i]);
+            if (w == "back") request.reverse = true;
+            else if (w == "hold") request.hold = true;
+            else if (w == "rear") request.reversed = true;
+            else if (w == "priority" && i + 1 < words.size() && number_of(words[i + 1])) request.priority = *number_of(words[++i]);
+            else return usage;
+        }
+        const auto made = server.add_segment(request, error);
+        return made ? "segment " + std::to_string(*made) + " queued (see: segments)" : "error: " + error;
+    }
+    if (command == "heads") {
+        // Every head as the players get it (0x460C): its TDB item, aspect,
+        // draw state, mode; what openrts-net-dump --heads prints of a snapshot.
+        if (const auto* signals = route.signals()) {
+            for (const auto& head : signals->heads()) {
+                out << "head " << head.track_item << ' ' << static_cast<int>(head.state) << ' ' << static_cast<int>(head.draw_state) << ' '
+                    << static_cast<int>(head.mode) << '\n';
+            }
+        }
+        return out.str().empty() ? "no signal heads" : out.str();
     }
     if (command == "signals") {
         const auto filter = lower(arg(1));

@@ -30,13 +30,83 @@ openrts-server --route Kuban_RTS --root D:\Games\MDDRTS --port 800 --season summ
 | `--no-admit` | take no new players |
 | `--data <folder>` | where the server keeps its files (the route database it saves); openRTS's user data folder by default (`%LOCALAPPDATA%\openRTS`, or next to the program with a `portable.txt`), never the RTS installation |
 | `--command "<line>"` | a console line run at the start (repeatable) |
-| `--run <s>` | stop after so many seconds (tests) |
+| `--run <s>` | stop after so many seconds (tests); runs at the console |
+| `--no-window` | run at the console, without the window (`--route` needed) |
+| `--capture <file.ppm>`, `--capture-at <s>` | the window's picture `s` seconds after the server started (3 by default), then it closes (a check) |
 
 It loads the route in about a second (Kuban: 1653 track nodes, 1951 signal
 heads, 0.9 s) and then listens. Players connect with the start menu's
 "Сетевая игра" or `openrts_viewer --mp-connect host[:port]`, or with
 `rts1.exe`. Arguments and console lines are read as UTF-16 on Windows, so
 Russian path names and messages work.
+
+## The window
+
+Without `--no-window` (or `--run`) the server opens its window, as
+`rts_server.exe` does:
+
+- **The start form:** the RTS folder (with "Обновить" to list its
+  routes again), the route, season, weather, time, port (0: any free
+  one), whether new players are taken, and the server's folder. The
+  arguments fill it in. Started without `--route`, it is as it was last
+  started (`server_window.ini` in the server's folder).
+- **Then the console on the route's map** (the same map as the viewer's
+  Track control, `trackmap/`): the track, junctions, signals with their
+  names, platforms, sidings, stations, the trains in the colour of their
+  kind (player's, traffic, standing) with their numbers, owners and speed
+  and an arrow ahead of the head the way each faces, each train's route and the station routes' segments (waiting grey, set
+  green, the train on it dark green). The wheel zooms, a right drag moves
+  the map, the first train placed brings the map to it. A right click
+  opens what can be done there:
+  - a train: give it to a player or take it back, cancel its route,
+    remove it;
+  - a junction: a branch, lock against players or unlock;
+  - a signal (its unit's report on top): set the aspect, open,
+    automatic block, close, back to its default;
+  - the track: "Поставить поезд" (the consist picked in "Поезда" first,
+    then any found by part of its name), a route for the selected train
+    to here (from its head, or its rear when the place is behind it).
+- **Placing a train** is seen first: the consist stands on the map
+  outlined, its first car orange with a big arrow the way it faces, red
+  where it does not fit or runs into a train; a bar over the map says
+  which and how long. Drag it along the track, click another track to
+  move it there, Left / Right nudge it 1 m (Shift: 10 m); "Поставить
+  (Enter)" puts it (the server still refuses it on another train),
+  "Развернуть (Пробел)" turns it, "Отмена (Esc)" drops it.
+- **The tabs:**
+  - "Поезда": the trains (number, id, kind, driver, cars, speed; a click
+    selects one and shows it), the selected one's actions (a train gone
+    is unselected), a new train: a consist (found by part of its name,
+    Russian or Latin; a click on the picked one, or "Снять выбор",
+    unpicks it) shown at a path's start to be put from there.
+  - "Станционные маршруты", as `rts_server.exe`'s "Собрать маршрут": the
+    train (picked here, in "Поезда" or on the map), its queue with each
+    segment's state and cancel, and the routes it can take next from the
+    end of its last segment, else from its head (a blue mark with an
+    arrow on the map); "Направление" turns that way (it reverses there, or
+    starts rear first). Main tracks first in green, onto a wrong track last
+    in lilac, "[П]" and the length of a station track it goes onto, how far
+    its start is. The one picked is drawn on the map (thick, with an arrow
+    at its end and its name; the way to it thin) and the map shows all of
+    it; the one under the mouse in orange. "Задать" (or a double click)
+    queues it with "держать следующий" and the priority, and the list goes
+    on from its end: to the next station and further. "Все маршруты
+    станции" lists any of a station's routes; at the bottom every train's
+    queue.
+  - "Сигналы": every signal of a type to manual / open / automatic block,
+    the type shown as a train signal, restore the defaults, set as the
+    defaults, save the route database (into the server's folder).
+  - "Игроки": nick, state, trains, address; a message to the player or to
+    everyone, drop the player.
+  - "Журнал": the server's log and a line for the console's commands
+    (`help`), the same as at the console.
+- **The bar on top:** the route and port, the server's time and setting
+  it, pause, taking new players, how many play, stopping the server.
+  Under it what was last done, for 5 s (an error 10 s).
+
+The log also goes to the console behind the window. Not in the window yet:
+starting and stopping a train on its own (the server drives no train
+before step 7, TRAFFIC).
 
 ## The dispatcher's console
 
@@ -56,7 +126,14 @@ Russian path names and messages work.
 | `time [HH:MM[:SS]]` | shown or set (`0x460D` to everyone) |
 | `route <train> <signal> [signal...]` | a train's route, as the console's assembly: from the train's front (or its rear, running rear first) to the signal named so in the route database (its "литера"), through the others in turn, the shortest way; of several signals with one name the nearest along the way. Every junction on it is set, facing and trailing, and held: players cannot throw it until the train's rear has passed it (and 30 m). Its manual signals facing the train open ("Signals" below). A TDB item number works too |
 | `route <train> cancel` | the route's junctions freed (they stay as they are), the signals it opened closed |
+| `heads` | every signal head as the players get it: TDB item, aspect, draw state, mode (to compare with `openrts-net-dump --heads`) |
 | `signals [text]` | the signals' names and how many stand under each |
+| `stations [text]` | the stations of the route database's station routes, with how many routes each |
+| `routes <station> [text]` | a station's routes: ID, name, from, to, flags, whether its way is laid |
+| `next <train> [back]` | the station routes the train can take next, as "Собрать маршрут": from its last segment's end, else its head (back: the other way); ID, station, name, "[П]" and the track's length, main track, onto a wrong track, how far; with `back` or `rear` when they need it |
+| `segment <train> <route ID> [back] [hold] [rear] [priority N]` | a segment of the train's route, the station route by its ID (back: from its end; hold: the train's next segment waits; rear: the train runs it rear first): checked and queued, set when its turn comes ("Station routes" below) |
+| `segment cancel <id>` | cancelled: the train's route goes back to its previous segment's end |
+| `segments` | the queue: id, train, station route, state, junctions set |
 | `junction <node> [branch] [lock\|unlock]` | thrown (refused while occupied or held by a route) or locked against players |
 | `signal <item\|name>` | the signal's unit: its mode, aspect, whether the dispatcher picked it, its defaults, its heads' types; by name when only one signal has it |
 | `signal <item\|name> <aspect>` | held at that aspect (manual, the dispatcher's: a route leaves it so), as the console's "set aspect" |
@@ -217,13 +294,17 @@ draw it.
   game's way, are not used.
 - At the load every unit is manual and runs once with `enabled` 0, then
   the route database (`<RouteID>.rtsdb`) gives its defaults: `UnitFlags`
-  bit 2 open, else bit 4 automatic block, else manual at its
-  `DefaultAspect`. Kuban (2026-11 build): 1405 units, 503 automatic
-  block, 902 manual (STOP but one); with no train its block signals show
-  CLEAR_2 389, APPROACH_1 40, APPROACH_3 14, RESTRICTING 44,
+  bit 2 open, else bit 4 automatic block, else manual, and the unit runs
+  once. A manual one is not held at its `DefaultAspect` (`rts_server.exe`
+  holds it on the console's selected signal, none at the load): it shows
+  what its scripts give with `enabled` 0 — on Kuban mostly
+  STOP_AND_PROCEED, red, as the live capture's first snapshot; held at
+  STOP its `-also` heads would be dark ("No"). Kuban (2026-11 build): 1405
+  units, 503 automatic block, 902 manual; with no train its block signals
+  show CLEAR_2 389, APPROACH_1 40, APPROACH_3 14, RESTRICTING 44,
   STOP_AND_PROCEED 16. So the stations' home, exit and shunting signals
-  stand at STOP until the dispatcher opens them or sets a route; the
-  line's block signals work by themselves.
+  stand red until the dispatcher opens them or sets a route; the line's
+  block signals work by themselves. "Restore the defaults" does the same.
 - A route (`route`, the console's `0x4619`) opens its manual signals facing
   the train, but not those whose aspect the dispatcher picked; its end or
   cancellation closes the ones still open.
@@ -249,7 +330,47 @@ draw it.
   896 (a few units the old database named twice). The installation's file
   is not touched; copying the saved one there gives `rts_server.exe` the
   same defaults.
-- Not yet: the station routes (`0x450B`).
+- The station routes: below.
+
+**Station routes** (`server::StationRoutes`, `GameServer::add_segment`;
+how RTS does it: `reverse/dispatcher.md`, "Station routes and segments"):
+- At the load the route database's route points are put on the track
+  (within 3 m) and each station route's path is laid from its start point
+  to its end point through the junctions it lists, in order and at their
+  branches, and back; a route onto a station track runs on to its far
+  point (by the exit signal ahead, the guide's "точка окончания маршрута").
+  Kuban: 182 points (all on the track), 828 routes, 828 paths, every one
+  laid both ways.
+- What a train can take next (`StationRoutes::available`,
+  `GameServer::next_from`): from its last segment's end (else its head,
+  and the point it stands at within 300 m back) the way chosen, through
+  junctions any way, to the first route point on each way; the routes
+  starting there that way. An exit with nothing that way and a point
+  nothing starts from are passed, so after a route onto a stretch come the
+  next station's (Kuban from Краснодар-1's track 4: Краснодар-2,
+  Витаминкомбинат, Титаровка). One-way routes only from their start.
+- A train's route is a chain of segments, each a station route (from its
+  start, or from its end). A segment is checked when it comes (the train;
+  no oncoming train's route waiting at the far end of the stretch its end
+  leads onto; a way on from the train's previous segment's end) and queued
+  by its priority.
+- Each step sets those whose turn it is (the train's previous segment set
+  and not holding the next): an end onto a stretch waits for an oncoming
+  route there or a train coming this way on it; a point to start from waits
+  for another driven train between; then its junctions must be free (none
+  locked or held for another train's route, with the checks on no other
+  train on the track between them). They are thrown, the train's route is
+  laid from its head to the segment's end (held, its manual signals open,
+  `0x4619`): state 1. A route with flag 8 may be set part of the way
+  (state 2). The train on it: 3; past it: 4, and it goes at the next step.
+  A junction of it thrown elsewhere while the train's route holds it sends
+  it back to waiting.
+- Cancelled: the train's route goes (laid again to its previous segment's
+  end when that one is set).
+- Consoles get `0x450B` when a segment is queued and in their world,
+  `0x450E` with each change of its state, `0x450D` when it goes; a
+  console's `0x450B` (checked by its station and its start point's tile)
+  and `0x450D` are answered with `0x450C`.
 
 **The server's trains.** Each train has a copy on the server's network
 (`simulation::Train`): its cars from the consist's files, placed where the
@@ -296,6 +417,10 @@ and when the dispatcher sets it.
 | `server/src/game_server.cpp` | users, login, snapshot, the relays, junctions, signals, trains, couplings, the dispatcher's actions; no sockets |
 | `server/src/tcp_server.cpp` | TCP: an accepting thread, a reader and a sender per connection; RTS's limits (a login of 64 bytes, packages of `0x3C00`) |
 | `server/src/console.cpp` | the commands |
+| `server/src/session.cpp` | a running server: the route loaded, the port open, the game, console lines; the program and the window run one |
+| `server/src/server_window.cpp` | the window: the start form and the console on the map (built when ImGui, GLFW and WebGPU are; `wgpu_native.dll` is loaded only when the window opens) |
+| `trackmap/src/track_map.cpp` | the route's map, shared with the viewer's Track control: track, junctions, signals, places, stations, trains, lines and marks of its owner, picking, tooltips |
+| `ui/src/text.cpp`, `ui/src/fonts.cpp` | the Russian texts (`tr`) and the fonts, shared with the viewer |
 | `server/src/main.cpp` | `openrts-server` |
 
 ## Checked
@@ -330,6 +455,35 @@ and when the dispatcher sets it.
   - `tests/server_test.cpp` (`route_database`): a route database read,
     written with other units and types and read back, the rest of the
     file as it was.
+  - Kuban's station routes (182 points, 828 routes and paths laid both
+    ways), a segment from the ED9M's track set (552 "НМ4БП => Н1": 10 of 10
+    junctions at their branches, the train's route holding them, its
+    signals open, the console's `0x450B` and `0x450E`), the next one from
+    its end queued, one elsewhere refused ("no way"), a console's `0x450B`
+    answered and one of another database refused, the cancels (the train's
+    route and signals gone).
+  - At the load no head dark and most of Kuban's manual `-also` heads at
+    STOP_AND_PROCEED (red); the console's `heads` against
+    `openrts-net-dump --heads` of the live capture's first snapshot: 1949
+    of 1951 heads the same on the 2025 build's Kuban after 40 s.
+  - Kuban's "Собрать маршрут": from the ED9M's head the three routes from
+    its track 4БП (552, 555, 558) past half a track nothing starts from,
+    then on from the end of a route onto the stretch, station after
+    station (Краснодар-2, Витаминкомбинат, Титаровка); `next` at the
+    console from the train and from its segment's end.
+  - `tests/server_test.cpp` (`station_segments`): on the switch track a
+    station route through the junction set (thrown, held), the train on it
+    (3) and past it (4, then gone), the console told each; an unknown route
+    or train refused. (`route_database`: route points, routes and paths read
+    and kept by the save.)
+  - `tests/server_test.cpp` (`session`, with an installation): a session
+    refusing a route that is not there; Kuban's started on a free port,
+    a console line placing the ED9M, its cars on the map, segment 552's
+    route leg for the map, no route to the place its head stands on,
+    `quit`.
+  - The window by hand and by its picture (`--capture`): the start form
+    (filled in from the arguments, as last started without them), Kuban's
+    console with the ED9M placed and its segment set.
   - `tests/signal_test.cpp` (`test_dispatched`): units on a synthetic
     track, `enabled` = the mode, automatic block reading the unit ahead,
     an aspect the type lacks, a train closing the open signal it reaches.

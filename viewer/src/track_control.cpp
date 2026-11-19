@@ -22,50 +22,6 @@ namespace {
 
 constexpr double tile = 2048.0;
 
-// A label running along a track on the screen, so that names of things on
-// tracks side by side (signals, platforms, sidings) lie on their own tracks
-// instead of over each other where the tracks run up the screen. `along`:
-// the track's direction on the screen; the text is turned so it never reads
-// upside down. `size`: its height in px. Its nearer edge goes `side` px off
-// the track (`towards`: the side, any point there; none: above the line as
-// it reads), starting at `anchor` (or centred on it).
-void text_along(ImDrawList* draw, const ImVec2 anchor, ImVec2 along, const ImU32 colour, const char* text, const float size,
-                const float side, const std::optional<ImVec2> towards, const bool centred) {
-    const float length = std::sqrt(along.x * along.x + along.y * along.y);
-    if (length < 1e-6f) {
-        along = ImVec2(1.0f, 0.0f);
-    } else {
-        along = ImVec2(along.x / length, along.y / length);
-    }
-    // Reading left to right (or downwards on a vertical track).
-    if (along.x < 0.0f || (along.x == 0.0f && along.y < 0.0f)) along = ImVec2(-along.x, -along.y);
-    // The glyphs' "up" follows the reading direction alone; the side only
-    // moves the text (flipping this "up" had mirrored the letters).
-    const ImVec2 up(along.y, -along.x);
-    float off = 1.0f;
-    if (towards) {
-        const float d = (towards->x - anchor.x) * up.x + (towards->y - anchor.y) * up.y;
-        if (d < 0.0f) off = -1.0f;
-    }
-    ImFont* font = ImGui::GetFont();
-    const ImVec2 box = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
-    // Laid flat with its middle-left (or middle) at the anchor, then turned
-    // about it and moved `side` px off the line. It is laid at the anchor,
-    // inside the map: ImGui drops the glyphs of text laid outside the clip
-    // rectangle, and laid at the screen's corner the names had vanished.
-    const ImVec2 corner(centred ? -box.x * 0.5f : 0.0f, -box.y * 0.5f);
-    const int first = draw->VtxBuffer.Size;
-    draw->AddText(font, size, ImVec2(anchor.x + corner.x, anchor.y + corner.y), colour, text);
-    const float away = off * (side + box.y * 0.5f);
-    const ImVec2 shift(anchor.x + up.x * away, anchor.y + up.y * away);
-    for (int i = first; i < draw->VtxBuffer.Size; ++i) {
-        auto& v = draw->VtxBuffer[i].pos;
-        // Glyph y grows down; the text's down is -up.
-        const float x = v.x - anchor.x, y = v.y - anchor.y;
-        v = ImVec2(shift.x + x * along.x - y * up.x, shift.y + x * along.y - y * up.y);
-    }
-}
-
 [[nodiscard]] const char* role_name(const TrainView::Role role) {
     switch (role) {
     case TrainView::Role::driven: return tr("driven");
@@ -86,180 +42,17 @@ void text_along(ImDrawList* draw, const ImVec2 anchor, ImVec2 along, const ImU32
     return std::sqrt(cx * cx + cy * cy);
 }
 
-// A name folded for comparing as RTS's lstrcmpiW does here: ASCII and
-// Cyrillic letters in lower case (UTF-8 in, UTF-8 out).
-[[nodiscard]] std::string fold_name(const std::string_view text) {
-    std::string out;
-    out.reserve(text.size());
-    for (std::size_t i = 0; i < text.size();) {
-        const auto c = static_cast<unsigned char>(text[i]);
-        if (c < 0x80) {
-            out.push_back(static_cast<char>(std::tolower(c)));
-            ++i;
-            continue;
-        }
-        if ((c & 0xE0) == 0xC0 && i + 1 < text.size()) {
-            unsigned code = ((c & 0x1Fu) << 6) | (static_cast<unsigned char>(text[i + 1]) & 0x3Fu);
-            if (code >= 0x410 && code <= 0x42F) code += 0x20; // А-Я
-            else if (code == 0x401) code = 0x451;               // Ё
-            out.push_back(static_cast<char>(0xC0 | (code >> 6)));
-            out.push_back(static_cast<char>(0x80 | (code & 0x3Fu)));
-            i += 2;
-            continue;
-        }
-        out.push_back(text[i]);
-        ++i;
-    }
-    return out;
-}
-
 } // namespace
 
 TrackControl::TrackControl(simulation::TrackNetwork& network, const formats::RoutePosition origin)
-    : network_(&network), origin_(origin) {
-    build_lines();
-    build_places();
-}
-
-void TrackControl::build_places() {
-    // Stations: their platform items grouped by station name, at the mean of
-    // the items' positions (0x555624 keeps a running mean and a count).
-    {
-        std::map<std::string, std::size_t> by_name;
-        for (const auto& item : network_->database().items) {
-            if (item.kind != formats::TrackItemKind::platform || item.station.empty() || !item.has_position) continue;
-            const simulation::TrackPoint at{.tile_x = item.tile_x, .tile_z = item.tile_z, .x = item.x, .y = item.y, .z = item.z};
-            const auto key = fold_name(item.station);
-            auto [it, added] = by_name.emplace(key, stations_.size());
-            if (added) stations_.push_back({.name = item.station});
-            auto& station = stations_[it->second];
-            ++station.items;
-            station.x += (world_x(at) - station.x) / station.items;
-            station.z += (world_z(at) - station.z) / station.items;
-        }
-    }
-    // Every TDB item's place on the network.
-    std::map<std::uint32_t, std::pair<std::uint32_t, double>> where;
-    for (std::uint32_t n = 1; n < network_->node_count(); ++n) {
-        const auto* node = network_->node(n);
-        if (!node || node->kind != formats::TrackNodeKind::vector) continue;
-        for (const auto& entry : node->items) where[entry.item] = {n, entry.offset};
-    }
-    const auto& items = network_->database().items;
-    for (const auto& [id, place] : where) {
-        if (id >= items.size()) continue;
-        const auto& item = items[id];
-        const bool platform = item.kind == formats::TrackItemKind::platform;
-        if (!platform && item.kind != formats::TrackItemKind::siding) continue;
-        const auto other = where.find(item.linked);
-        if (other != where.end() && item.linked < id) continue; // each pair once
-        Place result{.platform = platform, .name = item.name};
-        if (platform && !item.station.empty() && item.station != item.name) result.name = item.station + " (" + item.name + ")";
-        const auto add = [&](const std::uint32_t node, const double offset) {
-            if (const auto p = network_->point(node, offset)) {
-                result.x.push_back(world_x(*p));
-                result.z.push_back(world_z(*p));
-            }
-        };
-        if (other != where.end() && other->second.first == place.first) {
-            const double a = place.second, b = other->second.second;
-            const int steps = (std::max)(1, static_cast<int>(std::abs(b - a) / 10.0));
-            for (int k = 0; k <= steps; ++k) add(place.first, a + (b - a) * k / steps);
-            result.length = std::abs(b - a);
-        } else {
-            add(place.first, place.second);
-            if (other != where.end()) add(other->second.first, other->second.second);
-            // Ends on two nodes: the straight distance between them.
-            if (result.x.size() == 2) result.length = std::hypot(result.x[1] - result.x[0], result.z[1] - result.z[0]);
-        }
-        if (!result.x.empty()) places_.push_back(std::move(result));
-    }
-}
-
-void TrackControl::hover_tooltip(const float mouse_x, const float mouse_y, const simulation::SignalSystem* signals) const {
-    const double cx = canvas_x_ + canvas_w_ * 0.5, cy = canvas_y_ + canvas_h_ * 0.5;
-    const auto sx = [&](const double x) { return cx + (x - centre_x_) * scale_; };
-    const auto sy = [&](const double z) { return cy - (z - centre_z_) * scale_; };
-    // A signal within 8 px.
-    if (signals && show_signals_ && scale_ > 0.15) {
-        const auto& objects = signals->objects();
-        const auto& heads = signals->heads();
-        std::optional<std::uint32_t> nearest;
-        double best = 8.0;
-        for (std::uint32_t i = 0; i < objects.size(); ++i) {
-            const auto& p = objects[i].placement.position;
-            const simulation::TrackPoint where{.tile_x = p.tile_x, .tile_z = p.tile_z, .x = p.x, .y = p.y, .z = p.z};
-            const double d = std::hypot(sx(world_x(where)) - mouse_x, sy(world_z(where)) - mouse_y);
-            if (d < best) {
-                best = d;
-                nearest = i;
-            }
-        }
-        if (nearest) {
-            const auto name = signal_names_ ? signal_names_(*nearest) : std::string();
-            ImGui::BeginTooltip();
-            if (name.empty()) {
-                ImGui::Text(tr("Signal %u (no name)"), *nearest);
-            } else {
-                ImGui::Text(tr("Signal %s"), name.c_str());
-            }
-            for (const auto h : objects[*nearest].heads) {
-                const auto& head = heads[h];
-                const auto aspect = static_cast<formats::SignalAspect>(std::clamp(static_cast<int>(head.state), 0, 9));
-                if (head.speed >= 0.0f) {
-                    ImGui::TextDisabled(tr("%s: %s, %.0f km/h"), head.type ? head.type->name.c_str() : "?", formats::to_string(aspect), head.speed * 3.6);
-                } else {
-                    ImGui::TextDisabled(tr("%s: %s"), head.type ? head.type->name.c_str() : "?", formats::to_string(aspect));
-                }
-            }
-            ImGui::EndTooltip();
-            return;
-        }
-    }
-    // A platform or a siding within 6 px of its line.
-    if ((show_platforms_ || show_sidings_) && scale_ > 0.05) {
-        const Place* nearest = nullptr;
-        double best = 6.0;
-        for (const auto& place : places_) {
-            if (place.platform ? !show_platforms_ : !show_sidings_) continue;
-            for (std::size_t k = 0; k < place.x.size(); ++k) {
-                double d = 0.0;
-                if (k + 1 < place.x.size()) {
-                    double t = 0.0;
-                    d = segment_distance(mouse_x, mouse_y, sx(place.x[k]), sy(place.z[k]), sx(place.x[k + 1]), sy(place.z[k + 1]), t);
-                } else if (place.x.size() == 1) {
-                    d = std::hypot(sx(place.x[k]) - mouse_x, sy(place.z[k]) - mouse_y);
-                } else {
-                    continue;
-                }
-                if (d < best) {
-                    best = d;
-                    nearest = &place;
-                }
-            }
-        }
-        if (nearest) {
-            ImGui::BeginTooltip();
-            ImGui::Text("%s", nearest->name.empty() ? tr("(no name)") : nearest->name.c_str());
-            if (nearest->length > 0.0) {
-                ImGui::TextDisabled(nearest->platform ? tr("platform, %.0f m") : tr("siding, %.0f m"), nearest->length);
-            } else {
-                ImGui::TextDisabled("%s", nearest->platform ? tr("platform") : tr("siding"));
-            }
-            ImGui::EndTooltip();
-        }
-    }
-}
+    : network_(&network), origin_(origin), map_(network, origin) {}
 
 void TrackControl::show_train(TrainView& trains, const std::uint64_t train) {
     const auto* t = trains.train_by_id(train);
     const auto front = t && t->placed() ? t->front_end() : std::nullopt;
     if (!front) return;
-    const auto at = front->pose();
     selected_ = train;
-    centre_x_ = world_x(at);
-    centre_z_ = world_z(at);
-    scale_ = (std::max)(scale_, 1.0);
+    map_.centre_on(front->pose(), 1.0);
     open_ = true;
 }
 
@@ -289,141 +82,68 @@ void TrackControl::request_teleport(const double x, const double z, const simula
 }
 
 double TrackControl::world_x(const simulation::TrackPoint& point) const {
-    return (point.tile_x - origin_.tile_x) * tile + point.x - origin_.x;
+    return map_.world_x(point);
 }
 
 double TrackControl::world_z(const simulation::TrackPoint& point) const {
-    return (point.tile_z - origin_.tile_z) * tile + point.z - origin_.z;
-}
-
-void TrackControl::build_lines() {
-    lines_.clear();
-    for (std::uint32_t n = 1; n < network_->node_count(); ++n) {
-        const auto* node = network_->node(n);
-        if (!node || node->kind != formats::TrackNodeKind::vector || node->sections.empty()) continue;
-        Line line{.node = n};
-        const double step = 10.0;
-        for (double offset = 0.0;; offset += step) {
-            const double at = (std::min)(offset, node->length);
-            if (const auto point = network_->point(n, at)) {
-                line.x.push_back(world_x(*point));
-                line.z.push_back(world_z(*point));
-                line.offset.push_back(at);
-            }
-            if (at >= node->length) break;
-        }
-        if (line.x.empty()) continue;
-        line.min_x = *std::min_element(line.x.begin(), line.x.end());
-        line.max_x = *std::max_element(line.x.begin(), line.x.end());
-        line.min_z = *std::min_element(line.z.begin(), line.z.end());
-        line.max_z = *std::max_element(line.z.begin(), line.z.end());
-        lines_.push_back(std::move(line));
-    }
+    return map_.world_z(point);
 }
 
 TrackControl::Pick TrackControl::pick(const float mouse_x, const float mouse_y, TrainView& trains,
                                       const simulation::SignalSystem* signals) const {
-    const double cx = canvas_x_ + canvas_w_ * 0.5, cy = canvas_y_ + canvas_h_ * 0.5;
-    const auto sx = [&](const double x) { return cx + (x - centre_x_) * scale_; };
-    const auto sy = [&](const double z) { return cy - (z - centre_z_) * scale_; };
-    Pick result;
-    result.x = centre_x_ + (mouse_x - cx) / scale_;
-    result.z = centre_z_ - (mouse_y - cy) / scale_;
+    (void)trains;
+    const ImVec2 mouse(mouse_x, mouse_y);
     // The consist being placed comes before anything under it.
     if (placement_.active && placement_car_at(mouse_x, mouse_y) >= 0) {
-        result.kind = PickKind::placement;
-        return result;
+        const auto picked = map_.pick(mouse, signals);
+        return Pick{.kind = PickKind::placement, .x = picked.x, .z = picked.z};
     }
-    double best = 9.0;
-    double t = 0.0;
-    const auto consider = [&](const double d, const Pick& candidate) {
-        if (d < best) {
-            best = d;
-            const double x = result.x, z = result.z;
-            result = candidate;
-            result.x = x;
-            result.z = z;
-        }
-    };
-    // Path points of the edited path.
+    // Path points of the edited path within 7 px.
     if (editing_) {
-        if (const auto start = network_->point(plan_.start.node, plan_.start.offset)) {
-            consider(std::hypot(sx(world_x(*start)) - mouse_x, sy(world_z(*start)) - mouse_y) - 2.0,
-                     Pick{.kind = PickKind::start_point});
-        }
+        double best = 7.0;
+        std::optional<Pick> found;
+        const auto consider = [&](const simulation::TrackPoint& at, const Pick& candidate) {
+            const auto p = map_.screen(at);
+            const double d = std::hypot(p.x - mouse_x, p.y - mouse_y);
+            if (d < best) {
+                best = d;
+                found = candidate;
+            }
+        };
+        if (const auto start = network_->point(plan_.start.node, plan_.start.offset)) consider(*start, Pick{.kind = PickKind::start_point});
         for (std::size_t i = 0; i < plan_.points.size(); ++i) {
             if (const auto where = network_->point(plan_.points[i].node, plan_.points[i].offset)) {
-                consider(std::hypot(sx(world_x(*where)) - mouse_x, sy(world_z(*where)) - mouse_y) - 2.0,
-                         Pick{.kind = PickKind::plan_point, .point = i});
+                consider(*where, Pick{.kind = PickKind::plan_point, .point = i});
             }
         }
+        if (found) return *found;
     }
-    // Trains: their cars.
-    for (const auto& summary : trains.summaries()) {
-        const auto* train = trains.train_by_id(summary.id);
-        if (!train || !train->placed()) continue;
-        for (const auto& car : train->placements()) {
-            const double d = segment_distance(mouse_x, mouse_y, sx(world_x(car.front)), sy(world_z(car.front)),
-                                              sx(world_x(car.rear)), sy(world_z(car.rear)), t);
-            consider(d - 1.0, Pick{.kind = PickKind::train, .train = summary.id});
-        }
-    }
-    // Junctions.
-    for (std::uint32_t n = 1; n < network_->node_count(); ++n) {
-        const auto* node = network_->node(n);
-        if (!node || node->kind != formats::TrackNodeKind::junction) continue;
-        const auto where = network_->node_position(n);
-        if (!where) continue;
-        consider(std::hypot(sx(world_x(*where)) - mouse_x, sy(world_z(*where)) - mouse_y), Pick{.kind = PickKind::junction, .junction = n});
-    }
-    // Signals.
-    if (signals && show_signals_) {
-        const auto& objects = signals->objects();
-        for (std::uint32_t i = 0; i < objects.size(); ++i) {
-            const auto& p = objects[i].placement.position;
-            const simulation::TrackPoint where{.tile_x = p.tile_x, .tile_z = p.tile_z, .x = p.x, .y = p.y, .z = p.z};
-            consider(std::hypot(sx(world_x(where)) - mouse_x, sy(world_z(where)) - mouse_y) + 1.0,
-                     Pick{.kind = PickKind::signal, .signal = i});
-        }
-    }
-    if (result.kind != PickKind::none) return result;
-    if (const auto track = nearest_track(mouse_x, mouse_y, 12.0)) {
-        result.kind = PickKind::track;
-        result.location = *track;
+    const auto picked = map_.pick(mouse, signals);
+    Pick result{.train = picked.train, .junction = picked.junction, .signal = picked.signal, .location = picked.location, .x = picked.x, .z = picked.z};
+    switch (picked.kind) {
+    case trackmap::PickKind::train: result.kind = PickKind::train; break;
+    case trackmap::PickKind::junction: result.kind = PickKind::junction; break;
+    case trackmap::PickKind::signal: result.kind = PickKind::signal; break;
+    case trackmap::PickKind::track: result.kind = PickKind::track; break;
+    default: break;
     }
     return result;
 }
 
 std::optional<simulation::TrackLocation> TrackControl::nearest_track(const float mouse_x, const float mouse_y, const double reach) const {
-    const double cx = canvas_x_ + canvas_w_ * 0.5, cy = canvas_y_ + canvas_h_ * 0.5;
-    const auto sx = [&](const double x) { return cx + (x - centre_x_) * scale_; };
-    const auto sy = [&](const double z) { return cy - (z - centre_z_) * scale_; };
-    std::optional<simulation::TrackLocation> result;
-    double best = reach;
-    double t = 0.0;
-    for (const auto& line : lines_) {
-        for (std::size_t i = 0; i + 1 < line.x.size(); ++i) {
-            const double d = segment_distance(mouse_x, mouse_y, sx(line.x[i]), sy(line.z[i]), sx(line.x[i + 1]), sy(line.z[i + 1]), t);
-            if (d >= best) continue;
-            best = d;
-            result = simulation::TrackLocation{line.node, line.offset[i] + (line.offset[i + 1] - line.offset[i]) * t, true};
-        }
-    }
-    return result;
+    return map_.nearest_track(ImVec2(mouse_x, mouse_y), reach);
 }
 
 int TrackControl::placement_car_at(const float mouse_x, const float mouse_y) const {
     if (!placement_.active) return -1;
-    const double cx = canvas_x_ + canvas_w_ * 0.5, cy = canvas_y_ + canvas_h_ * 0.5;
-    const auto sx = [&](const double x) { return cx + (x - centre_x_) * scale_; };
-    const auto sy = [&](const double z) { return cy - (z - centre_z_) * scale_; };
-    const double reach = (std::max)(8.0, scale_ * 3.2 * 0.5 + 4.0);
+    const double reach = (std::max)(8.0, map_.scale() * 3.2 * 0.5 + 4.0);
     double best = reach;
     double t = 0.0;
     int found = -1;
     for (std::size_t i = 0; i < placement_.cars.size(); ++i) {
         const auto& [front, rear] = placement_.cars[i];
-        const double d = segment_distance(mouse_x, mouse_y, sx(world_x(front)), sy(world_z(front)), sx(world_x(rear)), sy(world_z(rear)), t);
+        const auto a = map_.screen(front), b = map_.screen(rear);
+        const double d = segment_distance(mouse_x, mouse_y, a.x, a.y, b.x, b.y, t);
         if (d < best) {
             best = d;
             found = static_cast<int>(i);
@@ -622,11 +342,7 @@ void TrackControl::draw(TrainView& trains, simulation::SignalSystem* signals) {
     if (!centred_) {
         centred_ = true;
         const auto* driven = trains.train();
-        if (driven && driven->placed() && driven->front_end()) {
-            const auto head = driven->front_end()->pose();
-            centre_x_ = world_x(head);
-            centre_z_ = world_z(head);
-        }
+        if (driven && driven->placed() && driven->front_end()) map_.centre_on(driven->front_end()->pose());
     }
     ImGui::SetNextWindowSize(ImVec2(1150.0f, 720.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(tr("Track control (Ctrl+Alt+F7)###track_control"), &open_)) {
@@ -651,110 +367,12 @@ void TrackControl::draw(TrainView& trains, simulation::SignalSystem* signals) {
 
 void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* signals) {
 #ifdef OPENRTS_HAS_IMGUI
-    const ImVec2 corner = ImGui::GetCursorScreenPos();
-    ImVec2 size = ImGui::GetContentRegionAvail();
-    size.x = (std::max)(size.x, 50.0f);
-    size.y = (std::max)(size.y, 50.0f);
-    canvas_x_ = corner.x;
-    canvas_y_ = corner.y;
-    canvas_w_ = size.x;
-    canvas_h_ = size.y;
-    ImGui::InvisibleButton("canvas", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-    const bool hovered = ImGui::IsItemHovered();
-    const bool active = ImGui::IsItemActive();
     auto& io = ImGui::GetIO();
-    const double cx = corner.x + size.x * 0.5, cy = corner.y + size.y * 0.5;
-
-    // Wheel zooms about the cursor; right drag pans; a right click opens the
-    // menu for what is under the cursor; a left click selects.
-    if (hovered && io.MouseWheel != 0.0f) {
-        const double wx = centre_x_ + (io.MousePos.x - cx) / scale_;
-        const double wz = centre_z_ - (io.MousePos.y - cy) / scale_;
-        scale_ = std::clamp(scale_ * std::pow(1.25, static_cast<double>(io.MouseWheel)), 0.002, 20.0);
-        centre_x_ = wx - (io.MousePos.x - cx) / scale_;
-        centre_z_ = wz + (io.MousePos.y - cy) / scale_;
-    }
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) drag_ = 0.0f;
-    if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0.0f)) {
-        centre_x_ -= io.MouseDelta.x / scale_;
-        centre_z_ += io.MouseDelta.y / scale_;
-        drag_ += std::abs(io.MouseDelta.x) + std::abs(io.MouseDelta.y);
-    }
-    if (hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right) && drag_ < 4.0f) {
-        menu_ = pick(io.MousePos.x, io.MousePos.y, trains, signals);
-        ImGui::OpenPopup("track_control_menu");
-    }
-    if (placement_.active) {
-        // Placing a consist: drag a car along the track; a click on another
-        // track moves the front there. Space turns it, Enter places it,
-        // Escape drops it, Left / Right nudge it 1 m (Shift: 10 m).
-        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            placement_.grabbed = placement_car_at(io.MousePos.x, io.MousePos.y);
-            if (placement_.grabbed < 0) {
-                if (const auto where = nearest_track(io.MousePos.x, io.MousePos.y, 14.0)) move_placement(trains, *where);
-            }
-        }
-        if (placement_.grabbed >= 0) {
-            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                placement_.grabbed = -1;
-            } else if (!placement_.cars.empty() && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
-                // Along the grabbed car on the screen (front to rear points
-                // back, so the front is the positive way).
-                const auto index = (std::min)(static_cast<std::size_t>(placement_.grabbed), placement_.cars.size() - 1);
-                const auto& [front, rear] = placement_.cars[index];
-                const double dx = (world_x(front) - world_x(rear)) * scale_;
-                const double dy = -(world_z(front) - world_z(rear)) * scale_;
-                const double span = std::hypot(dx, dy);
-                if (span > 1e-6) slide_placement(trains, (io.MouseDelta.x * dx + io.MouseDelta.y * dy) / span / scale_);
-            }
-        }
-        if (hovered || focused_) {
-            const double step = io.KeyShift ? 10.0 : 1.0;
-            if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) turn_placement(trains);
-            if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) finish_placement(trains);
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-                placement_ = {};
-                message_ = tr("placing dropped");
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) slide_placement(trains, step);
-            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) slide_placement(trains, -step);
-        }
-    } else if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        const auto picked = pick(io.MousePos.x, io.MousePos.y, trains, signals);
-        if (picked.kind == PickKind::train) selected_ = picked.train;
-        if (picked.kind == PickKind::signal) selected_signal_ = picked.signal;
-    }
-
-    const auto sx = [&](const double x) { return static_cast<float>(cx + (x - centre_x_) * scale_); };
-    const auto sy = [&](const double z) { return static_cast<float>(cy - (z - centre_z_) * scale_); };
-    if (hovered && !active && !ImGui::IsPopupOpen("track_control_menu")) hover_tooltip(io.MousePos.x, io.MousePos.y, signals);
-    const auto at = [&](const simulation::TrackPoint& p) { return ImVec2(sx(world_x(p)), sy(world_z(p))); };
-    auto* draw = ImGui::GetWindowDrawList();
-    const ImVec2 far_corner(corner.x + size.x, corner.y + size.y);
-    // RTS track control: light green background, black track.
-    draw->AddRectFilled(corner, far_corner, IM_COL32(204, 255, 204, 255));
-    draw->PushClipRect(corner, far_corner, true);
-    const double half_w = size.x * 0.5 / scale_, half_h = size.y * 0.5 / scale_;
-    const double left = centre_x_ - half_w, right = centre_x_ + half_w;
-    const double bottom = centre_z_ - half_h, top = centre_z_ + half_h;
-    // A polyline along a stretch of a vector node.
-    const auto stretch = [&](const std::uint32_t node, const double from, const double to, std::vector<ImVec2>& out) {
-        const double length = std::abs(to - from);
-        const int steps = (std::max)(1, static_cast<int>(length / 10.0));
-        for (int i = 0; i <= steps; ++i) {
-            const double offset = from + (to - from) * i / steps;
-            if (const auto p = network_->point(node, offset)) out.push_back(at(*p));
-        }
-    };
-    std::vector<ImVec2> points;
-    // The track's line; platforms and sidings are drawn over it as wide.
-    constexpr float track_width = 2.0f;
-    for (const auto& line : lines_) {
-        if (line.max_x < left || line.min_x > right || line.max_z < bottom || line.min_z > top) continue;
-        points.clear();
-        for (std::size_t i = 0; i < line.x.size(); ++i) points.emplace_back(sx(line.x[i]), sy(line.z[i]));
-        draw->AddPolyline(points.data(), static_cast<int>(points.size()), IM_COL32(30, 30, 30, 255), 0, track_width);
-    }
+    map_.trains.clear();
+    map_.lines.clear();
+    map_.marks.clear();
+    map_.selected_train = selected_;
+    map_.selected_signal = selected_signal_;
     // Electrification: each stretch in its supply type's colour (the
     // .electrotype's AARRGGBB), dead wire grey; track without wire stays black.
     auto& electro = trains.electrification();
@@ -763,14 +381,14 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
             electro_built_.assign(network_->node_count(), false);
             electro_stretches_.assign(network_->node_count(), {});
         }
-        for (const auto& line : lines_) {
-            if (line.max_x < left || line.min_x > right || line.max_z < bottom || line.min_z > top) continue;
-            if (line.node >= electro_built_.size()) continue;
-            if (!electro_built_[line.node]) {
-                electro_stretches_[line.node] = electro.stretches(line.node);
-                electro_built_[line.node] = true;
+        for (std::uint32_t n = 1; n < network_->node_count(); ++n) {
+            const auto* node = network_->node(n);
+            if (!node || node->kind != formats::TrackNodeKind::vector) continue;
+            if (!electro_built_[n]) {
+                electro_stretches_[n] = electro.stretches(n);
+                electro_built_[n] = true;
             }
-            for (const auto& piece : electro_stretches_[line.node]) {
+            for (const auto& piece : electro_stretches_[n]) {
                 if (piece.state == simulation::LineState::no_wire) continue;
                 ImU32 colour = IM_COL32(150, 150, 150, 255);
                 if (piece.state == simulation::LineState::live) {
@@ -779,16 +397,10 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
                         colour = IM_COL32((c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff, 255);
                     }
                 }
-                points.clear();
-                stretch(line.node, piece.from, piece.to, points);
-                if (points.size() > 1) draw->AddPolyline(points.data(), static_cast<int>(points.size()), colour, 0, 3.0f);
+                map_.lines.push_back({.points = map_.along(n, piece.from, piece.to), .colour = colour, .width = 3.0f});
             }
         }
     }
-    const auto visible = [&](const ImVec2& p) {
-        return p.x > corner.x - 20 && p.x < far_corner.x + 20 && p.y > corner.y - 20 && p.y < far_corner.y + 20;
-    };
-
     // Paths: the reserved way green, the rest of the leg blue, later legs pale.
     for (const auto& summary : trains.summaries()) {
         if (!show_all_paths_ && summary.id != selected_) continue;
@@ -797,24 +409,11 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
         if (!route || !progress) continue;
         for (std::size_t l = progress->leg; l < route->legs.size(); ++l) {
             const auto& leg = route->legs[l];
-            for (const auto& span : leg.spans) {
-                const double end = span.start + span.length();
-                const auto piece = [&](double from, double to, const ImU32 colour, const float width) {
-                    from = (std::max)(from, span.start);
-                    to = (std::min)(to, end);
-                    if (to <= from) return;
-                    points.clear();
-                    const double a = span.forward ? span.from + (from - span.start) : span.from - (from - span.start);
-                    const double b = span.forward ? span.from + (to - span.start) : span.from - (to - span.start);
-                    stretch(span.node, a, b, points);
-                    if (points.size() > 1) draw->AddPolyline(points.data(), static_cast<int>(points.size()), colour, 0, width);
-                };
-                if (l == progress->leg) {
-                    piece(progress->head, progress->authority, IM_COL32(0, 170, 0, 230), 6.0f);
-                    piece(progress->authority, leg.length(), IM_COL32(40, 90, 230, 200), 4.0f);
-                } else {
-                    piece(0.0, leg.length(), IM_COL32(120, 150, 240, 160), 3.0f);
-                }
+            if (l == progress->leg) {
+                map_.lines.push_back({.points = map_.along(leg, progress->head, progress->authority), .colour = IM_COL32(0, 170, 0, 230), .width = 6.0f});
+                map_.lines.push_back({.points = map_.along(leg, progress->authority, leg.length()), .colour = IM_COL32(40, 90, 230, 200), .width = 4.0f});
+            } else {
+                map_.lines.push_back({.points = map_.along(leg, 0.0, leg.length()), .colour = IM_COL32(120, 150, 240, 160), .width = 3.0f});
             }
             for (const auto& mark : leg.marks) {
                 const auto location = leg.at(mark.distance);
@@ -825,169 +424,15 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
                                      : mark.kind == simulation::RouteMarkKind::reverse ? "R"
                                      : mark.kind == simulation::RouteMarkKind::end     ? "E"
                                                                                        : "o";
-                const auto p = at(*where);
-                draw->AddCircleFilled(p, 7.0f, IM_COL32(255, 255, 255, 230));
-                draw->AddText(ImVec2(p.x - 4.0f, p.y - 7.0f), IM_COL32(20, 20, 160, 255), letter);
+                map_.marks.push_back({.at = *where, .colour = IM_COL32(255, 255, 255, 230), .letter = letter, .letter_colour = IM_COL32(20, 20, 160, 255)});
             }
         }
     }
-    // The edited path's points.
+    // The edited path's points (its start: overlay, with its direction).
     if (editing_) {
-        if (const auto start = network_->point(plan_.start.node, plan_.start.offset)) {
-            const auto p = at(*start);
-            const float heading = start->heading + (plan_.start.forward ? 0.0f : 3.14159265f);
-            const ImVec2 tip(p.x + std::sin(heading) * 12.0f, p.y - std::cos(heading) * 12.0f);
-            draw->AddLine(p, tip, IM_COL32(200, 0, 120, 255), 3.0f);
-            draw->AddCircleFilled(p, 6.0f, IM_COL32(200, 0, 120, 255));
-            draw->AddText(ImVec2(p.x + 6.0f, p.y + 2.0f), IM_COL32(120, 0, 80, 255), "S");
-        }
-        for (std::size_t i = 0; i < plan_.points.size(); ++i) {
-            const auto where = network_->point(plan_.points[i].node, plan_.points[i].offset);
-            if (!where) continue;
-            const auto p = at(*where);
-            draw->AddCircle(p, 8.0f, IM_COL32(200, 0, 120, 255), 0, 2.0f);
-        }
-    }
-    // Junctions: red occupied, orange reserved; the set branch in green
-    // when zoomed in.
-    for (std::uint32_t n = 1; n < network_->node_count(); ++n) {
-        const auto* node = network_->node(n);
-        if (!node || node->kind != formats::TrackNodeKind::junction) continue;
-        const auto where = network_->node_position(n);
-        if (!where) continue;
-        const auto p = at(*where);
-        if (!visible(p)) continue;
-        const auto* state = network_->junction(n);
-        ImU32 colour = IM_COL32(90, 90, 90, 255);
-        if (state && !state->reservations.empty()) colour = IM_COL32(240, 150, 0, 255);
-        if (state && state->occupied) colour = IM_COL32(220, 0, 0, 255);
-        if (state && scale_ > 0.4 && state->selected + 1 < node->pins.size()) {
-            const auto& pin = node->pins[1 + state->selected];
-            const auto* branch = network_->node(pin.node);
-            if (branch && branch->kind == formats::TrackNodeKind::vector) {
-                points.clear();
-                const double reach = (std::min)(25.0, branch->length);
-                stretch(branch->index, pin.direction == 1 ? 0.0 : branch->length, pin.direction == 1 ? reach : branch->length - reach, points);
-                if (points.size() > 1) draw->AddPolyline(points.data(), static_cast<int>(points.size()), IM_COL32(0, 200, 0, 255), 0, 4.0f);
-            }
-        }
-        draw->AddCircleFilled(p, scale_ > 0.4 ? 4.0f : 2.5f, colour);
-        if (show_junction_ids_ && scale_ > 0.4) {
-            char text[16];
-            std::snprintf(text, sizeof text, "%u", n);
-            draw->AddText(ImVec2(p.x + 5.0f, p.y - 14.0f), IM_COL32(60, 60, 60, 255), text);
-        }
-    }
-    // Signals: a square in the colour of the obeyed NORMAL head.
-    if (signals && show_signals_ && scale_ > 0.15) {
-        const auto& objects = signals->objects();
-        const auto& heads = signals->heads();
-        for (std::uint32_t i = 0; i < objects.size(); ++i) {
-            const auto& pos = objects[i].placement.position;
-            const auto p = at(simulation::TrackPoint{.tile_x = pos.tile_x, .tile_z = pos.tile_z, .x = pos.x, .y = pos.y, .z = pos.z});
-            if (!visible(p)) continue;
-            int aspect = -1;
-            for (const auto h : objects[i].heads) {
-                const auto& head = heads[h];
-                if (head.type && head.type->function == formats::SignalFunction::normal) aspect = (std::max)(aspect, static_cast<int>(head.state));
-            }
-            if (aspect < 0 && !objects[i].heads.empty()) aspect = static_cast<int>(heads[objects[i].heads.front()].state);
-            const ImU32 colour = aspect <= 1 ? IM_COL32(230, 0, 0, 255) : aspect <= 5 ? IM_COL32(240, 200, 0, 255) : IM_COL32(0, 190, 0, 255);
-            // Which track it governs: a line from the signal to the place of
-            // each head on the track, and a mark there pointing the way the
-            // head protects.
-            for (const auto h : objects[i].heads) {
-                const auto& head = heads[h];
-                if (!head.placed) continue;
-                const auto track = network_->point(head.node, head.offset);
-                if (!track) continue;
-                const auto q = at(*track);
-                draw->AddLine(p, q, IM_COL32(60, 60, 60, 220), 1.5f);
-                const float heading = track->heading + (head.forward ? 0.0f : 3.14159265f);
-                const ImVec2 along(std::sin(heading), -std::cos(heading));
-                const float mark = std::clamp(static_cast<float>(scale_ * 4.0), 4.0f, 10.0f);
-                draw->AddLine(q, ImVec2(q.x + along.x * mark, q.y + along.y * mark), colour, 2.0f);
-                draw->AddCircleFilled(q, 2.0f, IM_COL32(40, 40, 40, 255));
-            }
-            const float r = 3.5f;
-            draw->AddRectFilled(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r), colour);
-            draw->AddRect(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r),
-                          selected_signal_ == i ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 255));
-            // The names are sized to the map: 2.5 m tall, at most 16 px, and
-            // left out below 7 px (a fixed size made a mess zoomed out).
-            const float name_size = (std::min)(static_cast<float>(2.5 * scale_), 16.0f);
-            if (show_signal_names_ && signal_names_ && name_size >= 7.0f) {
-                const auto name = signal_names_(i);
-                if (!name.empty()) {
-                    // Along the track its first head governs, beside it on
-                    // the signal's side; at the signal when it has no place.
-                    std::optional<simulation::TrackPoint> track;
-                    for (const auto h : objects[i].heads) {
-                        if (heads[h].placed && (track = network_->point(heads[h].node, heads[h].offset))) break;
-                    }
-                    if (track) {
-                        const ImVec2 along(std::sin(track->heading), -std::cos(track->heading));
-                        text_along(draw, at(*track), along, IM_COL32(120, 60, 0, 255), name.c_str(), name_size, name_size * 0.35f, p, false);
-                    } else {
-                        draw->AddText(ImVec2(p.x + 5.0f, p.y - 15.0f), IM_COL32(120, 60, 0, 255), name.c_str());
-                    }
-                }
-            }
-        }
-    }
-    // Platforms (blue) and sidings (yellow): the track's line in their colour
-    // between their two ends, and the name above its middle.
-    if ((show_platforms_ || show_sidings_) && scale_ > 0.05) {
-        for (const auto& place : places_) {
-            if (place.platform ? !show_platforms_ : !show_sidings_) continue;
-            points.clear();
-            for (std::size_t k = 0; k < place.x.size(); ++k) points.emplace_back(sx(place.x[k]), sy(place.z[k]));
-            const auto& middle = points[points.size() / 2];
-            // Drawn when its line's box meets the map: a long platform seen
-            // in part, its middle and ends off the screen, had vanished.
-            float min_x = points.front().x, max_x = min_x, min_y = points.front().y, max_y = min_y;
-            for (const auto& q : points) {
-                min_x = (std::min)(min_x, q.x);
-                max_x = (std::max)(max_x, q.x);
-                min_y = (std::min)(min_y, q.y);
-                max_y = (std::max)(max_y, q.y);
-            }
-            if (max_x < corner.x - 20 || min_x > far_corner.x + 20 || max_y < corner.y - 20 || min_y > far_corner.y + 20) continue;
-            const ImU32 colour = place.platform ? IM_COL32(30, 90, 230, 255) : IM_COL32(230, 190, 0, 255);
-            const float width = track_width;
-            if (points.size() > 1) {
-                draw->AddPolyline(points.data(), static_cast<int>(points.size()), colour, 0, width);
-            } else {
-                draw->AddCircleFilled(points.front(), width * 0.6f, colour);
-            }
-            // Names sized to the map: 3.5 m tall, at most 18 px, left out below 7 px.
-            const float name_size = (std::min)(static_cast<float>(3.5 * scale_), 18.0f);
-            if (name_size >= 7.0f && !place.name.empty()) {
-                // Along the line at its middle, just above it as it reads.
-                const auto& a = points[points.size() > 2 ? points.size() / 2 - 1 : 0];
-                const auto& b = points[(std::min)(points.size() / 2 + 1, points.size() - 1)];
-                text_along(draw, middle, ImVec2(b.x - a.x, b.y - a.y), place.platform ? IM_COL32(0, 0, 170, 255) : IM_COL32(130, 100, 0, 255),
-                           place.name.c_str(), name_size, width * 0.5f + 2.0f, std::nullopt, true);
-            }
-        }
-    }
-    // Station names (RTS 0x53F990): black Arial at the middle of the
-    // station's platform items, a little right and up. RTS shows them while
-    // its zoom (half the view in units of 64 m) is below 3500 and the station
-    // has more platform items than zoom / 300, so the big stations stay named
-    // farthest out.
-    if (show_station_names_) {
-        const double half = (std::min)(size.x, size.y) * 0.5;
-        const double rts_zoom = half / scale_ / 64.0;
-        if (rts_zoom < 3500.0) {
-            ImFont* font = map_label_font() ? map_label_font() : ImGui::GetFont();
-            const float font_size = map_label_font() ? map_label_font()->FontSize : ImGui::GetFontSize() * 1.3f;
-            const float offset = static_cast<float>(0.03 * half);
-            for (const auto& station : stations_) {
-                if (station.items * 300.0 <= rts_zoom) continue;
-                const ImVec2 base(sx(station.x) + offset, sy(station.z) - offset);
-                if (!visible(base)) continue;
-                draw->AddText(font, font_size, ImVec2(base.x, base.y - font_size), IM_COL32(0, 0, 0, 255), station.name.c_str());
+        for (const auto& point : plan_.points) {
+            if (const auto where = network_->point(point.node, point.offset)) {
+                map_.marks.push_back({.at = *where, .colour = IM_COL32(200, 0, 120, 255), .radius = 8.0f, .ring = true});
             }
         }
     }
@@ -1001,121 +446,151 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
             const auto end = route->second ? train->rear_end() : train->front_end();
             if (!end) continue;
             simulation::TrackTraveller walk(*network_, end->node(), end->offset(), route->second ? !end->forward() : end->forward());
-            points.clear();
-            points.push_back(at(walk.pose()));
-            const double step = (std::max)(2.0, 6.0 / scale_);
+            trackmap::MapLine line{.colour = IM_COL32(0, 190, 0, 210), .width = 5.0f};
+            line.points.push_back(walk.pose());
+            const double step = (std::max)(2.0, 6.0 / map_.scale());
             for (double done = 0.0; done < route->first;) {
                 const double move = (std::min)(step, route->first - done);
                 if (walk.move(move).moved <= 0.0) break;
                 done += move;
-                points.push_back(at(walk.pose()));
+                line.points.push_back(walk.pose());
             }
-            if (points.size() > 1) draw->AddPolyline(points.data(), static_cast<int>(points.size()), IM_COL32(0, 190, 0, 210), 0, 5.0f);
+            map_.lines.push_back(std::move(line));
         }
     }
-    // Trains: their cars, in the colour of their role; the selected one outlined.
+    // Trains: their cars, in the colour of their role.
     for (const auto& summary : trains.summaries()) {
         const auto* train = trains.train_by_id(summary.id);
         if (!train || !train->placed()) continue;
-        const ImU32 colour = summary.role == TrainView::Role::driven ? IM_COL32(200, 30, 200, 255)
-                           : summary.role == TrainView::Role::ai     ? IM_COL32(40, 60, 220, 255)
-                                                                     : IM_COL32(140, 120, 20, 255);
-        const auto cars = train->placements();
-        const float width = std::clamp(static_cast<float>(scale_ * 3.2), 4.0f, 14.0f);
-        for (const auto& car : cars) {
-            const auto a = at(car.front), b = at(car.rear);
-            if (summary.id == selected_) draw->AddLine(a, b, IM_COL32(255, 255, 255, 255), width + 4.0f);
-            draw->AddLine(a, b, summary.derailed ? IM_COL32(255, 0, 0, 255) : colour, width);
-        }
-        if (!cars.empty()) {
-            const auto head = at(cars.front().front);
-            char text[160];
-            std::snprintf(text, sizeof text, tr("%s %.0f km/h"), summary.name.c_str(), std::abs(summary.speed) * 3.6);
-            draw->AddText(ImVec2(head.x + 6.0f, head.y - 16.0f), IM_COL32(0, 0, 0, 255), text);
-        }
+        trackmap::MapTrain t{.id = summary.id, .derailed = summary.derailed};
+        t.colour = summary.role == TrainView::Role::driven ? IM_COL32(200, 30, 200, 255)
+                 : summary.role == TrainView::Role::ai     ? IM_COL32(40, 60, 220, 255)
+                                                           : IM_COL32(140, 120, 20, 255);
+        for (const auto& car : train->placements()) t.cars.emplace_back(car.front, car.rear);
+        char text[160];
+        std::snprintf(text, sizeof text, tr("%s %.0f km/h"), summary.name.c_str(), std::abs(summary.speed) * 3.6);
+        t.label = text;
+        map_.trains.push_back(std::move(t));
     }
-    // The consist being placed: outlined cars, the front one orange with an
-    // arrow the way the train faces; red outline where it does not fit or
-    // runs into a train.
-    if (placement_.active && !placement_.cars.empty()) {
-        const float width = std::clamp(static_cast<float>(scale_ * 3.2), 5.0f, 14.0f);
-        const bool trouble = !placement_.fits || !placement_.overlaps.empty();
-        const ImU32 outline = trouble ? IM_COL32(220, 0, 0, 255) : IM_COL32(20, 20, 20, 255);
-        for (std::size_t i = 0; i < placement_.cars.size(); ++i) {
-            auto a = at(placement_.cars[i].first), b = at(placement_.cars[i].second);
-            // A small gap between the cars when they are long enough on
-            // the screen.
-            const float dx = b.x - a.x, dy = b.y - a.y;
-            const float span = std::sqrt(dx * dx + dy * dy);
-            if (span > 8.0f) {
-                const float gap = 1.5f / span;
-                a = ImVec2(a.x + dx * gap, a.y + dy * gap);
-                b = ImVec2(b.x - dx * gap, b.y - dy * gap);
+    // Over it all: the edited path's start, the consist being placed, the player.
+    map_.overlay = [&](ImDrawList* draw) {
+        const auto at = [&](const simulation::TrackPoint& p) { return map_.screen(p); };
+        if (editing_) {
+            if (const auto start = network_->point(plan_.start.node, plan_.start.offset)) {
+                const auto p = at(*start);
+                const float heading = start->heading + (plan_.start.forward ? 0.0f : 3.14159265f);
+                const ImVec2 tip(p.x + std::sin(heading) * 12.0f, p.y - std::cos(heading) * 12.0f);
+                draw->AddLine(p, tip, IM_COL32(200, 0, 120, 255), 3.0f);
+                draw->AddCircleFilled(p, 6.0f, IM_COL32(200, 0, 120, 255));
+                draw->AddText(ImVec2(p.x + 6.0f, p.y + 2.0f), IM_COL32(120, 0, 80, 255), "S");
             }
-            const ImU32 fill = i == 0 ? IM_COL32(255, 120, 0, 255)
-                             : placement_.layout.engines[i] ? IM_COL32(255, 200, 120, 235)
-                                                           : IM_COL32(250, 250, 250, 235);
-            draw->AddLine(a, b, outline, width + 3.0f);
-            draw->AddLine(a, b, fill, width);
         }
-        // The arrow ahead of the front car.
-        const auto front = at(placement_.cars.front().first), rear = at(placement_.cars.front().second);
-        float dx = front.x - rear.x, dy = front.y - rear.y;
-        const float span = std::sqrt(dx * dx + dy * dy);
-        if (span > 1e-3f) {
-            dx /= span;
-            dy /= span;
-            const float arrow = (std::max)(12.0f, width * 1.6f);
-            const ImVec2 base(front.x + dx * 3.0f, front.y + dy * 3.0f);
-            const ImVec2 tip(base.x + dx * arrow, base.y + dy * arrow);
-            const ImVec2 wing_a(base.x - dy * arrow * 0.55f, base.y + dx * arrow * 0.55f);
-            const ImVec2 wing_b(base.x + dy * arrow * 0.55f, base.y - dx * arrow * 0.55f);
-            draw->AddTriangleFilled(tip, wing_a, wing_b, IM_COL32(255, 120, 0, 255));
-            draw->AddTriangle(tip, wing_a, wing_b, outline, 1.5f);
-        }
-        char text[200];
-        std::snprintf(text, sizeof text, tr("%s: %zu cars, %.0f m%s"), placement_.layout.name.c_str(), placement_.layout.lengths.size(),
-                      placement_.layout.length, !placement_.fits ? tr(" - does not fit") : !placement_.overlaps.empty() ? tr(" - runs into a train") : "");
-        draw->AddText(ImVec2(front.x + 10.0f, front.y + 8.0f), trouble ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255), text);
-    }
-    // The player (the camera): a figure with a cone the way it looks.
-    {
-        const auto p = ImVec2(sx(map_x(eye_.x)), sy(map_z(eye_.z)));
-        if (visible(p)) {
-            float fx = forward_.x, fy = -forward_.z; // screen: z up the map
-            const float length = std::sqrt(fx * fx + fy * fy);
-            if (length > 1e-3f) {
-                fx /= length;
-                fy /= length;
-                constexpr float spread = 0.55f; // about 30 degrees either side
-                const float c = std::cos(spread), s = std::sin(spread);
-                const ImVec2 a(p.x + (fx * c - fy * s) * 46.0f, p.y + (fx * s + fy * c) * 46.0f);
-                const ImVec2 b(p.x + (fx * c + fy * s) * 46.0f, p.y + (-fx * s + fy * c) * 46.0f);
-                draw->AddTriangleFilled(p, a, b, IM_COL32(230, 90, 20, 70));
-                draw->AddLine(p, a, IM_COL32(230, 90, 20, 160), 1.5f);
-                draw->AddLine(p, b, IM_COL32(230, 90, 20, 160), 1.5f);
+        // The consist being placed: outlined cars, the front one orange with
+        // an arrow the way the train faces; red outline where it does not fit
+        // or runs into a train.
+        if (placement_.active && !placement_.cars.empty()) {
+            const float width = std::clamp(static_cast<float>(map_.scale() * 3.2), 5.0f, 14.0f);
+            const bool trouble = !placement_.fits || !placement_.overlaps.empty();
+            const ImU32 outline = trouble ? IM_COL32(220, 0, 0, 255) : IM_COL32(20, 20, 20, 255);
+            for (std::size_t i = 0; i < placement_.cars.size(); ++i) {
+                auto a = at(placement_.cars[i].first), b = at(placement_.cars[i].second);
+                // A small gap between the cars when they are long enough on
+                // the screen.
+                const float dx = b.x - a.x, dy = b.y - a.y;
+                const float span = std::sqrt(dx * dx + dy * dy);
+                if (span > 8.0f) {
+                    const float gap = 1.5f / span;
+                    a = ImVec2(a.x + dx * gap, a.y + dy * gap);
+                    b = ImVec2(b.x - dx * gap, b.y - dy * gap);
+                }
+                const ImU32 fill = i == 0 ? IM_COL32(255, 120, 0, 255)
+                                 : placement_.layout.engines[i] ? IM_COL32(255, 200, 120, 235)
+                                                               : IM_COL32(250, 250, 250, 235);
+                draw->AddLine(a, b, outline, width + 3.0f);
+                draw->AddLine(a, b, fill, width);
             }
-            // A little person: head and body, white edged.
-            const ImU32 body = IM_COL32(230, 90, 20, 255), edge = IM_COL32(255, 255, 255, 255);
-            const ImVec2 head(p.x, p.y - 9.0f);
-            draw->AddRectFilled(ImVec2(p.x - 5.5f, p.y - 4.5f), ImVec2(p.x + 5.5f, p.y + 7.0f), edge, 4.0f);
-            draw->AddRectFilled(ImVec2(p.x - 4.0f, p.y - 3.0f), ImVec2(p.x + 4.0f, p.y + 5.5f), body, 3.0f);
-            draw->AddCircleFilled(head, 5.0f, edge);
-            draw->AddCircleFilled(head, 3.6f, body);
+            // The arrow ahead of the front car.
+            const auto front = at(placement_.cars.front().first);
+            auto rear = at(placement_.cars.front().second);
+            if (std::hypot(front.x - rear.x, front.y - rear.y) < 3.0f) rear = at(placement_.cars.back().second);
+            trackmap::draw_direction_arrow(draw, front, rear, IM_COL32(255, 120, 0, 255), outline, std::clamp(width * 2.2f, 18.0f, 30.0f));
+            char text[200];
+            std::snprintf(text, sizeof text, tr("%s: %zu cars, %.0f m%s"), placement_.layout.name.c_str(), placement_.layout.lengths.size(),
+                          placement_.layout.length, !placement_.fits ? tr(" - does not fit") : !placement_.overlaps.empty() ? tr(" - runs into a train") : "");
+            draw->AddText(ImVec2(front.x + 10.0f, front.y + 8.0f), trouble ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255), text);
         }
+        // The player (the camera): a figure with a cone the way it looks.
+        const auto p = map_.screen(map_x(eye_.x), map_z(eye_.z));
+        float fx = forward_.x, fy = -forward_.z; // screen: z up the map
+        const float length = std::sqrt(fx * fx + fy * fy);
+        if (length > 1e-3f) {
+            fx /= length;
+            fy /= length;
+            constexpr float spread = 0.55f; // about 30 degrees either side
+            const float c = std::cos(spread), sn = std::sin(spread);
+            const ImVec2 a(p.x + (fx * c - fy * sn) * 46.0f, p.y + (fx * sn + fy * c) * 46.0f);
+            const ImVec2 b(p.x + (fx * c + fy * sn) * 46.0f, p.y + (-fx * sn + fy * c) * 46.0f);
+            draw->AddTriangleFilled(p, a, b, IM_COL32(230, 90, 20, 70));
+            draw->AddLine(p, a, IM_COL32(230, 90, 20, 160), 1.5f);
+            draw->AddLine(p, b, IM_COL32(230, 90, 20, 160), 1.5f);
+        }
+        // A little person: head and body, white edged.
+        const ImU32 body = IM_COL32(230, 90, 20, 255), edge = IM_COL32(255, 255, 255, 255);
+        const ImVec2 head(p.x, p.y - 9.0f);
+        draw->AddRectFilled(ImVec2(p.x - 5.5f, p.y - 4.5f), ImVec2(p.x + 5.5f, p.y + 7.0f), edge, 4.0f);
+        draw->AddRectFilled(ImVec2(p.x - 4.0f, p.y - 3.0f), ImVec2(p.x + 4.0f, p.y + 5.5f), body, 3.0f);
+        draw->AddCircleFilled(head, 5.0f, edge);
+        draw->AddCircleFilled(head, 3.6f, body);
+    };
+    const auto frame = map_.draw(signals, ImGui::IsPopupOpen("track_control_menu"));
+    map_.overlay = nullptr;
+    // A right click without a drag opens the menu for what is under it (the
+    // map panned with a right drag); a left click selects.
+    if (frame.right_click) {
+        menu_ = pick(frame.mouse.x, frame.mouse.y, trains, signals);
+        ImGui::OpenPopup("track_control_menu");
     }
-    // Scale bar.
-    {
-        double metres = 1.0;
-        while (metres * scale_ < 60.0) metres *= metres >= 1000.0 ? 2.0 : 10.0;
-        const float length = static_cast<float>(metres * scale_);
-        const ImVec2 a(corner.x + 12.0f, far_corner.y - 14.0f);
-        draw->AddLine(a, ImVec2(a.x + length, a.y), IM_COL32(0, 0, 0, 255), 2.0f);
-        char text[32];
-        std::snprintf(text, sizeof text, metres >= 1000.0 ? "%.0f km" : "%.0f m", metres >= 1000.0 ? metres / 1000.0 : metres);
-        draw->AddText(ImVec2(a.x, a.y - 16.0f), IM_COL32(0, 0, 0, 255), text);
+    if (placement_.active) {
+        // Placing a consist: drag a car along the track; a click on another
+        // track moves the front there. Space turns it, Enter places it,
+        // Escape drops it, Left / Right nudge it 1 m (Shift: 10 m).
+        if (frame.left_click) {
+            placement_.grabbed = placement_car_at(frame.mouse.x, frame.mouse.y);
+            if (placement_.grabbed < 0) {
+                if (const auto where = nearest_track(frame.mouse.x, frame.mouse.y, 14.0)) move_placement(trains, *where);
+            }
+        }
+        if (placement_.grabbed >= 0) {
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                placement_.grabbed = -1;
+            } else if (!placement_.cars.empty() && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
+                // Along the grabbed car on the screen (front to rear points
+                // back, so the front is the positive way).
+                const auto index = (std::min)(static_cast<std::size_t>(placement_.grabbed), placement_.cars.size() - 1);
+                const auto& [front, rear] = placement_.cars[index];
+                const double scale = map_.scale();
+                const double dx = (world_x(front) - world_x(rear)) * scale;
+                const double dy = -(world_z(front) - world_z(rear)) * scale;
+                const double span = std::hypot(dx, dy);
+                if (span > 1e-6) slide_placement(trains, (io.MouseDelta.x * dx + io.MouseDelta.y * dy) / span / scale);
+            }
+        }
+        if (frame.hovered || focused_) {
+            const double step = io.KeyShift ? 10.0 : 1.0;
+            if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) turn_placement(trains);
+            if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) finish_placement(trains);
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                placement_ = {};
+                message_ = tr("placing dropped");
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) slide_placement(trains, step);
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) slide_placement(trains, -step);
+        }
+    } else if (frame.left_click) {
+        const auto picked = pick(frame.mouse.x, frame.mouse.y, trains, signals);
+        if (picked.kind == PickKind::train) selected_ = picked.train;
+        if (picked.kind == PickKind::signal) selected_signal_ = picked.signal;
     }
-    draw->PopClipRect();
     draw_menu(trains, const_cast<simulation::SignalSystem*>(signals));
 #else
     (void)trains;
@@ -1512,7 +987,7 @@ void TrackControl::draw_signal_window(simulation::SignalSystem* signals) {
     }
     const auto index = *signal_window_;
     const auto& object = signals->objects()[index];
-    const auto name = signal_names_ ? signal_names_(index) : std::string{};
+    const auto name = map_.signal_name ? map_.signal_name(index) : std::string{};
     char title[160];
     std::snprintf(title, sizeof title, tr("Signal %s###signal_info"), name.empty() ? std::to_string(index).c_str() : name.c_str());
     bool open = true;
@@ -1675,7 +1150,7 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
     if (selected_signal_ && signals && *selected_signal_ < signals->objects().size()) {
         const auto& object = signals->objects()[*selected_signal_];
         ImGui::SeparatorText(tr("Signal"));
-        const auto name = signal_names_ ? signal_names_(*selected_signal_) : std::string{};
+        const auto name = map_.signal_name ? map_.signal_name(*selected_signal_) : std::string{};
         ImGui::TextWrapped(tr("%s%sUiD %u, %zu head(s)"), name.c_str(), name.empty() ? "" : ", ", object.placement.uid, object.heads.size());
         for (const auto h : object.heads) {
             const auto& head = signals->heads()[h];
@@ -1697,12 +1172,12 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
             ImGui::TableNextColumn();
             ImGui::Checkbox(label, &value);
         };
-        box(tr("Signals"), show_signals_);
-        box(tr("Platforms"), show_platforms_);
-        box(tr("Sidings"), show_sidings_);
-        box(tr("Stations"), show_station_names_);
-        box(tr("Signal names"), show_signal_names_);
-        box(tr("Junction numbers"), show_junction_ids_);
+        box(tr("Signals"), map_.layers.signals);
+        box(tr("Platforms"), map_.layers.platforms);
+        box(tr("Sidings"), map_.layers.sidings);
+        box(tr("Stations"), map_.layers.station_names);
+        box(tr("Signal names"), map_.layers.signal_names);
+        box(tr("Junction numbers"), map_.layers.junction_ids);
         box(tr("Every path"), show_all_paths_);
         box(tr("Electrification"), show_electrification_);
         ImGui::EndTable();

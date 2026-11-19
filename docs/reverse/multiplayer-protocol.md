@@ -388,10 +388,10 @@ of its state comes from this link (`multiplayer.md`, "Helpers").
 | `0x4507` | server → sender | `u32` 1, the sender's local id, ok, the new id as `f32`, `u32` 0 | the answer to a `0x4607`: the server's id |
 | `0x4508` | console → server → players | train id, `f32` `+332`, `+260`, `+252`, `+256` | see "Trains" |
 | `0x450A` | server → console | `u8` type, `u16`, train `u32`, `u32`, `u32`, 2 × `f32` | a line of the event log (`0x45E324`) |
-| `0x450B` | both ways | id, train id, station route id, station name, two check `u16`, direction `u8`, two flags `u8`, length `f32`, priority `u32`, state `u8`, junction list `u16`, junctions thrown `u16` ("Live capture") | a segment of a train's route; the server checks it (`0x469804`), answers `0x450C` and sets it at once |
+| `0x450B` | both ways | id, train id, station route id, station name (`u16 n`, UTF-16, a zero), the start point's tile (two `u16`), from its end `u8`, hold `u8`, rear first `u8`, length `f32`, priority `u32`, state `u8`, its TrainPath (index + 1) `u16`, junctions set `u16` (`dispatcher.md`, "Station routes and segments") | a segment of a train's route; the server checks it (`0x469804`), answers `0x450C` and queues it |
 | `0x450C` | server → console | request id, new id, ok `u8` (`u16 n` + text when refused) | the answer; a refused route shows the text |
 | `0x450D` | both ways | route id | cancel a segment; the server echoes it and answers `0x450C` (id, 0, ok) |
-| `0x450E` | server → console | segment id, state `u8`, junction list `u16` (index + 1), priority `u32`, length `f32`, junctions thrown `u16` | a segment's state (server `0x454600`, console `0x4547AC`): 0 waiting, 2 throwing junctions, 1 set, 3 the train on it, 4 passed (the console drops it); on the console 0xFE waits for the server, 0xFF was refused |
+| `0x450E` | server → console | segment id, state `u8`, its TrainPath (index + 1) `u16`, priority `u32`, length `f32`, junctions set `u16` | a segment's state (server `0x454600`, console `0x4547AC`): 0 waiting, 2 throwing junctions, 1 set, 3 the train on it, 4 passed (the console drops it); on the console 0xFE waits for the server, 0xFF was refused |
 
 - **The train's context menu** is rebuilt on every click (`0x450E1C`) by
   the train's kind:
@@ -820,8 +820,9 @@ above.
     the session;
   - the length `f32`, m;
   - the priority `u32` (0, or 2 from the window's field);
-  - the state `u8`, the junction list `u16` (index + 1) and the number of
-    its junctions thrown so far `u16`, as in `0x450E`.
+  - the state `u8`, its TrainPath `u16` (the index in the database's
+    `RouteTrainPaths` + 1; "the junction list" before 2026-11-19) and the
+    number of its junctions thrown so far `u16`, as in `0x450E`.
 - **From the ДСП** the console sends `0x450B`. The server answers:
   - `0x450B` with its id;
   - `0x450C`: the request id, the new id, ok `u8` 1, no text;

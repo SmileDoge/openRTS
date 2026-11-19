@@ -48,6 +48,7 @@
 #include "update.hpp"
 #include <openrts/renderer/bc7.hpp>
 
+#include "exit_codes.hpp"
 #include "viewer_state.hpp"
 #include "window_mode.hpp"
 
@@ -952,7 +953,8 @@ struct Launcher::State {
         } else if (!network_game || net_step != NetStep::failed) {
             // A failed join keeps its status: it says why.
             net_step = NetStep::none;
-            status = code == 0 ? std::string(tr("The game is over."))
+            status = code == static_cast<DWORD>(viewer::exit_code::server_gone) ? std::string(tr("The server stopped: the network game is over."))
+                   : code == 0 ? std::string(tr("The game is over."))
                                : viewer::trf("The game ended with code %lu: see openrts.log in %s.", static_cast<unsigned long>(code),
                                              utf8(viewer::user_data_directory()).c_str());
         }

@@ -269,6 +269,8 @@ public:
     [[nodiscard]] virtual bool engineer_on_foot() const { return false; }
     // The scene is done: its window closes (the start menu, updated, starts again).
     [[nodiscard]] virtual bool wants_close() const { return false; }
+    // The program's exit code when the scene closed it (exit_codes.hpp).
+    [[nodiscard]] virtual int close_code() const { return 0; }
     // Esc closes something of the scene's this frame (the car menu, a
     // placement in Track control): it does not show or hide the panels then.
     [[nodiscard]] virtual bool escape_taken() const { return false; }

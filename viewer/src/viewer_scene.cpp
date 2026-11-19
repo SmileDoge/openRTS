@@ -52,6 +52,7 @@
 #include <openrts/simulation/track_network.hpp>
 
 #include "track_view.hpp"
+#include "exit_codes.hpp"
 #include "players_panel.hpp"
 #include "crossing_view.hpp"
 #include "particle_effects.hpp"
@@ -1728,6 +1729,8 @@ public:
     }
     // A server's pause; a scenario's modal message, till its OK.
     [[nodiscard]] bool paused() const override { return (net_ && net_->paused()) || (activity_ && activity_->holds()); }
+    [[nodiscard]] bool wants_close() const override { return leave_; }
+    [[nodiscard]] int close_code() const override { return leave_ ? exit_code::server_gone : exit_code::success; }
     [[nodiscard]] SceneLoading loading() const override { return loading_; }
     // The Discord profile: what he does (loading, at the console, on foot,
     // driving which engine, looking round), and the route with the kind of
@@ -1935,6 +1938,7 @@ public:
             track_control_->set_viewer(camera.eye(), camera.forward(), origin_);
             track_control_->draw(*train_, signals_ ? signals_->system() : nullptr);
         }
+        if (net_ && net_->down()) draw_server_gone();
         if (net_ && net_->console() && train_) console_panel_.draw(*net_, *train_, track_control_.get(), *content_.vfs());
         if (net_ && !net_->console() && train_) {
             if (draw_players_section(*net_, *train_, camera.eye(), origin_, player_names_)) {
@@ -1955,6 +1959,37 @@ public:
 
 private:
     static constexpr int tile_radius = 1;
+
+#ifdef OPENRTS_HAS_IMGUI
+    // The server of the network game is gone (it stopped, or the connection
+    // broke): a window says so in the middle of the screen; the game goes
+    // back to the menu in 15 s, or at once, or stays to look round the world.
+    void draw_server_gone() const {
+        const double now = ImGui::GetTime();
+        if (!server_gone_at_) {
+            server_gone_at_ = now;
+            std::cout << "status: server_gone" << std::endl;
+        }
+        if (stay_) return;
+        constexpr double wait = 15.0;
+        const double left = wait - (now - *server_gone_at_);
+        if (left <= 0.0) leave_ = true;
+        const auto& io = ImGui::GetIO();
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.4f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::Begin(tr("The server is gone###server_gone"), nullptr,
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::TextUnformatted(tr("The connection to the server is lost: it stopped, or the network broke."));
+        ImGui::TextUnformatted(tr("The network game is over."));
+        ImGui::Spacing();
+        if (ImGui::Button(trf("To the menu (in %.0f s)", (std::max)(0.0, std::ceil(left))).c_str())) leave_ = true;
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Stay and look round"))) stay_ = true;
+        ImGui::End();
+    }
+#endif
+    mutable std::optional<double> server_gone_at_;
+    mutable bool stay_ = false;
+    mutable bool leave_ = false;
 
     static constexpr int terrain_radius = 2;
     // The nearest the loaded terrain ends (m): its tiles round the eye's.

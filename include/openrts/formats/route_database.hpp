@@ -27,7 +27,56 @@ struct RouteSignalUnit {
 // SIMISA@@@@@@@@@@JINX1R0t; docs/reverse/dispatcher.md): the game reads the
 // signal names from it (Ctrl+F7), the dispatcher console also its station
 // routes. Only the signal units are read so far.
+// A place of the track in the route database: a position and the number
+// after it (a route point's end: its direction flag; a junction: the
+// branch its route takes).
+struct RouteTrackPlace {
+    RoutePosition position;
+    std::uint32_t value{};
+};
+
+// RoutePoint (rts_server.exe 0x4640F0): a place a station route starts or
+// ends at. PointType 1 a point (Point1), 2 a track between Point1 and
+// Point2; Flags bit 2 it leads onto a stretch (an oncoming route there is
+// refused, 0x469804), bit 4 no occupancy checks; Junctions: those within
+// the track, with their branches.
+struct RoutePoint {
+    std::string name;
+    std::uint32_t type{};
+    std::uint32_t flags{};
+    std::string station;
+    RouteTrackPlace point1;
+    std::optional<RouteTrackPlace> point2;
+    std::vector<RouteTrackPlace> junctions;
+};
+
+// TrainRoute (0x464674): a station route from one route point to another
+// of its station. Flags bit 4: no occupancy checks; bit 8: it may be set
+// part of the way (junction after junction, 0x46A348).
+struct StationRoute {
+    std::uint32_t id{};
+    std::string name;
+    std::uint32_t flags{};
+    std::string station;
+    std::string start; // route point names
+    std::string end;
+};
+
+// TrainPath (0x464890): a station route's way, the junctions it passes in
+// order with the branch each is set to (0x4361F4 walks them from the start
+// point). Start bit 2: from the start point's Point2 (else Point1).
+struct StationPath {
+    std::uint32_t route{};
+    std::string name;
+    std::uint32_t priority{};
+    std::uint32_t start{};
+    std::vector<RouteTrackPlace> junctions;
+};
+
 struct RouteDatabase {
+    std::vector<RoutePoint> points;     // RoutePoints
+    std::vector<StationRoute> routes;   // RouteTrainRoutes
+    std::vector<StationPath> paths;     // RouteTrainPaths
     std::vector<RouteSignalUnit> signal_units;
     // SignalTypeShownAsNormal ( "<type>" ): signal types (sigcfg names) the
     // console draws as train signals, whose heads also count for their

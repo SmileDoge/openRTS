@@ -24,9 +24,12 @@
 #include <openrts/net/packages.hpp>
 #include <openrts/net/play.hpp>
 #include <openrts/net/snapshot.hpp>
+#include <openrts/net/world.hpp>
 #include <openrts/server/console.hpp>
 #include <openrts/server/game_server.hpp>
 #include <openrts/server/server_route.hpp>
+#include <openrts/server/session.hpp>
+#include <openrts/server/station_routes.hpp>
 #include <openrts/server/transport.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train.hpp>
@@ -670,6 +673,90 @@ void helpers() {
     check(bob.size() == 1 && bob[0].value == static_cast<std::uint8_t>(net::HelperState::ended), "Alice gone: Bob's help ends");
 }
 
+// A station route's segment on the switch track: set, the train on it,
+// the train gone past it (rts_server.exe 0x46A348's states 1, 3, 4).
+void station_segments() {
+    auto network = switch_track();
+    const auto car = car_definition();
+    // Point A on node 1 (60 m), track B on node 3 (20 m to 50 m); the route
+    // A -> B through junction 20 at branch 1.
+    formats::RouteDatabase db;
+    formats::RoutePoint a{.name = "A", .type = 1, .station = "S"};
+    a.point1.position = {.x = 0.0, .z = 60.0};
+    formats::RoutePoint b{.name = "B", .type = 2, .station = "S"};
+    b.point1.position = {.x = 1.5, .z = 120.0};
+    b.point2 = formats::RouteTrackPlace{.position = {.x = 1.5, .z = 150.0}};
+    db.points = {a, b};
+    db.routes = {{.id = 7, .name = "A => B", .station = "S", .start = "A", .end = "B"}};
+    db.paths = {{.route = 7, .priority = 1, .junctions = {{.position = {}, .value = 1}}}};
+    const auto routes = server::StationRoutes::build(*network, db);
+    check(routes.paths().size() == 1 && routes.paths()[0].forward && routes.paths()[0].junctions.size() == 1,
+          "the station route laid through junction 20: " + routes.summary() + " " +
+              (routes.paths().empty() ? std::string() : routes.paths()[0].problem));
+    if (routes.paths().empty() || !routes.paths()[0].forward) return;
+
+    Recorder rec;
+    server::ServerOptions options;
+    options.route_id = "testroute";
+    options.consoles = true;
+    server::GameServer game(rec, options, *network, nullptr);
+    game.set_station_routes(&routes);
+    std::string error;
+    double now = 0.0;
+    game.tick(now);
+    check(game.add_train(new_train(car, 1, 40.0, 101), error) == 1u, "a train before the route");
+    game.connected(1, "127.0.0.1:1");
+    game.received(1, P(Package::login), login(u"Alice"));
+    take_reply(rec, 1);
+    check(game.assign(1, "Alice", error), "Alice drives it: " + error);
+    game.received(1, P(Package::snapshot), {});
+    rec.out[1].clear();
+    game.connected(2, "127.0.0.1:2");
+    game.received(2, P(Package::console_login), login(u"DSP"));
+    take_reply(rec, 2);
+    game.received(2, P(Package::snapshot), {});
+    rec.out[2].clear();
+
+    check(network->junction(20)->selected == 0, "junction 20 at its main branch");
+    const auto id = game.add_segment({.train = 1, .route = 7}, error);
+    check(id.has_value(), "the segment queued: " + error);
+    game.tick(now += 0.05);
+    auto list = game.segments();
+    check(list.size() == 1 && list[0].state == 1 && list[0].thrown == 1, "set at the next step: its junction thrown");
+    check(network->junction(20)->selected == 1 && game.route_junctions(1) == std::vector<std::uint32_t>{20},
+          "junction 20 at branch 1, held for the train's route");
+    // Where Alice says her train is (0x4603), from a train put there.
+    const auto move_to = [&](const std::uint32_t node, const double front) {
+        simulation::Train ghost({{.definition = &car}, {.definition = &car}});
+        std::string why;
+        check(ghost.place(*network, node, front, true, &why), "a place for the train: " + why);
+        auto pos = net::position_of(ghost);
+        if (!pos) return;
+        pos->speed = 0.0f;
+        game.received(1, P(Package::train_pos), net::encode_train_pos(1, *pos));
+        game.tick(now += 0.05);
+    };
+    move_to(3, 40.0);
+    list = game.segments();
+    check(list.size() == 1 && list[0].state == 3, "the train on it: state 3");
+    move_to(3, 95.0);
+    list = game.segments();
+    check(list.size() == 1 && list[0].state == 4, "the train past it: state 4");
+    game.tick(now += 0.05);
+    check(game.segments().empty(), "and it goes at the next step");
+    bool states[5]{}, gone = false;
+    for (const auto& g : take(rec, 2)) {
+        if (g.id == P(Package::route_segment_state)) {
+            if (const auto s = net::decode_route_segment_state(g.body); s && s->state < 5) states[s->state] = true;
+        }
+        gone = gone || g.id == P(Package::route_segment_cancel);
+    }
+    check(states[1] && states[3] && states[4] && gone, "the console got states 1, 3, 4 (0x450E), then 0x450D");
+    // Refused: no such station route; a train that is not there.
+    check(!game.add_segment({.train = 1, .route = 8}, error) && error == "no station route 8", "an unknown station route refused");
+    check(!game.add_segment({.train = 9, .route = 7}, error) && error == "no train 9", "an unknown train refused");
+}
+
 void hand_route() {
     auto network = switch_track();
     const auto car = car_definition();
@@ -892,6 +979,37 @@ void route_database() {
           "the rest as it was, the type after the header, the units as RTS writes them");
     const auto fresh = formats::write_route_database({}, changed, error);
     check(formats::parse_route_database(fresh).signal_units.size() == 2, "and a new one when the route had none");
+
+    // The station routes' part, as Kuban's database writes it.
+    const std::string routes_text =
+        "SIMISA@@@@@@@@@@JINX1R0t______\r\n\r\n"
+        "RoutePoints ( 2 \r\n"
+        "\tRoutePoint ( \r\n\t\tName ( \"4БП\" )\r\n\t\tPointType ( 2 )\r\n\t\tFlags ( 00000008 )\r\n"
+        "\t\tStationName ( \"Краснодар-1\" )\r\n\t\tPoint1 ( -4549 14591 919.0742 0.9338 751.3620 0 )\r\n"
+        "\t\tPoint2 ( -4549 14591 801.5150 0.9338 1011.0000 1 )\r\n\t)\r\n"
+        "\tRoutePoint ( \r\n\t\tName ( \"Н Краснодар-2\" )\r\n\t\tPointType ( 1 )\r\n\t\tFlags ( 00000002 )\r\n"
+        "\t\tStationName ( \"Краснодар-1\" )\r\n\t\tPoint1 ( -4547 14591 -1096.8704 0.9338 -825.6983 1 )\r\n\t)\r\n"
+        ")\r\n"
+        "RouteTrainRoutes ( 1 \r\n\tTrainRoute ( \r\n\t\tID ( 558 )\r\n\t\tName ( \"НМ4БП => Н Краснодар-2\" )\r\n"
+        "\t\tFlags ( 0000000a )\r\n\t\tStationName ( \"Краснодар-1\" )\r\n\t\tStart ( \"4БП\" )\r\n"
+        "\t\tEnd ( \"Н Краснодар-2\" )\r\n\t)\r\n)\r\n"
+        "RouteTrainPaths ( 1 \r\n\tTrainPath ( \r\n\t\tRouteID ( 558 )\r\n\t\tPriority ( 1 )\r\n\t\tStart ( 00000002 )\r\n"
+        "\t\tPoints ( 2 \r\n\t\t\tPoint ( -4548 14591 734.0760 0.9338 -826.0130 0 )\r\n"
+        "\t\t\tPoint ( -4548 14591 545.0100 0.9338 -807.3250 1 )\r\n\t\t)\r\n\t)\r\n)\r\n"
+        "SignalUnits ( 0 \r\n)";
+    const auto routes = formats::parse_route_database(utf16_bytes(routes_text));
+    check(routes.points.size() == 2 && routes.points[0].name == "4БП" && routes.points[0].type == 2 && routes.points[0].flags == 8 &&
+              routes.points[0].point2 && routes.points[0].point2->value == 1 && std::abs(routes.points[0].point2->position.z - 1011.0) < 1e-6 &&
+              routes.points[1].type == 1 && routes.points[1].flags == 2 && !routes.points[1].point2,
+          "route points: name, type, flags, station, Point1 / Point2 with their flags");
+    check(routes.routes.size() == 1 && routes.routes[0].id == 558 && routes.routes[0].flags == 0xA && routes.routes[0].start == "4БП" &&
+              routes.routes[0].end == "Н Краснодар-2" && routes.routes[0].station == "Краснодар-1",
+          "a station route: ID, flags, from, to");
+    check(routes.paths.size() == 1 && routes.paths[0].route == 558 && routes.paths[0].priority == 1 && routes.paths[0].start == 2 &&
+              routes.paths[0].junctions.size() == 2 && routes.paths[0].junctions[1].value == 1,
+          "its path: the junctions with their branches");
+    const auto kept = formats::parse_route_database(formats::write_route_database(utf16_bytes(routes_text), routes, error));
+    check(kept.points.size() == 2 && kept.routes.size() == 1 && kept.paths.size() == 1, "and the save keeps them");
 }
 
 // Kuban as rts_server.exe plays it.
@@ -980,6 +1098,24 @@ void content(const std::filesystem::path& root) {
     check(signals->dispatched() && signals->unit_count() > 1000 && by_mode[2] > 200 && by_mode[0] > 500 && by_mode[1] == 0,
           "Kuban's signal units: automatic block and manual from its route database, none open");
     check(with_defaults * 20 >= signals->unit_count() * 19, "nearly every unit has its SignalUnit");
+    // At the load a manual unit shows what its scripts give (rts_server.exe's
+    // hold of DefaultAspect acts on the console's selected unit, none then):
+    // no head dark, as the live capture's first snapshot; Kuban's
+    // "-also" heads red at STOP_AND_PROCEED, not "No" at STOP.
+    {
+        std::size_t dark = 0, red_also = 0, also = 0;
+        for (const auto& head : signals->heads()) {
+            dark += head.draw_state < 0.0f ? 1 : 0;
+            if (!head.type || head.type->name.find("-also") == std::string::npos) continue;
+            const auto unit = signals->unit_of_item(head.track_item);
+            if (!unit || signals->unit_mode(*unit) != simulation::UnitMode::manual) continue;
+            ++also;
+            red_also += head.aspect() == formats::SignalAspect::stop_and_proceed ? 1 : 0;
+        }
+        std::cout << "server content: at the load " << dark << " heads dark, " << red_also << " of " << also << " manual -also heads red\n";
+        check(dark == 0, "no signal head dark at the load");
+        check(also > 0 && red_also * 2 > also, "manual -also heads red at the load");
+    }
     // A console: every unit's 0x4618 after its world (rts_server.exe 0x41733C).
     game.connected(2, "127.0.0.1:2");
     game.received(2, P(Package::console_login), login(u"DSP"));
@@ -1116,6 +1252,153 @@ void content(const std::filesystem::path& root) {
         check(closed, "cancelled: its signals closed (manual again)");
         take(rec, 1);
     }
+    // Station routes (RoutePoints, TrainRoutes, TrainPaths) and the
+    // dispatcher's segments of a train's route.
+    {
+        const auto& station_routes = route->station_routes();
+        std::size_t both = 0, laid = 0;
+        for (const auto& p : station_routes.paths()) {
+            laid += (p.forward || p.backward) ? 1 : 0;
+            both += (p.forward && p.backward) ? 1 : 0;
+        }
+        std::cout << "server content: " << station_routes.summary() << ", " << both << " both ways\n";
+        check(station_routes.points().size() > 150 && station_routes.routes().size() > 700 && laid * 100 >= station_routes.paths().size() * 95,
+              "Kuban's station routes laid on the track");
+        game.set_station_routes(&station_routes);
+        take(rec, 2);
+        // The routes the ED9M can take ("Собрать маршрут"): from its head
+        // the way it faces, then on from the end of one of them, and on.
+        {
+            const auto head = game.train_end(*id, false);
+            check(head.has_value(), "the ED9M's head on the track");
+            auto from = head;
+            std::string chain;
+            for (int step = 0; step < 4 && from; ++step) {
+                const auto choices = station_routes.available(route->network(), *from, 60000.0, 300.0);
+                std::cout << "server content: available " << step << ":";
+                for (std::size_t k = 0; k < choices.size() && k < 8; ++k) {
+                    const auto& r = station_routes.routes()[choices[k].route];
+                    std::cout << " [" << r.data->id << " " << r.data->station << ": " << r.data->name << (choices[k].reverse ? " back" : "") << " @"
+                              << static_cast<int>(choices[k].distance) << "]";
+                }
+                std::cout << " (" << choices.size() << ")\n";
+                if (step == 0) {
+                    check(std::any_of(choices.begin(), choices.end(),
+                                      [&](const auto& c) { return station_routes.routes()[c.route].data->start == "4БП" && !c.reverse; }),
+                          "routes from the ED9M's track (4БП) available from its head");
+                }
+                if (choices.empty()) break;
+                // On along the one leading onto a stretch when there is one.
+                const server::StationRoutes::Choice* pick = &choices.front();
+                for (const auto& choice : choices) {
+                    const auto& candidate = station_routes.routes()[choice.route];
+                    const auto last = choice.reverse ? candidate.start : candidate.end;
+                    if (last && (station_routes.points()[*last].data->flags & server::point_flag::stretch)) pick = &choice;
+                }
+                const auto& r = station_routes.routes()[pick->route];
+                chain += (chain.empty() ? "" : " -> ") + r.data->station + ": " + r.data->name;
+                const auto* leg = station_routes.leg_of(r, pick->reverse);
+                from = leg ? leg->at(leg->length()) : std::nullopt;
+            }
+            std::cout << "server content: chain " << chain << "\n";
+            check(chain.find(" -> ") != std::string::npos, "routes chained on from one's end");
+        }
+        // The first of Краснодар-1's routes from the ED9M's track that is set.
+        std::uint32_t first = 0, first_route = 0;
+        for (const auto& r : station_routes.routes()) {
+            if (r.data->station != "Краснодар-1" || r.data->start != "4БП") continue;
+            const auto made = game.add_segment({.train = *id, .route = r.data->id}, error);
+            if (!made) continue;
+            for (int i = 0; i < 6; ++i) game.tick(now += 0.05);
+            const auto list = game.segments();
+            if (!list.empty() && list.back().state == 1) {
+                first = *made;
+                first_route = r.data->id;
+                break;
+            }
+            check(game.cancel_segment(*made, error), "a segment not set cancelled: " + error);
+        }
+        check(first != 0, "a segment from the ED9M's track is set");
+        if (first) {
+            const auto list = game.segments();
+            const auto& s = list.back();
+            std::cout << "server content: segment " << s.id << ": " << s.route << " " << s.name << ", " << s.thrown << " of " << s.junctions
+                      << " junctions, " << static_cast<int>(s.length) << " m\n";
+            check(s.thrown == s.junctions && !game.route_junctions(*id).empty(), "its junctions set and the train's route holding them");
+            const auto* r = station_routes.route(first_route);
+            const auto* path = r ? station_routes.path_of(*r, false) : nullptr;
+            bool at_branches = path != nullptr;
+            for (const auto& [node, branch] : path ? path->junctions : std::vector<std::pair<std::uint32_t, std::uint32_t>>{}) {
+                at_branches = at_branches && route->network().junction(node)->selected == branch;
+            }
+            check(at_branches, "every junction of its path at its branch");
+            std::size_t open = 0;
+            for (std::uint32_t u = 0; u < signals->unit_count(); ++u) open += signals->unit_mode(u) == simulation::UnitMode::open ? 1 : 0;
+            check(open > 0, "the route opened its signals: " + std::to_string(open));
+            bool told = false, state = false;
+            for (const auto& g : take(rec, 2)) {
+                told = told || g.id == P(Package::route_segment);
+                if (g.id == P(Package::route_segment_state)) {
+                    const auto st = net::decode_route_segment_state(g.body);
+                    state = state || (st && st->id == first && st->state == 1);
+                }
+            }
+            check(told && state, "the console gets its 0x450B and 0x450E (state 1)");
+            // The next one from where it ends; one from elsewhere refused.
+            const auto& end_name = r->data->end;
+            std::optional<std::uint32_t> next;
+            for (const auto& other : station_routes.routes()) {
+                if (other.data->station != r->data->station || other.data->start != end_name) continue;
+                next = game.add_segment({.train = *id, .route = other.data->id}, error);
+                if (next) break;
+            }
+            std::cout << "server content: the next segment from " << end_name << ": " << (next ? "queued" : error) << '\n';
+            std::optional<std::uint32_t> wrong;
+            for (const auto& other : station_routes.routes()) {
+                if (other.data->station == r->data->station) continue;
+                wrong = game.add_segment({.train = *id, .route = other.data->id}, error);
+                break;
+            }
+            check(!wrong && error.find("no way") != std::string::npos, "a segment elsewhere refused: " + error);
+            // A console's own (0x450B), then its cancel (0x450D).
+            const auto& any = station_routes.routes().front();
+            net::RouteSegment asked{.id = 0xFF000001u, .train = *id, .route = any.data->id, .station = net::from_utf8(any.data->station)};
+            const auto& start_place = station_routes.points()[*any.start].data->point1.position;
+            asked.tile_x = static_cast<std::int16_t>(start_place.tile_x);
+            asked.tile_z = static_cast<std::int16_t>(start_place.tile_z);
+            game.received(2, P(Package::route_segment), net::encode_route_segment(asked));
+            bool replied = false;
+            for (const auto& g : take(rec, 2)) {
+                if (g.id != P(Package::route_segment_reply)) continue;
+                const auto reply = net::decode_route_segment_reply(g.body);
+                replied = reply && reply->request == 0xFF000001u;
+                if (replied && reply->ok) game.cancel_segment(reply->id, error);
+            }
+            check(replied, "the console's 0x450B answered with 0x450C");
+            asked.tile_x = static_cast<std::int16_t>(asked.tile_x + 1);
+            game.received(2, P(Package::route_segment), net::encode_route_segment(asked));
+            bool refused = false;
+            for (const auto& g : take(rec, 2)) {
+                if (g.id != P(Package::route_segment_reply)) continue;
+                const auto reply = net::decode_route_segment_reply(g.body);
+                refused = reply && !reply->ok && !reply->text.empty();
+            }
+            check(refused, "one of another route database (its start's tile) refused");
+            // Cancelled: the train's route goes, its signals close.
+            if (next) check(game.cancel_segment(*next, error), "the next one cancelled: " + error);
+            {
+                net::WireWriter w;
+                w.u32(first);
+                game.received(2, P(Package::route_segment_cancel), w.data());
+            }
+            check(game.segments().empty() && game.route_junctions(*id).empty(), "the console's 0x450D: the segment and the train's route gone");
+            std::size_t still_open = 0;
+            for (std::uint32_t u = 0; u < signals->unit_count(); ++u) still_open += signals->unit_mode(u) == simulation::UnitMode::open ? 1 : 0;
+            check(still_open == 0, "its signals closed");
+        }
+        take(rec, 1);
+        take(rec, 2);
+    }
     // The console's signal actions on a manual unit: open, automatic block,
     // close (STOP_AND_PROCEED, as rts_server.exe's menu), its defaults.
     {
@@ -1242,17 +1525,74 @@ void content(const std::filesystem::path& root) {
     }
 }
 
+// The running server as the program and its window have it: the route
+// loaded, the port open, console lines, trains and segments on its map.
+void session(const std::filesystem::path& root) {
+    std::string error;
+    std::vector<std::string> lines;
+    const auto data = std::filesystem::temp_directory_path() / "openrts_server_session_test";
+    check(!server::ServerSession::start({.root = root, .route = "no such route", .data = data, .port = 0, .local = true}, error, lines) &&
+              !error.empty(),
+          "a session refuses a route that is not there");
+    error.clear();
+    lines.clear();
+    auto s = server::ServerSession::start({.root = root, .route = "Kuban_RTS", .data = data, .port = 0, .local = true}, error, lines);
+    if (!s) {
+        std::cout << "server session: Kuban_RTS not started (" << error << "), skipped\n";
+        return;
+    }
+    check(s->port() != 0, "a session listens on a free port");
+    check(!lines.empty() && lines.back().starts_with("listening on port"), "a session tells its port last");
+    bool quit = false;
+    const auto added = s->command("add \"ED9M-0032 8 vag\" \"Краснодар-1 п.4 (платф) - Староминская п.3 (платф)\"", quit);
+    check(added.find("stands at the start") != std::string::npos && !quit, "a session takes console lines");
+    double now = 0.0;
+    for (int i = 0; i < 4; ++i) s->step(now += 0.05);
+    const auto trains = s->game().trains();
+    check(trains.size() == 1 && !s->game().train_cars(trains.front().id).empty(), "a session's train has its cars on the map");
+    check(s->game().train_cars(99).empty() && !s->game().route_leg(99), "no cars or route for a train that is not there");
+    // "Собрать маршрут" at the console: what the train can take next.
+    const auto next = s->command("next " + std::to_string(trains.front().id), quit);
+    check(next.find("552  Краснодар-1: НМ4БП => Н1") != std::string::npos && next.find("from the train") != std::string::npos,
+          "next lists the routes from the train's head");
+    const auto segment = s->command("segment " + std::to_string(trains.front().id) + " 552", quit);
+    const auto after = s->command("next " + std::to_string(trains.front().id), quit);
+    check(after.find("from the end of segment") != std::string::npos && after.find("Краснодар-1: ") != std::string::npos,
+          "next goes on from the end of the train's last segment");
+    for (int i = 0; i < 10; ++i) s->step(now += 0.05);
+    const auto leg = s->game().route_leg(trains.front().id);
+    check(leg && leg->length() > 900.0, "a segment's route leg is there for the map (" + segment + ")");
+    // A route laid to a place: ahead of the train's head, not behind it.
+    std::string result;
+    const auto cars = s->game().train_cars(trains.front().id);
+    if (const auto front = s->route().network().locate(cars.front().front, 1.0)) {
+        (void)s->command("segment cancel 1", quit);
+        for (int i = 0; i < 4; ++i) s->step(now += 0.05);
+        const simulation::TrackLocation behind{front->node, front->offset, true};
+        const bool one = s->game().lay_route_to(trains.front().id, behind, false, result);
+        const bool two = s->game().lay_route_to(trains.front().id, simulation::TrackLocation{front->node, front->offset, false}, false, result);
+        check(!one && !two, "no route to the place the head stands on (" + result + ")");
+    }
+    (void)s->command("quit", quit);
+    check(quit, "quit stops a session's console");
+    s.reset();
+    std::error_code fs_error;
+    std::filesystem::remove_all(data, fs_error);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     if (argc > 1) {
         content(argv[1]);
+        session(argv[1]);
         if (failures == 0) std::cout << "server content: all checks passed\n";
         return failures == 0 ? 0 : 1;
     }
     route_database();
     game();
     helpers();
+    station_segments();
     hand_route();
     over_tcp();
     if (failures == 0) std::cout << "server: all checks passed\n";
