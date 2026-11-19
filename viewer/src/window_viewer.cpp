@@ -2997,6 +2997,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     int capture_minimise_frames = 0;
     double capture_minimise_clock = 0.0;
     int capture_board_step = 0; // --capture-board: 1 at the door, then the presses of Enter
+    int capture_hand_step = 0;  // --capture-hand-switch: 1 by it, 2 reported, 3 Enter, 4 reported
     bool capture_passed = false; // --capture-passage done
     double capture_reported = 0.0; // --capture-report: the last pick
     int capture_path_switches = 0; // --capture-switch-path: switches made
@@ -3317,6 +3318,17 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                     frame_input.engineer_action_ctrl = phase == 2;
                 }
                 ++capture_board_step;
+            }
+        }
+        if (capture && options.capture_hand_switch && capture_hand_step < 4) {
+            const double since = glfwGetTime() - capture_start;
+            static constexpr double at[] = {0.3, 0.45, 0.5, 0.7};
+            if (since >= options.capture_at * at[capture_hand_step]) {
+                switch (capture_hand_step++) {
+                case 0: scene.stand_at_hand_switch(); break;
+                case 2: frame_input.engineer_action = true; break;
+                default: scene.report_hand_switch(); break;
+                }
             }
         }
         if (capture && options.capture_ok) scene.close_activity_message();

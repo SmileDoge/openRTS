@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <set>
 
 #include <openrts/core/installation.hpp>
@@ -43,9 +45,11 @@ std::vector<formats::WorldObjectPlacement> world_signals(const core::Vfs& vfs, c
 
 ServerRoute::~ServerRoute() = default;
 
-std::unique_ptr<ServerRoute> ServerRoute::load(const std::filesystem::path& root, const std::string& route, std::string& error) {
+std::unique_ptr<ServerRoute> ServerRoute::load(const std::filesystem::path& root, const std::string& route, std::string& error,
+                                               const std::filesystem::path& data) {
     std::unique_ptr<ServerRoute> result(new ServerRoute());
     auto& r = *result;
+    r.data_ = data;
     core::mount_installation(r.vfs_, root, core::load_installation_config(root));
     r.vfs_.build_index();
     // The route folder as written, found case-blind.
@@ -100,9 +104,25 @@ std::unique_ptr<ServerRoute> ServerRoute::load(const std::filesystem::path& root
         if (p.ok()) r.paths_.push_back(std::move(p));
     }
 
+    // The route database: the one the server saved, else the installation's.
+    r.database_file_ = formats::route_database_file(r.vfs_, r.route_);
+    r.database_name_ = r.database_file_ ? std::string(r.database_file_->filename()) : r.route_id_ + ".rtsdb";
+    {
+        std::error_code exists_error;
+        const auto saved = r.saved_database_path();
+        if (!r.data_.empty() && std::filesystem::is_regular_file(saved, exists_error)) {
+            std::ifstream input(saved, std::ios::binary);
+            const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+            r.route_database_ = formats::parse_route_database(bytes);
+            r.notes_.push_back("the route database saved by the server: " + saved.string());
+        } else {
+            r.route_database_ = formats::load_route_database(r.vfs_, r.route_);
+        }
+        if (!r.route_database_.ok()) r.notes_.push_back("route database: " + r.route_database_.error);
+    }
+    const auto& route_database = r.route_database_;
     // The signals' names from the route database, on their TDB items as
     // the game shows them (Ctrl+F7: RTS's match, else the nearest item).
-    const auto route_database = formats::load_route_database(r.vfs_, r.route_);
     for (const auto& [item, unit] : formats::match_signal_units(database_of(*r.network_), route_database)) {
         const auto& name = route_database.signal_units[unit].name;
         if (!name.empty()) r.signal_names_.emplace_back(name, item);
@@ -111,7 +131,129 @@ std::unique_ptr<ServerRoute> ServerRoute::load(const std::filesystem::path& root
         const auto la = lower(a.first), lb = lower(b.first);
         return la != lb ? la < lb : a.second < b.second;
     });
+
+    // The signals as rts_server.exe runs them (docs/reverse/dispatcher.md,
+    // "Signal modes on the server"): its signal units (objects), every one
+    // manual and run once with no train (0x402F80), then each with a
+    // SignalUnit in the route database takes its defaults (0x449C68,
+    // 0x41F39C): UnitFlags bit 2 open, else bit 4 automatic block, else
+    // manual at its DefaultAspect. A database unit is found by its
+    // position, as the game finds it (0x4903DC).
+    if (r.signals_) {
+        auto& signals = *r.signals_;
+        signals.set_dispatched(true);
+        for (const auto& type : route_database.shown_as_normal) signals.set_shown_as_normal(type, true);
+        const auto found = formats::rts_signal_units(database_of(*r.network_), route_database);
+        r.unit_records_.assign(signals.unit_count(), -1);
+        std::size_t by_mode[3]{};
+        std::size_t without = 0;
+        for (std::uint32_t u = 0; u < signals.unit_count(); ++u) {
+            std::int32_t unit = -1;
+            for (const auto item : signals.unit_items(u)) {
+                if (item < found.size() && found[item] >= 0) {
+                    unit = found[item];
+                    break;
+                }
+            }
+            if (unit < 0) {
+                ++without;
+                continue;
+            }
+            r.unit_records_[u] = unit;
+            const auto& record = route_database.signal_units[static_cast<std::size_t>(unit)];
+            simulation::UnitDefaults value;
+            value.mode = (record.flags & 2u)   ? simulation::UnitMode::open
+                         : (record.flags & 4u) ? simulation::UnitMode::automatic
+                                             : simulation::UnitMode::manual;
+            if (const auto aspect = formats::signal_aspect_from_name(record.default_aspect)) value.aspect = *aspect;
+            signals.set_defaults(u, value);
+            signals.restore_defaults(u);
+            ++by_mode[static_cast<int>(value.mode)];
+        }
+        r.signal_modes_ = std::to_string(signals.unit_count()) + " signal units: " + std::to_string(by_mode[2]) + " automatic block, " +
+                          std::to_string(by_mode[1]) + " open, " + std::to_string(by_mode[0]) + " manual from the route database (" +
+                          std::to_string(route_database.signal_units.size()) + " SignalUnits); " + std::to_string(without) +
+                          " without one (manual, at what their script gives with no train)";
+    }
     return result;
+}
+
+std::filesystem::path ServerRoute::saved_database_path() const {
+    return data_ / "server" / std::filesystem::path(net::from_utf8(folder_)) / std::filesystem::path(net::from_utf8(database_name_));
+}
+
+bool ServerRoute::save_signal_defaults(std::string& result) {
+    if (!signals_ || !signals_->dispatched()) {
+        result = "the route's signals did not load";
+        return false;
+    }
+    if (data_.empty()) {
+        result = "the server has no data folder (--data)";
+        return false;
+    }
+    const auto& signals = *signals_;
+    const auto& items = database_of(*network_).items;
+    // The names as the server shows them (signal_names_), by item.
+    std::map<std::uint32_t, std::string> name_of;
+    for (const auto& [name, item] : signal_names_) name_of.emplace(item, name);
+    formats::RouteDatabase out;
+    out.shown_as_normal = signals.shown_as_normal_types();
+    for (std::uint32_t u = 0; u < signals.unit_count(); ++u) {
+        formats::RouteSignalUnit unit;
+        const auto& unit_items = signals.unit_items(u);
+        if (!unit_items.empty() && unit_items.front() < items.size()) {
+            const auto& item = items[unit_items.front()];
+            unit.position = {.tile_x = item.tile_x, .tile_z = item.tile_z, .x = item.x, .y = item.y, .z = item.z};
+        }
+        unit.items = static_cast<std::uint32_t>(unit_items.size());
+        for (const auto item : unit_items) {
+            if (const auto it = name_of.find(item); it != name_of.end()) {
+                unit.name = it->second;
+                break;
+            }
+        }
+        const auto record = u < unit_records_.size() ? unit_records_[u] : -1;
+        if (record >= 0) unit.flags = route_database_.signal_units[static_cast<std::size_t>(record)].flags & ~6u;
+        unit.default_aspect = "STOP";
+        if (const auto value = signals.defaults(u)) {
+            if (value->mode == simulation::UnitMode::open) unit.flags |= 2u;
+            if (value->mode == simulation::UnitMode::automatic) unit.flags |= 4u;
+            unit.default_aspect = formats::to_string(value->aspect);
+        }
+        out.signal_units.push_back(std::move(unit));
+    }
+    // The file to edit: the saved one, else the installation's.
+    std::string original;
+    std::error_code fs_error;
+    const auto path = saved_database_path();
+    if (std::filesystem::is_regular_file(path, fs_error)) {
+        std::ifstream input(path, std::ios::binary);
+        original.assign((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    } else if (database_file_) {
+        if (const auto bytes = vfs_.read(*database_file_)) original = *bytes;
+    }
+    std::string error;
+    const auto bytes = formats::write_route_database(original, out, error);
+    if (bytes.empty()) {
+        result = "the route database could not be written: " + error;
+        return false;
+    }
+    std::filesystem::create_directories(path.parent_path(), fs_error);
+    if (std::filesystem::is_regular_file(path, fs_error)) {
+        auto backup = path;
+        backup += ".bak";
+        std::filesystem::remove(backup, fs_error);
+        std::filesystem::rename(path, backup, fs_error);
+    }
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    if (!output) {
+        result = "could not write " + path.string();
+        return false;
+    }
+    result = std::to_string(out.signal_units.size()) + " signal units and " + std::to_string(out.shown_as_normal.size()) +
+             " types shown as normal saved to " + path.string();
+    return true;
 }
 
 std::vector<std::uint32_t> ServerRoute::signal_items(const std::string_view name) const {

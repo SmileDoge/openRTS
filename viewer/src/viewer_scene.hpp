@@ -325,6 +325,10 @@ public:
     // --capture-board: the engineer on the ground at a cab door of car
     // `index` (from 0) of the driven train.
     virtual void stand_at_cab_door(std::size_t) {}
+    // --capture-hand-switch: the engineer on foot by the hand switch nearest
+    // to the driven train; the report prints its branch.
+    virtual void stand_at_hand_switch() {}
+    virtual void report_hand_switch() const {}
     // --capture-passage: the engineer at the passage door of car `index`.
     virtual void stand_at_passage(std::size_t) {}
     [[nodiscard]] virtual std::string car_menu_report() const { return {}; }

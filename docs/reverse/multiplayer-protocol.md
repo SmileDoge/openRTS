@@ -259,15 +259,15 @@ A name says what the package is about; the rows below hold the details.
 |---|---|---|---|
 | `0x460D` | server → player, console | `f32` time of day | every 300 s (live capture 2026-11-05) |
 | `0x4609` | snapshot; player → server | container | in the snapshot it holds the `0x460A` entries; from a player, a list of nested `0x460A` changes (`0x40C52C` each) |
-| `0x460A` | both ways | junction index (the TDB node number − 1: the client reads its node table at the index, CONFIRMED against Kuban, `net.md`), branch `u32`, lock `u8` | a junction's state; from a player, a change the server decides at once (`0x40C52C`) |
-| `0x4642` | player → server or host | junction index, `u32` | a junction request, done when the junction is neither locked nor reserved (`0x40C5A4`) |
+| `0x460A` | both ways | junction index (the TDB node number − 1: the client reads its node table at the index, CONFIRMED against Kuban, `net.md`), branch `u32`, lock `u8` | a junction's state; from a player, set at once as sent, the lock byte too, with no check (`0x40C52C`); a player's `rts1.exe` sends it only for the junctions its trains run through (`0x4CBFC4`) |
+| `0x4642` | player → server or host | junction index, branch `u32` (a hand switch thrown on foot, `rts1.exe` `0x4D1EB8`) | a junction request, done when the junction is neither locked nor reserved (`0x40C5A4`) |
 | `0x460B` | snapshot | container | holds the `0x460C` entries |
 | `0x460C` | server → player | the head's TDB `SignalItem` (`TrItemId`: the client reads its track item table at it, CONFIRMED against Kuban), `u16` (`+78`: the semaphore arm's position, the drawing state's `SemaphorePos`; 0 on colour lights, as on Kuban; client `0x479AFC`), state `f32` (`+84`), drawing `f32` (`+88`), `f32` `+92`, mode `f32` (`+96`), speed limit `f32` (`+100`, m/s, −1 none) | a signal head's state ("Live capture"); the client skips `+92` / `+96` |
 | `0x4634` | server → player | area id, remove `u8`, `u32 n` + data | a weather area made, changed or removed (network thread only) |
 | `0x4635` | server → player | area id, `u32` (`+32`), 8 bytes (`+12`) | a weather area's values |
 | `0x461D` | player → server → others | object (`u32`, 3 × `f32` position, `u32` id), then `u8` `+65`, `u8` `+64`, `f32` | a world object found within 50 m (`0x4E0E4C`) gets two bytes and, unless the float is −1, a value at its `+40 → +44`. PROBABLE: crossings and animated objects |
 | `0x463F` | player → server → others | the same object key, then `u16` code | a sound trigger on that object's sound (`0x4A9F48`). The data channel of `multiplayer.md` uses this one |
-| `0x4618` | console ↔ server | signal object index, state `u16`, mode `f32`, `u8` | the dispatcher's control of a signal: mode 0 manual, 2 automatic block, 1 PROBABLE open by a route; the server applies a manual state at once and sends `0x460C` ("Live capture"). The table (`dword_54C5BC` entries of 56 bytes) holds the signal objects |
+| `0x4618` | console ↔ server | signal object index, state `u16`, mode `f32`, `u8` | the dispatcher's control of a signal: mode 0 manual, 1 open (until a train reaches it), 2 automatic block, CONFIRMED (`dispatcher.md`, "Signal modes on the server"); `u8` the dispatcher picked the aspect (`+17`); the server applies a manual state at once and sends `0x460C` ("Live capture"). The table (`dword_54C5BC` entries of 56 bytes) holds the signal objects |
 | `0x464B` | both ways | object id, index `u32`, `f32` | a track object of kind 2 (`0x4C90E8`; client `0x4ECC6C`) |
 | `0x464C` | both ways | object id, `u8` (`+64`) | a track object of kind 1 (`0x42139C`) |
 | `0x464D` | both ways | object id, `u16` (`+14`) | a track object of kind 1 (`0x4214F4`) |

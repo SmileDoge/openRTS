@@ -6276,7 +6276,7 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
             }
         }
     }
-    const EngineerControls controls{.forward = input.walk_forward,
+    EngineerControls controls{.forward = input.walk_forward,
                                     .back = input.walk_back,
                                     .left = input.walk_left,
                                     .right = input.walk_right,
@@ -6354,6 +6354,19 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
             }
         }
     }
+    // By a switch on foot (RTS 0x414D24, 0x4121BC): Enter throws it to its
+    // next branch. Not where Enter already has a door or a ladder.
+    if (engineer_.mode() == Engineer::Mode::outside && !engineer_.passing() && !at_ladder && board_prompt_.empty()
+        && engineer_.prompt().empty()) {
+        const glm::vec3 eye = engineer_.feet() + glm::vec3{0.0f, engineer_.height(), 0.0f};
+        if (const auto node = junction_at_hand(eye)) {
+            board_prompt_ = tr("Enter: throw the switch");
+            if (input.engineer_action && !input.engineer_action_ctrl) {
+                throw_by_hand(*node);
+                controls.action = false;
+            }
+        }
+    }
     auto* cab = engineer_cab();
     if (!cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) {
         // No cab of his: walking goes on outside (the player's, not the
@@ -6410,6 +6423,54 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
     }
     if (const auto door = engineer_.take_pass()) pass_to_next_car(*door);
     look_ = camera.forward();
+}
+
+// The switch the engineer on foot stands by (RTS 0x414D24): the nearest
+// junction whose world object is within 5 m of his eye. In a network game or
+// a scenario only hand switches (tsection's ManualJunctionShape, TrackShape
+// flag 0x10), in a scenario only those no train's path holds; in a free run
+// any.
+std::optional<std::uint32_t> TrainView::junction_at_hand(const glm::vec3& eye) {
+    if (!network_) return std::nullopt;
+    if (!junction_spots_built_) {
+        junction_spots_built_ = true;
+        for (std::uint32_t n = 1; n < network_->node_count(); ++n) {
+            const auto* node = network_->node(n);
+            if (!node || node->kind != formats::TrackNodeKind::junction || node->branch_count() < 2) continue;
+            if (const auto at = network_->node_position(n)) junction_spots_.emplace_back(n, *at);
+        }
+    }
+    constexpr float reach = 5.0f;
+    const bool hand_only = network_game_ || activity_ != nullptr;
+    std::optional<std::uint32_t> best;
+    float nearest = reach;
+    for (const auto& [n, at] : junction_spots_) {
+        const float distance = glm::length(local(at) - eye);
+        if (distance > nearest) continue;
+        const auto* node = network_->node(n);
+        const auto* state = network_->junction(n);
+        if (!node || !state) continue;
+        if (hand_only && !(node->shape && node->shape->manual_junction)) continue;
+        if (activity_ && !state->reservations.empty()) continue;
+        nearest = distance;
+        best = n;
+    }
+    return best;
+}
+
+// Enter by a switch (RTS 0x4121BC, object type 7): its next branch, round
+// to the first. A network game asks the server (0x460A), whose answer is
+// what stands.
+void TrainView::throw_by_hand(const std::uint32_t node) {
+    const auto* info = network_ ? network_->node(node) : nullptr;
+    const auto* state = network_ ? network_->junction(node) : nullptr;
+    if (!info || !state || info->branch_count() < 2) return;
+    const auto next = static_cast<std::uint32_t>((state->selected + 1) % info->branch_count());
+    if (network_game_) {
+        junction_throws_.emplace_back(node, next);
+        return;
+    }
+    if (!network_->throw_junction(node, next)) message_ = tr("The switch is occupied or held by a train's route.");
 }
 
 std::optional<TrainView::BoardTarget> TrainView::board_target(const glm::vec3& feet) {
@@ -6664,6 +6725,42 @@ std::unique_ptr<CabView> TrainView::take_cab(const std::size_t car) {
         return cab;
     }
     return CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, c.definition->engine.has_value()));
+}
+
+void TrainView::stand_at_hand_switch() {
+    if (!network_ || !loaded()) return;
+    const auto body = body_pose(units_.front(), 0, false);
+    if (!body) return;
+    (void)junction_at_hand(glm::vec3{0.0f}); // the junctions' places
+    const glm::vec3 head{body->transform[3]};
+    const simulation::TrackPoint* spot = nullptr;
+    float nearest = std::numeric_limits<float>::max();
+    for (const auto& [n, at] : junction_spots_) {
+        const auto* node = network_->node(n);
+        if (!node || !node->shape || !node->shape->manual_junction) continue;
+        const float d = glm::length(local(at) - head);
+        if (d < nearest) {
+            nearest = d;
+            test_hand_switch_ = n;
+            spot = &at;
+        }
+    }
+    if (!spot) {
+        std::cout << "test: no hand switch on the route" << std::endl;
+        return;
+    }
+    const glm::vec3 side{std::cos(spot->heading), 0.0f, -std::sin(spot->heading)};
+    set_walking(true, local(*spot) + side * 2.5f + glm::vec3{0.0f, 1.7f, 0.0f});
+    const auto* node = network_->node(test_hand_switch_);
+    std::cout << "test: on foot by hand switch " << test_hand_switch_ << " (" << node->shape->file_name << ", " << nearest
+              << " m from the first car), branch " << network_->junction(test_hand_switch_)->selected << std::endl;
+}
+
+void TrainView::report_hand_switch() const {
+    const auto* state = network_ && test_hand_switch_ ? network_->junction(test_hand_switch_) : nullptr;
+    if (!state) return;
+    std::cout << "test: hand switch " << test_hand_switch_ << " branch " << state->selected << ", prompt \"" << board_prompt_ << "\""
+              << std::endl;
 }
 
 void TrainView::stand_at_cab_door(const std::size_t car) {

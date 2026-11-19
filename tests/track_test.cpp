@@ -49,6 +49,15 @@ TrackShapes ( 2
         SectionIdx ( 1 0 0 0 0 1 )
         SectionIdx ( 1 1.5 0 0.1 5 2 )
     )
+    TrackShape ( 8
+        FileName ( SwitchMnl.s )
+        NumPaths ( 2 )
+        MainRoute ( 0 )
+        ClearanceDist ( 25 )
+        SectionIdx ( 1 0 0 0 0 1 )
+        SectionIdx ( 1 1.5 0 0.1 5 2 )
+        ManualJunctionShape ( )
+    )
 )
 )";
 
@@ -100,6 +109,8 @@ void test_formats() {
               && near(shape->clearance_distance, 25.0) && shape->paths[1].sections.size() == 1
               && near(shape->paths[1].start[0], 1.5),
           "track shape parsed");
+    const auto* hand = library.shape(8);
+    check(hand && hand->manual_junction && !shape->manual_junction, "ManualJunctionShape marks a hand switch");
 
     const auto db = formats::parse_track_database(database(
         vector_node(1, section(1, 0, 0), 1, pin(2, 1) + pin(3, 1), "TrItemRefs ( 1 TrItemRef ( 0 ) ) ")

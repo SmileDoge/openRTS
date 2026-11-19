@@ -668,6 +668,28 @@ std::optional<SignalHeadState> decode_signal_head(const ByteView body) {
     return h;
 }
 
+std::optional<SignalControl> decode_signal_control(const ByteView body) {
+    SignalControl c;
+    if (!parse_body(body, [&](WireReader& r) {
+            c.unit = r.u32();
+            c.aspect = r.u16();
+            c.mode = r.f32();
+            c.pinned = r.u8();
+        })) {
+        return std::nullopt;
+    }
+    return c;
+}
+
+Bytes encode_signal_control(const SignalControl& value) {
+    WireWriter w;
+    w.u32(value.unit);
+    w.u16(value.aspect);
+    w.f32(value.mode);
+    w.u8(value.pinned);
+    return w.take();
+}
+
 std::optional<SnapshotTrain> decode_train_add(const ByteView body) {
     SnapshotTrain t;
     if (!read_train(body, t)) return std::nullopt;

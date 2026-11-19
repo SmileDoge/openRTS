@@ -12,6 +12,8 @@
 #include <thread>
 #include <vector>
 
+#include <openrts/core/user_data.hpp>
+
 #include <openrts/core/core.hpp>
 #include <openrts/core/virtual_path.hpp>
 #include <openrts/server/console.hpp>
@@ -42,7 +44,8 @@ void on_signal(int) { stop_requested = true; }
 constexpr const char* usage =
     "usage: openrts-server --route <folder> [--root <RTS installation>] [--port 800]\n"
     "                      [--season spring|summer|autumn|winter] [--weather clear|snow|rain|storm] [--time HH:MM]\n"
-    "                      [--no-admit] [--run <seconds>] [--command \"<line>\"]...\n"
+    "                      [--no-admit] [--data <folder>] [--run <seconds>] [--command \"<line>\"]...\n"
+    "  --data      where the server keeps its files (openRTS's user data folder by default)\n"
     "  --run       stop after so many seconds (tests); --command runs a console line at start\n"
     "  players get their trains from the dispatcher at the server's console\n";
 
@@ -120,6 +123,7 @@ int main(int argc, char** argv) {
     std::uint8_t season = 1, weather = 0;
     double time_of_day = 12.0 * 3600.0;
     bool admit = true;
+    fs::path data;
     double run_for = -1.0;
     std::vector<std::string> commands;
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -130,6 +134,9 @@ int main(int argc, char** argv) {
         } else if (a == "--root" && has_value) {
             const auto& text = args[++i];
             root = fs::path(std::u8string(text.begin(), text.end()));
+        } else if (a == "--data" && has_value) {
+            const auto& text = args[++i];
+            data = fs::path(std::u8string(text.begin(), text.end()));
         } else if (a == "--port" && has_value) {
             port = static_cast<std::uint16_t>(std::stoi(args[++i]));
         } else if (a == "--season" && has_value) {
@@ -172,7 +179,8 @@ int main(int argc, char** argv) {
     std::cout << "openRTS server " << core::version_text() << ": loading " << route_name << " from " << root.string() << std::endl;
     const auto loading = std::chrono::steady_clock::now();
     std::string error;
-    auto route = server::ServerRoute::load(root, route_name, error);
+    if (data.empty()) data = core::find_user_data_directory();
+    auto route = server::ServerRoute::load(root, route_name, error, data);
     if (!route) {
         std::cerr << "error: " << error << std::endl;
         return 1;
@@ -184,6 +192,7 @@ int main(int argc, char** argv) {
               << (route->signals() ? std::to_string(route->signals()->heads().size()) + " signal heads" : std::string("no signals")) << ", "
               << route->paths().size() << " paths; "
               << std::chrono::duration<double>(std::chrono::steady_clock::now() - loading).count() << " s" << std::endl;
+    if (!route->signal_modes().empty()) std::cout << "signals: " << route->signal_modes() << std::endl;
 
     server::TcpServer tcp;
     if (!tcp.listen(port, error)) {

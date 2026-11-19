@@ -143,9 +143,39 @@ public:
     [[nodiscard]] double time_of_day() const noexcept { return time_; }
     // Throws junction `node` (TDB node number); `lock` set or cleared when given.
     bool set_junction(std::uint32_t node, std::optional<std::uint32_t> branch, std::optional<bool> lock, std::string& error);
-    // Holds the heads of TDB signal item `item` at `aspect` (the console's
-    // manual state), or gives them back to their scripts (nothing).
+    // Holds the signal of TDB signal item `item` at `aspect`, the dispatcher's
+    // pick (the console's "set aspect": manual, a route leaves it so), or
+    // with nothing puts it under automatic block. With the signals run as
+    // rts_server.exe runs them (SignalSystem::dispatched; docs/server.md
+    // "Signals") it is the signal unit's; else an override of its heads.
     bool set_signal(std::uint32_t item, std::optional<formats::SignalAspect> aspect, std::string& error);
+    // The console's other signal actions (rts_server.exe's TfPult menu):
+    // open (its script runs until a train passes it), automatic block,
+    // close (manual at STOP_AND_PROCEED, as unticking "Открыт" /
+    // "Автоблокировка", 0x40C648), back to its defaults from the route
+    // database.
+    enum class SignalAction : std::uint8_t { open, automatic, close, defaults };
+    bool control_signal(std::uint32_t item, SignalAction action, std::string& error);
+    // Every signal unit with a head of signal type `type` (sigcfg's name,
+    // case ignored) in `mode` (the console's "Сигналы" by type, 0x40CAF0);
+    // how many in `count`.
+    bool set_signal_type_mode(std::string_view type, simulation::UnitMode mode, std::size_t& count, std::string& error);
+    // Every signal back to its defaults (the console's "restore defaults").
+    bool restore_signal_defaults(std::string& error);
+    // "Задать как умолчания" (0x4499F0): every signal's defaults become its
+    // mode and aspect now (ServerRoute::save_signal_defaults writes them).
+    bool set_signal_defaults(std::string& error);
+    // A signal type shown as normal or not (the console's "Отображать как
+    // поездной" by type, 0x40CAF0; the route database's
+    // SignalTypeShownAsNormal): its heads count for their unit's aspect.
+    // How many units have such a head in `count`.
+    bool set_signal_type_shown(std::string_view type, bool on, std::size_t& count, std::string& error);
+    // A console's 0x4618 (rts_server.exe 0x40FB90): the unit takes the mode;
+    // manual holds the aspect, the dispatcher's when `pinned` is set.
+    bool control_signal_unit(const net::SignalControl& control, std::string& error);
+    // One line on the signal of TDB item `item`: its mode, aspect, whether
+    // the dispatcher picked it, its defaults.
+    [[nodiscard]] std::string signal_report(std::uint32_t item) const;
     bool kick(std::string_view nick, std::string& error);
     // The dispatcher makes a player another's helper (помощник машиниста) on
     // `train`, as RTS's dispatcher assigns helpers; nothing: he helps no
@@ -156,8 +186,10 @@ public:
     // the shortest way; a stop is the TDB signal items it may be (one name
     // can stand at several stations: the nearest along the way is taken).
     // Every junction on it is set, facing and trailing alike, and held:
-    // players cannot throw it until the train's rear has passed it. The
-    // signals open by their own scripts. `result`: what was set, or why not.
+    // players cannot throw it until the train's rear has passed it. Its
+    // manual signals facing the train open (0x40918C; not those whose aspect
+    // the dispatcher picked) and close again as the train passes each, or
+    // when the route is cancelled or ends. `result`: what was set, or why not.
     bool set_route(std::uint32_t train, const std::vector<std::vector<std::uint32_t>>& stops, std::string& result);
     bool cancel_route(std::uint32_t train, std::string& error);
     // RTS's hand route (the console's "Задать маршрут", 0x4619): `length` m

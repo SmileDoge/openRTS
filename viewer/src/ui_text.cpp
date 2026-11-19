@@ -1577,6 +1577,8 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"Ctrl+Enter: climb in", "Ctrl+Enter — подняться"},
         {"Ctrl+Enter: climb up", "Ctrl+Enter — подняться"},
         {"Ctrl+Enter: climb down", "Ctrl+Enter — спуститься"},
+        {"Enter: throw the switch", "Enter — перевести стрелку"},
+        {"The switch is occupied or held by a train's route.", "Стрелка занята или замкнута маршрутом поезда."},
         {"Ctrl+Enter: go through", "Ctrl+Enter — пройти"},
         {"Enter: open the door, Ctrl+Enter: go through", "Enter — открыть дверь, Ctrl+Enter — пройти"},
         {"Enter: close the door, Ctrl+Enter: go through", "Enter — закрыть дверь, Ctrl+Enter — пройти"},

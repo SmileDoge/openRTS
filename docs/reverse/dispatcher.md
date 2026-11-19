@@ -279,6 +279,116 @@ with a simpler priority (30 s earlier and the holder beyond its stopping
 distance) and a section lock for single lines instead of `0x48C21C` /
 `0x48C654`.
 
+## Signal modes on the server (`rts_server.exe`) — CONFIRMED (static, 2026-11-19)
+
+**Signal objects** (`0x402F80`, the table `Src`, `dword_54C5BC` entries of
+56 bytes): per vector node in TDB order, per signal item in its
+`TrItemRefs` order, an object for the first item of each place (`+8`, the
+offset) and direction (`+48`), holding every item of the node there. The
+route database's `SignalUnit`s are written in this order, and `0x4618`'s
+index is into it. Fields: `+0` its aspect (u16, the strongest of its heads
+of its lowest function), `+2` that lowest function, `+4` its mode (f32),
+`+8` the distance to its next object, `+17` the dispatcher picked its
+aspect (u8), `+20` / `+24` its heads, `+48` its next object, `+52` the one
+whose next it is.
+
+| Mode | | Its heads' scripts |
+|---|---|---|
+| 0 manual | holds what it was given | not run |
+| 1 open | the console's "Открыт", a route | run every step (`0x40CBB4`); manual again once a train reaches it (`0x45A1DC`) or its route ends or is cancelled (`0x4098F4`) |
+| 2 automatic block | the console's "Автоблокировка" | run every step |
+
+**A run** (`0x40CD40`, also `0x402F80` and `0x40CBB4`): each head's
+`enabled` (`+96`) is set to the object's mode, its script runs
+(`0x43B9F0`), and `+0` becomes the strongest state of its heads of the
+lowest function (`0x40CBB4` also counts a type marked
+`SignalTypeShownAsNormal`, flag `0x100` of the type). So a manual object's
+script sees `enabled` 0, which most scripts answer with STOP; one that
+does not read it (Kuban's `T_Head_G`) gives what it gives.
+`next_sig_lr` / `next_sig_mr` walk the objects' `+48` chain.
+
+**The next object** (`0x40D1D8`): the next signal item ahead of the
+object's first head, the way it faces, as the junctions stand, within
+50 km (`0x42A8D8`); `+8` its distance. A junction thrown (`0x40C52C` →
+`0x40CE20`) renews it for the objects behind the junction.
+
+**At the route's load** (`0x402F80`) every object is manual and runs once.
+Then the route database's `SignalUnit`s (`0x449C68`, `<route>.rtsdb`) are
+matched to the objects (the same index first, else by position) and give
+their defaults (`0x41F39C`): `UnitFlags` bit 2 → open, else bit 4 →
+automatic block, else manual at its `DefaultAspect` (`0x40C714`). Bit 1
+only marks the signal red on the console's map in one of its modes
+(`byte_54C85C`); no logic of it found. An object without a `SignalUnit`
+keeps what its run at the load gave. The console's "restore defaults"
+(`TfEditor_btSigRestoreDefClick`) and "set as defaults" (`0x4499F0`,
+written into the `.rtsdb` by "save all") work on the same table.
+
+**Holding an aspect** (`0x40C714`): the object made manual and run once;
+`+0` = the aspect, `+17` = the flag given; the first head of the lowest
+function whose type has the aspect shows it (its draw state and speed),
+the other heads go dark (draw state −1); when none has it, every head
+takes the aspect with the type's draw state for it, else for STOP, else
+for STOP_AND_PROCEED. The console's menu:
+- "Установить показание" (`TfPult_mnSigSetStopClick`): aspects 0..7, the
+  flag 1;
+- "Открыт" / "Автоблокировка" (`TfPult_mnSigOpenClick`,
+  `TfPult_mnSigAutoClick` → `0x40C648`): toggles; ticked, mode 1 or 2;
+  unticked, manual at aspect 1 (STOP_AND_PROCEED), the flag 0 — the live
+  capture's "close gives 1";
+- by type (`TfPult_btSigTurnOnClick` → `0x40CAF0`): every object with a
+  head of that type to the mode chosen, and the type's "shown as normal"
+  flag.
+
+**Routes.** A train's route (`0x40918C`, from `0x4619` and the station
+routes) opens every object along it whose items face the train, that is
+manual and whose `+17` is clear (mode 1). Cancelling (`0x4619` with a
+length below 0) or ending it (`0x4098F4`) closes the open ones along what
+is left. A train closes an open object as its first car reaches it
+(`0x45A1DC`, from `0x40DCDC`: the objects within the first car's
+`+188` + half its length ahead of it).
+
+**`0x4618`** from a console (`0x40FB90`): the object index, `+0` (u16),
+`+4` (f32), `+17` (u8); a mode 0 holds that aspect (`0x40C714`), a mode
+above 0 runs from the next step. The server sends it back to its consoles
+(`0x451F3C`) with every change of `+0` or the mode; the players get each
+head's `0x460C` (`0x451D5C`), whose `+96` is `enabled`, that is the mode.
+
+**The installed routes' `.rtsdb`** (`UnitFlags` counts): Kuban 503 × 4
+(automatic block), 846 × 0, 56 × 1, `DefaultAspect` STOP for all but one;
+Pavlovsk 496 × 4, 1610 × 0, 92 × 1, 5 × 5; Chernyshevsk 377 × 4, 3122 × 0,
+97 × 1; Novokuznetsk 222 × 4, 3136 × 0, 147 × 1; Stepy Priazovya 184 × 4,
+1705 × 0, 108 × 1; DZHD 6 × 4, 103 × 0, 8 × 1; Lviv 1661 × 0 with
+DefaultAspects STOP_AND_PROCEED, RESTRICTING, CLEAR_2, STOP and APPROACH_1.
+In the old install only: Kievskij hod 1112 × 4, 1947 × 0, 177 × 1, 72 × 5;
+Uspensk 214 × 4, 709 × 0, 134 × 2 (open), 48 × 5. The new build ships no
+`.rtsdb` for these two.
+
+**So on an RTS server:** the line's block signals work by themselves,
+clear over free blocks whatever the station's signals show; the station's
+home, exit and shunting signals stand at STOP until the dispatcher opens
+them (and close again as the train reaches them) or sets a route. The
+server throws no junction by itself: players throw hand switches
+(`track.md`), the dispatcher assembles routes. Single player has no
+dispatcher (PROBABLE, not read in `rts1.exe` for this: it reads the
+`.rtsdb` for the signals' names, `0x4903DC`): every signal runs its script
+there, so an exit signal clears by itself when the way ahead is free.
+
+**openRTS's server** does this since 2026-11-19 (`server.md`, "Signals";
+`simulation::SignalSystem::set_dispatched`), the consoles' `0x4618`,
+`SignalTypeShownAsNormal`, "set as defaults" and the signals' part of
+"save all" included. Not yet: the station routes.
+
+**"Save all" for the signals** (`0x448914`, also asked at closing): the
+file is written whole, `.bak` keeping the one before: first
+`SignalTypeShownAsNormal ( "<type>" )` for every type with flag `0x100`
+(the type's name as sigcfg writes it), `JunctionDefaultStates`, the route
+points, routes and paths, then `SignalUnits ( n` with a `SignalUnit` per
+object in table order: `Position ( tile_x tile_z x y z )` of its first
+head (x as the TDB writes it: RTS keeps it negated), `NumSigItems`,
+`Name ( "…")` when it has one, `UnitFlags ( %08x )` and
+`DefaultAspect ( NAME )` from the defaults table. The installed files
+have no `SignalTypeShownAsNormal`.
+
 ## Signal names ("литеры") — CONFIRMED (2026-11-01)
 
 The names live in the route database (`.rtsdb`, UTF-16

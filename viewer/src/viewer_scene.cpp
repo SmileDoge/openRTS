@@ -1812,6 +1812,12 @@ public:
     void stand_at_passage(const std::size_t index) override {
         if (train_) train_->stand_at_passage(index);
     }
+    void stand_at_hand_switch() override {
+        if (train_) train_->stand_at_hand_switch();
+    }
+    void report_hand_switch() const override {
+        if (train_) train_->report_hand_switch();
+    }
     void stand_at_cab_door(const std::size_t index) override {
         if (train_) train_->stand_at_cab_door(index);
     }

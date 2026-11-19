@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,11 +29,23 @@ struct RouteSignalUnit {
 // routes. Only the signal units are read so far.
 struct RouteDatabase {
     std::vector<RouteSignalUnit> signal_units;
+    // SignalTypeShownAsNormal ( "<type>" ): signal types (sigcfg names) the
+    // console draws as train signals, whose heads also count for their
+    // unit's aspect (rts_server.exe: the type's flag 0x100).
+    std::vector<std::string> shown_as_normal;
     std::string error;
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
 };
 
 [[nodiscard]] RouteDatabase parse_route_database(std::string_view bytes);
+
+// The route database `original` (its file's bytes; empty: a new one) with
+// its SignalTypeShownAsNormal and SignalUnits as `database` has them, as
+// rts_server.exe's "Сохранить всё" writes them (0x448914): the types after
+// the header, the units (Position, NumSigItems, Name when there is one,
+// UnitFlags, DefaultAspect) in their order where the old ones were, the
+// rest of the file as it was. UTF-16LE with a BOM, CRLF lines.
+[[nodiscard]] std::string write_route_database(std::string_view original, const RouteDatabase& database, std::string& error);
 
 struct TrackDatabase;
 // The TDB signal item each named signal unit belongs to: first as RTS
@@ -48,7 +61,9 @@ struct TrackDatabase;
 // By item number; -1 none.
 [[nodiscard]] std::vector<std::int32_t> rts_signal_units(const TrackDatabase& tdb, const RouteDatabase& database);
 // `<route>/<RouteID>.rtsdb` (RouteID from the .trk, as RTS builds the name),
-// else the only .rtsdb of the folder; an empty database when there is none.
+// else the only .rtsdb of the folder; nothing when there is none.
+[[nodiscard]] std::optional<core::VirtualPath> route_database_file(const core::Vfs& vfs, const core::VirtualPath& route);
+// That file read; an empty database when there is none.
 [[nodiscard]] RouteDatabase load_route_database(const core::Vfs& vfs, const core::VirtualPath& route);
 
 } // namespace openrts::formats

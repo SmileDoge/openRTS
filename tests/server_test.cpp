@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 
+#include <openrts/formats/route_database.hpp>
 #include <openrts/formats/track_database.hpp>
 #include <openrts/formats/track_sections.hpp>
 #include <openrts/net/connection.hpp>
@@ -372,6 +373,15 @@ void game() {
         check(take(rec, 1).empty(), "and Alice gets nothing");
         check(game.set_junction(20, std::nullopt, false, error), "unlocked");
         take(rec, 1);
+        take(rec, 2);
+        // A hand switch thrown on foot: 0x4642, the junction and the branch.
+        net::WireWriter hand;
+        hand.u32(19);
+        hand.u32(1);
+        game.received(2, P(Package::junction_request), hand.data());
+        got = take(rec, 1);
+        check(got.size() == 1 && got[0].id == P(Package::junction) && got[0].body[4] == 1, "Bob's hand switch (0x4642): Alice gets branch 1");
+        check(network->junction(20)->selected == 1, "the hand switch is thrown on the server");
         take(rec, 2);
     }
 
@@ -827,10 +837,71 @@ WrittenCounts written_counts(const std::filesystem::path& file) {
     return counts;
 }
 
+// UTF-8 text as a UTF-16LE file with a BOM, and back.
+std::string utf16_bytes(const std::string_view text) {
+    std::string out("\xFF\xFE", 2);
+    for (const auto c : net::from_utf8(text)) {
+        out.push_back(static_cast<char>(c & 0xFF));
+        out.push_back(static_cast<char>(c >> 8));
+    }
+    return out;
+}
+
+std::string utf8_of(const std::string_view bytes) {
+    std::u16string text;
+    for (std::size_t i = 2; i + 1 < bytes.size(); i += 2) {
+        text.push_back(static_cast<char16_t>(static_cast<unsigned char>(bytes[i]) | (static_cast<unsigned char>(bytes[i + 1]) << 8)));
+    }
+    return net::to_utf8(text);
+}
+
+// The route database written as rts_server.exe's "save all" writes it: the
+// units and the types replaced, the rest as it was.
+void route_database() {
+    const std::string text =
+        "SIMISA@@@@@@@@@@JINX1R0t______\r\n\r\n"
+        "RoutePoints ( 1 \r\n\tRoutePoint ( \r\n\t\tName ( \"1\" )\r\n\t\tPointType ( 2 )\r\n\t)\r\n)\r\n"
+        "SignalTypeShownAsNormal ( \"t_old\" )\r\n"
+        "SignalUnits ( 2 \r\n"
+        "\tSignalUnit ( \r\n\t\tPosition ( -4497 14555 902.8710 15.3226 -891.6260 )\r\n\t\tNumSigItems ( 1 )\r\n"
+        "\t\tName ( \"Ч1\")\r\n\t\tUnitFlags ( 00000001 )\r\n\t\tDefaultAspect ( STOP )\r\n\t)\r\n"
+        "\tSignalUnit ( \r\n\t\tPosition ( -4497 14554 865.8020 14.8220 964.5350 )\r\n\t\tNumSigItems ( 2 )\r\n"
+        "\t\tUnitFlags ( 00000004 )\r\n\t\tDefaultAspect ( STOP )\r\n\t)\r\n"
+        ")";
+    const auto read = formats::parse_route_database(utf16_bytes(text));
+    check(read.ok() && read.signal_units.size() == 2 && read.signal_units[0].name == "Ч1" && read.signal_units[0].flags == 1 &&
+              read.signal_units[1].flags == 4 && read.signal_units[1].items == 2 && read.shown_as_normal == std::vector<std::string>{"t_old"},
+          "a route database read: units, names, flags, the type shown as normal");
+    auto changed = read;
+    changed.signal_units[0].flags = 0x5;
+    changed.signal_units[0].default_aspect = "CLEAR_2";
+    changed.shown_as_normal = {"T_Stop_R"};
+    std::string error;
+    const auto bytes = formats::write_route_database(utf16_bytes(text), changed, error);
+    check(bytes.size() > 2 && static_cast<unsigned char>(bytes[0]) == 0xFF && static_cast<unsigned char>(bytes[1]) == 0xFE,
+          "written as UTF-16LE with a BOM: " + error);
+    const auto again = formats::parse_route_database(bytes);
+    check(again.ok() && again.signal_units.size() == 2 && again.signal_units[0].flags == 5 && again.signal_units[0].default_aspect == "CLEAR_2" &&
+              again.signal_units[0].name == "Ч1" && again.signal_units[1].flags == 4 &&
+              std::abs(again.signal_units[1].position.z - 964.535) < 1e-3 && again.shown_as_normal == std::vector<std::string>{"T_Stop_R"},
+          "read back: the units and the types as written");
+    const auto written = utf8_of(bytes);
+    check(written.find("RoutePoint ( \r\n\t\tName ( \"1\" )") != std::string::npos && written.find("t_old") == std::string::npos &&
+              written.find("\t\tName ( \"Ч1\")\r\n\t\tUnitFlags ( 00000005 )\r\n\t\tDefaultAspect ( CLEAR_2 )") != std::string::npos &&
+              written.rfind("SIMISA@@@@@@@@@@JINX1R0t______\r\n\r\nSignalTypeShownAsNormal ( \"T_Stop_R\" )\r\n", 0) == 0,
+          "the rest as it was, the type after the header, the units as RTS writes them");
+    const auto fresh = formats::write_route_database({}, changed, error);
+    check(formats::parse_route_database(fresh).signal_units.size() == 2, "and a new one when the route had none");
+}
+
 // Kuban as rts_server.exe plays it.
 void content(const std::filesystem::path& root) {
     std::string error;
-    auto route = server::ServerRoute::load(root, "kuban_rts", error);
+    // The server's own folder for the route database it saves.
+    const auto data = std::filesystem::temp_directory_path() / "openrts_server_test";
+    std::error_code fs_error;
+    std::filesystem::remove_all(data, fs_error);
+    auto route = server::ServerRoute::load(root, "kuban_rts", error, data);
     if (!route) {
         std::cout << "server content: Kuban_RTS not installed (" << error << "), skipped\n";
         return;
@@ -860,6 +931,7 @@ void content(const std::filesystem::path& root) {
     server::ServerOptions options;
     options.route_id = "kuban_rts";
     options.counts = c;
+    options.consoles = true;
     server::GameServer game(rec, options, route->network(), route->signals());
     double now = 0.0;
     game.tick(now);
@@ -886,26 +958,99 @@ void content(const std::filesystem::path& root) {
     }
     for (int i = 0; i < 40; ++i) game.tick(now += 0.05);
     take(rec, 1);
-    // A signal held at stop from the console.
-    const auto& heads = route->signals()->heads();
+    // The signals as rts_server.exe runs them: its units, their modes from
+    // the route database; none open before a route.
+    auto* signals = route->signals();
+    std::size_t by_mode[3]{};
+    std::size_t with_defaults = 0;
+    for (std::uint32_t u = 0; u < signals->unit_count(); ++u) {
+        ++by_mode[static_cast<int>(signals->unit_mode(u))];
+        if (signals->defaults(u)) ++with_defaults;
+    }
+    std::cout << "server content: " << route->signal_modes() << '\n';
+    {
+        std::map<std::string, std::size_t> shown;
+        for (std::uint32_t u = 0; u < signals->unit_count(); ++u) {
+            if (signals->unit_mode(u) == simulation::UnitMode::automatic) ++shown[formats::to_string(signals->unit_aspect(u))];
+        }
+        std::cout << "server content: the automatic block units show";
+        for (const auto& [aspect, count] : shown) std::cout << ' ' << aspect << " " << count;
+        std::cout << '\n';
+    }
+    check(signals->dispatched() && signals->unit_count() > 1000 && by_mode[2] > 200 && by_mode[0] > 500 && by_mode[1] == 0,
+          "Kuban's signal units: automatic block and manual from its route database, none open");
+    check(with_defaults * 20 >= signals->unit_count() * 19, "nearly every unit has its SignalUnit");
+    // A console: every unit's 0x4618 after its world (rts_server.exe 0x41733C).
+    game.connected(2, "127.0.0.1:2");
+    game.received(2, P(Package::console_login), login(u"DSP"));
+    take_reply(rec, 2);
+    game.received(2, P(Package::snapshot), {});
+    {
+        // The snapshot's frames nest; the 0x4618s follow it: 17-byte frames.
+        std::size_t controls = 0;
+        bool right = true;
+        const auto& bytes = rec.out[2];
+        const std::uint8_t header[] = {0x18, 0x46, 17, 0, 0, 0};
+        for (std::size_t at = 0; at + 17 <= bytes.size(); ++at) {
+            if (!std::equal(std::begin(header), std::end(header), bytes.begin() + static_cast<std::ptrdiff_t>(at))) continue;
+            const auto c4618 = net::decode_signal_control(net::ByteView(bytes).subspan(at + 6, 11));
+            right = right && c4618 && c4618->unit == controls &&
+                    c4618->mode == static_cast<float>(static_cast<int>(signals->unit_mode(c4618->unit)));
+            ++controls;
+            at += 16;
+        }
+        rec.out[2].clear();
+        check(controls == signals->unit_count() && right, "the console gets every unit's 0x4618 in order: " + std::to_string(controls));
+    }
+    // Its 0x4618: an automatic block unit held at STOP, its flag set; then
+    // automatic block again.
+    {
+        std::uint32_t unit = 0;
+        while (unit < signals->unit_count() && signals->unit_mode(unit) != simulation::UnitMode::automatic) ++unit;
+        game.received(2, P(Package::signal_control), net::encode_signal_control({.unit = unit, .aspect = 0, .mode = 0.0f, .pinned = 1}));
+        check(signals->unit_mode(unit) == simulation::UnitMode::manual && signals->unit_pinned(unit) &&
+                  signals->unit_aspect(unit) == formats::SignalAspect::stop,
+              "the console's 0x4618 holds a unit at STOP, the dispatcher's");
+        for (int i = 0; i < 4; ++i) game.tick(now += 0.05);
+        bool back = false;
+        for (const auto& g : take(rec, 2)) {
+            if (g.id != P(Package::signal_control)) continue;
+            const auto c4618 = net::decode_signal_control(g.body);
+            back = back || (c4618 && c4618->unit == unit && c4618->mode == 0.0f && c4618->pinned == 1 && c4618->aspect == 0);
+        }
+        check(back, "the consoles get it back (0x4618, mode 0, the flag)");
+        game.received(2, P(Package::signal_control), net::encode_signal_control({.unit = unit, .aspect = 0, .mode = 2.0f, .pinned = 0}));
+        check(signals->unit_mode(unit) == simulation::UnitMode::automatic, "0x4618 with mode 2: automatic block again");
+        for (int i = 0; i < 4; ++i) game.tick(now += 0.05);
+        game.received(2, P(Package::signal_control), net::encode_signal_control({.unit = 99999, .mode = 2.0f}));
+        bool refused = false;
+        for (const auto& g : take(rec, 2)) refused = refused || g.id == P(Package::console_reply);
+        check(refused, "a unit the server has not: the console told");
+        take(rec, 1);
+    }
+    // A signal under automatic block held at stop from the console.
     std::uint32_t item = 0;
     bool found = false;
-    for (const auto& head : heads) {
-        if (head.placed && head.state > 0.0f) {
-            item = head.track_item;
-            found = true;
-            break;
-        }
+    for (std::uint32_t u = 0; u < signals->unit_count() && !found; ++u) {
+        if (signals->unit_mode(u) != simulation::UnitMode::automatic || signals->unit_heads(u).empty()) continue;
+        item = signals->unit_items(u).front();
+        found = true;
     }
-    check(found, "a head showing more than stop");
+    check(found, "a signal under automatic block");
     if (found) {
         check(game.set_signal(item, formats::SignalAspect::stop, error), "held at stop: " + error);
         for (int i = 0; i < 4; ++i) game.tick(now += 0.05);
+        // The unit's first head of its lowest function with a STOP shows it,
+        // its other heads go dark (0x40C714).
+        const auto unit = signals->unit_of_item(item);
+        check(unit && signals->unit_aspect(*unit) == formats::SignalAspect::stop && signals->unit_pinned(*unit),
+              "the signal's unit at STOP, the dispatcher's");
+        const auto& items = unit ? signals->unit_items(*unit) : std::vector<std::uint32_t>{};
         bool sent = false;
         for (const auto& g : take(rec, 1)) {
             if (g.id != P(Package::signal_head)) continue;
             const auto head = net::decode_signal_head(g.body);
-            sent = sent || (head && head->item == item && head->state == 0.0f && head->mode == 0.0f);
+            sent = sent || (head && std::find(items.begin(), items.end(), head->item) != items.end() && head->state == 0.0f && head->mode == 0.0f);
         }
         check(sent, "the players get it: 0x460C stop, mode 0 (manual)");
     }
@@ -926,6 +1071,29 @@ void content(const std::filesystem::path& root) {
         std::cout << "server content: route to " << reached << ": " << result << '\n';
         const auto held = game.route_junctions(*id);
         check(!held.empty(), "its junctions are held");
+        // Its manual signals facing the train are open now (0x40918C).
+        std::vector<std::uint32_t> opened;
+        for (std::uint32_t u = 0; u < signals->unit_count(); ++u) {
+            if (signals->unit_mode(u) == simulation::UnitMode::open) opened.push_back(u);
+        }
+        check(!opened.empty() && result.find(std::to_string(opened.size()) + " signals opened") != std::string::npos,
+              "the route opened its signals (" + std::to_string(opened.size()) + ")");
+        for (int i = 0; i < 20; ++i) game.tick(now += 0.05);
+        std::size_t proceed = 0;
+        for (const auto u : opened) {
+            const auto aspect = signals->unit_aspect(u);
+            if (aspect > formats::SignalAspect::stop_and_proceed) ++proceed;
+            std::cout << "server content: opened " << game.signal_report(signals->unit_items(u).front()) << '\n';
+        }
+        check(proceed > 0, "an opened signal shows a proceed aspect");
+        bool sent_open = false;
+        for (int i = 0; i < 4; ++i) game.tick(now += 0.05);
+        for (const auto& g : take(rec, 1)) {
+            if (g.id != P(Package::signal_head)) continue;
+            const auto head = net::decode_signal_head(g.body);
+            sent_open = sent_open || (head && head->mode == 1.0f);
+        }
+        check(sent_open, "the players get them: 0x460C with mode 1 (open)");
         // A player cannot throw one of them.
         for (const auto n : held) {
             const auto* node = route->network().node(n);
@@ -943,6 +1111,39 @@ void content(const std::filesystem::path& root) {
             break;
         }
         check(game.cancel_route(*id, error) && game.route_junctions(*id).empty() && !game.cancel_route(*id, error), "the route freed once");
+        bool closed = true;
+        for (const auto u : opened) closed = closed && signals->unit_mode(u) == simulation::UnitMode::manual;
+        check(closed, "cancelled: its signals closed (manual again)");
+        take(rec, 1);
+    }
+    // The console's signal actions on a manual unit: open, automatic block,
+    // close (STOP_AND_PROCEED, as rts_server.exe's menu), its defaults.
+    {
+        std::uint32_t manual_item = 0;
+        for (std::uint32_t u = 0; u < signals->unit_count() && !manual_item; ++u) {
+            const auto value = signals->defaults(u);
+            if (value && value->mode == simulation::UnitMode::manual && !signals->unit_heads(u).empty()) manual_item = signals->unit_items(u).front();
+        }
+        check(manual_item != 0, "a manual signal");
+        const auto unit = *signals->unit_of_item(manual_item);
+        check(game.control_signal(manual_item, server::GameServer::SignalAction::open, error) && signals->unit_mode(unit) == simulation::UnitMode::open,
+              "opened: " + game.signal_report(manual_item));
+        check(game.control_signal(manual_item, server::GameServer::SignalAction::automatic, error) &&
+                  signals->unit_mode(unit) == simulation::UnitMode::automatic,
+              "automatic block: " + game.signal_report(manual_item));
+        check(game.control_signal(manual_item, server::GameServer::SignalAction::close, error) && signals->unit_mode(unit) == simulation::UnitMode::manual &&
+                  signals->unit_aspect(unit) == formats::SignalAspect::stop_and_proceed,
+              "closed: " + game.signal_report(manual_item));
+        check(game.control_signal(manual_item, server::GameServer::SignalAction::defaults, error) &&
+                  signals->unit_mode(unit) == simulation::UnitMode::manual && !signals->unit_pinned(unit),
+              "back to its defaults: " + game.signal_report(manual_item));
+        std::cout << "server content: " << game.signal_report(manual_item) << '\n';
+        std::size_t count = 0;
+        const auto* type = signals->heads()[signals->unit_heads(unit).front()].type;
+        check(type && game.set_signal_type_mode(type->name, simulation::UnitMode::automatic, count, error) && count > 0 &&
+                  signals->unit_mode(unit) == simulation::UnitMode::automatic,
+              "a whole type under automatic block: " + std::to_string(count) + " " + error);
+        check(game.restore_signal_defaults(error) && signals->unit_mode(unit) == simulation::UnitMode::manual, "every signal back to its defaults");
         take(rec, 1);
     }
     // The console's consist by its cars, at a place of the track.
@@ -984,6 +1185,61 @@ void content(const std::filesystem::path& root) {
         thrown = thrown || (j && j->node() == junction && j->branch == 1 - before);
     }
     check(thrown, "the players get it");
+
+    // "Задать как умолчания", a type shown as normal, "save all" into the
+    // server's folder, and a server loading it again.
+    {
+        std::uint32_t unit = 0;
+        while (unit < signals->unit_count() && signals->unit_mode(unit) != simulation::UnitMode::manual) ++unit;
+        const auto unit_item = signals->unit_items(unit).front();
+        const auto* type = signals->heads()[signals->unit_heads(unit).front()].type;
+        std::size_t count = 0;
+        check(type && game.set_signal_type_shown(type->name, true, count, error) && count > 0 && signals->shown_as_normal(*type),
+              "a type shown as normal: " + std::to_string(count) + " signals");
+        check(game.control_signal(unit_item, server::GameServer::SignalAction::automatic, error) && game.set_signal_defaults(error) &&
+                  signals->defaults(unit)->mode == simulation::UnitMode::automatic,
+              "set as defaults: the unit's default is automatic block now");
+        std::string result;
+        check(route->save_signal_defaults(result) && std::filesystem::is_regular_file(route->saved_database_path()), "saved: " + result);
+        std::cout << "server content: " << result << '\n';
+        check(route->saved_database_path().string().find(data.string()) == 0, "into the server's folder, not the installation");
+        std::ifstream input(route->saved_database_path(), std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        const auto text = utf8_of(bytes);
+        check(text.find("RoutePoints ( 182") != std::string::npos || text.find("RoutePoints") != std::string::npos,
+              "its RoutePoints kept");
+        auto again = server::ServerRoute::load(root, "kuban_rts", error, data);
+        check(again && again->signals() && again->signals()->unit_count() == signals->unit_count(), "the route loaded again: " + error);
+        if (again && again->signals()) {
+            const auto* s2 = again->signals();
+            check(s2->unit_mode(unit) == simulation::UnitMode::automatic && s2->defaults(unit)->mode == simulation::UnitMode::automatic,
+                  "the saved default read back: automatic block");
+            check(s2->shown_as_normal(*type), "the type still shown as normal");
+            if (again->signal_names() != route->signal_names()) {
+                std::cout << "server content: names " << route->signal_names().size() << " then " << again->signal_names().size() << ':';
+                std::size_t shown = 0;
+                for (const auto& entry : route->signal_names()) {
+                    if (std::find(again->signal_names().begin(), again->signal_names().end(), entry) != again->signal_names().end()) continue;
+                    if (++shown > 6) break;
+                    std::cout << " lost " << entry.first << "@" << entry.second;
+                }
+                shown = 0;
+                for (const auto& entry : again->signal_names()) {
+                    if (std::find(route->signal_names().begin(), route->signal_names().end(), entry) != route->signal_names().end()) continue;
+                    if (++shown > 6) break;
+                    std::cout << " new " << entry.first << "@" << entry.second;
+                }
+                std::cout << std::endl;
+            }
+            // One name per unit, as rts_server.exe writes them: a unit two
+            // old SignalUnits named keeps one.
+            check(again->signal_names().size() * 100 >= route->signal_names().size() * 99, "the names kept (one per unit)");
+            std::size_t same = 0;
+            for (std::uint32_t u = 0; u < s2->unit_count(); ++u) same += s2->unit_mode(u) == signals->unit_mode(u) ? 1 : 0;
+            std::cout << "server content: loaded again, " << same << " of " << s2->unit_count() << " units in the same mode\n";
+        }
+        std::filesystem::remove_all(data, fs_error);
+    }
 }
 
 } // namespace
@@ -994,6 +1250,7 @@ int main(int argc, char** argv) {
         if (failures == 0) std::cout << "server content: all checks passed\n";
         return failures == 0 ? 0 : 1;
     }
+    route_database();
     game();
     helpers();
     hand_route();

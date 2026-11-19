@@ -18,6 +18,19 @@ namespace openrts::net {
 [[nodiscard]] std::optional<float> decode_time(ByteView body);
 [[nodiscard]] std::optional<JunctionState> decode_junction(ByteView body);
 [[nodiscard]] std::optional<SignalHeadState> decode_signal_head(ByteView body);
+
+// 0x4618 signal_control, console <-> server (rts_server.exe 0x451F3C, read
+// by 0x40FB90): a signal unit (the server's signal object, by its table
+// index), its aspect (+0), its mode (+4: 0 manual, 1 open, 2 automatic
+// block) and whether the dispatcher picked the aspect (+17).
+struct SignalControl {
+    std::uint32_t unit{};
+    std::uint16_t aspect{};
+    float mode{};
+    std::uint8_t pinned{};
+};
+[[nodiscard]] std::optional<SignalControl> decode_signal_control(ByteView body);
+[[nodiscard]] Bytes encode_signal_control(const SignalControl& value);
 [[nodiscard]] std::optional<SnapshotTrain> decode_train_add(ByteView body);
 
 struct TrainPosUpdate {

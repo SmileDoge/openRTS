@@ -76,6 +76,27 @@ struct SignalObject {
     std::vector<std::uint32_t> heads;
 };
 
+// The RTS server's signals (rts_server.exe; docs/reverse/dispatcher.md,
+// "Signal modes on the server"). Its signal objects, here signal units: the
+// TDB signal items at one place of a vector node facing one way, in the
+// order rts_server.exe builds its table (0x402F80: nodes in TDB order, their
+// items in TrItemRefs order), which is the order of the route database's
+// SignalUnits and the index of 0x4618. The dispatcher gives every unit a
+// mode. Manual: its heads hold what they were given and run no script.
+// Open: they run every step until a train passes the signal or its route
+// ends. Automatic block: they always run. A running head sees `enabled` =
+// the mode (RTS head +96) and the units ahead as the junctions stand (each
+// unit's next signal, 0x40D1D8, renewed when a junction is thrown).
+enum class UnitMode : std::uint8_t { manual = 0, open = 1, automatic = 2 };
+
+// A unit's defaults from the route database (its SignalUnit, 0x41F39C):
+// UnitFlags bit 2 open, else bit 4 automatic block, else manual at its
+// DefaultAspect.
+struct UnitDefaults {
+    UnitMode mode = UnitMode::manual;
+    formats::SignalAspect aspect = formats::SignalAspect::stop;
+};
+
 // The next signal a train obeys.
 struct SignalAhead {
     bool valid = false;
@@ -170,9 +191,64 @@ public:
     // Whether the head's last run read a local before writing it.
     [[nodiscard]] bool reads_stale(std::uint32_t head) const;
 
+    // The RTS server's way (UnitMode): on, the signal units are made, every
+    // one manual, its heads run once with `enabled` 0, holding what that
+    // gives (0x402F80; mostly STOP), and from then on update() runs the units
+    // by their modes instead of the trains' chains and the free-running
+    // heads (ahead(), positions() and passes stay empty). Defaults are
+    // applied by restore_defaults. Off: back to the game's way.
+    void set_dispatched(bool on);
+    [[nodiscard]] bool dispatched() const noexcept { return dispatched_; }
+    [[nodiscard]] std::size_t unit_count() const;
+    // A unit's TDB signal items (in TrItemRefs order) and its heads here.
+    [[nodiscard]] const std::vector<std::uint32_t>& unit_items(std::uint32_t unit) const;
+    [[nodiscard]] const std::vector<std::uint32_t>& unit_heads(std::uint32_t unit) const;
+    // The unit of TDB signal item `item`.
+    [[nodiscard]] std::optional<std::uint32_t> unit_of_item(std::uint32_t item) const;
+    [[nodiscard]] UnitMode unit_mode(std::uint32_t unit) const;
+    // The unit's aspect (RTS +0): the strongest of its heads of its lowest
+    // function.
+    [[nodiscard]] formats::SignalAspect unit_aspect(std::uint32_t unit) const;
+    // The dispatcher chose its aspect (RTS +17): a route does not open it.
+    [[nodiscard]] bool unit_pinned(std::uint32_t unit) const;
+    // A mode (the console's "open" / "automatic block", a route, a type's
+    // switch): its heads run at once with it (0x40CD40); manual then holds
+    // what they give with `enabled` 0. Unpins it.
+    void set_unit_mode(std::uint32_t unit, UnitMode mode);
+    // Manual at `aspect` (0x40C714): its heads run once with `enabled` 0,
+    // then the first head of its lowest function whose type has the aspect
+    // shows it (its draw state and speed) and its other heads go dark; when
+    // none has it, every head takes the aspect with the type's draw state
+    // for it, else for STOP, else for STOP_AND_PROCEED. `pinned`: the
+    // dispatcher picked it.
+    void hold_aspect(std::uint32_t unit, formats::SignalAspect aspect, bool pinned);
+    void set_defaults(std::uint32_t unit, const UnitDefaults& defaults);
+    [[nodiscard]] std::optional<UnitDefaults> defaults(std::uint32_t unit) const;
+    // Back to its defaults (0x41F39C); a unit without any keeps its state.
+    void restore_defaults(std::uint32_t unit);
+    // "Задать как умолчания" (0x4499F0): every unit's defaults become its
+    // mode and aspect now.
+    void set_defaults_from_state();
+    // SignalTypeShownAsNormal (the route database, the console's "Отображать
+    // как поездной" by type): heads of such a type count for their unit's
+    // aspect besides those of its lowest function, at the step's runs
+    // (0x40CBB4; type flag 0x100). `type`: its sigcfg name, case ignored.
+    void set_shown_as_normal(std::string_view type, bool on);
+    [[nodiscard]] bool shown_as_normal(const formats::SignalType& type) const;
+    // Their sigcfg names as written there.
+    [[nodiscard]] std::vector<std::string> shown_as_normal_types() const;
+    // Open units that went back to manual since the last call because a
+    // train's leading end reached them (0x45A1DC).
+    [[nodiscard]] std::vector<std::uint32_t> take_closed();
+
     struct Impl; // internal (public only for the implementation's helpers)
 
 private:
+    void dispatch_step(std::span<const Train* const> trains, double dt);
+    void run_unit(std::uint32_t unit, bool step = false);
+    void build_units();
+    void build_chains();
+    bool dispatched_ = false;
     std::unique_ptr<Impl> impl_;
     std::shared_ptr<const formats::SignalConfig> config_;
     std::shared_ptr<const formats::SignalScriptFile> scripts_;

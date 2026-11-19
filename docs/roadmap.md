@@ -313,11 +313,14 @@ yet. Each stage ends with something that runs and is checked:
    (`rts_server_DSP.exe`, `0x4500`, and openRTS's in the game, hidden until
    then) comes after. In order:
    1. What `rts_server.exe` does that openRTS's does not, read from it (on
-      a copy): the signals ahead of a train with no route (in RTS the route
-      the dispatcher gives, `0x4619`, looks like the train's authority:
-      openRTS opens them, a placed train's exit signal cleared by itself on
-      2026-11-09), who gets `0x4619`, what each console action sends, the
-      station routes (`0x450B`).
+      a copy). **Signal modes done (2026-11-19, `server.md` "Signals",
+      `reverse/dispatcher.md`):** the RTS server's signal objects with
+      their modes (manual, open, automatic block) and defaults from the
+      route database; a route opens its manual signals and a train closes
+      them; the console's signal actions. A placed train's exit signal no
+      longer clears by itself. The consoles' `0x4618`, the types shown as
+      normal, "set as defaults" and saving them (into the server's own
+      folder) followed the same day. Left: the station routes (`0x450B`).
    2. Track control as a module of its own (the map: track, junctions,
       signals and their names, places, trains, routes; actions as
       callbacks), for the viewer, the server's console and later the
@@ -346,7 +349,8 @@ yet. Each stage ends with something that runs and is checked:
    user's choice, 2026-11-09, in place of an HTML client); its first
    version is there, hidden until the server (stage 3) is done
    (`server.md`, "The dispatcher's console"). Left: the
-   station routes of the route database, signal modes (automatic block),
+   station routes of the route database, the signal modes from the console
+   (the server has them, stage 3),
    brakes and the other forms, RTS compatibility (`rts_server_DSP.exe`).
 6. **Panels and forms** (planned, 2026-11-06): RmlUi (HTML/CSS-like
    markup, MIT) drawn by the renderer, with the logic in Lua; Luau is the

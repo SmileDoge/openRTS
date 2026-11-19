@@ -308,12 +308,126 @@ void test_modes() {
     check(system.heads()[0].mode == 0.0f && system.heads()[0].aspect() == SignalAspect::clear_2, "back to NORMAL: CLEAR_2");
 }
 
+// The same head reading `enabled`, as the routes' scripts do: STOP unless
+// the signal is enabled.
+const std::string enabled_scripts = R"(  header line padding for the 32-character start of the search
+SCRIPT TestHead
+	extern float block_state ();
+	extern float next_sig_lr ();
+	extern float def_draw_state ();
+	extern float state;
+	extern float draw_state;
+	extern float enabled;
+	state = SIGASP_STOP;
+	if (enabled)
+	{
+		if (block_state () ==# BLOCK_CLEAR)
+		{
+			if (next_sig_lr (SIGFN_NORMAL) ==# SIGASP_STOP)
+			{
+				state = SIGASP_APPROACH_1;
+			}
+			else
+			{
+				state = SIGASP_CLEAR_2;
+			}
+		}
+	}
+	draw_state = def_draw_state (state);
+)";
+
+// The RTS server's way (rts_server.exe, docs/reverse/dispatcher.md): signal
+// units with the dispatcher's modes; a running head sees `enabled` = its
+// mode and the units ahead.
+void test_dispatched() {
+    using simulation::UnitMode;
+    auto network = signal_track();
+    if (!network) return;
+    auto config = std::make_shared<formats::SignalConfig>(formats::parse_signal_config(test_config));
+    auto scripts = std::make_shared<formats::SignalScriptFile>(formats::compile_signal_scripts(enabled_scripts, config.get()));
+    check(scripts->scripts.size() == 1 && scripts->scripts.front().ok(), "the script reading enabled compiles");
+    std::vector<formats::WorldObjectPlacement> signals;
+    for (std::uint32_t i = 0; i < 3; ++i) {
+        formats::WorldObjectPlacement placement{.kind = formats::WorldObjectKind::signal, .uid = i, .shape_file = "test.s"};
+        placement.signal_units.push_back({.sub_object = 0, .track_item = i});
+        signals.push_back(placement);
+    }
+    simulation::SignalSystem system(*network, config, scripts, signals);
+    system.set_dispatched(true);
+    check(system.dispatched() && system.unit_count() == 3 && system.unit_items(1) == std::vector<std::uint32_t>{1} &&
+              system.unit_of_item(2) == 2u,
+          "dispatched: a unit per signal place, in the TDB's order");
+    for (std::uint32_t u = 0; u < 3; ++u) {
+        check(system.unit_mode(u) == UnitMode::manual && system.heads()[u].aspect() == SignalAspect::stop && system.heads()[u].enabled == 0.0f,
+              "every unit manual at the start, its script run with enabled 0: STOP");
+    }
+    system.update({}, simulation::train_step);
+    check(system.heads()[0].aspect() == SignalAspect::stop, "a manual unit runs no script");
+
+    // Automatic block from the far end: each head sees the next unit.
+    system.set_unit_mode(2, UnitMode::automatic);
+    check(system.heads()[2].aspect() == SignalAspect::approach_1 && system.heads()[2].enabled == 2.0f,
+          "the last unit under automatic block: APPROACH_1 (nothing beyond), enabled 2");
+    system.set_unit_mode(1, UnitMode::automatic);
+    check(system.heads()[1].aspect() == SignalAspect::clear_2, "the middle one sees the last at APPROACH_1: CLEAR_2");
+    check(system.heads()[0].aspect() == SignalAspect::stop, "the first, manual, stays at STOP");
+
+    // Open: its script runs with enabled 1.
+    system.set_unit_mode(0, UnitMode::open);
+    check(system.unit_mode(0) == UnitMode::open && system.heads()[0].aspect() == SignalAspect::clear_2 && system.heads()[0].enabled == 1.0f,
+          "the first opened: CLEAR_2, enabled 1");
+
+    // The last held at STOP by the dispatcher: the middle one follows at the
+    // next step (it reads the unit ahead).
+    system.hold_aspect(2, SignalAspect::stop, true);
+    check(system.unit_pinned(2) && system.unit_mode(2) == UnitMode::manual, "held by the dispatcher: manual, pinned");
+    system.update({}, simulation::train_step);
+    check(system.heads()[1].aspect() == SignalAspect::approach_1, "the middle one sees it: APPROACH_1");
+    // An aspect its type lacks: every head takes it, drawn as STOP.
+    system.hold_aspect(2, SignalAspect::restricting, true);
+    check(static_cast<int>(system.heads()[2].state) == 2 && system.heads()[2].draw_state == 0.0f,
+          "RESTRICTING, which the type lacks: the aspect kept, STOP's draw state");
+    system.update({}, simulation::train_step);
+    check(system.heads()[1].aspect() == SignalAspect::clear_2, "the middle one sees RESTRICTING, not STOP: CLEAR_2");
+
+    // A train passing the open first signal closes it (manual, STOP).
+    const auto engine = formats::parse_wagon(engine_text);
+    simulation::Train train({{.definition = &engine}});
+    std::string error;
+    check(train.place(*network, 1, 500.0, true, &error), "dispatched: train placed: " + error);
+    const simulation::Train* trains[] = {&train};
+    system.update(trains, simulation::train_step);
+    check(system.heads()[0].aspect() == SignalAspect::clear_2 && system.unit_mode(0) == UnitMode::open, "open ahead of the train");
+    auto driver = simulation::attach_keyboard_driver(train);
+    driver->reverser = 1;
+    driver->throttle = driver->notches;
+    std::vector<std::uint32_t> closed;
+    for (int i = 0; i < 20 * 120 && train.front_end()->offset() < 1100.0; ++i) {
+        train.step();
+        system.update(trains, simulation::train_step);
+        for (const auto u : system.take_closed()) closed.push_back(u);
+    }
+    check(closed == std::vector<std::uint32_t>{0}, "the first unit closed as the train reached it");
+    check(system.unit_mode(0) == UnitMode::manual && system.heads()[0].aspect() == SignalAspect::stop, "manual again: STOP behind the train");
+    check(system.ahead(train).valid == false, "no train chains in the dispatched way");
+
+    // Defaults (the route database's) back.
+    system.set_defaults(0, {.mode = UnitMode::automatic});
+    system.restore_defaults(0);
+    check(system.unit_mode(0) == UnitMode::automatic && system.heads()[0].aspect() == SignalAspect::stop,
+          "back to its default: automatic block, STOP with the train in its block");
+    system.set_dispatched(false);
+    system.update(trains, simulation::train_step);
+    check(!system.dispatched() && system.ahead(train).valid, "off: the trains' chains again");
+}
+
 } // namespace
 
 int main() {
     test_compiler();
     test_system();
     test_modes();
+    test_dispatched();
     if (failures == 0) std::cout << "signal tests passed\n";
     return failures == 0 ? 0 : 1;
 }

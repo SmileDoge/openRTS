@@ -168,6 +168,11 @@ struct WindowOptions {
     // opened) and Ctrl+Enter (up the steps) are pressed; each takes 0.6 of
     // capture_at shared out.
     std::vector<std::size_t> capture_board;
+    // --capture-hand-switch: at 0.3 of capture_at the engineer stands on the
+    // ground beside the hand switch nearest to the driven train; at 0.45 its
+    // branch and the prompt go to the log, at 0.5 Enter is pressed, at 0.7
+    // the branch goes to the log again.
+    bool capture_hand_switch = false;
     // --capture-passage <index>: at 0.3 of capture_at the engineer stands in
     // the cab or salon of car `index` (from 0) of the driven train, at its
     // passage door to the next car, the door opened (the next car's room

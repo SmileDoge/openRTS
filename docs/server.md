@@ -28,6 +28,7 @@ openrts-server --route Kuban_RTS --root D:\Games\MDDRTS --port 800 --season summ
 | `--season`, `--weather` | `spring`..`winter` or 0..3; `clear`, `snow`, `rain` or 0..2, `storm` or 3: openRTS's thunderstorm (rain to RTS players, docs/weather.md) |
 | `--time HH:MM` | the time of day at the start (12:00) |
 | `--no-admit` | take no new players |
+| `--data <folder>` | where the server keeps its files (the route database it saves); openRTS's user data folder by default (`%LOCALAPPDATA%\openRTS`, or next to the program with a `portable.txt`), never the RTS installation |
 | `--command "<line>"` | a console line run at the start (repeatable) |
 | `--run <s>` | stop after so many seconds (tests) |
 
@@ -53,11 +54,18 @@ Russian path names and messages work.
 | `say <nick\|*> <text>` | a message (`0x4611`) |
 | `pause`, `resume` | `0x4616`; nothing goes out while paused, as RTS |
 | `time [HH:MM[:SS]]` | shown or set (`0x460D` to everyone) |
-| `route <train> <signal> [signal...]` | a train's route, as the console's assembly: from the train's front (or its rear, running rear first) to the signal named so in the route database (its "литера"), through the others in turn, the shortest way; of several signals with one name the nearest along the way. Every junction on it is set, facing and trailing, and held: players cannot throw it until the train's rear has passed it (and 30 m). The signals open by their scripts. A TDB item number works too |
-| `route <train> cancel` | the route's junctions freed (they stay as they are) |
+| `route <train> <signal> [signal...]` | a train's route, as the console's assembly: from the train's front (or its rear, running rear first) to the signal named so in the route database (its "литера"), through the others in turn, the shortest way; of several signals with one name the nearest along the way. Every junction on it is set, facing and trailing, and held: players cannot throw it until the train's rear has passed it (and 30 m). Its manual signals facing the train open ("Signals" below). A TDB item number works too |
+| `route <train> cancel` | the route's junctions freed (they stay as they are), the signals it opened closed |
 | `signals [text]` | the signals' names and how many stand under each |
 | `junction <node> [branch] [lock\|unlock]` | thrown (refused while occupied or held by a route) or locked against players |
-| `signal <item> <aspect\|auto>` | the heads of a TDB signal item held at an aspect, or back to their scripts |
+| `signal <item\|name>` | the signal's unit: its mode, aspect, whether the dispatcher picked it, its defaults, its heads' types; by name when only one signal has it |
+| `signal <item\|name> <aspect>` | held at that aspect (manual, the dispatcher's: a route leaves it so), as the console's "set aspect" |
+| `signal <item\|name> open\|auto\|close\|default` | open (its script runs until a train passes it), automatic block, closed (manual at STOP_AND_PROCEED, as unticking the console's "Открыт" / "Автоблокировка"), back to its defaults |
+| `signal type <type> <manual\|open\|auto>` | every signal with a head of that sigcfg type, as the console's switch by type |
+| `signal defaults` | every signal back to its defaults from the route database |
+| `signal set-defaults` | every signal's defaults become its mode and aspect now (the console's "Задать как умолчания") |
+| `signal type <type> normal on\|off` | the type shown as normal (its heads count for their signal's aspect; the console's "Отображать как поездной") |
+| `signal save` | the defaults and the types shown as normal into the server's copy of the route database (`<data>/server/<route>/<file>.rtsdb`, the one before kept as `.bak`): the console's "Сохранить всё" for the signals; the server reads that copy first from then on |
 | `couple <train> <train>` | the second joins the first where they stand end to end (the nearest ends within 50 m), as `rts_server.exe` couples a LOOSE train run into another: `0x460F` to everyone, the first's owner too |
 | `cut <train> <car>` | cut before car `car` (from 0): the cars from it on are a train of their own, kind and owner as the train's; `0x460E` to everyone, the owner too |
 | `helper <nick> <train\|off>` | the player is the helper (помощник машиниста) on the train's cab, or no more (openRTS players: "Helpers" below) |
@@ -126,9 +134,10 @@ openRTS itself is the console (the user's choice, 2026-11-09):
     console, the camera's place, their trains) and the trains (id, number,
     kind, subtype, state, owner, the junctions their route holds, speed,
     standing, cars, the first car).
-- A player's junction thrown with the key (or in the cab's Track control)
-  in a network game now goes to the server as `0x460A`, as `rts1.exe`
-  sends it; the server's answer is what stands.
+- A hand switch a player throws on foot (`track.md`) goes to the server
+  as `0x4642`, as `rts1.exe` sends it; the server's answer is what
+  stands. A player has no other way to throw a junction in a network
+  game, as in RTS.
 
 ## What it does
 
@@ -190,11 +199,57 @@ draw it.
 - A player's `0x460A` / `0x4642` / `0x4609` is carried out on the
   server's network and sent to everyone. A locked junction or one a train
   stands on is refused, and the sender gets its state back.
-- The signals run their scripts on the server (`simulation::SignalSystem`),
-  every 0.05 s, with every train on the server's network. A head that
-  changes goes out as `0x460C`.
-- The players' trains run the heads ahead of both their ends, as RTS's
-  player trains.
+- The signals are run as `rts_server.exe` runs them ("Signals" below), every
+  0.05 s, with every train on the server's network. A head that changes
+  goes out as `0x460C`.
+
+**Signals** (`simulation::SignalSystem::set_dispatched`; how RTS does it:
+`reverse/dispatcher.md`, "Signal modes on the server"):
+- The server's signal units are `rts_server.exe`'s signal objects: the TDB
+  signal items at one place of a vector node facing one way, in its
+  table's order (the route database's `SignalUnit`s are in that order).
+- Each has a mode: **manual** (its heads hold what they were given and run
+  no script), **open** (they run until a train's leading end reaches the
+  signal, then it is manual again: mostly STOP), **automatic block** (they
+  always run). A running head sees `enabled` = the mode and the units ahead
+  as the junctions stand (renewed when one is thrown), so a block signal
+  shows the next one's aspect. Trains' chains and free-running heads, the
+  game's way, are not used.
+- At the load every unit is manual and runs once with `enabled` 0, then
+  the route database (`<RouteID>.rtsdb`) gives its defaults: `UnitFlags`
+  bit 2 open, else bit 4 automatic block, else manual at its
+  `DefaultAspect`. Kuban (2026-11 build): 1405 units, 503 automatic
+  block, 902 manual (STOP but one); with no train its block signals show
+  CLEAR_2 389, APPROACH_1 40, APPROACH_3 14, RESTRICTING 44,
+  STOP_AND_PROCEED 16. So the stations' home, exit and shunting signals
+  stand at STOP until the dispatcher opens them or sets a route; the
+  line's block signals work by themselves.
+- A route (`route`, the console's `0x4619`) opens its manual signals facing
+  the train, but not those whose aspect the dispatcher picked; its end or
+  cancellation closes the ones still open.
+- `0x460C`'s field `+96` is the head's `enabled`, so it carries the unit's
+  mode (0 manual, 1 open, 2 automatic block), as the RTS server sends it.
+- **Consoles** (Legacy, `0x4500`; taken when `ServerOptions::consoles` is
+  on): after the world a console gets every unit's `0x4618` (unit index,
+  aspect, mode, the dispatcher's flag), then each unit whose aspect, mode
+  or flag changes. A console's `0x4618` sets the unit: mode 1 or 2 that
+  mode, mode 0 manual at the aspect given (the dispatcher's when its flag
+  is set); a unit the server has not is answered with an error.
+- **Types shown as normal** (`SignalTypeShownAsNormal` in the route
+  database, `signal type <type> normal on|off`): their heads count for
+  their unit's aspect besides those of its lowest function, at the step's
+  runs.
+- **Defaults**: `signal set-defaults` takes every unit's mode and aspect
+  as its defaults; `signal save` writes them into the server's copy of
+  the route database: the file as RTS's "save all" writes it (every unit
+  in order with its Position, NumSigItems, Name, UnitFlags with bits 2 and
+  4 from its default and the others as they were, DefaultAspect; the types
+  after the header), the rest of the file (route points, routes, paths) as
+  it was. A unit has one name, as RTS writes it: on Kuban 901 names became
+  896 (a few units the old database named twice). The installation's file
+  is not touched; copying the saved one there gives `rts_server.exe` the
+  same defaults.
+- Not yet: the station routes (`0x450B`).
 
 **The server's trains.** Each train has a copy on the server's network
 (`simulation::Train`): its cars from the consist's files, placed where the
@@ -259,7 +314,25 @@ and when the dispatcher sets it.
     them and a snapshot with every junction and head; an ED9M at a
     path's start, a signal held at stop and a junction thrown from the
     console reaching the player; a route from the ED9M to the signal "1"
-    (4 472 m, 11 junctions held) whose junction a player cannot throw.
+    (4 472 m, 11 junctions held) whose junction a player cannot throw;
+    the signal units (2026-11 build: 1 405, 503 automatic block, 902
+    manual, as its route database), the route opening its 5 manual
+    signals facing the train (APPROACH_2, CLEAR_2, APPROACH_1 and two
+    shunting ones at STOP_AND_PROCEED; `0x460C` with mode 1) and closing
+    them when cancelled, a block signal held at STOP (`0x460C` mode 0),
+    open / automatic block / close / defaults on a manual signal, a whole
+    type under automatic block and every signal back to its defaults;
+    a console getting every unit's `0x4618` after its world and its own
+    `0x4618` holding a unit at STOP (sent back) and putting it under
+    automatic block; a type shown as normal, "set as defaults", the save
+    into a temporary data folder and the route loaded again from it (the
+    same modes, the type, 896 of 901 names).
+  - `tests/server_test.cpp` (`route_database`): a route database read,
+    written with other units and types and read back, the rest of the
+    file as it was.
+  - `tests/signal_test.cpp` (`test_dispatched`): units on a synthetic
+    track, `enabled` = the mode, automatic block reading the unit ahead,
+    an aspect the type lacks, a train closing the open signal it reaches.
 - By hand, 2026-11-09: two openRTS clients on `openrts-server` with Kuban.
   Each got an ED9M at a path's start, the world (555 junctions, 1951 heads), the
   other's train in its place, its lights, sounds and look.

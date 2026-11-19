@@ -1,6 +1,7 @@
 #include <openrts/server/game_server.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <random>
 #include <cmath>
 #include <cstdio>
@@ -132,7 +133,33 @@ struct GameServer::Impl {
         bool ended = false;      // the head has run past its end
         float sent = -2.0f;      // the distance left last sent (0x4619)
         double send_at = 0.0;
+        std::vector<std::uint32_t> opened; // the signal units it opened
     };
+    // A route opens its manual signals facing the train (0x40918C: not those
+    // whose aspect the dispatcher picked), the signals being run as
+    // rts_server.exe runs them.
+    void open_signals(HeldRoute& route) {
+        if (!signals || !signals->dispatched()) return;
+        std::set<std::uint32_t> done;
+        for (const auto& head : signals->heads()) {
+            const auto unit = signals->unit_of_item(head.track_item);
+            if (!head.placed || !unit || done.contains(*unit)) continue;
+            std::size_t span = 0;
+            const auto at = route.leg.locate(head.node, head.offset, 0, &span);
+            if (!at || span >= route.leg.spans.size() || route.leg.spans[span].forward != head.forward) continue;
+            done.insert(*unit);
+            if (signals->unit_mode(*unit) != simulation::UnitMode::manual || signals->unit_pinned(*unit)) continue;
+            signals->set_unit_mode(*unit, simulation::UnitMode::open);
+            route.opened.push_back(*unit);
+        }
+    }
+    // Its end or cancellation closes those still open (0x4098F4).
+    void close_signals(const HeldRoute& route) {
+        if (!signals || !signals->dispatched()) return;
+        for (const auto unit : route.opened) {
+            if (signals->unit_mode(unit) == simulation::UnitMode::open) signals->set_unit_mode(unit, simulation::UnitMode::manual);
+        }
+    }
     std::map<std::uint32_t, HeldRoute> routes;
     [[nodiscard]] std::optional<std::uint32_t> holder(const std::uint32_t node) const {
         for (const auto& [train, route] : routes) {
@@ -148,6 +175,14 @@ struct GameServer::Impl {
         bool operator==(const Shown&) const = default;
     };
     std::vector<Shown> shown; // by head: what the players were last sent
+    // By signal unit: what the consoles were last sent (0x4618).
+    std::vector<net::SignalControl> units_sent;
+    [[nodiscard]] net::SignalControl control_of(const std::uint32_t unit) const {
+        return {.unit = unit,
+                .aspect = static_cast<std::uint16_t>(signals->unit_aspect(unit)),
+                .mode = static_cast<float>(static_cast<int>(signals->unit_mode(unit))),
+                .pinned = static_cast<std::uint8_t>(signals->unit_pinned(unit) ? 1 : 0)};
+    }
     double now{};
     double last_tick = -1.0;
     double next_time = 0.0;
@@ -236,10 +271,11 @@ struct GameServer::Impl {
     }
 
     [[nodiscard]] Shown shown_of(const simulation::SignalHead& head) const {
-        // The mode field is the dispatcher's: 0 manual, 1 the head's own
-        // logic, 2 automatic block (live capture 2026-11-05).
-        return {.state = head.state, .draw_state = head.draw_state, .speed = head.speed,
-                .mode = manual.contains(head.track_item) ? 0.0f : 1.0f};
+        // The field +96 is the head's `enabled`, which rts_server.exe sets to
+        // its object's mode before each run: 0 manual, 1 open, 2 automatic
+        // block (live capture 2026-11-05).
+        const float mode = signals && signals->dispatched() ? head.enabled : manual.contains(head.track_item) ? 0.0f : 1.0f;
+        return {.state = head.state, .draw_state = head.draw_state, .speed = head.speed, .mode = mode};
     }
 
     [[nodiscard]] std::vector<net::SignalHeadState> head_states() const {
@@ -533,6 +569,12 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         }
         if (paused_) s.pause = 1;
         send_to(*user, net::write_snapshot(s));
+        // A console gets every signal unit's 0x4618 (rts_server.exe 0x41733C).
+        if (user->console && impl.signals && impl.signals->dispatched()) {
+            for (std::uint32_t u = 0; u < impl.signals->unit_count(); ++u) {
+                send_to(*user, framed(P(Package::signal_control), net::encode_signal_control(impl.control_of(u))));
+            }
+        }
         user->playing = true;
         user->played = true;
         impl.note("user " + utf8(user->nick) + " got the world: " + std::to_string(s.trains.size()) + " trains");
@@ -567,6 +609,19 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
             send_to(*user, package(P(Package::console_reply), [&](net::WireWriter& w) { w.text_u32(net::from_utf8("error: " + result)); }));
         }
         impl.next_console = 0.0;
+        return;
+    }
+    // A console's signal control (0x4618, rts_server.exe 0x40FB90): the unit
+    // takes the mode; manual holds the aspect given, the dispatcher's when
+    // the flag is set. The change goes to everyone with the next step.
+    if (user->console && id == P(Package::signal_control)) {
+        const auto control = net::decode_signal_control(body);
+        if (!control) return;
+        std::string error;
+        if (!control_signal_unit(*control, error)) {
+            impl.note(utf8(user->nick) + ": " + error);
+            send_to(*user, package(P(Package::console_reply), [&](net::WireWriter& w) { w.text_u32(net::from_utf8("error: " + error)); }));
+        }
         return;
     }
     if (user->console && id == P(Package::junction)) {
@@ -916,6 +971,7 @@ void GameServer::tick(const double now) {
     for (auto it = impl.routes.begin(); it != impl.routes.end();) {
         const auto* t = impl.train(it->first);
         if (!t) {
+            impl.close_signals(it->second);
             it = impl.routes.erase(it);
             continue;
         }
@@ -943,6 +999,7 @@ void GameServer::tick(const double now) {
         }
         if (route.ended && route.junctions.empty()) {
             send_route_left(it->first, -1.0f, route.rear_first);
+            impl.close_signals(route);
             it = impl.routes.erase(it);
             continue;
         }
@@ -974,6 +1031,25 @@ void GameServer::tick(const double now) {
                 impl.signal_step -= simulation::train_step;
             }
             impl.signal_step = std::min(impl.signal_step, simulation::train_step);
+            // The consoles get each unit whose aspect, mode or flag changed
+            // (0x4618, rts_server.exe 0x451F3C).
+            if (impl.signals->dispatched()) {
+                const auto units = impl.signals->unit_count();
+                if (impl.units_sent.size() != units) {
+                    impl.units_sent.clear();
+                    for (std::uint32_t u = 0; u < units; ++u) impl.units_sent.push_back(impl.control_of(u));
+                }
+                for (std::uint32_t u = 0; u < units; ++u) {
+                    const auto now_control = impl.control_of(u);
+                    auto& sent = impl.units_sent[u];
+                    if (now_control.aspect == sent.aspect && now_control.mode == sent.mode && now_control.pinned == sent.pinned) continue;
+                    sent = now_control;
+                    const auto bytes = framed(P(Package::signal_control), net::encode_signal_control(now_control));
+                    for (const auto& [_, user] : impl.users) {
+                        if (user.console && user.playing && user.connection) transport_.send(user.connection, bytes);
+                    }
+                }
+            }
             const auto& heads = impl.signals->heads();
             impl.shown.resize(heads.size());
             for (std::size_t h = 0; h < heads.size(); ++h) {
@@ -1102,7 +1178,10 @@ bool GameServer::remove_train(const std::uint32_t train, std::string& error) {
     // off the track under it (live capture 2026-11-05).
     if (t->owner) unassign(train, error);
     if (t->sim) t->sim->vacate();
-    impl.routes.erase(train);
+    if (const auto route = impl.routes.find(train); route != impl.routes.end()) {
+        impl.close_signals(route->second);
+        impl.routes.erase(route);
+    }
     impl.trains.erase(train);
     const auto bytes = package(P(Package::train_remove), [&](net::WireWriter& w) {
         w.u32(train);
@@ -1346,6 +1425,19 @@ bool GameServer::set_signal(const std::uint32_t item, const std::optional<format
         error = "the route's signals did not load";
         return false;
     }
+    if (impl.signals->dispatched()) {
+        const auto unit = impl.signals->unit_of_item(item);
+        if (!unit) {
+            error = "no signal on item " + std::to_string(item);
+            return false;
+        }
+        if (aspect) {
+            impl.signals->hold_aspect(*unit, *aspect, true);
+        } else {
+            impl.signals->set_unit_mode(*unit, simulation::UnitMode::automatic);
+        }
+        return true;
+    }
     bool found = false;
     const auto& heads = impl.signals->heads();
     for (std::uint32_t h = 0; h < heads.size(); ++h) {
@@ -1367,6 +1459,170 @@ bool GameServer::set_signal(const std::uint32_t item, const std::optional<format
     if (aspect) impl.manual.insert(item);
     else impl.manual.erase(item);
     return true;
+}
+
+namespace {
+
+[[nodiscard]] const char* mode_name(const simulation::UnitMode mode) {
+    switch (mode) {
+    case simulation::UnitMode::open: return "open";
+    case simulation::UnitMode::automatic: return "automatic block";
+    default: return "manual";
+    }
+}
+
+[[nodiscard]] std::string lower_text(std::string_view text) {
+    std::string out(text);
+    std::transform(out.begin(), out.end(), out.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+} // namespace
+
+bool GameServer::control_signal(const std::uint32_t item, const SignalAction action, std::string& error) {
+    auto* signals = impl_->signals;
+    if (!signals || !signals->dispatched()) {
+        error = signals ? "the signals are not run as rts_server.exe runs them" : "the route's signals did not load";
+        return false;
+    }
+    const auto unit = signals->unit_of_item(item);
+    if (!unit) {
+        error = "no signal on item " + std::to_string(item);
+        return false;
+    }
+    switch (action) {
+    case SignalAction::open: signals->set_unit_mode(*unit, simulation::UnitMode::open); break;
+    case SignalAction::automatic: signals->set_unit_mode(*unit, simulation::UnitMode::automatic); break;
+    case SignalAction::close: signals->hold_aspect(*unit, formats::SignalAspect::stop_and_proceed, false); break;
+    case SignalAction::defaults:
+        if (!signals->defaults(*unit)) {
+            error = "signal " + std::to_string(item) + " has no defaults (no SignalUnit in the route database)";
+            return false;
+        }
+        signals->restore_defaults(*unit);
+        break;
+    }
+    return true;
+}
+
+bool GameServer::set_signal_type_mode(const std::string_view type, const simulation::UnitMode mode, std::size_t& count, std::string& error) {
+    auto* signals = impl_->signals;
+    count = 0;
+    if (!signals || !signals->dispatched()) {
+        error = signals ? "the signals are not run as rts_server.exe runs them" : "the route's signals did not load";
+        return false;
+    }
+    const auto wanted = lower_text(type);
+    std::set<std::uint32_t> units;
+    for (const auto& head : signals->heads()) {
+        if (!head.type || lower_text(head.type->name) != wanted) continue;
+        if (const auto unit = signals->unit_of_item(head.track_item)) units.insert(*unit);
+    }
+    if (units.empty()) {
+        error = "no signal of type " + std::string(type);
+        return false;
+    }
+    for (const auto unit : units) signals->set_unit_mode(unit, mode);
+    count = units.size();
+    return true;
+}
+
+bool GameServer::set_signal_defaults(std::string& error) {
+    auto* signals = impl_->signals;
+    if (!signals || !signals->dispatched()) {
+        error = signals ? "the signals are not run as rts_server.exe runs them" : "the route's signals did not load";
+        return false;
+    }
+    signals->set_defaults_from_state();
+    return true;
+}
+
+bool GameServer::set_signal_type_shown(const std::string_view type, const bool on, std::size_t& count, std::string& error) {
+    auto* signals = impl_->signals;
+    count = 0;
+    if (!signals || !signals->dispatched()) {
+        error = signals ? "the signals are not run as rts_server.exe runs them" : "the route's signals did not load";
+        return false;
+    }
+    const auto wanted = lower_text(type);
+    std::set<std::uint32_t> units;
+    for (const auto& head : signals->heads()) {
+        if (!head.type || lower_text(head.type->name) != wanted) continue;
+        if (const auto unit = signals->unit_of_item(head.track_item)) units.insert(*unit);
+    }
+    if (units.empty()) {
+        error = "no signal of type " + std::string(type);
+        return false;
+    }
+    signals->set_shown_as_normal(type, on);
+    count = units.size();
+    return true;
+}
+
+bool GameServer::control_signal_unit(const net::SignalControl& control, std::string& error) {
+    auto* signals = impl_->signals;
+    if (!signals || !signals->dispatched()) {
+        error = signals ? "the signals are not run as rts_server.exe runs them" : "the route's signals did not load";
+        return false;
+    }
+    if (control.unit >= signals->unit_count()) {
+        error = "no signal unit " + std::to_string(control.unit);
+        return false;
+    }
+    const auto mode = static_cast<int>(control.mode);
+    if (mode == 1 || mode == 2) {
+        signals->set_unit_mode(control.unit, mode == 1 ? simulation::UnitMode::open : simulation::UnitMode::automatic);
+    } else if (control.aspect <= static_cast<std::uint16_t>(formats::SignalAspect::failed)) {
+        signals->hold_aspect(control.unit, static_cast<formats::SignalAspect>(control.aspect), control.pinned != 0);
+    } else {
+        error = "no aspect " + std::to_string(control.aspect);
+        return false;
+    }
+    return true;
+}
+
+bool GameServer::restore_signal_defaults(std::string& error) {
+    auto* signals = impl_->signals;
+    if (!signals || !signals->dispatched()) {
+        error = signals ? "the signals are not run as rts_server.exe runs them" : "the route's signals did not load";
+        return false;
+    }
+    for (std::uint32_t unit = 0; unit < signals->unit_count(); ++unit) signals->restore_defaults(unit);
+    return true;
+}
+
+std::string GameServer::signal_report(const std::uint32_t item) const {
+    const auto* signals = impl_->signals;
+    if (!signals) return "the route's signals did not load";
+    std::string text = "signal " + std::to_string(item) + ": ";
+    if (!signals->dispatched()) {
+        for (const auto& head : signals->heads()) {
+            if (head.track_item != item) continue;
+            text += formats::to_string(head.aspect());
+            text += ' ';
+        }
+        return text;
+    }
+    const auto unit = signals->unit_of_item(item);
+    if (!unit) return "no signal on item " + std::to_string(item);
+    text += "unit " + std::to_string(*unit) + ", ";
+    text += mode_name(signals->unit_mode(*unit));
+    text += ", ";
+    text += formats::to_string(signals->unit_aspect(*unit));
+    if (signals->unit_pinned(*unit)) text += " (the dispatcher's)";
+    if (const auto value = signals->defaults(*unit)) {
+        text += "; default ";
+        text += mode_name(value->mode);
+        if (value->mode == simulation::UnitMode::manual) text += std::string(" at ") + formats::to_string(value->aspect);
+    } else {
+        text += "; no defaults";
+    }
+    std::string types;
+    for (const auto h : signals->unit_heads(*unit)) {
+        if (const auto* type = signals->heads()[h].type) types += (types.empty() ? "" : ", ") + type->name;
+    }
+    if (!types.empty()) text += "; " + types;
+    return text;
 }
 
 bool GameServer::kick(const std::string_view nick, std::string& error) {
@@ -1490,11 +1746,14 @@ bool GameServer::set_route(const std::uint32_t train, const std::vector<std::vec
     }
     const auto count = held.junctions.size();
     held.sent = static_cast<float>(leg.length());
+    if (const auto old = impl.routes.find(train); old != impl.routes.end()) impl.close_signals(old->second);
+    impl.open_signals(held);
+    const auto opened = held.opened.size();
     impl.routes[train] = std::move(held);
     send_route_left(train, static_cast<float>(leg.length()), from_rear);
     char text[160];
-    std::snprintf(text, sizeof text, "train %u's route: %.0f m, %zu junctions (%zu thrown), held until its rear has passed them", train,
-                  leg.length(), count, thrown);
+    std::snprintf(text, sizeof text, "train %u's route: %.0f m, %zu junctions (%zu thrown), held until its rear has passed them, %zu signals opened",
+                  train, leg.length(), count, thrown, opened);
     result = text;
     impl.note(result);
     return true;
@@ -1515,6 +1774,7 @@ bool GameServer::cancel_route(const std::uint32_t train, std::string& error) {
         return false;
     }
     const bool rear_first = it->second.rear_first;
+    impl_->close_signals(it->second);
     impl_->routes.erase(it);
     send_route_left(train, -1.0f, rear_first);
     return true;
@@ -1577,11 +1837,14 @@ bool GameServer::lay_route(const std::uint32_t train, const double length, const
     const auto count = held.junctions.size();
     held.sent = static_cast<float>(held.leg.length());
     held.send_at = impl.now + 0.5;
+    if (const auto old = impl.routes.find(train); old != impl.routes.end()) impl.close_signals(old->second);
+    impl.open_signals(held);
+    const auto opened = held.opened.size();
     impl.routes[train] = std::move(held);
     send_route_left(train, static_cast<float>(impl.routes[train].leg.length()), rear_first);
     char text[160];
-    std::snprintf(text, sizeof text, "train %u's route: %.0f m along the junctions as they stand%s, %zu junctions held", train,
-                  impl.routes[train].leg.length(), moved.ok() ? "" : " (to the end of the track)", count);
+    std::snprintf(text, sizeof text, "train %u's route: %.0f m along the junctions as they stand%s, %zu junctions held, %zu signals opened",
+                  train, impl.routes[train].leg.length(), moved.ok() ? "" : " (to the end of the track)", count, opened);
     result = text;
     impl.note(result);
     return true;

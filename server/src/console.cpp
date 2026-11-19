@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cstdlib>
 #include <cstdio>
+#include <set>
 #include <sstream>
 
 #include <openrts/core/virtual_path.hpp>
@@ -55,8 +56,16 @@ constexpr const char* help_text =
     "  route <train> cancel           free the route's junctions\n"
     "  signals [text]                 the signals' names and how many of each\n"
     "  junction <node> [branch] [lock|unlock]  throw or lock a junction (TDB node)\n"
-    "  signal <item> <aspect|auto>    hold a signal's heads (TDB item) at an aspect, or give them back\n"
+    "  signal <item|name> [what]      a signal (TDB item, or its name if only one has it): its mode and aspect,\n"
+    "                                 or: <aspect> hold it there (manual, a route leaves it so), open (until a\n"
+    "                                 train passes it), auto (automatic block), close (manual), default\n"
     "                                 aspects: stop, stop_and_proceed, restricting, approach_1..3, clear_1, clear_2\n"
+    "  signal type <type> <manual|open|auto>  every signal with a head of that sigcfg type\n"
+    "  signal type <type> normal on|off  the type shown as normal (its heads count for their signal's aspect)\n"
+    "  signal defaults                every signal back to its defaults from the route database\n"
+    "  signal set-defaults            every signal's defaults become its mode and aspect now\n"
+    "  signal save                    the defaults and the types shown as normal into the server's copy of\n"
+    "                                 the route database (its data folder; the installation is not touched)\n"
     "  helper <nick> <train|off>      make a player the helper (помощник машиниста) on a train's cab, or not\n"
     "  kick <nick>                    drop a player\n"
     "  admit on|off                   take new players or not\n"
@@ -446,19 +455,73 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         return done(server.set_junction(*node, branch, lock, error), "junction " + std::to_string(*node) + " set");
     }
     if (command == "signal") {
-        const auto item = number_of(arg(1));
-        if (!item || words.size() < 3) return "usage: signal <item> <aspect|auto>";
-        std::optional<formats::SignalAspect> aspect;
-        if (lower(arg(2)) != "auto") {
-            aspect = formats::signal_aspect_from_name(lower(arg(2)));
-            if (!aspect) {
-                const auto n = number_of(arg(2));
-                if (!n || *n > 7) return "error: unknown aspect " + std::string(arg(2));
-                aspect = static_cast<formats::SignalAspect>(*n);
-            }
+        const std::string usage = "usage: signal <item|name> [aspect|open|auto|close|default] | signal type <type> <manual|open|auto> | "
+                                  "signal type <type> normal on|off | signal defaults | signal set-defaults | signal save";
+        if (words.size() < 2) return usage;
+        if (lower(arg(1)) == "defaults" && words.size() == 2) {
+            return done(server.restore_signal_defaults(error), "every signal back to its defaults");
         }
-        return done(server.set_signal(*item, aspect, error),
-                    "signal " + std::to_string(*item) + (aspect ? std::string(" held at ") + formats::to_string(*aspect) : " runs its script"));
+        if (lower(arg(1)) == "set-defaults" && words.size() == 2) {
+            return done(server.set_signal_defaults(error), "every signal's defaults are its mode and aspect now (signal save keeps them)");
+        }
+        if (lower(arg(1)) == "save" && words.size() == 2) {
+            std::string result;
+            const bool ok = route.save_signal_defaults(result);
+            return ok ? result : "error: " + result;
+        }
+        if (lower(arg(1)) == "type") {
+            if (words.size() < 4) return usage;
+            const auto what = lower(arg(3));
+            if (what == "normal") {
+                const auto state = lower(arg(4));
+                if (state != "on" && state != "off") return usage;
+                std::size_t count = 0;
+                const bool ok = server.set_signal_type_shown(arg(2), state == "on", count, error);
+                return done(ok, "type " + std::string(arg(2)) + (state == "on" ? " shown as normal (" : " not shown as normal (") +
+                                    std::to_string(count) + " signals)");
+            }
+            simulation::UnitMode mode = simulation::UnitMode::manual;
+            if (what == "open") mode = simulation::UnitMode::open;
+            else if (what == "auto" || what == "automatic") mode = simulation::UnitMode::automatic;
+            else if (what != "manual" && what != "close") return usage;
+            std::size_t count = 0;
+            const bool ok = server.set_signal_type_mode(arg(2), mode, count, error);
+            return done(ok, std::to_string(count) + " signals of type " + std::string(arg(2)) + ": " + what);
+        }
+        // The signal: a name only one signal has (names can be numbers, as
+        // "1"), else a TDB item.
+        std::uint32_t item = 0;
+        const auto items = route.signal_items(arg(1));
+        if (!items.empty()) {
+            std::set<std::uint32_t> units;
+            std::string list;
+            for (const auto i : items) {
+                const auto unit = route.signals() ? route.signals()->unit_of_item(i) : std::nullopt;
+                if (unit && units.insert(*unit).second) list += (list.empty() ? "" : ", ") + std::to_string(i);
+            }
+            if (units.size() > 1) {
+                return "error: " + std::to_string(units.size()) + " signals are named " + std::string(arg(1)) + ": items " + list;
+            }
+            item = items.front();
+        } else if (const auto n = number_of(arg(1))) {
+            item = *n;
+        } else {
+            return "error: no signal named " + std::string(arg(1)) + " (see: signals)";
+        }
+        if (words.size() < 3) return server.signal_report(item);
+        const auto what = lower(arg(2));
+        const auto action = [&](const GameServer::SignalAction a) { return done(server.control_signal(item, a, error), server.signal_report(item)); };
+        if (what == "open") return action(GameServer::SignalAction::open);
+        if (what == "auto" || what == "automatic") return action(GameServer::SignalAction::automatic);
+        if (what == "close") return action(GameServer::SignalAction::close);
+        if (what == "default") return action(GameServer::SignalAction::defaults);
+        auto aspect = formats::signal_aspect_from_name(what);
+        if (!aspect) {
+            const auto n = number_of(what);
+            if (!n || *n > 7) return "error: unknown aspect " + std::string(arg(2));
+            aspect = static_cast<formats::SignalAspect>(*n);
+        }
+        return done(server.set_signal(item, aspect, error), server.signal_report(item));
     }
     if (command == "helper") {
         if (words.size() < 3) return "usage: helper <nick> <train|off>";
