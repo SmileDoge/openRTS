@@ -20,6 +20,7 @@ add_library(openrts_viewer_core STATIC
     src/inspector.cpp
     src/mod_files.cpp
     src/tape_view.cpp
+    src/profile_strip.cpp
     src/key_repeat.cpp
     src/file_dialog.cpp
     src/viewer_state.cpp

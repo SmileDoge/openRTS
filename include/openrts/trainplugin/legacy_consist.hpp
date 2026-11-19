@@ -125,23 +125,38 @@ struct BrakesParameters {
 };
 [[nodiscard]] BrakesParameters brakes_parameters(const formats::EngineDefinition& engine);
 
+// A cab's КЛУБ switches and displays (KLUB_*<n>, PB_*<n>, the cab n from 1);
+// an id of -1 is none.
+struct KlubCabParameters {
+    std::vector<std::pair<std::int32_t, simulation::KlubPress>> keys; // KLUB_B*ID<n>
+    std::int32_t rb = -1, rbs = -1, epk_key = -1, cassette = -1, tskbm = -1, saut = -1;
+    std::int32_t cab_switch = -1; // BR_367ID<n>: the cab works with it in BR_367OPPOL
+    // Its displays: the screen (KLUB_DBIL<n>), the ALSN's lights
+    // (KLUB_DALS<n>, KLUB_DPOM<n> screens; KLUB_B1POM<n> .. B8POM<n> lamps).
+    std::int32_t screen = -1, dals = -1, dpom = -1;
+    std::array<std::int32_t, 8> lamps{-1, -1, -1, -1, -1, -1, -1, -1};
+    [[nodiscard]] const simulation::KlubPress* key(std::int32_t id) const noexcept;
+};
+
 // Brakes.dll's КЛУБ as openRTS's КЛУБ takes it (simulation/klub.hpp;
-// docs/reverse/brakes-dll.md §11): its settings and the first cab's
-// switches (KLUB_*1, PB_*1); an id of -1 is none.
+// docs/reverse/brakes-dll.md §11): its settings and each cab's switches
+// and displays (BR_NUMCABS cabs).
 struct KlubParameters {
     bool present = false;
     simulation::KlubSettings settings;
-    std::vector<std::pair<std::int32_t, simulation::KlubPress>> keys; // KLUB_B*ID1
-    std::vector<std::int32_t> power;                                  // KLUB_PIT1 .. KLUB_PIT<KLUB_PCOUNT>
-    std::int32_t rb = -1, rbs = -1, epk_key = -1, cassette = -1, tskbm = -1, saut = -1;
+    std::vector<KlubCabParameters> cabs = std::vector<KlubCabParameters>(1); // at least one
+    std::int32_t working_position = -1;           // BR_367OPPOL
+    std::vector<std::int32_t> power;              // KLUB_PIT1 .. KLUB_PIT<KLUB_PCOUNT> given (a missing one: on)
     std::int32_t flip = -1;                       // PB_FLIP: the cab whose forward is the car's back (from 0)
     std::int32_t setup_index = -1;                // PB_SETUP's index in the library's parameters
-    // Its displays: the screen (KLUB_DBIL1), the ALSN's lights (KLUB_DALS1,
-    // KLUB_DPOM1 screens; KLUB_B1POM1 .. B8POM1 lamps), its lamp
-    // (KLUB_PLAMP) and the cab's texture change for the backlight (KLUB_TCHNUM).
-    std::int32_t screen = -1, dals = -1, dpom = -1, lamp = -1, backlight = -1;
-    std::array<std::int32_t, 8> lamps{-1, -1, -1, -1, -1, -1, -1, -1};
-    [[nodiscard]] const simulation::KlubPress* key(std::int32_t id) const noexcept;
+    // Its lamp (KLUB_PLAMP) and the cab's texture change for the backlight (KLUB_TCHNUM).
+    std::int32_t lamp = -1, backlight = -1;
+    // TRANS_SOUND 1: Brakes.dll posts its sounds on the locomotive's SMS too
+    // (the outside and the cab's), not only on its own (0x404B10).
+    bool trans_sound = false;
+    // The working cab as Brakes.dll finds it (SwitchKLUB, updateKLUB): the
+    // only one, else the first whose 367 stands in BR_367OPPOL; -1 none.
+    [[nodiscard]] int working_cab(const std::vector<dllhost::SwitchState>& switches) const noexcept;
 };
 [[nodiscard]] KlubParameters klub_parameters(const formats::EngineDefinition& engine);
 // mdd_Libraries/Brakes/ChangeStanc.bto: the КЛУБ's station names (upper case).

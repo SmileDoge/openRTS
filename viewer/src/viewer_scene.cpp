@@ -760,6 +760,7 @@ public:
             if (input.limits_panel) train_->toggle_limits_panel();
             if (input.stations_panel) train_->toggle_stations_panel();
             if (input.drive_panel) train_->toggle_drive_panel();
+            if (input.profile_strip) train_->toggle_profile_strip();
             if (input.activity_journal && activity_) activity_->toggle_journal();
             if (input.activity_menu && activity_) activity_->toggle_menu();
             if (input.car_view) train_->car_view_key(camera);

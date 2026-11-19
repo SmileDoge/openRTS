@@ -255,10 +255,22 @@ openRTS around a running Brakes.dll, as now, is what this replaces.
      КЛУБ-У set against Brakes.dll's ("The real КЛУБ-У against
      Brakes.dll's" below); their recordings (the approach to a signal,
      К282) not posted yet.
-   - Not in it yet: САУТ (its permitted speed is taken from Brakes.dll's
-     in the shadow, not at all in the game), ТСКБМ, the БЛОК's screens and
-     `KLUB_BILTYPE` 2, two-cab engines, `Engine::CurrentMilepost` (the
-     coordinate).
+   - 2026-11-19: every cab of an engine (the ЭП1, ЭП2К, ЭП20: the working
+     cab's keys and devices, each cab's screen), the БЛОК's screen (the
+     ЭП20, 2ЭС6) and `KLUB_BILTYPE` 2's (the ЭП2К), the assistant's ALSN
+     lamps (`KLUB_B<n>POM<cab>`, read by a wrong name length until then),
+     and what Brakes.dll's other parts keep, read back from its variables
+     every step (protocol: `want_aux_vars` while openRTS's КЛУБ works):
+     САУТ's "on" (`+4` bit `0x40`) and permitted speed (`+256`) in the
+     game too, its coefficient (`Engine +120`) and distance (`+308`),
+     ТСКБМ's timer (`+12`). The limit and the next target go into
+     Brakes.dll's variables after its `Run` (`AuxVarWrite::after_run`):
+     САУТ reads `_ALSN`'s there before the КЛУБ. Its sounds go on the
+     locomotive's SMS with `TRANS_SOUND` 1 as Brakes.dll's do. Set against
+     Brakes.dll's step by step: `openrts.content.klub_2es6`, `_ep20`,
+     `_ep2k`, `_ep1` (standing: the ЭК, К799, the aspects).
+   - Not in it yet: САУТ and ТСКБМ of openRTS's own (Brakes.dll's run on),
+     `Engine::CurrentMilepost` (the coordinate).
 4. **The other cabs**, by the `KLUB_*` and `BR_*` ids of each family; then
    the recorder, САУТ, ТСКБМ.
 5. **Brakes.dll not loaded** for a locomotive switched to openRTS's.
@@ -333,6 +345,12 @@ Their recordings (the approach to a signal, К282) are not posted yet.
 | The ALSN's frequency: no codes off the section's | "50ГЦ" / "25ГЦ" shown by the line's current (DC / AC); no frequency logic |
 | The shunting mode: the signal ahead keeps giving КЖ (the testers' wish) | the shunting mode (МП on Б) shows Б at 60, whatever the codes |
 | К282 | not in Brakes.dll |
+| К799: on white only once the speed on white is entered and confirmed | on white at once, at the speed before, while the speed is entered |
+
+openRTS's КЛУБ does К799 the real КЛУБ-У's way (2026-11-19, the
+developer's choice; `KlubState::white_799_entry`); К809 and К800 as
+Brakes.dll's. The shadow sets only the entry against Brakes.dll's from К799
+until its screen redraws after the speed is entered.
 
 So the real КЛУБ-У's map (a target by the track number) and the ALSN's
 frequency are openRTS's to add later as settings (the developer's choice,
@@ -349,3 +367,8 @@ way out); side tracks; К282.
   parameters are read as data.
 - **Content:** other authors' content may use Brakes.dll in ways the
   installation's does not show.
+- **The 2ЭС4К with the ЭК** (found 2026-11-19, the shadow): with a track
+  number Brakes.dll keeps the limit at `KLUB_GRSPD` (120) and the target
+  at 120 / 10 000 m, as without the ЭК, where openRTS's takes the line's
+  100: its `_ALSN` seems to see another limit there (the 2ЭС4К's DLL?).
+  Not traced.

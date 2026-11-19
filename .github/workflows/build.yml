@@ -21,6 +21,9 @@ jobs:
     runs-on: windows-latest
     env:
       WGPU_VERSION: v27.0.4.0
+      # The compiler's cache in GitHub's cache (sccache): a build compiles
+      # only what changed since a cached one.
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -39,6 +42,18 @@ jobs:
           Invoke-WebRequest $url -OutFile wgpu.zip
           Expand-Archive wgpu.zip -DestinationPath wgpu-native
 
+      # Ninja (Multi-Config: the programs stay in their Release folders) in
+      # the MSVC environment: the Visual Studio generator cannot call a
+      # compiler launcher. openrts-dllhost32 is still built by Visual
+      # Studio's (CMakeLists.txt).
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       # The build's label after the version in the windows' titles: "nightly
       # <commit>" for a push to master (the nightly release), "ci <commit>"
       # for a pull request or a manual run, none for a version tag.
@@ -49,10 +64,14 @@ jobs:
           if ($env:GITHUB_REF -like 'refs/tags/v*') { $label = '' }
           elseif ($env:GITHUB_REF -eq 'refs/heads/master' -and $env:GITHUB_EVENT_NAME -eq 'push') { $label = "nightly $commit" }
           else { $label = "ci $commit" }
-          cmake -S . -B build -DOPENRTS_ENABLE_WGPU=ON "-DOPENRTS_WGPU_ROOT=$env:GITHUB_WORKSPACE/wgpu-native" "-DOPENRTS_BUILD_LABEL=$label"
+          cmake -S . -B build -G "Ninja Multi-Config" -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DOPENRTS_ENABLE_WGPU=ON "-DOPENRTS_WGPU_ROOT=$env:GITHUB_WORKSPACE/wgpu-native" "-DOPENRTS_BUILD_LABEL=$label"
 
       - name: Build
         run: cmake --build build --config Release --parallel
+
+      - name: Compiler cache
+        if: always()
+        run: sccache --show-stats
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure

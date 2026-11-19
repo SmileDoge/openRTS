@@ -3,10 +3,12 @@
 #include <cstdint>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <openrts/formats/track_database.hpp>
 #include <openrts/simulation/track_network.hpp>
+#include <openrts/simulation/track_traveller.hpp>
 
 // Speed limits from the route's speed posts (docs/paths.md): a limit post
 // sets the limit for trains passing it in the direction its sign faces, a
@@ -76,6 +78,10 @@ public:
     // it, counting up or down as the next post ahead tells; nothing without
     // a post within 5 km behind.
     [[nodiscard]] std::optional<double> ordinate(const Train& train) const;
+    // The kilometre posts along the way from `lead` (facing the way it
+    // goes) within `ahead` m forward and `behind` m back: (the kilometre a
+    // post shows, metres from `lead`: ahead +, behind -), by distance.
+    [[nodiscard]] std::vector<std::pair<double, double>> mileposts_along(const TrackTraveller& lead, double ahead, double behind) const;
     [[nodiscard]] const std::vector<SpeedPostOnTrack>& posts() const noexcept { return posts_; }
     // The post for item `item`, if it is a limit post on the network.
     [[nodiscard]] const SpeedPostOnTrack* post(std::uint32_t item) const;

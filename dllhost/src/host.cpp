@@ -1266,15 +1266,21 @@ void Host::write_aux(const StepRequest& request) {
     }
 }
 
-void Host::apply_aux_writes(AuxMirror& aux) {
-    for (const auto& w : aux.pending_writes) {
+void Host::apply_aux_writes(AuxMirror& aux, const bool after_run) {
+    std::size_t kept = 0;
+    for (std::size_t k = 0; k < aux.pending_writes.size(); ++k) {
+        const auto w = aux.pending_writes[k];
+        if ((w.after_run != 0) != after_run) {
+            aux.pending_writes[kept++] = w;
+            continue;
+        }
         if (w.offset % 4 != 0 || w.offset / 4u >= aux.var.size()) continue;
         std::uint32_t word = 0;
         std::memcpy(&word, &aux.var[w.offset / 4u], sizeof word);
         word = (word & ~w.mask) | (w.bits & w.mask);
         std::memcpy(&aux.var[w.offset / 4u], &word, sizeof word);
     }
-    aux.pending_writes.clear();
+    aux.pending_writes.resize(kept);
 }
 
 void Host::write_inputs(const std::vector<CarInput>& inputs) {
@@ -1508,13 +1514,14 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
         for (const auto& call : car.aux_info[i].calls) {
             if (call.event != aux_run || call.order >= 0) continue;
             car.aux_info[i].exchange_before = exchange_word(car.aux_info[i]);
-            apply_aux_writes(car.aux_info[i]);
+            apply_aux_writes(car.aux_info[i], false);
             car.aux[i].lib_flags &= ~1u;
             auto* fn = reinterpret_cast<abi::AuxRunFn>(am.run);
             abi::Locomotive* v = view(car, &am);
             const DWORD crash = guarded([&] { fn(&car.aux[i], v, state, dt, air_temperature); });
             sync();
             if (crash) fail(am, L"Run (aux)", crash);
+            apply_aux_writes(car.aux_info[i], true);
         }
     }
     if (car.module->run) {
@@ -1530,17 +1537,21 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
         for (const auto& call : car.aux_info[i].calls) {
             if (call.event != aux_run || call.order < 0) continue;
             car.aux_info[i].exchange_before = exchange_word(car.aux_info[i]);
-            apply_aux_writes(car.aux_info[i]);
+            apply_aux_writes(car.aux_info[i], false);
             car.aux[i].lib_flags |= 1u;
             auto* fn = reinterpret_cast<abi::AuxRunFn>(am.run);
             abi::Locomotive* v = view(car, &am);
             const DWORD crash = guarded([&] { fn(&car.aux[i], v, state, dt, air_temperature); });
             sync();
             if (crash) fail(am, L"Run (aux)", crash);
+            apply_aux_writes(car.aux_info[i], true);
         }
     }
     // A library without a Run this step still takes its writes.
-    for (auto& aux : car.aux_info) apply_aux_writes(aux);
+    for (auto& aux : car.aux_info) {
+        apply_aux_writes(aux, false);
+        apply_aux_writes(aux, true);
+    }
     if (flipped) {
         w->velocity = -w->velocity;
         w->acceleration = -w->acceleration;
@@ -2218,6 +2229,7 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
     o.alsn_on = e->alsn_on;
     o.sanding = e->sanding;
     o.engine_flags = e->engine_flags;
+    o.flags = e->flags;
     o.reverse = e->reverse;
     o.wheelslip = e->wheelslip;
     o.engine_force_count = static_cast<std::uint8_t>((std::min)(car.engine_force.size(), o.engine_forces.size()));

@@ -347,10 +347,17 @@ void update(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sou
     s.saut_rules = false;
     if ((s.device & d::saut_on) && (k.setup & 1) && !(s.flags & f::white_799) && (!(s.flags & f::white_809) || aspect != 2) &&
         (s.flags & f::train_mode)) {
+        // updateKLUB's drawing does it ("САУТ" / "С" on the screen; the sum
+        // in the x87's precision). Brakes.dll's ЭП1 run shows it on both
+        // cabs' screens, though its code reads as doing it in the first
+        // cab drawn only (PROBABLE: all of them).
         if (k.setup & 8) {
-            if (in.saut_permitted - 3.0f <= s.permitted) s.permitted = in.saut_permitted - 3.0f;
-        } else if (in.saut_permitted + 5.0f <= s.permitted) {
-            s.permitted = in.saut_permitted + 5.0f;
+            if (s.permitted > in.saut_permitted) {
+                s.permitted = in.saut_permitted;
+                s.saut_rules = true;
+            }
+        } else if (static_cast<double>(in.saut_permitted) + 5.0 < static_cast<double>(s.permitted)) {
+            s.permitted = static_cast<float>(static_cast<double>(in.saut_permitted) + 5.0);
             s.saut_rules = true;
         }
     }
@@ -594,6 +601,8 @@ void key(KlubState& s, const KlubSettings& k, const KlubInputs& in, const KlubPr
             s.flags &= ~f::white_entry;
             s.white_speed = s.entry;
             s.entry = 0;
+            if (s.white_799_entry) s.flags |= f::white_799;
+            s.white_799_entry = false;
             confirm();
         } else if (!(s.flags & f::track_entry)) {
             if (s.flags & f::right_entry) {
@@ -698,10 +707,15 @@ void key(KlubState& s, const KlubSettings& k, const KlubInputs& in, const KlubPr
         if (s.flags & f::double_traction) s.flags |= f::traction_262;
         break;
     case 799:
-        s.flags |= f::white_799 | f::white_entry | f::fresh_entry;
+        // The speed first; on white once it is entered (ВВОД above).
+        s.flags |= f::white_entry | f::fresh_entry;
+        s.white_799_entry = true;
         s.entry = s.white_speed;
         break;
-    case 800: s.flags &= ~(f::white_799 | f::white_809); break;
+    case 800:
+        s.flags &= ~(f::white_799 | f::white_809);
+        s.white_799_entry = false;
+        break;
     case 809:
         s.flags |= f::white_809 | f::white_entry | f::fresh_entry;
         s.entry = s.white_speed;

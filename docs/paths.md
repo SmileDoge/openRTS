@@ -42,6 +42,20 @@ train, else the driven one):
 - **Ctrl+F5** — the kilometre and picket (from the nearest kilometre post
   behind, counting the way the posts ahead go), the limit now, the limits
   ahead within 10 km with their distances, the next signal;
+- **Ctrl+F4** — the profile strip at the top (openRTS; the testers' request,
+  2026-11-19): the track's height along the junctions as set, ahead and a
+  little behind, a point every 10 m (20 m on spans over 5 km), slightly
+  smoothed (`simulation/track_profile.hpp`); its grade by colour (rising
+  warm, falling cool, level grey, stronger to 10 per mille) and the grade
+  under the train ("Профиль = −0,4 ‰", from its rear to its front); the
+  kilometre posts, the speed limits ahead, the signals (their normal heads'
+  lamp, names on spans up to 5 km) and the stations; the train as a stroke
+  of its length with its mass and cars. The wheel over it: 2, 5, 10, 20 km
+  on the screen; a drag shifts it, a double click puts it back. Built again
+  every second. The other panels keep below it; remembered as
+  `profile_strip`. In a capture `--capture-profile` turns it on at 0.2 of
+  `--capture-at`, and `--capture-ui` keeps the panels in the picture (they
+  are left out otherwise);
 - **F6** — the stations ahead with their distances: along the path, or
   along the junctions as set within 40 km; a platform named after its
   station shows only the rest ("о.п. ЗИП, п.I"). In a scenario whose
