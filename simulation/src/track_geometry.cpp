@@ -65,4 +65,13 @@ double heading_difference(const float a, const float b) {
     return difference;
 }
 
+float cant_angle(const float curvature, const float radius, const float design_speed) noexcept {
+    const float r = radius > 1.0f ? radius : (std::abs(curvature) > 1e-4f ? 1.0f / std::abs(curvature) : 0.0f);
+    if (r <= 0.0f || curvature == 0.0f) return 0.0f;
+    const float design = std::clamp(design_speed, 10.0f, 40.0f);
+    const float height = std::clamp(track_gauge * design * design / (9.81f * r) - 0.05f, 0.0f, 0.15f);
+    return (curvature > 0.0f ? 1.0f : -1.0f) * std::asin(height / track_gauge);
+}
+
 } // namespace openrts::simulation
+
