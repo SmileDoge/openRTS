@@ -51,7 +51,7 @@ using formats::WagonDefinition;
 }
 
 [[nodiscard]] float mass_of(const CarState& car) {
-    return (std::max)(car.definition->mass, 1.0f);
+    return static_cast<float>(car_mass(car));
 }
 
 // Under the realistic air, one bogie's full brake force at 40 km/h: half the
@@ -496,7 +496,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
         // The sander raises the limit as it raises adhesion (Adheasion's third value).
         const float sand = handles.sanding && inputs.definition->adhesion[2] > 0.0f ? inputs.definition->adhesion[2] : 1.0f;
         const float mu = inputs.definition->adhesion[1] * sand * inputs.adhesion;
-        if (mu > 0.0f) force = (std::min)(force, inputs.definition->mass * 10.0f * mu * 0.9f);
+        if (mu > 0.0f) force = (std::min)(force, (inputs.definition->mass + inputs.cargo_mass) * 10.0f * mu * 0.9f);
         demands.force = force * static_cast<float>(reverser);
     }
     // Compressor with hysteresis (every engine).
@@ -912,6 +912,13 @@ double Train::mass() const noexcept {
     return total;
 }
 
+void Train::set_cargo(const std::size_t car, const float mass_kg, std::string id) {
+    if (car >= cars_.size()) return;
+    auto& state = cars_[car];
+    state.cargo_mass = (std::max)(mass_kg, 0.0f);
+    state.cargo_id = state.cargo_mass > 0.0f ? std::move(id) : std::string{};
+}
+
 void Train::hit(const std::size_t index, const float force, const float (&direction)[3], const float time) {
     if (index >= cars_.size() || force <= 0.0f) return;
     auto& car = cars_[index];
@@ -1215,7 +1222,7 @@ double Train::brake_pressing() const {
         const float reference = brake_force_pressure(*car.definition);
         if (reference <= 0.0f) continue;
         const auto kind = distributor_kind(*car.definition);
-        const float full_cylinder = distributor_full_cylinder(kind, effective_load(car.distributor.load, car.definition->mass));
+        const float full_cylinder = distributor_full_cylinder(kind, effective_load(car.distributor.load, mass_of(car)));
         for (std::size_t b = 0; b < 2; ++b) pressing += bogie_full_force(car, b, settings_) * (full_cylinder / reference) / cast_iron_40;
     }
     return weight > 0.0 ? 100.0 * pressing / weight : 0.0;
@@ -1374,6 +1381,7 @@ void Train::step() {
             .independent = car.independent,
             .flipped = car.flipped,
             .definition = car.definition,
+            .cargo_mass = car.cargo_mass,
             // The default controller keeps its force within RTS's limit;
             // with openRTS's (below) its axles may slip as any engine's.
             .adhesion = settings_.rails == RailCondition::rts ? rails_grip : 0.0f,
@@ -2414,7 +2422,7 @@ namespace {
 // Mass-weighted mean velocity of a train towards its front.
 double mean_velocity(const Train& train) {
     double momentum = 0.0;
-    for (const auto& car : train.cars()) momentum += static_cast<double>(car.velocity) * (std::max)(car.definition->mass, 1.0f);
+    for (const auto& car : train.cars()) momentum += static_cast<double>(car.velocity) * car_mass(car);
     return momentum / (std::max)(train.mass(), 1.0);
 }
 
@@ -2451,7 +2459,7 @@ std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains
             const double overlap = closing * train_step - meeting->gap;
             if (overlap <= 0.0) continue;
             // The impact RTS compares with DerailBufferForce.
-            const double force = overlap / train_step * ((std::max)(end_a.definition->mass, 1.0f) + (std::max)(end_b.definition->mass, 1.0f));
+            const double force = overlap / train_step * (car_mass(end_a) + car_mass(end_b));
             const auto& coupler_a = front ? (end_a.flipped ? end_a.definition->couplings[0] : end_a.definition->couplings[1])
                                           : (end_a.flipped ? end_a.definition->couplings[1] : end_a.definition->couplings[0]);
             const auto& coupler_b = meeting->other_front

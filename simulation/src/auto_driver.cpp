@@ -91,8 +91,8 @@ float planned_deceleration_for(const Train& train) {
     double mass = 0.0;
     for (const auto& car : train.cars()) {
         const auto* definition = car.definition;
-        if (!definition || definition->mass <= 0.0f) continue;
-        mass += definition->mass;
+        if (!definition) continue;
+        mass += car_mass(car);
         force += definition->brakes.realistic_brake_force > 0.0f ? definition->brakes.realistic_brake_force
                                                                  : definition->brakes.max_brake_force;
     }
@@ -108,8 +108,8 @@ float planned_deceleration_for(const Train& train) {
 double curve_speed(const Train& train, const double radius) {
     double worst = std::numeric_limits<double>::infinity();
     for (const auto& car : train.cars()) {
-        if (!car.definition || car.definition->derail_rail_force <= 0.0f || car.definition->mass <= 0.0f) continue;
-        worst = (std::min)(worst, static_cast<double>(car.definition->derail_rail_force / car.definition->mass));
+        if (!car.definition || car.definition->derail_rail_force <= 0.0f) continue;
+        worst = (std::min)(worst, static_cast<double>(car.definition->derail_rail_force) / car_mass(car));
     }
     if (!std::isfinite(worst) || radius <= 0.0) return std::numeric_limits<double>::infinity();
     return 0.85 * std::sqrt(worst * radius);

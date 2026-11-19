@@ -57,7 +57,7 @@ float reservoir_volume(const formats::EngineDefinition& engine) { return main_re
 
 // The load mode of a car's 483: as a hand set it, else by its mass.
 DistributorLoad load_of(const CarState& car) {
-    return effective_load(car.distributor.load, car.definition ? car.definition->mass : 60000.0f);
+    return effective_load(car.distributor.load, car.definition ? static_cast<float>(car_mass(car)) : 60000.0f);
 }
 
 
@@ -261,7 +261,7 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                 .pipe_volume = volume[i],
                 .auxiliary_volume = distributor_auxiliary_volume(kind),
                 .cylinder_volume = distributor_cylinder_volume,
-                .mass = car.definition->mass,
+                .mass = car_mass(car),
                 .ep = (car.definition->brakes.system & 2) != 0,
                 .ep_fill = car.ep_fill,
                 .load = load,

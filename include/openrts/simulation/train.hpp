@@ -143,6 +143,7 @@ struct EngineInputs {
     float independent{};    // independent brake cylinder, atm
     bool flipped = false;   // the car faces the train rear
     const formats::WagonDefinition* definition = nullptr;
+    float cargo_mass{};     // kg, on top of the definition's
     // The rails' adhesion as a share of RTS's (TrainSettings::rails, the
     // treads' wetness): the traction limit's factor.
     float adhesion = 1.0f;
@@ -326,6 +327,8 @@ struct BrakeWear {
 // State of one car (the ts.h Wagon fields RTS simulates on).
 struct CarState {
     const formats::WagonDefinition* definition = nullptr;
+    float cargo_mass{};   // kg (RTS industries), on top of the definition's
+    std::string cargo_id; // the catalog ID; empty: the car carries nothing
     bool flipped = false;
     // The brake shoes of its front and rear bogie (its own ends): their
     // friction under the realistic air (brake_shoes.hpp).
@@ -451,6 +454,12 @@ struct CarState {
     }
 };
 
+
+// The mass the physics runs on: the car's own and its cargo's, kg.
+[[nodiscard]] inline double car_mass(const CarState& car) noexcept {
+    const double base = car.definition ? static_cast<double>(car.definition->mass) : 0.0;
+    return (std::max)(base + static_cast<double>(car.cargo_mass), 1.0);
+}
 
 class Train {
 public:
@@ -595,6 +604,10 @@ public:
     void set_drive_acceleration(float acceleration) noexcept { drive_acceleration_ = acceleration; }
 
     [[nodiscard]] const std::vector<CarState>& cars() const noexcept { return cars_; }
+
+    // RTS cargo: car `car` carries `mass_kg` of `id` (its catalog entry);
+    // the physics adds it to the car's own mass. Zero clears the load.
+    void set_cargo(std::size_t car, float mass_kg, std::string id);
     // The force each joint passes after the last step (tension +; joint j is
     // behind car j). On the move it is what the cars behind it need (Newton:
     // each one's m·a less its own forces, its brake and resistance against
