@@ -5295,6 +5295,12 @@ void TrainView::draw_hud() {
     }
     if (limits_panel_) {
         if (begin_panel("##limits", limits_place_, 1.0f - margin_x, margin_y)) {
+            ImGui::TextDisabled("%s", tr("Speed limits"));
+            if (limit.current > 0.0f) {
+                ImGui::Text(tr("Limit %.0f km/h"), limit.current * 3.6f);
+            } else {
+                ImGui::TextDisabled("%s", tr("Limit -"));
+            }
             if (ordinate) {
                 const double km = std::floor(*ordinate);
                 const int picket = static_cast<int>((*ordinate - km) * 10.0) + 1;
@@ -5302,18 +5308,26 @@ void TrainView::draw_hud() {
             } else {
                 ImGui::TextDisabled(tr("km -"));
             }
-            ImGui::Text(tr("Limit %.0f km/h"), limit.current * 3.6f);
             ImGui::Separator();
-            const auto ahead = limits_->limits_ahead(train, unit->speed_category(), 10000.0, 6);
-            if (!ahead.empty() && ImGui::BeginTable("##limits_ahead", 2, ImGuiTableFlags_SizingFixedFit)) {
+            const auto ahead = limits_->limits_ahead(train, unit->speed_category(), 50000.0, 24);
+            if (ImGui::BeginTable("##limits_ahead", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+                ImGui::TableSetupColumn(tr("Limit, km/h"));
+                ImGui::TableSetupColumn(tr("Distance, km"));
+                ImGui::TableHeadersRow();
+                bool nearest = true;
                 for (const auto& [speed, distance] : ahead) {
                     ImGui::TableNextRow();
+                    if (nearest) ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(167, 241, 29, 24));
                     ImGui::TableNextColumn();
-                    ImGui::Text("%4.0f km/h", speed * 3.6f);
+                    ImGui::Text("%.0f", speed * 3.6f);
                     ImGui::TableNextColumn();
-                    ImGui::Text(distance >= 1000.0 ? "%.2f km" : "%.0f m", distance >= 1000.0 ? distance / 1000.0 : distance);
+                    ImGui::Text("%.2f", distance / 1000.0);
+                    nearest = false;
                 }
                 ImGui::EndTable();
+            }
+            if (ahead.empty()) {
+                ImGui::TextDisabled("%s", limit.current > 0.0f ? tr("No limits in the next 50 km") : tr("No limit data for the route"));
             }
             if (signals_) {
                 const auto next = signals_->ahead(train);
@@ -5324,6 +5338,8 @@ void TrainView::draw_hud() {
                 }
                 if (alsn_) ImGui::Text(tr("ALSN %s"), simulation::alsn_name(alsn_->code(train)));
             }
+            ImGui::Separator();
+            ImGui::TextDisabled("%s", tr("Ctrl+F5: speed limits and the kilometre"));
         }
         end_panel(limits_place_);
     }
