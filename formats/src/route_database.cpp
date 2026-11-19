@@ -28,6 +28,19 @@ using detail::TextRange;
     return result;
 }
 
+[[nodiscard]] std::optional<RoutePlace> place(const std::string_view text, const TextRange range) {
+    const auto v = tokens(text, range);
+    if (v.size() < 6) return std::nullopt;
+    RoutePlace result;
+    result.tile_x = std::atoi(v[0].c_str());
+    result.tile_z = std::atoi(v[1].c_str());
+    result.x = std::strtof(v[2].c_str(), nullptr);
+    result.y = std::strtof(v[3].c_str(), nullptr);
+    result.z = std::strtof(v[4].c_str(), nullptr);
+    result.flag = static_cast<std::uint32_t>(std::strtoul(v[5].c_str(), nullptr, 10));
+    return result;
+}
+
 } // namespace
 
 RouteDatabase parse_route_database(const std::string_view bytes) {
@@ -63,6 +76,68 @@ RouteDatabase parse_route_database(const std::string_view bytes) {
         database.signal_units.push_back(std::move(unit));
         within.begin = block->end + 1;
         if (within.begin >= within.end) break;
+    }
+    if (const auto points = rts_find(t, "routepoints")) {
+        auto within = *points;
+        while (const auto block = rts_find(t, "routepoint", within)) {
+            RoutePoint point;
+            if (const auto name = rts_find(t, "name", *block)) point.name = rts_token(o, name->begin, name->end);
+            if (const auto type = rts_find(t, "pointtype", *block))
+                point.point_type = static_cast<std::uint32_t>(std::atoi(rts_token(t, type->begin, type->end).c_str()));
+            if (const auto flags = rts_find(t, "flags", *block))
+                point.flags = static_cast<std::uint32_t>(std::strtoul(rts_token(t, flags->begin, flags->end).c_str(), nullptr, 16));
+            if (const auto station = rts_find(t, "stationname", *block)) point.station = rts_token(o, station->begin, station->end);
+            if (const auto first = rts_find(t, "point1", *block)) {
+                if (const auto parsed = place(t, *first)) point.first = *parsed;
+            }
+            if (const auto second = rts_find(t, "point2", *block)) {
+                if (const auto parsed = place(t, *second)) {
+                    point.second = *parsed;
+                    point.has_second = true;
+                }
+            }
+            database.points.push_back(std::move(point));
+            within.begin = block->end + 1;
+            if (within.begin >= within.end) break;
+        }
+    }
+    if (const auto routes = rts_find(t, "routetrainroutes")) {
+        auto within = *routes;
+        while (const auto block = rts_find(t, "trainroute", within)) {
+            RouteTrainRoute route;
+            if (const auto id = rts_find(t, "id", *block))
+                route.id = static_cast<std::uint32_t>(std::atoi(rts_token(t, id->begin, id->end).c_str()));
+            if (const auto name = rts_find(t, "name", *block)) route.name = rts_token(o, name->begin, name->end);
+            if (const auto flags = rts_find(t, "flags", *block))
+                route.flags = static_cast<std::uint32_t>(std::strtoul(rts_token(t, flags->begin, flags->end).c_str(), nullptr, 16));
+            if (const auto station = rts_find(t, "stationname", *block)) route.station = rts_token(o, station->begin, station->end);
+            if (const auto start = rts_find(t, "start", *block)) route.start = rts_token(o, start->begin, start->end);
+            if (const auto end = rts_find(t, "end", *block)) route.end = rts_token(o, end->begin, end->end);
+            database.routes.push_back(std::move(route));
+            within.begin = block->end + 1;
+            if (within.begin >= within.end) break;
+        }
+    }
+    if (const auto paths = rts_find(t, "routetrainpaths")) {
+        auto within = *paths;
+        while (const auto block = rts_find(t, "trainpath", within)) {
+            RouteTrainPath path;
+            if (const auto id = rts_find(t, "routeid", *block))
+                path.route_id = static_cast<std::uint32_t>(std::atoi(rts_token(t, id->begin, id->end).c_str()));
+            if (const auto priority = rts_find(t, "priority", *block))
+                path.priority = static_cast<std::uint32_t>(std::atoi(rts_token(t, priority->begin, priority->end).c_str()));
+            if (const auto points = rts_find(t, "points", *block)) {
+                auto rows = *points;
+                while (const auto row = rts_find(t, "point", rows)) {
+                    if (const auto parsed = place(t, *row)) path.points.push_back(*parsed);
+                    rows.begin = row->end + 1;
+                    if (rows.begin >= rows.end) break;
+                }
+            }
+            database.paths.push_back(std::move(path));
+            within.begin = block->end + 1;
+            if (within.begin >= within.end) break;
+        }
     }
     return database;
 }

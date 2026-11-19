@@ -22,12 +22,54 @@ struct RouteSignalUnit {
     std::string default_aspect;     // DefaultAspect, e.g. STOP
 };
 
+struct RoutePlace {
+    std::int32_t tile_x{};
+    std::int32_t tile_z{};
+    float x{};
+    float y{};
+    float z{};
+    std::uint32_t flag{};
+    [[nodiscard]] double absolute_x() const noexcept { return static_cast<double>(tile_x) * 2048.0 + x; }
+    [[nodiscard]] double absolute_z() const noexcept { return static_cast<double>(tile_z) * 2048.0 + z; }
+};
+
+struct RoutePoint {
+    std::string name;
+    std::uint32_t point_type{};
+    std::uint32_t flags{};
+    std::string station;
+    RoutePlace first;
+    RoutePlace second;
+    bool has_second = false;
+    [[nodiscard]] bool is_track() const noexcept { return point_type == 2; }
+};
+
+struct RouteTrainRoute {
+    std::uint32_t id{};
+    std::string name;
+    std::uint32_t flags{};
+    std::string station;
+    std::string start;
+    std::string end;
+    [[nodiscard]] bool is_main() const noexcept { return (flags & 1U) != 0; }
+    [[nodiscard]] bool is_through() const noexcept { return (flags & 8U) != 0; }
+};
+
+struct RouteTrainPath {
+    std::uint32_t route_id{};
+    std::uint32_t priority{};
+    std::vector<RoutePlace> points;
+};
+
 // The RTS route database (`<route>/<RouteID>.rtsdb`, UTF-16 text,
 // SIMISA@@@@@@@@@@JINX1R0t; docs/reverse/dispatcher.md): the game reads the
 // signal names from it (Ctrl+F7), the dispatcher console also its station
-// routes. Only the signal units are read so far.
+// routes.
 struct RouteDatabase {
     std::vector<RouteSignalUnit> signal_units;
+    std::vector<RoutePoint> points;
+    std::vector<RouteTrainRoute> routes;
+    std::vector<RouteTrainPath> paths;
     std::string error;
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
 };
