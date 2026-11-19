@@ -65,6 +65,8 @@
 
 namespace openrts::viewer {
 
+class CargoSystem;
+
 // A consist from the content on the route: simulated (simulation::Train on a
 // fixed step), driven with the keyboard, drawn with posed bogies and wheels,
 // and heard through its cars' sound scripts. Uncoupled cuts stay on the
@@ -1051,6 +1053,8 @@ private:
     simulation::TrackNetwork* network_ = nullptr;
     std::string consist_;
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock_;
+    std::unique_ptr<CargoSystem> cargo_;
+    std::vector<std::array<float, 3>> cargo_centres_;
     std::vector<Unit> units_; // [0]: the driven train; the rest: cuts and trains from Track control
     std::unique_ptr<simulation::Dispatcher> dispatcher_;
     std::unique_ptr<simulation::SpeedLimits> limits_;

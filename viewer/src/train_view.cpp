@@ -1,5 +1,6 @@
 ﻿#ifdef OPENRTS_HAS_WGPU
 #include "train_view.hpp"
+#include "cargo_system.hpp"
 
 #include <openrts/core/profile.hpp>
 
@@ -352,6 +353,7 @@ TrainView::TrainView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath rou
     route_tolerance_ = definition.ok() ? definition.timetable_tolerance : 0.0f;
     electrification_ = simulation::Electrification::load(*vfs_, route_, network);
     if (!electrification_->data().error.empty()) std::cout << "electrification: " << electrification_->data().error << '\n';
+    cargo_ = std::make_unique<CargoSystem>(vfs_, route_, origin_);
 }
 
 std::filesystem::path TrainView::user_path_folder() const {
@@ -2197,6 +2199,15 @@ void TrainView::step_trains() {
         auto& unit = units_[u];
         if (unit.remote) continue;
         unit.train->step();
+        if (cargo_ && unit.train->placed()) {
+            const auto placements = unit.train->placements();
+            cargo_centres_.clear();
+            for (const auto& placement : placements) {
+                const glm::vec3 centre = (local(placement.front) + local(placement.rear)) * 0.5f;
+                cargo_centres_.push_back({centre.x, centre.y, centre.z});
+            }
+            cargo_->update(static_cast<float>(simulation::train_step), *unit.train, cargo_centres_);
+        }
         for (const auto& event : unit.train->take_events()) {
             auto* car = event.car < unit.cars.size() ? &unit.cars[event.car] : nullptr;
             switch (event.kind) {
@@ -8104,6 +8115,23 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
                                                  : trf("%s: %.1f t", what.c_str(), f.mass * 0.001f));
             }
             text += "\n" + trf("Total: %.1f t", c.definition->mass * 0.001f);
+            const auto& state = train.cars()[i];
+            if (!state.cargo_id.empty() || state.cargo_mass > 0.0f) {
+                float capacity = 0.0f;
+                if (cargo_ && cargo_->ready() && state.definition) {
+                    if (const auto* wagon = cargo_->catalog().wagon_for(state.definition->file.filename().string())) {
+                        if (const auto* type = cargo_->catalog().cargo(state.cargo_id)) {
+                            capacity = formats::cargo_capacity(*wagon, *type, state.definition->width, state.definition->height,
+                                                               state.definition->length);
+                        }
+                    }
+                }
+                const std::string what = state.cargo_id.empty() ? tr("cargo") : state.cargo_id;
+                text += "\n" + (capacity > 0.0f
+                                    ? trf("%s: %.1f t of %.1f t", what.c_str(), state.cargo_mass * 0.001f, capacity * 0.001f)
+                                    : trf("%s: %.1f t", what.c_str(), state.cargo_mass * 0.001f));
+                text += "\n" + trf("With cargo: %.1f t", (c.definition->mass + state.cargo_mass) * 0.001f);
+            }
             cargo_text_ = std::move(text);
             cargo_time_ = 30.0f;
             break;
