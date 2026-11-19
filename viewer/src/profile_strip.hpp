@@ -27,6 +27,8 @@ struct ProfileMark {
 
 struct ProfileView {
     const simulation::TrackProfile* profile = nullptr;
+    // Its elements of one grade, numbered under the line (a regime map's).
+    std::vector<simulation::TrackProfileElement> elements;
     std::vector<ProfileMark> marks;
     double train_length{};  // m behind the leading end
     double mass_tonnes{};
@@ -43,6 +45,8 @@ public:
     [[nodiscard]] bool take_changed() noexcept;
     // Its height on the screen (px): the panels keep below it.
     [[nodiscard]] static float height();
+    // The shortest element whose grade can be written at the span shown (m).
+    [[nodiscard]] double shortest_element() const;
     void draw(const ProfileView& view);
 
 private:

@@ -47,7 +47,12 @@ train, else the driven one):
   little behind, a point every 10 m (20 m on spans over 5 km), slightly
   smoothed (`simulation/track_profile.hpp`); its grade by colour (rising
   warm, falling cool, level grey, stronger to 10 per mille) and the grade
-  under the train ("Профиль = −0,4 ‰", from its rear to its front); the
+  under the train ("Профиль = −0,4 ‰", from its rear to its front); under
+  the line each element of one grade numbered in per mille with its sign
+  (rising +) and its ends ticked, as on a regime map: the steps whose
+  grades differ by 0.5 per mille or less make one element, and an element
+  too short for its number at the span shown joins the neighbour nearer in
+  grade (`TrackProfile::elements`); the
   kilometre posts, the speed limits ahead, the signals (their normal heads'
   lamp, names on spans up to 5 km) and the stations; the train as a stroke
   of its length with its mass and cars. The wheel over it: 2, 5, 10, 20 km

@@ -87,6 +87,12 @@ struct TrackProfilePoint {
     double height{};   // m, the track's (TrackTraveller::pose().y)
 };
 
+// An element of the profile (a regime map's): a stretch of one grade.
+struct TrackProfileElement {
+    double from{}, to{}; // m along the way
+    double grade{};      // per mille: + rising the way the train goes
+};
+
 struct TrackProfile {
     std::vector<TrackProfilePoint> points; // by distance, behind first
     double ahead{}, behind{};              // how far it got each way (an end of track stops it)
@@ -96,6 +102,12 @@ struct TrackProfile {
     // The grade from `from` to `to` (m along the way), per mille: + rising
     // the way the train goes, - falling. 0 for a span under a metre.
     [[nodiscard]] double grade(double from, double to) const;
+    // Its elements of one grade, as a regime map draws them: the steps
+    // between the points whose grades differ by `tolerance` per mille or
+    // less joined; then an element under `min_length` m joined to the
+    // neighbour nearer in grade (the grade the chord over both), so the
+    // numbers fit the span shown.
+    [[nodiscard]] std::vector<TrackProfileElement> elements(double tolerance, double min_length) const;
 };
 
 // The profile from `lead` (the train's leading end, facing the way it goes)

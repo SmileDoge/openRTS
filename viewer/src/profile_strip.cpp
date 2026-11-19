@@ -54,9 +54,21 @@ double ProfileStrip::span() const noexcept { return spans[std::clamp(span_index_
 
 float ProfileStrip::height() {
 #ifdef OPENRTS_HAS_IMGUI
-    return ImGui::GetFontSize() * 8.5f;
+    return ImGui::GetFontSize() * 9.8f;
 #else
     return 0.0f;
+#endif
+}
+
+double ProfileStrip::shortest_element() const {
+#ifdef OPENRTS_HAS_IMGUI
+    const float width = ImGui::GetIO().DisplaySize.x - ImGui::GetFontSize() * 1.2f;
+    if (width <= 1.0f) return span();
+    // A number like "−12,5" and a little room either side.
+    const float label = ImGui::CalcTextSize("â" "12,5").x + ImGui::GetFontSize() * 0.6f;
+    return span() * static_cast<double>(label / width);
+#else
+    return span();
 #endif
 }
 
@@ -89,7 +101,7 @@ void ProfileStrip::draw(const ProfileView& view) {
         const float row0 = origin.y + pad * 0.4f;     // the grade, the stations, the span
         const float row1 = row0 + font * 1.25f;       // the speed limits
         const float top = row1 + font * 1.6f;         // the profile's area
-        const float bottom = origin.y + height - font * 1.5f;
+        const float bottom = origin.y + height - font * 2.7f; // the grades' row under it, then the kilometres'
         const double left = this->left(), right = this->right();
         const auto x_of = [&](const double d) { return x0 + static_cast<float>((d - left) / (right - left)) * (x1 - x0); };
 
@@ -151,8 +163,25 @@ void ProfileStrip::draw(const ProfileView& view) {
             const float x = x_of(mark.distance);
             const float w = ImGui::CalcTextSize(mark.text.c_str()).x;
             if (x - w * 0.5f < km_end + font * 0.4f || x + w * 0.5f > x1) continue;
-            draw->AddText(ImVec2(x - w * 0.5f, bottom + font * 0.15f), IM_COL32(220, 220, 220, 255), mark.text.c_str());
+            draw->AddText(ImVec2(x - w * 0.5f, bottom + font * 1.35f), IM_COL32(220, 220, 220, 255), mark.text.c_str());
             km_end = x + w * 0.5f;
+        }
+        // The elements' grades under the line, per mille with the sign
+        // (rising +), their ends ticked, as on a regime map.
+        for (const auto& element : view.elements) {
+            if (element.to < left || element.from > right) continue;
+            const double from = (std::max)(element.from, left), to = (std::min)(element.to, right);
+            for (const double end : {element.from, element.to}) {
+                if (end <= left || end >= right) continue;
+                const float x = x_of(end);
+                draw->AddLine(ImVec2(x, bottom), ImVec2(x, bottom + font * 1.15f), IM_COL32(255, 255, 255, 110), 1.0f);
+            }
+            const double shown = std::round(element.grade * 10.0) / 10.0;
+            const std::string text = shown == 0.0 ? std::string("0") : grade_text(element.grade);
+            const float w = ImGui::CalcTextSize(text.c_str()).x;
+            const float a = x_of(from), b = x_of(to);
+            if (b - a < w + 4.0f) continue;
+            draw->AddText(ImVec2((a + b - w) * 0.5f, bottom + font * 0.1f), grade_colour(element.grade, 255), text.c_str());
         }
         // The train: a stroke of its length on the line, its mass and cars over it.
         {
