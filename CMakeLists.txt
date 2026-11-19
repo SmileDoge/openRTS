@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(openRTS
-    VERSION 0.24.1
+    VERSION 0.25.0
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
 
@@ -212,6 +212,21 @@ if(OPENRTS_BUILD_VIEWER)
             "${OPENRTS_WGPU_INCLUDE_DIR}")
         target_compile_definitions(openrts_imgui PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_WGPU=1)
         target_link_libraries(openrts_imgui PUBLIC glfw openrts_wgpu_native)
+        add_subdirectory(ui)
+        add_subdirectory(trackmap)
+        # The server's window (server/src/server_window.cpp: its start form and
+        # its map console); without it the server runs at the console. The
+        # WebGPU DLL is loaded only when the window opens (--no-window runs
+        # without it).
+        if(TARGET openrts_server_app)
+            target_sources(openrts_server_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/server/src/server_window.cpp")
+            target_link_libraries(openrts_server_app PRIVATE openrts_imgui openrts_ui openrts_trackmap openrts_renderer)
+            target_compile_definitions(openrts_server_app PRIVATE OPENRTS_SERVER_WINDOW=1)
+            if(MSVC)
+                target_link_options(openrts_server_app PRIVATE /DELAYLOAD:wgpu_native.dll)
+                target_link_libraries(openrts_server_app PRIVATE delayimp)
+            endif()
+        endif()
     endif()
     add_subdirectory(viewer)
 endif()

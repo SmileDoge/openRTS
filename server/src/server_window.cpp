@@ -1,0 +1,1741 @@
+#include "server_window.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <deque>
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <set>
+
+#include <webgpu/wgpu.h>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
+#include <GLFW/glfw3.h>
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
+
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_wgpu.h>
+
+#include <openrts/core/core.hpp>
+#include <openrts/core/user_data.hpp>
+#include <openrts/core/virtual_path.hpp>
+#include <openrts/net/wire.hpp>
+#include <openrts/renderer/webgpu_context.hpp>
+#include <openrts/server/console.hpp>
+#include <openrts/simulation/track_traveller.hpp>
+#include <openrts/trackmap/track_map.hpp>
+#include <openrts/ui/fonts.hpp>
+#include <openrts/ui/text.hpp>
+
+namespace openrts::server {
+namespace {
+
+namespace fs = std::filesystem;
+using ui::tr;
+using ui::trf;
+
+constexpr std::uint16_t kind_static = 0, kind_player = 1, kind_traffic = 2;
+
+[[nodiscard]] std::string clock_text(const double seconds) {
+    const auto s = static_cast<long long>(seconds);
+    char text[16];
+    std::snprintf(text, sizeof text, "%02lld:%02lld:%02lld", s / 3600 % 24, s / 60 % 60, s % 60);
+    return text;
+}
+
+[[nodiscard]] std::string stamp() {
+    const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &now);
+#else
+    localtime_r(&now, &tm);
+#endif
+    char text[16];
+    std::strftime(text, sizeof text, "%H:%M:%S", &tm);
+    return text;
+}
+
+// The distance from (px, py) to the segment a-b; `t` where along it (0..1).
+[[nodiscard]] double segment_distance(const double px, const double py, const double ax, const double ay, const double bx, const double by,
+                                      double& t) {
+    const double dx = bx - ax, dy = by - ay;
+    const double span = dx * dx + dy * dy;
+    t = span > 1e-12 ? std::clamp(((px - ax) * dx + (py - ay) * dy) / span, 0.0, 1.0) : 0.0;
+    return std::hypot(px - (ax + dx * t), py - (ay + dy * t));
+}
+
+[[nodiscard]] std::string utf8_path(const fs::path& path) {
+    const auto text = path.u8string();
+    return {text.begin(), text.end()};
+}
+
+[[nodiscard]] fs::path path_of(const char* utf8) {
+    const std::string text(utf8);
+    return fs::path(std::u8string(text.begin(), text.end()));
+}
+
+// ---- the window's picture -------------------------------------------------------
+
+#ifdef _WIN32
+// The swap chain of the window (a plain BGRA8 / RGBA8 target, Fifo).
+class Surface {
+public:
+    Surface(const renderer::WgpuDeviceContext& context, GLFWwindow* window) : device_(context.device()) {
+        const WGPUSurfaceSourceWindowsHWND source{
+            .chain = {.sType = WGPUSType_SurfaceSourceWindowsHWND},
+            .hinstance = GetModuleHandle(nullptr),
+            .hwnd = glfwGetWin32Window(window),
+        };
+        const WGPUSurfaceDescriptor descriptor{.nextInChain = &source.chain};
+        surface_ = wgpuInstanceCreateSurface(context.instance(), &descriptor);
+        if (!surface_) return;
+        WGPUSurfaceCapabilities capabilities{};
+        wgpuSurfaceGetCapabilities(surface_, context.adapter(), &capabilities);
+        if (capabilities.formatCount > 0 && capabilities.alphaModeCount > 0) {
+            WGPUTextureFormat format = capabilities.formats[0];
+            for (const auto wanted : {WGPUTextureFormat_BGRA8Unorm, WGPUTextureFormat_RGBA8Unorm}) {
+                for (std::size_t i = 0; i < capabilities.formatCount; ++i) {
+                    if (capabilities.formats[i] == wanted) format = wanted;
+                }
+                if (format == wanted) break;
+            }
+            int width = 0, height = 0;
+            glfwGetFramebufferSize(window, &width, &height);
+            config_ = {.device = device_,
+                       .format = format,
+                       .usage = WGPUTextureUsage_RenderAttachment,
+                       .width = static_cast<std::uint32_t>((std::max)(width, 1)),
+                       .height = static_cast<std::uint32_t>((std::max)(height, 1)),
+                       .alphaMode = capabilities.alphaModes[0],
+                       .presentMode = WGPUPresentMode_Fifo};
+            wgpuSurfaceConfigure(surface_, &config_);
+            configured_ = true;
+        }
+        wgpuSurfaceCapabilitiesFreeMembers(capabilities);
+    }
+    ~Surface() {
+        if (configured_) wgpuSurfaceUnconfigure(surface_);
+        if (surface_) wgpuSurfaceRelease(surface_);
+    }
+    Surface(const Surface&) = delete;
+    Surface& operator=(const Surface&) = delete;
+
+    [[nodiscard]] bool ok() const noexcept { return configured_; }
+    [[nodiscard]] WGPUTextureFormat format() const noexcept { return config_.format; }
+    [[nodiscard]] std::uint32_t width() const noexcept { return config_.width; }
+    [[nodiscard]] std::uint32_t height() const noexcept { return config_.height; }
+    void resize(const int width, const int height) {
+        if (width <= 0 || height <= 0) return;
+        if (config_.width == static_cast<std::uint32_t>(width) && config_.height == static_cast<std::uint32_t>(height)) return;
+        config_.width = static_cast<std::uint32_t>(width);
+        config_.height = static_cast<std::uint32_t>(height);
+        wgpuSurfaceConfigure(surface_, &config_);
+    }
+    [[nodiscard]] WGPUTexture acquire() const {
+        WGPUSurfaceTexture frame{};
+        wgpuSurfaceGetCurrentTexture(surface_, &frame);
+        const bool usable = frame.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal ||
+                            frame.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal;
+        return usable ? frame.texture : nullptr;
+    }
+    void present() const { wgpuSurfacePresent(surface_); }
+
+private:
+    WGPUDevice device_ = nullptr;
+    WGPUSurface surface_ = nullptr;
+    WGPUSurfaceConfiguration config_{};
+    bool configured_ = false;
+};
+
+// ImGui's frame into `target`, cleared first.
+void render_frame(const WGPUDevice device, const WGPUTexture target, const WGPUCommandEncoder encoder) {
+    const auto view = wgpuTextureCreateView(target, nullptr);
+    const WGPURenderPassColorAttachment colour{
+        .view = view,
+        .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+        .loadOp = WGPULoadOp_Clear,
+        .storeOp = WGPUStoreOp_Store,
+        .clearValue = {.r = 0.09, .g = 0.1, .b = 0.12, .a = 1.0},
+    };
+    const WGPURenderPassDescriptor descriptor{.colorAttachmentCount = 1, .colorAttachments = &colour};
+    const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+    ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+    wgpuTextureViewRelease(view);
+    (void)device;
+}
+
+// The window's picture to a binary PPM (--capture): drawn into a texture of
+// its own and read back.
+bool capture_frame(const renderer::WgpuDeviceContext& context, const WGPUTextureFormat format, const std::uint32_t width,
+                   const std::uint32_t height, const fs::path& file) {
+    const auto device = context.device();
+    const WGPUTextureDescriptor texture_descriptor{
+        .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc,
+        .dimension = WGPUTextureDimension_2D,
+        .size = {.width = width, .height = height, .depthOrArrayLayers = 1},
+        .format = format,
+        .mipLevelCount = 1,
+        .sampleCount = 1,
+    };
+    const auto texture = wgpuDeviceCreateTexture(device, &texture_descriptor);
+    if (!texture) return false;
+    const std::uint32_t row_bytes = (width * 4 + 255) / 256 * 256;
+    const WGPUBufferDescriptor buffer_descriptor{.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst,
+                                                 .size = static_cast<std::uint64_t>(row_bytes) * height};
+    const auto buffer = wgpuDeviceCreateBuffer(device, &buffer_descriptor);
+    const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+    render_frame(device, texture, encoder);
+    const WGPUTexelCopyTextureInfo source{.texture = texture};
+    const WGPUTexelCopyBufferInfo target{.layout = {.bytesPerRow = row_bytes, .rowsPerImage = height}, .buffer = buffer};
+    const WGPUExtent3D size{.width = width, .height = height, .depthOrArrayLayers = 1};
+    wgpuCommandEncoderCopyTextureToBuffer(encoder, &source, &target, &size);
+    const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
+    const auto queue = wgpuDeviceGetQueue(device);
+    wgpuQueueSubmit(queue, 1, &commands);
+    wgpuCommandBufferRelease(commands);
+    wgpuCommandEncoderRelease(encoder);
+    bool mapped = false, done = false;
+    struct State {
+        bool* mapped;
+        bool* done;
+    } state{&mapped, &done};
+    const WGPUBufferMapCallbackInfo callback{
+        .mode = WGPUCallbackMode_AllowProcessEvents,
+        .callback = [](const WGPUMapAsyncStatus status, WGPUStringView, void* data, void*) {
+            auto* s = static_cast<State*>(data);
+            *s->mapped = status == WGPUMapAsyncStatus_Success;
+            *s->done = true;
+        },
+        .userdata1 = &state,
+    };
+    wgpuBufferMapAsync(buffer, WGPUMapMode_Read, 0, static_cast<std::size_t>(row_bytes) * height, callback);
+    for (int i = 0; i < 1000 && !done; ++i) {
+        wgpuDevicePoll(device, true, nullptr);
+        wgpuInstanceProcessEvents(context.instance());
+    }
+    bool written = false;
+    if (mapped) {
+        const auto* bytes = static_cast<const std::uint8_t*>(wgpuBufferGetConstMappedRange(buffer, 0, static_cast<std::size_t>(row_bytes) * height));
+        std::ofstream out(file, std::ios::binary);
+        if (bytes && out) {
+            out << "P6\n" << width << ' ' << height << "\n255\n";
+            const bool bgra = format == WGPUTextureFormat_BGRA8Unorm || format == WGPUTextureFormat_BGRA8UnormSrgb;
+            std::vector<char> row(static_cast<std::size_t>(width) * 3);
+            for (std::uint32_t y = 0; y < height; ++y) {
+                const auto* line = bytes + static_cast<std::size_t>(y) * row_bytes;
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    row[x * 3 + 0] = static_cast<char>(line[x * 4 + (bgra ? 2 : 0)]);
+                    row[x * 3 + 1] = static_cast<char>(line[x * 4 + 1]);
+                    row[x * 3 + 2] = static_cast<char>(line[x * 4 + (bgra ? 0 : 2)]);
+                }
+                out.write(row.data(), static_cast<std::streamsize>(row.size()));
+            }
+            written = static_cast<bool>(out);
+        }
+        wgpuBufferUnmap(buffer);
+    }
+    wgpuQueueRelease(queue);
+    wgpuBufferRelease(buffer);
+    wgpuTextureRelease(texture);
+    return written;
+}
+#endif
+
+// ---- the start form (rts_server.exe's: route, season, weather, time, port) ----------
+
+struct StartForm {
+    char root[512]{};
+    char data[512]{};
+    std::vector<std::string> routes;
+    int route = -1;
+    int season = 1;
+    int weather = 0;
+    char time[16] = "12:00";
+    int port = 800;
+    bool admit = true;
+    std::string error;
+    int loading = 0; // frames since "Start": the load runs after "Loading" is shown
+
+    void list_routes() {
+        routes.clear();
+        std::error_code failed;
+        for (const auto& entry : fs::directory_iterator(path_of(root) / "ROUTES", failed)) {
+            if (entry.is_directory(failed)) routes.push_back(utf8_path(entry.path().filename()));
+        }
+        std::sort(routes.begin(), routes.end());
+    }
+    void pick_route(const std::string& name) {
+        for (std::size_t i = 0; i < routes.size(); ++i) {
+            if (core::fold_case(routes[i]) == core::fold_case(name)) route = static_cast<int>(i);
+        }
+    }
+
+    // The form as it was last started (server_window.ini in the server's
+    // folder): key=value lines.
+    void load(const fs::path& file) {
+        std::ifstream in(file);
+        std::string line, route_name;
+        while (std::getline(in, line)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            const auto key = line.substr(0, eq);
+            const auto value = line.substr(eq + 1);
+            try {
+                if (key == "root") std::snprintf(root, sizeof root, "%s", value.c_str());
+                else if (key == "route") route_name = value;
+                else if (key == "season") season = std::clamp(std::stoi(value), 0, 3);
+                else if (key == "weather") weather = std::clamp(std::stoi(value), 0, 3);
+                else if (key == "time") std::snprintf(time, sizeof time, "%s", value.c_str());
+                else if (key == "port") port = std::clamp(std::stoi(value), 0, 65535);
+                else if (key == "admit") admit = value == "1";
+            } catch (const std::exception&) {
+                // a number spoilt by hand: the default kept
+            }
+        }
+        list_routes();
+        pick_route(route_name);
+    }
+    void save(const fs::path& file) const {
+        std::ofstream out(file);
+        out << "root=" << root << "\nroute=" << (route >= 0 ? routes[static_cast<std::size_t>(route)] : std::string()) << "\nseason=" << season
+            << "\nweather=" << weather << "\ntime=" << time << "\nport=" << port << "\nadmit=" << (admit ? 1 : 0) << '\n';
+    }
+};
+
+// ---- the console: the map and the dispatcher's tabs ------------------------------------
+
+// A station route as picked in a list: the route (in StationRoutes::routes())
+// and whether it is run from its end.
+struct RouteChoice {
+    std::size_t route{};
+    bool reverse = false;
+    bool operator==(const RouteChoice&) const = default;
+};
+
+class Console {
+public:
+    explicit Console(ServerSession& session) : s_(session), map_(session.route().network(), origin_of(session.route().network())) {
+        auto& route = s_.route();
+        // The signals' names by signal object (the route database's, by TDB item).
+        std::map<std::uint32_t, std::string> by_item;
+        for (const auto& [name, item] : route.signal_names()) by_item.emplace(item, name);
+        if (const auto* signals = route.signals()) {
+            const auto& objects = signals->objects();
+            for (std::uint32_t o = 0; o < objects.size(); ++o) {
+                for (const auto h : objects[o].heads) {
+                    if (const auto it = by_item.find(signals->heads()[h].track_item); it != by_item.end()) {
+                        names_[o] = it->second;
+                        break;
+                    }
+                }
+            }
+            std::set<std::string> types;
+            for (const auto& head : signals->heads()) {
+                if (head.type) types.insert(head.type->name);
+            }
+            types_.assign(types.begin(), types.end());
+        }
+        map_.signal_name = [this](const std::uint32_t object) {
+            const auto it = names_.find(object);
+            return it == names_.end() ? std::string() : it->second;
+        };
+        map_.signal_notes = [this](const std::uint32_t object) {
+            std::vector<std::string> notes;
+            if (const auto item = first_item(object)) notes.push_back(s_.game().signal_report(*item));
+            return notes;
+        };
+        consists_ = route.consist_names();
+        const auto stations = route.station_routes().stations();
+        for (const auto& [name, count] : stations) stations_.push_back(name);
+        // The map on the first path's start, else the middle of the first track.
+        std::optional<simulation::TrackPoint> at;
+        if (!route.paths().empty()) {
+            if (const auto front = route.path_front(route.paths().front(), 0.0)) at = front->pose();
+        }
+        if (!at) {
+            if (const auto* node = route.network().node(1)) at = route.network().point(1, node->length * 0.5);
+        }
+        if (at) map_.centre_on(*at, 0.5);
+        std::snprintf(time_, sizeof time_, "%s", clock_text(s_.game().time_of_day()).substr(0, 5).c_str());
+    }
+
+    void log(std::string line) {
+        log_.push_back(stamp() + ' ' + std::move(line));
+        std::cout << log_.back() << std::endl; // the console behind the window too
+        while (log_.size() > 3000) log_.pop_front();
+        log_scroll_ = true;
+    }
+
+    // A console line, its answer into the log line by line. "quit" stops
+    // the server as its button does.
+    void run(const std::string& line) {
+        log("> " + line);
+        bool quit = false;
+        const auto answer = s_.command(line, quit);
+        std::size_t start = 0;
+        while (start < answer.size()) {
+            auto end = answer.find('\n', start);
+            if (end == std::string::npos) end = answer.size();
+            if (end > start) log(answer.substr(start, end - start));
+            start = end + 1;
+        }
+        if (quit) quit_ = true;
+    }
+
+    // The whole window; false when the operator stops the server.
+    bool draw() {
+        for (auto& line : s_.game().take_log()) log(std::move(line));
+        routes_tab_open_ = false;
+        hovered_.reset();
+        // A train gone (removed here, by a command or a console) is no
+        // longer the selected one.
+        if (selected_train_) {
+            const auto trains = s_.game().trains();
+            if (std::none_of(trains.begin(), trains.end(), [&](const TrainSummary& t) { return t.id == selected_train_; })) selected_train_ = 0;
+        }
+        const auto& io = ImGui::GetIO();
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(io.DisplaySize);
+        bool running = !quit_;
+        ImGui::Begin("##server", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+        top_bar(running);
+        ImGui::BeginChild("panel", ImVec2(460.0f, 0.0f), ImGuiChildFlags_Borders);
+        if (ImGui::BeginTabBar("tabs")) {
+            if (ImGui::BeginTabItem(tr("Trains"))) {
+                trains_tab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(tr("Station routes"))) {
+                routes_tab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(tr("Signals"))) {
+                signals_tab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(tr("Players"))) {
+                players_tab();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem(tr("Log"))) {
+                log_tab();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("map", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        draw_map();
+        ImGui::EndChild();
+        ImGui::End();
+        return running;
+    }
+
+private:
+    [[nodiscard]] static formats::RoutePosition origin_of(const simulation::TrackNetwork& network) {
+        for (std::uint32_t n = 1; n < network.node_count(); ++n) {
+            if (const auto at = network.point(n, 0.0)) return {.tile_x = at->tile_x, .tile_z = at->tile_z, .x = at->x, .y = at->y, .z = at->z};
+        }
+        return {};
+    }
+
+    // A signal object's first TDB item (what the game's signal commands take).
+    [[nodiscard]] std::optional<std::uint32_t> first_item(const std::uint32_t object) const {
+        const auto* signals = s_.route().signals();
+        if (!signals || object >= signals->objects().size() || signals->objects()[object].heads.empty()) return std::nullopt;
+        return signals->heads()[signals->objects()[object].heads.front()].track_item;
+    }
+
+    void report(const bool ok, const std::string& what, const std::string& error) {
+        set_status(ok ? what : tr("error: ") + error, !ok);
+        log(status_);
+    }
+
+    // The line under the top bar: what was last done, for a few seconds
+    // (an error longer).
+    void set_status(std::string text, const bool error = false) {
+        status_ = std::move(text);
+        status_error_ = error;
+        status_until_ = ImGui::GetTime() + (error ? 10.0 : 5.0);
+    }
+
+    void top_bar(bool& running) {
+        auto& game = s_.game();
+        ImGui::Text("%s", trf("Route %s, port %u", s_.route().folder().c_str(), static_cast<unsigned>(s_.port())).c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+        ImGui::Text("%s", trf("Time %s", clock_text(game.time_of_day()).c_str()).c_str());
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        ImGui::InputText("##time", time_, sizeof time_);
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Set the time"))) {
+            if (const auto t = parse_time_of_day(time_)) {
+                game.set_time(*t);
+                report(true, trf("time set to %s", clock_text(*t).c_str()), {});
+            } else {
+                report(false, {}, tr("the time is HH:MM or HH:MM:SS"));
+            }
+        }
+        ImGui::SameLine();
+        bool paused = game.paused();
+        if (ImGui::Checkbox(tr("Pause"), &paused)) game.set_paused(paused);
+        ImGui::SameLine();
+        bool admit = game.admits();
+        if (ImGui::Checkbox(tr("Take new players"), &admit)) game.set_admit(admit);
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+        std::size_t playing = 0;
+        for (const auto& user : game.users()) playing += user.connected ? 1 : 0;
+        ImGui::Text("%s", trf("players: %zu", playing).c_str());
+        ImGui::SameLine(ImGui::GetWindowWidth() - 170.0f);
+        if (ImGui::Button(tr("Stop the server"))) running = false;
+        // The line stays, empty when nothing is shown: the panels below keep their place.
+        if (ImGui::GetTime() < status_until_) {
+            ImGui::TextColored(status_error_ ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%s", status_.c_str());
+        } else {
+            ImGui::TextUnformatted("");
+        }
+        ImGui::Separator();
+    }
+
+    // ---- the map ----
+    void draw_map() {
+        auto& game = s_.game();
+        auto& route = s_.route();
+        map_.trains.clear();
+        map_.lines.clear();
+        map_.marks.clear();
+        map_.selected_train = selected_train_;
+        // The segments' ways: waiting grey, set green, the train on it dark green.
+        const auto& station_routes = route.station_routes();
+        for (const auto& segment : game.segments()) {
+            const auto index = station_routes.route_index(segment.route);
+            if (!index) continue;
+            const auto* path = station_routes.path_of(station_routes.routes()[*index], segment.reverse);
+            const auto& leg = path ? (segment.reverse ? path->backward : path->forward) : std::nullopt;
+            if (!leg) continue;
+            const ImU32 colour = segment.state == 0 ? IM_COL32(120, 120, 120, 200)
+                               : segment.state == 3 ? IM_COL32(0, 120, 0, 220)
+                                                    : IM_COL32(0, 200, 60, 200);
+            map_.lines.push_back({.points = map_.along(*leg, 0.0, leg->length()), .colour = colour, .width = 6.0f});
+        }
+        for (const auto& t : game.trains()) {
+            if (const auto leg = game.route_leg(t.id)) {
+                map_.lines.push_back({.points = map_.along(*leg, 0.0, leg->length()), .colour = IM_COL32(0, 190, 0, 160), .width = 4.0f});
+            }
+            const auto cars = game.train_cars(t.id);
+            if (cars.empty()) continue;
+            // The first train on the track brings the map to it once.
+            if (!seen_train_) {
+                seen_train_ = true;
+                map_.centre_on(cars.front().front, 1.0);
+            }
+            trackmap::MapTrain train{.id = t.id};
+            train.colour = t.kind == kind_player    ? IM_COL32(200, 30, 200, 255)
+                         : t.kind == kind_traffic   ? IM_COL32(40, 60, 220, 255)
+                         : t.kind == kind_static    ? IM_COL32(140, 120, 20, 255)
+                                                    : IM_COL32(120, 120, 120, 255);
+            for (const auto& car : cars) train.cars.emplace_back(car.front, car.rear);
+            train.label = std::to_string(t.number) + (t.owner.empty() ? std::string() : ' ' + t.owner) + ' ' + trf("%.0f km/h", std::abs(t.speed) * 3.6);
+            map_.trains.push_back(std::move(train));
+        }
+        route_lines();
+        if (placing_.active) placement_bar();
+        map_.overlay = [this](ImDrawList* draw) {
+            draw_route_marks(draw);
+            if (placing_.active) draw_placement(draw);
+        };
+        const bool menu_open = ImGui::IsPopupOpen("map_menu");
+        const auto frame = map_.draw(route.signals(), menu_open);
+        map_.overlay = nullptr;
+        if (placing_.active) {
+            // The consist being placed: drag a car along the track; a click
+            // on another track moves its front there.
+            const auto& io = ImGui::GetIO();
+            if (frame.left_click) {
+                placing_.grabbed = placement_car_at(frame.mouse);
+                if (placing_.grabbed < 0) {
+                    if (const auto where = map_.nearest_track(frame.mouse, 14.0)) move_placement(*where);
+                }
+            }
+            if (placing_.grabbed >= 0) {
+                if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                    placing_.grabbed = -1;
+                } else if (!placing_.cars.empty() && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
+                    // Along the grabbed car on the screen, its front the positive way.
+                    const auto index = (std::min)(static_cast<std::size_t>(placing_.grabbed), placing_.cars.size() - 1);
+                    const auto a = map_.screen(placing_.cars[index].first), b = map_.screen(placing_.cars[index].second);
+                    const double dx = a.x - b.x, dy = a.y - b.y;
+                    const double span = std::hypot(dx, dy);
+                    if (span > 1e-6) slide_placement((io.MouseDelta.x * dx + io.MouseDelta.y * dy) / span / map_.scale());
+                }
+            }
+            if (!io.WantTextInput && !menu_open) {
+                const double step = io.KeyShift ? 10.0 : 1.0;
+                if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) finish_placement();
+                else if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) turn_placement();
+                else if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) cancel_placement();
+                else if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) slide_placement(step);
+                else if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) slide_placement(-step);
+            }
+        } else if (frame.left_click && frame.left_click->kind == trackmap::PickKind::train) {
+            selected_train_ = static_cast<std::uint32_t>(frame.left_click->train);
+        }
+        if (frame.right_click) {
+            menu_ = *frame.right_click;
+            std::memset(menu_filter_, 0, sizeof menu_filter_);
+            ImGui::OpenPopup("map_menu");
+        }
+        map_menu();
+    }
+
+    // ---- placing a consist: seen on the map first, put when confirmed ----
+    void start_placement(const std::string& consist, simulation::TrackLocation where, const bool exact) {
+        auto made = s_.route().consist(consist, 0);
+        if (!made.ok()) {
+            report(false, {}, made.error.empty() ? "consist " + consist + " has no cars" : made.error);
+            return;
+        }
+        Placement p;
+        p.active = true;
+        p.consist = consist;
+        for (std::size_t i = 0; i < made.cars.size(); ++i) {
+            const double length = made.cars[i].definition ? made.cars[i].definition->length : 0.0;
+            p.fronts.push_back(p.length);
+            p.lengths.push_back(length);
+            p.engines.push_back(i < made.records.size() && made.records[i].kind != 0);
+            p.length += length;
+        }
+        placing_ = std::move(p);
+        // The front where it was asked, the cars behind it: exactly so at a
+        // path's start, else whichever way they fit, along the node first.
+        if (exact) {
+            placing_.head = where;
+            lay_placement();
+        } else {
+            for (const bool forward : {true, false}) {
+                where.forward = forward;
+                placing_.head = where;
+                lay_placement();
+                if (placing_.fits) break;
+            }
+            if (!placing_.fits) {
+                where.forward = true;
+                placing_.head = where;
+                lay_placement();
+            }
+        }
+        if (!placing_.cars.empty()) map_.centre_on(placing_.cars.front().first);
+        seen_train_ = true; // the map stays on it, not on the first train
+        set_status(trf("placing %s: check where it stands, then put it", consist.c_str()));
+    }
+
+    void lay_placement() {
+        auto& p = placing_;
+        auto& network = s_.route().network();
+        p.cars.clear();
+        p.fits = true;
+        p.overlaps.clear();
+        for (std::size_t i = 0; i < p.lengths.size(); ++i) {
+            simulation::TrackTraveller front(network, p.head.node, p.head.offset, p.head.forward);
+            const auto to_front = front.move(-p.fronts[i]);
+            simulation::TrackTraveller rear = front;
+            const auto to_rear = rear.move(-p.lengths[i]);
+            if (!to_front.ok() || !to_rear.ok()) {
+                p.fits = false;
+                if (to_front.ok()) p.cars.emplace_back(front.pose(), rear.pose());
+                break;
+            }
+            p.cars.emplace_back(front.pose(), rear.pose());
+        }
+        // Another train in the way: a car end or middle of the consist within
+        // 1.6 m of one of its cars (tracks lie 4 m and more apart). The
+        // server decides when it is put.
+        double t = 0.0;
+        for (const auto& train : s_.game().trains()) {
+            for (const auto& car : s_.game().train_cars(train.id)) {
+                const double ax = map_.world_x(car.front), az = map_.world_z(car.front);
+                const double bx = map_.world_x(car.rear), bz = map_.world_z(car.rear);
+                for (const auto& [front, rear] : p.cars) {
+                    const double fx = map_.world_x(front), fz = map_.world_z(front), rx = map_.world_x(rear), rz = map_.world_z(rear);
+                    const double points[3][2] = {{fx, fz}, {(fx + rx) * 0.5, (fz + rz) * 0.5}, {rx, rz}};
+                    for (const auto& point : points) {
+                        if (segment_distance(point[0], point[1], ax, az, bx, bz, t) < 1.6) {
+                            p.overlaps = trf("train %u", train.number);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    void slide_placement(const double metres) {
+        if (!placing_.active || metres == 0.0) return;
+        const auto previous = placing_.head;
+        const bool fitted = placing_.fits;
+        simulation::TrackTraveller head(s_.route().network(), previous.node, previous.offset, previous.forward);
+        head.move(metres);
+        placing_.head = {head.node(), head.offset(), head.forward()};
+        lay_placement();
+        if (fitted && !placing_.fits) {
+            // The front ran off the track or the rear would: it stays.
+            placing_.head = previous;
+            lay_placement();
+        }
+    }
+
+    void move_placement(simulation::TrackLocation where) {
+        if (!placing_.active) return;
+        // Facing the way it faced on the screen as far as the new track allows.
+        auto& network = s_.route().network();
+        simulation::TrackTraveller old(network, placing_.head.node, placing_.head.offset, placing_.head.forward);
+        const float facing = old.pose().heading;
+        simulation::TrackTraveller along(network, where.node, where.offset, true);
+        where.forward = std::cos(along.pose().heading - facing) >= 0.0f;
+        placing_.head = where;
+        lay_placement();
+    }
+
+    void turn_placement() {
+        if (!placing_.active) return;
+        simulation::TrackTraveller tail(s_.route().network(), placing_.head.node, placing_.head.offset, placing_.head.forward);
+        if (!tail.move(-placing_.length).ok()) {
+            report(false, {}, tr("turning needs the whole consist on the track"));
+            return;
+        }
+        tail.reverse();
+        placing_.head = {tail.node(), tail.offset(), tail.forward()};
+        lay_placement();
+    }
+
+    void cancel_placement() {
+        placing_ = {};
+        set_status(tr("placing dropped"));
+    }
+
+    void finish_placement() {
+        if (!placing_.active) return;
+        if (!placing_.fits) {
+            report(false, {}, tr("does not fit: not enough track"));
+            return;
+        }
+        auto& game = s_.game();
+        std::string error;
+        const auto number = game.free_number();
+        auto made = train_at(s_.route(), placing_.consist, placing_.head, number, error);
+        const auto id = made ? game.add_train(std::move(*made), error) : std::nullopt;
+        report(id.has_value(), trf("train %u (№%u) placed", id.value_or(0), number), error);
+        if (!id) return;
+        selected_train_ = *id;
+        placing_ = {};
+    }
+
+    // The car of the consist being placed under the mouse, -1 none.
+    [[nodiscard]] int placement_car_at(const ImVec2 mouse) const {
+        const double reach = (std::max)(8.0, map_.scale() * 3.2 * 0.5 + 4.0);
+        double best = reach, t = 0.0;
+        int found = -1;
+        for (std::size_t i = 0; i < placing_.cars.size(); ++i) {
+            const auto a = map_.screen(placing_.cars[i].first), b = map_.screen(placing_.cars[i].second);
+            const double d = segment_distance(mouse.x, mouse.y, a.x, a.y, b.x, b.y, t);
+            if (d < best) {
+                best = d;
+                found = static_cast<int>(i);
+            }
+        }
+        return found;
+    }
+
+    // Over the map while placing: what it is, whether it fits, the buttons.
+    void placement_bar() {
+        const bool trouble = !placing_.fits || !placing_.overlaps.empty();
+        ImGui::TextUnformatted(trf("Placing %s: %zu cars, %.0f m", placing_.consist.c_str(), placing_.lengths.size(), placing_.length).c_str());
+        if (!placing_.fits) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", tr("does not fit: not enough track"));
+        } else if (!placing_.overlaps.empty()) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", trf("runs into %s", placing_.overlaps.c_str()).c_str());
+        }
+        ImGui::BeginDisabled(!placing_.fits);
+        if (ImGui::Button(tr("Put it here (Enter)"))) finish_placement();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Turn it around (Space)"))) turn_placement();
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Cancel (Esc)"))) cancel_placement();
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr("drag it along the track; a click on another track moves it there; Left / Right: 1 m, with Shift 10 m"));
+        (void)trouble;
+    }
+
+    // The consist being placed: outlined cars, the front one orange with an
+    // arrow the way it faces; a red outline where it does not fit or runs
+    // into a train.
+    void draw_placement(ImDrawList* draw) const {
+        if (placing_.cars.empty()) return;
+        const float width = std::clamp(static_cast<float>(map_.scale() * 3.2), 5.0f, 14.0f);
+        const bool trouble = !placing_.fits || !placing_.overlaps.empty();
+        const ImU32 outline = trouble ? IM_COL32(220, 0, 0, 255) : IM_COL32(20, 20, 20, 255);
+        for (std::size_t i = 0; i < placing_.cars.size(); ++i) {
+            auto a = map_.screen(placing_.cars[i].first), b = map_.screen(placing_.cars[i].second);
+            const float dx = b.x - a.x, dy = b.y - a.y;
+            const float span = std::sqrt(dx * dx + dy * dy);
+            if (span > 8.0f) {
+                const float gap = 1.5f / span;
+                a = ImVec2(a.x + dx * gap, a.y + dy * gap);
+                b = ImVec2(b.x - dx * gap, b.y - dy * gap);
+            }
+            const ImU32 fill = i == 0 ? IM_COL32(255, 120, 0, 255) : placing_.engines[i] ? IM_COL32(255, 200, 120, 235) : IM_COL32(250, 250, 250, 235);
+            draw->AddLine(a, b, outline, width + 3.0f);
+            draw->AddLine(a, b, fill, width);
+        }
+        const auto front = map_.screen(placing_.cars.front().first);
+        auto rear = map_.screen(placing_.cars.front().second);
+        if (std::hypot(front.x - rear.x, front.y - rear.y) < 3.0f) rear = map_.screen(placing_.cars.back().second);
+        trackmap::draw_direction_arrow(draw, front, rear, IM_COL32(255, 120, 0, 255), outline, std::clamp(width * 2.2f, 18.0f, 30.0f));
+        draw->AddText(ImVec2(front.x + 10.0f, front.y + 8.0f), trouble ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255), placing_.consist.c_str());
+    }
+
+    // The consists to put at a place, in the map's menu: the one picked in
+    // "Поезда" first, then any found by part of its name.
+    void consist_menu(const simulation::TrackLocation& location) {
+        if (consist_ >= 0 && consist_ < static_cast<int>(consists_.size())) {
+            const auto& picked = consists_[static_cast<std::size_t>(consist_)];
+            if (ImGui::MenuItem(trf("%s (picked in Trains)", picked.c_str()).c_str())) start_placement(picked, location, false);
+            ImGui::Separator();
+        }
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(320.0f);
+        ImGui::InputTextWithHint("##menu_filter", tr("consist: part of its name"), menu_filter_, sizeof menu_filter_);
+        const auto filter = ui::search_form(menu_filter_);
+        std::vector<std::size_t> found;
+        for (std::size_t i = 0; i < consists_.size(); ++i) {
+            if (filter.empty() || ui::search_form(consists_[i]).find(filter) != std::string::npos) found.push_back(i);
+        }
+        ImGui::BeginChild("menu_consists", ImVec2(320.0f, 280.0f), ImGuiChildFlags_Borders);
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(found.size()));
+        while (clipper.Step()) {
+            for (int k = clipper.DisplayStart; k < clipper.DisplayEnd; ++k) {
+                const auto& name = consists_[found[static_cast<std::size_t>(k)]];
+                if (ImGui::Selectable(name.c_str())) {
+                    start_placement(name, location, false);
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+        ImGui::EndChild();
+    }
+
+    void map_menu() {
+        if (!ImGui::BeginPopup("map_menu")) return;
+        auto& game = s_.game();
+        auto& route = s_.route();
+        std::string error;
+        switch (menu_.kind) {
+        case trackmap::PickKind::train: {
+            const auto id = static_cast<std::uint32_t>(menu_.train);
+            selected_train_ = id;
+            const auto trains = game.trains();
+            const auto it = std::find_if(trains.begin(), trains.end(), [&](const auto& t) { return t.id == id; });
+            if (it == trains.end()) {
+                ImGui::TextDisabled("%s", tr("nothing here"));
+                break;
+            }
+            ImGui::TextDisabled("%s", trf("Train %u (№%u), %zu cars", id, it->number, it->cars).c_str());
+            if (it->owner.empty()) {
+                if (ImGui::BeginMenu(tr("Give it to a player"))) {
+                    for (const auto& user : game.users()) {
+                        if (user.console || !user.connected) continue;
+                        if (ImGui::MenuItem(user.nick.c_str())) report(game.assign(id, user.nick, error), trf("train %u given to %s", id, user.nick.c_str()), error);
+                    }
+                    ImGui::EndMenu();
+                }
+            } else if (ImGui::MenuItem(trf("Take it back from %s", it->owner.c_str()).c_str())) {
+                report(game.unassign(id, error), trf("train %u taken back", id), error);
+            }
+            if (ImGui::MenuItem(tr("Cancel the route"), nullptr, false, !game.route_junctions(id).empty() || game.route_leg(id).has_value())) {
+                report(game.cancel_route(id, error), trf("train %u's route freed", id), error);
+            }
+            if (ImGui::MenuItem(tr("Remove train"))) report(game.remove_train(id, error), trf("train %u removed", id), error);
+            break;
+        }
+        case trackmap::PickKind::junction: {
+            const auto node = menu_.junction;
+            const auto* info = route.network().node(node);
+            const auto* state = route.network().junction(node);
+            ImGui::TextDisabled("%s", trf("Junction %u", node).c_str());
+            for (std::uint32_t b = 0; info && b < info->branch_count(); ++b) {
+                if (ImGui::MenuItem(trf("Branch %u", b).c_str(), nullptr, state && state->selected == b)) {
+                    report(game.set_junction(node, b, std::nullopt, error), trf("junction %u to branch %u", node, b), error);
+                }
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem(tr("Lock against players"))) report(game.set_junction(node, std::nullopt, true, error), trf("junction %u locked", node), error);
+            if (ImGui::MenuItem(tr("Unlock"))) report(game.set_junction(node, std::nullopt, false, error), trf("junction %u unlocked", node), error);
+            break;
+        }
+        case trackmap::PickKind::signal: {
+            const auto item = first_item(menu_.signal);
+            if (!item) break;
+            const auto name = map_.signal_name(menu_.signal);
+            const auto heading = (name.empty() ? std::string() : name + ": ") + game.signal_report(*item);
+            ImGui::TextDisabled("%s", heading.c_str());
+            if (ImGui::BeginMenu(tr("Set the aspect"))) {
+                for (int a = 0; a <= 7; ++a) {
+                    const auto aspect = static_cast<formats::SignalAspect>(a);
+                    if (ImGui::MenuItem(formats::to_string(aspect))) {
+                        const bool ok = game.set_signal(*item, aspect, error);
+                        report(ok, game.signal_report(*item), error);
+                    }
+                }
+                ImGui::EndMenu();
+            }
+            const auto act = [&](const char* label, const GameServer::SignalAction action) {
+                if (!ImGui::MenuItem(label)) return;
+                const bool ok = game.control_signal(*item, action, error);
+                report(ok, game.signal_report(*item), error);
+            };
+            act(tr("Open"), GameServer::SignalAction::open);
+            act(tr("Automatic block"), GameServer::SignalAction::automatic);
+            act(tr("Close"), GameServer::SignalAction::close);
+            act(tr("Back to its default"), GameServer::SignalAction::defaults);
+            break;
+        }
+        case trackmap::PickKind::track: {
+            const auto location = menu_.location;
+            if (placing_.active && ImGui::MenuItem(trf("Move %s here", placing_.consist.c_str()).c_str())) move_placement(location);
+            if (ImGui::BeginMenu(tr("Put a train"))) {
+                consist_menu(location);
+                ImGui::EndMenu();
+            }
+            if (selected_train_ && ImGui::MenuItem(trf("Route for train %u to here", selected_train_).c_str())) {
+                route_to(selected_train_, location);
+            }
+            break;
+        }
+        default:
+            ImGui::TextDisabled("%s", tr("nothing here"));
+            break;
+        }
+        ImGui::EndPopup();
+    }
+
+    // The selected train's route from its head to a place; from its rear
+    // when the place is behind it.
+    void route_to(const std::uint32_t train, const simulation::TrackLocation& to) {
+        auto& game = s_.game();
+        std::string result;
+        for (const bool facing : {to.forward, !to.forward}) {
+            const simulation::TrackLocation target{to.node, to.offset, facing};
+            for (const bool rear_first : {false, true}) {
+                if (game.lay_route_to(train, target, rear_first, result)) {
+                    report(true, result, {});
+                    return;
+                }
+            }
+        }
+        report(false, {}, result);
+    }
+
+    // ---- the tabs ----
+    void trains_tab() {
+        auto& game = s_.game();
+        auto& route = s_.route();
+        std::string error;
+        static constexpr const char* kinds[] = {"STATIC", "PLAYER", "TRAFFIC", "LOOSE"};
+        if (ImGui::BeginTable("trains", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, ImVec2(0.0f, 220.0f))) {
+            ImGui::TableSetupColumn(tr("No."));
+            ImGui::TableSetupColumn(tr("id"));
+            ImGui::TableSetupColumn(tr("kind"));
+            ImGui::TableSetupColumn(tr("driver"));
+            ImGui::TableSetupColumn(tr("cars"));
+            ImGui::TableSetupColumn(tr("km/h"));
+            ImGui::TableHeadersRow();
+            for (const auto& t : game.trains()) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                char label[32];
+                std::snprintf(label, sizeof label, "%u##train%u", t.number, t.id);
+                if (ImGui::Selectable(label, selected_train_ == t.id, ImGuiSelectableFlags_SpanAllColumns)) {
+                    selected_train_ = t.id;
+                    if (const auto cars = game.train_cars(t.id); !cars.empty()) map_.centre_on(cars.front().front, 1.0);
+                }
+                ImGui::TableNextColumn();
+                ImGui::Text("%u", t.id);
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(t.kind < 4 ? kinds[t.kind] : "?");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(t.owner.empty() ? "-" : t.owner.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%zu", t.cars);
+                ImGui::TableNextColumn();
+                ImGui::Text("%.0f", std::abs(t.speed) * 3.6);
+            }
+            ImGui::EndTable();
+        }
+        if (selected_train_) {
+            ImGui::SeparatorText(trf("Train %u", selected_train_).c_str());
+            if (ImGui::Button(tr("Take it back"))) report(game.unassign(selected_train_, error), trf("train %u taken back", selected_train_), error);
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Cancel the route"))) report(game.cancel_route(selected_train_, error), trf("train %u's route freed", selected_train_), error);
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Remove train"))) {
+                report(game.remove_train(selected_train_, error), trf("train %u removed", selected_train_), error);
+                selected_train_ = 0;
+            }
+            if (selected_train_ && ImGui::BeginCombo(tr("Give it to"), tr("a player..."))) {
+                for (const auto& user : game.users()) {
+                    if (user.console || !user.connected) continue;
+                    if (ImGui::Selectable(user.nick.c_str())) {
+                        report(game.assign(selected_train_, user.nick, error), trf("train %u given to %s", selected_train_, user.nick.c_str()), error);
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+        ImGui::SeparatorText(tr("A new train"));
+        ImGui::InputTextWithHint("##consist_filter", tr("consist: part of its name"), consist_filter_, sizeof consist_filter_);
+        if (ImGui::BeginListBox("##consists", ImVec2(-1.0f, 150.0f))) {
+            const auto filter = ui::search_form(consist_filter_);
+            for (std::size_t i = 0; i < consists_.size(); ++i) {
+                if (!filter.empty() && ui::search_form(consists_[i]).find(filter) == std::string::npos) continue;
+                // A click on the picked one unpicks it.
+                const bool picked = consist_ == static_cast<int>(i);
+                if (ImGui::Selectable(consists_[i].c_str(), picked)) consist_ = picked ? -1 : static_cast<int>(i);
+            }
+            ImGui::EndListBox();
+        }
+        if (consist_ >= 0 && consist_ < static_cast<int>(consists_.size())) {
+            ImGui::TextUnformatted(trf("Picked: %s", consists_[static_cast<std::size_t>(consist_)].c_str()).c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton(tr("Unpick"))) consist_ = -1;
+        }
+        const auto& paths = route.paths();
+        const char* path_name = path_ >= 0 && path_ < static_cast<int>(paths.size()) ? paths[static_cast<std::size_t>(path_)].name.c_str() : tr("no path");
+        if (ImGui::BeginCombo(tr("Path"), path_name)) {
+            if (ImGui::Selectable(tr("no path"), path_ < 0)) path_ = -1;
+            for (std::size_t i = 0; i < paths.size(); ++i) {
+                const auto& name = paths[i].name.empty() ? paths[i].file : paths[i].name;
+                if (ImGui::Selectable((name + "##path" + std::to_string(i)).c_str(), path_ == static_cast<int>(i))) path_ = static_cast<int>(i);
+            }
+            ImGui::EndCombo();
+        }
+        const bool ready = consist_ >= 0 && path_ >= 0;
+        ImGui::BeginDisabled(!ready);
+        if (ImGui::Button(tr("At the path's start (preview)"))) {
+            const auto& consist = consists_[static_cast<std::size_t>(consist_)];
+            const auto& path = paths[static_cast<std::size_t>(path_)];
+            auto made = route.consist(consist, 0);
+            double length = 0.0;
+            for (const auto& car : made.cars) length += car.definition ? car.definition->length : 0.0;
+            if (const auto front = made.ok() ? route.path_front(path, length) : std::nullopt) {
+                start_placement(consist, {front->node(), front->offset(), front->forward()}, true);
+            } else {
+                report(false, {}, made.ok() ? tr("the path's start has no track") : made.error);
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::TextWrapped("%s", tr("Or right-click the track on the map: \"Put a train\". The consist shows where it will stand; it is put when "
+                                    "confirmed. Right-click a train, a junction or a signal for what can be done with it; the wheel zooms, a "
+                                    "right drag moves the map."));
+    }
+
+    // The point a train's next station route is looked for from (rts_server.exe's
+    // "Собрать маршрут": the last route of its queue, else the train itself),
+    // the way chosen with "Направление".
+    void update_current_point() {
+        auto& game = s_.game();
+        const auto& station_routes = s_.route().station_routes();
+        current_at_.reset();
+        current_rear_first_ = false;
+        current_text_.clear();
+        if (!selected_train_) return;
+        std::optional<GameServer::SegmentSummary> last;
+        for (const auto& segment : game.segments()) {
+            if (segment.train == selected_train_) last = segment;
+        }
+        // A new train or a new end of its queue: the direction as it goes.
+        const auto key = std::to_string(selected_train_) + "/" + (last ? std::to_string(last->id) : std::string("-"));
+        if (key != flip_key_) {
+            flip_key_ = key;
+            flip_ = false;
+            picked_.reset();
+        }
+        if (const auto from = game.next_from(selected_train_, flip_)) {
+            current_at_ = from->at;
+            current_rear_first_ = from->rear_first;
+            behind_ = from->behind;
+        }
+        if (last) {
+            current_text_ = flip_ ? trf("From the end of %s, back (it reverses there)", last->name.c_str()) : trf("From the end of %s", last->name.c_str());
+        } else {
+            current_text_ = flip_ ? tr("From the train's rear (it goes rear first)") : tr("From the train's head");
+        }
+        // The routes from there, looked for again when the point changes.
+        char text[96] = "";
+        if (current_at_) std::snprintf(text, sizeof text, "%u %.1f %d %.0f", current_at_->node, current_at_->offset, current_at_->forward ? 1 : 0, behind_);
+        if (text != avail_key_) {
+            avail_key_ = text;
+            avail_ = current_at_ ? station_routes.available(s_.route().network(), *current_at_, 60000.0, behind_) : std::vector<StationRoutes::Choice>{};
+            // Main tracks first, onto a wrong track last (rts_server.exe's
+            // list: green, lilac), the nearest first between.
+            const auto rank = [&](const StationRoutes::Choice& c) {
+                const auto& r = station_routes.routes()[c.route];
+                const auto last_point = c.reverse ? r.start : r.end;
+                if (last_point && (station_routes.points()[*last_point].data->flags & point_flag::wrong_way)) return 2;
+                return (r.data->flags & route_flag::main_track) ? 0 : 1;
+            };
+            std::stable_sort(avail_.begin(), avail_.end(), [&](const auto& a, const auto& b) { return rank(a) < rank(b); });
+        }
+    }
+
+    // A station route's line in the list: its station and name, from its
+    // end, onto a platform track and its length, how far its start is.
+    [[nodiscard]] std::string route_label(const StationRoutes::Route& r, const bool reverse, const std::optional<double> distance) const {
+        const auto& station_routes = s_.route().station_routes();
+        std::string label = r.data->station + ": " + r.data->name;
+        if (reverse) label += tr(" (from its end)");
+        const auto last_point = reverse ? r.start : r.end;
+        if (last_point) {
+            const auto& point = station_routes.points()[*last_point];
+            if (point.data->flags & point_flag::platform) label += " [П]";
+            if (point.length > 0.0) label += ' ' + trf("%.0f m", point.length);
+        }
+        if (distance && *distance > 50.0) label += "  " + trf("in %.1f km", *distance / 1000.0);
+        return label;
+    }
+
+    void add_picked() {
+        if (!picked_ || !selected_train_) return;
+        auto& game = s_.game();
+        const auto& r = s_.route().station_routes().routes()[picked_->route];
+        std::string error;
+        const auto made = game.add_segment({.train = selected_train_,
+                                            .route = r.data->id,
+                                            .reverse = picked_->reverse,
+                                            .hold = hold_,
+                                            .reversed = current_rear_first_,
+                                            .priority = static_cast<std::uint32_t>(priority_)},
+                                           error);
+        report(made.has_value(), trf("segment %u queued: %s", made.value_or(0), r.data->name.c_str()), error);
+        if (made) picked_.reset();
+    }
+
+    // A route picked in a list: the map shows all of it and where the
+    // routes are looked for from (unchanged when they are on it already).
+    void pick_route(const RouteChoice choice) {
+        picked_ = choice;
+        const auto& station_routes = s_.route().station_routes();
+        const auto* leg = station_routes.leg_of(station_routes.routes()[choice.route], choice.reverse);
+        if (!leg) return;
+        auto points = map_.along(*leg, 0.0, leg->length());
+        if (current_at_) {
+            if (const auto here = s_.route().network().point(current_at_->node, current_at_->offset)) points.push_back(*here);
+        }
+        map_.fit(points);
+    }
+
+    void routes_tab() {
+        auto& game = s_.game();
+        const auto& station_routes = s_.route().station_routes();
+        std::string error;
+        if (station_routes.routes().empty()) {
+            ImGui::TextWrapped("%s", tr("The route database has no station routes."));
+            return;
+        }
+        routes_tab_open_ = true;
+        // The train: picked here, in "Поезда" or on the map.
+        const auto trains = game.trains();
+        std::string train_name = tr("a train...");
+        for (const auto& t : trains) {
+            if (t.id == selected_train_) train_name = trf("%u (id %u)", t.number, t.id) + (t.owner.empty() ? "" : ", " + t.owner);
+        }
+        if (ImGui::BeginCombo(tr("Train"), train_name.c_str())) {
+            for (const auto& t : trains) {
+                const auto label = trf("%u (id %u)", t.number, t.id) + (t.owner.empty() ? "" : ", " + t.owner) + "##pick" + std::to_string(t.id);
+                if (ImGui::Selectable(label.c_str(), t.id == selected_train_)) selected_train_ = t.id;
+            }
+            ImGui::EndCombo();
+        }
+        update_current_point();
+        static constexpr const char* states[] = {"waiting", "set", "set part of the way", "the train on it", "left"};
+        if (selected_train_) {
+            // Its queue (rts_server.exe's upper list).
+            ImGui::SeparatorText(tr("Its queue"));
+            bool any = false;
+            for (const auto& segment : game.segments()) {
+                if (segment.train != selected_train_) continue;
+                any = true;
+                char label[32];
+                std::snprintf(label, sizeof label, "%s##cancel%u", tr("Cancel"), segment.id);
+                if (ImGui::SmallButton(label)) report(game.cancel_segment(segment.id, error), trf("segment %u cancelled", segment.id), error);
+                ImGui::SameLine();
+                ImGui::Text("%s: %s%s, %s %u/%zu", segment.station.c_str(), segment.name.c_str(), segment.reverse ? tr(" (from its end)") : "",
+                            tr(segment.state < 5 ? states[segment.state] : "?"), static_cast<unsigned>(segment.thrown), segment.junctions);
+            }
+            if (!any) ImGui::TextDisabled("%s", tr("nothing queued"));
+            // What can be set next, from there, the way chosen.
+            ImGui::SeparatorText(tr("Routes it can take"));
+            ImGui::TextUnformatted(current_text_.c_str());
+            if (ImGui::Button(flip_ ? tr("Direction: back (change)") : tr("Direction: ahead (change)"))) {
+                flip_ = !flip_;
+                picked_.reset();
+            }
+            ImGui::TextDisabled("%s", tr("green: main track; lilac: onto a wrong track; [П] a platform, then the track's length"));
+            if (!current_at_) {
+                ImGui::TextDisabled("%s", tr("the train is not on the server's track"));
+            } else if (ImGui::BeginListBox("##available", ImVec2(-1.0f, 190.0f))) {
+                if (avail_.empty()) ImGui::TextDisabled("%s", tr("none from here this way"));
+                for (const auto& choice : avail_) {
+                    const auto& r = station_routes.routes()[choice.route];
+                    const auto last_point = choice.reverse ? r.start : r.end;
+                    const bool wrong = last_point && (station_routes.points()[*last_point].data->flags & point_flag::wrong_way);
+                    const bool main = (r.data->flags & route_flag::main_track) != 0;
+                    const RouteChoice here{choice.route, choice.reverse};
+                    if (wrong) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.55f, 1.0f, 1.0f));
+                    else if (main) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.95f, 0.45f, 1.0f));
+                    const auto label = route_label(r, choice.reverse, choice.distance) + "##avail" + std::to_string(choice.route) + (choice.reverse ? "r" : "");
+                    if (ImGui::Selectable(label.c_str(), picked_ == here, ImGuiSelectableFlags_AllowDoubleClick)) {
+                        pick_route(here);
+                        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) add_picked();
+                    }
+                    if (ImGui::IsItemHovered()) hovered_ = here;
+                    if (wrong || main) ImGui::PopStyleColor();
+                }
+                ImGui::EndListBox();
+            }
+        } else {
+            ImGui::TextDisabled("%s", tr("pick a train here, in Trains or on the map"));
+        }
+        ImGui::Checkbox(tr("hold the next"), &hold_);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::InputInt(tr("priority"), &priority_);
+        priority_ = (std::max)(priority_, 0);
+        ImGui::BeginDisabled(!picked_ || !selected_train_);
+        const auto set_label = picked_ ? trf("Set: %s", station_routes.routes()[picked_->route].data->name.c_str()) : std::string(tr("Set the route picked"));
+        if (ImGui::Button(set_label.c_str())) add_picked();
+        ImGui::EndDisabled();
+        if (!picked_) ImGui::TextDisabled("%s", tr("pick a route in the list (the map shows it; a double click sets it)"));
+        // Any route of a station, wherever the train is (a check then decides).
+        if (ImGui::CollapsingHeader(tr("Every route of a station"))) {
+            const char* station = station_ >= 0 && station_ < static_cast<int>(stations_.size()) ? stations_[static_cast<std::size_t>(station_)].c_str()
+                                                                                              : tr("a station...");
+            if (ImGui::BeginCombo(tr("Station"), station)) {
+                for (std::size_t i = 0; i < stations_.size(); ++i) {
+                    if (ImGui::Selectable(stations_[i].c_str(), station_ == static_cast<int>(i))) station_ = static_cast<int>(i);
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::InputTextWithHint("##route_filter", tr("part of its name"), route_filter_, sizeof route_filter_);
+            ImGui::Checkbox(tr("from its end"), &back_);
+            if (ImGui::BeginListBox("##routes", ImVec2(-1.0f, 160.0f))) {
+                const auto filter = ui::search_form(route_filter_);
+                for (std::size_t i = 0; i < station_routes.routes().size(); ++i) {
+                    const auto& r = station_routes.routes()[i];
+                    if (station_ < 0 || r.data->station != stations_[static_cast<std::size_t>(station_)]) continue;
+                    if (!filter.empty() && ui::search_form(r.data->name).find(filter) == std::string::npos) continue;
+                    const bool laid = station_routes.leg_of(r, back_) != nullptr;
+                    const RouteChoice here{i, back_};
+                    const auto label = std::to_string(r.data->id) + "  " + route_label(r, back_, std::nullopt) + (laid ? "" : tr(" (not laid)")) + "##all" +
+                                       std::to_string(i);
+                    if (ImGui::Selectable(label.c_str(), picked_ == here)) pick_route(here);
+                    if (ImGui::IsItemHovered()) hovered_ = here;
+                }
+                ImGui::EndListBox();
+            }
+        }
+        // Every train's queue (rts_server.exe's lower list).
+        ImGui::SeparatorText(tr("Every train's queue"));
+        if (ImGui::BeginTable("segments", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, ImVec2(0.0f, 0.0f))) {
+            ImGui::TableSetupColumn(tr("train"));
+            ImGui::TableSetupColumn(tr("station route"), ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn(tr("state"));
+            ImGui::TableSetupColumn("");
+            ImGui::TableHeadersRow();
+            for (const auto& segment : game.segments()) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("%u", segment.train);
+                ImGui::TableNextColumn();
+                ImGui::Text("%s: %s", segment.station.c_str(), segment.name.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%s, %u/%zu", tr(segment.state < 5 ? states[segment.state] : "?"), static_cast<unsigned>(segment.thrown), segment.junctions);
+                ImGui::TableNextColumn();
+                char label[32];
+                std::snprintf(label, sizeof label, "%s##cancel_all%u", tr("Cancel"), segment.id);
+                if (ImGui::SmallButton(label)) report(game.cancel_segment(segment.id, error), trf("segment %u cancelled", segment.id), error);
+            }
+            ImGui::EndTable();
+        }
+    }
+
+    // On the map while "Станционные маршруты" is open: the route picked and
+    // the one under the mouse in its lists, each with an arrow at its end
+    // and its name, and the point the routes are looked for from.
+    void route_lines() {
+        if (!routes_tab_open_) return;
+        const auto& station_routes = s_.route().station_routes();
+        const auto add = [&](const std::optional<RouteChoice>& choice, const ImU32 colour) {
+            if (!choice) return;
+            const auto* leg = station_routes.leg_of(station_routes.routes()[choice->route], choice->reverse);
+            if (!leg) return;
+            map_.lines.push_back({.points = map_.along(*leg, 0.0, leg->length()), .colour = colour, .width = 8.0f});
+            // And the way to it from where the routes are looked for from, thin.
+            if (const auto* way = way_to(*choice)) {
+                map_.lines.push_back({.points = map_.along(*way, 0.0, way->length()), .colour = (colour & 0x00FFFFFFu) | 0x90000000u, .width = 4.0f});
+            }
+        };
+        add(picked_, IM_COL32(230, 0, 200, 230));
+        if (hovered_ != picked_) add(hovered_, IM_COL32(255, 140, 0, 230));
+    }
+
+    // The way from the point the routes are looked for from to a route's
+    // start (as the walk found it, junctions any way); kept while the point
+    // stays.
+    const simulation::RouteLeg* way_to(const RouteChoice& choice) {
+        if (!current_at_) return nullptr;
+        if (ways_key_ != avail_key_) {
+            ways_key_ = avail_key_;
+            ways_.clear();
+        }
+        const auto key = std::pair{choice.route, choice.reverse};
+        auto found = ways_.find(key);
+        if (found == ways_.end()) {
+            std::optional<simulation::RouteLeg> way;
+            const auto& station_routes = s_.route().station_routes();
+            const auto* leg = station_routes.leg_of(station_routes.routes()[choice.route], choice.reverse);
+            const auto start = leg ? leg->at(0.0) : std::nullopt;
+            if (start) {
+                simulation::PathPlan plan;
+                plan.name = "way to a station route";
+                plan.start = *current_at_;
+                plan.points = {{.kind = simulation::PlanPointKind::end, .node = start->node, .offset = start->offset}};
+                auto built = simulation::build_route(s_.route().network(), plan);
+                if (built.ok() && built.legs.size() == 1 && built.legs[0].length() > 1.0) way = std::move(built.legs[0]);
+            }
+            found = ways_.emplace(key, std::move(way)).first;
+        }
+        return found->second ? &*found->second : nullptr;
+    }
+
+    void draw_route_marks(ImDrawList* draw) const {
+        if (!routes_tab_open_) return;
+        const auto& station_routes = s_.route().station_routes();
+        auto& network = s_.route().network();
+        const auto mark = [&](const std::optional<RouteChoice>& choice, const ImU32 colour) {
+            if (!choice) return;
+            const auto& r = station_routes.routes()[choice->route];
+            const auto* leg = station_routes.leg_of(r, choice->reverse);
+            if (!leg || leg->length() < 1.0) return;
+            const auto points = map_.along(*leg, (std::max)(0.0, leg->length() - 8.0), leg->length());
+            if (points.size() < 2) return;
+            const auto front = map_.screen(points.back()), rear = map_.screen(points.front());
+            trackmap::draw_direction_arrow(draw, front, rear, colour, IM_COL32(20, 20, 20, 255), 20.0f);
+            const auto name = r.data->station + ": " + r.data->name;
+            draw->AddText(ImVec2(front.x + 14.0f, front.y - 8.0f), IM_COL32(20, 20, 20, 255), name.c_str());
+        };
+        mark(picked_, IM_COL32(230, 0, 200, 255));
+        if (hovered_ != picked_) mark(hovered_, IM_COL32(255, 140, 0, 255));
+        // Where the routes are looked for from, and which way.
+        if (current_at_) {
+            if (const auto pose = network.point(current_at_->node, current_at_->offset)) {
+                const auto p = map_.screen(*pose);
+                const float heading = pose->heading + (current_at_->forward ? 0.0f : 3.14159265f);
+                const ImVec2 along(std::sin(heading), -std::cos(heading));
+                draw->AddCircleFilled(p, 7.0f, IM_COL32(0, 110, 255, 255));
+                draw->AddCircle(p, 7.0f, IM_COL32(255, 255, 255, 255), 0, 2.0f);
+                trackmap::draw_direction_arrow(draw, ImVec2(p.x + along.x * 8.0f, p.y + along.y * 8.0f), p, IM_COL32(0, 110, 255, 255),
+                                               IM_COL32(255, 255, 255, 255), 18.0f);
+            }
+        }
+    }
+
+    void signals_tab() {
+        auto& game = s_.game();
+        std::string error;
+        ImGui::TextWrapped("%s", tr("A signal's own actions: right-click it on the map. Here: every signal of a type, and the defaults."));
+        const char* type = type_ >= 0 && type_ < static_cast<int>(types_.size()) ? types_[static_cast<std::size_t>(type_)].c_str() : tr("a type...");
+        if (ImGui::BeginCombo(tr("Signal type"), type)) {
+            for (std::size_t i = 0; i < types_.size(); ++i) {
+                if (ImGui::Selectable(types_[i].c_str(), type_ == static_cast<int>(i))) type_ = static_cast<int>(i);
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::BeginDisabled(type_ < 0);
+        std::size_t count = 0;
+        const auto by_type = [&](const char* label, const simulation::UnitMode mode) {
+            if (!ImGui::Button(label)) return;
+            const bool ok = game.set_signal_type_mode(types_[static_cast<std::size_t>(type_)], mode, count, error);
+            report(ok, trf("%zu signals of type %s: %s", count, types_[static_cast<std::size_t>(type_)].c_str(), label), error);
+        };
+        by_type(tr("Manual"), simulation::UnitMode::manual);
+        ImGui::SameLine();
+        by_type(tr("Open"), simulation::UnitMode::open);
+        ImGui::SameLine();
+        by_type(tr("Automatic block"), simulation::UnitMode::automatic);
+        if (type_ >= 0) {
+            const auto* signals = s_.route().signals();
+            const formats::SignalType* found = nullptr;
+            if (signals) {
+                for (const auto& head : signals->heads()) {
+                    if (head.type && head.type->name == types_[static_cast<std::size_t>(type_)]) found = head.type;
+                }
+            }
+            bool shown = found && signals->shown_as_normal(*found);
+            if (ImGui::Checkbox(tr("Shown as a train signal"), &shown)) {
+                const bool ok = game.set_signal_type_shown(types_[static_cast<std::size_t>(type_)], shown, count, error);
+                report(ok, trf(shown ? "type %s is shown as a train signal" : "type %s is not shown as a train signal", types_[static_cast<std::size_t>(type_)].c_str()), error);
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SeparatorText(tr("Defaults"));
+        if (ImGui::Button(tr("Restore the defaults"))) report(game.restore_signal_defaults(error), tr("every signal back to its defaults"), error);
+        if (ImGui::Button(tr("Set as the defaults"))) report(game.set_signal_defaults(error), tr("every signal's defaults are its mode and aspect now"), error);
+        if (ImGui::Button(tr("Save the route database"))) {
+            std::string result;
+            const bool ok = s_.route().save_signal_defaults(result);
+            report(ok, result, result);
+        }
+        ImGui::TextWrapped("%s", trf("Saved into %s (the installation is not touched).", utf8_path(s_.route().saved_database_path()).c_str()).c_str());
+    }
+
+    void players_tab() {
+        auto& game = s_.game();
+        std::string error;
+        if (ImGui::BeginTable("users", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, ImVec2(0.0f, 240.0f))) {
+            ImGui::TableSetupColumn(tr("nick"));
+            ImGui::TableSetupColumn(tr("state"));
+            ImGui::TableSetupColumn(tr("trains"));
+            ImGui::TableSetupColumn(tr("address"), ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+            for (const auto& user : game.users()) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                if (ImGui::Selectable((user.nick + "##user").c_str(), player_ == user.nick, ImGuiSelectableFlags_SpanAllColumns)) player_ = user.nick;
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(user.console ? tr("dispatcher") : !user.connected ? tr("away") : user.playing ? tr("playing") : tr("in the menu"));
+                ImGui::TableNextColumn();
+                std::string trains;
+                for (const auto t : user.trains) trains += (trains.empty() ? "" : ", ") + std::to_string(t);
+                ImGui::TextUnformatted(trains.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(user.address.c_str());
+            }
+            ImGui::EndTable();
+        }
+        ImGui::InputTextWithHint("##message", tr("a message"), message_, sizeof message_);
+        const auto send = [&](const std::string& to) {
+            const std::string text(message_);
+            if (text.empty()) return;
+            const bool ok = game.message(to, net::from_utf8(text), error);
+            report(ok, trf("message to %s: %s", to == "*" ? tr("everyone") : to.c_str(), text.c_str()), error);
+            if (ok) message_[0] = 0;
+        };
+        ImGui::BeginDisabled(player_.empty());
+        if (ImGui::Button(tr("To the player"))) send(player_);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button(tr("To everyone"))) send("*");
+        ImGui::BeginDisabled(player_.empty());
+        if (ImGui::Button(tr("Drop the player"))) report(game.kick(player_, error), trf("%s dropped", player_.c_str()), error);
+        ImGui::EndDisabled();
+    }
+
+    void log_tab() {
+        ImGui::BeginChild("log", ImVec2(0.0f, -ImGui::GetFrameHeightWithSpacing() * 1.2f), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+        for (const auto& line : log_) ImGui::TextUnformatted(line.c_str());
+        if (log_scroll_) {
+            ImGui::SetScrollHereY(1.0f);
+            log_scroll_ = false;
+        }
+        ImGui::EndChild();
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::InputTextWithHint("##command", tr("a console command (help)"), command_, sizeof command_, ImGuiInputTextFlags_EnterReturnsTrue)) {
+            const std::string line(command_);
+            command_[0] = 0;
+            if (!line.empty()) run(line);
+            ImGui::SetKeyboardFocusHere(-1);
+        }
+    }
+
+    ServerSession& s_;
+    trackmap::TrackMap map_;
+    std::map<std::uint32_t, std::string> names_; // signal object -> its name
+    std::deque<std::string> log_;
+    bool log_scroll_ = false;
+    char command_[512]{};
+    char time_[16] = "12:00";
+    std::string status_;
+    bool status_error_ = false;
+    double status_until_ = 0.0; // ImGui time it is shown until
+    std::uint32_t selected_train_ = 0;
+    trackmap::Pick menu_;
+    std::vector<std::string> consists_;
+    char consist_filter_[64]{};
+    int consist_ = -1;
+    int path_ = -1;
+    std::vector<std::string> stations_;
+    int station_ = -1;
+    char route_filter_[64]{};
+    bool back_ = false, hold_ = false;
+    // "Собрать маршрут": the route picked, the one under the mouse, the
+    // point the routes are looked for from and what is found there.
+    std::optional<RouteChoice> picked_, hovered_;
+    bool routes_tab_open_ = false;
+    bool flip_ = false;
+    std::string flip_key_, avail_key_, ways_key_;
+    std::map<std::pair<std::size_t, bool>, std::optional<simulation::RouteLeg>> ways_;
+    std::vector<StationRoutes::Choice> avail_;
+    std::optional<simulation::TrackLocation> current_at_;
+    bool current_rear_first_ = false;
+    double behind_ = 0.0;
+    std::string current_text_;
+    int priority_ = 0;
+    std::vector<std::string> types_;
+    int type_ = -1;
+    char message_[256]{};
+    std::string player_;
+    bool quit_ = false;
+    bool seen_train_ = false;
+    // The consist being placed (seen on the map, put when confirmed).
+    struct Placement {
+        bool active = false;
+        std::string consist;
+        std::vector<double> lengths, fronts; // each car's length and how far its front is behind the train's
+        std::vector<bool> engines;
+        double length{};
+        simulation::TrackLocation head; // the front of car 0, facing the train's way
+        std::vector<std::pair<simulation::TrackPoint, simulation::TrackPoint>> cars;
+        bool fits = true;
+        std::string overlaps; // the train it runs into, empty none
+        int grabbed = -1;
+    } placing_;
+    char menu_filter_[64]{};
+};
+
+// The start form; true when "Start" has been pressed and the load may run.
+bool draw_form(StartForm& form) {
+    const auto& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f));
+    ImGui::Begin(tr("openRTS server###start"), nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+    if (form.loading > 0) {
+        ImGui::TextUnformatted(tr("Loading the route..."));
+        ImGui::End();
+        return ++form.loading > 2;
+    }
+    ImGui::TextUnformatted(tr("The RTS installation"));
+    ImGui::SetNextItemWidth(-90.0f);
+    ImGui::InputText("##root", form.root, sizeof form.root);
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Look"))) form.list_routes();
+    const char* route = form.route >= 0 && form.route < static_cast<int>(form.routes.size()) ? form.routes[static_cast<std::size_t>(form.route)].c_str()
+                                                                                          : tr("a route...");
+    if (ImGui::BeginCombo(tr("Route"), route)) {
+        for (std::size_t i = 0; i < form.routes.size(); ++i) {
+            if (ImGui::Selectable(form.routes[i].c_str(), form.route == static_cast<int>(i))) form.route = static_cast<int>(i);
+        }
+        ImGui::EndCombo();
+    }
+    const char* seasons[] = {tr("spring"), tr("summer"), tr("autumn"), tr("winter")};
+    ImGui::Combo(tr("Season"), &form.season, seasons, 4);
+    const char* weathers[] = {tr("clear"), tr("snow"), tr("rain"), tr("thunderstorm")};
+    ImGui::Combo(tr("Weather"), &form.weather, weathers, 4);
+    ImGui::InputText(tr("Time (HH:MM)"), form.time, sizeof form.time);
+    ImGui::InputInt(tr("Port"), &form.port);
+    form.port = std::clamp(form.port, 0, 65535); // 0: any free port
+    ImGui::Checkbox(tr("Take new players"), &form.admit);
+    ImGui::TextUnformatted(tr("The server's folder (the route database it saves)"));
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##data", form.data, sizeof form.data);
+    if (!form.error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", form.error.c_str());
+    bool start = false;
+    ImGui::BeginDisabled(form.route < 0);
+    if (ImGui::Button(tr("Start"), ImVec2(120.0f, 0.0f))) start = true;
+    ImGui::EndDisabled();
+    ImGui::End();
+    if (start) {
+        if (!parse_time_of_day(form.time)) {
+            form.error = tr("the time is HH:MM or HH:MM:SS");
+        } else {
+            form.error.clear();
+            form.loading = 1;
+        }
+    }
+    return false;
+}
+
+} // namespace
+
+int run_server_window(SessionSettings settings, const std::vector<std::string>& commands, const fs::path& capture, const double capture_at) {
+#ifndef _WIN32
+    (void)settings;
+    (void)commands;
+    (void)capture;
+    (void)capture_at;
+    std::cerr << "the server's window is Windows-only for now: --no-window --route <folder>" << std::endl;
+    return 2;
+#else
+    if (!glfwInit()) {
+        std::cerr << "error: no window system (glfwInit); run with --no-window" << std::endl;
+        return 1;
+    }
+    auto device = renderer::create_wgpu_device(renderer::GraphicsBackend::automatic);
+    if (!device.ok()) {
+        std::cerr << "error: no GPU device: " << device.error << "; run with --no-window" << std::endl;
+        glfwTerminate();
+        return 1;
+    }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    GLFWwindow* window = glfwCreateWindow(1500, 900, "openRTS server", nullptr, nullptr);
+    if (!window) {
+        std::cerr << "error: the window could not be made; run with --no-window" << std::endl;
+        glfwTerminate();
+        return 1;
+    }
+    int exit_code = 0;
+    {
+        Surface surface(device.context, window);
+        if (!surface.ok()) {
+            std::cerr << "error: the window's surface could not be made; run with --no-window" << std::endl;
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        if (settings.data.empty()) settings.data = core::find_user_data_directory();
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        const auto layout = utf8_path(settings.data / "server_imgui.ini");
+        ImGui::GetIO().IniFilename = layout.c_str();
+        ImGui::StyleColorsDark();
+        ui::load_fonts();
+        ImGui_ImplGlfw_InitForOther(window, true);
+        ImGui_ImplWGPU_InitInfo info{};
+        info.Device = device.context.device();
+        info.NumFramesInFlight = 3;
+        info.RenderTargetFormat = surface.format();
+        info.DepthStencilFormat = WGPUTextureFormat_Undefined;
+        ImGui_ImplWGPU_Init(&info);
+
+        StartForm form;
+        std::snprintf(form.root, sizeof form.root, "%s", utf8_path(settings.root).c_str());
+        std::snprintf(form.data, sizeof form.data, "%s", utf8_path(settings.data).c_str());
+        form.season = settings.season;
+        form.weather = settings.weather;
+        std::snprintf(form.time, sizeof form.time, "%s", clock_text(settings.time_of_day).substr(0, 5).c_str());
+        form.port = settings.port;
+        form.admit = settings.admit;
+        form.list_routes();
+        form.pick_route(settings.route);
+        // Started without a route: the form as it was last started.
+        const auto remembered = settings.data / "server_window.ini";
+        if (settings.route.empty()) form.load(remembered);
+        // A check (--capture) starts the route given at once.
+        if (!capture.empty() && form.route >= 0) form.loading = 1;
+
+        std::unique_ptr<ServerSession> session;
+        std::unique_ptr<Console> console;
+        const auto opened = std::chrono::steady_clock::now();
+        std::optional<std::chrono::steady_clock::time_point> started;
+        const auto queue = wgpuDeviceGetQueue(device.context.device());
+        bool running = true;
+        while (running && !glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            int width = 0, height = 0;
+            glfwGetFramebufferSize(window, &width, &height);
+            surface.resize(width, height);
+            const auto now = std::chrono::steady_clock::now();
+            if (session) session->step(std::chrono::duration<double>(now - *started).count());
+
+            ImGui_ImplWGPU_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+            if (console) {
+                running = console->draw();
+            } else if (draw_form(form)) {
+                SessionSettings chosen = settings;
+                chosen.root = path_of(form.root);
+                chosen.data = path_of(form.data);
+                chosen.route = form.routes[static_cast<std::size_t>(form.route)];
+                chosen.season = static_cast<std::uint8_t>(form.season);
+                chosen.weather = static_cast<std::uint8_t>(form.weather);
+                chosen.time_of_day = parse_time_of_day(form.time).value_or(12.0 * 3600.0);
+                chosen.port = static_cast<std::uint16_t>(form.port);
+                chosen.admit = form.admit;
+                std::string error;
+                std::vector<std::string> lines;
+                std::error_code made;
+                fs::create_directories(remembered.parent_path(), made);
+                form.save(remembered);
+                session = ServerSession::start(chosen, error, lines);
+                form.loading = 0;
+                if (!session) {
+                    form.error = error;
+                } else {
+                    started = std::chrono::steady_clock::now();
+                    console = std::make_unique<Console>(*session);
+                    for (const auto& line : lines) console->log(line);
+                    for (const auto& line : commands) console->run(line);
+                    glfwSetWindowTitle(window, ("openRTS server: " + chosen.route).c_str());
+                }
+            }
+            ImGui::Render();
+            // A check: the window's picture after `capture_at` s, then it closes.
+            const auto since = std::chrono::duration<double>(now - (started ? *started : opened)).count();
+            if (!capture.empty() && (started || form.loading == 0) && since >= capture_at) {
+                exit_code = capture_frame(device.context, surface.format(), surface.width(), surface.height(), capture) ? 0 : 1;
+                std::cout << (exit_code == 0 ? "window captured to " : "the capture failed: ") << utf8_path(capture) << std::endl;
+                break;
+            }
+            if (const auto frame = surface.acquire()) {
+                const auto encoder = wgpuDeviceCreateCommandEncoder(device.context.device(), nullptr);
+                render_frame(device.context.device(), frame, encoder);
+                const auto commands_buffer = wgpuCommandEncoderFinish(encoder, nullptr);
+                wgpuQueueSubmit(queue, 1, &commands_buffer);
+                wgpuCommandBufferRelease(commands_buffer);
+                wgpuCommandEncoderRelease(encoder);
+                surface.present();
+                wgpuTextureRelease(frame);
+            }
+        }
+        wgpuQueueRelease(queue);
+        console.reset();
+        session.reset();
+        ImGui_ImplWGPU_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+    }
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    return exit_code;
+#endif
+}
+
+} // namespace openrts::server

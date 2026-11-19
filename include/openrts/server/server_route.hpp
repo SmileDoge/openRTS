@@ -12,8 +12,10 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/stock_rules.hpp>
+#include <openrts/formats/route_database.hpp>
 #include <openrts/formats/train_path.hpp>
 #include <openrts/net/snapshot.hpp>
+#include <openrts/server/station_routes.hpp>
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/track_traveller.hpp>
@@ -50,8 +52,11 @@ struct ConsistTrain {
 class ServerRoute {
 public:
     // `root`: the RTS installation; `route`: its folder under ROUTES.
+    // `data`: where the server keeps its files (never the installation); a
+    // route database saved there (save_signal_defaults) is read in place of
+    // the installation's.
     [[nodiscard]] static std::unique_ptr<ServerRoute> load(const std::filesystem::path& root, const std::string& route,
-                                                           std::string& error);
+                                                           std::string& error, const std::filesystem::path& data = {});
     ~ServerRoute();
     ServerRoute(const ServerRoute&) = delete;
     ServerRoute& operator=(const ServerRoute&) = delete;
@@ -84,6 +89,23 @@ public:
     [[nodiscard]] std::vector<std::uint32_t> signal_items(std::string_view name) const;
     // Every signal name with its items, by name.
     [[nodiscard]] const std::vector<std::pair<std::string, std::uint32_t>>& signal_names() const noexcept { return signal_names_; }
+    // The route database's station routes on the network (the dispatcher's
+    // segments, GameServer::add_segment).
+    [[nodiscard]] const StationRoutes& station_routes() const noexcept { return station_routes_; }
+    // The route database as read (the server's saved copy when there is one).
+    [[nodiscard]] const formats::RouteDatabase& route_database() const noexcept { return route_database_; }
+    // How the signals' modes were set at the load (from the route database).
+    [[nodiscard]] const std::string& signal_modes() const noexcept { return signal_modes_; }
+    // The route database the server writes and reads first:
+    // <data>/server/<route folder>/<the installation's file name>.
+    [[nodiscard]] std::filesystem::path saved_database_path() const;
+    // rts_server.exe's "Сохранить всё" for the signals (0x448914): the route
+    // database with every signal unit's defaults (UnitFlags bits 2 and 4,
+    // DefaultAspect, the name and the other flags as they were) and the
+    // types shown as normal, the rest of it as it was, written to
+    // saved_database_path() (the one there before kept as .bak).
+    // `result`: where, or why not.
+    bool save_signal_defaults(std::string& result);
 
 private:
     ServerRoute() = default;
@@ -101,6 +123,13 @@ private:
     std::vector<formats::TrainPath> paths_;
     std::map<std::string, std::unique_ptr<formats::WagonDefinition>> wagons_; // by folder\name.ext, lower case
     std::vector<std::pair<std::string, std::uint32_t>> signal_names_;           // name, TDB item; by name
+    std::string signal_modes_;
+    std::filesystem::path data_;
+    std::string database_name_;                      // the route database's file name
+    std::optional<core::VirtualPath> database_file_; // the installation's
+    formats::RouteDatabase route_database_;          // as read (the saved one when there is one)
+    std::vector<std::int32_t> unit_records_;         // by signal unit: its SignalUnit in route_database_, -1 none
+    StationRoutes station_routes_;                   // points into route_database_
     std::vector<std::string> notes_;
 };
 

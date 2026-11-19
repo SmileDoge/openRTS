@@ -147,6 +147,14 @@ void NetSession::request_junction(const std::uint32_t node, const std::uint32_t 
     connection_->send(net::id(net::Package::junction), w.data());
 }
 
+void NetSession::ask_junction(const std::uint32_t node, const std::uint32_t branch) {
+    if (!connection_ || node == 0) return;
+    net::WireWriter w;
+    w.u32(node - 1);
+    w.u32(branch);
+    connection_->send(net::id(net::Package::junction_request), w.data());
+}
+
 std::uint32_t NetSession::server_train(const std::uint64_t view_train) const {
     if (view_train == 0) return 0;
     for (const auto& [id, remote] : remotes_) {
@@ -315,6 +323,8 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
     // (the server and its consoles kept the other train and dropped every
     // position of ours with the cars taken in; testers 2026-11-15).
     send_couplings(trains);
+    // Switches thrown by hand on foot: the server decides.
+    for (const auto& [node, branch] : trains.take_junction_throws()) ask_junction(node, branch);
     // openRTS's own packages go to an openRTS server only: it answers this
     // (rts_server.exe leaves an id it does not know to its main thread).
     if (connection_ && !hello_sent_ && !console_) {

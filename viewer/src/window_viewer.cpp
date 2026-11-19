@@ -1897,50 +1897,7 @@ private:
         }
     }
 
-    // A system monospace font with Cyrillic (content names are often
-    // Russian); ImGui's built-in font, Latin only, when none is found.
-    static void load_font() {
-        auto& io = ImGui::GetIO();
-        static const ImWchar ranges[] = {
-            0x0020, 0x00FF, // Latin + Latin-1
-            0x0400, 0x052F, // Cyrillic + supplement
-            0x2010, 0x205E, // punctuation (dashes, quotes, ellipsis)
-            0x2116, 0x2116, // numero sign
-            0,
-        };
-        const std::vector<std::string> candidates{
-            "C:/Windows/Fonts/consola.ttf",
-            "C:/Windows/Fonts/lucon.ttf",
-            "C:/Windows/Fonts/cour.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        };
-        bool loaded = false;
-        for (const auto& file : candidates) {
-            if (!std::filesystem::is_regular_file(file)) continue;
-            if (io.Fonts->AddFontFromFileTTF(file.c_str(), 15.0f, nullptr, ranges)) {
-                loaded = true;
-                break;
-            }
-        }
-        if (!loaded) io.Fonts->AddFontDefault();
-        // Map labels (Track control station names; RTS: Arial 16, here a
-        // little larger for today's screens).
-        for (const char* file : {"C:/Windows/Fonts/arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"}) {
-            if (!std::filesystem::is_regular_file(file)) continue;
-            if (auto* font = io.Fonts->AddFontFromFileTTF(file, 20.0f, nullptr, ranges)) {
-                map_label_font() = font;
-                break;
-            }
-        }
-        // The start menu's title and large button (Segoe UI Semibold).
-        for (const char* file : {"C:/Windows/Fonts/seguisb.ttf", "C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arial.ttf",
-                                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"}) {
-            if (!std::filesystem::is_regular_file(file)) continue;
-            title_font() = io.Fonts->AddFontFromFileTTF(file, 34.0f, nullptr, ranges);
-            large_font() = io.Fonts->AddFontFromFileTTF(file, 21.0f, nullptr, ranges);
-            break;
-        }
-    }
+    static void load_font() { ui::load_fonts(); }
 
     std::string layout_file_; // ImGui keeps the pointer until the context goes
     bool initialized_ = false;
@@ -3020,6 +2977,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     int capture_minimise_frames = 0;
     double capture_minimise_clock = 0.0;
     int capture_board_step = 0; // --capture-board: 1 at the door, then the presses of Enter
+    int capture_hand_step = 0;  // --capture-hand-switch: 1 by it, 2 reported, 3 Enter, 4 reported
     bool capture_passed = false; // --capture-passage done
     double capture_reported = 0.0; // --capture-report: the last pick
     int capture_path_switches = 0; // --capture-switch-path: switches made
@@ -3355,6 +3313,17 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                     frame_input.engineer_action_ctrl = phase == 2;
                 }
                 ++capture_board_step;
+            }
+        }
+        if (capture && options.capture_hand_switch && capture_hand_step < 4) {
+            const double since = glfwGetTime() - capture_start;
+            static constexpr double at[] = {0.3, 0.45, 0.5, 0.7};
+            if (since >= options.capture_at * at[capture_hand_step]) {
+                switch (capture_hand_step++) {
+                case 0: scene.stand_at_hand_switch(); break;
+                case 2: frame_input.engineer_action = true; break;
+                default: scene.report_hand_switch(); break;
+                }
             }
         }
         if (capture && options.capture_ok) scene.close_activity_message();
@@ -3906,7 +3875,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
         }
     }
-    return exit_code::success;
+    return scene.close_code();
 }
 
 } // namespace openrts::viewer

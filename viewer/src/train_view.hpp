@@ -455,6 +455,11 @@ public:
     };
     [[nodiscard]] std::vector<Coupling> take_couplings() { return std::exchange(couplings_, {}); }
     [[nodiscard]] std::vector<Cut> take_cuts() { return std::exchange(cuts_, {}); }
+    // Junctions the engineer threw by hand in a network game since the last
+    // call (node, branch): the server decides (0x460A).
+    [[nodiscard]] std::vector<std::pair<std::uint32_t, std::uint32_t>> take_junction_throws() {
+        return std::exchange(junction_throws_, {});
+    }
     // Trains the player may take (the network: his own). On foot, Enter at
     // an exterior door of one of their cabs makes it the driven train; the
     // Train panel lists them with "Drive".
@@ -674,6 +679,11 @@ public:
     // A test (--capture-board): the engineer on the ground at a cab door of
     // car `car` of the driven train.
     void stand_at_cab_door(std::size_t car);
+    // A test (--capture-hand-switch): the engineer on the ground 2.5 m beside
+    // the hand switch nearest to the driven train's first car; the report
+    // prints its branch and the prompt shown.
+    void stand_at_hand_switch();
+    void report_hand_switch() const;
     // A test (--capture-passage): the engineer on foot in car `car`'s cab or
     // salon, at its passage door towards the next car, the door opened.
     void stand_at_passage(std::size_t car);
@@ -923,6 +933,14 @@ private:
     std::vector<Coupling> couplings_;      // take_couplings
     std::vector<Cut> cuts_;                // take_cuts
     std::string board_prompt_;             // Enter at another cab's door (his other trains, the far end of his own)
+    // Hand switches (RTS 0x414D24 / 0x4121BC): the junction the engineer on
+    // foot stands by, and the throws a network game sends to the server.
+    [[nodiscard]] std::optional<std::uint32_t> junction_at_hand(const glm::vec3& eye);
+    void throw_by_hand(std::uint32_t node);
+    std::vector<std::pair<std::uint32_t, simulation::TrackPoint>> junction_spots_; // junction node, its world object
+    bool junction_spots_built_ = false;
+    std::uint32_t test_hand_switch_ = 0; // stand_at_hand_switch
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> junction_throws_; // take_junction_throws
     // The cabs of engines he is not in, by car key: the ones he stood at
     // (their doors for boarding) and the ones he left, kept with their
     // doors as he left them (RTS keeps each car's cabin, wagon +556); a car's

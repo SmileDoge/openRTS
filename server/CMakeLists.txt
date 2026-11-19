@@ -5,7 +5,9 @@
 add_library(openrts_server STATIC
     src/console.cpp
     src/game_server.cpp
+    src/session.cpp
     src/server_route.cpp
+    src/station_routes.cpp
     src/tcp_server.cpp)
 openrts_configure_target(openrts_server)
 target_link_libraries(openrts_server PUBLIC openrts_net_world openrts_simulation openrts_formats openrts_core)
@@ -19,4 +21,10 @@ set_target_properties(openrts_server_app PROPERTIES OUTPUT_NAME openrts-server)
 target_link_libraries(openrts_server_app PRIVATE openrts_server)
 if(WIN32)
     target_link_libraries(openrts_server_app PRIVATE shell32)
+endif()
+
+# The window (added from the top CMakeLists once ImGui is there) needs the
+# WebGPU runtime next to the program.
+if(OPENRTS_BUILD_VIEWER AND OPENRTS_ENABLE_GLFW AND OPENRTS_ENABLE_WGPU)
+    openrts_copy_wgpu_runtime(openrts_server_app)
 endif()

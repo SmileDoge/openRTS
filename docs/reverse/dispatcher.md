@@ -279,6 +279,255 @@ with a simpler priority (30 s earlier and the holder beyond its stopping
 distance) and a section lock for single lines instead of `0x48C21C` /
 `0x48C654`.
 
+## Signal modes on the server (`rts_server.exe`) — CONFIRMED (static, 2026-11-19)
+
+**Signal objects** (`0x402F80`, the table `Src`, `dword_54C5BC` entries of
+56 bytes): per vector node in TDB order, per signal item in its
+`TrItemRefs` order, an object for the first item of each place (`+8`, the
+offset) and direction (`+48`), holding every item of the node there. The
+route database's `SignalUnit`s are written in this order, and `0x4618`'s
+index is into it. Fields: `+0` its aspect (u16, the strongest of its heads
+of its lowest function), `+2` that lowest function, `+4` its mode (f32),
+`+8` the distance to its next object, `+17` the dispatcher picked its
+aspect (u8), `+20` / `+24` its heads, `+48` its next object, `+52` the one
+whose next it is.
+
+| Mode | | Its heads' scripts |
+|---|---|---|
+| 0 manual | holds what it was given | not run |
+| 1 open | the console's "Открыт", a route | run every step (`0x40CBB4`); manual again once a train reaches it (`0x45A1DC`) or its route ends or is cancelled (`0x4098F4`) |
+| 2 automatic block | the console's "Автоблокировка" | run every step |
+
+**A run** (`0x40CD40`, also `0x402F80` and `0x40CBB4`): each head's
+`enabled` (`+96`) is set to the object's mode, its script runs
+(`0x43B9F0`), and `+0` becomes the strongest state of its heads of the
+lowest function (`0x40CBB4` also counts a type marked
+`SignalTypeShownAsNormal`, flag `0x100` of the type). So a manual object's
+script sees `enabled` 0, which most scripts answer with STOP; one that
+does not read it (Kuban's `T_Head_G`) gives what it gives.
+`next_sig_lr` / `next_sig_mr` walk the objects' `+48` chain.
+
+**The next object** (`0x40D1D8`): the next signal item ahead of the
+object's first head, the way it faces, as the junctions stand, within
+50 km (`0x42A8D8`); `+8` its distance. A junction thrown (`0x40C52C` →
+`0x40CE20`) renews it for the objects behind the junction.
+
+**At the route's load** (`0x402F80`) every object is manual and runs once.
+Then the route database's `SignalUnit`s (`0x449C68`, `<route>.rtsdb`) are
+matched to the objects (the same index first, else by position) and give
+their defaults (`0x41F39C`): `UnitFlags` bit 2 → open, else bit 4 →
+automatic block, else manual; the object runs once (`0x40CD40`). A manual
+one's `DefaultAspect` goes to `0x40C714`, but that holds an aspect on the
+object the console has selected (`dword_54C70C`), not on the one given:
+at the load none is selected and nothing is held, so a manual signal shows
+what its scripts give with `enabled` 0 — CONFIRMED by the live capture
+of 2026-11-05: its first snapshot, 40 s after the start (12:01), has no
+head dark (−1) and 932 at STOP_AND_PROCEED (Kuban's red), though every
+`DefaultAspect` is STOP; openRTS on the same route matches all its 1951
+heads in aspect, draw state and mode (with the matching below). (Kuban's `-also` heads map STOP to the draw state "No", no
+light: held at STOP they would be dark.) `DefaultAspect` is read through
+`0x426AC0` (STOP 0 … CLEAR_2 7, 8, 9; anything else 0). Bit 1
+only marks the signal red on the console's map in one of its modes
+(`byte_54C85C`); no logic of it found. An object without a `SignalUnit`
+keeps what its run at the load gave. The console's "restore defaults"
+(`TfEditor_btSigRestoreDefClick`) and "set as defaults" (`0x4499F0`,
+written into the `.rtsdb` by "save all") work on the same table.
+
+**A `SignalUnit` to its object** (`0x449C68`), CONFIRMED by code and by
+data: the file's units in order, each to the object of its own index when
+that object has as many heads (`NumSigItems`) and stands at its `Position`,
+else to the first object standing there (a "Signal ID has changed"
+warning); a later one taking an object replaces the earlier. "Stands
+there" (`0x41F418`): the object's first head's tile and x, y, z within
+0.2 m (the file's x read negated, as the heads keep it). That place is not
+always the TDB item's: building the objects (`0x402F80`), for each object's
+first item the first later item of its node at the same offset facing the
+other way is moved — `0x429BB4` finds it on its node walking each section
+from its start in steps of 5 m (a section whose start is farther than its
+length + 0.1 m skipped) and takes the first point within 2.6 m, then
+`0x42C9A4` moves it 20 m along the track (direction 0 against the node, 1
+along it: PROBABLE, from the data) — and "save all" writes that place.
+Matched so, every `SignalUnit` of both Kuban builds finds its object
+(1406 and 1405) and the modes are the files' (517 / 503 automatic block);
+matched by the TDB items' own places, about 300 objects facing the other
+way at a shared place took their neighbour's unit.
+
+**Holding an aspect** (`0x40C714`): the object made manual and run once;
+`+0` = the aspect, `+17` = the flag given; the first head of the lowest
+function whose type has the aspect shows it (its draw state and speed),
+the other heads go dark (draw state −1); when none has it, every head
+takes the aspect with the type's draw state for it, else for STOP, else
+for STOP_AND_PROCEED. The console's menu:
+- "Установить показание" (`TfPult_mnSigSetStopClick`): aspects 0..7, the
+  flag 1;
+- "Открыт" / "Автоблокировка" (`TfPult_mnSigOpenClick`,
+  `TfPult_mnSigAutoClick` → `0x40C648`): toggles; ticked, mode 1 or 2;
+  unticked, manual at aspect 1 (STOP_AND_PROCEED), the flag 0 — the live
+  capture's "close gives 1";
+- by type (`TfPult_btSigTurnOnClick` → `0x40CAF0`): every object with a
+  head of that type to the mode chosen, and the type's "shown as normal"
+  flag.
+
+**Routes.** A train's route (`0x40918C`, from `0x4619` and the station
+routes) opens every object along it whose items face the train, that is
+manual and whose `+17` is clear (mode 1). Cancelling (`0x4619` with a
+length below 0) or ending it (`0x4098F4`) closes the open ones along what
+is left. A train closes an open object as its first car reaches it
+(`0x45A1DC`, from `0x40DCDC`: the objects within the first car's
+`+188` + half its length ahead of it).
+
+**`0x4618`** from a console (`0x40FB90`): the object index, `+0` (u16),
+`+4` (f32), `+17` (u8); a mode 0 holds that aspect (`0x40C714`), a mode
+above 0 runs from the next step. The server sends it back to its consoles
+(`0x451F3C`) with every change of `+0` or the mode; the players get each
+head's `0x460C` (`0x451D5C`), whose `+96` is `enabled`, that is the mode.
+
+**The installed routes' `.rtsdb`** (`UnitFlags` counts): Kuban 503 × 4
+(automatic block), 846 × 0, 56 × 1, `DefaultAspect` STOP for all but one;
+Pavlovsk 496 × 4, 1610 × 0, 92 × 1, 5 × 5; Chernyshevsk 377 × 4, 3122 × 0,
+97 × 1; Novokuznetsk 222 × 4, 3136 × 0, 147 × 1; Stepy Priazovya 184 × 4,
+1705 × 0, 108 × 1; DZHD 6 × 4, 103 × 0, 8 × 1; Lviv 1661 × 0 with
+DefaultAspects STOP_AND_PROCEED, RESTRICTING, CLEAR_2, STOP and APPROACH_1.
+In the old install only: Kievskij hod 1112 × 4, 1947 × 0, 177 × 1, 72 × 5;
+Uspensk 214 × 4, 709 × 0, 134 × 2 (open), 48 × 5. The new build ships no
+`.rtsdb` for these two.
+
+**So on an RTS server:** the line's block signals work by themselves,
+clear over free blocks whatever the station's signals show; the station's
+home, exit and shunting signals stand at STOP until the dispatcher opens
+them (and close again as the train reaches them) or sets a route. The
+server throws no junction by itself: players throw hand switches
+(`track.md`), the dispatcher assembles routes. Single player has no
+dispatcher (PROBABLE, not read in `rts1.exe` for this: it reads the
+`.rtsdb` for the signals' names, `0x4903DC`): every signal runs its script
+there, so an exit signal clears by itself when the way ahead is free.
+
+**openRTS's server** does this since 2026-11-19 (`server.md`, "Signals";
+`simulation::SignalSystem::set_dispatched`), the consoles' `0x4618`,
+`SignalTypeShownAsNormal`, "set as defaults" and the signals' part of
+"save all" included; the station routes too (below).
+
+**"Save all" for the signals** (`0x448914`, also asked at closing): the
+file is written whole, `.bak` keeping the one before: first
+`SignalTypeShownAsNormal ( "<type>" )` for every type with flag `0x100`
+(the type's name as sigcfg writes it), `JunctionDefaultStates`, the route
+points, routes and paths, then `SignalUnits ( n` with a `SignalUnit` per
+object in table order: `Position ( tile_x tile_z x y z )` of its first
+head (x as the TDB writes it: RTS keeps it negated), `NumSigItems`,
+`Name ( "…")` when it has one, `UnitFlags ( %08x )` and
+`DefaultAspect ( NAME )` from the defaults table. The installed files
+have no `SignalTypeShownAsNormal`.
+
+## Station routes and segments (`rts_server.exe`) — CONFIRMED (static, 2026-11-19)
+
+The route database's other half (`0x449C68` reads it after the signal units):
+
+- **`RoutePoint`** (`0x4640F0`): `Name`, `PointType` (1 a point, 2 a track),
+  `Flags`, `StationName`, `Point1 ( tile_x tile_z x y z dir )` placed on the
+  track (`0x428790`, "Failed to place point1 in route point"), for a track
+  `Point2` too and the distance between them along the track (`+152`, "Failed
+  to make way for track"), and an optional `Junctions ( n Point ( … branch ) )`
+  within it. Point flags: bit 2 it leads onto a stretch (`0x469804`,
+  `0x46A348`), bit 4 no occupancy checks; bit 1 a wrong-way exit and bit 8
+  a passenger platform (PROBABLE, below). Kuban: 182 points, 52 points and
+  130 tracks.
+- **`TrainRoute`** (`0x464674`): `ID`, `Name`, `Flags`, `StationName`,
+  `Start` and `End` (point names of the station, `0x449BF8`). Route flags:
+  bit 4 no occupancy checks, bit 8 it may be set part of the way; bit 1
+  the main track and bit 2 one way (PROBABLE, below). Kuban: 828 routes.
+- **`TrainPath`** (`0x464890`): `RouteID`, `Name`, `Priority`, `Start`
+  (bit 1 the direction, bit 2 from the start point's Point2) and
+  `Points ( n Point ( tile_x tile_z x y z branch ) )`: every junction the
+  route passes, in order, with the branch it is set to. `0x4361F4` walks
+  them from the start point: each point must be the next junction, the
+  branch leads on, the last one to the end point's node ("Failed to load
+  route" otherwise). Kuban: 828 paths, one per route.
+
+**The guide** `Поездные маршруты.pdf` (next to `rts_server.exe`, 4 pages)
+says how the operator uses them:
+
+- The route form ("Маршруты поездов") per station: points are its tracks
+  and its exits (set before the home signals); a track's two points stand
+  by its exit signals, one in each direction, "чтобы корректно расположить
+  точку окончания маршрута для трафика" — PROBABLE: a route onto a track
+  ends at its far point. An exit's properties, in this order: "Неправильный
+  путь" (routes onto it last in the list, lilac), "Проверять встречный
+  маршрут" (the oncoming route check: bit 2, CONFIRMED by the code),
+  "Маневровый"; the forms table adds a passenger platform. A route's, in
+  this order: "Главный путь" (first in the list, green), "В одну сторону"
+  (only from its start), "Маневровый" (no occupancy checks: bit 4,
+  CONFIRMED), "Составной" (part of the way: bit 8, CONFIRMED). The order
+  of the two confirmed bits gives the rest: PROBABLE route bit 1 main
+  track, 2 one way; point bit 1 wrong way, 8 a platform (Kuban: its
+  station tracks with platforms). Kuban's route 552 "НМ4БП => Н1" (flags 3)
+  runs straight onto main track 1; most have bit 2.
+- Several paths per route: the free one of the smallest priority is set.
+- **"Собрать маршрут"** (`TfrmAssembleRoute`, a train's menu): the upper
+  list is the train's queue; the routes list shows "все маршруты в
+  выбранном направлении, доступные от текущей точки: последнего элемента
+  очереди или от самого поезда"; "Направление" turns the search (and the
+  train's way on) at that point; a route onto a station track shows "[П]"
+  for a platform and the track's length; a priority (the smaller first);
+  the lower list is every train's routes at the station. How it finds the
+  routes from the point is not read from the code: openRTS walks on from
+  the point the way chosen, through junctions any way, to the first route
+  point on each way and takes the routes starting there that way (an exit
+  with nothing that way, and a point nothing starts from, are passed) —
+  so after a route onto a stretch the next station's routes follow.
+
+**A segment** (52 bytes; the server's list `dword_54C630`, linked by
+`+44` / `+48`): `+0` the point it starts at, `+4` the one it ends at (swapped
+when run from its end), `+8` the route, `+12` run from its end, `+13` hold
+(the train's next segment waits), `+14` the train runs it rear first,
+`+16` its length, `+20` the train, `+24` the priority, `+28` the state,
+`+32` its id, `+36` the path it was set by, `+40` its junctions set.
+
+- **Added** (`0x450B` from a console, `0x454194` reads it: the route by ID,
+  refused when its station or its start's `Point1` tile differ; then
+  `0x469804`): the train exists; an end point leading onto a stretch: no
+  segment queued that ends at the stretch's far end (`0x436510`, "На
+  перегон задан маршрут встречному поезду"); a track at the end: the
+  operator asked when it is occupied (not from a console); a way from the
+  train's previous segment's end to the new start (`0x435278`, "Не найден
+  путь от предыдущей точки пути до нового маршрута"). Then queued
+  (`0x41F520`): a new id (the largest + 1), after the last segment, moved
+  before other trains' segments of a larger priority number; `0x450B` to
+  the consoles.
+- **Each step** (`0x46A348`), in the list's order:
+  - 0 waiting: its turn when the train has no earlier segment or that one
+    is set (1 or 3) and does not hold. An end leading onto a stretch waits
+    while a route for an oncoming train waits there or a train on the
+    stretch comes this way; a point to start from waits while another
+    driven train (kind 1 or 2) stands between the train and it. Then the
+    path (`0x46A10C`): no junction locked or held for another train, and,
+    with the checks on (neither the end point nor the route has bit 4), no
+    other train on the track after each junction but the last. Its
+    junctions are thrown for the train (`0x40C4AC`) and the train's route
+    laid to the segment's end (`0x40918C`, which opens its signals): 1.
+    Not possible and route bit 8: as many junctions as are free, the route
+    to the last route point reached, state 2, on next steps further.
+  - 1 / 3: a junction of the path the train's route holds thrown
+    elsewhere: back to 0. The train on it (its junctions behind and ahead
+    of the train's front, or one of them within half its first car + 80 m
+    ahead): 3; off it after 3: 4.
+- **Cancelled** (`0x450D`, `0x469C68`): for a train the server drives, its
+  route closed and laid again to its previous segment's end; `0x450D` to
+  the consoles, the segment freed.
+- **Packages:** `0x450B` (`0x453F80`): id, train, route ID, station
+  (`u16 n`, the UTF-16 and a zero), the start point's `Point1` tile (two
+  `u16`), `+12`, `+13`, `+14`, length, priority, state, the path (index in
+  `RouteTrainPaths` + 1), junctions set. `0x450E` (`0x454600`): id, state,
+  path, priority, length, junctions set. `0x450C` (`0x454484`): the
+  request's id, the segment's, ok, the reason (UTF-16 to a zero). A
+  console's world brings every segment's `0x450B`.
+- UNKNOWN: what drops a segment at state 4 on the server (the console
+  drops it; no code found that frees it); openRTS drops it at the next
+  step with `0x450D`.
+
+openRTS: `server::StationRoutes` (the points on the track, each path's way
+both ways through its junctions) and `GameServer::add_segment` and its step
+(`server.md`, "Station routes").
+
 ## Signal names ("литеры") — CONFIRMED (2026-11-01)
 
 The names live in the route database (`.rtsdb`, UTF-16

@@ -64,9 +64,14 @@ public:
     // The commands sent and what the server answered, the dispatchers'
     // messages, oldest first.
     [[nodiscard]] const std::vector<std::string>& console_log() const noexcept { return console_log_; }
-    // Asks the server to throw a junction (0x460A, as rts1.exe sends a
-    // player's switch): it decides and sends everyone the result.
+    // A junction's new position for the server (0x460A, as RTS's console
+    // sends its route's junctions); rts_server.exe sets it as sent, its lock
+    // byte too (0x40C52C), and sends everyone the result.
     void request_junction(std::uint32_t node, std::uint32_t branch);
+    // A hand switch thrown on foot (0x4642, rts1.exe 0x4D1EB8: the junction
+    // and the branch): the server throws it unless it is locked or reserved
+    // (rts_server.exe 0x40C5A4) and sends everyone the result.
+    void ask_junction(std::uint32_t node, std::uint32_t branch);
     // RTS's hand route (0x4619, the console's "Задать маршрут"): `length` m
     // from the train's head along the junctions as they stand, from its rear
     // when `rear_first`; below 0 cancels it. The junctions go first

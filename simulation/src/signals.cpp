@@ -97,6 +97,28 @@ struct SignalSystem::Impl {
     std::vector<SignalPass> passes;
     // The head being run, for dependency recording.
     std::uint32_t running = no_index;
+    // The RTS server's way (set_dispatched), by signal unit (RTS object).
+    struct Dispatch {
+        std::vector<std::vector<std::uint32_t>> items; // by unit: its TDB signal items
+        std::vector<std::uint32_t> unit_node;           // by unit: its vector node
+        std::set<std::uint32_t> moved;                 // items 0x402F80 moves 20 m (unit_places)
+        std::vector<std::vector<std::uint32_t>> heads; // by unit: its heads
+        std::map<std::uint32_t, std::uint32_t> unit_of_item;
+        std::vector<std::uint32_t> unit_of_head;
+        std::vector<UnitMode> mode;
+        std::vector<int> aspect;   // RTS object +0
+        std::vector<char> pinned;  // +17: the dispatcher picked the aspect
+        std::vector<std::optional<UnitDefaults>> defaults;
+        std::vector<int> lowest;   // +2: the lowest function of its heads
+        // [0] the unit itself, then the units ahead of its first head as
+        // the junctions stand (its next signal +48 and theirs, 0x40D1D8).
+        std::vector<std::vector<ChainNode>> chains;
+        std::vector<char> rerun;                   // to run at the next step whatever changed
+        std::vector<char> changed, changed_before; // its aspect changed this step / the last
+        std::vector<std::uint32_t> selected;       // by node: the branches the chains were walked on
+        std::vector<std::uint32_t> closed;         // take_closed
+    } dispatch;
+    std::set<std::string> shown_as_normal; // signal types (signal_name_key), set_shown_as_normal
 };
 
 SignalSystem::SignalSystem(TrackNetwork& network, std::shared_ptr<const formats::SignalConfig> config,
@@ -741,6 +763,20 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
         }
     }
 
+    // Flash timers.
+    const auto flash = [&] {
+        for (auto& head : heads_) {
+            if (!head.type || head.type->flash_on <= 0.0f) continue;
+            head.flash_timer += static_cast<float>(dt);
+            if (head.flash_timer > head.type->flash_on + head.type->flash_off) head.flash_timer = 0.0f;
+        }
+    };
+    if (dispatched_) {
+        dispatch_step(trains, dt);
+        flash();
+        return;
+    }
+
     const Walker walker{network, heads_, impl.node_heads, impl.occupancy};
     std::swap(impl.in_chain, impl.was_in_chain);
     std::fill(impl.in_chain.begin(), impl.in_chain.end(), char{0});
@@ -949,12 +985,7 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
     for (std::size_t h = 0; h < heads_.size(); ++h) {
         if (impl.always[h] || impl.stale[h]) ++stats_.always_run_heads;
     }
-    // Flash timers.
-    for (auto& head : heads_) {
-        if (!head.type || head.type->flash_on <= 0.0f) continue;
-        head.flash_timer += static_cast<float>(dt);
-        if (head.flash_timer > head.type->flash_on + head.type->flash_off) head.flash_timer = 0.0f;
-    }
+    flash();
 }
 
 void SignalSystem::set_authority(std::function<std::optional<double>(const Train&)> authority) {
@@ -1039,6 +1070,466 @@ std::vector<SignalPosition> SignalSystem::positions(const Train& train, const bo
 
 std::vector<SignalPass> SignalSystem::take_passes() {
     return std::exchange(impl_->passes, {});
+}
+
+// ---- the RTS server's way (rts_server.exe, UnitMode) ------------------------------
+
+namespace {
+
+constexpr double next_signal_reach = 50000.0; // m: how far 0x40D1D8 looks for a unit's next signal
+const std::vector<std::uint32_t> no_list;
+
+[[nodiscard]] bool type_has(const formats::SignalType& type, const int aspect) {
+    return std::any_of(type.aspects.begin(), type.aspects.end(),
+                       [&](const formats::SignalAspectEntry& e) { return static_cast<int>(e.aspect) == aspect; });
+}
+
+} // namespace
+
+// 0x402F80: per vector node in TDB order, per signal item in TrItemRefs
+// order, a unit for the first item of each place (offset) and direction,
+// holding every item of the node at that place and direction.
+void SignalSystem::build_units() {
+    auto& impl = *impl_;
+    auto& d = impl.dispatch;
+    const auto& db = impl.network->database();
+    d.items.clear();
+    d.heads.clear();
+    d.unit_of_item.clear();
+    d.unit_node.clear();
+    d.moved.clear();
+    for (std::uint32_t n = 0; n < db.nodes.size(); ++n) {
+        const auto& node = db.nodes[n];
+        if (node.kind != formats::TrackNodeKind::vector) continue;
+        const auto& refs = node.items;
+        const auto signal = [&](const std::uint32_t item) {
+            return item < db.items.size() && db.items[item].kind == formats::TrackItemKind::signal;
+        };
+        const auto same = [&](const std::uint32_t a, const std::uint32_t b) {
+            return db.items[a].distance == db.items[b].distance && db.items[a].signal_direction == db.items[b].signal_direction;
+        };
+        for (std::size_t k = 0; k < refs.size(); ++k) {
+            if (!signal(refs[k])) continue;
+            bool first = true;
+            for (std::size_t j = 0; j < k && first; ++j) {
+                if (signal(refs[j]) && same(refs[j], refs[k])) first = false;
+            }
+            if (!first) continue;
+            const auto unit = static_cast<std::uint32_t>(d.items.size());
+            auto& items = d.items.emplace_back();
+            d.unit_node.push_back(node.index);
+            for (std::size_t m = k; m < refs.size(); ++m) {
+                if (signal(refs[m]) && same(refs[m], refs[k]) && !d.unit_of_item.contains(refs[m])) {
+                    items.push_back(refs[m]);
+                    d.unit_of_item[refs[m]] = unit;
+                }
+            }
+            // The first item after it at this place facing the other way is
+            // moved 20 m along the track (0x402F80).
+            for (std::size_t m = k + 1; m < refs.size(); ++m) {
+                if (signal(refs[m]) && db.items[refs[m]].distance == db.items[refs[k]].distance &&
+                    db.items[refs[m]].signal_direction != db.items[refs[k]].signal_direction) {
+                    d.moved.insert(refs[m]);
+                    break;
+                }
+            }
+        }
+    }
+    d.heads.assign(d.items.size(), {});
+    d.unit_of_head.assign(heads_.size(), no_index);
+    for (std::uint32_t h = 0; h < heads_.size(); ++h) {
+        const auto it = d.unit_of_item.find(heads_[h].track_item);
+        if (it == d.unit_of_item.end()) continue;
+        d.heads[it->second].push_back(h);
+        d.unit_of_head[h] = it->second;
+    }
+}
+
+void SignalSystem::build_chains() {
+    auto& impl = *impl_;
+    auto& d = impl.dispatch;
+    const auto& network = *impl.network;
+    d.selected.assign(network.node_count(), no_index);
+    for (std::uint32_t n = 1; n < network.node_count(); ++n) {
+        if (const auto* state = network.junction(n)) d.selected[n] = state->selected;
+    }
+    d.chains.assign(d.heads.size(), {});
+    for (std::uint32_t u = 0; u < d.heads.size(); ++u) {
+        auto& chain = d.chains[u];
+        chain.push_back({.object = u, .heads = d.heads[u], .min_function = d.lowest[u]});
+        d.rerun[u] = 1;
+        const SignalHead* first = nullptr;
+        for (const auto h : d.heads[u]) {
+            if (heads_[h].placed) {
+                first = &heads_[h];
+                break;
+            }
+        }
+        if (!first) continue;
+        // The units ahead of its first head, the way it faces, in order
+        // (each with its heads facing that way).
+        auto node = first->node;
+        double offset = first->offset;
+        bool forward = first->forward;
+        double walked = 0.0;
+        std::set<std::pair<std::uint32_t, bool>> visited;
+        bool done = false;
+        while (!done) {
+            const auto* info = network.node(node);
+            if (!info || !visited.insert({node, forward}).second) break;
+            if (node < impl.node_heads.size()) {
+                const auto& list = impl.node_heads[node];
+                for (std::size_t i = 0; i < list.size(); ++i) {
+                    const auto h = list[forward ? i : list.size() - 1 - i];
+                    const auto& head = heads_[h];
+                    const auto unit = d.unit_of_head[h];
+                    if (unit == no_index || unit == u || head.forward != forward) continue;
+                    if (forward ? head.offset < offset : head.offset > offset) continue;
+                    if (chain.back().object == unit) {
+                        chain.back().heads.push_back(h);
+                        continue;
+                    }
+                    if (chain.size() >= chain_limit) {
+                        done = true;
+                        break;
+                    }
+                    chain.push_back({.object = unit,
+                                     .heads = {h},
+                                     .distance = walked + std::abs(head.offset - offset),
+                                     .min_function = d.lowest[unit]});
+                }
+            }
+            if (done) break;
+            walked += forward ? info->length - offset : offset;
+            if (walked > next_signal_reach) break;
+            MoveStop stop = MoveStop::completed;
+            const auto step = next_vector_node(network, node, forward, stop);
+            if (!step) break;
+            node = step->node;
+            forward = step->forward;
+            const auto* next = network.node(node);
+            offset = forward ? 0.0 : (next ? next->length : 0.0);
+        }
+    }
+}
+
+// 0x40CD40: the unit's heads run with `enabled` = its mode, seeing the units
+// ahead at their aspects; its aspect is the strongest of its heads of its
+// lowest function.
+void SignalSystem::run_unit(const std::uint32_t unit, const bool step) {
+    auto& impl = *impl_;
+    auto& d = impl.dispatch;
+    if (unit >= d.chains.size()) return;
+    const Walker walker{*impl.network, heads_, impl.node_heads, impl.occupancy};
+    auto& chain = d.chains[unit];
+    for (std::size_t k = 0; k < chain.size(); ++k) {
+        chain[k].aspect = k == 0 ? 0.0f : static_cast<float>(d.aspect[chain[k].object]);
+        chain[k].speed = -1.0f;
+        chain[k].mode = 0.0f;
+    }
+    const auto enabled = static_cast<float>(static_cast<int>(d.mode[unit]));
+    int best = 0;
+    for (const auto h : d.heads[unit]) {
+        auto& head = heads_[h];
+        head.enabled = enabled;
+        impl.stale[h] = run_head(impl, heads_, h, &chain, 0, *config_, walker);
+        impl.dirty[h] = 0;
+        ++stats_.free_runs;
+        // 0x40CBB4 also counts a type shown as normal (flag 0x100); 0x40CD40 not.
+        if (head.type && (static_cast<int>(head.type->function) == d.lowest[unit] ||
+                          (step && impl.shown_as_normal.contains(head.type->name)))) {
+            best = (std::max)(best, static_cast<int>(static_cast<std::int64_t>(head.state)));
+        }
+    }
+    if (best != d.aspect[unit]) d.changed[unit] = 1;
+    d.aspect[unit] = best;
+    d.rerun[unit] = 0;
+}
+
+void SignalSystem::dispatch_step(const std::span<const Train* const> trains, const double dt) {
+    auto& impl = *impl_;
+    auto& d = impl.dispatch;
+    const auto& network = *impl.network;
+    stats_.free_runs = 0;
+    std::swap(d.changed_before, d.changed);
+    std::fill(d.changed.begin(), d.changed.end(), char{0});
+    // A junction thrown: every unit's next signals again (0x40CE20 renews
+    // those behind it).
+    for (std::uint32_t n = 1; n < network.node_count() && n < d.selected.size(); ++n) {
+        const auto* state = network.junction(n);
+        if (state && state->selected != d.selected[n]) {
+            build_chains();
+            break;
+        }
+    }
+    // A train's leading end reaching an open signal closes it (0x45A1DC): the
+    // heads facing its way within its step (and a metre) ahead.
+    for (const auto* train : trains) {
+        if (!train || !train->placed()) continue;
+        const double speed = std::abs(train->speed());
+        if (speed < 1e-3) continue;
+        const auto lead = train->leading_end();
+        if (!lead) continue;
+        const double reach = speed * dt + 1.0;
+        auto node = lead->node();
+        double offset = lead->offset();
+        bool forward = lead->forward();
+        double walked = 0.0;
+        std::set<std::pair<std::uint32_t, bool>> visited;
+        while (walked <= reach) {
+            const auto* info = network.node(node);
+            if (!info || !visited.insert({node, forward}).second) break;
+            if (node < impl.node_heads.size()) {
+                for (const auto h : impl.node_heads[node]) {
+                    const auto& head = heads_[h];
+                    const auto unit = d.unit_of_head[h];
+                    if (unit == no_index || head.forward != forward) continue;
+                    const double ahead = forward ? head.offset - offset : offset - head.offset;
+                    if (ahead < 0.0 || walked + ahead > reach) continue;
+                    if (d.mode[unit] != UnitMode::open) continue;
+                    d.mode[unit] = UnitMode::manual;
+                    run_unit(unit);
+                    d.closed.push_back(unit);
+                }
+            }
+            walked += forward ? info->length - offset : offset;
+            MoveStop stop = MoveStop::completed;
+            const auto step = next_vector_node(network, node, forward, stop);
+            if (!step) break;
+            node = step->node;
+            forward = step->forward;
+            const auto* next = network.node(node);
+            offset = forward ? 0.0 : (next ? next->length : 0.0);
+        }
+    }
+    // Every open or automatic unit (0x40CBB4), when something it reads
+    // changed: its track (block_state, route_set), the junctions, the aspect
+    // of a unit ahead.
+    for (std::uint32_t u = 0; u < d.heads.size(); ++u) {
+        if (d.mode[u] == UnitMode::manual) continue;
+        bool due = full_evaluation_ || d.rerun[u];
+        for (const auto h : d.heads[u]) due = due || impl.dirty[h] || impl.always[h] || impl.stale[h];
+        const auto& chain = d.chains[u];
+        for (std::size_t k = 1; k < chain.size() && !due; ++k) {
+            due = d.changed[chain[k].object] || d.changed_before[chain[k].object];
+        }
+        if (due) run_unit(u, true);
+    }
+}
+
+void SignalSystem::set_dispatched(const bool on) {
+    auto& impl = *impl_;
+    auto& d = impl.dispatch;
+    dispatched_ = on;
+    std::fill(impl.dirty.begin(), impl.dirty.end(), char{1});
+    if (!on) {
+        d = {};
+        return;
+    }
+    build_units();
+    const auto n = d.heads.size();
+    d.mode.assign(n, UnitMode::manual);
+    d.aspect.assign(n, 0);
+    d.pinned.assign(n, char{0});
+    d.defaults.assign(n, std::nullopt);
+    d.lowest.assign(n, 5);
+    d.rerun.assign(n, char{1});
+    d.changed.assign(n, char{0});
+    d.changed_before.assign(n, char{0});
+    d.closed.clear();
+    for (std::uint32_t u = 0; u < n; ++u) {
+        for (const auto h : d.heads[u]) {
+            if (heads_[h].type) d.lowest[u] = (std::min)(d.lowest[u], static_cast<int>(heads_[h].type->function));
+        }
+    }
+    impl.trains.clear();
+    impl.passes.clear();
+    std::fill(impl.in_chain.begin(), impl.in_chain.end(), char{0});
+    std::fill(impl.was_in_chain.begin(), impl.was_in_chain.end(), char{0});
+    build_chains();
+    // 0x402F80: manual, each run once with `enabled` 0.
+    for (std::uint32_t u = 0; u < n; ++u) run_unit(u);
+    std::fill(d.changed.begin(), d.changed.end(), char{0});
+}
+
+std::size_t SignalSystem::unit_count() const {
+    return dispatched_ ? impl_->dispatch.heads.size() : 0;
+}
+
+std::vector<TrackPoint> SignalSystem::unit_places(const std::uint32_t unit) const {
+    const auto& impl = *impl_;
+    const auto& d = impl.dispatch;
+    if (unit >= d.items.size() || d.items[unit].empty()) return {};
+    const auto first = d.items[unit].front();
+    const auto& db = impl.network->database();
+    if (first >= db.items.size() || !db.items[first].has_position) return {};
+    const auto& item = db.items[first];
+    const TrackPoint at{.tile_x = item.tile_x, .tile_z = item.tile_z, .x = item.x, .y = item.y, .z = item.z};
+    if (!d.moved.contains(first)) return {at};
+    // 0x402F80 moves it from where 0x429BB4 finds it on its node: the
+    // first point, walking each section from its start in steps of 5 m
+    // (a section whose start is farther than its length + 0.1 m skipped),
+    // within 2.6 m of it; then 20 m along the track, the way against the
+    // node for direction 0, along it for 1 (as the route databases have it).
+    const auto node_index = unit < d.unit_node.size() ? d.unit_node[unit] : 0u;
+    const auto* node = impl.network->node(node_index);
+    if (!node) return {};
+    std::optional<double> found;
+    for (const auto& section : node->sections) {
+        const auto start = impl.network->point(node_index, section.start);
+        if (!start || distance(*start, at) > section.length + 0.1) continue;
+        for (double along = 0.0; along < section.length && !found; along += 5.0) {
+            const auto p = impl.network->point(node_index, section.start + along);
+            if (p && distance(*p, at) < 2.6) found = section.start + along;
+        }
+        if (found) break;
+    }
+    if (!found) return {};
+    TrackTraveller walk(*impl.network, node_index, *found, item.signal_direction != 0);
+    if (!walk.move(20.0).ok()) return {};
+    return {walk.pose()};
+}
+
+const std::vector<std::uint32_t>& SignalSystem::unit_items(const std::uint32_t unit) const {
+    const auto& d = impl_->dispatch;
+    return unit < d.items.size() ? d.items[unit] : no_list;
+}
+
+const std::vector<std::uint32_t>& SignalSystem::unit_heads(const std::uint32_t unit) const {
+    const auto& d = impl_->dispatch;
+    return unit < d.heads.size() ? d.heads[unit] : no_list;
+}
+
+std::optional<std::uint32_t> SignalSystem::unit_of_item(const std::uint32_t item) const {
+    const auto& d = impl_->dispatch;
+    const auto it = d.unit_of_item.find(item);
+    if (it == d.unit_of_item.end()) return std::nullopt;
+    return it->second;
+}
+
+UnitMode SignalSystem::unit_mode(const std::uint32_t unit) const {
+    const auto& d = impl_->dispatch;
+    return dispatched_ && unit < d.mode.size() ? d.mode[unit] : UnitMode::manual;
+}
+
+formats::SignalAspect SignalSystem::unit_aspect(const std::uint32_t unit) const {
+    const auto& d = impl_->dispatch;
+    if (!dispatched_ || unit >= d.aspect.size()) return formats::SignalAspect::stop;
+    return static_cast<formats::SignalAspect>(std::clamp(d.aspect[unit], 0, 9));
+}
+
+bool SignalSystem::unit_pinned(const std::uint32_t unit) const {
+    const auto& d = impl_->dispatch;
+    return dispatched_ && unit < d.pinned.size() && d.pinned[unit];
+}
+
+void SignalSystem::set_unit_mode(const std::uint32_t unit, const UnitMode mode) {
+    auto& d = impl_->dispatch;
+    if (!dispatched_ || unit >= d.mode.size()) return;
+    d.mode[unit] = mode;
+    d.pinned[unit] = 0;
+    run_unit(unit);
+}
+
+void SignalSystem::hold_aspect(const std::uint32_t unit, const formats::SignalAspect aspect, const bool pinned) {
+    auto& d = impl_->dispatch;
+    if (!dispatched_ || unit >= d.mode.size()) return;
+    d.mode[unit] = UnitMode::manual;
+    run_unit(unit);
+    const int wanted = static_cast<int>(aspect);
+    d.aspect[unit] = wanted;
+    d.pinned[unit] = pinned ? 1 : 0;
+    d.changed[unit] = 1;
+    // The first head of the unit's lowest function whose type has it.
+    std::optional<std::uint32_t> chosen;
+    for (const auto h : d.heads[unit]) {
+        auto& head = heads_[h];
+        if (!head.type || static_cast<int>(head.type->function) != d.lowest[unit] || !type_has(*head.type, wanted)) continue;
+        const auto [draw, speed] = aspect_entry(*head.type, wanted);
+        head.state = static_cast<float>(wanted);
+        head.draw_state = static_cast<float>(draw);
+        head.speed = speed;
+        chosen = h;
+        break;
+    }
+    for (const auto h : d.heads[unit]) {
+        auto& head = heads_[h];
+        if (chosen) {
+            if (h != *chosen) head.draw_state = -1.0f;
+            continue;
+        }
+        head.state = static_cast<float>(wanted);
+        if (!head.type) continue;
+        for (const int fallback : {wanted, 0, 1}) {
+            if (!type_has(*head.type, fallback)) continue;
+            head.draw_state = static_cast<float>(aspect_entry(*head.type, fallback).first);
+            break;
+        }
+    }
+}
+
+void SignalSystem::set_defaults(const std::uint32_t unit, const UnitDefaults& defaults) {
+    auto& d = impl_->dispatch;
+    if (unit < d.defaults.size()) d.defaults[unit] = defaults;
+}
+
+std::optional<UnitDefaults> SignalSystem::defaults(const std::uint32_t unit) const {
+    const auto& d = impl_->dispatch;
+    return unit < d.defaults.size() ? d.defaults[unit] : std::nullopt;
+}
+
+void SignalSystem::restore_defaults(const std::uint32_t unit) {
+    const auto& d = impl_->dispatch;
+    if (!dispatched_ || unit >= d.defaults.size() || !d.defaults[unit]) return;
+    // 0x41F39C sets the mode and runs the unit once (0x40CD40); a manual
+    // one's DefaultAspect goes to 0x40C714, which holds an aspect on the
+    // unit the console has selected (dword_54C70C), not on this one: none
+    // at the load, so a manual unit shows what its scripts give with mode 0
+    // (Kuban: STOP_AND_PROCEED, red). CONFIRMED by the live capture's
+    // snapshot 40 s after the start: no head dark (-1), 932 at aspect 1.
+    set_unit_mode(unit, d.defaults[unit]->mode);
+}
+
+std::vector<std::uint32_t> SignalSystem::take_closed() {
+    return std::exchange(impl_->dispatch.closed, {});
+}
+
+void SignalSystem::set_defaults_from_state() {
+    auto& d = impl_->dispatch;
+    if (!dispatched_) return;
+    for (std::uint32_t u = 0; u < d.mode.size(); ++u) {
+        d.defaults[u] = UnitDefaults{.mode = d.mode[u], .aspect = static_cast<formats::SignalAspect>(std::clamp(d.aspect[u], 0, 9))};
+    }
+}
+
+void SignalSystem::set_shown_as_normal(const std::string_view type, const bool on) {
+    auto& impl = *impl_;
+    const auto key = formats::signal_name_key(type);
+    if (on) {
+        impl.shown_as_normal.insert(key);
+    } else {
+        impl.shown_as_normal.erase(key);
+    }
+    // The units with such a head run again.
+    auto& d = impl.dispatch;
+    for (std::uint32_t u = 0; u < d.heads.size(); ++u) {
+        for (const auto h : d.heads[u]) {
+            if (heads_[h].type && heads_[h].type->name == key) d.rerun[u] = 1;
+        }
+    }
+}
+
+bool SignalSystem::shown_as_normal(const formats::SignalType& type) const {
+    return impl_->shown_as_normal.contains(type.name);
+}
+
+std::vector<std::string> SignalSystem::shown_as_normal_types() const {
+    std::vector<std::string> names;
+    for (const auto& key : impl_->shown_as_normal) {
+        const auto* type = config_->find_type(key);
+        names.push_back(type ? type->display_name : key);
+    }
+    return names;
 }
 
 } // namespace openrts::simulation

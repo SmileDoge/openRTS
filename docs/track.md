@@ -11,9 +11,6 @@ openrts_viewer --window --route D:\Games\MDDRTS\ROUTES\Kuban_RTS [--consist <nam
     T            track overlay on/off (yellow track, magenta junctions, red ends,
                  signals red, speed posts blue, platforms cyan; green = selected branch)
     C            put the train on the track nearest to the camera
-    J            throw the first facing junction within 300 m ahead of the train
-                 (by its motion, else the reverser); without a train, the one nearest to the camera;
-                 refused while the junction is occupied or held by a train's path (paths.md)
     Ctrl+Alt+F7  Track control (paths.md); F5, Shift+F5, Ctrl+F5, F6, F7, Ctrl+F7: information
                  panels, platform / siding names and signal names as in RTS (paths.md)
     V            camera follows the train
@@ -194,6 +191,18 @@ types:
   driven by keys along the track, the first "ride" along the route.
 - **Switching:** a key throws a junction. A train takes the chosen branch,
   and a trailing move throws the switch itself, as in RTS.
+- **Hand switches on foot** (as `rts1.exe`, `reverse/track.md`): the
+  engineer on the ground within 5 m of a switch (its world object) gets
+  the prompt "Enter: throw the switch"; Enter throws it to its next
+  branch. In a network game or a scenario only hand switches (the shapes
+  marked `ManualJunctionShape` in `tsection.dat`, the `…Mnl` ones: 105 of
+  Kuban's 555 junctions, 242 of Pavlovsk's 1 061), in a scenario only
+  those no train's path holds; in a free run any switch. In a network
+  game the throw goes to the server as `0x4642`, as `rts1.exe` sends it,
+  and the server refuses a locked or held one. A player in a network game
+  throws no other junction (no Track control there), as in RTS: a player's
+  `rts1.exe` asks for a junction only here. Checked with `--capture-hand-switch` (Kuban, switch 732:
+  branch 1 → 0).
 - **Check:**
   - the lines lie on the rails over a whole route (Kuban, TestRoute);
   - a traveller runs from end to end following topology;

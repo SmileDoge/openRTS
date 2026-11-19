@@ -406,6 +406,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.capture_uncouple = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--capture-couple" && has_value) {
             options.capture_couple = std::string(flags[++i]) != "rear";
+        } else if (flags[i] == "--capture-hand-switch") {
+            options.capture_hand_switch = true;
         } else if (flags[i] == "--capture-board" && has_value) {
             options.capture_board.push_back(static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str())));
         } else if (flags[i] == "--capture-passage" && has_value) {

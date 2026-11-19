@@ -270,6 +270,8 @@ public:
     [[nodiscard]] virtual bool engineer_on_foot() const { return false; }
     // The scene is done: its window closes (the start menu, updated, starts again).
     [[nodiscard]] virtual bool wants_close() const { return false; }
+    // The program's exit code when the scene closed it (exit_codes.hpp).
+    [[nodiscard]] virtual int close_code() const { return 0; }
     // Esc closes something of the scene's this frame (the car menu, a
     // placement in Track control): it does not show or hide the panels then.
     [[nodiscard]] virtual bool escape_taken() const { return false; }
@@ -329,6 +331,10 @@ public:
     // --capture-board: the engineer on the ground at a cab door of car
     // `index` (from 0) of the driven train.
     virtual void stand_at_cab_door(std::size_t) {}
+    // --capture-hand-switch: the engineer on foot by the hand switch nearest
+    // to the driven train; the report prints its branch.
+    virtual void stand_at_hand_switch() {}
+    virtual void report_hand_switch() const {}
     // --capture-passage: the engineer at the passage door of car `index`.
     virtual void stand_at_passage(std::size_t) {}
     [[nodiscard]] virtual std::string car_menu_report() const { return {}; }

@@ -114,6 +114,36 @@ Look-ahead stops only at a matching item or an end node, and never keeps
 visited nodes; see `signals.md` for the closed-loop hang. openRTS bounds it
 by distance and visited (node, direction) pairs.
 
+### CONFIRMED (`0x483694`, `0x414D24`, `0x4121BC`) — hand switches
+
+- **The flag:** `tsection.dat`'s `ManualJunctionShape ( )` sets bit `0x10`
+  of the track shape's flags (`+16` of the 28-byte shape; `0x483694`
+  also sets 1 tunnel, 2 road, 4 crossover, 8 `MainRoute` given). In the
+  installed `GLOBAL/tsection.dat` it marks the `…Mnl` switch shapes.
+- **Thrown on foot:** with no locomotive (the engineer on the ground),
+  `0x414D24` also picks a world object of kind 18 (a junction's track
+  object) whose position is within **5 m** of the eye, the nearest of
+  everything it picks. Left out: a junction with its lock byte (`+56`)
+  set; in a scenario (`dword_61D7CC`), one with a reservation queue
+  (`+52`). In a scenario or a network game (`dword_61D31C + 36`) only a
+  junction whose shape has bit `0x10`; in a free run any.
+- **Enter** (`0x4121BC`, picked object type 7, without Ctrl): the next
+  branch, round to the first (`+12` + 1, 0 at `+32`); in a network game
+  it is asked for (`0x4D1EB8`: `0x4642`, the junction index and the
+  branch, `u32` each) and the server's answer stands, else set at once
+  (no occupancy check).
+- **Nothing else of a player throws a junction in a network game:**
+  `0x4D1EB8` is called only from here. `rts1.exe` sends `0x460A` only for
+  the junctions its own trains run through within a step (`0x4CBFC4`,
+  from `0x4CBF0C`, both ends of a train) and as a mini-server host
+  (`0x4D1D58`); `0x4609` / `0x460A` from `0x4D14F0` (UNKNOWN when). The
+  RTS server takes a player's `0x460A` as sent, its lock byte too, with no
+  check (`rts_server.exe` `0x40C52C`); `0x4642` only when the junction is
+  neither locked nor reserved (`0x40C5A4`).
+- openRTS: `TrainView::junction_at_hand` / `throw_by_hand`; the free
+  run's throw goes through `TrackNetwork::throw_junction` (refused while
+  occupied or held).
+
 ### UNKNOWN
 
 - **Switch blade frame in RTS:** how RTS maps junction state to the blade

@@ -259,15 +259,15 @@ A name says what the package is about; the rows below hold the details.
 |---|---|---|---|
 | `0x460D` | server → player, console | `f32` time of day | every 300 s (live capture 2026-11-05) |
 | `0x4609` | snapshot; player → server | container | in the snapshot it holds the `0x460A` entries; from a player, a list of nested `0x460A` changes (`0x40C52C` each) |
-| `0x460A` | both ways | junction index (the TDB node number − 1: the client reads its node table at the index, CONFIRMED against Kuban, `net.md`), branch `u32`, lock `u8` | a junction's state; from a player, a change the server decides at once (`0x40C52C`) |
-| `0x4642` | player → server or host | junction index, `u32` | a junction request, done when the junction is neither locked nor reserved (`0x40C5A4`) |
+| `0x460A` | both ways | junction index (the TDB node number − 1: the client reads its node table at the index, CONFIRMED against Kuban, `net.md`), branch `u32`, lock `u8` | a junction's state; from a player, set at once as sent, the lock byte too, with no check (`0x40C52C`); a player's `rts1.exe` sends it only for the junctions its trains run through (`0x4CBFC4`) |
+| `0x4642` | player → server or host | junction index, branch `u32` (a hand switch thrown on foot, `rts1.exe` `0x4D1EB8`) | a junction request, done when the junction is neither locked nor reserved (`0x40C5A4`) |
 | `0x460B` | snapshot | container | holds the `0x460C` entries |
 | `0x460C` | server → player | the head's TDB `SignalItem` (`TrItemId`: the client reads its track item table at it, CONFIRMED against Kuban), `u16` (`+78`: the semaphore arm's position, the drawing state's `SemaphorePos`; 0 on colour lights, as on Kuban; client `0x479AFC`), state `f32` (`+84`), drawing `f32` (`+88`), `f32` `+92`, mode `f32` (`+96`), speed limit `f32` (`+100`, m/s, −1 none) | a signal head's state ("Live capture"); the client skips `+92` / `+96` |
 | `0x4634` | server → player | area id, remove `u8`, `u32 n` + data | a weather area made, changed or removed (network thread only) |
 | `0x4635` | server → player | area id, `u32` (`+32`), 8 bytes (`+12`) | a weather area's values |
 | `0x461D` | player → server → others | object (`u32`, 3 × `f32` position, `u32` id), then `u8` `+65`, `u8` `+64`, `f32` | a world object found within 50 m (`0x4E0E4C`) gets two bytes and, unless the float is −1, a value at its `+40 → +44`. PROBABLE: crossings and animated objects |
 | `0x463F` | player → server → others | the same object key, then `u16` code | a sound trigger on that object's sound (`0x4A9F48`). The data channel of `multiplayer.md` uses this one |
-| `0x4618` | console ↔ server | signal object index, state `u16`, mode `f32`, `u8` | the dispatcher's control of a signal: mode 0 manual, 2 automatic block, 1 PROBABLE open by a route; the server applies a manual state at once and sends `0x460C` ("Live capture"). The table (`dword_54C5BC` entries of 56 bytes) holds the signal objects |
+| `0x4618` | console ↔ server | signal object index, state `u16`, mode `f32`, `u8` | the dispatcher's control of a signal: mode 0 manual, 1 open (until a train reaches it), 2 automatic block, CONFIRMED (`dispatcher.md`, "Signal modes on the server"); `u8` the dispatcher picked the aspect (`+17`); the server applies a manual state at once and sends `0x460C` ("Live capture"). The table (`dword_54C5BC` entries of 56 bytes) holds the signal objects |
 | `0x464B` | both ways | object id, index `u32`, `f32` | a track object of kind 2 (`0x4C90E8`; client `0x4ECC6C`) |
 | `0x464C` | both ways | object id, `u8` (`+64`) | a track object of kind 1 (`0x42139C`) |
 | `0x464D` | both ways | object id, `u16` (`+14`) | a track object of kind 1 (`0x4214F4`) |
@@ -388,10 +388,10 @@ of its state comes from this link (`multiplayer.md`, "Helpers").
 | `0x4507` | server → sender | `u32` 1, the sender's local id, ok, the new id as `f32`, `u32` 0 | the answer to a `0x4607`: the server's id |
 | `0x4508` | console → server → players | train id, `f32` `+332`, `+260`, `+252`, `+256` | see "Trains" |
 | `0x450A` | server → console | `u8` type, `u16`, train `u32`, `u32`, `u32`, 2 × `f32` | a line of the event log (`0x45E324`) |
-| `0x450B` | both ways | id, train id, station route id, station name, two check `u16`, direction `u8`, two flags `u8`, length `f32`, priority `u32`, state `u8`, junction list `u16`, junctions thrown `u16` ("Live capture") | a segment of a train's route; the server checks it (`0x469804`), answers `0x450C` and sets it at once |
+| `0x450B` | both ways | id, train id, station route id, station name (`u16 n`, UTF-16, a zero), the start point's tile (two `u16`), from its end `u8`, hold `u8`, rear first `u8`, length `f32`, priority `u32`, state `u8`, its TrainPath (index + 1) `u16`, junctions set `u16` (`dispatcher.md`, "Station routes and segments") | a segment of a train's route; the server checks it (`0x469804`), answers `0x450C` and queues it |
 | `0x450C` | server → console | request id, new id, ok `u8` (`u16 n` + text when refused) | the answer; a refused route shows the text |
 | `0x450D` | both ways | route id | cancel a segment; the server echoes it and answers `0x450C` (id, 0, ok) |
-| `0x450E` | server → console | segment id, state `u8`, junction list `u16` (index + 1), priority `u32`, length `f32`, junctions thrown `u16` | a segment's state (server `0x454600`, console `0x4547AC`): 0 waiting, 2 throwing junctions, 1 set, 3 the train on it, 4 passed (the console drops it); on the console 0xFE waits for the server, 0xFF was refused |
+| `0x450E` | server → console | segment id, state `u8`, its TrainPath (index + 1) `u16`, priority `u32`, length `f32`, junctions set `u16` | a segment's state (server `0x454600`, console `0x4547AC`): 0 waiting, 2 throwing junctions, 1 set, 3 the train on it, 4 passed (the console drops it); on the console 0xFE waits for the server, 0xFF was refused |
 
 - **The train's context menu** is rebuilt on every click (`0x450E1C`) by
   the train's kind:
@@ -820,8 +820,9 @@ above.
     the session;
   - the length `f32`, m;
   - the priority `u32` (0, or 2 from the window's field);
-  - the state `u8`, the junction list `u16` (index + 1) and the number of
-    its junctions thrown so far `u16`, as in `0x450E`.
+  - the state `u8`, its TrainPath `u16` (the index in the database's
+    `RouteTrainPaths` + 1; "the junction list" before 2026-11-19) and the
+    number of its junctions thrown so far `u16`, as in `0x450E`.
 - **From the ДСП** the console sends `0x450B`. The server answers:
   - `0x450B` with its id;
   - `0x450C`: the request id, the new id, ok `u8` 1, no text;

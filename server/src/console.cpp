@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cstdlib>
 #include <cstdio>
+#include <set>
 #include <sstream>
 
 #include <openrts/core/virtual_path.hpp>
@@ -54,9 +55,27 @@ constexpr const char* help_text =
     "                                 (its name, \"литера\", from the route database), through the others in turn\n"
     "  route <train> cancel           free the route's junctions\n"
     "  signals [text]                 the signals' names and how many of each\n"
+    "  stations [text]                the stations of the route database's station routes, with how many\n"
+    "  routes <station> [text]        a station's routes: ID, name, from, to, flags, whether its way is laid\n"
+    "  heads                          every signal head as the players get it: item, aspect, draw state, mode\n"
+    "  next <train> [back]            the station routes the train can take next (\"Собрать маршрут\"): from its last\n"
+    "                                 segment's end, else its head (back: the other way); then segment <train> <ID> ...\n"
+    "  segment <train> <route ID> [back] [hold] [rear] [priority N]  a segment of the train's route: the\n"
+    "                                 station route (back: from its end; hold: the train's next segment waits;\n"
+    "                                 rear: the train runs it rear first), set when its turn comes\n"
+    "  segment cancel <id>            a segment cancelled (the train's route back to its previous one's end)\n"
+    "  segments                       the queue: id, train, station route, state, junctions set\n"
     "  junction <node> [branch] [lock|unlock]  throw or lock a junction (TDB node)\n"
-    "  signal <item> <aspect|auto>    hold a signal's heads (TDB item) at an aspect, or give them back\n"
+    "  signal <item|name> [what]      a signal (TDB item, or its name if only one has it): its mode and aspect,\n"
+    "                                 or: <aspect> hold it there (manual, a route leaves it so), open (until a\n"
+    "                                 train passes it), auto (automatic block), close (manual), default\n"
     "                                 aspects: stop, stop_and_proceed, restricting, approach_1..3, clear_1, clear_2\n"
+    "  signal type <type> <manual|open|auto>  every signal with a head of that sigcfg type\n"
+    "  signal type <type> normal on|off  the type shown as normal (its heads count for their signal's aspect)\n"
+    "  signal defaults                every signal back to its defaults from the route database\n"
+    "  signal set-defaults            every signal's defaults become its mode and aspect now\n"
+    "  signal save                    the defaults and the types shown as normal into the server's copy of\n"
+    "                                 the route database (its data folder; the installation is not touched)\n"
     "  helper <nick> <train|off>      make a player the helper (помощник машиниста) on a train's cab, or not\n"
     "  kick <nick>                    drop a player\n"
     "  admit on|off                   take new players or not\n"
@@ -411,6 +430,116 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         const bool ok = server.set_route(*train, stops, result);
         return ok ? result : "error: " + result;
     }
+    if (command == "stations") {
+        const auto filter = lower(arg(1));
+        for (const auto& [station, count] : route.station_routes().stations()) {
+            if (!filter.empty() && lower(station).find(filter) == std::string::npos) continue;
+            out << station << " (" << count << ")\n";
+        }
+        return out.str().empty() ? "no station routes" : out.str();
+    }
+    if (command == "next") {
+        if (words.size() < 2) return "usage: next <train> [back]";
+        const auto train = static_cast<std::uint32_t>(std::stoul(std::string(arg(1))));
+        const bool back = words.size() > 2 && lower(arg(2)) == "back";
+        const auto from = server.next_from(train, back);
+        if (!from) return "error: train " + std::to_string(train) + " is not on the server's track";
+        const auto& routes = route.station_routes();
+        const auto choices = routes.available(route.network(), from->at, 60000.0, from->behind);
+        for (const auto& c : choices) {
+            const auto& r = routes.routes()[c.route];
+            const auto last = c.reverse ? r.start : r.end;
+            out << r.data->id << "  " << r.data->station << ": " << r.data->name << (c.reverse ? " (back: segment ... back)" : "");
+            if (last) {
+                const auto& point = routes.points()[*last];
+                if (point.data->flags & point_flag::platform) out << " [П]";
+                if (point.length > 0.0) out << ' ' << static_cast<int>(point.length) << " m";
+                if (point.data->flags & point_flag::wrong_way) out << " (onto a wrong track)";
+            }
+            if (r.data->flags & route_flag::main_track) out << " (main track)";
+            if (c.distance > 50.0) out << ", in " << static_cast<int>(c.distance) << " m";
+            out << '\n';
+        }
+        out << (from->after ? "from the end of segment " + std::to_string(*from->after) : std::string("from the train"))
+            << (back ? ", back" : "") << (from->rear_first ? " (rear first: segment ... rear)" : "") << '\n';
+        return out.str();
+    }
+    if (command == "routes") {
+        if (words.size() < 2) return "usage: routes <station> [text]";
+        // The station: its name, else the only one containing the text.
+        const auto wanted = lower(arg(1));
+        std::vector<std::string> found;
+        for (const auto& [station, _] : route.station_routes().stations()) {
+            if (lower(station) == wanted) {
+                found = {station};
+                break;
+            }
+            if (lower(station).find(wanted) != std::string::npos) found.push_back(station);
+        }
+        if (found.empty()) return "error: no station " + std::string(arg(1)) + " (see: stations)";
+        if (found.size() > 1) {
+            std::string list;
+            for (const auto& s : found) list += (list.empty() ? "" : ", ") + s;
+            return "error: several stations: " + list;
+        }
+        const auto filter = lower(arg(2));
+        const auto& routes = route.station_routes();
+        for (const auto& r : routes.routes()) {
+            if (r.data->station != found.front()) continue;
+            if (!filter.empty() && lower(r.data->name).find(filter) == std::string::npos) continue;
+            char flags[16];
+            std::snprintf(flags, sizeof flags, "%x", r.data->flags);
+            const bool forward = routes.path_of(r, false) != nullptr;
+            const bool backward = routes.path_of(r, true) != nullptr;
+            out << r.data->id << "  " << r.data->name << ": " << r.data->start << " -> " << r.data->end << " (flags " << flags << ")"
+                << (forward ? "" : backward ? " (laid only from its end)" : " (its way is not laid)") << '\n';
+        }
+        return out.str().empty() ? "no routes" : out.str();
+    }
+    if (command == "segments") {
+        static constexpr const char* states[] = {"waiting", "set", "set part of the way", "the train on it", "left"};
+        for (const auto& s : server.segments()) {
+            out << s.id << "  train " << s.train << ": " << s.route << " " << s.name << " (" << s.station << ")"
+                << (s.reverse ? " from its end" : "") << (s.hold ? ", holds the next" : "") << (s.reversed ? ", rear first" : "")
+                << ", priority " << s.priority << ": " << (s.state < 5 ? states[s.state] : "?") << ", " << s.thrown << " of "
+                << s.junctions << " junctions set, " << static_cast<int>(s.length) << " m\n";
+        }
+        return out.str().empty() ? "no segments" : out.str();
+    }
+    if (command == "segment") {
+        const std::string usage = "usage: segment <train> <route ID> [back] [hold] [rear] [priority N] | segment cancel <id>";
+        if (lower(arg(1)) == "cancel") {
+            const auto id = number_of(arg(2));
+            if (!id) return usage;
+            return done(server.cancel_segment(*id, error), "segment " + std::to_string(*id) + " cancelled");
+        }
+        const auto train = number_of(arg(1));
+        const auto id = number_of(arg(2));
+        if (!train || !id) return usage;
+        GameServer::SegmentRequest request{.train = *train, .route = *id};
+        for (std::size_t i = 3; i < words.size(); ++i) {
+            const auto w = lower(words[i]);
+            if (w == "back") request.reverse = true;
+            else if (w == "hold") request.hold = true;
+            else if (w == "rear") request.reversed = true;
+            else if (w == "priority" && i + 1 < words.size() && number_of(words[i + 1])) request.priority = *number_of(words[++i]);
+            else return usage;
+        }
+        const auto made = server.add_segment(request, error);
+        return made ? "segment " + std::to_string(*made) + " queued (see: segments)" : "error: " + error;
+    }
+    if (command == "heads") {
+        // Every head as the players get it (0x460C): its TDB item, aspect,
+        // draw state, mode; what openrts-net-dump --heads prints of a snapshot.
+        if (const auto* signals = route.signals()) {
+            for (const auto& head : signals->heads()) {
+                // The mode as 0x460C carries it: the head's `enabled`, its unit's mode.
+                out << "head " << head.track_item << ' ' << static_cast<int>(head.state) << ' ' << static_cast<int>(head.draw_state) << ' '
+                    << static_cast<int>(signals->dispatched() ? head.enabled : head.mode) << '\n';
+            }
+        }
+        return out.str().empty() ? "no signal heads" : out.str();
+    }
     if (command == "signals") {
         const auto filter = lower(arg(1));
         std::string last;
@@ -446,19 +575,73 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         return done(server.set_junction(*node, branch, lock, error), "junction " + std::to_string(*node) + " set");
     }
     if (command == "signal") {
-        const auto item = number_of(arg(1));
-        if (!item || words.size() < 3) return "usage: signal <item> <aspect|auto>";
-        std::optional<formats::SignalAspect> aspect;
-        if (lower(arg(2)) != "auto") {
-            aspect = formats::signal_aspect_from_name(lower(arg(2)));
-            if (!aspect) {
-                const auto n = number_of(arg(2));
-                if (!n || *n > 7) return "error: unknown aspect " + std::string(arg(2));
-                aspect = static_cast<formats::SignalAspect>(*n);
-            }
+        const std::string usage = "usage: signal <item|name> [aspect|open|auto|close|default] | signal type <type> <manual|open|auto> | "
+                                  "signal type <type> normal on|off | signal defaults | signal set-defaults | signal save";
+        if (words.size() < 2) return usage;
+        if (lower(arg(1)) == "defaults" && words.size() == 2) {
+            return done(server.restore_signal_defaults(error), "every signal back to its defaults");
         }
-        return done(server.set_signal(*item, aspect, error),
-                    "signal " + std::to_string(*item) + (aspect ? std::string(" held at ") + formats::to_string(*aspect) : " runs its script"));
+        if (lower(arg(1)) == "set-defaults" && words.size() == 2) {
+            return done(server.set_signal_defaults(error), "every signal's defaults are its mode and aspect now (signal save keeps them)");
+        }
+        if (lower(arg(1)) == "save" && words.size() == 2) {
+            std::string result;
+            const bool ok = route.save_signal_defaults(result);
+            return ok ? result : "error: " + result;
+        }
+        if (lower(arg(1)) == "type") {
+            if (words.size() < 4) return usage;
+            const auto what = lower(arg(3));
+            if (what == "normal") {
+                const auto state = lower(arg(4));
+                if (state != "on" && state != "off") return usage;
+                std::size_t count = 0;
+                const bool ok = server.set_signal_type_shown(arg(2), state == "on", count, error);
+                return done(ok, "type " + std::string(arg(2)) + (state == "on" ? " shown as normal (" : " not shown as normal (") +
+                                    std::to_string(count) + " signals)");
+            }
+            simulation::UnitMode mode = simulation::UnitMode::manual;
+            if (what == "open") mode = simulation::UnitMode::open;
+            else if (what == "auto" || what == "automatic") mode = simulation::UnitMode::automatic;
+            else if (what != "manual" && what != "close") return usage;
+            std::size_t count = 0;
+            const bool ok = server.set_signal_type_mode(arg(2), mode, count, error);
+            return done(ok, std::to_string(count) + " signals of type " + std::string(arg(2)) + ": " + what);
+        }
+        // The signal: a name only one signal has (names can be numbers, as
+        // "1"), else a TDB item.
+        std::uint32_t item = 0;
+        const auto items = route.signal_items(arg(1));
+        if (!items.empty()) {
+            std::set<std::uint32_t> units;
+            std::string list;
+            for (const auto i : items) {
+                const auto unit = route.signals() ? route.signals()->unit_of_item(i) : std::nullopt;
+                if (unit && units.insert(*unit).second) list += (list.empty() ? "" : ", ") + std::to_string(i);
+            }
+            if (units.size() > 1) {
+                return "error: " + std::to_string(units.size()) + " signals are named " + std::string(arg(1)) + ": items " + list;
+            }
+            item = items.front();
+        } else if (const auto n = number_of(arg(1))) {
+            item = *n;
+        } else {
+            return "error: no signal named " + std::string(arg(1)) + " (see: signals)";
+        }
+        if (words.size() < 3) return server.signal_report(item);
+        const auto what = lower(arg(2));
+        const auto action = [&](const GameServer::SignalAction a) { return done(server.control_signal(item, a, error), server.signal_report(item)); };
+        if (what == "open") return action(GameServer::SignalAction::open);
+        if (what == "auto" || what == "automatic") return action(GameServer::SignalAction::automatic);
+        if (what == "close") return action(GameServer::SignalAction::close);
+        if (what == "default") return action(GameServer::SignalAction::defaults);
+        auto aspect = formats::signal_aspect_from_name(what);
+        if (!aspect) {
+            const auto n = number_of(what);
+            if (!n || *n > 7) return "error: unknown aspect " + std::string(arg(2));
+            aspect = static_cast<formats::SignalAspect>(*n);
+        }
+        return done(server.set_signal(item, aspect, error), server.signal_report(item));
     }
     if (command == "helper") {
         if (words.size() < 3) return "usage: helper <nick> <train|off>";

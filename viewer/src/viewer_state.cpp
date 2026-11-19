@@ -1,5 +1,8 @@
 #include "viewer_state.hpp"
 
+#include <openrts/core/installation.hpp>
+#include <openrts/core/user_data.hpp>
+
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
@@ -23,35 +26,8 @@ namespace {
 
 namespace fs = std::filesystem;
 
-[[nodiscard]] fs::path program_directory() {
-#ifdef _WIN32
-    std::wstring buffer(MAX_PATH, L'\0');
-    for (;;) {
-        const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-        if (length == 0) break;
-        if (length < buffer.size()) return fs::path(buffer.substr(0, length)).parent_path();
-        buffer.resize(buffer.size() * 2);
-    }
-#else
-    std::error_code error;
-    if (const auto self = fs::read_symlink("/proc/self/exe", error); !error) return self.parent_path();
-#endif
-    std::error_code error;
-    return fs::current_path(error);
-}
-
-// %LOCALAPPDATA%\openRTS, or $XDG_DATA_HOME/openRTS (~/.local/share/openRTS).
-[[nodiscard]] fs::path per_user_directory() {
-#ifdef _WIN32
-    std::wstring local(32768, L'\0');
-    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (length > 0 && length < local.size()) return fs::path(local.substr(0, length)) / L"openRTS";
-#else
-    if (const char* data = std::getenv("XDG_DATA_HOME"); data && *data) return fs::path(data) / "openRTS";
-    if (const char* home = std::getenv("HOME"); home && *home) return fs::path(home) / ".local" / "share" / "openRTS";
-#endif
-    return {};
-}
+using core::per_user_directory;
+using core::program_directory;
 
 // What an older version kept next to the program or in the working
 // directory, copied once into `to` (nothing is deleted there).

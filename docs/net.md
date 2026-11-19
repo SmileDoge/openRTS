@@ -149,7 +149,10 @@ without it the camera follows the train from above.
   version).
 - Then a thread reads whole packages into a queue the main loop takes.
   When the socket closes it queues a `server_down` of its own, as
-  `rts1.exe` does.
+  `rts1.exe` does. The game then shows "Сервер отключился" in the middle
+  of the screen and goes back to the menu in 15 s (exit code 10, the menu
+  says "Сервер остановлен: сетевая игра окончена"), at once with its
+  button, or stays to look round the world.
 - Closing the window closes the connection first, while the GPU is still
   up: the reader thread waits in `recv`, and a graphics layer that hooks it
   (ReShade) is unloaded with the device. Returning into it crashed the

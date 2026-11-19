@@ -18,6 +18,59 @@ namespace openrts::net {
 [[nodiscard]] std::optional<float> decode_time(ByteView body);
 [[nodiscard]] std::optional<JunctionState> decode_junction(ByteView body);
 [[nodiscard]] std::optional<SignalHeadState> decode_signal_head(ByteView body);
+
+// 0x4618 signal_control, console <-> server (rts_server.exe 0x451F3C, read
+// by 0x40FB90): a signal unit (the server's signal object, by its table
+// index), its aspect (+0), its mode (+4: 0 manual, 1 open, 2 automatic
+// block) and whether the dispatcher picked the aspect (+17).
+struct SignalControl {
+    std::uint32_t unit{};
+    std::uint16_t aspect{};
+    float mode{};
+    std::uint8_t pinned{};
+};
+[[nodiscard]] std::optional<SignalControl> decode_signal_control(ByteView body);
+[[nodiscard]] Bytes encode_signal_control(const SignalControl& value);
+
+// 0x450B route_segment, console <-> server (rts_server.exe 0x453F80 writes,
+// 0x454194 reads): a segment of a train's route, a station route of the
+// route database. `tile_x` / `tile_z`: the tile of the station route's
+// start point (Point1), a check; `reverse`: it is run from its end; `hold`:
+// the train's next segment waits; `reversed`: the train runs it rear
+// first; `path`: its TrainPath (index + 1, 0 none); `thrown`: how many of
+// its junctions are set so far.
+struct RouteSegment {
+    std::uint32_t id{};
+    std::uint32_t train{};
+    std::uint32_t route{};
+    std::u16string station;
+    std::int16_t tile_x{};
+    std::int16_t tile_z{};
+    std::uint8_t reverse{};
+    std::uint8_t hold{};
+    std::uint8_t reversed{};
+    float length{};
+    std::uint32_t priority{};
+    std::uint8_t state{}; // 0 waiting, 1 set, 2 set part of the way, 3 the train on it, 4 left
+    std::uint16_t path{};
+    std::uint16_t thrown{};
+};
+[[nodiscard]] std::optional<RouteSegment> decode_route_segment(ByteView body);
+[[nodiscard]] Bytes encode_route_segment(const RouteSegment& value);
+// 0x450C route_segment_reply (0x454484): the request's id, the segment's
+// (0 none), ok, the reason when not.
+struct RouteSegmentReply {
+    std::uint32_t request{};
+    std::uint32_t id{};
+    std::uint8_t ok{};
+    std::u16string text;
+};
+[[nodiscard]] std::optional<RouteSegmentReply> decode_route_segment_reply(ByteView body);
+[[nodiscard]] Bytes encode_route_segment_reply(const RouteSegmentReply& value);
+// 0x450E route_segment_state (0x454600): id, state, path, priority,
+// length, junctions set.
+[[nodiscard]] std::optional<RouteSegment> decode_route_segment_state(ByteView body);
+[[nodiscard]] Bytes encode_route_segment_state(const RouteSegment& value);
 [[nodiscard]] std::optional<SnapshotTrain> decode_train_add(ByteView body);
 
 struct TrainPosUpdate {

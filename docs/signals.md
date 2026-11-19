@@ -353,10 +353,13 @@ makes them visible.
   path.
 - Bounded walks are the one deliberate difference (a hang in RTS). They do
   not change a result RTS produces.
-- Signal states are a function of trains, switches and overrides, all on
-  the shared 0.05 s step. A server can therefore send switches and overrides
-  only, and every client computes the same aspects. Whether RTS's protocol
-  sends aspects is a question for the multiplayer step.
+- In a network game the server decides the aspects and sends every head
+  that changes (`0x460C`); clients show them (`net::SignalHeads`). The
+  server runs the signals as `rts_server.exe` does, not as the game does
+  (`SignalSystem::set_dispatched`, 2026-11-19; `server.md`, "Signals"):
+  signal units with the dispatcher's modes (manual, open, automatic block)
+  and their defaults from the route database, each running head seeing
+  `enabled` = its mode and the units ahead.
 
 ## Not in this step
 

@@ -143,9 +143,39 @@ public:
     [[nodiscard]] double time_of_day() const noexcept { return time_; }
     // Throws junction `node` (TDB node number); `lock` set or cleared when given.
     bool set_junction(std::uint32_t node, std::optional<std::uint32_t> branch, std::optional<bool> lock, std::string& error);
-    // Holds the heads of TDB signal item `item` at `aspect` (the console's
-    // manual state), or gives them back to their scripts (nothing).
+    // Holds the signal of TDB signal item `item` at `aspect`, the dispatcher's
+    // pick (the console's "set aspect": manual, a route leaves it so), or
+    // with nothing puts it under automatic block. With the signals run as
+    // rts_server.exe runs them (SignalSystem::dispatched; docs/server.md
+    // "Signals") it is the signal unit's; else an override of its heads.
     bool set_signal(std::uint32_t item, std::optional<formats::SignalAspect> aspect, std::string& error);
+    // The console's other signal actions (rts_server.exe's TfPult menu):
+    // open (its script runs until a train passes it), automatic block,
+    // close (manual at STOP_AND_PROCEED, as unticking "Открыт" /
+    // "Автоблокировка", 0x40C648), back to its defaults from the route
+    // database.
+    enum class SignalAction : std::uint8_t { open, automatic, close, defaults };
+    bool control_signal(std::uint32_t item, SignalAction action, std::string& error);
+    // Every signal unit with a head of signal type `type` (sigcfg's name,
+    // case ignored) in `mode` (the console's "Сигналы" by type, 0x40CAF0);
+    // how many in `count`.
+    bool set_signal_type_mode(std::string_view type, simulation::UnitMode mode, std::size_t& count, std::string& error);
+    // Every signal back to its defaults (the console's "restore defaults").
+    bool restore_signal_defaults(std::string& error);
+    // "Задать как умолчания" (0x4499F0): every signal's defaults become its
+    // mode and aspect now (ServerRoute::save_signal_defaults writes them).
+    bool set_signal_defaults(std::string& error);
+    // A signal type shown as normal or not (the console's "Отображать как
+    // поездной" by type, 0x40CAF0; the route database's
+    // SignalTypeShownAsNormal): its heads count for their unit's aspect.
+    // How many units have such a head in `count`.
+    bool set_signal_type_shown(std::string_view type, bool on, std::size_t& count, std::string& error);
+    // A console's 0x4618 (rts_server.exe 0x40FB90): the unit takes the mode;
+    // manual holds the aspect, the dispatcher's when `pinned` is set.
+    bool control_signal_unit(const net::SignalControl& control, std::string& error);
+    // One line on the signal of TDB item `item`: its mode, aspect, whether
+    // the dispatcher picked it, its defaults.
+    [[nodiscard]] std::string signal_report(std::uint32_t item) const;
     bool kick(std::string_view nick, std::string& error);
     // The dispatcher makes a player another's helper (помощник машиниста) on
     // `train`, as RTS's dispatcher assigns helpers; nothing: he helps no
@@ -156,8 +186,10 @@ public:
     // the shortest way; a stop is the TDB signal items it may be (one name
     // can stand at several stations: the nearest along the way is taken).
     // Every junction on it is set, facing and trailing alike, and held:
-    // players cannot throw it until the train's rear has passed it. The
-    // signals open by their own scripts. `result`: what was set, or why not.
+    // players cannot throw it until the train's rear has passed it. Its
+    // manual signals facing the train open (0x40918C; not those whose aspect
+    // the dispatcher picked) and close again as the train passes each, or
+    // when the route is cancelled or ends. `result`: what was set, or why not.
     bool set_route(std::uint32_t train, const std::vector<std::vector<std::uint32_t>>& stops, std::string& result);
     bool cancel_route(std::uint32_t train, std::string& error);
     // RTS's hand route (the console's "Задать маршрут", 0x4619): `length` m
@@ -166,8 +198,67 @@ public:
     // as set_route's; the distance left goes to everyone as 0x4619 every 0.5
     // s while it changes, -1 when it ends.
     bool lay_route(std::uint32_t train, double length, bool rear_first, std::string& result);
+    // The train's route along the junctions as they stand from its head (its
+    // rear when `rear_first`) to `to` (the console's map); false when `to` is
+    // not ahead of it.
+    bool lay_route_to(std::uint32_t train, const simulation::TrackLocation& to, bool rear_first, std::string& result);
     // The junctions a train's route holds (TDB nodes), in its order.
     [[nodiscard]] std::vector<std::uint32_t> route_junctions(std::uint32_t train) const;
+    // For a map: each car's ends where the server has the train (empty when
+    // it is not on its track), and the way its route was laid.
+    [[nodiscard]] std::vector<simulation::CarPlacement> train_cars(std::uint32_t train) const;
+    // Where the train's head stands facing the way it goes (its rear facing
+    // back when `rear`: running rear first); nothing when not on the track.
+    [[nodiscard]] std::optional<simulation::TrackLocation> train_end(std::uint32_t train, bool rear) const;
+    [[nodiscard]] std::optional<simulation::RouteLeg> route_leg(std::uint32_t train) const;
+
+    // The station routes segments are made of (ServerRoute::station_routes;
+    // it must outlive the server). Without them there are no segments.
+    void set_station_routes(const StationRoutes* routes) noexcept;
+    // A segment of a train's route, a station route of the route database
+    // (rts_server.exe's "Сборка маршрута поезда", 0x450B; docs/server.md,
+    // "Station routes").
+    struct SegmentRequest {
+        std::uint32_t train{};
+        std::uint32_t route{};  // the station route's ID
+        bool reverse = false;   // run from its end to its start
+        bool hold = false;      // the train's next segment waits
+        bool reversed = false;  // the train runs it rear first
+        std::uint32_t priority{};
+    };
+    struct SegmentSummary {
+        std::uint32_t id{};
+        std::uint32_t train{};
+        std::uint32_t route{};
+        std::string name;    // the station route's
+        std::string station;
+        bool reverse = false, hold = false, reversed = false;
+        std::uint32_t priority{};
+        std::uint8_t state{}; // 0 waiting, 1 set, 2 set part of the way, 3 the train on it, 4 left
+        std::uint16_t thrown{};
+        std::size_t junctions{};
+        float length{};
+    };
+    // Checked as rts_server.exe checks a segment (0x469804: the train, an
+    // oncoming route on the stretch it leads to, a way from the train's
+    // previous segment) and queued by its priority (0x41F520); each step
+    // sets those whose turn it is (0x46A348). Its id, or why not.
+    std::optional<std::uint32_t> add_segment(const SegmentRequest& request, std::string& error);
+    // Cancelled (0x469C68): the train's route goes (to its previous
+    // segment's end when it has one).
+    bool cancel_segment(std::uint32_t id, std::string& error);
+    [[nodiscard]] std::vector<SegmentSummary> segments() const;
+    // Where a train's next segment is looked for from (rts_server.exe's
+    // "Собрать маршрут", StationRoutes::available): the end of its last
+    // segment, else its head; `back` the other way ("Направление": it
+    // reverses there, or starts rear first).
+    struct NextFrom {
+        simulation::TrackLocation at;
+        bool rear_first = false;               // the segment run so
+        double behind = 0.0;                   // m back to look for the point a train stands at
+        std::optional<std::uint32_t> after;    // the segment it follows, nothing from the train
+    };
+    [[nodiscard]] std::optional<NextFrom> next_from(std::uint32_t train, bool back) const;
     void set_admit(bool admit) noexcept { options_.admit = admit; }
     [[nodiscard]] bool admits() const noexcept { return options_.admit; }
     // What a console's command line (console_command) runs: the server's
@@ -188,6 +279,11 @@ private:
     struct Impl;
     // 0x4619 to everyone, kept in the train's record for the snapshot.
     void send_route_left(std::uint32_t train, float left, bool rear_first);
+    // The segments' step (0x46A348).
+    void step_segments();
+    // A segment's packages to the consoles: 0x450B, 0x450E, 0x450D.
+    void send_segment(std::size_t index, std::uint16_t package);
+    [[nodiscard]] net::RouteSegment segment_record(std::size_t index) const;
     // A coupling or a cut, a player's (`sender`, not sent back to them) or
     // the server's own (sender 0: to everyone). The cut's part is named to
     // its sender as `local_part` (0x4610).

@@ -351,15 +351,20 @@ void check_route(const core::Vfs& vfs, const std::string& name) {
     }
     const auto& db = network->database();
     std::map<formats::TrackNodeKind, std::size_t> kinds;
+    std::size_t hand_switches = 0; // tsection's ManualJunctionShape: thrown on foot
     for (std::uint32_t i = 1; i < network->node_count(); ++i) {
-        if (const auto* node = network->node(i)) ++kinds[node->kind];
+        if (const auto* node = network->node(i)) {
+            ++kinds[node->kind];
+            if (node->kind == formats::TrackNodeKind::junction && node->shape && node->shape->manual_junction) ++hand_switches;
+        }
     }
     std::map<formats::TrackItemKind, std::size_t> items;
     for (const auto& item : db.items) ++items[item.kind];
     const auto load_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 
     std::cout << name << ": " << kinds[formats::TrackNodeKind::vector] << " vector, "
-              << kinds[formats::TrackNodeKind::junction] << " junction, " << kinds[formats::TrackNodeKind::end]
+              << kinds[formats::TrackNodeKind::junction] << " junction (" << hand_switches << " hand), "
+              << kinds[formats::TrackNodeKind::end]
               << " end nodes; " << db.items.size() << " items (";
     bool first = true;
     for (const auto& [kind, count] : items) {

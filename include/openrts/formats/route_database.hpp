@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,59 +23,78 @@ struct RouteSignalUnit {
     std::string default_aspect;     // DefaultAspect, e.g. STOP
 };
 
-struct RoutePlace {
-    std::int32_t tile_x{};
-    std::int32_t tile_z{};
-    float x{};
-    float y{};
-    float z{};
-    std::uint32_t flag{};
-    [[nodiscard]] double absolute_x() const noexcept { return static_cast<double>(tile_x) * 2048.0 + x; }
-    [[nodiscard]] double absolute_z() const noexcept { return static_cast<double>(tile_z) * 2048.0 + z; }
+// The RTS route database (`<route>/<RouteID>.rtsdb`, UTF-16 text,
+// SIMISA@@@@@@@@@@JINX1R0t; docs/reverse/dispatcher.md): the game reads the
+// signal names from it (Ctrl+F7), the dispatcher console also its station
+// routes. Only the signal units are read so far.
+// A place of the track in the route database: a position and the number
+// after it (a route point's end: its direction flag; a junction: the
+// branch its route takes).
+struct RouteTrackPlace {
+    RoutePosition position;
+    std::uint32_t value{};
 };
 
+// RoutePoint (rts_server.exe 0x4640F0): a place a station route starts or
+// ends at. PointType 1 a point (Point1), 2 a track between Point1 and
+// Point2; Flags bit 2 it leads onto a stretch (an oncoming route there is
+// refused, 0x469804), bit 4 no occupancy checks; Junctions: those within
+// the track, with their branches.
 struct RoutePoint {
     std::string name;
-    std::uint32_t point_type{};
+    std::uint32_t type{};
     std::uint32_t flags{};
     std::string station;
-    RoutePlace first;
-    RoutePlace second;
-    bool has_second = false;
-    [[nodiscard]] bool is_track() const noexcept { return point_type == 2; }
+    RouteTrackPlace point1;
+    std::optional<RouteTrackPlace> point2;
+    std::vector<RouteTrackPlace> junctions;
 };
 
-struct RouteTrainRoute {
+// TrainRoute (0x464674): a station route from one route point to another
+// of its station. Flags bit 4: no occupancy checks; bit 8: it may be set
+// part of the way (junction after junction, 0x46A348).
+struct StationRoute {
     std::uint32_t id{};
     std::string name;
     std::uint32_t flags{};
     std::string station;
-    std::string start;
+    std::string start; // route point names
     std::string end;
-    [[nodiscard]] bool is_main() const noexcept { return (flags & 1U) != 0; }
-    [[nodiscard]] bool is_through() const noexcept { return (flags & 8U) != 0; }
 };
 
-struct RouteTrainPath {
-    std::uint32_t route_id{};
+// TrainPath (0x464890): a station route's way, the junctions it passes in
+// order with the branch each is set to (0x4361F4 walks them from the start
+// point). Start bit 2: from the start point's Point2 (else Point1).
+struct StationPath {
+    std::uint32_t route{};
+    std::string name;
     std::uint32_t priority{};
-    std::vector<RoutePlace> points;
+    std::uint32_t start{};
+    std::vector<RouteTrackPlace> junctions;
 };
 
-// The RTS route database (`<route>/<RouteID>.rtsdb`, UTF-16 text,
-// SIMISA@@@@@@@@@@JINX1R0t; docs/reverse/dispatcher.md): the game reads the
-// signal names from it (Ctrl+F7), the dispatcher console also its station
-// routes.
 struct RouteDatabase {
+    std::vector<RoutePoint> points;     // RoutePoints
+    std::vector<StationRoute> routes;   // RouteTrainRoutes
+    std::vector<StationPath> paths;     // RouteTrainPaths
     std::vector<RouteSignalUnit> signal_units;
-    std::vector<RoutePoint> points;
-    std::vector<RouteTrainRoute> routes;
-    std::vector<RouteTrainPath> paths;
+    // SignalTypeShownAsNormal ( "<type>" ): signal types (sigcfg names) the
+    // console draws as train signals, whose heads also count for their
+    // unit's aspect (rts_server.exe: the type's flag 0x100).
+    std::vector<std::string> shown_as_normal;
     std::string error;
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }
 };
 
 [[nodiscard]] RouteDatabase parse_route_database(std::string_view bytes);
+
+// The route database `original` (its file's bytes; empty: a new one) with
+// its SignalTypeShownAsNormal and SignalUnits as `database` has them, as
+// rts_server.exe's "Сохранить всё" writes them (0x448914): the types after
+// the header, the units (Position, NumSigItems, Name when there is one,
+// UnitFlags, DefaultAspect) in their order where the old ones were, the
+// rest of the file as it was. UTF-16LE with a BOM, CRLF lines.
+[[nodiscard]] std::string write_route_database(std::string_view original, const RouteDatabase& database, std::string& error);
 
 struct TrackDatabase;
 // The TDB signal item each named signal unit belongs to: first as RTS
@@ -90,7 +110,9 @@ struct TrackDatabase;
 // By item number; -1 none.
 [[nodiscard]] std::vector<std::int32_t> rts_signal_units(const TrackDatabase& tdb, const RouteDatabase& database);
 // `<route>/<RouteID>.rtsdb` (RouteID from the .trk, as RTS builds the name),
-// else the only .rtsdb of the folder; an empty database when there is none.
+// else the only .rtsdb of the folder; nothing when there is none.
+[[nodiscard]] std::optional<core::VirtualPath> route_database_file(const core::Vfs& vfs, const core::VirtualPath& route);
+// That file read; an empty database when there is none.
 [[nodiscard]] RouteDatabase load_route_database(const core::Vfs& vfs, const core::VirtualPath& route);
 
 } // namespace openrts::formats

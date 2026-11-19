@@ -11,24 +11,25 @@
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train_route.hpp>
+#include <openrts/trackmap/track_map.hpp>
 
 #include "train_view.hpp"
 
 namespace openrts::viewer {
 
 // The Track control window (RTS's in-game "RTS track control", 0x549A60,
-// docs/reverse/dispatcher.md): the route's real track from above with the
-// trains, junctions and signals; context menus on a train (jump to it, its
-// path, role, uncouple, remove), on a junction (throw it, or switch it on
-// the edited path), on a signal (its heads), on the track (spawn a consist,
-// place path points). F7 opens it.
+// docs/reverse/dispatcher.md): the route's map (trackmap::TrackMap) with
+// the trains, their paths and routes; context menus on a train (jump to it,
+// its path, role, uncouple, remove), on a junction (throw it, or switch it
+// on the edited path), on a signal (its heads), on the track (spawn a
+// consist, place path points). F7 opens it.
 class TrackControl {
 public:
     TrackControl(simulation::TrackNetwork& network, formats::RoutePosition origin);
 
     void toggle() noexcept { open_ = !open_; }
     // Signal names (route database, Ctrl+F7) by signal object.
-    void set_signal_names(std::function<std::string(std::uint32_t)> names) { signal_names_ = std::move(names); }
+    void set_signal_names(std::function<std::string(std::uint32_t)> names) { map_.signal_name = std::move(names); }
     [[nodiscard]] bool is_open() const noexcept { return open_; }
     // A consist is being placed (Esc drops it).
     [[nodiscard]] bool placing() const noexcept { return placement_.active; }
@@ -80,11 +81,6 @@ public:
     void show_train(TrainView& trains, std::uint64_t train);
 
 private:
-    struct Line {
-        std::uint32_t node{};
-        std::vector<double> x, z, offset; // samples along the node, route metres
-        double min_x{}, max_x{}, min_z{}, max_z{};
-    };
     enum class PickKind : std::uint8_t { none, train, junction, signal, track, start_point, plan_point, placement };
     struct Pick {
         PickKind kind = PickKind::none;
@@ -96,7 +92,6 @@ private:
         double x{}, z{};            // route metres of the click
     };
 
-    void build_lines();
     [[nodiscard]] double world_x(const simulation::TrackPoint& point) const;
     [[nodiscard]] double world_z(const simulation::TrackPoint& point) const;
     [[nodiscard]] Pick pick(float mouse_x, float mouse_y, TrainView& trains, const simulation::SignalSystem* signals) const;
@@ -122,13 +117,9 @@ private:
     [[nodiscard]] double map_z(double scene_z) const;
     // A teleport to map point (x, z); `track` gives the height and heading.
     void request_teleport(double x, double z, const simulation::TrackPoint* track);
-    std::vector<Line> lines_;
+    trackmap::TrackMap map_;
     bool open_ = false;
     bool centred_ = false;
-    // View: the route point at the canvas centre and pixels per metre.
-    double centre_x_ = 0.0, centre_z_ = 0.0, scale_ = 0.25;
-    float canvas_x_ = 0.0f, canvas_y_ = 0.0f, canvas_w_ = 1.0f, canvas_h_ = 1.0f;
-    float drag_ = 0.0f;
     std::uint64_t selected_ = 0;
     std::optional<std::uint32_t> selected_signal_;
     bool editing_ = false;
@@ -175,40 +166,13 @@ private:
     void finish_placement(TrainView& trains);
     // The preview car under the cursor, -1 when none.
     [[nodiscard]] int placement_car_at(float mouse_x, float mouse_y) const;
-    bool show_signals_ = true;
-    bool show_platforms_ = true;
-    bool show_junction_ids_ = false;
     bool show_all_paths_ = false;
-    bool show_signal_names_ = true;
-    bool show_sidings_ = true;
-    bool show_station_names_ = true;
     bool show_electrification_ = false;
     // The electrification layer: each node's stretches, built when first drawn.
     std::vector<std::vector<simulation::Electrification::Stretch>> electro_stretches_;
     std::vector<bool> electro_built_;
     void draw_electrification_panel(TrainView& trains);
-    // Station names (RTS 0x555624): every platform item counted under its
-    // station's name, the label at the middle of them.
-    struct Station {
-        std::string name;
-        double x{}, z{}; // route metres
-        std::uint32_t items{};
-    };
-    std::vector<Station> stations_;
-    // Platforms and sidings: the stretch of track between their two ends.
-    struct Place {
-        bool platform = true;
-        std::string name;
-        std::vector<double> x, z; // route metres along the track
-        double length{};          // m between its two ends
-    };
-    std::vector<Place> places_;
-    void build_places();
-    std::function<std::string(std::uint32_t)> signal_names_;
     NetworkActions network_actions_;
-    // What is under the mouse: a tooltip with a signal's name and aspects,
-    // or a platform's or siding's name and length.
-    void hover_tooltip(float mouse_x, float mouse_y, const simulation::SignalSystem* signals) const;
 };
 
 } // namespace openrts::viewer
