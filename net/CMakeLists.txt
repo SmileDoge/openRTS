@@ -5,6 +5,7 @@ add_library(openrts_net STATIC
     src/connection.cpp
     src/packages.cpp
     src/snapshot.cpp
+    src/weather.cpp
     src/wire.cpp)
 openrts_configure_target(openrts_net)
 if(WIN32)

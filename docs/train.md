@@ -162,6 +162,19 @@ The RTS rules from the notes:
 - curve resistance `7/R · m`;
 - grade `-sin(pitch) · m · 10`.
 
+Two more models are the Train window's settings:
+- `ResistanceModel::ptr` replaces the car's `Friction` with the ПТР's basic
+  resistance, `w0 = b0 + (b1 + b2 V + b3 V^2) / q` kgf per tonne, `V` in km/h
+  and `q` the tonnes on an axle (`b0 = 0.7`, `b1 = 8`, `b2 = 0.08`,
+  `b3 = 0.002`), the force `m w0 g / 1000`;
+- `TrainSettings::axle_dynamics` gives every wheelset its own turning
+  (`CarState::axle_omega`, `J = 100 kg·m²` in ten sub-steps a step): the rail
+  returns the grip the creep allows, `mu / (1 + tanh |slip|)`, and what is left
+  of the demand spins the wheelset up. The pull is the sum of the rail's
+  forces, so a demand past the adhesion becomes a growing slip and a force near
+  half the grip instead of the 25 % cut. A coasting wheelset is back at the
+  rail's speed in 0.25 s.
+
 ### Couplers
 
 The RTS solver:
@@ -282,16 +295,12 @@ RTS's menu at a coupling or a bogie (`docs/reverse/car-menu.md`), in
 
 #### Realistic pneumatics (openRTS path)
 
-**Implemented (2026-11-01)** as `BrakeModel::realistic`
-(`simulation/src/realistic_air.cpp`, the Train window's "Realistic air"
-checkbox, `openrts-train-check --brake ... --realistic`, `--realistic-air` at
-the start). Off by default;
-the RTS model (`docs/reverse/brakes.md`) stays as it is and is the only path
-with Legacy on (the server fixes the choice, like the coupler sub-steps). A
-train with a legacy DLL keeps the RTS model
-(`LocomotiveController::rts_brakes`): its valve is tuned to RTS's triple
-valve; since 2026-11-13 the Train window's "Trains with DLLs" can give it
-the realistic air too ("Realistic air with DLL locomotives" below). What is
+**Implemented (2026-11-01)** in `simulation/src/realistic_air.cpp`. Since
+2026-11-15 it is the only brake model: RTS's triple-valve path
+(`docs/reverse/brakes.md`) is gone, the Train window has no model switch, and
+`openrts-train-check --brake ... --realistic` keeps the flag for older
+scripts only. A train with a legacy DLL can still let the DLL work its own
+pipe and valves ("Trains with DLLs" below). What is
 built, against the proposal below:
 - **Pipe** (2026-11-17): per-car volumes (0.8 l per metre, a 32 mm bore),
   between two cars' centres a line with the air's inertia and the pipe's

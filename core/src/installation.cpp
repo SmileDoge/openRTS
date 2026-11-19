@@ -14,6 +14,14 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+
+// RegGetValue's registry views; MinGW's winreg.h does not name them.
+#ifndef RRF_SUBKEY_WOW6464KEY
+#define RRF_SUBKEY_WOW6464KEY 0x00010000
+#endif
+#ifndef RRF_SUBKEY_WOW6432KEY
+#define RRF_SUBKEY_WOW6432KEY 0x00020000
+#endif
 #endif
 
 namespace openrts::core {

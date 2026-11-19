@@ -250,6 +250,16 @@ public:
         float distance{};
     };
     [[nodiscard]] std::optional<Picked> pick(const glm::vec3& origin, const glm::vec3& direction, float reach) const;
+    // The SCREEN display (КЛУБ, САПВЭ ...) whose glass the ray meets first,
+    // within `reach`: its quad is not a surface of the shape, so pick() does
+    // not see it. The wheel on it takes the eye up close (cab_screen_focus).
+    struct ScreenPicked {
+        std::size_t display{}; // in description().displays
+        ScreenPlane plane{};   // as the .sd places it, cab shape coordinates
+        float distance{};
+    };
+    [[nodiscard]] std::optional<ScreenPicked> pick_screen(const glm::vec3& origin, const glm::vec3& direction,
+                                                          float reach) const;
     // The door (a node of its own) the ray meets before any other surface,
     // within `reach`, as it is drawn now (openRTS: a click opens or shuts
     // it; RTS works doors with Enter only).

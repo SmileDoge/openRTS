@@ -6,6 +6,7 @@
 // docs/reverse/cab-screens.md). This lays them out; the renderer draws them.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,23 @@ struct ScreenBatch {
 struct ScreenPlane {
     glm::vec3 top_left{}, top_right{}, bottom_right{};
 };
+
+// Where the eye goes to read a screen of the cab from up close, and the way
+// it looks there (cab shape coordinates). TME's InsideThreeDimCamera: the
+// screen fills about two thirds of the frame, its distance clamped so the
+// near plane of the cab does not cut it and the eye does not leave the cab.
+struct ScreenFocus {
+    glm::vec3 eye{};
+    glm::vec3 forward{};
+    float distance = 0.0f; // the eye's, m, from the screen's plane
+};
+
+// The focus on `plane` for an eye at `eye` (cab shape coordinates), with the
+// frame's vertical field of view (radians) and aspect: the plane's centre,
+// `forward` into it, the eye `distance` off it on the side `eye` is. Nothing
+// for a degenerate plane or frame.
+[[nodiscard]] std::optional<ScreenFocus> cab_screen_focus(const ScreenPlane& plane, const glm::vec3& eye,
+                                                         float vertical_fov, float aspect);
 
 class CabScreens {
 public:
@@ -72,12 +90,16 @@ private:
         std::uint32_t texture{};           // CurrentTex
         float frame{};                     // ARROW / BAR: the value shown, moving to Value
         float blink_clock{};
+        float level = 1.0f;                // its SubFade: 1 shown, 0 hidden
+        bool primed = false;
     };
     struct Screen {
         std::size_t display{};             // in the description's displays
         glm::vec3 top_left{}, top_right{}, bottom_right{};
         const formats::CabScreen* source{}; // its own objects, or the ReferenceScreen's
         std::vector<Object> objects;
+        float level = 1.0f;                // its DisplayFade: 1 shown, 0 hidden
+        bool primed = false;
     };
     const formats::CabDescription* cab_;
     std::vector<Screen> screens_;

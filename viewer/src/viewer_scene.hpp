@@ -135,6 +135,7 @@ struct SceneInput {
     bool doors_right = false;      // U: the right doors open / shut
     bool toggle_track_control = false; // Ctrl+Alt+F7 (RTS): the Track control window
     bool place_names = false;     // F7 (RTS): platform and siding names along the track
+    bool track_profile = false;   // Shift+F7: the track profile behind and ahead
     // RTS's information keys (docs/reverse/dispatcher.md).
     bool car_info = false;        // F5: a page of the train's cars; again: the next page
     bool car_info_shift = false;  // Shift held with F5: the train as a whole
@@ -277,6 +278,9 @@ public:
     [[nodiscard]] virtual bool escape_taken() const { return false; }
     // The mouse wheel works the scene (the 3-D cab) instead of zooming.
     [[nodiscard]] virtual bool takes_scroll() const { return false; }
+    // The eye back from a screen of the cab the wheel took it to, smoothly
+    // (the * key: TME's CameraReset does the same).
+    virtual void restore_screen_focus() {}
     // Switch `id` of the driven train's cab to `state` (--capture-switch).
     virtual void set_cab_switch(std::uint32_t, std::uint32_t) {}
     // Where it is now: State and SetState (the capture's report).

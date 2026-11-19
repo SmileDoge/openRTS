@@ -120,4 +120,42 @@ ValveOutput step_valve_395(ValveState& state, const ValvePosition position, cons
     return out;
 }
 
+ValveOutput step_valve(const ValveKind kind, ValveState& state, const ValvePosition position, const ValveInputs& in, const float dt) {
+    ValveOutput out = step_valve_395(state, position, in, dt);
+    if (kind != ValveKind::krm130) return out;
+    // The КРМ-130: I puts a pulse of overcharge into the УР, II keeps the pipe
+    // on it while the stabiliser takes it out (p_pulse_II, 0.45 atm in about
+    // 110 s); the rest of the positions as the 395's.
+    constexpr float pulse = 0.45f;       // atm over the charge after I
+    constexpr float stabiliser = 0.004f; // atm/s, II takes the pulse out
+    constexpr float charge_rate = 0.3f;  // atm/s, I
+    constexpr float feed_div = 1.8f;
+    const float top = in.charging_pressure + pulse;
+    const float ceiling = in.main_reservoir > 0.0f ? (std::min)(top, in.main_reservoir) : top;
+    switch (position) {
+    case ValvePosition::charge:
+        state.equalising = (std::max)(state.equalising, in.charging_pressure);
+        state.equalising = (std::min)(state.equalising + charge_rate * dt, ceiling);
+        break;
+    case ValvePosition::running:
+        if (state.equalising > in.charging_pressure) {
+            state.equalising = (std::max)(state.equalising - stabiliser * dt, in.charging_pressure);
+        }
+        break;
+    default:
+        break;
+    }
+    if (position == ValvePosition::charge || position == ValvePosition::running) {
+        // The pulse feeds the pipe: the train is under the overcharge while
+        // the УР comes down.
+        if (state.equalising > in.pipe) {
+            out.pipe_rate = (state.equalising - in.pipe) / feed_div;
+        } else {
+            out.pipe_rate = (std::max)(state.equalising - in.pipe, -0.5f);
+        }
+    }
+    out.equalising = state.equalising;
+    return out;
+}
+
 } // namespace openrts::simulation

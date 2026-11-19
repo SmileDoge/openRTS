@@ -1,6 +1,7 @@
 add_library(openrts_simulation STATIC
     src/simulation.cpp
     src/track_geometry.cpp
+    src/derailment.cpp
     src/track_network.cpp
     src/rail_joints.cpp
     src/body_motion.cpp
@@ -14,9 +15,11 @@ add_library(openrts_simulation STATIC
     src/driver_valve.cpp
     src/track_profile.cpp
     src/track_traveller.cpp
+    src/track_profile.cpp
     src/train.cpp
     src/realistic_air.cpp
     src/signals.cpp
+    src/alsn.cpp
     src/train_route.cpp
     src/dispatcher.cpp
     src/speed_limits.cpp

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #ifdef OPENRTS_HAS_WGPU
 #include <array>
@@ -21,6 +21,7 @@
 
 #include <openrts/audio/audio_engine.hpp>
 #include <openrts/audio/interior_acoustics.hpp>
+#include <openrts/simulation/alsn.hpp>
 #include <openrts/formats/route_database.hpp>
 #include <openrts/audio/sound_bank.hpp>
 #include <openrts/audio/sound_instance.hpp>
@@ -65,6 +66,8 @@
 #include "viewer_scene.hpp"
 
 namespace openrts::viewer {
+
+class CargoSystem;
 
 // A consist from the content on the route: simulated (simulation::Train on a
 // fixed step), driven with the keyboard, drawn with posed bogies and wheels,
@@ -150,7 +153,10 @@ public:
         float draw_distance = 0.0f;  // <= 0: no limit
         float shadow_range = 0.0f;
     };
-    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view = {});
+    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library) {
+        submit(renderer, library, SubmitView{});
+    }
+    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view);
     // The engineer into the driving cab's seat (--capture-cab).
     void enter_cab() { set_engineer(true); }
     // Whether the player's train has a cab to go back into (Ctrl+F).
@@ -230,12 +236,9 @@ public:
     // The installation (MODS_OPENRTS, openrts.ini): the car menu keeps a
     // car type's distributor in a mod there.
     void set_install_root(std::filesystem::path root) { install_root_ = std::move(root); }
-    // Every train made from now on runs the realistic air (--realistic-air).
-    // --realistic-air: for this run, over the remembered choice.
-    void set_realistic_air(bool on) noexcept {
-        realistic_air_ = on;
-        realistic_air_loaded_ = true;
-    }
+    // The air is always the realistic one; --realistic-air is kept for
+    // older scripts and does nothing.
+    void set_realistic_air(bool on) noexcept { (void)on; }
     // Switch `id` of the player's cab to `state` (--capture-switch).
     void set_cab_switch(std::uint32_t id, std::uint32_t state) {
         if (legacy_) legacy_->set_switch(id, state);
@@ -704,6 +707,9 @@ public:
     // The view from inside his cab or salon: not while the car view has the
     // camera (F3).
     [[nodiscard]] bool viewing_inside() const noexcept { return engineer_.inside() && car_view_ == CarView::off; }
+    // The eye back from a screen of the cab the wheel took it to, smoothly
+    // (the * key: TME's CameraReset does the same).
+    void restore_screen_focus() { engineer_.release_focus(); }
     // The engineer sits in a cab's chair and the view is his.
     [[nodiscard]] bool seated_in_cab() const noexcept { return engineer_.mode() == Engineer::Mode::seated && car_view_ == CarView::off; }
     // F3: the camera orbits the train's first car, then its last, then back.
@@ -733,6 +739,8 @@ public:
     void follow_train(std::uint64_t id);
     // The route's signals, for the test drivers (next signal and its aspect).
     void set_signals(const simulation::SignalSystem* signals) noexcept { signals_ = signals; }
+    // The ALSN codes the track gives the trains (viewer_scene updates it).
+    void set_alsn(const simulation::AlsnSystem* alsn) noexcept { alsn_ = alsn; }
     // Text about train `id`'s path: leg, reserved way, what it waits for.
     [[nodiscard]] std::string path_status(std::uint64_t id) const;
     // RTS's information keys (docs/reverse/dispatcher.md): F5 a page of the
@@ -742,6 +750,8 @@ public:
     void update_car_view(ViewerCamera& camera);
     void toggle_limits_panel() noexcept { limits_panel_ = !limits_panel_; }
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
+    // Shift+F7: the track profile behind and ahead of the train.
+    void set_track_profile(bool on) noexcept { track_profile_panel_ = on; }
     void toggle_drive_panel();
     // Ctrl+F4: the profile strip at the top (profile_strip.hpp); remembered as profile_strip.
     void toggle_profile_strip();
@@ -1047,6 +1057,8 @@ private:
     simulation::TrackNetwork* network_ = nullptr;
     std::string consist_;
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock_;
+    std::unique_ptr<CargoSystem> cargo_;
+    std::vector<std::array<float, 3>> cargo_centres_;
     std::vector<Unit> units_; // [0]: the driven train; the rest: cuts and trains from Track control
     std::unique_ptr<simulation::Dispatcher> dispatcher_;
     std::unique_ptr<simulation::SpeedLimits> limits_;
@@ -1055,6 +1067,7 @@ private:
     simulation::LineSupply line_;   // the driven train's, last step
     bool line_engines_ = false;     // the driven train has electric engines
     const simulation::SignalSystem* signals_ = nullptr;
+    const simulation::AlsnSystem* alsn_ = nullptr; // the codes the track gives
     std::uint64_t follow_id_ = 0;
     std::size_t spawned_ = 0;
     std::uint32_t numbered_trains_ = 0; // RTS's train counter for car numbers
@@ -1079,6 +1092,7 @@ private:
     std::size_t car_page_ = 0;
     static constexpr std::size_t car_page_size = 15;
     bool limits_panel_ = false;
+    bool track_profile_panel_ = false; // Shift+F7
     bool stations_panel_ = false;
     // F4: the driver's summary (openRTS): moving or standing, the speed and
     // its limit, the pressures, the next signal and platform, the time.
@@ -1115,6 +1129,7 @@ private:
     HudPanel car_info_place_{.key = "hud_car_info"};
     HudPanel limits_place_{.key = "hud_limits", .pivot_x = 1.0f};
     HudPanel stations_place_{.key = "hud_stations", .pivot_x = 1.0f};
+    HudPanel profile_place_{.key = "hud_profile", .pivot_x = 1.0f};
     HudPanel drive_place_{.key = "hud_drive", .pivot_x = 1.0f};
     // Starts a panel window at its place; false when it is not drawn.
     bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y);
@@ -1411,6 +1426,11 @@ private:
     // cars took it; `listed` when the mod was added to openrts.ini.
     std::size_t keep_distributor(const Car& car, formats::BrakeDistributor distributor, bool& listed, std::string& error);
     glm::vec3 look_{0.0f, 0.0f, 1.0f}; // the camera's direction, for the cab labels
+    // The frame's view this frame (the window's, from ViewerCamera): the
+    // aspect and the vertical field of view drawn, radians. The wheel on a
+    // screen fits it into the frame with them (cab_screen_focus).
+    float frame_aspect_ = 16.0f / 9.0f;
+    float frame_fov_ = 0.85f;
     // Outside he collides with the world's objects and stands on them
     // (platforms, ballast, bridges), or only with the ground and the trains.
     bool walk_objects_ = true;
@@ -1449,11 +1469,10 @@ private:
     std::uint32_t flat_random_ = 0x9E3779B9u;
     [[nodiscard]] float flat_uniform(float low, float high);
     int substeps_ = 1;
-    // openRTS realistic air for every train (BrakeModel::realistic):
-    // remembered as realistic_air (the panel's checkbox, the launcher's),
-    // read at the first train; never by itself in a network game.
-    mutable bool realistic_air_ = false;
-    mutable bool realistic_air_loaded_ = false;
+    // The running resistance (simulation::ResistanceModel::ptr) and the
+    // wheelsets' own slip (TrainSettings::axle_dynamics).
+    mutable bool ptr_resistance_ = false;
+    mutable bool axle_dynamics_ = false;
     // The RTS model with a distributor's stability (TrainSettings), remembered
     // as distributor_stability; read at the first train.
     mutable bool distributor_stability_ = false;
@@ -1480,6 +1499,9 @@ private:
     // (CabView::AirGauges); remembered as gauges_openrts_air, on by default.
     mutable bool gauges_air_ = true;
     mutable bool gauges_air_loaded_ = false;
+    // The realistic air is the only brake model (TrainSettings has none):
+    // kept for the presets' bookkeeping, always on.
+    bool realistic_air_ = true;
     [[nodiscard]] std::optional<CabView::AirGauges> air_gauges(const Unit& unit, std::size_t car) const;
     // The rails' state for the adhesion (simulation::RailCondition): 0 as
     // RTS, 1 by the weather (rain wet, snow snow), 2 dry, 3 wet, 4 snow, 5

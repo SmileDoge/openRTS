@@ -42,8 +42,9 @@ struct DistributorModes {
 // The load mode a car's 483 is on: `load`, or by `mass` (kg; over 60 t
 // loaded, over 35 t medium, else empty).
 [[nodiscard]] DistributorLoad effective_load(DistributorLoad load, float mass) noexcept;
-// ТЦ of a full application: a 483 by its load mode (1.5 / 3.0 / 3.8 atm),
-// 3.8 for the others.
+// ТЦ of a full application: a 483 by its load mode (1.9 / 3.0 / 4.1 atm:
+// its two load springs, the empty and the loaded ends of the research
+// table), 3.8 for the others.
 [[nodiscard]] float distributor_full_cylinder(DistributorKind kind, DistributorLoad load) noexcept;
 // The distributor a car gets: the one its file (or a mod's companion, the
 // car menu's choice) names in ORTSBrakeDistributor, else EP-equipped cars
@@ -70,6 +71,14 @@ struct DistributorModes {
 // other distributors keep BrakeCylinderPressureForMaxBrakeBrakeForce.
 [[nodiscard]] float brake_force_pressure(const formats::WagonDefinition& definition) noexcept;
 
+// The share of a car's full brake force that a cylinder pressure gives under
+// the realistic air: the rigging takes up its slack and the piston its stroke
+// before the shoes reach the wheels, so under the touch pressure nothing
+// presses and the force then rises with the pressure (K = Kmax (p - p_end) /
+// (p_max - p_end)). RTS's own model has no take-up and keeps p / p_max.
+inline constexpr float brake_touch_pressure = 0.3f; // atm
+[[nodiscard]] float brake_rigging_share(float cylinder, float reference) noexcept;
+
 // The distributor's air and its state at one car, atm.
 struct DistributorState {
     float pipe{};       // ТМ at the car: a distributor takes air from it (charging, quick service)
@@ -78,6 +87,13 @@ struct DistributorState {
     float reference{};  // the level remembered: 483 its РК, 292 the ЗР when the application began
     bool braking = false;   // an application is on
     bool emergency = false; // the emergency front has reached the car
+    // The 483's chambers between the piston and the brake cylinder, atm: the
+    // spool chamber (ЗК) takes the pipe's air through the open piston and
+    // feeds the extra chamber (КДР), which fills the cylinder - so the fill
+    // has its two stages, fast up to about 0.6 of the full pressure and slow
+    // to the end. Unused by the other distributors.
+    float zk{};
+    float kdr{};
     // ЭВР 305: its РК (1.5 l), which its relay keeps the ТЦ at, and whether
     // the switching valve has the ТЦ on the 305's side (else the 292's).
     float ep_chamber{};

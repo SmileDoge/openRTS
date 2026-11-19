@@ -265,7 +265,7 @@ public:
         const auto& out = outputs->cars[car_];
         apply_engine_output(out.engine, demands);
         const auto mode = air_ ? air_->mode : DllAir::rts;
-        if (mode == DllAir::rts || !inputs.realistic_air) {
+        if (mode == DllAir::rts) {
             valve_started_ = false;
             brakes_started_ = false;
             dll_ur_known_ = false;
@@ -392,7 +392,6 @@ public:
             demands.equalising_kept = out.engine.equalising;
         }
     }
-    [[nodiscard]] bool rts_brakes() const override { return !air_ || air_->mode == DllAir::rts; }
     // A saved game: openRTS's valve over the DLL (its УР, its ЭПТ demand),
     // the compressor's governor and the DLL УР last seen. The DLL's own
     // state goes with LegacyConsist::save_state.

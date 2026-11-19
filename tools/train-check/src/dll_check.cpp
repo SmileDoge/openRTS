@@ -1,4 +1,4 @@
-// openrts-train-check <root> --dll <TRAINSET folder> <eng|wag>[!] ... [--script <file>] [--seconds <s>]
+﻿// openrts-train-check <root> --dll <TRAINSET folder> <eng|wag>[!] ... [--script <file>] [--seconds <s>]
 //
 // Runs legacy RTS locomotive DLLs through openrts-dllhost32 on a straight
 // level test track: the consist is the named .eng / .wag files of one
@@ -438,7 +438,6 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     consist->set_own_klub(klub_own);
     if (klub_own) std::printf("openRTS's КЛУБ in place of Brakes.dll's\n");
     if (air != trainplugin::DllAir::rts) {
-        train.set_brake_model(simulation::BrakeModel::realistic);
         std::printf("realistic air, %s\n", air == trainplugin::DllAir::own_valve ? "openRTS's valve over Brakes.dll" : "the DLL's valve");
     }
     if (own_brakes) {

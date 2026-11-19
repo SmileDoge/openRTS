@@ -18,6 +18,10 @@ constexpr float s483 = 0.3f / 60.0f;       // stability, atm/s
 constexpr float s292 = 0.4f / 60.0f;
 constexpr float apply_483 = 0.15f;         // РК − pipe that starts an application
 constexpr float apply_292 = 0.10f;
+// The 292's spool: it takes up a 0.015 gap against its springs and sticks in
+// a 0.03 band, so a pipe movement under the band does not move it; with the
+// 0.05 lap that makes the 0.095 the application threshold is drawn from.
+constexpr float spool_band = 0.03f;
 constexpr float quick_service = 0.12f;     // atm the 483's quick service takes locally
 // The 292's КДР: a 1 l chamber the pipe empties into as the application
 // starts, "дополнительная разрядка магистрали в эту камеру на величину
@@ -143,9 +147,9 @@ DistributorLoad effective_load(const DistributorLoad load, const float mass) noe
 float distributor_full_cylinder(const DistributorKind kind, const DistributorLoad load) noexcept {
     if (kind != DistributorKind::vr483) return 3.8f;
     switch (load) {
-    case DistributorLoad::empty: return 1.5f;
+    case DistributorLoad::empty: return 1.9f;
     case DistributorLoad::medium: return 3.0f;
-    default: return 3.8f;
+    default: return 4.1f;
     }
 }
 
@@ -179,9 +183,16 @@ DistributorKind inferred_distributor_kind(const formats::WagonDefinition& defini
 float brake_force_pressure(const formats::WagonDefinition& definition) noexcept {
     const float pressure = definition.brakes.cylinder_pressure_for_max_force;
     if (definition.brakes.realistic_brake_force > 0.0f || distributor_kind(definition) != DistributorKind::vr483) return pressure;
+    // The 483 fills the ТЦ to its load mode's full pressure: the file's force
+    // stands at whichever of that and the file's own pressure is lower (its
+    // MaxBrakeForce was written for the mode its mass gives).
     const auto meant = effective_load(DistributorLoad::by_mass, definition.mass);
-    return pressure * distributor_full_cylinder(DistributorKind::vr483, meant) /
-           distributor_full_cylinder(DistributorKind::vr483, DistributorLoad::loaded);
+    return (std::min)(pressure, distributor_full_cylinder(DistributorKind::vr483, meant));
+}
+
+float brake_rigging_share(const float cylinder, const float reference) noexcept {
+    if (reference <= brake_touch_pressure) return 0.0f;
+    return std::clamp((cylinder - brake_touch_pressure) / (reference - brake_touch_pressure), 0.0f, 1.1f);
 }
 
 void step_distributor(DistributorState& s, const DistributorCar& car, const float rate, const float ep, const float h,
@@ -228,6 +239,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
             s.pipe = (std::max)(s.pipe - quick_service, 0.0f); // quick service
             s.pipe_low = s.pipe;
         }
+        if (s.braking && (car.mountain ? drop < step_483 : p >= s.reference - release_483)) s.braking = false;
         if (s.braking) {
             const float target = (std::min)(tc_max, tc_max / 1.5f * drop);
             const bool filling = s.cylinder < target - 0.02f && s.auxiliary > s.cylinder;
@@ -255,6 +267,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         } else if (s.cylinder > 0.0f) {
             s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * car.pace * h, 0.0f);
         }
+        if (s.cylinder < 1.0e-4f) s.cylinder = 0.0f;
         return;
     }
     // ЭВР 305: its РК by the line (step_ep_chamber). The 292 behind it
@@ -279,7 +292,11 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
     float pneumatic = 0.0f; // the ТЦ the 292 asks for
     if (s.braking) {
         const float ratio = car.ratio > 0.5f ? car.ratio : 3.0f;
-        pneumatic = (std::min)(tc_max, ratio * (s.reference - p));
+        // The spool sticks in its friction band: a pipe rise shorter than the
+        // band does not let the cylinder down, so the target only follows the
+        // drop past it. Up to the gap and the band, it stays at lap.
+        const float target = (std::min)(tc_max, ratio * (std::max)(s.reference - p - spool_band, 0.0f));
+        pneumatic = target;
         if (s.cylinder < pneumatic && s.auxiliary > s.cylinder) {
             take_for_cylinder((std::min)(pneumatic - s.cylinder, rates.fill * h));
             if (s.cylinder > s.ep_chamber) s.ep_side = false;

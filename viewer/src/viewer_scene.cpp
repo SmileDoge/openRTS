@@ -1,4 +1,4 @@
-#include "viewer_scene.hpp"
+﻿#include "viewer_scene.hpp"
 
 #include <openrts/core/profile.hpp>
 #include "rts_config.hpp"
@@ -50,6 +50,7 @@
 #include <openrts/renderer/wide_lines.hpp>
 #include <openrts/net/world.hpp>
 #include <openrts/simulation/track_network.hpp>
+#include <openrts/simulation/alsn.hpp>
 
 #include "track_view.hpp"
 #include "exit_codes.hpp"
@@ -689,6 +690,8 @@ public:
         if (input.toggle_track_control && track_control_) track_control_->toggle();
         if (input.signal_names) signal_names_ = !signal_names_;
         if (input.place_names) place_names_ = !place_names_;
+        if (input.track_profile) track_profile_ = !track_profile_;
+        if (train_) train_->set_track_profile(track_profile_);
         cab_labels_ = input.cab_labels;
         if (input.inspector) inspector_.toggle();
         if (input.tape_window) tape_view_.toggle();
@@ -804,6 +807,11 @@ public:
             const auto trains = train_ ? train_->trains() : std::vector<const simulation::Train*>{};
             OPENRTS_ZONE("signals");
             signals_->update(clock.elapsed, train_ ? train_->train() : nullptr, trains, camera.eye());
+            if (signals_->system()) {
+                if (!alsn_) alsn_ = std::make_unique<simulation::AlsnSystem>();
+                alsn_->update(*signals_->system(), trains, clock.elapsed);
+            }
+            if (train_) train_->set_alsn(alsn_.get());
             if (snapshot_signals_ && signals_->system() && content_.snapshot()) {
                 snapshot_signals_ = false;
                 report_snapshot("signal heads set", net::apply_signals(*signals_->system(), *content_.snapshot()));
@@ -1600,6 +1608,9 @@ public:
     [[nodiscard]] bool keyboard_captured() const override { return train_ && train_->keyboard_captured(); }
     [[nodiscard]] bool engineer_on_foot() const override { return train_ && train_->engineer_on_foot(); }
     [[nodiscard]] bool takes_scroll() const override { return train_ && train_->viewing_inside(); }
+    void restore_screen_focus() override {
+        if (train_) train_->restore_screen_focus();
+    }
     [[nodiscard]] std::optional<double> take_time_of_day() override {
         return net_ ? net_->take_time_of_day() : std::nullopt;
     }
@@ -1926,6 +1937,7 @@ public:
             ImGui::SameLine();
         }
         ImGui::Checkbox(tr("Names (F7)"), &place_names_);
+        ImGui::Checkbox(tr("Profile (Shift+F7)"), &track_profile_);
         ImGui::SameLine();
         ImGui::Checkbox(tr("Signal names (Ctrl+F7)"), &signal_names_);
         {
@@ -2793,11 +2805,13 @@ private:
     std::unique_ptr<TrackControl> track_control_;
     mutable bool signal_names_ = false; // Ctrl+F7
     mutable bool place_names_ = false;  // F7
+    mutable bool track_profile_ = false; // Shift+F7
     bool signal_names_set_ = false;     // the F4 panel has the signals' names
     // The other players' names over the world (a network game).
     mutable bool player_names_ = remembered("player_names").value_or("1") != "0";
     mutable bool cab_labels_ = false;   // Alt held in the 3-D cab
     std::unique_ptr<SignalView> signals_;
+    std::unique_ptr<simulation::AlsnSystem> alsn_; // the codes along the route
     bool snapshot_signals_ = false; // the snapshot's aspects wait for the signals to load
     std::unique_ptr<CrossingView> crossings_;
     std::unique_ptr<RoadTraffic> roads_;

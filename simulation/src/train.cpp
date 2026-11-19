@@ -1,4 +1,4 @@
-#include <openrts/simulation/train.hpp>
+﻿#include <openrts/simulation/train.hpp>
 
 #include <openrts/simulation/driver_valve.hpp>
 
@@ -7,6 +7,7 @@
 #include "realistic_air.hpp"
 
 #include <openrts/simulation/brake_shoes.hpp>
+#include <openrts/simulation/track_geometry.hpp>
 
 #include <algorithm>
 #include <random>
@@ -50,7 +51,7 @@ using formats::WagonDefinition;
 }
 
 [[nodiscard]] float mass_of(const CarState& car) {
-    return (std::max)(car.definition->mass, 1.0f);
+    return static_cast<float>(car_mass(car));
 }
 
 // Under the realistic air, one bogie's full brake force at 40 km/h: half the
@@ -171,6 +172,79 @@ using formats::WagonDefinition;
     }
     const double scale = speed <= 1.0f ? 1.0 : std::pow(speed, f.e1);
     return static_cast<float>(scale * f.c1);
+}
+
+// The axles a car's wheels make: half of NumWheels, in the four the car state
+// keeps (a car without the number is taken as a four-axle one).
+[[nodiscard]] std::size_t axle_count(const WagonDefinition& wagon) {
+    const auto wheels = static_cast<std::size_t>((std::max)(wagon.wheels, std::uint8_t{2}));
+    return (std::min)(wheels / 2, std::size_t{4});
+}
+
+// The ПТР's basic resistance (TrainSettings::resistance): w0 = b0 + (b1 + b2 V
+// + b3 V^2) / q kgf per tonne, V in km/h and q the tonnes on an axle. The car's
+// force is that over the whole mass, m w0 g / 1000.
+[[nodiscard]] float ptr_resistance(const WagonDefinition& wagon, const float speed, const float mass) {
+    constexpr double b0 = 0.7;
+    constexpr double b1 = 8.0;
+    constexpr double b2 = 0.08;
+    constexpr double b3 = 0.002;
+    const double q = static_cast<double>(mass) / 1000.0 / static_cast<double>(axle_count(wagon));
+    if (q <= 0.0) return 0.0f;
+    const double kmh = std::abs(speed) * 3.6;
+    const double w = b0 + (b1 + b2 * kmh + b3 * kmh * kmh) / q;
+    return static_cast<float>(static_cast<double>(mass) * w * gravity / 1000.0);
+}
+
+// A wheelset's moment of inertia about its axle, kg m^2: a metre wheel with its
+// axle boxes, which holds the tread near the rail's speed between steps.
+constexpr double axle_inertia = 100.0;
+// The wheelsets are integrated in this many sub-steps: their grip falls with the
+// slip, and over the whole 0.05 s step that fall is too steep to hold.
+constexpr int axle_substeps = 10;
+// How fast a coasting wheelset is back at the rail's speed, s.
+constexpr double axle_roll_time = 0.25;
+// The slip, m/s, past which a wheelset counts as spinning.
+constexpr float axle_slip_flag = 0.5f;
+
+// The traction at the rail through the wheelsets (TrainSettings::axle_dynamics):
+// every axle takes its share of the demand as a torque, the rail gives back the
+// grip the creep allows (mu / (1 + tanh |slip|), half of mu once the tread runs
+// well past the rail), and the difference spins the wheelset up or lets it
+// back. The car sees the sum of the rail's forces, so a demand past the adhesion
+// becomes a growing slip and a pull that settles near half the grip instead of
+// a cut.
+[[nodiscard]] float step_axles(CarState& car, const float demand, const float mu, const double h) {
+    const auto axles = axle_count(*car.definition);
+    const float r = car.definition->wheel_radius > 0.0f ? car.definition->wheel_radius : 0.5f;
+    const double normal = static_cast<double>(mass_of(car)) * gravity / static_cast<double>(axles);
+    const double v = static_cast<double>(car.velocity) * (car.flipped ? -1.0 : 1.0);
+    const double share = static_cast<double>(demand) / static_cast<double>(axles);
+    // A car that just started up: its wheels turn with the rail.
+    if (v != 0.0 && car.axle_omega[0] == 0.0f) car.axle_omega.fill(static_cast<float>(v / r));
+    const double hh = h / axle_substeps;
+    double rail_sum = 0.0;
+    bool spinning = false;
+    for (int pass = 0; pass < axle_substeps; ++pass) {
+        for (std::size_t i = 0; i < axles; ++i) {
+            float& omega = car.axle_omega[i];
+            if (demand == 0.0f) {
+                // Coasting: the treads come back to the rail's speed.
+                omega += static_cast<float>((v / r - static_cast<double>(omega)) * (std::min)(1.0, hh / axle_roll_time));
+                car.axle_slip[i] = 0.0f;
+                continue;
+            }
+            const double slip = static_cast<double>(omega) * r - v;
+            const double grip = mu > 0.0f ? static_cast<double>(mu) / (1.0 + std::tanh(std::abs(slip))) * normal : 0.0;
+            const double rail = std::clamp(share, -grip, grip);
+            omega = static_cast<float>(static_cast<double>(omega) + (share - rail) * r / axle_inertia * hh);
+            car.axle_slip[i] = static_cast<float>(static_cast<double>(omega) * r - v);
+            if (std::abs(car.axle_slip[i]) > axle_slip_flag) spinning = true;
+            rail_sum += rail;
+        }
+    }
+    car.wheelslip = spinning;
+    return static_cast<float>(rail_sum / axle_substeps);
 }
 
 
@@ -299,7 +373,32 @@ void equalise(std::vector<CarState>& cars, const std::size_t a, const std::size_
     }
 }
 
+// СА-3 friction draft gear: a preloaded block that takes the first
+// millimetres stiffly, then the absorbing apparatus, and past its travel the
+// apparatus yields plastically. `travel` is how far the coupler has gone past
+// its play, `rate` how fast the cars grind past each other (m/s, magnitude).
+double sa3_coupler_force(const double travel, const double rate) {
+    constexpr double block_travel = 0.011;        // m, the preloaded block's stroke
+    constexpr double block_stiffness = 5.0e8;     // N/m
+    constexpr double preload = 5.0e3;             // N
+    constexpr double apparatus_travel = 0.22;     // m, +-2 lambda
+    constexpr double apparatus_stiffness = 2.0e7; // N/m
+    constexpr double plastic = 0.1;               // the apparatus past its travel
+    constexpr double friction = 0.6;              // dry friction of the gear
+    if (travel <= 0.0) return 0.0;
+    double force = preload + block_stiffness * (std::min)(travel, block_travel);
+    if (travel > block_travel) {
+        const double apparatus = (std::min)(travel, apparatus_travel) - block_travel;
+        force += apparatus_stiffness * apparatus;
+        if (travel > apparatus_travel) force += plastic * apparatus_stiffness * (travel - apparatus_travel);
+    }
+    // Dry friction holds the gear: it resists the movement, more the faster.
+    return force * (1.0 + friction * std::tanh(100.0 * rate));
+}
+
 } // namespace
+
+double sa3_draft_gear_force(const double travel, const double rate) { return sa3_coupler_force(travel, rate); }
 
 // ---------------------------------------------------------------------------
 // Keyboard controller
@@ -322,7 +421,7 @@ float compressor_rate(bool& running, const EngineInputs& inputs) {
     if (inputs.main_reservoir < range.on) running = true;
     if (inputs.main_reservoir >= range.off) running = false;
     if (!running) return 0.0f;
-    if (inputs.realistic_air && engine) {
+    if (engine) {
         // Its delivery (m³ of free air a minute) into the real main reservoir
         // volume: the .eng's or the stock rules' ORTSCompressorCapacity, else
         // a КТ-6's 5.3 (0.088 m³·atm/s). Until 2026-11-17 a КТ-6 everywhere:
@@ -397,7 +496,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
         // The sander raises the limit as it raises adhesion (Adheasion's third value).
         const float sand = handles.sanding && inputs.definition->adhesion[2] > 0.0f ? inputs.definition->adhesion[2] : 1.0f;
         const float mu = inputs.definition->adhesion[1] * sand * inputs.adhesion;
-        if (mu > 0.0f) force = (std::min)(force, inputs.definition->mass * 10.0f * mu * 0.9f);
+        if (mu > 0.0f) force = (std::min)(force, (inputs.definition->mass + inputs.cargo_mass) * 10.0f * mu * 0.9f);
         demands.force = force * static_cast<float>(reverser);
     }
     // Compressor with hysteresis (every engine).
@@ -414,7 +513,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
         .main_reservoir = inputs.main_reservoir,
         .cylinder = inputs.cylinder,
         .charging_pressure = handles.charging_pressure,
-        .realistic = inputs.realistic_air,
+        .realistic = true,
         .ep_on = handles.ep_brake,
     };
     const auto out = step_valve_395(state, static_cast<ValvePosition>(brake), valve, static_cast<float>(dt));
@@ -552,23 +651,24 @@ const EngineDemands* Train::demands_of(const std::size_t car) const noexcept {
 }
 
 std::size_t Train::emergency_cars() const noexcept {
-    if (brake_model() != BrakeModel::realistic) return 0;
     std::size_t count = 0;
     for (const auto& air : impl_->air.state())
         if (air.emergency) ++count;
     return count;
 }
 
-void Train::set_brake_model(const BrakeModel model) noexcept {
-    if (settings_.brake_model != model && model == BrakeModel::realistic) impl_->air.reset(cars_);
-    settings_.brake_model = model;
-}
+void Train::set_coupler_model(const CouplerModel model) noexcept { settings_.coupler_model = model; }
 
-BrakeModel Train::brake_model() const noexcept {
-    if (settings_.brake_model != BrakeModel::realistic) return BrakeModel::rts;
-    for (const auto& c : impl_->controllers)
-        if (c && c->rts_brakes()) return BrakeModel::rts;
-    return BrakeModel::realistic;
+void Train::set_resistance_model(const ResistanceModel model) noexcept { settings_.resistance = model; }
+
+void Train::set_axle_dynamics(const bool on) noexcept {
+    settings_.axle_dynamics = on;
+    if (!on) return;
+    for (auto& car : cars_) {
+        const float r = car.definition->wheel_radius > 0.0f ? car.definition->wheel_radius : 0.5f;
+        car.axle_omega.fill(car.velocity * (car.flipped ? -1.0f : 1.0f) / r);
+        car.axle_slip.fill(0.0f);
+    }
 }
 
 void Train::set_coupler_substeps(const std::uint32_t substeps) noexcept {
@@ -812,6 +912,13 @@ double Train::mass() const noexcept {
     return total;
 }
 
+void Train::set_cargo(const std::size_t car, const float mass_kg, std::string id) {
+    if (car >= cars_.size()) return;
+    auto& state = cars_[car];
+    state.cargo_mass = (std::max)(mass_kg, 0.0f);
+    state.cargo_id = state.cargo_mass > 0.0f ? std::move(id) : std::string{};
+}
+
 void Train::hit(const std::size_t index, const float force, const float (&direction)[3], const float time) {
     if (index >= cars_.size() || force <= 0.0f) return;
     auto& car = cars_[index];
@@ -841,12 +948,8 @@ void Train::hit(const std::size_t index, const float force, const float (&direct
     // middle of the car).
     if (std::abs(direction[0]) > 0.3f) {
         const float side = direction[0] > 0.0f ? 1.0f : -1.0f;
-        const float target = (std::min)(shove * 0.04f + 0.1f, 1.8f);
-        if (target > std::abs(car.tilt_target)) {
-            car.tilt_target = target * side;
-            car.tilt_rate = std::abs(shove / (std::max)(car.definition->width, 1.0f)) * side;
-            car.tilt_friction = m * 10.0f * (target < 1.57f ? target * 0.637f : 1.0f);
-        }
+        car.tilt_rate += shove / (std::max)(car.definition->width, 1.0f) * side;
+        if (car.roll_side == 0) car.roll_side = static_cast<std::int8_t>(side > 0.0f ? -1 : 1);
     }
 }
 
@@ -1025,7 +1128,10 @@ bool Train::place(TrackNetwork& network, const std::uint32_t node, const double 
     for (auto& car : cars_) {
         car.derailed = false;
         car.derail = DerailKind::none;
-        car.tilt = car.tilt_target = car.tilt_rate = car.tilt_friction = 0.0f;
+        car.tilt = car.tilt_target = car.tilt_rate = 0.0f;
+        car.roll_side = 0;
+        car.climb = {};
+        car.climb_count = 0;
         car.fallen = false;
         car.slide = car.slide_speed = 0.0f;
         car.slide_origin_set = false;
@@ -1116,7 +1222,7 @@ double Train::brake_pressing() const {
         const float reference = brake_force_pressure(*car.definition);
         if (reference <= 0.0f) continue;
         const auto kind = distributor_kind(*car.definition);
-        const float full_cylinder = distributor_full_cylinder(kind, effective_load(car.distributor.load, car.definition->mass));
+        const float full_cylinder = distributor_full_cylinder(kind, effective_load(car.distributor.load, mass_of(car)));
         for (std::size_t b = 0; b < 2; ++b) pressing += bogie_full_force(car, b, settings_) * (full_cylinder / reference) / cast_iron_40;
     }
     return weight > 0.0 ? 100.0 * pressing / weight : 0.0;
@@ -1246,7 +1352,6 @@ void Train::step() {
     const auto dt = static_cast<float>(train_step);
     auto& impl = *impl_;
 
-    const bool realistic_air = brake_model() == BrakeModel::realistic;
     // 1. Locomotive controllers and their engine part (0x5031D8).
     for (std::size_t i = 0; i < n; ++i) {
         auto& car = cars_[i];
@@ -1276,7 +1381,7 @@ void Train::step() {
             .independent = car.independent,
             .flipped = car.flipped,
             .definition = car.definition,
-            .realistic_air = realistic_air,
+            .cargo_mass = car.cargo_mass,
             // The default controller keeps its force within RTS's limit;
             // with openRTS's (below) its axles may slip as any engine's.
             .adhesion = settings_.rails == RailCondition::rts ? rails_grip : 0.0f,
@@ -1296,9 +1401,9 @@ void Train::step() {
             }
         }
         car.main_reservoir = (std::max)(car.main_reservoir + demands.main_reservoir_rate * dt, 0.0f);
-        // Worn brakes (realistic air): the main reservoir leaks, and the
-        // independent brake's valve keeps its leaking cylinder filled from it.
-        if (realistic_air && (car.wear.reservoir_leak > 0.0f || car.wear.cylinder_leak > 0.0f)) {
+        // Worn brakes: the main reservoir leaks, and the independent brake's
+        // valve keeps its leaking cylinder filled from it.
+        if (car.wear.reservoir_leak > 0.0f || car.wear.cylinder_leak > 0.0f) {
             float lost = car.wear.reservoir_leak / 60.0f * (car.main_reservoir / 9.0f) * dt;
             if (car.independent > 0.0f && car.independent >= car.cylinder)
                 lost += car.wear.cylinder_leak / 60.0f * (car.independent / 3.8f) * distributor_cylinder_volume /
@@ -1327,40 +1432,46 @@ void Train::step() {
         const bool sanded = car.sanding || car.sand_travel >= 0.0f;
         if (sanded && car.definition->adhesion[2] > 0.0f) mu *= car.definition->adhesion[2];
         mu *= rails_grip;
-        // RTS 0x424488: slipping the last step, the adhesion x Adheasion's
-        // first value (the ВЛ80Т's 0.6): the force must come down further
-        // than it went over for the wheels to grip again.
-        if (slipped != 0 && car.definition->adhesion[0] > 0.0f) mu *= car.definition->adhesion[0];
-        const float limit = mass_of(car) * gravity * mu;
-        const auto& engine = *car.definition->engine;
-        if (settings_.rails != RailCondition::rts) {
-            if (force != 0.0f) force = axle_traction(car, demands, force, rails_grip, sanded, slipped);
-        } else if (mu > 0.0f && force != 0.0f && engine.num_engines > 0) {
-            // Each motor against its axles' share of the weight: a slipping
-            // one's axles spin and its force falls to a quarter (RTS: a
-            // random 10..40 %; a quarter keeps runs the same). As RTS, a
-            // locomotive with NumEngines but no EngineAxles, or whose DLL
-            // leaves EngineForce at 0, never slips.
-            const float axle_limit = limit / static_cast<float>((std::max)(engine.num_axles, 1u));
-            const std::size_t motors = (std::min)(static_cast<std::size_t>(demands.engine_force_count), engine.engine_axles.size());
-            for (std::size_t m = 0; m < motors; ++m) {
-                const auto& axles = engine.engine_axles[m];
-                if (axles.empty()) continue;
-                const float motor = demands.engine_forces[m];
-                const float per_axle = motor / static_cast<float>(axles.size());
-                if (std::abs(per_axle) <= axle_limit) continue;
-                for (const auto axle : axles) {
-                    car.wheelslip |= 1u << axle;
-                    if (axle < car.slip_ratio.size()) car.slip_ratio[axle] = per_axle / axle_limit;
+        if (settings_.axle_dynamics) {
+            // The wheelsets pull at the creep their own turning allows.
+            force = step_axles(car, force, mu, train_step);
+        } else {
+            // RTS 0x424488: slipping the last step, the adhesion x Adheasion's
+            // first value (the ВЛ80Т's 0.6): the force must come down further
+            // than it went over for the wheels to grip again.
+            if (slipped != 0 && car.definition->adhesion[0] > 0.0f) mu *= car.definition->adhesion[0];
+            const float limit = mass_of(car) * gravity * mu;
+            const auto& engine = *car.definition->engine;
+            if (settings_.rails != RailCondition::rts) {
+                // openRTS's adhesion: every axle of its own, slipping alone.
+                if (force != 0.0f) force = axle_traction(car, demands, force, rails_grip, sanded, slipped);
+            } else if (mu > 0.0f && force != 0.0f && engine.num_engines > 0) {
+                // Each motor against its axles' share of the weight: a slipping
+                // one's axles spin and its force falls to a quarter (RTS: a
+                // random 10..40 %; a quarter keeps runs the same). As RTS, a
+                // locomotive with NumEngines but no EngineAxles, or whose DLL
+                // leaves EngineForce at 0, never slips.
+                const float axle_limit = limit / static_cast<float>((std::max)(engine.num_axles, 1u));
+                const std::size_t motors = (std::min)(static_cast<std::size_t>(demands.engine_force_count), engine.engine_axles.size());
+                for (std::size_t m = 0; m < motors; ++m) {
+                    const auto& axles = engine.engine_axles[m];
+                    if (axles.empty()) continue;
+                    const float motor = demands.engine_forces[m];
+                    const float per_axle = motor / static_cast<float>(axles.size());
+                    if (std::abs(per_axle) <= axle_limit) continue;
+                    for (const auto axle : axles) {
+                        car.wheelslip |= 1u << axle;
+                        if (axle < car.slip_ratio.size()) car.slip_ratio[axle] = per_axle / axle_limit;
+                    }
+                    force += (0.25f - 1.0f) * motor;
                 }
-                force += (0.25f - 1.0f) * motor;
+            } else if (mu > 0.0f && std::abs(force) > limit) {
+                // No motors to tell apart: the whole locomotive slips (Wheelslip
+                // 15) and pulls nothing.
+                car.wheelslip = 15;
+                for (std::size_t a = 0; a < 4; ++a) car.slip_ratio[a] = force / limit;
+                force = 0.0f;
             }
-        } else if (mu > 0.0f && std::abs(force) > limit) {
-            // No motors to tell apart: the whole locomotive slips (Wheelslip
-            // 15) and pulls nothing.
-            car.wheelslip = 15;
-            for (std::size_t a = 0; a < 4; ++a) car.slip_ratio[a] = force / limit;
-            force = 0.0f;
         }
         car.force = force * direction;
         car.power = demands.power >= 0.0f ? demands.power : std::abs(force * car.velocity);
@@ -1396,9 +1507,12 @@ void Train::step() {
         const float cylinder = (std::max)(car.cylinder, car.independent);
         // The realistic air: a 483 car's content force at its load mode's
         // full cylinder (distributor.hpp, brake_force_pressure).
-        const float reference = realistic_air ? brake_force_pressure(*car.definition) : brakes.cylinder_pressure_for_max_force;
-        const float share = reference > 0.0f ? cylinder / reference : 0.0f;
-        if (realistic_air) {
+        const float reference = brake_force_pressure(*car.definition);
+        // The rigging takes up its slack and the piston its stroke before the
+        // shoes reach the wheels: under the touch pressure the cylinder
+        // presses nothing (distributor.hpp, brake_rigging_share).
+        const float share = brake_rigging_share(cylinder, reference);
+        {
             // Each bogie: half the force on its shoes, wet and warm as they
             // are, its wheels sliding when the shoes hold them harder than
             // the rail turns them (adhesion.hpp); the engine's sand helps.
@@ -1426,39 +1540,17 @@ void Train::step() {
             }
             if (car.sliding()) car.slid += std::abs(car.velocity) * dt;
             car.brake_force = force;
-        } else {
-            car.brake_force = share * brakes.max_brake_force;
-            car.brake_force += car.handbrake * brakes.max_handbrake_force;
         }
         // Brake shoes under its bogies (RTS: 10 kN each).
         if (car.chocks & chock_front) car.brake_force += chock_force;
         if (car.chocks & chock_rear) car.brake_force += chock_force;
     }
     for (std::size_t i = 0; i < n; ++i) cars_[i].brake_force += impl.demands[i].brake_force;
-    // The RTS air: a car whose brake holds more than its adhesion has its
-    // wheels stand (RTS 0x4F5B34, mass x 10 x Adheasion[1] x the weather's
-    // factor); the realistic air slides by bogie (adhesion.hpp).
-    {
-        const float grip = settings_.rails == RailCondition::rts ? 1.0f : rail_factor(settings_.rails);
-        for (auto& car : cars_) {
-            const float mu = car.definition ? car.definition->adhesion[1] * grip : 0.0f;
-            car.brake_locked = !realistic_air && mu > 0.0f && car.brake_force > mass_of(car) * gravity * mu && std::abs(car.velocity) > 0.01f;
-            // The flats are openRTS's own (RTS has none): worn only where the
-            // brake beats the wheel's real grip on the rail (adhesion.hpp),
-            // not RTS's Adheasion threshold. The ЭД9М's head cars give 0.1
-            // there (42 kN for 43 t): every service application "stood" them
-            // and wore flats on the head cars and engines alone, the cars
-            // between never (testers 2026-11-18).
-            const float rail_grip = wheel_rail_adhesion(std::abs(car.velocity) * 3.6f) * grip * mass_of(car) * gravity;
-            if (car.brake_locked && car.brake_force > rail_grip) {
-                const auto index = static_cast<std::size_t>(&car - cars_.data());
-                for (std::size_t b = 0; b < 2; ++b) grow_flat(car, b, std::abs(car.velocity) * dt, index);
-            }
-        }
-    }
+    // The realistic air slides by bogie (adhesion.hpp, shoe_state): a locked
+    // wheel's flat grows with the slide above, not by a whole-car grip check.
 
-    // 3. Air: realistic pneumatics (openRTS), or RTS's pipe and triple valves.
-    if (realistic_air) {
+    // 3. Air: the pneumatics of the realistic model.
+    {
         detail::AirInputs air{};
         air.demands = &impl.demands;
         std::vector<bool> has(n);
@@ -1494,6 +1586,12 @@ void Train::step() {
             }
             i = j + 1;
         }
+        // The valves a hand opened vent the pipe and the cylinder before the
+        // air is solved, so the distributors see the fall of the pipe.
+        for (auto& car : cars_) {
+            if (car.valves & valve_emergency) car.pipe = (std::max)(car.pipe - 18.0f * dt, 0.0f);
+            if (car.valves & valve_release) car.cylinder = (std::max)(car.cylinder - 0.5f * dt, 0.0f);
+        }
         impl.air.step(cars_, air, dt);
         // An engine releasing its own train brake (EngineFlags 1: the 254 in
         // I) vents its cylinder, as in the RTS model.
@@ -1503,183 +1601,15 @@ void Train::step() {
                 car.cylinder = (std::max)(car.cylinder - car.definition->brakes.max_release_rate * dt, 0.0f);
             }
         }
-        // The valves a hand opened, as in the RTS model.
-        for (auto& car : cars_) {
-            if (car.valves & valve_emergency) car.pipe = (std::max)(car.pipe - 18.0f * dt, 0.0f);
-            if (car.valves & valve_release) car.cylinder = (std::max)(car.cylinder - 0.5f * dt, 0.0f);
-        }
-    } else {
-        // 3. Air: pipe from the locomotives, equalisation, triple valves.
-        std::vector<float> pipe_start(n);
-        for (std::size_t i = 0; i < n; ++i) pipe_start[i] = cars_[i].pipe;
-        const auto pipe_volume = [&](const std::size_t i) { return length_of(cars_[i]) * pipe_area; };
-        // Air flows between car i and i + 1 only through connected hoses and
-        // open end cocks; a pipe end with an open cock and nothing coupled vents
-        // at 10 atm/s (RTS; the hiss is sound variable 80).
-        const auto joined = [&](const std::size_t i) {
-            return !(cars_[i].pipe_ends & (pipe_hose_rear | pipe_cock_rear))
-                && !(cars_[i + 1].pipe_ends & (pipe_hose_front | pipe_cock_front));
-        };
-        for (auto& car : cars_) {
-            const bool front_open = (car.pipe_ends & pipe_hose_front) && !(car.pipe_ends & pipe_cock_front);
-            const bool rear_open = (car.pipe_ends & pipe_hose_rear) && !(car.pipe_ends & pipe_cock_rear);
-            if (front_open || rear_open) car.pipe = (std::max)(car.pipe - 10.0f * dt, 0.0f);
-            if (car.valves & valve_emergency) car.pipe = (std::max)(car.pipe - 18.0f * dt, 0.0f);
-            if (car.valves & valve_release) car.cylinder = (std::max)(car.cylinder - 0.5f * dt, 0.0f);
-        }
-        for (std::size_t j = 0; j < n; ++j) {
-            const auto& demands = impl.demands[j];
-            auto& loco = cars_[j];
-            if (!loco.definition->engine || !impl.controllers[j] || !(demands.systems & 1)) continue;
-            // Only engines that ask for it touch the pipe (the master's valve).
-            const float rate = demands.train_pipe_rate;
-            if (rate == 0.0f) continue;
-            const float reservoir_volume = loco.definition->engine->main_reservoir_volume;
-            if (rate < 0.0f) {
-                // Vent at the locomotive, the rest follows (lowering only).
-                const float vented = (std::max)(loco.pipe + rate, 0.0f);
-                loco.pipe += (vented - loco.pipe) * dt;
-                float distance = 0.0f;
-                for (std::size_t m = j + 1; m < n && joined(m - 1); ++m) {
-                    distance += length_of(cars_[m - 1]);
-                    const float factor = (std::min)(1.0f, 30.0f / distance) * dt;
-                    cars_[m].pipe += (std::min)((vented - cars_[m].pipe) * factor, 0.0f);
-                }
-                distance = 0.0f;
-                for (std::size_t m = j; m-- > 0 && joined(m);) {
-                    distance += length_of(cars_[m + 1]);
-                    const float factor = (std::min)(1.0f, 30.0f / distance) * dt;
-                    cars_[m].pipe += (std::min)((vented - cars_[m].pipe) * factor, 0.0f);
-                }
-                continue;
-            }
-            if (reservoir_volume <= 0.0f) continue;
-            // Fed from the main reservoir: volume-weighted equalisation, slower
-            // with the distance from the locomotive.
-            const auto feed = [&](CarState& car, const float distance, const float volume) {
-                const float factor = (std::min)(1.0f, (std::min)(1.0f, 30.0f / (std::max)(distance, 1.0f)) * dt * rate);
-                const float average = (loco.main_reservoir * reservoir_volume + car.pipe * volume) / (reservoir_volume + volume);
-                const float change = (average - car.pipe) * factor;
-                car.pipe += change;
-                loco.main_reservoir = (std::max)(loco.main_reservoir - change * volume / reservoir_volume, 0.0f);
-            };
-            feed(loco, 1.0f, pipe_volume(j));
-            float distance = 0.0f;
-            for (std::size_t m = j + 1; m < n && joined(m - 1); ++m) {
-                distance += length_of(cars_[m - 1]);
-                feed(cars_[m], distance, pipe_volume(m - 1));
-            }
-            distance = 0.0f;
-            for (std::size_t m = j; m-- > 0 && joined(m);) {
-                distance += length_of(cars_[m + 1]);
-                feed(cars_[m], distance, pipe_volume(m));
-            }
-        }
-        // Every car equalises with each car ahead of it, slower with distance.
-        for (std::size_t i = 1; i < n; ++i) {
-            auto& car = cars_[i];
-            const float volume = pipe_volume(i);
-            for (std::size_t k = i; k-- > 0 && joined(k);) {
-                auto& ahead = cars_[k];
-                if (ahead.pipe == car.pipe) continue;
-                const float ahead_volume = pipe_volume(k);
-                const double distance = ahead.offset - car.offset;
-                const float factor = (distance == 0.0 ? 1.0f : (std::min)(1.0f, static_cast<float>(30.0 / std::abs(distance)))) * dt;
-                const float average = (ahead.pipe * ahead_volume + car.pipe * volume) / (ahead_volume + volume);
-                car.pipe += (average - car.pipe) * factor;
-                ahead.pipe += (average - ahead.pipe) * factor;
-            }
-        }
-        for (std::size_t i = 0; i < n; ++i) {
-            auto& car = cars_[i];
-            const auto& brakes = car.definition->brakes;
-            float pipe_change = car.pipe - pipe_start[i];
-            const float ratio = (std::max)(brakes.triple_valve_ratio, 0.01f);
-            if (car.definition->engine && impl.controllers[i] && impl.demands[i].release_train_brake) {
-                car.cylinder = (std::max)(car.cylinder - brakes.max_release_rate * dt, 0.0f);
-            }
-            // EP brake.
-            if ((brakes.system & 2) && car.ep >= 0.0f) {
-                if (car.cylinder < car.ep) {
-                    float equalised = (car.auxiliary - car.cylinder) / (ratio + 0.625f);
-                    equalised = (std::max)(equalised, 0.0f);
-                    float rise = (std::min)(car.ep - car.cylinder, brakes.max_application_rate * dt);
-                    rise = (std::min)(rise, equalised * ratio);
-                    car.cylinder += rise;
-                    car.auxiliary = (std::max)(car.auxiliary - rise / ratio * 0.625f, 0.0f);
-                } else if (car.cylinder > car.ep) {
-                    car.cylinder = (std::max)(car.cylinder - brakes.max_release_rate * dt, car.ep);
-                }
-                pipe_change = 0.0f;
-            }
-            if (!(brakes.system & 5)) continue;
-            // Control chamber.
-            if (brakes.system & 4) {
-                if (car.charging_pipe > car.auxiliary) {
-                    float charge = (car.charging_pipe - car.auxiliary) * 0.05f;
-                    if (charge / dt > brakes.max_auxiliary_charging_rate) charge = brakes.max_auxiliary_charging_rate * dt;
-                    car.auxiliary += charge;
-                    car.charging_pipe = (std::max)(car.charging_pipe - 10.0f * charge, 0.0f);
-                }
-                if (car.cylinder == 0.0f && pipe_change >= 0.0f) {
-                    const float target = car.pipe - 0.2f;
-                    if (car.control < target) {
-                        car.control = (std::min)(car.control + car.pipe * 0.04f * dt, target);
-                    } else if (car.control > target) {
-                        car.control = (std::max)(car.control - car.pipe * 0.04f * dt, target);
-                    }
-                }
-            } else {
-                car.control = car.auxiliary;
-            }
-            // openRTS's stability (TrainSettings::distributor_stability):
-            // while released, a pipe falling no faster than the distributor's
-            // stability (483 0.3, 292 0.5 atm/min) takes the control chamber
-            // (on a single pipe: the reservoir) down with it, so it applies
-            // nothing; a faster fall outruns it and brakes as before.
-            if (settings_.distributor_stability && car.cylinder <= 0.0f && pipe_change < 0.0f) {
-                const float stability = (distributor_kind(*car.definition) == DistributorKind::vr483 ? 0.3f : 0.4f) / 60.0f;
-                const float floor = car.pipe - 0.2f;
-                if (car.control > floor) {
-                    car.control = (std::max)(floor, car.control - stability * dt);
-                    if (!(brakes.system & 4)) car.auxiliary = car.control;
-                }
-            }
-            if (pipe_change >= 0.0f) {
-                // Charge the auxiliary reservoir from the pipe.
-                if (car.auxiliary + 0.2f < car.pipe) {
-                    float charge = (car.pipe - car.auxiliary - 0.2f) * 0.05f;
-                    if (charge / dt > brakes.max_auxiliary_charging_rate) charge = brakes.max_auxiliary_charging_rate * dt;
-                    if ((brakes.system & 4) && car.charging_pipe > car.pipe) charge = 0.0f;
-                    car.auxiliary += charge;
-                    car.pipe = (std::max)(car.pipe - 10.0f * charge, 0.0f);
-                    pipe_change -= 10.0f * charge;
-                }
-                // Graduated release with the pipe rise.
-                if (pipe_change > 0.0f) car.cylinder = (std::max)(car.cylinder - pipe_change * ratio, 0.0f);
-            } else if (car.control > car.pipe) {
-                // Application in proportion to the pipe drop, up to equalisation
-                // with the auxiliary reservoir.
-                float rise = -pipe_change * ratio;
-                float drop = pipe_change * 0.625f;
-                if (car.cylinder + rise > car.auxiliary + drop) {
-                    drop = (std::min)(-(car.auxiliary - car.cylinder) / (ratio + 0.625f), 0.0f);
-                    rise = -drop * ratio;
-                    drop *= 0.625f;
-                }
-                car.cylinder += rise;
-                car.auxiliary = (std::max)(car.auxiliary + drop, 0.0f);
-                car.cylinder = (std::min)(car.cylinder, car.auxiliary);
-            }
-        }
-
     }
 
     // 4. Resistance, grade, curve.
     for (auto& car : cars_) {
         const auto& wagon = *car.definition;
         const float speed = std::abs(car.velocity);
-        car.resistance = rolling_resistance(wagon, speed);
+        car.resistance = settings_.resistance == ResistanceModel::ptr
+                             ? ptr_resistance(wagon, speed, mass_of(car))
+                             : rolling_resistance(wagon, speed);
         if (wagon.engine && wagon.engine->max_velocity > 0.0f && speed > wagon.engine->max_velocity) {
             const float limit = wagon.engine->max_velocity;
             if (limit * 1.2f >= speed) {
@@ -1691,11 +1621,8 @@ void Train::step() {
         car.grade = car.pitch == 0.0f ? 0.0f : static_cast<float>(std::sin(car.pitch)) * -mass_of(car) * gravity;
         if (car.radius != 0.0f) {
             car.resistance += 7.0f / car.radius * mass_of(car);
-            if (settings_.derailment && !car.derailed
-                && mass_of(car) * car.velocity * car.velocity / car.radius > wagon.derail_rail_force) {
-                start_tipping(static_cast<std::size_t>(&car - cars_.data()), nullptr);
-            }
         }
+        if (settings_.derailment) update_derailment(static_cast<std::size_t>(&car - cars_.data()));
     }
 
     // 5. Active and dissipative forces; the dissipative force first eats the
@@ -1706,8 +1633,8 @@ void Train::step() {
         auto& car = cars_[i];
         float force = car.force - car.grade;
         float friction = car.brake_force + car.resistance;
-        if (car.derail == DerailKind::tipping && car.tilt_target != 0.0f) {
-            friction += std::abs(car.tilt / car.tilt_target) * car.tilt_friction;
+        if (car.derail == DerailKind::tipping) {
+            friction += static_cast<float>(mass_of(car) * derail_gravity * 0.35 * std::sin(std::abs(car.tilt)));
         } else if (car.derail == DerailKind::sliding) {
             friction += mass_of(car) * 5.0f; // RTS: the slid body's friction, mass * 5
         }
@@ -1760,8 +1687,21 @@ void Train::step() {
             gaps[j] = gap;
             const auto& a = coupling_behind(ahead);
             const auto& b = coupling_ahead(behind);
-            const double force = gap < 0.0 ? (a.stiffness_compression + b.stiffness_compression) * gap
-                                           : (a.stiffness_tension + b.stiffness_tension) * gap;
+            double force = 0.0;
+            if (settings_.coupler_model == CouplerModel::sa3) {
+                const bool compression = gap < 0.0;
+                const double play = compression ? 0.5 * (a.r0_compression + b.r0_compression)
+                                                : 0.5 * (a.r0_tension + b.r0_tension);
+                const double travel = (std::max)(std::abs(gap) - play, 0.0);
+                const double rate = velocity[j] - velocity[j + 1];
+                force = std::copysign(sa3_coupler_force(travel, std::abs(rate)), gap);
+                force -= (compression ? a.damping_compression + b.damping_compression
+                                      : a.damping_tension + b.damping_tension) *
+                         rate;
+            } else {
+                force = gap < 0.0 ? (a.stiffness_compression + b.stiffness_compression) * gap
+                                  : (a.stiffness_tension + b.stiffness_tension) * gap;
+            }
             active[j] -= force * 0.5;
             active[j + 1] += force * 0.5;
             if (pass == 0) cars_[j].coupler_force = static_cast<float>(force);
@@ -1831,32 +1771,121 @@ void Train::step() {
     derailment();
 }
 
-// A car starts overturning (RTS 0x580B30, its "not sliding" branch): the
-// roll aims at 0.1 + 0.04 |v| rad (a tipped neighbour: 0.75 of its roll,
-// at 0.8 of its rate), at most 1.8, and grows at |v| / 33 rad/s; the drag
-// at the full roll is m * 10, times 0.637 * target below 1.57 rad. It rolls
-// outwards of the curve, or the way the neighbour rolls.
 void Train::start_tipping(const std::size_t index, const CarState* neighbour) {
     auto& car = cars_[index];
     if (car.derailed) return;
     car.derailed = true;
     car.derail = DerailKind::tipping;
-    const float speed = std::abs(neighbour ? neighbour->velocity : car.velocity);
-    float target = neighbour ? std::abs(neighbour->tilt_target) * 0.75f : speed * 0.04f + 0.1f;
-    target = (std::min)(target, 1.8f);
-    car.tilt_friction = mass_of(car) * 10.0f;
-    if (target < 1.57f) car.tilt_friction *= target * 0.637f;
-    float rate = neighbour ? std::abs(neighbour->tilt_rate) * 0.8f : std::abs(car.velocity) * (1.0f / 33.0f);
-    // Outwards: against the side the car turns to.
-    const float side = neighbour ? (neighbour->tilt_target < 0.0f ? -1.0f : 1.0f) : (car.curvature > 0.0f ? -1.0f : 1.0f);
-    car.tilt_target = target * side;
-    car.tilt_rate = rate * side;
+    car.tilt = 0.0f;
+    car.tilt_target = 0.0f;
+    if (neighbour) {
+        car.roll_side = neighbour->roll_side;
+        car.tilt_rate = neighbour->tilt_rate * 0.8f;
+    } else {
+        car.tilt_rate = 0.0f;
+    }
     impl_->events.push_back({.kind = TrainEventKind::derailment, .car = static_cast<std::uint32_t>(index)});
 }
 
+void Train::update_derailment(const std::size_t index) {
+    auto& car = cars_[index];
+    const auto& wagon = *car.definition;
+    if (car.derail == DerailKind::sliding) return;
+    const double mass = mass_of(car);
+    const double gauge = track_gauge;
+    const double height = wagon.derail_rail_height > 0.0f
+                              ? static_cast<double>(wagon.derail_rail_height)
+                              : (std::max)(1.0, static_cast<double>(wagon.height) * 0.5);
+    const double speed = car.velocity;
+    const double gain = curve_load_gain(car.curvature, speed);
+    WheelLoads loads = wheel_loads(mass, gauge, height, 0.0, car.curvature, car.cant, speed);
+    apply_curve_load(loads, gain, gauge, height, 0.0);
+
+    if (car.derail != DerailKind::none) {
+        if (car.roll_side == 0) {
+            if (loads.left <= 0.0) car.roll_side = 1;
+            else if (loads.right <= 0.0) car.roll_side = -1;
+        }
+        if (car.roll_side == 0) return;
+        const double side = static_cast<double>(car.roll_side);
+        double angle = std::abs(static_cast<double>(car.tilt));
+        double rate = -side * static_cast<double>(car.tilt_rate);
+        const double inertia = (std::max)(
+            mass * 0.1,
+            mass * (static_cast<double>(wagon.width) * static_cast<double>(wagon.width) + height * height) / 12.0);
+        step_roll(mass, gauge, height, 0.0, inertia, loads, car.roll_side, train_step, angle, rate);
+        car.tilt = static_cast<float>(-side * angle);
+        car.tilt_rate = static_cast<float>(-side * rate);
+        car.tilt_target = car.tilt;
+        if (angle <= 0.0) {
+            car.derailed = false;
+            car.derail = DerailKind::none;
+            car.tilt = car.tilt_rate = car.tilt_target = 0.0f;
+            car.roll_side = 0;
+        }
+        return;
+    }
+
+    const auto depart = [&] {
+        car.derailed = true;
+        car.derail = DerailKind::tipping;
+        impl_->events.push_back({.kind = TrainEventKind::derailment, .car = static_cast<std::uint32_t>(index)});
+    };
+    if (std::abs(loads.lateral) > static_cast<double>(wagon.derail_rail_force)) {
+        depart();
+        return;
+    }
+    std::uint8_t axles = wagon.wheels > 0 ? static_cast<std::uint8_t>(wagon.wheels / 2) : 4;
+    if (axles == 0) axles = 4;
+    axles = std::clamp<std::uint8_t>(axles, 1, 8);
+    car.climb_count = axles;
+    const double share = mass / static_cast<double>(axles);
+    const double base = (std::max)(0.5, static_cast<double>(car.bogie_ahead + car.bogie_behind));
+    const double approach = std::abs(speed) * std::sin((std::min)(0.1, std::abs(car.curvature) * base));
+    const double flange_force = std::abs(loads.lateral) * (std::max)(1.0, static_cast<double>(axles) * 0.5);
+    bool departed = false;
+    for (std::uint8_t k = 0; k < axles && !departed; ++k) {
+        auto& axle = car.climb[k];
+        const int side = loads.lateral > 0.0 ? 1 : (loads.lateral < 0.0 ? -1 : 0);
+        if (side != axle.side) {
+            axle = AxleRoll{};
+            axle.side = side;
+        }
+        if (side == 0) continue;
+        WheelLoads axle_loads = wheel_loads(share, gauge, height, 0.0, car.curvature, car.cant, speed);
+        apply_curve_load(axle_loads, gain, gauge, height, 0.0);
+        const double vertical = side > 0 ? axle_loads.right : axle_loads.left;
+        const double inertia = (std::max)(
+            share * 0.1,
+            share * (static_cast<double>(wagon.width) * static_cast<double>(wagon.width) + height * height) / 12.0);
+        step_roll(share, gauge, height, 0.0, inertia, axle_loads, side, train_step, axle.lift_angle, axle.lift_speed);
+        if (gauge * std::sin(axle.lift_angle) >= derail_flange_length) {
+            axle.travel += approach * train_step;
+        } else {
+            axle.travel = 0.0;
+        }
+        if (axle.travel >= derail_flange_length / std::tan(derail_flange_angle)) {
+            departed = true;
+        } else if (step_flange(flange_force, vertical, share * 0.5, derail_flange_angle, derail_flange_friction,
+                               derail_flange_length, approach, train_step, axle.climb_height, axle.climb_speed)) {
+            departed = true;
+        }
+    }
+    if (!departed) return;
+    double angle = 0.0;
+    double rate = 0.0;
+    combine_axle_roll(std::span<const AxleRoll>(car.climb.data(), static_cast<std::size_t>(axles)), angle, rate);
+    double lift = 0.0;
+    for (std::uint8_t k = 0; k < axles; ++k) lift = (std::max)(lift, car.climb[k].lift_angle);
+    const int side = loads.lateral >= 0.0 ? 1 : -1;
+    car.roll_side = static_cast<std::int8_t>(side);
+    car.tilt = static_cast<float>(-side * lift);
+    car.tilt_rate = static_cast<float>(-side * std::abs(rate));
+    car.tilt_target = car.tilt;
+    depart();
+}
+
 // Per step after the move (RTS 0x581BC4 and 0x581694):
-// - a tipping car rolls on, by rate * dt * (|target - roll| / |target| + 0.2),
-//   until it reaches the target;
 // - past 0.8 rad it has fallen: its hoses are torn off (both ends, and the
 //   neighbours' ends facing it), so the pipe vents and the train brakes;
 // - it pulls its neighbours with 0.637 * |roll| * m: above a neighbour's
@@ -1868,14 +1897,6 @@ void Train::derailment() {
     const auto n = cars_.size();
     for (std::size_t i = 0; i < n; ++i) {
         auto& car = cars_[i];
-        if (car.derail != DerailKind::none && car.tilt_target != 0.0f && car.tilt != car.tilt_target) {
-            const float share = std::abs(car.tilt_target - car.tilt) / std::abs(car.tilt_target) + 0.2f;
-            car.tilt += car.tilt_rate * dt * share;
-            if (std::abs(car.tilt) >= std::abs(car.tilt_target)) {
-                car.tilt = car.tilt_target;
-                car.tilt_rate = 0.0f;
-            }
-        }
         if (car.derail == DerailKind::sliding && car.yaw != car.yaw_target) {
             const float rate = (std::max)(0.3f, std::abs(car.slide_speed) * 0.2f) * dt;
             const float diff = car.yaw_target - car.yaw;
@@ -2000,9 +2021,8 @@ void Train::sway() {
             if (motion.seed == 0) motion.seed = next_body_seed();
             const auto modes = body_modes(*car.definition, mass_of(car), motion.seed);
             motion.input.speed = std::abs(car.velocity);
-            // The curve's pull; the track has no cant here, and a line's
-            // cant takes about half of it at its usual speeds.
-            motion.input.lateral_acceleration = 0.5f * car.velocity * car.velocity * car.curvature;
+            motion.input.lateral_acceleration =
+                car.velocity * car.velocity * car.curvature * std::cos(car.cant) - 9.81f * std::sin(car.cant);
             motion.input.acceleration = car.acceleration;
             const float ahead = car.bogie_ahead > 0.0f ? car.bogie_ahead : car.definition->length * 0.35f;
             const float behind = car.bogie_behind > 0.0f ? car.bogie_behind : car.definition->length * 0.35f;
@@ -2028,7 +2048,8 @@ void Train::sway() {
         const float v = car.velocity;
         const auto* q = wagon.frame_osc_correction;
         // Lateral: outwards of the curve, the body moves against the turn.
-        const float centrifugal = -q[0] * m * v * v * car.curvature;
+        const float centrifugal =
+            -q[0] * m * (v * v * car.curvature * std::cos(car.cant) - 9.81f * std::sin(car.cant));
         const float hunting = std::sin(car.hunting_phase) * (v * 0.008f * (std::max)(wagon.mass, 1.0f) * q[0]);
         car.hunting_phase += v * 0.3f * m * dt * q[1] / damping;
         if (car.hunting_phase > 3.14159265f) car.hunting_phase -= 6.28318531f;
@@ -2215,6 +2236,12 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
             if (turn < -pi * 0.5) turn += pi;
             car.curvature = distance > 0.5 ? static_cast<float>(turn / distance) : 0.0f;
         }
+        {
+            const float target = cant_angle(car.curvature, car.radius, settings_.cant_reference);
+            const float pace = (std::max)(std::abs(car.velocity), 5.0f);
+            const float alpha = 1.0f - std::exp(-pace * static_cast<float>(train_step) / 25.0f);
+            car.cant += (target - car.cant) * alpha;
+        }
         // Rail joints (RTS 0x4F5B34): a junction event when a bogie changes
         // node; a joint event when it passes a rail joint along the node,
         // laid out as RTS or openRTS does (TrackNetwork::rail_joints). Each
@@ -2395,7 +2422,7 @@ namespace {
 // Mass-weighted mean velocity of a train towards its front.
 double mean_velocity(const Train& train) {
     double momentum = 0.0;
-    for (const auto& car : train.cars()) momentum += static_cast<double>(car.velocity) * (std::max)(car.definition->mass, 1.0f);
+    for (const auto& car : train.cars()) momentum += static_cast<double>(car.velocity) * car_mass(car);
     return momentum / (std::max)(train.mass(), 1.0);
 }
 
@@ -2432,7 +2459,7 @@ std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains
             const double overlap = closing * train_step - meeting->gap;
             if (overlap <= 0.0) continue;
             // The impact RTS compares with DerailBufferForce.
-            const double force = overlap / train_step * ((std::max)(end_a.definition->mass, 1.0f) + (std::max)(end_b.definition->mass, 1.0f));
+            const double force = overlap / train_step * (car_mass(end_a) + car_mass(end_b));
             const auto& coupler_a = front ? (end_a.flipped ? end_a.definition->couplings[0] : end_a.definition->couplings[1])
                                           : (end_a.flipped ? end_a.definition->couplings[1] : end_a.definition->couplings[0]);
             const auto& coupler_b = meeting->other_front

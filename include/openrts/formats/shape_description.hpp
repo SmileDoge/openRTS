@@ -58,11 +58,26 @@ struct WalkBox {
     std::array<float, 3> low{}, high{}; // the corners, sorted per axis
 };
 
+struct PickupObject {
+    std::array<std::uint32_t, 2> types{};
+    std::string cargo;
+    std::array<float, 2> capacity{};
+    std::array<float, 2> speed{};
+    float length = 2.0f;
+    std::array<float, 6> area{};
+    bool has_area = false;
+    std::vector<std::array<float, 3>> points;
+    std::array<float, 2> animation{};
+    std::uint32_t crane_type{};
+    bool crane_oriented = false;
+};
+
 struct ShapeDescription {
     std::filesystem::path shape_file;
     std::uint32_t alternative_texture{}; // ESD_Alternative_Texture bits
     std::vector<ShapeLight> lights;      // ESD_LightSources
     std::vector<WalkBox> boxes;          // ESD_Complex, else ESD_Bounding_Box
+    std::optional<PickupObject> pickup;  // ESD_Pickup_Object
 };
 
 struct ShapeDescriptionResult {

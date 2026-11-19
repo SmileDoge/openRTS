@@ -164,12 +164,21 @@ SpeedLimit SpeedLimits::evaluate(const Train& train, const TrainCategory categor
     result.current = current;
     const auto ahead = look_ahead(*network_, lead->node(), lead->offset(), lead->forward(), distance,
                                   [&](const formats::TrackItem& item) { return by_item_.contains(item.id); });
+    // The most restrictive post within the look-ahead is the one that shapes
+    // the driving: a nearer, higher post is still obeyed on the way down to a
+    // lower one further on, so the minimum never lets the train run past a
+    // limit that a later post would have cut anyway.
+    bool any = false;
     for (const auto& found : ahead.items) {
         const auto* on = post(found.item);
         if (!on || !applies(*on, found.facing_forward, category)) continue;
-        result.ahead = speed_of(*on);
-        result.ahead_distance = found.distance;
-        break;
+        const float speed = speed_of(*on);
+        if (speed <= 0.0f) continue;
+        if (!any || speed < result.ahead) {
+            result.ahead = speed;
+            result.ahead_distance = found.distance;
+            any = true;
+        }
     }
     return result;
 }

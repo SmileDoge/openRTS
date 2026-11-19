@@ -1,5 +1,6 @@
-#ifdef OPENRTS_HAS_WGPU
+﻿#ifdef OPENRTS_HAS_WGPU
 #include "train_view.hpp"
+#include "cargo_system.hpp"
 
 #include <openrts/core/profile.hpp>
 
@@ -33,6 +34,7 @@
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/track_traveller.hpp>
 #include <openrts/simulation/train_lights.hpp>
+#include <openrts/simulation/track_profile.hpp>
 
 #ifdef OPENRTS_HAS_IMGUI
 #include <imgui.h>
@@ -352,6 +354,7 @@ TrainView::TrainView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath rou
     route_tolerance_ = definition.ok() ? definition.timetable_tolerance : 0.0f;
     electrification_ = simulation::Electrification::load(*vfs_, route_, network);
     if (!electrification_->data().error.empty()) std::cout << "electrification: " << electrification_->data().error << '\n';
+    cargo_ = std::make_unique<CargoSystem>(vfs_, route_, origin_);
 }
 
 std::filesystem::path TrainView::user_path_folder() const {
@@ -909,23 +912,21 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
     unit.freight = !passenger;
     unit.cars = std::move(cars);
     unit.train = std::make_unique<simulation::Train>(std::move(setups));
+    unit.train->set_cant_reference(limits_->route_limit());
     // Its ЭПТ's own pace (a new train, a new one).
     unit.train->scatter_ep_fill(std::random_device{}());
     // The consist's PlaceDrag (RTS 0x477928): the cars' chocks from the start.
     for (std::size_t i = 0; i < entries.size() && i < unit.cars.size(); ++i)
         if (entries[i].place_drag != 0) unit.train->set_car_flags(i, simulation::Train::CarFlags::chocks, entries[i].place_drag, true);
     unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
-    if (!realistic_air_loaded_) {
-        // As last chosen (2026-11-17, testers: it had to be set again every
-        // run); not in a network game, where the server's choice stands.
-        realistic_air_loaded_ = true;
-        if (!network_game_) realistic_air_ = remembered("realistic_air").value_or("0") == "1";
-    }
-    if (realistic_air_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
     if (!distributor_stability_loaded_) {
         distributor_stability_loaded_ = true;
         distributor_stability_ = remembered("distributor_stability").value_or("0") == "1";
+        ptr_resistance_ = remembered("ptr_resistance").value_or("0") == "1";
+        axle_dynamics_ = remembered("axle_dynamics").value_or("0") == "1";
     }
+    unit.train->set_resistance_model(ptr_resistance_ ? simulation::ResistanceModel::ptr : simulation::ResistanceModel::msts);
+    unit.train->set_axle_dynamics(axle_dynamics_);
     unit.train->set_distributor_stability(distributor_stability_);
     return {};
 }
@@ -1728,7 +1729,7 @@ std::optional<CabView::AirGauges> TrainView::air_gauges(const Unit& unit, const 
         gauges_air_loaded_ = true;
         gauges_air_ = remembered("gauges_openrts_air").value_or("1") == "1";
     }
-    if (!gauges_air_ || !realistic_air_ || !unit.train || unit.train->brake_model() != simulation::BrakeModel::realistic) return std::nullopt;
+    if (!gauges_air_ || !unit.train) return std::nullopt;
     const auto& cars = unit.train->cars();
     if (car >= cars.size()) return std::nullopt;
     const auto& state = cars[car];
@@ -2199,6 +2200,15 @@ void TrainView::step_trains() {
         auto& unit = units_[u];
         if (unit.remote) continue;
         unit.train->step();
+        if (cargo_ && unit.train->placed()) {
+            const auto placements = unit.train->placements();
+            cargo_centres_.clear();
+            for (const auto& placement : placements) {
+                const glm::vec3 centre = (local(placement.front) + local(placement.rear)) * 0.5f;
+                cargo_centres_.push_back({centre.x, centre.y, centre.z});
+            }
+            cargo_->update(static_cast<float>(simulation::train_step), *unit.train, cargo_centres_);
+        }
         for (const auto& event : unit.train->take_events()) {
             auto* car = event.car < unit.cars.size() ? &unit.cars[event.car] : nullptr;
             switch (event.kind) {
@@ -2687,15 +2697,12 @@ TrainView::BrakeSet TrainView::brake_set() const noexcept {
 }
 
 void TrainView::apply_brake_set(const BrakeSet& set) {
-    realistic_air_ = set.realistic;
-    realistic_air_loaded_ = true;
-    remember("realistic_air", realistic_air_ ? "1" : "0");
+    // The realistic air is the only model: the preset's flag only marks it.
+    realistic_air_ = true;
     dll_air_ = set.dll_air;
     dll_air_loaded_ = true;
     remember("dll_air", std::to_string(dll_air_));
     if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
-    for (auto& unit : units_)
-        if (unit.train) unit.train->set_brake_model(realistic_air_ ? simulation::BrakeModel::realistic : simulation::BrakeModel::rts);
     gauges_air_ = set.gauges;
     gauges_air_loaded_ = true;
     remember("gauges_openrts_air", gauges_air_ ? "1" : "0");
@@ -5076,9 +5083,8 @@ void TrainView::draw_hud() {
                                     ur ? trf("%.2f", *ur).c_str() : "-", state.cylinder);
                     }
                 }
-                if (train.brake_model() == simulation::BrakeModel::realistic)
-                    ImGui::Text(tr("Brake pressing %.0f tf per 100 tf of weight (as cast-iron shoes), brakes' condition %s"),
-                                train.brake_pressing(), train.brake_condition() == 0 ? tr("none (as the files)") : std::to_string(train.brake_condition()).c_str());
+                ImGui::Text(tr("Brake pressing %.0f tf per 100 tf of weight (as cast-iron shoes), brakes' condition %s"),
+                            train.brake_pressing(), train.brake_condition() == 0 ? tr("none (as the files)") : std::to_string(train.brake_condition()).c_str());
                 std::size_t chocked = 0;
                 for (const auto& state : train.cars())
                     if (state.chocks != 0) ++chocked;
@@ -5102,7 +5108,6 @@ void TrainView::draw_hud() {
                 const auto joint_force = train.joint_forces();
                 // The РК: a 483's control chamber under the realistic air,
                 // the level it releases at in the flat mode (docs/train.md).
-                const bool realistic = train.brake_model() == simulation::BrakeModel::realistic;
                 // A right click on a car's name opens the pick below, outside
                 // the table: a table pushes its own ID, so a popup opened in
                 // a cell would not be the one begun after it.
@@ -5190,7 +5195,7 @@ void TrainView::draw_hud() {
                         ImGui::TableNextColumn();
                         ImGui::Text("%.2f", state.auxiliary);
                         ImGui::TableNextColumn();
-                        if (realistic && car.definition && (car.definition->brakes.system & 5) &&
+                        if (car.definition && (car.definition->brakes.system & 5) &&
                             simulation::distributor_kind(*car.definition) == simulation::DistributorKind::vr483) {
                             ImGui::Text("%.2f", state.control);
                         } else {
@@ -5317,9 +5322,82 @@ void TrainView::draw_hud() {
                     ImGui::Text(tr("Signal %s in %.0f m%s"), formats::to_string(next.aspect), next.distance,
                                 next.speed > 0.0f ? (", " + std::to_string(static_cast<int>(next.speed * 3.6f)) + " km/h").c_str() : "");
                 }
+                if (alsn_) ImGui::Text(tr("ALSN %s"), simulation::alsn_name(alsn_->code(train)));
             }
         }
         end_panel(limits_place_);
+    }
+    if (track_profile_panel_ && limits_ && network_) {
+        if (begin_panel("##profile", profile_place_, 1.0f - margin_x, 0.30f)) {
+            const auto profile = simulation::build_track_window(train, *network_, limits_.get(), unit->speed_category(), signals_, {});
+            ImGui::Text(tr("Grade %+.1f per mille, rail %.2f m"), profile.grade_at_head, profile.elevation_at_head);
+            if (profile.current_limit > 0.0f) ImGui::Text(tr("Limit %.0f km/h"), profile.current_limit * 3.6f);
+            else ImGui::TextDisabled(tr("Limit -"));
+            const ImVec2 size(520.0f, 130.0f);
+            ImGui::Dummy(size);
+            const ImVec2 origin = ImGui::GetItemRectMin();
+            auto* draw = ImGui::GetWindowDrawList();
+            const auto& vertices = profile.vertices;
+            if (vertices.size() >= 2) {
+                const double first = vertices.front().distance;
+                const double last = vertices.back().distance;
+                double low = vertices.front().elevation;
+                double high = low;
+                for (const auto& vertex : vertices) {
+                    low = std::min(low, vertex.elevation);
+                    high = std::max(high, vertex.elevation);
+                }
+                if (high - low < 2.0) {
+                    const double middle = 0.5 * (low + high);
+                    low = middle - 1.0;
+                    high = middle + 1.0;
+                }
+                const double span = std::max(1.0, last - first);
+                const auto x_of = [&](const double distance) {
+                    return origin.x + static_cast<float>((distance - first) / span) * size.x;
+                };
+                const auto y_of = [&](const double elevation) {
+                    return origin.y + size.y * (1.0f - static_cast<float>((elevation - low) / (high - low)));
+                };
+                draw->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(120, 120, 120, 160));
+                for (const auto& occupied : profile.occupied) {
+                    draw->AddRectFilled(ImVec2(x_of(occupied.from), origin.y), ImVec2(x_of(occupied.to), origin.y + size.y),
+                                        IM_COL32(150, 150, 150, 50));
+                }
+                for (std::size_t i = 1; i < vertices.size(); ++i) {
+                    const auto& from = vertices[i - 1];
+                    const auto& to = vertices[i];
+                    draw->AddLine(ImVec2(x_of(from.distance), y_of(from.elevation)), ImVec2(x_of(to.distance), y_of(to.elevation)),
+                                  IM_COL32(240, 240, 240, 220), 1.5f);
+                }
+                for (const auto& mark : profile.marks) {
+                    if (mark.distance < first || mark.distance > last) continue;
+                    ImU32 colour = IM_COL32(160, 160, 160, 180);
+                    switch (mark.kind) {
+                    case simulation::ProfileMarkKind::signal:
+                        colour = mark.at_danger ? IM_COL32(230, 70, 70, 230) : IM_COL32(90, 210, 110, 230);
+                        break;
+                    case simulation::ProfileMarkKind::speed_post: colour = IM_COL32(230, 200, 80, 230); break;
+                    case simulation::ProfileMarkKind::station:
+                    case simulation::ProfileMarkKind::platform: colour = IM_COL32(110, 180, 230, 230); break;
+                    case simulation::ProfileMarkKind::siding: colour = IM_COL32(160, 160, 160, 180); break;
+                    }
+                    const float x = x_of(mark.distance);
+                    draw->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + size.y), colour, 1.2f);
+                    if (!mark.name.empty() && mark.kind != simulation::ProfileMarkKind::siding && std::abs(mark.distance) < 400.0) {
+                        draw->AddText(ImVec2(x + 2.0f, origin.y + 2.0f), colour, mark.name.c_str());
+                    }
+                }
+                const float head = x_of(0.0);
+                draw->AddLine(ImVec2(head, origin.y - 4.0f), ImVec2(head, origin.y + size.y + 4.0f), IM_COL32(255, 255, 255, 245),
+                              2.0f);
+            } else {
+                ImGui::TextDisabled(tr("no track"));
+            }
+            ImGui::TextDisabled(tr("%.0f m behind, %.0f m ahead%s"), profile.behind, profile.ahead,
+                                profile.cut_behind || profile.cut_ahead ? tr(" (cut)") : "");
+        }
+        end_panel(profile_place_);
     }
     if (!drive_panel_) drive_panel_ = remembered("drive_panel").value_or("1") != "0";
     if (*drive_panel_) draw_drive_panel(*unit);
@@ -5695,6 +5773,9 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
                        renderer::ModelLibrary& library, audio::AudioEngine* sound) {
     OPENRTS_ZONE("trains: update");
     camera_eye_ = camera.eye();
+    // The frame the window will draw (the wheel on a cab's screen fits it in).
+    frame_aspect_ = camera.aspect;
+    frame_fov_ = camera.frame_fov;
     // While the car menu is open its window has the arrows and Enter.
     SceneInput menu_input;
     if (car_menu_) {
@@ -6506,7 +6587,9 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
     // openRTS's head on its neck nods and leans on top (head_motion()).
     if (engineer_.inside()) {
         camera.position += sway_offset(unit, engineer_car_, camera.position);
-        move_head(unit, engineer_car_, elapsed, camera);
+        // A screen of the cab holding the eye keeps the head still.
+        if (!engineer_.focused()) move_head(unit, engineer_car_, elapsed, camera);
+        else head_.started = false;
     } else {
         head_.started = false;
     }
@@ -7345,6 +7428,24 @@ void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& di
             return;
         }
     }
+    // The wheel on a screen of the cab (TME's InsideThreeDimCamera): the eye
+    // up close to read it, then back — the wheel down lets it go, and so does
+    // * (restore_screen_focus). A switch in front of the screen keeps the
+    // wheel: it turns the handle below.
+    if (engineer_.focused()) {
+        if (scroll != 0.0f) {
+            if (scroll < 0.0f) engineer_.release_focus();
+            return;
+        }
+    } else if (scroll > 0.0f && engineer_.inside() && !helping_ && !(hovered_ && hovered_->control)) {
+        if (const auto screen = cab->pick_screen(origin, along, 4.0f)) {
+            if (const auto focus = cab_screen_focus(screen->plane, origin, frame_fov_, frame_aspect_)) {
+                engineer_.focus_screen(focus->eye, focus->forward);
+                hovered_.reset();
+                return;
+            }
+        }
+    }
     // The wheel turns handles only (CONTROLLERX / CONTROLLERY, the ones a
     // drag moves, or the piece of one); over a button or a switch it is as
     // off the controls, so leaning in to read the КЛУБ no longer pressed
@@ -7559,7 +7660,7 @@ std::string TrainView::systems_report() const {
             for (const auto& l : car.lights) lit += l.level > 0.0f ? 1 : 0;
         std::snprintf(line, sizeof line, "; %s (%s, %zu cars, %s air): lights %zu", unit.name.c_str(),
                       unit.role == Role::driven ? "driven" : unit.role == Role::ai ? "ai" : "standing", unit.cars.size(),
-                      unit.train->brake_model() == simulation::BrakeModel::realistic ? "realistic" : "RTS", lit);
+                      "realistic", lit);
         text += line;
         for (std::size_t i = 0; i < unit.cars.size() && i < states.size(); ++i) {
             const auto& c = states[i];
@@ -7752,7 +7853,7 @@ std::vector<TrainView::CarMenuItem> TrainView::car_menu_items(const CarMenu& men
         }
         // openRTS: the distributor's switches, with the realistic air (RTS's
         // triple valve has none). The label says the position it is in.
-        if (unit->train->brake_model() == simulation::BrakeModel::realistic && (car.definition->brakes.system & 5)) {
+        if ((car.definition->brakes.system & 5)) {
             const auto& modes = car.distributor;
             if (simulation::distributor_kind(*car.definition) == simulation::DistributorKind::vr483) {
                 switch (simulation::effective_load(modes.load, car.definition->mass)) {
@@ -8103,6 +8204,23 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
                                                  : trf("%s: %.1f t", what.c_str(), f.mass * 0.001f));
             }
             text += "\n" + trf("Total: %.1f t", c.definition->mass * 0.001f);
+            const auto& state = train.cars()[i];
+            if (!state.cargo_id.empty() || state.cargo_mass > 0.0f) {
+                float capacity = 0.0f;
+                if (cargo_ && cargo_->ready() && state.definition) {
+                    if (const auto* wagon = cargo_->catalog().wagon_for(state.definition->file.filename().string())) {
+                        if (const auto* type = cargo_->catalog().cargo(state.cargo_id)) {
+                            capacity = formats::cargo_capacity(*wagon, *type, state.definition->width, state.definition->height,
+                                                               state.definition->length);
+                        }
+                    }
+                }
+                const std::string what = state.cargo_id.empty() ? tr("cargo") : state.cargo_id;
+                text += "\n" + (capacity > 0.0f
+                                    ? trf("%s: %.1f t of %.1f t", what.c_str(), state.cargo_mass * 0.001f, capacity * 0.001f)
+                                    : trf("%s: %.1f t", what.c_str(), state.cargo_mass * 0.001f));
+                text += "\n" + trf("With cargo: %.1f t", (c.definition->mass + state.cargo_mass) * 0.001f);
+            }
             cargo_text_ = std::move(text);
             cargo_time_ = 30.0f;
             break;
@@ -8844,7 +8962,7 @@ void TrainView::log_brakes(const double dt) {
     } else {
         f << ';';
     }
-    f << ';' << (train.brake_model() == simulation::BrakeModel::realistic ? "реалистичный" : "RTS") << ';';
+    f << ';' << "реалистичный" << ';';
     if (legacy_ && out) {
         const auto mode = legacy_->air();
         f << (mode == trainplugin::DllAir::own_valve ? "кран openRTS" : mode == trainplugin::DllAir::dll_valve ? "кран DLL" : "RTS");
@@ -8896,7 +9014,7 @@ void TrainView::log_brakes(const double dt) {
     }
     for (const auto k : brake_log_cars_) {
         const auto& c = cars[k];
-        const bool rk = train.brake_model() == simulation::BrakeModel::realistic && c.definition && (c.definition->brakes.system & 5) &&
+        const bool rk = c.definition && (c.definition->brakes.system & 5) &&
                         simulation::distributor_kind(*c.definition) == simulation::DistributorKind::vr483;
         f << ';' << num(c.pipe) << ';' << num(c.auxiliary) << ';' << (rk ? num(c.control) : std::string()) << ';' << num(c.cylinder) << ';'
           << num(c.independent);
@@ -8908,9 +9026,11 @@ void TrainView::log_brakes(const double dt) {
 std::optional<float> TrainView::equalising_of(const std::size_t u, const std::size_t i) const {
     // The valve working the pipe under the realistic air (the DLL's УР
     // taken, or openRTS's valve over it).
-    if (u < units_.size() && units_[u].train->brake_model() == simulation::BrakeModel::realistic) {
-        if (const auto* asked = units_[u].train->demands_of(i); asked && asked->equalising_kept >= 0.0f) return asked->equalising_kept;
-        if (const auto* asked = units_[u].train->demands_of(i); asked && asked->equalising >= 0.0f) return asked->equalising;
+    if (u < units_.size()) {
+        if (const auto* asked = units_[u].train->demands_of(i); asked) {
+            if (asked->equalising_kept >= 0.0f) return asked->equalising_kept;
+            if (asked->equalising >= 0.0f) return asked->equalising;
+        }
     }
     if (const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr; out && out->has_engine) {
         // What its DLL keeps in Engine::UR (not every DLL fills it).
@@ -10646,6 +10766,7 @@ std::optional<TrainView::BodyPose> TrainView::body_pose(const Unit& unit, const 
     transform = glm::translate(transform, centre);
     transform = glm::rotate(transform, body_heading, glm::vec3{0.0f, 1.0f, 0.0f});
     transform = glm::rotate(transform, -up, glm::vec3{1.0f, 0.0f, 0.0f});
+    transform = glm::rotate(transform, -state.cant, glm::vec3{0.0f, 0.0f, 1.0f});
     transform = transform * motion * flip;
     return BodyPose{.transform = transform, .here = here, .heading = body_heading, .motion = glm::inverse(flip) * motion * flip};
 }
@@ -10869,6 +10990,8 @@ void TrainView::draw_panel() {
         }
         ImGui::SameLine();
         ImGui::TextDisabled(substeps_ == 1 ? "(RTS)" : "(experimental)");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr("(flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed)"));
         if (!gauges_air_loaded_) {
             gauges_air_loaded_ = true;
             gauges_air_ = remembered("gauges_openrts_air").value_or("1") == "1";
@@ -10903,18 +11026,20 @@ void TrainView::draw_panel() {
                                          : preset == 1 ? "(openRTS's air, its valve over Brakes.dll, rails by the weather, real brake forces)"
                                                        : "(your own: the settings below as you set them)"));
         }
-        if (ImGui::Checkbox(tr("Realistic air (openRTS)"), &realistic_air_)) {
-            realistic_air_loaded_ = true;
-            remember("realistic_air", realistic_air_ ? "1" : "0");
+        if (ImGui::Checkbox(tr("Resistance by the ПТР"), &ptr_resistance_)) {
+            remember("ptr_resistance", ptr_resistance_ ? "1" : "0");
             for (auto& unit : units_)
-                unit.train->set_brake_model(realistic_air_ ? simulation::BrakeModel::realistic : simulation::BrakeModel::rts);
+                unit.train->set_resistance_model(ptr_resistance_ ? simulation::ResistanceModel::ptr
+                                                                 : simulation::ResistanceModel::msts);
         }
         ImGui::SameLine();
-        if (!units_.empty() && realistic_air_ && units_.front().train->brake_model() == simulation::BrakeModel::rts) {
-            ImGui::TextDisabled("%s", tr("(the player's train keeps RTS air: its DLL's valve is made for it)"));
-        } else {
-            ImGui::TextDisabled("%s", tr("(off: RTS model; flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed)"));
+        ImGui::TextDisabled(tr("(w0 = b0 + (b1 + b2 V + b3 V^2) / q; off: the car's Friction)"));
+        if (ImGui::Checkbox(tr("Wheelsets slip"), &axle_dynamics_)) {
+            remember("axle_dynamics", axle_dynamics_ ? "1" : "0");
+            for (auto& unit : units_) unit.train->set_axle_dynamics(axle_dynamics_);
         }
+        ImGui::SameLine();
+        ImGui::TextDisabled(tr("(every axle pulls at the creep its own turning allows)"));
         {
             // Trains with locomotive DLLs under the realistic air (docs/train.md).
             const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),
@@ -10924,14 +11049,10 @@ void TrainView::draw_panel() {
                 dll_air_loaded_ = true;
                 remember("dll_air", std::to_string(dll_air_));
                 if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
-                if (realistic_air_) {
-                    for (auto& unit : units_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
-                }
             }
-            ImGui::TextDisabled("%s", tr(!realistic_air_ ? "(works with the realistic air on)"
-                                         : dll_air_ == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
-                                         : dll_air_ == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
-                                                         : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
+            ImGui::TextDisabled("%s", tr(dll_air_ == 0 ? "(as RTS: the DLL works the train's pipe and triple valves)"
+                                                 : dll_air_ == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
+                                                                 : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
             // Brakes.dll's brakes or openRTS's devices in their place
             // (docs/brakes-dll-replacement.md), and whose numbers.
             const bool can_own = realistic_air_ && dll_air_ != 0;
@@ -10984,13 +11105,10 @@ void TrainView::draw_panel() {
             }
             // The cab's gauges of the pipe, the cylinders and the main
             // reservoir from the model's air (CabView::AirGauges).
-            ImGui::BeginDisabled(!realistic_air_);
             if (ImGui::Checkbox(tr("Cab gauges show openRTS's air (pipe, cylinders, main reservoir)"), &gauges_air_))
                 remember("gauges_openrts_air", gauges_air_ ? "1" : "0");
-            ImGui::EndDisabled();
-            ImGui::TextDisabled("%s", tr(!realistic_air_ ? "(works with the realistic air on; without it the gauges are the DLL's, as in RTS)"
-                                         : gauges_air_ ? "(the gauges named DTM, DTC1, DTC2, DGR show what F5 shows; the others stay the DLL's)"
-                                                       : "(as the DLL draws them: its own needles, which may lag or run ahead of F5)"));
+            ImGui::TextDisabled("%s", tr(gauges_air_ ? "(the gauges named DTM, DTC1, DTC2, DGR show what F5 shows; the others stay the DLL's)"
+                                                     : "(as the DLL draws them: its own needles, which may lag or run ahead of F5)"));
         }
         {
             // The rails' adhesion (adhesion.hpp): traction and, with the realistic
@@ -11150,10 +11268,8 @@ void TrainView::draw_panel() {
         // working the pipe (the DLL's, or openRTS's over Brakes.dll).
         const auto ur = equalising_of(0, driven);
         const auto mode = legacy_ ? legacy_->air() : trainplugin::DllAir::rts;
-        const bool realistic = train.brake_model() == simulation::BrakeModel::realistic;
         const auto* asked = train.demands_of(driven);
-        const char* valve = !realistic ? tr("the DLL's valve, RTS air")
-                          : asked && asked->cab_brakes ? tr("openRTS brakes")
+        const char* valve = asked && asked->cab_brakes ? tr("openRTS brakes")
                           : mode == trainplugin::DllAir::own_valve && train.cars()[driven].definition->engine->brakes_library.valve >= 0
                               ? tr("openRTS valve over Brakes.dll")
                               : tr("the DLL's valve");

@@ -57,7 +57,7 @@ float reservoir_volume(const formats::EngineDefinition& engine) { return main_re
 
 // The load mode of a car's 483: as a hand set it, else by its mass.
 DistributorLoad load_of(const CarState& car) {
-    return effective_load(car.distributor.load, car.definition ? car.definition->mass : 60000.0f);
+    return effective_load(car.distributor.load, car.definition ? static_cast<float>(car_mass(car)) : 60000.0f);
 }
 
 
@@ -228,6 +228,9 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
             const bool end_open = ((car.pipe_ends & pipe_hose_front) && !(car.pipe_ends & pipe_cock_front)) ||
                                   ((car.pipe_ends & pipe_hose_rear) && !(car.pipe_ends & pipe_cock_rear));
             if (!a.emergency && end_open && rate <= emergency_rate) a.emergency = true;
+            // A hand-opened emergency valve fires at its car at once: the
+            // accelerators along the train go with it.
+            if (!a.emergency && (car.valves & valve_emergency)) a.emergency = true;
             // The driver's valve in VI starts the front at its own locomotive.
             if (!a.emergency && i < inputs.has_controller->size() && (*inputs.has_controller)[i] && demands[i].emergency)
                 a.emergency = true;
@@ -258,7 +261,7 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                 .pipe_volume = volume[i],
                 .auxiliary_volume = distributor_auxiliary_volume(kind),
                 .cylinder_volume = distributor_cylinder_volume,
-                .mass = car.definition->mass,
+                .mass = car_mass(car),
                 .ep = (car.definition->brakes.system & 2) != 0,
                 .ep_fill = car.ep_fill,
                 .load = load,
@@ -267,7 +270,17 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                 .pace = car.wear.pace,
                 .sensitivity = car.wear.sensitivity,
             };
-            DistributorState state{car.pipe, car.auxiliary, car.cylinder, a.reference, a.braking, a.emergency, a.ep_chamber, a.ep_side, a.pipe_low};
+            DistributorState state{.pipe = car.pipe,
+                                   .auxiliary = car.auxiliary,
+                                   .cylinder = car.cylinder,
+                                   .reference = a.reference,
+                                   .braking = a.braking,
+                                   .emergency = a.emergency,
+                                   .zk = a.zk,
+                                   .kdr = a.kdr,
+                                   .ep_chamber = a.ep_chamber,
+                                   .ep_side = a.ep_side,
+                                   .pipe_low = a.pipe_low};
             bool stepped = false;
             // A built-in one named (the car menu, a mod) stands in for a script.
             if (a.script && car.definition->brakes.distributor == formats::BrakeDistributor::inferred) {
@@ -284,6 +297,8 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
             car.cylinder = state.cylinder;
             a.reference = state.reference;
             a.braking = state.braking;
+            a.zk = state.zk;
+            a.kdr = state.kdr;
             a.ep_chamber = state.ep_chamber;
             a.ep_side = state.ep_side;
             a.pipe_low = state.pipe_low;
