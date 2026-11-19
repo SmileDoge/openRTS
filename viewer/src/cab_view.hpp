@@ -145,8 +145,9 @@ public:
         std::optional<std::uint32_t> live_switch;
     };
     // The realistic air's pressures (atm) for the gauges MaDaDev's cabs name
-    // DTM (the brake pipe), DTC1 and DTC2 (the brake cylinders) and DGR (the
-    // main reservoir): with them those needles show the model's air, not
+    // DTM (the brake pipe), DTC1 and DTC2 (the brake cylinders: the higher of
+    // the train brake's and the independent brake's) and DGR (the main
+    // reservoir): with them those needles show the model's air, not
     // what the DLL draws of its own (its needles lag and run ahead of F5's
     // air; testers 2026-11-17). Other gauges stay the DLL's.
     struct AirGauges {

@@ -804,9 +804,12 @@ against Brakes.dll's step by step.
 **The cab's air gauges** (2026-11-17; "Cab gauges show openRTS's air", on
 by default, remembered as `gauges_openrts_air`; the Train window and the
 launcher's Brakes): with the realistic air the needles MaDaDev's cabs name
-`DTM` (the brake pipe), `DTC1` / `DTC2` (the brake cylinders) and `DGR`
-(the main reservoir; 36 cabs of the 2026-11 install) take the car's
-pressures from the model, as F5 shows them, instead of the DLL's display
+`DTM` (the brake pipe), `DTC1` / `DTC2` (the brake cylinders: the higher of
+the train brake's and the independent brake's, as Brakes.dll shows them;
+until 2026-11-19 the train brake's alone, the needle at 0 with only the
+254 applied) and `DGR` (the main reservoir; 36 cabs of the 2026-11
+install) take the car's pressures from the model, as F5 shows them,
+instead of the DLL's display
 values: its needles lagged (a cylinder long released still falling) and
 ran ahead (the pipe leaping at position I) of the model's air (testers).
 The DLL's logic is not touched, only what those needles show; the `DURA`

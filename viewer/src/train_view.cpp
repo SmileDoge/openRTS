@@ -1732,7 +1732,13 @@ std::optional<CabView::AirGauges> TrainView::air_gauges(const Unit& unit, const 
     const auto& cars = unit.train->cars();
     if (car >= cars.size()) return std::nullopt;
     const auto& state = cars[car];
-    return CabView::AirGauges{.pipe = state.pipe, .cylinder = state.cylinder, .main_reservoir = state.main_reservoir};
+    // The ТЦ needles the higher of the train brake's and the independent
+    // brake's, as Brakes.dll's (Wagon +52 / +96) and openRTS's cab brakes'
+    // (testers 2026-11-19: on the 2ТЭ116 the gauge stood at 0 with the 254
+    // applied, F5 "3.70 (вспом.)").
+    return CabView::AirGauges{.pipe = state.pipe,
+                              .cylinder = (std::max)(state.cylinder, state.independent),
+                              .main_reservoir = state.main_reservoir};
 }
 
 const trainplugin::BrakesParameters& TrainView::brakes_parameters_of(const formats::EngineDefinition& engine) const {
