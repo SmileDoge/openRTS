@@ -305,6 +305,10 @@ draw it.
   STOP_AND_PROCEED 16. So the stations' home, exit and shunting signals
   stand red until the dispatcher opens them or sets a route; the line's
   block signals work by themselves. "Restore the defaults" does the same.
+  A `SignalUnit` finds its unit as `rts_server.exe` finds it (its own
+  index first, then by its first head's place, which for a signal facing
+  the other way at a shared place is moved 20 m: `reverse/dispatcher.md`),
+  so every one is used and the modes are the file's.
 - A route (`route`, the console's `0x4619`) opens its manual signals facing
   the train, but not those whose aspect the dispatcher picked; its end or
   cancellation closes the ones still open.
@@ -464,8 +468,10 @@ and when the dispatcher sets it.
     route and signals gone).
   - At the load no head dark and most of Kuban's manual `-also` heads at
     STOP_AND_PROCEED (red); the console's `heads` against
-    `openrts-net-dump --heads` of the live capture's first snapshot: 1949
-    of 1951 heads the same on the 2025 build's Kuban after 40 s.
+    `openrts-net-dump --heads` of the live capture's first snapshot: all
+    1951 heads the same in aspect, draw state and mode on the 2025 build's
+    Kuban after 40 s; every SignalUnit of both builds on its unit, the
+    modes as the files give them.
   - Kuban's "Собрать маршрут": from the ED9M's head the three routes from
     its track 4БП (552, 555, 558) past half a track nothing starts from,
     then on from the end of a route onto the stretch, station after

@@ -1098,6 +1098,21 @@ void content(const std::filesystem::path& root) {
     check(signals->dispatched() && signals->unit_count() > 1000 && by_mode[2] > 200 && by_mode[0] > 500 && by_mode[1] == 0,
           "Kuban's signal units: automatic block and manual from its route database, none open");
     check(with_defaults * 20 >= signals->unit_count() * 19, "nearly every unit has its SignalUnit");
+    // As rts_server.exe matches them (0x449C68, 0x41F418): every SignalUnit
+    // finds its unit (those at a place shared with the other direction by
+    // their place moved 20 m, 0x402F80), so the modes are the file's.
+    {
+        std::size_t file_automatic = 0, file_open = 0;
+        for (const auto& record : route->route_database().signal_units) {
+            file_open += (record.flags & 2u) ? 1 : 0;
+            file_automatic += !(record.flags & 2u) && (record.flags & 4u) ? 1 : 0;
+        }
+        std::cout << "server content: units " << by_mode[2] << " automatic, " << by_mode[1] << " open of the file's " << file_automatic << ", "
+                  << file_open << "; " << with_defaults << " of " << signals->unit_count() << " with a SignalUnit\n";
+        check(with_defaults == signals->unit_count() && with_defaults == route->route_database().signal_units.size(),
+              "every SignalUnit on its unit, as rts_server.exe matches them");
+        check(by_mode[2] == file_automatic && by_mode[1] == file_open, "the units' modes as the route database gives them");
+    }
     // At the load a manual unit shows what its scripts give (rts_server.exe's
     // hold of DefaultAspect acts on the console's selected unit, none then):
     // no head dark, as the live capture's first snapshot; Kuban's

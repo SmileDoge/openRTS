@@ -533,8 +533,9 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         // draw state, mode; what openrts-net-dump --heads prints of a snapshot.
         if (const auto* signals = route.signals()) {
             for (const auto& head : signals->heads()) {
+                // The mode as 0x460C carries it: the head's `enabled`, its unit's mode.
                 out << "head " << head.track_item << ' ' << static_cast<int>(head.state) << ' ' << static_cast<int>(head.draw_state) << ' '
-                    << static_cast<int>(head.mode) << '\n';
+                    << static_cast<int>(signals->dispatched() ? head.enabled : head.mode) << '\n';
             }
         }
         return out.str().empty() ? "no signal heads" : out.str();

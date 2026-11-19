@@ -100,6 +100,8 @@ struct SignalSystem::Impl {
     // The RTS server's way (set_dispatched), by signal unit (RTS object).
     struct Dispatch {
         std::vector<std::vector<std::uint32_t>> items; // by unit: its TDB signal items
+        std::vector<std::uint32_t> unit_node;           // by unit: its vector node
+        std::set<std::uint32_t> moved;                 // items 0x402F80 moves 20 m (unit_places)
         std::vector<std::vector<std::uint32_t>> heads; // by unit: its heads
         std::map<std::uint32_t, std::uint32_t> unit_of_item;
         std::vector<std::uint32_t> unit_of_head;
@@ -1094,6 +1096,8 @@ void SignalSystem::build_units() {
     d.items.clear();
     d.heads.clear();
     d.unit_of_item.clear();
+    d.unit_node.clear();
+    d.moved.clear();
     for (std::uint32_t n = 0; n < db.nodes.size(); ++n) {
         const auto& node = db.nodes[n];
         if (node.kind != formats::TrackNodeKind::vector) continue;
@@ -1113,10 +1117,20 @@ void SignalSystem::build_units() {
             if (!first) continue;
             const auto unit = static_cast<std::uint32_t>(d.items.size());
             auto& items = d.items.emplace_back();
+            d.unit_node.push_back(node.index);
             for (std::size_t m = k; m < refs.size(); ++m) {
                 if (signal(refs[m]) && same(refs[m], refs[k]) && !d.unit_of_item.contains(refs[m])) {
                     items.push_back(refs[m]);
                     d.unit_of_item[refs[m]] = unit;
+                }
+            }
+            // The first item after it at this place facing the other way is
+            // moved 20 m along the track (0x402F80).
+            for (std::size_t m = k + 1; m < refs.size(); ++m) {
+                if (signal(refs[m]) && db.items[refs[m]].distance == db.items[refs[k]].distance &&
+                    db.items[refs[m]].signal_direction != db.items[refs[k]].signal_direction) {
+                    d.moved.insert(refs[m]);
+                    break;
                 }
             }
         }
@@ -1340,6 +1354,40 @@ void SignalSystem::set_dispatched(const bool on) {
 
 std::size_t SignalSystem::unit_count() const {
     return dispatched_ ? impl_->dispatch.heads.size() : 0;
+}
+
+std::vector<TrackPoint> SignalSystem::unit_places(const std::uint32_t unit) const {
+    const auto& impl = *impl_;
+    const auto& d = impl.dispatch;
+    if (unit >= d.items.size() || d.items[unit].empty()) return {};
+    const auto first = d.items[unit].front();
+    const auto& db = impl.network->database();
+    if (first >= db.items.size() || !db.items[first].has_position) return {};
+    const auto& item = db.items[first];
+    const TrackPoint at{.tile_x = item.tile_x, .tile_z = item.tile_z, .x = item.x, .y = item.y, .z = item.z};
+    if (!d.moved.contains(first)) return {at};
+    // 0x402F80 moves it from where 0x429BB4 finds it on its node: the
+    // first point, walking each section from its start in steps of 5 m
+    // (a section whose start is farther than its length + 0.1 m skipped),
+    // within 2.6 m of it; then 20 m along the track, the way against the
+    // node for direction 0, along it for 1 (as the route databases have it).
+    const auto node_index = unit < d.unit_node.size() ? d.unit_node[unit] : 0u;
+    const auto* node = impl.network->node(node_index);
+    if (!node) return {};
+    std::optional<double> found;
+    for (const auto& section : node->sections) {
+        const auto start = impl.network->point(node_index, section.start);
+        if (!start || distance(*start, at) > section.length + 0.1) continue;
+        for (double along = 0.0; along < section.length && !found; along += 5.0) {
+            const auto p = impl.network->point(node_index, section.start + along);
+            if (p && distance(*p, at) < 2.6) found = section.start + along;
+        }
+        if (found) break;
+    }
+    if (!found) return {};
+    TrackTraveller walk(*impl.network, node_index, *found, item.signal_direction != 0);
+    if (!walk.move(20.0).ok()) return {};
+    return {walk.pose()};
 }
 
 const std::vector<std::uint32_t>& SignalSystem::unit_items(const std::uint32_t unit) const {

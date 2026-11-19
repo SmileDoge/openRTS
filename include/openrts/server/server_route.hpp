@@ -92,6 +92,8 @@ public:
     // The route database's station routes on the network (the dispatcher's
     // segments, GameServer::add_segment).
     [[nodiscard]] const StationRoutes& station_routes() const noexcept { return station_routes_; }
+    // The route database as read (the server's saved copy when there is one).
+    [[nodiscard]] const formats::RouteDatabase& route_database() const noexcept { return route_database_; }
     // How the signals' modes were set at the load (from the route database).
     [[nodiscard]] const std::string& signal_modes() const noexcept { return signal_modes_; }
     // The route database the server writes and reads first:

@@ -1,8 +1,8 @@
-#include <cstdio>
 #include <openrts/server/server_route.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <set>
@@ -145,23 +145,43 @@ std::unique_ptr<ServerRoute> ServerRoute::load(const std::filesystem::path& root
         auto& signals = *r.signals_;
         signals.set_dispatched(true);
         for (const auto& type : route_database.shown_as_normal) signals.set_shown_as_normal(type, true);
-        const auto found = formats::rts_signal_units(database_of(*r.network_), route_database);
+        // 0x449C68: the file's SignalUnits in order, each to the unit of its
+        // own index when that unit has as many items and stands at its
+        // Position (0x41F418: the first head's tile, x, y, z within 0.2),
+        // else to the first unit standing there; a later one taking a unit
+        // replaces the earlier.
         r.unit_records_.assign(signals.unit_count(), -1);
+        {
+            std::vector<std::vector<simulation::TrackPoint>> places(signals.unit_count());
+            for (std::uint32_t u = 0; u < signals.unit_count(); ++u) places[u] = signals.unit_places(u);
+            const auto at = [&](const std::uint32_t u, const formats::RouteSignalUnit& record) {
+                for (const auto& p : places[u]) {
+                    if (p.tile_x == record.position.tile_x && p.tile_z == record.position.tile_z && std::abs(p.x - record.position.x) <= 0.2 &&
+                        std::abs(p.y - record.position.y) <= 0.2 && std::abs(p.z - record.position.z) <= 0.2)
+                        return true;
+                }
+                return false;
+            };
+            const auto count = (std::min)(route_database.signal_units.size(), static_cast<std::size_t>(signals.unit_count()));
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto& record = route_database.signal_units[i];
+                std::optional<std::uint32_t> unit;
+                const auto own = static_cast<std::uint32_t>(i);
+                if (signals.unit_items(own).size() == record.items && at(own, record)) unit = own;
+                for (std::uint32_t u = 0; !unit && u < signals.unit_count(); ++u) {
+                    if (u != own && at(u, record)) unit = u;
+                }
+                if (unit) r.unit_records_[*unit] = static_cast<std::int32_t>(i);
+            }
+        }
         std::size_t by_mode[3]{};
         std::size_t without = 0;
         for (std::uint32_t u = 0; u < signals.unit_count(); ++u) {
-            std::int32_t unit = -1;
-            for (const auto item : signals.unit_items(u)) {
-                if (item < found.size() && found[item] >= 0) {
-                    unit = found[item];
-                    break;
-                }
-            }
+            const auto unit = r.unit_records_[u];
             if (unit < 0) {
                 ++without;
                 continue;
             }
-            r.unit_records_[u] = unit;
             const auto& record = route_database.signal_units[static_cast<std::size_t>(unit)];
             simulation::UnitDefaults value;
             value.mode = (record.flags & 2u)   ? simulation::UnitMode::open
@@ -194,7 +214,6 @@ bool ServerRoute::save_signal_defaults(std::string& result) {
         return false;
     }
     const auto& signals = *signals_;
-    const auto& items = database_of(*network_).items;
     // The names as the server shows them (signal_names_), by item.
     std::map<std::uint32_t, std::string> name_of;
     for (const auto& [name, item] : signal_names_) name_of.emplace(item, name);
@@ -203,9 +222,15 @@ bool ServerRoute::save_signal_defaults(std::string& result) {
     for (std::uint32_t u = 0; u < signals.unit_count(); ++u) {
         formats::RouteSignalUnit unit;
         const auto& unit_items = signals.unit_items(u);
-        if (!unit_items.empty() && unit_items.front() < items.size()) {
-            const auto& item = items[unit_items.front()];
-            unit.position = {.tile_x = item.tile_x, .tile_z = item.tile_z, .x = item.x, .y = item.y, .z = item.z};
+        // Its Position as rts_server.exe writes it: its first head's place
+        // as it keeps it (unit_places: moved 20 m for some), the one read
+        // when there was one.
+        const auto record_of = u < unit_records_.size() ? unit_records_[u] : -1;
+        if (record_of >= 0) {
+            unit.position = route_database_.signal_units[static_cast<std::size_t>(record_of)].position;
+        } else if (const auto places = signals.unit_places(u); !places.empty()) {
+            const auto& p = places.front();
+            unit.position = {.tile_x = p.tile_x, .tile_z = p.tile_z, .x = p.x, .y = p.y, .z = p.z};
         }
         unit.items = static_cast<std::uint32_t>(unit_items.size());
         for (const auto item : unit_items) {

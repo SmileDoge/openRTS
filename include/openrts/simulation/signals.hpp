@@ -203,6 +203,13 @@ public:
     // A unit's TDB signal items (in TrItemRefs order) and its heads here.
     [[nodiscard]] const std::vector<std::uint32_t>& unit_items(std::uint32_t unit) const;
     [[nodiscard]] const std::vector<std::uint32_t>& unit_heads(std::uint32_t unit) const;
+    // Where rts_server.exe keeps a unit (its first head's place, which the
+    // route database's SignalUnit Position names, 0x41F418): the first
+    // item's position; but an item facing the other way at a place whose
+    // other direction began a unit before it on the node is moved 20 m
+    // along the track (0x402F80), and that place is written. Then both
+    // ways along the node are given (which way it moves is not read).
+    [[nodiscard]] std::vector<TrackPoint> unit_places(std::uint32_t unit) const;
     // The unit of TDB signal item `item`.
     [[nodiscard]] std::optional<std::uint32_t> unit_of_item(std::uint32_t item) const;
     [[nodiscard]] UnitMode unit_mode(std::uint32_t unit) const;

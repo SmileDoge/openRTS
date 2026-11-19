@@ -323,8 +323,8 @@ at the load none is selected and nothing is held, so a manual signal shows
 what its scripts give with `enabled` 0 — CONFIRMED by the live capture
 of 2026-11-05: its first snapshot, 40 s after the start (12:01), has no
 head dark (−1) and 932 at STOP_AND_PROCEED (Kuban's red), though every
-`DefaultAspect` is STOP; openRTS on the same route matches 1949 of its
-1951 heads. (Kuban's `-also` heads map STOP to the draw state "No", no
+`DefaultAspect` is STOP; openRTS on the same route matches all its 1951
+heads in aspect, draw state and mode (with the matching below). (Kuban's `-also` heads map STOP to the draw state "No", no
 light: held at STOP they would be dark.) `DefaultAspect` is read through
 `0x426AC0` (STOP 0 … CLEAR_2 7, 8, 9; anything else 0). Bit 1
 only marks the signal red on the console's map in one of its modes
@@ -332,6 +332,25 @@ only marks the signal red on the console's map in one of its modes
 keeps what its run at the load gave. The console's "restore defaults"
 (`TfEditor_btSigRestoreDefClick`) and "set as defaults" (`0x4499F0`,
 written into the `.rtsdb` by "save all") work on the same table.
+
+**A `SignalUnit` to its object** (`0x449C68`), CONFIRMED by code and by
+data: the file's units in order, each to the object of its own index when
+that object has as many heads (`NumSigItems`) and stands at its `Position`,
+else to the first object standing there (a "Signal ID has changed"
+warning); a later one taking an object replaces the earlier. "Stands
+there" (`0x41F418`): the object's first head's tile and x, y, z within
+0.2 m (the file's x read negated, as the heads keep it). That place is not
+always the TDB item's: building the objects (`0x402F80`), for each object's
+first item the first later item of its node at the same offset facing the
+other way is moved — `0x429BB4` finds it on its node walking each section
+from its start in steps of 5 m (a section whose start is farther than its
+length + 0.1 m skipped) and takes the first point within 2.6 m, then
+`0x42C9A4` moves it 20 m along the track (direction 0 against the node, 1
+along it: PROBABLE, from the data) — and "save all" writes that place.
+Matched so, every `SignalUnit` of both Kuban builds finds its object
+(1406 and 1405) and the modes are the files' (517 / 503 automatic block);
+matched by the TDB items' own places, about 300 objects facing the other
+way at a shared place took their neighbour's unit.
 
 **Holding an aspect** (`0x40C714`): the object made manual and run once;
 `+0` = the aspect, `+17` = the flag given; the first head of the lowest
