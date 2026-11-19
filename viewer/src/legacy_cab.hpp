@@ -132,6 +132,16 @@ public:
         if (consist_) consist_->set_air(mode);
     }
     [[nodiscard]] trainplugin::DllAir air() const { return consist_ ? consist_->air() : trainplugin::DllAir::rts; }
+    // openRTS's cab brake devices (LegacyConsist::set_own_brakes).
+    void set_own_brakes(const bool own, const bool books) {
+        if (consist_) consist_->set_own_brakes(own, books);
+    }
+    [[nodiscard]] bool own_brakes() const { return consist_ && consist_->own_brakes(); }
+    // openRTS's КЛУБ-У (LegacyConsist::set_own_klub).
+    void set_own_klub(const bool own) {
+        if (consist_) consist_->set_own_klub(own);
+    }
+    [[nodiscard]] std::size_t klub_cars() const { return consist_ ? consist_->klub_cars() : 0; }
     [[nodiscard]] std::size_t take_restored() { return consist_ ? consist_->take_restored() : 0; }
     bool reconsist(const core::Vfs& vfs, const std::vector<std::vector<LegacyCarRef>>& trains,
                    const std::vector<simulation::Train*>& sims);
@@ -166,6 +176,14 @@ public:
     void set_on_foot(bool on) noexcept { on_foot_ = on; }
     [[nodiscard]] bool on_foot() const noexcept { return on_foot_; }
     [[nodiscard]] bool alive() const { return consist_ && consist_->alive(); }
+    // A saved game: the DLLs' state by car key (LegacyConsist::save_state /
+    // restore_state). False: no DLLs running, or the host failed.
+    [[nodiscard]] bool save_state(std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>& states) {
+        return consist_ && consist_->save_state(states);
+    }
+    bool restore_state(const std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>>& states) {
+        return consist_ && consist_->restore_state(states);
+    }
 
     // A helper's hands on the engineer's cab (docs/net.md, "Players and
     // helpers"): no DLLs here; the cab is what the engineer's DLLs showed

@@ -376,6 +376,31 @@ car's sound is made.
   `reverse/train-dll.md` §19).
 - **`Event_Trigger`:** `WagonOnJoint` / `WagonOnJunction` /
   `WagonOnAnyJoint` events from the train.
+- **`ORTSDay_Trigger` / `ORTSNight_Trigger`** (openRTS, 2026-11-18): a
+  trigger with actions like any other, fired when day or night comes, and
+  as the sound comes on, the one of the time it is. Night is as the night
+  textures have it: from the environment's sunset to its sunrise
+  (`RtsSkyState::night`). For the routes' `.ws` sources; other sounds are
+  not told the time, and neither fires. A time that changed while the
+  sound was off (the listener away) is caught up when it comes on again:
+  a stream last on one of them takes the one of the time now. RTS does not
+  know them and skips them (each keeps its trigger index), so a script
+  with them still loads there. Birds by day and crickets by night:
+
+  ```
+  Streams ( 2
+      Stream ( Triggers ( 2
+          ORTSDay_Trigger ( StartLoop ( 1 File ( "birds.wav" -1 ) SelectionMethod ( SequentialSelection ) Fade ( 5 ) ) )
+          ORTSNight_Trigger ( ReleaseLoopRelease ( Fade ( 5 ) ) ) ) )
+      Stream ( Triggers ( 2
+          ORTSNight_Trigger ( StartLoop ( 1 File ( "crickets.wav" -1 ) SelectionMethod ( SequentialSelection ) Fade ( 5 ) ) )
+          ORTSDay_Trigger ( ReleaseLoopRelease ( Fade ( 5 ) ) ) ) ) )
+  ```
+
+  `Fade` makes the one come in and the other go over five seconds. Any
+  action works there: a `PlayOneShot` (a cock crowing at dawn),
+  `EnableTrigger` / `DisableTrigger` (a `Random_Trigger` of dogs barking
+  only at night). Test: `test_day_night` in `tests/sound_test.cpp`.
 - **Indices:** `EnableTrigger` / `DisableTrigger` count from 1, as
   `ingame.sms` numbers them.
 - **CONFIRMED the cab's doors and windows** (`0x438708`, `0x46AF1C`): an
@@ -406,6 +431,11 @@ car's sound is made.
   Started and released in one update, the sound stops at once (the ChS4t's
   auxiliary compressor above 7 atm: silent, as in RTS).
 - **`Fade`:** a started loop fades in, a released loop fades out and stops.
+  A one-shot starts at its volume (CONFIRMED, `0x4A8C00`: `PlayOneShot`
+  sets no fade timer, `StartLoop` and `StartLoopRelease` set both to the
+  action's `Fade`). openRTS faded one-shots in until 2026-11-18: the ЭД9М's
+  doors (`PlayOneShot ( ... Fade ( 2.0 ) )`) swelled for two seconds
+  (testers).
 - **`EnableStream` / `DisableStream` / `SuspendStream` (index from 1):** a
   disabled stream stops its voices; a suspended one keeps them but its
   triggers pause.

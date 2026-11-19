@@ -114,8 +114,15 @@ int charge_test(const core::Vfs& vfs, std::vector<std::string> args) {
     const bool realistic = realistic_flag != args.end();
     if (realistic) args.erase(realistic_flag);
     (void)realistic;
+    // --condition <1..10>: the brakes' condition (seed 1); at the end the
+    // pipe's fall in III and IV.
+    int condition = 0;
+    if (const auto flag = std::find(args.begin(), args.end(), "--condition"); flag != args.end() && flag + 1 != args.end()) {
+        condition = std::atoi((flag + 1)->c_str());
+        args.erase(flag, flag + 2);
+    }
     if (args.size() < 3) {
-        std::fprintf(stderr, "--charge <wagons> <folder/eng>[!] ... <folder/wag> [--realistic]\n");
+        std::fprintf(stderr, "--charge <wagons> <folder/eng>[!] ... <folder/wag> [--realistic] [--condition <1..10>]\n");
         return 2;
     }
     const auto count = static_cast<std::size_t>(std::atoi(args[0].c_str()));
@@ -153,6 +160,7 @@ int charge_test(const core::Vfs& vfs, std::vector<std::string> args) {
     }
     auto network = simulation::straight_test_track(length + 2000.0);
     simulation::Train train(cars);
+    if (condition > 0) train.set_brake_condition(condition, 1u);
     std::string error;
     if (!network || !train.place(*network, 1, length + 100.0, true, &error)) {
         std::fprintf(stderr, "cannot place the train: %s\n", error.c_str());
@@ -284,6 +292,23 @@ int charge_test(const core::Vfs& vfs, std::vector<std::string> args) {
                 released[(first + last) / 2], released[last]);
     if (released[first] >= 0.0 && released[last] > released[first]) std::printf("; the release wave %.0f m/s", span / (released[last] - released[first]));
     std::printf("\n");
+    // The pipe's tightness: charged 10 min more, then a minute in III (no
+    // feed) and, charged again, a minute in IV (fed).
+    for (const auto handle : {simulation::DriverHandles::BrakeHandle::lap, simulation::DriverHandles::BrakeHandle::lap_feed}) {
+        driver->brake = simulation::DriverHandles::BrakeHandle::running;
+        for (int k = 0; k < static_cast<int>(600.0 / simulation::train_step); ++k) train.step();
+        const float head = train.cars().front().pipe, tail = train.cars().back().pipe, mr = train.cars().front().main_reservoir;
+        driver->brake = handle;
+        float highest = 0.0f;
+        for (int k = 0; k < static_cast<int>(60.0 / simulation::train_step); ++k) {
+            train.step();
+            for (std::size_t c = first; c <= last; ++c) highest = (std::max)(highest, train.cars()[c].cylinder);
+        }
+        std::printf("a minute in %s: head pipe %.2f -> %.2f, tail pipe %.2f -> %.2f, the wagons' cylinders up to %.2f, MR %.2f -> %.2f\n",
+                    handle == simulation::DriverHandles::BrakeHandle::lap ? "III" : "IV", head, train.cars().front().pipe, tail,
+                    train.cars().back().pipe, highest, mr, train.cars().front().main_reservoir);
+    }
+    if (condition > 0) std::printf("brakes' condition %d: brake pressing %.0f tf per 100 tf\n", condition, train.brake_pressing());
     return 0;
 }
 

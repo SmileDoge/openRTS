@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <thread>
 #include <iostream>
 #include <memory>
@@ -318,6 +319,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     bool season_given = false;       // --season / --weather win over the server's
     bool weather_given = false;
     std::string activity_name;       // --activity: an RTS scenario of the route (RTS_ACT)
+    std::filesystem::path load_game; // --load: a saved game to start from (docs/saves.md)
     for (std::size_t i = 0; i < flags.size(); ++i) {
         const bool has_value = i + 1 < flags.size();
         if (flags[i] == "--view" && has_value) {
@@ -340,6 +342,9 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             start_state = value == "cold" ? 0 : value == "on" ? 1 : -1;
         } else if (flags[i] == "--activity" && has_value) {
             activity_name = std::string(flags[++i]);
+        } else if (flags[i] == "--load" && has_value) {
+            const auto value = flags[++i];
+            load_game = std::filesystem::path(std::u8string(value.begin(), value.end()));
         } else if (flags[i] == "--situation" && has_value) {
             const auto value = flags[++i];
             situation = std::filesystem::path(std::u8string(value.begin(), value.end()));
@@ -480,6 +485,9 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         } else if (flags[i] == "--compress-textures" && has_value) {
             const std::string value(flags[++i]);
             options.compress_textures = value == "off" ? 0 : value == "memory" ? 1 : 2;
+        } else if (flags[i] == "--save-game-after" && i + 2 < flags.size()) {
+            const double after = std::atof(std::string(flags[++i]).c_str());
+            options.save_game_after = std::pair{after, std::string(flags[++i])};
         } else if (flags[i] == "--texture-size" && has_value) {
             const std::string value(flags[++i]);
             options.texture_size = value == "1024" ? 1 : value == "512" ? 2 : value == "256" ? 3 : 0;
@@ -582,6 +590,43 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
                       << " is opened" << std::endl;
         }
         path = server_route;
+    }
+
+    // --load: a saved game (docs/saves.md). Its header names the route, the
+    // scenario and the clock: the world starts so, the save goes over it.
+    if (!load_game.empty()) {
+        std::ifstream save(load_game, std::ios::binary);
+        if (!save) {
+            std::cerr << "Cannot read the saved game " << load_game.string() << '\n';
+            return exit_code::content_failed;
+        }
+        std::map<std::string, std::string> header;
+        for (std::string line; std::getline(save, line) && !line.starts_with("@@");) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            const auto equals = line.find('=');
+            if (equals != std::string::npos && !line.starts_with('#')) header[line.substr(0, equals)] = line.substr(equals + 1);
+        }
+        if (mode == "--route" && !path.empty() && openrts::core::fold_case(fs::path(std::u8string(path.begin(), path.end())).filename().string())
+                                                       != openrts::core::fold_case(header["route"])) {
+            std::cerr << "The saved game is from route " << header["route"] << ", not " << path << '\n';
+            return exit_code::content_failed;
+        }
+        if (activity_name.empty()) activity_name = header["activity_file"];
+        if (!time_given && header.contains("time")) {
+            options.time_of_day = static_cast<std::int32_t>(std::atof(header["time"].c_str()));
+            time_given = true;
+        }
+        if (!season_given && header.contains("season")) {
+            options.season = static_cast<openrts::renderer::rts::Season>(std::clamp(std::atoi(header["season"].c_str()), 0, 3));
+            season_given = true;
+        }
+        if (!weather_given && header.contains("weather")) {
+            options.weather = static_cast<openrts::renderer::rts::Weather>(std::clamp(std::atoi(header["weather"].c_str()), 0, 2));
+            options.storm = header["storm"] == "1";
+            weather_given = true;
+        }
+        std::cout << "saved game: " << load_game.string() << " (route " << header["route"]
+                  << (activity_name.empty() ? std::string() : ", scenario " + activity_name) << ")" << std::endl;
     }
 
     if (!fps_given) {
@@ -721,7 +766,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control,
         .start_state = start_state, .situation = situation, .start_view = start_view, .realistic_air = realistic_air,
         .save_situation = save_situation, .root = target->root, .snapshot = snapshot, .connection = connection,
-        .early = std::move(early), .console = mp_console, .activity = activity, .activity_folder = activity_folder};
+        .early = std::move(early), .console = mp_console, .activity = activity, .activity_folder = activity_folder,
+        .load_game = load_game, .activity_name = activity_name};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)
                                     : openrts::viewer::load_route_scene(content, target->path);
 

@@ -16,7 +16,9 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/body_motion.hpp>
+#include <openrts/simulation/cab_brakes.hpp>
 #include <openrts/simulation/distributor.hpp>
+#include <openrts/simulation/state_text.hpp>
 #include <openrts/simulation/track_traveller.hpp>
 
 namespace openrts::simulation {
@@ -67,6 +69,9 @@ struct TrainSettings {
     // real stock with its shoes gives (shoe_force_limit), for content that
     // brakes far harder than the real thing.
     bool limit_brake_force = false;
+    // openRTS, the realistic air: the shoes' force of every car as a factor
+    // (тормозное нажатие, 0.5 .. 1.5; 1: as the files give it).
+    float brake_force_factor = 1.0f;
     // openRTS: the RTS triple valve gets a distributor's stability (мягкость):
     // a slow pipe fall applies nothing (docs/train.md). Off: as RTS, which
     // applies on any fall below the reservoir, the stabiliser's too.
@@ -110,6 +115,11 @@ struct EngineDemands {
     // 367 it goes on holding its own УР. < 0: no valve of the model here.
     float equalising_kept = -1.0f;
     bool emergency = false;
+    // The relay may feed the pipe (not in III: ValveOutput::feed).
+    bool pipe_feed = true;
+    // openRTS's cab brake devices in place of a DLL's (cab_brakes.hpp): what
+    // they did this step, for the cab's gauges and lamps.
+    std::optional<CabBrakeOutput> cab_brakes;
     // Engine::Sanding: adhesion x the .eng's sanding factor (Adheasion's
     // third value) while the sand lasts (RTS 0x424488).
     bool sanding = false;
@@ -147,6 +157,11 @@ class LocomotiveController {
 public:
     virtual ~LocomotiveController() = default;
     virtual void step(double dt, const EngineInputs& inputs, EngineDemands& demands) = 0;
+    // A saved game (Train::save_state): what the controller keeps between
+    // steps (its handles, its valve, its compressor's governor), under keys
+    // starting with `prefix`. Nothing by default.
+    virtual void save(StateWriter& /*out*/, std::string_view /*prefix*/) const {}
+    virtual void restore(const StateReader& /*in*/, std::string_view /*prefix*/) {}
 };
 
 // Driver's handles shared by every engine of a train (multiple-unit
@@ -202,6 +217,8 @@ public:
 
     KeyboardController(std::shared_ptr<DriverHandles> handles, bool master);
     void step(double dt, const EngineInputs& inputs, EngineDemands& demands) override;
+    void save(StateWriter& out, std::string_view prefix) const override;
+    void restore(const StateReader& in, std::string_view prefix) override;
 
 private:
     std::shared_ptr<DriverHandles> handles_;
@@ -291,6 +308,19 @@ enum class DerailKind : std::uint8_t {
     sliding, // off the end of the track, sliding on along its heading
 };
 
+// How worn a car's brakes are under the realistic air (docs/train.md,
+// "Brake condition"): drawn for every car from the train's condition 1..10
+// (Train::set_brake_condition); as new, nothing changes.
+struct BrakeWear {
+    float pipe_leak{};      // atm/min its pipe loses by itself at 5 atm (over the file's TrainPipeLeakRate)
+    float reservoir_leak{}; // atm/min an engine's main reservoir loses at 9 atm
+    float cylinder_leak{};  // atm/min its cylinder loses at 3.8 atm
+    float pace = 1.0f;        // its distributor's fill and release, a factor
+    float sensitivity = 1.0f; // the pipe's fall that applies it, a factor (> 1: a deeper one)
+    float rigging = 1.0f;     // the rigging's share of the shoes' force
+    bool operator==(const BrakeWear&) const = default;
+};
+
 // State of one car (the ts.h Wagon fields RTS simulates on).
 struct CarState {
     const formats::WagonDefinition* definition = nullptr;
@@ -354,6 +384,8 @@ struct CarState {
     std::uint8_t chocks{};       // chock_*
     // The distributor's switches (realistic air only; the car menu at a bogie).
     DistributorModes distributor{};
+    // Its brakes' wear (realistic air only; Train::set_brake_condition).
+    BrakeWear wear{};
     // The body swaying on its springs (RTS 0x4F5B34): offset from its rest
     // pose (m) along the curve's turning side (lateral), up (vertical) and
     // towards the train front (longitudinal), and the rates.
@@ -466,6 +498,25 @@ public:
     // train 0.8-1.2 atm/s, each car within 5 % of it, 0.75-1.25 in all.
     // Drawn from `seed` (a new train: a random one); 1 atm/s until called.
     void scatter_ep_fill(std::uint32_t seed);
+    // The brakes' condition (docs/train.md, "Brake condition"): 10 as from
+    // the works, 1 due for an overhaul, 0 none (every car as its files give
+    // it). Each car's wear (CarState::wear) is drawn from `seed` and the
+    // condition: the worse it is, the more the cars leak (pipe, cylinder, an
+    // engine's main reservoir), the slower and less alike their
+    // distributors, the weaker their rigging; even at 10 they differ a
+    // little. The realistic air only.
+    void set_brake_condition(int condition, std::uint32_t seed);
+    // Another condition, the train's own seed kept.
+    void set_brake_condition(int condition) { set_brake_condition(condition, brake_seed_); }
+    [[nodiscard]] int brake_condition() const noexcept { return brake_condition_; }
+    [[nodiscard]] std::uint32_t brake_seed() const noexcept { return brake_seed_; }
+    // TrainSettings::brake_force_factor.
+    void set_brake_force_factor(float factor) noexcept { settings_.brake_force_factor = factor; }
+    // The train's brake pressing (тормозное нажатие) under the realistic air:
+    // its cars' full shoe force at 40 km/h as cast-iron shoes would need to
+    // press for it (their friction then 0.126), in tonnes-force per 100
+    // tonnes of the train's weight: as the brake certificate counts it.
+    [[nodiscard]] double brake_pressing() const;
     // The brake shoes of car `car`'s front and rear bogie (CarState::shoes);
     // a bogie whose shoes change gets new ones (shoe_state as new).
     void set_brake_shoes(std::size_t car, const std::array<formats::BrakeShoe, 2>& shoes);
@@ -517,6 +568,15 @@ public:
     // were. It still occupies the track, couples and is hit like any train;
     // the owner wakes it when something moves it (RTS: it becomes LOOSE).
     void set_asleep(bool asleep) noexcept;
+    // A saved game: what changes as the train runs - where its ends stand,
+    // each car's motion, air, flats, hoses, cocks, chocks and shoes, the
+    // realistic air's distributors and the controllers' handles and valves
+    // (state_text.hpp; keys "head", "c3.pipe", "a3.braking", "k0.throttle").
+    // restore_state() puts it back into a train placed with the same cars;
+    // a key missing keeps what is there. The bodies' sway, a derailment and
+    // the wire's heat are not kept: they start at rest.
+    void save_state(StateWriter& out) const;
+    void restore_state(const StateReader& in);
     [[nodiscard]] bool asleep() const noexcept { return asleep_; }
     // A traffic train (RTS train type TRAFFIC, 0x424488, docs/traffic.md):
     // one rigid body on the track. Each step its speed changes by the
@@ -605,6 +665,8 @@ private:
     TrainSettings settings_;
     TrackNetwork* network_ = nullptr;
     std::uint64_t id_;
+    int brake_condition_ = 0;
+    std::uint32_t brake_seed_ = 0;
     bool asleep_ = false;
     bool kinematic_ = false;
     float drive_acceleration_ = 0.0f;

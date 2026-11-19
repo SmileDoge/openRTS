@@ -547,7 +547,8 @@ built, against the proposal below:
     rails as RTS, no brake force limit, the distributors as RTS) and
     "realistic (openRTS)" (the realistic air, openRTS's valve over
     Brakes.dll, the model's gauges, the rails by the weather, the limit
-    and the distributors' stability on) set the six settings at once; any
+    and the distributors' stability on, the brakes' condition 6, the
+    pressing 100 %; RTS's: no condition) set the eight settings at once; any
     of them changed by hand makes "my own", remembered as `brakes_custom`
     and given back when it is chosen again.
   - "Limit the brake force to real stock's" (the Train window, on by
@@ -562,6 +563,44 @@ built, against the proposal below:
     43 t, the trailer's 39.5 t) slid and wore flats, its 64 t motor cars
     not, and the whole train stopped at 2.8 m/s² (testers: "будто якорь
     скинул").
+  - **Brake condition** (the Train window, 2026-11-18, testers' proposal;
+    `Train::set_brake_condition`, remembered as `brake_condition`; the
+    realistic air only): 10 as from the works, 6 in service (the realistic
+    preset's), 1 due for an overhaul, "off" every car as its files give it
+    (the RTS preset's). Each car's wear (`CarState::wear`, `BrakeWear`) is
+    drawn from the train's own seed and the condition: the train's wear w =
+    (10 - condition) / 9, each car's within ±(0.06 + 0.24 w) of it, each
+    figure of a car a draw of its own about the car's (a leaky pipe beside
+    a good distributor). From a car's wear x:
+    - its pipe leaks 0.01 + 0.5 x² atm/min by itself at 5 atm (with the
+      pressure), over the file's `TrainPipeLeakRate`;
+    - an engine's main reservoir 0.01 + 0.25 x² atm/min at 9 atm;
+    - its cylinder 0.005 + 0.4 x² atm/min at 3.8 atm. A 483 keeps it
+      filled from its ЗР and the ЗР from the pipe, so a braked train's pipe
+      leaks more; a 292 does not (its piston stays in lap, the cylinder
+      falls); a 305 on its side does (its relay); an engine's independent
+      brake from the main reservoir;
+    - its distributor's fill and release 0.6 .. 1.15 of the book's
+      (`DistributorCar::pace`), the pipe's fall that applies it 0.8 .. 1.6
+      of it (`sensitivity`): the worse, the less alike;
+    - its rigging's share of the shoes' force (`rigging`, 0.55 .. 1), the
+      hand brake's too.
+    At 10 the cars still differ a little (pace within about 3 %, the pipe
+    0.01 atm/min). A save keeps every car's wear and the train's seed; the
+    setting changed, every train draws again from its own seed. Checked
+    (`openrts-train-check --charge 60` ВЛ80к, loaded gondolas, `--condition`):
+    a minute in III the pipe falls 0.03 atm at 10, 0.14 at 6 (the rules
+    allow 0.2), 0.6 at 1, where the cars brake by themselves (up to 0.9
+    atm); after a service step and a minute in III the cylinders stand at
+    0.77, 0.90 and 1.5; the brake pressing 41, 38 and 34 tf per 100 tf.
+  - **Brake pressing** (the Train window, remembered as `brake_pressing`,
+    50 .. 150 %, `TrainSettings::brake_force_factor`; the realistic air):
+    every car's shoe force as a factor. Shift+F5 and the Train window show
+    the train's brake pressing (`Train::brake_pressing`): its cars' full
+    shoe force at 40 km/h as cast-iron shoes would need to press for it
+    (their design friction 0.27 · 140 / 300 = 0.126 there), in tonnes-force
+    per 100 tonnes of weight, as the brake certificate counts it (a freight
+    train needs at least 33).
   - `ORTSBrakeForce ( 74kN )` in a `.wag` / `.eng` (or its `.rts*`
     companion): the brake force at the full cylinder
     (`BrakeCylinderPressureForMaxBrakeBrakeForce`) at 40 km/h that the
@@ -699,9 +738,70 @@ release of the engine's own brake (`EngineDemands::equalising`,
 RTS model takes its pipe rate instead. Positions I, II, III, IV, VЭ, V, VI
 are a cab control's states 0..6. VЭ without the ЭПТ is a lap without feed
 (the ЭР9Т), or with `slow_service` a Va: the УР down 0.03 atm/s, as
-Brakes.dll's.
+Brakes.dll's. In III (lap without feed) the realistic air's relay may let
+the pipe out but not feed it (`ValveOutput::feed`, `EngineDemands::pipe_feed`):
+its leaks are not made up, as IV makes them up. Until 2026-11-18 it held
+the pipe in III as in IV, so no leak showed there.
 
 #### Realistic air with DLL locomotives
+
+**openRTS's cab brakes over Brakes.dll** (2026-11-18, experimental; the
+Train window's "Brakes: Brakes.dll / openRTS" and "Brake numbers: as
+Brakes.dll / openRTS (from the books)", remembered as `own_brakes` and
+`brake_numbers`, Brakes.dll and "as Brakes.dll" by default; with the
+realistic air and "Trains with DLLs" not as RTS;
+`trainplugin::DllAirSetting::own_brakes`,
+docs/brakes-dll-replacement.md). openRTS's devices
+(`simulation/cab_brakes.hpp`) work the cab's 395 or 130, 254 or 224, 4ВК,
+367, combined valve, separating cock, ОТ, ЭТ, stop valves and ЭПТ instead
+of MaDaDev's Brakes.dll:
+- they give the model the УР, the independent brake's target and the
+  ЭПТ's command;
+- the cab's Brakes.dll gauges and lamps (`BR_MAN*`, `BR_LAMP*`,
+  `BR_VOLT`, `BR_AMP`) show theirs;
+- Brakes.dll's other cars of a multiple unit (`BR_MODE` 1) brake by the
+  ЭПТ's line, not by their own independent brake.
+
+Brakes.dll goes on running for the КЛУБ, the ЭПК, its springs and sounds:
+its ЭПК's trip (`var + 8` `0x01000000`, protocol 16's `AuxExchange::flags`)
+opens the pipe, and the train's DLL's
+requests (`var + 32` before Brakes.dll's `Run`: the ЭПТ's hold and apply,
+the handle taken as IV, the УР kept; protocol 14's `AuxExchange`) reach
+openRTS's devices. A locomotive whose Brakes.dll has a parameter openRTS
+does not know (a 334, a custom 292, the ЭП2Д's ППТ, `BR_KID`, the ВЛ82м's
+`BR_OTID` without its cab) keeps Brakes.dll; the Train window says which.
+`openrts-train-check --dll ... --brakes openrts [--numbers books]` runs
+them in the harness.
+
+**openRTS's КЛУБ-У over Brakes.dll** (2026-11-19, experimental; the Train
+window's "КЛУБ: Brakes.dll / openRTS", remembered as `own_klub`, Brakes.dll
+by default; with the realistic air and "Trains with DLLs" not as RTS;
+`LegacyConsist::set_own_klub`, docs/brakes-dll-replacement.md step 3).
+openRTS's КЛУБ (`simulation/klub.hpp`, `klub_screen.hpp`) does what
+Brakes.dll's does, step for step (docs/reverse/brakes-dll.md §11):
+- **Brakes.dll's КЛУБ is switched off.** On the player's train's cars
+  whose Brakes.dll has one (`PB_SETUP` 2) and one cab, the host gives
+  Brakes.dll a `PB_SETUP` without 2 (protocol 15's `AuxParameterSet`).
+  Brakes.dll's brakes, САУТ and ТСКБМ go on.
+- **What openRTS's КЛУБ works:**
+  - it takes the keys (`KLUB_B*ID`), the РБ, the ЭПК key and the power;
+  - its ЭПК and КОН open the pipe;
+  - it draws the screen (`KLUB_DBIL`) and the ALSN's lights and lamps;
+  - its beeps and whistle go on Brakes.sms.
+- **For the train's DLL** it writes into Brakes.dll's variables what
+  Brakes.dll's КЛУБ would leave there (protocol 15's `AuxVarWrite`: `var +
+  32` bits 1 and 4, the limits, the target, the permitted speed, the
+  timer, the flags).
+- **Switched on, it starts afresh:** the track number and the train's
+  data are entered again. A saved game keeps its state with the car's DLL
+  state.
+- **Not yet:**
+  - САУТ's permitted speed does not reach it;
+  - two-cab engines (the ЭП20) keep Brakes.dll's КЛУБ;
+  - `Engine::CurrentMilepost` is not given, so the coordinate shows 0.
+
+`openrts-train-check ... --klub openrts` runs it, `--klub shadow` sets it
+against Brakes.dll's step by step.
 
 **The cab's air gauges** (2026-11-17; "Cab gauges show openRTS's air", on
 by default, remembered as `gauges_openrts_air`; the Train window and the
@@ -781,6 +881,30 @@ The other two choices take the air after the valve from the model:
   the DLL's valve vented the pipe towards its own УР, still 0 after an
   emergency, which openRTS took for its ЭПК (testers: "ТМ моментально до
   0 почти падает").
+  A locomotive with several cabs in one car (`BR_NUMCABS`; the ЭП20:
+  `BR_395ID2 ( 200 )`, `BR_367ID2 ( 206 )` ... for its second) has each
+  cab's switches read (`BrakesLibrary::cabs`), and the working cab is the
+  first whose 367 stands in `BR_367OPPOL`, as Brakes.dll's `Run` finds it
+  (decompiled 2026-11-18; the 367 is a KEY switch, state 0 its key out).
+  Until then openRTS's valve read the first cab's handle: the ЭП20 started
+  "on" works from its second cab, the first's handle stands at 0, VI on its
+  130 valve (states VI .. I), and the УР and pipe stayed at 0 (testers;
+  test `dll_ep20_cabs`).
+  The mode "the DLL's valve" reads the same cocks: its УР reaches the
+  pipe only with the separating cock open and the 367 in its operating
+  state. Until 2026-11-18 the pipe followed it through both shut (a cab
+  changed, both cocks shut, the handle at II: the pipe charged).
+  Checked (`openrts-train-check --air own|dll`, ED9M-0060, six cars):
+  after a vent, the pressure line's cock opened, then the brake pipe's,
+  the pipe charges from 0 in about 4 s and the main reservoir (the head
+  cars' `AirBrakesMainResVolume( 340 )` in litres, 2 x 170 l as the
+  real ЭД4М, joined by the feed pipe) falls 0.8 atm, as testers know
+  the real one (about an atmosphere). Kept as Brakes.dll does it: the
+  ЭД9М's "Кран напорной магистрали" sits in the 367's place
+  (`BR_367ID1 ( 75 )`), and a 367 off cuts the valve from the pipe, not
+  from the main reservoir, so its УР charges with that cock shut (the
+  real cock feeds the valve); the ТЭМ2 and ТУ2 map a real 367 and a
+  separating cock the same way.
 - At the start the pressures are those the DLLs set in Init; a pipe they
   charged has its reservoirs charged with it (`enter_new_train`): Brakes.dll
   sets the pipe (the ЭП2Д's 4.4) and leaves the ЗР and the РК at 0, so until

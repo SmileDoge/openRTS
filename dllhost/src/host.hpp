@@ -65,6 +65,9 @@ struct AuxMirror {
     abi::SMSObject sound{};
     bool has_sound = false;
     std::array<std::uint32_t, 8> pairs{}; // its SMSObject::PairedFlags once a pair code came
+    std::uint32_t exchange_before{};      // var + 32 as its last Run found it (AuxExchange)
+    // StepRequest::aux_writes for this library, put in just before its Run.
+    std::vector<AuxVarWrite> pending_writes;
 };
 
 struct CarMirror {
@@ -130,6 +133,7 @@ struct CarMirror {
     alignas(4) std::array<std::uint8_t, 1024> wag_type{};
 
     abi::Wagon* wagon() { return reinterpret_cast<abi::Wagon*>(object.data()); }
+    [[nodiscard]] const abi::Wagon* wagon() const { return reinterpret_cast<const abi::Wagon*>(object.data()); }
     abi::Locomotive* loco() { return reinterpret_cast<abi::Locomotive*>(object.data()); }
     abi::ElectricLocomotive* electric() { return reinterpret_cast<abi::ElectricLocomotive*>(object.data()); }
     abi::DieselLocomotive* diesel() { return reinterpret_cast<abi::DieselLocomotive*>(object.data()); }
@@ -223,6 +227,10 @@ private:
     void regroup();
     void regroup(CarMirror& master, bool player);
     void write_inputs(const std::vector<CarInput>& inputs);
+    // StepRequest::aux_parameters (at once) and aux_writes (kept for the
+    // library's Run, apply_aux_writes).
+    void write_aux(const StepRequest& request);
+    static void apply_aux_writes(AuxMirror& aux);
     void write_cabs(const StepRequest& request);
     void run_car(CarMirror& car, float dt, float air_temperature);
     void signals(const StepRequest& request);
@@ -283,6 +291,7 @@ private:
     // The tape (RTSGetInteger / RTSSetIntegerG 7): the car it rolls on, -1
     // none; what the DLLs changed this step (a start always opens a new file).
     std::int32_t tape_car_ = -1;
+    bool want_aux_vars_ = false; // StepRequest::want_aux_vars
     bool tape_set_ = false;
     bool tape_started_ = false;
     void mark_tape();

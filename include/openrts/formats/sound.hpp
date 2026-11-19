@@ -85,6 +85,9 @@ enum class SoundTriggerKind : std::uint8_t {
     variable, // a variable crosses a threshold
     random,   // after a random delay, repeatedly
     event,    // RTS: wagon on a joint or junction
+    // openRTS: ORTSDay_Trigger / ORTSNight_Trigger, when day or night comes
+    // (and as the sound activates, by the time it is); RTS skips them.
+    time_of_day,
 };
 
 enum class SoundEvent : std::uint8_t { wagon_on_joint, wagon_on_junction, wagon_on_any_joint, unknown };
@@ -100,6 +103,7 @@ struct SoundTrigger {
     float volume_minimum = 1.0f, volume_maximum = 1.0f;
     SoundEvent event = SoundEvent::unknown;
     std::int32_t event_parameter{}; // 0 both bogies, 1 front, 2 rear
+    bool night = false; // time_of_day: ORTSNight_Trigger (else ORTSDay_Trigger)
     std::vector<SoundAction> actions;
 };
 

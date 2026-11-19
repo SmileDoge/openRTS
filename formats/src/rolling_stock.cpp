@@ -405,6 +405,22 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
                 bool separating_fitted = false;
                 for (const auto& p : a.parameters) {
                     const auto name = core::fold_case(p.name);
+                    // Every cab's switches: BR_395ID<k> and the like, k from 1.
+                    for (const auto& [prefix, field] : std::initializer_list<std::pair<std::string_view, std::int32_t EngineDefinition::BrakesLibrary::CabIds::*>>{
+                             {"br_395id", &EngineDefinition::BrakesLibrary::CabIds::valve},
+                             {"br_kptid", &EngineDefinition::BrakesLibrary::CabIds::controller},
+                             {"br_manu", &EngineDefinition::BrakesLibrary::CabIds::equalising_gauge},
+                             {"br_redid", &EngineDefinition::BrakesLibrary::CabIds::reducer},
+                             {"br_kkid", &EngineDefinition::BrakesLibrary::CabIds::combined},
+                             {"br_367id", &EngineDefinition::BrakesLibrary::CabIds::block},
+                             {"br_razid", &EngineDefinition::BrakesLibrary::CabIds::separating}}) {
+                        if (!name.starts_with(prefix) || name.size() != prefix.size() + 1) continue;
+                        const char digit = name.back();
+                        if (digit < '1' || digit > '8') continue;
+                        const auto k = static_cast<std::size_t>(digit - '1');
+                        if (brakes_dll.cabs.size() <= k) brakes_dll.cabs.resize(k + 1);
+                        brakes_dll.cabs[k].*field = static_cast<std::int32_t>(p.value);
+                    }
                     if (name == "br_395id1") brakes_dll.valve = static_cast<std::int32_t>(p.value);
                     else if (name == "br_kptid1") brakes_dll.controller = static_cast<std::int32_t>(p.value);
                     else if (name == "br_manu1") brakes_dll.equalising_gauge = static_cast<std::int32_t>(p.value);
@@ -417,6 +433,8 @@ void read_extended(std::string_view text, TextRange extended, EngineDefinition& 
                     else if (name == "br_razobshk") separating_fitted = p.value != 0.0f;
                 }
                 if (separating_fitted) brakes_dll.separating = separating_id;
+                if (!separating_fitted)
+                    for (auto& c : brakes_dll.cabs) c.separating = -1;
             }
             engine.aux_libraries.push_back(std::move(a));
         }

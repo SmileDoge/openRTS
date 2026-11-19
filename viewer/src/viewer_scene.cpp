@@ -13,7 +13,11 @@
 #include <cmath>
 #include <thread>
 #include <iostream>
+#include <cstdio>
+#include <fstream>
+#include <iomanip>
 #include <map>
+#include <sstream>
 #include <optional>
 
 #include <glm/common.hpp>
@@ -63,6 +67,7 @@
 #include "activity_view.hpp"
 #include "train_view.hpp"
 #include "thunder_view.hpp"
+#include "weather_cycle.hpp"
 
 #ifdef OPENRTS_HAS_IMGUI
 #include <imgui.h>
@@ -252,6 +257,8 @@ public:
     [[nodiscard]] std::vector<net::ReceivedPackage> take_early() { return std::exchange(content_.early, {}); }
     [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
     [[nodiscard]] const std::shared_ptr<const formats::Activity>& activity() const noexcept { return content_.activity; }
+    [[nodiscard]] const std::string& activity_name() const noexcept { return content_.activity_name; }
+    [[nodiscard]] const std::filesystem::path& load_game() const noexcept { return content_.load_game; }
     [[nodiscard]] const core::VirtualPath& activity_folder() const noexcept { return content_.activity_folder; }
     [[nodiscard]] const std::filesystem::path& root() const noexcept { return content_.root; }
     [[nodiscard]] bool track_control() const noexcept { return content_.track_control; }
@@ -645,7 +652,12 @@ public:
         streamer_.reset();
     }
 
-    void update(ModelRenderer&, ViewerCamera& camera, const SceneClock& clock, const SceneInput& input) override {
+    void update(ModelRenderer&, ViewerCamera& camera, const SceneClock& given, const SceneInput& input) override {
+        // The dynamic weather (weather_cycle.hpp) decides the weather this
+        // frame: RTS's weather and the storm from it.
+        SceneClock clock = given;
+        apply_dynamic_weather(clock);
+        last_clock_ = clock;
         OPENRTS_ZONE("scene: update");
         if (input.toggle_labels) labels_ = !labels_;
         rebase_near(camera);
@@ -698,6 +710,25 @@ public:
             inspector_.pick(last_eye_, *direction, inspector_world());
             click = false;
         }
+        // Ctrl+F (openRTS): from the engineer to the free camera where his
+        // eyes are, as the inspector's "fly to" leaves him; again, back by
+        // the chair of the driving cab. In a cab with a DLL every letter may
+        // be the cab's, F among them, and nothing let the player out but the
+        // panel (testers 2026-11-18).
+        if (input.free_camera && train_) {
+            if (train_->walking()) {
+                const auto eye = camera.eye();
+                train_->set_walking(false, last_eye_);
+                train_->stop_following();
+                camera.fly = true;
+                camera.position = eye;
+                camera.target = eye + camera.forward() * camera.distance;
+            } else if (train_->has_driving_cab()) {
+                train_->enter_cab();
+            } else {
+                camera.toggle_fly();
+            }
+        }
         if (const auto fly = inspector_.take_fly_to()) {
             if (train_) {
                 if (train_->walking()) train_->set_walking(false, last_eye_);
@@ -746,7 +777,22 @@ public:
                 net_->update(track_->network(), signals_ ? signals_->system() : nullptr, *train_,
                              renderer::route_position(camera.eye(), origin_));
             }
+            // OPENRTS_SPAWN_CHECK=<consist>: with no train, 3 s after the
+            // loading one put on the track as Track control would, and for 6 s
+            // what holds the keyboard from the free camera, logged.
+            spawn_check(clock, camera);
+            // Placements: a click in the free flight picks trains.
+            if (train_->selecting() && input.click && input.pointer && !train_->walking())
+                train_->select_at(last_eye_, last_view_projection_, {input.pointer_x, input.pointer_y}, input.click_ctrl, input.click_shift);
             train_->update(input, camera, clock.elapsed, *library_, audio_);
+            // --load: the saved game once the world stands (a scenario's
+            // trains placed, its start not run: the save has its state).
+            if (!content_.load_game().empty() && !start_game_loaded_ && loading_.done
+                && (!activity_ || train_->activity_started())) {
+                start_game_loaded_ = true;
+                if (const auto error = load_game(content_.load_game()); !error.empty())
+                    std::cout << "saved game: " << content_.load_game().string() << ": " << error << std::endl;
+            }
             if (activity_) {
                 // The start's events once the trains stand and the loading
                 // screen is gone; then the events every frame.
@@ -804,8 +850,9 @@ public:
             sky.altitude = static_cast<float>(camera_position.y);
             sky.eye_route = {static_cast<double>(camera_position.tile_x) * formats::route_tile_size + camera_position.x,
                              static_cast<double>(camera_position.tile_z) * formats::route_tile_size + camera_position.z};
-            // The cover the player chose, else the weather's.
+            // The cover the player chose, else the dynamic weather's, else the weather's.
             sky.coverage = renderer::cloud_cover() >= 0.0f                    ? renderer::cloud_cover()
+                           : dynamic_weather_                               ? weather_cycle().shown.cloud
                            : storm_                                         ? 0.97f
                            : clock.weather == renderer::rts::Weather::rain ? 0.92f
                            : clock.weather == renderer::rts::Weather::snow ? 0.85f
@@ -821,7 +868,8 @@ public:
             // stopped, a time-lapse while it runs faster, up to 60 times (at
             // 600 or 3600 they would jump hundreds of metres a frame).
             sky.elapsed = clock.elapsed * std::clamp(clock.time_speed, 0.0f, 60.0f);
-            sky.storm = storm_ ? 1.0f : 0.0f;
+            // The dynamic weather's storm darkens the clouds as it gathers.
+            sky.storm = dynamic_weather_ ? std::clamp(weather_cycle().shown.storm, 0.0f, 1.0f) : storm_ ? 1.0f : 0.0f;
             sky.flash_id = sky_flash_id_;
             sky.flash_at = sky_flash_at_;
             sky.flash = sky_flash_;
@@ -895,7 +943,9 @@ public:
         // they pass its doors and windows (docs/sound.md).
         const float outside_gain = train_ ? train_->outside_gain() : 1.0f;
         if (world_sounds_ && audio_) {
-            world_sounds_->update(clock.elapsed, camera.eye(), audio::SoundCamera::external, *audio_, outside_gain);
+            // Night as the night textures have it (the environment's sunset to sunrise).
+            const auto night = sky_state_ ? std::optional<bool>(sky_state_->night) : std::nullopt;
+            world_sounds_->update(clock.elapsed, camera.eye(), audio::SoundCamera::external, *audio_, outside_gain, night);
         }
         if (crossings_) {
             const auto trains = train_ ? train_->trains() : std::vector<const simulation::Train*>{};
@@ -912,8 +962,9 @@ public:
                 const auto forward = camera.forward();
                 glm::vec3 right{forward.z, 0.0f, -forward.x};
                 right = glm::length(right) > 1e-4f ? glm::normalize(right) : glm::vec3{1.0f, 0.0f, 0.0f};
-                // Under a thunderstorm heavier.
-                precipitation_->update(clock.elapsed, camera.eye(), right, effects_.precipitation ? (storm_ ? 1.7f : 1.0f) : 0.0f, opaque);
+                // Under a thunderstorm heavier; the dynamic weather's by its amount.
+                const float amount = dynamic_weather_ ? 0.3f + 1.4f * weather_cycle().shown.precipitation : storm_ ? 1.7f : 1.0f;
+                precipitation_->update(clock.elapsed, camera.eye(), right, effects_.precipitation ? amount : 0.0f, opaque);
             }
             if (smoke_) {
                 std::vector<ExhaustSource> sources;
@@ -1337,7 +1388,9 @@ public:
         }
         const glm::dvec2 eye_route{static_cast<double>(at.tile_x) * formats::route_tile_size + at.x,
                                    static_cast<double>(at.tile_z) * formats::route_tile_size + at.z};
-        auto strikes = renderer::lightning_strikes(eye_route, clock.time_of_day_exact, renderer::lightning_rate());
+        // The dynamic weather's storm strikes as often as it is strong.
+        const float rate = renderer::lightning_rate() * (dynamic_weather_ ? std::clamp(weather_cycle().shown.storm, 0.0f, 1.0f) : 1.0f);
+        auto strikes = renderer::lightning_strikes(eye_route, clock.time_of_day_exact, rate);
         if (test) {
             // Straight ahead along the ground (scene x, z are the route's).
             glm::dvec2 way{forward.x, forward.z};
@@ -1556,6 +1609,120 @@ public:
     [[nodiscard]] std::optional<double> take_time_of_day() override {
         return net_ ? net_->take_time_of_day() : std::nullopt;
     }
+
+    // --- saved games (docs/saves.md) ---------------------------------------
+    // One text file: a header (route, scenario, clock), then parts after
+    // "@@ <part>" lines: the junctions, the trains (TrainView::save_game),
+    // the scenario (ActivityView::save).
+    [[nodiscard]] std::filesystem::path saves_folder() const override {
+        if (!train_ || net_) return {};
+        return user_data_directory() / "saves" / std::string(route_.filename());
+    }
+    [[nodiscard]] std::vector<std::string> saved_games() const override {
+        std::vector<std::pair<std::filesystem::file_time_type, std::string>> found;
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator(saves_folder(), error)) {
+            if (entry.path().extension() != ".save") continue;
+            const auto stem = entry.path().stem().u8string();
+            found.emplace_back(entry.last_write_time(error), std::string(stem.begin(), stem.end()));
+        }
+        std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::vector<std::string> names;
+        for (auto& [_, name] : found) names.push_back(std::move(name));
+        return names;
+    }
+    [[nodiscard]] std::string save_game(const std::string& name) override {
+        if (net_) return tr("saving is not available in a network game yet");
+        if (!train_ || !track_) return tr("there is no game to save");
+        if (train_->loading_game()) return tr("the saved game is still being put back");
+        std::string clean;
+        for (const char c : name) clean += (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') ? '_' : c;
+        if (clean.empty()) return tr("give the save a name");
+        std::ostringstream out;
+        out << std::setprecision(17);
+        out << "# openRTS saved game\nversion=1\nroute=" << route_.filename() << '\n';
+        if (activity_) out << "activity=" << activity_->activity().name << "\nactivity_file=" << content_.activity_name() << '\n';
+        out << "time=" << last_clock_.time_of_day_exact << "\nseason=" << static_cast<int>(last_clock_.season) << "\nweather="
+            << static_cast<int>(last_clock_.weather) << "\nstorm=" << (last_clock_.storm ? 1 : 0) << '\n';
+        // The dynamic weather's clock and seed: it goes on as it was.
+        if (dynamic_weather_) out << "weather_cycle=" << weather_cycle().time << ' ' << weather_cycle().seed << '\n';
+        out << "@@ junctions\n";
+        const auto& network = track_->network();
+        for (std::uint32_t node = 0; node < network.node_count(); ++node) {
+            if (const auto* junction = network.junction(node)) out << "junction=" << node << ' ' << junction->selected << '\n';
+        }
+        out << "@@ trains\n" << train_->save_game();
+        if (activity_) out << "@@ activity\n" << activity_->save();
+        std::error_code fs_error;
+        std::filesystem::create_directories(saves_folder(), fs_error);
+        const auto file = saves_folder() / std::filesystem::path(std::u8string(clean.begin(), clean.end())).replace_extension(".save");
+        std::ofstream output(file, std::ios::binary | std::ios::trunc);
+        output << out.str();
+        if (!output) return tr("the save could not be written");
+        std::cout << "saved game: " << file.string() << std::endl;
+        return {};
+    }
+    [[nodiscard]] std::string load_game(const std::filesystem::path& file) override {
+        if (net_) return tr("loading is not available in a network game");
+        if (!train_ || !track_) return tr("there is no game to load into");
+        std::ifstream input(file, std::ios::binary);
+        if (!input) return tr("the save could not be read");
+        std::map<std::string, std::string> header;
+        std::map<std::string, std::string> parts;
+        std::string part;
+        for (std::string line; std::getline(input, line);) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.starts_with("@@ ")) {
+                part = line.substr(3);
+                continue;
+            }
+            if (part.empty()) {
+                const auto equals = line.find('=');
+                if (equals != std::string::npos && !line.starts_with('#')) header[line.substr(0, equals)] = line.substr(equals + 1);
+            } else {
+                parts[part] += line + '\n';
+            }
+        }
+        if (header["route"] != std::string(route_.filename())) return trf("the save is from another route (%s)", header["route"].c_str());
+        const std::string scenario = activity_ ? activity_->activity().name : std::string();
+        if (header["activity"] != scenario) {
+            return header["activity"].empty() ? std::string(tr("the save is from a free run: start the route without a scenario"))
+                                              : trf("the save is from the scenario \"%s\": start it first", header["activity"].c_str());
+        }
+        auto& network = track_->network();
+        std::istringstream junctions(parts["junctions"]);
+        std::size_t thrown = 0;
+        for (std::string line; std::getline(junctions, line);) {
+            std::uint32_t node{}, selected{};
+            if (!line.starts_with("junction=")) continue;
+            std::istringstream fields(line.substr(9));
+            if (!(fields >> node >> selected)) continue;
+            const auto* junction = network.junction(node);
+            if (junction && junction->selected != selected && network.throw_junction(node, selected)) ++thrown;
+        }
+        if (const auto error = train_->load_game(parts["trains"]); !error.empty()) return error;
+        if (activity_ && parts.contains("activity")) activity_->load(parts["activity"]);
+        if (const auto cycle = header.find("weather_cycle"); cycle != header.end()) {
+            std::istringstream fields(cycle->second);
+            double time = 0.0;
+            std::uint64_t seed = 0;
+            if (fields >> time >> seed) {
+                auto& weather = weather_cycle();
+                weather.time = time;
+                weather.seed = seed;
+                weather.forced.reset();
+                weather.shown_valid = false;
+                weather_started_ = true;
+            }
+        }
+        saved_clock_ = SavedClock{.time_of_day = std::atof(header["time"].c_str()),
+                                  .season = std::atoi(header["season"].c_str()),
+                                  .weather = std::atoi(header["weather"].c_str()),
+                                  .storm = header["storm"] == "1"};
+        std::cout << "saved game: " << file.string() << " put back (" << thrown << " junctions thrown)" << std::endl;
+        return {};
+    }
+    [[nodiscard]] std::optional<SavedClock> take_saved_clock() override { return std::exchange(saved_clock_, std::nullopt); }
     void close_activity_message() override {
         if (activity_) activity_->close_message();
     }
@@ -1750,6 +1917,7 @@ public:
             inspector_.draw(world);
             inspector_.add_selection_lines(world, pending_lines_);
         }
+        if (train_) train_->add_placement_lines(pending_lines_);
         if (track_control_) {
             bool open = track_control_->is_open();
             if (ImGui::Checkbox(tr("Track control (Ctrl+Alt+F7)"), &open)) track_control_->toggle();
@@ -1922,7 +2090,8 @@ private:
         }
         if (!weather_sound_) return;
         audio::SoundInputs inputs{.camera = audio::SoundCamera::external, .position = eye};
-        inputs.gain = gain;
+        // The dynamic weather's light rain is quieter, its heavy one louder.
+        inputs.gain = gain * (dynamic_weather_ ? std::clamp(0.3f + 0.8f * weather_cycle().shown.precipitation, 0.3f, 1.1f) : 1.0f);
         weather_sound_->update(elapsed, inputs, *audio_);
     }
 
@@ -2298,8 +2467,112 @@ private:
     mutable std::uint64_t probe_tag_ = 0;
     static constexpr int sky_probe_columns = 6;
     static constexpr int sky_probe_rows = 4;
+    double spawn_check_time_ = 0.0;
+    bool spawn_check_done_ = false;
+    void spawn_check(const SceneClock& clock, const ViewerCamera& camera) {
+        static const std::string consist = [] {
+#ifdef _WIN32
+            char* value = nullptr;
+            std::size_t size = 0;
+            std::string text;
+            if (_dupenv_s(&value, &size, "OPENRTS_SPAWN_CHECK") == 0 && value) text = value;
+            std::free(value);
+            return text;
+#else
+            const char* value = std::getenv("OPENRTS_SPAWN_CHECK");
+            return std::string(value ? value : "");
+#endif
+        }();
+        if (consist.empty() || !train_ || !track_ || !loading_.done) return;
+        spawn_check_time_ += clock.elapsed;
+        if (!spawn_check_done_ && spawn_check_time_ > 3.0) {
+            spawn_check_done_ = true;
+            const auto& network = track_->network();
+            simulation::TrackLocation where{};
+            for (std::uint32_t node = 1; node < network.node_count(); ++node) {
+                const auto* n = network.node(node);
+                if (n && n->kind == formats::TrackNodeKind::vector && n->length > 600.0) {
+                    where = {node, n->length * 0.5, true};
+                    break;
+                }
+            }
+            const auto error = train_->spawn(consist, where, TrainView::Role::standing, std::nullopt, -1);
+            std::cout << "spawn check: " << consist << " at node " << where.node << ": " << (error.empty() ? "put down" : error) << std::endl;
+        }
+        if (spawn_check_done_ && spawn_check_time_ < 9.5 && std::fmod(spawn_check_time_, 1.0) < clock.elapsed) {
+            std::cout << "spawn check: " << spawn_check_time_ << " s: keyboard captured " << keyboard_captured() << ", on foot "
+                      << engineer_on_foot() << ", walking " << train_->walking() << ", camera fly " << camera.fly << " at "
+                      << camera.position.x << " " << camera.position.y << " " << camera.position.z << std::endl;
+        }
+    }
     // A thunderstorm this frame, and its lightning (update_lightning).
     bool storm_ = false;
+    // The dynamic weather runs (weather_cycle.hpp: on, and not a network
+    // game, whose weather is the server's); begun from the weather chosen.
+    bool dynamic_weather_ = false;
+    bool weather_started_ = false;
+    // The weather this frame from the dynamic weather: its clock on by the
+    // game's, the mix shown eased towards the cycle's (a setting changed by
+    // hand comes over some 20 game seconds, also with the clock stopped).
+    // It starts from the weather chosen (the start menu's, a scenario's),
+    // held a spell, then the cycle's.
+    void apply_dynamic_weather(SceneClock& clock) {
+        auto& cycle = weather_cycle();
+        // OPENRTS_WEATHER_CHECK set: on for this run, 600 times as fast,
+        // what it shows logged every game hour.
+        static const bool check = [] {
+#ifdef _WIN32
+            char* value = nullptr;
+            std::size_t size = 0;
+            const bool set = _dupenv_s(&value, &size, "OPENRTS_WEATHER_CHECK") == 0 && value != nullptr;
+            std::free(value);
+            return set;
+#else
+            return std::getenv("OPENRTS_WEATHER_CHECK") != nullptr;
+#endif
+        }();
+        if (check) cycle.settings.dynamic = true;
+        dynamic_weather_ = cycle.settings.dynamic && !content_.connection();
+        if (!dynamic_weather_) {
+            cycle.shown_valid = false;
+            weather_started_ = false;
+            return;
+        }
+        if (!weather_started_) {
+            weather_started_ = true;
+            WeatherMix chosen;
+            chosen.snow = clock.season == renderer::rts::Season::winter;
+            if (clock.weather == renderer::rts::Weather::rain || clock.weather == renderer::rts::Weather::snow) {
+                chosen.snow = clock.weather == renderer::rts::Weather::snow;
+                chosen.cloud = clock.storm ? 0.97f : chosen.snow ? 0.85f : 0.92f;
+                chosen.precipitation = clock.storm ? 0.85f : 0.6f;
+                chosen.storm = clock.storm ? 0.9f : 0.0f;
+            }
+            cycle.shown = chosen;
+            cycle.shown_valid = true;
+            cycle.force(chosen);
+        }
+        const double before = cycle.time;
+        const float pace = (std::max)(clock.time_speed, 0.0f) * (check ? 600.0f : 1.0f);
+        cycle.time += static_cast<double>(clock.elapsed) * pace;
+        if (check && std::floor(cycle.time / 3600.0) != std::floor(before / 3600.0))
+            std::cout << "weather check: hour " << std::floor(cycle.time / 3600.0) << ": clouds " << cycle.shown.cloud << ", precipitation "
+                      << cycle.shown.precipitation << ", storm " << cycle.shown.storm << ", rts weather " << static_cast<int>(clock.weather)
+                      << (clock.storm ? " (storm)" : "") << ", drops " << (precipitation_ ? precipitation_->drops() : 0) << std::endl;
+        const auto target = cycle.now(clock.season);
+        if (!cycle.shown_valid) {
+            cycle.shown = target;
+            cycle.shown_valid = true;
+        } else {
+            const float k = 1.0f - std::exp(-clock.elapsed * (std::max)(pace, 1.0f) / 20.0f);
+            cycle.shown = blend(cycle.shown, target, k);
+            // Gone: none (not a trace of it for ever).
+            if (cycle.shown.precipitation < 1e-4f) cycle.shown.precipitation = 0.0f;
+            if (cycle.shown.storm < 1e-4f) cycle.shown.storm = 0.0f;
+        }
+        clock.weather = rts_weather(cycle.shown);
+        clock.storm = storming(cycle.shown);
+    }
     float sky_open_seen_ = 1.0f; // the view's sky share the probe last saw (0..1, a quarter or more: 1)
     float sky_open_ = 1.0f;      // that, eased
     // The sky's openness round the eye for its light (PBR stage 2): the
@@ -2478,6 +2751,9 @@ private:
     std::unique_ptr<ActivityView> activity_; // a scenario (--activity)
     std::set<std::int32_t> reported_;        // --capture-report: the menus picked from
     std::unique_ptr<NetSession> net_; // --mp-connect: the server's game
+    SceneClock last_clock_;                // the last update's (a save takes it)
+    bool start_game_loaded_ = false;        // --load's save put back
+    std::optional<SavedClock> saved_clock_; // a loaded game's, for the window's clock
 #ifdef OPENRTS_HAS_IMGUI
     mutable ConsolePanel console_panel_; // --mp-console: the dispatcher's window
 #endif

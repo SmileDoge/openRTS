@@ -53,6 +53,19 @@ using formats::WagonDefinition;
     return (std::max)(car.definition->mass, 1.0f);
 }
 
+// Under the realistic air, one bogie's full brake force at 40 km/h: half the
+// car's (its ORTSBrakeForce, else MaxBrakeForce), with the limit at most
+// what real stock with its shoes gives (not for ORTSBrakeForce: the
+// author's own figure), through its rigging (wear) and the brake pressing
+// factor.
+[[nodiscard]] float bogie_full_force(const CarState& car, const std::size_t bogie, const TrainSettings& settings) {
+    const auto& brakes = car.definition->brakes;
+    const bool own = brakes.realistic_brake_force > 0.0f;
+    float full = 0.5f * (own ? brakes.realistic_brake_force : brakes.max_brake_force);
+    if (settings.limit_brake_force && !own) full = (std::min)(full, shoe_force_limit(car.shoes[bogie]) * 0.5f * mass_of(car) * gravity);
+    return full * car.wear.rigging * settings.brake_force_factor;
+}
+
 // openRTS's traction limit, axle by axle (docs/train.md "Wheel slip"; with
 // the rails other than "as RTS"). RTS takes the .eng's Adheasion as the
 // adhesion (the 2ES6's 0.9, never reached) and its "once slipping" factor
@@ -418,6 +431,22 @@ float compressor_rate(bool& running, const EngineInputs& inputs) {
     return 0.05f;
 }
 
+void KeyboardController::save(StateWriter& out, const std::string_view prefix) const {
+    const std::string p(prefix);
+    const auto& h = *handles_;
+    out.put(p + "handles", h.throttle, h.reverser, h.brake, h.independent, h.charging_pressure, h.equalising, h.ep_brake, h.sanding,
+            h.ep_target);
+    out.put(p + "compressor", compressor_);
+}
+
+void KeyboardController::restore(const StateReader& in, const std::string_view prefix) {
+    const std::string p(prefix);
+    auto& h = *handles_;
+    in.get(p + "handles", h.throttle, h.reverser, h.brake, h.independent, h.charging_pressure, h.equalising, h.ep_brake, h.sanding,
+           h.ep_target);
+    in.get(p + "compressor", compressor_);
+}
+
 KeyboardController::KeyboardController(std::shared_ptr<DriverHandles> handles, const bool master)
     : handles_(std::move(handles)), master_(master) {}
 
@@ -493,6 +522,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     demands.equalising = out.equalising;
     demands.equalising_kept = out.equalising;
     demands.emergency = out.emergency;
+    demands.pipe_feed = out.feed;
     demands.systems = out.systems;
     if (out.ep_value >= 0.0f) {
         demands.ep_value = out.ep_value;
@@ -671,6 +701,34 @@ void Train::scatter_ep_fill(const std::uint32_t seed) {
     std::uniform_real_distribution<float> train_pace(0.8f, 1.2f), car_pace(0.95f, 1.05f);
     const float pace = train_pace(random);
     for (auto& car : cars_) car.ep_fill = std::clamp(pace * car_pace(random), 0.75f, 1.25f);
+}
+
+void Train::set_brake_condition(const int condition, const std::uint32_t seed) {
+    brake_condition_ = std::clamp(condition, 0, 10);
+    brake_seed_ = seed;
+    if (brake_condition_ == 0) {
+        for (auto& car : cars_) car.wear = {};
+        return;
+    }
+    // The train's wear 0 (10, from the works) .. 1 (1, due for an overhaul);
+    // each car's about it, the wider the worse; each figure of a car its
+    // own draw about the car's (a leaky pipe, a good distributor).
+    std::mt19937 random(seed ^ 0x5bd1e995u);
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    const float wear = static_cast<float>(10 - brake_condition_) / 9.0f;
+    const float spread = 0.06f + 0.24f * wear;
+    for (auto& car : cars_) {
+        const float own = std::clamp(wear + spread * (2.0f * unit(random) - 1.0f), 0.0f, 1.0f);
+        const auto figure = [&] { return own * (0.6f + 0.8f * unit(random)); };
+        auto& w = car.wear;
+        const float pipe = figure(), reservoir = figure(), cylinder = figure();
+        w.pipe_leak = 0.01f + 0.5f * pipe * pipe;
+        w.reservoir_leak = car.definition && car.definition->engine ? 0.01f + 0.25f * reservoir * reservoir : 0.0f;
+        w.cylinder_leak = 0.005f + 0.4f * cylinder * cylinder;
+        w.pace = std::clamp(1.0f - 0.35f * own * (unit(random) - 0.25f) - 0.03f * (unit(random) - 0.5f), 0.6f, 1.15f);
+        w.sensitivity = std::clamp(1.0f + 0.6f * own * (unit(random) - 0.25f) + 0.05f * (unit(random) - 0.5f), 0.8f, 1.6f);
+        w.rigging = std::clamp(1.0f - 0.35f * own * (0.2f + 0.8f * unit(random)) - 0.02f * unit(random), 0.55f, 1.0f);
+    }
 }
 
 void Train::set_distributor_modes(const std::size_t car, const DistributorModes& modes) {
@@ -1145,6 +1203,94 @@ void Train::set_line_load(const std::size_t car, const float current, const floa
     cars_[car].line_burnt = burnt;
 }
 
+double Train::brake_pressing() const {
+    // Cast iron's friction at 40 km/h by the rules' design formula
+    // (0.27 (v + 100) / (5v + 100)).
+    constexpr double cast_iron_40 = 0.27 * 140.0 / 300.0;
+    double pressing = 0.0, weight = 0.0;
+    for (const auto& car : cars_) {
+        if (!car.definition) continue;
+        weight += mass_of(car) * gravity;
+        if (!(car.definition->brakes.system & 5)) continue;
+        const float reference = brake_force_pressure(*car.definition);
+        if (reference <= 0.0f) continue;
+        const auto kind = distributor_kind(*car.definition);
+        const float full_cylinder = distributor_full_cylinder(kind, effective_load(car.distributor.load, car.definition->mass));
+        for (std::size_t b = 0; b < 2; ++b) pressing += bogie_full_force(car, b, settings_) * (full_cylinder / reference) / cast_iron_40;
+    }
+    return weight > 0.0 ? 100.0 * pressing / weight : 0.0;
+}
+
+void Train::save_state(StateWriter& out) const {
+    const auto& impl = *impl_;
+    const auto end = [&](const char* key, const std::optional<TrackTraveller>& t) {
+        if (t) out.put(key, t->node(), t->offset(), t->forward());
+    };
+    end("head", impl.head);
+    end("tail", impl.tail);
+    out.put("travel", impl.moving_backward, impl.against, impl.stopped_at_end, asleep_);
+    out.put("condition", brake_condition_, brake_seed_);
+    for (std::size_t i = 0; i < cars_.size(); ++i) {
+        const auto& c = cars_[i];
+        const std::string p = "c" + std::to_string(i) + ".";
+        out.put(p + "motion", c.offset, c.velocity, c.travelled, c.rolled[0], c.rolled[1]);
+        out.put(p + "air", c.pipe, c.auxiliary, c.cylinder, c.independent, c.control, c.charging_pipe, c.ep, c.ep_command, c.ep_fill,
+                c.main_reservoir);
+        out.put(p + "hand", c.handbrake, c.pipe_ends, c.coupler_open, c.cables, c.valves, c.chocks);
+        out.put(p + "distributor", c.distributor.load, c.distributor.mountain, c.distributor.plug);
+        out.put(p + "flat", c.flat[0], c.flat[1], c.flat_phase[0][0], c.flat_phase[0][1], c.flat_phase[1][0], c.flat_phase[1][1],
+                c.flat_seen[0], c.flat_seen[1]);
+        out.put(p + "shoes", c.shoe_state[0].wet, c.shoe_state[0].heat, c.shoe_state[0].wear, c.shoe_state[0].burning,
+                c.shoe_state[1].wet, c.shoe_state[1].heat, c.shoe_state[1].wear, c.shoe_state[1].burning, c.slid);
+        out.put(p + "sand", c.sand_left, c.sand_travel);
+        out.put(p + "wear", c.wear.pipe_leak, c.wear.reservoir_leak, c.wear.cylinder_leak, c.wear.pace, c.wear.sensitivity, c.wear.rigging);
+    }
+    impl.air.save(out);
+    for (std::size_t i = 0; i < impl.controllers.size(); ++i) {
+        if (impl.controllers[i]) impl.controllers[i]->save(out, "k" + std::to_string(i) + ".");
+    }
+}
+
+void Train::restore_state(const StateReader& in) {
+    auto& impl = *impl_;
+    if (network_) {
+        const auto end = [&](const char* key, std::optional<TrackTraveller>& t) {
+            std::uint32_t node{};
+            double offset{};
+            bool forward = true;
+            if (in.get(key, node, offset, forward) && network_->node(node)) t = TrackTraveller(*network_, node, offset, forward);
+        };
+        end("head", impl.head);
+        end("tail", impl.tail);
+    }
+    bool asleep = asleep_;
+    in.get("travel", impl.moving_backward, impl.against, impl.stopped_at_end, asleep);
+    in.get("condition", brake_condition_, brake_seed_);
+    for (std::size_t i = 0; i < cars_.size(); ++i) {
+        auto& c = cars_[i];
+        const std::string p = "c" + std::to_string(i) + ".";
+        in.get(p + "motion", c.offset, c.velocity, c.travelled, c.rolled[0], c.rolled[1]);
+        in.get(p + "air", c.pipe, c.auxiliary, c.cylinder, c.independent, c.control, c.charging_pipe, c.ep, c.ep_command, c.ep_fill,
+               c.main_reservoir);
+        in.get(p + "hand", c.handbrake, c.pipe_ends, c.coupler_open, c.cables, c.valves, c.chocks);
+        in.get(p + "distributor", c.distributor.load, c.distributor.mountain, c.distributor.plug);
+        in.get(p + "flat", c.flat[0], c.flat[1], c.flat_phase[0][0], c.flat_phase[0][1], c.flat_phase[1][0], c.flat_phase[1][1],
+               c.flat_seen[0], c.flat_seen[1]);
+        in.get(p + "shoes", c.shoe_state[0].wet, c.shoe_state[0].heat, c.shoe_state[0].wear, c.shoe_state[0].burning,
+               c.shoe_state[1].wet, c.shoe_state[1].heat, c.shoe_state[1].wear, c.shoe_state[1].burning, c.slid);
+        in.get(p + "sand", c.sand_left, c.sand_travel);
+        in.get(p + "wear", c.wear.pipe_leak, c.wear.reservoir_leak, c.wear.cylinder_leak, c.wear.pace, c.wear.sensitivity, c.wear.rigging);
+        c.acceleration = 0.0f;
+        c.body[0] = c.body[1] = c.body[2] = 0.0f;
+        c.body_rate[0] = c.body_rate[1] = c.body_rate[2] = 0.0f;
+    }
+    impl.air.restore(in);
+    for (std::size_t i = 0; i < impl.controllers.size(); ++i) {
+        if (impl.controllers[i]) impl.controllers[i]->restore(in, "k" + std::to_string(i) + ".");
+    }
+    asleep_ = asleep;
+}
+
 void Train::set_asleep(const bool asleep) noexcept {
     asleep_ = asleep;
     if (!asleep) return;
@@ -1247,6 +1393,15 @@ void Train::step() {
             }
         }
         car.main_reservoir = (std::max)(car.main_reservoir + demands.main_reservoir_rate * dt, 0.0f);
+        // Worn brakes (realistic air): the main reservoir leaks, and the
+        // independent brake's valve keeps its leaking cylinder filled from it.
+        if (realistic_air && (car.wear.reservoir_leak > 0.0f || car.wear.cylinder_leak > 0.0f)) {
+            float lost = car.wear.reservoir_leak / 60.0f * (car.main_reservoir / 9.0f) * dt;
+            if (car.independent > 0.0f && car.independent >= car.cylinder)
+                lost += car.wear.cylinder_leak / 60.0f * (car.independent / 3.8f) * distributor_cylinder_volume /
+                        detail::main_reservoir_volume(*car.definition->engine) * dt;
+            car.main_reservoir = (std::max)(car.main_reservoir - lost, 0.0f);
+        }
         // Traction with the adhesion limit (RTS: m * 10 * mu, Adheasion's
         // second value). RTS cuts a slipping force to a random 10..40 %;
         // here it is 25 % so runs are deterministic.
@@ -1359,16 +1514,10 @@ void Train::step() {
             float force = 0.0f;
             for (std::size_t b = 0; b < 2; ++b) {
                 const auto shoe = car.shoes[b];
-                // This bogie's full brake force: half the car's (its
-                // ORTSBrakeForce, else MaxBrakeForce), with the limit at most
-                // what real stock with its shoes gives (not for ORTSBrakeForce:
-                // the author's own figure).
-                const bool own = brakes.realistic_brake_force > 0.0f;
-                float full = 0.5f * (own ? brakes.realistic_brake_force : brakes.max_brake_force);
-                if (settings_.limit_brake_force && !own) full = (std::min)(full, shoe_force_limit(shoe) * 0.5f * mass_of(car) * gravity);
+                const float full = bogie_full_force(car, b, settings_);
                 const auto pressed = [&](const float speed) {
                     return share * full * shoe_factor(shoe, speed, share) +
-                           0.5f * car.handbrake * brakes.max_handbrake_force * shoe_factor(shoe, speed, car.handbrake);
+                           0.5f * car.handbrake * brakes.max_handbrake_force * car.wear.rigging * shoe_factor(shoe, speed, car.handbrake);
                 };
                 const BogieBrake bogie{.shoe = shoe,
                                        .share = share,

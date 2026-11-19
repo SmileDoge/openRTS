@@ -188,9 +188,16 @@ void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
             }
         }
         catch_up(inputs, sink);
+        // Day turned to night (or back) while it was off: a stream last on an
+        // ORTSDay / ORTSNight trigger waits for the one of the time now
+        // (update_streams), not its old one again.
+        const bool time_changed = inputs.night && night_fired_ != inputs.night;
         for (auto& stream : streams_) {
             const auto& triggers = stream.definition->triggers;
-            if (stream.current && *stream.current < triggers.size()) fire(stream, *stream.current, 1.0f, inputs, sink);
+            if (stream.current && *stream.current < triggers.size()
+                && !(time_changed && triggers[*stream.current].kind == SoundTriggerKind::time_of_day)) {
+                fire(stream, *stream.current, 1.0f, inputs, sink);
+            }
             stream.resume_frame.reset();
         }
         return;
@@ -354,7 +361,12 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
         }
         sink.set(id, 0.0f, 1.0f, inputs.position); // real values follow in this update
         const bool region = playback == VoicePlayback::loop_region && clip->has_loop();
-        return {.id = id, .volume = volume, .clip = std::move(clip), .fade_in = action.fade, .start_frame = start_frame,
+        // Fade brings a started loop in; a one-shot starts at its volume
+        // (rts1.exe 0x4A8C00: PlayOneShot sets no fade timer, StartLoop and
+        // StartLoopRelease do). The ЭД9М's doors, PlayOneShot with Fade ( 2.0 ),
+        // swelled for two seconds (testers 2026-11-18).
+        const float fade_in = playback == VoicePlayback::once ? 0.0f : action.fade;
+        return {.id = id, .volume = volume, .clip = std::move(clip), .fade_in = fade_in, .start_frame = start_frame,
                 .file = action.files[choice].name, .region = region};
     };
     const auto here = static_cast<std::size_t>(&stream - streams_.data());
@@ -620,6 +632,21 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
     const auto codes = pass_pairs(incoming);
     passed_.insert(passed_.end(), codes.begin(), codes.end());
 
+    // ORTSDay_Trigger / ORTSNight_Trigger (openRTS): once the sound is on,
+    // the one of the time now; then each time day or night comes.
+    if (inputs.night && night_fired_ != inputs.night) {
+        night_fired_ = inputs.night;
+        if (!trace_.empty()) note(SIZE_MAX, *inputs.night ? "night" : "day");
+        for (auto& stream : streams_) {
+            if (!stream.running) continue;
+            const auto& triggers = stream.definition->triggers;
+            for (std::size_t i = 0; i < triggers.size(); ++i) {
+                if (stream.enabled[i] && triggers[i].kind == SoundTriggerKind::time_of_day && triggers[i].night == *inputs.night)
+                    fire(stream, i, 1.0f, inputs, sink);
+            }
+        }
+    }
+
     for (auto& stream : streams_) {
         if (!stream.running) continue;
         const auto& triggers = stream.definition->triggers;
@@ -629,6 +656,7 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
             switch (trigger.kind) {
             case SoundTriggerKind::unknown:
             case SoundTriggerKind::initial:
+            case SoundTriggerKind::time_of_day:
                 break;
             case SoundTriggerKind::discrete:
                 for (const auto code : codes) {

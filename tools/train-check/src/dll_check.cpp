@@ -17,6 +17,47 @@
 //                             # reverse, panto, main_switch, speed (km/h),
 //                             # pipe, mr, ur, alive)
 //   20   screen 180 24 043    # a cab screen's label text (or shown / hidden)
+//   5    press 404 416 408    # momentary keys, one a step (1, then 0)
+//   40   expect var140 == 60  # BRAKES' variable stack at byte 140, a float;
+//   40   expect bits8 & 8     # bitsN its bits: & any set, !& none set
+//                             # (also aspect: the cab signal's)
+//
+// A line for the КЛУБ (step 3.2): signals and speed posts at metres from
+// the train's front at the start; the ALSN's arrays, the train's limit and
+// the next speed post follow the front as it runs.
+//
+//   0    line_limit 120         # km/h before the first post
+//   0    line_signal S1 1500 3  # name, metres, RTS aspect [limit km/h]
+//   0    line_post 2500 80      # metres, km/h
+//   90   line_aspect S1 7       # the signal cleared
+//   0    when 2650 switch 2 5   # a command once the front is that far
+//   0    then 3 switch 2 2      # so many seconds after the `when` above
+//
+// --record <file> [--record-library <AuxLibraryName>]: a golden run
+// (docs/brakes-dll-replacement.md, step 1): every step, for every car with
+// that auxiliary library (BRAKES by default), a tab-separated row: the
+// time, the car, the speed, its air, its Engine's brake outputs, the SMS
+// triggers of that library and of the locomotive, the cab switches and
+// displays (gauges, lamps) that changed (a display: id=state/value), and
+// the library's whole variable stack as raw 32-bit words (hex: some are
+// floats, some flags).
+//
+// --brakes openrts [--numbers books]: openRTS's cab brake devices in place
+// of Brakes.dll's (docs/brakes-dll-replacement.md, step 2) on the realistic
+// air; a record then has their УР, independent brake, ЭПТ, gauges and
+// lamps (tools/reverse/golden_compare.py sets it against a Brakes.dll run).
+//
+// --klub shadow: openRTS's КЛУБ-У (simulation/klub.hpp; step 3.3) beside
+// Brakes.dll's on the same inputs (the line's ALSN, the keys, the cab's
+// switches), every step set against Brakes.dll's variables (the aspect,
+// the limits, the target, the permitted speed, the vigilance timer, the
+// flags, the track, the entry, the ЭПК and the КЛУБ's sounds); a step that
+// differs fails the run (tests/data/golden/ed9m_klub*.script); its screen
+// (simulation/klub_screen.hpp) against Brakes.dll's too.
+//
+// --klub openrts: openRTS's КЛУБ in place of Brakes.dll's, as the game's
+// setting has it (LegacyConsist::set_own_klub; step 3.4): Brakes.dll's
+// switched off, the realistic air (--air own unless given).
 //
 // Exit code 0: every expectation held; 1: one failed; 2: could not run.
 
@@ -26,7 +67,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <deque>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -41,6 +85,7 @@
 #include <openrts/simulation/stock_rules.hpp>
 
 #include "cab_screens.hpp"
+#include <openrts/simulation/klub_screen.hpp>
 #include <openrts/simulation/train.hpp>
 #include <openrts/trainplugin/legacy_consist.hpp>
 
@@ -103,6 +148,22 @@ double field(const std::string& name, const trainplugin::LegacyConsist& consist,
         const auto id = static_cast<std::size_t>(std::atoi(name.c_str() + (name[0] == 'k' ? 3 : 2)));
         return id < out->switches.size() ? out->switches[id].state : std::nan("");
     }
+    if (name == "aspect") return out->cab_aspect; // Cabin::Signal's aspect as the DLLs left it
+    // varN / bitsN: BRAKES' variable stack at byte offset N, as a float / as
+    // its bits (with --record, or a script: CarOutput::aux_vars).
+    if (name.rfind("var", 0) == 0 || name.rfind("bits", 0) == 0) {
+        const bool bits = name[0] == 'b';
+        const auto offset = static_cast<std::size_t>(std::atoi(name.c_str() + (bits ? 4 : 3)));
+        const int lib = consist.aux_library(car, "BRAKES");
+        if (lib < 0 || static_cast<std::size_t>(lib) >= out->aux_vars.size()) return std::nan("");
+        const auto& var = out->aux_vars[static_cast<std::size_t>(lib)].var;
+        if (offset % 4 != 0 || offset / 4 >= var.size()) return std::nan("");
+        const float v = var[offset / 4];
+        if (!bits) return v;
+        std::uint32_t u = 0;
+        std::memcpy(&u, &v, sizeof u);
+        return u;
+    }
     return std::nan("");
 }
 
@@ -113,6 +174,11 @@ bool compare(double a, const std::string& op, double b) {
     if (op == "<=") return a <= b;
     if (op == "==") return std::abs(a - b) < 1e-6;
     if (op == "!=") return std::abs(a - b) >= 1e-6;
+    if (op == "&" || op == "!&") {
+        if (!(a >= 0.0) || !(b >= 0.0)) return false;
+        const bool any = (static_cast<std::uint64_t>(a) & static_cast<std::uint64_t>(b)) != 0;
+        return op == "&" ? any : !any;
+    }
     return false;
 }
 
@@ -212,10 +278,19 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     bool show_screens = false;  // --screens: the cab screens' shown objects and texts, each second
     bool show_light_defs = false; // --light-defs: with --cars, each lit exterior light's .eng definition
     std::string screens_image;  // --screens-image <dir>: the cab screens as RTS lays them out, at the end (PPM)
+    std::string record_path;    // --record <file>: the golden run (above)
+    std::string record_library = "BRAKES";
     int start_state = -1; // --start cold|on|running
     // --air rts|dll|own: the realistic air with the DLL's valve (its УР), or
     // openRTS's 395 over Brakes.dll (docs/train.md); rts: as RTS.
     trainplugin::DllAir air = trainplugin::DllAir::rts;
+    // --brakes openrts: openRTS's cab brake devices in place of Brakes.dll's
+    // (docs/brakes-dll-replacement.md, step 2; the realistic air, --air own
+    // unless given); --numbers books: the books' numbers, not Brakes.dll's.
+    bool own_brakes = false;
+    bool book_numbers = false;
+    bool klub_shadow = false; // --klub shadow: openRTS's КЛУБ beside Brakes.dll's
+    bool klub_own = false;    // --klub openrts: openRTS's КЛУБ in place of Brakes.dll's
     for (std::size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "--script" && i + 1 < args.size()) {
             script_path = args[++i];
@@ -225,6 +300,13 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         } else if (args[i] == "--air" && i + 1 < args.size()) {
             const auto& value = args[++i];
             air = value == "dll" ? trainplugin::DllAir::dll_valve : value == "own" ? trainplugin::DllAir::own_valve : trainplugin::DllAir::rts;
+        } else if (args[i] == "--brakes" && i + 1 < args.size()) {
+            own_brakes = args[++i] == "openrts";
+        } else if (args[i] == "--klub" && i + 1 < args.size()) {
+            klub_shadow = args[i + 1] == "shadow";
+            klub_own = args[++i] == "openrts";
+        } else if (args[i] == "--numbers" && i + 1 < args.size()) {
+            book_numbers = args[++i] == "books";
         } else if (args[i] == "--rails" && i + 1 < args.size()) {
             // The rails' state (adhesion.hpp): openRTS's traction limit; RTS's by default.
             const auto& value = args[++i];
@@ -244,6 +326,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             show_screens = true;
         } else if (args[i] == "--light-defs") {
             show_light_defs = true;
+        } else if (args[i] == "--record" && i + 1 < args.size()) {
+            record_path = args[++i];
+        } else if (args[i] == "--record-library" && i + 1 < args.size()) {
+            record_library = args[++i];
         } else if (args[i] == "--screens-image" && i + 1 < args.size()) {
             screens_image = args[++i];
         } else if (args[i] == "--seconds" && i + 1 < args.size()) {
@@ -254,6 +340,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     }
     std::string error;
     std::vector<Command> script;
+    bool want_aux_vars = !record_path.empty(); // BRAKES' variable stack in the outputs
     if (!script_path.empty()) {
         script = read_script(script_path, error);
         if (!error.empty()) {
@@ -261,6 +348,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             return 2;
         }
         for (const auto& c : script) seconds = (std::max)(seconds, c.time + 1.0);
+        want_aux_vars = true;
     }
 
     // The cars: <folder> <names...>, or "consist" <consist name> as RTS looks it up.
@@ -339,9 +427,26 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             if (player == SIZE_MAX) player = i;
         }
     }
+    if (own_brakes && air == trainplugin::DllAir::rts) air = trainplugin::DllAir::own_valve;
     consist->set_air(air);
+    consist->set_own_brakes(own_brakes, book_numbers);
+    if (klub_own && air == trainplugin::DllAir::rts) air = trainplugin::DllAir::own_valve; // it needs the realistic air
+    consist->set_air(air);
+    consist->set_own_klub(klub_own);
+    if (klub_own) std::printf("openRTS's КЛУБ in place of Brakes.dll's\n");
     if (air != trainplugin::DllAir::rts) {
         std::printf("realistic air, %s\n", air == trainplugin::DllAir::own_valve ? "openRTS's valve over Brakes.dll" : "the DLL's valve");
+    }
+    if (own_brakes) {
+        std::printf("openRTS's cab brake devices, %s numbers\n", book_numbers ? "the books'" : "Brakes.dll's");
+        for (std::size_t i = 0; i < legacy.size(); ++i) {
+            const auto* definition = train.cars()[i].definition;
+            if (!definition || !definition->engine) continue;
+            const auto parameters = trainplugin::brakes_parameters(*definition->engine);
+            if (!parameters.present) continue;
+            if (parameters.understood()) std::printf("  car %zu: openRTS's\n", i);
+            else std::printf("  car %zu keeps Brakes.dll: %s\n", i, parameters.unknown.c_str());
+        }
     }
     // Its air from Init, as the game's first entering (RTS's).
     if (!trainplugin::enter_new_train(*consist, player, train, true, start_state)) {
@@ -351,7 +456,301 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     std::printf("player in car %zu (%s)\n", player, names[player].c_str());
 
     trainplugin::LegacyWorld world;
+    world.record_aux_vars = want_aux_vars;
+    // A scripted line for the КЛУБ's golden runs (docs/brakes-dll-replacement.md,
+    // step 3.2): signals and speed posts at metres from where the train's
+    // front starts. The ALSN's arrays, the train's limits and the next speed
+    // post follow the front as the train runs (RTS 0x508520's, simplified:
+    // one NORMAL head per signal, nothing behind the train).
+    struct LineSignal {
+        std::string name;
+        double at{};
+        std::uint32_t aspect{};
+        float limit = -1.0f; // m/s, -1 none
+    };
+    struct LinePost {
+        double at{};
+        float limit{}; // m/s
+    };
+    std::vector<LineSignal> line_signals;
+    std::vector<LinePost> line_posts;
+    bool line = false;
+    double front = 0.0, last_front = 0.0; // the train's front along the line, m
+    float line_limit = 120.0f / 3.6f;     // before the first post
+    float signal_limit = -1.0f;           // the last signal passed's
+    const auto fill_line = [&] {
+        if (!line) return;
+        world.alsn_ahead.clear();
+        world.alsn_passing.clear();
+        world.signals_ahead.clear();
+        std::sort(line_signals.begin(), line_signals.end(), [](const auto& a, const auto& b) { return a.at < b.at; });
+        std::sort(line_posts.begin(), line_posts.end(), [](const auto& a, const auto& b) { return a.at < b.at; });
+        for (const auto& s : line_signals) {
+            dllhost::SignalInput in;
+            in.distance = static_cast<float>(s.at - front);
+            in.aspect[0] = s.aspect;
+            in.flags = 1; // a NORMAL head
+            in.speed_limit = s.limit;
+            if (s.at > front) {
+                if (world.alsn_ahead.size() < 16) world.alsn_ahead.push_back(in);
+            } else if (s.at > last_front) {
+                world.alsn_passing.push_back(in);
+                signal_limit = s.limit;
+            }
+        }
+        if (!world.alsn_ahead.empty()) world.signals_ahead.push_back(world.alsn_ahead.front());
+        float limit = line_limit;
+        const LinePost* next = nullptr;
+        for (const auto& p : line_posts) {
+            if (p.at <= front) limit = p.limit;
+            else if (!next) next = &p;
+        }
+        world.next_limit = next ? next->limit : -1.0f;
+        world.next_limit_distance = next ? static_cast<float>(next->at - front) : -1.0f;
+        world.route = {limit, world.next_limit, world.next_limit_distance};
+        world.signal = {signal_limit, -1.0f, -1.0f};
+    };
+    // press: the keys still to go, and the one down this step.
+    std::deque<std::uint32_t> presses;
+    std::optional<std::uint32_t> pressed;
+    // --klub shadow (docs/brakes-dll-replacement.md, step 3.3): openRTS's
+    // КЛУБ (simulation/klub.hpp) on the same inputs as Brakes.dll's, set
+    // against its variables every step.
+    trainplugin::KlubParameters klub;
+    if (klub_shadow) {
+        if (const auto* d = train.cars()[player].definition; d && d->engine) klub = trainplugin::klub_parameters(*d->engine);
+        if (!klub.present) {
+            std::fprintf(stderr, "--klub shadow: the player's engine has no Brakes.dll\n");
+            return 2;
+        }
+        world.record_aux_vars = true;
+        std::printf("openRTS's КЛУБ beside Brakes.dll's: PB_SETUP %u, ALSN_DELAY %.1f, KLUB_GRSPD %.0f, %zu keys\n", klub.settings.setup,
+                    klub.settings.alsn_delay, klub.settings.green_speed, klub.keys.size());
+    }
+    simulation::KlubState klub_state;
+    simulation::KlubOutput klub_out;
+    simulation::KlubScreen klub_screen;
+    float klub_last_ur = 0.0f, klub_last_gauge = 0.0f; // the last step's (updateKLUB draws before the brakes run)
+    std::vector<simulation::KlubPress> klub_keys;
+    // The cab's switches as they stood in the step before: what Brakes.dll
+    // read during this step's Run (RTS moves them after the DLLs' Run).
+    std::vector<dllhost::SwitchState> klub_switches;
+    struct ShadowDiff {
+        std::size_t steps{};
+        double first{};
+        double golden{}, ours{};
+    };
+    std::map<std::string, ShadowDiff> shadow_diffs;
+    std::size_t shadow_steps = 0, shadow_printed = 0;
+    // A switch the script moved: the КЛУБ's events.
+    const auto operated = [&](const std::uint32_t id, const std::uint32_t state) {
+        if (!klub_shadow) return;
+        const auto i = static_cast<std::int32_t>(id);
+        if (state != 0)
+            if (const auto* press = klub.key(i)) klub_keys.push_back(*press);
+    };
+    // One step of openRTS's КЛУБ after the host's, on what Brakes.dll had.
+    const auto shadow_step = [&](const double now) {
+        const auto* out = consist->output(player);
+        const int lib = consist->aux_library(player, "BRAKES");
+        if (!out || lib < 0 || static_cast<std::size_t>(lib) >= out->aux_vars.size()) return;
+        const auto& var = out->aux_vars[static_cast<std::size_t>(lib)].var;
+        const auto at = [&](const std::size_t offset) { return offset / 4 < var.size() ? var[offset / 4] : 0.0f; };
+        const auto bits = [&](const std::size_t offset) {
+            std::uint32_t u = 0;
+            const float v = at(offset);
+            std::memcpy(&u, &v, sizeof u);
+            return u;
+        };
+        const auto state_in = [](const std::vector<dllhost::SwitchState>& list, const std::int32_t id) {
+            return id >= 0 && static_cast<std::size_t>(id) < list.size() ? list[static_cast<std::size_t>(id)].state : 0u;
+        };
+        if (klub_switches.empty()) klub_switches = out->switches; // the first step: as they stand
+        const auto on = [&](const std::int32_t id) { return state_in(klub_switches, id) != 0; };
+        // Switched after this step's Run: a switch whose state changed.
+        const auto moved = [&](const std::int32_t id) { return state_in(klub_switches, id) != state_in(out->switches, id); };
+        std::vector<simulation::KlubSignal> signals;
+        for (const auto& g : world.alsn_ahead) {
+            simulation::KlubSignal k;
+            k.distance = g.distance;
+            std::memcpy(k.aspect, g.aspect, sizeof k.aspect);
+            k.flags = g.flags;
+            k.speed_limit = g.speed_limit;
+            signals.push_back(k);
+        }
+        simulation::KlubInputs in;
+        in.dt = static_cast<float>(simulation::train_step);
+        in.speed = static_cast<float>(train.speed());
+        in.signals = signals;
+        // Cabin::Signal before ALSN (dllhost Host::signals): the leading cab's.
+        if (!world.signals_ahead.empty()) {
+            const auto& g = world.signals_ahead.front();
+            in.cab_signal.distance = g.distance;
+            std::memcpy(in.cab_signal.aspect, g.aspect, sizeof in.cab_signal.aspect);
+            in.cab_signal.flags = g.flags;
+            in.cab_signal.speed_limit = g.speed_limit;
+        } else {
+            in.cab_signal = {};
+            in.cab_signal.speed_limit = -1.0f;
+        }
+        float limit = -1.0f;
+        for (const float v : {world.route.limit, world.signal.limit, world.event.limit})
+            if (v >= 0.0f && (limit < 0.0f || v < limit)) limit = v;
+        in.limit = limit;
+        in.next_limit = world.next_limit;
+        in.next_limit_distance = world.next_limit_distance;
+        in.powered = true;
+        for (const auto id : klub.power) in.powered = in.powered && on(id);
+        in.epk_key = on(klub.epk_key);
+        in.rb_held = on(klub.rb);
+        in.tskbm = on(klub.tskbm);
+        in.saut = (klub.settings.setup & 1) && on(klub.saut);
+        in.saut_permitted = at(256); // САУТ is not openRTS's yet: Brakes.dll's
+        in.wheelslip = out->engine.wheelslip != 0;
+        const auto& car = train.cars()[player];
+        in.cylinder = (std::max)(car.cylinder, car.independent);
+        in.day_time = world.day_time;
+        in.cassette = on(klub.cassette);
+        in.keys = klub_keys;
+        in.rb = moved(klub.rb);
+        in.rbs = moved(klub.rbs);
+        in.epk_key_turned = moved(klub.epk_key);
+        in.epk_key_to = state_in(out->switches, klub.epk_key) != 0;
+        // The ЭПК key turned on at Init (the train's DLL sets it: Switched,
+        // its 903 and the КЛУБ's beep in the first step).
+        if (shadow_steps == 0 && in.epk_key) in.epk_key_turned = in.epk_key_to = true;
+        simulation::step_klub(klub_state, klub.settings, in, klub_out);
+        klub_keys.clear();
+        klub_switches = out->switches;
+        ++shadow_steps;
+        // Set against Brakes.dll's (docs/reverse/brakes-dll.md §11's offsets).
+        const auto differ = [&](const char* name, const double golden, const double ours, const double within) {
+            if (std::abs(golden - ours) <= within) return;
+            auto& d = shadow_diffs[name];
+            if (d.steps++ == 0) {
+                d.first = now;
+                d.golden = golden;
+                d.ours = ours;
+            }
+            if (shadow_printed < 12) {
+                ++shadow_printed;
+                std::printf("%6.2f КЛУБ %s: Brakes.dll %g, openRTS %g\n", now, name, golden, ours);
+            }
+        };
+        const auto& s = klub_state;
+        constexpr std::uint32_t flags_compared = 0x1 | 0x8 | 0x40 | 0x80 | 0x400 | 0x800 | 0x1000 | 0x2000 | 0x8000 | 0x10000 |
+                                                 0x80000 | 0x400000 | 0x800000 | 0x1000000 | 0x2000000 | 0x4000000 | 0x10000000;
+        differ("aspect", out->cab_aspect, s.signal.aspect[0], 0.0);
+        differ("limit", at(80), s.limit, 0.01);
+        differ("target", at(116), s.target_speed, 0.01);
+        differ("target_m", at(120), s.target_distance, 0.05);
+        differ("permitted", at(140), s.permitted, 0.01);
+        differ("timer", at(24), s.timer, 0.06);
+        differ("flags", bits(8) & flags_compared, s.flags & flags_compared, 0.0);
+        differ("kon", bits(4) & 0x400, s.device & 0x400, 0.0);
+        differ("track", bits(160), s.track, 0.0);
+        differ("wagons", bits(176), s.wagons, 0.0);
+        differ("entry", bits(132), s.entry, 0.0);
+        differ("epk_bit", bits(32) & 1, s.epk_bit ? 1 : 0, 0.0);
+        // The screen, drawn from the КЛУБ's state, against Brakes.dll's
+        // (simulation/klub_screen.hpp).
+        {
+            simulation::KlubScreenInputs si;
+            si.powered = in.powered;
+            si.epk_key = in.epk_key;
+            si.speed = in.speed;
+            si.direction = klub.flip == 0 ? -1 : 1; // PB_FLIP is the cab (from 0) whose forward is the other way
+            si.pipe = klub_last_gauge > 0.0f ? klub_last_gauge : car.pipe;
+            si.cylinder = in.cylinder;
+            si.equalising = klub_last_ur;
+            si.acceleration = car.acceleration;
+            si.line_frequency = world.line_frequency;
+            si.wheelslip = in.wheelslip;
+            si.day_time = world.day_time;
+            si.cassette = in.cassette;
+            si.cassette_given = klub.cassette >= 0;
+            simulation::draw_klub(klub_state, klub.settings, si, klub_screen);
+            const formats::CabDisplay* display = nullptr;
+            if (const auto* cab_now = consist->cab(player))
+                for (const auto& dd : cab_now->displays)
+                    if (static_cast<std::int32_t>(dd.id) == klub.screen) display = &dd;
+            for (const auto& screen : out->screens) {
+                if (static_cast<std::int32_t>(screen.display) != klub.screen) continue;
+                for (std::size_t k = 0; k < klub_screen.bil.size() && k < screen.objects.size(); ++k) {
+                    const auto& o = klub_screen.bil[k];
+                    const auto& g = screen.objects[k];
+                    char name[24];
+                    if (o.state_set) {
+                        std::snprintf(name, sizeof name, "bil%zu.state", k);
+                        differ(name, g.state, o.state, 0.0);
+                    }
+                    if (o.value_set) {
+                        std::snprintf(name, sizeof name, "bil%zu.value", k);
+                        differ(name, g.value, o.value, 0.001);
+                    }
+                    if (o.blink_set) {
+                        std::snprintf(name, sizeof name, "bil%zu.blink", k);
+                        differ(name, g.fade[2], o.blink, 0.001);
+                    }
+                    if (o.text_set && k < screen.texts.size()) {
+                        auto ours = o.text;
+                        if (display && k < display->screen.objects.size() && ours.size() > display->screen.objects[k].max_length)
+                            ours.resize(display->screen.objects[k].max_length);
+                        if (ours != screen.texts[k]) {
+                            std::snprintf(name, sizeof name, "bil%zu.text", k);
+                            if (shadow_printed < 30) {
+                                std::printf("%6.2f КЛУБ %s: Brakes.dll '%s', openRTS '%s'\n", now, name,
+                                            trainplugin::utf16_to_utf8(screen.texts[k]).c_str(), trainplugin::utf16_to_utf8(ours).c_str());
+                            }
+                            differ(name, 0.0, 1.0, 0.0);
+                        }
+                    }
+                }
+            }
+            for (std::size_t k = 0; k < klub.lamps.size(); ++k) {
+                const auto id = klub.lamps[k];
+                if (id < 0 || static_cast<std::size_t>(id) >= out->displays.size()) continue;
+                char name[24];
+                std::snprintf(name, sizeof name, "lamp%zu", k + 1);
+                differ(name, out->displays[static_cast<std::size_t>(id)].state, klub_screen.lamps[k], 0.0);
+            }
+        }
+        klub_last_ur = out->engine.equalising;
+        klub_last_gauge = at(28);
+        // The КЛУБ's sounds of Brakes.sms, in order.
+        std::vector<std::uint16_t> golden_sounds;
+        if (static_cast<std::size_t>(lib) < out->aux_sound.size())
+            for (const auto c : out->aux_sound[static_cast<std::size_t>(lib)].triggers)
+                if (c == 56 || c == 57 || (c >= 3192 && c <= 3199) || c == 3956 || c == 3957) golden_sounds.push_back(c);
+        if (golden_sounds != klub_out.sounds) {
+            const auto join = [](const std::vector<std::uint16_t>& list) {
+                double v = 0;
+                for (const auto c : list) v = v * 10000.0 + c;
+                return v;
+            };
+            differ("sounds", join(golden_sounds), join(klub_out.sounds), 0.0);
+        }
+    };
     const auto* cab = consist->cab(player);
+    // The golden run's file and what it last saw of each car's switches.
+    std::FILE* record = nullptr;
+    std::vector<std::vector<std::uint32_t>> recorded_switches;
+    std::vector<std::vector<std::pair<std::uint32_t, float>>> recorded_displays;
+    std::vector<std::map<std::pair<std::uint32_t, std::size_t>, std::string>> recorded_screens;
+    if (!record_path.empty()) {
+#ifdef _WIN32
+        if (fopen_s(&record, record_path.c_str(), "w") != 0) record = nullptr;
+#else
+        record = std::fopen(record_path.c_str(), "w");
+#endif
+        if (!record) {
+            std::fprintf(stderr, "cannot write %s\n", record_path.c_str());
+            return 2;
+        }
+        want_aux_vars = true;
+        std::fprintf(record, "t\tcar\tkmh\tpipe\tcyl\tind\taux\tmr\tur\te_ind\te_pipe_rate\te_aux_rate\te_mr_rate\te_ept\te_systems\te_alsn\t"
+                             "e_flags\tsnd_lib\tsnd_ext\tsnd_cab\tswitches\tdisplays\taspect\tscreens\tvar\n");
+    }
     int failures = 0;
     double time = 0.0;
     double next_print = 0.0;
@@ -387,6 +786,27 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     while (time <= seconds + 1e-9) {
         for (auto& c : script) {
             if (c.done || c.time > time + 1e-9) continue;
+            // when <metres> <command ...>: the command once the train's front
+            // is that far along the line (from the line's time on).
+            if (c.verb == "then") continue; // waits for its `when`
+            if (c.verb == "when") {
+                if (c.args.size() < 2 || front < std::atof(c.args[0].c_str())) continue;
+                std::printf("%6.1f at %.0f m:", time, front);
+                for (std::size_t k = 1; k < c.args.size(); ++k) std::printf(" %s", c.args[k].c_str());
+                std::printf("\n");
+                c.verb = c.args[1];
+                c.args.erase(c.args.begin(), c.args.begin() + 2);
+                // then <seconds> <command ...>: the lines after it, so long
+                // after it fired.
+                for (auto k = static_cast<std::size_t>(&c - script.data()) + 1;
+                     k < script.size() && script[k].verb != "when"; ++k) {
+                    auto& t = script[k];
+                    if (t.verb != "then" || t.args.size() < 2) continue;
+                    t.time = time + std::atof(t.args[0].c_str());
+                    t.verb = t.args[1];
+                    t.args.erase(t.args.begin(), t.args.begin() + 2);
+                }
+            }
             c.done = true;
             if (c.verb == "switch" && c.args.size() >= 2) {
                 std::uint32_t id = 0;
@@ -401,6 +821,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 }
                 const auto state = static_cast<std::uint32_t>(std::atoi(c.args[1].c_str()));
                 const bool ok = consist->operate(player, id, state);
+                if (ok) operated(id, state);
                 std::printf("%6.1f switch %u -> %u: %s\n", time, id, state, ok ? "allowed" : "refused");
             } else if (c.verb == "show" && !c.args.empty()) {
                 // show <switch id>: its State / SetState / frame as the host keeps them
@@ -482,6 +903,28 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     signal.flags = c.args.size() > 2 ? static_cast<std::uint32_t>(std::atoi(c.args[2].c_str())) : 1u; // 1 normal
                     world.alsn_ahead.push_back(signal);
                 }
+            } else if (c.verb == "line_signal" && c.args.size() >= 3) {
+                // line_signal <name> <metres> <aspect> [limit km/h]: a signal on the line
+                line = true;
+                line_signals.push_back({c.args[0], std::atof(c.args[1].c_str()),
+                                        static_cast<std::uint32_t>(std::atoi(c.args[2].c_str())),
+                                        c.args.size() > 3 ? static_cast<float>(std::atof(c.args[3].c_str()) / 3.6) : -1.0f});
+            } else if (c.verb == "line_aspect" && c.args.size() >= 2) {
+                // line_aspect <name> <aspect>: the signal cleared or put back
+                for (auto& s : line_signals)
+                    if (s.name == c.args[0]) s.aspect = static_cast<std::uint32_t>(std::atoi(c.args[1].c_str()));
+            } else if (c.verb == "line_post" && c.args.size() >= 2) {
+                // line_post <metres> <km/h>: a speed post on the line
+                line = true;
+                line_posts.push_back({std::atof(c.args[0].c_str()), static_cast<float>(std::atof(c.args[1].c_str()) / 3.6)});
+            } else if (c.verb == "line_limit" && !c.args.empty()) {
+                // line_limit <km/h>: the limit before the first post
+                line = true;
+                line_limit = static_cast<float>(std::atof(c.args[0].c_str()) / 3.6);
+            } else if (c.verb == "press" && !c.args.empty()) {
+                // press <switch id>...: momentary keys, one a step, each to 1
+                // and back to 0 the step after (the КЛУБ's keys: Switched on 1)
+                for (const auto& a : c.args) presses.push_back(static_cast<std::uint32_t>(std::atoi(a.c_str())));
             } else if (c.verb == "voltage" && !c.args.empty()) {
                 world.line_voltage = static_cast<float>(std::atof(c.args[0].c_str()));
                 world.line_frequency = c.args.size() > 1 ? static_cast<float>(std::atof(c.args[1].c_str())) : 0.0f;
@@ -563,11 +1006,26 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 if (!ok) ++failures;
             }
         }
+        // press: the last key up, the next one down.
+        if (pressed) {
+            if (consist->operate(player, *pressed, 0)) operated(*pressed, 0);
+            pressed.reset();
+        }
+        if (!presses.empty()) {
+            pressed = presses.front();
+            presses.pop_front();
+            const bool ok = consist->operate(player, *pressed, 1);
+            if (ok) operated(*pressed, 1);
+            std::printf("%6.1f press %u: %s\n", time, *pressed, ok ? "ok" : "refused");
+            if (!ok) ++failures;
+        }
+        fill_line();
         if (!consist->step(simulation::train_step, host_trains(), world)) {
             std::printf("%6.1f host failed: %s\n", time, consist->error().c_str());
             ++failures;
             break;
         }
+        if (klub_shadow) shadow_step(time);
         for (std::size_t i = 0; i < legacy.size(); ++i) {
             if (const auto* out = consist->output(i)) {
                 triggers += out->sound_ext.size() + out->sound_cab.size();
@@ -595,7 +1053,95 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         }
         if (const auto text = consist->take_messages(); !text.empty()) std::printf("%s", text.c_str());
         train.step();
+        last_front = front;
+        front += train.speed() * simulation::train_step;
         if (cut_train) cut_train->step();
+        if (record) {
+            recorded_switches.resize(legacy.size());
+            recorded_displays.resize(legacy.size());
+            recorded_screens.resize(legacy.size());
+            for (std::size_t i = 0; i < legacy.size(); ++i) {
+                const auto* out = consist->output(i);
+                const int lib = consist->aux_library(i, record_library);
+                if (!out || lib < 0) continue;
+                const auto& s = train.cars()[i];
+                const auto& e = out->engine;
+                const auto list = [](const std::vector<std::uint16_t>& codes) {
+                    std::string text;
+                    for (const auto c : codes) text += (text.empty() ? "" : " ") + std::to_string(c);
+                    return text.empty() ? std::string("-") : text;
+                };
+                const auto l = static_cast<std::size_t>(lib);
+                // openRTS's cab brake devices in place of Brakes.dll's: their
+                // УР, independent brake, ЭПТ, gauges and lamps.
+                float ur = e.equalising, independent = e.independent_brake, ep = e.ep_value;
+                unsigned systems = e.systems;
+                std::vector<dllhost::DisplayState> shown_displays = out->displays;
+                if (const auto* asked = train.demands_of(i); asked && asked->cab_brakes && s.definition && s.definition->engine) {
+                    const auto& r = *asked->cab_brakes;
+                    ur = r.equalising_kept;
+                    independent = r.independent_brake;
+                    ep = r.ep_value;
+                    systems = r.systems;
+                    trainplugin::show_cab_brakes(trainplugin::brakes_parameters(*s.definition->engine),
+                                                 trainplugin::working_cab(s.definition->engine->brakes_library, out->switches), r,
+                                                 shown_displays);
+                }
+                std::string switches;
+                auto& seen = recorded_switches[i];
+                seen.resize(out->switches.size(), ~0u);
+                for (std::size_t k = 0; k < out->switches.size(); ++k) {
+                    if (out->switches[k].state == seen[k]) continue;
+                    seen[k] = out->switches[k].state;
+                    switches += (switches.empty() ? "" : " ") + std::to_string(k) + "=" + std::to_string(seen[k]);
+                }
+                // Displays: a change of state, or of value by over 0.005.
+                std::string displays;
+                auto& shown = recorded_displays[i];
+                shown.resize(shown_displays.size(), {~0u, -1e9f});
+                for (std::size_t k = 0; k < shown_displays.size(); ++k) {
+                    const auto& d = shown_displays[k];
+                    if (d.state == shown[k].first && std::abs(d.value - shown[k].second) <= 0.005f) continue;
+                    shown[k] = {d.state, d.value};
+                    char text[48];
+                    std::snprintf(text, sizeof text, "%s%zu=%u/%.3g", displays.empty() ? "" : " ", k, d.state, d.value);
+                    displays += text;
+                }
+                std::fprintf(record, "%.2f\t%zu\t%.3f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%u\t%u\t%u\t%s\t%s\t%s\t%s\t",
+                             time, i, train.speed() * 3.6, s.pipe, s.cylinder, s.independent, s.auxiliary, s.main_reservoir, ur,
+                             independent, e.train_pipe_rate, e.auxiliary_rate, e.main_reservoir_rate, ep, systems,
+                             static_cast<unsigned>(e.alsn_on), e.engine_flags,
+                             l < out->aux_sound.size() ? list(out->aux_sound[l].triggers).c_str() : "-", list(out->sound_ext).c_str(),
+                             list(out->sound_cab).c_str(), switches.empty() ? "-" : switches.c_str());
+                // The screens' texts that changed: display:object=text, ';'
+                // between (a hidden object's text empty).
+                std::string screens;
+                auto& texts = recorded_screens[i];
+                for (const auto& screen : out->screens) {
+                    for (std::size_t k = 0; k < screen.texts.size(); ++k) {
+                        std::string text = k < screen.objects.size() && screen.objects[k].state < 0
+                                               ? std::string()
+                                               : trainplugin::utf16_to_utf8(screen.texts[k]);
+                        for (auto& ch : text)
+                            if (ch == '\t' || ch == ';' || ch == '\n') ch = ' ';
+                        auto& seen_text = texts[{screen.display, k}];
+                        if (text == seen_text) continue;
+                        seen_text = text;
+                        screens += (screens.empty() ? "" : ";") + std::to_string(screen.display) + ":" + std::to_string(k) + "=" + text;
+                    }
+                }
+                std::fprintf(record, "%s\t%u\t%s\t", displays.empty() ? "-" : displays.c_str(), out->cab_aspect,
+                             screens.empty() ? "-" : screens.c_str());
+                if (l < out->aux_vars.size()) {
+                    for (const float v : out->aux_vars[l].var) {
+                        std::uint32_t bits = 0;
+                        std::memcpy(&bits, &v, sizeof bits);
+                        std::fprintf(record, "%08X ", bits);
+                    }
+                }
+                std::fprintf(record, "\n");
+            }
+        }
         if (show_body) {
             body_most.resize(train.cars().size());
             for (std::size_t i = 0; i < train.cars().size(); ++i) {
@@ -626,6 +1172,17 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                             s.pipe, ur, s.main_reservoir, (std::max)(s.cylinder, s.independent),
                             brake / 1000.0, static_cast<unsigned long long>(triggers), train.cars().back().pipe,
                             train.cars().back().cylinder);
+                if (line) {
+                    // On the line: where the front is, the next signal, and
+                    // what BRAKES' КЛУБ makes of it (its limit, target,
+                    // permitted speed, flags; docs/reverse/brakes-dll.md §11).
+                    const auto v = [&](const char* name) { return field(name, *consist, player, train); };
+                    std::printf("       line %.0f m, next signal %s, aspect %.0f, limit %.0f, target %.0f at %.0f, permitted %.0f, "
+                                "flags 0x%08llX, timer %.2f\n",
+                                front, world.alsn_ahead.empty() ? "none" : (std::to_string(static_cast<int>(world.alsn_ahead.front().distance)) + " m").c_str(),
+                                v("aspect"), v("var80"), v("var116"), v("var120"), v("var140"),
+                                static_cast<unsigned long long>(v("bits8")), v("var24"));
+                }
                 if (show_body) {
                     for (std::size_t i = 0; i < body_most.size(); ++i) {
                         const auto& m = body_most[i];
@@ -741,6 +1298,15 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         ++failures;
     }
     if (!screens_image.empty()) write_screen_images(vfs, legacy[player], consist->cab(player), consist->output(player), screens_image);
+    if (record) std::fclose(record);
+    if (klub_shadow) {
+        std::printf("КЛУБ shadow: %zu steps\n", shadow_steps);
+        for (const auto& [name, d] : shadow_diffs)
+            std::printf("  %-10s %6zu steps differ, first at %.2f s: Brakes.dll %g, openRTS %g\n", name.c_str(), d.steps, d.first,
+                        d.golden, d.ours);
+        if (shadow_diffs.empty()) std::printf("  all the same\n");
+        else ++failures;
+    }
     std::printf("%s\n", failures ? "FAILED" : "ok");
     return failures ? 1 : 0;
 }

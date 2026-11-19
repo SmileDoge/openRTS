@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -41,8 +42,10 @@ public:
 
     // `listener` in scene coordinates (relative to the origin).
     // `gain`: the share of outside sound that reaches the listener (the
-    // doors and windows of the room he is in, docs/sound.md).
-    void update(float dt, const glm::vec3& listener, SoundCamera camera, VoiceSink& sink, float gain = 1.0f);
+    // doors and windows of the room he is in, docs/sound.md). `night`: for
+    // the scripts' ORTSDay_Trigger / ORTSNight_Trigger (none: neither fires).
+    void update(float dt, const glm::vec3& listener, SoundCamera camera, VoiceSink& sink, float gain = 1.0f,
+                std::optional<bool> night = std::nullopt);
     // Moves the scene origin; loaded sources move with it.
     void set_origin(const formats::RoutePosition& origin);
     void stop(VoiceSink& sink);

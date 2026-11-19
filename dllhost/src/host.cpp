@@ -167,6 +167,19 @@ float advance_switch(const float from, const float target, float distance, const
     return at;
 }
 
+// An AuxLibrary's var + 32 (protocol AuxExchange).
+std::uint32_t exchange_word(const AuxMirror& info) {
+    std::uint32_t word = 0;
+    if (info.var.size() > 8) std::memcpy(&word, &info.var[8], sizeof(word));
+    return word;
+}
+// Its var + 8 (AuxExchange::flags).
+std::uint32_t flags_word(const AuxMirror& info) {
+    std::uint32_t word = 0;
+    if (info.var.size() > 2) std::memcpy(&word, &info.var[2], sizeof(word));
+    return word;
+}
+
 } // namespace
 
 const wchar_t* keep(std::deque<std::wstring>& strings, std::u16string_view text) {
@@ -1043,6 +1056,16 @@ bool Host::init_car(CarMirror& car, std::uint32_t state) {
     Module& m = *car.module;
     bool ok = true;
     prepare_fpu();
+    // Running (State bit 1) is a moving train's state in RTS (0x468C74 sets
+    // it from the train's speed). A train put down running stands: Init
+    // sees it moving forward at 0.01 m/s and then it stands again. The
+    // ЭП1's DLL picks its working cab by the sign of the speed when
+    // running, and standing readied neither cab while the air and the
+    // breaker were up (testers, 2026-11-18: the 367 would not go in).
+    abi::Wagon* w = car.wagon();
+    const float speed = w->velocity;
+    const bool nudged = (state & 2u) != 0 && std::abs(speed) < 0.01f;
+    if (nudged) w->velocity = 0.01f;
     if (m.init) {
         auto* fn = reinterpret_cast<abi::InitFn>(m.init);
         abi::Locomotive* v = view(car, &m);
@@ -1068,6 +1091,7 @@ bool Host::init_car(CarMirror& car, std::uint32_t state) {
             }
         }
     }
+    if (nudged) car.wagon()->velocity = speed;
     if (!ok) {
         log(L"DLL " + m.path + L": Init returned false for car " + std::to_wstring(car.index));
         return false;
@@ -1225,6 +1249,34 @@ void Host::group(CarMirror& player, const bool players) {
 
 // --- each step ---------------------------------------------------------------------
 
+void Host::write_aux(const StepRequest& request) {
+    for (const auto& p : request.aux_parameters) {
+        if (p.car >= cars_.size()) continue;
+        auto& car = *cars_[p.car];
+        if (p.library >= car.aux_info.size() || p.index >= car.aux_info[p.library].params.size()) continue;
+        car.aux_info[p.library].params[p.index].value = p.value;
+    }
+    for (auto& car : cars_)
+        for (auto& aux : car->aux_info) aux.pending_writes.clear();
+    for (const auto& w : request.aux_writes) {
+        if (w.car >= cars_.size()) continue;
+        auto& car = *cars_[w.car];
+        if (w.library >= car.aux_info.size()) continue;
+        car.aux_info[w.library].pending_writes.push_back(w);
+    }
+}
+
+void Host::apply_aux_writes(AuxMirror& aux) {
+    for (const auto& w : aux.pending_writes) {
+        if (w.offset % 4 != 0 || w.offset / 4u >= aux.var.size()) continue;
+        std::uint32_t word = 0;
+        std::memcpy(&word, &aux.var[w.offset / 4u], sizeof word);
+        word = (word & ~w.mask) | (w.bits & w.mask);
+        std::memcpy(&aux.var[w.offset / 4u], &word, sizeof word);
+    }
+    aux.pending_writes.clear();
+}
+
 void Host::write_inputs(const std::vector<CarInput>& inputs) {
     const std::size_t n = (std::min)(inputs.size(), cars_.size());
     for (std::size_t i = 0; i < n; ++i) {
@@ -1314,6 +1366,7 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
     set_direction_ = 0;
     items_wanted_ = 0.0f;
     tape_car_ = request.tape_car;
+    want_aux_vars_ = request.want_aux_vars != 0;
     tape_set_ = tape_started_ = false;
     mark_tape();
     // The route database's signals, the track items and the player's
@@ -1354,6 +1407,7 @@ bool Host::step(const StepRequest& request, StepReply& reply) {
         sound->paired_flags = block->data();
     }
     write_inputs(request.cars);
+    write_aux(request);
     // A control cable connected or parted (the car menu): the multiple-unit
     // groups again (RTS 0x4F995C).
     {
@@ -1453,6 +1507,8 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
         if (am.failed || !am.run) continue;
         for (const auto& call : car.aux_info[i].calls) {
             if (call.event != aux_run || call.order >= 0) continue;
+            car.aux_info[i].exchange_before = exchange_word(car.aux_info[i]);
+            apply_aux_writes(car.aux_info[i]);
             car.aux[i].lib_flags &= ~1u;
             auto* fn = reinterpret_cast<abi::AuxRunFn>(am.run);
             abi::Locomotive* v = view(car, &am);
@@ -1473,6 +1529,8 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
         if (am.failed || !am.run) continue;
         for (const auto& call : car.aux_info[i].calls) {
             if (call.event != aux_run || call.order < 0) continue;
+            car.aux_info[i].exchange_before = exchange_word(car.aux_info[i]);
+            apply_aux_writes(car.aux_info[i]);
             car.aux[i].lib_flags |= 1u;
             auto* fn = reinterpret_cast<abi::AuxRunFn>(am.run);
             abi::Locomotive* v = view(car, &am);
@@ -1481,6 +1539,8 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
             if (crash) fail(am, L"Run (aux)", crash);
         }
     }
+    // A library without a Run this step still takes its writes.
+    for (auto& aux : car.aux_info) apply_aux_writes(aux);
     if (flipped) {
         w->velocity = -w->velocity;
         w->acceleration = -w->acceleration;
@@ -2063,6 +2123,17 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
         if (!info.has_sound) continue;
         drain(info.sound, o.triggers);
         vars(info.sound, o.vars);
+    }
+    // Each library's var + 32 (AuxExchange).
+    out.aux_exchange.resize(car.aux_info.size());
+    for (std::size_t i = 0; i < car.aux_info.size(); ++i) {
+        out.aux_exchange[i] = {car.aux_info[i].exchange_before, exchange_word(car.aux_info[i]), flags_word(car.aux_info[i])};
+    }
+    // The golden runs: each library's whole variable stack.
+    out.aux_vars.clear();
+    if (want_aux_vars_) {
+        out.aux_vars.resize(car.aux_info.size());
+        for (std::size_t i = 0; i < car.aux_info.size(); ++i) out.aux_vars[i].var = car.aux_info[i].var;
     }
     out.light_flags.resize(car.lights.size());
     for (std::size_t i = 0; i < car.lights.size(); ++i) out.light_flags[i] = car.lights[i].flags;

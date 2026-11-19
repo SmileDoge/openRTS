@@ -90,6 +90,18 @@ std::optional<double> Dispatcher::authority_ahead(const std::uint64_t id) const 
     return (std::max)(0.0, p.authority - p.head);
 }
 
+void Dispatcher::restore_progress(const std::uint64_t id, const std::size_t leg, const std::size_t next_mark) {
+    const auto it = followers_.find(id);
+    if (it == followers_.end()) return;
+    auto& f = *it->second;
+    if (leg >= f.route.legs.size()) return;
+    cancel(f, 0);
+    f.progress.leg = leg;
+    f.progress.next_mark = (std::min)(next_mark, f.route.legs[leg].marks.size());
+    f.progress.finished = false;
+    f.span_hint = 0;
+}
+
 bool Dispatcher::next_leg(const std::uint64_t id) {
     const auto it = followers_.find(id);
     if (it == followers_.end()) return false;

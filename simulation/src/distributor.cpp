@@ -205,10 +205,13 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         s.cylinder += rise;
         s.auxiliary = (std::max)(s.auxiliary - rise * car.cylinder_volume / zr_volume, 0.0f);
     };
-    const auto rates = plug_rates(car.plug);
+    auto rates = plug_rates(car.plug);
+    rates.fill *= car.pace;
+    rates.release *= car.pace;
+    rates.emergency *= car.pace;
     if (s.emergency) {
         s.braking = true;
-        const float fill = (car.kind == DistributorKind::vr483 ? 0.45f : rates.emergency) * h;
+        const float fill = (car.kind == DistributorKind::vr483 ? 0.45f * car.pace : rates.emergency) * h;
         const float rise = (std::min)(tc_max - s.cylinder, fill);
         if (rise > 0.0f && s.auxiliary > s.cylinder) take_for_cylinder(rise);
         if (s.cylinder >= s.ep_chamber) s.ep_side = false;
@@ -231,7 +234,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
             else s.reference = (std::max)(p, s.reference - s483 * h);
         }
         const float drop = s.reference - p;
-        if (!s.braking && drop >= apply_483) {
+        if (!s.braking && drop >= apply_483 * car.sensitivity) {
             s.braking = true;
             s.pipe = (std::max)(s.pipe - quick_service, 0.0f); // quick service
             s.pipe_low = s.pipe;
@@ -240,7 +243,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         if (s.braking) {
             const float target = (std::min)(tc_max, tc_max / 1.5f * drop);
             const bool filling = s.cylinder < target - 0.02f && s.auxiliary > s.cylinder;
-            if (filling) take_for_cylinder((std::min)(target - s.cylinder, tc_max * 0.9f / 18.0f * h));
+            if (filling) take_for_cylinder((std::min)(target - s.cylinder, tc_max * 0.9f / 18.0f * car.pace * h));
             // The pipe's level in lap: while it fills, where the pipe is (a
             // rise then, the quick service's dip filling back, releases
             // nothing); in lap, the lowest since.
@@ -250,7 +253,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
                 // what the pipe's shortfall below РК gives, and is released
                 // once the pipe is back at РК.
                 if (s.cylinder > target + tc_max / 1.5f * step_483) {
-                    s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * h, target);
+                    s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * car.pace * h, target);
                 }
                 if (drop < step_483) s.braking = false;
             } else if (p >= s.reference - release_483 || (!filling && p >= s.pipe_low + rise_483)) {
@@ -262,7 +265,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
                 s.reference = (std::min)(s.reference, p);
             }
         } else if (s.cylinder > 0.0f) {
-            s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * h, 0.0f);
+            s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * car.pace * h, 0.0f);
         }
         if (s.cylinder < 1.0e-4f) s.cylinder = 0.0f;
         return;
@@ -280,7 +283,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         if (p < s.auxiliary) s.auxiliary -= (std::min)(s.auxiliary - p, s292 * h);
         // Any pipe level: until 2026-11-17 not above 4.9, so a first step
         // from a charging pressure of 5.2-5.4 could brake nothing.
-        if (s.auxiliary - p >= apply_292) {
+        if (s.auxiliary - p >= apply_292 * car.sensitivity) {
             s.braking = true;
             s.reference = s.auxiliary;
             s.pipe = (std::max)(s.pipe - s.pipe * kdr_292 / (car.pipe_volume + kdr_292), 0.0f); // its КДР
@@ -447,6 +450,8 @@ bool ScriptDistributor::step(DistributorState& s, const DistributorCar& car, con
     number("v_zr", car.auxiliary_volume);
     number("v_tc", car.cylinder_volume);
     number("mass", car.mass);
+    number("pace", car.pace);
+    number("sensitivity", car.sensitivity);
     flag("ep_wired", car.ep);
     lua_pushstring(t, kind_name(car.kind));
     lua_setfield(t, -2, "kind");

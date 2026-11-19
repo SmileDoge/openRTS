@@ -57,6 +57,9 @@ public:
     // One train step of `dt` seconds over every car's pipe, reservoirs and cylinder.
     void step(std::vector<CarState>& cars, const AirInputs& inputs, float dt);
     [[nodiscard]] const std::vector<AirCar>& state() const noexcept { return air_; }
+    // A saved game: each car's distributor state ("a3.braking" ...).
+    void save(StateWriter& out) const;
+    void restore(const StateReader& in);
 
 private:
     std::vector<AirCar> air_;

@@ -83,6 +83,7 @@ ValveOutput step_valve_395(ValveState& state, const ValvePosition position, cons
     out.pipe_rate = rate;
     out.equalising = ur;
     out.emergency = position == ValvePosition::emergency;
+    out.feed = position != ValvePosition::lap;
     // ЭПТ (ЭР9Т rates): EPT_APPLY_RATE 0.5, EPT_RELEASE_RATE 0.5 (II) and
     // EPT_RELEASE_RATE1 0.8 (I), at most 6 atm; none in VI (pneumatic).
     auto& target = state.ep_target;

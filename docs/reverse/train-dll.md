@@ -111,6 +111,14 @@ Other trains (traffic, static) never load DLLs.
     give `Init` an activity's TrainState (0, 1, or the train's own bits).
     The ED9M (MaDaDev) runs `Init` only for a non-zero state: cold, it
     leaves everything off.
+  - Bit 1 is a moving train's in RTS (its speed). A train put down
+    running stands (the default start, Track control's «на ходу»): its
+    `Init` (and its libraries') sees it moving forward at 0.01 m/s, then it
+    stands again. The ЭП1's DLL picks its working cab by the sign of the
+    speed when running; standing, until 2026-11-18, it readied neither cab
+    while the air and the breaker were up (testers: the 367 would not go
+    in). Giving such a train TrainState 1 instead lost the VL10k's and the
+    ED9M's keys and reverser set for a running start.
   - **PROBABLE** train byte `+2` is the dispatcher's state: the console's
     "Редактирование поезда" has `cbTrainState` = Холодный / Включен /
     Движется (0 / 1 / 2), and `0x5026FC` reads byte `+2` = 1 as bit 0 and

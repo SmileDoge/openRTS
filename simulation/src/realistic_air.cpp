@@ -81,6 +81,29 @@ float main_reservoir_volume(const formats::EngineDefinition& engine) {
     return v > 100.0f ? v * 0.001f : v * 0.0283f;
 }
 
+void RealisticAir::save(StateWriter& out) const {
+    for (std::size_t i = 0; i < air_.size(); ++i) {
+        const auto& a = air_[i];
+        out.put("a" + std::to_string(i) + ".state", a.braking, a.emergency, a.reference, a.last_pipe, a.wave, a.accelerator, a.ep_chamber,
+                a.ep_side, a.pipe_low);
+    }
+    out.put_list("air.links", link_flow_);
+}
+
+void RealisticAir::restore(const StateReader& in) {
+    for (std::size_t i = 0; i < air_.size(); ++i) {
+        auto& a = air_[i];
+        in.get("a" + std::to_string(i) + ".state", a.braking, a.emergency, a.reference, a.last_pipe, a.wave, a.accelerator, a.ep_chamber,
+               a.ep_side, a.pipe_low);
+    }
+    std::vector<float> links;
+    if (in.get_list("air.links", links) && links.size() == link_flow_.size()) {
+        link_flow_ = std::move(links);
+    } else {
+        std::fill(link_flow_.begin(), link_flow_.end(), 0.0f);
+    }
+}
+
 void RealisticAir::reset(const std::vector<CarState>& cars) {
     air_.assign(cars.size(), {});
     link_flow_.assign(cars.empty() ? 0 : cars.size() - 1, 0.0f);
@@ -147,6 +170,8 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
             const bool rear_open = (car.pipe_ends & pipe_hose_rear) && !(car.pipe_ends & pipe_cock_rear);
             if (front_open || rear_open) flow[i] -= open_end_rate * volume[i] * car.pipe * h;
             if (car.definition) flow[i] -= car.definition->brakes.train_pipe_leak_rate * volume[i] * h;
+            // Its wear's own leak, as the pipe's pressure drives it.
+            if (car.wear.pipe_leak > 0.0f) flow[i] -= car.wear.pipe_leak / 60.0f * (car.pipe / 5.0f) * volume[i] * h;
             // The accelerator of a car gone into emergency vents its pipe for
             // a while (not a 292 with its plug at УВ: the accelerator is off).
             const bool accelerator_off = air_[i].type != DistributorKind::vr483 &&
@@ -165,8 +190,10 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                 } else {
                     float q = relay_gain * (d.equalising - car.pipe);
                     q = std::clamp(q, -relay_vent, relay_feed);
-                    // Feeding needs the main reservoir above the pipe.
-                    if (q > 0.0f) q = (std::min)(q, relay_gain * (std::max)(car.main_reservoir - car.pipe, 0.0f));
+                    // Feeding needs the main reservoir above the pipe, and
+                    // the valve not in III (lap without feed: its leaks are
+                    // not made up; until 2026-11-18 it held the pipe as IV).
+                    if (q > 0.0f) q = d.pipe_feed ? (std::min)(q, relay_gain * (std::max)(car.main_reservoir - car.pipe, 0.0f)) : 0.0f;
                     // The relay holds the pipe at the УР: no overshoot in a sub-step.
                     const float most = (d.equalising - car.pipe) * volume[i];
                     q = q > 0.0f ? (std::min)(q * h, (std::max)(most, 0.0f)) : (std::max)(q * h, (std::min)(most, 0.0f));
@@ -240,6 +267,8 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                 .load = load,
                 .mountain = car.distributor.mountain,
                 .plug = car.distributor.plug,
+                .pace = car.wear.pace,
+                .sensitivity = car.wear.sensitivity,
             };
             DistributorState state{.pipe = car.pipe,
                                    .auxiliary = car.auxiliary,
@@ -279,6 +308,18 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
             if (a.emergency && !was_emergency) a.accelerator = accelerator_time;
             // Recovery: once the pipe is charged again the car leaves emergency.
             if (a.emergency && p > 3.5f && rate > 0.0f) a.emergency = false;
+            // Its cylinder leaks (wear). A 483 keeps it filled from its ЗР,
+            // the ЗР from the pipe, so a braked train's pipe leaks more; a
+            // 292 does not (its piston stays in lap: the cylinder falls), a
+            // 305 on its side does (its relay, from the ЗР).
+            if (car.wear.cylinder_leak > 0.0f && car.cylinder > 0.0f) {
+                const float lost = (std::min)(car.cylinder, car.wear.cylinder_leak / 60.0f * (car.cylinder / 3.8f) * h);
+                car.cylinder -= lost;
+                if (kind != DistributorKind::vr483 && a.braking && !a.ep_side) {
+                    const float ratio = car.definition->brakes.triple_valve_ratio > 0.5f ? car.definition->brakes.triple_valve_ratio : 3.0f;
+                    a.reference -= lost / ratio;
+                }
+            }
         }
     }
     for (std::size_t i = 0; i < n; ++i) cars[i].control = air_[i].type == DistributorKind::vr483 ? air_[i].reference : cars[i].auxiliary;

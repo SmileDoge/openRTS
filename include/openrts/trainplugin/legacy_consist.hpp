@@ -10,6 +10,7 @@
 // train.step(). The consist must outlive the train's controllers' use of it
 // (they turn inert when it is gone).
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -27,6 +28,8 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/formats/route_database.hpp>
 #include <openrts/formats/track_database.hpp>
+#include <openrts/simulation/cab_brakes.hpp>
+#include <openrts/simulation/klub.hpp>
 #include <openrts/simulation/train.hpp>
 #include <openrts/trainplugin/legacy_host.hpp>
 
@@ -41,6 +44,13 @@ enum class DllAir : std::uint8_t {
 };
 struct DllAirSetting {
     DllAir mode = DllAir::rts;
+    // openRTS's cab brake devices in place of Brakes.dll's on the realistic
+    // air (simulation/cab_brakes.hpp, docs/brakes-dll-replacement.md step
+    // 2), for every car whose Brakes.dll parameters openRTS knows
+    // (BrakesParameters); their numbers the books' (CabBrakeNumbers::openrts)
+    // or Brakes.dll's.
+    bool own_brakes = false;
+    bool book_numbers = false;
 };
 
 // What a cab's Brakes.dll controls tell openRTS's valve (own_valve).
@@ -66,6 +76,10 @@ struct BrakeCabControls {
     std::vector<std::int8_t> controller; // the КПТ's, as the valve's
     std::vector<float> reducer;
     std::vector<std::int8_t> combined;
+    // The tables of the locomotive's other cabs (BrakesLibrary::cabs from
+    // the second on): the same cab file, their own switches.
+    std::vector<BrakeCabControls> more;
+    [[nodiscard]] const BrakeCabControls& of_cab(const std::size_t k) const { return k == 0 || k > more.size() ? *this : more[k - 1]; }
     // From the switches' states now; `last` the reading before (an unknown
     // state keeps its value).
     [[nodiscard]] CabBrakes read(const formats::EngineDefinition::BrakesLibrary& ids,
@@ -73,6 +87,77 @@ struct BrakeCabControls {
 };
 [[nodiscard]] BrakeCabControls brake_cab_controls(const formats::EngineDefinition::BrakesLibrary& ids,
                                                   const formats::CabDescription& cab);
+// Brakes.dll's working cab of a locomotive with several in one car
+// (BR_NUMCABS, the ЭП20's): the first whose blocking device 367
+// (BR_367ID<k>) stands in BR_367OPPOL, as Brakes.dll's Run looks for it
+// (decompiled, 2026-11-18); none: the first (k from 0).
+[[nodiscard]] std::size_t working_cab(const formats::EngineDefinition::BrakesLibrary& ids,
+                                      const std::vector<dllhost::SwitchState>& switches);
+
+// A car's Brakes.dll parameters (its AuxLibrary's BR_*) as openRTS's cab
+// brake devices take them (simulation/cab_brakes.hpp,
+// docs/brakes-dll-replacement.md, step 2): each cab's switches and
+// displays, and whether openRTS knows every one. A car with a parameter it
+// does not know (a 334, a custom 292, the ЭП2Д's ППТ, BR_KID) keeps
+// Brakes.dll; an id of -1 is no device.
+struct BrakesParameters {
+    bool present = false;
+    std::string unknown;        // the first parameter openRTS does not know
+    bool flipped = false;       // BR_FLIPCABS 1: the handles' states from I
+    bool multiple_unit = false; // BR_MODE 1
+    bool buffer_kvt = false;    // BR_BUFERKVT
+    float charging{};           // BR_ZARPRESS, 0 not given
+    std::int32_t block_operating = -1;     // BR_367OPPOL
+    bool separating_fitted = false;        // BR_RAZOBSHK
+    std::vector<std::int32_t> stop_valves; // BR_SK1 .. BR_SK<BR_SKNUM>
+    struct Cab {
+        std::int32_t valve = -1, controller = -1, reducer = -1, combined = -1, block = -1, separating = -1;
+        std::int32_t independent = -1, independent_cock = -1, independent2 = -1, independent2_cock = -1;
+        std::int32_t vk4 = -1, vk4_cock = -1;
+        std::int32_t release = -1, emergency = -1; // ОТ, ЭТ
+        std::int32_t ep_apply = -1, ep_release = -1, sensor418 = -1;
+        std::int32_t gauge_cylinder = -1, gauge_pipe = -1, gauge_main_reservoir = -1, gauge_equalising = -1;
+        std::int32_t lamp_ep_on = -1, lamp_ep_hold = -1, lamp_ep_brake = -1, lamp_pipe = -1;
+        std::int32_t ep_volts = -1, ep_amps = -1;
+    };
+    std::vector<Cab> cabs; // BR_NUMCABS of them, at least one
+    [[nodiscard]] bool understood() const noexcept { return present && unknown.empty(); }
+};
+[[nodiscard]] BrakesParameters brakes_parameters(const formats::EngineDefinition& engine);
+
+// Brakes.dll's КЛУБ as openRTS's КЛУБ takes it (simulation/klub.hpp;
+// docs/reverse/brakes-dll.md §11): its settings and the first cab's
+// switches (KLUB_*1, PB_*1); an id of -1 is none.
+struct KlubParameters {
+    bool present = false;
+    simulation::KlubSettings settings;
+    std::vector<std::pair<std::int32_t, simulation::KlubPress>> keys; // KLUB_B*ID1
+    std::vector<std::int32_t> power;                                  // KLUB_PIT1 .. KLUB_PIT<KLUB_PCOUNT>
+    std::int32_t rb = -1, rbs = -1, epk_key = -1, cassette = -1, tskbm = -1, saut = -1;
+    std::int32_t flip = -1;                       // PB_FLIP: the cab whose forward is the car's back (from 0)
+    std::int32_t setup_index = -1;                // PB_SETUP's index in the library's parameters
+    // Its displays: the screen (KLUB_DBIL1), the ALSN's lights (KLUB_DALS1,
+    // KLUB_DPOM1 screens; KLUB_B1POM1 .. B8POM1 lamps), its lamp
+    // (KLUB_PLAMP) and the cab's texture change for the backlight (KLUB_TCHNUM).
+    std::int32_t screen = -1, dals = -1, dpom = -1, lamp = -1, backlight = -1;
+    std::array<std::int32_t, 8> lamps{-1, -1, -1, -1, -1, -1, -1, -1};
+    [[nodiscard]] const simulation::KlubPress* key(std::int32_t id) const noexcept;
+};
+[[nodiscard]] KlubParameters klub_parameters(const formats::EngineDefinition& engine);
+// mdd_Libraries/Brakes/ChangeStanc.bto: the КЛУБ's station names (upper case).
+[[nodiscard]] std::vector<std::pair<std::u16string, std::u16string>> load_klub_station_names(const core::Vfs& vfs);
+// The working cab's devices for step_cab_brakes, as its switches stand.
+// `valve`: its driver's valve's position as CabBrakes reads it (-1 not
+// known: the state by BR_FLIPCABS); `exchange`: Brakes.dll's var + 32
+// (protocol AuxExchange); `systems`: the engine's BrakeSystemsEngaged.
+[[nodiscard]] simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& parameters, std::size_t cab,
+                                                              const std::vector<dllhost::SwitchState>& switches,
+                                                              const CabBrakes& valve, dllhost::AuxExchange exchange,
+                                                              std::uint16_t systems);
+// What openRTS's devices show on a cab's gauges and lamps (displays by
+// BrakesParameters' ids; the УР only in the working cab).
+void show_cab_brakes(const BrakesParameters& parameters, std::size_t working, const simulation::CabBrakeOutput& shown,
+                     std::vector<dllhost::DisplayState>& displays);
 
 // A switch's AssignKey keys as RTS keeps them in ActSwitch::Key (+72, the
 // loader 0x45AE90): per key, two at most, its virtual-key code and its
@@ -118,6 +203,12 @@ struct LegacyWorld {
     const formats::RouteDatabase* route_database = nullptr;
     const formats::TrackDatabase* tdb = nullptr;
     float route_speed_limit = 0.0f;
+    // The speed posts' limits without the routes' +3 km/h
+    // (simulation::without_tolerance) in RTSGetTrackItems too.
+    bool limits_without_tolerance = false;
+    // Every car's auxiliary libraries' variable stacks in its output
+    // (CarOutput::aux_vars): the golden runs (openrts-train-check --record).
+    bool record_aux_vars = false;
     // RTSGetTrackItems: the player's train's items (RTS 0x4808DC) and how
     // far ahead and behind the list reaches.
     std::vector<dllhost::TrackItemEntry> track_items;
@@ -137,6 +228,9 @@ public:
         // openRTS's compressors (the realistic air) off until a DLL reports
         // a pantograph up, a diesel on, its own compressor or traction.
         bool cold = false;
+        // openRTS's КЛУБ's ЭПК or КОН venting the pipe at a car (by the
+        // index of `cars`; set_own_klub).
+        std::vector<std::uint8_t> klub_vent;
     };
 
     // nullptr (with `error`) when no car has a DLL or the host cannot start.
@@ -228,8 +322,43 @@ public:
     // of this consist follows it at once).
     void set_air(DllAir mode) noexcept { air_->mode = mode; }
     [[nodiscard]] DllAir air() const noexcept { return air_->mode; }
+    // openRTS's cab brake devices in place of Brakes.dll's, with the books'
+    // numbers or Brakes.dll's (DllAirSetting::own_brakes, book_numbers).
+    void set_own_brakes(const bool own, const bool books) noexcept {
+        air_->own_brakes = own;
+        air_->book_numbers = books;
+    }
+    [[nodiscard]] bool own_brakes() const noexcept { return air_->own_brakes; }
+    // openRTS's КЛУБ-У in place of Brakes.dll's (simulation/klub.hpp;
+    // docs/brakes-dll-replacement.md, step 3.4), with the air not as RTS's:
+    // on the player's train's cars whose Brakes.dll has a КЛУБ (PB_SETUP 2)
+    // and one cab, Brakes.dll's is switched off (its PB_SETUP without 2)
+    // and openRTS's works the ЭПК (Outputs::klub_vent), draws the screen and
+    // the lamps, sounds its beeps and whistle on Brakes.sms and leaves in
+    // Brakes.dll's variables what the train's DLL reads of a КЛУБ. Switched
+    // on, it starts afresh: the track and the train's data to be entered.
+    void set_own_klub(const bool own) noexcept { own_klub_ = own; }
+    [[nodiscard]] bool own_klub() const noexcept { return own_klub_; }
+    // The cars it works on in the last step.
+    [[nodiscard]] std::size_t klub_cars() const noexcept { return klub_working_; }
+    // Its state on a car (nullptr: not there).
+    [[nodiscard]] const simulation::KlubState* klub_state(std::size_t car) const;
 
 private:
+    struct KlubCar;
+    void klub_before(dllhost::StepRequest& request);
+    void klub_after(const dllhost::StepRequest& request, const LegacyWorld& world);
+    void klub_key(std::size_t at, std::uint32_t id);
+    KlubCar* klub_car(std::size_t at);
+    void klub_save(std::uint32_t key, std::vector<std::uint8_t>& bytes) const;
+    void klub_restore(std::size_t at, std::vector<std::uint8_t>& bytes);
+    // By the car's key; nullptr: no КЛУБ of Brakes.dll that openRTS's can take.
+    std::unordered_map<std::uint32_t, std::unique_ptr<KlubCar>> klub_;
+    bool own_klub_ = false;
+    std::size_t klub_working_ = 0;
+    // mdd_Libraries/Brakes/ChangeStanc.bto (the КЛУБ's station names).
+    std::vector<std::pair<std::u16string, std::u16string>> station_names_;
+
     LegacyConsist() = default;
     std::vector<dllhost::CarInput> inputs(const std::vector<const simulation::Train*>& trains, const LegacyWorld* world) const;
     std::vector<dllhost::CarInput> inputs(const simulation::Train& train, const LegacyWorld* world) const {
@@ -253,6 +382,13 @@ private:
     std::vector<std::uint32_t> train_types_;
     std::size_t restored_ = 0;
     std::string messages_;
+public:
+    // The host's number of car `car`'s auxiliary library `name` (AuxLibraryName,
+    // case ignored), -1 when it has none or its module was not found: its
+    // index in CarOutput::aux_vars and aux_sound.
+    [[nodiscard]] int aux_library(std::size_t car, std::string_view name) const;
+
+private:
     // Per car: each AuxLibrary of the .eng as the host numbers them (only
     // the ones whose module was found), -1 missing.
     std::vector<std::vector<std::int16_t>> aux_index_;
@@ -297,8 +433,10 @@ bool enter_new_train(LegacyConsist& consist, std::size_t car, simulation::Train&
 // A controller for car `car` of `outputs` (LegacyConsist::controller makes
 // them; tests make them on outputs of their own). `cab`: its cab's brake
 // controls (brake_cab_controls); empty: the 395's states I..VI, no reducer.
+// `brakes`: its Brakes.dll's parameters, `brakes_library` that library's
+// number in the host (aux_library; -1 none), for DllAirSetting::own_brakes.
 [[nodiscard]] std::unique_ptr<simulation::LocomotiveController> make_legacy_controller(
     std::weak_ptr<const LegacyConsist::Outputs> outputs, std::size_t car, std::shared_ptr<const DllAirSetting> air,
-    BrakeCabControls cab = {});
+    BrakeCabControls cab = {}, BrakesParameters brakes = {}, int brakes_library = -1);
 
 } // namespace openrts::trainplugin

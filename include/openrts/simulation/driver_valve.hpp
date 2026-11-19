@@ -55,6 +55,9 @@ struct ValveOutput {
     float pipe_rate{};      // the RTS model's TrainPipeRate, atm/s (> 0 feed, < 0 vent)
     float equalising{};     // the УР the pipe is to follow
     bool emergency = false; // VI: the pipe opened at the engine
+    // The realistic air: the relay may feed the pipe from the main reservoir
+    // (not in III, lap without feed: the pipe's leaks are not made up).
+    bool feed = true;
     float ep_value = -1.0f; // the ЭПТ demand, < 0 none
     // With the realistic air the valves' command (the cars' ЭВР fill, hold
     // or let out at their own rates); else target (ep_value).

@@ -34,6 +34,7 @@
 #include <openrts/renderer/frustum.hpp>
 #include <openrts/renderer/model_assets.hpp>
 #include <openrts/renderer/model_library.hpp>
+#include <openrts/renderer/wide_lines.hpp>
 #include <openrts/renderer/model_renderer.hpp>
 #include <openrts/renderer/glow_sprites.hpp>
 #include <openrts/renderer/route_streamer.hpp>
@@ -82,6 +83,8 @@ public:
         int rails = 0;          // rails
         bool limit = false;     // limit_brake_force
         bool stability = false; // distributor_stability
+        int condition = 0;      // brake_condition (0: none)
+        int pressing = 100;     // brake_pressing, %
         bool operator==(const BrakeSet&) const = default;
     };
     // Who drives a train: the keyboard, the test driver along its path, or
@@ -152,6 +155,8 @@ public:
     void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view);
     // The engineer into the driving cab's seat (--capture-cab).
     void enter_cab() { set_engineer(true); }
+    // Whether the player's train has a cab to go back into (Ctrl+F).
+    [[nodiscard]] bool has_driving_cab() const noexcept { return cab_ != nullptr; }
     // Walking is the player's, not a train's (the main panel's "On foot"):
     // on, he stands on the ground under `eye` and walks, into a cab of his
     // train by its door; off, the free camera.
@@ -361,6 +366,28 @@ public:
     [[nodiscard]] std::filesystem::path situation_folder() const;
     [[nodiscard]] std::vector<std::string> situations() const;
     [[nodiscard]] std::string save_situation(const std::string& name) const;
+    // A saved game (docs/saves.md): the trains as a situation keeps them,
+    // each one's running state (Train::save_state), its DLLs' (by car key),
+    // its path and place on it, a scenario train's service, and whether the
+    // engineer was in the cab. Text for the save file's [trains] part.
+    [[nodiscard]] std::string save_game() const;
+    // Puts a save_game() text back: the trains at the next update, their
+    // state once their shapes are fitted, the DLLs' once the host has them.
+    // An error, or empty.
+    [[nodiscard]] std::string load_game(const std::string& text);
+    // Placements (docs/placements.md): trains picked in the free flight - a
+    // click picks a train, Ctrl+click adds or drops another, Shift+click
+    // drops or takes back one car of a picked train - kept as a set in
+    // <placement_folder>/<name>.placement and put beside the trains there,
+    // shown first where they will stand.
+    [[nodiscard]] bool selecting() const noexcept { return selecting_; }
+    // A click at `aim` (the view's -1..1) with the camera at `eye`.
+    void select_at(const glm::vec3& eye, const glm::mat4& view_projection, glm::vec2 aim, bool ctrl, bool shift);
+    // The picked cars' boxes (yellow) and the preview's (green, red where
+    // the track is taken).
+    void add_placement_lines(std::vector<renderer::WideLine>& lines) const;
+    // A saved game is being put back (its trains not all in their state yet).
+    [[nodiscard]] bool loading_game() const noexcept { return !pending_game_.empty() || !pending_dlls_.empty(); }
     // Puts a saved situation back at the next update (the trains there now
     // and their sounds go first).
     void request_situation(std::filesystem::path file) { pending_situation_ = std::move(file); }
@@ -385,6 +412,8 @@ public:
     };
     // A new car key (unique in this program).
     [[nodiscard]] static std::uint32_t new_car_key();
+    // Keys up to `up_to` are taken (a saved game's): new ones come after them.
+    static void reserve_car_keys(std::uint32_t up_to);
     // Puts these trains back at the next update, as a situation does;
     // `source` names them in the messages.
     void request_trains(std::vector<PlacedTrain> trains, std::string source) {
@@ -844,6 +873,45 @@ private:
     // it its air (LegacyCab::attach `fresh`).
     bool fresh_train_ = false;
     std::filesystem::path pending_situation_;
+    // A saved game being put back (load_game): each train's extras by its
+    // first car's key, applied once the trains stand and their shapes are
+    // fitted; the DLLs' states, once the host has the cars.
+    struct SavedTrain {
+        std::uint32_t first_key{};
+        std::string state;  // Train::save_state's text
+        std::string path;   // a route path's file it followed (else its service's)
+        std::size_t leg{}, mark{};
+        bool has_route = false;
+        bool scenario_traffic = false, remove_at_end = true, force_removal = false;
+        std::optional<std::int32_t> remove_time;
+        double wait_here = 0.0;
+        float wait_left = -1.0f;
+    };
+    std::vector<SavedTrain> pending_game_;
+    // Placements: the picked cars by train id (their keys); the preview of a
+    // placement read, made but not on the track yet.
+    bool selecting_ = false;
+    std::map<std::uint64_t, std::set<std::uint32_t>> selection_;
+    std::array<char, 64> placement_name_{};
+    int placement_choice_ = -1;
+    std::vector<Unit> preview_units_;
+    std::vector<std::unique_ptr<formats::WagonDefinition>> preview_stock_;
+    bool preview_blocked_ = false;
+    bool placement_checked_ = false; // OPENRTS_PLACEMENT_CHECK done
+    std::string preview_name_;
+    [[nodiscard]] std::filesystem::path placement_folder() const;
+    [[nodiscard]] std::vector<std::string> placements() const;
+    [[nodiscard]] std::string save_placement(const std::string& name) const;
+    [[nodiscard]] std::string preview_placement(const std::filesystem::path& file);
+    [[nodiscard]] std::string place_preview();
+    void draw_placements();
+    std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>> pending_dlls_;
+    int pending_dll_tries_ = 0;
+    float pending_game_wait_ = 0.0f; // s the saved trains waited for their shapes
+    bool pending_engineer_in_cab_ = false;
+    void apply_saved_game();
+    // The route path each train was given (assign_route_path), for a save.
+    std::unordered_map<std::uint64_t, std::string> route_path_of_;
     std::vector<PlacedTrain> pending_trains_;
     std::string pending_trains_source_;
     std::set<std::uint64_t> shared_sound_; // take_sound
@@ -1367,6 +1435,19 @@ private:
     // remembered as dll_air; read at the first update.
     int dll_air_ = 0;
     bool dll_air_loaded_ = false;
+    // The Train window's "Brakes": Brakes.dll's (0) or openRTS's cab brake
+    // devices (1); "Brake numbers": as Brakes.dll (0) or the books' (1)
+    // (docs/brakes-dll-replacement.md). Remembered as own_brakes and
+    // brake_numbers.
+    int own_brakes_ = 0;
+    int brake_numbers_ = 0;
+    bool own_brakes_loaded_ = false;
+    // The Train window's "КЛУБ": Brakes.dll's (0) or openRTS's (1)
+    // (docs/brakes-dll-replacement.md, step 3); remembered as own_klub.
+    int own_klub_ = 0;
+    // Each engine's Brakes.dll parameters (trainplugin::brakes_parameters).
+    mutable std::unordered_map<const formats::EngineDefinition*, trainplugin::BrakesParameters> brakes_parameters_;
+    [[nodiscard]] const trainplugin::BrakesParameters& brakes_parameters_of(const formats::EngineDefinition& engine) const;
     // The cab's air gauges (DTM, DTC1/2, DGR) from the realistic air's model
     // (CabView::AirGauges); remembered as gauges_openrts_air, on by default.
     mutable bool gauges_air_ = true;
@@ -1382,6 +1463,16 @@ private:
     bool rails_loaded_ = false;
     // TrainSettings::limit_brake_force, remembered as limit_brake_force.
     bool limit_brake_force_ = false;
+    // The speed posts' limits without the routes' +3 km/h
+    // (SpeedLimits::set_without_tolerance), remembered as
+    // limits_without_tolerance.
+    bool limits_without_tolerance_ = false;
+    // The brakes' condition of every train (Train::set_brake_condition: 0
+    // none, 10 from the works .. 1 due for an overhaul) and the brake
+    // pressing (TrainSettings::brake_force_factor, %), remembered as
+    // brake_condition and brake_pressing; read with the rails.
+    int brake_condition_ = 0;
+    int brake_pressing_ = 100;
     [[nodiscard]] BrakeSet brake_set() const noexcept;
     void apply_brake_set(const BrakeSet& set);
     std::string brake_custom_code_; // the own set as last remembered

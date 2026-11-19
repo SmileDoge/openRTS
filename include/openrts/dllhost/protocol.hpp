@@ -22,7 +22,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 12;
+inline constexpr std::uint32_t protocol_version = 16;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -409,6 +409,31 @@ struct CarInput {
     float equalising = -1.0f;
 };
 
+// An auxiliary library's AuxLibraryParameters entry given another value
+// (by its index in AuxLibrarySpec::parameters; it keeps it until the next
+// one): openRTS's КЛУБ in place of Brakes.dll's gives Brakes.dll a PB_SETUP
+// without its КЛУБ (docs/brakes-dll-replacement.md, step 3.4).
+struct AuxParameterSet {
+    std::uint32_t car{};      // in StepRequest::cars' order
+    std::uint16_t library{};  // the car's AuxLibrary, in .eng order
+    std::uint16_t index{};
+    float value{};
+};
+
+// A 32-bit word of an auxiliary library's variable stack written this step
+// just before that library's own Run (after the main DLL's for an AuxCall
+// order of 0 and on): var[offset / 4] = (var & ~mask) | (bits & mask)
+// (floats by their bits). openRTS's КЛУБ writes what Brakes.dll's would
+// have written in that Run, for the train's DLL to read in its next one
+// (var + 32 bits 1 and 4, the limits, the timer); the rest of that Run
+// (Brakes.dll's other parts) goes on over it as before.
+struct AuxVarWrite {
+    std::uint32_t car{};
+    std::uint16_t library{};
+    std::uint16_t offset{};
+    std::uint32_t mask{}, bits{};
+};
+
 struct EnterRequest {
     std::uint32_t car{};          // the locomotive the player takes
     bool running = true;          // State bit 1 (the train starts running); bit 0 "has cars" is the host's
@@ -482,6 +507,12 @@ struct StepRequest {
     // The car whose tape rolls (simulation/tape.hpp), -1 none: RTSGetInteger
     // 7 answers from it, its LocoFlags get 0x10000 (RTS 0x414B40).
     std::int32_t tape_car = -1;
+    // Auxiliary libraries' parameters set and variables written before Run.
+    std::vector<AuxParameterSet> aux_parameters;
+    std::vector<AuxVarWrite> aux_writes;
+    // Every AuxLibrary's variable stack in the reply (CarOutput::aux_vars):
+    // the golden runs of docs/brakes-dll-replacement.md; not in the game.
+    std::uint8_t want_aux_vars = 0;
 };
 
 struct EngineOutput {
@@ -517,6 +548,23 @@ struct AuxSoundOutput {
     std::array<float, 8> vars{};         // its SMSObject Var1..Var8
 };
 
+// An AuxLibrary's variable stack after the step (StepRequest::want_aux_vars).
+struct AuxVarsOutput {
+    std::vector<float> var;
+};
+
+// The word at an AuxLibrary's var + 32: MaDaDev's Brakes.dll's exchange
+// with the train's DLLs (docs/reverse/brakes-dll.md §5). `before`: as its
+// Run found it, the train's DLL's requests (Brakes.dll clears 0x10 ..
+// 0x8000 at the end of its Run); `after`: after the step (bit 1: the
+// train's DLL cuts traction, set by the ЭПК's trip among others; 2 the 418,
+// 8 САУТ); `flags`: var + 8 after the step (0x01000000 the ЭПК vented).
+// openRTS's cab brake devices take them (docs/brakes-dll-replacement.md,
+// step 2).
+struct AuxExchange {
+    std::uint32_t before{}, after{}, flags{};
+};
+
 // A diesel's ExhaustContr (RTSGetLocoObject ot_exhaust): what its DLL says
 // the smoke of exhaust n is (rts1.exe 0x50D3B4 takes it instead of the .eng).
 struct ExhaustOutput {
@@ -549,6 +597,10 @@ struct CarOutput {
     std::vector<DoorState> doors;
     // Diesels with a DLL: the exhausts' smoke as the DLL sets it.
     std::vector<ExhaustOutput> exhausts;
+    // Per AuxLibrary (the host's numbering), its variable stack, when asked.
+    std::vector<AuxVarsOutput> aux_vars;
+    // Per AuxLibrary, its var + 32 word (AuxExchange).
+    std::vector<AuxExchange> aux_exchange;
 };
 
 // A car's air as the DLLs left it in its Wagon (enter only: Init writes
@@ -763,7 +815,8 @@ inline void write(Writer& w, const StepRequest& s) {
     w.put(s.next_limit); w.put(s.next_limit_distance);
     write_list(w, s.signal_units); write_pod_list(w, s.sound_pairs);
     write_list(w, s.items); write_pod_list(w, s.track_items); w.put(s.items_range);
-    w.put(s.tape_car);
+    w.put(s.tape_car); w.put(s.want_aux_vars);
+    write_pod_list(w, s.aux_parameters); write_pod_list(w, s.aux_writes);
 }
 inline void read(Reader& r, StepRequest& s) {
     s.day_time = r.get<double>(); s.dt = r.get<float>(); s.air_temperature = r.get<float>();
@@ -775,6 +828,8 @@ inline void read(Reader& r, StepRequest& s) {
     read_list(r, s.signal_units, 100000); read_pod_list(r, s.sound_pairs, 4096);
     read_list(r, s.items, 200000); read_pod_list(r, s.track_items, 200000); s.items_range = r.get<float>();
     s.tape_car = r.get<std::int32_t>();
+    s.want_aux_vars = r.get<std::uint8_t>();
+    read_pod_list(r, s.aux_parameters, 4096); read_pod_list(r, s.aux_writes, 4096);
 }
 
 inline void write(Writer& w, const ReconsistCar& c) { w.put(c.from); write(w, c.spec); }
@@ -808,6 +863,8 @@ inline void read(Reader& r, ScreenOutput& s) {
 }
 
 inline void write(Writer& w, const AuxSoundOutput& a) { write_pod_list(w, a.triggers); w.put(a.vars); }
+inline void write(Writer& w, const AuxVarsOutput& a) { write_pod_list(w, a.var); }
+inline void read(Reader& r, AuxVarsOutput& a) { read_pod_list(r, a.var, 100000); }
 inline void read(Reader& r, AuxSoundOutput& a) { read_pod_list(r, a.triggers); a.vars = r.get<std::array<float, 8>>(); }
 
 inline void write(Writer& w, const CarOutput& c) {
@@ -820,6 +877,8 @@ inline void write(Writer& w, const CarOutput& c) {
     write_list(w, c.screens);
     write_pod_list(w, c.doors);
     write_pod_list(w, c.exhausts);
+    write_list(w, c.aux_vars);
+    write_pod_list(w, c.aux_exchange);
 }
 inline void read(Reader& r, CarOutput& c) {
     c.has_engine = r.get<std::uint8_t>() != 0; c.engine = r.get<EngineOutput>();
@@ -833,6 +892,8 @@ inline void read(Reader& r, CarOutput& c) {
     read_list(r, c.screens, 256);
     read_pod_list(r, c.doors, 4096);
     read_pod_list(r, c.exhausts, 16);
+    read_list(r, c.aux_vars, 64);
+    read_pod_list(r, c.aux_exchange, 64);
 }
 
 inline void write(Writer& w, const StepReply& s) {

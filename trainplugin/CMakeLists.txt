@@ -3,6 +3,8 @@
 # (docs/train-dll.md).
 add_library(openrts_trainplugin STATIC
     src/legacy_host.cpp
+    src/brakes_parameters.cpp
+    src/klub_parameters.cpp
     src/legacy_consist.cpp
     src/native_plugin.cpp)
 openrts_configure_target(openrts_trainplugin)

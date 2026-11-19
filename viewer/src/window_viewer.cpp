@@ -18,6 +18,7 @@
 #include <openrts/renderer/light_shafts.hpp>
 #include <openrts/renderer/depth_export.hpp>
 #include <algorithm>
+#include <random>
 #include <array>
 #include <cfloat>
 #include <chrono>
@@ -44,6 +45,7 @@
 #include "frame_limiter.hpp"
 #include "graphics_presets_ui.hpp"
 #include "graphics_settings.hpp"
+#include "weather_cycle.hpp"
 #include <openrts/renderer/gpu_pass_timer.hpp>
 #include <openrts/renderer/video_memory.hpp>
 #include "key_layout.hpp"
@@ -638,6 +640,15 @@ struct PanelState {
     std::string save_status;
     // RTS's Pause key (0x402FC3): the world stands still, the camera moves.
     bool paused = false;
+    // Saved games (ViewerScene::save_game / load_game): the panel asks, the
+    // frame loop does it (the scene is not changed while the panel is drawn).
+    std::array<char, 96> save_name{};
+    int save_choice = -1;
+    std::string save_request;                 // a name to save as
+    std::optional<std::filesystem::path> load_request;
+    std::string game_status;                  // the last save's or load's outcome
+    double game_status_until = 0.0;
+    bool quick_save_key_down = false;         // F2
     // The panel's tab (testers, 2026-11-14: the sections one under another
     // lost what one looked for): general, graphics, train, world,
     // performance, the keys.
@@ -900,7 +911,7 @@ public:
         }
         if (panel.paused) {
             // As RTS writes it over the picture.
-            const char* text = tr("PAUSE (Pause)");
+            const char* text = tr("PAUSE (Pause or F1)");
             const auto display = ImGui::GetIO().DisplaySize;
             const auto size = ImGui::CalcTextSize(text);
             auto* list = ImGui::GetForegroundDrawList();
@@ -1065,7 +1076,36 @@ public:
                 }
                 ImGui::TextDisabled("%s", tr("(1: a smooth push of the bogie, harder with the speed and on the diverging route; 0: none)"));
             }
-            ImGui::Checkbox(tr("Pause (Pause)"), &panel.paused);
+            ImGui::Checkbox(tr("Pause (Pause or F1)"), &panel.paused);
+            if (const auto folder = scene.saves_folder(); !folder.empty()) {
+                // Saved games: as RTS, F2 saves at once (the quick save).
+                ImGui::SeparatorText(tr("Saved games"));
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::InputTextWithHint("##save_name", tr("save name"), panel.save_name.data(), panel.save_name.size());
+                ImGui::SameLine();
+                if (ImGui::Button(tr("Save##game"))) panel.save_request = panel.save_name.data();
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", tr("(F2: quick save)"));
+                const auto saves = scene.saved_games();
+                if (saves.empty()) {
+                    ImGui::TextDisabled("%s", tr("(no saves on this route yet)"));
+                } else {
+                    panel.save_choice = std::clamp(panel.save_choice, 0, static_cast<int>(saves.size()) - 1);
+                    ImGui::SetNextItemWidth(220.0f);
+                    if (ImGui::BeginCombo("##saves", saves[static_cast<std::size_t>(panel.save_choice)].c_str())) {
+                        for (std::size_t i = 0; i < saves.size(); ++i) {
+                            if (ImGui::Selectable(saves[i].c_str(), static_cast<int>(i) == panel.save_choice)) panel.save_choice = static_cast<int>(i);
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button(tr("Load##game"))) {
+                        const auto& name = saves[static_cast<std::size_t>(panel.save_choice)];
+                        panel.load_request = folder / std::filesystem::path(std::u8string(name.begin(), name.end())).replace_extension(".save");
+                    }
+                }
+                if (!panel.game_status.empty() && ImGui::GetTime() < panel.game_status_until) ImGui::TextWrapped("%s", panel.game_status.c_str());
+            }
         }
 
         if (panel.tab == PanelState::Tab::graphics) {
@@ -1760,8 +1800,16 @@ private:
         ImGui::Combo(tr("Season"), &clock.season, seasons, 4);
         // Order of the RTS weather variable: clear, snow, rain; then openRTS's thunderstorm.
         const char* weathers[] = {tr("Clear"), tr("Snow"), tr("Rain"), tr("Thunderstorm")};
+        auto& cycle = weather_cycle();
+        ImGui::BeginDisabled(cycle.settings.dynamic);
         ImGui::Combo(tr("Weather"), &clock.weather, weathers, 4);
-        if (clock.weather == 3) {
+        ImGui::EndDisabled();
+        if (cycle.settings.dynamic) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", tr("(the dynamic weather began from it)"));
+        }
+        draw_dynamic_weather(clock.season);
+        if (clock.weather == 3 || (cycle.settings.dynamic && cycle.settings.by_season ? clock.season != 3 : cycle.settings.dynamic && cycle.settings.climate.storms > 0.0f)) {
             if (ImGui::SliderFloat(tr("Lightning strikes a minute"), &renderer::lightning_rate(), 0.0f, 30.0f, "%.0f"))
                 remember("lightning_rate", std::to_string(renderer::lightning_rate()));
             if (ImGui::SliderFloat(tr("Lightning brightness"), &renderer::lightning_brightness(), 0.0f, 3.0f, "%.1f"))
@@ -1776,6 +1824,76 @@ private:
                 ImGui::SameLine();
                 ImGui::TextDisabled("%s", tr("(no lightning while the clock stands or runs faster than x16)"));
             }
+        }
+    }
+
+    // The dynamic weather (weather_cycle.hpp, docs/weather.md): on or off,
+    // what it is now and what comes, its climate (the season's or the
+    // sliders'), how long a weather lasts and turns, and a change by hand.
+    static void draw_dynamic_weather(const int season) {
+        auto& cycle = weather_cycle();
+        auto& s = cycle.settings;
+        if (ImGui::Checkbox(tr("Dynamic weather (openRTS)"), &s.dynamic)) remember("weather_dynamic", s.dynamic ? "1" : "0");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr(s.dynamic ? "(clouds, rain or snow and thunderstorms change by themselves; not in network games, where the server's weather stands)"
+                                               : "(off: the weather chosen stays, as in RTS)"));
+        if (!s.dynamic) return;
+        if (cycle.shown_valid) {
+            const auto& m = cycle.shown;
+            ImGui::Text(tr("Now: clouds %.0f %%, %s %.0f %%, thunderstorm %.0f %%"), m.cloud * 100.0f, m.snow ? tr("snow") : tr("rain"),
+                        m.precipitation * 100.0f, m.storm * 100.0f);
+            if (const auto next = cycle.next_change()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled(tr("(the next weather begins to come in %.0f game minutes)"), *next / 60.0);
+            } else if (cycle.forced) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", tr("(changed by hand: it holds a spell, then the weather goes on by itself)"));
+            }
+        }
+        if (ImGui::Checkbox(tr("By the season##weather"), &s.by_season)) remember("weather_by_season", s.by_season ? "1" : "0");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr(s.by_season ? "(winter overcast with snow; spring and autumn rainy; summer clearer, with thunderstorms)"
+                                                 : "(the climate below)"));
+        ImGui::BeginDisabled(s.by_season);
+        float cloudiness = s.climate.cloudiness * 100.0f, wet = s.climate.wet * 100.0f, storms = s.climate.storms * 100.0f;
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat(tr("Usual cloud cover"), &cloudiness, 0.0f, 100.0f, "%.0f %%")) {
+            s.climate.cloudiness = cloudiness / 100.0f;
+            remember("weather_cloudiness", std::to_string(s.climate.cloudiness));
+        }
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat(tr("Spells with rain or snow"), &wet, 0.0f, 100.0f, "%.0f %%")) {
+            s.climate.wet = wet / 100.0f;
+            remember("weather_wet", std::to_string(s.climate.wet));
+        }
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat(tr("Thunderstorms among the rains"), &storms, 0.0f, 100.0f, "%.0f %%")) {
+            s.climate.storms = storms / 100.0f;
+            remember("weather_storms", std::to_string(s.climate.storms));
+        }
+        ImGui::EndDisabled();
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat(tr("A weather lasts, game minutes"), &s.spell_minutes, 10.0f, 240.0f, "%.0f"))
+            remember("weather_spell", std::to_string(s.spell_minutes));
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::SliderFloat(tr("Turns into the next over, game minutes"), &s.change_minutes, 1.0f, 60.0f, "%.0f"))
+            remember("weather_change", std::to_string(s.change_minutes));
+        ImGui::TextDisabled("%s", tr("(at most half a weather's time; the clock's x60 runs it 60 times as fast)"));
+        // A change by hand: to it over a change, held a spell.
+        const bool winter = season == static_cast<int>(renderer::rts::Season::winter);
+        ImGui::TextUnformatted(tr("Change now to:"));
+        const auto button = [&](const char* label, const WeatherMix& mix) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(label)) cycle.force(mix);
+        };
+        button(tr("clear##now"), {.cloud = 0.15f, .precipitation = 0.0f, .storm = 0.0f, .snow = winter});
+        button(tr("cloudy##now"), {.cloud = 0.8f, .precipitation = 0.0f, .storm = 0.0f, .snow = winter});
+        button(winter ? tr("snow##now") : tr("rain##now"), {.cloud = 0.92f, .precipitation = 0.6f, .storm = 0.0f, .snow = winter});
+        if (!winter) button(tr("thunderstorm##now"), {.cloud = 0.97f, .precipitation = 0.9f, .storm = 0.9f, .snow = false});
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("another weather##now"))) {
+            cycle.seed = static_cast<std::uint64_t>(std::random_device{}()) << 32 | std::random_device{}();
+            cycle.forced.reset();
         }
     }
 
@@ -1871,6 +1989,7 @@ struct CameraInput {
     bool kp7_down = false;
     bool inspector_key_down = false;
     bool tape_window_key_down = false; // F9
+    bool free_camera_key_down = false; // Ctrl+F
     int clicks = 0;            // left clicks in fly mode since the last scene_input()
     int releases = 0;          // left button let go (anywhere, over a panel too)
     double scroll = 0.0;       // wheel since the last scene_input()
@@ -2065,8 +2184,10 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const auto down = [window, typing](const int key) { return !typing && glfwGetKey(window, key) == GLFW_PRESS; };
     auto& camera = *input.camera;
 
-    // F is a cab key when the cab has the keyboard.
-    const bool toggle = down(GLFW_KEY_F) && !input.keyboard_captured;
+    // F is a cab key when the cab has the keyboard; Ctrl+F is the scene's
+    // (SceneInput::free_camera).
+    const bool ctrl = down(GLFW_KEY_LEFT_CONTROL) || down(GLFW_KEY_RIGHT_CONTROL);
+    const bool toggle = down(GLFW_KEY_F) && !ctrl && !input.keyboard_captured;
     if (toggle && !input.toggle_key_down) {
         camera.toggle_fly();
         if (!camera.fly) {
@@ -2111,6 +2232,9 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool f12 = pressed(GLFW_KEY_F12, input.inspector_key_down);
     // Ctrl+F9 the tape window (F9 alone is RTS's objectives, 0x402C88).
     const bool f9 = pressed(GLFW_KEY_F9, input.tape_window_key_down);
+    // Ctrl+F: no cab of the installed content assigns it (their letters,
+    // F among them, may all be the cab's; testers 2026-11-18).
+    const bool free_camera = pressed(GLFW_KEY_F, input.free_camera_key_down) && ctrl && !alt;
     const bool enter_now = down(GLFW_KEY_ENTER) || down(GLFW_KEY_KP_ENTER);
     const bool enter = enter_now && !input.enter_key_down;
     input.enter_key_down = enter_now;
@@ -2168,6 +2292,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.cursor_x = static_cast<float>(input.cursor_x);
         in.cursor_y = static_cast<float>(input.cursor_y);
         in.click_shift = shift;
+        in.click_ctrl = ctrl;
         in.scroll = pointer ? static_cast<float>(scroll) : 0.0f;
         in.walk_forward = down(GLFW_KEY_UP) || (wasd && down(GLFW_KEY_W));
         in.walk_back = down(GLFW_KEY_DOWN) || (wasd && down(GLFW_KEY_S));
@@ -2196,6 +2321,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
             .activity_menu = pressed(GLFW_KEY_F8, input.menu_key_down),
             .tape_window = f9 && ctrl,
+            .free_camera = free_camera,
         };
         engineer(captured);
         captured.keys = std::exchange(input.key_events, {});
@@ -2237,6 +2363,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
         .activity_menu = pressed(GLFW_KEY_F8, input.menu_key_down),
         .tape_window = f9 && ctrl,
+        .free_camera = free_camera,
     };
     engineer(result);
     result.keys = std::exchange(input.key_events, {});
@@ -2795,6 +2922,21 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto throws = remembered("switch_throws")) set_switch_throws(std::strtof(throws->c_str(), nullptr));
     // A thunderstorm's lightning as last set.
     if (const auto rate = remembered("lightning_rate")) renderer::lightning_rate() = std::clamp(std::strtof(rate->c_str(), nullptr), 0.0f, 30.0f);
+    {
+        // The dynamic weather's settings, and a seed of its own each run.
+        auto& weather = weather_cycle();
+        const auto number = [](const char* key, float& out, const float least, const float most) {
+            if (const auto value = remembered(key)) out = std::clamp(std::strtof(value->c_str(), nullptr), least, most);
+        };
+        weather.settings.dynamic = remembered("weather_dynamic").value_or("0") == "1";
+        weather.settings.by_season = remembered("weather_by_season").value_or("1") == "1";
+        number("weather_cloudiness", weather.settings.climate.cloudiness, 0.0f, 1.0f);
+        number("weather_wet", weather.settings.climate.wet, 0.0f, 1.0f);
+        number("weather_storms", weather.settings.climate.storms, 0.0f, 1.0f);
+        number("weather_spell", weather.settings.spell_minutes, 10.0f, 240.0f);
+        number("weather_change", weather.settings.change_minutes, 1.0f, 60.0f);
+        weather.seed = static_cast<std::uint64_t>(std::random_device{}()) << 32 | std::random_device{}();
+    }
     if (const auto brightness = remembered("lightning_brightness"))
         renderer::lightning_brightness() = std::clamp(std::strtof(brightness->c_str(), nullptr), 0.0f, 3.0f);
     if (const auto volume = remembered("thunder_volume")) thunder_volume() = std::clamp(std::strtof(volume->c_str(), nullptr), 0.0f, 2.0f);
@@ -2972,11 +3114,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         panel.effects.light_shafts = has("shafts");
     }
     // The field of view: the panel's, else RTS's (config.ini FOV, vertical, degrees).
+    // Num* brings back RTS's (else the default).
+    float base_fov = default_fov_degrees;
+    if (const auto rts = rts_config_value(read_rts_config(options.identity.root), "fov")) base_fov = std::clamp(*rts, 15.0f, 100.0f);
     if (const auto fov = remembered("fov")) {
         panel.fov = std::clamp(static_cast<float>(std::atof(fov->c_str())), 15.0f, 100.0f);
-    } else if (const auto rts = rts_config_value(read_rts_config(options.identity.root), "fov")) {
-        panel.fov = std::clamp(*rts, 15.0f, 100.0f);
+    } else {
+        panel.fov = base_fov;
     }
+    bool fov_reset_down = false; // Num* held
     StageClock stage_clock;
     StageTimes stages{};
     FovKeys fov_keys;
@@ -2985,6 +3131,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // the menu runs the game): what a frame waits on, without the panel.
     double perf_at = last_time + 10.0;
     DiscordStatus discord(options.discord && !capture);
+    double scripted_save_loaded_at = -1.0; // --save-game-after
+    bool scripted_save_done = false;
     while (!glfwWindowShouldClose(window.get())) {
         // The start's loading (as the last update left it): its screen, no
         // input for the scene, and for a start in the cab no time passing.
@@ -3029,13 +3177,36 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const bool fov_keyboard_free = true;
 #endif
         if (update_fov_keys(window.get(), fov_keys, panel.fov, elapsed, fov_keyboard_free)) remember("fov", std::to_string(panel.fov));
+        {
+            // Num*, or Ctrl+0 without a keypad (no cab assigns it): the field
+            // of view back to where it starts and Ctrl+wheel's zoom off
+            // (testers 2026-11-18; Num+ / Num- move it, as in RTS).
+            const auto held = [&](const int key) { return glfwGetKey(window.get(), key) == GLFW_PRESS; };
+            const bool reset = fov_keyboard_free
+                               && (held(GLFW_KEY_KP_MULTIPLY)
+                                   || ((held(GLFW_KEY_LEFT_CONTROL) || held(GLFW_KEY_RIGHT_CONTROL)) && held(GLFW_KEY_0)));
+            if (reset && !fov_reset_down) {
+                panel.fov = base_fov;
+                camera.view_zoom = 1.0f;
+                remember("fov", std::to_string(panel.fov));
+            }
+            fov_reset_down = reset;
+        }
         last_time = now;
 
         toggle_shading_from_keyboard(window.get(), input, renderer);
         if (!panel.experimental_supported) renderer.set_shading_path(renderer::ShadingPath::rts_compatible);
         {
             // Pause: trains, DLLs, the clock and the sound stop; the free camera still flies.
-            const bool pause_key = !imgui_has_keyboard() && glfwGetKey(window.get(), GLFW_KEY_PAUSE) == GLFW_PRESS;
+            // Pause, as RTS; F1 too (openRTS's), for keyboards without Pause
+            // (laptops, testers 2026-11-18): no cab of the installed content
+            // assigns an F key, and RTS's F1 works only with Shift
+            // (0x402C88).
+            const bool shift = glfwGetKey(window.get(), GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
+                               || glfwGetKey(window.get(), GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+            const bool pause_key = !imgui_has_keyboard()
+                                   && (glfwGetKey(window.get(), GLFW_KEY_PAUSE) == GLFW_PRESS
+                                       || (glfwGetKey(window.get(), GLFW_KEY_F1) == GLFW_PRESS && !shift));
             if (pause_key && !input.pause_key_down) panel.paused = !panel.paused;
             input.pause_key_down = pause_key;
         }
@@ -3219,6 +3390,39 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
         }
         if (const auto time = scene.take_time_of_day()) clock.time_of_day = *time;
+        if (const auto saved = scene.take_saved_clock()) {
+            // A loaded game's clock, season and weather.
+            clock.time_of_day = saved->time_of_day;
+            clock.season = std::clamp(saved->season, 0, 3);
+            clock.weather = saved->storm ? 3 : std::clamp(saved->weather, 0, 2);
+        }
+        {
+            // Saved games: the panel's requests and F2 (RTS: F2 saves the game).
+            const bool f2 = !imgui_has_keyboard() && glfwGetKey(window.get(), GLFW_KEY_F2) == GLFW_PRESS;
+            if (f2 && !panel.quick_save_key_down && !scene.saves_folder().empty()) panel.save_request = tr("quick save");
+            panel.quick_save_key_down = f2;
+            // --save-game-after: once, that long after the loading ended.
+            if (scene.loading().done && scripted_save_loaded_at < 0.0) scripted_save_loaded_at = now;
+            if (options.save_game_after && !scripted_save_done && scripted_save_loaded_at >= 0.0
+                && now - scripted_save_loaded_at >= options.save_game_after->first) {
+                panel.save_request = options.save_game_after->second;
+                scripted_save_done = true;
+            }
+            if (!panel.save_request.empty()) {
+                const auto name = std::exchange(panel.save_request, {});
+                const auto error = scene.save_game(name);
+                panel.game_status = error.empty() ? trf("saved: %s", name.c_str()) : error;
+                panel.game_status_until = ImGui::GetTime() + 8.0;
+                if (error.empty()) panel.save_choice = 0;
+            }
+            if (panel.load_request) {
+                const auto file = *std::exchange(panel.load_request, std::nullopt);
+                const auto error = scene.load_game(file);
+                const auto stem = file.stem().u8string();
+                panel.game_status = error.empty() ? trf("loading: %s", std::string(stem.begin(), stem.end()).c_str()) : error;
+                panel.game_status_until = ImGui::GetTime() + 8.0;
+            }
+        }
         auto scene_clock = clock.advance(panel.paused || scene.paused() || loading.hold_time ? 0.0f : elapsed);
         scene_clock.background = background;
         camera.head_nod = camera.head_tilt = 0.0f;
