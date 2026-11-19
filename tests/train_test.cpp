@@ -111,8 +111,8 @@ struct Run {
     std::shared_ptr<simulation::DriverHandles> driver;
     float max_cylinder = 0.0f;
 
-    Run(const Stock& stock, const simulation::TrainSettings settings, const double front)
-        : train(stock.cars(10), settings) {
+    Run(const Stock& stock, const simulation::TrainSettings settings, const double front, const std::size_t wagons = 10)
+        : train(stock.cars(wagons), settings) {
         std::string error;
         check(train.place(*network, 1, front, true, &error), "placed: " + error);
         driver = simulation::attach_keyboard_driver(train);
@@ -1116,7 +1116,7 @@ void test_realistic_air(const Stock& stock) {
         r.run(10.0);
         r.driver->brake = Handle::charge;
         r.run(1.0);
-        check(r.train.cars().front().pipe > r.driver->equalising + 0.3f,
+        check(r.train.cars().front().pipe > r.driver->equalising + 0.2f,
               "realistic: I feeds the pipe at the engine ahead of the УР (" + std::to_string(r.train.cars().front().pipe) + " / " +
                   std::to_string(r.driver->equalising) + ")");
     }
@@ -1720,9 +1720,41 @@ Train ( TrainCfg ( "c"
     }
 }
 
+// I by the train's length (testers 2026-11-19): the pipe at the engine
+// runs ahead of the УР, and the longer the train the slower it rises.
+void test_charge_by_length(const Stock& stock) {
+    using Handle = simulation::DriverHandles::BrakeHandle;
+    simulation::TrainSettings settings;
+    settings.brake_model = simulation::BrakeModel::realistic;
+    float rise[3]{};
+    const std::size_t lengths[3] = {0, 10, 60};
+    for (int k = 0; k < 3; ++k) {
+        const auto wagons = lengths[k];
+        Run r(stock, settings, 2500.0, wagons);
+        r.run(wagons > 20 ? 600.0 : 200.0);
+        r.driver->brake = Handle::service;
+        r.run(4.0);
+        r.driver->brake = Handle::lap;
+        r.run(10.0);
+        const float before = r.train.cars().front().pipe;
+        r.driver->brake = Handle::charge;
+        r.run(2.0);
+        const float head = r.train.cars().front().pipe;
+        rise[k] = head - before;
+        check(head > r.driver->equalising + 0.1f,
+              "realistic, " + std::to_string(wagons) + " wagons: in I the pipe at the engine runs ahead of the УР (" +
+                  std::to_string(head) + " / " + std::to_string(r.driver->equalising) + ")");
+        if (wagons == 60)
+            check(head < r.train.cars().front().main_reservoir - 1.0f,
+                  "realistic, 60 wagons: in I the pipe does not leap to the main reservoir (" + std::to_string(head) + ")");
+    }
+    check(rise[0] > rise[1] && rise[1] > rise[2], "realistic: in I the longer the train the slower the pipe rises");
+}
+
 int main() {
     test_units();
     const Stock stock;
+    test_charge_by_length(stock);
     test_parse(stock);
     test_brakes(stock);
     test_buffer_stop(stock);

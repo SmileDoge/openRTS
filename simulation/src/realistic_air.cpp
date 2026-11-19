@@ -52,8 +52,14 @@ constexpr float relay_vent = 0.080f;
 // 1983, the 395 in I): the pipe at the engine runs ahead of the УР, the
 // faster the less pipe there is to fill (testers 2026-11-19: on the ЭП1 and
 // the ЭД4М the pipe rose with the УР, the relay holding it there).
-constexpr float direct_gain = 0.60f;       // m³/(s·atm)
-constexpr float direct_feed = 0.50f;       // m³·atm/s
+// v0.28.1 gave it 600 l/(s·atm) and 500 l·atm/s: the pipe at the engine
+// leapt to the main reservoir's pressure even with 60 cars behind (testers:
+// the longer the train, the slower the pipe reaches it). At 80 / 80 a lone
+// engine's pipe is at the main reservoir in about a second, 10 cars' runs
+// 0.3 .. 0.8 atm ahead of the УР, 60 cars' 0.2 .. 0.45 and slower
+// (train_test, "I by the train's length").
+constexpr float direct_gain = 0.08f;       // m³/(s·atm)
+constexpr float direct_feed = 0.08f;       // m³·atm/s
 constexpr float emergency_valve = 0.050f;  // VI: m³/(s·atm) to the atmosphere
 
 float car_length(const CarState& car) {
