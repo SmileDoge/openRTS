@@ -275,6 +275,9 @@ public:
     [[nodiscard]] virtual bool escape_taken() const { return false; }
     // The mouse wheel works the scene (the 3-D cab) instead of zooming.
     [[nodiscard]] virtual bool takes_scroll() const { return false; }
+    // The eye back from a screen of the cab the wheel took it to, smoothly
+    // (the * key: TME's CameraReset does the same).
+    virtual void restore_screen_focus() {}
     // Switch `id` of the driven train's cab to `state` (--capture-switch).
     virtual void set_cab_switch(std::uint32_t, std::uint32_t) {}
     // Where it is now: State and SetState (the capture's report).

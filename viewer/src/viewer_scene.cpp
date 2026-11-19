@@ -1606,6 +1606,9 @@ public:
     [[nodiscard]] bool keyboard_captured() const override { return train_ && train_->keyboard_captured(); }
     [[nodiscard]] bool engineer_on_foot() const override { return train_ && train_->engineer_on_foot(); }
     [[nodiscard]] bool takes_scroll() const override { return train_ && train_->viewing_inside(); }
+    void restore_screen_focus() override {
+        if (train_) train_->restore_screen_focus();
+    }
     [[nodiscard]] std::optional<double> take_time_of_day() override {
         return net_ ? net_->take_time_of_day() : std::nullopt;
     }

@@ -1994,6 +1994,10 @@ struct CameraInput {
     int releases = 0;          // left button let go (anywhere, over a panel too)
     double scroll = 0.0;       // wheel since the last scene_input()
     bool scene_takes_scroll = false;
+    // The * key (FovReturn): the edge polled, and Ctrl+wheel's own zoom, which
+    // cancels the return as a field of view key does.
+    bool fov_reset_key_down = false;
+    bool fov_touched = false;
     std::array<bool, 14> train_keys_down{};
     std::vector<KeyEvent> key_events; // since the last scene_input()
     bool keyboard_captured = false;   // the scene takes the keyboard (cab keys)
@@ -2086,6 +2090,7 @@ void on_scroll(GLFWwindow* window, [[maybe_unused]] const double x, const double
         const bool ctrl = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
         if (ctrl) {
             input->camera->zoom_view(static_cast<float>(y));
+            input->fov_touched = true; // a * return eases no more
         } else {
             input->scroll += y;
             if (!input->scene_takes_scroll) input->camera->zoom(static_cast<float>(y));
@@ -2127,16 +2132,19 @@ void install_input_callbacks(GLFWwindow* window, CameraInput& input) {
     glfwSetCharCallback(window, on_char);
 }
 
-// RTS's field of view keys (rts1.exe 0x403715, WM_KEYDOWN): Num+ narrows it
-// by half a degree while above 15, Num- widens it while below 90, on the
-// press and on each of the key's repeats (here: after 0.5 s, 30 a second);
-// with Ctrl RTS does something else with them, so they do nothing here.
+// RTS's field of view keys (rts1.exe 0x403715, WM_KEYDOWN): Num+ narrows it,
+// Num- widens it. RTS steps half a degree per press and per key repeat, and at
+// 15 repeats a second that reads as jumps; here a held key turns it at a steady
+// rate instead, as TME's 3-D cab does (40 degrees a second there), and a tap
+// still steps half a degree. With Ctrl RTS does something else with them, so
+// they do nothing here.
 struct FovKeys {
     int key = 0;        // 1 narrower, -1 wider, 0 none
-    double held = 0.0;  // s since the press
-    double next = 0.0;  // s at the next repeat
     bool changed = false;
 };
+
+// How fast a held key turns the field of view, degrees a second.
+constexpr float fov_key_rate = 30.0f;
 
 // True when the key that changed the field of view was let go (remember it).
 [[nodiscard]] bool update_fov_keys(GLFWwindow* window, FovKeys& state, float& fov, const float seconds, const bool keyboard_free) {
@@ -2149,23 +2157,36 @@ struct FovKeys {
         state = {};
         return let_go;
     }
-    int steps = 0;
+    float step = 0.0f;
     if (key != state.key) {
         state.key = key;
-        state.held = 0.0;
-        state.next = 0.5;
-        steps = 1;
+        step = 0.5f; // the tap
     } else {
-        state.held += seconds;
-        for (; state.held >= state.next && steps < 64; state.next += 1.0 / 30.0) ++steps;
+        // A long frame (a load, a hitch) must not jump the field of view.
+        step = fov_key_rate * (std::min)(seconds, 0.1f);
     }
-    for (int k = 0; k < steps; ++k) {
-        if (key > 0 && fov > 15.0f) fov -= 0.5f;
-        if (key < 0 && fov < 90.0f) fov += 0.5f;
+    if (key > 0 && fov > 15.0f) {
+        fov = (std::max)(15.0f, fov - step);
+        state.changed = true;
+    }
+    if (key < 0 && fov < 90.0f) {
+        fov = (std::min)(90.0f, fov + step);
         state.changed = true;
     }
     return false;
 }
+
+// The * key: the field of view back to the one the viewer started with, and
+// the view's zoom back to 1, eased over this long (TME's CameraReset snaps it;
+// here the wheel's own zoom eases too, so the return does).
+struct FovReturn {
+    bool active = false;
+    float from = 0.0f;
+    float to = 0.0f;
+    float zoom_from = 1.0f;
+    float t = 0.0f;
+};
+constexpr float fov_return_seconds = 0.45f;
 
 // Polled keyboard handling: F toggles fly/orbit on key press, WASD/QE move.
 // The keyboard is ImGui's while one of its text boxes takes it (the console's
@@ -3122,7 +3143,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     } else {
         panel.fov = base_fov;
     }
-    bool fov_reset_down = false; // Num* held
+    const float start_fov = panel.fov;
+    FovReturn fov_return;
     StageClock stage_clock;
     StageTimes stages{};
     FovKeys fov_keys;
@@ -3178,19 +3200,33 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
 #endif
         if (update_fov_keys(window.get(), fov_keys, panel.fov, elapsed, fov_keyboard_free)) remember("fov", std::to_string(panel.fov));
         {
-            // Num*, or Ctrl+0 without a keypad (no cab assigns it): the field
-            // of view back to where it starts and Ctrl+wheel's zoom off
-            // (testers 2026-11-18; Num+ / Num- move it, as in RTS).
             const auto held = [&](const int key) { return glfwGetKey(window.get(), key) == GLFW_PRESS; };
-            const bool reset = fov_keyboard_free
-                               && (held(GLFW_KEY_KP_MULTIPLY)
-                                   || ((held(GLFW_KEY_LEFT_CONTROL) || held(GLFW_KEY_RIGHT_CONTROL)) && held(GLFW_KEY_0)));
-            if (reset && !fov_reset_down) {
-                panel.fov = base_fov;
-                camera.view_zoom = 1.0f;
-                remember("fov", std::to_string(panel.fov));
+            const bool down = fov_keyboard_free
+                              && (held(GLFW_KEY_KP_MULTIPLY)
+                                  || ((held(GLFW_KEY_LEFT_CONTROL) || held(GLFW_KEY_RIGHT_CONTROL)) && held(GLFW_KEY_0)));
+            if (down && !input.fov_reset_key_down) {
+                fov_return = {};
+                fov_return.active = true;
+                fov_return.from = panel.fov;
+                fov_return.to = start_fov;
+                fov_return.zoom_from = camera.view_zoom;
+                scene.restore_screen_focus();
             }
-            fov_reset_down = reset;
+            input.fov_reset_key_down = down;
+            if (fov_keys.changed || input.fov_touched) {
+                fov_return.active = false;
+                input.fov_touched = false;
+            }
+            if (fov_return.active) {
+                fov_return.t = (std::min)(1.0f, fov_return.t + elapsed / fov_return_seconds);
+                const float t = fov_return.t * fov_return.t * (3.0f - 2.0f * fov_return.t);
+                panel.fov = fov_return.from + (fov_return.to - fov_return.from) * t;
+                camera.view_zoom = fov_return.zoom_from + (1.0f - fov_return.zoom_from) * t;
+                if (fov_return.t >= 1.0f) {
+                    fov_return.active = false;
+                    remember("fov", std::to_string(panel.fov));
+                }
+            }
         }
         last_time = now;
 
@@ -3501,6 +3537,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const bool hdr = tone && surface.hdr_view();
 
         const auto aspect = static_cast<float>(width) / static_cast<float>(height);
+        // What the frame is drawn with, for the wheel on a cab's screen: the
+        // eye fits the screen into the frame with it (cab_screen_focus).
+        camera.aspect = aspect;
+        camera.frame_fov = camera.vertical_fov(glm::radians(panel.fov));
         seated_cab_near = panel.cab_near_plane > 0.0f && scene.seated_in_cab() ? panel.cab_near_plane : 0.0f;
         FrameView frame{
             .eye = camera.eye(),

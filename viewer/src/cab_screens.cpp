@@ -480,4 +480,36 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
     }
 }
 
+std::optional<ScreenFocus> cab_screen_focus(const ScreenPlane& plane, const glm::vec3& eye, const float vertical_fov,
+                                            const float aspect) {
+    // TME's InsideThreeDimCamera: the screen fills this much of the frame; the
+    // eye stays between these distances of it, m. The near one is raised from
+    // TME's 0.15 because the cab's near plane is 0.2 m.
+    constexpr float screen_fill = 0.68f;
+    constexpr float min_distance = 0.28f;
+    constexpr float max_distance = 0.9f;
+    const glm::vec3& top_left = plane.top_left;
+    const glm::vec3& top_right = plane.top_right;
+    const glm::vec3& bottom_right = plane.bottom_right;
+    glm::vec3 normal = glm::cross(top_right - top_left, bottom_right - top_right);
+    const float area = glm::length(normal);
+    if (area < 1e-6f || aspect <= 0.0f || vertical_fov <= 0.0f) return std::nullopt;
+    normal /= area;
+    const glm::vec3 centre = (top_left + bottom_right) * 0.5f;
+    // The eye may be on either side of a screen (a cab seen mirrored): the
+    // normal turns to its side, so the focus is always in front of the glass.
+    if (glm::dot(normal, eye - centre) < 0.0f) normal = -normal;
+    const float width = glm::distance(top_left, top_right);
+    const float height = glm::distance(top_right, bottom_right);
+    if (width < 1e-4f || height < 1e-4f) return std::nullopt;
+    // Fit the larger of the height and the width the frame's aspect allows.
+    const float half_fov = std::clamp(vertical_fov, 0.05f, 3.0f) * 0.5f;
+    const float fit = (std::max)(height, width / aspect) * 0.5f / (std::tan(half_fov) * screen_fill);
+    ScreenFocus focus;
+    focus.distance = std::clamp(fit, min_distance, max_distance);
+    focus.eye = centre + normal * focus.distance;
+    focus.forward = -normal;
+    return focus;
+}
+
 } // namespace openrts::viewer

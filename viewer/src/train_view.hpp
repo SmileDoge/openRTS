@@ -693,6 +693,9 @@ public:
     // The view from inside his cab or salon: not while the car view has the
     // camera (F3).
     [[nodiscard]] bool viewing_inside() const noexcept { return engineer_.inside() && car_view_ == CarView::off; }
+    // The eye back from a screen of the cab the wheel took it to, smoothly
+    // (the * key: TME's CameraReset does the same).
+    void restore_screen_focus() { engineer_.release_focus(); }
     // The engineer sits in a cab's chair and the view is his.
     [[nodiscard]] bool seated_in_cab() const noexcept { return engineer_.mode() == Engineer::Mode::seated && car_view_ == CarView::off; }
     // F3: the camera orbits the train's first car, then its last, then back.
@@ -1384,6 +1387,11 @@ private:
     // cars took it; `listed` when the mod was added to openrts.ini.
     std::size_t keep_distributor(const Car& car, formats::BrakeDistributor distributor, bool& listed, std::string& error);
     glm::vec3 look_{0.0f, 0.0f, 1.0f}; // the camera's direction, for the cab labels
+    // The frame's view this frame (the window's, from ViewerCamera): the
+    // aspect and the vertical field of view drawn, radians. The wheel on a
+    // screen fits it into the frame with them (cab_screen_focus).
+    float frame_aspect_ = 16.0f / 9.0f;
+    float frame_fov_ = 0.85f;
     // Outside he collides with the world's objects and stands on them
     // (platforms, ballast, bridges), or only with the ground and the trains.
     bool walk_objects_ = true;

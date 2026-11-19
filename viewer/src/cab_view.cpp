@@ -705,6 +705,52 @@ std::optional<CabView::DoorPicked> CabView::pick_door(const glm::vec3& origin, c
     return best;
 }
 
+namespace {
+
+// Möller-Trumbore: where the ray (origin, direction) meets the triangle, as
+// its distance along the ray; nothing if it misses or is parallel.
+[[nodiscard]] std::optional<float> ray_triangle(const glm::vec3& origin, const glm::vec3& direction, const glm::vec3& a,
+                                               const glm::vec3& b, const glm::vec3& c) {
+    const glm::vec3 ab = b - a, ac = c - a;
+    const glm::vec3 p = glm::cross(direction, ac);
+    const float det = glm::dot(ab, p);
+    if (std::abs(det) < 1e-9f) return std::nullopt;
+    const float inv = 1.0f / det;
+    const glm::vec3 s = origin - a;
+    const float u = glm::dot(s, p) * inv;
+    if (u < 0.0f || u > 1.0f) return std::nullopt;
+    const glm::vec3 q = glm::cross(s, ab);
+    const float v = glm::dot(direction, q) * inv;
+    if (v < 0.0f || u + v > 1.0f) return std::nullopt;
+    const float t = glm::dot(ac, q) * inv;
+    if (t <= 0.0f) return std::nullopt;
+    return t;
+}
+
+} // namespace
+
+std::optional<CabView::ScreenPicked> CabView::pick_screen(const glm::vec3& origin, const glm::vec3& direction,
+                                                          const float reach) const {
+    const float length = glm::length(direction);
+    if (length < 1e-6f) return std::nullopt;
+    const glm::vec3 along = direction / length;
+    std::optional<ScreenPicked> best;
+    for (std::size_t i = 0; i < cab_.displays.size(); ++i) {
+        const auto& display = cab_.displays[i];
+        if (display.type != formats::CabDisplayType::screen || !display.screen.present) continue;
+        const ScreenPlane plane{glm::vec3{display.screen.top_left[0], display.screen.top_left[1], display.screen.top_left[2]},
+                                glm::vec3{display.screen.top_right[0], display.screen.top_right[1], display.screen.top_right[2]},
+                                glm::vec3{display.screen.bottom_right[0], display.screen.bottom_right[1], display.screen.bottom_right[2]}};
+        // The .sd gives three corners; the fourth completes the quad.
+        const glm::vec3 bottom_left = plane.top_left + plane.bottom_right - plane.top_right;
+        std::optional<float> hit = ray_triangle(origin, along, plane.top_left, plane.top_right, plane.bottom_right);
+        if (!hit) hit = ray_triangle(origin, along, plane.top_left, plane.bottom_right, bottom_left);
+        if (!hit || *hit > reach || (best && *hit >= best->distance)) continue;
+        best = ScreenPicked{i, plane, *hit};
+    }
+    return best;
+}
+
 std::string CabView::door_pick_report(const glm::vec3& eye) const {
     if (!geometry_) return "the cab's surfaces not read";
     std::vector<glm::vec3> lo, hi;
