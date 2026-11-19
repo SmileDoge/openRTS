@@ -156,6 +156,34 @@ void read_extensions(const std::string_view text, ShapeDescription& description)
     } else if (const auto* bounding = find_node(root, "esd_bounding_box"); bounding && bounding->values.size() >= 6) {
         box(*bounding, 0);
     }
+    if (const auto* node = find_node(root, "esd_pickup_object")) {
+        PickupObject pickup;
+        const auto* type = node->child("pickuptype");
+        pickup.types = {static_cast<std::uint32_t>(value(type, 0)), static_cast<std::uint32_t>(value(type, 1))};
+        if (const auto* cargo = node->child("cargotype"); cargo && !cargo->values.empty()) {
+            pickup.cargo = cargo->values.front();
+        }
+        const auto* capacity = node->child("pickupcapacity");
+        pickup.capacity = {value(capacity, 0), value(capacity, 1)};
+        const auto* speed = node->child("speedrange");
+        pickup.speed = {value(speed, 0), value(speed, 1)};
+        pickup.length = (std::max)(0.0f, value(node->child("pickuplength"), 0, 2.0f));
+        if (const auto* area = node->child("pickuparea"); area && area->values.size() >= 6) {
+            pickup.has_area = true;
+            for (std::size_t k = 0; k < 6; ++k) pickup.area[k] = value(area, k);
+        }
+        if (const auto* points = node->child("pickuppoints")) {
+            std::size_t first = points->values.size() % 3 == 1 ? 1 : 0;
+            for (; first + 2 < points->values.size(); first += 3) {
+                pickup.points.push_back({value(points, first), value(points, first + 1), value(points, first + 2)});
+            }
+        }
+        const auto* animation = node->child("pickupanimdata");
+        pickup.animation = {value(animation, 0), value(animation, 1)};
+        pickup.crane_type = static_cast<std::uint32_t>(value(node->child("pickupcranetype"), 0));
+        pickup.crane_oriented = value(node->child("pickupcraneoriented"), 0) != 0.0f;
+        description.pickup = std::move(pickup);
+    }
     const auto* lights = find_node(root, "esd_lightsources");
     if (!lights) return;
     for (const auto& node : lights->children) {

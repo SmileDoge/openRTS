@@ -720,6 +720,7 @@ WagonDefinition load_wagon(const core::Vfs& vfs, const std::string_view folder, 
     // The merged companion text comes first in the Wagon block, so its
     // first token is no longer the name; the file name is.
     wagon.name = std::string(name);
+    wagon.file = path.str();
     wagon.display_name = written_name(*bytes);
     // openRTS's stock rules (Luau): the file < the rules < the companion.
     auto& brakes_now = wagon.brakes;

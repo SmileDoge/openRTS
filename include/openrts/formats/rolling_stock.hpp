@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
@@ -352,6 +353,7 @@ struct WagonDefinition {
     // Wagon block, as the file writes it (RTS reads the files lower-cased);
     // for people only (the Discord profile). Empty without one.
     std::string display_name;
+    std::filesystem::path file;
     WagonKind kind = WagonKind::unknown;
     std::string shape;          // RTSWagonShape, else WagonShape
     std::string freight_shape;  // FreightAnim
