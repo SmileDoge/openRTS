@@ -1393,9 +1393,9 @@ void Train::step() {
             }
         }
         car.main_reservoir = (std::max)(car.main_reservoir + demands.main_reservoir_rate * dt, 0.0f);
-        // Worn brakes (realistic air): the main reservoir leaks, and the
-        // independent brake's valve keeps its leaking cylinder filled from it.
-        if (realistic_air && (car.wear.reservoir_leak > 0.0f || car.wear.cylinder_leak > 0.0f)) {
+        // Worn brakes: the main reservoir leaks, and the independent brake's
+        // valve keeps its leaking cylinder filled from it.
+        if (car.wear.reservoir_leak > 0.0f || car.wear.cylinder_leak > 0.0f) {
             float lost = car.wear.reservoir_leak / 60.0f * (car.main_reservoir / 9.0f) * dt;
             if (car.independent > 0.0f && car.independent >= car.cylinder)
                 lost += car.wear.cylinder_leak / 60.0f * (car.independent / 3.8f) * distributor_cylinder_volume /
