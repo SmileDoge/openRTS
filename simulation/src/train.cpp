@@ -425,6 +425,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     demands.equalising_kept = out.equalising;
     demands.emergency = out.emergency;
     demands.pipe_feed = out.feed;
+    demands.pipe_direct = out.direct;
     demands.systems = out.systems;
     if (out.ep_value >= 0.0f) {
         demands.ep_value = out.ep_value;

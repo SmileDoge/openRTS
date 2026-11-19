@@ -686,6 +686,12 @@ built, against the proposal below:
   (20 l/(s·atm), 50 l·atm/s feed, 20 vent), fed from the main reservoir;
   VI vents at 50 l/(s·atm). The keyboard controller drops RTS's forced
   overcharge in II and its stabiliser removes an overcharge at 0.12 atm/min.
+  In I the main reservoir also feeds the pipe straight through the wide
+  channel, past the relay (600 l/(s·atm), at most 500 l·atm/s, till the two
+  stand equal), and the relay lets nothing out: the pipe at the engine runs
+  ahead of the УР, the faster the shorter the train (testers 2026-11-19: on
+  the ЭП1 and the ЭД4М it rose with the УР). Every valve: the keyboard's,
+  openRTS's valve for a DLL and openRTS's cab brakes.
 - **Main reservoir:** the real volume (`AirBrakesMainResVolume` in litres
   when above 100, else cubic feet: the install has 1 .. 84 ft³ and 175 ..
   2020 l; at a border of 50 the ВЛ80Т's 66 ft³ read as 66 l and its

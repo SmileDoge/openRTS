@@ -159,6 +159,7 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
     }
     if (c.keep_equalising) ur = ur_before;
     const bool connected = c.valve.has_value() && !c.cut_off;
+    out.direct = connected && *c.valve == ValvePosition::charge;
     out.equalising_kept = ur;
     out.equalising = connected ? ur : -1.0f;
     out.emergency = (connected && emergency) || c.emergency;

@@ -1105,6 +1105,22 @@ void test_realistic_air(const Stock& stock) {
         check(r.train.cars().back().cylinder > 2.0f, "realistic: VI applies the whole train within 10 s");
     }
     {
+        // I: the main reservoir straight into the pipe through the 395's
+        // wide channel, past the relay: the pipe at the engine runs ahead of
+        // the УР (testers 2026-11-19: it rose with the УР).
+        Run r(stock, settings, 1000.0);
+        r.run(120.0);
+        r.driver->brake = Handle::service;
+        r.run(4.0);
+        r.driver->brake = Handle::lap;
+        r.run(10.0);
+        r.driver->brake = Handle::charge;
+        r.run(1.0);
+        check(r.train.cars().front().pipe > r.driver->equalising + 0.3f,
+              "realistic: I feeds the pipe at the engine ahead of the УР (" + std::to_string(r.train.cars().front().pipe) + " / " +
+                  std::to_string(r.driver->equalising) + ")");
+    }
+    {
         // Passenger cars (305 with a 292), charged to 5.2: a first step of
         // about 0.3 brakes them (the 292 braked nothing above a pipe of 4.9
         // until 2026-11-17); I then II releases and nothing brakes again

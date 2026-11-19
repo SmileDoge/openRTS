@@ -379,6 +379,7 @@ public:
             demands.equalising_kept = valve_out.equalising;
             demands.emergency = (connected && valve_out.emergency) || controls_.combined == 2 || vent;
             demands.pipe_feed = valve_out.feed;
+            demands.pipe_direct = connected && valve_out.direct;
             return;
         }
         // The DLL's valve: its УР, through the cab's cocks as openRTS's valve
@@ -448,6 +449,7 @@ private:
         demands.equalising_kept = r.equalising_kept;
         demands.emergency = r.emergency || vent;
         demands.pipe_feed = r.feed;
+        demands.pipe_direct = r.direct;
         demands.ep_value = r.ep_value;
         demands.ep_command = r.ep_command;
         demands.systems = static_cast<std::uint16_t>((demands.systems & 4u) | r.systems);

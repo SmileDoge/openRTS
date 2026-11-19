@@ -100,6 +100,9 @@ struct EngineDemands {
     bool emergency = false;
     // The relay may feed the pipe (not in III: ValveOutput::feed).
     bool pipe_feed = true;
+    // I: the main reservoir feeds the pipe straight, past the relay
+    // (ValveOutput::direct).
+    bool pipe_direct = false;
     // openRTS's cab brake devices in place of a DLL's (cab_brakes.hpp): what
     // they did this step, for the cab's gauges and lamps.
     std::optional<CabBrakeOutput> cab_brakes;

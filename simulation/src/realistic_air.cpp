@@ -47,6 +47,13 @@ constexpr float emergency_rate = -2.5f;    // atm/s: only a pipe vented right th
 constexpr float relay_gain = 0.40f;        // m³/(s·atm)
 constexpr float relay_feed = 0.150f;       // m³·atm/s
 constexpr float relay_vent = 0.080f;
+// I: the 395's wide channel from the main reservoir straight into the pipe,
+// past the relay (Крылов, «Автоматические тормоза подвижного состава»,
+// 1983, the 395 in I): the pipe at the engine runs ahead of the УР, the
+// faster the less pipe there is to fill (testers 2026-11-19: on the ЭП1 and
+// the ЭД4М the pipe rose with the УР, the relay holding it there).
+constexpr float direct_gain = 0.60f;       // m³/(s·atm)
+constexpr float direct_feed = 0.50f;       // m³·atm/s
 constexpr float emergency_valve = 0.050f;  // VI: m³/(s·atm) to the atmosphere
 
 float car_length(const CarState& car) {
@@ -197,6 +204,15 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                     // The relay holds the pipe at the УР: no overshoot in a sub-step.
                     const float most = (d.equalising - car.pipe) * volume[i];
                     q = q > 0.0f ? (std::min)(q * h, (std::max)(most, 0.0f)) : (std::max)(q * h, (std::min)(most, 0.0f));
+                    if (d.pipe_direct && car.main_reservoir > car.pipe) {
+                        // I: the wide channel holds the pipe up (the relay
+                        // lets nothing out) and fills it from the main
+                        // reservoir, at most till the two stand equal.
+                        q = (std::max)(q, 0.0f);
+                        const float gap = car.main_reservoir - car.pipe;
+                        const float equal = gap * volume[i] * vmr / (volume[i] + vmr);
+                        q += (std::min)((std::min)(direct_gain * gap, direct_feed) * h, (std::max)(equal - q, 0.0f));
+                    }
                     flow[i] += q;
                     if (q > 0.0f) car.main_reservoir = (std::max)(car.main_reservoir - q / vmr, 0.0f);
                 }

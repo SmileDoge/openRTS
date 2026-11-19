@@ -123,6 +123,7 @@ struct CabBrakeOutput {
     float equalising_kept{};
     bool emergency = false; // the pipe opened at the engine
     bool feed = true;       // the relay may feed the pipe (not in III)
+    bool direct = false;    // I: the main reservoir straight into the pipe (ValveOutput::direct)
     // The ЭПТ: its level (>= 0 while on) and its command to the cars' ЭВР;
     // BrakeSystemsEngaged.
     float ep_value = -1.0f;
