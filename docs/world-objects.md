@@ -154,10 +154,21 @@ openRTS: `viewer/src/road_traffic.cpp`.
 ## Water
 
 - **Where:** terrain patches with flag bits `0xC0` (`0x49B088`). Each gets a
-  quad at the tile's water height, `terrain_water_height_offset` (token 251,
-  four values) spread over the 17 x 17 patch corners as `0x4A2A5C` does (bug
-  for bug: away from the first values rather than towards the others; equal
-  values everywhere on the installed routes but one tile).
+  quad at the tile's water height there.
+- **The height:** `terrain_water_height_offset` (token 251) holds the
+  water's height at the tile's corners SW, SE, NE, NW (`rts1.exe` pairs the
+  last two with the north edge, the first two with the south one). openRTS
+  spreads them bilinearly from corner to corner, a corner given as 0 taking
+  the SW one (a tile with only its first height set is level), as Open Rails
+  does (`TerrainTile::water_height`; Open Rails' `TerrainFile.cs`,
+  `Tiles.cs`, `Water.cs`, GPL-3.0); both waters, RTS's layers and openRTS's,
+  take it (since 2026-11-20, the testers' request: sloped water instead of
+  waterfalls and dams). RTS (`0x4A2A5C`) spreads them away from the first
+  values rather than towards the others, so sloped water came out wrong and
+  the route builders keep the four equal. Equal corners come out the same
+  either way: every water tile of the installed routes has them equal; the
+  three tiles with unequal ones (Novokuznetsk `-148c6e98`, `-148c6eac`,
+  Pavlovsk `-109aa8b8`) have no water patches.
 - **The layers (`world_water` in the environment, `0x55859C`):** each at its
   `world_water_layer_height` above the water, drawn in order right after the
   terrain (`0x408574`), depth test LEQUAL with writes; `BlendATex*` and

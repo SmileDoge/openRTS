@@ -151,14 +151,11 @@ TerrainTileMesh build_terrain_tile_mesh(const core::Vfs& vfs,
     }
 
     // Water (rts1.exe 0x49B088): a quad over each patch flagged 0xC0, its
-    // corners at the water height 0x4A2A5C takes from the tile's four
-    // values (bug for bug: away from the first values, not towards the others).
-    const auto water = tile.water_heights.value_or(std::array<float, 4>{});
-    const auto water_height = [&](const float column, const float row) {
-        const float near = column * (water[2] - water[3]) * 0.0625f + water[2];
-        const float far = column * (water[0] - water[1]) * 0.0625f + water[0];
-        return row * (near - far) * 0.0625f + near;
-    };
+    // corners at the tile's water height there, the four corners' heights
+    // spread from corner to corner (TerrainTile::water_height, as Open Rails;
+    // RTS's 0x4A2A5C spread them the wrong way: sloped water came out wrong).
+    const auto patches = static_cast<float>(tile.patches_per_side);
+    const auto water_height = [&](const float column, const float row) { return tile.water_height(column / patches, row / patches); };
     const float patch_size = half_extent * 2.0f / static_cast<float>(tile.patches_per_side);
     for (std::uint32_t patch_row = 0; patch_row < tile.patches_per_side; ++patch_row) {
         for (std::uint32_t patch_column = 0; patch_column < tile.patches_per_side; ++patch_column) {

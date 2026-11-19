@@ -311,14 +311,16 @@ template <typename ReadFile>
         } else if (child->token == token_patches) {
             read_patches(child->contents, tile);
         } else if (child->token == token_water_height_offset) {
+            // As many as given (Open Rails reads up to four); the missing 0.
             std::array<float, 4> heights{};
-            bool all = true;
+            std::size_t given = 0;
             for (auto& height : heights) {
                 const auto value = child->contents.f32();
-                if (!value) all = false;
-                height = value.value_or(0.0f);
+                if (!value) break;
+                height = *value;
+                ++given;
             }
-            if (all) tile.water_heights = heights;
+            if (given > 0) tile.water_heights = heights;
         }
     }
 
@@ -344,6 +346,17 @@ template <typename ReadFile>
 }
 
 } // namespace
+
+float TerrainTile::water_height(const float east, const float south) const {
+    if (!water_heights) return 0.0f;
+    const auto& given = *water_heights;
+    const float sw = given[0];
+    const auto corner = [sw](const float value) { return value != 0.0f ? value : sw; };
+    const float se = corner(given[1]), ne = corner(given[2]), nw = corner(given[3]);
+    const float north_edge = nw + (ne - nw) * east;
+    const float south_edge = sw + (se - sw) * east;
+    return north_edge + (south_edge - north_edge) * south;
+}
 
 TerrainTile load_terrain_tile(const std::filesystem::path& tiles_directory,
                               const std::int32_t tile_x,

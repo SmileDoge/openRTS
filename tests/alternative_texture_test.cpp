@@ -18,6 +18,7 @@
 #include <openrts/formats/shape_description.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/terrain.hpp>
+#include <openrts/renderer/terrain_renderer.hpp>
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/formats/environment.hpp>
 #include <openrts/formats/car_spawn.hpp>
@@ -403,6 +404,14 @@ void test_content(const std::filesystem::path& root) {
         std::size_t water = 0;
         for (const auto& patch : tile.patches) water += (patch.flags & 0xC0u) != 0 ? 1 : 0;
         check(tile.ok() && water == 7, "Kuban tile -4494 14578: 7 water patches, got " + std::to_string(water));
+        // Its four water heights equal: both waters level at them, as in RTS
+        // (the corners spread from corner to corner since 2026-11-20).
+        const auto mesh = renderer::build_terrain_tile_mesh(vfs, *tiles, -4494, 14578);
+        const float level = tile.water_heights ? (*tile.water_heights)[0] : -1e9f;
+        bool flat = mesh.ok() && !mesh.water.empty() && !mesh.water_surface.empty();
+        for (const auto& v : mesh.water) flat = flat && std::abs(v.position[1] - level) < 1e-3f;
+        for (const auto& v : mesh.water_surface) flat = flat && std::abs(v.position[1] - level) < 1e-3f;
+        check(flat, "Kuban tile -4494 14578: the water level at its height " + std::to_string(level));
     }
     if (const auto eng = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_2TE116-773/mdd_2te116-773a.eng"); eng && vfs.exists(*eng)) {
         const auto wagon = formats::load_wagon(vfs, "mdd_2TE116-773", "mdd_2te116-773a", true);
