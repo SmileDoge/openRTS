@@ -17,6 +17,7 @@
 #include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/body_motion.hpp>
 #include <openrts/simulation/cab_brakes.hpp>
+#include <openrts/simulation/derailment.hpp>
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/state_text.hpp>
 #include <openrts/simulation/track_traveller.hpp>
@@ -405,7 +406,9 @@ struct CarState {
     float tilt{};          // rad, roll towards the lateral axis (tipping)
     float tilt_target{};   // rad, the roll it settles at
     float tilt_rate{};     // rad/s
-    float tilt_friction{}; // N at the full target roll
+    std::array<AxleRoll, 8> climb{};
+    std::uint8_t climb_count{};
+    std::int8_t roll_side{};
     bool fallen = false;   // rolled past 0.8 rad: hoses torn off
     float slide{};         // m slid off the track (sliding), signed towards the train front
     float slide_speed{};   // m/s, signed towards the train front
@@ -656,6 +659,7 @@ private:
     void reverse_cars();
     void sway();
     void start_tipping(std::size_t index, const CarState* neighbour);
+    void update_derailment(std::size_t index);
     void derailment();
     void occupy_under();
     void advance_clearance(const MoveResult& leading, const MoveResult& trailing);
