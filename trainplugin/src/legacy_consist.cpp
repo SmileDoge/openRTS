@@ -1590,8 +1590,9 @@ void LegacyConsist::klub_before(StepRequest& request) {
         // Brakes.dll without its КЛУБ (updateKLUB, SwitchKLUB, the ЭПК part of
         // Run); sent every step (a reconsist builds the parameters again).
         request.aux_parameters.push_back({index, lib, setup, static_cast<float>(car->parameters.settings.setup & ~2u)});
-        // What its КЛУБ would have left there for the train's DLL and its
-        // other parts (docs/reverse/brakes-dll.md §5, §6).
+        // What its КЛУБ would have written in its Run, put in just before
+        // that Run (the train's DLL reads it in its next; Brakes.dll's other
+        // parts go on over it as they did): docs/reverse/brakes-dll.md §5, §6.
         if (!car->state.started) continue;
         const auto& s = car->state;
         const auto put = [&](const std::uint16_t offset, const std::uint32_t mask, const std::uint32_t bits) {
@@ -1602,7 +1603,11 @@ void LegacyConsist::klub_before(StepRequest& request) {
             std::memcpy(&bits, &v, sizeof bits);
             put(offset, ~0u, bits);
         };
-        put(32, 1u | 4u, (s.epk_bit ? 1u : 0u) | (car->out.safety_powered ? 4u : 0u));
+        // Bit 4 every step (updateKLUB clears and sets it); bit 1 only when
+        // the КЛУБ wrote it (its trip, an answer, the ЭПК key off): set by
+        // Brakes.dll's other parts, it stays theirs.
+        put(32, 4u, car->out.safety_powered ? 4u : 0u);
+        if (car->out.epk_bit_written) put(32, 1u, s.epk_bit ? 1u : 0u);
         put(8, ~0x10u, s.flags); // (0x10 is ТСКБМ's, which runs on in Brakes.dll)
         put(4, 0x600u, s.device); // КОН, and its vent
         put_float(24, s.timer);

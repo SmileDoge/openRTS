@@ -22,7 +22,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 15;
+inline constexpr std::uint32_t protocol_version = 16;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -420,10 +420,13 @@ struct AuxParameterSet {
     float value{};
 };
 
-// A 32-bit word of an auxiliary library's variable stack written before the
-// car's DLLs run this step: var[offset / 4] = (var & ~mask) | (bits & mask)
-// (floats by their bits). openRTS's КЛУБ writes what Brakes.dll's would for
-// the train's DLL to read (var + 32 bits 1 and 4, the limits, the timer).
+// A 32-bit word of an auxiliary library's variable stack written this step
+// just before that library's own Run (after the main DLL's for an AuxCall
+// order of 0 and on): var[offset / 4] = (var & ~mask) | (bits & mask)
+// (floats by their bits). openRTS's КЛУБ writes what Brakes.dll's would
+// have written in that Run, for the train's DLL to read in its next one
+// (var + 32 bits 1 and 4, the limits, the timer); the rest of that Run
+// (Brakes.dll's other parts) goes on over it as before.
 struct AuxVarWrite {
     std::uint32_t car{};
     std::uint16_t library{};
@@ -553,11 +556,13 @@ struct AuxVarsOutput {
 // The word at an AuxLibrary's var + 32: MaDaDev's Brakes.dll's exchange
 // with the train's DLLs (docs/reverse/brakes-dll.md §5). `before`: as its
 // Run found it, the train's DLL's requests (Brakes.dll clears 0x10 ..
-// 0x8000 at the end of its Run); `after`: after the step (bit 1 the ЭПК
-// tripped, 2 the 418, 8 САУТ). openRTS's cab brake devices take them
-// (docs/brakes-dll-replacement.md, step 2).
+// 0x8000 at the end of its Run); `after`: after the step (bit 1: the
+// train's DLL cuts traction, set by the ЭПК's trip among others; 2 the 418,
+// 8 САУТ); `flags`: var + 8 after the step (0x01000000 the ЭПК vented).
+// openRTS's cab brake devices take them (docs/brakes-dll-replacement.md,
+// step 2).
 struct AuxExchange {
-    std::uint32_t before{}, after{};
+    std::uint32_t before{}, after{}, flags{};
 };
 
 // A diesel's ExhaustContr (RTSGetLocoObject ot_exhaust): what its DLL says

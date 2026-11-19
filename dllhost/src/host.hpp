@@ -66,6 +66,8 @@ struct AuxMirror {
     bool has_sound = false;
     std::array<std::uint32_t, 8> pairs{}; // its SMSObject::PairedFlags once a pair code came
     std::uint32_t exchange_before{};      // var + 32 as its last Run found it (AuxExchange)
+    // StepRequest::aux_writes for this library, put in just before its Run.
+    std::vector<AuxVarWrite> pending_writes;
 };
 
 struct CarMirror {
@@ -225,8 +227,10 @@ private:
     void regroup();
     void regroup(CarMirror& master, bool player);
     void write_inputs(const std::vector<CarInput>& inputs);
-    // StepRequest::aux_parameters and aux_writes, before the DLLs run.
+    // StepRequest::aux_parameters (at once) and aux_writes (kept for the
+    // library's Run, apply_aux_writes).
     void write_aux(const StepRequest& request);
+    static void apply_aux_writes(AuxMirror& aux);
     void write_cabs(const StepRequest& request);
     void run_car(CarMirror& car, float dt, float air_temperature);
     void signals(const StepRequest& request);

@@ -154,6 +154,11 @@ struct KlubState {
 
 struct KlubOutput {
     bool vent = false;            // the ЭПК or КОН vents the pipe (TrainPipeRate -1.2, EPTValue -1)
+    // The КЛУБ wrote var + 32 bit 1 this step (KlubState::epk_bit): its
+    // trip sets it, an answer with the timer running and the ЭПК key off
+    // clear it. Brakes.dll's other parts set it too, so it is written back
+    // only then.
+    bool epk_bit_written = false;
     bool safety_powered = false;  // var + 32 bit 4
     std::vector<std::uint16_t> sounds; // its SMS triggers (56 / 57, 3192 .. 3199)
 };

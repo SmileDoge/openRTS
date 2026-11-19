@@ -164,7 +164,10 @@ simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const
     }
     c.charging = valve.charging > 0.0f ? valve.charging : p.charging > 0.0f ? p.charging : 5.0f;
     c.cut_off = valve.combined == 1 || valve.blocked || valve.separated;
-    c.emergency = valve.combined == 2 || on(ids.emergency) || (exchange.after & 1u) != 0 ||
+    // The pipe opens at the ЭПК's own trip (var + 8 0x01000000, its whistle's
+    // 12 s; Brakes.dll's TrainPipeRate -1.2), not at var + 32 bit 1, which
+    // only cuts the train DLL's traction and has more sources than the ЭПК.
+    c.emergency = valve.combined == 2 || on(ids.emergency) || (exchange.flags & 0x01000000u) != 0 ||
                   std::any_of(p.stop_valves.begin(), p.stop_valves.end(), on);
     c.keep_equalising = (exchange.before & 0x4000u) != 0;
     const auto independent = [&](const std::int32_t id, const std::int32_t cock) -> std::optional<simulation::IndependentPosition> {

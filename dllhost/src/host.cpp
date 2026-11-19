@@ -173,6 +173,12 @@ std::uint32_t exchange_word(const AuxMirror& info) {
     if (info.var.size() > 8) std::memcpy(&word, &info.var[8], sizeof(word));
     return word;
 }
+// Its var + 8 (AuxExchange::flags).
+std::uint32_t flags_word(const AuxMirror& info) {
+    std::uint32_t word = 0;
+    if (info.var.size() > 2) std::memcpy(&word, &info.var[2], sizeof(word));
+    return word;
+}
 
 } // namespace
 
@@ -1250,17 +1256,25 @@ void Host::write_aux(const StepRequest& request) {
         if (p.library >= car.aux_info.size() || p.index >= car.aux_info[p.library].params.size()) continue;
         car.aux_info[p.library].params[p.index].value = p.value;
     }
+    for (auto& car : cars_)
+        for (auto& aux : car->aux_info) aux.pending_writes.clear();
     for (const auto& w : request.aux_writes) {
         if (w.car >= cars_.size()) continue;
         auto& car = *cars_[w.car];
         if (w.library >= car.aux_info.size()) continue;
-        auto& var = car.aux_info[w.library].var;
-        if (w.offset % 4 != 0 || w.offset / 4u >= var.size()) continue;
-        std::uint32_t word = 0;
-        std::memcpy(&word, &var[w.offset / 4u], sizeof word);
-        word = (word & ~w.mask) | (w.bits & w.mask);
-        std::memcpy(&var[w.offset / 4u], &word, sizeof word);
+        car.aux_info[w.library].pending_writes.push_back(w);
     }
+}
+
+void Host::apply_aux_writes(AuxMirror& aux) {
+    for (const auto& w : aux.pending_writes) {
+        if (w.offset % 4 != 0 || w.offset / 4u >= aux.var.size()) continue;
+        std::uint32_t word = 0;
+        std::memcpy(&word, &aux.var[w.offset / 4u], sizeof word);
+        word = (word & ~w.mask) | (w.bits & w.mask);
+        std::memcpy(&aux.var[w.offset / 4u], &word, sizeof word);
+    }
+    aux.pending_writes.clear();
 }
 
 void Host::write_inputs(const std::vector<CarInput>& inputs) {
@@ -1494,6 +1508,7 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
         for (const auto& call : car.aux_info[i].calls) {
             if (call.event != aux_run || call.order >= 0) continue;
             car.aux_info[i].exchange_before = exchange_word(car.aux_info[i]);
+            apply_aux_writes(car.aux_info[i]);
             car.aux[i].lib_flags &= ~1u;
             auto* fn = reinterpret_cast<abi::AuxRunFn>(am.run);
             abi::Locomotive* v = view(car, &am);
@@ -1515,6 +1530,7 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
         for (const auto& call : car.aux_info[i].calls) {
             if (call.event != aux_run || call.order < 0) continue;
             car.aux_info[i].exchange_before = exchange_word(car.aux_info[i]);
+            apply_aux_writes(car.aux_info[i]);
             car.aux[i].lib_flags |= 1u;
             auto* fn = reinterpret_cast<abi::AuxRunFn>(am.run);
             abi::Locomotive* v = view(car, &am);
@@ -1523,6 +1539,8 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
             if (crash) fail(am, L"Run (aux)", crash);
         }
     }
+    // A library without a Run this step still takes its writes.
+    for (auto& aux : car.aux_info) apply_aux_writes(aux);
     if (flipped) {
         w->velocity = -w->velocity;
         w->acceleration = -w->acceleration;
@@ -2109,7 +2127,7 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
     // Each library's var + 32 (AuxExchange).
     out.aux_exchange.resize(car.aux_info.size());
     for (std::size_t i = 0; i < car.aux_info.size(); ++i) {
-        out.aux_exchange[i] = {car.aux_info[i].exchange_before, exchange_word(car.aux_info[i])};
+        out.aux_exchange[i] = {car.aux_info[i].exchange_before, exchange_word(car.aux_info[i]), flags_word(car.aux_info[i])};
     }
     // The golden runs: each library's whole variable stack.
     out.aux_vars.clear();

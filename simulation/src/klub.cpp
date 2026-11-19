@@ -386,6 +386,7 @@ void epk(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sounds
                 sound.whistle(false);
                 s.timer = 0.0f;
                 s.epk_bit = false;
+                out.epk_bit_written = true;
             }
         } else {
             s.timer += dt;
@@ -395,6 +396,7 @@ void epk(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sounds
                 s.device |= d::kon;
                 s.flags |= f::epk_vented;
                 s.epk_bit = true;
+                out.epk_bit_written = true;
             }
         }
         if (s.epk_aspect != seen && in.powered) {
@@ -416,6 +418,7 @@ void epk(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sounds
         if (s.timer > 5.0f) sound.whistle(false);
         s.timer = 0.0f;
         s.epk_bit = false;
+        out.epk_bit_written = true;
         s.flags &= ~f::epk_vented;
     }
     if (in.powered) {
@@ -713,6 +716,7 @@ void key(KlubState& s, const KlubSettings& k, const KlubInputs& in, const KlubPr
 void step_klub(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput& out) {
     out.vent = false;
     out.safety_powered = false;
+    out.epk_bit_written = false;
     out.sounds.clear();
     const Sounds sound{k, out};
     if (!s.started) {

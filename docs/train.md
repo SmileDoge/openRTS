@@ -754,7 +754,8 @@ of MaDaDev's Brakes.dll:
   ЭПТ's line, not by their own independent brake.
 
 Brakes.dll goes on running for the КЛУБ, the ЭПК, its springs and sounds:
-its ЭПК trip (`var + 32` bit 1) opens the pipe, and the train's DLL's
+its ЭПК's trip (`var + 8` `0x01000000`, protocol 16's `AuxExchange::flags`)
+opens the pipe, and the train's DLL's
 requests (`var + 32` before Brakes.dll's `Run`: the ЭПТ's hold and apply,
 the handle taken as IV, the УР kept; protocol 14's `AuxExchange`) reach
 openRTS's devices. A locomotive whose Brakes.dll has a parameter openRTS
