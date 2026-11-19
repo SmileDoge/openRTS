@@ -1090,6 +1090,8 @@ private:
     std::optional<bool> profile_strip_on_;
     std::unique_ptr<ProfileStrip> profile_strip_;
     simulation::TrackProfile profile_;
+    std::vector<simulation::TrackProfileElement> profile_elements_;
+    double profile_element_length_ = 0.0; // the shortest element they were made for
     std::vector<ProfileMark> profile_marks_;
     double profile_built_at_ = -1e9;               // ImGui's time
     double profile_left_ = 0.0, profile_right_ = 0.0; // the way built, m from the leading end

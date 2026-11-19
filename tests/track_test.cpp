@@ -350,6 +350,15 @@ void test_profile() {
     TrackTraveller back(*net, 1, 150.0, false);
     const auto reverse = simulation::track_profile(back, 40.0, 0.0, 10.0);
     check(reverse.grade(0.0, 40.0) < -3.9, "the other way it falls");
+    // Its elements: level, then rising, the boundary at the sections' joint
+    // (offset 100 on the node, 50 m ahead of the lead).
+    const auto elements = profile.elements(0.5, 30.0);
+    check(elements.size() == 2 && std::abs(elements[0].grade) < 0.1 && elements[1].grade > 3.9 && elements[1].grade < 4.1 &&
+              near(elements[0].to, 50.0),
+          "two elements: level to 50 m ahead, then about +4 per mille");
+    // On a span where 100 m is too short to write a number: one element, its chord.
+    const auto merged = profile.elements(0.5, 150.0);
+    check(merged.size() == 1 && merged[0].grade > 1.0 && merged[0].grade < 3.0, "too short: joined into one, the chord's grade");
 }
 
 int main() {

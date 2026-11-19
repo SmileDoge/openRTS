@@ -4880,8 +4880,15 @@ void TrainView::draw_profile_strip(const Unit& unit) {
             }
         }
     }
+    // The elements for the span shown (again when it changed).
+    const double shortest = strip.shortest_element();
+    if (profile_built_at_ == now || std::abs(shortest - profile_element_length_) > 1e-6) {
+        profile_element_length_ = shortest;
+        profile_elements_ = profile_.elements(0.5, shortest);
+    }
     ProfileView view;
     view.profile = &profile_;
+    view.elements = profile_elements_;
     view.marks = profile_marks_;
     view.train_length = train.length();
     view.mass_tonnes = train.mass() / 1000.0;
