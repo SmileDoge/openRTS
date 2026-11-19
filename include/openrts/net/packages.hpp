@@ -130,6 +130,9 @@ enum class Package : std::uint16_t {
     helper = 0x45F5,          // asking, answering and the helpers' news (net::HelperNote)
     helper_cab = 0x45F6,      // engineer -> server -> his helpers: a cab as his DLLs show it
     helper_input = 0x45F7,    // helper -> server -> the engineer: a control worked, the car he is in
+    // The weather the server keeps for the whole route, to openRTS players
+    // (docs/weather.md): net::WeatherReport, sent whole.
+    openrts_weather = 0x45F8, // server -> players: the weather it keeps for everyone
 };
 
 [[nodiscard]] constexpr std::uint16_t id(const Package package) noexcept { return static_cast<std::uint16_t>(package); }

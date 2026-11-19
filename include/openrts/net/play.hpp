@@ -375,4 +375,24 @@ struct HelperInput {
 // 0x4616 pause: suspended or not.
 [[nodiscard]] std::optional<bool> decode_pause(ByteView body);
 
+// 0x45F8 openrts_weather: the weather the server keeps for the whole route
+// (docs/weather.md), sent whole so a player takes it at any moment and runs
+// its own scene on it. openRTS's own, so the body is ours: a version byte,
+// then the fields, little-endian as everything else.
+struct WeatherReport {
+    float temperature_c = 15.0f; // the air's
+    float cloud = 0.0f;          // 0..1 of the sky covered
+    float rain = 0.0f;           // 0..1 of RTS's rain density
+    float snow = 0.0f;           // 0..1 of RTS's snow density
+    float wind_mps = 0.0f;       // the wind's speed
+    float wind_from = 0.0f;      // radians: where it blows from
+    float visibility_m = 0.0f;   // how far the fog lets one see
+    float thunder = 0.0f;        // 0..1: how often the lightning strikes
+    float wetness = 0.0f;        // 0..1: the rails and the ground
+    float ground_snow = 0.0f;    // 0..1: the snow lying on them
+};
+[[nodiscard]] Bytes encode_openrts_weather(const WeatherReport& report);
+// Nothing but a whole body of this version.
+[[nodiscard]] std::optional<WeatherReport> decode_openrts_weather(ByteView body);
+
 } // namespace openrts::net

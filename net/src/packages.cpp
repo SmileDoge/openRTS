@@ -92,6 +92,7 @@ constexpr Named names[] = {
     {0x45F5, "helper"},
     {0x45F6, "helper_cab"},
     {0x45F7, "helper_input"},
+    {0x45F8, "openrts_weather"},
     {0x4620, "train_stream"},
     {0x4621, "car_stream"},
     {0x4628, "engine_stream"},
