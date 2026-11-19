@@ -97,13 +97,18 @@ KlubParameters klub_parameters(const formats::EngineDefinition& engine) {
     }
     k.has_screen = screen;
     k.cassette_given = p.cassette >= 0;
-    // KLUB_PIT1 .. KLUB_PIT<KLUB_PCOUNT>, all on to power it (a missing one
-    // reads as switch -1: off).
+    // KLUB_PIT1 .. KLUB_PIT<KLUB_PCOUNT>, all on to power it (Brakes.dll
+    // 0x4015A4). A missing one reads as switch -1, which is no cab object:
+    // 0x401600 gives -1 for it, and only a state 0 is off, so it counts as
+    // on (the ВЛ10 / ВЛ10У give KLUB_PIT2 twice and no KLUB_PIT1, the ЧС7
+    // KLUB_PIT1 four times for KLUB_PCOUNT 4). A name given twice: the
+    // first, as RTS finds a parameter by its name (PROBABLE).
     for (int i = 1; i <= power_count; ++i) {
-        std::int32_t id = -1;
-        for (const auto& [n, v] : power)
-            if (n == i) id = v;
-        p.power.push_back(id);
+        for (const auto& [n, v] : power) {
+            if (n != i) continue;
+            p.power.push_back(v);
+            break;
+        }
     }
     return p;
 }

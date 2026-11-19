@@ -1708,8 +1708,13 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
         in.limit = limit;
         in.next_limit = request.next_limit;
         in.next_limit_distance = request.next_limit_distance;
+        // Powered unless one of its switches is there and at 0 (Brakes.dll
+        // 0x4015A4: a switch the cab has not counts as on).
         in.powered = true;
-        for (const auto id : p.power) in.powered = in.powered && on(id);
+        for (const auto id : p.power) {
+            const bool there = id >= 0 && static_cast<std::size_t>(id) < car.switches.size();
+            in.powered = in.powered && (!there || on(id));
+        }
         in.epk_key = on(p.epk_key);
         in.rb_held = on(p.rb);
         in.tskbm = on(p.tskbm);

@@ -480,10 +480,17 @@ Read in `_ALSN` (`0x402828`), `updateKLUB` (`0x406658`), `SwitchKLUB`
   of the КЛУБ runs: `updateKLUB`, `SwitchKLUB` (from `_CanSwitch`), the ЭПК
   part of `_Run`, the РБ's beep; `_ALSN` and the ALSN delay still do
   (openRTS's КЛУБ switches Brakes.dll's off so, step 3.4).
-- **Powered** (`0x402658`): every `KLUB_PIT1 .. KLUB_PIT<KLUB_PCOUNT>`
-  switch on (the ЭД9М's 58 and 59). Unpowered: no permitted speed, no
-  screens, and with the ЭПК key on the vigilance timer is held at 5 s or
-  more, so the ЭПК vents 7 s later.
+- **Powered** (`0x4015A4`, CONFIRMED): none of `KLUB_PIT1 ..
+  KLUB_PIT<KLUB_PCOUNT>` at 0 (the ЭД9М's 58 and 59). Each id is read by
+  name (`0x401530`: the name and the number, -1 when not given) and the
+  switch's state through `0x401600`, which gives -1 for a switch the cab
+  has not: so a missing `KLUB_PIT<n>`, or one naming no switch, counts as
+  on. Some .eng depend on it: the ВЛ10 / ВЛ10У give `KLUB_PIT2` twice and
+  no `KLUB_PIT1` (`KLUB_PCOUNT 2`), the ЧС7 `KLUB_PIT1` four times
+  (`KLUB_PCOUNT 4`); a name given twice is found once (PROBABLE: the
+  first, RTS's lookup by name). САУТ's `SAUT_PIT` the same (`0x402244`).
+  Unpowered: no permitted speed, no screens, and with the ЭПК key on the
+  vigilance timer is held at 5 s or more, so the ЭПК vents 7 s later.
 - **The ЭПК key** (`PB_EPKKEY`) writes its state into `Engine::ALSNOn`
   (`+106`). The ЭПК part of `_Run` and the signal lines of the screen work
   only with it on.

@@ -132,7 +132,7 @@ struct KlubParameters {
     bool present = false;
     simulation::KlubSettings settings;
     std::vector<std::pair<std::int32_t, simulation::KlubPress>> keys; // KLUB_B*ID1
-    std::vector<std::int32_t> power;                                  // KLUB_PIT1 .. KLUB_PIT<KLUB_PCOUNT>
+    std::vector<std::int32_t> power;                                  // KLUB_PIT1 .. KLUB_PIT<KLUB_PCOUNT> given (a missing one: on)
     std::int32_t rb = -1, rbs = -1, epk_key = -1, cassette = -1, tskbm = -1, saut = -1;
     std::int32_t flip = -1;                       // PB_FLIP: the cab whose forward is the car's back (from 0)
     std::int32_t setup_index = -1;                // PB_SETUP's index in the library's parameters

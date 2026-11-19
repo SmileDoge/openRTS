@@ -130,6 +130,29 @@ int main() {
         }
     }
 
+    // The КЛУБ's power switches as Brakes.dll reads them (0x4015A4): a
+    // missing KLUB_PIT<n> is no switch and counts as on; a name given twice,
+    // the first. The ВЛ10У-053 gives KLUB_PIT2 twice and no KLUB_PIT1; the
+    // ЧС7 KLUB_PIT1 four times for KLUB_PCOUNT 4.
+    {
+        const auto with = [](const std::string& power) {
+            const auto text = "Wagon ( loco\n Type ( Engine )\n Mass ( 100t )\n" + common + R"()
+Engine ( loco Type ( Electric ) MaxPower ( 3000kW ) MaxForce ( 300kN ) )
+EngExtended ( AuxLibraries ( AuxLibrary (
+    AuxLibraryName ( "BRAKES" )
+    AuxLibraryModule ( "../mdd_Libraries/Brakes/Brakes.dll" )
+    AuxLibraryParameters ( 4 PB_SETUP ( 2 ) )" + power + R"( )
+) ) ))";
+            const auto engine = formats::parse_wagon(text);
+            return engine.engine ? trainplugin::klub_parameters(*engine.engine).power : std::vector<std::int32_t>{99};
+        };
+        check(with(" KLUB_PCOUNT ( 2 ) KLUB_PIT2 ( 201 ) KLUB_PIT2 ( 202 )") == std::vector<std::int32_t>{201},
+              "ВЛ10У: KLUB_PIT1 missing (on), KLUB_PIT2 the first given");
+        check(with(" KLUB_PCOUNT ( 4 ) KLUB_PIT1 ( 104 ) KLUB_PIT1 ( 93 ) KLUB_PIT1 ( 94 ) KLUB_PIT1 ( 54 )") == std::vector<std::int32_t>{104},
+              "ЧС7: KLUB_PIT1 the first given, 2 .. 4 missing (on)");
+        check(with(" KLUB_PCOUNT ( 2 ) KLUB_PIT1 ( 58 ) KLUB_PIT2 ( 59 )") == (std::vector<std::int32_t>{58, 59}), "ЭД9М: both given");
+    }
+
     // EngineAxles ( count axle ... ) in EngExtended: each motor its own
     // axles (the ЭД9М's four, one axle each; until 2026-11-18 all read as
     // axle 1, the count), and a motor of two axles.
