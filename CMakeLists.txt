@@ -122,13 +122,41 @@ endfunction()
 # openrts-dllhost32.exe: legacy RTS locomotive DLLs are 32-bit, so they run
 # in a separate Win32 process (docs/train-dll.md). Built as an external
 # project for the Win32 platform and copied next to the programs that use it.
-if(WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_GENERATOR MATCHES "Visual Studio")
+# With a Visual Studio generator it is the same one; with another (Ninja, as
+# CI builds for its compiler cache) the newest Visual Studio's, or
+# OPENRTS_DLLHOST_GENERATOR. Its output keeps the configuration's folder
+# (<bin32>/<config>/) either way.
+set(OPENRTS_DLLHOST_GENERATOR "" CACHE STRING "Visual Studio generator for openrts-dllhost32 when the build's is not one (empty: the newest installed)")
+set(openrts_dllhost_generator "")
+if(WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    if(CMAKE_GENERATOR MATCHES "Visual Studio")
+        set(openrts_dllhost_generator "${CMAKE_GENERATOR}")
+    elseif(OPENRTS_DLLHOST_GENERATOR)
+        set(openrts_dllhost_generator "${OPENRTS_DLLHOST_GENERATOR}")
+    else()
+        set(vswhere "$ENV{ProgramFiles\(x86\)}/Microsoft Visual Studio/Installer/vswhere.exe")
+        if(EXISTS "${vswhere}")
+            execute_process(COMMAND "${vswhere}" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+                                    -property installationVersion
+                            OUTPUT_VARIABLE vs_version OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+            if(vs_version MATCHES "^18\\.")
+                set(openrts_dllhost_generator "Visual Studio 18 2026")
+            elseif(vs_version MATCHES "^17\\.")
+                set(openrts_dllhost_generator "Visual Studio 17 2022")
+            endif()
+        endif()
+        if(NOT openrts_dllhost_generator)
+            message(WARNING "openrts-dllhost32: no Visual Studio generator found (OPENRTS_DLLHOST_GENERATOR); the 32-bit DLL host is not built")
+        endif()
+    endif()
+endif()
+if(openrts_dllhost_generator)
     include(ExternalProject)
     set(OPENRTS_DLLHOST_DIR "${CMAKE_BINARY_DIR}/bin32")
     ExternalProject_Add(openrts_dllhost32
         SOURCE_DIR "${PROJECT_SOURCE_DIR}/dllhost"
         BINARY_DIR "${CMAKE_BINARY_DIR}/dllhost32"
-        CMAKE_GENERATOR "${CMAKE_GENERATOR}"
+        CMAKE_GENERATOR "${openrts_dllhost_generator}"
         CMAKE_GENERATOR_PLATFORM Win32
         CMAKE_ARGS "-DOPENRTS_DLLHOST_OUTPUT=${OPENRTS_DLLHOST_DIR}" "-DOPENRTS_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
         BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config $<CONFIG>
