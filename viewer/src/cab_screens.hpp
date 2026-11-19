@@ -90,12 +90,16 @@ private:
         std::uint32_t texture{};           // CurrentTex
         float frame{};                     // ARROW / BAR: the value shown, moving to Value
         float blink_clock{};
+        float level = 1.0f;                // its SubFade: 1 shown, 0 hidden
+        bool primed = false;
     };
     struct Screen {
         std::size_t display{};             // in the description's displays
         glm::vec3 top_left{}, top_right{}, bottom_right{};
         const formats::CabScreen* source{}; // its own objects, or the ReferenceScreen's
         std::vector<Object> objects;
+        float level = 1.0f;                // its DisplayFade: 1 shown, 0 hidden
+        bool primed = false;
     };
     const formats::CabDescription* cab_;
     std::vector<Screen> screens_;
