@@ -17,6 +17,7 @@
 #include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/body_motion.hpp>
 #include <openrts/simulation/cab_brakes.hpp>
+#include <openrts/simulation/derailment.hpp>
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/state_text.hpp>
 #include <openrts/simulation/track_traveller.hpp>
@@ -61,6 +62,7 @@ struct TrainSettings {
     BodyMotionModel body_motion = BodyMotionModel::rts;
     // openRTS's body motion: the push aside at switches, a factor (0: none).
     float switch_throws = 1.0f;
+    float cant_reference = 25.0f;
     // openRTS: the rails' state for the wheels' adhesion (adhesion.hpp): rts
     // keeps RTS's traction limit; any other scales it, and under the
     // realistic air the brakes slide (юз) and the shoes wet and warm.
@@ -339,6 +341,7 @@ struct CarState {
     float coupler_force{}; // to the car behind, first sub-step
     float pitch{};       // rad, positive uphill towards the train front
     float radius{};      // curve radius under the car, 0 straight
+    float cant{};
     // Brakes, atm.
     float pipe{}, auxiliary{}, cylinder{}, independent{}, control{}, charging_pipe{};
     float ep = -1.0f;
@@ -403,7 +406,9 @@ struct CarState {
     float tilt{};          // rad, roll towards the lateral axis (tipping)
     float tilt_target{};   // rad, the roll it settles at
     float tilt_rate{};     // rad/s
-    float tilt_friction{}; // N at the full target roll
+    std::array<AxleRoll, 8> climb{};
+    std::uint8_t climb_count{};
+    std::int8_t roll_side{};
     bool fallen = false;   // rolled past 0.8 rad: hoses torn off
     float slide{};         // m slid off the track (sliding), signed towards the train front
     float slide_speed{};   // m/s, signed towards the train front
@@ -646,6 +651,7 @@ public:
     void set_body_motion(BodyMotionModel model) noexcept;
     // TrainSettings::switch_throws.
     void set_switch_throws(float factor) noexcept { settings_.switch_throws = factor; }
+    void set_cant_reference(float metres_per_second) noexcept { settings_.cant_reference = metres_per_second; }
     [[nodiscard]] CouplerModel coupler_model() const noexcept { return settings_.coupler_model; }
     [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
 
@@ -653,6 +659,7 @@ private:
     void reverse_cars();
     void sway();
     void start_tipping(std::size_t index, const CarState* neighbour);
+    void update_derailment(std::size_t index);
     void derailment();
     void occupy_under();
     void advance_clearance(const MoveResult& leading, const MoveResult& trailing);

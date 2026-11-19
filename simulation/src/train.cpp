@@ -7,6 +7,7 @@
 #include "realistic_air.hpp"
 
 #include <openrts/simulation/brake_shoes.hpp>
+#include <openrts/simulation/track_geometry.hpp>
 
 #include <algorithm>
 #include <random>
@@ -940,12 +941,8 @@ void Train::hit(const std::size_t index, const float force, const float (&direct
     // middle of the car).
     if (std::abs(direction[0]) > 0.3f) {
         const float side = direction[0] > 0.0f ? 1.0f : -1.0f;
-        const float target = (std::min)(shove * 0.04f + 0.1f, 1.8f);
-        if (target > std::abs(car.tilt_target)) {
-            car.tilt_target = target * side;
-            car.tilt_rate = std::abs(shove / (std::max)(car.definition->width, 1.0f)) * side;
-            car.tilt_friction = m * 10.0f * (target < 1.57f ? target * 0.637f : 1.0f);
-        }
+        car.tilt_rate += shove / (std::max)(car.definition->width, 1.0f) * side;
+        if (car.roll_side == 0) car.roll_side = static_cast<std::int8_t>(side > 0.0f ? -1 : 1);
     }
 }
 
@@ -1124,7 +1121,10 @@ bool Train::place(TrackNetwork& network, const std::uint32_t node, const double 
     for (auto& car : cars_) {
         car.derailed = false;
         car.derail = DerailKind::none;
-        car.tilt = car.tilt_target = car.tilt_rate = car.tilt_friction = 0.0f;
+        car.tilt = car.tilt_target = car.tilt_rate = 0.0f;
+        car.roll_side = 0;
+        car.climb = {};
+        car.climb_count = 0;
         car.fallen = false;
         car.slide = car.slide_speed = 0.0f;
         car.slide_origin_set = false;
@@ -1613,11 +1613,8 @@ void Train::step() {
         car.grade = car.pitch == 0.0f ? 0.0f : static_cast<float>(std::sin(car.pitch)) * -mass_of(car) * gravity;
         if (car.radius != 0.0f) {
             car.resistance += 7.0f / car.radius * mass_of(car);
-            if (settings_.derailment && !car.derailed
-                && mass_of(car) * car.velocity * car.velocity / car.radius > wagon.derail_rail_force) {
-                start_tipping(static_cast<std::size_t>(&car - cars_.data()), nullptr);
-            }
         }
+        if (settings_.derailment) update_derailment(static_cast<std::size_t>(&car - cars_.data()));
     }
 
     // 5. Active and dissipative forces; the dissipative force first eats the
@@ -1628,8 +1625,8 @@ void Train::step() {
         auto& car = cars_[i];
         float force = car.force - car.grade;
         float friction = car.brake_force + car.resistance;
-        if (car.derail == DerailKind::tipping && car.tilt_target != 0.0f) {
-            friction += std::abs(car.tilt / car.tilt_target) * car.tilt_friction;
+        if (car.derail == DerailKind::tipping) {
+            friction += static_cast<float>(mass_of(car) * derail_gravity * 0.35 * std::sin(std::abs(car.tilt)));
         } else if (car.derail == DerailKind::sliding) {
             friction += mass_of(car) * 5.0f; // RTS: the slid body's friction, mass * 5
         }
@@ -1766,32 +1763,121 @@ void Train::step() {
     derailment();
 }
 
-// A car starts overturning (RTS 0x580B30, its "not sliding" branch): the
-// roll aims at 0.1 + 0.04 |v| rad (a tipped neighbour: 0.75 of its roll,
-// at 0.8 of its rate), at most 1.8, and grows at |v| / 33 rad/s; the drag
-// at the full roll is m * 10, times 0.637 * target below 1.57 rad. It rolls
-// outwards of the curve, or the way the neighbour rolls.
 void Train::start_tipping(const std::size_t index, const CarState* neighbour) {
     auto& car = cars_[index];
     if (car.derailed) return;
     car.derailed = true;
     car.derail = DerailKind::tipping;
-    const float speed = std::abs(neighbour ? neighbour->velocity : car.velocity);
-    float target = neighbour ? std::abs(neighbour->tilt_target) * 0.75f : speed * 0.04f + 0.1f;
-    target = (std::min)(target, 1.8f);
-    car.tilt_friction = mass_of(car) * 10.0f;
-    if (target < 1.57f) car.tilt_friction *= target * 0.637f;
-    float rate = neighbour ? std::abs(neighbour->tilt_rate) * 0.8f : std::abs(car.velocity) * (1.0f / 33.0f);
-    // Outwards: against the side the car turns to.
-    const float side = neighbour ? (neighbour->tilt_target < 0.0f ? -1.0f : 1.0f) : (car.curvature > 0.0f ? -1.0f : 1.0f);
-    car.tilt_target = target * side;
-    car.tilt_rate = rate * side;
+    car.tilt = 0.0f;
+    car.tilt_target = 0.0f;
+    if (neighbour) {
+        car.roll_side = neighbour->roll_side;
+        car.tilt_rate = neighbour->tilt_rate * 0.8f;
+    } else {
+        car.tilt_rate = 0.0f;
+    }
     impl_->events.push_back({.kind = TrainEventKind::derailment, .car = static_cast<std::uint32_t>(index)});
 }
 
+void Train::update_derailment(const std::size_t index) {
+    auto& car = cars_[index];
+    const auto& wagon = *car.definition;
+    if (car.derail == DerailKind::sliding) return;
+    const double mass = mass_of(car);
+    const double gauge = track_gauge;
+    const double height = wagon.derail_rail_height > 0.0f
+                              ? static_cast<double>(wagon.derail_rail_height)
+                              : (std::max)(1.0, static_cast<double>(wagon.height) * 0.5);
+    const double speed = car.velocity;
+    const double gain = curve_load_gain(car.curvature, speed);
+    WheelLoads loads = wheel_loads(mass, gauge, height, 0.0, car.curvature, car.cant, speed);
+    apply_curve_load(loads, gain, gauge, height, 0.0);
+
+    if (car.derail != DerailKind::none) {
+        if (car.roll_side == 0) {
+            if (loads.left <= 0.0) car.roll_side = 1;
+            else if (loads.right <= 0.0) car.roll_side = -1;
+        }
+        if (car.roll_side == 0) return;
+        const double side = static_cast<double>(car.roll_side);
+        double angle = std::abs(static_cast<double>(car.tilt));
+        double rate = -side * static_cast<double>(car.tilt_rate);
+        const double inertia = (std::max)(
+            mass * 0.1,
+            mass * (static_cast<double>(wagon.width) * static_cast<double>(wagon.width) + height * height) / 12.0);
+        step_roll(mass, gauge, height, 0.0, inertia, loads, car.roll_side, train_step, angle, rate);
+        car.tilt = static_cast<float>(-side * angle);
+        car.tilt_rate = static_cast<float>(-side * rate);
+        car.tilt_target = car.tilt;
+        if (angle <= 0.0) {
+            car.derailed = false;
+            car.derail = DerailKind::none;
+            car.tilt = car.tilt_rate = car.tilt_target = 0.0f;
+            car.roll_side = 0;
+        }
+        return;
+    }
+
+    const auto depart = [&] {
+        car.derailed = true;
+        car.derail = DerailKind::tipping;
+        impl_->events.push_back({.kind = TrainEventKind::derailment, .car = static_cast<std::uint32_t>(index)});
+    };
+    if (std::abs(loads.lateral) > static_cast<double>(wagon.derail_rail_force)) {
+        depart();
+        return;
+    }
+    std::uint8_t axles = wagon.wheels > 0 ? static_cast<std::uint8_t>(wagon.wheels / 2) : 4;
+    if (axles == 0) axles = 4;
+    axles = std::clamp<std::uint8_t>(axles, 1, 8);
+    car.climb_count = axles;
+    const double share = mass / static_cast<double>(axles);
+    const double base = (std::max)(0.5, static_cast<double>(car.bogie_ahead + car.bogie_behind));
+    const double approach = std::abs(speed) * std::sin((std::min)(0.1, std::abs(car.curvature) * base));
+    const double flange_force = std::abs(loads.lateral) * (std::max)(1.0, static_cast<double>(axles) * 0.5);
+    bool departed = false;
+    for (std::uint8_t k = 0; k < axles && !departed; ++k) {
+        auto& axle = car.climb[k];
+        const int side = loads.lateral > 0.0 ? 1 : (loads.lateral < 0.0 ? -1 : 0);
+        if (side != axle.side) {
+            axle = AxleRoll{};
+            axle.side = side;
+        }
+        if (side == 0) continue;
+        WheelLoads axle_loads = wheel_loads(share, gauge, height, 0.0, car.curvature, car.cant, speed);
+        apply_curve_load(axle_loads, gain, gauge, height, 0.0);
+        const double vertical = side > 0 ? axle_loads.right : axle_loads.left;
+        const double inertia = (std::max)(
+            share * 0.1,
+            share * (static_cast<double>(wagon.width) * static_cast<double>(wagon.width) + height * height) / 12.0);
+        step_roll(share, gauge, height, 0.0, inertia, axle_loads, side, train_step, axle.lift_angle, axle.lift_speed);
+        if (gauge * std::sin(axle.lift_angle) >= derail_flange_length) {
+            axle.travel += approach * train_step;
+        } else {
+            axle.travel = 0.0;
+        }
+        if (axle.travel >= derail_flange_length / std::tan(derail_flange_angle)) {
+            departed = true;
+        } else if (step_flange(flange_force, vertical, share * 0.5, derail_flange_angle, derail_flange_friction,
+                               derail_flange_length, approach, train_step, axle.climb_height, axle.climb_speed)) {
+            departed = true;
+        }
+    }
+    if (!departed) return;
+    double angle = 0.0;
+    double rate = 0.0;
+    combine_axle_roll(std::span<const AxleRoll>(car.climb.data(), static_cast<std::size_t>(axles)), angle, rate);
+    double lift = 0.0;
+    for (std::uint8_t k = 0; k < axles; ++k) lift = (std::max)(lift, car.climb[k].lift_angle);
+    const int side = loads.lateral >= 0.0 ? 1 : -1;
+    car.roll_side = static_cast<std::int8_t>(side);
+    car.tilt = static_cast<float>(-side * lift);
+    car.tilt_rate = static_cast<float>(-side * std::abs(rate));
+    car.tilt_target = car.tilt;
+    depart();
+}
+
 // Per step after the move (RTS 0x581BC4 and 0x581694):
-// - a tipping car rolls on, by rate * dt * (|target - roll| / |target| + 0.2),
-//   until it reaches the target;
 // - past 0.8 rad it has fallen: its hoses are torn off (both ends, and the
 //   neighbours' ends facing it), so the pipe vents and the train brakes;
 // - it pulls its neighbours with 0.637 * |roll| * m: above a neighbour's
@@ -1803,14 +1889,6 @@ void Train::derailment() {
     const auto n = cars_.size();
     for (std::size_t i = 0; i < n; ++i) {
         auto& car = cars_[i];
-        if (car.derail != DerailKind::none && car.tilt_target != 0.0f && car.tilt != car.tilt_target) {
-            const float share = std::abs(car.tilt_target - car.tilt) / std::abs(car.tilt_target) + 0.2f;
-            car.tilt += car.tilt_rate * dt * share;
-            if (std::abs(car.tilt) >= std::abs(car.tilt_target)) {
-                car.tilt = car.tilt_target;
-                car.tilt_rate = 0.0f;
-            }
-        }
         if (car.derail == DerailKind::sliding && car.yaw != car.yaw_target) {
             const float rate = (std::max)(0.3f, std::abs(car.slide_speed) * 0.2f) * dt;
             const float diff = car.yaw_target - car.yaw;
@@ -1935,9 +2013,8 @@ void Train::sway() {
             if (motion.seed == 0) motion.seed = next_body_seed();
             const auto modes = body_modes(*car.definition, mass_of(car), motion.seed);
             motion.input.speed = std::abs(car.velocity);
-            // The curve's pull; the track has no cant here, and a line's
-            // cant takes about half of it at its usual speeds.
-            motion.input.lateral_acceleration = 0.5f * car.velocity * car.velocity * car.curvature;
+            motion.input.lateral_acceleration =
+                car.velocity * car.velocity * car.curvature * std::cos(car.cant) - 9.81f * std::sin(car.cant);
             motion.input.acceleration = car.acceleration;
             const float ahead = car.bogie_ahead > 0.0f ? car.bogie_ahead : car.definition->length * 0.35f;
             const float behind = car.bogie_behind > 0.0f ? car.bogie_behind : car.definition->length * 0.35f;
@@ -1963,7 +2040,8 @@ void Train::sway() {
         const float v = car.velocity;
         const auto* q = wagon.frame_osc_correction;
         // Lateral: outwards of the curve, the body moves against the turn.
-        const float centrifugal = -q[0] * m * v * v * car.curvature;
+        const float centrifugal =
+            -q[0] * m * (v * v * car.curvature * std::cos(car.cant) - 9.81f * std::sin(car.cant));
         const float hunting = std::sin(car.hunting_phase) * (v * 0.008f * (std::max)(wagon.mass, 1.0f) * q[0]);
         car.hunting_phase += v * 0.3f * m * dt * q[1] / damping;
         if (car.hunting_phase > 3.14159265f) car.hunting_phase -= 6.28318531f;
@@ -2149,6 +2227,12 @@ void Train::move_and_update(const double front_moved, const double rear_moved) {
             if (turn > pi * 0.5) turn -= pi;
             if (turn < -pi * 0.5) turn += pi;
             car.curvature = distance > 0.5 ? static_cast<float>(turn / distance) : 0.0f;
+        }
+        {
+            const float target = cant_angle(car.curvature, car.radius, settings_.cant_reference);
+            const float pace = (std::max)(std::abs(car.velocity), 5.0f);
+            const float alpha = 1.0f - std::exp(-pace * static_cast<float>(train_step) / 25.0f);
+            car.cant += (target - car.cant) * alpha;
         }
         // Rail joints (RTS 0x4F5B34): a junction event when a bogie changes
         // node; a joint event when it passes a rail joint along the node,
