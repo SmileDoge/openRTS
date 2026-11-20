@@ -10,6 +10,8 @@
 #include <map>
 #include <set>
 #include <memory>
+#include <cstdint>
+#include <tuple>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,9 +28,9 @@
 #include <openrts/audio/sound_instance.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/electronic_map.hpp>
 #include <openrts/simulation/stock_rules.hpp>
 #include <openrts/simulation/track_profile.hpp>
-#include <openrts/simulation/electronic_map.hpp>
 #include <openrts/formats/activity.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/train_path.hpp>
@@ -189,8 +191,25 @@ public:
     // The player's cab keys are on (a locomotive DLL's cab): the viewer's
     // camera and default driving keys are off.
     [[nodiscard]] bool keyboard_captured() const noexcept;
+    // A cab control in the mouse's hand (a handle or a blind dragged, RTS
+    // 0x4121BC): the helper's, else the engineer's.
+    [[nodiscard]] bool control_in_hand() const noexcept;
     // Standing in a cab, outside or on a car (not in a chair).
     [[nodiscard]] bool engineer_on_foot() const noexcept { return engineer_.on_foot(); }
+    // On foot with something for Enter where he stands (the prompt shown
+    // offers it; not with the car menu open): E does it, else E opens the
+    // car menu (key_layout.hpp).
+    [[nodiscard]] bool engineer_action_at_hand() const;
+    // On foot outside: collide with the world's objects or only with the
+    // ground and the trains (the Train window's checkbox; Num/ or Shift+=).
+    void toggle_walk_objects();
+    // A world object's collision (its world tile and UiD): off, the engineer
+    // walks through it and a sliding car passes it (the inspector; for this
+    // session).
+    [[nodiscard]] bool object_collides(std::int32_t tile_x, std::int32_t tile_z, std::uint32_t uid) const {
+        return !collision_off_.contains({tile_x, tile_z, uid});
+    }
+    void set_object_collides(std::int32_t tile_x, std::int32_t tile_z, std::uint32_t uid, bool collides);
     // Whether the driving keys (the DLL's cab keys, openRTS's handles) reach
     // the driven cab: not while the engineer is on foot out of the driven car
     // (on the platform, in another car). With the engineer off (an outside
@@ -1226,6 +1245,12 @@ private:
     };
     std::shared_future<std::shared_ptr<const SignalUnits>> signal_units_;
     [[nodiscard]] const SignalUnits* signal_units();
+    // openRTS's КЛУБ's electronic map (simulation/electronic_map.hpp) from
+    // the route database's station tracks, made aside once the database
+    // and the signals are there; the Train window's "ЭК" turns it off.
+    std::shared_future<std::shared_ptr<const simulation::ElectronicMap>> electronic_map_;
+    [[nodiscard]] const simulation::ElectronicMap* electronic_map();
+    bool klub_map_ = true;
     double items_searched_[2]{}; // how far the item list's walks went (ahead, behind), m
     const CabView* listener_cab_ = nullptr;
     glm::vec3 listener_local_{};
@@ -1245,12 +1270,6 @@ private:
     std::optional<DoorHover> door_hover_;
     // A car shape's surfaces and matrices (its doors under the mouse), read aside.
     struct CarMeshData {
-    // openRTS's КЛУБ's electronic map (simulation/electronic_map.hpp) from
-    // the route database's station tracks, made aside once the database
-    // and the signals are there; the Train window's "ЭК" turns it off.
-    std::shared_future<std::shared_ptr<const simulation::ElectronicMap>> electronic_map_;
-    [[nodiscard]] const simulation::ElectronicMap* electronic_map();
-    bool klub_map_ = true;
         CabCollision mesh;
         formats::ShapeModel rig; // matrices, hierarchy, animations (no vertices)
     };
@@ -1414,6 +1433,10 @@ private:
     // Outside he collides with the world's objects and stands on them
     // (platforms, ballast, bridges), or only with the ground and the trains.
     bool walk_objects_ = true;
+    std::set<std::tuple<std::int32_t, std::int32_t, std::uint32_t>> collision_off_; // world objects without collision (tile, UiD)
+    // The hotkey's note on the screen (the panel may be hidden) until then (ImGui time).
+    std::string walk_note_;
+    double walk_note_until_ = -1.0;
     struct WalkMesh {
         std::future<std::shared_ptr<CabCollision>> loading;
         std::shared_ptr<CabCollision> mesh; // null while loading or when it does not read

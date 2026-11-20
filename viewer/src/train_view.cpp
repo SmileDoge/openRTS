@@ -1977,6 +1977,37 @@ bool TrainView::keyboard_captured() const noexcept {
     return ((legacy_ && legacy_->keyboard()) || native_) && cab_keys_live();
 }
 
+void TrainView::toggle_walk_objects() {
+    walk_objects_ = !walk_objects_;
+    message_ = walk_objects_ ? trf("On foot: collides with objects again (%s: walk through them)", walk_collision_key_name())
+                             : trf("On foot: walks through objects, only the ground and the trains hold him (%s: collide again)",
+                                   walk_collision_key_name());
+    walk_note_ = message_;
+#ifdef OPENRTS_HAS_IMGUI
+    walk_note_until_ = ImGui::GetTime() + 3.0;
+#endif
+    std::cout << "walking: " << (walk_objects_ ? "collides with objects" : "through objects") << std::endl;
+}
+
+void TrainView::set_object_collides(const std::int32_t tile_x, const std::int32_t tile_z, const std::uint32_t uid, const bool collides) {
+    if (collides) {
+        collision_off_.erase({tile_x, tile_z, uid});
+    } else {
+        collision_off_.insert({tile_x, tile_z, uid});
+    }
+    std::cout << "object " << uid << " of world tile " << tile_x << ", " << tile_z << ": collision " << (collides ? "on" : "off") << std::endl;
+}
+
+bool TrainView::engineer_action_at_hand() const {
+    if (car_menu_ || !engineer_.active() || !engineer_.on_foot()) return false;
+    return offers_enter(board_prompt_) || offers_enter(engineer_.prompt());
+}
+
+bool TrainView::control_in_hand() const noexcept {
+    const LegacyCab* hands = helping_ ? helper_cab_.get() : legacy_.get();
+    return hands && hands->dragging();
+}
+
 audio::SoundCamera TrainView::sound_camera() const noexcept {
     // RTS (0x44AB7C, docs/sound.md): outside - on foot, the free or an
     // outside camera, the head out of a window - the ExternalCam groups; in
@@ -5499,6 +5530,7 @@ void TrainView::collide_slides(renderer::ModelLibrary& library) {
             const float half_length = glm::length(pose->front - pose->rear) * 0.5f + 2.0f;
             for (const auto& object : *obstacles_) {
                 if (object.collide_flags == 0 || (object.collide_flags & 2u) != 0) continue;
+                if (!object_collides(object.world_tile_x, object.world_tile_z, object.uid)) continue;
                 if (object.kind != formats::WorldObjectKind::static_object && object.kind != formats::WorldObjectKind::collide_object) continue;
                 auto* model = library.find(object.source_path);
                 if (!model) continue;
@@ -5587,6 +5619,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("0").c_str()), 0, 1);
         brake_numbers_ = std::clamp(std::atoi(remembered("brake_numbers").value_or("0").c_str()), 0, 1);
         own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("0").c_str()), 0, 1);
+        klub_map_ = remembered("klub_map").value_or("1") != "0";
     }
     if (legacy_) legacy_->set_own_brakes(own_brakes_ == 1, brake_numbers_ == 1);
     if (legacy_) legacy_->set_own_klub(own_klub_ == 1);
@@ -5619,7 +5652,6 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
             if (unit.train->brake_condition() != brake_condition_ || (brake_condition_ != 0 && unit.train->brake_seed() == 0)) {
                 const auto seed = unit.train->brake_seed();
                 unit.train->set_brake_condition(brake_condition_, seed != 0 ? seed : std::random_device{}() | 1u);
-        klub_map_ = remembered("klub_map").value_or("1") != "0";
             }
         }
     }
@@ -6073,6 +6105,7 @@ void TrainView::gather_walk_world(const glm::vec3& around, renderer::ModelLibrar
         }
     }
     for (const auto& object : *obstacles_) {
+        if (!object_collides(object.world_tile_x, object.world_tile_z, object.uid)) continue;
         const glm::vec3 at{object.transform[3]};
         if (const auto* model = library.find(object.source_path); model && model->bounds().radius > 0.0f) {
             const auto bounds = model->bounds();
@@ -8448,6 +8481,30 @@ const TrainView::SignalUnits* TrainView::signal_units() {
     return signal_units_.get().get();
 }
 
+const simulation::ElectronicMap* TrainView::electronic_map() {
+    if (!electronic_map_.valid()) {
+        const auto* network = units_.empty() || !units_.front().train ? nullptr : units_.front().train->network();
+        if (!network || !signals_ || !signal_units()) return nullptr;
+        // The train signals (a NORMAL head, placed): one place each.
+        std::vector<simulation::MapSignal> signals;
+        std::set<std::uint32_t> taken;
+        for (const auto& head : signals_->heads()) {
+            if (!head.placed || !head.type || head.type->function != formats::SignalFunction::normal) continue;
+            if (!taken.insert(head.object).second) continue;
+            signals.push_back({.object = head.object, .node = head.node, .offset = head.offset, .forward = head.forward});
+        }
+        electronic_map_ = std::async(std::launch::async, [units = signal_units_.get(), network, signals = std::move(signals)]() mutable {
+                              const auto started = std::chrono::steady_clock::now();
+                              auto map = std::make_shared<const simulation::ElectronicMap>(*network, units->database, std::move(signals));
+                              const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+                              std::cout << "КЛУБ electronic map: " << map->tracks().size() << " station tracks, " << ms << " ms" << std::endl;
+                              return map;
+                          }).share();
+    }
+    if (electronic_map_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return nullptr;
+    return electronic_map_.get().get();
+}
+
 namespace {
 
 [[nodiscard]] std::string utf8(const std::filesystem::path& path) {
@@ -8479,30 +8536,6 @@ std::string TrainView::car_label(const Car& car) const {
     char number[32];
     std::snprintf(number, sizeof number, "[%04u-%04u-%04u]", car.number >> 18, (car.number >> 10) & 0xFFu, car.number & 0x3FFu);
     return name + number;
-}
-
-const simulation::ElectronicMap* TrainView::electronic_map() {
-    if (!electronic_map_.valid()) {
-        const auto* network = units_.empty() || !units_.front().train ? nullptr : units_.front().train->network();
-        if (!network || !signals_ || !signal_units()) return nullptr;
-        // The train signals (a NORMAL head, placed): one place each.
-        std::vector<simulation::MapSignal> signals;
-        std::set<std::uint32_t> taken;
-        for (const auto& head : signals_->heads()) {
-            if (!head.placed || !head.type || head.type->function != formats::SignalFunction::normal) continue;
-            if (!taken.insert(head.object).second) continue;
-            signals.push_back({.object = head.object, .node = head.node, .offset = head.offset, .forward = head.forward});
-        }
-        electronic_map_ = std::async(std::launch::async, [units = signal_units_.get(), network, signals = std::move(signals)]() mutable {
-                              const auto started = std::chrono::steady_clock::now();
-                              auto map = std::make_shared<const simulation::ElectronicMap>(*network, units->database, std::move(signals));
-                              const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
-                              std::cout << "КЛУБ electronic map: " << map->tracks().size() << " station tracks, " << ms << " ms" << std::endl;
-                              return map;
-                          }).share();
-    }
-    if (electronic_map_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return nullptr;
-    return electronic_map_.get().get();
 }
 
 std::string TrainView::driven_name() const {
@@ -10607,6 +10640,8 @@ void TrainView::draw_cab_controls() {
     if (on) {
         ImGui::TextDisabled("%s", tr("Arrows: walk (Shift: run), Enter: stand up / sit down / a door, "
                                      "Ctrl+Enter: steps, ladders, through a door, RMB: look round, Alt: captions of the controls"));
+        if (key_layout() == KeyLayout::openrts)
+            ImGui::TextDisabled("%s", tr("On foot E: as Enter, Shift+E: as Ctrl+Enter; with nothing at hand E opens the car menu (seated E is the cab's)"));
         ImGui::TextDisabled("%s", trf("Mouse: a click works a switch, the wheel turns it a step; %s: the window, %s: head out",
                                       window_key_name(), head_out_key_name()).c_str());
         ImGui::Checkbox(tr("On foot outside: collide with objects (off: only the ground and trains)"), &walk_objects_);
@@ -10628,10 +10663,22 @@ void TrainView::draw_cab_controls() {
 void TrainView::draw_overlay() {
 #ifdef OPENRTS_HAS_IMGUI
     if (legacy_ && panels_shown()) legacy_->draw_window([this] { draw_cab_controls(); });
+    // The walking collision switched (Num/ or Shift+=): a few seconds' note.
+    if (ImGui::GetTime() < walk_note_until_ && !walk_note_.empty()) {
+        const auto size = ImGui::GetIO().DisplaySize;
+        const auto text_size = ImGui::CalcTextSize(walk_note_.c_str());
+        const ImVec2 corner{(size.x - text_size.x) * 0.5f, size.y * 0.72f};
+        auto* list = ImGui::GetForegroundDrawList();
+        list->AddRectFilled({corner.x - 8.0f, corner.y - 4.0f}, {corner.x + text_size.x + 8.0f, corner.y + text_size.y + 4.0f},
+                            0xa0000000u, 4.0f);
+        list->AddText(corner, 0xffe0e0e0u, walk_note_.c_str());
+    }
     // What Enter does where the engineer stands (unless the hints are off).
     if (key_hints() && engineer_.active() && car_view_ == CarView::off && (!board_prompt_.empty() || !engineer_.prompt().empty())) {
         const auto size = ImGui::GetIO().DisplaySize;
-        const char* text = !board_prompt_.empty() ? board_prompt_.c_str() : engineer_.prompt().c_str();
+        // Its keys as pressed (on foot in openRTS's keys E and Shift+E).
+        const auto shown = engineer_keys(!board_prompt_.empty() ? board_prompt_ : engineer_.prompt(), engineer_.on_foot());
+        const char* text = shown.c_str();
         const auto text_size = ImGui::CalcTextSize(text);
         const ImVec2 corner{(size.x - text_size.x) * 0.5f, size.y * 0.78f};
         auto* list = ImGui::GetForegroundDrawList();
@@ -10888,6 +10935,16 @@ void TrainView::draw_panel() {
             if (can_own && own_klub_ == 1 && legacy_)
                 ImGui::TextUnformatted(legacy_->klub_cars() ? tr("This train's КЛУБ is openRTS's.")
                                                             : tr("This train keeps Brakes.dll's КЛУБ (none, or a locomotive with two cabs)."));
+            if (can_own && own_klub_ == 1) {
+                if (ImGui::Checkbox(tr("Electronic map (ЭК) from the route database"), &klub_map_)) remember("klub_map", klub_map_ ? "1" : "0");
+                const auto* map = klub_map_ ? electronic_map() : nullptr;
+                ImGui::TextDisabled("%s", !klub_map_ ? tr("(off: a track entered only turns the ЭК on, the target the next signal as the switches stand, as Brakes.dll's)")
+                                          : !map      ? tr("(the map is being made)")
+                                          : map->empty()
+                                              ? tr("(the route database has no station tracks: as Brakes.dll's, the next signal as the switches stand)")
+                                              : trf("(%zu station tracks: the target the entered track's signal whatever way the switches lie; a number the map has not: \"без ЭК\")",
+                                                    map->tracks().size()).c_str());
+            }
             // The player's locomotive: openRTS's devices, or why it keeps Brakes.dll.
             if (can_own && own_brakes_ == 1 && !units_.empty()) {
                 const auto& player_train = *units_.front().train;
@@ -10935,16 +10992,6 @@ void TrainView::draw_panel() {
         if (ImGui::Checkbox(tr("Limit the brake force to real stock's (openRTS)"), &limit_brake_force_)) {
             rails_loaded_ = true;
             remember("limit_brake_force", limit_brake_force_ ? "1" : "0");
-            if (can_own && own_klub_ == 1) {
-                if (ImGui::Checkbox(tr("Electronic map (ЭК) from the route database"), &klub_map_)) remember("klub_map", klub_map_ ? "1" : "0");
-                const auto* map = klub_map_ ? electronic_map() : nullptr;
-                ImGui::TextDisabled("%s", !klub_map_ ? tr("(off: a track entered only turns the ЭК on, the target the next signal as the switches stand, as Brakes.dll's)")
-                                          : !map      ? tr("(the map is being made)")
-                                          : map->empty()
-                                              ? tr("(the route database has no station tracks: as Brakes.dll's, the next signal as the switches stand)")
-                                              : trf("(%zu station tracks: the target the entered track's signal whatever way the switches lie; a number the map has not: \"без ЭК\")",
-                                                    map->tracks().size()).c_str());
-            }
         }
         ImGui::SameLine();
         ImGui::TextDisabled("%s", tr(limit_brake_force_

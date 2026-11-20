@@ -485,6 +485,17 @@ void Inspector::draw_properties(const InspectorWorld& world) {
             row(tr("Position"), text);
             std::snprintf(text, sizeof text, "0x%X / 0x%X", instance->collide_flags, instance->static_flags);
             row(tr("Collide / static flags"), text);
+            if (world.trains) {
+                // Off: the engineer walks through it, a sliding car passes it.
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(tr("Collision"));
+                ImGui::TableSetColumnIndex(1);
+                bool collides = world.trains->object_collides(instance->world_tile_x, instance->world_tile_z, instance->uid);
+                if (ImGui::Checkbox(tr("on: the engineer on foot and a sliding car stop at it (off: through it, till the game is closed)"), &collides))
+                    world.trains->set_object_collides(instance->world_tile_x, instance->world_tile_z, instance->uid, collides);
+            }
         } else if (selection_.kind == Selection::Kind::car && world.trains) {
             const auto cars = world.trains->inspected_cars(selection_.train);
             if (selection_.car < cars.size()) {
