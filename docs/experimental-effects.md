@@ -757,6 +757,27 @@ Then (2026-11-02):
   - Frames unchanged: pixel for pixel within the run-to-run noise (Vulkan,
     both paths, day and night; DirectX 12 identical byte for byte, OpenGL
     4 pixels).
+  - **Shared buffers** (2026-11-20): a group was a model's, as were its
+    buffers and bindings, so a station's track pieces, fences and houses
+    were a command each however many shared a texture (Kuban, a station:
+    585 calls, 541 commands, the CPU's `encode` 1 ms of a 2.2 ms frame;
+    each command some 1.2 us in wgpu). Now the models' vertices and
+    indices are ranges of shared pages (`ModelPools`: 1 M vertices and 4 M
+    indices a page; a normal-mapped model keeps its own buffers beside its
+    tangents) and their MaterialUniforms ranges of shared storage pages
+    (65536 slots of 224 bytes; a draw's slot is its place there), so a
+    binding is a material page and textures, shared by every model with
+    them; the draws take their offsets as `first_index` and `base_vertex`.
+    The groups go by pipeline, buffers and binding (the blended ones and
+    the cab's as before), so one multi-draw takes every model's parts with
+    the same textures; an opaque depth pass's by the material page alone
+    (it samples no texture). Measured (DirectX 12, 1280 x 720, MSAA 4x):
+    the station at night 541 -> 221 commands, `encode` 0.99 -> 0.61 ms,
+    the frame 2.22 -> 1.84 ms; by day with the sun's shadows 509 -> 221,
+    2.68 -> 2.06 ms; the ВЛ80С's cab by day 785 -> 338, 3.42 -> 2.68 ms.
+    Frames unchanged (within 5 of 255, the cars on the roads apart).
+    `OPENRTS_SHARED_MODEL_BUFFERS=0` gives every model its own as before
+    (a check).
 - **What `finish` was** (2026-11-07): the stage is now four, `end` (the
   main pass ended), `post` (the depth copy for ReShade, the HDR tone pass
   and the panel), `encode` (`wgpuCommandEncoderFinish`) and `join` (waiting
@@ -862,10 +883,12 @@ separate depth array, half the cascades' size, at least 1024):
 Drawn in depth slots 6..13 (both renderers now have 14) with the shadow
 casters, out of view ones within 80 m too. A map is drawn every other frame
 (the slots alternating, 2026-11-17), at once for a lamp new in its slot or
-when its lamp or the sphere moved a metre (a twentieth of the sphere) or
-more; between, the shaders take the matrix it was drawn with, as the far
-sun cascades do: a frame's lag of the shadows of things moving. At the
-night station with five shadowed lamps: their passes 1.0 to 0.5 ms of the
+when its lamp or the sphere moved at all; between, the shaders take the
+matrix it was drawn with: a frame's lag only of the shadows of other things
+moving. Until 2026-11-20 a lamp or sphere moved under a metre (a twentieth
+of the sphere) kept its map too: in a moving cab every other frame showed
+its shadows a frame behind and they flickered, the more the lower the fps
+(testers). At the night station with five shadowed lamps: their passes 1.0 to 0.5 ms of the
 GPU, their recording on the workers 2.6 to 0.8 ms; a standing picture is
 the same. In the lamp loops of the model
 and terrain shaders a lamp in that list is multiplied by

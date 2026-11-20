@@ -102,6 +102,13 @@ struct LegacyConsist::KlubCar {
     simulation::KlubState state;
     simulation::KlubOutput out;
     std::vector<simulation::KlubScreen> screens; // a cab's each (its KLUB_*<n>)
+    // САУТ's displays as its steps left them, a cab's each: a step redraws
+    // them every 0.3 s and sets nothing between, and the cab keeps what was
+    // drawn (as the КЛУБ's screens above). Until 2026-11-20 only the step's
+    // own were put over the outputs: between its redraws the cab showed the
+    // outputs' stale values, САУТ's speed blinking 45 / 120 and the speed
+    // 0 / the train's (testers, the ЭД9М at Тимашевская).
+    std::vector<simulation::SautScreen> saut_screens;
     std::vector<simulation::KlubPress> keys;     // pressed since the last step
     std::vector<simulation::SautKey> saut_keys;  // САУТ's, pressed since the last step
     std::vector<SwitchState> switches;           // the cab's after the last step
@@ -2109,9 +2116,33 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
             }
             apply(id, as_klub);
         };
-        for (std::size_t c = 0; c < p.cabs.size() && c < car.out.saut_screens.size(); ++c) {
-            apply_saut(p.cabs[c].saut_db, car.out.saut_screens[c].db);
-            apply_saut(p.cabs[c].saut_df, car.out.saut_screens[c].df);
+        // What this step set over what the cab keeps, then all of it.
+        const auto keep = [](auto& kept, const auto& now) {
+            for (std::size_t k = 0; k < kept.size() && k < now.size(); ++k) {
+                const auto& o = now[k];
+                auto& g = kept[k];
+                if (o.state_set) {
+                    g.state = o.state;
+                    g.state_set = true;
+                }
+                if (o.blink_set) {
+                    g.blink = o.blink;
+                    g.blink_set = true;
+                }
+                if (o.text_set) {
+                    g.text = o.text;
+                    g.text_set = true;
+                }
+            }
+        };
+        if (car.saut_screens.size() != car.out.saut_screens.size()) car.saut_screens.assign(car.out.saut_screens.size(), {});
+        for (std::size_t c = 0; c < car.out.saut_screens.size(); ++c) {
+            keep(car.saut_screens[c].db, car.out.saut_screens[c].db);
+            keep(car.saut_screens[c].df, car.out.saut_screens[c].df);
+        }
+        for (std::size_t c = 0; c < p.cabs.size() && c < car.saut_screens.size(); ++c) {
+            apply_saut(p.cabs[c].saut_db, car.saut_screens[c].db);
+            apply_saut(p.cabs[c].saut_df, car.saut_screens[c].df);
         }
         for (std::size_t c = 0; c < p.cabs.size(); ++c) {
             const auto& ids = p.cabs[c];

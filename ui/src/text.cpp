@@ -1293,7 +1293,7 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"words to find", "что найти"},
         {"Follow the newest", "Следить за новыми"},
         {"Copy", "Копировать"},
-        {"Clear", "Очистить"},
+        {"Clear##log", "Очистить"},
         {"%llu lines, of them %llu warnings and %llu errors since the start (also in openrts.log)",
          "строк: %llu, из них предупреждений %llu и ошибок %llu с начала (то же в openrts.log)"},
         {"Console (F2): close", "Консоль (F2): закрыть"},

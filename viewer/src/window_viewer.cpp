@@ -3739,6 +3739,13 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             .lighting = environment.lighting,
         });
         scene.submit(renderer, frame);
+        // The cab or salon as this frame drew it (the environment's room was
+        // the last frame's, behind the moving cab).
+        if (const auto room = scene.light_shaft_room()) {
+            renderer.set_room(renderer::ModelRoom{room->to_room, room->lower, room->upper});
+        } else {
+            renderer.set_room(std::nullopt);
+        }
         effects.set_focus(scene.shadow_focus(), scene.lamp_shadow_focus(camera));
         stage_clock.mark(FrameStage::cull, stages);
         renderer.prepare();

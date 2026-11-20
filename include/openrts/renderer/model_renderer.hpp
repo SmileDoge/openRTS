@@ -365,6 +365,13 @@ public:
     // sort translucent geometry), then the pass-3 instances (the cab).
     // Submitted RenderModels must outlive render().
     void begin_frame(const ModelFrameContext& frame);
+    // After the frame's submits, before prepare(): the room the eye is in
+    // as this frame placed it (ModelLighting::room), over begin_frame()'s.
+    // The scene's lighting is made before the trains are submitted, so its
+    // room was the last frame's: a train moving 0.7 m a frame (30 fps, 80
+    // km/h) left the cab's front outside it, its light by day cut off across
+    // the cab and flickering (testers, 2026-11-20).
+    void set_room(const std::optional<ModelRoom>& room) noexcept;
     void submit(RenderModel& model, const ModelTransform& transform);
     // Draws an animated model at `frame` of its first animation (rest pose
     // when the shape has none).

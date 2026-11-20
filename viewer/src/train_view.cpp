@@ -9405,6 +9405,9 @@ void TrainView::update_neighbour_rooms(const float elapsed, const glm::vec3& eye
 }
 
 void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
+    // Every train's lights a frame: the ЭД9М's head cars have 920 each (its
+    // route board's 900 dots, MARSHUZ), a matrix a lit one.
+    OPENRTS_ZONE("trains: lights");
     light_glows_.clear();
     light_beams_.clear();
     interior_lights_.clear();

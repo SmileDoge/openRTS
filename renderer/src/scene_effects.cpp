@@ -719,11 +719,14 @@ struct SceneEffects::Impl {
     // What each lamp's map holds (2026-11-17): the lamp, the sphere and the
     // matrix it was drawn with. A map is drawn every other frame (the slots
     // alternating), at once for a lamp new in its slot, a lamp or sphere
-    // moved a metre (a twentieth of the sphere) or more, or a new array;
-    // between, the shaders take the matrix it was drawn with (as the far sun
-    // cascades): half the lamps' passes, a frame's lag of their shadows of
-    // things moving. Until then every map every frame (8 on Ultra: about
-    // 1 ms of the GPU and 2.6 ms of the workers a frame at a night station).
+    // moved at all, or a new array; between, the shaders take the matrix it
+    // was drawn with: half the lamps' passes while they stand (8 on Ultra:
+    // about 1 ms of the GPU and 2.6 ms of the workers a frame at a night
+    // station). Until 2026-11-20 a lamp or sphere moved under a metre (a
+    // twentieth of the sphere) kept it too: in a moving cab (its lamps, its
+    // sphere) every other frame showed the shadows a frame behind, the
+    // cab's moved by the frame's travel (0.8 m at 60 km/h and 20 fps), and
+    // they flickered, the more the lower the fps (testers).
     struct LampKept {
         glm::vec3 position{};
         glm::vec3 centre{};
@@ -1735,7 +1738,7 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
         auto& kept = lamp_kept[k];
         const float moved = (std::max)(glm::distance(kept.position, position), glm::distance(kept.centre, centre));
         const bool turn = (lamp_frame + k) % 2 == 0;
-        if (matched[k] && kept.generation == lamp_generation && moved < (std::min)(1.0f, 0.05f * radius) && !turn) {
+        if (matched[k] && kept.generation == lamp_generation && moved <= 1e-4f && !turn) {
             matrix = kept.matrix;
             texel = kept.texel;
             lamp_redraw[k] = false;

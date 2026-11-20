@@ -141,7 +141,11 @@ rts1.exe; findings from the decompiled code, on a copy of the database.
     from that, the file's own left);
   - its mipmaps averaged in linear light, then the image laid on the panel
     as one quad (anisotropic 16, half a mip sharper), turned back to the
-    display's values and blended as before (straight alpha).
+    display's values and blended as before (straight alpha);
+  - an image is drawn again only when what it shows changed (its objects'
+    vertices, colours and textures, the part covered; 2026-11-20): every
+    screen with its mip levels every frame took the ЭД9М's cab from 350 to
+    270 fps (testers).
 
   A line a fifth of a pixel wide now shows about half its brightness (a
   fifth of its light in linear light); turned needles and hard alpha edges
