@@ -21,6 +21,8 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#else
+#include <spawn.h>
 #endif
 
 #ifdef OPENRTS_HAS_IMGUI
@@ -362,6 +364,8 @@ struct Launcher::State {
     std::chrono::steady_clock::time_point next_situation_scan{};
 #ifdef _WIN32
     HANDLE process = nullptr;
+#else
+    pid_t process = 0;
 #endif
     // Updates (update.hpp): a check at the start ("update_check"), the offer
     // as a modal window; a version skipped there ("update_skip") is not
@@ -711,10 +715,17 @@ struct Launcher::State {
     }
 
     [[nodiscard]] fs::path game_exe() const {
-        const std::vector<fs::path> candidates{
-            exe_dir / "openrts_viewer.exe",
-            exe_dir.parent_path().parent_path() / "viewer" / exe_dir.filename() / "openrts_viewer.exe",
-        };
+#ifdef _WIN32
+        std::string viewer_name = "openrts_viewer.exe";
+#else
+        std::string viewer_name = "openrts_viewer";
+#endif
+          const std::vector<fs::path>
+              candidates{
+                  exe_dir / viewer_name,
+                  exe_dir.parent_path().parent_path() / "viewer" /
+                      exe_dir.filename() / viewer_name,
+      };
         std::error_code error;
         for (const auto& candidate : candidates)
             if (fs::is_regular_file(candidate, error)) return candidate;
@@ -908,7 +919,33 @@ struct Launcher::State {
         process = info.hProcess;
         status = network_game ? net_message() : std::string(tr("The game is running. The menu comes back when it is closed."));
 #else
-        status = tr("Starting the game is only done on Windows yet.");
+        posix_spawn_file_actions_t file_actions;
+        posix_spawn_file_actions_init(&file_actions);
+
+        posix_spawnattr_t attr;
+        posix_spawnattr_init(&attr);
+
+        std::istringstream iss(command);
+        std::vector<std::string> argv_strings;
+        std::string s;
+
+        while (iss >> std::quoted(s)) {
+            argv_strings.push_back(s);
+        }
+
+        std::vector<char*> argv;
+        // start from 1 because the 0th argument is the name of the program itself, not needed here.
+        for (int i = 1; i < argv_strings.size(); i++) {
+            argv.push_back((char*)argv_strings[i].c_str());
+        }
+
+        int result = posix_spawnp(&process, game_exe().c_str(), &file_actions, &attr, &argv[0], nullptr);
+        if (result == 0) {
+            status = tr("The game is running. The menu comes back when it is closed.");
+        } else {
+            status = viewer::trf("The game did not start (error %lu).", static_cast<unsigned long>(result));
+        }
+        //status = tr("Starting the game is only done on Windows yet.");
 #endif
     }
 
