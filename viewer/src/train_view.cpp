@@ -2003,6 +2003,29 @@ bool TrainView::engineer_action_at_hand() const {
     return offers_enter(board_prompt_) || offers_enter(engineer_.prompt());
 }
 
+void TrainView::spring_brake_handles() {
+    // Brakes.dll's springs with openRTS's cab brake devices (trainplugin::
+    // brake_springs): the 254's release and the КПТ's last position back
+    // once neither their key nor the mouse holds them. Brakes.dll, still
+    // loaded, does the same (its GetAsyncKeyState); without it they are
+    // these.
+    if (!legacy_ || helping_ || units_.empty() || units_.front().remote) return;
+    const auto car = driven_car();
+    const auto& unit = units_.front();
+    if (car == SIZE_MAX || car >= unit.cars.size() || !unit.cars[car].definition || !unit.cars[car].definition->engine) return;
+    const auto* asked = unit.train->demands_of(car);
+    if (!asked || !asked->cab_brakes) return;
+    const auto* out = legacy_->output(car);
+    if (!out) return;
+    const auto& parameters = brakes_parameters_of(*unit.cars[car].definition->engine);
+    for (const auto& spring : trainplugin::brake_springs(parameters)) {
+        if (spring.id < 0 || static_cast<std::size_t>(spring.id) >= out->switches.size()) continue;
+        if (out->switches[static_cast<std::size_t>(spring.id)].state != spring.from) continue;
+        if (mouse_down_ || legacy_->key_held(static_cast<std::uint32_t>(spring.id), spring.direction)) continue;
+        legacy_->set_switch(static_cast<std::uint32_t>(spring.id), spring.to);
+    }
+}
+
 bool TrainView::control_in_hand() const noexcept {
     const LegacyCab* hands = helping_ ? helper_cab_.get() : legacy_.get();
     return hands && hands->dragging();
@@ -5620,7 +5643,10 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         brake_numbers_ = std::clamp(std::atoi(remembered("brake_numbers").value_or("0").c_str()), 0, 1);
         own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("0").c_str()), 0, 1);
         klub_map_ = remembered("klub_map").value_or("1") != "0";
+        no_brakes_dll_ = remembered("no_brakes_dll").value_or("0") == "1";
     }
+    // For the trains made from now on (docs/brakes-dll-replacement.md "The rest", 7).
+    trainplugin::LegacyConsist::set_without_brakes_dll(no_brakes_dll_ && realistic_air_ && dll_air_ != 0 && own_klub_ == 1 && own_brakes_ == 1);
     if (legacy_) legacy_->set_own_brakes(own_brakes_ == 1, brake_numbers_ == 1);
     if (legacy_) legacy_->set_own_klub(own_klub_ == 1);
     if (network_ && network_->rail_joints().layout() != rail_joint_layout()) network_->set_rail_joint_layout(rail_joint_layout());
@@ -5918,6 +5944,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
                 legacy_->step(trains, posted);
             }
             take_dll_tape();
+            spring_brake_handles();
             for (std::size_t t = 0; t < posted.size() && t < host_units.size(); ++t) {
                 if (!host_units[t]) continue;
                 auto& unit = *host_units[t];
@@ -7198,6 +7225,7 @@ void TrainView::outer_door_pointer(const glm::vec3& eye, const glm::vec3& direct
 
 void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& direction, const bool click, const bool shift,
                         const float scroll, const bool release, const glm::vec2& cursor, const bool held) {
+    mouse_down_ = held;
     // A helper's hands work the engineer's cab (helper_cab_), else the DLLs here.
     LegacyCab* hands = helping_ ? helper_cab_.get() : legacy_.get();
     // A control in hand (RTS 0x4121BC) follows the cursor while the button
@@ -7674,28 +7702,47 @@ std::vector<TrainView::CarMenuItem> TrainView::car_menu_items(const CarMenu& men
                 default: items.push_back({42, "Distributor plug: УВ, accelerator off (switch to К)"}); break;
                 }
             }
-            // The distributor itself: RTS content cannot tell a multiple
-            // unit's car (305-001) from a coach (305-000), nor a freight
-            // locomotive's 483 from an EP one's 305. Chosen here for the
-            // car's type and kept in a mod (docs/train.md).
+            // The car's air, three things (2026-11-20, as the player asked):
+            // its distributor, its ЭПТ, a locomotive's 418. RTS content
+            // cannot tell a multiple unit's car (305-001) from a coach
+            // (305-000), nor a freight locomotive's 483 from an EP one's 305.
+            // Chosen here for the car's type and kept in a mod (docs/train.md).
             const bool chosen = car.definition->brakes.distributor_in_companion;
-            switch (simulation::distributor_kind(*car.definition)) {
-            case simulation::DistributorKind::vr483:
-                items.push_back({49, chosen ? "Distributor: 483, chosen in a mod (switch to 292)"
-                                            : "Distributor: 483, by the car's type (switch to 292, kept in a mod)"});
-                break;
-            case simulation::DistributorKind::vr292:
-                items.push_back({49, chosen ? "Distributor: 292, chosen in a mod (switch to EVR 305-000)"
-                                            : "Distributor: 292, by the car's type (switch to EVR 305-000, kept in a mod)"});
-                break;
-            case simulation::DistributorKind::evr305:
-                items.push_back({49, chosen ? "Distributor: EVR 305-000 with a 292, chosen in a mod (switch to 305-001, multiple units)"
-                                            : "Distributor: EVR 305-000 with a 292, by the car's type (switch to 305-001, multiple units, kept in a mod)"});
-                break;
-            default:
-                items.push_back({49, chosen ? "Distributor: EVR 305-001 with a 292 (multiple units), chosen in a mod (switch to 483)"
-                                            : "Distributor: EVR 305-001 with a 292 (multiple units), by the car's type (switch to 483, kept in a mod)"});
-                break;
+            const auto kind = simulation::distributor_kind(*car.definition);
+            if (kind == simulation::DistributorKind::vr483) {
+                items.push_back({49, chosen ? "Distributor: 483, freight, chosen in a mod (switch to 292, passenger)"
+                                            : "Distributor: 483, freight, by the car's type (switch to 292, passenger, kept in a mod)"});
+            } else {
+                items.push_back({49, chosen ? "Distributor: 292, passenger, chosen in a mod (switch to 483, freight)"
+                                            : "Distributor: 292, passenger, by the car's type (switch to 483, freight, kept in a mod)"});
+                // The ЭПТ: an ЭВР 305 beside the 292 (a 483 has none).
+                switch (kind) {
+                case simulation::DistributorKind::vr292:
+                    items.push_back({51, chosen ? "EP brake: none, chosen in a mod (fit an EVR 305-000)"
+                                                : "EP brake: none, by the car's type (fit an EVR 305-000, kept in a mod)"});
+                    break;
+                case simulation::DistributorKind::evr305:
+                    items.push_back({51, chosen ? "EP brake: EVR 305-000, chosen in a mod (switch to 305-001, multiple units)"
+                                                : "EP brake: EVR 305-000, by the car's type (switch to 305-001, multiple units, kept in a mod)"});
+                    break;
+                default:
+                    items.push_back({51, chosen ? "EP brake: EVR 305-001 (multiple units), chosen in a mod (take it off)"
+                                                : "EP brake: EVR 305-001 (multiple units), by the car's type (take it off, kept in a mod)"});
+                    break;
+                }
+            }
+            // The 418 (openRTS's brakes; cab_brakes.hpp): a locomotive's,
+            // with the 483 only.
+            if (car.definition->kind == formats::WagonKind::engine) {
+                const auto sensor = car.definition->brakes.sensor418;
+                if (kind != simulation::DistributorKind::vr483) {
+                    items.push_back({52, "418 sensor (openRTS brakes): none, a 292 has none (only with a 483)"});
+                } else if (sensor.value_or(true)) {
+                    items.push_back({52, sensor ? "418 sensor (openRTS brakes): fitted, chosen in a mod (take it off)"
+                                                : "418 sensor (openRTS brakes): fitted, as the 483 gives (take it off, kept in a mod)"});
+                } else {
+                    items.push_back({52, "418 sensor (openRTS brakes): taken off in a mod (fit it)"});
+                }
             }
             // The same on every car of the train (the locomotives keep theirs).
             if (car.definition->kind != formats::WagonKind::engine) {
@@ -7921,6 +7968,37 @@ void TrainView::choose_distributor_for_train(const Unit& unit, const Car& chosen
 }
 
 std::size_t TrainView::keep_distributor(const Car& chosen, const formats::BrakeDistributor distributor, bool& listed, std::string& error) {
+    return keep_in_companion(
+        chosen, [&](const std::string_view old) { return formats::set_override_distributor(old, distributor); },
+        [&](formats::WagonDefinition& owned) {
+            // Back to its type's: the file's, the stock rules' or inferred.
+            owned.brakes.distributor = distributor == formats::BrakeDistributor::inferred ? owned.brakes.default_distributor : distributor;
+            owned.brakes.distributor_in_companion = distributor != formats::BrakeDistributor::inferred;
+        },
+        listed, error);
+}
+
+void TrainView::choose_sensor418(const Car& chosen, const std::optional<bool> fitted) {
+    if (install_root_.empty()) {
+        message_ = tr("no installation to keep the mod in");
+        return;
+    }
+    bool listed = false;
+    std::string error;
+    const auto changed = keep_in_companion(
+        chosen, [&](const std::string_view old) { return formats::set_override_sensor418(old, fitted); },
+        [&](formats::WagonDefinition& owned) { owned.brakes.sensor418 = fitted; }, listed, error);
+    if (!error.empty()) {
+        message_ = error;
+        return;
+    }
+    message_ = trf(fitted.value_or(true) ? "%s: the 418 fitted on %zu cars, kept in MODS_OPENRTS/%s" : "%s: the 418 taken off %zu cars, kept in MODS_OPENRTS/%s",
+                   chosen.file.c_str(), changed, edits_mod().c_str());
+    if (listed) message_ += std::string(" ") + tr("(the mod was added to openrts.ini)");
+}
+
+std::size_t TrainView::keep_in_companion(const Car& chosen, const std::function<std::string(std::string_view)>& edit,
+                                         const std::function<void(formats::WagonDefinition&)>& apply, bool& listed, std::string& error) {
     // The edits mod's companion of the car's file, its other entries kept.
     const auto virtual_file = formats::wagon_override_path(chosen.folder, chosen.file, chosen.engine).str();
     const auto mod = edits_mod();
@@ -7936,7 +8014,7 @@ std::size_t TrainView::keep_distributor(const Car& chosen, const formats::BrakeD
             if (const auto text = vfs_->read(*path)) old = *text;
         }
     }
-    const auto text = formats::set_override_distributor(old, distributor);
+    const auto text = edit(old);
     std::error_code io_error;
     if (text.empty()) {
         std::filesystem::remove(file, io_error);
@@ -7963,9 +8041,7 @@ std::size_t TrainView::keep_distributor(const Car& chosen, const formats::BrakeD
             if (!car.definition || !same(car)) continue;
             for (auto& owned : stock_) {
                 if (owned.get() != car.definition) continue;
-                // Back to its type's: the file's, the stock rules' or inferred.
-                owned->brakes.distributor = distributor == formats::BrakeDistributor::inferred ? owned->brakes.default_distributor : distributor;
-                owned->brakes.distributor_in_companion = distributor != formats::BrakeDistributor::inferred;
+                apply(*owned);
                 ++changed;
                 break;
             }
@@ -8100,12 +8176,17 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
             message_ = trf(modes.mountain ? "car %zu: distributor in mountain mode" : "car %zu: distributor in flat mode", i + 1);
             break;
         }
-        case 49: { // the distributor of the car's type: 483 -> 292 -> 305-000 -> 305-001 -> 483
+        case 49:   // the distributor of the car's type: 483 <-> 292 (with its type's ЭПТ, if any)
+        case 51: { // its ЭПТ (a 292's): none -> 305-000 -> 305-001 -> none
             if (i >= unit->cars.size()) break;
             using K = simulation::DistributorKind;
             const auto& definition = *cars[i].definition;
             const auto now = simulation::distributor_kind(definition);
-            const auto next = now == K::vr483 ? K::vr292 : now == K::vr292 ? K::evr305 : now == K::evr305 ? K::evr305_001 : K::vr483;
+            const auto given = simulation::default_distributor_kind(definition);
+            const auto next = id == 49 ? (now != K::vr483 ? K::vr483 : given != K::vr483 ? given : K::vr292)
+                              : now == K::vr292   ? K::evr305
+                              : now == K::evr305  ? K::evr305_001
+                                                  : K::vr292;
             // The one its type gives (its file, the stock rules) needs no mod's word.
             const auto choice = next == simulation::default_distributor_kind(definition) ? formats::BrakeDistributor::inferred
                                 : next == K::vr483                                         ? formats::BrakeDistributor::vr483
@@ -8117,6 +8198,16 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
         }
         case 50: { // this car's distributor on every car of the train (not the locomotives)
             if (i < unit->cars.size()) choose_distributor_for_train(*unit, unit->cars[i]);
+            break;
+        }
+        case 52: { // a locomotive's 418: fitted (as its 483 gives) <-> taken off
+            if (i >= unit->cars.size()) break;
+            const auto& definition = *cars[i].definition;
+            if (simulation::distributor_kind(definition) != simulation::DistributorKind::vr483) {
+                message_ = tr("the 418 needs the distributor 483: switch it first");
+                break;
+            }
+            choose_sensor418(unit->cars[i], definition.brakes.sensor418.value_or(true) ? std::optional<bool>(false) : std::nullopt);
             break;
         }
         case 42: { // the 292's plug: К -> Д -> УВ -> К
@@ -8948,6 +9039,14 @@ void TrainView::feed_world(const Unit& unit) {
         world.tdb = &network->database();
         const double range = (std::max)(5000.0, static_cast<double>(legacy_->items_wanted()));
         world.items_range = static_cast<float>(range);
+        // The coordinate, from the rear: worked out once, then while moving.
+        if (milepost_train_ != unit.train.get()) {
+            milepost_train_ = unit.train.get();
+            milepost_ = {};
+        }
+        if (const auto rear = unit.train->rear_end(); rear && (!milepost_.known || std::abs(unit.train->speed()) > 0.0))
+            simulation::update_milepost(milepost_, *network, rear->node(), rear->offset(), rear->forward());
+        world.milepost = milepost_;
         const double length = unit.train->length();
         const auto not_signal = [](const formats::TrackItem& item) { return item.kind != formats::TrackItemKind::signal; };
         if (const auto rear = unit.train->rear_end()) {
@@ -10935,6 +11034,13 @@ void TrainView::draw_panel() {
             if (can_own && own_klub_ == 1 && legacy_)
                 ImGui::TextUnformatted(legacy_->klub_cars() ? tr("This train's КЛУБ is openRTS's.")
                                                             : tr("This train keeps Brakes.dll's КЛУБ (none, or a locomotive with two cabs)."));
+            ImGui::BeginDisabled(!can_own || own_klub_ != 1 || own_brakes_ != 1);
+            if (ImGui::Checkbox(tr("Without Brakes.dll where all of it is openRTS's (from the next train)"), &no_brakes_dll_))
+                remember("no_brakes_dll", no_brakes_dll_ ? "1" : "0");
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("%s", tr("(a КЛУБ's locomotive on openRTS's brakes, no speed recorder: Brakes.dll is not loaded on it, openRTS's devices do all; to go back, load the train again with it off)"));
+            if (legacy_ && legacy_->without_brakes_dll())
+                ImGui::Text(tr("Brakes.dll is not loaded on %d cars of this train."), static_cast<int>(legacy_->without_brakes_dll()));
             if (can_own && own_klub_ == 1) {
                 if (ImGui::Checkbox(tr("Electronic map (ЭК) from the route database"), &klub_map_)) remember("klub_map", klub_map_ ? "1" : "0");
                 const auto* map = klub_map_ ? electronic_map() : nullptr;

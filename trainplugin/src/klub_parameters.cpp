@@ -33,6 +33,9 @@ std::pair<std::string_view, int> cab_name(const std::string_view name) {
     std::size_t end = name.size();
     while (end > 0 && name[end - 1] >= '0' && name[end - 1] <= '9') --end;
     if (end == name.size() || end == 0) return {name, 0};
+    // ТСКБМ's lamps keep their number before the cab's: TSKBM_L1<n> .. L3<n>
+    // (Brakes.dll appends the cab to "TSKBM_L1").
+    if (name.substr(0, end) == "tskbm_l" && name.size() > end + 1) ++end;
     return {name.substr(0, end), std::atoi(std::string(name.substr(end)).c_str())};
 }
 
@@ -77,8 +80,8 @@ KlubParameters klub_parameters(const formats::EngineDefinition& engine) {
     p.lamp = 0;
     p.backlight = 0;
     auto& k = p.settings;
-    int power_count = 0, cab_count = 1;
-    std::vector<std::pair<int, std::int32_t>> power;
+    int power_count = 0, cab_count = 1, saut_power_count = 0;
+    std::vector<std::pair<int, std::int32_t>> power, saut_power;
     // A cab's id by its name: the first given, as RTS finds a parameter by
     // its name (PROBABLE).
     struct CabId {
@@ -113,6 +116,11 @@ KlubParameters klub_parameters(const formats::EngineDefinition& engine) {
         else if (name == "br_367oppol") p.working_position = id;
         else if (name == "klub_pcount") power_count = id;
         else if (name.starts_with("klub_pit")) power.emplace_back(std::atoi(name.c_str() + 8), id);
+        else if (name == "saut_pcount") saut_power_count = id;
+        else if (name.starts_with("saut_pit")) saut_power.emplace_back(std::atoi(name.c_str() + 8), id);
+        else if (name == "saut_mode") p.saut_mode = value == 1.0f;
+        else if (name == "saut_modet") p.saut_mode_switch = id;
+        else if (name == "saut_modeon") p.saut_mode_on = static_cast<std::uint32_t>(id);
         else if (const auto [base, cab] = cab_name(name); cab >= 1) {
             bool seen = false;
             for (const auto& c : cab_ids) seen = seen || (c.cab == cab && c.name == base);
@@ -131,6 +139,20 @@ KlubParameters klub_parameters(const formats::EngineDefinition& engine) {
         else if (base == "pb_rbs") c.rbs = id;
         else if (base == "pb_epkkey") c.epk_key = id;
         else if (base == "tskbm_sw") c.tskbm = id;
+        else if (base == "tskbm_disp") c.tskbm_screen = id;
+        else if (base == "saut_komid") c.saut_keys[0] = id;
+        else if (base == "saut_grid") c.saut_keys[1] = id;
+        else if (base == "saut_ykid") c.saut_keys[2] = id;
+        else if (base == "saut_k20id") c.saut_keys[3] = id;
+        else if (base == "saut_podid") c.saut_keys[4] = id;
+        else if (base == "saut_otpid") c.saut_keys[5] = id;
+        else if (base == "saut_osid") c.saut_os = id;
+        else if (base == "saut_dbid") c.saut_db = id;
+        else if (base == "saut_dfid") c.saut_df = id;
+        else if (base == "tskbm_pit") c.tskbm_power = id;
+        else if (base == "tskbm_l1") c.tskbm_lamps[0] = id;
+        else if (base == "tskbm_l2") c.tskbm_lamps[1] = id;
+        else if (base == "tskbm_l3") c.tskbm_lamps[2] = id;
         else if (base == "saut_swid") c.saut = id;
         else if (base == "br_367id") c.cab_switch = id;
         else if (base.size() == 10 && base.starts_with("klub_b") && base.ends_with("pom") && base[6] >= '1' && base[6] <= '8')
@@ -154,6 +176,78 @@ KlubParameters klub_parameters(const formats::EngineDefinition& engine) {
             p.power.push_back(v);
             break;
         }
+    }
+    // САУТ's the same way: SAUT_PIT1 .. SAUT_PIT<SAUT_PCOUNT>,
+    // a missing one -1 (on).
+    for (int i = 1; i <= saut_power_count; ++i) {
+        std::int32_t id = -1;
+        for (const auto& [n, v] : saut_power) {
+            if (n != i) continue;
+            id = v;
+            break;
+        }
+        p.saut_power.push_back(id);
+    }
+    return p;
+}
+
+RecorderParameters recorder_parameters(const formats::EngineDefinition& engine) {
+    RecorderParameters p;
+    const formats::AuxLibraryDefinition* library = nullptr;
+    for (const auto& a : engine.aux_libraries) {
+        if (is_brakes_dll(a.module)) {
+            library = &a;
+            break;
+        }
+    }
+    if (!library) return p;
+    // A parameter by its name as RTS finds it (the first given), Brakes.dll's
+    // per cab with the cab's number appended (param_int).
+    const auto find = [&](const std::string& name, std::int32_t* index = nullptr) -> const formats::EngineParameter* {
+        for (std::size_t i = 0; i < library->parameters.size(); ++i) {
+            if (core::fold_case(library->parameters[i].name) != name) continue;
+            if (index) *index = static_cast<std::int32_t>(i);
+            return &library->parameters[i];
+        }
+        return nullptr;
+    };
+    const auto value = [&](const std::string& name, const float fallback) {
+        const auto* found = find(name);
+        return found ? found->value : fallback;
+    };
+    const auto id = [&](const std::string& base, const std::size_t cab) {
+        return static_cast<std::int32_t>(value(base + std::to_string(cab), -1.0f));
+    };
+    auto& k = p.settings;
+    k.setup = static_cast<std::uint32_t>(value("sl_setup", 0.0f));
+    k.klub_setup = static_cast<std::uint32_t>(value("pb_setup", 0.0f));
+    p.trans_sound = value("trans_sound", 0.0f) == 1.0f;
+    const bool needle = find("sl_speed1", &p.speed1_index) && value("sl_speed1", -1.0f) > -1.0f;
+    const bool kpd = find("sl_kpdspd1", &p.kpd_index) && value("sl_kpdspd1", -1.0f) > -1.0f;
+    k.needle = needle;
+    p.speed1 = value("sl_speed1", -1.0f);
+    p.present = needle || kpd;
+    p.own = needle && !kpd && !(k.setup & 8u);
+    const auto cabs = static_cast<std::size_t>(std::clamp(static_cast<int>(value("br_numcabs", 1.0f)), 1, 8));
+    for (std::size_t c = 1; c <= cabs; ++c) {
+        simulation::RecorderCab cab;
+        cab.epk_key = id("pb_epkkey", c);
+        cab.rb = id("pb_rb", c);
+        cab.rbs = id("pb_rbs", c);
+        cab.als = id("sl_als", c);
+        cab.h = id("sl_h", c);
+        cab.dvij = id("sl_dvij", c);
+        cab.vk = id("sl_vk", c);
+        cab.zavod = id("sl_zavod", c);
+        cab.kid = id("br_kid", c);
+        cab.speed = id("sl_speed", c);
+        cab.hour = id("sl_hour", c);
+        cab.minute = id("sl_min", c);
+        for (std::size_t d = 0; d < cab.odometer.size(); ++d) cab.odometer[d] = id("sl_odom" + std::to_string(d + 1), c);
+        cab.pss = id("sl_pss", c);
+        cab.hl = id("sl_hl", c);
+        cab.pr = id("sl_pr", c);
+        k.cabs.push_back(cab);
     }
     return p;
 }

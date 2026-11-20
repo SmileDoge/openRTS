@@ -111,8 +111,11 @@ both.
 beside the program, from `packs/stock`) has `multiple_units.luau`: the cars
 whose folder or file names a multiple unit's series (ЭД2Т, ЭД4М, ЭД9, ЭР1,
 ЭР2, ЭР9, ЭТ2 as ED2T, ED4M, ...) get the governor 6.5–8.0 atm and, with
-the ЭПТ, the ЭВР 305-001 (`docs/train.md`). A mod replaces it by the same
-path, or adds its own script beside it.
+the ЭПТ, the ЭВР 305-001 (`docs/train.md`), and `freight_locomotives.luau`: the locomotives whose
+names give a freight or shunting series (ВЛ10, ВЛ11, ВЛ60К, ВЛ80, ВЛ82,
+ВЛ85, ЭС4К, ЭС5К, ЭС6, 2ТЭ10, 2ТЭ116, М62, ТЭМ, ЧМЭ, ...; not the 2ТЭ10УТ)
+get the 483 (testers 2026-11-20), and with it the 418. A mod replaces
+either by the same path, or adds its own script beside them.
 
 ## The stand
 

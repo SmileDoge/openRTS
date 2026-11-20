@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -166,6 +167,11 @@ struct AuxLibrarySpec {
     std::vector<AuxCallSpec> calls;
     bool has_sound = false; // AuxLibrarySound given: the library gets an SMS object
     std::int32_t sound_table = -1; // its SMS's SetupRequest::sound_tables entry, -1 none
+    // Not loaded: the library without its code (no Init, Run, Switched ...),
+    // its variables, parameters and SMS kept for the train's DLL, openRTS's
+    // devices in its place (Brakes.dll, docs/brakes-dll-replacement.md "The
+    // rest", 7).
+    bool stub = false;
 };
 
 // What a DLL can ask of a sound script (RTS 0x4394F4, 0x439548): its
@@ -407,6 +413,16 @@ struct CarInput {
     // driven): the DLL's own valve keeps its УР in that field, and left to
     // itself it drifts from openRTS's; < 0 leaves the DLL's.
     float equalising = -1.0f;
+    // Engine::Flags (+120) written before Run: openRTS's САУТ's braking
+    // coefficient, × 100 (Brakes.dll's САУТ keeps it there; the train's
+    // DLLs' screens read it); < 0 leaves it.
+    std::int32_t engine_flags_word = -1;
+    // Engine::ALSNOn (+106) written before Run: openRTS's speed recorder's
+    // (Brakes.dll's sets it in its Run); < 0 leaves it.
+    std::int32_t alsn_on_word = -1;
+    // Engine::CurrentMilepost (+140) written before Run: the train's
+    // coordinate, km (simulation/milepost.hpp); NaN leaves it.
+    float current_milepost = std::numeric_limits<float>::quiet_NaN();
 };
 
 // An auxiliary library's AuxLibraryParameters entry given another value
@@ -435,6 +451,10 @@ struct AuxVarWrite {
     std::uint16_t offset{};
     std::uint32_t mask{}, bits{};
     std::uint32_t after_run{}; // 0 before the library's Run, 1 after it
+    // 0 the library's variables; 1 the cab's aspect (Cabin::Signal.Aspect[0]
+    // = bits; offset, mask unused): openRTS's speed recorder's ВК on К, set
+    // in Brakes.dll's Run.
+    std::uint32_t target{};
 };
 
 struct EnterRequest {
@@ -527,6 +547,7 @@ struct EngineOutput {
     std::uint32_t flags{}; // Engine::Flags (+120): Brakes.dll's САУТ puts its braking coefficient there, × 100
     std::int32_t reverse{};
     std::uint32_t wheelslip{}, throttle{};
+    float milepost{}; // Engine::CurrentMilepost (+140), km
     // Engine::EngineForce[NumEngines]: each traction motor's force, N
     // (the first eight).
     std::array<float, 8> engine_forces{};
@@ -680,11 +701,13 @@ inline void write(Writer& w, const AuxLibrarySpec& a) {
     w.text(a.name); w.text(a.module); w.put(a.stack_size);
     write_list(w, a.parameters); write_list(w, a.calls); w.put(static_cast<std::uint8_t>(a.has_sound));
     w.put(a.sound_table);
+    w.put(static_cast<std::uint8_t>(a.stub));
 }
 inline void read(Reader& r, AuxLibrarySpec& a) {
     a.name = r.text(); a.module = r.text(); a.stack_size = r.get<std::uint32_t>();
     read_list(r, a.parameters); read_list(r, a.calls); a.has_sound = r.get<std::uint8_t>() != 0;
     a.sound_table = r.get<std::int32_t>();
+    a.stub = r.get<std::uint8_t>() != 0;
 }
 
 inline void write(Writer& w, const SwitchSpec& s) {

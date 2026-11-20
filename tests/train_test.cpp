@@ -1654,14 +1654,18 @@ Train ( TrainCfg ( "c"
         std::filesystem::remove_all(work);
     }
     {
-        // The stock rules (packs/stock/multiple_units.luau): an ЭД4М's car
-        // gets the 305-001 and the governor 6.5-8.0; a ВЛ80 nothing; a
-        // companion's distributor wins; a broken script is said and left out.
+        // The stock rules (packs/stock): an ЭД4М's car gets the 305-001 and
+        // the governor 6.5-8.0 (multiple_units.luau); a ВЛ80 the 483 and with
+        // it the 418, a 2ТЭ10УТ (passenger) nothing (freight_locomotives.luau);
+        // a companion's distributor and 418 win; a broken script is said and
+        // left out.
         const auto work = std::filesystem::temp_directory_path() / "openrts-train-test-rules";
         std::filesystem::remove_all(work);
         const auto set = work / "TRAINS" / "TRAINSET";
         std::filesystem::create_directories(set / "mdd_ED4M-0001");
         std::filesystem::create_directories(set / "vl80");
+        std::filesystem::create_directories(set / "mdd_VL10-0001");
+        std::filesystem::create_directories(set / "RTS_2TE10Ut-0001");
         std::filesystem::create_directories(work / "TRAINS" / "OPENRTS" / "STOCK");
         auto eng = engine_text.substr(0, engine_text.size() - 1) +
                    "\n    AirBrakesMainMaxAirPressure ( 130 )\n    AirBrakesCompressorRestartPressure ( 105 )\n)";
@@ -1672,15 +1676,21 @@ Train ( TrainCfg ( "c"
         std::ofstream(set / "mdd_ED4M-0001" / "mdd_ED4M-0001_M.eng.openrts", std::ios::binary)
             << formats::set_override_distributor("", formats::BrakeDistributor::vr292);
         std::ofstream(set / "vl80" / "vl80.eng", std::ios::binary) << eng;
-        std::filesystem::copy_file(std::filesystem::path(OPENRTS_SOURCE_DIR) / "packs" / "stock" / "multiple_units.luau",
-                                   work / "TRAINS" / "OPENRTS" / "STOCK" / "multiple_units.luau");
+        std::ofstream(set / "mdd_VL10-0001" / "mdd_VL10-0001A.eng", std::ios::binary) << eng;
+        std::ofstream(set / "mdd_VL10-0001" / "mdd_VL10-0001A.eng.openrts", std::ios::binary)
+            << formats::set_override_sensor418("", false);
+        std::ofstream(set / "RTS_2TE10Ut-0001" / "RTS_2te10ut-0001a.eng", std::ios::binary) << eng;
+        for (const char* script : {"multiple_units.luau", "freight_locomotives.luau"}) {
+            std::filesystem::copy_file(std::filesystem::path(OPENRTS_SOURCE_DIR) / "packs" / "stock" / script,
+                                       work / "TRAINS" / "OPENRTS" / "STOCK" / script);
+        }
         std::ofstream(work / "TRAINS" / "OPENRTS" / "STOCK" / "zz_broken.luau", std::ios::binary) << "function car(c) error('сломано') end\n";
         core::Vfs vfs;
         vfs.mount_directory(work);
         vfs.build_index();
         std::string messages;
         const auto rules = simulation::StockRules::load(vfs, messages);
-        check(rules->scripts() == 2 && messages.empty(), "two stock rules scripts load (" + messages + ")");
+        check(rules->scripts() == 3 && messages.empty(), "three stock rules scripts load (" + messages + ")");
         const auto emu = formats::load_wagon(vfs, "mdd_ED4M-0001", "mdd_ED4M-0001_G", true, rules->hook());
         check(emu.ok() && emu.brakes.distributor == formats::BrakeDistributor::evr305_001 &&
                   emu.brakes.default_distributor == formats::BrakeDistributor::evr305_001 && !emu.brakes.distributor_in_companion,
@@ -1688,15 +1698,26 @@ Train ( TrainCfg ( "c"
         check(emu.engine && near(emu.engine->compressor_restart, 6.5, 1e-4) && near(emu.engine->main_reservoir_max, 8.0, 1e-4),
               "the rules: an ЭД4М's governor 6.5-8.0 over the file's 130 / 105 psi");
         check(emu.engine && near(emu.engine->compressor_capacity, 0.37, 1e-4), "the rules: an ЭД4М's compressor 0.37 m³/min");
+        check(!simulation::sensor418_fitted(emu), "an ЭД4М's car (its 305) has no 418");
         check(rules->take_messages().find("zz_broken.luau") != std::string::npos, "a broken script is said");
         const auto chosen = formats::load_wagon(vfs, "mdd_ED4M-0001", "mdd_ED4M-0001_M", true, rules->hook());
         check(chosen.brakes.distributor == formats::BrakeDistributor::vr292 && chosen.brakes.distributor_in_companion &&
                   chosen.brakes.default_distributor == formats::BrakeDistributor::evr305_001,
               "a companion's distributor wins over the rules");
         const auto loco = formats::load_wagon(vfs, "vl80", "vl80", true, rules->hook());
-        check(loco.brakes.distributor == formats::BrakeDistributor::inferred && loco.engine && near(loco.engine->main_reservoir_max, 8.85, 0.01)
-                  && loco.engine->compressor_capacity == 0.0f,
-              "the rules leave a ВЛ80 as its file gives it");
+        check(loco.brakes.distributor == formats::BrakeDistributor::vr483 && loco.brakes.default_distributor == formats::BrakeDistributor::vr483 &&
+                  loco.engine && near(loco.engine->main_reservoir_max, 8.85, 0.01) && loco.engine->compressor_capacity == 0.0f,
+              "the rules: a ВЛ80 (EP flag and all) gets the 483, its governor as its file gives it");
+        check(simulation::sensor418_fitted(loco), "a ВЛ80 with the 483 has the 418");
+        const auto vl10 = formats::load_wagon(vfs, "mdd_VL10-0001", "mdd_VL10-0001A", true, rules->hook());
+        check(vl10.brakes.distributor == formats::BrakeDistributor::vr483 && vl10.brakes.sensor418 == std::optional<bool>(false) &&
+                  !simulation::sensor418_fitted(vl10),
+              "a ВЛ10 with the 483 and ORTSBrakeSensor418 ( 0 ) in its companion: no 418 (" + vl10.error + ")");
+        const auto te10ut = formats::load_wagon(vfs, "RTS_2TE10Ut-0001", "RTS_2te10ut-0001a", true, rules->hook());
+        check(te10ut.brakes.distributor == formats::BrakeDistributor::inferred && !simulation::sensor418_fitted(te10ut),
+              "the rules leave a 2ТЭ10УТ (passenger) as its file gives it, no 418");
+        check(formats::set_override_sensor418(formats::set_override_sensor418("", false), std::nullopt).empty(),
+              "ORTSBrakeSensor418 taken out again: no companion left");
         std::filesystem::remove_all(work);
     }
     const auto shod = formats::parse_consist(R"(SIMISA@@@@@@@@@@JINX0D0t______

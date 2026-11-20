@@ -118,6 +118,28 @@ struct Rig {
 } // namespace
 
 int main() {
+    // Brakes.dll's springs: the 254's and the КПТ's last positions by
+    // BR_FLIPCABS; the air sounds' modes and TRANS_SOUND read.
+    {
+        trainplugin::BrakesParameters p;
+        p.cabs.resize(2);
+        p.cabs[0].independent = 7;
+        p.cabs[0].controller = 9;
+        p.cabs[1].independent = 17;
+        auto springs = trainplugin::brake_springs(p);
+        check(springs.size() == 3 && springs[0].id == 7 && springs[0].from == 5 && springs[0].to == 4 && springs[0].direction == 1
+                  && springs[1].id == 9 && springs[1].from == 6 && springs[1].to == 5 && springs[2].id == 17,
+              "BR_FLIPCABS 0: the 254 from 5 to 4, the КПТ from 6 to 5 (key up), every cab");
+        p.flipped = true;
+        springs = trainplugin::brake_springs(p);
+        check(springs.size() == 3 && springs[0].from == 0 && springs[0].to == 1 && springs[0].direction == -1,
+              "BR_FLIPCABS 1: from 0 to 1 (key down)");
+        auto text = engine_text;
+        text.replace(text.find("BR_RAZOBSHK ( 1 )"), 17, "BR_RAZOBSHK ( 1 ) BR_130MODE ( 1 ) TRANS_SOUND ( 1 )");
+        const auto engine = formats::parse_wagon(text);
+        const auto read = engine.engine ? trainplugin::brakes_parameters(*engine.engine) : trainplugin::BrakesParameters{};
+        check(read.sounds_130 && !read.sounds_224 && read.trans_sound && read.understood(), "BR_130MODE and TRANS_SOUND read");
+    }
     // Brakes.dll's parameters.
     {
         const auto engine = formats::parse_wagon(engine_text);

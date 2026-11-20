@@ -1,5 +1,7 @@
 #include <openrts/simulation/klub.hpp>
 
+#include "saut_part.hpp"
+
 #include <cmath>
 #include <cstdint>
 
@@ -354,13 +356,15 @@ void update(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sou
         // in the x87's precision). Brakes.dll's ЭП1 run shows it on both
         // cabs' screens, though its code reads as doing it in the first
         // cab drawn only (PROBABLE: all of them).
+        // САУТ's speed shown: openRTS's own, else Brakes.dll's.
+        const float saut_permitted = in.saut_in.own ? s.saut_shown : in.saut_permitted;
         if (k.setup & 8) {
-            if (s.permitted > in.saut_permitted) {
-                s.permitted = in.saut_permitted;
+            if (s.permitted > saut_permitted) {
+                s.permitted = saut_permitted;
                 s.saut_rules = true;
             }
-        } else if (static_cast<double>(in.saut_permitted) + 5.0 < static_cast<double>(s.permitted)) {
-            s.permitted = static_cast<float>(static_cast<double>(in.saut_permitted) + 5.0);
+        } else if (static_cast<double>(saut_permitted) + 5.0 < static_cast<double>(s.permitted)) {
+            s.permitted = static_cast<float>(static_cast<double>(saut_permitted) + 5.0);
             s.saut_rules = true;
         }
     }
@@ -449,6 +453,63 @@ void epk(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sounds
         s.timer = 0.0f;
     }
     out.vent = s.timer >= 12.0f || s.kon_vented;
+}
+
+// ТСКБМ (after the КЛУБ's permitted speed): while its switch is on, on the
+// move with the ЭПК key in, its timer runs down; under 15 s the lamp L2
+// blinks, under 7 the whistle and the request, at 0
+// the ЭПК vents (the vigilance timer held at 45, TrainPipeRate -1.2). At a
+// stand it waits at 6.9. With the БЛОК (PB_SETUP 8): it runs at a stand
+// too, its request from 15 s, its beep 3196 at 15 and 7 s.
+void tskbm(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput& out) {
+    const auto whistle = [&](const bool on) {
+        const bool block = (k.setup & 8) && !k.block_mode;
+        out.sounds.push_back(on ? (block ? 3956 : 56) : (block ? 3957 : 57));
+    };
+    auto& timer = s.tskbm_timer;
+    if (s.flags & f::developer) timer = 60.0f;
+    s.tskbm_shown = timer;
+    if (!in.tskbm) return;
+    const bool moving = std::abs(in.speed) > 0.1f;
+    const bool may = !(k.setup & 2) || in.powered;
+    if (moving && may) {
+        if (timer >= 7.0f) {
+            if (s.device & d::tskbm_whistle) {
+                s.device &= ~d::tskbm_whistle;
+                whistle(false);
+            }
+        } else {
+            s.flags |= f::tskbm | f::vigilance;
+            if (!(s.device & d::tskbm_whistle) && timer > 0.0f) {
+                whistle(true);
+                s.device |= d::tskbm_whistle;
+            }
+        }
+        if (timer <= 0.0f) {
+            if (s.device & d::tskbm_whistle) {
+                s.device &= ~d::tskbm_whistle;
+                whistle(false);
+            }
+            s.timer = 45.0f;
+            out.vent = true;
+        }
+    }
+    bool warn = false;
+    const bool alsn = in.alsn_on >= 0 ? in.alsn_on == 1 : in.epk_key;
+    if ((moving || (k.setup & 8)) && alsn && may) {
+        timer -= in.dt;
+        if (!moving && timer < 7.0f) timer = 6.9f;
+        if ((k.setup & 8) && timer < 15.0f) s.flags |= f::tskbm;
+        warn = timer < 7.0f || (timer < 15.0f && timer > 14.0f);
+    }
+    if (warn) {
+        if (!(s.device & d::tskbm_warning)) {
+            s.device |= d::tskbm_warning;
+            if (k.setup & 8) out.sounds.push_back(3196);
+        }
+    } else {
+        s.device &= ~d::tskbm_warning;
+    }
 }
 
 // The РБ, the РБС and the ЭПК key (Switched).
@@ -744,19 +805,29 @@ void step_klub(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOu
     s.ek_off = in.ek.given && !in.ek.matched;
     if (in.tskbm) s.device |= d::tskbm_on;
     else s.device &= ~d::tskbm_on;
-    if (in.saut) s.device |= d::saut_on;
-    else s.device &= ~d::saut_on;
+    // САУТ's "on": openRTS's САУТ sets it, else Brakes.dll's.
+    if (!in.saut_in.own) {
+        if (in.saut) s.device |= d::saut_on;
+        else s.device &= ~d::saut_on;
+    }
+    out.saut_screens.clear();
     // The keys before the step (CanSwitch).
     if ((k.setup & 2) && in.powered)
         for (const auto& press : in.keys) key(s, k, in, press, sound);
+    const bool saut_here = in.saut_in.own && (k.setup & 1);
+    if (saut_here) saut::keys(s, k, in, out);
     if (in.alsn) alsn(s, in);
     delay(s, k, in);
-    if (k.setup & 2) {
-        update(s, k, in, sound, out);
-        epk(s, k, in, sound, out);
-    }
-    // Switched after Run: the РБ, the РБС, the ЭПК key.
+    // САУТ first, before the permitted speed (it reads this step's ALSN).
+    if (saut_here) saut::step(s, k, in, out);
+    if (k.setup & 2) update(s, k, in, sound, out);
+    if (k.setup & 4) tskbm(s, k, in, out);
+    if (k.setup & 2) epk(s, k, in, sound, out);
+    // Switched after Run: the РБ, the РБС, the ЭПК key; any switch starts
+    // ТСКБМ's timer again unless it asks.
     answers(s, k, in, sound);
+    if (in.switched && !(s.flags & f::tskbm)) s.tskbm_timer = 90.0f;
+    if (in.saut_in.own && (k.setup & 1)) saut::switched(s, in, out);
 }
 
 } // namespace openrts::simulation

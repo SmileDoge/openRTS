@@ -14,6 +14,7 @@
 #include <openrts/formats/route_database.hpp>
 #include <openrts/formats/signal_config.hpp>
 #include <openrts/simulation/electronic_map.hpp>
+#include <openrts/simulation/milepost.hpp>
 #include <openrts/simulation/track_traveller.hpp>
 
 using namespace openrts;
@@ -187,6 +188,56 @@ int main(int argc, char* argv[]) {
             if (derevyankovka.contains(number)) check(drive.back_at > 9000.0, name + ": back before Деревянковка, which has it");
             else check(drive.back_at < 0.0, name + ": not back (Деревянковка has none)");
         }
+    }
+    // Standing on Albashi's track 1 with another of its tracks entered (the
+    // testers' case, 2026-11-20: the train at its platform, the switches set
+    // for it): that track's signal, as the real КЛУБ-У's map by its
+    // coordinate, not track 1's (nor the next station's track of the number).
+    for (const auto& one : map.tracks()) {
+        if (one.station != "Албаши" || one.name != "1" || one.spans.empty()) continue;
+        const auto& span = one.spans[one.spans.size() / 2];
+        const double middle = 0.5 * (span.from + span.to);
+        for (const auto number : albashi) {
+            if (number == 1) continue;
+            int targets = 0;
+            for (const bool way : {true, false}) {
+                simulation::EkState state;
+                const auto target = map.update(state, *network, span.node, middle, way, number, {});
+                const auto* track = target.has_target ? map.track_of(target.object) : nullptr;
+                std::cout << "on Албаши 1, track " << number << (way ? " forward: " : " back: ")
+                          << (!target.matched ? std::string("без ЭК")
+                              : track ? track->station + " " + track->name + " in " + std::to_string(static_cast<int>(target.distance)) + " m"
+                                      : std::string("signal ") + std::to_string(target.object))
+                          << "\n";
+                if (!target.has_target) continue;
+                ++targets;
+                check(target.matched && track && track->station == "Албаши" && track->number == number,
+                      "on Албаши 1, track " + std::to_string(number) + ": its signal");
+            }
+            check(targets > 0, "on Албаши 1, track " + std::to_string(number) + ": a target");
+        }
+        break;
+    }
+    // The coordinate (Engine::CurrentMilepost, simulation/milepost.hpp):
+    // driven 3 km on from 2 km out before Albashi, every 500 m it moves by
+    // about 0.5 km (the kilometre posts' numbers, one way or the other).
+    {
+        simulation::TrackTraveller t = train;
+        simulation::MilepostState state;
+        float last = -1.0f;
+        int steps = 0, moved_right = 0;
+        for (int k = 0; k <= 6; ++k) {
+            simulation::update_milepost(state, *network, t.node(), t.offset(), t.forward());
+            const float km = simulation::car_milepost(state, 0.0);
+            std::cout << "coordinate at +" << k * 500 << " m: " << km << (state.decreasing ? " (falling)" : "") << "\n";
+            if (last >= 0.0f && km >= 0.0f) {
+                ++steps;
+                if (std::abs(std::abs(km - last) - 0.5f) < 0.1f) ++moved_right; // the posts are not 1000 m apart everywhere
+            }
+            last = km;
+            if (!t.move(500.0).ok()) break;
+        }
+        check(steps >= 4 && moved_right == steps, "the coordinate moves 0.5 km in 500 m");
     }
     if (failures == 0) std::cout << "electronic_map_test: ok\n";
     return failures == 0 ? 0 : 1;

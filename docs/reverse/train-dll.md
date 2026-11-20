@@ -1424,6 +1424,31 @@ whatever its `Init` did.
 openRTS (2026-11-18): a situation keeps the trains' places and brake shoes
 only; the DLLs' state is not saved yet.
 
+## 21. Engine::CurrentMilepost (2026-11-20)
+
+CONFIRMED (rts1.exe, the old build's database: `0x508520`, `0x47FBE4`,
+`0x50B690`, `0x4FE92C`). The train keeps a coordinate at its reference
+point (Train `+112`, km; −1 none) and a direction (Train `+4` bit
+`0x800000`: the numbers fall towards its front); an engine takes it when
+made (`0x4FE92C`). Its update (`0x508520`), each step the train moves (its
+speed `+92` not 0), looks along the track from its position for the first
+kilometre post within 5000 m (`0x47FBE4`: a speed post, item type 2,
+without flag 2, its `KM` the post's number); openRTS's works it out once
+at the start too:
+
+- one behind: with one ahead, the one behind plus the metres to it where
+  the one ahead is not lower, else (falling) minus them; with none ahead
+  (its second look behind starts again from the train and finds the same
+  post) plus them;
+- none behind, one ahead: that one minus the metres to it (its second look
+  ahead finds the same post again);
+- none: −1.
+
+Each engine's `CurrentMilepost` (`0x50B690`) is the train's plus its car's
+`zord` / 1000 (minus with the falling bit), −1 with none: openRTS's
+(`simulation/milepost.hpp`) from the rear, the cars' offsets along the
+train (the last car 0).
+
 ## Open questions
 
 - Train types 4 and 5 (`State` bits `0x200` / `0x400`): PROBABLY type 4 is

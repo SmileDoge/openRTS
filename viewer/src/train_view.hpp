@@ -29,6 +29,7 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/electronic_map.hpp>
+#include <openrts/simulation/milepost.hpp>
 #include <openrts/simulation/stock_rules.hpp>
 #include <openrts/simulation/track_profile.hpp>
 #include <openrts/formats/activity.hpp>
@@ -194,6 +195,9 @@ public:
     // A cab control in the mouse's hand (a handle or a blind dragged, RTS
     // 0x4121BC): the helper's, else the engineer's.
     [[nodiscard]] bool control_in_hand() const noexcept;
+    // Brakes.dll's springs of the brake handles with openRTS's devices.
+    void spring_brake_handles();
+    bool mouse_down_ = false; // the left button down, as the pointer last saw it
     // Standing in a cab, outside or on a car (not in a chair).
     [[nodiscard]] bool engineer_on_foot() const noexcept { return engineer_.on_foot(); }
     // On foot with something for Enter where he stands (the prompt shown
@@ -1252,6 +1256,10 @@ private:
     [[nodiscard]] const simulation::ElectronicMap* electronic_map();
     bool klub_map_ = true;
     double items_searched_[2]{}; // how far the item list's walks went (ahead, behind), m
+    // The player's train's coordinate (Engine::CurrentMilepost; RTS works it
+    // out while the train moves, simulation/milepost.hpp).
+    simulation::MilepostState milepost_;
+    const simulation::Train* milepost_train_ = nullptr;
     const CabView* listener_cab_ = nullptr;
     glm::vec3 listener_local_{};
     int listener_room_ = audio::InteriorAcoustics::outside;
@@ -1429,6 +1437,13 @@ private:
     // Writes the companion of `car`'s type and gives it to its cars; how many
     // cars took it; `listed` when the mod was added to openrts.ini.
     std::size_t keep_distributor(const Car& car, formats::BrakeDistributor distributor, bool& listed, std::string& error);
+    // The car menu's 418 for locomotive `car`'s type (none: as its
+    // distributor gives), kept and given the same way.
+    void choose_sensor418(const Car& car, std::optional<bool> fitted);
+    // The companion of `car`'s type through `edit`, then `apply` on the
+    // definition of every car of that type; how many cars.
+    std::size_t keep_in_companion(const Car& car, const std::function<std::string(std::string_view)>& edit,
+                                  const std::function<void(formats::WagonDefinition&)>& apply, bool& listed, std::string& error);
     glm::vec3 look_{0.0f, 0.0f, 1.0f}; // the camera's direction, for the cab labels
     // Outside he collides with the world's objects and stands on them
     // (platforms, ballast, bridges), or only with the ground and the trains.
@@ -1496,6 +1511,7 @@ private:
     // The Train window's "КЛУБ": Brakes.dll's (0) or openRTS's (1)
     // (docs/brakes-dll-replacement.md, step 3); remembered as own_klub.
     int own_klub_ = 0;
+    bool no_brakes_dll_ = false; // Brakes.dll not loaded where all of it is openRTS's (the next train)
     // Each engine's Brakes.dll parameters (trainplugin::brakes_parameters).
     mutable std::unordered_map<const formats::EngineDefinition*, trainplugin::BrakesParameters> brakes_parameters_;
     [[nodiscard]] const trainplugin::BrakesParameters& brakes_parameters_of(const formats::EngineDefinition& engine) const;

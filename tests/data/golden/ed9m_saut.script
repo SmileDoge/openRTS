@@ -1,0 +1,182 @@
+# САУТ (PB_SETUP 1) on a
+# six-car ЭД9М (G M P M MR GR), docs/brakes-dll-replacement.md "The rest",
+# stage 3: set against openRTS's step by step (--klub shadow). Its switch
+# (147) on: the aspects announced; КОМ (140), ГР (142) and УК (141) on its
+# screen; a braking in V and lap for its coefficient; stopped within 560 m
+# of a Ж: ОТП (145), on past it; stopped within 300 m of a КЖ: ПОД (144)
+# and К20 (143), the ВК (405), on past it under 20 km/h; its switch off
+# and on again on the move. The РБ (23) every 5 s, the ЭПК key 26, the
+# 395 switch 2 (II 1, III 2, V 5), the controller 0 (5 zero, 7 the first
+# notch), the reverser 1. RTS's air.
+#
+#   openrts-train-check <RTS root> --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P
+#       mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR --script tests/data/golden/ed9m_saut.script
+#       --klub shadow
+0    voltage 25000 50
+0    line_limit 120
+0    line_signal S1 600 7
+0    line_signal S2 1500 2
+0    line_signal S3 2300 1
+0    line_signal S4 3400 7
+1    switch 2 1
+2    switch 35 1
+# САУТ on; its screen's keys.
+3    switch 147 1
+5    press 140
+7    press 142
+9    press 142
+11   press 141
+13   press 141
+# Off to about 40 km/h, then coasting; a braking (V, lap) for the
+# coefficient, КОМ shows it.
+20   switch 1 3
+21   switch 0 5
+23   switch 0 7
+44   switch 0 5
+50   switch 2 5
+51.3 switch 2 2
+68   press 140
+70   switch 2 1
+75   switch 0 7
+92   switch 0 5
+# Before the Ж: stopped some 300 m short, ОТП, on.
+0    when 1050 switch 2 5
+0    then 1.5 switch 2 2
+0    then 20 switch 2 1
+0    then 24 press 145
+0    then 30 switch 0 7
+0    then 45 switch 0 5
+# Before the КЖ: stopped some 250 m short, ПОД and К20, the ВК, on past it
+# slowly.
+0    when 1990 switch 2 5
+0    then 1.5 switch 2 2
+0    then 20 switch 2 1
+0    then 24 press 144
+0    then 28 press 143
+0    then 32 press 405
+0    then 36 switch 0 7
+0    then 46 switch 0 5
+0    when 2200 switch 0 7
+0    when 2260 switch 0 5
+0    when 2400 switch 0 7
+0    when 2700 switch 0 5
+# Its switch off and on again on the move.
+0    when 2800 switch 147 0
+0    when 2850 switch 147 1
+# The РБ every 5 s.
+25   press 23
+30   press 23
+35   press 23
+40   press 23
+45   press 23
+50   press 23
+55   press 23
+60   press 23
+65   press 23
+70   press 23
+75   press 23
+80   press 23
+85   press 23
+90   press 23
+95   press 23
+100  press 23
+105  press 23
+110  press 23
+115  press 23
+120  press 23
+125  press 23
+130  press 23
+135  press 23
+140  press 23
+145  press 23
+150  press 23
+155  press 23
+160  press 23
+165  press 23
+170  press 23
+175  press 23
+180  press 23
+185  press 23
+190  press 23
+195  press 23
+200  press 23
+205  press 23
+210  press 23
+215  press 23
+220  press 23
+225  press 23
+230  press 23
+235  press 23
+240  press 23
+245  press 23
+250  press 23
+255  press 23
+260  press 23
+265  press 23
+270  press 23
+275  press 23
+280  press 23
+285  press 23
+290  press 23
+295  press 23
+300  press 23
+305  press 23
+310  press 23
+315  press 23
+320  press 23
+325  press 23
+330  press 23
+335  press 23
+340  press 23
+345  press 23
+350  press 23
+355  press 23
+360  press 23
+365  press 23
+370  press 23
+375  press 23
+380  press 23
+385  press 23
+390  press 23
+395  press 23
+400  press 23
+405  press 23
+410  press 23
+415  press 23
+420  press 23
+425  press 23
+430  press 23
+435  press 23
+440  press 23
+445  press 23
+450  press 23
+455  press 23
+460  press 23
+465  press 23
+470  press 23
+475  press 23
+480  press 23
+485  press 23
+490  press 23
+495  press 23
+500  press 23
+505  press 23
+510  press 23
+515  press 23
+520  press 23
+525  press 23
+530  press 23
+535  press 23
+540  press 23
+545  press 23
+550  press 23
+555  press 23
+560  press 23
+565  press 23
+570  press 23
+575  press 23
+580  press 23
+585  press 23
+590  press 23
+595  press 23
+600  press 23

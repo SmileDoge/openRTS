@@ -90,6 +90,37 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     const std::uint32_t aspect = s.signal.aspect[0];
     screen.lamp = 0;
     screen.backlight = 0;
+    // ТСКБМ's display and lamps (every step): out, and with this
+    // cab's switch on lit (30 s shown); on the move with the КЛУБ powered
+    // its seconds (at most 30) as the step began, L2 blinking under 15,
+    // the request (object 1) and L3 under 7.
+    if (k.setup & 4) {
+        auto& t = screen.tskbm;
+        hide(t[0]);
+        hide(t[1]);
+        value(t[2], 0.0f);
+        screen.tskbm_power = 0;
+        screen.tskbm_lamps = {0, 0, 0};
+        if (in.tskbm_switch) {
+            show(t[0]);
+            value(t[2], 30.0f);
+            screen.tskbm_power = 1;
+            screen.tskbm_lamps = {1, 0, 0};
+            screen.tskbm_l2_blink = 0.0f;
+            const float timer = s.tskbm_shown;
+            if (std::abs(in.speed) > 0.1f && (!(k.setup & 2) || in.powered)) {
+                value(t[2], timer >= 30.0f ? 30.0f : static_cast<float>(whole(timer)));
+                if (timer < 15.0f && timer > 7.0f) {
+                    screen.tskbm_lamps[1] = 1;
+                    screen.tskbm_l2_blink = 0.5f;
+                }
+                if (timer < 7.0f) {
+                    show(t[1]);
+                    screen.tskbm_lamps[2] = 1;
+                }
+            }
+        }
+    }
     // Cleared at every redraw, and every step while unpowered.
     if (!in.powered || redraw) {
         for (int j = 0; j < 14; ++j) hide(b[j]);
@@ -223,6 +254,10 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     if (s.flags & f::lamp_test) {
         message = std::u16string(u"    1234657") + ((s.device & d::saut_on) ? u"8" : u"-") + u"9А" + ((s.device & d::tskbm_on) ? u"В" : u"-");
         message_value.clear();
+    }
+    if (in.saut_caught) {
+        message = u"СРЫВ ЭПК САУТ";
+        what.clear();
     }
     if ((s.flags & f::tskbm) && std::abs(in.speed) >= 0.1f) {
         message = u"СРЫВ ЭПК ТСКБМ";
@@ -483,7 +518,7 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
             screen.lamps[static_cast<std::size_t>(lamp - 1)] = 1;
         });
     }
-    if (s.limit_marks & 0x100) show(b[13]);
+    if (in.saut_caught) show(b[13]); // САУТ caught up
     if (s.flags & f::train_mode) show(b[11]);
     else show(b[10]);
     blink(b[11], (s.flags & f::double_traction) ? 0.5f : 0.0f);

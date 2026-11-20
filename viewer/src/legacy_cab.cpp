@@ -508,6 +508,7 @@ void LegacyCab::operate(std::uint32_t id, std::uint32_t state, std::size_t car) 
 }
 
 void LegacyCab::release_keys() {
+    keys_down_.clear();
     if (!working()) return;
     const auto car = player();
     const auto* out = out_of(car);
@@ -528,7 +529,15 @@ bool key_reaches(const formats::CabSwitch& control, const std::optional<glm::vec
     return glm::distance(*eye, at) <= control.radius;
 }
 
+bool LegacyCab::key_held(const std::uint32_t id, const int direction) const {
+    for (const auto& b : bindings_)
+        if (b.id == id && (direction == 0 || b.direction == direction) && keys_down_.contains(b.key)) return true;
+    return false;
+}
+
 void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) {
+    if (event.down) keys_down_.insert(event.key);
+    else keys_down_.erase(event.key);
     if (!working() || !keyboard()) return;
     const auto* out = out_of(player());
     for (const auto& b : bindings_) {
