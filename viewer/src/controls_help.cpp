@@ -50,6 +50,7 @@ void draw_controls_help() {
 
     if (begin_section("Camera and world", "##controls_camera")) {
         row("RMB + mouse", "look around");
+        row("Wheel click", "mouse lock: the view always turns with the mouse, a click works what the dot in the middle is on; again: the cursor back");
         row("W A S D", "move the free camera");
         row("Q / E", "down / up");
         row("Shift", "faster");
@@ -83,7 +84,12 @@ void draw_controls_help() {
     if (begin_section("Engineer and cab", "##controls_cab")) {
         row("Enter", "in the chair: rise at the desk and sit back / sit down / open a door / climb up");
         row("Ctrl+Enter", "get up from the chair, step into the gangway; at a door outside: climb up");
+        if (key_layout() == KeyLayout::openrts) {
+            row("E", "on foot: as Enter (a door, a window, the chair, a switch); with nothing at hand the car menu at the coupling or bogie in front; seated: the cab's key");
+            row("Shift+E", "on foot: as Ctrl+Enter (climb in, go out, go through, a ladder)");
+        }
         row("Arrows, Shift, End", "walk, run, slower");
+        row(walk_collision_key_name(), "on foot outside: walk through the world's objects / collide with them again");
         row(window_key_name(), "open the window");
         row(head_out_key_name(), "lean out");
         row(car_menu_key_name(), "the car menu at the coupling or bogie under the cursor (outside)");
@@ -93,6 +99,7 @@ void draw_controls_help() {
         if (key_layout() == KeyLayout::rts) row("Num5", "which locomotive the tape records");
         row("F12", "the inspector: the map's objects and their properties");
         row("RMB + mouse", "look around");
+        row("Wheel click", "mouse lock: the view always turns with the mouse, a click works what the dot in the middle is on; again: the cursor back");
         row("Mouse", "click: a control; wheel: a handle one position (not buttons and switches); drag: handles and blinds");
         row("F3", "view from the first car, again from the last, again back; the wheel nearer, Ctrl+wheel zoom");
         row("Wheel at the chair", "off the controls: the head nearer to what the cursor points at, or back");

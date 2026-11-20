@@ -39,6 +39,7 @@ struct Rig {
     float limit = 120.0f * kmh;
     float next_limit = -1.0f, next_distance = -1.0f;
     bool epk_key = true, powered = true;
+    KlubInputs::ElectronicMap ek; // openRTS's map's answer (not given: Brakes.dll's way)
     std::vector<std::uint16_t> sounds;
     // One step; the signals and the next post come closer as it runs.
     void step(const std::vector<KlubPress>& keys = {}, const bool rb = false) {
@@ -54,6 +55,7 @@ struct Rig {
         in.epk_key = epk_key;
         in.keys = keys;
         in.rb = rb;
+        in.ek = ek;
         step_klub(state, settings, in, out);
         sounds.insert(sounds.end(), out.sounds.begin(), out.sounds.end());
         for (auto& g : signals) g.distance -= speed * dt;
@@ -113,6 +115,31 @@ void test_curve_with_the_ek() {
     post.next_distance = 500.0f;
     post.run(0.1f);
     check(near(post.state.permitted, 60.0 + 0.08 * 500.0, 0.1), "the curve to a post: its speed + 0.08 a metre");
+}
+
+// openRTS's map: matched, the target its distance (the entered track's
+// signal) with the codes' aspect; nothing for the number, "без ЭК" as with
+// no track entered, the number kept.
+void test_electronic_map() {
+    Rig rig;
+    rig.track(3);
+    rig.signals = {KlubSignal{.distance = 900.0f, .aspect = {1, 0, 0, 0}, .flags = 1}};
+    rig.ek = {.given = true, .matched = true, .has_target = true, .distance = 500.0f};
+    rig.run(6.0f);
+    check(klub_ek(rig.state) && rig.state.signal.aspect[0] == 1, "the map's ЭК: КЖ as the codes give it");
+    check(near(rig.state.signal_metres, 500.0) && near(rig.state.permitted, 40.0), "the curve to the map's target (500 m: 40), not the next signal's 900 m");
+    Rig off;
+    off.track(7);
+    off.signals.front().aspect[0] = 3;
+    off.ek = {.given = true, .matched = false};
+    off.run(6.0f);
+    check(!klub_ek(off.state) && (off.state.track & 0x7F) == 7, "the map has nothing for 7: без ЭК, 7 kept");
+    check(near(off.state.target_speed, 60.0) && near(off.state.target_distance, 1000.0), "Ж without the ЭК: KLUB_YLSPD at KLUB_BLUCH");
+    off.ek.matched = true;
+    off.ek.has_target = true;
+    off.ek.distance = 1500.0f;
+    off.run(0.1f);
+    check(klub_ek(off.state), "the map has it again: the ЭК");
 }
 
 void test_without_the_ek() {
@@ -251,6 +278,7 @@ void test_commands() {
 int main() {
     test_aspect_delay();
     test_curve_with_the_ek();
+    test_electronic_map();
     test_without_the_ek();
     test_vigilance();
     test_own_limit_clears();

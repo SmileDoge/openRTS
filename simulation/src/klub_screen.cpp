@@ -115,9 +115,9 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     screen.backlight = (s.flags & f::backlight) ? 1 : 0;
     // The lines 21 / 22 (kind, name or value) and the message.
     std::u16string kind, what, message = u" ", message_value, signal_name;
-    if (!(s.track & 0x7F)) message = u" РЕЖИМ БЕЗ ЭК";
+    if (!klub_ek(s)) message = u" РЕЖИМ БЕЗ ЭК";
     float next = 100000.0f, signal_at = 0.0f;
-    if (in.epk_key && (s.track & 0x7F)) {
+    if (in.epk_key && klub_ek(s)) {
         if (!in.signal_name.empty()) what = signal_name = in.signal_name;
         kind = u"СВЕТОФОР";
         next = s.signal_metres;
@@ -152,7 +152,7 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
             break;
         }
     }
-    if (!(s.track & 0x7F)) text(b[27], u"");
+    if (!klub_ek(s)) text(b[27], u"");
     // The next object within 500 m (an odd track number: its bit 0).
     if ((s.track & 1) && in.epk_key) {
         bool first = true;
@@ -277,7 +277,7 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     std::uint32_t shown = whole(std::abs(static_cast<double>(in.speed) * 3.6));
     if (in.wheelslip) shown = static_cast<std::uint32_t>(static_cast<std::int64_t>(static_cast<float>(shown) + 20.0f * s.slip_time));
     // The БЛОК keeps lines 21 / 22 and shows the message in 6 and 8.
-    if (!block && (message[0] != u' ' || (s.flags & f::lamp_test) || s.slip_time > 0.3f || !(s.track & 0x7F))) {
+    if (!block && (message[0] != u' ' || (s.flags & f::lamp_test) || s.slip_time > 0.3f || !klub_ek(s))) {
         kind = message;
         what = message_value;
     }
@@ -318,12 +318,13 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
         }
     }
     if (bil2) show(b[(s.flags & f::second_set) ? 36 : 35]);
-    if (s.track & 0x7F) {
+    if (klub_ek(s)) {
         text(b[16], u"ЭК");
         text(b[17], ascii("%d", static_cast<int>(s.track & 0x7F)) + (block ? u" " : u"") + ((s.track & 0x80) ? u"ПР" : u"НП"));
     } else {
         text(b[16], (s.alsen_table && s.alsen_table < 5) ? u"ЕН" : in.line_frequency == 0.0f ? u"50ГЦ" : u"25ГЦ");
-        text(b[17], u"0");
+        // A number entered the map has nothing for (openRTS's map): that number.
+        text(b[17], (s.track & 0x7F) ? ascii("%d", static_cast<int>(s.track & 0x7F)) : u"0");
     }
     if ((s.device & d::saut_on) && (k.setup & 1) && !(s.flags & f::white_799) && (!(s.flags & f::white_809) || aspect != 2) &&
         (s.flags & f::train_mode) && s.saut_rules)
@@ -344,7 +345,7 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     if (in.working_cab) {
         text(b[21], kind);
         text(b[22], what);
-        if (in.epk_key && (s.track & 0x7F) && next != signal_at) {
+        if (in.epk_key && klub_ek(s) && next != signal_at) {
             text(b[43], signal_name);
             text(b[44], ascii("%1.0f", static_cast<double>(signal_at)) + u" М");
         }
@@ -428,8 +429,8 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     if ((k.setup & 1) && in.saut_coefficient >= 0.0f && in.working_cab) text(b[19], ascii("%0.2f", static_cast<double>(in.saut_coefficient)));
     else if (block) text(b[19], u"0.67");
     if (in.working_cab || block) {
-        if ((!(s.flags & f::command_mode) && !s.field && s.alsen_table != 5 && (s.track & 0x7F) && s.time_shown == -1.0f && !in.wheelslip) ||
-            (bil2 && (s.track & 0x7F))) {
+        if ((!(s.flags & f::command_mode) && !s.field && s.alsen_table != 5 && klub_ek(s) && s.time_shown == -1.0f && !in.wheelslip) ||
+            (bil2 && klub_ek(s))) {
             if (next >= 10000.0f) text(b[20], std::u16string());
             else text(b[20], block ? ascii("%0.0f", static_cast<double>(next)) + u" М" : ascii("%04.0f", static_cast<double>(next)));
             if (bil2 && next < 10000.0f) {

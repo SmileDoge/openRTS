@@ -807,14 +807,17 @@ launcher's Brakes): with the realistic air the needles MaDaDev's cabs name
 `DTM` (the brake pipe), `DTC1` / `DTC2` (the brake cylinders: the higher of
 the train brake's and the independent brake's, as Brakes.dll shows them;
 until 2026-11-19 the train brake's alone, the needle at 0 with only the
-254 applied) and `DGR` (the main reservoir; 36 cabs of the 2026-11
-install) take the car's pressures from the model, as F5 shows them,
-instead of the DLL's display
+254 applied), `DGR` (the main reservoir; 36 cabs of the 2026-11
+install) and, since 2026-11-20, `DURA` (the equalising reservoir: the УР
+the driver's valve holds, openRTS's over Brakes.dll or the DLL's taken, as
+F5 and the tape have it; 66 of the 72 cabs with a `DTM`; the testers: it
+stayed the DLL's and went apart from the pipe) take the car's pressures
+from the model, as F5 shows them, instead of the DLL's display
 values: its needles lagged (a cylinder long released still falling) and
 ran ahead (the pipe leaping at position I) of the model's air (testers).
-The DLL's logic is not touched, only what those needles show; the `DURA`
-(УР) and every other gauge stay the DLL's. Off, or with RTS's air: the
-DLL's needles, as in RTS.
+The DLL's logic is not touched, only what those needles show; every other
+gauge stays the DLL's. Off, or with RTS's air: the DLL's needles, as in
+RTS.
 
 (2026-11-13; the Train window's "Trains with DLLs", remembered as
 `dll_air`; works with the realistic air on, never with Legacy;

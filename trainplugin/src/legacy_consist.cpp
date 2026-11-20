@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iostream>
 #include <map>
 #include <optional>
 #include <span>
@@ -105,6 +106,11 @@ struct LegacyConsist::KlubCar {
     bool alsn_on = false;
     float last_ur = 0.0f, last_pipe = 0.0f;      // the last step's (updateKLUB draws before the brakes)
     float last_gauge = 0.0f;                     // the ТМ gauge's, Brakes.dll's var + 28, the last step's
+    simulation::EkState ek;                      // openRTS's map for its entered track (LegacyWorld::electronic_map)
+    // What the log last said of it: the track, the ЭК or not, the target.
+    std::uint32_t ek_logged_track = 0;
+    int ek_logged_mode = -1;
+    std::uint32_t ek_logged_object = ~0u;
 };
 
 namespace {
@@ -1779,6 +1785,33 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
         in.day_time = request.day_time;
         in.cassette = on(wc.cassette);
         in.keys = car.keys;
+        // openRTS's map in the leading cab: the entered track's target.
+        std::u16string target_name = signal_name;
+        if (world.electronic_map && i == leading) {
+            const auto target = world.electronic_map(car.state.track & 0x7Fu, car.ek);
+            in.ek = {.given = true, .matched = target.matched, .has_target = target.has_target, .distance = static_cast<float>(target.distance)};
+            if (target.matched && target.has_target && world.route_database && target.unit >= 0
+                && static_cast<std::size_t>(target.unit) < world.route_database->signal_units.size())
+                target_name = u16(world.route_database->signal_units[static_cast<std::size_t>(target.unit)].name);
+            else if (target.matched && target.has_target)
+                target_name.clear();
+            // The log: the map's answer when it changes (a track entered).
+            const std::uint32_t track = car.state.track & 0x7Fu;
+            const int mode = target.matched ? 1 : 0;
+            const std::uint32_t object = target.has_target ? target.object : ~0u;
+            if (track && (track != car.ek_logged_track || mode != car.ek_logged_mode || (mode && object != car.ek_logged_object))) {
+                const std::string name = utf16_to_utf8(target_name);
+                std::cout << "КЛУБ ЭК, track " << track << ": "
+                          << (!target.matched     ? std::string("без ЭК")
+                              : target.has_target ? "target " + (name.empty() ? std::string("signal ") + std::to_string(object) : name) + " in "
+                                                        + std::to_string(static_cast<int>(target.distance)) + " m"
+                                                  : std::string("no signal ahead"))
+                          << std::endl;
+            }
+            car.ek_logged_track = track;
+            car.ek_logged_mode = mode;
+            car.ek_logged_object = object;
+        }
         // Switched on with the ЭПК key in (its Init's Switched, or the
         // setting turned on): the КЛУБ's beep.
         if (!car.state.started && in.epk_key) in.epk_key_turned = in.epk_key_to = true;
@@ -1798,7 +1831,7 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
         si.line_frequency = input.line_frequency;
         si.wheelslip = in.wheelslip;
         si.day_time = request.day_time;
-        si.signal_name = signal_name;
+        si.signal_name = target_name;
         si.items = items;
         si.station_names = station_names_;
         for (std::size_t c = 0; c < p.cabs.size(); ++c) {

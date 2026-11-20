@@ -1,5 +1,8 @@
 #pragma once
 
+#include <string>
+#include <string_view>
+
 #include <openrts/simulation/body_motion.hpp>
 #include <openrts/simulation/rail_joints.hpp>
 
@@ -21,6 +24,15 @@ void set_key_layout(KeyLayout layout) noexcept;
 [[nodiscard]] const char* head_out_key_name();
 // The car menu (RTS: Num3; openRTS: the ` key, left of 1).
 [[nodiscard]] const char* car_menu_key_name();
+// E on foot in openRTS's keys: what Enter does where the engineer stands
+// (a door, a window, the chair, a switch), Shift+E what Ctrl+Enter does
+// (climb in, go out, go through, a ladder); with nothing for Enter at hand
+// the car menu. Seated E is the cab's, as W A S D are (testers 2026-11-20).
+// A prompt's keys as the player presses them: on foot in openRTS's keys
+// Ctrl+Enter is Shift+E and Enter is E, else as written.
+[[nodiscard]] std::string engineer_keys(std::string_view prompt, bool on_foot);
+// The prompt offers something for Enter alone (not only Ctrl+Enter).
+[[nodiscard]] bool offers_enter(std::string_view prompt) noexcept;
 // RTS's flashlight: Num2; openRTS's Shift+` (the backslash is the ED4M's and
 // ER2's cab key, the tilde no cab's).
 [[nodiscard]] const char* flashlight_key_name();
@@ -31,6 +43,9 @@ void set_key_layout(KeyLayout layout) noexcept;
 [[nodiscard]] const char* clock_key_name();
 // The boarding at a scenario's stop (RTS: Ctrl+Num7; openRTS: Ctrl+=).
 [[nodiscard]] const char* board_key_name();
+// On foot outside: collide with the world's objects or walk through them
+// (the Train window's checkbox): Num/ in RTS's keys, Shift+'=' in openRTS's.
+[[nodiscard]] const char* walk_collision_key_name();
 
 // The sound while the game's window is in the background (another window
 // in front, or minimised). RTS falls silent then: its DirectSound buffers
@@ -78,6 +93,26 @@ inline constexpr float max_mouse_sensitivity = 3.0f;
 void set_mouse_sensitivity(float factor) noexcept;
 // The remembered value as a factor (1 when none or unreadable).
 [[nodiscard]] float parse_mouse_sensitivity(const char* text) noexcept;
+
+// How smoothly the view follows the mouse: each frame's move spread over
+// this many milliseconds (mouse_look.hpp), 0..50, 12 by default
+// (remembered as mouse_smoothing_ms). At sensitivity 1 a count of the mouse
+// turns the view about half a degree, a dozen pixels on the screen, and
+// slow moves came out in jumps (2026-11-20). 0: at once.
+inline constexpr float max_mouse_smoothing = 50.0f;
+inline constexpr float default_mouse_smoothing = 12.0f;
+[[nodiscard]] float mouse_smoothing() noexcept;
+void set_mouse_smoothing(float milliseconds) noexcept;
+// The remembered value (default_mouse_smoothing when none or unreadable).
+[[nodiscard]] float parse_mouse_smoothing(const char* text) noexcept;
+
+// The mouse lock (the wheel's click, or the panel's General; remembered as
+// mouse_lock): the cursor hidden and the view turning with every move of
+// the mouse, no button held; a dot in the screen's middle clicks the cab's
+// controls and the doors. Off while the openRTS panel (Esc) or the start
+// menu is shown.
+[[nodiscard]] bool mouse_lock() noexcept;
+void set_mouse_lock(bool on) noexcept;
 
 // The driver's head in the cab (openRTS, head_motion.hpp): how far it nods
 // with the train's acceleration, braking and the rail joints and leans in

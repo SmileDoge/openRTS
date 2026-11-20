@@ -752,6 +752,7 @@ public:
         }
         if (train_) {
             if (input.car_info) train_->car_info_key(input.car_info_shift);
+            if (input.walk_collision) train_->toggle_walk_objects();
             if (input.tape) train_->tape_key();
             if (input.tape_which) train_->tape_which();
             if (input.limits_panel) train_->toggle_limits_panel();
@@ -1597,7 +1598,9 @@ public:
     }
 
     [[nodiscard]] bool keyboard_captured() const override { return train_ && train_->keyboard_captured(); }
+    [[nodiscard]] bool control_in_hand() const override { return train_ && train_->control_in_hand(); }
     [[nodiscard]] bool engineer_on_foot() const override { return train_ && train_->engineer_on_foot(); }
+    [[nodiscard]] bool engineer_action_at_hand() const override { return train_ && train_->engineer_action_at_hand(); }
     [[nodiscard]] bool takes_scroll() const override { return train_ && train_->viewing_inside(); }
     [[nodiscard]] std::optional<double> take_time_of_day() override {
         return net_ ? net_->take_time_of_day() : std::nullopt;

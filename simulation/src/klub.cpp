@@ -94,6 +94,9 @@ void alsn(KlubState& s, const KlubInputs& in) {
         s.signal.aspect[0] = 2;
         s.signal.speed_limit = white_limit;
     }
+    // openRTS's map: the target where the map has it, the aspect as the
+    // codes give it.
+    if (in.ek.given && in.ek.matched && in.ek.has_target) s.signal.distance = in.ek.distance;
     auto& aspect = s.signal.aspect[0];
     if (aspect == 1) {
         s.signal.speed_limit = 0.0f;
@@ -199,7 +202,7 @@ void update(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sou
     }
     // Without the ЭК: KLUB_GRSPD, and KLUB_YLSPD / 20 after a yellow / КЖ.
     if (k.green_speed > -1.0f && k.green_speed < s.limit) s.limit = k.green_speed;
-    if ((s.track & 0x7F) == 0) {
+    if (!klub_ek(s)) {
         if (k.block_length < s.yellow_run) s.yellow_run = k.block_length;
         if (aspect == 3 || aspect == 4 || aspect == 5) {
             s.limit = k.green_speed;
@@ -219,7 +222,7 @@ void update(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sou
         }
     }
     // The curve: 0.08 km/h a metre.
-    if (aspect <= 1 && in.powered && (s.track & 0x7F)) {
+    if (aspect <= 1 && in.powered && klub_ek(s)) {
         if (static_cast<float>(whole(s.limit)) * 12.5f <= s.signal_metres) {
             s.marks &= ~2u;
             s.permitted = s.limit;
@@ -737,6 +740,8 @@ void step_klub(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOu
         s.started = true;
         s.delay_timer = k.alsn_delay;
     }
+    // The map's answer for the track entered (the last step's number).
+    s.ek_off = in.ek.given && !in.ek.matched;
     if (in.tskbm) s.device |= d::tskbm_on;
     else s.device &= ~d::tskbm_on;
     if (in.saut) s.device |= d::saut_on;

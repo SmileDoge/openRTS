@@ -13,6 +13,8 @@ bool hints = true;
 bool wasd = true;
 bool panels = false;
 float sensitivity = 1.0f;
+float smoothing = default_mouse_smoothing;
+bool lock = false;
 float head = default_head_motion;
 simulation::RailJointLayout joints = simulation::RailJointLayout::openrts;
 simulation::BodyMotionModel bodies = simulation::BodyMotionModel::openrts;
@@ -50,6 +52,24 @@ float parse_mouse_sensitivity(const char* text) noexcept {
     if (end == text || !(value > 0.0f)) return 1.0f;
     return value < min_mouse_sensitivity ? min_mouse_sensitivity : value > max_mouse_sensitivity ? max_mouse_sensitivity : value;
 }
+
+float mouse_smoothing() noexcept { return smoothing; }
+
+void set_mouse_smoothing(const float milliseconds) noexcept {
+    smoothing = milliseconds > 0.0f ? (milliseconds < max_mouse_smoothing ? milliseconds : max_mouse_smoothing) : 0.0f;
+}
+
+float parse_mouse_smoothing(const char* text) noexcept {
+    if (!text) return default_mouse_smoothing;
+    char* end = nullptr;
+    const float value = std::strtof(text, &end);
+    if (end == text || !(value >= 0.0f)) return default_mouse_smoothing;
+    return value < max_mouse_smoothing ? value : max_mouse_smoothing;
+}
+
+bool mouse_lock() noexcept { return lock; }
+
+void set_mouse_lock(const bool on) noexcept { lock = on; }
 
 float head_motion() noexcept { return head; }
 
@@ -89,7 +109,26 @@ const char* window_key_name() { return current == KeyLayout::rts ? "Num0" : tr("
 
 const char* head_out_key_name() { return current == KeyLayout::rts ? "Num1" : tr("'='"); }
 
-const char* car_menu_key_name() { return current == KeyLayout::rts ? "Num3" : tr("'`'"); }
+const char* car_menu_key_name() { return current == KeyLayout::rts ? "Num3" : tr("E (nothing else at hand) or '`'"); }
+
+std::string engineer_keys(const std::string_view prompt, const bool on_foot) {
+    std::string out(prompt);
+    if (current == KeyLayout::rts || !on_foot) return out;
+    const auto swap = [&out](const std::string_view from, const std::string_view to) {
+        for (std::size_t at = out.find(from); at != std::string::npos; at = out.find(from, at + to.size())) out.replace(at, from.size(), to);
+    };
+    // Ctrl+Enter first: "Shift+E" has no "Enter" left in it.
+    swap("Ctrl+Enter", "Shift+E");
+    swap("Enter", "E");
+    return out;
+}
+
+bool offers_enter(const std::string_view prompt) noexcept {
+    for (std::size_t at = prompt.find("Enter"); at != std::string_view::npos; at = prompt.find("Enter", at + 5)) {
+        if (at < 5 || prompt.substr(at - 5, 5) != "Ctrl+") return true;
+    }
+    return false;
+}
 
 const char* flashlight_key_name() { return current == KeyLayout::rts ? "Num2" : tr("Shift+'`'"); }
 
@@ -98,6 +137,8 @@ const char* tape_key_name() { return current == KeyLayout::rts ? "Ctrl+Num5" : t
 const char* clock_key_name() { return current == KeyLayout::rts ? "Num4" : tr("Shift+'-'"); }
 
 const char* board_key_name() { return current == KeyLayout::rts ? "Ctrl+Num7" : "Ctrl+'='"; }
+
+const char* walk_collision_key_name() { return current == KeyLayout::rts ? "Num/" : "Shift+'='"; }
 
 BackgroundSound background_sound() noexcept { return background; }
 

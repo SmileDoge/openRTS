@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -29,6 +30,7 @@
 #include <openrts/formats/route_database.hpp>
 #include <openrts/formats/track_database.hpp>
 #include <openrts/simulation/cab_brakes.hpp>
+#include <openrts/simulation/electronic_map.hpp>
 #include <openrts/simulation/klub.hpp>
 #include <openrts/simulation/train.hpp>
 #include <openrts/trainplugin/legacy_host.hpp>
@@ -232,6 +234,10 @@ struct LegacyWorld {
     std::vector<dllhost::SoundPairState> sound_pairs;
     // The player's train's car whose tape rolls (simulation/tape.hpp), -1 none.
     std::int32_t tape_car = -1;
+    // openRTS's КЛУБ's electronic map (simulation/electronic_map.hpp): the
+    // target for track `number` from the player's train's front, a КЛУБ's
+    // map state kept here. Empty: no map (Brakes.dll's way).
+    std::function<simulation::EkTarget(std::uint32_t number, simulation::EkState& state)> electronic_map;
 };
 
 class LegacyConsist {

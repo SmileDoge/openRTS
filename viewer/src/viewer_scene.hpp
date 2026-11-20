@@ -109,6 +109,7 @@ struct SceneInput {
     bool toggle_track = false;   // T
     bool toggle_labels = false;  // L: junction and signal labels
     bool car_menu = false;       // Num3 / `: the car menu at a coupling or bogie (edge)
+    bool walk_collision = false; // Num/ / Shift+=: on foot, collide with the world's objects or not (edge)
     bool flashlight = false;     // Num2 / Shift+`: RTS's flashlight on or off (edge)
     bool clock = false;          // Num4 / Shift+-: the world's time on the screen or not (edge; the viewer's)
     bool tape = false;           // Ctrl+Num5 / Ctrl+`: the tape on or off (edge)
@@ -264,9 +265,15 @@ public:
     // The scene takes the keyboard (a cab's own keys): the camera and the
     // default driving keys stay off.
     [[nodiscard]] virtual bool keyboard_captured() const { return false; }
+    // A cab control in hand (dragged): in the mouse lock the mouse moves it
+    // rather than the view.
+    [[nodiscard]] virtual bool control_in_hand() const { return false; }
     // The engineer on his feet (standing in a cab, outside, on a car), not
     // in a chair: W A S D walk him (key_layout.hpp, wasd_walking).
     [[nodiscard]] virtual bool engineer_on_foot() const { return false; }
+    // On foot with something for Enter where he stands (key_layout.hpp,
+    // offers_enter): E does it, else E opens the car menu.
+    [[nodiscard]] virtual bool engineer_action_at_hand() const { return false; }
     // The scene is done: its window closes (the start menu, updated, starts again).
     [[nodiscard]] virtual bool wants_close() const { return false; }
     // The program's exit code when the scene closed it (exit_codes.hpp).

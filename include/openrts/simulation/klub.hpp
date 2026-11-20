@@ -90,6 +90,17 @@ struct KlubInputs {
     // `epk_key_to` (Engine::ALSNOn from then: `epk_key` the next step).
     bool rb = false, rbs = false;
     bool epk_key_turned = false, epk_key_to = false;
+    // openRTS's electronic map (electronic_map.hpp) for the entered track,
+    // the leading cab's: the ЭК mode or "без ЭК", and the distance to the
+    // map's target (the entered track's signal, whatever way the switches
+    // lie). Not given: Brakes.dll's way (a number entered is the ЭК, the
+    // target the next signal as the switches stand).
+    struct ElectronicMap {
+        bool given = false;
+        bool matched = false;
+        bool has_target = false;
+        float distance{}; // m
+    } ek;
 };
 
 // var + 8 (KlubState::flags).
@@ -156,7 +167,13 @@ struct KlubState {
     bool white_799_entry = false;
     std::uint32_t drawn_flags = klub_flag::train_mode; // `flags` where the redraw shows the request (before its overspeed check)
     bool started = false;
+    // The map gives nothing for the entered track ("без ЭК" with a number
+    // entered: none of the map's, 99, off its way; KlubInputs::ek).
+    bool ek_off = false;
 };
+
+// The ЭК mode: a track entered and the map (when there is one) has it.
+[[nodiscard]] inline bool klub_ek(const KlubState& s) noexcept { return (s.track & 0x7F) != 0 && !s.ek_off; }
 
 struct KlubOutput {
     bool vent = false;            // the ЭПК or КОН vents the pipe (TrainPipeRate -1.2, EPTValue -1)

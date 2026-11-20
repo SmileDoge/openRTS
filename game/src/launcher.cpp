@@ -470,6 +470,8 @@ struct Launcher::State {
         sound = remembered_int("launcher_sound", 1) != 0;
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
         viewer::set_mouse_sensitivity(remembered_float("mouse_sensitivity", 1.0f));
+        viewer::set_mouse_smoothing(remembered_float("mouse_smoothing_ms", viewer::default_mouse_smoothing));
+        viewer::set_mouse_lock(remembered_int("mouse_lock", 0) != 0);
         viewer::set_head_motion(remembered_float("head_motion", viewer::default_head_motion));
         viewer::set_background_sound(viewer::parse_background_sound(remembered("background_sound").value_or("").c_str()));
         viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
@@ -1398,6 +1400,21 @@ void Launcher::State::draw_settings(const float height) {
                 viewer::set_mouse_sensitivity(sensitivity);
                 remember("mouse_sensitivity", std::to_string(viewer::mouse_sensitivity()));
             }
+            form_row(tr("Mouse smoothing, ms"));
+            float smooth = viewer::mouse_smoothing();
+            ImGui::SetNextItemWidth(220.0f);
+            if (viewer::slider_with_input("##mouse_smoothing", &smooth, 0.0f, viewer::max_mouse_smoothing, "%.0f", "%.0f")) {
+                viewer::set_mouse_smoothing(smooth);
+                remember("mouse_smoothing_ms", std::to_string(viewer::mouse_smoothing()));
+            }
+            ImGui::TextDisabled("%s", tr("(0: the view turns at once with the mouse; more: smoother, a little behind it)"));
+            form_row(tr("Mouse lock (the wheel's click)"));
+            bool lock = viewer::mouse_lock();
+            if (ImGui::Checkbox("##mouse_lock", &lock)) {
+                viewer::set_mouse_lock(lock);
+                remember("mouse_lock", lock ? "1" : "0");
+            }
+            ImGui::TextDisabled("%s", tr("(the view always turns with the mouse, the cursor hidden; a dot in the middle clicks the cab's controls; while the panel (Esc) is shown the cursor is free)"));
             form_row(tr("Head motion in the cab"));
             float head = viewer::head_motion();
             ImGui::SetNextItemWidth(220.0f);
