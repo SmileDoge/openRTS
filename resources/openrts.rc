@@ -1,0 +1,4 @@
+// The programs' icon (openrts.ico, made from logo.png by make_icon.py).
+// Named GLFW_ICON: GLFW gives its windows the icon of that name (the title
+// bar, the taskbar), Explorer shows the file's first icon.
+GLFW_ICON ICON "openrts.ico"

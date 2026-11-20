@@ -17,6 +17,7 @@ endif()
 
 add_executable(openrts_server_app src/main.cpp)
 openrts_configure_target(openrts_server_app)
+openrts_add_icon(openrts_server_app)
 set_target_properties(openrts_server_app PROPERTIES OUTPUT_NAME openrts-server)
 target_link_libraries(openrts_server_app PRIVATE openrts_server)
 if(WIN32)

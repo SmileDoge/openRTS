@@ -4,6 +4,10 @@ project(openRTS
     VERSION 0.28.4
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
+if(WIN32)
+    # The programs' icon (resources/openrts.rc).
+    enable_language(RC)
+endif()
 
 include(CTest)
 include(FetchContent)
@@ -116,6 +120,14 @@ function(openrts_configure_target target)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endfunction()
+
+# The openRTS icon in a program (resources/openrts.ico): Explorer's, and its
+# windows' through GLFW.
+function(openrts_add_icon target)
+    if(WIN32)
+        target_sources(${target} PRIVATE "${PROJECT_SOURCE_DIR}/resources/openrts.rc")
     endif()
 endfunction()
 
