@@ -120,11 +120,11 @@ fs::path program_directory() {
         buffer.resize(buffer.size() * 2);
     }
     std::error_code error;
-    return fs::current_path(error);
 #else
     std::error_code error;
     if (const auto self = fs::read_symlink("/proc/self/exe", error); !error) return self.parent_path();
 #endif
+    return fs::current_path(error);
 }
 
 fs::path own_packs_directory() {

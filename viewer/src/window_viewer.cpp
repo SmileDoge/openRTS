@@ -3224,10 +3224,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     panel.smooth_train_textures = remembered("smooth_train_textures").value_or("0") == "1";
     // Tests: OPENRTS_SMOOTH_TRAIN_TEXTURES turns it on for the run, not remembered.
     {
-      char *forced = getenv("OPENRTS_SMOOTH_TRAIN_TEXTURES");
+      char* forced = getenv("OPENRTS_SMOOTH_TRAIN_TEXTURES");
       if (forced && *forced == '1')
         panel.smooth_train_textures = true;
-      std::free(forced);
     }
     renderer::texture_cache_directory() = user_data_directory() / "texture_cache" / "bc7";
     if (const auto kept = remembered("cab_near_plane")) panel.cab_near_plane = std::clamp(std::strtof(kept->c_str(), nullptr), 0.0f, 0.3f);
