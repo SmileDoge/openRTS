@@ -237,6 +237,14 @@ openrts_configure_target(openrts_head_motion_test)
 target_link_libraries(openrts_head_motion_test PRIVATE glm::glm)
 add_test(NAME openrts.head_motion COMMAND openrts_head_motion_test)
 
+# openRTS's КЛУБ's electronic map on Kuban's route database (content).
+add_executable(openrts_electronic_map_test electronic_map_test.cpp)
+openrts_configure_target(openrts_electronic_map_test)
+target_link_libraries(openrts_electronic_map_test PRIVATE openrts_simulation)
+if(OPENRTS_TEST_ROOT)
+    add_test(NAME openrts.content.electronic_map COMMAND openrts_electronic_map_test "${OPENRTS_TEST_ROOT}")
+endif()
+
 # The rail joints along the track: RTS's layout and openRTS's.
 add_executable(openrts_rail_joints_test rail_joints_test.cpp)
 openrts_configure_target(openrts_rail_joints_test)

@@ -5619,6 +5619,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
             if (unit.train->brake_condition() != brake_condition_ || (brake_condition_ != 0 && unit.train->brake_seed() == 0)) {
                 const auto seed = unit.train->brake_seed();
                 unit.train->set_brake_condition(brake_condition_, seed != 0 ? seed : std::random_device{}() | 1u);
+        klub_map_ = remembered("klub_map").value_or("1") != "0";
             }
         }
     }
@@ -8480,6 +8481,30 @@ std::string TrainView::car_label(const Car& car) const {
     return name + number;
 }
 
+const simulation::ElectronicMap* TrainView::electronic_map() {
+    if (!electronic_map_.valid()) {
+        const auto* network = units_.empty() || !units_.front().train ? nullptr : units_.front().train->network();
+        if (!network || !signals_ || !signal_units()) return nullptr;
+        // The train signals (a NORMAL head, placed): one place each.
+        std::vector<simulation::MapSignal> signals;
+        std::set<std::uint32_t> taken;
+        for (const auto& head : signals_->heads()) {
+            if (!head.placed || !head.type || head.type->function != formats::SignalFunction::normal) continue;
+            if (!taken.insert(head.object).second) continue;
+            signals.push_back({.object = head.object, .node = head.node, .offset = head.offset, .forward = head.forward});
+        }
+        electronic_map_ = std::async(std::launch::async, [units = signal_units_.get(), network, signals = std::move(signals)]() mutable {
+                              const auto started = std::chrono::steady_clock::now();
+                              auto map = std::make_shared<const simulation::ElectronicMap>(*network, units->database, std::move(signals));
+                              const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+                              std::cout << "КЛУБ electronic map: " << map->tracks().size() << " station tracks, " << ms << " ms" << std::endl;
+                              return map;
+                          }).share();
+    }
+    if (electronic_map_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return nullptr;
+    return electronic_map_.get().get();
+}
+
 std::string TrainView::driven_name() const {
     const auto car = driven_car();
     if (car == SIZE_MAX || !units_.front().train) return {};
@@ -8969,7 +8994,32 @@ void TrainView::feed_world(const Unit& unit) {
         return s;
     };
     std::vector<dllhost::SignalInput> rear_passing;
-    for (const auto& p : signals_->positions(train, true)) (p.distance > passing ? world.alsn_ahead : world.alsn_passing).push_back(to_input(p));
+    std::vector<std::uint32_t> passed; // the train signals the front passes this step (the map's)
+    for (const auto& p : signals_->positions(train, true)) {
+        (p.distance > passing ? world.alsn_ahead : world.alsn_passing).push_back(to_input(p));
+        if (p.distance <= passing && (p.flags & 1u)) passed.push_back(p.object);
+    }
+    // openRTS's КЛУБ's map: the entered track's target from the front.
+    world.electronic_map = {};
+    if (klub_map_ && own_klub_ == 1) {
+        const auto* map = electronic_map();
+        const auto front = train.front_end();
+        if (map && !map->empty() && front) {
+            world.electronic_map = [map, network = train.network(), node = front->node(), offset = front->offset(),
+                                    forward = front->forward(), passed = std::move(passed), units, signals = signals_](
+                                       const std::uint32_t number, simulation::EkState& state) {
+                auto target = map->update(state, *network, node, offset, forward, number, passed);
+                if (target.has_target && units && target.object < signals->objects().size()) {
+                    const auto& heads = signals->objects()[target.object].heads;
+                    if (!heads.empty() && heads.front() < signals->heads().size()) {
+                        const auto item = signals->heads()[heads.front()].track_item;
+                        target.unit = item < units->item_unit.size() ? units->item_unit[item] : -1;
+                    }
+                }
+                return target;
+            };
+        }
+    }
     for (const auto& p : signals_->positions(train, false)) (p.distance > passing ? world.alsn_behind : rear_passing).push_back(to_input(p));
     world.alsn_passing.insert(world.alsn_passing.end(), rear_passing.begin(), rear_passing.end());
     const auto next = signals_->ahead(train);
@@ -10885,6 +10935,16 @@ void TrainView::draw_panel() {
         if (ImGui::Checkbox(tr("Limit the brake force to real stock's (openRTS)"), &limit_brake_force_)) {
             rails_loaded_ = true;
             remember("limit_brake_force", limit_brake_force_ ? "1" : "0");
+            if (can_own && own_klub_ == 1) {
+                if (ImGui::Checkbox(tr("Electronic map (ЭК) from the route database"), &klub_map_)) remember("klub_map", klub_map_ ? "1" : "0");
+                const auto* map = klub_map_ ? electronic_map() : nullptr;
+                ImGui::TextDisabled("%s", !klub_map_ ? tr("(off: a track entered only turns the ЭК on, the target the next signal as the switches stand, as Brakes.dll's)")
+                                          : !map      ? tr("(the map is being made)")
+                                          : map->empty()
+                                              ? tr("(the route database has no station tracks: as Brakes.dll's, the next signal as the switches stand)")
+                                              : trf("(%zu station tracks: the target the entered track's signal whatever way the switches lie; a number the map has not: \"без ЭК\")",
+                                                    map->tracks().size()).c_str());
+            }
         }
         ImGui::SameLine();
         ImGui::TextDisabled("%s", tr(limit_brake_force_

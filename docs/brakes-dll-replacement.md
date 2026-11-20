@@ -354,10 +354,55 @@ until its screen redraws after the speed is entered.
 
 So the real КЛУБ-У's map (a target by the track number) and the ALSN's
 frequency are openRTS's to add later as settings (the developer's choice,
-2026-11-19). The route database's signal letters (`.rtsdb`, filled on some
-routes only) and its stations' routes could make the map. Open with the testers: the frequency
-of a section; the shunting mode (how it comes on, its speed, vigilance, the
-way out); side tracks; К282.
+2026-11-19). Open with the testers: the frequency of a section; the
+shunting mode (how it comes on, its speed, vigilance, the way out); К282.
+
+### openRTS's electronic map (ЭК), first version
+
+With openRTS's КЛУБ the Train window's "Electronic map (ЭК) from the route
+database" (on by default, remembered as `klub_map`) gives the leading cab
+the map's target (`simulation/electronic_map.hpp`, the testers' rules of
+2026-11-19 .. 20). Off, or on a route whose database has no station tracks:
+Brakes.dll's way above.
+
+- **The map** is made when the route loads, from its `.rtsdb`: its station
+  tracks (RoutePoints of PointType 2: a station, a name such as `3`, `1А`,
+  `2БП`, `6ч`, the track's two ends; the number is the name's leading
+  digits) laid on the track from one end to the other, and its stations'
+  ends at the lines (PointType 1 with flag 2, where the entry signals
+  stand). Not the signals' letters: they are filled on some routes only
+  (Kuban 900 of 1406), the station tracks on all (Kuban: 130, every one
+  placed, in 0.1 s). A train signal (a NORMAL head) on a track or within
+  60 m past its end is that track's (its exit or route signal); one within
+  40 m of a station's end, its entry.
+- **The target:** from the front, the way to the nearest track of the
+  entered number ahead within 10 km, every branch looked at, then on along
+  the switches' MainRoute; the target is the first train signal along it,
+  its distance along that way. So a number entered before the entry gives
+  the entry Н, then the track's own signal (Н3, НМ3), after the exit the
+  first block signal; a wrong number gives the distance to the entered
+  track's signal, whatever way the switches lie. The aspect stays the
+  codes' (ALSN of the track the train is on). The screen names the target
+  by its letter where the database has one.
+- **"Без ЭК":** no number, 99 (the instructions' way into it), a number no
+  station of the route has; or once the train passes the signal of another
+  track (it took another way: the testers' 3 → 1 → Н1 case), or the entry
+  signal of a station without the entered track. No target then, the
+  aspect's speeds (`KLUB_GRSPD`, `KLUB_YLSPD`); the screen shows "РЕЖИМ БЕЗ
+  ЭК" and the number entered. Without a station track ahead the ЭК goes on
+  along MainRoute while the train is on the entered track's way (out of its
+  station onto the line).
+- **Back by itself** before the entry signal of another station with the
+  track: the target is that entry (where the entries are not known, one
+  train signal or none before the track). Not back in the station it was
+  left in (Albashi's `2А` after its track 1 signal).
+- Not yet: the ALSN's frequency from the map, its limits, switches and
+  crossings, К280 / К282, manual tables for stations the database names
+  otherwise. The log says each change (`КЛУБ ЭК, track 3: target НМ3 in
+  1234 m`, `… без ЭК`).
+- Tests: `tests/electronic_map_test.cpp` (Kuban, content: Albashi's tracks
+  entered from Староминская, driven through on track 1 to Деревянковка),
+  `tests/klub_test.cpp` (`test_electronic_map`).
 
 ## Open
 

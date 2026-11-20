@@ -11,6 +11,7 @@ add_library(openrts_simulation STATIC
     src/cab_brakes.cpp
     src/klub.cpp
     src/klub_screen.cpp
+    src/electronic_map.cpp
     src/driver_valve.cpp
     src/track_profile.cpp
     src/track_traveller.cpp

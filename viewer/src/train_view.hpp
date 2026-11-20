@@ -28,6 +28,7 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/stock_rules.hpp>
 #include <openrts/simulation/track_profile.hpp>
+#include <openrts/simulation/electronic_map.hpp>
 #include <openrts/formats/activity.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/train_path.hpp>
@@ -1244,6 +1245,12 @@ private:
     std::optional<DoorHover> door_hover_;
     // A car shape's surfaces and matrices (its doors under the mouse), read aside.
     struct CarMeshData {
+    // openRTS's КЛУБ's electronic map (simulation/electronic_map.hpp) from
+    // the route database's station tracks, made aside once the database
+    // and the signals are there; the Train window's "ЭК" turns it off.
+    std::shared_future<std::shared_ptr<const simulation::ElectronicMap>> electronic_map_;
+    [[nodiscard]] const simulation::ElectronicMap* electronic_map();
+    bool klub_map_ = true;
         CabCollision mesh;
         formats::ShapeModel rig; // matrices, hierarchy, animations (no vertices)
     };
