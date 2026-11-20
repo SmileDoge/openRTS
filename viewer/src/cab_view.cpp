@@ -927,6 +927,7 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             if (named("DTM")) value = air->pipe;
             else if (named("DTC1") || named("DTC2")) value = air->cylinder;
             else if (named("DGR")) value = air->main_reservoir;
+            else if (named("DURA") && air->equalising >= 0.0f) value = air->equalising;
         }
         // RTS 0x525DB0: with a blink the display is hidden for the second
         // half of each 2 x blink period.

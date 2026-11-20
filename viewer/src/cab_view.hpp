@@ -146,14 +146,18 @@ public:
     };
     // The realistic air's pressures (atm) for the gauges MaDaDev's cabs name
     // DTM (the brake pipe), DTC1 and DTC2 (the brake cylinders: the higher of
-    // the train brake's and the independent brake's) and DGR (the main
-    // reservoir): with them those needles show the model's air, not
-    // what the DLL draws of its own (its needles lag and run ahead of F5's
-    // air; testers 2026-11-17). Other gauges stay the DLL's.
+    // the train brake's and the independent brake's), DGR (the main
+    // reservoir) and DURA (the equalising reservoir, the УР the driver's
+    // valve holds, openRTS's or the DLL's taken; testers 2026-11-20: it
+    // was the DLL's own and went apart from the others): with them those
+    // needles show the model's air, not what the DLL draws of its own (its
+    // needles lag and run ahead of F5's air; testers 2026-11-17). Other
+    // gauges stay the DLL's.
     struct AirGauges {
         float pipe = 0.0f;
         float cylinder = 0.0f;
         float main_reservoir = 0.0f;
+        float equalising = -1.0f; // < 0: no valve of the model here (the DLL's needle)
     };
     void adjustments(const dllhost::CarOutput* state, std::vector<renderer::NodeAdjustment>& out,
                      std::uint32_t aspect = 0, const Blend* blend = nullptr, const AirGauges* air = nullptr) const;

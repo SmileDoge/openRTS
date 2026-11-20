@@ -1736,9 +1736,14 @@ std::optional<CabView::AirGauges> TrainView::air_gauges(const Unit& unit, const 
     // brake's, as Brakes.dll's (Wagon +52 / +96) and openRTS's cab brakes'
     // (testers 2026-11-19: on the 2ТЭ116 the gauge stood at 0 with the 254
     // applied, F5 "3.70 (вспом.)").
+    // The УР the valve holds (equalising_of's): what it keeps cut off the
+    // pipe, else what it works the pipe by (the DLL's taken).
+    float equalising = -1.0f;
+    if (const auto* asked = unit.train->demands_of(car)) equalising = asked->equalising_kept >= 0.0f ? asked->equalising_kept : asked->equalising;
     return CabView::AirGauges{.pipe = state.pipe,
                               .cylinder = (std::max)(state.cylinder, state.independent),
-                              .main_reservoir = state.main_reservoir};
+                              .main_reservoir = state.main_reservoir,
+                              .equalising = equalising};
 }
 
 const trainplugin::BrakesParameters& TrainView::brakes_parameters_of(const formats::EngineDefinition& engine) const {
