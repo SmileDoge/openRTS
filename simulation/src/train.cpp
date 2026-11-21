@@ -1275,6 +1275,9 @@ void Train::step() {
             .main_reservoir = car.main_reservoir,
             .cylinder = car.cylinder,
             .independent = car.independent,
+            .valve_feed = car.valve_feed,
+            .distributor_channel = car.distributor_channel,
+            .distributor_discharge = car.distributor_discharge,
             .flipped = car.flipped,
             .definition = car.definition,
             .realistic_air = realistic_air,
@@ -1495,6 +1498,7 @@ void Train::step() {
             }
             i = j + 1;
         }
+        for (auto& car : cars_) car.distributor_discharge = false; // this air step's
         impl.air.step(cars_, air, dt);
         // An engine releasing its own train brake (EngineFlags 1: the 254 in
         // I) vents its cylinder, as in the RTS model.

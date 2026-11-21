@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -35,6 +36,12 @@
 // comes back by itself before the entry signal of another station with the
 // track (the entry its target; where the entries are not known, one train
 // signal or none before the track). Track 99: "без ЭК" (the instructions' way into it).
+// The front on another track of a station that has the entered one (at its
+// platform, the switches set for the train's own): the entered track's
+// signal the train's way all the same, as the real КЛУБ-У's by its
+// coordinate (testers, 2026-11-20), measured from the point of that track
+// abreast of the front; so too in its throat past its entry signal, once
+// the entered track is no more ahead.
 // Not yet: the ALSN frequency, the limits, switches and crossings of the
 // map, К280 / К282.
 namespace openrts::simulation {
@@ -56,6 +63,7 @@ struct MapTrack {
     struct Span {
         std::uint32_t node{};
         double from{}, to{}; // offsets along the node, from <= to
+        bool forward = true; // from the track's first end to its second the offset grows
     };
     std::vector<Span> spans;
 };
@@ -67,6 +75,9 @@ struct EkState {
     bool matched = false;       // the ЭК mode
     bool latched_off = false;   // left the entered track's way: back only near another station with it
     std::string left_at;        // the station it was left at
+    // The station with the entered track the front is in: past its entry
+    // signal, or on one of its tracks, until it passes a track's signal.
+    std::string inside;
 };
 
 struct EkTarget {
@@ -126,11 +137,18 @@ private:
     // `already` metres on, within the horizon.
     [[nodiscard]] Found along_main(const TrackNetwork& network, std::uint32_t node, double offset, bool forward, double already,
                                    bool strictly_ahead) const;
+    // The station track whose span holds (node, offset), else none.
+    [[nodiscard]] std::optional<std::size_t> track_at(std::uint32_t node, double offset) const;
+    // Track `number` of `station`: its first train signal the way the front
+    // at (node, offset, forward) runs, from its point abreast of the front.
+    [[nodiscard]] Found abreast(const TrackNetwork& network, std::uint32_t node, double offset, bool forward, const std::string& station,
+                                std::uint32_t number) const;
 
     std::vector<MapTrack> tracks_;
     std::unordered_map<std::uint32_t, std::vector<Signal>> signals_; // by node, by offset
     std::unordered_map<std::uint32_t, std::vector<SpanRef>> spans_;  // by node
     std::unordered_map<std::uint32_t, std::size_t> signal_track_;    // object -> track
+    std::unordered_map<std::uint32_t, MapSignal> signal_place_;      // object -> where it stands
     std::unordered_map<std::uint32_t, std::string> signal_entry_;    // object -> the station it enters
     std::set<std::pair<std::string, std::uint32_t>> station_numbers_;
     std::set<std::uint32_t> numbers_;

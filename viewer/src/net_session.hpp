@@ -57,6 +57,10 @@ public:
     void send_command(std::string_view line);
     // A consist put on the track by its cars (console_place).
     void send_place(const net::ConsolePlace& place);
+    // The station routes server train `train` can take next (console_next),
+    // `back` the other way; the server's answer comes in next_routes().
+    void ask_next_routes(std::uint32_t train, bool back);
+    [[nodiscard]] const std::optional<net::ConsoleNext>& next_routes() const noexcept { return next_routes_; }
     // A line in the console's log (a problem found here).
     void note(std::string line) { console_log_.push_back(std::move(line)); }
     // The game as the server last told the console (every second).
@@ -89,6 +93,15 @@ public:
     [[nodiscard]] bool openrts_server() const noexcept { return openrts_server_; }
     // Its game is a thunderstorm (its answer to openrts_hello).
     [[nodiscard]] bool server_storm() const noexcept { return server_storm_; }
+    // The server lets its game be joined from Discord: the address it gives
+    // (empty: the one we connected to), its players and places (0 no
+    // limit); nothing: not allowed.
+    struct DiscordJoin {
+        std::string address;
+        int players = 0;
+        int places = 0;
+    };
+    [[nodiscard]] const std::optional<DiscordJoin>& discord_join() const noexcept { return discord_join_; }
     // A server train as the players know it: its name or number.
     [[nodiscard]] std::string train_label(std::uint32_t server_train) const;
     // The other players as the server relays their places (player_pos),
@@ -200,6 +213,7 @@ private:
     bool hello_sent_ = false;
     bool openrts_server_ = false;
     bool server_storm_ = false;
+    std::optional<DiscordJoin> discord_join_;
     std::map<std::uint32_t, Player> players_;
     // Each player's places of the last seconds (heard time, place): one in
     // a train drawn behind by its delay is shown as far behind (players()).
@@ -224,6 +238,7 @@ private:
     std::map<std::uint32_t, std::pair<std::size_t, std::uint32_t>> cab_seen_; // by car: packages, the test switch's state
     std::map<std::uint32_t, std::pair<float, bool>> routes_; // by server train: 0x4619
     std::optional<net::ConsoleState> console_state_;
+    std::optional<net::ConsoleNext> next_routes_;
     std::vector<std::string> console_log_;
 };
 

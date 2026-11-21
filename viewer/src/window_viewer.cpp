@@ -1090,7 +1090,7 @@ public:
             }
             ImGui::TextDisabled("%s", tr("(0: the view turns at once with the mouse; more: smoother, a little behind it)"));
             bool lock = mouse_lock();
-            if (ImGui::Checkbox(tr("Mouse lock (the wheel's click)"), &lock)) {
+            if (ImGui::Checkbox(tr("Mouse lock (the side mouse button or Caps Lock)"), &lock)) {
                 set_mouse_lock(lock);
                 remember("mouse_lock", lock ? "1" : "0");
             }
@@ -1811,13 +1811,13 @@ private:
         list->AddCircleFilled(at, radius, IM_COL32(255, 255, 255, 235));
     }
 
-    // A few seconds after the wheel's click: the lock on or off, and how to
+    // A few seconds after the side button or Caps Lock: the lock on or off, and how to
     // switch it back.
     static void draw_lock_note(const PanelState& panel) {
         if (ImGui::GetTime() >= panel.lock_note_until) return;
-        const char* text = !mouse_lock()     ? tr("Mouse lock off (the wheel's click: on)")
+        const char* text = !mouse_lock()     ? tr("Mouse lock off (the side button or Caps Lock: on)")
                            : panels_shown() ? tr("Mouse lock on: in force once the panel (Esc) is hidden")
-                                            : tr("Mouse lock on: the view turns with the mouse, a click works what the dot is on (the wheel's click: off)");
+                                            : tr("Mouse lock on: the view turns with the mouse, a click works what the dot is on (the side button or Caps Lock: off)");
         const auto display = ImGui::GetIO().DisplaySize;
         const auto size = ImGui::CalcTextSize(text);
         auto* list = ImGui::GetForegroundDrawList();
@@ -2048,7 +2048,8 @@ struct CameraInput {
     // The mouse lock (key_layout.hpp) in force this frame: wanted, and
     // neither the panel (Esc) nor the start menu shown.
     bool locked = false;
-    bool lock_toggled = false;    // the wheel was clicked: the main loop switches the lock
+    bool lock_toggled = false;    // the side button or Caps Lock: the main loop switches the lock
+    bool zoom_held = false;       // the wheel held down: it zooms (ViewerCamera::hold_zoom)
     bool control_in_hand = false; // a cab control is dragged: in the lock the mouse moves it, not the view
     bool cursor_captured = false; // hidden and held in the window (set_cursor_captured)
     // The cursor was captured or let go in this poll: its moves do not turn
@@ -2136,8 +2137,18 @@ void on_mouse_button(GLFWwindow* window, const int button, const int action, [[m
             input->orbit_right = false;
         }
     }
-    // The wheel's click switches the mouse lock (the main loop, next frame).
-    if (button == GLFW_MOUSE_BUTTON_MIDDLE && pressed) input->lock_toggled = true;
+    // The side button (back) switches the mouse lock (the main loop, next
+    // frame), as Caps Lock does; the wheel held down zooms while it turns,
+    // let go the view comes back (2026-11-21; the wheel's click was the lock).
+    if (button == GLFW_MOUSE_BUTTON_4 && pressed) input->lock_toggled = true;
+    if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
+        if (pressed) {
+            input->zoom_held = true;
+        } else if (action == GLFW_RELEASE) {
+            input->zoom_held = false;
+            input->camera->hold_zoom.reset();
+        }
+    }
     input->orbit_dragging = input->orbit_left || input->orbit_right;
     update_cursor_capture(window, *input);
     glfwGetCursorPos(window, &input->last_x, &input->last_y);
@@ -2193,7 +2204,10 @@ void on_scroll(GLFWwindow* window, [[maybe_unused]] const double x, const double
         // too (its controls then keep still); else outside the cab the wheel
         // brings the camera nearer, in it the cab has it.
         const bool ctrl = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
-        if (ctrl) {
+        if (input->zoom_held) {
+            // The wheel held down: the held zoom, nothing else.
+            input->camera->zoom_hold(static_cast<float>(y));
+        } else if (ctrl) {
             input->camera->zoom_view(static_cast<float>(y));
         } else {
             input->scroll += y;
@@ -2213,6 +2227,7 @@ void on_key([[maybe_unused]] GLFWwindow* window,
 #endif
     if (action == GLFW_REPEAT) return;
     if (auto* input = camera_input(window)) {
+        if (key == GLFW_KEY_CAPS_LOCK && action == GLFW_PRESS) input->lock_toggled = true;
         input->key_events.push_back({.key = key,
                                      .down = action == GLFW_PRESS,
                                      .shift = (mods & GLFW_MOD_SHIFT) != 0,
@@ -3369,6 +3384,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const bool fov_keyboard_free = true;
 #endif
         if (update_fov_keys(window.get(), fov_keys, panel.fov, elapsed, fov_keyboard_free)) remember("fov", std::to_string(panel.fov));
+        camera.ease_zoom(elapsed);
         {
             // Num*, or Ctrl+0 without a keypad (no cab assigns it): the field
             // of view back to where it starts and Ctrl+wheel's zoom off
@@ -3379,7 +3395,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                    || ((held(GLFW_KEY_LEFT_CONTROL) || held(GLFW_KEY_RIGHT_CONTROL)) && held(GLFW_KEY_0)));
             if (reset && !fov_reset_down) {
                 panel.fov = base_fov;
-                camera.view_zoom = 1.0f;
+                camera.zoom_target = 1.0f;
+                camera.hold_zoom.reset();
                 remember("fov", std::to_string(panel.fov));
             }
             fov_reset_down = reset;
@@ -3753,6 +3770,13 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             .lighting = environment.lighting,
         });
         scene.submit(renderer, frame);
+        // The cab or salon as this frame drew it (the environment's room was
+        // the last frame's, behind the moving cab).
+        if (const auto room = scene.light_shaft_room()) {
+            renderer.set_room(renderer::ModelRoom{room->to_room, room->lower, room->upper});
+        } else {
+            renderer.set_room(std::nullopt);
+        }
         effects.set_focus(scene.shadow_focus(), scene.lamp_shadow_focus(camera));
         stage_clock.mark(FrameStage::cull, stages);
         renderer.prepare();

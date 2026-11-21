@@ -354,6 +354,38 @@ int main() {
         check(at(ValvePosition::ep_service).ep_command == EpCommand::target, "the RTS model: a target");
     }
 
+    // The 418's channels (cab_brakes.hpp): an application begins with its
+    // additional discharge once; the ТЦ channel goes on to the target even
+    // with the cylinder let off outside (the engine's own release, the 254),
+    // and a slow fall (an overcharge going) starts nothing.
+    for (const auto kind : {DistributorKind::vr483, DistributorKind::vr292}) {
+        const auto car = car_of(kind);
+        const std::string name = kind == DistributorKind::vr483 ? "483" : "292";
+        DistributorState s{.pipe = 5.0f, .auxiliary = 5.0f, .cylinder = 0.0f, .reference = 5.0f};
+        constexpr float h = 1.0f / 300.0f;
+        int discharges = 0;
+        for (int i = 0; i < 300 * 20; ++i) { // the pipe 5.0 down by 0.6 at 0.2 atm/s, held
+            s.discharge = false;
+            if (s.pipe > 4.4f) s.pipe -= 0.2f * h;
+            step_distributor(s, car, i * h < 3.0f ? -0.2f : 0.0f, -1.0f, h);
+            if (s.discharge) ++discharges;
+        }
+        check(discharges == 1, name + ": one additional discharge (" + std::to_string(discharges) + ")");
+        const float channel = s.channel;
+        s.cylinder = 0.0f; // let off outside the distributor (the engine's own release)
+        step_distributor(s, car, 0.0f, -1.0f, h);
+        check(channel > 1.0f && s.channel >= channel - 1e-4f,
+              name + ": the ТЦ channel stays at its target with the cylinder let off (" + std::to_string(s.channel) + ")");
+        DistributorState slow{.pipe = 5.4f, .auxiliary = 5.4f, .cylinder = 0.0f, .reference = 5.4f};
+        int slow_discharges = 0;
+        for (int i = 0; i < 300 * 150; ++i) { // 5.4 to 5.0 at the stabiliser's 0.15 atm a minute
+            slow.discharge = false;
+            if (slow.pipe > 5.0f) slow.pipe -= 0.15f / 60.0f * h;
+            step_distributor(slow, car, -0.0025f, -1.0f, h);
+            if (slow.discharge) ++slow_discharges;
+        }
+        check(slow_discharges == 0, name + ": an overcharge going makes no additional discharge");
+    }
     if (failures == 0) std::cout << "distributor: all checks passed\n";
     return failures == 0 ? 0 : 1;
 }

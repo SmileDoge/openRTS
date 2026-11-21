@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <openrts/core/vfs.hpp>
 #include <openrts/net/play.hpp>
@@ -23,13 +25,31 @@ class TrainView;
 
 // The dispatcher's console (Пульт ДСП) on an openRTS server (--mp-console,
 // docs/server.md): the game as the server holds it (players, trains with
-// their owners and routes, the time) and its commands. The map is Track
-// control: a junction thrown or a signal's aspect there goes to the server.
+// their owners and routes, the time) and its commands; station routes and
+// signals as the server's window has them. The map is Track control: a
+// junction thrown or a signal's aspect there goes to the server.
 class ConsolePanel {
 public:
     void draw(NetSession& net, TrainView& trains, TrackControl* map, const core::Vfs& vfs);
 
 private:
+    // "Станционные маршруты" (the server window's, rts_server.exe's
+    // "Собрать маршрут"): the picked train's queue, what it can take next
+    // (asked from the server), every train's queue.
+    void station_routes(NetSession& net, const net::ConsoleState& state);
+    void set_picked(NetSession& net, const net::ConsoleNext& next);
+    // "Сигналы": every signal of a type, the defaults, the save.
+    void signals(NetSession& net, const TrainView& trains);
+
+    bool back_ = false;                                      // the routes looked for the other way
+    std::optional<std::pair<std::uint32_t, bool>> picked_;   // a route's ID, from its end
+    bool hold_ = false;
+    int priority_ = 0;
+    std::string next_key_;     // the train and its queue's end the routes were asked for
+    double next_asked_ = -10.0; // ImGui time
+    std::vector<std::string> types_; // the route's signal types
+    bool types_read_ = false;
+    int type_ = -1;
     std::uint32_t selected_train_ = 0; // the server's id
     std::uint64_t map_selected_ = 0;   // the map's pick last followed
     std::uint32_t selected_user_ = 0;

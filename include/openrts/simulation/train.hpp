@@ -125,6 +125,12 @@ struct EngineInputs {
     float main_reservoir{}; // atm
     float cylinder{};       // train brake cylinder, atm
     float independent{};    // independent brake cylinder, atm
+    // Realistic air: how fast its driver's valve's relay fed the pipe at
+    // this car over the last step, atm/s (CarState::valve_feed).
+    float valve_feed{};
+    // Its distributor's ТЦ channel and additional discharge (CarState's).
+    float distributor_channel{};
+    bool distributor_discharge = false;
     bool flipped = false;   // the car faces the train rear
     const formats::WagonDefinition* definition = nullptr;
     bool realistic_air = false; // the train runs BrakeModel::realistic
@@ -336,6 +342,15 @@ struct CarState {
     float ep_fill = 1.0f; // atm/s its ЭВР 305 fills at (scatter_ep_fill)
     float handbrake{}; // 0..1
     float main_reservoir{}; // engines
+    // Realistic air: how fast the engine's driver's valve (its relay, I's
+    // wide channel) fed the pipe at this car over the last air step, atm/s
+    // (the cab's air sounds; Brakes.dll's TrainPipeRate > 0).
+    float valve_feed{};
+    // Realistic air: its distributor's ТЦ channel (atm) and whether an
+    // application began with its additional discharge over the last air
+    // step: the 418's ДТЦ and ДДР (cab_brakes.hpp).
+    float distributor_channel{};
+    bool distributor_discharge = false;
     // Bogie positions from the car centre towards the train front / rear, m
     // (RTS takes them from the shape's BOGIE nodes); 0: 35 % of the length.
     float bogie_ahead{};

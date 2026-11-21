@@ -1284,6 +1284,19 @@ Bytes encode_console_state(const ConsoleState& s) {
         w.u32(t.cars);
         w.text_u32(t.first_car);
     }
+    w.u32(static_cast<std::uint32_t>(s.segments.size()));
+    for (const auto& g : s.segments) {
+        w.u32(g.id);
+        w.u32(g.train);
+        w.u32(g.route);
+        w.text_u32(g.station);
+        w.text_u32(g.name);
+        w.u8(static_cast<std::uint8_t>((g.reverse ? 1 : 0) | (g.hold ? 2 : 0) | (g.reversed ? 4 : 0)));
+        w.u32(g.priority);
+        w.u8(g.state);
+        w.u16(g.thrown);
+        w.u32(g.junctions);
+    }
     return w.take();
 }
 
@@ -1325,9 +1338,93 @@ std::optional<ConsoleState> decode_console_state(const ByteView body) {
             t.first_car = r.text_u32();
             s.trains.push_back(std::move(t));
         }
+        if (r.at_end()) return; // a server before 2026-11-21: no segments
+        const auto segments = r.u32();
+        for (std::uint32_t i = 0; i < segments && r.ok() && i < 65536; ++i) {
+            ConsoleSegment g;
+            g.id = r.u32();
+            g.train = r.u32();
+            g.route = r.u32();
+            g.station = r.text_u32();
+            g.name = r.text_u32();
+            const auto flags = r.u8();
+            g.reverse = (flags & 1) != 0;
+            g.hold = (flags & 2) != 0;
+            g.reversed = (flags & 4) != 0;
+            g.priority = r.u32();
+            g.state = r.u8();
+            g.thrown = r.u16();
+            g.junctions = r.u32();
+            s.segments.push_back(std::move(g));
+        }
     });
     if (!ok) return std::nullopt;
     return s;
+}
+
+Bytes encode_console_next_ask(const ConsoleNextAsk& ask) {
+    WireWriter w;
+    w.u32(ask.train);
+    w.u8(ask.back ? 1 : 0);
+    return w.take();
+}
+
+std::optional<ConsoleNextAsk> decode_console_next_ask(const ByteView body) {
+    ConsoleNextAsk ask;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        ask.train = r.u32();
+        ask.back = r.u8() != 0;
+    });
+    if (!ok) return std::nullopt;
+    return ask;
+}
+
+Bytes encode_console_next(const ConsoleNext& n) {
+    WireWriter w;
+    w.u32(n.train);
+    w.u8(static_cast<std::uint8_t>((n.back ? 1 : 0) | (n.found ? 2 : 0) | (n.rear_first ? 4 : 0)));
+    w.u32(n.after);
+    w.text_u32(n.after_name);
+    w.u32(static_cast<std::uint32_t>(n.routes.size()));
+    for (const auto& c : n.routes) {
+        w.u32(c.route);
+        w.u8(static_cast<std::uint8_t>((c.reverse ? 1 : 0) | (c.main_track ? 2 : 0) | (c.wrong_way ? 4 : 0) | (c.platform ? 8 : 0)));
+        w.f32(c.track_length);
+        w.f32(c.distance);
+        w.text_u32(c.station);
+        w.text_u32(c.name);
+    }
+    return w.take();
+}
+
+std::optional<ConsoleNext> decode_console_next(const ByteView body) {
+    ConsoleNext n;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        n.train = r.u32();
+        const auto flags = r.u8();
+        n.back = (flags & 1) != 0;
+        n.found = (flags & 2) != 0;
+        n.rear_first = (flags & 4) != 0;
+        n.after = r.u32();
+        n.after_name = r.text_u32();
+        const auto count = r.u32();
+        for (std::uint32_t i = 0; i < count && r.ok() && i < 65536; ++i) {
+            ConsoleRouteChoice c;
+            c.route = r.u32();
+            const auto f = r.u8();
+            c.reverse = (f & 1) != 0;
+            c.main_track = (f & 2) != 0;
+            c.wrong_way = (f & 4) != 0;
+            c.platform = (f & 8) != 0;
+            c.track_length = r.f32();
+            c.distance = r.f32();
+            c.station = r.text_u32();
+            c.name = r.text_u32();
+            n.routes.push_back(std::move(c));
+        }
+    });
+    if (!ok) return std::nullopt;
+    return n;
 }
 
 Bytes encode_console_place(const ConsolePlace& p) {
@@ -1414,11 +1511,30 @@ std::optional<OtherPlayer> decode_other_player(const ByteView body) {
     return p;
 }
 
-Bytes encode_openrts_hello(const std::uint16_t features, const bool storm) {
+Bytes encode_openrts_hello(const std::uint16_t features, const bool storm, const std::optional<OpenrtsDiscord> discord) {
     WireWriter w;
     w.u16(features);
     w.u8(storm ? 1 : 0);
+    if (discord) {
+        w.u8(1);
+        w.text_u16(discord->address);
+        w.u16(discord->players);
+        w.u16(discord->places);
+    }
     return w.take();
+}
+
+std::optional<OpenrtsDiscord> openrts_hello_discord(const ByteView body) {
+    WireReader r(body);
+    (void)r.u16();
+    (void)r.u8();
+    if (!r.ok() || r.at_end() || r.u8() != 1) return std::nullopt;
+    OpenrtsDiscord discord;
+    discord.address = r.text_u16();
+    discord.players = r.u16();
+    discord.places = r.u16();
+    if (!r.ok()) return std::nullopt;
+    return discord;
 }
 
 bool openrts_hello_storm(const ByteView body) {

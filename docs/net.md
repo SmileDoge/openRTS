@@ -132,7 +132,7 @@ without it the camera follows the train from above.
   | `loading` | a train assigned: the world, then the route |
   | `playing` | the window opens |
   | `unreachable` | no connection |
-  | `refused nick` / `full` / `version` / `<code>` | the server refused the login (`0x4701` / `0x4702` / `0x4705` / another) |
+  | `refused nick` / `full` / `version` / `console` / `password` / `<code>` | the server refused the login (`0x4701` / `0x4702` / `0x4705` / `0x4702` to a dispatcher's console from another computer / `0x4707` a wrong dispatcher password / another) |
   | `closed`, `no-world`, `timeout` | the server closed, would not send the world (`0x4703`), no train in 30 minutes |
   | `no-route <route>` | the server's route is not installed |
 
@@ -146,7 +146,8 @@ without it the camera follows the train from above.
 - The reply has no length field: `0x4600`, the version, the description,
   season and weather, the route id and four counts; or a code alone
   (`0x4701` nick in use, `0x4702` no new players, `0x4705` another
-  version).
+  version; openRTS's server to a dispatcher's console: `0x4707` a wrong
+  password, server.md).
 - Then a thread reads whole packages into a queue the main loop takes.
   When the socket closes it queues a `server_down` of its own, as
   `rts1.exe` does. The game then shows "Сервер отключился" in the middle
@@ -397,13 +398,36 @@ Between openRTS's server and openRTS players; `rts1.exe` and
 - **Hello** (`0x45F4 openrts_hello`, `u16` features, 1: players and
   helpers; then, since 2026-11-16, `u8` 1 when the game is a thunderstorm,
   the server's answer: its login said rain, docs/weather.md; a reader of
-  the features alone stops before it). The client sends it right after its login. `rts_server.exe`
+  the features alone stops before it; since 2026-11-21 then, when the
+  server lets its game be joined from Discord, `u8` 1, the address for
+  the others, `text_u16`, empty: the one each player connected to, `u16`
+  the players connected and `u16` its places, 0: no limit; the server
+  sends this answer again whenever the players' number changes). The client sends it right after its login. `rts_server.exe`
   leaves an id it does not know to its main thread
   (`reverse/multiplayer.md`, "Routing"). openRTS's server answers it, and
   only then does the client send the packages below. An openRTS player on
   an openRTS server does not wait in the menu for a train: it asks for the
   world at once and looks round with the free camera. The dispatcher can
   give it a train any time, and another player can take it as his helper.
+- **Joining from Discord** (2026-11-21, discord-rpc's way over the same
+  local pipe as the profile's line, `platform/discord_presence`). When the
+  server allows it (its window's "Вход через Discord", `--discord-join`),
+  a player's profile carries a party (`openrts-<hash of the address>`,
+  the server's count of its players of its places; without a limit no
+  count) and the join secret `openrts1 <host:port>`:
+  the server's address for the others, else the one he connected to (not
+  127.x). Discord then shows the others "Ask to Join" / "Join"; the game's
+  own buttons go meanwhile (Discord takes none with a secret), and the
+  game answers "Ask to Join" yes (`SEND_ACTIVITY_JOIN_INVITE`). The one who
+  joins needs openRTS's start menu started once: it writes Discord's
+  `discord-<application id>` scheme under `HKCU\Software\Classes` to start
+  `openrts_game.exe`, which Discord starts (or finds open) and hands the
+  secret (`ACTIVITY_JOIN`). The menu puts the address in "Сетевая игра" as a
+  driver and connects when the nick and the RTS folder are there. The
+  address goes to whoever joins, as the server's own players have it; the
+  port must be reachable as for any player. Checked 2026-11-21: Discord
+  took the activity with the party and the secret (no error); the
+  buttons at another account and a join wait for a try by two people.
 - **Players.** The other players' places come as RTS relays them
   (`0x462D`: the sender's id, its place, its name). openRTS showed nothing
   of them until now. Now it shows:

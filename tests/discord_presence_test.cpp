@@ -68,6 +68,21 @@ void test_command() {
     for (int i = 0; i < 128; ++i) expected += "ж";
     expected += '"';
     check(has(cut, expected), "a long text cut to 128 characters, not bytes");
+
+    // A game others may join: its party and secret, no buttons, an instance.
+    DiscordActivity joinable;
+    joinable.details = "Ведёт ЭД9М";
+    joinable.party_id = "openrts-1a2b";
+    joinable.party_size = 3;
+    joinable.party_max = 32;
+    joinable.join_secret = "openrts1 203.0.113.7:800";
+    joinable.buttons = {{"openRTS на GitHub", "https://github.com/SmileDoge/openRTS"}};
+    const auto join = discord_activity_command(joinable, 1, 4);
+    check(has(join, R"("party":{"id":"openrts-1a2b","size":[3,32]})") && has(join, R"("secrets":{"join":"openrts1 203.0.113.7:800"})"),
+          "the party and the join secret: " + join);
+    check(!has(join, "buttons") && has(join, R"("instance":true})"), "no buttons with a join secret, an instance");
+    joinable.party_size = 40;
+    check(has(discord_activity_command(joinable, 1, 5), R"("size":[32,32])"), "the party's size within its most");
 }
 
 #ifdef _WIN32
@@ -208,6 +223,56 @@ void test_talk() {
     check(cleared && cleared->first == 1 && has(cleared->second, R"("args":{"pid":)") && !has(cleared->second, "activity"),
           "the activity cleared on the way out: " + (cleared ? cleared->second : std::string("none")));
 }
+
+// Joining: the subscriptions after READY, an ACTIVITY_JOIN's secret taken,
+// an "Ask to Join" answered yes while the activity has a secret.
+void test_join() {
+    using namespace std::chrono_literals;
+    using openrts::platform::DiscordActivity;
+    using openrts::platform::DiscordPresence;
+    const std::string prefix = R"(\\.\pipe\openrts-test-discord-join-)" + std::to_string(GetCurrentProcessId()) + "-";
+    FakeClient client(prefix + "0");
+    check(client.ok(), "the join stand-in's pipe");
+    if (!client.ok()) return;
+    DiscordPresence presence(DiscordPresence::Options{.application_id = "123456789012345678",
+                                                      .pipe_prefix = prefix,
+                                                      .retry = 100ms,
+                                                      .min_interval = 300ms,
+                                                      .join_events = true,
+                                                      .accept_join_requests = true});
+    DiscordActivity game;
+    game.details = "Ведёт ЭД9М";
+    game.party_id = "p";
+    game.party_size = 1;
+    game.party_max = 8;
+    game.join_secret = "openrts1 198.51.100.2:800";
+    presence.set(game);
+    check(client.accept(), "the join presence connects");
+    (void)client.receive(); // the handshake
+    client.send(1, R"({"cmd":"DISPATCH","data":{"v":1,"config":{},"user":{"id":"1","username":"t"}},"evt":"READY","nonce":null})");
+    std::string seen;
+    for (int i = 0; i < 3; ++i) {
+        if (auto frame = client.receive()) seen += frame->second + "\n";
+    }
+    check(has(seen, R"({"cmd":"SUBSCRIBE","evt":"ACTIVITY_JOIN","args":{})") && has(seen, R"("evt":"ACTIVITY_JOIN_REQUEST")") &&
+              has(seen, R"("secrets":{"join":"openrts1 198.51.100.2:800"})"),
+          "both subscriptions and the joinable activity: " + seen);
+    client.send(1, R"({"cmd":"SUBSCRIBE","data":{"evt":"ACTIVITY_JOIN"},"evt":null,"nonce":"1"})");
+    client.send(1, R"({"cmd":"DISPATCH","data":{"secret":"openrts1 192.0.2.9:801"},"evt":"ACTIVITY_JOIN"})");
+    client.send(1, R"({"cmd":"DISPATCH","data":{"user":{"id":"777","username":"friend","avatar":null}},"evt":"ACTIVITY_JOIN_REQUEST"})");
+    const auto answer = client.receive();
+    check(answer && has(answer->second, R"({"cmd":"SEND_ACTIVITY_JOIN_INVITE","args":{"user_id":"777"})"),
+          "an Ask to Join answered yes: " + (answer ? answer->second : std::string("none")));
+    std::vector<std::string> joins;
+    for (int i = 0; i < 50 && joins.empty(); ++i) {
+        joins = presence.take_joins();
+        if (joins.empty()) std::this_thread::sleep_for(20ms);
+    }
+    check(joins.size() == 1 && joins.front() == "openrts1 192.0.2.9:801", "the join's secret taken");
+    check(presence.take_joins().empty(), "taken once");
+    const auto status = presence.status();
+    check(status.subscribed == 1 && status.joins == 1 && status.join_requests == 1, "the join counts");
+}
 #endif
 
 } // namespace
@@ -222,6 +287,7 @@ int main() {
     test_command();
 #ifdef _WIN32
     test_talk();
+    test_join();
 #endif
     if (failures == 0) std::cout << "discord presence: all checks passed\n";
     return failures == 0 ? 0 : 1;

@@ -177,6 +177,16 @@ net::Bytes login(const std::u16string& nick, const std::uint16_t version = 101) 
     return w.take();
 }
 
+// openRTS's console login: the nick, then the dispatcher's password.
+net::Bytes console_login(const std::u16string& nick, const std::u16string& password) {
+    auto body = login(nick);
+    net::WireWriter w;
+    w.text_u16(password);
+    const auto tail = w.take();
+    body.insert(body.end(), tail.begin(), tail.end());
+    return body;
+}
+
 formats::WagonDefinition car_definition() {
     formats::WagonDefinition car;
     car.length = 16.0f;
@@ -247,7 +257,74 @@ void game() {
     check(rec.out[9].size() == 2 && rec.out[9][0] == 0x05 && rec.out[9][1] == 0x47 && rec.closed.contains(9), "protocol 100: 0x4705 and closed");
     game.connected(10, "10.0.0.5:10");
     game.received(10, P(Package::console_login), login(u"DSP"));
-    check(rec.out[10].size() == 2 && rec.out[10][0] == 0x02 && rec.closed.contains(10), "a console from elsewhere, not a dispatcher: 0x4702");
+    check(rec.out[10].size() == 2 && rec.out[10][0] == 0x02 && rec.closed.contains(10),
+          "a console from elsewhere, the server without a dispatcher password: 0x4702");
+    {
+        // The dispatcher's password (2026-11-21): from elsewhere a console
+        // needs it; from this computer none; a wrong one gets 0x4707.
+        Recorder guarded_out;
+        auto guarded_options = options;
+        guarded_options.dispatcher_password = "пароль-7";
+        server::GameServer guarded(guarded_out, guarded_options, *network, nullptr);
+        guarded.connected(1, "10.0.0.5:1");
+        guarded.received(1, P(Package::console_login), login(u"DSP"));
+        check(guarded_out.out[1] == net::Bytes{0x07, 0x47} && guarded_out.closed.contains(1), "a console from elsewhere without the password: 0x4707");
+        guarded.connected(2, "10.0.0.5:2");
+        guarded.received(2, P(Package::console_login), console_login(u"DSP", u"пароль-8"));
+        check(guarded_out.out[2] == net::Bytes{0x07, 0x47} && guarded_out.closed.contains(2), "a console from elsewhere, a wrong password: 0x4707");
+        guarded.connected(3, "10.0.0.5:3");
+        guarded.received(3, P(Package::console_login), console_login(u"DSP", u"пароль-7"));
+        check(take_reply(guarded_out, 3).has_value() && !guarded_out.closed.contains(3), "a console from elsewhere with the password: logged in");
+        guarded.connected(4, "127.0.0.1:4");
+        guarded.received(4, P(Package::console_login), login(u"DSP2"));
+        check(take_reply(guarded_out, 4).has_value() && !guarded_out.closed.contains(4), "a console from this computer: no password needed");
+        guarded.connected(5, "10.0.0.6:5");
+        guarded.received(5, P(Package::login), login(u"Bob"));
+        check(take_reply(guarded_out, 5).has_value(), "a player needs no password");
+    }
+    {
+        // Places (2026-11-21): a new player beyond them refused as when new
+        // players are not taken, one coming back not, consoles not counted;
+        // Discord's party told again when the players' number changes.
+        Recorder full_out;
+        auto full_options = options;
+        full_options.max_players = 2;
+        full_options.discord_join = true;
+        full_options.public_address = "26.1.2.3:800";
+        server::GameServer full(full_out, full_options, *network, nullptr);
+        const auto discord_of = [&](const server::ConnectionId c) {
+            std::optional<net::OpenrtsDiscord> last;
+            for (const auto& g : take(full_out, c)) {
+                if (g.id == P(Package::openrts_hello)) last = net::openrts_hello_discord(g.body);
+            }
+            return last;
+        };
+        full.connected(1, "10.0.0.1:1");
+        full.received(1, P(Package::login), login(u"A"));
+        check(take_reply(full_out, 1).has_value(), "places: the first player");
+        full.received(1, P(Package::openrts_hello), net::encode_openrts_hello());
+        const auto first = discord_of(1);
+        check(first && first->address == u"26.1.2.3:800" && first->players == 1 && first->places == 2, "the hello's answer: 1 of 2 places");
+        full.connected(2, "10.0.0.2:2");
+        full.received(2, P(Package::login), login(u"B"));
+        check(take_reply(full_out, 2).has_value(), "places: the second player");
+        full.connected(3, "127.0.0.1:3");
+        full.received(3, P(Package::console_login), login(u"DSP"));
+        check(take_reply(full_out, 3).has_value(), "places: a console is not a player");
+        full.tick(1.0);
+        const auto second = discord_of(1);
+        check(second && second->players == 2, "the party told again: 2 of 2");
+        full.connected(4, "10.0.0.4:4");
+        full.received(4, P(Package::login), login(u"C"));
+        check(full_out.out[4] == net::Bytes{0x02, 0x47} && full_out.closed.contains(4), "all places taken: 0x4702");
+        full.closed(2);
+        full.connected(5, "10.0.0.2:5");
+        full.received(5, P(Package::login), login(u"C"));
+        check(take_reply(full_out, 5).has_value(), "a place freed: a new player in");
+        full.connected(6, "10.0.0.2:6");
+        full.received(6, P(Package::login), login(u"B"));
+        check(take_reply(full_out, 6).has_value(), "one coming back under his nick: in though the places are taken");
+    }
     game.connected(11, "127.0.0.1:11");
     game.received(11, P(Package::time), net::Bytes(4));
     check(rec.out[11].size() == 2 && rec.out[11][0] == 0x04 && rec.closed.contains(11), "not a login: 0x4704");
@@ -262,6 +339,14 @@ void game() {
     check(net::openrts_hello_storm(net::encode_openrts_hello(net::openrts_features, true)) &&
               !net::openrts_hello_storm(net::encode_openrts_hello()) && net::decode_openrts_hello(net::encode_openrts_hello(1, true)) == 1,
           "the hello's thunderstorm byte");
+    {
+        const net::OpenrtsDiscord join{.address = u"26.1.2.3:800", .players = 3, .places = 16};
+        check(!net::openrts_hello_discord(net::encode_openrts_hello(1, true)) &&
+                  net::openrts_hello_discord(net::encode_openrts_hello(1, false, join)) == join &&
+                  net::openrts_hello_discord(net::encode_openrts_hello(1, true, net::OpenrtsDiscord{})) == net::OpenrtsDiscord{} &&
+                  net::openrts_hello_storm(net::encode_openrts_hello(1, true, join)),
+              "the hello's Discord join (address, players, places) after the storm byte");
+    }
     check(reply && reply->counts[0] == 20 && reply->counts[1] == 0 && reply->counts[2] == 1 && reply->counts[3] == 2, "the route's four counts");
     check(reply && reply->description == u"Маршрут: TestRoute\r\nСезон: Лето", "the description");
     check(!rec.closed.contains(1), "Alice stays connected");
@@ -528,6 +613,44 @@ void game() {
             }
         }
         check(state, "the console gets the game's state: the trains with their owner");
+        // What a train can take next, asked by the console (no station
+        // routes on this track: not found).
+        game.received(6, P(Package::console_next), net::encode_console_next_ask({.train = 1}));
+        bool answered = false;
+        for (const auto& g : take(rec, 6)) {
+            if (g.id != P(Package::console_next_reply)) continue;
+            const auto n = net::decode_console_next(g.body);
+            answered = n && n->train == 1 && !n->found && n->routes.empty();
+        }
+        check(answered, "a console's console_next answered");
+        {
+            // The segments after the trains (2026-11-21); a state without them still reads.
+            net::ConsoleState s;
+            s.trains.push_back({.id = 3, .number = 101});
+            s.segments.push_back({.id = 7, .train = 3, .route = 552, .station = u"Краснодар-1", .name = u"НМ4БП => Н1", .reverse = true,
+                                  .hold = true, .priority = 2, .state = 1, .thrown = 4, .junctions = 10});
+            const auto back = net::decode_console_state(net::encode_console_state(s));
+            check(back && back->segments.size() == 1 && back->segments[0].name == u"НМ4БП => Н1" && back->segments[0].reverse &&
+                      back->segments[0].hold && !back->segments[0].reversed && back->segments[0].priority == 2 && back->segments[0].thrown == 4 &&
+                      back->segments[0].junctions == 10,
+                  "console_state: the segments both ways");
+            net::ConsoleState without;
+            without.trains = s.trains;
+            auto old = net::encode_console_state(without);
+            old.resize(old.size() - 4); // no segment count: a server before
+            const auto read = net::decode_console_state(old);
+            check(read && read->trains.size() == 1 && read->segments.empty(), "console_state without segments (an older server)");
+            net::ConsoleNext n{.train = 3, .back = true, .found = true, .rear_first = true, .after = 7, .after_name = u"Н1"};
+            n.routes.push_back({.route = 555, .reverse = true, .main_track = true, .platform = true, .track_length = 850.0f, .distance = 1200.0f,
+                                .station = u"Ст", .name = u"Маршрут"});
+            const auto m = net::decode_console_next(net::encode_console_next(n));
+            check(m && m->back && m->found && m->rear_first && m->after == 7 && m->after_name == u"Н1" && m->routes.size() == 1 &&
+                      m->routes[0].route == 555 && m->routes[0].reverse && m->routes[0].main_track && m->routes[0].platform &&
+                      !m->routes[0].wrong_way && m->routes[0].track_length == 850.0f && m->routes[0].name == u"Маршрут",
+                  "console_next both ways");
+            const auto ask = net::decode_console_next_ask(net::encode_console_next_ask({.train = 9, .back = true}));
+            check(ask && ask->train == 9 && ask->back, "console_next's ask both ways");
+        }
 
         // A consist by its cars, from the console only.
         net::ConsolePlace place;
@@ -1570,7 +1693,26 @@ void session(const std::filesystem::path& root) {
     const auto next = s->command("next " + std::to_string(trains.front().id), quit);
     check(next.find("552  Краснодар-1: НМ4БП => Н1") != std::string::npos && next.find("from the train") != std::string::npos,
           "next lists the routes from the train's head");
+    // The same for a remote console (console_next_reply), through its codec.
+    {
+        const auto listed = net::decode_console_next(net::encode_console_next(s->game().next_routes(trains.front().id, false)));
+        bool has = false, ranked = true;
+        int rank = 0;
+        for (const auto& c : listed ? listed->routes : std::vector<net::ConsoleRouteChoice>{}) {
+            has = has || (c.route == 552 && c.station == u"Краснодар-1" && c.name == u"НМ4БП => Н1");
+            const int here = c.wrong_way ? 2 : c.main_track ? 0 : 1;
+            ranked = ranked && here >= rank;
+            rank = here;
+        }
+        check(listed && listed->found && listed->after == 0 && has && ranked,
+              "console_next: the routes from the train's head, main tracks first, onto a wrong track last");
+        check(!s->game().next_routes(99, false).found, "console_next: a train that is not there");
+    }
     const auto segment = s->command("segment " + std::to_string(trains.front().id) + " 552", quit);
+    {
+        const auto listed = s->game().next_routes(trains.front().id, false);
+        check(listed.found && listed.after != 0 && listed.after_name == u"НМ4БП => Н1", "console_next: from the end of the train's segment");
+    }
     const auto after = s->command("next " + std::to_string(trains.front().id), quit);
     check(after.find("from the end of segment") != std::string::npos && after.find("Краснодар-1: ") != std::string::npos,
           "next goes on from the end of the train's last segment");

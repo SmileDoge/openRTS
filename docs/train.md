@@ -660,10 +660,22 @@ built, against the proposal below:
 - **Choosing a car's distributor** (2026-11-16). RTS and MSTS content says
   nothing of it: a multiple unit's cars are `Type ( Engine )` like a
   locomotive's, the trailer cars often `.eng` too, and freight locomotives
-  (2ТЭ10, ВЛ10к, 2ЭС4к) carry the EP flag. A player chooses it in the car
-  menu at a bogie, with the realistic air: "Distributor: 292, by the car's
-  type (switch to EVR 305-000, kept in a mod)", stepping 483 → 292 →
-  305-000 → 305-001 → 483. The choice is the car's type's (its `.wag` /
+  (2ТЭ10, ВЛ10к, 2ЭС4к) carry the EP flag. openRTS's stock rules give
+  freight locomotives (ВЛ10, ВЛ80, ВЛ85, 2ЭС4к, 2ТЭ10, М62, ТЭМ2, ЧМЭ3, ...
+  by the folder's or file's name; not the 2ТЭ10УТ, the ВЛ60ПК) the 483
+  (testers 2026-11-20: "so it should have been from the start";
+  `packs/stock/freight_locomotives.luau`, `docs/scripting.md`); their EP
+  flag stays: the locomotive feeds the train's ЭПТ line and its 395
+  works it, its own cylinder answers the pipe through the 483 (an ЭВР 305
+  sits on a 292). A player chooses it in the car menu at a bogie, with the
+  realistic air, three lines since 2026-11-20 (the player's wish):
+  "Distributor: 483, freight, by the car's type (switch to 292, passenger,
+  kept in a mod)"; with a 292 "EP brake: none / EVR 305-000 / EVR 305-001
+  (multiple units)" stepping round; on a locomotive "418 sensor (openRTS
+  brakes): fitted, as the 483 gives (take it off, kept in a mod)" (with a
+  292 none; `ORTSBrakeSensor418 ( 0 | 1 )` in the companion; the 418 in
+  docs/brakes-dll-replacement.md). Back from 483 the car gets its type's
+  292 or 305 again. The choice is the car's type's (its `.wag` /
   `.eng`; "by the car's type" is the file's or the stock rules', the ЭД4М's
   305-001): every car of that type changes at once, and it is written to the
   edits mod (`MODS_OPENRTS/openrts_edits`, the inspector's; openrts.ini's

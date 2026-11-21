@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <map>
+#include <set>
 #include <optional>
 #include <vector>
 
@@ -84,6 +85,10 @@ public:
     // The keys no longer reach the cab (the engineer left the car): the
     // buttons a key holds (NONFIXED) go back to their FixedState, as if let go.
     void release_keys();
+    // A key of the player's cab bound to switch `id` the way `direction`
+    // (+1 up, -1 down; 0 either) is down now (Brakes.dll's springs, as its
+    // GetAsyncKeyState on the switch's AssignKey).
+    [[nodiscard]] bool key_held(std::uint32_t id, int direction) const;
     // Switch `id` of the player's cab to `state` (through the DLL's
     // CanSwitch / Switched, as a key would; --capture-switch).
     void set_switch(std::uint32_t id, std::uint32_t state) { operate(id, state); }
@@ -142,6 +147,7 @@ public:
         if (consist_) consist_->set_own_klub(own);
     }
     [[nodiscard]] std::size_t klub_cars() const { return consist_ ? consist_->klub_cars() : 0; }
+    [[nodiscard]] std::size_t without_brakes_dll() const { return consist_ ? consist_->without_brakes_dll() : 0; }
     [[nodiscard]] std::size_t take_restored() { return consist_ ? consist_->take_restored() : 0; }
     bool reconsist(const core::Vfs& vfs, const std::vector<std::vector<LegacyCarRef>>& trains,
                    const std::vector<simulation::Train*>& sims);
@@ -241,6 +247,7 @@ private:
 
     std::unique_ptr<trainplugin::LegacyConsist> consist_;
     std::vector<Binding> bindings_;
+    std::set<int> keys_down_; // the GLFW keys down, as the cab's key events left them
     std::map<std::uint64_t, std::uint8_t> going_down_; // ping-pong direction per car << 32 | switch id
     std::optional<std::pair<std::size_t, std::uint32_t>> held_; // the button the mouse holds down: car, id
     struct Drag {

@@ -140,7 +140,8 @@ struct TcpServer::Impl {
             const auto length = static_cast<std::uint32_t>(head[2]) | (static_cast<std::uint32_t>(head[3]) << 8) |
                                 (static_cast<std::uint32_t>(head[4]) << 16) | (static_cast<std::uint32_t>(head[5]) << 24);
             // RTS drops a user whose package is too long or too short (0x47FF).
-            if (length < 6 || length > (first ? login_limit : package_limit)) break;
+            const auto limit = !first ? package_limit : package == 0x4500 ? console_login_limit : login_limit;
+            if (length < 6 || length > limit) break;
             NetEvent event{.kind = NetEvent::Kind::package, .connection = id, .id = package};
             event.body.resize(length - 6);
             if (!event.body.empty() && !read_exact(connection->socket, event.body.data(), event.body.size())) break;

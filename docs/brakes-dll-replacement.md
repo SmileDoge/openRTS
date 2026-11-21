@@ -187,8 +187,8 @@ openRTS around a running Brakes.dll, as now, is what this replaces.
      realistic air instead of Brakes.dll's valve; the train's DLL's
      `var + 32` bits before Brakes.dll's `Run` reach them (protocol 14,
      `AuxExchange`); the cab's gauges and lamps (`BR_MAN*`, `BR_LAMP*`)
-     show theirs; Brakes.dll's ЭПК trip opens the pipe. Brakes.dll's
-     springs (the 254's I) and its air sounds stay its own until step 5.
+     show theirs; Brakes.dll's ЭПК trip opens the pipe. The springs and
+     the air sounds: "The rest", stage 1 (2026-11-20).
    - 2.4 (done): the harness (`--brakes openrts [--numbers books]`) and
      `tools/reverse/golden_compare.py` against the golden runs. The ЭД9М
      and the ЭП20 match them in the УР, the independent brake and the
@@ -277,6 +277,111 @@ openRTS around a running Brakes.dll, as now, is what this replaces.
 
 Each step keeps the switch back to Brakes.dll.
 
+### The rest (2026-11-20)
+
+The testers asked for openRTS's own devices in place of Brakes.dll's
+altogether (the request accepted 2026-11-20): ТСКБМ, САУТ and the 3СЛ-2М
+behave as the content expects them to, as the КЛУБ does. Brakes.dll is
+MaDaDev's library; openRTS neither ships nor changes it, and with
+"Brakes.dll" chosen everything works as before. Each stage below keeps the
+switch back to it. Compatibility is checked as for the КЛУБ: the same
+scenarios run with Brakes.dll and with openRTS side by side
+(`openrts-train-check --klub shadow`), and their results compared.
+
+1. **The springs and the air sounds** (done 2026-11-20). openRTS's cab
+   brake devices play the content's air sounds (Brakes.sms, on the
+   locomotive's SMS too with `TRANS_SOUND`; the 31xx forms with
+   `BR_130MODE` / `BR_224MODE`): the valve's I and II feeding, V, the pipe
+   vented, II at the charge, the ЭПТ's apply and release, the ТМ needle
+   over the pipe, the 254's and 4ВК's filling and letting out
+   (`LegacyConsist::own_air_after`). The valve's feed is the realistic
+   air's (`CarState::valve_feed`, the 395 relay's flow into the pipe). The
+   ТМ needle lags by the handle and the train's length. The springs
+   (`trainplugin::brake_springs`): the 254's, 254Д's and КПТ's last
+   position back once neither its key nor the mouse holds it. The 4ВК's
+   direction now follows `BR_FLIPCABS`. Against the golden runs
+   (`ed9m_brakes`, `ep20_brakes`, `--brakes openrts`): the same sounds
+   phase by phase; the times differ by the air (in VI the realistic pipe is
+   empty in under a second). In VI openRTS's ЭПТ does nothing.
+2. **ТСКБМ** (done 2026-11-20): with "КЛУБ: openRTS" ТСКБМ is openRTS's
+   too, part of the КЛУБ's step: its timer for the screens and the train's
+   DLLs, its display and lamps (`TSKBM_DISP`, `PIT`, `L1` .. `L3`, L2's
+   blink), its whistle, request, warning and the ЭПК at 0; any switch
+   starts it again. Checked: `openrts.content.klub_ed9m_tskbm` (a new
+   script) and the ЭП20's (the БЛОК), with the КЛУБ's own runs
+   (`..._own`).
+3. **САУТ** (done 2026-11-20): with "КЛУБ: openRTS" САУТ is openRTS's too
+   (`simulation/src/saut.cpp`), part of the КЛУБ's step, for the КЛУБ's
+   screens and the train's DLLs: its keys in the working cab, its modes
+   (ГР, УК, КОМ, ПОД, К20, ОТП), its target and distance, its braking (the
+   DLLs cut traction), its displays (`SAUT_DBID`, `SAUT_DFID`), its sounds
+   (on the locomotive's SMS with `TRANS_SOUND`), its announcements from the
+   track items (platforms, crossings and the routes' `%n` sidings:
+   Новокузнецк, Чернышевск, Павловск, Кубань and Степи Приазовья have
+   them); the КЛУБ's screen shows "СРЫВ ЭПК САУТ". Checked: every КЛУБ
+   script (the ЭД9М's, 2ЭС6, ЭП20, ЭП2К, ЭП1) and a new one,
+   `openrts.content.klub_ed9m_saut` (the modes, the aspects, a red at 90 ..
+   100 m), with its own run (`..._own`). Not in the checks: the ЭД9М's
+   braking coefficient (it brakes with its ЭПТ), the announcements (the
+   check runs on a line without them).
+4. **The speed recorder** (done 2026-11-20 for the 3СЛ-2М): with "КЛУБ:
+   openRTS" the cabs without the КЛУБ that have `SL_SPEED1` take openRTS's
+   speed recorder and ALSN vigilance (`simulation/recorder.cpp`): the
+   needle, the clock wound by its key, the rolling odometer, the periodic
+   check by the aspect and the speed with its whistle, the requests, the
+   ЭПК venting when overdue or when the train runs with the ALSN off, the
+   lamps (`SL_PSS`, `SL_HL`), the ВК on К, the РБ, the РБС, the ВК and the
+   clock's key, its sounds. Checked on the ВЛ10
+   (`openrts.content.recorder_vl10`: the КЖ's check and its venting, the
+   ALSN off on the move, the РБ and the РБС, the clock), with its own run
+   (`..._own`). Not openRTS's yet: the КПД-3 (`SL_KPDSPD1`: ВЛ60к, ВЛ60пк,
+   2ВЛ60к, ВЛ80С), the УКБМ (`SL_SETUP` 8: 2ТЭ10У, 2ТЭ10В, 3ТЭ10У, 2М62У),
+   the МУ blocks (`SL_SETUP` `0x10`: no content of the installation); the
+   recorder's state in a saved game (it starts afresh); openRTS's tape
+   (docs/tape.md) from it.
+5. **The rest of the cab** (done 2026-11-20): the coordinate
+   (`Engine::CurrentMilepost`) as RTS works it out
+   (docs/reverse/train-dll.md §21; `simulation/milepost.cpp`), given to
+   every engine of the player's train before its DLLs run
+   (`CarInput::current_milepost`): the КЛУБ's coordinate lines and САУТ's
+   modes read it (on Kuban: 1338 km at Albashi, moving 0.46 .. 0.55 km in
+   500 m by the posts' spacing). The `RC_*` parameters are the
+   RTSCONNECTOR library's (MaDaDev's link to its programs): nothing to take
+   over there; that library stays as it is.
+6. **The cars Brakes.dll keeps whole** (the list made 2026-11-20, over the
+   installation's 2517 `.eng` with Brakes.dll in 52 families):
+   - Taken now: the cars with `BR_KID` and the ВЛ82м's `BR_OTID` take
+     openRTS's cab brakes (223 + 16 `.eng`: the 2ТЭ10М, 2ТЭ10Л, 2ТЭ10У,
+     2ТЭ10В, 3ТЭ10М, 3ТЭ10У, ТЭП10Л, ВЛ80С, ВЛ82м). Of 2517, 263 keep
+     Brakes.dll's brakes.
+   - Brakes.dll's still, each its own port: the 334 (`BR_334ID`, the ЭР9's,
+     ЭР9П's, ЭР9ПК's valve: 51 `.eng`) and the custom 292 (`BR_292CUSTOM`:
+     170, the same families); the ЭП2Д's ППТ (`BR_PPTID`: 26); the КПД-3,
+     the УКБМ, the МУ blocks (stage 4).
+   - Every other parameter the installation gives Brakes.dll is read by
+     openRTS's devices (the brakes' `understood()` rules over every
+     `.eng`).
+7. **Brakes.dll not loaded** (done 2026-11-20 for the КЛУБ's cabs): with
+   "Without Brakes.dll where all of it is openRTS's" (the Train window, from
+   the next train; `LegacyConsist::set_without_brakes_dll`, train-check
+   `--brakes-dll none`) a car whose every part openRTS has — its brakes
+   understood, a КЛУБ openRTS takes (with ТСКБМ and САУТ), no speed
+   recorder — gets a `BRAKES` library without code
+   (`AuxLibrarySpec::stub`: no DLL loaded; its parameters and Brakes.sms
+   kept). openRTS's КЛУБ and cab brakes stay on for that train on the
+   realistic air (to go back, load the train again with the box off). What
+   the train's DLL reads from the brakes there (that they run, the
+   distance, the ЭПТ's pressure, the 418, a braking position, the ALSN, the
+   switches' sounds) openRTS gives. Without it every КЛУБ script passes (the
+   ЭД9М's КЛУБ, modes, ТСКБМ, САУТ; the 2ЭС6, ЭП20, ЭП2К, ЭП1); tests
+   `openrts.content.klub_ed9m_no_brakes_dll`, `klub_ep20_no_brakes_dll`. A
+   multiple unit's other cars (the ЭД9М's motor and trailer cars, no КЛУБ)
+   keep Brakes.dll. Not yet without it: the speed recorder's cabs (their
+   ALSN delay), the 334 / 292 / ППТ, the КПД-3, УКБМ, МУ; the 367's lock
+   while moving and the cassette's state; the cab's aspect as the train's
+   DLL reads it (openRTS's КЛУБ keeps its own); a saved game without it
+   not checked.
+
 In a network game the modules run in `simulation`, so the server can run
 them later as it does the air.
 
@@ -322,8 +427,30 @@ on a rise of 0.015–0.03 MPa).
 The ЭПТ's level for cars on RTS's air (`ep_value`) fills at 1 atm/s and
 lets out 0.65 atm/s, as Brakes.dll's on the ЭД9М (its golden run); on the
 realistic air the cars' ЭВР take only the command and fill and let out at
-their own rates (docs/reverse/air-brakes-real.md). The 418's
-numbers stay Brakes.dll's: the device came after the book.
+their own rates (docs/reverse/air-brakes-real.md).
+
+The 418 (2026-11-20, the testers' request; Афонин и др. §4.7, Асадченко
+§4.3.5) works as the real one with both sets of numbers under the realistic
+air, on a locomotive with the ВР 483 only (`simulation::sensor418_fitted`):
+the testers: the 418 is a freight locomotive's, a 292's (the ЭП1's, a ЧС's,
+a multiple unit's) has none. openRTS's stock rules give freight
+locomotives the 483 (`packs/stock/freight_locomotives.luau`,
+docs/scripting.md), and the car menu takes the 418 off or the 483 away
+(docs/train.md). Its ДДР closes when that 483 starts an application with
+its additional discharge (its quick service, an emergency); with its ДТЦ
+still closed (the distributor's ТЦ channel under 0.5 kgf/cm²: it opens at
+0.4-0.7, set to 0.5, by МПС's ЦТ-533 and the ВЛ11's signaller; РЖД's: out
+over 0.07 MPa; the testers) the relay picks up and holds itself: the lamp ТМ and no traction (for the
+train's DLL as well), until that channel opens the ДТЦ. The channel is the pressure the
+distributor works its cylinder to (`DistributorState::channel`), not the
+cylinder: the engine's own brake let off (the 254) while the train brakes
+puts the lamp out all the same. A service application: a flash (some 2.5 s
+on the ВЛ10 from V); a break: lit until the channel fills (the testers: it
+gets there), an emergency the same in under a second; a channel held short
+of the ДТЦ would keep it lit. An overcharge going (a slow fall) and a
+release do not set it off, nor the ЭПТ braking the train by wire with the
+pipe standing (the 483 starts nothing). Where Brakes.dll's brakes work,
+its own 418 stays.
 
 ## The real КЛУБ-У against Brakes.dll's (step 3.5)
 
@@ -384,6 +511,20 @@ Brakes.dll's way above.
   track's signal, whatever way the switches lie. The aspect stays the
   codes' (ALSN of the track the train is on). The screen names the target
   by its letter where the database has one.
+- **In the station** (2026-11-20, the testers' request: on track 6 with 1
+  entered the КЛУБ drew ЧМ6, on 1 with 3 НГ1; the way-to search had found
+  the next station's track 1, through ЧМ6): the front on another track of a
+  station with the entered one, or in its throat past its entry signal
+  until it passes a track's signal, takes the entered track's signal the
+  way it runs, as the real КЛУБ-У's map by its coordinate. Measured along
+  that track from its point abreast of the front (in the throat: the
+  metres up to its near end, straight on, added); of two tracks of the
+  number ("2", "2А"; "6н", "6ч") the nearest beside the front with a
+  signal ahead. Not taken past the entered track's far end, nor for a
+  track more than 500 m off (another park): the way-to search then, as
+  before. Over every station track with another of its station's numbers
+  entered, both ways: the entered track's signal in 76 % (Чернышевск), 84 %
+  (Новокузнецк), 87 % (Kuban).
 - **"Без ЭК":** no number, 99 (the instructions' way into it), a number no
   station of the route has; or once the train passes the signal of another
   track (it took another way: the testers' 3 → 1 → Н1 case), or the entry
@@ -401,7 +542,8 @@ Brakes.dll's way above.
   otherwise. The log says each change (`КЛУБ ЭК, track 3: target НМ3 in
   1234 m`, `… без ЭК`).
 - Tests: `tests/electronic_map_test.cpp` (Kuban, content: Albashi's tracks
-  entered from Староминская, driven through on track 1 to Деревянковка),
+  entered from Староминская, driven through on track 1 to Деревянковка;
+  standing on its track 1 with each other track entered, both ways),
   `tests/klub_test.cpp` (`test_electronic_map`).
 
 ## Open

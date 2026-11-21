@@ -133,10 +133,12 @@ Questions, discussion and bug reports: our
 - **Own server** `openrts-server` (RTS-compatible, Legacy mode,
   [more](docs/server.md)): `rts1.exe` and openRTS log in to it as to
   `rts_server.exe`. It decides junctions and runs the signals with every
-  train, carries out couplings and cuts; the dispatcher works at its
-  console: trains, assignments, routes, junctions, signals, time, pause,
-  messages. Next: the server with its own console map, as `rts_server.exe`;
-  the remote dispatcher's console after it.
+  train, carries out couplings and cuts, engineers' helpers. The
+  dispatcher works in its window, a console on the route's map as
+  `rts_server.exe`'s: trains, assignments, station routes, junctions,
+  signals, time, pause, messages; or from another computer with openRTS's
+  remote dispatcher's console, by the dispatcher password. The start menu
+  starts it too.
 - **Signalling:**
   - `sigscr.dat` scripts compiled exactly as RTS compiles them;
   - blocks, routes, occupancy by the whole train;
@@ -266,9 +268,11 @@ The easiest way is the start menu. It has four tabs:
   joined before, where to start (in the cab or above the train);
   "Connect". The server gives the route, season, weather and
   time, the dispatcher the train. Until there is one the menu shows the
-  wait, which can be cancelled. An own server is `openrts-server`, next to
-  the game ([docs/server.md](docs/server.md)); the menu does not start it
-  yet.
+  wait, which can be cancelled. "Join as: Dispatcher (console)" is an
+  openRTS server's dispatcher's console (from another computer with the
+  dispatcher password). On the right "Own server": "Open the server's start
+  window" (`openrts-server` with the RTS folder, in its own window,
+  [docs/server.md](docs/server.md)) and "Join my server".
 - **Settings:** the RTS folder (typed, or "Browse..." to pick it), language, key layout, the key hints at the
   bottom of the screen (they can be turned off; the game's panel too), the
   mouse sensitivity and the head motion in the cab (the game's panel too),
@@ -277,6 +281,8 @@ The easiest way is the start menu. It has four tabs:
   settings and log folder, updates, the game in the Discord profile
   ("Playing openRTS": in the menu or driving which engine, the route, the
   time; on by default, told only to the Discord program on this computer).
+  When an openRTS server allows "Join from Discord", the profile has
+  "Join": a friend's openRTS menu opens and connects to the same server.
 - **Graphics:** every graphics setting of the game's panel in groups
   (screen, renderer, shadows, ambient occlusion, lamps, sky and water,
   world), presets from Low to Ultra, and each setting's load on the CPU

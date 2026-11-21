@@ -48,10 +48,17 @@ void on_signal(int) { stop_requested = true; }
 constexpr const char* usage =
     "usage: openrts-server [--route <folder>] [--root <RTS installation>] [--port 800]\n"
     "                      [--season spring|summer|autumn|winter] [--weather clear|snow|rain|storm] [--time HH:MM]\n"
-    "                      [--no-admit] [--data <folder>] [--run <seconds>] [--command \"<line>\"]... [--no-window]\n"
+    "                      [--no-admit] [--data <folder>] [--dispatcher-password <text>]\n"
+    "                      [--discord-join] [--public-address <host:port>] [--max-players <n>]\n"
+    "                      [--run <seconds>] [--command \"<line>\"]... [--no-window]\n"
     "  without --no-window (or --run) the server's window opens: its start form, then its map console;\n"
     "  --no-window runs it at the console (--route needed)\n"
     "  --data      where the server keeps its files (openRTS's user data folder by default)\n"
+    "  --dispatcher-password  the dispatcher's console from another computer logs in with it\n"
+    "              (none: only from this one)\n"
+    "  --discord-join  openRTS players may be joined from their Discord profiles (\"Join\"),\n"
+    "              at --public-address (else the address each one connected to)\n"
+    "  --max-players  places: a new player beyond so many is refused (0, as by default: no limit)\n"
     "  --run       stop after so many seconds (tests); --command runs a console line at start\n"
     "  players get their trains from the dispatcher at the server's console\n";
 
@@ -130,6 +137,11 @@ int main(int argc, char** argv) {
     double time_of_day = 12.0 * 3600.0;
     bool admit = true;
     fs::path data;
+    std::string dispatcher_password;
+    bool root_given = false, port_given = false, password_given = false;
+    bool discord_join = false;
+    std::string public_address;
+    std::uint32_t max_players = 0;
     double run_for = -1.0;
     std::vector<std::string> commands;
     bool no_window = false;
@@ -143,11 +155,22 @@ int main(int argc, char** argv) {
         } else if (a == "--root" && has_value) {
             const auto& text = args[++i];
             root = fs::path(std::u8string(text.begin(), text.end()));
+            root_given = true;
+        } else if (a == "--discord-join") {
+            discord_join = true;
+        } else if (a == "--public-address" && has_value) {
+            public_address = args[++i];
+        } else if (a == "--max-players" && has_value) {
+            max_players = static_cast<std::uint32_t>(std::clamp(std::stoi(args[++i]), 0, 65535));
+        } else if (a == "--dispatcher-password" && has_value) {
+            dispatcher_password = args[++i];
+            password_given = true;
         } else if (a == "--data" && has_value) {
             const auto& text = args[++i];
             data = fs::path(std::u8string(text.begin(), text.end()));
         } else if (a == "--port" && has_value) {
             port = static_cast<std::uint16_t>(std::stoi(args[++i]));
+            port_given = true;
         } else if (a == "--season" && has_value) {
             const auto s = server::parse_season(args[++i]);
             if (!s) {
@@ -188,11 +211,13 @@ int main(int argc, char** argv) {
         }
     }
     server::SessionSettings settings{.root = root, .route = route_name, .data = data, .port = port, .season = season,
-                                     .weather = weather, .time_of_day = time_of_day, .admit = admit};
+                                     .weather = weather, .time_of_day = time_of_day, .admit = admit,
+                                     .dispatcher_password = dispatcher_password, .discord_join = discord_join,
+                                     .public_address = public_address, .max_players = max_players};
 #ifdef OPENRTS_SERVER_WINDOW
     // The window (as rts_server.exe: its start form, then its map console),
     // unless the console is asked for or a test runs it.
-    if (!no_window && run_for < 0.0) return server::run_server_window(settings, commands, capture, capture_at);
+    if (!no_window && run_for < 0.0) return server::run_server_window(settings, commands, capture, capture_at, {root_given, port_given, password_given});
 #endif
     if (route_name.empty()) {
         std::cerr << usage;

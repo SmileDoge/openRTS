@@ -50,14 +50,26 @@ struct ServerOptions {
     // rts_server.exe sends the time every 300 s (live capture 2026-11-05).
     double time_period = 300.0;
     bool admit = true;             // new players taken (else 0x4702)
-    // Remote dispatcher consoles (0x4500: rts_server_DSP.exe, openRTS's in
-    // the game). Off: refused with 0x4702. They come after the server
-    // itself, which is the dispatcher's as rts_server.exe is (the user's
-    // call, 2026-11-09); the code stays, the tests run it.
+    // Dispatcher consoles (0x4500: openRTS's in the game; rts_server_DSP.exe
+    // expects replies not read yet). Off: refused with 0x4702. Hidden from
+    // 2026-11-09 until the server was done; on since 2026-11-21.
     bool consoles = false;
-    // Nicks that may log in as a console from anywhere; from this computer
-    // any nick may.
+    // A console from this computer comes in with any nick. From another one
+    // it needs this password (0x4707 when wrong); without one it is refused
+    // (0x4702). Until 2026-11-21 a nick of `dispatchers` alone let it in.
+    std::string dispatcher_password;
+    // When not empty, a console from another computer also needs one of
+    // these nicks.
     std::vector<std::string> dispatchers;
+    // The game may be joined from the players' Discord profiles (their
+    // "Join" button; told to openRTS players in the hello's answer), at this
+    // address (empty: the one each player connected to).
+    bool discord_join = false;
+    std::string public_address;
+    // Places: a new player beyond so many playing is refused (0x4702), as
+    // when new players are not taken; one coming back under his nick is not.
+    // 0: no limit.
+    std::uint32_t max_players = 0;
 };
 
 // A train the dispatcher puts on the track.
@@ -259,6 +271,11 @@ public:
         std::optional<std::uint32_t> after;    // the segment it follows, nothing from the train
     };
     [[nodiscard]] std::optional<NextFrom> next_from(std::uint32_t train, bool back) const;
+    // The station routes the train can take next from there (as the
+    // window's "Станционные маршруты" lists them: main tracks first, onto a
+    // wrong track last, the nearest first between): a console's
+    // console_next answered.
+    [[nodiscard]] net::ConsoleNext next_routes(std::uint32_t train, bool back) const;
     void set_admit(bool admit) noexcept { options_.admit = admit; }
     [[nodiscard]] bool admits() const noexcept { return options_.admit; }
     // What a console's command line (console_command) runs: the server's
@@ -294,6 +311,11 @@ private:
     void send_helper(const User& user, const net::HelperNote& note);
     // `helper` asks or helps no more: he and the engineer are told.
     void end_helping(User& helper, net::HelperState why);
+    // The players connected (not the consoles).
+    [[nodiscard]] std::uint32_t players_connected() const;
+    // The answer to an openRTS player's hello: the storm, the Discord join
+    // with the players and the places.
+    [[nodiscard]] net::Bytes hello_answer() const;
     // He helps on `train` now: he and its engineer are told.
     void start_helping(User& helper, std::uint32_t train);
     // A helper's train gone or given to another: his help ends.

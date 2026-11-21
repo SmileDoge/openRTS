@@ -117,6 +117,11 @@ void NetSession::send_place(const net::ConsolePlace& place) {
     console_log_.push_back("> " + net::to_utf8(place.consist) + ": " + std::to_string(place.cars.size()) + " cars");
 }
 
+void NetSession::ask_next_routes(const std::uint32_t train, const bool back) {
+    if (!connection_ || train == 0) return;
+    connection_->send(net::id(net::Package::console_next), net::encode_console_next_ask({.train = train, .back = back}));
+}
+
 void NetSession::send_route(const std::uint32_t server_train, const float length, const bool rear_first) {
     if (!connection_ || server_train == 0) return;
     net::WireWriter w;
@@ -653,6 +658,9 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
     case P(net::Package::console_state):
         if (auto state = net::decode_console_state(body)) console_state_ = std::move(*state);
         return;
+    case P(net::Package::console_next_reply):
+        if (auto next = net::decode_console_next(body)) next_routes_ = std::move(*next);
+        return;
     case P(net::Package::couple):
         if (const auto c = net::decode_couple(body)) coupled(*c, network, trains);
         return;
@@ -697,6 +705,12 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         openrts_server_ = true;
         if (net::openrts_hello_storm(body) && !server_storm_) std::cout << "net: the server's weather is a thunderstorm" << std::endl;
         server_storm_ = net::openrts_hello_storm(body);
+        if (const auto discord = net::openrts_hello_discord(body)) {
+            if (!discord_join_) std::cout << "net: the server may be joined from Discord" << std::endl;
+            discord_join_ = DiscordJoin{.address = net::to_utf8(discord->address), .players = discord->players, .places = discord->places};
+        } else {
+            discord_join_.reset();
+        }
         return;
     case P(net::Package::player_pos):
         if (auto other = net::decode_other_player(body)) {

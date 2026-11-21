@@ -24,6 +24,7 @@ constexpr Named names[] = {
     {0x4704, "not_a_login"},
     {0x4705, "bad_version"},
     {0x4706, "flooding"},
+    {0x4707, "wrong_password"},
     {0x47FD, "drop_receive"},
     {0x47FE, "drop_short"},
     {0x47FF, "drop_bad"},
@@ -120,6 +121,8 @@ constexpr Named names[] = {
     {0x45F1, "console_reply"},
     {0x45F2, "console_state"},
     {0x45F3, "console_place"},
+    {0x45F8, "console_next"},
+    {0x45F9, "console_next_reply"},
 };
 
 } // namespace

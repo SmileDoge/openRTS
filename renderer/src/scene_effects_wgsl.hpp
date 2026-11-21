@@ -41,7 +41,7 @@ struct Effects {
     fog_ring: array<vec4<f32>, 12>,      // the horizon's colour at each fog_ring_angle (linear)
     cloud_area: vec4<f32>,               // the clouds' shadow map: xy its middle from the eye, z its half width, w the layer's middle above the eye (m)
     cloud_sun: vec4<f32>,                // xyz: towards the sun as the clouds are marched, w: strength (0: none)
-    cloud_edge: vec4<f32>,               // xy: the light read taken through smoothstep(x, y) (the edge band)
+    cloud_edge: vec4<f32>,               // xy: the light read taken through smoothstep(x, y) (the edge band); z: the light where the map's shadow is not (a low sun's, CloudShadow::low_sun)
     sky_light: vec4<f32>,                // the sky's light (SkyLight): x 1 on, y the prefiltered cube's last mip, z the sky's openness round the eye
     sky_tune: vec4<f32>,                 // its tuning: x the diffuse part, y the reflections, z the reflections indoors (factors)
     views: vec4<f32>,                    // x: the material debug view (0 none, 1 base colour .. 6 emission), y: the relief's reach (m, 0 off), z: its steps at most
@@ -103,10 +103,11 @@ fn effects_sky_openness(world: vec3<f32>) -> f32 {
 
 // The light openRTS's clouds let through to a point (cloud_shadow.hpp): the
 // point taken along the sun's way up to the layer's middle height, read
-// there; 1 without them.
+// there; a low sun's off the map by the clouds' cover (cloud_edge.z); 1
+// without them.
 fn effects_cloud_shadow(world: vec3<f32>) -> f32 {
     let strength = effects.cloud_sun.w;
-    if (strength <= 0.0) { return 1.0; }
+    if (strength <= 0.0) { return effects.cloud_edge.z; }
     let sun = effects.cloud_sun.xyz;
     let d = world - effects.eye.xyz;
     let q = d.xz + sun.xz * ((effects.cloud_area.w - d.y) / max(sun.y, 0.05));
@@ -115,7 +116,7 @@ fn effects_cloud_shadow(world: vec3<f32>) -> f32 {
     // fall-off through smoothstep, after the filtering, so the edge is
     // finer than the map's texels.
     let lit = smoothstep(effects.cloud_edge.x, effects.cloud_edge.y, textureSampleLevel(cloud_shadow_map, cloud_sampler, uv, 0.0).r);
-    return mix(1.0, lit, strength);
+    return effects.cloud_edge.z - strength * (1.0 - lit);
 }
 
 // A lamp's light reaching a point (`index`: the lamp in scene_lights): 1
@@ -161,7 +162,9 @@ fn effects_lamp_shadow_slot(s: u32, world: vec3<f32>, normal: vec3<f32>, frag: v
     // No hard line where a map ends: towards its edge, and in flight towards
     // the edge of the sphere the maps cover, the shadow fades out.
     let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
-    var fade = smoothstep(0.0, 0.06, edge);
+    // The slot's weight (keys' w): a lamp's shadow fading in or out as it
+    // takes or loses its slot.
+    var fade = smoothstep(0.0, 0.06, edge) * effects.lamp_shadow_keys[s].w;
     if (effects.lamp_focus.w > 0.0) {
         let r = effects.lamp_focus.w;
         fade = fade * (1.0 - smoothstep(0.75 * r, r, distance(world, effects.lamp_focus.xyz)));

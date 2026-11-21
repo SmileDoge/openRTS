@@ -2,9 +2,11 @@
 // replacement of Brakes.dll's, docs/brakes-dll-replacement.md): each does
 // what docs/reverse/brakes-dll.md §10 says Brakes.dll's does, with its
 // numbers, and the openRTS numbers differ where the books say.
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include <openrts/simulation/cab_brakes.hpp>
 
@@ -275,7 +277,8 @@ void gauges() {
             check(near(rig.out.gauge_cylinder, 3.5f) && near(rig.out.gauge_pipe, 3.5f), "openRTS: the gauges show the air");
         } else {
             check(near(rig.out.gauge_cylinder, 1.0f, 0.04f), "Brakes.dll: the ТЦ needle 1 atm/s: " + std::to_string(rig.out.gauge_cylinder));
-            check(near(rig.out.gauge_pipe, 4.5f, 0.04f), "Brakes.dll: the ТМ needle falls 0.5 atm/s: " + std::to_string(rig.out.gauge_pipe));
+            check(near(rig.out.gauge_pipe, 4.8f, 0.04f),
+                  "Brakes.dll: the ТМ needle in II without wagons falls 0.2 atm/s: " + std::to_string(rig.out.gauge_pipe));
             // 1 atm/s to 3.0, then 0.2 atm/s within 0.5 of it: 5.5 s.
             rig.run(4.0f);
             check(rig.out.gauge_cylinder < 3.45f, "Brakes.dll: the ТЦ needle slow near the pressure");
@@ -298,6 +301,76 @@ void gauges() {
         rig.run(dt);
         check(!rig.out.lamp_pipe, "418: out once the cylinder is over 0.3");
     }
+    {
+        // The 418 by the distributor's channels (the realistic air; the
+        // testers' request 2026-11-20): its ДДР, an application's additional
+        // discharge, with the ДТЦ closed (the ТЦ channel under 0.5) lights
+        // the lamp and holds it until the channel is over 0.5.
+        const auto rig418 = [] {
+            Rig rig;
+            rig.controls.sensor418 = true;
+            rig.air.distributor_known = true;
+            rig.air.sensor418_fitted = true;
+            rig.run(dt);
+            return rig;
+        };
+        {
+            // A 292's locomotive (the ЭП1's; testers 2026-11-20): no 418.
+            Rig rig = rig418();
+            rig.air.sensor418_fitted = false;
+            rig.air.distributor_discharge = true;
+            rig.run(dt);
+            check(!rig.out.lamp_pipe, "418: none without a 483 on the locomotive");
+        }
+        {
+            // A service application: a flash.
+            Rig rig = rig418();
+            rig.air.distributor_discharge = true;
+            rig.run(dt);
+            check(rig.out.lamp_pipe, "418: the ДДР with the ДТЦ closed lights it");
+            rig.air.distributor_discharge = false;
+            rig.air.distributor_channel = 0.3f;
+            rig.run(dt);
+            check(rig.out.lamp_pipe, "418: held while the ТЦ channel is under the ДТЦ");
+            rig.air.distributor_channel = 0.6f;
+            rig.run(dt);
+            check(!rig.out.lamp_pipe, "418: out once the ТЦ channel opens the ДТЦ");
+        }
+        {
+            // The channel held short of the ДТЦ (a leak braking nothing
+            // further): the lamp stays. A break fills it (testers): out then,
+            // as a service application.
+            Rig rig = rig418();
+            rig.air.distributor_discharge = true;
+            rig.run(dt);
+            rig.air.distributor_discharge = false;
+            rig.air.distributor_channel = 0.2f;
+            rig.run(5.0f);
+            check(rig.out.lamp_pipe, "418: the channel short of the ДТЦ keeps it lit");
+        }
+        {
+            // The train braked, the engine's own brake let off (the 254):
+            // its cylinder 0, the distributor's channel full, the lamp out.
+            Rig rig = rig418();
+            rig.air.distributor_discharge = true;
+            rig.run(dt);
+            rig.air.distributor_discharge = false;
+            rig.air.distributor_channel = 1.5f;
+            rig.air.cylinder = 0.0f;
+            rig.run(dt);
+            check(!rig.out.lamp_pipe, "418: out by the distributor's channel, the engine's cylinder released");
+        }
+        {
+            // An overcharge going (a slow fall, no application): nothing; nor
+            // a fast fall without an application, nor a release.
+            Rig rig = rig418();
+            for (int i = 0; i < 40; ++i) {
+                rig.air.pipe -= 0.5f * dt;
+                rig.run(dt);
+            }
+            check(!rig.out.lamp_pipe, "418: no additional discharge, no lamp");
+        }
+    }
 }
 
 void positions() {
@@ -313,8 +386,69 @@ void positions() {
 
 } // namespace
 
+// The air sounds as Brakes.dll posts them (§10, "Its air sounds"): each on
+// as its condition starts, off as it ends, once; the 31xx codes with
+// BR_130MODE; the ТМ needle's fall by the handle and the wagons.
+void sounds() {
+    const auto heard = [](const std::vector<std::uint16_t>& all, const std::uint16_t code) {
+        return std::count(all.begin(), all.end(), code);
+    };
+    Rig rig(5.0f);
+    rig.controls.charging = 5.1f;
+    rig.controls.ep_on = true;
+    std::vector<std::uint16_t> all;
+    const auto run = [&](const float seconds) {
+        for (float t = 0.0f; t < seconds - 1e-4f; t += dt) {
+            rig.out = step_cab_brakes(rig.state, rig.controls, rig.air, rig.numbers, dt);
+            all.insert(all.end(), rig.out.sounds.begin(), rig.out.sounds.end());
+        }
+    };
+    // II, the pipe at the charge: 132 once.
+    run(1.0f);
+    check(heard(all, 132) == 1 && heard(all, 133) == 0, "II at the charge: 132 once");
+    // II feeding the pipe: 126, then 127 once it stops.
+    rig.air.valve_feed = 0.3f;
+    run(0.5f);
+    rig.air.valve_feed = 0.0f;
+    run(0.5f);
+    check(heard(all, 126) == 1 && heard(all, 127) == 1, "II feeding: 126 then 127");
+    // V: 133 and 128 (the pipe venting), the ЭПТ applying 134; III: 129, 135.
+    rig.controls.valve = ValvePosition::service;
+    run(1.0f);
+    check(heard(all, 133) == 1 && heard(all, 128) == 1 && heard(all, 134) == 1, "V: 133, 128, the ЭПТ's 134");
+    rig.controls.valve = ValvePosition::lap;
+    run(1.0f);
+    check(heard(all, 129) == 1 && heard(all, 135) == 1, "III: 129, 135");
+    // The pipe vented at the engine with air in it: 130; empty: 131.
+    rig.controls.emergency = true;
+    run(0.2f);
+    rig.air.pipe = 0.05f;
+    run(0.2f);
+    check(heard(all, 130) == 1 && heard(all, 131) == 1, "the pipe vented: 130, then 131 once empty");
+    // BR_130MODE: the 31xx codes.
+    Rig mode(5.0f);
+    mode.controls.charging = 5.1f;
+    mode.controls.sounds_130 = true;
+    mode.out = step_cab_brakes(mode.state, mode.controls, mode.air, mode.numbers, dt);
+    check(heard(mode.out.sounds, 3132) == 1, "BR_130MODE: 3132");
+    // The ТМ needle: in III at 1 atm/s; in II 0.2 + 0.012 a wagon.
+    Rig lap(5.0f);
+    lap.controls.valve = ValvePosition::lap;
+    lap.run(0.1f);
+    lap.air.pipe = 3.0f;
+    lap.run(1.0f);
+    check(near(lap.out.gauge_pipe, 4.0f, 0.05f), "the ТМ needle in III: 1 atm/s down");
+    Rig running(5.0f);
+    running.controls.wagons = 50;
+    running.run(0.1f);
+    running.air.pipe = 3.0f;
+    running.run(1.0f);
+    check(near(running.out.gauge_pipe, 5.0f - 0.8f, 0.05f), "the ТМ needle in II, 50 wagons: 0.2 + 0.6 atm/s");
+}
+
 int main() {
     valve();
+    sounds();
     ept();
     independent();
     gauges();

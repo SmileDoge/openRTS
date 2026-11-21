@@ -419,6 +419,36 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/klub_ep1.script" --klub shadow)
     # The same in the game's way: openRTS's КЛУБ in place of Brakes.dll's
     # (Brakes.dll's switched off), on the realistic air and openRTS's brakes.
+    # ТСКБМ (PB_SETUP 4) in openRTS's КЛУБ: beside Brakes.dll's, and working the train.
+    add_test(NAME openrts.content.klub_ed9m_tskbm COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_tskbm.script" --klub shadow)
+    add_test(NAME openrts.content.klub_ed9m_tskbm_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_tskbm.script" --klub openrts --brakes openrts)
+    # Brakes.dll not loaded where every part of it is openRTS's (the КЛУБ's
+    # cabs on openRTS's brakes; docs/brakes-dll-replacement.md "The rest", 7).
+    add_test(NAME openrts.content.klub_ed9m_no_brakes_dll COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_klub.script" --klub openrts --brakes openrts --brakes-dll none)
+    add_test(NAME openrts.content.klub_ep20_no_brakes_dll COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_EP20-001 mdd_EP20-001 --start on --seconds 66
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/klub_ep20.script" --klub openrts --brakes openrts --brakes-dll none)
+    # The speed recorder and ALSN vigilance of a cab without the КЛУБ
+    # (SL_SPEED1, the ВЛ10): beside Brakes.dll's, and working the train.
+    add_test(NAME openrts.content.recorder_vl10 COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub shadow)
+    add_test(NAME openrts.content.recorder_vl10_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub openrts --brakes openrts)
+    # САУТ (PB_SETUP 1) in openRTS's КЛУБ: beside Brakes.dll's, and working the train.
+    add_test(NAME openrts.content.klub_ed9m_saut COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_saut.script" --seconds 600 --klub shadow)
+    add_test(NAME openrts.content.klub_ed9m_saut_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_saut.script" --seconds 600 --klub openrts --brakes openrts)
     add_test(NAME openrts.content.klub_ed9m_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_klub.script" --klub openrts --brakes openrts)

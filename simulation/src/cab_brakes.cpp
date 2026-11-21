@@ -37,9 +37,19 @@ CabBrakeNumbers CabBrakeNumbers::brakes_dll() {
     n.cylinder_needle_band = 0.5f;
     // 0.5 + 0.8 k / 100 with k = RTSGetInteger(2), 0 under openRTS's host.
     n.pipe_needle_fall = 0.5f;
+    n.pipe_needle_per_wagon = 0.008f;
+    n.pipe_needle_fall_running = 0.2f;
+    n.pipe_needle_per_wagon_running = 0.012f;
+    n.pipe_needle_fall_braking = 1.0f;
     n.sensor418_rate = 0.0125f;
     n.sensor418_time = 0.5f;
     n.sensor418_cylinder = 0.3f;
+    // The ДТЦ opens at 0.4-0.7 kgf/cm² in the distributor's ТЦ channel, set
+    // to 0.5 (0.5 -0.1 +0.2: МПС's ЦТ-533 on testing the brake equipment,
+    // the ВЛ11's signaller; РЖД's: the lamp out over 0.07 MPa; testers
+    // 2026-11-20); the ДДР closes at 1.1-1.3 kgf/cm² of the additional
+    // discharge.
+    n.sensor418_dtc = 0.5f;
     return n;
 }
 
@@ -82,9 +92,9 @@ std::optional<IndependentPosition> independent_position_of(const int state, cons
     return static_cast<IndependentPosition>(d);
 }
 
-std::optional<Vk4Position> vk4_position_of(const int state) {
+std::optional<Vk4Position> vk4_position_of(const int state, const bool flipped) {
     if (state < 0 || state > 2) return std::nullopt;
-    return static_cast<Vk4Position>(state);
+    return static_cast<Vk4Position>(flipped ? state : 2 - state);
 }
 
 namespace {
@@ -147,9 +157,11 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
             break;
         case ValvePosition::ep_service:
             if (c.valve_resting) ur = (std::max)(ur - n.slow_service * dt, 0.0f);
+            out.braking = true;
             break;
         case ValvePosition::service:
             if (c.valve_resting) ur = (std::max)(ur - n.service * dt, 0.0f);
+            out.braking = true;
             break;
         case ValvePosition::emergency:
             ur = (std::max)(ur - n.emergency_ur * dt, 0.0f);
@@ -237,16 +249,28 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
     if (air.pipe >= s.pipe_needle || n.pipe_needle_fall <= 0.0f) {
         s.pipe_needle = air.pipe;
     } else {
-        s.pipe_needle = (std::max)(s.pipe_needle - n.pipe_needle_fall * dt, air.pipe);
+        // Brakes.dll's fall by the handle: III .. VI at 1 atm/s, II and
+        // the rest faster the more wagons (to 100).
+        const float wagons = c.wagons <= 100 ? static_cast<float>(c.wagons) : 0.0f;
+        float fall = n.pipe_needle_fall + n.pipe_needle_per_wagon * wagons;
+        if (c.valve && *c.valve == ValvePosition::running) fall = n.pipe_needle_fall_running + n.pipe_needle_per_wagon_running * wagons;
+        else if (c.valve && *c.valve >= ValvePosition::lap) fall = n.pipe_needle_fall_braking;
+        s.pipe_needle = (std::max)(s.pipe_needle - fall * dt, air.pipe);
     }
     out.gauge_cylinder = s.cylinder_needle;
     out.gauge_pipe = s.pipe_needle;
     out.gauge_main_reservoir = mr;
     out.gauge_equalising = ur;
 
-    // The 418: the pipe falling without the ЭПТ until the engine's brake
-    // answers.
-    if (c.sensor418 && dt > 0.0f) {
+    // The 418: by the distributor's channels where the air has them (a
+    // locomotive's 483 only), else the pipe falling without the ЭПТ until
+    // the engine's brake answers.
+    if (c.sensor418 && air.distributor_known) {
+        const bool dtc_closed = air.distributor_channel < n.sensor418_dtc;
+        if (air.sensor418_fitted && air.distributor_discharge && dtc_closed) s.sensor418 = true;
+        if (!air.sensor418_fitted || !dtc_closed) s.sensor418 = false;
+        s.sensor418_time = 0.0f;
+    } else if (c.sensor418 && dt > 0.0f) {
         const float falling = (s.last_pipe - air.pipe) / dt;
         s.sensor418_time = !c.ep_on && falling > n.sensor418_rate ? s.sensor418_time + dt : 0.0f;
         if (s.sensor418_time > n.sensor418_time) s.sensor418 = true;
@@ -257,6 +281,59 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
     }
     s.last_pipe = air.pipe;
     out.lamp_pipe = s.sensor418;
+
+    // The air sounds (docs/reverse/brakes-dll.md §10, "Its air sounds"): a
+    // sound starts and stops with its condition, each a bit of the state
+    // as Brakes.dll keeps them (its 31xx codes with BR_130MODE /
+    // BR_224MODE).
+    const auto sound = [&](const std::uint32_t bit, const bool on, const std::uint16_t code_on, const bool mode_31) {
+        if (on == ((s.sounds & bit) != 0)) return;
+        s.sounds = on ? (s.sounds | bit) : (s.sounds & ~bit);
+        const auto code = static_cast<std::uint16_t>(on ? code_on : code_on + 1);
+        out.sounds.push_back(static_cast<std::uint16_t>(mode_31 ? code + 3000 : code));
+    };
+    const auto at = [&](const ValvePosition p) { return c.valve && *c.valve == p; };
+    // The independent brake: filling (120) applying with the cylinder
+    // under the value, letting out (122) releasing with it over; the 4ВК's
+    // by its position, then (BR_254ID1 given) the 254's by 0.05 atm either
+    // way; with a 4ВК the pipe gauge's sound also stops off II (a plain 137).
+    if (c.vk4) {
+        sound(0x2, *c.vk4 == Vk4Position::apply && air.independent < s.independent, 120, c.sounds_224);
+        sound(0x4, *c.vk4 == Vk4Position::release && air.independent > s.independent, 122, c.sounds_224);
+        if (!at(ValvePosition::running) && (s.sounds & 0x800u)) {
+            s.sounds &= ~0x800u;
+            out.sounds.push_back(137);
+        }
+    }
+    if (c.independent_sounds) {
+        const float gap = s.independent - air.independent;
+        sound(0x2, gap > 0.05f, 120, c.sounds_224);
+        sound(0x4, gap < -0.05f, 122, c.sounds_224);
+    }
+    // The pipe gauge's needle 0.2 atm over the pipe (falling behind it).
+    sound(0x800, out.gauge_pipe > air.pipe + 0.2f, 136, c.sounds_130);
+    // The valve's, while it works the pipe: I and II feeding it, V venting
+    // it, II with the pipe up at the charge (0.4 under the pressure named:
+    // Brakes.dll's (charge × 10 − 1 − 3) / 10).
+    if (connected) {
+        sound(0x8, at(ValvePosition::running) && air.pipe > c.charging - 0.4f, 132, c.sounds_130);
+        sound(0x10, at(ValvePosition::charge) && air.valve_feed > 0.05f, 124, c.sounds_130);
+        sound(0x20, at(ValvePosition::running) && air.valve_feed > 0.05f, 126, c.sounds_130);
+        sound(0x40, at(ValvePosition::service) && air.pipe > 0.1f, 128, c.sounds_130);
+    }
+    // The pipe vented at the engine (VI, ЭТ, a stop valve, the ЭПК; Brakes.dll's
+    // TrainPipeRate −1.2) while there is air in it.
+    sound(0x80, out.emergency && air.pipe > 0.1f, 130, c.sounds_130);
+    // The ЭПТ: its release with air in it, its apply under 4.3 atm. In an
+    // emergency openRTS's ЭПТ does nothing (Brakes.dll's applies in VI once
+    // the pipe is under 0.1: its 134 then).
+    if (c.ep_on) {
+        const float level = s.valve.ep_target;
+        const bool applying = out.ep_command == EpCommand::apply;
+        const bool holding = applying || out.ep_command == EpCommand::hold;
+        sound(0x400, !out.emergency && !holding && level > 0.05f, 122, c.sounds_130);
+        sound(0x100, !out.emergency && applying && level < 4.3f, 134, c.sounds_130);
+    }
     return out;
 }
 

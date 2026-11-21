@@ -161,6 +161,7 @@ void read_brakes(std::string_view text, BrakeEquipment& brakes, std::string& err
         brakes.distributor = *builtin;
         brakes.distributor_script.clear();
     }
+    if (auto sensor = values(text, "ortsbrakesensor418"); sensor.found()) brakes.sensor418 = sensor.atof() != 0.0;
     brakes.shoe = brake_shoe_from(values(text, "ortsbrakeshoetype").token());
     if (auto force = values(text, "ortsbrakeforce"); force.found()) brakes.realistic_brake_force = (std::max)(static_cast<float>(force.quantity()), 0.0f);
     if (auto add = values(text, "addbrakeforce"); add.found()) brakes.max_brake_force += static_cast<float>(add.quantity());
@@ -794,7 +795,12 @@ core::VirtualPath wagon_override_path(const std::string_view folder, const std::
     return core::VirtualPath::parse(wagon_path(folder, name, engine).str() + ".openrts").value_or(core::VirtualPath{});
 }
 
-std::string set_override_distributor(const std::string_view text, const BrakeDistributor distributor) {
+namespace {
+
+// `text` (a companion's) with its Wagon block's `key` line (folded, no
+// blanks) replaced by `entry`, or taken out for an empty one; the rest kept.
+// Empty when nothing is left in it.
+std::string set_override_line(const std::string_view text, const std::string_view key, const std::string& entry) {
     // Line by line: the companion is openRTS's own small file, a block a line.
     std::vector<std::string> lines;
     {
@@ -817,9 +823,8 @@ std::string set_override_distributor(const std::string_view text, const BrakeDis
         }
         return out;
     };
-    std::erase_if(lines, [&](const std::string& line) { return bare(line).find("ortsbrakedistributor") != std::string::npos; });
-    if (distributor != BrakeDistributor::inferred) {
-        const std::string entry = std::string("\tORTSBrakeDistributor ( \"") + brake_distributor_name(distributor) + "\" )";
+    std::erase_if(lines, [&](const std::string& line) { return bare(line).find(key) != std::string::npos; });
+    if (!entry.empty()) {
         const auto opener = std::find_if(lines.begin(), lines.end(), [&](const std::string& line) { return bare(line) == "wagon("; });
         if (opener != lines.end()) {
             lines.insert(opener + 1, entry);
@@ -849,6 +854,19 @@ std::string set_override_distributor(const std::string_view text, const BrakeDis
     std::string out;
     for (const auto& line : lines) out += line + "\r\n";
     return out;
+}
+
+} // namespace
+
+std::string set_override_distributor(const std::string_view text, const BrakeDistributor distributor) {
+    if (distributor == BrakeDistributor::inferred) return set_override_line(text, "ortsbrakedistributor", {});
+    return set_override_line(text, "ortsbrakedistributor",
+                             std::string("\tORTSBrakeDistributor ( \"") + brake_distributor_name(distributor) + "\" )");
+}
+
+std::string set_override_sensor418(const std::string_view text, const std::optional<bool> fitted) {
+    if (!fitted) return set_override_line(text, "ortsbrakesensor418", {});
+    return set_override_line(text, "ortsbrakesensor418", *fitted ? "\tORTSBrakeSensor418 ( 1 )" : "\tORTSBrakeSensor418 ( 0 )");
 }
 
 ConsistDefinition parse_consist(const std::string_view bytes) {

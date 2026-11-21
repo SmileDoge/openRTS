@@ -312,6 +312,20 @@ void Host::fail(Module& module, const wchar_t* call, std::uint32_t code) {
     log(L"DLL " + module.path + L": " + call + L" crashed (" + hex(code) + where + L"); the DLL is switched off");
 }
 
+// A library not loaded (AuxLibrarySpec::stub): no entry points, so none of
+// its calls is made; its variables and SMS are the car's as for a loaded one.
+Module* Host::stub_module(const std::wstring& path) {
+    const std::wstring name = L"(not loaded) " + path;
+    for (auto& m : modules_)
+        if (m->path == name) return m.get();
+    auto module = std::make_unique<Module>();
+    module->path = name;
+    Module* m = module.get();
+    modules_.push_back(std::move(module));
+    log(L"DLL " + path + L": not loaded, openRTS's devices in its place");
+    return m;
+}
+
 Module* Host::module_for(const std::wstring& path) {
     for (auto& m : modules_) {
         if (lstrcmpiW(m->path.c_str(), path.c_str()) == 0) return m->failed ? nullptr : m.get();
@@ -976,7 +990,7 @@ bool Host::bind(CarMirror& car) {
     car.aux.reserve(car.spec.aux.size());
     car.aux_info.reserve(car.spec.aux.size());
     for (const auto& spec : car.spec.aux) {
-        Module* am = module_for(from_u16(spec.module));
+        Module* am = spec.stub ? stub_module(from_u16(spec.module)) : module_for(from_u16(spec.module));
         if (!am) continue;
         ++am->refs;
         AuxMirror info;
@@ -1266,12 +1280,16 @@ void Host::write_aux(const StepRequest& request) {
     }
 }
 
-void Host::apply_aux_writes(AuxMirror& aux, const bool after_run) {
+void Host::apply_aux_writes(CarMirror& car, AuxMirror& aux, const bool after_run) {
     std::size_t kept = 0;
     for (std::size_t k = 0; k < aux.pending_writes.size(); ++k) {
         const auto w = aux.pending_writes[k];
         if ((w.after_run != 0) != after_run) {
             aux.pending_writes[kept++] = w;
+            continue;
+        }
+        if (w.target == 1) {
+            if (car.spec.cab.present) car.cabin.signal.aspect[0] = w.bits;
             continue;
         }
         if (w.offset % 4 != 0 || w.offset / 4u >= aux.var.size()) continue;
@@ -1316,6 +1334,9 @@ void Host::write_inputs(const std::vector<CarInput>& inputs) {
         // The slip the game found after the last step: the DLL reads it in Run.
         if (car.is_loco() && car.initialised) car.eng()->wheelslip = in.wheelslip;
         if (car.is_loco() && car.initialised && in.equalising >= 0.0f) car.eng()->ur = in.equalising;
+        if (car.is_loco() && car.initialised && in.engine_flags_word >= 0) car.eng()->flags = static_cast<std::uint32_t>(in.engine_flags_word);
+        if (car.is_loco() && car.initialised && in.alsn_on_word >= 0) car.eng()->alsn_on = static_cast<std::uint16_t>(in.alsn_on_word);
+        if (car.is_loco() && car.initialised && !std::isnan(in.current_milepost)) car.eng()->current_milepost = in.current_milepost;
         if (car.spec.kind == car_electric) {
             // RTS 0x503CE4 sets these before Run (the current from the last
             // step's PowerConsuming); a burnt pantograph is LocoFlags 0x200.
@@ -1514,14 +1535,14 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
         for (const auto& call : car.aux_info[i].calls) {
             if (call.event != aux_run || call.order >= 0) continue;
             car.aux_info[i].exchange_before = exchange_word(car.aux_info[i]);
-            apply_aux_writes(car.aux_info[i], false);
+            apply_aux_writes(car, car.aux_info[i], false);
             car.aux[i].lib_flags &= ~1u;
             auto* fn = reinterpret_cast<abi::AuxRunFn>(am.run);
             abi::Locomotive* v = view(car, &am);
             const DWORD crash = guarded([&] { fn(&car.aux[i], v, state, dt, air_temperature); });
             sync();
             if (crash) fail(am, L"Run (aux)", crash);
-            apply_aux_writes(car.aux_info[i], true);
+            apply_aux_writes(car, car.aux_info[i], true);
         }
     }
     if (car.module->run) {
@@ -1537,20 +1558,20 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
         for (const auto& call : car.aux_info[i].calls) {
             if (call.event != aux_run || call.order < 0) continue;
             car.aux_info[i].exchange_before = exchange_word(car.aux_info[i]);
-            apply_aux_writes(car.aux_info[i], false);
+            apply_aux_writes(car, car.aux_info[i], false);
             car.aux[i].lib_flags |= 1u;
             auto* fn = reinterpret_cast<abi::AuxRunFn>(am.run);
             abi::Locomotive* v = view(car, &am);
             const DWORD crash = guarded([&] { fn(&car.aux[i], v, state, dt, air_temperature); });
             sync();
             if (crash) fail(am, L"Run (aux)", crash);
-            apply_aux_writes(car.aux_info[i], true);
+            apply_aux_writes(car, car.aux_info[i], true);
         }
     }
     // A library without a Run this step still takes its writes.
     for (auto& aux : car.aux_info) {
-        apply_aux_writes(aux, false);
-        apply_aux_writes(aux, true);
+        apply_aux_writes(car, aux, false);
+        apply_aux_writes(car, aux, true);
     }
     if (flipped) {
         w->velocity = -w->velocity;
@@ -2235,6 +2256,7 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
     o.engine_force_count = static_cast<std::uint8_t>((std::min)(car.engine_force.size(), o.engine_forces.size()));
     for (std::size_t k = 0; k < o.engine_force_count; ++k) o.engine_forces[k] = car.engine_force[k];
     o.throttle = e->throttle_position;
+    o.milepost = e->current_milepost;
     if (car.spec.kind == car_electric) {
         o.panto = car.eng_e()->panto;
         o.main_switch = car.eng_e()->main_switch;

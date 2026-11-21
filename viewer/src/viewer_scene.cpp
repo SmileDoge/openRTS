@@ -254,6 +254,7 @@ public:
     [[nodiscard]] const std::string& save_situation() const noexcept { return content_.save_situation; }
     [[nodiscard]] const std::shared_ptr<const net::Snapshot>& snapshot() const noexcept { return content_.snapshot; }
     [[nodiscard]] const std::shared_ptr<net::RtsConnection>& connection() const noexcept { return content_.connection; }
+    [[nodiscard]] const std::string& server_address() const noexcept { return content_.server_address; }
     [[nodiscard]] std::vector<net::ReceivedPackage> take_early() { return std::exchange(content_.early, {}); }
     [[nodiscard]] const std::string& path() const noexcept { return content_.path; }
     [[nodiscard]] const std::shared_ptr<const formats::Activity>& activity() const noexcept { return content_.activity; }
@@ -1757,6 +1758,26 @@ public:
         }
         if (content_.connection()) {
             presence.state = trf("%s: a network game", route.c_str());
+            // The server lets the others join from Discord: its address (or
+            // ours, not this computer's own), the party by it.
+            if (const auto join = net_ && !content_.console() ? net_->discord_join() : std::nullopt) {
+                std::string address = join->address.empty() ? content_.server_address() : join->address;
+                const bool local = address.starts_with("127.") || address.starts_with("localhost") || address.starts_with("[::1]") ||
+                                   address.starts_with("::1");
+                if (!address.empty() && !local) {
+                    if (address.find(':') == std::string::npos) address += ":800";
+                    std::uint32_t hash = 2166136261u;
+                    for (const auto c : address) hash = (hash ^ static_cast<unsigned char>(c)) * 16777619u;
+                    char party[32];
+                    std::snprintf(party, sizeof party, "openrts-%08x", hash);
+                    // The server's count of its players and its places
+                    // (none: no limit, the party shown without them).
+                    presence.party_id = party;
+                    presence.party_max = join->places;
+                    presence.party_size = (std::max)(join->players, 1);
+                    presence.join_secret = "openrts1 " + address;
+                }
+            }
         } else if (content_.activity() && !content_.activity()->name.empty()) {
             presence.state = trf("%s: scenario \"%s\"", route.c_str(), content_.activity()->name.c_str());
         } else {
@@ -1846,25 +1867,51 @@ public:
     // takes the near lamps and the far ones; from above it lies on the ground.
     // In the cab: the cab's own focus.
     [[nodiscard]] std::optional<renderer::ShadowFocus> lamp_shadow_focus(const ViewerCamera& camera) const override {
-        if (!train_ || train_->cab_shadow_focus()) return std::nullopt;
+        if (!train_ || train_->cab_shadow_focus()) {
+            lamp_focus_.reset();
+            return std::nullopt;
+        }
         const glm::vec3 eye = camera.eye();
         const glm::vec3 forward = camera.forward();
+        // How far the view reaches: to the ground it meets within 200 m
+        // looking down, 40 m looking up, the two blended across the horizon
+        // (until 2026-11-21 it jumped from 200 to 40 there, the sphere with
+        // it, and a lamp's shadow came and went as the camera tipped a hair,
+        // testers).
         float reach = 40.0f;
-        if (forward.y < -0.01f) {
-            reach = 200.0f;
+        if (forward.y < 0.05f) {
+            float down = 200.0f;
             for (float t = 2.0f; t <= 200.0f; t += (std::max)(2.0f, t * 0.03f)) {
                 const glm::vec3 at = eye + forward * t;
                 if (const auto ground = train_->ground_at(at); ground && at.y <= *ground) {
-                    reach = t;
+                    down = t;
                     break;
                 }
             }
+            const float up = std::clamp((forward.y + 0.05f) / 0.1f, 0.0f, 1.0f);
+            reach = down + (40.0f - down) * up;
         }
-        renderer::ShadowFocus focus;
-        focus.centre = eye + forward * (0.6f * reach);
-        focus.radius = (std::max)(25.0f, 0.5f * reach + 15.0f);
-        return focus;
+        renderer::ShadowFocus target;
+        target.centre = eye + forward * (0.6f * reach);
+        target.radius = (std::max)(25.0f, 0.5f * reach + 15.0f);
+        // Eased over a quarter of a second: turning the head moves the
+        // sphere the lamps' shadows cover, it does not jump; a camera put
+        // somewhere else takes it at once.
+        const auto now = std::chrono::steady_clock::now();
+        const float dt = lamp_focus_clock_ ? std::chrono::duration<float>(now - *lamp_focus_clock_).count() : 0.0f;
+        lamp_focus_clock_ = now;
+        if (!lamp_focus_ || glm::distance(lamp_focus_->centre, target.centre) > 2.0f * target.radius) {
+            lamp_focus_ = target;
+        } else {
+            const float k = 1.0f - std::exp(-std::clamp(dt, 0.0f, 0.5f) / 0.25f);
+            lamp_focus_->centre += (target.centre - lamp_focus_->centre) * k;
+            lamp_focus_->radius += (target.radius - lamp_focus_->radius) * k;
+        }
+        return lamp_focus_;
     }
+    // The lamps' shadows' sphere as it eases (lamp_shadow_focus).
+    mutable std::optional<renderer::ShadowFocus> lamp_focus_;
+    mutable std::optional<std::chrono::steady_clock::time_point> lamp_focus_clock_;
 
     void draw_overlay([[maybe_unused]] const ViewerCamera& camera) const override {
 #ifdef OPENRTS_HAS_IMGUI

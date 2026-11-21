@@ -189,7 +189,7 @@ void draw_log_console(LogConsole& console) {
     ImGui::SameLine();
     const bool copy = ImGui::Button(tr("Copy"));
     ImGui::SameLine();
-    if (ImGui::Button(tr("Clear"))) {
+    if (ImGui::Button(tr("Clear##log"))) {
         clear_log();
         console.lines.clear();
         console.next = log_lines_from(0).next;

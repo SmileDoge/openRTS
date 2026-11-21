@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
@@ -26,8 +28,14 @@ struct ViewerCamera {
     glm::vec3 position{};
     bool fly = false;
     // The view's zoom: the field of view narrowed this many times (1: as
-    // set). Ctrl and the wheel outside the cab.
+    // set), eased each frame (ease_zoom) towards the one asked for: the
+    // wheel's held down, `hold_zoom` (the wheel turned meanwhile; let go, the
+    // view comes back), else `zoom_target` (Ctrl and the wheel). Until
+    // 2026-11-21 Ctrl and the wheel set it a step at a time, and the wheel's
+    // click switched the mouse lock (now the side button and Caps Lock).
     float view_zoom = 1.0f;
+    float zoom_target = 1.0f;
+    std::optional<float> hold_zoom;
     // The far plane at least this far, m (the car view's orbit is close but
     // looks along the line); 0: by the distance alone.
     float min_far = 0.0f;
@@ -38,6 +46,13 @@ struct ViewerCamera {
     float head_nod = 0.0f;
     float head_tilt = 0.0f;
 
+    // The zoom at once, nothing held (a view put somewhere else).
+    void set_zoom(float zoom);
+    // The zoom a frame of `seconds` nearer to the one asked for (a tenth of
+    // a second's ease, evenly in and out).
+    void ease_zoom(float seconds);
+    // The wheel turned with it held down: the held zoom, from the view's.
+    void zoom_hold(float scroll_steps);
     [[nodiscard]] glm::vec3 orbit_eye() const;
     [[nodiscard]] glm::vec3 forward() const;
     [[nodiscard]] glm::vec3 eye() const;
