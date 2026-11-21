@@ -60,6 +60,15 @@ public:
     // `back` the other way; the server's answer comes in next_routes().
     void ask_next_routes(std::uint32_t train, bool back);
     [[nodiscard]] const std::optional<net::ConsoleNext>& next_routes() const noexcept { return next_routes_; }
+    // The game's weather as the server last told it (openrts_weather), and
+    // how many times it has: nothing from an older server.
+    [[nodiscard]] const std::optional<net::OpenrtsWeather>& server_weather() const noexcept { return server_weather_; }
+    [[nodiscard]] std::uint32_t weather_serial() const noexcept { return weather_serial_; }
+    // Placements (docs/server.md, "Placements"): the server's list
+    // ("placement list") and a placement's file ("placement get [name]"),
+    // as its last answers came; the file taken once.
+    [[nodiscard]] const std::vector<std::string>& placement_names() const noexcept { return placement_names_; }
+    [[nodiscard]] std::optional<std::string> take_placement_text() { return std::exchange(placement_text_, std::nullopt); }
     // A line in the console's log (a problem found here).
     void note(std::string line) { console_log_.push_back(std::move(line)); }
     // The game as the server last told the console (every second).
@@ -249,6 +258,10 @@ private:
     std::map<std::uint32_t, std::pair<std::size_t, std::uint32_t>> cab_seen_; // by car: packages, the test switch's state
     std::map<std::uint32_t, std::pair<float, bool>> routes_; // by server train: 0x4619
     std::map<std::uint32_t, TrainNames> names_;             // by server train: 0x461A
+    std::vector<std::string> placement_names_;
+    std::optional<net::OpenrtsWeather> server_weather_;
+    std::uint32_t weather_serial_ = 0;
+    std::optional<std::string> placement_text_;
     std::optional<net::ConsoleState> console_state_;
     std::optional<net::ConsoleNext> next_routes_;
     std::vector<std::string> console_log_;

@@ -1,5 +1,6 @@
 #include "net_session.hpp"
 
+#include <openrts/net/placement.hpp>
 #include <openrts/core/profile.hpp>
 
 #include <algorithm>
@@ -78,6 +79,7 @@ TrainView::PlacedTrain placed_train(net::SnapshotTrain& train, const simulation:
         entry.folder = file.folder;
         entry.flipped = car.flipped();
         entry.cold = (car.flags & 2u) != 0;
+        entry.place_drag = static_cast<std::uint8_t>((car.flags >> 8) & 3u); // the chocks (0x100 / 0x200)
         if (car.handbrake) entry.handbrake = *car.handbrake * 100.0f;
         p.cars.push_back(std::move(entry));
     }
@@ -134,7 +136,7 @@ void NetSession::send_command(const std::string_view line) {
     net::WireWriter w;
     w.text_u32(net::from_utf8(line));
     connection_->send(net::id(net::Package::console_command), w.data());
-    console_log_.push_back("> " + std::string(line));
+    console_log_.push_back("> " + std::string(line.size() > 120 ? line.substr(0, 120) : line) + (line.size() > 120 ? "..." : ""));
 }
 
 void NetSession::send_place(const net::ConsolePlace& place) {
@@ -651,10 +653,37 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
             console_log_.push_back(net::to_utf8(*text));
         }
         return;
+    case P(net::Package::openrts_weather):
+        if (const auto w = net::decode_openrts_weather(body)) {
+            server_weather_ = *w;
+            ++weather_serial_;
+        }
+        return;
     case P(net::Package::console_reply): {
         net::WireReader r(body);
         const auto text = net::to_utf8(r.text_u32());
         if (!r.ok()) return;
+        // A placement's file, or the list: kept, a line in the log.
+        if (text.rfind(net::placement_header, 0) == 0 || text.rfind("openRTS server placement 1", 0) == 0) {
+            std::string error;
+            const auto count = net::read_placement(text, error).size();
+            placement_text_ = text;
+            console_log_.push_back("placement: " + std::to_string(count) + " trains");
+            return;
+        }
+        if (text.rfind("placements:", 0) == 0) {
+            placement_names_.clear();
+            std::size_t from = text.find('\n');
+            while (from != std::string::npos && from + 1 < text.size()) {
+                const auto end = text.find('\n', from + 1);
+                auto name = text.substr(from + 1, end == std::string::npos ? std::string::npos : end - from - 1);
+                while (!name.empty() && name.back() == '\r') name.pop_back();
+                if (!name.empty()) placement_names_.push_back(std::move(name));
+                from = end;
+            }
+            console_log_.push_back("placements on the server: " + std::to_string(placement_names_.size()));
+            return;
+        }
         std::size_t from = 0;
         while (from < text.size()) {
             const auto end = text.find('\n', from);

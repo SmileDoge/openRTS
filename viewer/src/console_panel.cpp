@@ -34,7 +34,8 @@ std::optional<net::ConsolePlace> consist_place(const core::Vfs& vfs, const std::
     place.max_velocity = definition.max_velocity;
     for (const auto& entry : definition.entries) {
         place.cars.push_back({.folder = net::from_utf8(entry.folder), .name = net::from_utf8(entry.name), .engine = entry.engine,
-                              .flipped = entry.flipped, .cold = entry.cold, .handbrake = entry.handbrake ? *entry.handbrake : -1.0f});
+                              .flipped = entry.flipped, .cold = entry.cold, .handbrake = entry.handbrake ? *entry.handbrake : -1.0f,
+                              .chocks = entry.place_drag});
     }
     if (place.cars.empty()) {
         error = "the consist has no cars";
@@ -90,6 +91,39 @@ std::string clock_text(const double seconds) {
 // A command word with spaces in quotes.
 std::string in_quotes(const std::string& text) { return "\"" + text + "\""; }
 
+} // namespace
+
+// A new train's kind (in the lists' order: STATIC, PLAYER, LOOSE, TRAFFIC,
+// as the organiser named them) as RTS's: 0 STATIC, 1 PLAYER, 3 LOOSE, 2 TRAFFIC.
+int new_train_kind(const int choice) {
+    static constexpr int kinds[] = {0, 1, 3, 2};
+    return choice >= 0 && choice < 4 ? kinds[choice] : 0;
+}
+
+void put_chocks(net::ConsolePlace& place, const std::uint8_t chocks) {
+    if (place.cars.empty()) return;
+    if (chocks & 1u) place.cars.front().chocks |= 1u;
+    if (chocks & 2u) place.cars.back().chocks |= 2u;
+}
+
+void new_train_chocks(int& chocks) {
+    const char* labels[] = {tr("no chocks"), tr("chocks under the head"), tr("chocks under the tail"), tr("chocks under both ends")};
+    ImGui::SetNextItemWidth(190.0f);
+    ImGui::Combo("##new_chocks", &chocks, labels, 4);
+}
+
+void new_train_kind_and_state(int& kind, int& state) {
+    static constexpr const char* kinds[] = {"STATIC", "PLAYER", "LOOSE", "TRAFFIC"};
+    const char* states[] = {tr("Cold"), tr("Switched on"), tr("Running")};
+    ImGui::SetNextItemWidth(110.0f);
+    ImGui::Combo("##new_kind", &kind, kinds, 4);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(130.0f);
+    ImGui::Combo("##new_state", &state, states, 3);
+}
+
+namespace {
+
 // The consist's name from its virtual path (TRAINS/CONSISTS_RTS/<name>.con).
 std::string consist_name(const std::string& path) {
     auto name = path;
@@ -99,6 +133,259 @@ std::string consist_name(const std::string& path) {
 }
 
 } // namespace
+
+// Placements (docs/server.md, "Placements"): every train on the server's
+// track saved there or here (one file for both), and a placement's trains,
+// the ones picked, put on the track by their cars (console_place), with
+// their numbers, names, notes, kinds and states.
+void ConsolePanel::placements(NetSession& net, TrainView& trains) {
+    namespace fs = std::filesystem;
+    const auto folder = trains.network_placement_folder();
+    const auto file_of = [&](const std::string& name) { return folder / fs::path(std::u8string(name.begin(), name.end()) + u8".placement"); };
+    const auto read_local = [&](const std::string& name) -> std::optional<std::string> {
+        if (!net::placement_name_ok(name)) return std::nullopt;
+        std::ifstream in(file_of(name), std::ios::binary);
+        if (!in) return std::nullopt;
+        return std::string((std::istreambuf_iterator<char>(in)), {});
+    };
+    const auto write_local = [&](const std::string& name, const net::Placement& placement) {
+        std::error_code fs_error;
+        fs::create_directories(folder, fs_error);
+        std::ofstream out(file_of(name), std::ios::binary | std::ios::trunc);
+        out << net::write_placement(placement);
+        local_listed_ = false;
+        return static_cast<bool>(out);
+    };
+    // Every train in it, those of its includes too, as one placement of its
+    // own (what goes to another computer: its includes may not be there).
+    const auto flat = [](net::Placement placement, std::vector<net::PlacementTrain> trains_in_it) {
+        for (auto& t : trains_in_it) t.from.clear();
+        placement.includes.clear();
+        placement.trains = std::move(trains_in_it);
+        return placement;
+    };
+    const auto show_local = [&](const std::string& name) {
+        const auto text = read_local(name);
+        std::string error;
+        const auto placement = text ? net::parse_placement(*text, error) : net::Placement{};
+        if (!text || !error.empty()) {
+            net.note(name + ": " + (text ? error : std::string("not here")));
+            return;
+        }
+        std::vector<std::string> problems;
+        shown_ = net::resolve_placement(placement, name, read_local, problems);
+        for (const auto& p : problems) net.note(name + ": " + p);
+        shown_includes_ = placement.includes;
+        placement_picked_.assign(shown_.size(), 1);
+        shown_from_ = tr("here: ") + name;
+        shown_local_ = name;
+        shown_server_.clear();
+    };
+    const auto show_server = [&](const std::string& name) {
+        awaited_ = Awaited::show;
+        shown_from_ = tr("on the server: ") + name;
+        shown_server_ = name;
+        shown_local_.clear();
+        net.send_command("placement get " + in_quotes(name));
+    };
+    // The server's answer awaited: shown, or kept here (as one of its own).
+    if (auto text = net.take_placement_text()) {
+        std::string error;
+        auto read = net::parse_placement(*text, error);
+        if (awaited_ == Awaited::keep) {
+            const auto trains_in_it = read.trains;
+            const bool ok = write_local(keep_as_, flat(std::move(read), trains_in_it));
+            net.note(ok ? "placement " + keep_as_ + " kept here: " + std::to_string(trains_in_it.size()) + " trains" : "placement " + keep_as_ + ": not written");
+        } else {
+            shown_ = std::move(read.trains);
+            shown_includes_ = std::move(read.includes);
+            placement_picked_.assign(shown_.size(), 1);
+        }
+        awaited_ = Awaited::none;
+    }
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::InputTextWithHint("##placement_name", tr("placement's name"), placement_name_, sizeof placement_name_);
+    const bool named = net::placement_name_ok(placement_name_);
+    ImGui::BeginDisabled(!named);
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Save on the server"))) net.send_command("placement save " + in_quotes(placement_name_));
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Save here"))) {
+        keep_as_ = placement_name_;
+        awaited_ = Awaited::keep;
+        net.send_command("placement get");
+    }
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%s", tr("every train on the track now, its number, name, notes, kind, state and chocks"));
+    // The server's.
+    if (ImGui::Button(tr("The server's placements"))) net.send_command("placement list");
+    for (const auto& name : net.placement_names()) {
+        ImGui::PushID(("s" + name).c_str());
+        if (ImGui::SmallButton(tr("Show"))) show_server(name);
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Keep here"))) {
+            keep_as_ = name;
+            awaited_ = Awaited::keep;
+            net.send_command("placement get " + in_quotes(name));
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(name.c_str());
+        ImGui::PopID();
+    }
+    // Kept here (the single player's placements of the route too).
+    if (!local_listed_) {
+        local_.clear();
+        std::error_code error;
+        for (const auto& entry : fs::directory_iterator(folder, error)) {
+            if (!entry.is_regular_file(error) || entry.path().extension() != ".placement") continue;
+            const auto stem = entry.path().stem().u8string();
+            local_.emplace_back(stem.begin(), stem.end());
+        }
+        std::sort(local_.begin(), local_.end());
+        local_listed_ = true;
+    }
+    ImGui::TextUnformatted(tr("Kept here:"));
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("Refresh"))) local_listed_ = false;
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", folder.string().c_str());
+    for (const auto& name : local_) {
+        ImGui::PushID(("l" + name).c_str());
+        if (ImGui::SmallButton(tr("Show"))) show_local(name);
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Save on the server"))) {
+            // As a file of the server's (the trains on its track stay), its
+            // includes' trains in it: theirs may not be there.
+            const auto text = read_local(name);
+            std::string error;
+            const auto placement = text ? net::parse_placement(*text, error) : net::Placement{};
+            if (text && error.empty()) {
+                std::vector<std::string> problems;
+                auto all = net::resolve_placement(placement, name, read_local, problems);
+                for (const auto& line : net::placement_upload_commands(name, net::write_placement(flat(placement, std::move(all))))) net.send_command(line);
+            } else {
+                net.note(name + ": " + (text ? error : std::string("not here")));
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Delete"))) {
+            std::error_code fs_error;
+            fs::remove(file_of(name), fs_error);
+            if (shown_local_ == name) shown_.clear();
+            local_listed_ = false;
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(name.c_str());
+        ImGui::PopID();
+    }
+    if (shown_.empty() && shown_includes_.empty()) return;
+    // The placement shown: its includes, its trains, the ones picked put on
+    // the track or saved as another placement.
+    ImGui::SeparatorText(shown_from_.c_str());
+    {
+        const bool server = !shown_server_.empty();
+        const auto& self = server ? shown_server_ : shown_local_;
+        const auto& others = server ? net.placement_names() : local_;
+        ImGui::TextUnformatted(trf("Includes (%zu):", shown_includes_.size()).c_str());
+        std::optional<std::pair<std::string, bool>> change; // another, added
+        for (std::size_t i = 0; i < shown_includes_.size(); ++i) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(trf("%s ×##inc%zu", shown_includes_[i].c_str(), i).c_str())) change = std::pair{shown_includes_[i], false};
+        }
+        ImGui::SetNextItemWidth(240.0f);
+        if (!self.empty() && ImGui::BeginCombo("##include_other", tr("include another placement"))) {
+            for (const auto& other : others) {
+                if (other == self || std::find(shown_includes_.begin(), shown_includes_.end(), other) != shown_includes_.end()) continue;
+                if (ImGui::Selectable(other.c_str())) change = std::pair{other, true};
+            }
+            ImGui::EndCombo();
+        }
+        if (change && server) {
+            net.send_command("placement " + std::string(change->second ? "include " : "exclude ") + in_quotes(self) + " " + in_quotes(change->first));
+            show_server(self);
+        } else if (change) {
+            const auto text = read_local(self);
+            std::string error;
+            auto placement = text ? net::parse_placement(*text, error) : net::Placement{};
+            if (text && error.empty()) {
+                auto& includes = placement.includes;
+                if (change->second) includes.push_back(change->first);
+                else includes.erase(std::remove(includes.begin(), includes.end(), change->first), includes.end());
+                if (!write_local(self, placement)) net.note(self + ": not written");
+                show_local(self);
+            }
+        }
+    }
+    if (ImGui::SmallButton(tr("All"))) std::fill(placement_picked_.begin(), placement_picked_.end(), 1);
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("None"))) std::fill(placement_picked_.begin(), placement_picked_.end(), 0);
+    static constexpr const char* kinds[] = {"STATIC", "PLAYER", "TRAFFIC", "LOOSE"};
+    const char* states[] = {tr("Cold"), tr("Switched on"), tr("Running")};
+    if (ImGui::BeginTable("##placement_trains", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+                          ImVec2(0.0f, 160.0f))) {
+        ImGui::TableSetupColumn("");
+        ImGui::TableSetupColumn(tr("No."));
+        ImGui::TableSetupColumn(tr("Name"));
+        ImGui::TableSetupColumn(tr("Kind"));
+        ImGui::TableSetupColumn(tr("Cars"));
+        ImGui::TableSetupColumn(tr("From"));
+        ImGui::TableHeadersRow();
+        for (std::size_t i = 0; i < shown_.size(); ++i) {
+            const auto& t = shown_[i];
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            bool on = placement_picked_[i] != 0;
+            if (ImGui::Checkbox("##pick", &on)) placement_picked_[i] = on ? 1 : 0;
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", t.number);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(net::to_utf8(t.name).c_str());
+            if (!t.notes.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", net::to_utf8(t.notes).c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("%s, %s", t.kind < 4 ? kinds[t.kind] : "?", t.state < 3 ? states[t.state] : "?");
+            ImGui::TableNextColumn();
+            const bool chocked = std::any_of(t.cars.begin(), t.cars.end(), [](const net::PlacementCar& car) { return car.chocks() != 0; });
+            ImGui::Text("%zu%s", t.cars.size(), chocked ? tr(", chocks") : "");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(t.from.empty() ? tr("its own") : t.from.c_str());
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::Checkbox(tr("Remove every train on the track first"), &clear_first_);
+    const auto count = static_cast<std::size_t>(std::count(placement_picked_.begin(), placement_picked_.end(), 1));
+    ImGui::BeginDisabled(count == 0);
+    if (ImGui::Button(trf("Put the %zu picked", count).c_str())) {
+        if (clear_first_) net.send_command("placement clear");
+        for (std::size_t i = 0; i < shown_.size(); ++i)
+            if (placement_picked_[i]) net.send_place(net::place_of(shown_[i]));
+    }
+    // The picked as a placement of their own (one train's, a station's).
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::InputTextWithHint("##subset_name", tr("another placement's name"), subset_name_, sizeof subset_name_);
+    const bool subset_named = net::placement_name_ok(subset_name_);
+    net::Placement subset;
+    if (subset_named) {
+        for (std::size_t i = 0; i < shown_.size(); ++i) {
+            if (!placement_picked_[i]) continue;
+            auto t = shown_[i];
+            t.from.clear();
+            subset.trains.push_back(std::move(t));
+        }
+    }
+    ImGui::BeginDisabled(!subset_named);
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Save the picked here"))) {
+        net.note(write_local(subset_name_, subset) ? trf("placement %s kept here: %zu trains", subset_name_, subset.trains.size()) : std::string(subset_name_) + ": not written");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Save the picked on the server"))) {
+        for (const auto& line : net::placement_upload_commands(subset_name_, net::write_placement(subset))) net.send_command(line);
+    }
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+}
 
 void ConsolePanel::draw(NetSession& net, TrainView& trains, TrackControl* map, const core::Vfs& vfs) {
     ImGui::SetNextWindowSize(ImVec2(520.0f, 640.0f), ImGuiCond_FirstUseEver);
@@ -120,6 +407,11 @@ void ConsolePanel::draw(NetSession& net, TrainView& trains, TrackControl* map, c
         return {};
     };
 
+    // On foot or flying (Ctrl+F): the dispatcher walks, gets into no train.
+    {
+        bool walking = trains.walking();
+        if (ImGui::Checkbox(tr("On foot (Ctrl+F): the free camera otherwise"), &walking)) trains.ask_walk_toggle();
+    }
     // The time and the pause.
     if (state) {
         ImGui::Text(tr("Time %s"), clock_text(state->time).c_str());
@@ -270,6 +562,7 @@ void ConsolePanel::draw(NetSession& net, TrainView& trains, TrackControl* map, c
     }
 
     // Station routes and signals, as the server's window has them.
+    if (ImGui::CollapsingHeader(tr("Placements"))) placements(net, trains);
     if (ImGui::CollapsingHeader(tr("Station routes")) && state) station_routes(net, *state);
     if (ImGui::CollapsingHeader(tr("Signals"))) signals(net, trains);
 
@@ -297,8 +590,13 @@ void ConsolePanel::draw(NetSession& net, TrainView& trains, TrackControl* map, c
             ImGui::EndCombo();
         }
         ImGui::SetNextItemWidth(100.0f);
-        ImGui::InputTextWithHint("##number", tr("number"), number_, sizeof number_);
+        ImGui::InputTextWithHint("##number", tr("number"), number_, sizeof number_, ImGuiInputTextFlags_CharsDecimal);
         ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextWithHint("##new_name", tr("name (the map shows it)"), new_name_, sizeof new_name_);
+        new_train_kind_and_state(new_kind_, new_state_);
+        ImGui::SameLine();
+        new_train_chocks(new_chocks_);
         ImGui::BeginDisabled(consist_.empty() || path_.empty());
         if (ImGui::Button(tr("Put it on the track"))) {
             // By its cars: the consist is ours, the server needs only the cars.
@@ -306,6 +604,10 @@ void ConsolePanel::draw(NetSession& net, TrainView& trains, TrackControl* map, c
             if (auto place = consist_place(vfs, consist_, error)) {
                 place->path = net::from_utf8(path_);
                 place->number = number_[0] ? static_cast<std::uint32_t>(std::strtoul(number_, nullptr, 10)) : 0u;
+                place->name = net::from_utf8(new_name_);
+                place->kind = static_cast<std::uint16_t>(new_train_kind(new_kind_));
+                place->state = static_cast<std::uint8_t>(new_state_);
+                put_chocks(*place, static_cast<std::uint8_t>(new_chocks_));
                 net.send_place(*place);
             } else {
                 net.note(consist_name(consist_) + ": " + error);

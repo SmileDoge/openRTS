@@ -22,6 +22,7 @@
 #include <openrts/formats/track_sections.hpp>
 #include <openrts/net/connection.hpp>
 #include <openrts/net/packages.hpp>
+#include <openrts/net/placement.hpp>
 #include <openrts/net/play.hpp>
 #include <openrts/net/snapshot.hpp>
 #include <openrts/net/world.hpp>
@@ -430,6 +431,28 @@ void game() {
         bool named = false;
         for (const auto& t : read.snapshot.trains) named = named || (t.id == 2 && t.names && (*t.names)[0] == u"Пригородный");
         check(read.ok() && named, "a new player's snapshot carries the name");
+        // The weather while the game runs (openrts_weather): to the consoles
+        // and openRTS players, not to RTS's.
+        take(rec, 5);
+        take(rec, 1);
+        auto weather = game.weather();
+        weather.dynamic = 1;
+        weather.seed = 77;
+        weather.clock = 120.0;
+        game.set_weather(weather);
+        const auto to_console = take(rec, 5);
+        std::optional<net::OpenrtsWeather> got_weather;
+        for (const auto& g : to_console)
+            if (g.id == P(Package::openrts_weather)) got_weather = net::decode_openrts_weather(g.body);
+        check(got_weather && got_weather->dynamic == 1 && got_weather->seed == 77 && got_weather->clock == 120.0, "the console gets the dynamic weather");
+        bool to_rts = false;
+        for (const auto& g : take(rec, 1)) to_rts = to_rts || g.id == P(Package::openrts_weather);
+        check(!to_rts, "an RTS player does not");
+        weather.dynamic = 0;
+        weather.weather = 3;
+        game.set_weather(weather);
+        check(game.weather().weather == 3 && !game.weather().dynamic, "a thunderstorm that stands");
+        rec.out[5].clear();
         game.closed(5);
         net::WireWriter w;
         w.u32(2);
@@ -701,6 +724,20 @@ void game() {
         check(back && back->consist == place.consist && back->cars.size() == 2 && back->cars[0].engine && back->cars[0].cold &&
                   back->cars[1].flipped && back->cars[0].handbrake == 50.0f && back->node == 1 && back->offset == 20.5 && !back->forward,
               "console_place reads back");
+        {
+            // The name, kind and state after the cars (2026-11-21); an older
+            // console's, without them, still reads: STATIC, cold.
+            auto named = place;
+            named.name = u"Пригородный";
+            named.kind = 3;
+            named.state = 2;
+            const auto again = net::decode_console_place(net::encode_console_place(named));
+            check(again && again->name == u"Пригородный" && again->kind == 3 && again->state == 2, "console_place's name, kind and state");
+            auto old = net::encode_console_place(place);
+            old.resize(old.size() - (4 + 2 + 1 + 4)); // no name (an empty u32 text), kind, state, notes
+            const auto older = net::decode_console_place(old);
+            check(older && older->cars.size() == 2 && older->name.empty() && older->kind == 0 && older->state == 0, "an older console's place");
+        }
         std::size_t placed = 0;
         game.set_console_place([&](const net::ConsolePlace& p) {
             ++placed;
@@ -1765,6 +1802,109 @@ void session(const std::filesystem::path& root) {
         const bool two = s->game().lay_route_to(trains.front().id, simulation::TrackLocation{front->node, front->offset, false}, false, result);
         check(!one && !two, "no route to the place the head stands on (" + result + ")");
     }
+    // A placement (docs/server.md, "Placements"): every train saved with its
+    // number, name, notes, kind and state; cleared; put back where it stood.
+    {
+        (void)s->command("segment cancel 1", quit);
+        const auto id = s->game().trains().front().id;
+        std::string form_error;
+        check(s->game().set_number(id, 2401, form_error) && s->game().set_names(id, u"Электричка", u"до Тимашевской", form_error), "named: " + form_error);
+        const auto before = s->game().standing_trains();
+        const auto saved = s->command("placement save тест 1", quit);
+        check(saved.find("1 trains") != std::string::npos, "placement save: " + saved);
+        const auto listed = s->command("placement list", quit);
+        check(listed.rfind("placements:", 0) == 0 && listed.find("тест 1") == std::string::npos && listed.find("тест") != std::string::npos,
+              "placement list: " + listed);
+        (void)s->command("placement save \"тест 1\"", quit);
+        check(s->command("placement clear", quit) == "1 trains removed" && s->game().trains().empty(), "placement clear");
+        const auto put = s->command("placement load \"тест 1\"", quit);
+        check(put.find("1 of 1 trains put") != std::string::npos, "placement load: " + put);
+        const auto back_trains = s->game().standing_trains();
+        check(back_trains.size() == 1 && before.size() == 1, "one train back");
+        if (back_trains.size() == 1 && before.size() == 1) {
+            const auto& a = before.front();
+            const auto& b = back_trains.front();
+            check(b.number == 2401 && b.name == u"Электричка" && b.notes == u"до Тимашевской" && b.kind == a.kind && b.state == a.state &&
+                      b.cars.size() == a.cars.size() && b.node == a.node && std::abs(b.offset - a.offset) < 0.5 && b.forward == a.forward,
+                  "the train back as it stood: its number, names, kind, state, cars and place");
+        }
+        // The same file as a console reads it (placement get).
+        const auto text = s->command("placement get \"тест 1\"", quit);
+        std::string read_error;
+        const auto trains_read = net::read_placement(text, read_error);
+        check(read_error.empty() && trains_read.size() == 1 && trains_read.front().notes == u"до Тимашевской", "placement get: the file");
+        check(net::place_of(trains_read.front()).cars.size() == before.front().cars.size(), "a console's place of it");
+
+        // A standing train put again (2026-11-21): chocks under both ends,
+        // then 60 m further along its node; its number, names and cars kept.
+        const auto first = s->game().standing_trains().front();
+        const auto chocked = s->command("chocks " + std::to_string(first.id) + " both", quit);
+        const auto after_chocks = s->game().standing_trains();
+        check(after_chocks.size() == 1 && train_chocks(s->game(), after_chocks.front().id) == 3 && after_chocks.front().number == 2401 &&
+                  after_chocks.front().name == u"Электричка" && after_chocks.front().node == first.node &&
+                  std::abs(after_chocks.front().offset - first.offset) < 0.5,
+              "chocks both: put again where it stood with them (" + chocked + ")");
+        if (!after_chocks.empty()) {
+            const auto& c = after_chocks.front();
+            check((c.cars.front().flags & 0x100u) && (c.cars.back().flags & 0x200u), "the chocks in its records (0x100 at the head, 0x200 at the tail)");
+            const auto* node = s->route().network().node(c.node);
+            const double to = c.offset > 200.0 ? c.offset - 60.0 : c.offset + 60.0;
+            char line[96];
+            std::snprintf(line, sizeof line, "move %u %u %.3f %d", c.id, c.node, to, c.forward ? 1 : 0);
+            const auto moved = s->command(line, quit);
+            const auto after_move = s->game().standing_trains();
+            check(node && after_move.size() == 1 && after_move.front().node == c.node && std::abs(after_move.front().offset - to) < 0.5 &&
+                      after_move.front().number == 2401 && after_move.front().notes == u"до Тимашевской" && train_chocks(s->game(), after_move.front().id) == 3,
+                  "move: there, its number, notes and chocks kept (" + moved + ")");
+            const auto refused = s->command("move " + std::to_string(after_move.front().id) + " " + std::to_string(c.node) + " 999999 1", quit);
+            check(refused.rfind("error", 0) == 0 && s->game().standing_trains().size() == 1, "move off the track: refused, the train kept (" + refused + ")");
+            (void)s->command("chocks " + std::to_string(s->game().standing_trains().front().id) + " none", quit);
+            check(train_chocks(s->game(), s->game().standing_trains().front().id) == 0, "chocks none");
+        }
+
+        // Includes: "станция" holds nothing of its own and includes "тест 1"
+        // and itself (a loop, not put twice); loading it puts that train.
+        (void)s->command("placement clear", quit);
+        check(placement_file_write(s->route(), "станция", net::Placement{.route = s->route().folder()}).empty(), "an empty placement written");
+        const auto included = s->command("placement include станция \"тест 1\"", quit);
+        check(included.find("includes") != std::string::npos, "placement include: " + included);
+        check(s->command("placement include станция станция", quit).rfind("error", 0) == 0, "a placement cannot include itself");
+        const auto station_text = s->command("placement get станция", quit);
+        std::string station_error;
+        const auto station = net::parse_placement(station_text, station_error);
+        check(station_error.empty() && station.includes.size() == 1 && station.trains.size() == 1 && station.trains.front().from == "тест 1",
+              "placement get: the includes and their trains marked");
+        const auto station_put = s->command("placement load станция", quit);
+        check(station_put.find("1 of 1 trains put") != std::string::npos && s->game().standing_trains().size() == 1, "placement load: its includes put (" + station_put + ")");
+        check(s->command("placement exclude станция \"тест 1\"", quit).find("no more") != std::string::npos, "placement exclude");
+
+        // A console's upload in parts (placement_upload_commands): a big
+        // one, 40 copies of the train, several parts, written as it came.
+        auto big = station;
+        big.includes.clear();
+        for (int k = 0; k < 40; ++k) {
+            auto copy = station.trains.front();
+            copy.from.clear();
+            copy.number = 3000 + static_cast<std::uint32_t>(k);
+            big.trains.push_back(copy);
+        }
+        const auto uploads = net::placement_upload_commands("с пульта", net::write_placement(big));
+        std::string last;
+        for (const auto& line : uploads) last = s->command(line, quit);
+        check(uploads.size() > 1 && last.find("41 trains") != std::string::npos, "placement upload in " + std::to_string(uploads.size()) + " parts: " + last);
+        std::string upload_error;
+        const auto uploaded = placement_file_read(s->route(), "с пульта", upload_error);
+        check(uploaded && uploaded->trains.size() == 41 && uploaded->trains.back().number == 3039 && uploaded->trains.front().name == u"Электричка",
+              "the upload's file as sent");
+
+        // The autosave: every train as "autosave"; at the next start the
+        // last run's kept as "autosave-previous".
+        const auto autosaved = autosave_placement(s->game(), s->route());
+        check(autosaved.find("1 trains") != std::string::npos, "autosave: " + autosaved);
+        keep_previous_autosave(s->route());
+        check(placement_text(s->route(), server::autosave_previous_name).has_value() && !placement_text(s->route(), server::autosave_name).has_value(),
+              "the last run's autosave kept as autosave-previous");
+    }
     (void)s->command("quit", quit);
     check(quit, "quit stops a session's console");
     s.reset();
@@ -1774,6 +1914,63 @@ void session(const std::filesystem::path& root) {
 
 } // namespace
 
+// The placement's file (net/placement.hpp): the single player's older
+// format read, includes resolved (a loop and a missing one), the route's
+// check, an upload's lines back to the text.
+void placement_format() {
+    const std::string old =
+        "# openRTS placement: trains to put down beside the others\nversion=1\nroute=Kuban_RTS\n\n[train]\nname=ЭД9М #2\nrole=standing\n"
+        "front=1203 45.5 0\ncar=ED9M\ted9m-0032-1\t1\t0\t0\tcast_iron,cast_iron\ncar=ED9M\ted9m-0032-2\t0\t1\t1\t\n";
+    std::string error;
+    const auto read = net::parse_placement(old, error);
+    check(error.empty() && read.route == "Kuban_RTS" && read.trains.size() == 1, "the single player's older placement read");
+    if (read.trains.size() == 1) {
+        const auto& t = read.trains.front();
+        check(t.name == u"ЭД9М #2" && t.node == 1203 && std::abs(t.offset - 45.5) < 1e-9 && !t.forward && t.cars.size() == 2 && t.kind == 0,
+              "its train: name, place, cars, STATIC");
+        check(t.cars.size() == 2 && t.cars[0].file == u"ED9M\\ed9m-0032-1.eng" && t.cars[1].file == u"ED9M\\ed9m-0032-2.wag" &&
+                  t.cars[1].flags == 1u && t.cars[0].shoes == "cast_iron,cast_iron",
+              "its cars: files, flipped, shoes");
+    }
+    // Written and read back: the new fields too.
+    net::Placement p{.route = "Kuban_RTS", .includes = {"депо"}};
+    p.trains.push_back({.number = 7, .name = u"Маневровый", .notes = u"строка 1\r\nстрока 2", .kind = 3, .subtype = 2, .state = 1, .node = 10,
+                        .offset = 2.5, .forward = true});
+    p.trains.back().cars.push_back({.flags = 0x301u, .handbrake = 0.5f, .file = u"ChME3\\chme3.eng", .shoes = "composite,composite"});
+    const auto again = net::parse_placement(net::write_placement(p), error);
+    check(error.empty() && again.includes == p.includes && again.trains.size() == 1 && again.trains.front().notes == p.trains.front().notes &&
+              again.trains.front().cars.front().chocks() == 3 && again.trains.front().cars.front().shoes == "composite,composite" &&
+              again.trains.front().cars.front().handbrake && std::abs(*again.trains.front().cars.front().handbrake - 0.5f) < 1e-3,
+          "written and read back: includes, notes, chocks, shoes, handbrake");
+    // A includes B and C (missing); B includes A (a loop): A's train, B's once.
+    std::map<std::string, std::string> files;
+    net::Placement b;
+    b.includes = {"A"};
+    b.trains.push_back({.number = 2, .node = 11});
+    files["B"] = net::write_placement(b);
+    net::Placement a;
+    a.includes = {"B", "C"};
+    a.trains.push_back({.number = 1, .node = 12});
+    std::vector<std::string> problems;
+    const auto all = net::resolve_placement(a, "A", [&](const std::string& name) -> std::optional<std::string> {
+        const auto it = files.find(name);
+        return it == files.end() ? std::nullopt : std::optional<std::string>(it->second);
+    }, problems);
+    check(all.size() == 2 && all[0].number == 1 && all[0].from.empty() && all[1].number == 2 && all[1].from == "B", "includes: B's train once, from B");
+    check(problems.size() == 1 && problems.front().find("C") == 0, "includes: the missing one told");
+    check(net::placement_route_fits("kuban_rts", "Kuban_RTS") && !net::placement_route_fits("Kuban_RTS", "Other") && net::placement_route_fits("", "Other"),
+          "the route's check");
+    // An upload's lines: the text back from their payloads (the 6th word).
+    const auto text = net::write_placement(p);
+    std::string payload;
+    for (const auto& line : net::placement_upload_commands("x y", text)) {
+        const auto words = server::command_words(line);
+        check(words.size() == 6 && words[2] == "x y", "an upload line's words");
+        if (words.size() == 6) payload += words[5];
+    }
+    check(net::placement_from_line(payload) == text, "the upload's text back");
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
         content(argv[1]);
@@ -1782,6 +1979,7 @@ int main(int argc, char** argv) {
         return failures == 0 ? 0 : 1;
     }
     route_database();
+    placement_format();
     game();
     helpers();
     station_segments();

@@ -551,7 +551,9 @@ Brakes.dll's way above.
   (Новокузнецк), 87 % (Kuban).
 - **On the line** (2026-11-21, the testers' request: an odd train on track
   1 with 2 entered follows track 2's block signals): the lines' tracks
-  carry the numbers of the station tracks they go on from, along MainRoute
+  carry the numbers of the station main tracks (1, 2) they go on from
+  (a side track's way out made the throat a "line" of its number: with 6
+  entered at Деревянковка the distance stood at 548 m), along MainRoute
   from each end up to the next station's track, 40 km at most (not on
   where a side track joins: its number stops there; a node led onto by two
   numbers, a single line, gets none). The front on one of another number
@@ -590,12 +592,16 @@ Brakes.dll's way above.
   entered, past the first signal on past its own along its way
   (2026-11-21, the testers): past its route signal НМ3 the exit Н1 after
   the crossover, past its exit Н3 the first block signal. The train on
-  another track (its switches for its own) the same: past that track's
-  exit at once where the entered one's way leads on to it (Albashi with 3
-  on track 1: past Н1, the testers' 3 → 1 → Н1 case), else at the next
-  block signal. The main tracks' numbers stay the ЭК's out of the station
-  by the other main track: the line's track of the number (above). To
-  2026-11-21 at any other track's signal passed. No target then, the
+  another track (its switches for its own): its station's exits passed
+  on (several heads of one too), "без ЭК" past the first block signal; once
+  the entered track abreast is behind (its signal passed), the target that
+  block signal along the train's way, the junctions as set (else the next
+  station's entry), not another park's track of the number further on
+  (Новокузнецк-Восточный, 1Г with 7: 7Г's signal, then the first block
+  signal 5.8 km on; until then 7А's, 3.9 km on, and "без ЭК" at the second
+  head of 1Г's exit). The main tracks' numbers stay the ЭК's out of the
+  station by the other main track: the line's track of the number (above).
+  To 2026-11-21 at any other track's signal passed. No target then, the
   aspect's speeds (`KLUB_GRSPD`, `KLUB_YLSPD`); the screen shows "РЕЖИМ БЕЗ
   ЭК" and the number entered. Without a station track ahead the ЭК goes on
   along MainRoute while the train is on the entered track's way (out of its

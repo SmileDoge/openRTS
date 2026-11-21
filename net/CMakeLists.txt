@@ -4,6 +4,7 @@
 add_library(openrts_net STATIC
     src/connection.cpp
     src/packages.cpp
+    src/placement.cpp
     src/snapshot.cpp
     src/wire.cpp)
 openrts_configure_target(openrts_net)

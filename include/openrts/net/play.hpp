@@ -340,6 +340,7 @@ struct ConsoleCar {
     bool flipped = false;
     bool cold = false;
     float handbrake = -1.0f; // percent; below 0 none given
+    std::uint8_t chocks{};   // PlaceDrag: 1 a chock at its end towards the train's front, 2 the other (2026-11-21)
 };
 struct ConsolePlace {
     std::u16string consist;  // its name, for the log
@@ -352,8 +353,33 @@ struct ConsolePlace {
     std::uint32_t node{};
     double offset{};
     bool forward = true;
+    // Since 2026-11-21, after the cars (an older console's place has none):
+    // the train's name (0x461A), its kind (0 STATIC, 1 PLAYER, 2 TRAFFIC,
+    // 3 LOOSE) and state (0 "Холодный", 1 "Включен", 2 "Движется").
+    std::u16string name;
+    std::uint16_t kind{};
+    std::uint8_t state{};
+    std::u16string notes; // after the state (0x461A's second text)
 };
 [[nodiscard]] Bytes encode_console_place(const ConsolePlace& place);
+
+// 0x45FA openrts_weather (openRTS's own, 2026-11-21): the game's weather, as
+// the server sets it while it runs. `dynamic` 0: `weather` stands (0 clear,
+// 1 snow, 2 rain, 3 thunderstorm); 1: openRTS's dynamic weather
+// (docs/weather.md), the same for everyone by its seed and clock (the
+// game seconds its cycle has run when this was sent; the server sends it
+// again every 30 s), its climate by the season or the sliders'.
+struct OpenrtsWeather {
+    std::uint8_t dynamic{};
+    std::uint8_t weather{};
+    std::uint64_t seed = 1;
+    double clock{};
+    std::uint8_t by_season = 1;
+    float cloudiness = 0.5f, wet = 0.3f, storms = 0.2f;
+    float spell_minutes = 45.0f, change_minutes = 12.0f;
+};
+[[nodiscard]] Bytes encode_openrts_weather(const OpenrtsWeather& weather);
+[[nodiscard]] std::optional<OpenrtsWeather> decode_openrts_weather(ByteView body);
 [[nodiscard]] std::optional<ConsolePlace> decode_console_place(ByteView body);
 
 // console_next: the station routes a train can take next, as the server's

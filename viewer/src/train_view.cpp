@@ -1,6 +1,7 @@
 #ifdef OPENRTS_HAS_WGPU
 #include "train_view.hpp"
 
+#include <openrts/net/placement.hpp>
 #include <openrts/core/profile.hpp>
 
 #include <openrts/renderer/route_space.hpp>
@@ -2605,7 +2606,8 @@ std::string TrainView::consist_layout(const std::string_view consist, ConsistLay
 }
 
 std::string TrainView::spawn(const std::string_view consist, const simulation::TrackLocation& where, const Role role,
-                             const std::optional<simulation::TrainCategory> category, const std::optional<int> start_state) {
+                             const std::optional<simulation::TrainCategory> category, const std::optional<int> start_state,
+                             const std::uint8_t chocks) {
     const bool first = units_.empty();
     Unit unit;
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
@@ -2629,6 +2631,7 @@ std::string TrainView::spawn(const std::string_view consist, const simulation::T
     if (unit.role == Role::standing) unit.train->set_asleep(true);
     units_.push_back(std::move(unit));
     attach_role(units_.back());
+    if (chocks != 0) (void)set_train_chocks(units_.back().train->id(), chocks);
     // Without a train of the player's own (the menu's "no train"), the first
     // one put on the route becomes theirs. The camera stays the free one it
     // was put down from: following it from behind (the default with no start
@@ -3233,16 +3236,17 @@ void TrainView::add_placement_lines(std::vector<renderer::WideLine>& lines) cons
 }
 
 // Each picked train's runs of picked cars as trains of their own, standing:
-// a run's front where its first car's front stands, the cars as a
-// situation writes them (no keys: they are new each time it is put down).
+// a run's front where its first car's front stands, its cars with their
+// chocks, handbrakes and shoes, the train's kind, category and state; the
+// number left to the server (net/placement.hpp: the file the server and the
+// dispatcher's console read, a player's sent to the organiser as it is).
 std::string TrainView::save_placement(const std::string& name) const {
     const auto clean = clean_file_name(name);
     if (clean.empty()) return tr("give the placement a name");
     if (selection_.empty()) return tr("pick trains first (a click in the free flight)");
-    std::ostringstream out;
-    out << std::setprecision(17) << "# openRTS placement: trains to put down beside the others\nversion=1\nroute=" << route_.filename()
-        << '\n';
-    std::size_t trains = 0, cars = 0;
+    net::Placement placement;
+    placement.route = std::string(route_.filename());
+    std::size_t cars = 0;
     for (const auto& unit : units_) {
         if (!unit.train) continue;
         const auto picked = selection_.find(unit.train->id());
@@ -3252,6 +3256,12 @@ std::string TrainView::save_placement(const std::string& name) const {
         if (!front || states.size() != unit.cars.size()) continue;
         const auto length_of = [&](const std::size_t i) { return unit.cars[i].definition ? unit.cars[i].definition->length : 0.0f; };
         const double head = states[0].offset + length_of(0) * 0.5;
+        // "ЧС2 #3": the number Track control gave it is not the train's.
+        auto label = unit.name;
+        if (const auto hash = label.rfind(" #"); hash != std::string::npos && label.find_first_not_of("0123456789", hash + 2) == std::string::npos) {
+            label.resize(hash);
+        }
+        const auto category = unit.speed_category();
         for (std::size_t i = 0; i < unit.cars.size();) {
             if (!picked->second.contains(unit.cars[i].key)) {
                 ++i;
@@ -3265,102 +3275,115 @@ std::string TrainView::save_placement(const std::string& name) const {
                 t.move(back);
                 t.reverse();
             }
-            out << "\n[train]\nname=" << unit.name << "\nrole=standing\nfront=" << t.node() << ' ' << t.offset() << ' '
-                << (t.forward() ? 1 : 0) << '\n';
+            net::PlacementTrain train{.name = net::from_utf8(label),
+                                      .kind = static_cast<std::uint16_t>(unit.role == Role::driven ? 1 : unit.role == Role::ai ? 2 : 0),
+                                      .subtype = static_cast<std::uint16_t>(category == simulation::TrainCategory::passenger ? 1
+                                                                            : category == simulation::TrainCategory::freight ? 2
+                                                                                                                              : 0),
+                                      .state = static_cast<std::uint8_t>(unit.start_state && *unit.start_state == 0   ? 0
+                                                                         : unit.start_state && *unit.start_state == 1 ? 1
+                                                                                                                      : 2),
+                                      .node = t.node(),
+                                      .offset = t.offset(),
+                                      .forward = t.forward()};
             for (; i < unit.cars.size() && picked->second.contains(unit.cars[i].key); ++i) {
                 const auto& car = unit.cars[i];
-                out << "car=" << car.folder << '\t' << car.file << '\t' << (car.engine ? 1 : 0) << '\t' << (car.flipped ? 1 : 0) << '\t'
-                    << car.uid << '\t' << formats::brake_shoe_name(states[i].shoes[0]) << ',' << formats::brake_shoe_name(states[i].shoes[1])
-                    << '\n';
+                net::PlacementCar out;
+                out.flags = (car.flipped ? 1u : 0u) | (car.engine && train.state == 0 ? 2u : 0u)
+                          | (static_cast<std::uint32_t>(states[i].chocks & 3u) << 8);
+                if (states[i].handbrake > 0.0f) out.handbrake = states[i].handbrake;
+                out.file = net::from_utf8(car.folder + "\\" + car.file + (car.engine ? ".eng" : ".wag"));
+                out.shoes = std::string(formats::brake_shoe_name(states[i].shoes[0])) + "," + formats::brake_shoe_name(states[i].shoes[1]);
+                train.cars.push_back(std::move(out));
                 ++cars;
             }
-            ++trains;
+            placement.trains.push_back(std::move(train));
         }
     }
-    if (trains == 0) return tr("pick trains first (a click in the free flight)");
+    if (placement.trains.empty()) return tr("pick trains first (a click in the free flight)");
     std::error_code fs_error;
     std::filesystem::create_directories(placement_folder(), fs_error);
     const auto file = placement_folder() / std::filesystem::path(std::u8string(clean.begin(), clean.end())).replace_extension(".placement");
     std::ofstream output(file, std::ios::binary | std::ios::trunc);
-    output << out.str();
+    output << net::write_placement(placement);
     if (!output) return "cannot write " + file.string();
-    return trf("placement %s saved: %zu trains, %zu cars", clean.c_str(), trains, cars);
+    return trf("placement %s saved: %zu trains, %zu cars", clean.c_str(), placement.trains.size(), cars);
+}
+
+std::optional<std::string> TrainView::placement_text(const std::string& name) const {
+    if (!net::placement_name_ok(name)) return std::nullopt;
+    std::ifstream input(placement_folder() / std::filesystem::path(std::u8string(name.begin(), name.end()) + u8".placement"), std::ios::binary);
+    if (!input) return std::nullopt;
+    return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 }
 
 std::string TrainView::preview_placement(const std::filesystem::path& file) {
     preview_units_.clear();
     preview_stock_.clear();
+    preview_trains_.clear();
     preview_blocked_ = false;
     std::ifstream input(file, std::ios::binary);
     if (!input) return "cannot read " + file.string();
-    struct Read {
-        std::string name;
-        std::optional<simulation::TrackLocation> front;
-        std::vector<formats::ConsistEntry> cars;
-    };
-    std::vector<Read> trains;
-    for (std::string line; std::getline(input, line);) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line == "[train]") {
-            trains.emplace_back();
-            continue;
-        }
-        const auto equals = line.find('=');
-        if (equals == std::string::npos || trains.empty() || line.starts_with('#')) continue;
-        const auto key = line.substr(0, equals);
-        const auto value = line.substr(equals + 1);
-        auto& train = trains.back();
-        if (key == "name") {
-            train.name = value;
-        } else if (key == "front") {
-            std::istringstream fields(value);
-            simulation::TrackLocation where;
-            int forward = 1;
-            if (fields >> where.node >> where.offset >> forward) {
-                where.forward = forward != 0;
-                train.front = where;
-            }
-        } else if (key == "car") {
-            std::vector<std::string> fields;
-            std::size_t start = 0;
-            for (;;) {
-                const auto tab = value.find('\t', start);
-                fields.push_back(value.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
-                if (tab == std::string::npos) break;
-                start = tab + 1;
-            }
-            if (fields.size() < 5) continue;
-            formats::ConsistEntry entry;
-            entry.folder = fields[0];
-            entry.name = fields[1];
-            entry.engine = fields[2] == "1";
-            entry.flipped = fields[3] == "1";
-            entry.uid = static_cast<std::uint32_t>(std::strtoul(fields[4].c_str(), nullptr, 10));
-            if (fields.size() > 5 && !fields[5].empty()) {
-                const auto comma = fields[5].find(',');
-                entry.shoes[0] = formats::brake_shoe_from(fields[5].substr(0, comma));
-                entry.shoes[1] = comma == std::string::npos ? entry.shoes[0] : formats::brake_shoe_from(fields[5].substr(comma + 1));
-            }
-            train.cars.push_back(std::move(entry));
-        }
-    }
+    const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    std::string error;
+    const auto placement = net::parse_placement(text, error);
+    if (!error.empty()) return file.filename().string() + ": " + error;
+    if (!net::placement_route_fits(placement.route, route_.filename())) return trf("a placement of another route (%s)", placement.route.c_str());
+    const auto stem = file.stem().u8string();
+    std::vector<std::string> problems;
+    const auto trains = net::resolve_placement(placement, std::string(stem.begin(), stem.end()),
+                                               [this](const std::string& name) { return placement_text(name); }, problems);
+    for (const auto& problem : problems) std::cout << "placement: " << problem << std::endl;
     std::size_t missing = 0;
-    for (auto& read : trains) {
-        if (!read.front || read.cars.empty()) continue;
+    for (const auto& read : trains) {
+        if (read.cars.empty()) continue;
+        std::vector<formats::ConsistEntry> entries;
+        for (std::size_t i = 0; i < read.cars.size(); ++i) {
+            const auto& car = read.cars[i];
+            const auto path = net::to_utf8(car.file);
+            const auto slash = path.find_last_of("\\/");
+            const auto dot = path.find_last_of('.');
+            if (slash == std::string::npos || dot == std::string::npos || dot < slash) continue;
+            formats::ConsistEntry entry;
+            entry.folder = path.substr(0, slash);
+            entry.name = path.substr(slash + 1, dot - slash - 1);
+            entry.engine = core::fold_case(path.substr(dot)) == ".eng";
+            entry.uid = static_cast<std::uint32_t>(i);
+            entry.flipped = (car.flags & 1u) != 0;
+            entry.cold = (car.flags & 2u) != 0;
+            entry.place_drag = car.chocks();
+            if (car.handbrake) entry.handbrake = *car.handbrake * 100.0f;
+            if (!car.shoes.empty()) {
+                const auto comma = car.shoes.find(',');
+                entry.shoes[0] = formats::brake_shoe_from(car.shoes.substr(0, comma));
+                entry.shoes[1] = comma == std::string::npos ? entry.shoes[0] : formats::brake_shoe_from(car.shoes.substr(comma + 1));
+            }
+            entries.push_back(std::move(entry));
+        }
+        auto label = net::to_utf8(read.name);
+        if (label.empty()) label = read.number ? "№" + std::to_string(read.number) : std::string(tr("train"));
         Unit unit;
-        if (const auto error = make_unit_from(read.name, read.cars, unit, preview_stock_); !error.empty()) {
-            std::cout << "placement: " << read.name << ": " << error << std::endl;
+        if (const auto made = make_unit_from(label, entries, unit, preview_stock_); !made.empty()) {
+            std::cout << "placement: " << label << ": " << made << std::endl;
             ++missing;
             continue;
         }
-        std::string error;
-        if (!unit.train->place(*network_, read.front->node, read.front->offset, read.front->forward, &error)) {
-            std::cout << "placement: " << read.name << ": " << error << std::endl;
+        if (!unit.train->place(*network_, read.node, read.offset, read.forward, &error)) {
+            std::cout << "placement: " << label << ": " << error << std::endl;
             ++missing;
             continue;
+        }
+        // The category for the speed posts (0: by its cars) and the state
+        // it starts in, as Track control's "Put a consist here" gives them.
+        if (read.subtype == 1) unit.category = simulation::TrainCategory::passenger;
+        if (read.subtype == 2) unit.category = simulation::TrainCategory::freight;
+        if (read.state <= 1) unit.start_state = read.state;
+        if (read.state == 0) {
+            for (std::size_t i = 0; i < unit.train->cars().size(); ++i) unit.train->set_air(i, {});
         }
         unit.settle();
         preview_units_.push_back(std::move(unit));
+        preview_trains_.push_back(read.from);
     }
     if (preview_units_.empty()) return tr("none of the placement's trains could be put down (see openrts.log)");
     // The track taken: a car of the placement within 2.5 m of a car there.
@@ -3379,12 +3402,14 @@ std::string TrainView::preview_placement(const std::filesystem::path& file) {
             }
         }
     }
-    const auto stem = file.stem().u8string();
     preview_name_.assign(stem.begin(), stem.end());
-    std::string text = trf("%zu trains shown where they will stand", preview_units_.size());
-    if (missing > 0) text += "; " + trf("%zu could not be made", missing);
-    if (preview_blocked_) text += "; " + std::string(tr("the track there is taken"));
-    return text;
+    std::string shown = trf("%zu trains shown where they will stand", preview_units_.size());
+    const auto included = static_cast<std::size_t>(std::count_if(preview_trains_.begin(), preview_trains_.end(), [](const std::string& from) { return !from.empty(); }));
+    if (included > 0) shown += "; " + trf("%zu of them from the placements it includes", included);
+    if (missing > 0) shown += "; " + trf("%zu could not be made", missing);
+    if (!problems.empty()) shown += "; " + trf("%zu included placements missing (see openrts.log)", problems.size());
+    if (preview_blocked_) shown += "; " + std::string(tr("the track there is taken"));
+    return shown;
 }
 
 std::string TrainView::place_preview() {
@@ -3404,10 +3429,69 @@ std::string TrainView::place_preview() {
         attach_role(units_.back());
     }
     preview_units_.clear();
+    preview_trains_.clear();
     if (first) {
         if (const auto error = set_role(units_.front().train->id(), Role::driven); !error.empty()) return error;
     }
     return trf("placement %s put down: %zu trains", preview_name_.c_str(), count);
+}
+
+std::string TrainView::train_layout(const std::uint64_t id, ConsistLayout& layout) const {
+    const auto* unit = find_unit(id);
+    if (!unit || !unit->train) return "no such train";
+    const auto& cars = unit->train->cars();
+    if (cars.empty()) return "the train has no cars";
+    layout = {.name = unit->name, .length = unit->train->length()};
+    const double head = cars.front().offset + cars.front().definition->length * 0.5;
+    for (std::size_t i = 0; i < cars.size(); ++i) {
+        const float length = cars[i].definition->length;
+        layout.lengths.push_back(length);
+        layout.fronts.push_back(head - (cars[i].offset + length * 0.5));
+        layout.engines.push_back(cars[i].definition->engine.has_value());
+    }
+    return {};
+}
+
+std::string TrainView::move_train(const std::uint64_t id, const simulation::TrackLocation& head) {
+    auto* unit = find_unit(id);
+    if (!unit || !unit->train) return "no such train";
+    if (unit->remote) return "the server moves it";
+    if (std::abs(unit->train->speed()) > 0.1) return "stop the train first";
+    const auto before = unit->train->front_end();
+    if (!before) return "the train is not on the track";
+    const simulation::TrackLocation old{before->node(), before->offset(), before->forward()};
+    dispatcher_->clear(id);
+    unit->train->vacate();
+    std::string error;
+    if (!unit->train->place(*network_, head.node, head.offset, head.forward, &error)) {
+        std::string ignored;
+        (void)unit->train->place(*network_, old.node, old.offset, old.forward, &ignored);
+        unit->settle();
+        return error.empty() ? std::string("the train does not fit there") : error;
+    }
+    unit->still = 0.0f;
+    unit->settle();
+    return {};
+}
+
+std::uint8_t TrainView::train_chocks(const std::uint64_t id) const {
+    const auto* unit = find_unit(id);
+    if (!unit || !unit->train || unit->train->cars().empty()) return 0;
+    const auto& cars = unit->train->cars();
+    return static_cast<std::uint8_t>(((cars.front().chocks & simulation::chock_front) ? 1u : 0u)
+                                     | ((cars.back().chocks & simulation::chock_rear) ? 2u : 0u));
+}
+
+std::string TrainView::set_train_chocks(const std::uint64_t id, const std::uint8_t chocks) {
+    auto* unit = find_unit(id);
+    if (!unit || !unit->train || unit->train->cars().empty()) return "no such train";
+    if (unit->remote) return "the server puts them";
+    auto& train = *unit->train;
+    const auto last = train.cars().size() - 1;
+    for (std::size_t i = 0; i <= last; ++i) train.set_car_flags(i, simulation::Train::CarFlags::chocks, simulation::chock_front | simulation::chock_rear, false);
+    if (chocks & 1u) train.set_car_flags(0, simulation::Train::CarFlags::chocks, simulation::chock_front, true);
+    if (chocks & 2u) train.set_car_flags(last, simulation::Train::CarFlags::chocks, simulation::chock_rear, true);
+    return {};
 }
 
 void TrainView::draw_placements() {
@@ -3427,6 +3511,7 @@ void TrainView::draw_placements() {
     ImGui::BeginDisabled(selection_.empty());
     if (ImGui::Button(tr("Save the picked trains"))) message_ = save_placement(placement_name_.data());
     ImGui::EndDisabled();
+    ImGui::TextDisabled("%s", trf("the files: %s (the dispatcher's console and the server read them as they are)", placement_folder().string().c_str()).c_str());
     const auto saved = placements();
     if (saved.empty()) {
         ImGui::TextDisabled("%s", tr("No placements on this route yet."));
@@ -3438,7 +3523,7 @@ void TrainView::draw_placements() {
             ImGui::EndListBox();
         }
         const auto& chosen = saved[static_cast<std::size_t>(placement_choice_)];
-        const auto file = placement_folder() / std::filesystem::path(std::u8string(chosen.begin(), chosen.end())).replace_extension(".placement");
+        const auto file = placement_folder() / std::filesystem::path(std::u8string(chosen.begin(), chosen.end()) + u8".placement");
         if (ImGui::Button(tr("Show where they stand"))) message_ = preview_placement(file);
         ImGui::SameLine();
         ImGui::BeginDisabled(preview_units_.empty() || preview_blocked_);
@@ -3449,6 +3534,7 @@ void TrainView::draw_placements() {
             if (ImGui::Button(tr("Cancel##placement"))) {
                 preview_units_.clear();
                 preview_stock_.clear();
+                preview_trains_.clear();
                 message_.clear();
             }
         }
@@ -3457,6 +3543,39 @@ void TrainView::draw_placements() {
             std::error_code fs_error;
             std::filesystem::remove(file, fs_error);
             message_ = trf("placement %s deleted", chosen.c_str());
+        }
+        // The placements it includes: put with it (theirs in turn).
+        if (const auto text = placement_text(chosen)) {
+            std::string error;
+            auto placement = net::parse_placement(*text, error);
+            if (error.empty()) {
+                bool changed = false;
+                ImGui::TextUnformatted(trf("Includes (%zu):", placement.includes.size()).c_str());
+                for (std::size_t i = 0; i < placement.includes.size(); ++i) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton(trf("%s ×##inc%zu", placement.includes[i].c_str(), i).c_str())) {
+                        placement.includes.erase(placement.includes.begin() + static_cast<std::ptrdiff_t>(i));
+                        changed = true;
+                        break;
+                    }
+                }
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::BeginCombo("##include_other", tr("include another placement"))) {
+                    for (const auto& other : saved) {
+                        if (other == chosen || std::find(placement.includes.begin(), placement.includes.end(), other) != placement.includes.end()) continue;
+                        if (ImGui::Selectable(other.c_str())) {
+                            placement.includes.push_back(other);
+                            changed = true;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                if (changed) {
+                    std::ofstream output(file, std::ios::binary | std::ios::trunc);
+                    output << net::write_placement(placement);
+                    message_ = output ? trf("placement %s: %zu included", chosen.c_str(), placement.includes.size()) : "cannot write " + file.string();
+                }
+            }
         }
     }
     ImGui::TreePop();
@@ -4791,6 +4910,7 @@ std::string TrainView::save_path(const std::uint64_t id, const std::string& name
 // camera as it was. The wheel brings the camera nearer, Ctrl and the wheel
 // zoom; the train goes on being driven from the cab's keys.
 void TrainView::car_view_key(ViewerCamera& camera) {
+    if (console_) return;
     const Unit* unit = follow_id_ != 0 ? find_unit(follow_id_) : nullptr;
     if (!unit && !units_.empty()) unit = &units_.front();
     if (!unit || unit->current.empty() || unit->cars.empty()) return;
@@ -5737,9 +5857,19 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         auto& keys = selection_[unit.train->id()];
         for (const auto& car : unit.cars) keys.insert(car.key);
         keys.erase(unit.cars[1].key);
+        // Chocks under both ends go into the file (2026-11-21, the common format).
+        (void)set_train_chocks(unit.train->id(), 3);
         std::cout << "placement check: " << save_placement("zz_placement_check") << std::endl;
+        (void)set_train_chocks(unit.train->id(), 0);
         const auto file = placement_folder() / "zz_placement_check.placement";
+        if (const auto text = placement_text("zz_placement_check")) std::cout << "placement check: the file's first line: " << text->substr(0, text->find('\n')) << std::endl;
         std::cout << "placement check: " << preview_placement(file) << ", blocked " << (preview_blocked_ ? 1 : 0) << std::endl;
+        if (!preview_units_.empty()) {
+            const auto& head = preview_units_.front().train->cars();
+            const auto& tail = preview_units_.back().train->cars();
+            std::cout << "placement check: chocks in the preview: head " << ((head.front().chocks & simulation::chock_front) ? 1 : 0) << ", tail "
+                      << ((tail.back().chocks & simulation::chock_rear) ? 1 : 0) << std::endl;
+        }
         // The preview's cars, in order, against the picked ones (car 0, then 2..).
         std::vector<std::size_t> picked;
         for (std::size_t i = 0; i < unit.cars.size(); ++i)
@@ -5758,9 +5888,22 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
                   << " m from where they came from" << std::endl;
         preview_units_.clear();
         preview_stock_.clear();
+        preview_trains_.clear();
         selection_.clear();
         std::error_code fs_error;
         std::filesystem::remove(file, fs_error);
+        // Track control's "Move it": 40 m back and where it was.
+        if (const auto front = unit.train->front_end()) {
+            const simulation::TrackLocation was{front->node(), front->offset(), front->forward()};
+            auto back = *front;
+            back.move(-40.0);
+            const auto moved = move_train(unit.train->id(), {back.node(), back.offset(), back.forward()});
+            const auto there = unit.train->front_end();
+            const double off = there && there->node() == back.node() ? std::abs(there->offset() - back.offset()) : -1.0;
+            std::cout << "placement check: moved 40 m back: " << (moved.empty() ? "ok" : moved) << ", " << off << " m off" << std::endl;
+            const auto returned = move_train(unit.train->id(), was);
+            std::cout << "placement check: moved back: " << (returned.empty() ? "ok" : returned) << std::endl;
+        }
     }
     // A saved game: the trains' state once every car is fitted (the fitting
     // sets the car spacing), then the DLLs' once the host has the cars
@@ -6345,7 +6488,8 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
     // On the ground by a car's ladder or steps (RTS 0x414D24): Ctrl+Enter
     // takes them (0x431F88), up onto its outside.
     bool at_ladder = false;
-    if (engineer_.mode() == Engineer::Mode::outside && !engineer_.passing()) {
+    // The dispatcher walks, gets into no train nor onto one (2026-11-21).
+    if (engineer_.mode() == Engineer::Mode::outside && !engineer_.passing() && !console_) {
         const glm::vec3 eye = engineer_.feet() + glm::vec3{0.0f, engineer_.height(), 0.0f};
         if (const auto ladder = ladder_target(eye, camera.forward())) {
             if (auto outside = car_outside(ladder->unit, ladder->car, false)) {
@@ -6367,7 +6511,7 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
     // same prompt as at his own cab; Enter makes that cab his (and the train
     // the driven one), and the same Enter then opens the door or climbs in
     // as into any cab.
-    if (engineer_.mode() == Engineer::Mode::outside && !at_ladder) {
+    if (engineer_.mode() == Engineer::Mode::outside && !at_ladder && !console_) {
         if (const auto target = board_target(engineer_.feet())) {
             if (const auto* unit = find_unit(target->train); unit && target->car < unit->cars.size()) {
                 if (const auto it = board_cabs_.find(unit->cars[target->car].key); it != board_cabs_.end() && it->second) {
@@ -6550,6 +6694,7 @@ std::optional<TrainView::BoardTarget> TrainView::board_target(const glm::vec3& f
 }
 
 std::string TrainView::board(const std::uint64_t id, const std::size_t car, const bool seat) {
+    if (console_) return "The dispatcher gets into no train.";
     if (is_player(id)) return {};
     const bool outside = engineer_.mode() == Engineer::Mode::outside;
     const auto feet = engineer_.feet();

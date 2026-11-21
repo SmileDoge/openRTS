@@ -491,6 +491,22 @@ public:
     // A network game (--mp-connect): the panel leaves out what puts trains
     // on the track (paths, consists, situations).
     void set_network(bool on) noexcept { network_game_ = on; }
+    // The dispatcher's placements of the network game (net/placement.hpp):
+    // the single player's folder, one file format for both (a player's
+    // placement sent to the organiser is put there and seen by both).
+    [[nodiscard]] std::filesystem::path network_placement_folder() const { return placement_folder(); }
+    // The dispatcher's console (2026-11-21, the organiser): the camera does
+    // not follow a train put on the track (with none of its own the first
+    // one was followed: the dispatcher was taken to each train he put), and
+    // no car view (F3).
+    void set_console(bool on) noexcept {
+        console_ = on;
+        if (on) follow_ = false;
+    }
+    [[nodiscard]] bool console() const noexcept { return console_; }
+    // On foot or flying, asked for from a panel (the scene does it as Ctrl+F).
+    void ask_walk_toggle() noexcept { walk_toggle_asked_ = true; }
+    [[nodiscard]] bool take_walk_toggle() noexcept { return std::exchange(walk_toggle_asked_, false); }
     // A train's category for speed posts as the server says (network).
     void set_category(std::uint64_t id, simulation::TrainCategory category);
     void set_boardable(std::uint64_t id, bool on) {
@@ -670,6 +686,14 @@ public:
         double length{};             // the whole train, as Train::length()
     };
     [[nodiscard]] std::string consist_layout(std::string_view consist, ConsistLayout& layout) const;
+    // Track control's train menu (2026-11-21, the organiser): the train's
+    // cars laid out as a consist's; the train put again at another place
+    // (the front of its first car, facing the way it runs; standing still);
+    // chocks under its ends (1 its head, 2 its tail: RTS's PlaceDrag).
+    [[nodiscard]] std::string train_layout(std::uint64_t id, ConsistLayout& layout) const;
+    [[nodiscard]] std::string move_train(std::uint64_t id, const simulation::TrackLocation& head);
+    [[nodiscard]] std::uint8_t train_chocks(std::uint64_t id) const;
+    [[nodiscard]] std::string set_train_chocks(std::uint64_t id, std::uint8_t chocks);
     // The 3-D cab: the caption of the control under the mouse, and with Alt
     // (`all`) the captions of every control near `eye`.
     void collect_cab_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, bool all) const;
@@ -750,7 +774,7 @@ public:
     // none: the Train window's).
     [[nodiscard]] std::string spawn(std::string_view consist, const simulation::TrackLocation& where, Role role,
                                     std::optional<simulation::TrainCategory> category = std::nullopt,
-                                    std::optional<int> start_state = std::nullopt);
+                                    std::optional<int> start_state = std::nullopt, std::uint8_t chocks = 0);
     // Saves train `id`'s path as <user_path_folder>/<name>.pat (never into the route).
     [[nodiscard]] std::string save_path(std::uint64_t id, const std::string& name);
     // The camera follows train `id` (0: the driven train).
@@ -929,9 +953,12 @@ private:
     int placement_choice_ = -1;
     std::vector<Unit> preview_units_;
     std::vector<std::unique_ptr<formats::WagonDefinition>> preview_stock_;
+    std::vector<std::string> preview_trains_; // each preview train's included placement (empty: its own)
     bool preview_blocked_ = false;
     bool placement_checked_ = false; // OPENRTS_PLACEMENT_CHECK done
     std::string preview_name_;
+    // A placement of placement_folder() by name (included ones).
+    [[nodiscard]] std::optional<std::string> placement_text(const std::string& name) const;
     [[nodiscard]] std::filesystem::path placement_folder() const;
     [[nodiscard]] std::vector<std::string> placements() const;
     [[nodiscard]] std::string save_placement(const std::string& name) const;
@@ -950,6 +977,8 @@ private:
     std::set<std::uint64_t> shared_sound_; // take_sound
     std::set<std::uint64_t> boardable_;    // set_boardable
     bool network_game_ = false;            // set_network
+    bool console_ = false;                 // set_console
+    bool walk_toggle_asked_ = false;       // ask_walk_toggle
     std::vector<Coupling> couplings_;      // take_couplings
     std::vector<Cut> cuts_;                // take_cuts
     std::string board_prompt_;             // Enter at another cab's door (his other trains, the far end of his own)

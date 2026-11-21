@@ -2453,7 +2453,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .step_up = down(GLFW_KEY_UP),
         .step_down = down(GLFW_KEY_DOWN),
         .toggle_follow = pressed(GLFW_KEY_V, input.follow_key_down),
-        .toggle_track = pressed(GLFW_KEY_T, input.track_key_down),
+        // Not with Ctrl: Ctrl+T is Track control's teleport.
+        .toggle_track = pressed(GLFW_KEY_T, input.track_key_down) && !ctrl,
         .toggle_labels = pressed(GLFW_KEY_L, input.labels_key_down),
         .throttle_up = pressed(GLFW_KEY_HOME, input.train_keys_down[1]),
         .throttle_down = pressed(GLFW_KEY_END, input.train_keys_down[2]),

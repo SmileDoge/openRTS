@@ -38,6 +38,7 @@ std::unique_ptr<ServerSession> ServerSession::start(SessionSettings settings, st
     // A thunderstorm is rain to RTS (the login's weather), a storm to openRTS.
     options.weather = settings.weather == 3 ? std::uint8_t{2} : settings.weather;
     options.storm = settings.weather == 3;
+    options.weather_dynamic = settings.weather_dynamic;
     options.counts = counts;
     options.time_of_day = settings.time_of_day;
     options.admit = settings.admit;
@@ -57,11 +58,13 @@ std::unique_ptr<ServerSession> ServerSession::start(SessionSettings settings, st
     });
     game.set_console_place([&game, &route](const net::ConsolePlace& place) { return place_cars(game, route, place); });
     game.set_station_routes(&route.station_routes());
+    if (settings.autosave_minutes > 0.0) keep_previous_autosave(route);
     lines.push_back("listening on port " + std::to_string(s.tcp_->port()));
     return session;
 }
 
 ServerSession::~ServerSession() {
+    if (game_ && route_ && settings_.autosave_minutes > 0.0) (void)autosave_placement(*game_, *route_);
     game_.reset();
     if (tcp_) tcp_->stop();
 }
@@ -75,6 +78,10 @@ void ServerSession::step(const double now) {
         }
     }
     game_->tick(now);
+    if (settings_.autosave_minutes > 0.0 && now - autosaved_at_ >= settings_.autosave_minutes * 60.0) {
+        autosaved_at_ = now;
+        (void)autosave_placement(*game_, *route_);
+    }
 }
 
 std::string ServerSession::command(const std::string_view line, bool& quit) {

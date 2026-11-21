@@ -123,6 +123,7 @@ constexpr Named names[] = {
     {0x45F3, "console_place"},
     {0x45F8, "console_next"},
     {0x45F9, "console_next_reply"},
+    {0x45FA, "openrts_weather"},
 };
 
 } // namespace

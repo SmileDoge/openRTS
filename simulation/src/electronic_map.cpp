@@ -30,7 +30,8 @@ struct Arrival {
 // MainRoute with `main_only`), the trunk of a trailing one. Pins as
 // track_traveller.cpp's follow() reads them: to a vector node, direction 1
 // onto its start going forward; to a junction, 1 onto its trunk (facing).
-void arrivals(const TrackNetwork& network, const std::uint32_t from, const bool forward, const bool main_only, std::vector<Arrival>& out) {
+void arrivals(const TrackNetwork& network, const std::uint32_t from, const bool forward, const bool main_only, std::vector<Arrival>& out,
+              const bool as_set = false) {
     out.clear();
     const auto* node = network.node(from);
     if (!node || node->pins.size() < 2) return;
@@ -52,7 +53,8 @@ void arrivals(const TrackNetwork& network, const std::uint32_t from, const bool 
         if (target->kind != formats::TrackNodeKind::junction || target->pins.size() < 2) continue;
         if (pending.pin.direction == 1) {
             const auto* state = network.junction(target->index);
-            const std::uint32_t main = state ? state->main_route : 0;
+            // `as_set`: the branch the junction is set for (the train's way).
+            const std::uint32_t main = state ? (as_set ? state->selected : state->main_route) : 0;
             for (std::size_t b = 1; b < target->pins.size(); ++b) {
                 if (main_only && b - 1 != main) continue;
                 stack.push_back({target->pins[b], pending.depth + 1});
@@ -181,6 +183,24 @@ std::uint32_t ElectronicMap::track_number(const std::string_view name) {
     return digits > 0 && number >= 1 && number <= 98 ? number : 0;
 }
 
+std::string ElectronicMap::track_park(const std::string_view name) {
+    std::size_t i = 0;
+    while (i < name.size() && name[i] >= '0' && name[i] <= '9') ++i;
+    if (i == 0 || i >= name.size()) return {};
+    const auto c = static_cast<unsigned char>(name[i]);
+    if (c >= 'A' && c <= 'Z') return std::string(name.substr(i, 1));
+    // UTF-8 А..Я (D0 90 .. D0 AF) and Ё (D0 81).
+    if (c == 0xD0 && i + 1 < name.size()) {
+        const auto d = static_cast<unsigned char>(name[i + 1]);
+        if ((d >= 0x90 && d <= 0xAF) || d == 0x81) return std::string(name.substr(i, 2));
+    }
+    return {};
+}
+
+bool ElectronicMap::in_park(const std::string& station, const std::string& park, const std::uint32_t number) const {
+    return park_numbers_.contains({station, park, number}) || (number <= 2 && park_numbers_.contains({station, std::string(), number}));
+}
+
 ElectronicMap::ElectronicMap(const TrackNetwork& network, const formats::RouteDatabase& database, std::vector<MapSignal> signals) {
     for (const auto& s : signals) {
         signals_[s.node].push_back({.object = s.object, .offset = s.offset, .forward = s.forward});
@@ -197,7 +217,7 @@ ElectronicMap::ElectronicMap(const TrackNetwork& network, const formats::RouteDa
         const auto a = network.locate(point_of(point.point1.position), reach, 5.0);
         const auto b = network.locate(point_of(point.point2->position), reach, 5.0);
         if (!a || !b) continue;
-        MapTrack track{.station = point.station, .name = point.name, .number = number};
+        MapTrack track{.station = point.station, .name = point.name, .number = number, .park = track_park(point.name)};
         if (a->node == b->node) {
             track.spans.push_back({a->node, (std::min)(a->offset, b->offset), (std::max)(a->offset, b->offset), a->offset <= b->offset});
         } else {
@@ -222,6 +242,7 @@ ElectronicMap::ElectronicMap(const TrackNetwork& network, const formats::RouteDa
             }
         }
         station_numbers_.insert({track.station, number});
+        park_numbers_.insert({track.station, track.park, number});
         numbers_.insert(number);
         tracks_.push_back(std::move(track));
     }
@@ -259,10 +280,13 @@ ElectronicMap::ElectronicMap(const TrackNetwork& network, const formats::RouteDa
             if (std::abs(s.offset - at->offset) <= entry_reach && !signal_track_.contains(s.object)) signal_entry_[s.object] = point.station;
         }
     }
-    // The lines' tracks: from each end of a station track outwards along
+    // The lines' tracks: from each end of a station's main track (1, 2: a
+    // side track's way out, numbered, made the throat a "line" of its
+    // number and the main ones' ambiguous where they join) outwards along
     // MainRoute (not on where it joins another track by a side branch) up
     // to the next station's track, its number carried.
     for (const auto& track : tracks_) {
+        if (track.number > 2) continue;
         for (const bool last_end : {true, false}) {
             const auto& span = last_end ? track.spans.back() : track.spans.front();
             std::uint32_t node = span.node;
@@ -361,7 +385,7 @@ const MapTrack* ElectronicMap::track_of(const std::uint32_t object) const {
 }
 
 ElectronicMap::Found ElectronicMap::along_main(const TrackNetwork& network, std::uint32_t node, double offset, bool forward,
-                                               double already, bool strictly_ahead, const bool line_way) const {
+                                               double already, bool strictly_ahead, const bool line_way, const bool as_set) const {
     Found found;
     std::set<std::pair<std::uint32_t, bool>> seen;
     std::vector<Arrival> next;
@@ -390,7 +414,7 @@ ElectronicMap::Found ElectronicMap::along_main(const TrackNetwork& network, std:
         }
         const double length = node_length(network, node);
         distance += forward ? length - offset : offset;
-        arrivals(network, node, forward, true, next);
+        arrivals(network, node, forward, true, next, as_set);
         if (next.empty()) break;
         node = next.front().node;
         forward = next.front().forward;
@@ -409,7 +433,7 @@ std::optional<std::size_t> ElectronicMap::track_at(const std::uint32_t node, con
 }
 
 ElectronicMap::Found ElectronicMap::abreast(const TrackNetwork& network, const std::uint32_t node, const double offset, const bool forward,
-                                            const std::string& station, const std::uint32_t number) const {
+                                            const std::string& station, const std::uint32_t number, const std::string* park) const {
     Found found;
     const auto front = network.point(node, offset);
     if (!front) return found;
@@ -431,9 +455,14 @@ ElectronicMap::Found ElectronicMap::abreast(const TrackNetwork& network, const s
     // Of the station's tracks of the number ("2", "2А"), the nearest to
     // the front with a signal ahead.
     double best_d2 = -1.0;
+    double nearest_d2 = -1.0;
+    bool nearest_passed = false;
     for (std::size_t t = 0; t < tracks_.size(); ++t) {
         const auto& track = tracks_[t];
         if (track.number != number || track.station != station || track.spans.empty()) continue;
+        // Within the train's park (the testers, 2026-11-21: not the next
+        // park's); the main ones also on the station's unlettered tracks.
+        if (park && track.park != *park && !(number <= 2 && track.park.empty())) continue;
         // Its point nearest the front: every 10 m, then to the metre.
         std::size_t near_span = 0;
         double near_at = 0.0, near_d2 = -1.0;
@@ -487,7 +516,6 @@ ElectronicMap::Found ElectronicMap::abreast(const TrackNetwork& network, const s
             const double way = track_heading + (up ? 0.0 : pi);
             past = (std::max)(dx * std::sin(way) + dz * std::cos(way), 0.0);
         }
-        if (best_d2 >= 0.0 && near_d2 >= best_d2) continue;
         // Its signals facing that way ahead of the point: the nearest.
         Found on_track;
         for (const auto& [object, index] : signal_track_) {
@@ -521,10 +549,17 @@ ElectronicMap::Found ElectronicMap::abreast(const TrackNetwork& network, const s
                 on_track.track = t;
             }
         }
+        // The nearest track of the number: behind the front, its signals
+        // passed (the testers' 2026-11-21: then the first block signal, not
+        // another park's track of the number further on).
+        if (nearest_d2 < 0.0 || near_d2 < nearest_d2) {
+            nearest_d2 = near_d2;
+            nearest_passed = far_end && past > 1.0 && !on_track.has_target;
+        }
+        if (best_d2 >= 0.0 && near_d2 >= best_d2) continue;
         // None of its own ahead (its exit past 60 m from its end, on
-        // another node, or passed): the first train signal on from the
-        // point along the track's way ahead of the front, unless another
-        // track's.
+        // another node): the first train signal on from the point along
+        // the track's way ahead of the front, unless another track's.
         if (!on_track.has_target) {
             const bool node_forward = up == track.spans[near_span].forward;
             auto on = along_main(network, track.spans[near_span].node, near_at, node_forward, lead - past, false);
@@ -545,7 +580,28 @@ ElectronicMap::Found ElectronicMap::abreast(const TrackNetwork& network, const s
         found = on_track;
         best_d2 = near_d2;
     }
+    // A side track's (not the main tracks' 1, 2: the line's of theirs then).
+    if (nearest_passed && number > 2) return Found{.passed = true};
     return found;
+}
+
+ElectronicMap::Found ElectronicMap::first_block(const TrackNetwork& network, const std::uint32_t node, const double offset,
+                                                const bool forward, const std::string& station) const {
+    const auto station_signal = [&](const std::uint32_t object) {
+        if (const auto t = signal_track_.find(object); t != signal_track_.end()) return tracks_[t->second].station == station;
+        if (const auto e = signal_entry_.find(object); e != signal_entry_.end()) return e->second == station;
+        return false;
+    };
+    // Along the junctions as they are set: the train's own way.
+    auto on = along_main(network, node, offset, forward, 0.0, true, false, true);
+    for (int k = 0; k < 32 && on.has_target && station_signal(on.object); ++k) {
+        const auto place = signal_place_.find(on.object);
+        if (place == signal_place_.end()) break;
+        on = along_main(network, place->second.node, place->second.offset, place->second.forward, on.distance, true, false, true);
+    }
+    if (on.has_target && station_signal(on.object)) on = {};
+    on.found = on.has_target;
+    return on;
 }
 
 ElectronicMap::Found ElectronicMap::search(const TrackNetwork& network, const std::uint32_t node, const double offset, const bool forward,
@@ -665,14 +721,16 @@ EkTarget ElectronicMap::update(EkState& state, const TrackNetwork& network, cons
     // up to the first signal on past its own along its way: past its route
     // signal (НМ3) the exit after the crossover (Н1), past its exit (Н3)
     // the first block signal; "без ЭК" past that. The train on another
-    // track passing that track's signal: at once where the entered one's
-    // way leads on to another track's signal, else at the next block
-    // signal. The entry of a station without the entered track: off its way.
+    // track: its station's signals passed on (its exits, several heads
+    // too), "без ЭК" past the first block signal. The entry of a station
+    // without the entered track: off its way.
     const auto leave = [&](const std::string& station) {
         state.matched = false;
         state.latched_off = true;
         state.left_at = station;
         state.leaving.clear();
+        state.leaving_own = false;
+        state.done_at.clear();
     };
     for (const auto object : passed) {
         if (const auto it = signal_track_.find(object); it != signal_track_.end()) {
@@ -680,14 +738,18 @@ EkTarget ElectronicMap::update(EkState& state, const TrackNetwork& network, cons
             const auto& track = tracks_[it->second];
             if (number <= 2) continue;
             if (track.number == number) {
-                state.leaving = track.station; // its own: the next signal past it ends it
-            } else if (!state.leaving.empty() || !abreast(network, node, offset, forward, track.station, number).has_target) {
+                // Its own (each of its heads): the next signal past it ends it.
+                state.leaving = track.station;
+                state.leaving_own = true;
+            } else if (state.leaving_own) {
                 leave(track.station);
             } else {
                 state.leaving = track.station;
             }
         } else if (const auto entry = signal_entry_.find(object); entry != signal_entry_.end()) {
             state.leaving.clear();
+            state.leaving_own = false;
+            if (state.done_at != entry->second) state.done_at.clear();
             if (!station_numbers_.contains({entry->second, number})) {
                 state.matched = false;
                 state.latched_off = true;
@@ -696,33 +758,62 @@ EkTarget ElectronicMap::update(EkState& state, const TrackNetwork& network, cons
             } else {
                 state.inside = entry->second;
             }
-        } else if (!state.leaving.empty()) {
-            leave(state.leaving);
+        } else if (!state.leaving.empty() || !state.done_at.empty()) {
+            leave(state.leaving.empty() ? state.done_at : state.leaving);
         }
     }
+    // The entered track abreast behind: the first block signal along the
+    // train's way.
+    const auto to_first_block = [&]() {
+        // Past its own signal: the next signal on, whatever it is (НМ3, then
+        // the exit Н1 after the crossover); else the first block signal.
+        const auto block = state.leaving_own ? along_main(network, node, offset, forward, 0.0, true, false, true)
+                                             : first_block(network, node, offset, forward, state.done_at);
+        out.matched = state.matched;
+        out.has_target = state.matched && block.has_target;
+        out.object = block.object;
+        out.distance = block.distance;
+        return out;
+    };
     // On another track of a station with the entered one: that track's
     // signal (the real КЛУБ-У's map, by its coordinate), unless the train
     // left the entered track's way there.
     if (const auto here = track_at(node, offset)) {
         const auto& station = tracks_[*here].station;
+        const auto& park = tracks_[*here].park;
+        // The entered number nowhere in the train's park (the station's
+        // tracks without a letter one park), or not at the station at all:
+        // "без ЭК", back before a station with it (the testers, 2026-11-21:
+        // to then the signal ahead, or the next park's track).
+        if (tracks_[*here].number != number && !state.leaving_own && state.done_at != station && !in_park(station, park, number)
+            && (!state.latched_off || state.left_at != station)) {
+            leave(station);
+            return out;
+        }
         if (tracks_[*here].number != number && station_numbers_.contains({station, number})
             && (!state.latched_off || state.left_at != station)) {
             state.inside = station;
-            const auto beside = abreast(network, node, offset, forward, station, number);
-            if (beside.has_target) {
-                state.matched = true;
-                state.latched_off = false;
-                out.matched = true;
-                out.has_target = true;
-                out.object = beside.object;
-                out.distance = beside.distance;
-                return out;
+            if (state.leaving_own) return to_first_block(); // past its own: the next signal on
+            if (state.done_at != station) {
+                const auto beside = abreast(network, node, offset, forward, station, number, &park);
+                if (beside.passed) {
+                    state.done_at = station;
+                } else if (beside.has_target) {
+                    state.matched = true;
+                    state.latched_off = false;
+                    out.matched = true;
+                    out.has_target = true;
+                    out.object = beside.object;
+                    out.distance = beside.distance;
+                    return out;
+                }
             }
+            if (state.done_at == station) return to_first_block();
         }
     }
     // On a line's track of another number (not in a station with the
     // entered track, not left off its way): the entered one's abreast.
-    if (state.inside.empty() && !state.latched_off && !track_at(node, offset)) {
+    if (number <= 2 && state.inside.empty() && !state.latched_off && !track_at(node, offset)) {
         if (const auto line = line_number(node); line != 0 && line != number) {
             const auto beside = line_abreast(network, node, offset, forward, number);
             if (beside.has_target) {
@@ -739,17 +830,26 @@ EkTarget ElectronicMap::update(EkState& state, const TrackNetwork& network, cons
     // In its throat past its entry signal: that track's signal from abreast
     // too, by its coordinate, whichever way the switches lead.
     if (!state.inside.empty() && (!state.latched_off || state.left_at != state.inside)) {
-        const auto beside = abreast(network, node, offset, forward, state.inside, number);
-        if (beside.has_target) {
-            state.matched = true;
-            state.latched_off = false;
-            out.matched = true;
-            out.has_target = true;
-            out.object = beside.object;
-            out.distance = beside.distance;
-            return out;
+        if (state.leaving_own) return to_first_block();
+        if (state.done_at != state.inside) {
+            const auto beside = abreast(network, node, offset, forward, state.inside, number);
+            if (beside.passed) {
+                state.done_at = state.inside;
+            } else if (beside.has_target) {
+                state.matched = true;
+                state.latched_off = false;
+                out.matched = true;
+                out.has_target = true;
+                out.object = beside.object;
+                out.distance = beside.distance;
+                return out;
+            }
         }
+        if (state.done_at == state.inside) return to_first_block();
     }
+    // Its station left behind (its signals passed) with the track abreast
+    // behind: the first block signal still.
+    if (!state.done_at.empty() && !state.latched_off) return to_first_block();
     if (found.found) {
         // Left off its way: back before the entry signal of another
         // station with the track (the target its entry, or no more than

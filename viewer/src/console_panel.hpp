@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
+#include <openrts/net/placement.hpp>
 #include <openrts/net/play.hpp>
 
 namespace openrts::viewer {
@@ -14,6 +15,13 @@ namespace openrts::viewer {
 // A consist of this installation (its name or virtual path) as the console
 // sends it: by its cars, so the server needs only the cars' files.
 [[nodiscard]] std::optional<net::ConsolePlace> consist_place(const core::Vfs& vfs, const std::string& consist, std::string& error);
+// A new train's kind and state: the lists (ImGui builds), the kind as RTS's.
+void new_train_kind_and_state(int& kind, int& state);
+// Its chocks: 0 none, 1 under its head, 2 its tail, 3 both (RTS's PlaceDrag).
+void new_train_chocks(int& chocks);
+// Chocks under a place's head (1) and tail (2), beside the consist's own.
+void put_chocks(net::ConsolePlace& place, std::uint8_t chocks);
+[[nodiscard]] int new_train_kind(int choice);
 }
 
 #ifdef OPENRTS_HAS_IMGUI
@@ -58,6 +66,31 @@ private:
     char command_[256]{};
     char time_[16]{};
     char number_[16]{};
+    // A new train's name, kind (STATIC, PLAYER, LOOSE, TRAFFIC) and state
+    // (cold, on, running): STATIC and cold by default (the organiser,
+    // 2026-11-21).
+    char new_name_[128]{};
+    int new_kind_ = 0;
+    int new_state_ = 0;
+    int new_chocks_ = 0;
+    // Placements: a name; the trains of the one shown (the server's or one
+    // kept here) with the ones picked to put; what the next file from the
+    // server is for.
+    void placements(NetSession& net, TrainView& trains);
+    char placement_name_[80]{};
+    std::vector<net::PlacementTrain> shown_;
+    std::vector<char> placement_picked_;
+    std::string shown_from_;
+    // Where the one shown is: the server's (by name) or here (by name); its
+    // includes; the picked saved as another placement.
+    std::string shown_server_, shown_local_;
+    std::vector<std::string> shown_includes_;
+    char subset_name_[80]{};
+    enum class Awaited { none, show, keep } awaited_ = Awaited::none;
+    std::string keep_as_;
+    bool clear_first_ = false;
+    std::vector<std::string> local_;
+    bool local_listed_ = false;
     // The chosen train's form: its number, name and notes (0x461A), loaded
     // when another train is chosen; another dispatcher's change taken where
     // this one is not edited.

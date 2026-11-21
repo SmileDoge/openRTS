@@ -5,6 +5,10 @@
 // station as the switches lie, a track entered that it does not take leaves
 // the ЭК at the other track's signal and comes back near a station with it.
 #include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <vector>
 #include <iostream>
 #include <set>
 #include <string>
@@ -50,10 +54,122 @@ struct Drive {
 
 } // namespace
 
+// A look at one case (not a check): OPENRTS_EK_PROBE="<route>|<station>|<track
+// name>|<number>" drives from the middle of that station track both ways
+// with the number entered and prints what the map gives.
+int probe(const std::filesystem::path& root, std::string spec) {
+    // "@<file>": the spec in a UTF-8 file (the environment's is the code page's).
+    if (!spec.empty() && spec[0] == '@') {
+        std::ifstream in(std::filesystem::path(spec.substr(1)), std::ios::binary);
+        std::getline(in, spec);
+        while (!spec.empty() && (spec.back() == '\r' || spec.back() == '\n')) spec.pop_back();
+    }
+    std::vector<std::string> part;
+    for (std::size_t from = 0;;) {
+        const auto bar = spec.find('|', from);
+        part.push_back(spec.substr(from, bar == std::string::npos ? std::string::npos : bar - from));
+        if (bar == std::string::npos) break;
+        from = bar + 1;
+    }
+    if (part.size() < 4) return 2;
+    core::Vfs vfs;
+    core::mount_installation(vfs, root, core::load_installation_config(root));
+    vfs.build_index();
+    const auto route = core::VirtualPath::parse("ROUTES/" + part[0]);
+    std::string error;
+    auto network = route ? simulation::TrackNetwork::load(vfs, *route, &error) : nullptr;
+    if (!network) return 2;
+    const auto database = formats::load_route_database(vfs, *route);
+    const auto config = formats::load_signal_config(vfs, *route);
+    std::vector<simulation::MapSignal> signals;
+    std::set<std::uint32_t> normal;
+    const auto& db = network->database();
+    for (std::uint32_t n = 0; n < network->node_count(); ++n) {
+        const auto* node = network->node(n);
+        if (!node || node->kind != formats::TrackNodeKind::vector) continue;
+        for (const auto& entry : node->items) {
+            const auto& item = db.items[entry.item];
+            if (item.kind != formats::TrackItemKind::signal) continue;
+            const auto* type = config.find_type(item.name);
+            if (!type || type->function != formats::SignalFunction::normal) continue;
+            signals.push_back({.object = entry.item, .node = n, .offset = entry.offset, .forward = item.signal_direction == 0});
+            normal.insert(entry.item);
+        }
+    }
+    const simulation::ElectronicMap map(*network, database, signals);
+    const auto number = static_cast<std::uint32_t>(std::stoul(part[3]));
+    const auto label = [&](const std::uint32_t object) {
+        const auto* track = map.track_of(object);
+        return std::to_string(object) + (track ? " (" + track->station + " " + track->name + ")" : std::string());
+    };
+    if (part[2] == "?") {
+        for (const auto& track : map.tracks())
+            if (track.station.find(part[1]) != std::string::npos) std::cout << track.station << " | " << track.name << " | " << track.number << "\n";
+        return 0;
+    }
+    for (const auto& track : map.tracks()) {
+        if (track.station != part[1] || track.name != part[2] || track.spans.empty()) continue;
+        const auto& span = track.spans[track.spans.size() / 2];
+        for (const bool way : {true, false}) {
+            std::cout << "== " << track.station << " " << track.name << (way ? " forward" : " back") << ", " << number << " entered\n";
+            simulation::TrackTraveller t(*network, span.node, 0.5 * (span.from + span.to), way);
+            simulation::EkState state;
+            std::uint32_t last = ~0u;
+            bool was = false;
+            double moved = 0.0;
+            for (int step = 0; step < 2400; ++step) {
+                const auto ahead = simulation::look_ahead(*network, t.node(), t.offset(), t.forward(), 5.0,
+                                                          [](const formats::TrackItem& item) { return item.kind == formats::TrackItemKind::signal; });
+                std::vector<std::uint32_t> passed;
+                for (const auto& item : ahead.items) {
+                    const bool facing = (db.items[item.item].signal_direction == 0) == item.facing_forward;
+                    if (facing && normal.contains(item.item) && item.distance > 0.0) passed.push_back(item.item);
+                }
+                const auto target = map.update(state, *network, t.node(), t.offset(), t.forward(), number, passed);
+                for (const auto p : passed) std::cout << "  passed " << label(p) << " at " << static_cast<int>(moved) << "\n";
+                // A fifth part "from-to": every step there.
+                if (part.size() > 4) {
+                    const auto dash = part[4].find('-');
+                    const double from = std::stod(part[4].substr(0, dash)), to = std::stod(part[4].substr(dash + 1));
+                    if (moved >= from && moved <= to)
+                        std::cout << "    " << static_cast<int>(moved) << ": node " << t.node() << " at " << static_cast<int>(t.offset())
+                                  << (t.forward() ? " fwd" : " back") << ", "
+                                  << (target.has_target ? label(target.object) + " in " + std::to_string(static_cast<int>(target.distance)) : std::string("-"))
+                                  << (target.matched ? "" : " без ЭК") << '\n';
+                }
+                if (target.matched != was || (target.has_target && target.object != last)) {
+                    std::cout << "  at " << static_cast<int>(moved) << ": "
+                              << (!target.matched ? std::string("без ЭК")
+                                  : target.has_target ? "target " + label(target.object) + " in " + std::to_string(static_cast<int>(target.distance)) + " m"
+                                                      : std::string("no target"))
+                              << " (line " << map.line_number(t.node()) << ")\n";
+                    was = target.matched;
+                    last = target.has_target ? target.object : ~0u;
+                }
+                if (!t.move(5.0).ok()) break;
+                moved += 5.0;
+            }
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cout << "electronic_map_test: no RTS folder given, skipped\n";
         return 0;
+    }
+    {
+        std::string spec;
+#ifdef _WIN32
+        char* value = nullptr;
+        std::size_t length = 0;
+        if (_dupenv_s(&value, &length, "OPENRTS_EK_PROBE") == 0 && value) spec = value;
+        std::free(value);
+#else
+        if (const char* value = std::getenv("OPENRTS_EK_PROBE")) spec = value;
+#endif
+        if (!spec.empty()) return probe(argv[1], spec);
     }
     const std::filesystem::path root = argv[1];
     core::Vfs vfs;
@@ -210,11 +326,10 @@ int main(int argc, char* argv[]) {
             // along the line's track 2 (the testers' 2026-11-21).
             check(drive.off_at < 0.0 || drive.off_at > 24000.0, name + ": the ЭК on along the line's track 2 out of Albashi by track 1");
         } else {
-            // Another track: the train goes on along track 1, its exit
-            // (4100 m) the one the entered track's way leads on to (a
-            // route signal on that track, the crossover, Н1): "без ЭК"
-            // past it (the testers' 2026-11-21).
-            check(drive.off_at > 2000.0 && drive.off_at < 6000.0, name + ": \"без ЭК\" past Albashi's track 1 exit, its way's");
+            // Another track: the train goes on along track 1; its station's
+            // exits passed on (4100 m), "без ЭК" past the first block
+            // signal (7050 m; the testers' 2026-11-21).
+            check(drive.off_at > 6000.0 && drive.off_at < 8000.0, name + ": \"без ЭК\" past the first block signal out of Albashi");
             // Back before Деревянковка's entry where it has the track, else not.
             if (derevyankovka.contains(number)) check(drive.back_at > 9000.0, name + ": back before Деревянковка, which has it");
             else check(drive.back_at < 0.0, name + ": not back (Деревянковка has none)");

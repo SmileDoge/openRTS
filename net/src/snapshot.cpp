@@ -1440,10 +1440,50 @@ Bytes encode_console_place(const ConsolePlace& p) {
     for (const auto& car : p.cars) {
         w.text_u32(car.folder);
         w.text_u32(car.name);
-        w.u8(static_cast<std::uint8_t>((car.engine ? 1 : 0) | (car.flipped ? 2 : 0) | (car.cold ? 4 : 0)));
+        w.u8(static_cast<std::uint8_t>((car.engine ? 1 : 0) | (car.flipped ? 2 : 0) | (car.cold ? 4 : 0) | ((car.chocks & 3u) << 3)));
         w.f32(car.handbrake);
     }
+    w.text_u32(p.name);
+    w.u16(p.kind);
+    w.u8(p.state);
+    w.text_u32(p.notes);
     return w.take();
+}
+
+Bytes encode_openrts_weather(const OpenrtsWeather& w) {
+    WireWriter out;
+    out.u8(w.dynamic);
+    out.u8(w.weather);
+    out.u32(static_cast<std::uint32_t>(w.seed));
+    out.u32(static_cast<std::uint32_t>(w.seed >> 32));
+    out.f64(w.clock);
+    out.u8(w.by_season);
+    out.f32(w.cloudiness);
+    out.f32(w.wet);
+    out.f32(w.storms);
+    out.f32(w.spell_minutes);
+    out.f32(w.change_minutes);
+    return out.take();
+}
+
+std::optional<OpenrtsWeather> decode_openrts_weather(const ByteView body) {
+    OpenrtsWeather w;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        w.dynamic = r.u8();
+        w.weather = r.u8();
+        const std::uint64_t low = r.u32();
+        const std::uint64_t high = r.u32();
+        w.seed = low | (high << 32);
+        w.clock = r.f64();
+        w.by_season = r.u8();
+        w.cloudiness = r.f32();
+        w.wet = r.f32();
+        w.storms = r.f32();
+        w.spell_minutes = r.f32();
+        w.change_minutes = r.f32();
+    });
+    if (!ok) return std::nullopt;
+    return w;
 }
 
 std::optional<ConsolePlace> decode_console_place(const ByteView body) {
@@ -1465,8 +1505,15 @@ std::optional<ConsolePlace> decode_console_place(const ByteView body) {
             car.engine = (flags & 1) != 0;
             car.flipped = (flags & 2) != 0;
             car.cold = (flags & 4) != 0;
+            car.chocks = static_cast<std::uint8_t>((flags >> 3) & 3u);
             car.handbrake = r.f32();
             p.cars.push_back(std::move(car));
+        }
+        if (r.ok() && !r.at_end()) {
+            p.name = r.text_u32();
+            p.kind = r.u16();
+            p.state = r.u8();
+            if (!r.at_end()) p.notes = r.text_u32();
         }
     });
     if (!ok || p.cars.empty()) return std::nullopt;

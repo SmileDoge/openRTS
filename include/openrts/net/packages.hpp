@@ -129,6 +129,7 @@ enum class Package : std::uint16_t {
     console_place = 0x45F3,   // console -> server: a consist's cars to put on the track
     console_next = 0x45F8,       // console -> server: the station routes a train can take next (net::ConsoleNextAsk)
     console_next_reply = 0x45F9, // server -> console: those routes (net::ConsoleNext)
+    openrts_weather = 0x45FA,    // server -> openRTS players and consoles: the game's weather (net::OpenrtsWeather)
     // Between openRTS's server and openRTS players (docs/net.md, "Players
     // and helpers"); a player sends them only after the server's hello.
     openrts_hello = 0x45F4,   // player -> server after the snapshot, the server's answer back: both are openRTS

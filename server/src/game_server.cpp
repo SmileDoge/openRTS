@@ -1,6 +1,7 @@
 #include <openrts/server/game_server.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <random>
 #include <cmath>
@@ -377,6 +378,11 @@ struct GameServer::Impl {
 
 GameServer::GameServer(Transport& transport, ServerOptions options, simulation::TrackNetwork& network, simulation::SignalSystem* signals)
     : impl_(std::make_unique<Impl>(network, signals)), transport_(transport), options_(std::move(options)), time_(options_.time_of_day) {
+    // The weather it starts with (the start form's, --weather; openrts_weather).
+    weather_.weather = options_.storm ? 3 : options_.weather;
+    weather_.dynamic = options_.weather_dynamic ? 1 : 0;
+    weather_.seed = options_.weather_seed ? options_.weather_seed : static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) | 1u;
+
     if (signals) {
         // The players' trains run the heads ahead of both ends (RTS train kinds 1 and 4).
         signals->set_player([this](const simulation::Train& train) {
@@ -622,6 +628,7 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         if (!user->openrts) impl.note("user " + utf8(user->nick) + " plays openRTS");
         user->openrts = true;
         send_to(*user, hello_answer());
+        if (user->playing) send_to(*user, framed(P(Package::openrts_weather), net::encode_openrts_weather(weather_)));
         return;
     }
 
@@ -670,6 +677,7 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         }
         if (paused_) s.pause = 1;
         send_to(*user, net::write_snapshot(s));
+        if (user->openrts || user->console) send_to(*user, framed(P(Package::openrts_weather), net::encode_openrts_weather(weather_)));
         // A console gets every signal unit's 0x4618 and every segment's
         // 0x450B (rts_server.exe 0x41733C).
         if (user->console && impl.signals && impl.signals->dispatched()) {
@@ -1075,6 +1083,10 @@ void GameServer::tick(const double now) {
     const double dt = impl.last_tick < 0.0 ? 0.0 : std::clamp(now - impl.last_tick, 0.0, 0.5);
     impl.last_tick = now;
     impl.now = now;
+    // The dynamic weather's clock runs with the game's (not while paused),
+    // told again every 30 s so the players' cycles stay with it.
+    if (weather_.dynamic && !paused_) weather_.clock += dt;
+    if (weather_.dynamic && now - weather_sent_ >= 30.0) set_weather(weather_);
     // Discord's party: the openRTS players told again when their number
     // changes (their profiles show it).
     if (options_.discord_join) {
@@ -1288,6 +1300,12 @@ std::optional<std::uint32_t> GameServer::add_train(NewTrain made, std::string& e
     t.number = made.number;
     t.sim = std::make_unique<simulation::Train>(std::move(made.cars));
     t.sim->scatter_ep_fill(std::random_device{}()); // its ЭПТ's own pace (the server's for everyone)
+    // The records' chocks (0x100 / 0x200, RTS's PlaceDrag) hold it here too.
+    for (std::size_t i = 0; i < t.record.cars.size(); ++i) {
+        if (const auto chocks = static_cast<std::uint8_t>((t.record.cars[i].flags >> 8) & 3u); chocks != 0) {
+            t.sim->set_car_flags(i, simulation::Train::CarFlags::chocks, chocks, true);
+        }
+    }
     if (!t.sim->place(impl.network, made.node, made.offset, made.forward, &error)) return std::nullopt;
     for (const auto& [other_id, other] : impl.trains) {
         if (!other.sim || !other.sim->placed()) continue;
@@ -2077,6 +2095,40 @@ bool GameServer::lay_route(const std::uint32_t train, const double length, const
     result = text;
     impl.note(result);
     return true;
+}
+
+void GameServer::set_weather(net::OpenrtsWeather weather) {
+    auto& impl = *impl_;
+    if (weather.weather > 3) weather.weather = 0;
+    const bool changed = weather.dynamic != weather_.dynamic || weather.weather != weather_.weather || weather.seed != weather_.seed;
+    weather_ = weather;
+    weather_sent_ = impl.now;
+    const auto bytes = framed(P(Package::openrts_weather), net::encode_openrts_weather(weather_));
+    for (auto& [_, user] : impl.users) {
+        if ((user.openrts || user.console) && user.playing && user.connection) transport_.send(user.connection, bytes);
+    }
+    if (changed) {
+        static constexpr const char* names[] = {"clear", "snow", "rain", "thunderstorm"};
+        impl.note(weather_.dynamic ? "weather: dynamic, seed " + std::to_string(weather_.seed) : std::string("weather: ") + names[weather_.weather]);
+    }
+}
+
+std::vector<StandingTrain> GameServer::standing_trains() const {
+    std::vector<StandingTrain> out;
+    for (const auto& [id, t] : impl_->trains) {
+        if (!t.sim || !t.sim->placed()) continue;
+        const auto front = t.sim->front_end();
+        if (!front) continue;
+        StandingTrain s{.id = id, .number = t.number, .kind = t.record.kind, .subtype = t.record.subtype, .state = t.record.state,
+                        .top_speed = t.record.top_speed, .node = front->node(), .offset = front->offset(), .forward = front->forward(),
+                        .cars = t.record.cars};
+        if (t.record.names) {
+            s.name = (*t.record.names)[0];
+            s.notes = (*t.record.names)[1];
+        }
+        out.push_back(std::move(s));
+    }
+    return out;
 }
 
 std::vector<TrainSummary> GameServer::trains() const {

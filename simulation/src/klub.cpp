@@ -97,7 +97,8 @@ void alsn(KlubState& s, const KlubInputs& in) {
         s.signal.speed_limit = white_limit;
     }
     // openRTS's map: the target where the map has it, the aspect as the
-    // codes give it.
+    // codes give it. САУТ keeps the signal actually ahead.
+    s.saut_signal_distance = s.signal.distance;
     if (in.ek.given && in.ek.matched && in.ek.has_target) s.signal.distance = in.ek.distance;
     auto& aspect = s.signal.aspect[0];
     if (aspect == 1) {
@@ -125,6 +126,8 @@ void alsn(KlubState& s, const KlubInputs& in) {
     else s.limit_marks &= ~0x4000u;
     s.signal_from_50 = static_cast<float>(whole(s.signal.distance) - 50u);
     if (s.signal_from_50 > 9999.0f) s.signal_from_50 = 0.0f;
+    s.saut_from_50 = static_cast<float>(whole(s.saut_signal_distance) - 50u);
+    if (s.saut_from_50 > 9999.0f) s.saut_from_50 = 0.0f;
     s.signal_metres = static_cast<float>(whole(s.signal.distance));
 }
 
