@@ -50,7 +50,9 @@ void draw_controls_help() {
 
     if (begin_section("Camera and world", "##controls_camera")) {
         row("RMB + mouse", "look around");
-        row("Wheel click", "mouse lock: the view always turns with the mouse, a click works what the dot in the middle is on; again: the cursor back");
+        row("Side button / Caps Lock", "mouse lock: the view always turns with the mouse, a click works what the dot in the middle is on; again: the cursor back");
+        row("Wheel held + wheel", "zoom while held; let go: the view comes back");
+        row("Ctrl+wheel", "zoom (smooth; in the cab too)");
         row("W A S D", "move the free camera");
         row("Q / E", "down / up");
         row("Shift", "faster");
@@ -99,11 +101,12 @@ void draw_controls_help() {
         if (key_layout() == KeyLayout::rts) row("Num5", "which locomotive the tape records");
         row("F12", "the inspector: the map's objects and their properties");
         row("RMB + mouse", "look around");
-        row("Wheel click", "mouse lock: the view always turns with the mouse, a click works what the dot in the middle is on; again: the cursor back");
+        row("Side button / Caps Lock", "mouse lock: the view always turns with the mouse, a click works what the dot in the middle is on; again: the cursor back");
+        row("Wheel held + wheel", "zoom while held; let go: the view comes back");
         row("Mouse", "click: a control; wheel: a handle one position (not buttons and switches); drag: handles and blinds");
         row("F3", "view from the first car, again from the last, again back; the wheel nearer, Ctrl+wheel zoom");
         row("Wheel at the chair", "off the controls: the head nearer to what the cursor points at, or back");
-        row("Ctrl+wheel", "zoom (in the cab too)");
+        row("Ctrl+wheel", "zoom (smooth; in the cab too)");
         row("Num+ / Num-", "field of view narrower / wider, as RTS (15..90 degrees)");
         row("Num* / Ctrl+0", "field of view back as it started, the zoom off");
         row("Alt", "captions of the cab's controls");

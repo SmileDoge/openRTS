@@ -272,6 +272,7 @@ struct GameServer::Impl {
     double next_time = 0.0;
     double signal_step = 0.0; // unspent seconds of the 0.05-s signal step
     double next_console = 0.0; // the consoles' next console_state
+    std::optional<std::uint32_t> discord_players; // the players last told for Discord's party
     // Who asked a train's owner for its look (state_request), until when:
     // the answer reaches them wherever they are. A player's place is its
     // camera's (player_pos), not its train's: a client asks when it loads the
@@ -519,6 +520,12 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         std::u16string nick;
         for (std::uint16_t i = 0; i < length && r.ok(); ++i) nick.push_back(static_cast<char16_t>(r.u16()));
         if (!r.ok()) return refuse(P(Package::drop_bad), "a short login");
+        // openRTS's console: its password after the nick's zero.
+        std::u16string password;
+        if (console && r.remaining() >= 2) {
+            r.u16();
+            if (r.remaining() >= 2) password = r.text_u16();
+        }
         if (version != protocol_version) return refuse(P(Package::bad_version), "protocol " + std::to_string(version));
         if (nick.empty() || nick.size() > 15) {
             transport_.close(connection);
@@ -526,17 +533,27 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
             return;
         }
         // A console: openRTS's (rts_server_DSP.exe expects 0x4501.. replies
-        // that are not read yet). From this computer, or a nick allowed.
-        if (console && !options_.consoles) return refuse(P(Package::not_admitted), "a dispatcher console: not taken yet");
+        // that are not read yet). From this computer any; from another with
+        // the dispatcher password (and a nick allowed, when nicks are given).
+        if (console && !options_.consoles) return refuse(P(Package::not_admitted), "a dispatcher console: not taken");
         if (console) {
             const bool local = address.rfind("127.", 0) == 0 || address.rfind("::1", 0) == 0 || address.rfind("::ffff:127.", 0) == 0;
-            bool allowed = local;
-            for (const auto& name : options_.dispatchers) allowed = allowed || name == utf8(nick);
-            if (!allowed) return refuse(P(Package::not_admitted), "a console that is not a dispatcher (--dispatcher)");
+            if (!local) {
+                if (options_.dispatcher_password.empty()) {
+                    return refuse(P(Package::not_admitted), "a dispatcher console from another computer: the server has no dispatcher password");
+                }
+                if (utf8(password) != options_.dispatcher_password) return refuse(P(Package::wrong_password), "a dispatcher console: a wrong password");
+                bool allowed = options_.dispatchers.empty();
+                for (const auto& name : options_.dispatchers) allowed = allowed || name == utf8(nick);
+                if (!allowed) return refuse(P(Package::not_admitted), "a console that is not a dispatcher (--dispatcher)");
+            }
         }
         auto* user = impl.user_named(nick);
         if (user && user->console != console && user->connection) return refuse(P(Package::nick_busy), "the nick is taken");
         if (!user && !options_.admit && !console) return refuse(P(Package::not_admitted), "no new players");
+        if (!user && !console && options_.max_players > 0 && players_connected() >= options_.max_players) {
+            return refuse(P(Package::not_admitted), "all " + std::to_string(options_.max_players) + " places taken");
+        }
         if (!user) {
             const auto uid = impl.next_user++;
             user = &impl.users[uid];
@@ -604,7 +621,7 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         if (!net::decode_openrts_hello(body) || user->console) return;
         if (!user->openrts) impl.note("user " + utf8(user->nick) + " plays openRTS");
         user->openrts = true;
-        send_to(*user, framed(P(Package::openrts_hello), net::encode_openrts_hello(net::openrts_features, options_.storm)));
+        send_to(*user, hello_answer());
         return;
     }
 
@@ -745,6 +762,14 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
                                                                .id = made.value_or(0),
                                                                .ok = static_cast<std::uint8_t>(made ? 1 : 0),
                                                                .text = made ? std::u16string{} : net::from_utf8(error)})));
+        return;
+    }
+    // openRTS's console asks what a train can take next (the window's
+    // "Станционные маршруты"): the answer is console_next_reply.
+    if (user->console && id == P(Package::console_next)) {
+        const auto ask = net::decode_console_next_ask(body);
+        if (!ask) return;
+        send_to(*user, framed(P(Package::console_next_reply), net::encode_console_next(next_routes(ask->train, ask->back))));
         return;
     }
     // Its cancel (0x450D, 0x469C68): the answer is 0x450C.
@@ -1038,6 +1063,18 @@ void GameServer::tick(const double now) {
     const double dt = impl.last_tick < 0.0 ? 0.0 : std::clamp(now - impl.last_tick, 0.0, 0.5);
     impl.last_tick = now;
     impl.now = now;
+    // Discord's party: the openRTS players told again when their number
+    // changes (their profiles show it).
+    if (options_.discord_join) {
+        const auto count = players_connected();
+        if (impl.discord_players != count) {
+            impl.discord_players = count;
+            const auto bytes = hello_answer();
+            for (const auto& [_, user] : impl.users) {
+                if (user.openrts && user.connection && !user.console) transport_.send(user.connection, bytes);
+            }
+        }
+    }
     // The consoles' view of the game, every second (even while paused).
     if (now >= impl.next_console) {
         impl.next_console = now + 1.0;
@@ -1067,6 +1104,22 @@ void GameServer::tick(const double now) {
                 if (const auto route = impl.routes.find(tid); route != impl.routes.end()) c.route_junctions = static_cast<std::uint32_t>(route->second.junctions.size());
                 if (!t.record.cars.empty()) c.first_car = t.record.cars.front().file;
                 state.trains.push_back(std::move(c));
+            }
+            if (impl.station_routes) {
+                for (const auto& g : segments()) {
+                    state.segments.push_back({.id = g.id,
+                                              .train = g.train,
+                                              .route = g.route,
+                                              .station = net::from_utf8(g.station),
+                                              .name = net::from_utf8(g.name),
+                                              .reverse = g.reverse,
+                                              .hold = g.hold,
+                                              .reversed = g.reversed,
+                                              .priority = g.priority,
+                                              .state = g.state,
+                                              .thrown = g.thrown,
+                                              .junctions = static_cast<std::uint32_t>(g.junctions)});
+                }
             }
             const auto bytes = framed(P(Package::console_state), net::encode_console_state(state));
             for (const auto& [_, user] : impl.users) {
@@ -2334,6 +2387,69 @@ bool GameServer::cancel_segment(const std::uint32_t id, std::string& error) {
     impl.segments.erase(impl.segments.begin() + static_cast<std::ptrdiff_t>(*index));
     impl.note("segment " + std::to_string(id) + " cancelled");
     return true;
+}
+
+std::uint32_t GameServer::players_connected() const {
+    std::uint32_t count = 0;
+    for (const auto& [_, user] : impl_->users) count += user.connection && !user.console ? 1u : 0u;
+    return count;
+}
+
+net::Bytes GameServer::hello_answer() const {
+    std::optional<net::OpenrtsDiscord> discord;
+    if (options_.discord_join) {
+        discord = net::OpenrtsDiscord{.address = net::from_utf8(options_.public_address),
+                                      .players = static_cast<std::uint16_t>((std::min)(players_connected(), 65535u)),
+                                      .places = static_cast<std::uint16_t>((std::min)(options_.max_players, 65535u))};
+    }
+    return framed(P(Package::openrts_hello), net::encode_openrts_hello(net::openrts_features, options_.storm, discord));
+}
+
+net::ConsoleNext GameServer::next_routes(const std::uint32_t train, const bool back) const {
+    const auto& impl = *impl_;
+    net::ConsoleNext out{.train = train, .back = back};
+    if (!impl.station_routes) return out;
+    const auto from = next_from(train, back);
+    if (!from) return out;
+    out.found = true;
+    out.rear_first = from->rear_first;
+    if (from->after) {
+        out.after = *from->after;
+        for (const auto& s : impl.segments) {
+            if (s.id == *from->after) out.after_name = net::from_utf8(impl.route_of(s).data->name);
+        }
+    }
+    const auto& routes = *impl.station_routes;
+    auto choices = routes.available(impl.network, from->at, 60000.0, from->behind);
+    const auto last_of = [&](const StationRoutes::Choice& c) {
+        const auto& r = routes.routes()[c.route];
+        return c.reverse ? r.start : r.end;
+    };
+    // Main tracks first, onto a wrong track last (rts_server.exe's list:
+    // green, lilac), the nearest first between, as the window's.
+    const auto rank = [&](const StationRoutes::Choice& c) {
+        const auto last = last_of(c);
+        if (last && (routes.points()[*last].data->flags & point_flag::wrong_way)) return 2;
+        return (routes.routes()[c.route].data->flags & route_flag::main_track) ? 0 : 1;
+    };
+    std::stable_sort(choices.begin(), choices.end(), [&](const auto& a, const auto& b) { return rank(a) < rank(b); });
+    for (const auto& c : choices) {
+        const auto& r = routes.routes()[c.route];
+        net::ConsoleRouteChoice choice{.route = r.data->id,
+                                       .reverse = c.reverse,
+                                       .main_track = (r.data->flags & route_flag::main_track) != 0,
+                                       .distance = static_cast<float>(c.distance),
+                                       .station = net::from_utf8(r.data->station),
+                                       .name = net::from_utf8(r.data->name)};
+        if (const auto last = last_of(c)) {
+            const auto& point = routes.points()[*last];
+            choice.wrong_way = (point.data->flags & point_flag::wrong_way) != 0;
+            choice.platform = (point.data->flags & point_flag::platform) != 0;
+            choice.track_length = static_cast<float>(point.length);
+        }
+        out.routes.push_back(std::move(choice));
+    }
+    return out;
 }
 
 std::vector<GameServer::SegmentSummary> GameServer::segments() const {

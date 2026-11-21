@@ -9,7 +9,6 @@ original `rts1.exe` and openRTS clients log in to it as they log in to
 
 Not yet:
 - the openRTS protocol (Legacy off) and its settings for everyone;
-- helpers (stage 4);
 - trains the server drives itself (TRAFFIC, step 7);
 - `rts_server_DSP.exe` consoles: they would get the player's login reply,
   not the `0x4501`.. they expect (not read yet).
@@ -28,11 +27,21 @@ openrts-server --route Kuban_RTS --root D:\Games\MDDRTS --port 800 --season summ
 | `--season`, `--weather` | `spring`..`winter` or 0..3; `clear`, `snow`, `rain` or 0..2, `storm` or 3: openRTS's thunderstorm (rain to RTS players, docs/weather.md) |
 | `--time HH:MM` | the time of day at the start (12:00) |
 | `--no-admit` | take no new players |
+| `--max-players <n>` | places: a new player beyond so many connected is refused (`0x4702`, as with `--no-admit`); one coming back under his nick and the dispatcher's consoles are not counted against it; 0 (the default): no limit |
+| `--discord-join`, `--public-address <host:port>` | openRTS players' Discord profiles get "Join" with that address (none given: the one each player connected to); net.md, "Joining from Discord" |
+| `--dispatcher-password <text>` | the dispatcher's console from another computer logs in with it (none: only from this one; "The dispatcher's console (in the game)" below) |
 | `--data <folder>` | where the server keeps its files (the route database it saves); openRTS's user data folder by default (`%LOCALAPPDATA%\openRTS`, or next to the program with a `portable.txt`), never the RTS installation |
 | `--command "<line>"` | a console line run at the start (repeatable) |
 | `--run <s>` | stop after so many seconds (tests); runs at the console |
 | `--no-window` | run at the console, without the window (`--route` needed) |
 | `--capture <file.ppm>`, `--capture-at <s>` | the window's picture `s` seconds after the server started (3 by default), then it closes (a check) |
+
+The start menu starts it too ("Сетевая игра", "Свой сервер": "Открыть
+окно запуска сервера") with the RTS folder, its window (the port is set
+there) and its log (`openrts-server.log` beside the settings) of its own;
+"Подключиться к своему серверу" then joins 127.0.0.1 at the port its
+window was last started with (`server_window.ini`), with the nick and the
+role given in the menu.
 
 It loads the route in about a second (Kuban: 1653 track nodes, 1951 signal
 heads, 0.9 s) and then listens. Players connect with the start menu's
@@ -47,9 +56,14 @@ Without `--no-window` (or `--run`) the server opens its window, as
 
 - **The start form:** the RTS folder (with "Обновить" to list its
   routes again), the route, season, weather, time, port (0: any free
-  one), whether new players are taken, and the server's folder. The
-  arguments fill it in. Started without `--route`, it is as it was last
-  started (`server_window.ini` in the server's folder).
+  one), whether new players are taken, the places ("Мест в игре", 16 at
+  first, 0 no limit), the dispatcher password (with it
+  the dispatcher's console may join from another computer), "Вход через
+  Discord" with the address for the players (net.md, "Joining from
+  Discord"), and the server's folder. The arguments fill it in. Started without `--route`, it
+  is as it was last started (`server_window.ini` in the server's folder,
+  the password too), but for the folder, port and password the command
+  line gives.
 - **Then the console on the route's map** (the same map as the viewer's
   Track control, `trackmap/`): the track, junctions, signals with their
   names, platforms, sidings, stations, the trains in the colour of their
@@ -101,7 +115,9 @@ Without `--no-window` (or `--run`) the server opens its window, as
   - "Журнал": the server's log and a line for the console's commands
     (`help`), the same as at the console.
 - **The bar on top:** the route and port, the server's time and setting
-  it, pause, taking new players, how many play, stopping the server.
+  it, pause, taking new players, how many play (of how many places), where the dispatcher may
+  join from ("только с этого компьютера" or "откуда угодно, по паролю"),
+  stopping the server.
   Under it what was last done, for 5 s (an error 10 s).
 
 The log also goes to the console behind the window. Not in the window yet:
@@ -148,18 +164,28 @@ before step 7, TRAFFIC).
 | `helper <nick> <train\|off>` | the player is the helper (помощник машиниста) on the train's cab, or no more (openRTS players: "Helpers" below) |
 | `kick <nick>`, `admit on\|off`, `quit` | |
 
-## The dispatcher's console (in the game) — hidden for now
+## The dispatcher's console (in the game)
 
-**Hidden until the server is done** (the user's call, 2026-11-09): the
-server comes first, Legacy and as `rts_server.exe`, with its own console;
-remote consoles (`0x4500`: `rts_server_DSP.exe`, this one) after it. The
-start menu no longer offers "Войти как: Диспетчер", and the server refuses
-`0x4500` with `0x4702` (`ServerOptions::consoles`, off). The code stays and
-the tests run it; what is below is how it works.
+The remote dispatcher (from 2026-11-21; hidden from 2026-11-09 until the
+server was done, the user's call): the start menu's "Сетевая игра", "Войти
+как: Диспетчер (пульт)", with the server's dispatcher password.
 
 openRTS itself is the console (the user's choice, 2026-11-09):
-`openrts_viewer --mp-connect host --mp-nick <nick> --mp-console`.
-- It logs in with `0x4500` and gets the world at once, no train needed.
+`openrts_viewer --mp-connect host --mp-nick <nick> --mp-console
+[--mp-password <text>]` (the start menu passes the password in
+`OPENRTS_MP_PASSWORD`, off the command line and the log).
+- **Who is let in** (`ServerOptions::consoles`, on; `dispatcher_password`):
+  from the server's own computer (127.0.0.1) any nick, no password; from
+  another one only with the dispatcher password set at the server (its
+  window's start form or `--dispatcher-password`): a wrong or missing one
+  gets `0x4707` (openRTS's own code), a server without a password `0x4702`.
+  Until 2026-11-21 a nick given with `--dispatcher` let a console in from
+  anywhere without a password; such nicks now only narrow who may (when
+  given, the nick must be one of them as well). The password goes in
+  plain text, as the whole protocol does.
+- It logs in with `0x4500` (openRTS's own: the password, `u16` length and
+  UTF-16 units with a zero, after the nick's zero; such a login may be 256
+  bytes, a player's 64) and gets the world at once, no train needed.
 - Track control is its map, open at the start. A junction thrown there or
   a signal's aspect chosen ("Показание …" in the signal's menu, or "by the
   script") goes to the server as a command. "Put a consist here" (dragged
@@ -179,13 +205,25 @@ openRTS itself is the console (the user's choice, 2026-11-09):
   distance left (`0x4619`) to everyone, players too, every 0.5 s while it
   changes; `-1` when the train has run through it, or when the console
   cancels it (`0x4619` -1). The map draws the route green from the train's
-  head. RTS's other way, the station routes assembled from the route
-  database (`0x450B`), is not there yet.
+  head. RTS's other way, the station routes of the route database, is the
+  window's "Станционные маршруты" below.
 - The window "Пульт ДСП":
   - the time, the pause, setting the time;
   - the trains (number, kind, driver, speed, route): picking one centres
     the map on it; give it to a player, take it back, remove it, set or
     cancel its route to a signal (литера);
+  - "Станционные маршруты", as the server window's: the picked train, its
+    queue with each segment's state and cancel, the routes it can take next
+    (asked from the server every 3 s and when its queue changes: from the
+    end of its last segment, else its head; "Направление" turns that way),
+    main tracks first in green, onto a wrong track last in lilac, "[П]" and
+    the track's length, how far; "держать следующий", the priority, "Задать"
+    or a double click queues it (the `segment` line); every train's queue.
+    The picked route is not drawn on the map yet;
+  - "Сигналы": every signal of a type (the route's types, read here) to
+    manual / open / automatic block, shown as a train signal or not, back
+    to the defaults, set as the defaults, the route database saved (on the
+    server, into its folder): the `signal` lines;
   - a new train: a consist (filtered) and a path, put on the track;
   - the players (dispatcher, away, in the menu, playing; their trains):
     messages to one or everyone, dropping a player, taking new players or
@@ -210,7 +248,16 @@ openRTS itself is the console (the user's choice, 2026-11-09):
     whether new players are taken, the users (id, nick, connected, playing,
     console, the camera's place, their trains) and the trains (id, number,
     kind, subtype, state, owner, the junctions their route holds, speed,
-    standing, cars, the first car).
+    standing, cars, the first car); since 2026-11-21 then the station
+    routes' segments (id, train, the route's ID, station and name, from its
+    end / holds the next / rear first, priority, state, junctions thrown of
+    how many), which a reader without them stops before;
+  - `0x45F8` console → server: what a train can take next (`u32` train,
+    `u8` 1 the other way); `0x45F9` the answer (`net::ConsoleNext`): the
+    train, the way, whether it is on the server's track, rear first, the
+    segment it follows (id, name), then the routes (ID, from its end, main
+    track, onto a wrong track, a platform, the track's length, how far,
+    station, name), as `GameServer::next_routes` ranks them.
 - A hand switch a player throws on foot (`track.md`) goes to the server
   as `0x4642`, as `rts1.exe` sends it; the server's answer is what
   stands. A player has no other way to throw a junction in a network
@@ -315,7 +362,7 @@ draw it.
 - `0x460C`'s field `+96` is the head's `enabled`, so it carries the unit's
   mode (0 manual, 1 open, 2 automatic block), as the RTS server sends it.
 - **Consoles** (Legacy, `0x4500`; taken when `ServerOptions::consoles` is
-  on): after the world a console gets every unit's `0x4618` (unit index,
+  on, as the session has it since 2026-11-21): after the world a console gets every unit's `0x4618` (unit index,
   aspect, mode, the dispatcher's flag), then each unit whose aspect, mode
   or flag changes. A console's `0x4618` sets the unit: mode 1 or 2 that
   mode, mode 0 manual at the aspect given (the dispatcher's when its flag

@@ -757,6 +757,7 @@ public:
     void follow_train(std::uint64_t id);
     // The route's signals, for the test drivers (next signal and its aspect).
     void set_signals(const simulation::SignalSystem* signals) noexcept { signals_ = signals; }
+    [[nodiscard]] const simulation::SignalSystem* signals() const noexcept { return signals_; }
     // Text about train `id`'s path: leg, reserved way, what it waits for.
     [[nodiscard]] std::string path_status(std::uint64_t id) const;
     // RTS's information keys (docs/reverse/dispatcher.md): F5 a page of the

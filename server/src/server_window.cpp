@@ -271,6 +271,10 @@ struct StartForm {
     char time[16] = "12:00";
     int port = 800;
     bool admit = true;
+    char password[64]{}; // the dispatcher's, for a console from another computer
+    int places = 16;      // ServerOptions::max_players, 0 no limit
+    bool discord = false; // the players' Discord "Join"
+    char address[128]{};  // the address it hands over (empty: the one each connected to)
     std::string error;
     int loading = 0; // frames since "Start": the load runs after "Loading" is shown
 
@@ -306,6 +310,10 @@ struct StartForm {
                 else if (key == "time") std::snprintf(time, sizeof time, "%s", value.c_str());
                 else if (key == "port") port = std::clamp(std::stoi(value), 0, 65535);
                 else if (key == "admit") admit = value == "1";
+                else if (key == "dispatcher_password") std::snprintf(password, sizeof password, "%s", value.c_str());
+                else if (key == "discord_join") discord = value == "1";
+                else if (key == "places") places = std::clamp(std::stoi(value), 0, 999);
+                else if (key == "public_address") std::snprintf(address, sizeof address, "%s", value.c_str());
             } catch (const std::exception&) {
                 // a number spoilt by hand: the default kept
             }
@@ -316,7 +324,8 @@ struct StartForm {
     void save(const fs::path& file) const {
         std::ofstream out(file);
         out << "root=" << root << "\nroute=" << (route >= 0 ? routes[static_cast<std::size_t>(route)] : std::string()) << "\nseason=" << season
-            << "\nweather=" << weather << "\ntime=" << time << "\nport=" << port << "\nadmit=" << (admit ? 1 : 0) << '\n';
+            << "\nweather=" << weather << "\ntime=" << time << "\nport=" << port << "\nadmit=" << (admit ? 1 : 0)
+            << "\ndispatcher_password=" << password << "\nplaces=" << places << "\ndiscord_join=" << (discord ? 1 : 0) << "\npublic_address=" << address << '\n';
     }
 };
 
@@ -509,7 +518,13 @@ private:
         ImGui::SameLine();
         std::size_t playing = 0;
         for (const auto& user : game.users()) playing += user.connected ? 1 : 0;
-        ImGui::Text("%s", trf("players: %zu", playing).c_str());
+        const auto places = s_.settings().max_players;
+        ImGui::Text("%s", places > 0 ? trf("players: %zu of %u", playing, places).c_str() : trf("players: %zu", playing).c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(s_.settings().dispatcher_password.empty() ? tr("dispatcher: this computer only")
+                                                                         : tr("dispatcher: from anywhere, by password"));
         ImGui::SameLine(ImGui::GetWindowWidth() - 170.0f);
         if (ImGui::Button(tr("Stop the server"))) running = false;
         // The line stays, empty when nothing is shown: the panels below keep their place.
@@ -1572,6 +1587,17 @@ bool draw_form(StartForm& form) {
     ImGui::InputInt(tr("Port"), &form.port);
     form.port = std::clamp(form.port, 0, 65535); // 0: any free port
     ImGui::Checkbox(tr("Take new players"), &form.admit);
+    ImGui::InputInt(tr("Places (0: no limit)"), &form.places);
+    form.places = std::clamp(form.places, 0, 999);
+    ImGui::InputText(tr("Dispatcher password"), form.password, sizeof form.password);
+    ImGui::TextDisabled("%s", form.password[0] ? tr("The dispatcher's console from another computer logs in with this password.")
+                                               : tr("No password: the dispatcher's console only from this computer."));
+    ImGui::Checkbox(tr("Join from Discord"), &form.discord);
+    ImGui::BeginDisabled(!form.discord);
+    ImGui::InputTextWithHint(tr("Address for the players"), tr("as the players connect, e.g. 26.1.2.3:800"), form.address, sizeof form.address);
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%s", form.discord ? tr("openRTS players' Discord profiles get \"Join\": it hands over this address (empty: the one each player connected to).")
+                                           : tr("Without it the players' Discord profiles show no \"Join\"."));
     ImGui::TextUnformatted(tr("The server's folder (the route database it saves)"));
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##data", form.data, sizeof form.data);
@@ -1594,7 +1620,8 @@ bool draw_form(StartForm& form) {
 
 } // namespace
 
-int run_server_window(SessionSettings settings, const std::vector<std::string>& commands, const fs::path& capture, const double capture_at) {
+int run_server_window(SessionSettings settings, const std::vector<std::string>& commands, const fs::path& capture, const double capture_at,
+                      const WindowGiven given) {
 #ifndef _WIN32
     (void)settings;
     (void)commands;
@@ -1652,11 +1679,27 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
         std::snprintf(form.time, sizeof form.time, "%s", clock_text(settings.time_of_day).substr(0, 5).c_str());
         form.port = settings.port;
         form.admit = settings.admit;
+        std::snprintf(form.password, sizeof form.password, "%s", settings.dispatcher_password.c_str());
+        form.discord = settings.discord_join;
+        if (settings.max_players > 0) form.places = static_cast<int>(settings.max_players);
+        std::snprintf(form.address, sizeof form.address, "%s", settings.public_address.c_str());
         form.list_routes();
         form.pick_route(settings.route);
-        // Started without a route: the form as it was last started.
+        // Started without a route: the form as it was last started, but for
+        // what the command line gave (the start menu: the folder, the port).
         const auto remembered = settings.data / "server_window.ini";
-        if (settings.route.empty()) form.load(remembered);
+        if (settings.route.empty()) {
+            form.load(remembered);
+            if (given.root) {
+                std::snprintf(form.root, sizeof form.root, "%s", utf8_path(settings.root).c_str());
+                const auto kept = form.route >= 0 ? form.routes[static_cast<std::size_t>(form.route)] : std::string();
+                form.list_routes();
+                form.route = -1;
+                form.pick_route(kept);
+            }
+            if (given.port) form.port = settings.port;
+            if (given.password) std::snprintf(form.password, sizeof form.password, "%s", settings.dispatcher_password.c_str());
+        }
         // A check (--capture) starts the route given at once.
         if (!capture.empty() && form.route >= 0) form.loading = 1;
 
@@ -1689,6 +1732,10 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
                 chosen.time_of_day = parse_time_of_day(form.time).value_or(12.0 * 3600.0);
                 chosen.port = static_cast<std::uint16_t>(form.port);
                 chosen.admit = form.admit;
+                chosen.dispatcher_password = form.password;
+                chosen.discord_join = form.discord;
+                chosen.max_players = static_cast<std::uint32_t>(form.places);
+                chosen.public_address = form.address;
                 std::string error;
                 std::vector<std::string> lines;
                 std::error_code made;

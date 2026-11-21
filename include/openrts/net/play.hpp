@@ -305,12 +305,27 @@ struct ConsoleTrain {
     std::uint32_t cars{};
     std::u16string first_car;        // its first car's file
 };
+// A segment of a train's route (a station route; GameServer::SegmentSummary).
+struct ConsoleSegment {
+    std::uint32_t id{}, train{};
+    std::uint32_t route{}; // the station route's ID
+    std::u16string station, name;
+    bool reverse = false;  // from its end
+    bool hold = false;     // the train's next segment waits
+    bool reversed = false; // the train runs it rear first
+    std::uint32_t priority{};
+    std::uint8_t state{};  // 0 waiting, 1 set, 2 set part of the way, 3 the train on it, 4 left
+    std::uint16_t thrown{};
+    std::uint32_t junctions{};
+};
 struct ConsoleState {
     float time{}; // s of the day
     bool paused = false;
     bool admits = true;
     std::vector<ConsoleUser> users;
     std::vector<ConsoleTrain> trains;
+    // Since 2026-11-21, after the trains (a reader without them stops there).
+    std::vector<ConsoleSegment> segments;
 };
 [[nodiscard]] Bytes encode_console_state(const ConsoleState& state);
 [[nodiscard]] std::optional<ConsoleState> decode_console_state(ByteView body);
@@ -341,6 +356,37 @@ struct ConsolePlace {
 [[nodiscard]] Bytes encode_console_place(const ConsolePlace& place);
 [[nodiscard]] std::optional<ConsolePlace> decode_console_place(ByteView body);
 
+// console_next: the station routes a train can take next, as the server's
+// "Собрать маршрут" lists them (docs/server.md, "Station routes"): from the
+// end of its last segment, else its head; `back` the other way.
+struct ConsoleNextAsk {
+    std::uint32_t train{};
+    bool back = false;
+};
+[[nodiscard]] Bytes encode_console_next_ask(const ConsoleNextAsk& ask);
+[[nodiscard]] std::optional<ConsoleNextAsk> decode_console_next_ask(ByteView body);
+struct ConsoleRouteChoice {
+    std::uint32_t route{};  // the station route's ID
+    bool reverse = false;   // run from its end
+    bool main_track = false;
+    bool wrong_way = false; // onto a wrong track
+    bool platform = false;  // ends at a platform ("[П]")
+    float track_length{};   // m of the track it ends on, 0 not known
+    float distance{};       // m along the track to its start
+    std::u16string station, name;
+};
+struct ConsoleNext {
+    std::uint32_t train{};
+    bool back = false;
+    bool found = false;      // the train is on the server's track
+    bool rear_first = false; // a segment set from here is run rear first
+    std::uint32_t after{};   // the segment it follows, 0: from the train
+    std::u16string after_name;
+    std::vector<ConsoleRouteChoice> routes; // main tracks first, onto a wrong track last
+};
+[[nodiscard]] Bytes encode_console_next(const ConsoleNext& next);
+[[nodiscard]] std::optional<ConsoleNext> decode_console_next(ByteView body);
+
 // 0x462D player_pos as the server relays it in play: the sender's id in
 // front, the 40 bytes after its first field, its name after (rts_server.exe
 // and openRTS's server alike). Who is where, for the players' list and
@@ -359,7 +405,19 @@ struct OtherPlayer {
 // (the server's answer; its login says rain, all RTS knows). Older readers
 // stop after the u16.
 constexpr std::uint16_t openrts_features = 1;
-[[nodiscard]] Bytes encode_openrts_hello(std::uint16_t features = openrts_features, bool storm = false);
+// The server's answer since 2026-11-21 then, when its game may be joined
+// from Discord: u8 1, the address for the others (text_u16; empty: the one
+// the player connected to), u16 the players in it, u16 its places (0: no
+// limit). The server sends it again when the players' number changes.
+struct OpenrtsDiscord {
+    std::u16string address;
+    std::uint16_t players = 0;
+    std::uint16_t places = 0;
+    bool operator==(const OpenrtsDiscord&) const = default;
+};
+[[nodiscard]] Bytes encode_openrts_hello(std::uint16_t features = openrts_features, bool storm = false,
+                                         std::optional<OpenrtsDiscord> discord = std::nullopt);
+[[nodiscard]] std::optional<OpenrtsDiscord> openrts_hello_discord(ByteView body);
 [[nodiscard]] std::optional<std::uint16_t> decode_openrts_hello(ByteView body);
 // The answer says the game is a thunderstorm (no byte for it: no).
 [[nodiscard]] bool openrts_hello_storm(ByteView body);

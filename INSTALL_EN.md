@@ -146,14 +146,20 @@ graphics, mods) are listed in the [README](README_EN.md#running).
 
 `openrts-server.exe` comes with the game: a server compatible with
 `rts_server.exe`. openRTS (Network game) and `rts1.exe` both join it.
+The simplest is the start menu: "Network game" → "Own server" → "Open the
+server's start window". There pick the route, season, weather, time, the
+port and, when the dispatcher sits at another computer, the dispatcher
+password, then "Start". Or from the command line:
 
 ```powershell
 .\openrts-server.exe --route Kuban_RTS --root D:\Games\RTS --time 10:00
 ```
 
-The dispatcher gives the players their trains with commands in the
-server's window: `add`, `assign`, `route`, `junction`, `signal`, `time`,
-`pause`, `say` (`help` lists them). The port is 800; open it for players from the internet. Details:
+The dispatcher gives the players their trains in the server's window (a
+console on the route's map) or with the remote console: "Network game",
+"Join as: Dispatcher (console)" with the dispatcher password. The port is
+800; for players from the internet open it on the router (TCP), or play
+in one virtual network (Radmin VPN, ZeroTier). Details:
 [docs/server.md](docs/server.md).
 
 ## In the game: first steps

@@ -54,6 +54,8 @@ public:
     // The Discord profile: "in the menu"; nothing while the game runs (the
     // game says its own).
     [[nodiscard]] std::optional<viewer::ScenePresence> presence() const override;
+    [[nodiscard]] bool wants_discord_joins() const override { return true; }
+    void discord_join(const std::string& secret) override;
 
 private:
     struct State;

@@ -208,6 +208,12 @@ struct SceneLoading {
 struct ScenePresence {
     std::string details; // what the player does ("Ведёт VL80s-606")
     std::string state;   // where ("Маршрут Lviv")
+    // A network game others may join from Discord (the server allows it):
+    // its party and the secret the one who joins gets ("openrts1 host:port").
+    std::string party_id;
+    int party_size = 0;
+    int party_max = 0;
+    std::string join_secret;
     bool operator==(const ScenePresence&) const = default;
 };
 
@@ -313,6 +319,10 @@ public:
     [[nodiscard]] virtual SceneLoading loading() const { return {}; }
     // For the Discord profile, asked about once a second; none: nothing shown.
     [[nodiscard]] virtual std::optional<ScenePresence> presence() const { return std::nullopt; }
+    // Discord's "Join" from a player's profile: the start menu takes the
+    // games joined so (DiscordStatus hands it the secret).
+    [[nodiscard]] virtual bool wants_discord_joins() const { return false; }
+    virtual void discord_join(const std::string& secret) { (void)secret; }
     // Car `car` of the driven train, shape space to world (--capture-camera).
     [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
     // The engineer into the driven train's cab (--capture-cab).
@@ -399,6 +409,7 @@ struct SceneContent {
     // the scene watches its game (NetSession). `early`: packages that came
     // after the snapshot's end.
     std::shared_ptr<net::RtsConnection> connection;
+    std::string server_address; // as --mp-connect gave it
     std::vector<net::ReceivedPackage> early;
     // Route scenes: logged in to an openRTS server as the dispatcher's
     // console (--mp-console): Track control and the console's window.

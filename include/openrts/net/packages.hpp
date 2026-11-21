@@ -21,6 +21,9 @@ enum class Package : std::uint16_t {
     not_a_login = 0x4704,
     bad_version = 0x4705,
     flooding = 0x4706,
+    // openRTS's own: a dispatcher console's password missing or wrong (only
+    // to 0x4500, which no RTS program sends to openRTS's server).
+    wrong_password = 0x4707,
     drop_receive = 0x47FD,
     drop_short = 0x47FE,
     drop_bad = 0x47FF,
@@ -124,6 +127,8 @@ enum class Package : std::uint16_t {
     console_reply = 0x45F1,   // server -> console: what it printed
     console_state = 0x45F2,   // server -> consoles: the players and the trains with their owners
     console_place = 0x45F3,   // console -> server: a consist's cars to put on the track
+    console_next = 0x45F8,       // console -> server: the station routes a train can take next (net::ConsoleNextAsk)
+    console_next_reply = 0x45F9, // server -> console: those routes (net::ConsoleNext)
     // Between openRTS's server and openRTS players (docs/net.md, "Players
     // and helpers"); a player sends them only after the server's hello.
     openrts_hello = 0x45F4,   // player -> server after the snapshot, the server's answer back: both are openRTS

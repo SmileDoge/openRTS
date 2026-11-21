@@ -25,6 +25,14 @@ struct SessionSettings {
     double time_of_day = 12.0 * 3600.0;
     bool admit = true;
     bool local = false;          // listens on 127.0.0.1 alone (tests: no firewall prompt)
+    // The dispatcher's console from another computer logs in with it (empty:
+    // only from this one; ServerOptions::dispatcher_password).
+    std::string dispatcher_password;
+    // The players' Discord "Join" (ServerOptions::discord_join) and the
+    // address it hands over (empty: the one each player connected to).
+    bool discord_join = false;
+    std::string public_address;
+    std::uint32_t max_players = 0; // places (ServerOptions::max_players), 0 no limit
 };
 
 class ServerSession {

@@ -1,8 +1,19 @@
 #include "discord_status.hpp"
 
 #include <ctime>
+#include <filesystem>
 #include <iostream>
 #include <string>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include <openrts/core/core.hpp>
 
@@ -39,7 +50,23 @@ DiscordStatus::DiscordStatus(const bool allowed) : allowed_(allowed), start_(sta
 
 DiscordStatus::~DiscordStatus() = default;
 
-void DiscordStatus::update(const ViewerScene& scene) {
+namespace {
+
+// This program, for Discord to start it for a join.
+[[nodiscard]] std::filesystem::path this_program() {
+#ifdef _WIN32
+    std::wstring path(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    path.resize(length);
+    return path;
+#else
+    return {};
+#endif
+}
+
+} // namespace
+
+void DiscordStatus::update(ViewerScene& scene) {
     const auto now = std::chrono::steady_clock::now();
     if (now < next_) return;
     next_ = now + std::chrono::seconds(1);
@@ -57,10 +84,29 @@ void DiscordStatus::update(const ViewerScene& scene) {
             allowed_ = false; // no application of openRTS's yet: nothing to show as
             return;
         }
-        presence_ = std::make_unique<platform::DiscordPresence>(platform::DiscordPresence::Options{.application_id = std::move(id)});
+        // The start menu takes the games joined from Discord (and is what
+        // Discord starts for one); the game says yes to "Ask to Join".
+        const bool menu = scene.wants_discord_joins();
+        if (menu) {
+            std::string error;
+            if (!platform::register_discord_launch(id, this_program(), error)) std::cout << "discord: not registered to be started: " << error << std::endl;
+        }
+        presence_ = std::make_unique<platform::DiscordPresence>(
+            platform::DiscordPresence::Options{.application_id = std::move(id), .join_events = menu, .accept_join_requests = !menu});
+    }
+    for (const auto& secret : presence_->take_joins()) {
+        std::cout << "discord: joined from Discord" << std::endl;
+        scene.discord_join(secret);
     }
     const auto what = scene.presence();
-    if (what != shown_) std::cout << "discord: " << (what ? what->details + " | " + what->state : std::string("nothing")) << std::endl;
+    if (what != shown_) {
+        std::cout << "discord: " << (what ? what->details + " | " + what->state : std::string("nothing"))
+                  << (what && !what->join_secret.empty()
+                          ? " (others may join: " + std::to_string(what->party_size) +
+                                (what->party_max > 0 ? " of " + std::to_string(what->party_max) : std::string(" players")) + ")"
+                          : std::string())
+                  << std::endl;
+    }
     shown_ = what;
     if (what) {
         platform::DiscordActivity activity;
@@ -70,6 +116,10 @@ void DiscordStatus::update(const ViewerScene& scene) {
         activity.large_text = "openRTS " + core::version_text();
         activity.start = start_;
         activity.buttons = {{tr("openRTS on GitHub"), project_page}};
+        activity.party_id = what->party_id;
+        activity.party_size = what->party_size;
+        activity.party_max = what->party_max;
+        activity.join_secret = what->join_secret;
         presence_->set(std::move(activity));
     } else {
         presence_->set(std::nullopt);
@@ -80,6 +130,10 @@ void DiscordStatus::update(const ViewerScene& scene) {
     if (status.accepted > 0 && !accepted_logged_) std::cout << "discord: presence shown" << std::endl;
     accepted_logged_ = status.accepted > 0;
     if (!status.error.empty() && status.error != error_logged_) std::cout << "discord: " << status.error << std::endl;
+    if (status.join_requests != requests_logged_) std::cout << "discord: an \"Ask to Join\" answered yes" << std::endl;
+    if (status.subscribed != subscribed_logged_) std::cout << "discord: join events subscribed (" << status.subscribed << ")" << std::endl;
+    subscribed_logged_ = status.subscribed;
+    requests_logged_ = status.join_requests;
     error_logged_ = status.error;
 }
 

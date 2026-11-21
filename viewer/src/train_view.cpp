@@ -4783,7 +4783,7 @@ void TrainView::car_view_key(ViewerCamera& camera) {
         car_view_memory_[unit->cars[i].key] = {.yaw_from_heading = camera.yaw - heading_of(i),
                                                .pitch = camera.pitch,
                                                .distance = camera.distance,
-                                               .zoom = camera.view_zoom};
+                                               .zoom = camera.zoom_target};
     }
     // From the end the player sits nearer (his car in the train's list, F5):
     // in the rear cab the last car first, then car 0 (testers 2026-11-18).
@@ -4801,7 +4801,7 @@ void TrainView::car_view_key(ViewerCamera& camera) {
     }
     if (car_view_ == CarView::off) {
         camera = person_camera_;
-        camera.view_zoom = 1.0f;
+        camera.set_zoom(1.0f);
         say(tr("normal view"));
         return;
     }
@@ -4817,12 +4817,12 @@ void TrainView::car_view_key(ViewerCamera& camera) {
     camera.yaw = std::atan2(towards_eye.x, towards_eye.z);
     camera.pitch = 0.2f;
     camera.distance = std::clamp(length * 1.2f, 15.0f, 50.0f);
-    camera.view_zoom = 1.0f;
+    camera.set_zoom(1.0f);
     if (const auto kept = car_view_memory_.find(unit->cars[i].key); kept != car_view_memory_.end()) {
         camera.yaw = heading_of(i) + kept->second.yaw_from_heading;
         camera.pitch = kept->second.pitch;
         camera.distance = kept->second.distance;
-        camera.view_zoom = kept->second.zoom;
+        camera.set_zoom(kept->second.zoom);
     }
     update_car_view(camera);
     say(car_view_ == CarView::head ? tr("view from the first car") : tr("view from the last car"));

@@ -36,6 +36,9 @@ struct NetEvent {
 // at most 64 bytes, then packages of at most 0x3C00 bytes; a longer one ends
 // the connection.
 inline constexpr std::uint32_t login_limit = 64;
+// openRTS's dispatcher console logs in (0x4500) with its password after the
+// nick: longer than a player's 64 bytes.
+inline constexpr std::uint32_t console_login_limit = 256;
 inline constexpr std::uint32_t package_limit = 0x3C00;
 
 // The server's TCP side (WinSock 2 / BSD sockets): a thread accepts, a thread

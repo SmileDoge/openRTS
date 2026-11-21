@@ -74,7 +74,27 @@ float ViewerCamera::vertical_fov(const float set) const {
 }
 
 void ViewerCamera::zoom_view(const float scroll_steps) {
-    view_zoom = std::clamp(view_zoom * std::exp(scroll_steps * 0.15f), 1.0f, 10.0f);
+    zoom_target = std::clamp(zoom_target * std::exp(scroll_steps * 0.15f), 1.0f, 10.0f);
+}
+
+void ViewerCamera::set_zoom(const float zoom) {
+    view_zoom = zoom_target = std::clamp(zoom, 1.0f, 10.0f);
+    hold_zoom.reset();
+}
+
+void ViewerCamera::ease_zoom(const float seconds) {
+    const float wanted = std::clamp(hold_zoom.value_or(zoom_target), 1.0f, 10.0f);
+    const float from = std::log((std::max)(view_zoom, 1.0f)), to = std::log(wanted);
+    if (std::abs(to - from) < 1e-3f) {
+        view_zoom = wanted;
+        return;
+    }
+    const float k = 1.0f - std::exp(-(std::max)(seconds, 0.0f) / 0.1f);
+    view_zoom = std::exp(from + (to - from) * k);
+}
+
+void ViewerCamera::zoom_hold(const float scroll_steps) {
+    hold_zoom = std::clamp(hold_zoom.value_or(view_zoom) * std::exp(scroll_steps * 0.2f), 1.0f, 10.0f);
 }
 
 void ViewerCamera::zoom(const float scroll_steps) {

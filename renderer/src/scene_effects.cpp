@@ -79,7 +79,7 @@ struct EffectsUniform {
     // openRTS's clouds' shadow (CloudShadow): where its map lies, the sun.
     glm::vec4 cloud_area{0.0f};
     glm::vec4 cloud_sun{0.0f};
-    glm::vec4 cloud_edge{0.0f, 1.0f, 0.0f, 0.0f}; // xy: the edge band (smoothstep)
+    glm::vec4 cloud_edge{0.0f, 1.0f, 1.0f, 0.0f}; // xy: the edge band (smoothstep), z: CloudShadow::low_sun
     // The sky's light (SkyLightView): x 1 on, y the prefiltered cube's last
     // mip, z the sky's openness round the eye.
     glm::vec4 sky_light{0.0f};
@@ -144,13 +144,105 @@ static_assert(sizeof(EffectsUniform) % 16 == 0);
 // so the focus map's fine texels do not draw a razor edge.
 constexpr float min_penumbra = 0.004f;
 
-// Ground-truth ambient occlusion (Jimenez et al. 2016, as XeGTAO lays it
-// out): two slices a pixel, six steps each way, horizons weighted down
-// beyond the radius; normals from the depth. Then a 5 x 5 blur that keeps
-// to surfaces of about the same depth.
-constexpr char gtao_wgsl[] = R"(
+// The view depth for the occlusion (2026-11-21, as XeGTAO's prefilter):
+// the camera's depth made linear once (metres along the view; the sky far
+// off), and three more levels each from the one before, each texel the 2 x 2
+// below weighed towards the farthest (XeGTAO's DepthMIPFilter: a near
+// sliver does not pull a far wall in). Until then GTAO and its blur turned
+// every depth they read back through the inverse projection, and the far
+// steps read the full-sized depth all over the frame: in a cab at 1440p
+// 0.6 ms and 0.22 ms (testers). A ВЛ80С's cab at 720p: GTAO with this 0.19
+// -> 0.11 ms, the blur 0.056 -> 0.027 (DirectX 12, a 9800X3D's RTX 4070 Ti
+// SUPER; the medians of three runs each in turn).
+constexpr char prefilter_wgsl[] = R"(
 @group(0) @binding(0) var<uniform> effects: Effects;
 @group(0) @binding(1) var depth_texture: texture_depth_2d;
+@group(0) @binding(2) var level0: texture_storage_2d<r32float, write>;
+@group(0) @binding(3) var level1: texture_storage_2d<r32float, write>;
+@group(0) @binding(4) var level2: texture_storage_2d<r32float, write>;
+@group(0) @binding(5) var level3: texture_storage_2d<r32float, write>;
+
+fn view_distance(depth: f32) -> f32 {
+    if (depth <= 0.0) { return 1.0e6; } // the sky (reversed Z cleared to 0)
+    let v = effects.inv_projection * vec4<f32>(0.0, 0.0, depth, 1.0);
+    return -v.z / v.w;
+}
+
+fn level_filter(d0: f32, d1: f32, d2: f32, d3: f32) -> f32 {
+    let far = max(max(d0, d1), max(d2, d3));
+    let radius = 0.75 * effects.ao.x;
+    let range = 0.615 * radius;
+    let from_near = radius * (1.0 - 0.615);
+    let mul = -1.0 / range;
+    let add = from_near / range + 1.0;
+    let w0 = clamp((far - d0) * mul + add, 0.0, 1.0);
+    let w1 = clamp((far - d1) * mul + add, 0.0, 1.0);
+    let w2 = clamp((far - d2) * mul + add, 0.0, 1.0);
+    let w3 = clamp((far - d3) * mul + add, 0.0, 1.0);
+    return (w0 * d0 + w1 * d1 + w2 * d2 + w3 * d3) / max(w0 + w1 + w2 + w3, 1e-4);
+}
+
+fn put(level: i32, texel: vec2<i32>, value: f32) {
+    if (level == 2) {
+        if (all(texel < vec2<i32>(textureDimensions(level2)))) { textureStore(level2, texel, vec4<f32>(value)); }
+    } else if (all(texel < vec2<i32>(textureDimensions(level3)))) {
+        textureStore(level3, texel, vec4<f32>(value));
+    }
+}
+
+// Level 1's 8 x 8 of the group's tile, then each smaller level from it.
+var<workgroup> tile: array<f32, 64>;
+
+// A group a 16 x 16 tile, a thread a 2 x 2 block of it: its four texels of
+// level 0, one of level 1; then 16 and 4 of its threads levels 2 and 3 from
+// the shared memory. Four levels: the farthest step (96 pixels) reads level
+// 3 (and four storage textures are WebGPU's least a stage).
+@compute @workgroup_size(8, 8)
+fn prefilter(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>,
+             @builtin(workgroup_id) group: vec3<u32>) {
+    let size = vec2<i32>(textureDimensions(depth_texture));
+    let base = vec2<i32>(id.xy) * 2;
+    var d: array<f32, 4>;
+    for (var k = 0; k < 4; k = k + 1) {
+        let p = base + vec2<i32>(k & 1, k >> 1);
+        let q = min(p, size - vec2<i32>(1));
+        d[k] = view_distance(textureLoad(depth_texture, q, 0));
+        if (p.x < size.x && p.y < size.y) { textureStore(level0, p, vec4<f32>(d[k])); }
+    }
+    let one = level_filter(d[0], d[1], d[2], d[3]);
+    if (all(vec2<i32>(id.xy) < vec2<i32>(textureDimensions(level1)))) { textureStore(level1, vec2<i32>(id.xy), vec4<f32>(one)); }
+    let at = vec2<i32>(local.xy);
+    tile[at.y * 8 + at.x] = one;
+    workgroupBarrier();
+    // Levels 2 and 3: 4 x 4 and 2 x 2 of the tile, in place.
+    var span = 8;
+    for (var level = 2; level <= 3; level = level + 1) {
+        let half_span = span / 2;
+        var value = 0.0;
+        let working = at.x < half_span && at.y < half_span;
+        if (working) {
+            let b = at * 2;
+            value = level_filter(tile[b.y * 8 + b.x], tile[b.y * 8 + b.x + 1], tile[(b.y + 1) * 8 + b.x], tile[(b.y + 1) * 8 + b.x + 1]);
+            put(level, vec2<i32>(group.xy) * half_span + at, value);
+        }
+        workgroupBarrier();
+        if (working) { tile[at.y * 8 + at.x] = value; }
+        workgroupBarrier();
+        span = half_span;
+    }
+}
+)";
+
+// Ground-truth ambient occlusion (Jimenez et al. 2016, as XeGTAO lays it
+// out): two slices a pixel, six steps each way, horizons weighted down
+// beyond the radius; normals from the depth. The steps read the view depth
+// (prefilter_wgsl), the far ones from its smaller levels (XeGTAO: the level
+// log2 of the step's pixels less 3.3, at most 3), the place a step's from
+// its ray.
+// Then a 5 x 5 blur that keeps to surfaces of about the same depth.
+constexpr char gtao_wgsl[] = R"(
+@group(0) @binding(0) var<uniform> effects: Effects;
+@group(0) @binding(1) var view_depth: texture_2d<f32>;
 @group(0) @binding(2) var ao_out: texture_storage_2d<r32float, write>;
 
 // High: every pixel, two slices of six steps. Low: a texel for each 2 x 2
@@ -161,32 +253,47 @@ override steps: i32 = 6;
 override scale: i32 = 1;
 override max_radius: f32 = 96.0;
 
-fn view_position(pixel: vec2<i32>) -> vec3<f32> {
-    let size = vec2<i32>(textureDimensions(depth_texture));
-    let p = clamp(pixel, vec2<i32>(0), size - vec2<i32>(1));
-    let depth = textureLoad(depth_texture, p, 0);
-    let uv = (vec2<f32>(p) + vec2<f32>(0.5)) / vec2<f32>(size);
-    let v = effects.inv_projection * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
-    return v.xyz / v.w;
+// The view ray through a point of the screen (NDC), at a metre's distance:
+// ray_mul * ndc + ray_add (from the inverse projection, per thread).
+var<private> ray_mul: vec2<f32>;
+var<private> ray_add: vec2<f32>;
+var<private> depth_size: vec2<i32>;
+
+fn ray_at(ndc: vec2<f32>) -> vec2<f32> {
+    let v = effects.inv_projection * vec4<f32>(ndc, 0.5, 1.0);
+    return v.xy / -v.z;
+}
+
+fn view_position(pixel: vec2<i32>, level: i32) -> vec3<f32> {
+    let p = clamp(pixel, vec2<i32>(0), depth_size - vec2<i32>(1));
+    // A level's size: the frame's halved, at least a texel (no array with
+    // a dynamic index: GPUs keep those in memory, not registers).
+    let shift = vec2<u32>(u32(level));
+    let last = max(depth_size >> shift, vec2<i32>(1)) - vec2<i32>(1);
+    let distance = textureLoad(view_depth, min(p >> shift, last), level).r;
+    let uv = (vec2<f32>(p) + vec2<f32>(0.5)) / vec2<f32>(depth_size);
+    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    return vec3<f32>((ray_mul * ndc + ray_add) * distance, -distance);
 }
 
 @compute @workgroup_size(8, 8)
 fn gtao(@builtin(global_invocation_id) id: vec3<u32>) {
-    let size = vec2<i32>(textureDimensions(depth_texture));
+    depth_size = vec2<i32>(textureDimensions(view_depth, 0));
     let texel = vec2<i32>(id.xy);
     let out_size = vec2<i32>(textureDimensions(ao_out));
     if (texel.x >= out_size.x || texel.y >= out_size.y) { return; }
-    let pixel = min(texel * scale, size - vec2<i32>(1));
-    let depth = textureLoad(depth_texture, pixel, 0);
-    if (depth <= 0.0) { // the sky (reversed Z cleared to 0)
+    let pixel = min(texel * scale, depth_size - vec2<i32>(1));
+    if (textureLoad(view_depth, pixel, 0).r >= 1.0e5) { // the sky
         textureStore(ao_out, texel, vec4<f32>(1.0));
         return;
     }
-    let p = view_position(pixel);
-    let l = view_position(pixel - vec2<i32>(1, 0));
-    let r = view_position(pixel + vec2<i32>(1, 0));
-    let u = view_position(pixel - vec2<i32>(0, 1));
-    let d = view_position(pixel + vec2<i32>(0, 1));
+    ray_add = ray_at(vec2<f32>(0.0));
+    ray_mul = vec2<f32>(ray_at(vec2<f32>(1.0, 0.0)).x, ray_at(vec2<f32>(0.0, 1.0)).y) - ray_add;
+    let p = view_position(pixel, 0);
+    let l = view_position(pixel - vec2<i32>(1, 0), 0);
+    let r = view_position(pixel + vec2<i32>(1, 0), 0);
+    let u = view_position(pixel - vec2<i32>(0, 1), 0);
+    let d = view_position(pixel + vec2<i32>(0, 1), 0);
     let dx = select(p - l, r - p, abs(r.z - p.z) < abs(p.z - l.z));
     let dy = select(p - u, d - p, abs(d.z - p.z) < abs(p.z - u.z));
     let v = normalize(-p);
@@ -195,12 +302,13 @@ fn gtao(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let radius = effects.ao.x;
     // Pixels a metre covers at this depth.
-    let pixels_per_metre = f32(size.y) * 0.5 / (effects.ao.z * max(-p.z, 0.01));
+    let pixels_per_metre = f32(depth_size.y) * 0.5 / (effects.ao.z * max(-p.z, 0.01));
     let radius_px = min(radius * pixels_per_metre, max_radius);
     if (radius_px < 1.0) {
         textureStore(ao_out, texel, vec4<f32>(1.0));
         return;
     }
+    let levels = 3;
     let noise = fract(52.9829189 * fract(0.06711056 * f32(texel.x) + 0.00583715 * f32(texel.y)));
     let noise2 = fract(noise * 7.13 + 0.37);
     let falloff_range = 0.615 * radius;
@@ -229,8 +337,9 @@ fn gtao(@builtin(global_invocation_id) id: vec3<u32>) {
             var s = (f32(step) + noise2) / f32(steps);
             s = s * s;
             let offset = omega * max(s * radius_px, f32(step) + 1.0);
-            let q0 = view_position(pixel + vec2<i32>(round(offset)));
-            let q1 = view_position(pixel - vec2<i32>(round(offset)));
+            let level = clamp(i32(round(log2(length(offset)) - 3.3)), 0, levels);
+            let q0 = view_position(pixel + vec2<i32>(round(offset)), level);
+            let q1 = view_position(pixel - vec2<i32>(round(offset)), level);
             let delta0 = q0 - p;
             let delta1 = q1 - p;
             let dist0 = length(delta0);
@@ -257,9 +366,11 @@ fn gtao(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 )";
 
+// The blur (2026-11-21): a group's tile of the occlusion and of the view
+// depth read once into its shared memory, the taps from there.
 constexpr char blur_wgsl[] = R"(
 @group(0) @binding(0) var<uniform> effects: Effects;
-@group(0) @binding(1) var depth_texture: texture_depth_2d;
+@group(0) @binding(1) var view_depth: texture_2d<f32>;
 @group(0) @binding(2) var ao_in: texture_2d<f32>;
 @group(0) @binding(3) var ao_out: texture_storage_2d<r32float, write>;
 
@@ -270,21 +381,29 @@ constexpr char blur_wgsl[] = R"(
 override scale: i32 = 1;
 override reach: i32 = 2;
 
-fn linear_depth(pixel: vec2<i32>) -> f32 {
-    let depth = textureLoad(depth_texture, pixel, 0);
-    let v = effects.inv_projection * vec4<f32>(0.0, 0.0, depth, 1.0);
-    return -v.z / v.w;
-}
+// A group's 8 x 8 pixels: 8 / scale texels of ao_in a side, `reach` round
+// (12 x 12 at most).
+var<workgroup> tile_ao: array<f32, 144>;
+var<workgroup> tile_depth: array<f32, 144>;
 
 @compute @workgroup_size(8, 8)
-fn blur(@builtin(global_invocation_id) id: vec3<u32>) {
+fn blur(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) index: u32,
+        @builtin(workgroup_id) group: vec3<u32>) {
     let size = vec2<i32>(textureDimensions(ao_out));
+    let in_size = vec2<i32>(textureDimensions(ao_in));
+    let depth_size = vec2<i32>(textureDimensions(view_depth, 0));
+    let span = 8 / scale + 2 * reach;
+    let origin = vec2<i32>(group.xy) * (8 / scale) - vec2<i32>(reach);
+    for (var k = i32(index); k < span * span; k = k + 64) {
+        let q = clamp(origin + vec2<i32>(k % span, k / span), vec2<i32>(0), in_size - vec2<i32>(1));
+        tile_ao[k] = textureLoad(ao_in, q, 0).r;
+        tile_depth[k] = textureLoad(view_depth, min(q * scale, depth_size - vec2<i32>(1)), 0).r;
+    }
+    workgroupBarrier();
     let pixel = vec2<i32>(id.xy);
     if (pixel.x >= size.x || pixel.y >= size.y) { return; }
-    let in_size = vec2<i32>(textureDimensions(ao_in));
-    let depth_size = vec2<i32>(textureDimensions(depth_texture));
-    let centre = linear_depth(pixel);
-    let at = pixel / scale;
+    let centre = textureLoad(view_depth, min(pixel, depth_size - vec2<i32>(1)), 0).r;
+    let at = pixel / scale - origin;
     // Joined up, no texel may be of the pixel's own surface (a thin pole):
     // then they count alike rather than not at all.
     let least = select(0.0, 0.001, scale > 1);
@@ -292,10 +411,10 @@ fn blur(@builtin(global_invocation_id) id: vec3<u32>) {
     var weights = 0.0;
     for (var y = -reach; y <= reach; y = y + 1) {
         for (var x = -reach; x <= reach; x = x + 1) {
-            let q = clamp(at + vec2<i32>(x, y), vec2<i32>(0), in_size - vec2<i32>(1));
-            let depth = linear_depth(min(q * scale, depth_size - vec2<i32>(1)));
-            let w = max(exp(-abs(depth - centre) / max(centre * 0.03, 0.02)), least);
-            sum = sum + textureLoad(ao_in, q, 0).r * w;
+            let t = at + vec2<i32>(x, y);
+            let k = t.y * span + t.x;
+            let w = max(exp(-abs(tile_depth[k] - centre) / max(centre * 0.03, 0.02)), least);
+            sum = sum + tile_ao[k] * w;
             weights = weights + w;
         }
     }
@@ -656,6 +775,9 @@ struct SceneEffects::Impl {
     WGPUBindGroupLayout cluster_layout = nullptr;
     WGPUComputePipeline gtao = nullptr;
     WGPUComputePipeline blur = nullptr;
+    // The view depth's levels for the occlusion (prefilter_wgsl).
+    WGPUBindGroupLayout prefilter_layout = nullptr;
+    WGPUComputePipeline prefilter = nullptr;
     // The low quality's (SceneEffectSettings::occlusion_low); without them high.
     WGPUComputePipeline gtao_low = nullptr;
     WGPUComputePipeline blur_low = nullptr;
@@ -683,6 +805,12 @@ struct SceneEffects::Impl {
     Texture lamp_shadow;     // a layer a lamp throwing shadows (or a 1 x 1 stand-in)
     std::array<WGPUTextureView, max_lamp_shadows> lamp_layers{};
     Texture depth;           // the camera's pre-pass
+    // Its view depth (prefilter_wgsl): the frame's size and three smaller
+    // levels; `view` all of them, `view_levels` each.
+    static constexpr std::uint32_t view_depth_levels = 4;
+    Texture view_depth;
+    std::array<WGPUTextureView, view_depth_levels> view_levels{};
+    std::uint32_t view_level_count = 0;
     Texture ao_raw;          // the frame's size, or half of it (ao_half)
     Texture ao;              // blurred, read by the main pass (or a 1 x 1 stand-in)
     bool ao_is_real = false;
@@ -692,6 +820,7 @@ struct SceneEffects::Impl {
     WGPUBindGroup gtao_group = nullptr;
     WGPUBindGroup blur_group = nullptr;
     WGPUBindGroup cluster_group = nullptr;
+    WGPUBindGroup prefilter_group = nullptr;
     bool groups_stale = true;
 
     EffectsUniform frame{};
@@ -738,6 +867,14 @@ struct SceneEffects::Impl {
         bool valid = false;
     };
     std::array<LampKept, max_lamp_shadows> lamp_kept{};
+    // How much of each slot's shadow shows (2026-11-21): a lamp that takes a
+    // slot fades in, one that loses it fades out before the slot goes to
+    // another (lamp_fade_time); until then a shadow came and went at once as
+    // the picks changed with the view (testers: a train's shadow gone as the
+    // camera moved a hair).
+    std::array<float, max_lamp_shadows> lamp_weight{};
+    std::optional<std::chrono::steady_clock::time_point> lamp_clock;
+    static constexpr float lamp_fade_time = 0.3f; // s
     std::array<bool, max_lamp_shadows> lamp_redraw{};
     std::uint64_t lamp_generation = 1; // grows when the lamps' array is made again
     std::uint64_t lamp_frame = 0;
@@ -920,6 +1057,7 @@ struct SceneEffects::Impl {
         }
         lamp_shadow.release();
         depth.release();
+        release_view_depth();
         ao_raw.release();
         ao.release();
         cloud_stand_in.release();
@@ -931,20 +1069,67 @@ struct SceneEffects::Impl {
             if (buffer) wgpuBufferRelease(buffer);
         }
         if (compare_sampler) wgpuSamplerRelease(compare_sampler);
-        for (const auto pipeline : {gtao, blur, gtao_low, blur_low, cluster}) {
+        for (const auto pipeline : {gtao, blur, gtao_low, blur_low, cluster, prefilter}) {
             if (pipeline) wgpuComputePipelineRelease(pipeline);
         }
-        for (const auto layout : {main_layout, gtao_layout, blur_layout, cluster_layout}) {
+        for (const auto layout : {main_layout, gtao_layout, blur_layout, cluster_layout, prefilter_layout}) {
             if (layout) wgpuBindGroupLayoutRelease(layout);
         }
     }
 
     void release_groups() {
-        for (auto* group : {&main_group, &gtao_group, &blur_group, &cluster_group}) {
+        for (auto* group : {&main_group, &gtao_group, &blur_group, &cluster_group, &prefilter_group}) {
             if (*group) wgpuBindGroupRelease(*group);
             *group = nullptr;
         }
         groups_stale = true;
+    }
+
+    void release_view_depth() {
+        for (auto& level : view_levels) {
+            if (level) wgpuTextureViewRelease(level);
+            level = nullptr;
+        }
+        view_level_count = 0;
+        view_depth.release();
+    }
+
+    // The view depth at the frame's size with its levels.
+    void make_view_depth(const std::uint32_t width, const std::uint32_t height) {
+        release_view_depth();
+        // Four levels, each at least a texel.
+        const std::uint32_t levels = view_depth_levels;
+        if (width < 8 || height < 8) return;
+        const WGPUTextureDescriptor descriptor{
+            .usage = WGPUTextureUsage_StorageBinding | WGPUTextureUsage_TextureBinding,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {.width = width, .height = height, .depthOrArrayLayers = 1},
+            .format = ao_format,
+            .mipLevelCount = levels,
+            .sampleCount = 1,
+        };
+        view_depth.texture = wgpuDeviceCreateTexture(device, &descriptor);
+        if (!view_depth.texture) return;
+        view_depth.width = width;
+        view_depth.height = height;
+        view_depth.layers = 1;
+        const WGPUTextureViewDescriptor all{
+            .format = ao_format,
+            .dimension = WGPUTextureViewDimension_2D,
+            .baseMipLevel = 0,
+            .mipLevelCount = levels,
+            .baseArrayLayer = 0,
+            .arrayLayerCount = 1,
+            .aspect = WGPUTextureAspect_All,
+        };
+        view_depth.view = wgpuTextureCreateView(view_depth.texture, &all);
+        for (std::uint32_t level = 0; level < levels; ++level) {
+            auto one = all;
+            one.baseMipLevel = level;
+            one.mipLevelCount = 1;
+            view_levels[level] = wgpuTextureCreateView(view_depth.texture, &one);
+        }
+        view_level_count = levels;
     }
 
     // The shadow array: a layer a cascade (and one for the focus) at the
@@ -1016,6 +1201,7 @@ struct SceneEffects::Impl {
         if (!wanted) {
             if (ao.texture && !ao_is_real) return;
             depth.release();
+            release_view_depth();
             ao_raw.release();
             ao.release();
             ao = make_texture(device, ao_format, WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst, 1, 1, 1,
@@ -1039,6 +1225,7 @@ struct SceneEffects::Impl {
         ao.release();
         depth = make_texture(device, depth_format, WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding, width, height, 1,
                              WGPUTextureViewDimension_2D);
+        make_view_depth(width, height);
         const auto usage = WGPUTextureUsage_StorageBinding | WGPUTextureUsage_TextureBinding;
         ao_half = half;
         ao_raw = make_texture(device, ao_format, usage, half ? (width + 1) / 2 : width, half ? (height + 1) / 2 : height, 1,
@@ -1071,16 +1258,26 @@ struct SceneEffects::Impl {
             const WGPUBindGroupDescriptor descriptor{.layout = main_layout, .entryCount = entries.size(), .entries = entries.data()};
             main_group = wgpuDeviceCreateBindGroup(device, &descriptor);
         }
-        if (ao_is_real && depth.view && ao_raw.view && ao.view) {
+        if (ao_is_real && depth.view && view_depth.view && view_level_count == view_depth_levels && ao_raw.view && ao.view) {
+            {
+                std::array<WGPUBindGroupEntry, 6> entries{};
+                entries[0] = {.binding = 0, .buffer = uniform, .size = sizeof(EffectsUniform)};
+                entries[1] = {.binding = 1, .textureView = depth.view};
+                for (std::uint32_t level = 0; level < view_depth_levels; ++level) {
+                    entries[2 + level] = {.binding = 2 + level, .textureView = view_levels[level]};
+                }
+                const WGPUBindGroupDescriptor descriptor{.layout = prefilter_layout, .entryCount = entries.size(), .entries = entries.data()};
+                prefilter_group = wgpuDeviceCreateBindGroup(device, &descriptor);
+            }
             std::array<WGPUBindGroupEntry, 3> entries{};
             entries[0] = {.binding = 0, .buffer = uniform, .size = sizeof(EffectsUniform)};
-            entries[1] = {.binding = 1, .textureView = depth.view};
+            entries[1] = {.binding = 1, .textureView = view_depth.view};
             entries[2] = {.binding = 2, .textureView = ao_raw.view};
             const WGPUBindGroupDescriptor descriptor{.layout = gtao_layout, .entryCount = entries.size(), .entries = entries.data()};
             gtao_group = wgpuDeviceCreateBindGroup(device, &descriptor);
             std::array<WGPUBindGroupEntry, 4> blur_entries{};
             blur_entries[0] = {.binding = 0, .buffer = uniform, .size = sizeof(EffectsUniform)};
-            blur_entries[1] = {.binding = 1, .textureView = depth.view};
+            blur_entries[1] = {.binding = 1, .textureView = view_depth.view};
             blur_entries[2] = {.binding = 2, .textureView = ao_raw.view};
             blur_entries[3] = {.binding = 3, .textureView = ao.view};
             const WGPUBindGroupDescriptor blur_descriptor{.layout = blur_layout, .entryCount = blur_entries.size(), .entries = blur_entries.data()};
@@ -1212,13 +1409,32 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
         entries[0].buffer.minBindingSize = sizeof(EffectsUniform);
         entries[1].binding = 1;
         entries[1].visibility = WGPUShaderStage_Compute;
-        entries[1].texture.sampleType = WGPUTextureSampleType_Depth;
+        entries[1].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
         entries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
         entries[2].binding = 2;
         entries[2].visibility = WGPUShaderStage_Compute;
         entries[2].storageTexture = {.access = WGPUStorageTextureAccess_WriteOnly, .format = ao_format, .viewDimension = WGPUTextureViewDimension_2D};
         const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
         impl.gtao_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    }
+    {
+        // The prefilter: the camera's depth into the view depth's four levels.
+        std::array<WGPUBindGroupLayoutEntry, 6> entries{};
+        entries[0].binding = 0;
+        entries[0].visibility = WGPUShaderStage_Compute;
+        entries[0].buffer.type = WGPUBufferBindingType_Uniform;
+        entries[0].buffer.minBindingSize = sizeof(EffectsUniform);
+        entries[1].binding = 1;
+        entries[1].visibility = WGPUShaderStage_Compute;
+        entries[1].texture.sampleType = WGPUTextureSampleType_Depth;
+        entries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
+        for (const std::uint32_t b : {2u, 3u, 4u, 5u}) {
+            entries[b].binding = b;
+            entries[b].visibility = WGPUShaderStage_Compute;
+            entries[b].storageTexture = {.access = WGPUStorageTextureAccess_WriteOnly, .format = ao_format, .viewDimension = WGPUTextureViewDimension_2D};
+        }
+        const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
+        impl.prefilter_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
     }
     {
         std::array<WGPUBindGroupLayoutEntry, 4> entries{};
@@ -1228,7 +1444,7 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
         entries[0].buffer.minBindingSize = sizeof(EffectsUniform);
         entries[1].binding = 1;
         entries[1].visibility = WGPUShaderStage_Compute;
-        entries[1].texture.sampleType = WGPUTextureSampleType_Depth;
+        entries[1].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
         entries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
         entries[2].binding = 2;
         entries[2].visibility = WGPUShaderStage_Compute;
@@ -1269,6 +1485,8 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
     impl.blur_low = make_compute(device, impl.blur_layout, header + blur_wgsl, "blur",
                                  {{.key = name("scale"), .value = 2.0}, {.key = name("reach"), .value = 1.0}});
     impl.cluster = make_compute(device, impl.cluster_layout, header + cluster_wgsl, "assign");
+    impl.prefilter = make_compute(device, impl.prefilter_layout, header + prefilter_wgsl, "prefilter");
+
     {
         // The sun's shadow cache: the unwrap (its offsets, the cache's
         // layers) and the far plane's fill (nothing bound).
@@ -1412,8 +1630,11 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
 
     const glm::vec3 to_sun = -glm::normalize(lighting.sun_direction);
     const float sun_luma = glm::dot(glm::vec3(lighting.sun_diffuse), glm::vec3{0.2126f, 0.7152f, 0.0722f});
-    // Shadows while the sun is up and shines (faded in at low sun).
-    const float sun_up = glm::clamp((to_sun.y - 0.02f) / 0.12f, 0.0f, 1.0f);
+    // Shadows while the sun is up and shines, out over its last degree above
+    // the horizon. Until 2026-11-21 they faded from 8 degrees down to 1 while
+    // its light did not: a rising sun shone through the walls, the cab's back
+    // wall cast none, its desk lit with the sun behind (testers).
+    const float sun_up = glm::clamp(to_sun.y / 0.0175f, 0.0f, 1.0f);
     const float shadow_strength = sun_up * glm::clamp(sun_luma * 1.6f, 0.0f, 1.0f);
     const bool shadows = active && s.shadows && shadow_strength > 0.01f;
     impl.ensure_shadow(active && s.shadows);
@@ -1513,10 +1734,12 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     const auto& ring = lighting.fog_ring;
     frame.fog_sun = ring.on ? glm::vec4{ring.sun, 0.0f, 0.0f} : glm::vec4{0.0f};
     for (std::size_t i = 0; i < FogRing::count; ++i) frame.fog_ring[i] = glm::vec4{linear(glm::vec4{ring.colours[i], 1.0f}), 1.0f};
+    frame.cloud_sun = glm::vec4{0.0f};
+    frame.cloud_edge = glm::vec4{0.0f, 1.0f, 1.0f, 0.0f};
     if (active && clouds.map) {
         frame.cloud_area = clouds.area;
         frame.cloud_sun = clouds.sun;
-        frame.cloud_edge = glm::vec4{clouds.edge, 0.0f, 0.0f};
+        frame.cloud_edge = glm::vec4{clouds.edge, clouds.low_sun, 0.0f};
     }
     if (ring.on) frame.aerial.x = 0.6f / fog_end;
     // haze.w: RTS's fog strength, its fog colour's alpha (the fog shaders
@@ -1659,46 +1882,87 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
         }
         picks.push_back({i, score});
     }
-    const auto wanted = (std::min)({static_cast<std::uint32_t>(picks.size()), settings.lamp_shadows, max_lamp_shadows});
-    std::partial_sort(picks.begin(), picks.begin() + wanted, picks.end(), [](const Pick& a, const Pick& b) { return a.score > b.score; });
+    const std::uint32_t slots = (std::min)(settings.lamp_shadows, max_lamp_shadows);
+    const auto top = (std::min)(static_cast<std::uint32_t>(picks.size()), slots);
+    std::partial_sort(picks.begin(), picks.begin() + top, picks.end(), [](const Pick& a, const Pick& b) { return a.score > b.score; });
     lamp_shadow_kept.clear();
     ++lamp_frame;
     const auto size = static_cast<float>(lamp_map_size());
-    // Each pick to a slot: the slot that drew its lamp (the same owner and
-    // kind, the nearest within a metre), else a free one.
-    std::array<int, max_lamp_shadows> slot_pick{};
-    slot_pick.fill(-1);
-    std::array<bool, max_lamp_shadows> matched{};
-    std::array<bool, max_lamp_shadows> placed{};
-    for (std::uint32_t p = 0; p < wanted; ++p) {
-        const auto& light = packed_lights[picks[p].index];
-        const glm::vec3 position{glm::inverse(light.to_light)[3]};
+    // The fade's step: the time since the last frame (at most a tenth of a second).
+    const auto now = std::chrono::steady_clock::now();
+    const float dt = lamp_clock ? std::clamp(std::chrono::duration<float>(now - *lamp_clock).count(), 0.0f, 0.1f) : 0.0f;
+    lamp_clock = now;
+    const auto same = [&](const LampKept& kept, const ModelExtraLight& light) {
         const int kind = static_cast<int>(light.kind) & 31;
-        int best = -1;
-        float best_distance = 1.0f;
-        for (std::uint32_t s = 0; s < wanted; ++s) {
-            const auto& kept = lamp_kept[s];
-            if (slot_pick[s] >= 0 || !kept.valid || kept.generation != lamp_generation || kept.owner != light.owner || kept.kind != kind) continue;
-            const float d = glm::distance(kept.position, position);
-            if (d < best_distance) {
-                best = static_cast<int>(s);
-                best_distance = d;
+        return kept.owner == light.owner && kept.kind == kind && glm::distance(kept.position, glm::vec3{glm::inverse(light.to_light)[3]}) < 1.0f;
+    };
+    // Each slot's lamp this frame (packed_lights' index, -1 none): the one it
+    // drew if it is still among the best (staying), else while that lamp is
+    // still there (going, fading out); then the best without a slot take the
+    // free ones (fading in).
+    std::array<int, max_lamp_shadows> slot_light{};
+    slot_light.fill(-1);
+    std::array<bool, max_lamp_shadows> going{};
+    std::array<bool, max_lamp_shadows> matched{};
+    std::array<bool, max_lamp_shadows> taken{};
+    for (std::uint32_t k = 0; k < slots; ++k) {
+        auto& kept = lamp_kept[k];
+        if (!kept.valid || kept.generation != lamp_generation) {
+            kept.valid = false;
+            continue;
+        }
+        for (std::uint32_t p = 0; p < top && slot_light[k] < 0; ++p) {
+            if (taken[p] || !same(kept, packed_lights[picks[p].index])) continue;
+            taken[p] = true;
+            slot_light[k] = static_cast<int>(picks[p].index);
+        }
+        if (slot_light[k] < 0) {
+            for (std::uint32_t i = 0; i < packed_lights.size(); ++i) {
+                if (!same(kept, packed_lights[i])) continue;
+                slot_light[k] = static_cast<int>(i);
+                going[k] = true;
+                break;
             }
         }
-        if (best >= 0) {
-            slot_pick[best] = static_cast<int>(p);
-            matched[best] = true;
-            placed[p] = true;
+        if (slot_light[k] < 0) {
+            kept.valid = false; // its lamp gone: the slot free at once
+            continue;
+        }
+        matched[k] = true;
+    }
+    for (std::uint32_t p = 0; p < top; ++p) {
+        if (taken[p]) continue;
+        for (std::uint32_t k = 0; k < slots; ++k) {
+            if (slot_light[k] >= 0) continue;
+            slot_light[k] = static_cast<int>(picks[p].index);
+            lamp_weight[k] = 0.0f;
+            break;
         }
     }
-    for (std::uint32_t p = 0, s = 0; p < wanted; ++p) {
-        if (placed[p]) continue;
-        while (slot_pick[s] >= 0) ++s;
-        slot_pick[s] = static_cast<int>(p);
+    std::uint32_t wanted = 0; // the slots in use: one past the last
+    for (std::uint32_t k = 0; k < slots; ++k) {
+        if (slot_light[k] < 0) continue;
+        const float fade_step = dt / lamp_fade_time;
+        lamp_weight[k] = std::clamp(lamp_weight[k] + (going[k] ? -fade_step : fade_step), 0.0f, 1.0f);
+        if (going[k] && lamp_weight[k] <= 0.0f) {
+            // Faded out: the slot is free for the next frame's best.
+            slot_light[k] = -1;
+            lamp_kept[k].valid = false;
+            continue;
+        }
+        wanted = k + 1;
     }
     for (std::uint32_t k = 0; k < wanted; ++k) {
-        const auto& pick = picks[static_cast<std::size_t>(slot_pick[k])];
-        const auto& light = packed_lights[pick.index];
+        if (slot_light[k] < 0) {
+            // A free slot among those in use: nothing drawn, no lamp's.
+            lamp_redraw[k] = false;
+            lamp_owners[k] = 0;
+            frame.lamp_shadow_ids[k] = 0;
+            frame.lamp_shadow_keys[k] = glm::vec4{0.0f};
+            continue;
+        }
+        const auto light_index = static_cast<std::uint32_t>(slot_light[k]);
+        const auto& light = packed_lights[light_index];
         lamp_owners[k] = light.owner;
         const glm::mat4 to_world = glm::inverse(light.to_light);
         const glm::vec3 position{to_world[3]};
@@ -1748,12 +2012,16 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
         }
         lamp_matrices[k] = matrix;
         frame.lamp_shadows[k] = matrix;
-        frame.lamp_shadow_ids[k] = pick.index + 1;
-        frame.lamp_shadow_keys[k] = glm::vec4{glm::vec3(light.to_light[3]), 1.0f};
+        frame.lamp_shadow_ids[k] = light_index + 1;
+        // w: how much of its shadow shows (lamp_weight).
+        frame.lamp_shadow_keys[k] = glm::vec4{glm::vec3(light.to_light[3]), lamp_weight[k]};
         frame.lamp_shadow_texel[static_cast<int>(k)] = texel;
         lamp_shadow_kept.push_back(position);
     }
-    for (std::uint32_t k = wanted; k < max_lamp_shadows; ++k) lamp_kept[k].valid = false;
+    for (std::uint32_t k = wanted; k < max_lamp_shadows; ++k) {
+        lamp_kept[k].valid = false;
+        lamp_weight[k] = 0.0f;
+    }
     lamp_shadow_count = wanted;
     lamps_lighting = static_cast<std::uint32_t>(picks.size());
     lamp_radius = radius;
@@ -2032,8 +2300,19 @@ void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const D
             wgpuComputePassEncoderEnd(compute);
             wgpuComputePassEncoderRelease(compute);
         };
-        if (frame.flags[1] != 0u) {
-            compute_one(GpuPass::occlusion, ao_half ? gtao_low : gtao, gtao_group, ao_raw.width, ao_raw.height);
+        if (frame.flags[1] != 0u && prefilter_group) {
+            // The view depth's levels, then GTAO: one pass (its time the two's).
+            const auto writes = compute_pass_timestamps(GpuPass::occlusion);
+            const WGPUComputePassDescriptor compute_descriptor{.timestampWrites = writes ? &*writes : nullptr};
+            const auto compute = wgpuCommandEncoderBeginComputePass(encoder, &compute_descriptor);
+            wgpuComputePassEncoderSetPipeline(compute, prefilter);
+            wgpuComputePassEncoderSetBindGroup(compute, 0, prefilter_group, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(compute, (view_depth.width + 15) / 16, (view_depth.height + 15) / 16, 1);
+            wgpuComputePassEncoderSetPipeline(compute, ao_half ? gtao_low : gtao);
+            wgpuComputePassEncoderSetBindGroup(compute, 0, gtao_group, 0, nullptr);
+            wgpuComputePassEncoderDispatchWorkgroups(compute, (ao_raw.width + 7) / 8, (ao_raw.height + 7) / 8, 1);
+            wgpuComputePassEncoderEnd(compute);
+            wgpuComputePassEncoderRelease(compute);
             compute_one(GpuPass::occlusion_blur, ao_half ? blur_low : blur, blur_group, ao.width, ao.height);
         }
     }

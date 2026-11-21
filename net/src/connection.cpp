@@ -145,7 +145,8 @@ RtsConnection::RtsConnection() : socket_(static_cast<std::uintptr_t>(no_socket))
 
 RtsConnection::~RtsConnection() { close(); }
 
-LoginResult RtsConnection::connect(const std::string& address, const std::u16string_view nick, const int timeout_ms, const bool console) {
+LoginResult RtsConnection::connect(const std::string& address, const std::u16string_view nick, const int timeout_ms, const bool console,
+                                   const std::u16string_view password) {
     LoginResult result;
     close();
     if (!network_ready()) {
@@ -188,11 +189,12 @@ LoginResult RtsConnection::connect(const std::string& address, const std::u16str
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&on), sizeof on);
 
     // The login: 0x4600 (a console 0x4500), length 12 + 2n, version 101, n,
-    // the nick and a zero.
+    // the nick and a zero; a console then its password (openRTS's server).
     WireWriter login;
     login.begin(id(console ? Package::console_login : Package::login));
     login.u16(101);
     login.text_u16(nick);
+    if (console) login.text_u16(password);
     login.end();
     if (!write_all(s, login.data().data(), login.data().size())) {
         close_socket(s);

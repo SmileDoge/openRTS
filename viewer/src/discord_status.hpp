@@ -31,8 +31,9 @@ public:
     DiscordStatus(const DiscordStatus&) = delete;
     DiscordStatus& operator=(const DiscordStatus&) = delete;
 
-    // Every frame; asks the scene about once a second.
-    void update(const ViewerScene& scene);
+    // Every frame; asks the scene about once a second, and hands it the games
+    // joined from Discord (the start menu).
+    void update(ViewerScene& scene);
 
 private:
     bool allowed_ = false;
@@ -41,6 +42,8 @@ private:
     std::unique_ptr<platform::DiscordPresence> presence_;
     bool ready_logged_ = false;
     bool accepted_logged_ = false;
+    std::uint64_t requests_logged_ = 0;
+    std::uint64_t subscribed_logged_ = 0;
     std::optional<ScenePresence> shown_; // the scene's last, for the log
     std::string error_logged_;
 };
