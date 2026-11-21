@@ -308,6 +308,7 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
             }
             if (const auto* driven = trains.train()) {
                 o.train = driven->id();
+                trains.set_unit_start_state(o.train, train.state == 0 ? 0 : train.state == 1 ? 1 : -1);
                 trains.set_category(o.train, category_of(train.subtype));
                 trains.share_sound(o.train, true);
                 trains.set_boardable(o.train, true);
@@ -339,6 +340,9 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
         }
         // The camera goes to the train the server gave us.
         if (own != 0) trains.follow_train(own);
+        // No train of ours (none given yet): free by the first train, not
+        // riding with it as if it were ours; the train comes with 0x4601.
+        if (own == 0 && !console_) trains.look_once_then_free();
         std::cout << "net: " << junctions << " of " << snapshot_.junctions.size() << " junctions set, " << placed << " of "
                   << snapshot_.trains.size() << " trains on the track" << std::endl;
         for (const auto& package : std::exchange(early_, {})) apply(package, network, signals, trains, t);
@@ -1315,6 +1319,7 @@ bool NetSession::place_owned(const std::uint32_t id, Owned& own, simulation::Tra
     own.lights_sent.clear();
     own.looks_sent.clear();
     own.sound_sent.clear();
+    trains.set_unit_start_state(own.train, own.record.state == 0 ? 0 : own.record.state == 1 ? 1 : -1);
     if (drive) {
         const auto state = own.record.state;
         trains.set_start_state(state == 0 ? 0 : state == 1 ? 1 : -1);
@@ -1372,6 +1377,9 @@ void NetSession::assigned(const net::TrainAssignUpdate& a, simulation::TrackNetw
             trains.share_sound(kept, true);
             trains.set_boardable(kept, true);
             trains.set_category(kept, category_of(placed.record.subtype));
+            // Its DLLs start as the server keeps it, cold too (the host
+            // takes the start state from the train on this way in).
+            trains.set_unit_start_state(kept, placed.record.state == 0 ? 0 : placed.record.state == 1 ? 1 : -1);
             if (driven_id(trains) == 0) {
                 trains.set_start_state(placed.record.state == 0 ? 0 : placed.record.state == 1 ? 1 : -1);
                 if (const auto problem = trains.board(kept); !problem.empty()) std::cout << "net: " << problem << std::endl;

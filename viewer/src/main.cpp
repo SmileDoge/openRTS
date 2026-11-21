@@ -187,7 +187,8 @@ std::optional<openrts::net::LoginReply> login_server(openrts::net::RtsConnection
 // in a status line.
 std::optional<openrts::net::Bytes> wait_for_world(openrts::net::RtsConnection& connection, const std::string& address,
                                                   const std::string& nick, const std::string& route,
-                                                  std::vector<openrts::net::ReceivedPackage>& early, const bool console) {
+                                                  std::vector<openrts::net::ReceivedPackage>& early, const bool console,
+                                                  const bool without_train) {
     namespace net = openrts::net;
     bool asked = false;
     if (console) {
@@ -219,7 +220,10 @@ std::optional<openrts::net::Bytes> wait_for_world(openrts::net::RtsConnection& c
                 report_status("closed");
                 return std::nullopt;
             }
-            if (!asked && package.id == net::id(net::Package::openrts_hello)) {
+            // An openRTS server lets an openRTS player in without a train;
+            // only when asked (--mp-no-train): as RTS, the player waits for
+            // the dispatcher's train (testers 2026-11-21).
+            if (!asked && without_train && package.id == net::id(net::Package::openrts_hello)) {
                 std::cout << "net: an openRTS server: into the world without a train (the dispatcher may give one, a player may take you as his helper)"
                           << std::endl;
                 report_status("loading");
@@ -315,6 +319,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     std::string mp_connect;          // --mp-connect host:port
     std::string mp_nick = "openRTS"; // --mp-nick
     bool mp_console = false;         // --mp-console: as the dispatcher's console
+    bool mp_no_train = false;        // --mp-no-train: in without a train (to look, to help)
     // --mp-password: the server's dispatcher password (a console from another
     // computer); else OPENRTS_MP_PASSWORD, as the start menu passes it (not
     // on the command line, which the log and the task manager show).
@@ -363,6 +368,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             mp_nick = std::string(flags[++i]);
         } else if (flags[i] == "--mp-console") {
             mp_console = true;
+        } else if (flags[i] == "--mp-no-train") {
+            mp_no_train = true;
         } else if (flags[i] == "--mp-password" && has_value) {
             mp_password = std::string(flags[++i]);
         } else if (flags[i] == "--mp-snapshot" && has_value) {
@@ -722,7 +729,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             report_status("no-route " + server_route);
             return exit_code::content_failed;
         }
-        snapshot_bytes = wait_for_world(*connection, mp_connect, mp_nick, server_route, early, mp_console);
+        snapshot_bytes = wait_for_world(*connection, mp_connect, mp_nick, server_route, early, mp_console, mp_no_train);
         if (!snapshot_bytes) return exit_code::network_failed;
         snapshot_source = mp_connect;
         // The world as the server sent it, kept for opening it again without

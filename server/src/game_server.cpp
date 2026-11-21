@@ -125,6 +125,10 @@ struct GameServer::Impl {
     std::map<ConnectionId, std::string> fresh;           // connected, no login yet: address
     std::map<std::uint32_t, Train> trains;
     std::uint32_t next_user = 1;
+    // Each junction's branch as last told to the players (any change by the
+    // server's own trains goes out too).
+    std::map<std::uint32_t, std::uint32_t> told_branch;
+    double next_junction_check = 0.0;
     std::set<std::uint32_t> locked; // junction nodes the dispatcher locked
     // Routes the dispatcher set, by train: the leg and its junctions with
     // their distances along it, held until the train's rear has passed.
@@ -1158,6 +1162,22 @@ void GameServer::tick(const double now) {
             if (user.playing && user.connection) transport_.send(user.connection, bytes);
         }
     };
+
+    // The switches as the server has them, whoever set them: its own trains
+    // set a switch back to MainRoute behind their tails and on a cancelled
+    // reservation, and nobody heard of it (testers 2026-11-21: the
+    // dispatcher's console showed it to the siding, the players and the
+    // server straight; a console logging in again saw it straight).
+    if (now >= impl.next_junction_check) {
+        impl.next_junction_check = now + 0.25;
+        const bool first = impl.told_branch.empty();
+        for (const auto& j : impl.junction_states()) {
+            auto [it, added] = impl.told_branch.try_emplace(j.index + 1, j.branch);
+            if (added || it->second == j.branch) continue;
+            it->second = j.branch;
+            if (!first) to_playing(junction_package(j));
+        }
+    }
 
     time_ = std::fmod(time_ + dt, 86400.0);
     if (now >= impl.next_time) {

@@ -108,7 +108,7 @@ bool TrackTraveller::leave(const bool forward, const JunctionMode mode, const st
             case JunctionMode::occupy:
                 pass.forced = held_by_other;
                 state->occupied = true;
-                if (!facing) state->selected = branch; // run-through: the switch is pushed over
+                if (!facing && !network.switches_by_server()) state->selected = branch; // run-through: the switch is pushed over
                 break;
             case JunctionMode::release:
                 if (facing) {

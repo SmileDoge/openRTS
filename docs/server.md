@@ -553,8 +553,10 @@ and when the dispatcher sets it.
 ## Helpers
 
 - **openRTS players** say `0x45F4` after their login; the server answers.
-  Such a player gets the world without a train (an `rts1.exe` without one
-  still waits in the menu, `0x4703`).
+  Such a player may get the world without a train (an `rts1.exe` without one
+  still waits in the menu, `0x4703`): only when he asks (the menu's "Войти
+  без поезда", `--mp-no-train`); otherwise he waits for the dispatcher's
+  train as in RTS (since 2026-11-21).
 - **Asking** (`0x45F5`): a player asks to help on a train. The server asks
   its owner (an openRTS player in play) and tells the helper "waiting"; the
   owner takes him or refuses. Not possible: no such train, nobody drives

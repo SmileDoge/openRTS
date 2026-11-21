@@ -504,6 +504,7 @@ public:
                     net_ = std::make_unique<NetSession>(content_.connection(), *snapshot, content_.take_early(), content_.console());
                     train_->set_network(true);
                     train_->set_console(content_.console());
+                    track_->network().set_switches_by_server(true);
                     if (track_control_) {
                         // The console's map: junctions and signals are the server's.
                         track_control_->set_network_actions({

@@ -345,6 +345,7 @@ struct Launcher::State {
     std::vector<std::string> servers;
     int net_spawn = 1; // net_spawn_names
     int net_role = 0;  // net_role_names
+    bool net_no_train = false; // in without a train (--mp-no-train)
     // The dispatcher's password for a server elsewhere (not kept: passed to
     // the game in OPENRTS_MP_PASSWORD, off its command line).
     std::array<char, 64> password{};
@@ -503,6 +504,7 @@ struct Launcher::State {
             for (int i = 0; i < 2; ++i)
                 if (*value == net_spawn_keys[i]) net_spawn = i;
         }
+        net_no_train = remembered("mp_no_train").value_or("0") == "1";
         if (const auto value = remembered("mp_role"); value && console_role_shown) {
             for (int i = 0; i < 2; ++i)
                 if (*value == net_role_keys[i]) net_role = i;
@@ -556,6 +558,7 @@ struct Launcher::State {
         remember("mp_servers", join_list(servers));
         remember("mp_spawn", net_spawn_keys[net_spawn]);
         remember("mp_role", net_role_keys[net_role]);
+        remember("mp_no_train", net_no_train ? "1" : "0");
     }
 
     void scan() {
@@ -768,8 +771,9 @@ struct Launcher::State {
             args.insert(args.end(), {"--mp-connect", address_text(), "--mp-nick", nick_text(), "--root", utf8(root)});
             if (net_role == net_role_dispatcher) {
                 args.push_back("--mp-console");
-            } else if (net_spawn == net_spawn_cab) {
-                args.insert(args.end(), {"--spawn", "cab"});
+            } else {
+                if (net_spawn == net_spawn_cab) args.insert(args.end(), {"--spawn", "cab"});
+                if (net_no_train) args.push_back("--mp-no-train");
             }
         } else {
             args.insert(args.end(), {"--route", routes[static_cast<std::size_t>(route)], "--root", utf8(root)});
@@ -1345,6 +1349,8 @@ void Launcher::State::draw_network(const float height) {
                 for (int i = 0; i < 2; ++i) spawns[i] = tr(net_spawn_names[i]);
                 form_row(tr("Start at"));
                 ImGui::Combo("##net_spawn", &net_spawn, spawns, 2);
+                form_row(tr("Without a train"));
+                ImGui::Checkbox(tr("Go in without a train (to look round, to help a driver)##no_train"), &net_no_train);
             }
             ImGui::EndTable();
         }
@@ -1354,6 +1360,8 @@ void Launcher::State::draw_network(const float height) {
         } else {
             hint(net_spawn == net_spawn_cab ? tr("When the dispatcher assigns your train, you sit at its desk.")
                                             : tr("When the dispatcher assigns your train, the camera follows it from above."));
+            hint(net_no_train ? tr("You go into the world at once, without a train: the dispatcher may give you one later, a driver may take you as his helper.")
+                              : tr("As in RTS, the game waits until the dispatcher gives you a train."));
         }
         hint(tr("The port is 800 when none is given. The nick is how the other players and the dispatcher see you."));
         const auto length = characters(nick_text());

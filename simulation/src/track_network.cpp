@@ -132,7 +132,7 @@ void TrackNetwork::cancel_reservation(const std::uint32_t node, const std::uint6
     const auto before = state->reservations.size();
     const bool was_first = !state->reservations.empty() && state->reservations.front().first == owner;
     std::erase_if(state->reservations, [&](const auto& r) { return r.first == owner; });
-    if (state->reservations.size() == before || state->occupied || !was_first) return;
+    if (state->reservations.size() == before || state->occupied || !was_first || switches_by_server_) return;
     state->selected = state->reservations.empty() ? state->main_route : state->reservations.front().second;
 }
 
@@ -142,6 +142,7 @@ void TrackNetwork::release_junction(const std::uint32_t node, const std::uint64_
     state->occupied = false;
     state->clearance.erase(owner);
     std::erase_if(state->reservations, [&](const auto& r) { return r.first == owner; });
+    if (switches_by_server_) return;
     state->selected = state->reservations.empty() ? state->main_route : state->reservations.front().second;
 }
 

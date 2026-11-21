@@ -2612,6 +2612,10 @@ std::string TrainView::consist_layout(const std::string_view consist, ConsistLay
     return {};
 }
 
+void TrainView::set_unit_start_state(const std::uint64_t id, const int state) {
+    if (auto* unit = find_unit(id)) unit->start_state = state;
+}
+
 std::string TrainView::spawn(const std::string_view consist, const simulation::TrackLocation& where, const Role role,
                              const std::optional<simulation::TrainCategory> category, const std::optional<int> start_state,
                              const std::uint8_t chocks) {
@@ -6170,6 +6174,10 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         camera.position = head.front - forward * 22.0f + glm::vec3{0.0f, 6.0f, 0.0f};
         camera.yaw = std::atan2(forward.x, forward.z) + pi;
         camera.pitch = 0.12f;
+        if (free_after_look_) {
+            free_after_look_ = false;
+            follow_ = false;
+        }
     }
     if (car_view_ != CarView::off) {
         // The car view (F3): the engineer stays where he is, with his own

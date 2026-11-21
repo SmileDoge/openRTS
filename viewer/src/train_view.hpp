@@ -228,6 +228,13 @@ public:
     [[nodiscard]] float outside_gain() const noexcept { return outside_gain_; }
     [[nodiscard]] bool following() const noexcept { return follow_; }
     void stop_following() noexcept { follow_ = false; }
+    // A network player with no train of his own: the camera put once
+    // behind the first train, then free (not following a train that is not
+    // his; testers 2026-11-21).
+    void look_once_then_free() noexcept {
+        follow_ = true;
+        free_after_look_ = true;
+    }
     // Terrain height at a scene point (x, z), when its tile has heights.
     [[nodiscard]] std::optional<float> ground_at(const glm::vec3& point) const { return ground_height(point); }
     // The driven train.
@@ -294,6 +301,11 @@ public:
     // The DLLs' start state for the next loaded consist: -1 running (the
     // default), 0 cold, 1 on (an activity's TrainState, docs/train-dll.md).
     void set_start_state(int state) noexcept { start_state_ = state; }
+    // The state train `id` starts its DLLs in (0 cold, 1 on, -1 running):
+    // the network's, as the server keeps it, whichever way the player gets
+    // into it (testers 2026-11-21: a cold ВЛ80Т given to a player already
+    // in the world started running).
+    void set_unit_start_state(std::uint64_t id, int state);
     // Where the player starts once the driven train stands on the track
     // (--spawn): in its cab; on foot beside the cab car, as RTS starts an
     // activity by default (0x42F4A4: 2 m off the car's left side at its
@@ -1510,6 +1522,7 @@ private:
     std::optional<std::uint32_t> outside_car_;
     double accumulator_{};
     bool follow_ = true;
+    bool free_after_look_ = false; // look_once_then_free
     std::size_t joints_ = 0, junctions_ = 0, coupler_breaks_ = 0, derailments_ = 0;
     bool end_of_track_ = false;
     std::unique_ptr<audio::SoundBank> bank_;
