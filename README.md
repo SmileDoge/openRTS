@@ -1,5 +1,5 @@
 # Dark Team Railway Engine (DTRE)
-This project is a fork of free, open-source railway simulator about post-Soviet mainline locomotives and trains OpenRTS. The game features an updated RTrainSim (RTS) train physics engine that accounts for longitudinal dynamics, wheel–rail interaction, and the operation of pneumatic and electrical systems on both locomotives and railcars. Players can take on roles such as locomotive engineer, assistant engineer, dispatcher, or rolling stock maintenance personnel.
+This project is a fork of free, open-source railway simulator about post-Soviet mainline locomotives and trains [OpenRTS](https://github.com/SmileDoge/openRTS). The game features an updated RTrainSim (RTS) train physics engine that accounts for longitudinal dynamics, wheel–rail interaction, and the operation of pneumatic and electrical systems on both locomotives and railcars. Players can take on roles such as locomotive engineer, assistant engineer, dispatcher, or rolling stock maintenance personnel.
 ![](https://dark-team.ru/GitHub/image2.png)
 The game's graphics are built upon the latest [wgpu-native](https://github.com/gfx-rs/wgpu-native) rendering library with support for PBR (Physically Based Rendering) materials.
 
