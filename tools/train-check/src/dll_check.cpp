@@ -141,6 +141,7 @@ double field(const std::string& name, const trainplugin::LegacyConsist& consist,
     if (name == "ur") return e.equalising;
     if (name == "brake_force") return e.brake_force;
     if (name == "loco_flags") return out->loco_flags;
+    if (name == "raised") return out->panto_raised; // the pantographs the DLL raises (bit 0: 1, bit 1: 2)
     if (name == "master") return (out->loco_flags & 1) ? 1.0 : 0.0;
     if (name == "bound") return (out->loco_flags & 0x20) ? 1.0 : 0.0;
     if (name.rfind("disp", 0) == 0) { // dispN: state of cab display N (a lamp: lit or not)

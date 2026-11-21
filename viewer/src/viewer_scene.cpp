@@ -504,7 +504,7 @@ public:
                     net_ = std::make_unique<NetSession>(content_.connection(), *snapshot, content_.take_early(), content_.console());
                     train_->set_network(true);
                     train_->set_console(content_.console());
-                    track_->network().set_switches_by_server(true);
+                    track_->network().set_switches_stay(true);
                     if (track_control_) {
                         // The console's map: junctions and signals are the server's.
                         track_control_->set_network_actions({
@@ -542,35 +542,68 @@ public:
                             // (or rear) to the place, its junctions thrown on the
                             // server one by one, then the length (0x4619).
                             .route_to = [net = net_.get(), trains = train_.get(), network = &track_->network()](
-                                            const std::uint64_t train, const simulation::TrackLocation& to) {
+                                            const std::uint64_t train, const std::vector<simulation::TrackLocation>& via,
+                                            const simulation::TrackLocation& to) -> std::string {
                                 const auto id = net->server_train(train);
                                 const auto* t = trains->train_by_id(train);
-                                if (!id || !t || !t->placed()) return;
+                                if (!id || !t || !t->placed()) return tr("the train is not on the track");
+                                // Another train on the way: the first one met
+                                // along the leg (its cars looked at every 5 m).
+                                const auto blocker = [&](const simulation::RouteLeg& leg) -> std::optional<std::string> {
+                                    for (const auto& s : trains->summaries()) {
+                                        if (s.id == train) continue;
+                                        const auto* other = trains->train_by_id(s.id);
+                                        const auto front = other && other->placed() ? other->front_end() : std::nullopt;
+                                        if (!front) continue;
+                                        auto walk = *front;
+                                        walk.reverse();
+                                        for (double done = 0.0; done <= other->length() + 0.1; done += 5.0) {
+                                            if (const auto at = leg.locate(walk.node(), walk.offset()); at && *at > 1.0) return s.name;
+                                            if (!walk.move((std::min)(5.0, other->length() - done + 0.1)).ok()) break;
+                                        }
+                                    }
+                                    return std::nullopt;
+                                };
                                 std::optional<simulation::TrainRoute> best;
                                 bool rear_first = false;
+                                std::string blocked;
                                 for (const bool rear : {false, true}) {
                                     const auto end = rear ? t->rear_end() : t->front_end();
                                     if (!end) continue;
                                     simulation::PathPlan plan;
                                     plan.name = "route";
                                     plan.start = {end->node(), end->offset(), rear ? !end->forward() : end->forward()};
+                                    // The points to pass, in order (as the single
+                                    // player's path editor's), then the end.
+                                    for (const auto& p : via) plan.points.push_back({.kind = simulation::PlanPointKind::via, .node = p.node, .offset = p.offset});
                                     plan.points.push_back({.kind = simulation::PlanPointKind::end, .node = to.node, .offset = to.offset});
                                     auto route = simulation::build_route(*network, plan);
                                     if (!route.ok() || route.legs.size() != 1) continue;
+                                    // Not through a train standing there (testers
+                                    // 2026-11-21: the shortest way ran through them).
+                                    if (const auto who = blocker(route.legs[0])) {
+                                        if (blocked.empty()) blocked = *who;
+                                        continue;
+                                    }
                                     if (!best || route.legs[0].length() < best->legs[0].length()) {
                                         best = std::move(route);
                                         rear_first = rear;
                                     }
                                 }
                                 if (!best) {
-                                    net->note(trf("train %u: no way to there", id));
-                                    return;
+                                    const auto text = blocked.empty() ? trf("train %u: no way to there", id)
+                                                                      : trf("train %u: the way runs into %s; add a point to pass round it", id, blocked.c_str());
+                                    net->note(text);
+                                    return text;
                                 }
+                                // The train's old route first lets its switches go.
+                                if (net->route_left(id)) net->send_route(id, -1.0f, false);
                                 for (const auto& j : best->legs[0].junctions) {
                                     const auto* state = network->junction(j.junction);
                                     if (state && state->selected != j.branch) net->request_junction(j.junction, j.branch);
                                 }
                                 net->send_route(id, static_cast<float>(best->legs[0].length()), rear_first);
+                                return {};
                             },
                             .cancel_route = [net = net_.get()](const std::uint64_t train) {
                                 if (const auto id = net->server_train(train)) net->send_route(id, -1.0f, false);

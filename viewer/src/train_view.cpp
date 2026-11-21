@@ -1265,25 +1265,57 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
         // names (0x4F0BC8): towards the shape's rear (z < 0) is 1, towards its
         // front 2. So the ED9M's motor car, one pantograph named 1 in its
         // front half, has pantograph 2, and the same car turned (_MR) has 1;
-        // its DLL raises them by these numbers. RTS takes each part's own z;
-        // here the pantograph's base (its BOTTOM node) decides for all its
-        // parts, so a middle arm with a z of its own stays with them.
+        // its DLL raises them by these numbers. Each part goes by where its
+        // chain's base stands in the whole shape (its topmost PANTOGRAPH*
+        // ancestor, through every parent's turn and shift): one pantograph
+        // whose parts are named 1 and 2 is one number (the ВЛ80Т's sections:
+        // a base named 2 with arms named 1 under it; testers 2026-11-21: the
+        // rear switch raised parts of the front one), and an arm with a z of
+        // its own stays with its base.
         {
-            std::array<std::uint8_t, 4> renumber{1, 2, 3, 4};
-            std::array<float, 4> z = car.pantograph_z;
-            for (std::uint8_t named = 1; named <= 2; ++named) {
-                const bool used = std::any_of(car.pantograph_nodes.begin(), car.pantograph_nodes.end(),
-                                              [named](const auto& node) { return node.second == named; });
-                if (used) renumber[named - 1] = car.pantograph_z[named - 1] < 0.0f ? 1 : 2;
+            // A node's origin in the shape (row vectors: p * R + T, up the parents).
+            const auto shape_point = [&](std::size_t m) {
+                float p[3] = {0.0f, 0.0f, 0.0f};
+                for (std::size_t guard = 0; m < rig.matrices.size() && guard <= rig.matrices.size(); ++guard) {
+                    const auto& v = rig.matrices[m].values;
+                    const float x = p[0] * v[0] + p[1] * v[3] + p[2] * v[6] + v[9];
+                    const float y = p[0] * v[1] + p[1] * v[4] + p[2] * v[7] + v[10];
+                    const float z = p[0] * v[2] + p[1] * v[5] + p[2] * v[8] + v[11];
+                    p[0] = x;
+                    p[1] = y;
+                    p[2] = z;
+                    const auto parent = m < rig.hierarchy.size() ? rig.hierarchy[m] : -1;
+                    if (parent < 0) break;
+                    m = static_cast<std::size_t>(parent);
+                }
+                return p[2];
+            };
+            const auto base_of = [&](std::size_t m) {
+                for (std::size_t guard = 0; guard <= rig.matrices.size(); ++guard) {
+                    const auto parent = m < rig.hierarchy.size() ? rig.hierarchy[m] : -1;
+                    if (parent < 0 || static_cast<std::size_t>(parent) >= rig.matrices.size()) break;
+                    if (!lower(rig.matrices[static_cast<std::size_t>(parent)].name).starts_with("pantograph")) break;
+                    m = static_cast<std::size_t>(parent);
+                }
+                return m;
+            };
+            std::array<float, 4> z_sum{};
+            std::array<int, 4> z_count{};
+            std::string moved;
+            for (auto& [matrix, number] : car.pantograph_nodes) {
+                const auto base = base_of(static_cast<std::size_t>(matrix));
+                const float z = shape_point(base);
+                if (number <= 2) {
+                    const std::uint8_t by_place = z < 0.0f ? 1 : 2;
+                    if (by_place != number) moved += " " + rig.matrices[static_cast<std::size_t>(matrix)].name + "->" + std::to_string(by_place);
+                    number = by_place;
+                }
+                z_sum[number - 1] += z;
+                ++z_count[number - 1];
             }
-            for (auto& node : car.pantograph_nodes) node.second = renumber[node.second - 1];
-            if (renumber[0] != 1 || renumber[1] != 2) {
-                std::cout << "pantographs of " << car.shape.str() << ": named 1 is " << int(renumber[0]) << ", named 2 is "
-                          << int(renumber[1]) << " (by where they stand, as RTS)" << std::endl;
-            }
-            for (std::uint8_t named = 1; named <= 2; ++named) {
-                if (renumber[named - 1] != named) car.pantograph_z[renumber[named - 1] - 1] = z[named - 1];
-            }
+            for (std::size_t n = 0; n < 4; ++n)
+                if (z_count[n] > 0) car.pantograph_z[n] = z_sum[n] / static_cast<float>(z_count[n]);
+            if (!moved.empty()) std::cout << "pantographs of " << car.shape.str() << " by where they stand (as RTS):" << moved << std::endl;
         }
         if (!car.pantograph_nodes.empty()) {
             // The pantographs' own key frames, not the animation's header: the
@@ -9841,8 +9873,22 @@ void TrainView::spin_slipping_wheels(const float elapsed) {
 }
 
 void TrainView::update_exterior_doors(const float elapsed) {
+    // A helper: the engineer's train's doors by their GlobalID (GM_DOOR_OPEN
+    // opens a group in every car, as RTS), from the cabs the engineer sends
+    // him (testers 2026-11-21: the helper's doors stayed shut).
+    std::set<std::uint32_t> helper_groups;
+    const Unit* helped = helping_ ? find_unit(helping_) : nullptr;
+    if (helped) {
+        for (const auto& [car_index, o] : helper_outputs_) {
+            if (car_index >= helped->cars.size()) continue;
+            const auto& groups = helped->cars[car_index].door_groups;
+            for (std::size_t k = 0; k < groups.size() && k < o.doors.size(); ++k)
+                if (groups[k] != 0 && o.doors[k].set_state != 0) helper_groups.insert(groups[k]);
+        }
+    }
     for (std::size_t u = 0; u < units_.size(); ++u) {
         auto& unit = units_[u];
+        const bool helped_train = helped && &unit == helped;
         for (std::size_t i = 0; i < unit.cars.size(); ++i) {
             auto& car = unit.cars[i];
             if (car.exterior_doors.empty()) continue;
@@ -9863,6 +9909,7 @@ void TrainView::update_exterior_doors(const float elapsed) {
             }
             // The train's doors of a GlobalID in this car (GM_DOOR_OPEN / CLOSE).
             const auto group_open = [&](const std::uint32_t group) {
+                if (!out && helped_train) return group != 0 && helper_groups.contains(group);
                 if (!out || group == 0) return false;
                 for (std::size_t k = 0; k < car.door_groups.size() && k < out->doors.size(); ++k)
                     if (car.door_groups[k] == group && out->doors[k].set_state != 0) return true;
@@ -9895,6 +9942,7 @@ void TrainView::update_exterior_doors(const float elapsed) {
                     decided = true;
                 }
                 if (!decided && out && door.index < out->doors.size()) target = out->doors[door.index].set_state != 0;
+                if (!decided && !out && helped_train && door.group != 0) target = helper_groups.contains(door.group);
                 // The driven train without a DLL: the Y / U keys (GlobalID 2
                 // left, 1 right, as the cab sees them; a car turned the other
                 // way has them swapped).
@@ -9926,12 +9974,17 @@ void TrainView::update_pantographs(const float elapsed) {
             const auto* engine = car.definition->engine ? &*car.definition->engine : nullptr;
             const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr;
             const bool plugin = u == 0 && native_ && i == native_car_;
+            // ExcludePantograph is the car's: never raised, whoever asks (a
+            // DLL too: the ВЛ80Т's sections each have a second pantograph
+            // node the .rtseng excludes, and its DLL raises both bits;
+            // testers 2026-11-21: the rear raised the front one as well).
+            const std::uint8_t excluded = engine ? engine->exclude_pantographs : std::uint8_t{0};
             if (unit.remote) {
-                car.pantograph_raised = car.remote_pantographs;
+                car.pantograph_raised = static_cast<std::uint8_t>(car.remote_pantographs & ~excluded);
             } else if (out) {
-                car.pantograph_raised = out->panto_raised;
+                car.pantograph_raised = static_cast<std::uint8_t>(out->panto_raised & ~excluded);
             } else if (plugin) {
-                car.pantograph_raised = static_cast<std::uint8_t>(native_->outputs().pantographs);
+                car.pantograph_raised = static_cast<std::uint8_t>(native_->outputs().pantographs & ~excluded);
             } else if (engine && engine->kind == formats::EngineKind::electric && working && !car.cold && !(u == 0 && pantographs_down_)) {
                 std::uint8_t main = 1, second = 2;
                 if (unit.role == Role::ai) {

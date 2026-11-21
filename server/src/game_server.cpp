@@ -384,6 +384,9 @@ GameServer::GameServer(Transport& transport, ServerOptions options, simulation::
     : impl_(std::make_unique<Impl>(network, signals)), transport_(transport), options_(std::move(options)), time_(options_.time_of_day) {
     // The weather it starts with (the start form's, --weather; openrts_weather).
     weather_.weather = options_.storm ? 3 : options_.weather;
+    // The switches stay where the dispatcher, a route or a player set them:
+    // not back to MainRoute behind each train (TrackNetwork::set_switches_stay).
+    network.set_switches_stay(true);
     weather_.dynamic = options_.weather_dynamic ? 1 : 0;
     weather_.seed = options_.weather_seed ? options_.weather_seed : static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) | 1u;
 
@@ -1648,6 +1651,16 @@ bool GameServer::set_junction(const std::uint32_t node, const std::optional<std:
         if (*branch >= n->branch_count()) {
             error = "junction " + std::to_string(node) + " has " + std::to_string(n->branch_count()) + " branches";
             return false;
+        }
+        // Not out from under a train's route laid over it (the console's too;
+        // testers 2026-11-21): cancel that route first.
+        if (const auto held = impl.holder(node); held && state->selected != *branch) {
+            for (const auto& [junction, wanted] : impl.routes.at(*held).junctions) {
+                if (junction == node && wanted != *branch) {
+                    error = "junction " + std::to_string(node) + " is on train " + std::to_string(*held) + "'s route: cancel it first";
+                    return false;
+                }
+            }
         }
         if (state->selected != *branch && !impl.network.throw_junction(node, *branch)) {
             error = "junction " + std::to_string(node) + " is occupied or reserved";

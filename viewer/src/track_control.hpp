@@ -76,7 +76,9 @@ public:
         // RTS's hand route from the console: the selected train to a place
         // of the track (its junctions thrown, then 0x4619), cancelled; and
         // the route a train has (the distance left, laid from its rear).
-        std::function<void(std::uint64_t train, const simulation::TrackLocation& to)> route_to;
+        // Through the points to pass in order (Track control's "Точка
+        // проезда"), not through another train; what was wrong, or empty.
+        std::function<std::string(std::uint64_t train, const std::vector<simulation::TrackLocation>& via, const simulation::TrackLocation& to)> route_to;
         std::function<void(std::uint64_t train)> cancel_route;
         std::function<std::optional<std::pair<float, bool>>(std::uint64_t train)> route_left;
         // The train's number and name as the server keeps them ("№101
@@ -192,6 +194,9 @@ private:
     void chocks_menu(TrainView& trains, std::uint64_t id);
     // The consist put down: its chocks (0 none, 1 head, 2 tail, 3 both).
     int spawn_chocks_ = 0;
+    // The network's hand route: the points to pass, for train route_via_train_.
+    std::vector<simulation::TrackLocation> route_via_;
+    std::uint64_t route_via_train_ = 0;
     int net_chocks_ = 0;
     void start_placement(TrainView& trains, const std::string& consist, simulation::TrackLocation where);
     void lay_placement(TrainView& trains);

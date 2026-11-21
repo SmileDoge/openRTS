@@ -985,9 +985,29 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
     case PickKind::track:
         ImGui::TextDisabled(tr("Track node %u, %.0f m"), menu_.location.node, menu_.location.offset);
         if (placement_.active && ImGui::MenuItem(tr("Move the consist being placed here"))) move_placement(trains, menu_.location);
-        if (network_actions_.route_to && selected_ != 0 && ImGui::MenuItem(tr("Route for the selected train to here"))) {
-            network_actions_.route_to(selected_, menu_.location);
-            message_ = tr("route sent to the server");
+        if (network_actions_.route_to && selected_ != 0) {
+            // Points to pass first (as many as needed, in order), then the end.
+            if (route_via_train_ != selected_) {
+                route_via_.clear();
+                route_via_train_ = selected_;
+            }
+            if (ImGui::MenuItem(trf("Point to pass for the route (%zu set)", route_via_.size()).c_str())) {
+                route_via_.push_back(menu_.location);
+                message_ = trf("%zu points to pass; then \"Route for the selected train to here\"", route_via_.size());
+            }
+            if (!route_via_.empty() && ImGui::MenuItem(tr("Forget the points to pass"))) {
+                route_via_.clear();
+                message_ = tr("the points to pass forgotten");
+            }
+            if (ImGui::MenuItem(tr("Route for the selected train to here"))) {
+                const auto error = network_actions_.route_to(selected_, route_via_, menu_.location);
+                if (error.empty()) {
+                    message_ = tr("route sent to the server");
+                    route_via_.clear();
+                } else {
+                    message_ = error;
+                }
+            }
         }
         if (ImGui::MenuItem(tr("Teleport here"))) {
             if (const auto at = network_->point(menu_.location.node, menu_.location.offset)) {

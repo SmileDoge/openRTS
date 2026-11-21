@@ -112,13 +112,13 @@ public:
     // owner's reservation and clearance, and set the switch to the next
     // reservation's branch or to MainRoute.
     void release_junction(std::uint32_t node, std::uint64_t owner);
-    // A network client's track: the server alone sets the switches (its
-    // 0x4609); a release, a cancelled reservation or a run-through here
-    // leaves them as they are (testers 2026-11-21: the switch went back to
-    // MainRoute behind a train on the player's side, the dispatcher's
-    // console still showed it to the siding).
-    void set_switches_by_server(bool on) noexcept { switches_by_server_ = on; }
-    [[nodiscard]] bool switches_by_server() const noexcept { return switches_by_server_; }
+    // The network game's track (the server's and its clients'): a switch
+    // stays where it was set until someone sets it again; a release, a
+    // cancelled reservation or a run-through leaves it (testers 2026-11-21:
+    // switches went back to MainRoute behind every train, under the
+    // dispatcher's routes; on a client, out of step with the server).
+    void set_switches_stay(bool on) noexcept { switches_stay_ = on; }
+    [[nodiscard]] bool switches_stay() const noexcept { return switches_stay_; }
     // The junction whose switch shape is world object `uid` on tile (x, z).
     [[nodiscard]] std::optional<std::uint32_t> junction_for_object(std::int32_t tile_x, std::int32_t tile_z,
                                                                    std::uint32_t uid) const;
@@ -148,7 +148,7 @@ public:
     void set_rail_joint_layout(RailJointLayout layout);
 
 private:
-    bool switches_by_server_ = false;
+    bool switches_stay_ = false;
     formats::TrackDatabase database_;
     formats::TrackSectionLibrary sections_;
     std::vector<NetworkNode> nodes_; // by node index; [0] unused
