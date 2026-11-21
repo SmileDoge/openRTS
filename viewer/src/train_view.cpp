@@ -4636,11 +4636,22 @@ void TrainView::start_traffic(TrafficPlan& plan) {
               << std::endl;
 }
 
+void TrainView::activity_spawn_train(const std::uint32_t service, const std::uint32_t train) {
+    for (auto& plan : traffic_plans_) {
+        if (plan.id.first != service || plan.id.second != train || plan.started) continue;
+        plan.on_spawn = false;
+        plan.start = static_cast<std::int32_t>(day_time_);
+        start_traffic(plan);
+        return;
+    }
+    std::cout << "activity: spawn train " << service << ' ' << train << ": no traffic train waiting for it" << std::endl;
+}
+
 void TrainView::update_traffic() {
     if (!activity_ || units_.empty()) return;
     const double now = day_time_;
     for (auto& plan : traffic_plans_) {
-        if (plan.started || !due(now, plan.start)) continue;
+        if (plan.started || plan.on_spawn || !due(now, plan.start)) continue;
         // ChangeServiceStartupType NONE: its trains wait till it starts again.
         if (services_held_.contains(plan.id.first)) continue;
         if (plan.remove && due(now, *plan.remove)) {
@@ -4822,6 +4833,22 @@ std::string TrainView::start_activity(const formats::Activity& activity, const c
         trains.push_back(std::move(placed));
     };
     const auto* player = activity.player_service();
+    // The trains a SpawnTrain outcome starts (ServiceID TrainID).
+    std::set<std::pair<std::uint32_t, std::uint32_t>> spawned;
+    {
+        const auto collect = [&](const std::uint32_t own, const formats::ActivityEvent& event) {
+            for (const auto& o : event.outcomes) {
+                if (lower(o.name) != "spawntrain" || o.values.empty()) continue;
+                const long first = std::strtol(o.values[0].c_str(), nullptr, 10);
+                const auto service = first == -2 ? own : static_cast<std::uint32_t>(first < 0 ? 0 : first);
+                const auto train = o.values.size() > 1 ? static_cast<std::uint32_t>(std::strtoul(o.values[1].c_str(), nullptr, 10)) : 1u;
+                spawned.insert({service, train});
+            }
+        };
+        for (const auto& event : activity.global_events) collect(0, event);
+        for (const auto& each : activity.services)
+            for (const auto& event : each.events) collect(each.id, event);
+    }
     for (const auto& service : activity.services) {
         if (&service == player) {
             const auto* train = activity.player_train ? service.train(activity.player_train->train) : nullptr;
@@ -4851,9 +4878,15 @@ std::string TrainView::start_activity(const formats::Activity& activity, const c
             }
             if (lower(service.starts) == "serial") std::cout << "activity: " << service.name << ": SERIAL starts as SINGLE\n";
             for (const auto& train : service.trains) {
+                // Without a TrainStartTime and named by a SpawnTrain: it
+                // waits for that event (testers 2026-11-21: "Наливной до
+                // Чернышевска"'s freight trains all started at 5:00 and
+                // their events called the player before he had reported).
+                const bool on_spawn = !train.start_time && spawned.contains({service.id, train.id});
                 traffic_plans_.push_back({.id = {service.id, train.id},
                                           .start = train.start_time.value_or(activity.start_time),
-                                          .remove = train.remove_time});
+                                          .remove = train.remove_time,
+                                          .on_spawn = on_spawn});
                 ++traffic;
             }
         } else {

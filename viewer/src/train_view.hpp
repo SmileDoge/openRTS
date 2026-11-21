@@ -394,6 +394,8 @@ public:
     void activity_default_uncouple(ActivityId train, UncoupleRule rule) { uncouple_rules_[train] = std::move(rule); }
     // ChangeServiceStartupType: the service's trains not started yet wait
     // (NONE, `starts` false) or start at their times.
+    // SpawnTrain: that traffic train starts now (one waiting for it).
+    void activity_spawn_train(std::uint32_t service, std::uint32_t train);
     void activity_service_startup(std::uint32_t service, bool starts);
     // SetSpeedLimit: the train's limit, m/s (not positive: none); the
     // driven train's DLL and the speed panel see it, traffic keeps under it.
@@ -1069,6 +1071,7 @@ private:
         std::optional<std::int32_t> remove; // TrainRemoveTime
         bool started = false;               // started, or given up
         bool waiting = false;               // CHECK_IF_BUSY: its place was taken
+        bool on_spawn = false;              // no TrainStartTime and a SpawnTrain names it: it waits for that
     };
     // A scenario's block point (service 0: a global one).
     struct ActivityBlock {

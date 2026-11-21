@@ -165,6 +165,7 @@ public:
         trains_.activity_default_uncouple({train.service, train.train}, std::move(own));
     }
     void set_service_startup(const std::uint32_t service, const bool starts) override { trains_.activity_service_startup(service, starts); }
+    void spawn_train(const ActivityTrainId train) override { trains_.activity_spawn_train(train.service, train.train); }
     void set_speed_limit(const ActivityTrainId train, const float limit) override {
         trains_.activity_speed_limit({train.service, train.train}, limit);
     }

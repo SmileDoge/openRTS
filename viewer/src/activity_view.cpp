@@ -862,6 +862,15 @@ bool ActivityView::run_outcome(Script& script, const formats::ActivityNode& o, A
                   << (rule.new_type.empty() ? std::string() : ' ' + rule.new_type) << std::endl;
         return true;
     }
+    if (name == "spawntrain") {
+        // activity.pdf 4.2 16: the train starts now (a traffic train waiting
+        // for it, without a TrainStartTime of its own).
+        const auto service = service_in(number(&o, 0, -2), script.service);
+        const auto id = static_cast<std::uint32_t>(number(&o, 1, 1));
+        world.spawn_train({service, id});
+        std::cout << "activity: spawn train " << service << ' ' << id << " at " << clock_text(now_) << std::endl;
+        return true;
+    }
     if (name == "changeservicestartuptype") {
         // activity.pdf 4.2 22: NewStartupType SERIAL / SINGLE start the
         // service's trains (at their times), NONE keeps them back. TrainID
