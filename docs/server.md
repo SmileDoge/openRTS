@@ -223,6 +223,20 @@ openRTS itself is the console (the user's choice, 2026-11-09):
   cancels it (`0x4619` -1). The map draws the route green from the train's
   head. RTS's other way, the station routes of the route database, is the
   window's "Станционные маршруты" below.
+- **RTS's own hand route** (2026-11-21): the picked train shows its line
+  from the head (and, fainter, from the rear) along the junctions as they
+  stand; the dispatcher throws them till the line runs where the train
+  should go, then right-clicks it: "Конец маршрута здесь" sends that
+  length (`0x4619`) and nothing else, as RTS's console. "Маршрут для
+  выбранного поезда сюда" (the shortest way, with points to pass) stays.
+- **Switches as RTS sets them** (2026-11-21): a switch stays where it was
+  set. A player's train that runs through one (trailing, from the other
+  branch) or leaves one behind (back to `MainRoute`, or the next train's
+  reservation) sets it on its owner's computer, which sends `0x460A`; the
+  server takes it as sent (not a junction the dispatcher locked, as
+  `rts_server.exe` `0x40C52C`) and tells everyone else. The server sets
+  those of its own trains (no player's) itself. A hand switch on foot is
+  asked (`0x4642`) and refused when locked, reserved or occupied.
 - The window "Пульт ДСП":
   - the time, the pause, setting the time;
   - the trains (number, kind, driver, speed, route): picking one centres
@@ -351,6 +365,15 @@ places it anew with its number, names, notes, kind, state and cars (a new
 id: RTS's clients see a train go and one come); refused where it does not
 fit (then it is put back where it stood) and for a train a player has.
 The chocks hold it on the server too (10 kN each, as RTS's PlaceDrag).
+
+**The drivers' trains kept** (2026-11-21): a placement keeps whose each
+train is (`owner <nick>`) and its own state (`state`: what its owner's
+openRTS sends every 30 s as `0x45FB` `openrts_train_state`, the cars' air,
+switches and flags and its DLLs' saved states, compressed, in parts).
+Put back, a train with an owner waits for him: logging in under that
+nick, he gets it at once (no dispatcher), and his openRTS puts its state
+back into it (its DLLs' once they run). A player coming back while the
+server runs gets his train and its state the same way.
 
 **The autosave**: every train on the track saved as the placement
 `autosave` every 2 minutes (`--autosave <minutes>`, 0 never) and when the

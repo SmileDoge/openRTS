@@ -935,6 +935,111 @@ Bytes encode_train_id(const std::uint32_t train) {
     return w.take();
 }
 
+Bytes encode_openrts_cab_doors(const OpenrtsCabDoors& doors) {
+    WireWriter w;
+    w.u32(doors.train);
+    w.u32(doors.car);
+    w.u32(static_cast<std::uint32_t>(doors.open.size()));
+    for (const auto o : doors.open) w.u8(o);
+    return w.take();
+}
+
+std::optional<OpenrtsCabDoors> decode_openrts_cab_doors(const ByteView body) {
+    WireReader r(body);
+    OpenrtsCabDoors d;
+    d.train = r.u32();
+    d.car = r.u32();
+    const auto count = r.u32();
+    if (!r.ok() || count > 256) return std::nullopt;
+    d.open.resize(count);
+    for (auto& o : d.open) o = r.u8();
+    if (!r.ok()) return std::nullopt;
+    return d;
+}
+
+Bytes encode_openrts_doors(const OpenrtsDoors& doors) {
+    WireWriter w;
+    w.u32(doors.train);
+    w.u32(static_cast<std::uint32_t>(doors.groups.size()));
+    for (const auto g : doors.groups) w.u8(g);
+    return w.take();
+}
+
+std::optional<OpenrtsDoors> decode_openrts_doors(const ByteView body) {
+    WireReader r(body);
+    OpenrtsDoors d;
+    d.train = r.u32();
+    const auto count = r.u32();
+    if (!r.ok() || count > 4096) return std::nullopt;
+    d.groups.resize(count);
+    for (auto& g : d.groups) g = r.u8();
+    if (!r.ok()) return std::nullopt;
+    return d;
+}
+
+std::vector<Bytes> encode_train_state(const std::uint32_t train, const ByteView state) {
+    constexpr std::size_t most = 12000;
+    const auto parts = static_cast<std::uint16_t>((std::max<std::size_t>)(1, (state.size() + most - 1) / most));
+    std::vector<Bytes> out;
+    for (std::uint16_t p = 0; p < parts; ++p) {
+        WireWriter w;
+        w.u32(train);
+        w.u16(p);
+        w.u16(parts);
+        const auto from = static_cast<std::size_t>(p) * most;
+        const auto count = (std::min)(most, state.size() - (std::min)(from, state.size()));
+        w.bytes(state.subspan(from, count));
+        out.push_back(w.take());
+    }
+    return out;
+}
+
+std::optional<TrainStatePart> decode_train_state(const ByteView body) {
+    WireReader r(body);
+    TrainStatePart p;
+    p.train = r.u32();
+    p.part = r.u16();
+    p.parts = r.u16();
+    if (!r.ok() || p.parts == 0 || p.part >= p.parts) return std::nullopt;
+    const auto rest = r.bytes(r.remaining());
+    p.bytes.assign(rest.begin(), rest.end());
+    return p;
+}
+
+std::optional<Derail> decode_derail(const ByteView body) {
+    WireReader r(body);
+    Derail d;
+    d.train = r.u32();
+    const auto count = r.u32();
+    if (!r.ok() || count > 4096) return std::nullopt;
+    d.derailed.resize(count);
+    for (auto& flag : d.derailed) flag = r.u8();
+    while (r.ok() && !r.at_end()) {
+        const auto f = r.frame();
+        if (!r.ok()) break;
+        if (f.id != id(Package::derailed_car)) continue;
+        WireReader c(f.body);
+        DerailedCar car;
+        car.car = c.u32();
+        for (auto& v : car.heading) v = c.f32();
+        c.f32();
+        for (auto& v : car.position) v = c.f32();
+        car.tip = c.f32();
+        car.tip_rest = c.f32();
+        car.tip_third = c.f32();
+        c.f32();
+        c.f32();
+        car.weight = c.f32();
+        c.f32();
+        c.f32();
+        c.u8();
+        car.state = c.u32();
+        if (c.ok()) d.cars.push_back(car);
+    }
+    if (!r.ok()) return std::nullopt;
+    return d;
+}
+
 Bytes encode_derail(const Derail& derail) {
     WireWriter w;
     w.u32(derail.train);

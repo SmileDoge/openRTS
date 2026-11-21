@@ -108,6 +108,8 @@ std::string write_placement(const Placement& placement) {
         if (!t.name.empty()) out += "name " + escaped(to_utf8(t.name)) + "\n";
         if (!t.notes.empty()) out += "notes " + escaped(to_utf8(t.notes)) + "\n";
         if (!t.from.empty()) out += "from " + t.from + "\n";
+        if (!t.owner.empty()) out += "owner " + escaped(t.owner) + "\n";
+        if (!t.own_state.empty()) out += "state " + to_base64(t.own_state) + "\n";
         for (const auto& car : t.cars) {
             char head[64];
             if (car.handbrake) std::snprintf(head, sizeof head, "car %u %.3f ", car.flags, *car.handbrake);
@@ -165,6 +167,10 @@ Placement parse_placement(const std::string_view text, std::string& error) {
             out.trains.back().notes = from_utf8(unescaped(std::string_view(line).substr(6)));
         } else if (line.rfind("from ", 0) == 0) {
             out.trains.back().from = trimmed(line.substr(5));
+        } else if (line.rfind("owner ", 0) == 0) {
+            out.trains.back().owner = unescaped(std::string_view(line).substr(6));
+        } else if (line.rfind("state ", 0) == 0) {
+            out.trains.back().own_state = from_base64(std::string_view(line).substr(6));
         } else if (line.rfind("car ", 0) == 0) {
             std::istringstream words(line.substr(4));
             PlacementCar car;
@@ -260,6 +266,43 @@ ConsolePlace place_of(const PlacementTrain& train) {
                               .chocks = car.chocks()});
     }
     return place;
+}
+
+std::string to_base64(const ByteView data) {
+    static constexpr char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((data.size() + 2) / 3 * 4);
+    for (std::size_t i = 0; i < data.size(); i += 3) {
+        const std::uint32_t n = (static_cast<std::uint32_t>(data[i]) << 16) | (i + 1 < data.size() ? data[i + 1] << 8 : 0)
+                                | (i + 2 < data.size() ? data[i + 2] : 0);
+        out += table[(n >> 18) & 63];
+        out += table[(n >> 12) & 63];
+        out += i + 1 < data.size() ? table[(n >> 6) & 63] : '=';
+        out += i + 2 < data.size() ? table[n & 63] : '=';
+    }
+    return out;
+}
+
+Bytes from_base64(const std::string_view text) {
+    Bytes out;
+    std::uint32_t bits = 0;
+    int count = 0;
+    for (const char c : text) {
+        int v = -1;
+        if (c >= 'A' && c <= 'Z') v = c - 'A';
+        else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
+        else if (c >= '0' && c <= '9') v = c - '0' + 52;
+        else if (c == '+') v = 62;
+        else if (c == '/') v = 63;
+        if (v < 0) continue;
+        bits = (bits << 6) | static_cast<std::uint32_t>(v);
+        count += 6;
+        if (count >= 8) {
+            count -= 8;
+            out.push_back(static_cast<std::uint8_t>((bits >> count) & 0xFF));
+        }
+    }
+    return out;
 }
 
 bool placement_name_ok(const std::string_view name) {

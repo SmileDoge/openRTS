@@ -467,7 +467,7 @@ void ConsolePanel::draw(NetSession& net, TrainView& trains, TrackControl* map, c
                 }
                 ImGui::TableNextColumn();
                 if (t.route_junctions) {
-                    ImGui::Text(tr("%u junctions"), t.route_junctions);
+                    ImGui::Text(tr("%u route switches ahead"), t.route_junctions); // held by its route, not yet behind its tail
                 } else {
                     ImGui::TextDisabled("-");
                 }

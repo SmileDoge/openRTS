@@ -608,6 +608,9 @@ public:
                             .cancel_route = [net = net_.get()](const std::uint64_t train) {
                                 if (const auto id = net->server_train(train)) net->send_route(id, -1.0f, false);
                             },
+                            .route_length = [net = net_.get()](const std::uint64_t train, const float length, const bool rear_first) {
+                                if (const auto id = net->server_train(train)) net->send_route(id, length, rear_first);
+                            },
                             .route_left = [net = net_.get()](const std::uint64_t train) -> std::optional<std::pair<float, bool>> {
                                 const auto id = net->server_train(train);
                                 return id ? net->route_left(id) : std::nullopt;

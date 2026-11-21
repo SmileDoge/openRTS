@@ -203,6 +203,16 @@ void RemoteMotion::add(simulation::TrackNetwork& network, const double time, con
         // As far as the train can go in twice the gap at 400 km/h, with room.
         const double limit = 50.0 + 2.0 * std::max(gap, 0.0) * 112.0;
         sample.from_previous = track_distance(network, last.front, front, limit);
+        // The time it was there: by the way covered at the speeds both
+        // packages give, not by when the package came (it comes early or
+        // late by a few tenths of a second: the train sped up and slowed
+        // down between them, 74 to 98 km/h at 86; testers 2026-11-21),
+        // pulled a little towards the arrival so the clocks do not drift.
+        const double mean = 0.5 * (std::abs(last.speed) + std::abs(speed));
+        if (sample.from_previous && mean > 1.0 && *sample.from_previous * speed >= 0.0 && *sample.from_previous * last.speed >= 0.0) {
+            const double by_way = last.time + std::abs(*sample.from_previous) / mean;
+            if (std::abs(by_way - time) < 1.0) sample.time = by_way + 0.15 * (time - by_way);
+        }
     }
     standing_ = false;
     samples_.push_back(sample);

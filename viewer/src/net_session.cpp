@@ -316,6 +316,7 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
                 ++placed;
                 std::cout << "net: train " << train.id << " \"" << net::train_name(train) << "\" is ours: driven here, "
                           << train.cars.size() << " cars" << std::endl;
+                put_back_state(train.id, trains);
             }
         }
         for (const auto& train : snapshot_.trains) {
@@ -360,6 +361,18 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
     // (the server and its consoles kept the other train and dropped every
     // position of ours with the cars taken in; testers 2026-11-15).
     send_couplings(trains);
+    // The switches our trains set as they run (a run-through, back to
+    // MainRoute behind the tail): ours to set and to tell the server, as
+    // rts1.exe does (0x460A, 0x4CBFC4); the others' trains are their
+    // owners' (the server tells us).
+    for (const auto& w : network.take_wanted_switches()) {
+        const bool ours = std::any_of(owned_.begin(), owned_.end(), [&](const auto& o) { return o.second.train != 0 && o.second.train == w.owner; });
+        if (!ours || console_) continue;
+        auto* state = network.junction(w.node);
+        if (!state || state->selected == w.branch) continue;
+        state->selected = w.branch;
+        request_junction(w.node, w.branch);
+    }
     // Switches thrown by hand on foot: the server decides.
     for (const auto& [node, branch] : trains.take_junction_throws()) ask_junction(node, branch);
     // openRTS's own packages go to an openRTS server only: it answers this
@@ -377,6 +390,7 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
     move_trains(network, trains, t);
     helper_streams(trains, t);
     if (!paused_) send_own(trains, t);
+    send_states(trains, t);
     // What our electric trains drew, to the dispatchers (0x4649, every 2 s
     // window, as rts1.exe 0x5B6030).
     for (const auto& load : trains.electrification().take_closed_loads()) {
@@ -605,6 +619,55 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         if (const auto v = net::decode_sound_values(body); v && v->slot == 3) {
             const auto it = remotes_.find(v->train);
             if (it != remotes_.end() && it->second.train != 0) trains.set_remote_sound(it->second.train, v->car, v->vars);
+        }
+        return;
+    case P(net::Package::openrts_cab_doors):
+        if (const auto d = net::decode_openrts_cab_doors(body)) {
+            const std::uint32_t on = help_ ? help_->train : driven_id(trains);
+            if (on != 0 && d->train == on) {
+                trains.set_cab_doors(d->car, d->open);
+                cab_doors_seen_[d->car] = d->open; // not told back
+            }
+        }
+        return;
+    case P(net::Package::openrts_doors):
+        if (const auto d = net::decode_openrts_doors(body)) {
+            if (const auto it = remotes_.find(d->train); it != remotes_.end() && it->second.train != 0)
+                trains.set_remote_doors(it->second.train, d->groups);
+        }
+        return;
+    case P(net::Package::openrts_train_state):
+        if (const auto part = net::decode_train_state(body); part && part->parts <= 64) {
+            auto& parts = state_parts_[part->train];
+            if (part->part == 0) parts.assign(part->parts, {});
+            if (parts.size() != part->parts) return;
+            parts[part->part] = part->bytes;
+            if (part->part + 1u != part->parts) return;
+            net::Bytes packed;
+            for (const auto& p : parts) packed.insert(packed.end(), p.begin(), p.end());
+            state_parts_.erase(part->train);
+            if (packed.size() < 4) return;
+            std::uint32_t size = 0;
+            std::memcpy(&size, packed.data(), 4);
+            if (size > (64u << 20)) return;
+            std::string text(size, '\0');
+            uLongf length = size;
+            if (uncompress(reinterpret_cast<Bytef*>(text.data()), &length, packed.data() + 4, static_cast<uLong>(packed.size() - 4)) != Z_OK || length != size)
+                return;
+            std::cout << "net: train " << part->train << ": its state from the server (" << size << " bytes)" << std::endl;
+            pending_states_[part->train] = std::move(text);
+            put_back_state(part->train, trains);
+        }
+        return;
+    case P(net::Package::derail):
+        if (const auto d = net::decode_derail(body)) {
+            if (const auto it = remotes_.find(d->train); it != remotes_.end() && it->second.train != 0) {
+                std::vector<std::array<float, 3>> rolls;
+                for (const auto& c : d->cars) rolls.push_back({static_cast<float>(c.car), c.tip, c.tip_rest});
+                trains.set_remote_derail(it->second.train, d->derailed, rolls);
+                const auto off = std::count(d->derailed.begin(), d->derailed.end(), std::uint8_t{1});
+                std::cout << "net: train " << d->train << ": " << off << " cars derailed" << std::endl;
+            }
         }
         return;
     case P(net::Package::car_state):
@@ -1332,7 +1395,69 @@ bool NetSession::place_owned(const std::uint32_t id, Owned& own, simulation::Tra
     }
     std::cout << "net: train " << id << " \"" << net::train_name(own.record) << "\" is ours: "
               << (drive ? "driven here" : "standing here") << ", " << own.record.cars.size() << " cars" << std::endl;
+    put_back_state(id, trains);
     return true;
+}
+
+// Our train's own state, every 30 s while it is ours here (0x45FB): the
+// server keeps it, and gives it back when the train is ours again.
+void NetSession::send_states(TrainView& trains, const double t) {
+    if (!connection_ || console_ || !openrts_server_) return;
+    // The doors of the cab we are in, when they change (0x45FD): the
+    // engineer's and his helpers' alike.
+    {
+        const std::uint32_t on = help_ ? help_->train : driven_id(trains);
+        if (on != cab_doors_train_) {
+            cab_doors_train_ = on;
+            cab_doors_seen_.clear();
+        }
+        if (on != 0) {
+            for (auto& d : trains.cab_doors()) {
+                auto& seen = cab_doors_seen_[d.car];
+                if (seen.empty()) {
+                    seen = d.open; // as it stood when we came in: nothing to tell
+                    continue;
+                }
+                if (seen == d.open) continue;
+                seen = d.open;
+                connection_->send(net::id(net::Package::openrts_cab_doors),
+                                  net::encode_openrts_cab_doors({.train = on, .car = static_cast<std::uint32_t>(d.car), .open = d.open}));
+            }
+        }
+    }
+    // The passenger doors, when they change (0x45FC; RTS shares none).
+    for (auto& [id, own] : owned_) {
+        if (own.train == 0 || own.waiting) continue;
+        auto doors = trains.door_groups(own.train);
+        if (doors.empty() || doors == own.doors_sent) continue;
+        own.doors_sent = doors;
+        connection_->send(net::id(net::Package::openrts_doors), net::encode_openrts_doors({.train = id, .groups = std::move(doors)}));
+    }
+    for (auto& [id, own] : owned_) {
+        if (own.train == 0 || own.waiting || t < own.next_state) continue;
+        own.next_state = t + 30.0;
+        const auto text = trains.own_state(own.train);
+        if (text.empty()) continue;
+        net::Bytes packed(4 + compressBound(static_cast<uLong>(text.size())));
+        const auto size = static_cast<std::uint32_t>(text.size());
+        std::memcpy(packed.data(), &size, 4);
+        uLongf length = static_cast<uLongf>(packed.size() - 4);
+        if (compress2(packed.data() + 4, &length, reinterpret_cast<const Bytef*>(text.data()), size, Z_BEST_SPEED) != Z_OK) continue;
+        packed.resize(4 + length);
+        for (const auto& part : net::encode_train_state(id, packed)) connection_->send(net::id(net::Package::openrts_train_state), part);
+    }
+}
+
+// A state the server gave back, into our train once it is on the track here.
+void NetSession::put_back_state(const std::uint32_t id, TrainView& trains) {
+    const auto it = pending_states_.find(id);
+    if (it == pending_states_.end()) return;
+    const auto own = owned_.find(id);
+    if (own == owned_.end() || own->second.train == 0) return;
+    trains.restore_own_state(own->second.train, it->second);
+    pending_states_.erase(it);
+    // Not sent back at once: the state put back is kept by the server already.
+    own->second.next_state = 0.0;
 }
 
 void NetSession::take_off(const std::uint32_t id, Owned& own, TrainView& trains) {
@@ -1387,6 +1512,7 @@ void NetSession::assigned(const net::TrainAssignUpdate& a, simulation::TrackNetw
                 trains.set_start_state(placed.record.state == 0 ? 0 : placed.record.state == 1 ? 1 : -1);
                 if (const auto problem = trains.board(kept); !problem.empty()) std::cout << "net: " << problem << std::endl;
             }
+            put_back_state(a.train, trains);
         } else if (placed.record.pos && !placed.record.cars.empty()) {
             place_owned(a.train, placed, network, trains, driven_id(trains) == 0);
         }

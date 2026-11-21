@@ -179,6 +179,17 @@ void TrackControl::start_placement(TrainView& trains, const std::string& consist
     message_ = trf("placing %s: drag it along the track, click another track to move it there", placement_.layout.name.c_str());
 }
 
+std::optional<double> TrackControl::way_to(const simulation::TrackLocation& from, const simulation::TrackLocation& to) const {
+    // Metre by metre along the junctions as they stand: where the place is
+    // passed (within 3 m of it), the distance.
+    simulation::TrackTraveller walk(*network_, from.node, from.offset, from.forward);
+    for (double done = 0.0; done < route_preview_metres; done += 1.0) {
+        if (walk.node() == to.node && std::abs(walk.offset() - to.offset) < 3.0) return done;
+        if (walk.move(1.0).moved <= 0.0) break;
+    }
+    return std::nullopt;
+}
+
 void TrackControl::start_moving(TrainView& trains, const std::uint64_t id) {
     TrainView::ConsistLayout layout;
     if (const auto error = trains.train_layout(id, layout); !error.empty()) {
@@ -533,6 +544,26 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
                 line.points.push_back(walk.pose());
             }
             map_.lines.push_back(std::move(line));
+        }
+    }
+    // RTS's hand route: the picked train's way from its head along the
+    // junctions as they stand (and from its rear, fainter); the dispatcher
+    // throws them, then sets the end on this line.
+    if (network_actions_.route_length && selected_ != 0 && !(network_actions_.route_left && network_actions_.route_left(selected_))) {
+        if (const auto* train = trains.train_by_id(selected_); train && train->placed()) {
+            for (const bool rear : {false, true}) {
+                const auto end = rear ? train->rear_end() : train->front_end();
+                if (!end) continue;
+                simulation::TrackTraveller walk(*network_, end->node(), end->offset(), rear ? !end->forward() : end->forward());
+                trackmap::MapLine line{.colour = rear ? IM_COL32(0, 170, 220, 110) : IM_COL32(0, 200, 255, 220), .width = rear ? 3.0f : 4.0f};
+                line.points.push_back(walk.pose());
+                const double step = (std::max)(2.0, 6.0 / map_.scale());
+                for (double done = 0.0; done < route_preview_metres; done += step) {
+                    if (walk.move(step).moved <= 0.0) break;
+                    line.points.push_back(walk.pose());
+                }
+                map_.lines.push_back(std::move(line));
+            }
         }
     }
     // Trains: their cars, in the colour of their role.
@@ -985,6 +1016,27 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
     case PickKind::track:
         ImGui::TextDisabled(tr("Track node %u, %.0f m"), menu_.location.node, menu_.location.offset);
         if (placement_.active && ImGui::MenuItem(tr("Move the consist being placed here"))) move_placement(trains, menu_.location);
+        if (network_actions_.route_length && selected_ != 0) {
+            // RTS's way: the end on the line the junctions make now.
+            if (ImGui::MenuItem(tr("Route end here (along the switches as they stand)"))) {
+                const auto* train = trains.train_by_id(selected_);
+                std::optional<std::pair<double, bool>> found;
+                for (const bool rear : {false, true}) {
+                    const auto end = train && train->placed() ? (rear ? train->rear_end() : train->front_end()) : std::nullopt;
+                    if (!end) continue;
+                    if (const auto d = way_to({end->node(), end->offset(), rear ? !end->forward() : end->forward()}, menu_.location)) {
+                        found = std::pair{*d, rear};
+                        break;
+                    }
+                }
+                if (found && found->first > 1.0) {
+                    network_actions_.route_length(selected_, static_cast<float>(found->first), found->second);
+                    message_ = trf("route sent to the server: %.0f m", found->first);
+                } else {
+                    message_ = tr("not on the train's line: throw the switches so that the line runs here");
+                }
+            }
+        }
         if (network_actions_.route_to && selected_ != 0) {
             // Points to pass first (as many as needed, in order), then the end.
             if (route_via_train_ != selected_) {
@@ -1030,7 +1082,8 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
             }
             if (ImGui::MenuItem(tr("Place reverse point"))) add_point(simulation::PlanPointKind::reverse);
             if (ImGui::MenuItem(tr("Place end point"))) add_point(simulation::PlanPointKind::end);
-        } else if (selected_ != 0 && ImGui::MenuItem(tr("Path for the selected train to here"))) {
+        } else if (selected_ != 0 && !network_actions_.throw_junction && ImGui::MenuItem(tr("Path for the selected train to here"))) {
+            // Single player's path editor; the network's routes are the server's (above).
             start_editing(trains, selected_);
             plan_.points.clear();
             add_point(simulation::PlanPointKind::end);

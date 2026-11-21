@@ -142,8 +142,18 @@ void TrackNetwork::release_junction(const std::uint32_t node, const std::uint64_
     state->occupied = false;
     state->clearance.erase(owner);
     std::erase_if(state->reservations, [&](const auto& r) { return r.first == owner; });
-    if (switches_stay_) return;
-    state->selected = state->reservations.empty() ? state->main_route : state->reservations.front().second;
+    const auto target = state->reservations.empty() ? state->main_route : state->reservations.front().second;
+    if (switches_stay_) {
+        if (target != state->selected) want_switch(node, target, owner);
+        return;
+    }
+    state->selected = target;
+}
+
+void TrackNetwork::want_switch(const std::uint32_t node, const std::uint32_t branch, const std::uint64_t owner) {
+    // Nobody takes them (a single player's track): a bound, not a leak.
+    if (wanted_.size() >= 4096) wanted_.erase(wanted_.begin(), wanted_.begin() + 2048);
+    wanted_.push_back({node, branch, owner});
 }
 
 std::optional<std::uint32_t> TrackNetwork::junction_for_object(const std::int32_t tile_x, const std::int32_t tile_z,

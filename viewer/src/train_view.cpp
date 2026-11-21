@@ -216,6 +216,7 @@ struct TrainView::Car {
     // Each light's wanted state the last update (update_lights), for the network.
     std::vector<std::uint8_t> lit_now;
     std::uint8_t remote_pantographs{};
+    std::uint8_t door_groups_open{};   // bit n: the doors of GlobalID n + 1 open (as drawn; another computer's: as sent)
     // FreightAnim of its consist entry: objects fastened to the car and the cargo.
     std::vector<formats::ConsistFreight> freight;
     std::vector<core::VirtualPath> freight_shapes; // resolved, empty when missing
@@ -3160,6 +3161,52 @@ std::string TrainView::load_game(const std::string& text) {
     return {};
 }
 
+std::string TrainView::own_state(const std::uint64_t id) {
+    auto* unit = find_unit(id);
+    if (!unit || unit->remote || !unit->train) return {};
+    std::ostringstream out;
+    simulation::StateWriter state;
+    unit->train->save_state(state);
+    std::istringstream lines(state.text());
+    for (std::string line; std::getline(lines, line);) out << "state=" << line << '\n';
+    if (legacy_ && unit->host) {
+        std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>> dlls;
+        if (legacy_->save_state(dlls)) {
+            for (const auto& [key, bytes] : dlls) {
+                for (std::size_t i = 0; i < unit->cars.size(); ++i)
+                    if (unit->cars[i].key == key) out << "dll=" << i << ' ' << base64_encode(bytes) << '\n';
+            }
+        }
+    }
+    return out.str();
+}
+
+void TrainView::restore_own_state(const std::uint64_t id, const std::string& text) {
+    auto* unit = find_unit(id);
+    if (!unit || unit->remote || !unit->train) return;
+    std::string state;
+    std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>> dlls;
+    std::istringstream input(text);
+    for (std::string line; std::getline(input, line);) {
+        if (line.rfind("state=", 0) == 0) {
+            state += line.substr(6) + '\n';
+        } else if (line.rfind("dll=", 0) == 0) {
+            const auto space = line.find(' ', 4);
+            if (space == std::string::npos) continue;
+            const auto index = static_cast<std::size_t>(std::strtoul(line.substr(4, space - 4).c_str(), nullptr, 10));
+            if (index < unit->cars.size()) dlls.emplace_back(unit->cars[index].key, base64_decode(std::string_view(line).substr(space + 1)));
+        }
+    }
+    if (!state.empty()) unit->train->restore_state(simulation::StateReader(state));
+    // The DLLs' state once they run for it (as a saved game's).
+    if (!dlls.empty()) {
+        pending_dlls_ = std::move(dlls);
+        pending_dll_tries_ = 0;
+    }
+    std::cout << "net: train state put back (" << (state.empty() ? "no cars' state" : "the cars' state") << ", "
+              << pending_dlls_.size() << " DLL states)" << std::endl;
+}
+
 // ---------------------------------------------------------------------------
 // Placements (docs/placements.md)
 
@@ -3774,6 +3821,69 @@ void TrainView::set_remote_light(const std::uint64_t id, const std::size_t car, 
         if (light >= lights.size()) lights.resize(light + 1, 0);
         lights[light] = on ? 1 : 0;
     }
+}
+
+void TrainView::set_remote_derail(const std::uint64_t id, const std::vector<std::uint8_t>& derailed,
+                                  const std::vector<std::array<float, 3>>& rolls) {
+    auto* unit = find_unit(id);
+    if (!unit || !unit->remote) return;
+    auto& train = *unit->train;
+    for (std::size_t i = 0; i < train.cars().size(); ++i) {
+        const bool off = i < derailed.size() && derailed[i] != 0;
+        float now = 0.0f, rest = 0.0f;
+        for (const auto& r : rolls) {
+            if (static_cast<std::size_t>(r[0]) != i) continue;
+            now = r[1];
+            rest = r[2];
+        }
+        train.show_car_derailed(i, off, now, rest);
+    }
+}
+
+std::vector<TrainView::CabDoors> TrainView::cab_doors() const {
+    std::vector<CabDoors> out;
+    const auto add = [&](const CabView* cab, const std::size_t car) {
+        if (!cab || car == SIZE_MAX) return;
+        for (const auto& c : out)
+            if (c.car == car) return;
+        CabDoors d{.car = car};
+        for (std::size_t j = 0; j < cab->description().doors.size(); ++j) d.open.push_back(cab->door_open(j) ? 1 : 0);
+        if (!d.open.empty()) out.push_back(std::move(d));
+    };
+    add(cab_.get(), cab_car_);
+    add(visit_cab_.get(), engineer_car_);
+    return out;
+}
+
+void TrainView::set_cab_doors(const std::size_t car, const std::vector<std::uint8_t>& open) {
+    const auto apply = [&](CabView* cab) {
+        if (!cab) return;
+        for (std::size_t j = 0; j < open.size() && j < cab->description().doors.size(); ++j) cab->set_door(j, open[j] != 0);
+    };
+    if (car == cab_car_) apply(cab_.get());
+    if (car == engineer_car_) apply(visit_cab_.get());
+    if (!units_.empty() && car < units_.front().cars.size()) {
+        if (const auto kept = board_cabs_.find(units_.front().cars[car].key); kept != board_cabs_.end()) apply(kept->second.get());
+    }
+}
+
+std::vector<std::uint8_t> TrainView::door_groups(const std::uint64_t id) const {
+    std::vector<std::uint8_t> out;
+    const auto* unit = find_unit(id);
+    if (!unit || unit->remote) return out;
+    for (const auto& car : unit->cars) {
+        std::uint8_t groups = 0;
+        for (const auto& door : car.exterior_doors)
+            if (door.group >= 1 && door.group <= 8 && door.open >= 0.5f) groups |= static_cast<std::uint8_t>(1u << (door.group - 1));
+        out.push_back(groups);
+    }
+    return out;
+}
+
+void TrainView::set_remote_doors(const std::uint64_t id, const std::vector<std::uint8_t>& groups) {
+    auto* unit = find_unit(id);
+    if (!unit || !unit->remote) return;
+    for (std::size_t i = 0; i < unit->cars.size() && i < groups.size(); ++i) unit->cars[i].door_groups_open = groups[i];
 }
 
 void TrainView::set_remote_look(const std::uint64_t id, const std::size_t car, const std::uint8_t pantographs,
@@ -6270,6 +6380,9 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     }
     if (auto* cab = engineer_cab()) cab->step_displays(elapsed);
     update_pantographs(elapsed);
+    // Other computers' derailed cars fall on here (about 0.9 rad/s).
+    for (auto& unit : units_)
+        if (unit.remote && unit.train) unit.train->ease_shown_derail(elapsed, 0.9f);
     update_exterior_doors(elapsed);
     spin_slipping_wheels(elapsed);
     // A flat on the player's train: told once it is 1 mm deep.
@@ -8699,7 +8812,8 @@ void TrainView::collect_cab_labels(std::vector<WorldLabel>& labels, const glm::v
     // Where the cab was drawn with the camera the labels are projected with.
     const glm::mat4 to_scene = cab_to_scene_ ? *cab_to_scene_ : body->transform * cab->placement();
     const auto& sd = cab->description();
-    const auto* out = legacy_ ? legacy_->output(engineer_car_) : nullptr;
+    // A helper: the engineer's cab as it came (interior_output), else the DLLs here.
+    const auto* out = interior_output(engineer_car_);
     constexpr float range = 2.6f;
     struct Item {
         glm::vec3 at;
@@ -9909,6 +10023,7 @@ void TrainView::update_exterior_doors(const float elapsed) {
             }
             // The train's doors of a GlobalID in this car (GM_DOOR_OPEN / CLOSE).
             const auto group_open = [&](const std::uint32_t group) {
+                if (unit.remote && group >= 1 && group <= 8) return ((car.door_groups_open >> (group - 1)) & 1u) != 0;
                 if (!out && helped_train) return group != 0 && helper_groups.contains(group);
                 if (!out || group == 0) return false;
                 for (std::size_t k = 0; k < car.door_groups.size() && k < out->doors.size(); ++k)
@@ -9939,6 +10054,11 @@ void TrainView::update_exterior_doors(const float elapsed) {
                 }
                 if (!decided && door.wanted) {
                     target = *door.wanted;
+                    decided = true;
+                }
+                // Another computer's train: its doors as its owner sends them (0x45FC).
+                if (!decided && unit.remote && door.group >= 1 && door.group <= 8) {
+                    target = ((car.door_groups_open >> (door.group - 1)) & 1u) != 0;
                     decided = true;
                 }
                 if (!decided && out && door.index < out->doors.size()) target = out->doors[door.index].set_state != 0;

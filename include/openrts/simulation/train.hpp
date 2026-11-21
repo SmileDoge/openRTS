@@ -490,6 +490,12 @@ public:
     // open, valves or brake shoes. A sleeping train wakes.
     enum class CarFlags : std::uint8_t { pipe_ends, coupler_open, valves, chocks, cables };
     void set_car_flags(std::size_t car, CarFlags which, std::uint8_t mask, bool on);
+    // A car of a train another computer runs, derailed as it says (0x4636):
+    // tipping towards `tilt_target`, `tilt` the roll now; not derailed puts
+    // it back upright.
+    void show_car_derailed(std::size_t car, bool derailed, float tilt, float tilt_target);
+    // The roll of such a car eased towards its target (rad/s).
+    void ease_shown_derail(float elapsed, float rate);
     // Car `car`'s handbrake, 0..1.
     void set_handbrake(std::size_t car, float value);
     // Car `car`'s distributor switches (the realistic air model reads them).

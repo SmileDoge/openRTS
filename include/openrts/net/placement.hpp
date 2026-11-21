@@ -20,6 +20,8 @@
 //   name <text>      (optional)
 //   notes <text>     (optional; "\n" a new line, "\\" a backslash)
 //   from <name>      (optional: the included placement it came from)
+//   owner <nick>     (optional: the player it is given to on logging in)
+//   state <base64>   (optional: the train's own state, 0x45FB's bytes)
 //   car <flags> <handbrake 0..1, "-" none> <folder\name.eng|.wag>
 //   shoes <front>,<rear>   (optional, the car before: its brake shoes)
 //   end
@@ -55,6 +57,8 @@ struct PlacementTrain {
     bool forward = true;
     std::vector<PlacementCar> cars;
     std::string from; // the included placement it came from, empty: its own
+    std::string owner; // the player's nick (UTF-8) it goes back to, empty: nobody's
+    Bytes own_state;   // its state as its owner's openRTS sent it (0x45FB), empty: none
 };
 
 struct Placement {
@@ -84,6 +88,8 @@ using PlacementOpener = std::function<std::optional<std::string>(const std::stri
 [[nodiscard]] ConsolePlace place_of(const PlacementTrain& train);
 // A placement's name for a file: no path characters, not empty.
 [[nodiscard]] bool placement_name_ok(std::string_view name);
+[[nodiscard]] std::string to_base64(ByteView bytes);
+[[nodiscard]] Bytes from_base64(std::string_view text);
 // A placement's text as one line of a console command and back
 // ("placement upload": "\\" and "\n" escaped).
 [[nodiscard]] std::string placement_to_line(std::string_view text);

@@ -189,6 +189,8 @@ private:
         std::vector<std::vector<std::uint8_t>> lights_sent;    // by car, by light
         std::vector<std::pair<std::uint8_t, bool>> looks_sent; // by car: pantographs, running
         std::size_t derailed_sent = 0; // derailed cars the last 0x4636 named
+        double next_state = 0.0;       // 0x45FB, its own state for the server, every 30 s
+        std::vector<std::uint8_t> doors_sent; // 0x45FC, the doors as last sent
     };
     // Puts an own train on the track at record.pos; `drive`: the player
     // takes it (its DLLs start in the server's state).
@@ -224,6 +226,16 @@ private:
     std::map<std::uint16_t, std::size_t> not_handled_; // of them, the ones the observer leaves
     double report_at_ = 10.0;
     std::map<std::uint32_t, Owned> owned_;
+    // Our trains' own states (0x45FB): coming in parts, and those waiting for
+    // their train to be on the track here.
+    std::map<std::uint32_t, std::vector<net::Bytes>> state_parts_;
+    std::map<std::uint32_t, std::string> pending_states_;
+    // The cab doors on the train we are on (ours, or the one we help on),
+    // by car, as last sent or taken (0x45FD).
+    std::uint32_t cab_doors_train_ = 0;
+    std::map<std::size_t, std::vector<std::uint8_t>> cab_doors_seen_;
+    void send_states(TrainView& trains, double t);
+    void put_back_state(std::uint32_t id, TrainView& trains);
     std::size_t triggers_sent_ = 0, values_sent_ = 0; // for the log
     double position_at_ = 0.0;                           // the next player_pos due
     double range_at_ = 0.0;                              // the next check of the remote trains' distance

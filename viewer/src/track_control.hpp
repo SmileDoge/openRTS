@@ -80,6 +80,10 @@ public:
         // проезда"), not through another train; what was wrong, or empty.
         std::function<std::string(std::uint64_t train, const std::vector<simulation::TrackLocation>& via, const simulation::TrackLocation& to)> route_to;
         std::function<void(std::uint64_t train)> cancel_route;
+        // RTS's own way: the route's length from the train's head (its rear,
+        // `rear_first`) along the junctions as they stand (0x4619); the
+        // dispatcher throws them first, then sets the end on the line.
+        std::function<void(std::uint64_t train, float length, bool rear_first)> route_length;
         std::function<std::optional<std::pair<float, bool>>(std::uint64_t train)> route_left;
         // The train's number and name as the server keeps them ("№101
         // name", empty: its own label) and its notes (0x461A).
@@ -197,6 +201,10 @@ private:
     // The network's hand route: the points to pass, for train route_via_train_.
     std::vector<simulation::TrackLocation> route_via_;
     std::uint64_t route_via_train_ = 0;
+    // The way a train would go from its head (or rear) along the junctions
+    // as they stand: drawn for the train picked, its route's end set on it.
+    static constexpr double route_preview_metres = 6000.0;
+    [[nodiscard]] std::optional<double> way_to(const simulation::TrackLocation& from, const simulation::TrackLocation& to) const;
     int net_chocks_ = 0;
     void start_placement(TrainView& trains, const std::string& consist, simulation::TrackLocation where);
     void lay_placement(TrainView& trains);

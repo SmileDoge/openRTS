@@ -235,7 +235,21 @@ net::PlacementTrain placement_of(const StandingTrain& t) {
                           .top_speed = t.top_speed, .node = t.node, .offset = t.offset, .forward = t.forward};
     // The records' flags as they go (flipped, cold, the chocks 0x100 / 0x200).
     for (const auto& car : t.cars) p.cars.push_back({.flags = car.flags & 0x303u, .handbrake = car.handbrake, .file = car.file});
+    p.owner = net::to_utf8(t.owner);
+    p.own_state = t.own_state;
     return p;
+}
+
+// A placement's train on the track again: its owner waited for, its state kept.
+std::string place_back(GameServer& server, ServerRoute& route, const net::PlacementTrain& t, std::uint32_t* placed) {
+    std::uint32_t id = 0;
+    auto answer = place_cars(server, route, net::place_of(t), &id);
+    if (id != 0) {
+        if (!t.own_state.empty()) server.set_train_state(id, t.own_state);
+        if (!t.owner.empty()) server.give_when_back(id, net::from_utf8(t.owner));
+    }
+    if (placed) *placed = id;
+    return answer;
 }
 
 } // namespace
@@ -277,10 +291,10 @@ std::string replace_train(GameServer& server, ServerRoute& route, const std::uin
     std::string error;
     if (!server.remove_train(train, error)) return "error: " + error;
     std::uint32_t id = 0;
-    const auto answer = place_cars(server, route, net::place_of(after), &id);
+    const auto answer = place_back(server, route, after, &id);
     if (answer.rfind("error", 0) == 0) {
         std::uint32_t back = 0;
-        (void)place_cars(server, route, net::place_of(before), &back);
+        (void)place_back(server, route, before, &back);
         if (placed) *placed = back;
         return answer + " (left where it was" + (back ? ": now train " + std::to_string(back) : std::string()) + ")";
     }
@@ -393,7 +407,7 @@ std::string load_placement(GameServer& server, ServerRoute& route, const std::st
     std::string problems;
     for (const auto& m : missing) problems += "\n  " + m;
     for (const auto& t : saved) {
-        const auto answer = place_cars(server, route, net::place_of(t));
+        const auto answer = place_back(server, route, t, nullptr);
         if (answer.rfind("error", 0) == 0) problems += "\n  №" + std::to_string(t.number) + (t.from.empty() ? "" : " (" + t.from + ")") + ": " + answer;
         else ++put;
     }

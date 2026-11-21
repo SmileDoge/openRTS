@@ -412,6 +412,12 @@ public:
     // state once their shapes are fitted, the DLLs' once the host has them.
     // An error, or empty.
     [[nodiscard]] std::string load_game(const std::string& text);
+    // One train's own state for the network (2026-11-21): its cars' air,
+    // switches and flags (Train::save_state) and, when its DLLs run here,
+    // theirs by car index; put back into the train when it is the player's
+    // again (the DLLs' once they run). Empty: no such train of ours.
+    [[nodiscard]] std::string own_state(std::uint64_t id);
+    void restore_own_state(std::uint64_t id, const std::string& text);
     // Placements (docs/placements.md): trains picked in the free flight - a
     // click picks a train, Ctrl+click adds or drops another, Shift+click
     // drops or takes back one car of a picked train - kept as a set in
@@ -540,6 +546,23 @@ public:
     // conditions and pantograph rules are not worked out (0x4F07D4).
     void set_remote_light(std::uint64_t id, std::size_t car, std::size_t light, bool on);
     void set_remote_look(std::uint64_t id, std::size_t car, std::uint8_t pantographs, bool running);
+    // The passenger doors open, a byte per car (bit n: GlobalID n + 1): ours
+    // as drawn (to send), another computer's train's as it says (0x45FC).
+    [[nodiscard]] std::vector<std::uint8_t> door_groups(std::uint64_t id) const;
+    void set_remote_doors(std::uint64_t id, const std::vector<std::uint8_t>& groups);
+    // The doors of the cabs open on the train he is on (his or the one he
+    // helps on: units_.front()), by car: to send, and as another sent them.
+    struct CabDoors {
+        std::size_t car{};
+        std::vector<std::uint8_t> open;
+    };
+    [[nodiscard]] std::vector<CabDoors> cab_doors() const;
+    void set_cab_doors(std::size_t car, const std::vector<std::uint8_t>& open);
+    // Another computer's train derailed (0x4636): a flag per car, the rolls
+    // (now, at rest) of those that came off; the falling runs on here, as in
+    // RTS (testers 2026-11-21: helpers and consoles saw nothing).
+    void set_remote_derail(std::uint64_t id, const std::vector<std::uint8_t>& derailed,
+                           const std::vector<std::array<float, 3>>& rolls); // car, roll now, roll at rest
     // The train the server gives this client (docs/net.md, "Own train"):
     // put on the track now as the driven train, every train there now gone;
     // its DLLs, cab and keyboard as with --situation. An error, or empty.

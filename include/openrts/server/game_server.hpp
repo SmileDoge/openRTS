@@ -104,6 +104,10 @@ struct StandingTrain {
     double offset{};
     bool forward = true;
     std::vector<net::TrainCar> cars;
+    // Whose it is (its owner's nick, or the one it waits for) and its own
+    // state as the owner's openRTS sent it (0x45FB), empty none (2026-11-21).
+    std::u16string owner;
+    net::Bytes own_state;
 };
 
 // One line of a report for the console.
@@ -165,6 +169,11 @@ public:
     // memo "Заметки"; empty both: none).
     bool set_number(std::uint32_t train, std::uint32_t number, std::string& error);
     bool set_names(std::uint32_t train, std::u16string name, std::u16string notes, std::string& error);
+    // A placement's train put back (2026-11-21): given to the player of
+    // that nick, at once when logged in, else when he logs in; its own
+    // state (0x45FB), given back to its owner's openRTS.
+    void give_when_back(std::uint32_t train, std::u16string nick);
+    void set_train_state(std::uint32_t train, net::Bytes state);
     // A train's name and notes, empty none.
     [[nodiscard]] std::pair<std::u16string, std::u16string> names(std::uint32_t train) const;
     // The server joins two trains standing end to end (the nearest ends

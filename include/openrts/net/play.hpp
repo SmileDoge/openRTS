@@ -107,6 +107,40 @@ struct Derail {
     std::vector<DerailedCar> cars;
 };
 [[nodiscard]] Bytes encode_derail(const Derail& derail);
+[[nodiscard]] std::optional<Derail> decode_derail(ByteView body);
+// 0x45FB openrts_train_state (openRTS's own, 2026-11-21): a train's state as
+// its owner's openRTS keeps it (the cars' air and switches, its DLLs'
+// saved state: TrainView::own_state), compressed and opaque to the server,
+// which keeps it with the train (and in its placements) and gives it back
+// to the owner who gets the train again. In parts: a package holds 0x3C00
+// bytes at most. u32 train, u16 part (0-based), u16 parts, the bytes.
+struct TrainStatePart {
+    std::uint32_t train{};
+    std::uint16_t part{}, parts{};
+    Bytes bytes;
+};
+[[nodiscard]] std::vector<Bytes> encode_train_state(std::uint32_t train, ByteView state);
+// 0x45FC openrts_doors (openRTS's own, 2026-11-21): a train's passenger
+// doors as its owner shows them, a byte per car (bit n: the doors of
+// GlobalID n + 1 open; 1 the right ones, 2 the left). RTS shares none
+// (reverse/multiplayer-protocol.md): sent when they change.
+struct OpenrtsDoors {
+    std::uint32_t train{};
+    std::vector<std::uint8_t> groups; // by car
+};
+[[nodiscard]] Bytes encode_openrts_doors(const OpenrtsDoors& doors);
+[[nodiscard]] std::optional<OpenrtsDoors> decode_openrts_doors(ByteView body);
+// 0x45FD openrts_cab_doors (openRTS's own, 2026-11-21): the doors of one
+// car's cab or salon (its .sd's doors: to the vestibule, the passageway,
+// the passengers' from inside) as whoever is in it opened or shut them, a
+// byte each (1 open), for the engineer and his helpers alike.
+struct OpenrtsCabDoors {
+    std::uint32_t train{}, car{};
+    std::vector<std::uint8_t> open;
+};
+[[nodiscard]] Bytes encode_openrts_cab_doors(const OpenrtsCabDoors& doors);
+[[nodiscard]] std::optional<OpenrtsCabDoors> decode_openrts_cab_doors(ByteView body);
+[[nodiscard]] std::optional<TrainStatePart> decode_train_state(ByteView body);
 // 0x4617 car_light, as rts1.exe sends it: the receiver takes the radius,
 // colour and position too (0x4C3DE0).
 struct CarLightState {

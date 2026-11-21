@@ -138,6 +138,22 @@ void motion() {
     m.stand(6.0);
     const auto stood = m.at(*net, 9.0);
     check(stood && near(stood->offset, 40.0), "a standing train stays where it was last");
+    // A steady 10 m/s whose packages come early and late (±0.25 s): drawn
+    // at about 10 m/s all the way, not sped up and slowed down by the
+    // arrival times (testers 2026-11-21: 74..98 km/h at 86).
+    net::RemoteMotion jitter;
+    jitter.add(*net, 0.0, {1, 10.0, true}, 10.0f);
+    jitter.add(*net, 1.75, {1, 25.0, true}, 10.0f);
+    jitter.add(*net, 2.8, {1, 40.0, true}, 10.0f);
+    jitter.add(*net, 4.75, {1, 55.0, true}, 10.0f);
+    float slowest = 100.0f, fastest = 0.0f;
+    for (double t = 0.3; t < 4.2; t += 0.1) {
+        const float v = jitter.speed_at(t + jitter.delay());
+        slowest = (std::min)(slowest, v);
+        fastest = (std::max)(fastest, v);
+    }
+    check(slowest > 8.8f && fastest < 11.2f, "packages early and late: the speed drawn stays near the train's (" + std::to_string(slowest) + ".." +
+                                                std::to_string(fastest) + ")");
     // Starting off: 0 m/s at the first position, 10 m/s 7.5 m on, 1.5 s
     // later. The speed rises from 0 without a jump.
     net::RemoteMotion start;
