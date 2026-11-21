@@ -2570,7 +2570,22 @@ std::optional<std::uint32_t> GameServer::add_segment(const SegmentRequest& reque
         // On from that end the way the train goes (0x435278 from the
         // previous route's end; PROBABLE that it looks only ahead).
         bool way = false;
-        if (from && to) {
+        // A route the console's list offers from there (next_routes, the
+        // way chosen with "Направление") is taken as it is: the list and
+        // this check agree (testers 2026-11-21: "Ч4 => Ч Рогожская" after
+        // "Ч => 4 путь" was offered and refused, the previous route ending
+        // at the track's far point, past Ч4).
+        for (const bool back : {false, true}) {
+            if (way) break;
+            const auto offered = next_routes(s.train, back);
+            for (const auto& choice : offered.routes) {
+                if (choice.route == request.route && choice.reverse == request.reverse) {
+                    way = true;
+                    break;
+                }
+            }
+        }
+        if (!way && from && to) {
             // The way the train goes on there (the list's "Направление"
             // turns it: the same as next_from offers).
             auto start = *from;
