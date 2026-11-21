@@ -24,6 +24,7 @@ void load_fonts() {
         "C:/Windows/Fonts/lucon.ttf",
         "C:/Windows/Fonts/cour.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
     };
     bool loaded = false;
     for (const auto& file : candidates) {
@@ -36,17 +37,29 @@ void load_fonts() {
     if (!loaded) io.Fonts->AddFontDefault();
     // Map labels (Track control station names; RTS: Arial 16, here a little
     // larger for today's screens).
-    for (const char* file : {"C:/Windows/Fonts/arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"}) {
-        if (!std::filesystem::is_regular_file(file)) continue;
-        if (auto* font = io.Fonts->AddFontFromFileTTF(file, 20.0f, nullptr, ranges)) {
+    for (const char* file : {
+            "C:/Windows/Fonts/arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/noto/NotoSans-Regular.ttf"
+        }) {
+        if (!std::filesystem::is_regular_file(file))
+            continue;
+        if (auto *font =
+                io.Fonts->AddFontFromFileTTF(file, 20.0f, nullptr, ranges)) {
             map_label_font() = font;
             break;
         }
     }
     // The start menu's title and large button (Segoe UI Semibold).
-    for (const char* file : {"C:/Windows/Fonts/seguisb.ttf", "C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arial.ttf",
-                             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"}) {
-        if (!std::filesystem::is_regular_file(file)) continue;
+    for (const char* file : {
+            "C:/Windows/Fonts/seguisb.ttf",
+            "C:/Windows/Fonts/segoeui.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/noto/NotoSans-Regular.ttf"
+        }) {
+        if (!std::filesystem::is_regular_file(file))
+            continue;
         title_font() = io.Fonts->AddFontFromFileTTF(file, 34.0f, nullptr, ranges);
         large_font() = io.Fonts->AddFontFromFileTTF(file, 21.0f, nullptr, ranges);
         break;

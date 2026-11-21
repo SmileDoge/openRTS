@@ -23,6 +23,8 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#else
+#include <spawn.h>
 #endif
 
 #ifdef OPENRTS_HAS_IMGUI
@@ -55,6 +57,11 @@
 #include "window_mode.hpp"
 
 namespace openrts::game {
+
+#if defined(__unix__) || defined(__APPLE__)
+extern "C" char** environ; 
+#endif
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -366,6 +373,8 @@ struct Launcher::State {
 #ifdef _WIN32
     HANDLE process = nullptr;
     HANDLE server_process = nullptr; // openrts-server.exe started here
+#else
+    pid_t process = 0;
 #endif
     // Updates (update.hpp): a check at the start ("update_check"), the offer
     // as a modal window; a version skipped there ("update_skip") is not
@@ -747,10 +756,17 @@ struct Launcher::State {
     }
 
     [[nodiscard]] fs::path game_exe() const {
-        const std::vector<fs::path> candidates{
-            exe_dir / "openrts_viewer.exe",
-            exe_dir.parent_path().parent_path() / "viewer" / exe_dir.filename() / "openrts_viewer.exe",
-        };
+#ifdef _WIN32
+        std::string viewer_name = "openrts_viewer.exe";
+#else
+        std::string viewer_name = "openrts_viewer";
+#endif
+          const std::vector<fs::path>
+              candidates{
+                  exe_dir / viewer_name,
+                  exe_dir.parent_path().parent_path() / "viewer" /
+                      exe_dir.filename() / viewer_name,
+      };
         std::error_code error;
         for (const auto& candidate : candidates)
             if (fs::is_regular_file(candidate, error)) return candidate;
@@ -758,7 +774,7 @@ struct Launcher::State {
     }
 
     // The game's command line for a tab's choice (empty: not ready, or no game).
-    [[nodiscard]] std::string command_line(const Tab which) const {
+    [[nodiscard]] std::vector<std::string> command_line(const Tab which) const {
         if (!ready_for(which)) return {};
         const auto exe = game_exe();
         if (exe.empty()) return {};
@@ -808,6 +824,11 @@ struct Launcher::State {
         if (!vsync) args.push_back("--no-vsync");
         if (graphics.experimental) args.push_back("--experimental");
         if (graphics.hdr) args.push_back("--hdr");
+        return args;
+    }
+
+    [[nodiscard]] std::string command_line_single(const Tab which) const {
+        const auto args = command_line(which);
         std::string command;
         for (const auto& a : args) command += (command.empty() ? "" : " ") + quoted(a);
         return command;
@@ -895,7 +916,9 @@ struct Launcher::State {
 
     void launch(const Tab which) {
         if (running() || !ready_for(which)) return;
-        const auto command = command_line(which);
+        const auto args = command_line(which);
+        std::string command;
+        for (const auto& a : args) command += (command.empty() ? "" : " ") + quoted(a);
         if (command.empty()) {
             status = tr("openrts_viewer.exe is not found next to the menu.");
             return;
@@ -955,8 +978,28 @@ struct Launcher::State {
         CloseHandle(info.hThread);
         process = info.hProcess;
         status = network_game ? net_message() : std::string(tr("The game is running. The menu comes back when it is closed."));
-#else
-        status = tr("Starting the game is only done on Windows yet.");
+#else                
+        posix_spawn_file_actions_t file_actions;
+        posix_spawn_file_actions_init(&file_actions);
+
+        posix_spawnattr_t attr;
+        posix_spawnattr_init(&attr);
+
+
+        std::vector<char*> argv;
+        // start from 1 because the 0th argument is the name of the program itself, not needed here.
+        for (auto& a: args) {
+            argv.push_back((char*)a.data());
+        }
+        argv.push_back(nullptr);
+
+        int result = posix_spawnp(&process, game_exe().c_str(), &file_actions, &attr, argv.data(), environ);
+        if (result == 0) {
+            status = tr("The game is running. The menu comes back when it is closed.");
+        } else {
+            status = viewer::trf("The game did not start (error %lu).", static_cast<unsigned long>(result));
+        }
+        //status = tr("Starting the game is only done on Windows yet.");
 #endif
     }
 
@@ -2345,9 +2388,9 @@ Launcher::Launcher(std::filesystem::path exe_dir) : state_(std::make_unique<Stat
     if (!state_->vfs) state_->tab = Tab::settings;
 }
 
-std::string Launcher::command() const { return state_->command_line(Tab::single); }
+std::string Launcher::command() const { return state_->command_line_single(Tab::single); }
 
-std::string Launcher::network_command() const { return state_->command_line(Tab::network); }
+std::string Launcher::network_command() const { return state_->command_line_single(Tab::network); }
 
 void Launcher::show_tab(const std::string_view key) {
     for (int i = 0; i < tab_count; ++i) {

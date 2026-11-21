@@ -13,6 +13,7 @@
 #endif
 
 #include <atomic>
+#include <utility>
 #include <cstring>
 
 namespace openrts::trainplugin {

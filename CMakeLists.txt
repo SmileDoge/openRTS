@@ -180,6 +180,27 @@ if(openrts_dllhost_generator)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${OPENRTS_DLLHOST_DIR}/$<CONFIG>/openrts-dllhost32.exe" "$<TARGET_FILE_DIR:${target}>")
     endfunction()
+elseif(LINUX)
+    include(ExternalProject)
+    set(OPENRTS_DLLHOST_DIR "${CMAKE_BINARY_DIR}/bin32")
+    ExternalProject_Add(openrts_dllhost32
+        SOURCE_DIR "${PROJECT_SOURCE_DIR}/dllhost"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/dllhost32"
+        CMAKE_ARGS "-DOPENRTS_DLLHOST_OUTPUT=${OPENRTS_DLLHOST_DIR}" "-DOPENRTS_SOURCE_ROOT=${PROJECT_SOURCE_DIR}"
+        BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --config $<CONFIG>
+        INSTALL_COMMAND ""
+        BUILD_ALWAYS TRUE
+        CMAKE_ARGS
+            -DCMAKE_TOOLCHAIN_FILE=${PROJECT_SOURCE_DIR}/dllhost/toolchain-mingw32.cmake
+            -DCMAKE_C_FLAGS=${CMAKE_C_FLAGS}\ -municode
+            -DCMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}\ -municode
+            -DCMAKE_EXE_LINKER_FLAGS=${CMAKE_EXE_LINKER_FLAGS}\ -static)
+    function(openrts_copy_dllhost target)
+        add_dependencies(${target} openrts_dllhost32)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${OPENRTS_DLLHOST_DIR}/openrts-dllhost32.exe" "$<TARGET_FILE_DIR:${target}>")
+    endfunction()
 else()
     function(openrts_copy_dllhost target)
     endfunction()
