@@ -1823,6 +1823,7 @@ const dllhost::CarOutput* TrainView::cab_state(const std::size_t car) const {
 
 const dllhost::CarOutput* TrainView::interior_output(const std::size_t car) const {
     if (helping_) {
+        if (const auto shown = helper_shown_.find(car); shown != helper_shown_.end()) return &shown->second;
         const auto it = helper_outputs_.find(car);
         return it != helper_outputs_.end() ? &it->second : nullptr;
     }
@@ -6019,6 +6020,30 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         cab_key_repeat_.clear();
     }
     helper_clock_ += elapsed;
+    // The engineer's cab comes 20 times a second: its switches' frames and
+    // its gauges eased towards it here, not jumping (testers 2026-11-21).
+    if (helping_) {
+        const float k = 1.0f - std::exp(-elapsed * 25.0f);
+        for (const auto& [car, got] : helper_outputs_) {
+            auto [it, added] = helper_shown_.try_emplace(car, got);
+            auto& shown = it->second;
+            if (added) continue;
+            auto switches = std::move(shown.switches);
+            auto displays = std::move(shown.displays);
+            shown = got;
+            if (switches.size() == got.switches.size()) {
+                for (std::size_t i = 0; i < switches.size(); ++i)
+                    shown.switches[i].current_frame = switches[i].current_frame + (got.switches[i].current_frame - switches[i].current_frame) * k;
+            }
+            if (displays.size() == got.displays.size()) {
+                for (std::size_t i = 0; i < displays.size(); ++i)
+                    shown.displays[i].value = displays[i].value + (got.displays[i].value - displays[i].value) * k;
+            }
+        }
+        std::erase_if(helper_shown_, [&](const auto& entry) { return !helper_outputs_.contains(entry.first); });
+    } else {
+        helper_shown_.clear();
+    }
     if (helper_cab_) {
         // The keys of the cab he is at (the other section's, walked into).
         helper_cab_->set_remote_player(engineer_car_ != SIZE_MAX && helper_outputs_.contains(engineer_car_) ? engineer_car_ : cab_car_);

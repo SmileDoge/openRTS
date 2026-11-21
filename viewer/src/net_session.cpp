@@ -853,11 +853,13 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
             }
             return;
         case net::HelperInputKind::operate:
+            cab_due_ = 0.0; // its result to the helper with the next frame
             std::cout << "net: the helper's hand: car " << input->car + 1 << ", switch " << input->id << " to " << input->state << ": "
                       << trains.helper_hand({.kind = TrainView::HelperHand::Kind::operate, .car = input->car, .id = input->id, .state = input->state})
                       << std::endl;
             return;
         case net::HelperInputKind::drag:
+            cab_due_ = 0.0;
             (void)trains.helper_hand({.kind = TrainView::HelperHand::Kind::drag, .car = input->car, .id = input->id, .delta = input->delta,
                                 .release = input->release});
             return;
@@ -1018,10 +1020,11 @@ void NetSession::helper_streams(TrainView& trains, const double t) {
         helping_view_ = false;
         stop_helping();
     }
-    // The engineer: the cabs his helpers are in, ten times a second while
-    // they change, every second anyway.
+    // The engineer: the cabs his helpers are in, twenty times a second while
+    // they change, every second anyway; at once after a helper's hand
+    // (testers 2026-11-21: the helper's buttons answered late).
     if (helpers_.empty() || t < cab_due_) return;
-    cab_due_ = t + 0.1;
+    cab_due_ = t + 0.05;
     const auto driven = driven_id(trains);
     if (driven == 0) return;
     bool helped = false;

@@ -1443,6 +1443,7 @@ private:
     std::uint64_t helping_ = 0;                                // the train he helps on (TrainView id), 0 none
     std::uint64_t helper_own_ = 0;                             // his own driven train before, to drive again after
     std::map<std::size_t, dllhost::CarOutput> helper_outputs_; // the engineer's cabs, by car
+    std::map<std::size_t, dllhost::CarOutput> helper_shown_;   // as drawn: switch frames and gauges eased towards them
     std::unique_ptr<LegacyCab> helper_cab_;                    // the helper's hands on them
     std::vector<HelperHand> helper_hands_;
     // The engineer's: the cab triggers for his helpers since the last
