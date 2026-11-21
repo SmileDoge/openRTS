@@ -127,6 +127,7 @@ constexpr Named names[] = {
     {0x45FB, "openrts_train_state"},
     {0x45FC, "openrts_doors"},
     {0x45FD, "openrts_cab_doors"},
+    {0x45FE, "openrts_car_action"},
 };
 
 } // namespace

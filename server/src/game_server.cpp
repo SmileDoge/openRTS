@@ -132,6 +132,7 @@ struct GameServer::Impl {
     // server's own trains goes out too).
     std::map<std::uint32_t, std::uint32_t> told_branch;
     double next_junction_check = 0.0;
+    std::size_t junction_resync = 0; // the next junction told again (all of them over and over)
     std::set<std::uint32_t> locked; // junction nodes the dispatcher locked
     // Routes the dispatcher set, by train: the leg and its junctions with
     // their distances along it, held until the train's rear has passed.
@@ -661,6 +662,13 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         return;
     }
 
+    // A car menu item done (0x45FE): to the other openRTS players.
+    if (id == P(Package::openrts_car_action)) {
+        const auto bytes = framed(id, body);
+        for (auto& [uid, other] : impl.users)
+            if (uid != user->id && other.playing && other.connection && other.openrts) transport_.send(other.connection, bytes);
+        return;
+    }
     // A cab's doors from the engineer or a helper (0x45FD): to the other
     // openRTS players (theirs take it for the train they are on).
     if (id == P(Package::openrts_cab_doors)) {
@@ -1100,8 +1108,20 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         auto* state = impl.network.junction(node);
         if (!n || n->kind != formats::TrackNodeKind::junction || !state || branch >= n->branch_count()) return;
         // Not one the dispatcher locked, nor one a laid route holds (the
-        // dispatcher's routes hold till the train's tail is past them).
-        if (!impl.locked.contains(node) && !impl.holder(node)) state->selected = branch;
+        // dispatcher's routes hold till the train's tail is past them), nor
+        // one under another train or just in front of it (a switch set back
+        // behind the sender's tail ran a train standing on it down the
+        // wrong track; testers 2026-11-21).
+        bool under_other = false;
+        for (const auto& [_, t] : impl.trains) {
+            if (!t.sim || !t.sim->placed() || t.owner == user->id) continue;
+            const auto under = net::junctions_under(impl.network, *t.sim);
+            if (std::find(under.begin(), under.end(), node) != under.end()) {
+                under_other = true;
+                break;
+            }
+        }
+        if (!impl.locked.contains(node) && !impl.holder(node) && !under_other) state->selected = branch;
         const auto now_state = net::JunctionState{.index = index, .branch = state->selected,
                                                   .lock = static_cast<std::uint8_t>(impl.locked.contains(node) ? 1 : 0)};
         impl.told_branch[node] = state->selected;
@@ -1272,6 +1292,18 @@ void GameServer::tick(const double now) {
             if (added || it->second == j.branch) continue;
             it->second = j.branch;
             if (!first) to_playing(junction_package(j));
+        }
+        // Every junction told again, a few at a time, round and round: a
+        // client that missed one, or moved one itself, has it back within
+        // seconds, not only when it logs in again (testers 2026-11-21: the
+        // dispatcher's map ran a train down the wrong track till he logged
+        // in again). 40 every 0.25 s: 3000 junctions in under 20 s.
+        if (!first) {
+            const auto all = impl.junction_states();
+            for (std::size_t k = 0; k < 40 && !all.empty(); ++k) {
+                if (impl.junction_resync >= all.size()) impl.junction_resync = 0;
+                to_playing(junction_package(all[impl.junction_resync++]));
+            }
         }
     }
 

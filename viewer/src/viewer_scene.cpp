@@ -503,6 +503,7 @@ public:
                     // Watching a live game: the session puts the trains on
                     // the track and keeps the world as the server says.
                     net_ = std::make_unique<NetSession>(content_.connection(), *snapshot, content_.take_early(), content_.console());
+                    net_->set_server_key(content_.server_address());
                     train_->set_network(true);
                     train_->set_console(content_.console());
                     track_->network().set_switches_stay(true);
@@ -842,6 +843,7 @@ public:
             if (input.limits_panel) train_->toggle_limits_panel();
             if (input.stations_panel) train_->toggle_stations_panel();
             if (input.profile_strip) train_->toggle_profile_strip();
+            if (input.drive_card) train_->toggle_drive_card();
             if (input.activity_journal && activity_) activity_->toggle_journal();
             if (input.activity_menu && activity_) activity_->toggle_menu();
             if (input.car_view) train_->car_view_key(camera);
@@ -1695,6 +1697,7 @@ public:
     // One text file: a header (route, scenario, clock), then parts after
     // "@@ <part>" lines: the junctions, the trains (TrainView::save_game),
     // the scenario (ActivityView::save).
+    [[nodiscard]] bool networked() const override { return net_ != nullptr; }
     [[nodiscard]] std::filesystem::path saves_folder() const override {
         if (!train_ || net_) return {};
         return user_data_directory() / "saves" / std::string(route_.filename());
@@ -2079,6 +2082,7 @@ public:
                 remember("player_names", player_names_ ? "1" : "0");
             }
             draw_helper_windows(*net_);
+            draw_state_offer(*net_, *train_);
         }
         {
             // The tape window: the file rolling now, and the RTS installation's tapes.

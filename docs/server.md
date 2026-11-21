@@ -315,6 +315,17 @@ openRTS itself is the console (the user's choice, 2026-11-09):
   as `0x4642`, as `rts1.exe` sends it; the server's answer is what
   stands. A player has no other way to throw a junction in a network
   game, as in RTS.
+- A junction a player's train sets (a run-through, back to MainRoute
+  behind its tail, `0x460A`) is not set, by the client nor by the server,
+  under another train or in front of it as far as that train runs in 4 s
+  (5 m standing, 150 m at most): the server sends the sender its state
+  back. Positions name a train's rear, and every computer lays the rest
+  of it along its own junctions: a switch set back under another train
+  ran it down the wrong track everywhere but on its owner's computer.
+- Every junction is told again, 40 every 0.25 s round and round (3000 in
+  under 20 s): a client that missed one has it back within seconds. A
+  client lays another player's train again from its head when its tail
+  is not where the junctions lead (not while it is derailed).
 
 ## Placements
 

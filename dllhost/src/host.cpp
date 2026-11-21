@@ -2196,6 +2196,19 @@ void Host::collect_car(CarMirror& car, CarOutput& out) {
     }
     out.doors.resize(car.doors.size());
     for (std::size_t k = 0; k < car.doors.size(); ++k) out.doors[k] = {car.doors[k].state, car.doors[k].set_state};
+    const auto anim_state = [&](const abi::FreeAnimation& a, const wchar_t* where) {
+        const dllhost::AnimState s{a.flags, a.animate_to, a.speed, a.speed_q, a.max_speed};
+        trace_once(std::wstring(L"anim ") + where + L" " + (a.name ? a.name : L"?") + L" " + std::to_wstring(s.flags) + L" "
+                       + std::to_wstring(s.animate_to) + L" " + std::to_wstring(static_cast<int>(s.speed * 1000.0f)),
+                   std::wstring(L"FreeAnimation ") + where + L" " + (a.name ? a.name : L"?") + L": flags " + std::to_wstring(s.flags)
+                       + L", animate to " + std::to_wstring(s.animate_to) + L", speed " + std::to_wstring(s.speed) + L" ("
+                       + std::to_wstring(s.speed_q) + L", max " + std::to_wstring(s.max_speed) + L")");
+        return s;
+    };
+    out.anims.clear();
+    for (const auto& a : car.anims) out.anims.push_back(anim_state(a, L"wagon"));
+    out.cab_anims.clear();
+    for (const auto& a : car.cab_anims) out.cab_anims.push_back(anim_state(a, L"cab"));
     out.exhausts.resize(car.exhaust.size());
     for (std::size_t k = 0; k < car.exhaust.size(); ++k) {
         const auto& e = car.exhaust[k];

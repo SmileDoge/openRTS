@@ -515,6 +515,9 @@ public:
     // the single player's folder, one file format for both (a player's
     // placement sent to the organiser is put there and seen by both).
     [[nodiscard]] std::filesystem::path network_placement_folder() const { return placement_folder(); }
+    // Where a network game's own trains' states are kept on this computer
+    // (user_data_directory()/train_states/<route>).
+    [[nodiscard]] std::filesystem::path train_states_folder() const;
     // The dispatcher's console (2026-11-21, the organiser): the camera does
     // not follow a train put on the track (with none of its own the first
     // one was followed: the dispatcher was taken to each train he put), and
@@ -557,9 +560,20 @@ public:
     struct CabDoors {
         std::size_t car{};
         std::vector<std::uint8_t> open;
+        const void* cab = nullptr; // the cab's view: made anew, its doors are not a change
     };
     [[nodiscard]] std::vector<CabDoors> cab_doors() const;
     void set_cab_doors(std::size_t car, const std::vector<std::uint8_t>& open);
+    // Car menu items done here, for the network (0x45FE), and one done on
+    // another computer carried out here.
+    struct CarAction {
+        std::uint64_t train{};
+        std::size_t car{};
+        bool coupling = false, front = true;
+        int item{};
+    };
+    [[nodiscard]] std::vector<CarAction> take_car_actions() { return std::exchange(car_actions_, {}); }
+    void apply_car_action(const CarAction& action);
     // Another computer's train derailed (0x4636): a flag per car, the rolls
     // (now, at rest) of those that came off; the falling runs on here, as in
     // RTS (testers 2026-11-21: helpers and consoles saw nothing).
@@ -830,6 +844,10 @@ public:
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
     // Ctrl+F4: the profile strip at the top (profile_strip.hpp); remembered as profile_strip.
     void toggle_profile_strip();
+    // F4: a small card of what the driver looks at most (openRTS; like
+    // RTS's old F4 in spirit, not its look): time, speed, limit now and
+    // next, the signal ahead.
+    void toggle_drive_card();
     // The names of signal objects (the route database's), for the F4 panel.
     void set_signal_names(std::function<std::string(std::uint32_t object)> names) { signal_names_ = std::move(names); }
     void draw_hud();
@@ -1016,6 +1034,7 @@ private:
     bool network_game_ = false;            // set_network
     bool console_ = false;                 // set_console
     bool walk_toggle_asked_ = false;       // ask_walk_toggle
+    std::vector<CarAction> car_actions_;   // take_car_actions
     std::vector<Coupling> couplings_;      // take_couplings
     std::vector<Cut> cuts_;                // take_cuts
     std::string board_prompt_;             // Enter at another cab's door (his other trains, the far end of his own)
@@ -1174,6 +1193,7 @@ private:
     // The profile strip (Ctrl+F4): built again every second, or when its
     // span or shift goes past what was built.
     std::optional<bool> profile_strip_on_;
+    std::optional<bool> drive_card_on_; // F4, remembered
     std::unique_ptr<ProfileStrip> profile_strip_;
     simulation::TrackProfile profile_;
     std::vector<simulation::TrackProfileElement> profile_elements_; // the track's own (TrackProfile::elements)
@@ -1199,6 +1219,7 @@ private:
     };
     HudPanel car_info_place_{.key = "hud_car_info"};
     HudPanel limits_place_{.key = "hud_limits", .pivot_x = 1.0f};
+    HudPanel drive_card_place_{.key = "hud_drive_card", .pivot_x = 1.0f};
     HudPanel stations_place_{.key = "hud_stations", .pivot_x = 1.0f};
     HudPanel drive_place_{.key = "hud_drive", .pivot_x = 1.0f};
     // Starts a panel window at its place; false when it is not drawn.

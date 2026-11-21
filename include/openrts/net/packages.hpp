@@ -133,6 +133,7 @@ enum class Package : std::uint16_t {
     openrts_train_state = 0x45FB, // owner <-> server: a train's own state (air, switches, DLLs), in parts (net::TrainStatePart)
     openrts_doors = 0x45FC,       // owner -> server -> openRTS players and consoles: the passenger doors open (net::OpenrtsDoors)
     openrts_cab_doors = 0x45FD,   // engineer / helper -> server -> the others on the train: a cab's doors (net::OpenrtsCabDoors)
+    openrts_car_action = 0x45FE,  // a player -> server -> the openRTS players: a car menu item done (net::OpenrtsCarAction)
     // Between openRTS's server and openRTS players (docs/net.md, "Players
     // and helpers"); a player sends them only after the server's hello.
     openrts_hello = 0x45F4,   // player -> server after the snapshot, the server's answer back: both are openRTS

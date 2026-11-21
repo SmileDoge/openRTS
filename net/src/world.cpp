@@ -82,6 +82,18 @@ std::optional<simulation::TrackLocation> train_front(simulation::TrackNetwork& n
     return simulation::TrackLocation{traveller.node(), traveller.offset(), traveller.forward()};
 }
 
+std::vector<std::uint32_t> junctions_under(simulation::TrackNetwork& network, const simulation::Train& train) {
+    const double ahead = 5.0 + std::min(std::abs(train.speed()) * 4.0, 150.0);
+    std::vector<std::uint32_t> out;
+    const auto rear = train.rear_end();
+    if (!rear || !train.placed()) return out;
+    // From the rear towards the front (as position_of and train_front take it).
+    simulation::TrackTraveller t(network, rear->node(), rear->offset(), rear->forward());
+    const auto moved = t.move(train.length() + ahead, simulation::JunctionMode::plain);
+    for (const auto& pass : moved.junctions) out.push_back(pass.junction);
+    return out;
+}
+
 std::optional<TrainPos> position_of(const simulation::Train& train) {
     const auto rear = train.rear_end();
     const auto& cars = train.cars();

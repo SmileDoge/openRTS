@@ -413,6 +413,24 @@ void CabView::step_displays(const float elapsed) {
         clock += elapsed;
         if (clock > blink * 2.0f) clock = std::fmod(clock, blink * 2.0f);
     }
+    for (std::size_t k = 0; k < free_anims_.size(); ++k) {
+        auto& a = free_anims_[k];
+        const bool running = k < free_anim_running_.size() && free_anim_running_[k] != 0;
+        if (!running && (!a.moving || !a.returns)) {
+            a.moving = false; // stopped where it is
+            continue;
+        }
+        a.moving = true;
+        a.phase += elapsed / a.time;
+        if (a.phase >= 1.0f) {
+            if (running) {
+                a.phase = std::fmod(a.phase, 1.0f);
+            } else {
+                a.phase = 0.0f; // the round finished: it stands
+                a.moving = false;
+            }
+        }
+    }
 }
 
 void CabView::poll() {
@@ -420,6 +438,21 @@ void CabView::poll() {
     if (loading_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
     geometry_ = loading_.get();
     if (!geometry_) return;
+    free_anims_.clear();
+    for (const auto& animation : cab_.animations) {
+        FreeAnim a;
+        a.time = animation.anim_time > 0.0f ? animation.anim_time : 1.0f;
+        a.returns = lower(animation.flags).find("returns") != std::string::npos;
+        for (const auto& name : animation.nodes) {
+            const auto it = geometry_->nodes.find(lower(name));
+            if (it == geometry_->nodes.end()) continue; // a misspelt one (the ВЛ80Т's WIRER2) moves nothing, as in RTS
+            const float last = geometry_->last_frames[static_cast<std::size_t>(it->second)];
+            if (last <= 0.0f) continue;
+            a.nodes.push_back(it->second);
+            a.last.push_back(last);
+        }
+        free_anims_.push_back(std::move(a));
+    }
     for (std::size_t i = 0; i < cab_.doors.size() && i < doors_.size(); ++i) {
         auto& door = doors_[i];
         const auto it = geometry_->nodes.find(lower(cab_.doors[i].name));
@@ -983,6 +1016,14 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             if (door.node < 0 || door.last_frame <= 0.0f) continue;
             out.push_back({.matrix = door.node, .frame = door.open * door.last_frame});
         }
+    }
+    // The DLL's FreeAnimations (the wipers): running as its flag says.
+    free_anim_running_.assign(free_anims_.size(), 0);
+    for (std::size_t k = 0; k < free_anims_.size(); ++k) {
+        if (state && k < state->cab_anims.size()) free_anim_running_[k] = (state->cab_anims[k].flags & 1u) ? 1 : 0;
+        const auto& a = free_anims_[k];
+        if (a.phase <= 0.0f) continue; // at frame 0: as the shape stands
+        for (std::size_t n = 0; n < a.nodes.size(); ++n) out.push_back({.matrix = a.nodes[n], .frame = a.phase * a.last[n]});
     }
     // The locomotive signal lights (RTS 0x525DB0): the aspect is
     // Cabin::Signal.Aspect[0]; the engine's ALSNOn 0 puts every light out,

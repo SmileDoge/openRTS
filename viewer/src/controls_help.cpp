@@ -119,6 +119,7 @@ void draw_controls_help() {
         row("F5", "the train's cars; again: the next page");
         row("Shift+F5", "the train as a whole");
         row("Ctrl+F5", "speed limits and the kilometre");
+        row("F4", "a small card: the time, the speed, the limit now and next, the signal ahead (openRTS)");
         row("Ctrl+F4", "the track's profile at the top: the grade, the kilometres, the limits, the signals and the stations; the wheel over it changes the span, a drag shifts it, a double click puts it back (openRTS)");
         row("F6", "the stations ahead and the sidings (yellow); in a scenario with a timetable, the timetable");
         row(board_key_name(), "a scenario's stop: start the boarding of the passengers");

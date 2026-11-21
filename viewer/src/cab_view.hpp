@@ -333,6 +333,21 @@ private:
     std::unique_ptr<CabScreens> screens_;
     std::vector<std::vector<std::int32_t>> state_nodes_; // a DISPLAY's StateNodes, by display
     std::vector<float> blink_clock_;                     // by display (RTS display +72)
+    // The .sd's AnimNodes a DLL runs (FreeAnimation: the wipers): while its
+    // flag 0 is set they go round their key frames, AnimTime a round; let
+    // go, a RETURNS one finishes the round back to frame 0, another stops
+    // where it is (a pneumatic wiper with its cock shut: the ВЛ80Т's, the
+    // ЧС7's; testers 2026-11-21: the wipers sounded and stood still).
+    struct FreeAnim {
+        std::vector<std::int32_t> nodes;
+        std::vector<float> last; // each node's last key frame
+        float time = 1.0f;
+        bool returns = false;
+        float phase = 0.0f;      // 0..1 of a round
+        bool moving = false;
+    };
+    std::vector<FreeAnim> free_anims_;
+    mutable std::vector<std::uint8_t> free_anim_running_; // as the DLL left them (adjustments)
 };
 
 } // namespace openrts::viewer

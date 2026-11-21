@@ -166,6 +166,7 @@ private:
         // lights, looks and sounds meanwhile (audience 4 goes by the
         // player's place, which is the camera's).
         bool far = false;
+        double next_relay = 0.0; // laid again from its head now and then (move_trains)
     };
 
     void apply(const net::ReceivedPackage& package, simulation::TrackNetwork& network, simulation::SignalSystem* signals,
@@ -190,6 +191,12 @@ private:
         std::vector<std::pair<std::uint8_t, bool>> looks_sent; // by car: pantographs, running
         std::size_t derailed_sent = 0; // derailed cars the last 0x4636 named
         double next_state = 0.0;       // 0x45FB, its own state for the server, every 30 s
+        // Its state kept on this computer too (train_states): written once
+        // it has been ours a while (a state put back is in by then), the
+        // last one put back when the server has none.
+        double ours_since = -1.0;      // t it came on the track here
+        double next_keep = 0.0;        // the next dated copy
+        bool offered = false;          // its kept states offered once (the window)
         std::vector<std::uint8_t> doors_sent; // 0x45FC, the doors as last sent
     };
     // Puts an own train on the track at record.pos; `drive`: the player
@@ -234,8 +241,36 @@ private:
     // by car, as last sent or taken (0x45FD).
     std::uint32_t cab_doors_train_ = 0;
     std::map<std::size_t, std::vector<std::uint8_t>> cab_doors_seen_;
+    std::map<std::size_t, const void*> cab_doors_view_; // the cab's view last seen per car
     void send_states(TrainView& trains, double t);
     void put_back_state(std::uint32_t id, TrainView& trains);
+    // The folder of an own train's states kept here: by its name and cars.
+    [[nodiscard]] std::filesystem::path kept_states_folder(const Owned& own, const TrainView& trains) const;
+    void keep_state(const Owned& own, const TrainView& trains, const std::string& text, double t, bool dated);
+    std::optional<std::filesystem::path> restore_asked_;
+
+public:
+    // The states of the train driven here kept on this computer, newest
+    // first: (file, label). Put back by hand (it goes to the server too).
+    struct KeptState {
+        std::filesystem::path file;
+        std::string label;
+    };
+    [[nodiscard]] std::vector<KeptState> kept_states(const TrainView& trains) const;
+    void ask_restore(const std::filesystem::path& file) { restore_asked_ = file; }
+    // The server's address: the kept states are by server.
+    void set_server_key(const std::string& address) { server_key_ = address; }
+    // Kept states to choose from when the train became ours (the window):
+    // shown while true, closed by its answer.
+    [[nodiscard]] bool states_offered() const noexcept { return states_offer_; }
+    void answer_states_offer(const std::optional<std::filesystem::path>& file) {
+        states_offer_ = false;
+        if (file) restore_asked_ = *file;
+    }
+
+private:
+    std::string server_key_;
+    bool states_offer_ = false;
     std::size_t triggers_sent_ = 0, values_sent_ = 0; // for the log
     double position_at_ = 0.0;                           // the next player_pos due
     double range_at_ = 0.0;                              // the next check of the remote trains' distance

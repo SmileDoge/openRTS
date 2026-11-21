@@ -935,6 +935,28 @@ Bytes encode_train_id(const std::uint32_t train) {
     return w.take();
 }
 
+Bytes encode_openrts_car_action(const OpenrtsCarAction& action) {
+    WireWriter w;
+    w.u32(action.train);
+    w.u32(action.car);
+    w.u8(action.coupling ? 1 : 0);
+    w.u8(action.front ? 1 : 0);
+    w.u32(action.item);
+    return w.take();
+}
+
+std::optional<OpenrtsCarAction> decode_openrts_car_action(const ByteView body) {
+    WireReader r(body);
+    OpenrtsCarAction a;
+    a.train = r.u32();
+    a.car = r.u32();
+    a.coupling = r.u8() != 0;
+    a.front = r.u8() != 0;
+    a.item = r.u32();
+    if (!r.ok()) return std::nullopt;
+    return a;
+}
+
 Bytes encode_openrts_cab_doors(const OpenrtsCabDoors& doors) {
     WireWriter w;
     w.u32(doors.train);

@@ -90,6 +90,22 @@ bool draw_players_section(NetSession& net, const TrainView& trains, const glm::v
         }
     }
     if (!net.openrts_server() && !players.empty()) ImGui::TextDisabled("%s", tr("Helpers are possible on an openRTS server only."));
+    // The driven train's states kept on this computer (every 30 s, a dated
+    // one every 5 minutes): put back by hand.
+    if (const auto kept = net.kept_states(trains); !kept.empty()) {
+        ImGui::SeparatorText(tr("Your train's state"));
+        static int chosen = 0;
+        if (chosen >= static_cast<int>(kept.size())) chosen = 0;
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::BeginCombo("##kept_state", kept[static_cast<std::size_t>(chosen)].label.c_str())) {
+            for (int i = 0; i < static_cast<int>(kept.size()); ++i)
+                if (ImGui::Selectable(kept[static_cast<std::size_t>(i)].label.c_str(), i == chosen)) chosen = i;
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Put this state back"))) net.ask_restore(kept[static_cast<std::size_t>(chosen)].file);
+        ImGui::TextDisabled("%s", tr("Kept on this computer every 30 s: the air, the devices, the locomotive DLLs."));
+    }
     if (!net.helpers().empty()) {
         ImGui::TextUnformatted(tr("Your helpers:"));
         for (const auto& h : net.helpers()) {
@@ -107,6 +123,38 @@ bool draw_players_section(NetSession& net, const TrainView& trains, const glm::v
     (void)names;
 #endif
     return changed;
+}
+
+void draw_state_offer(NetSession& net, const TrainView& trains) {
+#ifdef OPENRTS_HAS_IMGUI
+    if (!net.states_offered()) return;
+    const auto kept = net.kept_states(trains);
+    if (kept.empty()) {
+        net.answer_states_offer(std::nullopt);
+        return;
+    }
+    const auto display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos({display.x * 0.5f, display.y * 0.25f}, ImGuiCond_Appearing, {0.5f, 0.0f});
+    ImGui::SetNextWindowBgAlpha(0.9f);
+    if (ImGui::Begin(tr("Saved train state###state_offer"), nullptr,
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::TextUnformatted(tr("This train's state was saved on this computer on this server. Put one back?"));
+        static int chosen = 0;
+        if (chosen >= static_cast<int>(kept.size())) chosen = 0;
+        if (ImGui::BeginListBox("##offered_states", ImVec2(320.0f, 0.0f))) {
+            for (int i = 0; i < static_cast<int>(kept.size()); ++i)
+                if (ImGui::Selectable(kept[static_cast<std::size_t>(i)].label.c_str(), i == chosen)) chosen = i;
+            ImGui::EndListBox();
+        }
+        if (ImGui::Button(tr("Put it back"))) net.answer_states_offer(kept[static_cast<std::size_t>(chosen)].file);
+        ImGui::SameLine();
+        if (ImGui::Button(tr("No, as it is"))) net.answer_states_offer(std::nullopt);
+    }
+    ImGui::End();
+#else
+    (void)net;
+    (void)trains;
+#endif
 }
 
 void draw_helper_windows(NetSession& net) {

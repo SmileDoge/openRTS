@@ -3210,6 +3210,10 @@ void TrainView::restore_own_state(const std::uint64_t id, const std::string& tex
 // ---------------------------------------------------------------------------
 // Placements (docs/placements.md)
 
+std::filesystem::path TrainView::train_states_folder() const {
+    return user_data_directory() / "train_states" / std::string(route_.filename());
+}
+
 std::filesystem::path TrainView::placement_folder() const {
     return user_data_directory() / "placements" / std::string(route_.filename());
 }
@@ -3846,12 +3850,16 @@ std::vector<TrainView::CabDoors> TrainView::cab_doors() const {
         if (!cab || car == SIZE_MAX) return;
         for (const auto& c : out)
             if (c.car == car) return;
-        CabDoors d{.car = car};
+        CabDoors d{.car = car, .cab = cab};
         for (std::size_t j = 0; j < cab->description().doors.size(); ++j) d.open.push_back(cab->door_open(j) ? 1 : 0);
         if (!d.open.empty()) out.push_back(std::move(d));
     };
-    add(cab_.get(), cab_car_);
-    add(visit_cab_.get(), engineer_car_);
+    // Only the cab he stands in: a helper sees the engineer's cab from
+    // another one, and its doors are the engineer's to tell (testers
+    // 2026-11-21: doors opening and shutting by themselves with a helper
+    // in the other cab).
+    if (engineer_car_ == cab_car_) add(cab_.get(), cab_car_);
+    else add(visit_cab_.get(), engineer_car_);
     return out;
 }
 
@@ -5218,6 +5226,12 @@ void TrainView::toggle_profile_strip() {
     profile_built_at_ = -1e9;
 }
 
+void TrainView::toggle_drive_card() {
+    if (!drive_card_on_) drive_card_on_ = remembered("drive_card").value_or("0") == "1";
+    drive_card_on_ = !*drive_card_on_;
+    remember("drive_card", *drive_card_on_ ? "1" : "0");
+}
+
 void TrainView::draw_profile_strip(const Unit& unit) {
 #ifdef OPENRTS_HAS_IMGUI
     if (!profile_strip_) profile_strip_ = std::make_unique<ProfileStrip>();
@@ -5712,6 +5726,60 @@ void TrainView::draw_hud() {
     }
     if (!profile_strip_on_) profile_strip_on_ = remembered("profile_strip").value_or("0") == "1";
     if (*profile_strip_on_) draw_profile_strip(*unit);
+    if (!drive_card_on_) drive_card_on_ = remembered("drive_card").value_or("0") == "1";
+    if (*drive_card_on_) {
+        // F4: compact, every line short; dragged anywhere like the others.
+        if (begin_panel("##drive_card", drive_card_place_, 1.0f - margin_x, 0.30f)) {
+            const auto distance_text = [](const double m) {
+                char text[32];
+                std::snprintf(text, sizeof text, m >= 1000.0 ? tr("%.1f km") : tr("%.0f m"), m >= 1000.0 ? m / 1000.0 : m);
+                return std::string(text);
+            };
+            const auto seconds = static_cast<long>(std::fmod((std::max)(day_time_, 0.0), 86400.0));
+            const double kmh = std::abs(train.speed()) * 3.6;
+            const bool over = limit.current > 0.0f && kmh > limit.current * 3.6 + 0.5;
+            ImGui::Text("%02ld:%02ld:%02ld", seconds / 3600, seconds / 60 % 60, seconds % 60);
+            ImGui::SameLine(0.0f, 16.0f);
+            if (over) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(240, 70, 60, 255));
+            ImGui::Text(tr("%.0f km/h"), kmh);
+            if (over) ImGui::PopStyleColor();
+            if (limit.current > 0.0f) ImGui::Text(tr("Limit %.0f"), limit.current * 3.6f);
+            else ImGui::TextUnformatted(tr("Limit: none"));
+            if (limit.ahead > 0.0f && std::abs(limit.ahead - limit.current) > 0.1f) {
+                ImGui::SameLine(0.0f, 12.0f);
+                ImGui::TextDisabled(tr("then %.0f in %s"), limit.ahead * 3.6f, distance_text(limit.ahead_distance).c_str());
+            }
+            const auto next = signals_ ? signals_->ahead(train) : simulation::SignalAhead{};
+            if (next.valid) {
+                using A = formats::SignalAspect;
+                const auto aspect = next.aspect;
+                const std::uint32_t colour = aspect == A::stop || aspect == A::stop_and_proceed ? IM_COL32(230, 50, 40, 255)
+                                             : aspect == A::restricting                       ? IM_COL32(240, 240, 240, 255)
+                                             : aspect <= A::approach_3                        ? IM_COL32(250, 210, 40, 255)
+                                             : aspect <= A::clear_2                           ? IM_COL32(60, 210, 90, 255)
+                                                                                              : IM_COL32(120, 120, 120, 255);
+                const char* name = aspect == A::stop               ? tr("stop signal")
+                                   : aspect == A::stop_and_proceed ? tr("stop, pass allowed")
+                                   : aspect == A::restricting      ? tr("call-on signal")
+                                   : aspect <= A::approach_3       ? tr("yellow")
+                                   : aspect <= A::clear_2          ? tr("green")
+                                                                   : tr("aspect unknown");
+                const auto at = ImGui::GetCursorScreenPos();
+                const float h = ImGui::GetTextLineHeight();
+                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(at.x + h * 0.5f, at.y + h * 0.5f), h * 0.38f, colour);
+                ImGui::Dummy(ImVec2(h, h));
+                ImGui::SameLine(0.0f, 4.0f);
+                ImGui::Text("%s  %s", name, distance_text(next.distance).c_str());
+                if (next.speed > 0.0f) {
+                    ImGui::SameLine(0.0f, 8.0f);
+                    ImGui::TextDisabled("(%.0f)", next.speed * 3.6f);
+                }
+            } else {
+                ImGui::TextDisabled("%s", tr("No signal ahead"));
+            }
+        }
+        end_panel(drive_card_place_);
+    }
     if (stations_panel_) {
         if (begin_panel("##stations", stations_place_, 1.0f - margin_x, 0.45f)) {
             if (!timetable_.empty() && unit == &units_.front()) {
@@ -8262,7 +8330,21 @@ void TrainView::update_car_menu(const glm::vec3& eye) {
         if (std::none_of(items.begin(), items.end(), [&](const CarMenuItem& item) { return item.id == *choice; })) return;
         car_menu_.reset();
         do_car_menu_item(menu, *choice);
+        // For the others (the network): the coupling's uncouple and the
+        // cargo's information are not (the uncouple goes as a cut).
+        if (network_game_ && !(menu.coupling && *choice == 1) && !(!menu.coupling && *choice == 8))
+            car_actions_.push_back({.train = menu.train, .car = menu.car, .coupling = menu.coupling, .front = menu.front, .item = *choice});
     }
+}
+
+void TrainView::apply_car_action(const CarAction& action) {
+    CarMenu menu;
+    menu.coupling = action.coupling;
+    menu.train = action.train;
+    menu.car = action.car;
+    menu.front = action.front;
+    menu.remote = true;
+    do_car_menu_item(menu, action.item);
 }
 
 formats::WagonRules TrainView::stock_rules() const {
@@ -10127,17 +10209,18 @@ void TrainView::update_pantographs(const float elapsed) {
             const auto* engine = car.definition->engine ? &*car.definition->engine : nullptr;
             const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr;
             const bool plugin = u == 0 && native_ && i == native_car_;
-            // ExcludePantograph is the car's: never raised, whoever asks (a
-            // DLL too: the ВЛ80Т's sections each have a second pantograph
-            // node the .rtseng excludes, and its DLL raises both bits;
-            // testers 2026-11-21: the rear raised the front one as well).
-            const std::uint8_t excluded = engine ? engine->exclude_pantographs : std::uint8_t{0};
+            // A DLL's pantographs are as it raises them: RTS applies
+            // ExcludePantograph only without one (0x424488, below;
+            // reverse/train-dll.md 16). Applied to the DLL's too (v0.33.4),
+            // the ВЛ80Т's and ВЛ80С's sections raised none: each one's
+            // pantograph, numbered by where it stands, is the number its
+            // .rtseng excludes (testers 2026-11-21).
             if (unit.remote) {
-                car.pantograph_raised = static_cast<std::uint8_t>(car.remote_pantographs & ~excluded);
+                car.pantograph_raised = car.remote_pantographs;
             } else if (out) {
-                car.pantograph_raised = static_cast<std::uint8_t>(out->panto_raised & ~excluded);
+                car.pantograph_raised = out->panto_raised;
             } else if (plugin) {
-                car.pantograph_raised = static_cast<std::uint8_t>(native_->outputs().pantographs & ~excluded);
+                car.pantograph_raised = static_cast<std::uint8_t>(native_->outputs().pantographs);
             } else if (engine && engine->kind == formats::EngineKind::electric && working && !car.cold && !(u == 0 && pantographs_down_)) {
                 std::uint8_t main = 1, second = 2;
                 if (unit.role == Role::ai) {

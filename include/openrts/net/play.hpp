@@ -140,6 +140,18 @@ struct OpenrtsCabDoors {
 };
 [[nodiscard]] Bytes encode_openrts_cab_doors(const OpenrtsCabDoors& doors);
 [[nodiscard]] std::optional<OpenrtsCabDoors> decode_openrts_cab_doors(ByteView body);
+// 0x45FE openrts_car_action (openRTS's own, 2026-11-21): a car menu item
+// done on a car of any train (a chock, the handbrake, a valve, a hose, a
+// cock, a cable), carried out on every openRTS computer, its owner's too:
+// RTS keeps them on the one that did it (reverse/multiplayer-protocol.md).
+// u32 train, u32 car, u8 coupling (0 a bogie's menu), u8 front, u32 item.
+struct OpenrtsCarAction {
+    std::uint32_t train{}, car{};
+    bool coupling = false, front = true;
+    std::uint32_t item{};
+};
+[[nodiscard]] Bytes encode_openrts_car_action(const OpenrtsCarAction& action);
+[[nodiscard]] std::optional<OpenrtsCarAction> decode_openrts_car_action(ByteView body);
 [[nodiscard]] std::optional<TrainStatePart> decode_train_state(ByteView body);
 // 0x4617 car_light, as rts1.exe sends it: the receiver takes the radius,
 // colour and position too (0x4C3DE0).

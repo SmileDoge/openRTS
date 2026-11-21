@@ -4,6 +4,10 @@
 #include <openrts/core/profile.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -20,6 +24,7 @@
 #include <openrts/simulation/train.hpp>
 
 #include "train_view.hpp"
+#include "ui_text.hpp"
 
 namespace openrts::viewer {
 
@@ -365,9 +370,20 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
     // MainRoute behind the tail): ours to set and to tell the server, as
     // rts1.exe does (0x460A, 0x4CBFC4); the others' trains are their
     // owners' (the server tells us).
-    for (const auto& w : network.take_wanted_switches()) {
+    const auto wanted = network.take_wanted_switches();
+    std::set<std::uint32_t> under_others;
+    if (!wanted.empty()) {
+        for (const auto& [_, remote] : remotes_) {
+            if (remote.train == 0) continue;
+            if (const auto* train = trains.find_train(remote.train))
+                for (const auto j : net::junctions_under(network, *train)) under_others.insert(j);
+        }
+    }
+    for (const auto& w : wanted) {
         const bool ours = std::any_of(owned_.begin(), owned_.end(), [&](const auto& o) { return o.second.train != 0 && o.second.train == w.owner; });
         if (!ours || console_) continue;
+        // Not under another player's train, nor just in front of it.
+        if (under_others.contains(w.node)) continue;
         auto* state = network.junction(w.node);
         if (!state || state->selected == w.branch) continue;
         state->selected = w.branch;
@@ -619,6 +635,14 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         if (const auto v = net::decode_sound_values(body); v && v->slot == 3) {
             const auto it = remotes_.find(v->train);
             if (it != remotes_.end() && it->second.train != 0) trains.set_remote_sound(it->second.train, v->car, v->vars);
+        }
+        return;
+    case P(net::Package::openrts_car_action):
+        if (const auto a = net::decode_openrts_car_action(body)) {
+            if (const auto view = view_train(a->train)) {
+                trains.apply_car_action({.train = view, .car = a->car, .coupling = a->coupling, .front = a->front, .item = static_cast<int>(a->item)});
+                std::cout << "net: train " << a->train << " car " << a->car + 1 << ": menu item " << a->item << " from another player" << std::endl;
+            }
         }
         return;
     case P(net::Package::openrts_cab_doors):
@@ -1403,6 +1427,13 @@ bool NetSession::place_owned(const std::uint32_t id, Owned& own, simulation::Tra
 // server keeps it, and gives it back when the train is ours again.
 void NetSession::send_states(TrainView& trains, const double t) {
     if (!connection_ || console_ || !openrts_server_) return;
+    // Car menu items done here, on any train (0x45FE).
+    for (const auto& a : trains.take_car_actions()) {
+        if (const auto sid = server_train(a.train))
+            connection_->send(net::id(net::Package::openrts_car_action),
+                              net::encode_openrts_car_action({.train = sid, .car = static_cast<std::uint32_t>(a.car), .coupling = a.coupling,
+                                                              .front = a.front, .item = static_cast<std::uint32_t>(a.item)}));
+    }
     // The doors of the cab we are in, when they change (0x45FD): the
     // engineer's and his helpers' alike.
     {
@@ -1410,10 +1441,19 @@ void NetSession::send_states(TrainView& trains, const double t) {
         if (on != cab_doors_train_) {
             cab_doors_train_ = on;
             cab_doors_seen_.clear();
+            cab_doors_view_.clear();
         }
         if (on != 0) {
             for (auto& d : trains.cab_doors()) {
                 auto& seen = cab_doors_seen_[d.car];
+                // A view made anew (he came in, the view changed): its doors
+                // are as last told, not a change to tell.
+                if (auto& view = cab_doors_view_[d.car]; view != d.cab) {
+                    view = d.cab;
+                    if (!seen.empty() && seen != d.open) trains.set_cab_doors(d.car, seen);
+                    else seen = d.open;
+                    continue;
+                }
                 if (seen.empty()) {
                     seen = d.open; // as it stood when we came in: nothing to tell
                     continue;
@@ -1433,11 +1473,42 @@ void NetSession::send_states(TrainView& trains, const double t) {
         own.doors_sent = doors;
         connection_->send(net::id(net::Package::openrts_doors), net::encode_openrts_doors({.train = id, .groups = std::move(doors)}));
     }
+    const std::uint32_t driven = driven_id(trains);
     for (auto& [id, own] : owned_) {
-        if (own.train == 0 || own.waiting || t < own.next_state) continue;
+        if (own.train == 0 || own.waiting) continue;
+        if (own.ours_since < 0.0) own.ours_since = t;
+        // States of it kept here for this server, less than a day old: the
+        // player chooses one or none (a window), a few seconds on (the
+        // server's own is in by then).
+        if (!own.offered && id == driven && t - own.ours_since >= 3.0) {
+            own.offered = true;
+            if (!kept_states(trains).empty()) {
+                states_offer_ = true;
+                std::cout << "net: train " << id << ": states of it kept here, offered" << std::endl;
+            }
+        }
+        if (restore_asked_ && id == driven) {
+            std::ifstream in(*restore_asked_, std::ios::binary);
+            if (in) {
+                std::ostringstream text;
+                text << in.rdbuf();
+                trains.restore_own_state(own.train, text.str());
+                own.next_state = t + 10.0;
+                own.ours_since = t; // nothing kept over it till it is in
+                std::cout << "net: train " << id << ": state " << restore_asked_->filename().string() << " put back by hand" << std::endl;
+            }
+            restore_asked_.reset();
+        }
+        if (t < own.next_state) continue;
         own.next_state = t + 30.0;
         const auto text = trains.own_state(own.train);
         if (text.empty()) continue;
+        // Not while the kept ones are offered: the state now may be the one to be replaced.
+        if (id == driven && !states_offer_ && t - own.ours_since >= 40.0) {
+            const bool dated = t >= own.next_keep;
+            if (dated) own.next_keep = t + 300.0;
+            keep_state(own, trains, text, t, dated);
+        }
         net::Bytes packed(4 + compressBound(static_cast<uLong>(text.size())));
         const auto size = static_cast<std::uint32_t>(text.size());
         std::memcpy(packed.data(), &size, 4);
@@ -1458,6 +1529,106 @@ void NetSession::put_back_state(const std::uint32_t id, TrainView& trains) {
     pending_states_.erase(it);
     // Not sent back at once: the state put back is kept by the server already.
     own->second.next_state = 0.0;
+}
+
+std::filesystem::path NetSession::kept_states_folder(const Owned& own, const TrainView& trains) const {
+    // FNV-1a over the cars' files: the same name with other cars is another train.
+    std::uint64_t hash = 1469598103934665603ull;
+    for (const auto& car : own.record.cars) {
+        for (const char16_t c : car.file) {
+            hash ^= static_cast<std::uint64_t>(c);
+            hash *= 1099511628211ull;
+        }
+        hash ^= 0x2Cu;
+        hash *= 1099511628211ull;
+    }
+    std::string name = net::train_name(own.record);
+    for (auto& c : name)
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' || (c >= 0 && c < 32)) c = '_';
+    if (name.size() > 60) name.resize(60);
+    char tail[24];
+    std::snprintf(tail, sizeof tail, "_%08llx", static_cast<unsigned long long>(hash & 0xFFFFFFFFull));
+    const std::u8string folder(reinterpret_cast<const char8_t*>(name.data()), name.size());
+    std::string server = server_key_.empty() ? std::string("server") : server_key_;
+    for (auto& c : server)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-')) c = '_';
+    return trains.train_states_folder() / server
+           / (std::filesystem::path(folder).u8string() + std::u8string(reinterpret_cast<const char8_t*>(tail)));
+}
+
+void NetSession::keep_state(const Owned& own, const TrainView& trains, const std::string& text, const double t, const bool dated) {
+    static_cast<void>(t);
+    std::error_code error;
+    const auto folder = kept_states_folder(own, trains);
+    std::filesystem::create_directories(folder, error);
+    if (error) return;
+    const auto write = [&](const std::filesystem::path& file) {
+        const auto temporary = std::filesystem::path(file).concat(".tmp");
+        {
+            std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+            if (!out) return;
+            out << text;
+        }
+        std::error_code e;
+        std::filesystem::rename(temporary, file, e);
+    };
+    write(folder / "last.state");
+    if (!dated) return;
+    const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    char name[48];
+    std::strftime(name, sizeof name, "%Y-%m-%d_%H-%M-%S.state", &local);
+    write(folder / name);
+    // The newest 12 dated ones kept.
+    std::vector<std::filesystem::path> dated_files;
+    for (const auto& entry : std::filesystem::directory_iterator(folder, error))
+        if (entry.path().extension() == ".state" && entry.path().filename() != "last.state") dated_files.push_back(entry.path());
+    std::sort(dated_files.begin(), dated_files.end());
+    for (std::size_t i = 0; i + 12 < dated_files.size(); ++i) std::filesystem::remove(dated_files[i], error);
+}
+
+std::vector<NetSession::KeptState> NetSession::kept_states(const TrainView& trains) const {
+    std::vector<KeptState> out;
+    const auto it = owned_.find(driven_id(trains));
+    if (it == owned_.end()) return out;
+    const auto folder = kept_states_folder(it->second, trains);
+    std::error_code error;
+    // Newest first, less than a day old (an older one is of another game).
+    std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> files;
+    const auto now = std::filesystem::file_time_type::clock::now();
+    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
+        if (entry.path().extension() != ".state") continue;
+        std::error_code e;
+        const auto when = std::filesystem::last_write_time(entry.path(), e);
+        if (e || now - when > std::chrono::hours(24)) continue;
+        files.emplace_back(when, entry.path());
+    }
+    std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    // A dated copy written with the last one is the same state: once.
+    std::optional<std::filesystem::file_time_type> last;
+    for (const auto& [when, file] : files)
+        if (file.filename() == "last.state") last = when;
+    for (const auto& [when, file] : files) {
+        if (last && file.filename() != "last.state" && (when > *last ? when - *last : *last - when) < std::chrono::seconds(3)) continue;
+        const auto time = std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(when));
+        std::tm local{};
+#ifdef _WIN32
+        localtime_s(&local, &time);
+#else
+        localtime_r(&time, &local);
+#endif
+        char text[32];
+        std::strftime(text, sizeof text, "%d.%m %H:%M:%S", &local);
+        std::string label = text;
+        if (file.filename() == "last.state") label = std::string(tr("the last one")) + ", " + label;
+        out.push_back({file, label});
+    }
+    return out;
 }
 
 void NetSession::take_off(const std::uint32_t id, Owned& own, TrainView& trains) {
@@ -1703,7 +1874,30 @@ void NetSession::move_trains(simulation::TrackNetwork& network, TrainView& train
         const auto front = train->front_end();
         if (!target || !front) continue;
         const simulation::TrackLocation here{front->node(), front->offset(), front->forward()};
-        if (const auto d = net::track_distance(network, here, *target, 300.0)) {
+        // Laid again from its head every 5 s: its cars behind follow the
+        // junctions as they are here, and one set otherwise till the server
+        // told it again left them on the wrong track (testers 2026-11-21).
+        bool relay = false;
+        if (now >= remote.next_relay) {
+            remote.next_relay = now + 5.0;
+            // Only when its tail, laid from its head along the junctions as
+            // they are now, is not where it lies (nor while derailed: laying
+            // it again puts its cars back on the rails).
+            const auto rear = train->rear_end();
+            const auto& cars = train->cars();
+            const bool derailed = std::any_of(cars.begin(), cars.end(), [](const auto& c) { return c.derailed; });
+            simulation::TrackTraveller laid(network, here.node, here.offset, here.forward);
+            if (!derailed && rear && laid.move(-train->length()).ok()) {
+                const bool apart = laid.node() != rear->node() || std::abs(laid.offset() - rear->offset()) > 1.0;
+                if (apart) {
+                    relay = true;
+                    std::cout << "net: train " << id << " laid again from its head: its cars were on another track than the junctions here give"
+                              << std::endl;
+                }
+            }
+        }
+        const auto d = relay ? std::optional<double>{} : net::track_distance(network, here, *target, 300.0);
+        if (d) {
             if (std::abs(*d) > 1e-4) train->shift(*d);
         } else {
             std::string error;
