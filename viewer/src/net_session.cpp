@@ -100,7 +100,33 @@ NetSession::NetSession(std::shared_ptr<net::RtsConnection> connection, net::Snap
     if (snapshot_.time) time_of_day_ = *snapshot_.time;
     for (const auto& train : snapshot_.trains) {
         if (train.route_left && train.route_left->first >= 0.0f) routes_[train.id] = {train.route_left->first, (train.route_left->second & 1) != 0};
+        if (train.names) names_[train.id] = {(*train.names)[0], (*train.names)[1]};
     }
+}
+
+const NetSession::TrainNames* NetSession::train_names(const std::uint32_t server_train) const {
+    const auto it = names_.find(server_train);
+    return it == names_.end() ? nullptr : &it->second;
+}
+
+std::uint32_t NetSession::train_number(const std::uint32_t server_train) const {
+    if (console_state_) {
+        for (const auto& t : console_state_->trains) {
+            if (t.id == server_train) return t.number;
+        }
+    }
+    return 0;
+}
+
+void NetSession::send_train_names(const std::uint32_t server_train, const std::u16string& name, const std::u16string& notes) {
+    if (!connection_ || server_train == 0) return;
+    net::WireWriter w;
+    w.u32(server_train);
+    w.text_u32(name);
+    w.text_u32(notes);
+    connection_->send(net::id(net::Package::train_names), w.data());
+    console_log_.push_back("> train " + std::to_string(server_train) + ": name \"" + net::to_utf8(name) + "\", notes " +
+                           std::to_string(notes.size()) + " characters");
 }
 
 void NetSession::send_command(const std::string_view line) {
@@ -638,6 +664,17 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
             from = end + 1;
         }
         if (console_log_.size() > 500) console_log_.erase(console_log_.begin(), console_log_.end() - 500);
+        return;
+    }
+    case P(net::Package::train_names): {
+        // A train's name and notes (the console's train form), to everyone.
+        net::WireReader r(body);
+        const auto train = r.u32();
+        auto name = r.text_u32();
+        auto notes = r.text_u32();
+        if (!r.ok()) return;
+        if (name.empty() && notes.empty()) names_.erase(train);
+        else names_[train] = {std::move(name), std::move(notes)};
         return;
     }
     case P(net::Package::route_left): {

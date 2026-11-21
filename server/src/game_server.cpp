@@ -701,6 +701,18 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         return;
     }
 
+    // A console's train form: the train's name and notes (0x461A; RTS's
+    // console sends them so, the server to everyone).
+    if (user->console && id == P(Package::train_names)) {
+        net::WireReader r(body);
+        const auto train = r.u32();
+        auto name = r.text_u32();
+        auto notes = r.text_u32();
+        if (!r.ok()) return;
+        std::string result;
+        if (!set_names(train, std::move(name), std::move(notes), result)) impl.note(utf8(user->nick) + ": " + result);
+        return;
+    }
     // A console's RTS packages (Legacy): its hand route and its junctions.
     if (user->console && id == P(Package::route_left)) {
         net::WireReader r(body);
@@ -2125,6 +2137,60 @@ std::vector<UserSummary> GameServer::users() const {
         out.push_back(std::move(s));
     }
     return out;
+}
+
+bool GameServer::set_number(const std::uint32_t train, const std::uint32_t number, std::string& error) {
+    auto& impl = *impl_;
+    auto* t = impl.train(train);
+    if (!t) {
+        error = "no train " + std::to_string(train);
+        return false;
+    }
+    if (number == 0) {
+        error = "a train number is 1 or more";
+        return false;
+    }
+    for (const auto& [id, other] : impl.trains) {
+        if (id != train && other.number == number) {
+            error = "train " + std::to_string(id) + " has number " + std::to_string(number);
+            return false;
+        }
+    }
+    t->number = number;
+    const auto info = info_package(t->record, t->number);
+    for (auto& [_, user] : impl.users) {
+        if (user.playing && user.connection) transport_.send(user.connection, info);
+    }
+    impl.note("train " + std::to_string(train) + " is №" + std::to_string(number));
+    impl.next_console = 0.0;
+    return true;
+}
+
+bool GameServer::set_names(const std::uint32_t train, std::u16string name, std::u16string notes, std::string& error) {
+    auto& impl = *impl_;
+    auto* t = impl.train(train);
+    if (!t) {
+        error = "no train " + std::to_string(train);
+        return false;
+    }
+    if (name.empty() && notes.empty()) t->record.names.reset();
+    else t->record.names = std::array<std::u16string, 2>{name, notes};
+    const auto bytes = package(P(Package::train_names), [&](net::WireWriter& w) {
+        w.u32(train);
+        w.text_u32(name);
+        w.text_u32(notes);
+    });
+    for (auto& [_, user] : impl.users) {
+        if (user.playing && user.connection) transport_.send(user.connection, bytes);
+    }
+    impl.note("train " + std::to_string(train) + ": name \"" + utf8(name) + "\", notes " + std::to_string(notes.size()) + " characters");
+    return true;
+}
+
+std::pair<std::u16string, std::u16string> GameServer::names(const std::uint32_t train) const {
+    const auto it = impl_->trains.find(train);
+    if (it == impl_->trains.end() || !it->second.record.names) return {};
+    return {(*it->second.record.names)[0], (*it->second.record.names)[1]};
 }
 
 std::uint32_t GameServer::free_number() const {

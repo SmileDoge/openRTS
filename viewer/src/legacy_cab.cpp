@@ -126,7 +126,7 @@ std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::ve
         return nullptr;
     }
     for (const auto& m : consist->modules()) {
-        if (m.status != 0) status += "refused: " + trainplugin::utf16_to_utf8(m.path) + "\n";
+        if (m.status < 0) status += "refused: " + trainplugin::utf16_to_utf8(m.path) + "\n";
     }
     cab->consist_ = std::move(consist);
     cab->bind_keys(player);
@@ -587,7 +587,7 @@ void LegacyCab::draw_window(const std::function<void()>& extra) {
         const auto path = trainplugin::utf16_to_utf8(m.path);
         const auto slash = path.find_last_of("/\\");
         ImGui::TextDisabled("%s: %s, TS_VERSION %u", path.substr(slash == std::string::npos ? 0 : slash + 1).c_str(),
-                            m.status == 0 ? tr("loaded") : tr("refused"), m.version[1]);
+                            m.status == 0 ? tr("loaded") : m.status > 0 ? tr("not loaded (openRTS's devices)") : tr("refused"), m.version[1]);
     }
     // On foot they are on whatever is chosen (the box shows it, greyed).
     bool keys_on = keyboard();

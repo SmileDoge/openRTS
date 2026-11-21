@@ -84,6 +84,18 @@ public:
     // The distance a train's route has left, as the server last sent it
     // (0x4619), and whether it is laid from the rear; nothing: no route.
     [[nodiscard]] std::optional<std::pair<float, bool>> route_left(std::uint32_t server_train) const;
+    // A train's name and notes (0x461A, the console's train form's
+    // "Название" and "Заметки"; RTS's server sends them to everyone, its
+    // clients keep none): as the server last sent them, nothing none.
+    struct TrainNames {
+        std::u16string name, notes;
+    };
+    [[nodiscard]] const TrainNames* train_names(std::uint32_t server_train) const;
+    // Its number as the console's state has it (0: not known).
+    [[nodiscard]] std::uint32_t train_number(std::uint32_t server_train) const;
+    // The console's: a train's name and notes for the server (0x461A), which
+    // sends them to everyone.
+    void send_train_names(std::uint32_t server_train, const std::u16string& name, const std::u16string& notes);
     // The TrainView train a server train is drawn as (0 none), and back.
     [[nodiscard]] std::uint64_t view_train(std::uint32_t server_train) const;
     [[nodiscard]] std::uint32_t server_train(std::uint64_t view_train) const;
@@ -237,6 +249,7 @@ private:
     bool test_asked_ = false, test_switched_ = false;
     std::map<std::uint32_t, std::pair<std::size_t, std::uint32_t>> cab_seen_; // by car: packages, the test switch's state
     std::map<std::uint32_t, std::pair<float, bool>> routes_; // by server train: 0x4619
+    std::map<std::uint32_t, TrainNames> names_;             // by server train: 0x461A
     std::optional<net::ConsoleState> console_state_;
     std::optional<net::ConsoleNext> next_routes_;
     std::vector<std::string> console_log_;

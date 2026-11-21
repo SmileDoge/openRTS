@@ -184,8 +184,9 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
         }
     }
     if (!klub_ek(s)) text(b[27], u"");
-    // The next object within 500 m (an odd track number: its bit 0).
-    if ((s.track & 1) && in.epk_key) {
+    // The next object within 500 m (an odd track number: its bit 0); not
+    // with the objects' line off (the target signal only).
+    if ((s.track & 1) && in.epk_key && in.objects_line) {
         bool first = true;
         for (std::size_t i = 0; i < in.items.size(); ++i) {
             const auto& item = in.items[i];

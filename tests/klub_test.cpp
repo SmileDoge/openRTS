@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <openrts/simulation/klub.hpp>
+#include <openrts/simulation/klub_screen.hpp>
 
 namespace {
 
@@ -140,6 +141,64 @@ void test_electronic_map() {
     off.ek.distance = 1500.0f;
     off.run(0.1f);
     check(klub_ek(off.state), "the map has it again: the ЭК");
+}
+
+// П N ВВОД waits for its признак правильности: the track (and the ЭК's
+// number with it) changes at the second ВВОД (the testers' 2026-11-21);
+// 0 at once.
+void test_track_waits_for_its_sign() {
+    Rig rig;
+    rig.track(1);
+    rig.press(KlubKey::track);
+    rig.press(KlubKey::digit, 3);
+    rig.press(KlubKey::enter);
+    check((rig.state.track & 0xFF) == 0x81 && (rig.state.flags & klub_flag::right_entry),
+          "П 3 ВВОД: ПРИЗН. ПРАВ. asked, track 1 (the right one) kept");
+    check(rig.state.entry == 1, "the sign's field shows the last one (1, ПР)");
+    rig.press(KlubKey::digit, 0);
+    check(rig.state.entry == 0, "a digit replaces it");
+    rig.press(KlubKey::enter);
+    check(rig.state.track == 3 && !(rig.state.flags & klub_flag::right_entry), "its sign 0 ВВОД: track 3, not the right one");
+    rig.press(KlubKey::track);
+    check(rig.state.entry == 3, "П: the field shows the last track (3)");
+    rig.press(KlubKey::digit, 5);
+    check(rig.state.entry == 5, "a digit replaces it");
+    rig.press(KlubKey::enter);
+    check(rig.state.track == 3 && rig.state.entry == 0, "П 5 ВВОД: still 3, the field 0 (НП)");
+    rig.press(KlubKey::digit, 1);
+    rig.press(KlubKey::enter);
+    check(rig.state.track == (5 | 0x80u), "1 ВВОД: track 5, the right one");
+    rig.press(KlubKey::track);
+    rig.press(KlubKey::digit, 2);
+    rig.press(KlubKey::enter);
+    rig.press(KlubKey::enter);
+    check(rig.state.track == (2 | 0x80u), "П 2 ВВОД ВВОД: track 2 with the last sign (ПР)");
+    rig.press(KlubKey::track);
+    rig.press(KlubKey::digit, 0);
+    rig.press(KlubKey::enter);
+    check(rig.state.track == 0 && !(rig.state.flags & klub_flag::right_entry) && !klub_ek(rig.state), "П 0 ВВОД: no track at once");
+}
+
+// The next object line (KlubScreenInputs::objects_line): a crossing 300 m
+// ahead takes the target signal's place, as Brakes.dll's; with the line off
+// (openRTS's, the testers' 2026-11-21) the target signal stays.
+void test_objects_line() {
+    Rig rig;
+    rig.track(1); // odd: the objects shown
+    rig.ek = {.given = true, .matched = true, .has_target = true, .distance = 1500.0f};
+    rig.run(25.0f); // the screen up (its first 20 s)
+    const std::vector<KlubTrackItem> items{KlubTrackItem{.type = 5, .distance = 300.0f, .pos = 1}};
+    KlubScreenInputs in;
+    in.items = items;
+    in.signal_name = u"Н1";
+    KlubScreen with, without;
+    auto state = rig.state;
+    state.redraw = 0.0f; // a redraw's step: the lines are drawn then
+    draw_klub(state, rig.settings, in, with);
+    in.objects_line = false;
+    draw_klub(state, rig.settings, in, without);
+    check(with.bil[21].text == u"ПЕРЕЕЗД", "the objects' line: the crossing in the target's place");
+    check(without.bil[21].text != u"ПЕРЕЕЗД" && without.bil[22].text != with.bil[22].text, "off: the target signal stays");
 }
 
 void test_without_the_ek() {
@@ -279,6 +338,8 @@ int main() {
     test_aspect_delay();
     test_curve_with_the_ek();
     test_electronic_map();
+    test_track_waits_for_its_sign();
+    test_objects_line();
     test_without_the_ek();
     test_vigilance();
     test_own_limit_clears();

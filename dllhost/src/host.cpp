@@ -415,14 +415,22 @@ bool Host::setup(const SetupRequest& request, std::vector<ModuleReport>& modules
     link_cars();
 
     // Load (but do not bind) every module now, so the game learns early which
-    // DLLs refuse to run.
+    // DLLs refuse to run. A library not to be loaded (AuxLibrarySpec::stub)
+    // is not: reported as such (until 2026-11-21 it was loaded here all the
+    // same, mapped into the process with nothing of it called; the testers
+    // asked for Brakes.dll not in the process at all).
     for (const auto& car : cars_) {
-        auto report_module = [&](const std::u16string& path) {
+        auto report_module = [&](const std::u16string& path, const bool stub) {
             if (path.empty()) return;
             for (const auto& r : modules)
                 if (r.path == path) return;
             ModuleReport report;
             report.path = path;
+            if (stub) {
+                report.status = 1;
+                modules.push_back(std::move(report));
+                return;
+            }
             const Module* m = module_for(from_u16(path));
             report.status = m ? 0 : -1;
             for (const auto& mod : modules_)
@@ -430,8 +438,8 @@ bool Host::setup(const SetupRequest& request, std::vector<ModuleReport>& modules
                     std::memcpy(report.version, mod->version, sizeof(report.version));
             modules.push_back(std::move(report));
         };
-        report_module(car->spec.module);
-        for (const auto& aux : car->spec.aux) report_module(aux.module);
+        report_module(car->spec.module, false);
+        for (const auto& aux : car->spec.aux) report_module(aux.module, aux.stub);
     }
     return true;
 }

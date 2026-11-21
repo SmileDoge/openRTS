@@ -58,6 +58,14 @@ private:
     char command_[256]{};
     char time_[16]{};
     char number_[16]{};
+    // The chosen train's form: its number, name and notes (0x461A), loaded
+    // when another train is chosen; another dispatcher's change taken where
+    // this one is not edited.
+    std::uint32_t form_train_ = 0;
+    char form_number_[16]{};
+    char form_name_[256]{};
+    char form_notes_[6144]{}; // within RTS's 0x3C00 a package, as UTF-16
+    std::string form_name_seen_, form_notes_seen_;
     char consist_filter_[64]{};
     std::string consist_;
     std::string path_;

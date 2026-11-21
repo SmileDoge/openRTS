@@ -406,6 +406,41 @@ void game() {
         check(mine && other, "Bob's own train assigned, Alice's a player's");
     }
 
+    // The train form (2026-11-21): its number to everyone (0x4605, not
+    // another train's), its name and notes (0x461A) to everyone and in the
+    // snapshot; a console's 0x461A takes them, a player's does not.
+    {
+        check(!game.set_number(2, 101, error) && error.find("train 1") != std::string::npos, "number 101 is train 1's: " + error);
+        check(game.set_number(2, 2501, error), "train 2 is №2501: " + error);
+        got = take(rec, 1);
+        check(got.size() == 1 && got[0].id == P(Package::train_info) && net::decode_train_info(got[0].body)->number == 2501,
+              "Alice gets 0x4605 with №2501");
+        check(ids(take(rec, 2)) == std::vector<std::uint16_t>{P(Package::train_info)}, "Bob too");
+        check(game.set_names(2, u"Пригородный", u"на Тимашевскую\r\nс остановками", error), "train 2's name and notes: " + error);
+        got = take(rec, 1);
+        check(got.size() == 1 && got[0].id == P(Package::train_names), "Alice gets 0x461A");
+        take(rec, 2);
+        check(game.names(2).first == u"Пригородный" && game.names(2).second == u"на Тимашевскую\r\nс остановками", "the server keeps them");
+        game.connected(5, "127.0.0.1:5");
+        game.received(5, P(Package::console_login), login(u"DSP5")); // a console gets the world without a train
+        take_reply(rec, 5);
+        game.received(5, P(Package::snapshot), {});
+        const auto read = net::read_snapshot(rec.out[5]);
+        rec.out[5].clear();
+        bool named = false;
+        for (const auto& t : read.snapshot.trains) named = named || (t.id == 2 && t.names && (*t.names)[0] == u"Пригородный");
+        check(read.ok() && named, "a new player's snapshot carries the name");
+        game.closed(5);
+        net::WireWriter w;
+        w.u32(2);
+        w.text_u32(u"чужое");
+        w.text_u32(u"");
+        game.received(1, P(Package::train_names), w.data());
+        check(game.names(2).first == u"Пригородный", "a player's 0x461A is not taken");
+        take(rec, 1);
+        take(rec, 2);
+    }
+
     // Positions: relayed to the others only.
     {
         net::TrainPos pos;

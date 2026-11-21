@@ -1256,6 +1256,11 @@ private:
     std::shared_future<std::shared_ptr<const simulation::ElectronicMap>> electronic_map_;
     [[nodiscard]] const simulation::ElectronicMap* electronic_map();
     bool klub_map_ = true;
+    // The КЛУБ's next object line: platforms, crossings and limits in place
+    // of the target signal (Brakes.dll's); off by default, the target only
+    // (the testers, 2026-11-21: checking the ЭК). Remembered as klub_objects.
+    bool klub_objects_ = false;
+    void load_brake_choices();
     double items_searched_[2]{}; // how far the item list's walks went (ahead, behind), m
     // The player's train's coordinate (Engine::CurrentMilepost; RTS works it
     // out while the train moves, simulation/milepost.hpp).

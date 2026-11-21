@@ -139,6 +139,15 @@ public:
     bool assign(std::uint32_t train, std::string_view nick, std::string& error);
     bool unassign(std::uint32_t train, std::string& error);
     bool remove_train(std::uint32_t train, std::string& error);
+    // The console's train form (testers, 2026-11-21): its number (0x4605 to
+    // everyone, as rts_server.exe sends it when the console changes it: RTS
+    // numbers the cars by it; not one another train has), and its name and
+    // notes (0x461A to everyone; the console's free text "Название" and its
+    // memo "Заметки"; empty both: none).
+    bool set_number(std::uint32_t train, std::uint32_t number, std::string& error);
+    bool set_names(std::uint32_t train, std::u16string name, std::u16string notes, std::string& error);
+    // A train's name and notes, empty none.
+    [[nodiscard]] std::pair<std::u16string, std::u16string> names(std::uint32_t train) const;
     // The server joins two trains standing end to end (the nearest ends
     // within 50 m), as rts_server.exe does with a LOOSE train run into
     // another (0x40DCDC -> 0x4501E0): `0x460F` to everyone, A's owner too.

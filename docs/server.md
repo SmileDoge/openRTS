@@ -52,7 +52,12 @@ Russian path names and messages work.
 ## The window
 
 Without `--no-window` (or `--run`) the server opens its window, as
-`rts_server.exe` does:
+`rts_server.exe` does. The game steps on a thread of its own, every 20 ms
+as without the window; the window reads and changes it under a lock, its
+drawing outside it (2026-11-21: until then the game stepped once a frame,
+and a computer without a video card, drawing the window in software, sent
+the players' world seconds apart). On such a computer `--no-window` is
+lighter still.
 
 - **The start form:** the RTS folder (with "Обновить" to list its
   routes again), the route, season, weather, time, port (0: any free
@@ -137,6 +142,8 @@ before step 7, TRAFFIC).
 | `assign <train> <nick>` | the player drives it (`0x4601`; the others get `0x4605` PLAYER) |
 | `unassign <train>` | taken back: it stands as STATIC |
 | `remove <train>` | deleted (`0x4602` 1); its owner is told first |
+| `number <train> <number>` | its train number (`0x4605` to everyone, as `rts_server.exe` sends it when the console changes it: RTS numbers its cars by it); not one another train has |
+| `name <train> [text]`, `notes <train> [text]` | its name (the console's map shows it after the number) and its notes, one line here (the console's train form takes several); `0x461A` to everyone and in the snapshot; no text: cleared |
 | `say <nick\|*> <text>` | a message (`0x4611`) |
 | `pause`, `resume` | `0x4616`; nothing goes out while paused, as RTS |
 | `time [HH:MM[:SS]]` | shown or set (`0x460D` to everyone) |
@@ -224,6 +231,12 @@ openRTS itself is the console (the user's choice, 2026-11-09):
     manual / open / automatic block, shown as a train signal or not, back
     to the defaults, set as the defaults, the route database saved (on the
     server, into its folder): the `signal` lines;
+  - the train picked: its number ("Задать номер"), its name and notes
+    (several lines; "Сохранить название и заметки"), as RTS's console's
+    train form: `0x461A` to the server, which sends them to everyone; the
+    map shows "№ name" on the train and the notes when it is picked. A
+    form being edited keeps what is typed; another dispatcher's change
+    comes in where it is not (2026-11-21, the testers);
   - a new train: a consist (filtered) and a path, put on the track;
   - the players (dispatcher, away, in the menu, playing; their trains):
     messages to one or everyone, dropping a player, taking new players or
@@ -239,7 +252,10 @@ openRTS itself is the console (the user's choice, 2026-11-09):
     handbrake), its MaxVelocity, an optional number, and where: a path's
     start or the front of its first car at a node, an offset and a way.
     The consist is the dispatcher's own file; the server needs only the
-    cars' files and makes them its train. RTS's console does the same in
+    cars' files and makes them its train. A .con from anywhere on the
+    dispatcher's computer too (the map's "Browse..."): read there, by its
+    path (2026-11-21: until then "consist not found" for those, the game's
+    folders only, the testers' freight consists among them). RTS's console does the same in
     its own packages (live capture 2026-11-05): `0x4607` with the cars'
     records, the server's id back in `0x4507`, then `0x4603` / `0x4606` to
     place it; the server will take that sequence too when

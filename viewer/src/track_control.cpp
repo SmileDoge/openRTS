@@ -467,8 +467,12 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
                  : summary.role == TrainView::Role::ai     ? IM_COL32(40, 60, 220, 255)
                                                            : IM_COL32(140, 120, 20, 255);
         for (const auto& car : train->placements()) t.cars.emplace_back(car.front, car.rear);
-        char text[160];
-        std::snprintf(text, sizeof text, tr("%s %.0f km/h"), summary.name.c_str(), std::abs(summary.speed) * 3.6);
+        auto title = summary.name;
+        if (network_actions_.train_names) {
+            if (auto names = network_actions_.train_names(summary.id).first; !names.empty()) title = std::move(names);
+        }
+        char text[320];
+        std::snprintf(text, sizeof text, tr("%s %.0f km/h"), title.c_str(), std::abs(summary.speed) * 3.6);
         t.label = text;
         map_.trains.push_back(std::move(t));
     }
@@ -1091,8 +1095,12 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
     const auto summaries = trains.summaries();
     if (ImGui::BeginListBox("##trains", ImVec2(-1.0f, 150.0f))) {
         for (const auto& summary : summaries) {
-            char label[200];
-            std::snprintf(label, sizeof label, tr("%s  [%s]  %.0f km/h%s##%llu"), summary.name.c_str(),
+            auto title = summary.name;
+            if (network_actions_.train_names) {
+                if (auto names = network_actions_.train_names(summary.id).first; !names.empty()) title = std::move(names);
+            }
+            char label[360];
+            std::snprintf(label, sizeof label, tr("%s  [%s]  %.0f km/h%s##%llu"), title.c_str(),
                           summary.asleep ? "STATIC" : role_name(summary.role), std::abs(summary.speed) * 3.6,
                           summary.derailed ? tr("  DERAILED") : "", static_cast<unsigned long long>(summary.id));
             if (ImGui::Selectable(label, summary.id == selected_)) selected_ = summary.id;
@@ -1105,6 +1113,16 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
         ImGui::SeparatorText(selected->name.c_str());
         ImGui::Text(tr("%s%s, %zu cars, %.0f m"), role_name(selected->role), selected->asleep ? tr(" (STATIC: not simulated until moved)") : "",
                     selected->cars, selected->length);
+        if (network_actions_.train_names) {
+            const auto [title, notes] = network_actions_.train_names(selected->id);
+            if (!title.empty()) ImGui::TextUnformatted(title.c_str());
+            if (!notes.empty()) {
+                ImGui::TextDisabled("%s", tr("Notes"));
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextUnformatted(notes.c_str());
+                ImGui::PopTextWrapPos();
+            }
+        }
         if (selected->target >= 0.0f) ImGui::Text(tr("Test driver aims at %.0f km/h"), selected->target * 3.6f);
         if (signals) {
             const auto settings = signals->train_settings(selected->id);

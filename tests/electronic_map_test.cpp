@@ -42,7 +42,8 @@ struct Drive {
     std::uint32_t number{};
     simulation::EkState state;
     bool matched_at_start = false;
-    double off_at = -1.0;  // m driven when "без ЭК" came first
+    double on_at = -1.0;   // m driven when the ЭК came first (with a target)
+    double off_at = -1.0;  // and when "без ЭК" came after it
     double back_at = -1.0; // and when the ЭК came back
     std::size_t targets{};
 };
@@ -135,6 +136,9 @@ int main(int argc, char* argv[]) {
         simulation::TrackTraveller t = train;
         Drive drive{.number = number};
         std::uint32_t last_target = ~0u;
+        double last_distance = 0.0;
+        int stuck = 0;    // times the same target's distance stood
+        int standing = 0; // steps running it has not fallen
         double moved = 0.0;
         bool was_matched = true;
         std::string log;
@@ -150,11 +154,20 @@ int main(int argc, char* argv[]) {
             }
             const auto target = map.update(drive.state, *network, t.node(), t.offset(), t.forward(), number, passed);
             if (step == 0) drive.matched_at_start = target.matched && target.has_target;
+            if (drive.on_at < 0.0 && target.matched && target.has_target) drive.on_at = moved;
             for (const auto p : passed) {
                 const auto* track = map.track_of(p);
                 log += "  passed " + std::to_string(p) + (track ? " (" + track->station + " " + track->name + ")" : std::string()) + " at "
                        + std::to_string(static_cast<int>(moved)) + "\n";
             }
+            // Standing: 3 steps (15 m) running without a metre less.
+            if (target.matched && target.has_target && target.object == last_target && target.distance > last_distance - 1.0) {
+                if (++standing == 3 && stuck++ < 3)
+                    log += "  stuck at " + std::to_string(static_cast<int>(target.distance)) + " m at " + std::to_string(static_cast<int>(moved)) + "\n";
+            } else {
+                standing = 0;
+            }
+            if (target.has_target) last_distance = target.distance;
             if (target.has_target && target.object != last_target) {
                 ++drive.targets;
                 const auto* track = map.track_of(target.object);
@@ -164,26 +177,44 @@ int main(int argc, char* argv[]) {
             }
             if (!target.matched && was_matched) {
                 log += "  без ЭК from " + std::to_string(static_cast<int>(moved)) + " m\n";
-                if (drive.off_at < 0.0) drive.off_at = moved;
+                if (drive.off_at < 0.0 && drive.on_at >= 0.0) drive.off_at = moved;
             } else if (target.matched && !was_matched) {
                 log += "  ЭК again from " + std::to_string(static_cast<int>(moved)) + " m\n";
-                if (drive.back_at < 0.0) drive.back_at = moved;
+                if (drive.back_at < 0.0 && drive.off_at >= 0.0) drive.back_at = moved;
             }
             was_matched = target.matched;
             if (!t.move(stride).ok()) break;
             moved += stride;
         }
-        std::cout << "track " << number << ":\n" << log;
+        std::cout << "track " << number << ": " << stuck << " steps stuck\n" << log;
         const std::string name = "track " + std::to_string(number);
-        check(drive.matched_at_start, name + ": the ЭК with a target on the line before the station");
+        // The distance counts down as the train runs, past a nearer signal
+        // of the entered track too (the testers' 2026-11-21: it stood at 2 m).
+        check(stuck == 0, name + ": the distance never stands while the train runs");
+        // Track 1 (MainRoute) and 2 (its line track abreast) at once; a side
+        // track only in front of the signal its turn lies beyond, Albashi's
+        // entry here (2 km out the block signal at 570 m before it: the
+        // testers' 2026-11-21).
+        if (number <= 2) {
+            check(drive.matched_at_start, name + ": the ЭК with a target on the line before the station");
+        } else {
+            check(!drive.matched_at_start && drive.on_at >= 500.0 && drive.on_at < 2000.0,
+                  name + ": \"без ЭК\" up to the block signal, the ЭК in front of the entry");
+        }
         check(drive.targets >= 2, name + ": the targets change along the way");
         if (number == 1) {
             // The main line: the train keeps to it, the ЭК all the way.
             check(drive.off_at < 0.0, name + ": the ЭК all the way (the train on track 1)");
+        } else if (number == 2) {
+            // The other main track: out of Albashi by track 1 the ЭК goes on
+            // along the line's track 2 (the testers' 2026-11-21).
+            check(drive.off_at < 0.0 || drive.off_at > 24000.0, name + ": the ЭК on along the line's track 2 out of Albashi by track 1");
         } else {
-            // Another track: the train goes on along track 1, whose signal
-            // leaves the ЭК; not back in Albashi.
-            check(drive.off_at > 2000.0 && drive.off_at < 6000.0, name + ": \"без ЭК\" at Albashi's track 1 signal");
+            // Another track: the train goes on along track 1, its exit
+            // (4100 m) the one the entered track's way leads on to (a
+            // route signal on that track, the crossover, Н1): "без ЭК"
+            // past it (the testers' 2026-11-21).
+            check(drive.off_at > 2000.0 && drive.off_at < 6000.0, name + ": \"без ЭК\" past Albashi's track 1 exit, its way's");
             // Back before Деревянковка's entry where it has the track, else not.
             if (derevyankovka.contains(number)) check(drive.back_at > 9000.0, name + ": back before Деревянковка, which has it");
             else check(drive.back_at < 0.0, name + ": not back (Деревянковка has none)");
@@ -217,6 +248,65 @@ int main(int argc, char* argv[]) {
             check(targets > 0, "on Албаши 1, track " + std::to_string(number) + ": a target");
         }
         break;
+    }
+    // On the line (the testers' 2026-11-21): 2 km out before Albashi the
+    // train's line track has its station track's number; the other line
+    // track's number entered gives that track's next train signal abreast
+    // (its back to the train), and on along it as the train runs: driven
+    // 4 km away from Albashi, each target on that track ahead of the front.
+    {
+        std::unordered_map<std::uint32_t, simulation::MapSignal> placed;
+        for (const auto& s : signals) placed[s.object] = s;
+        const auto own = map.line_number(train.node());
+        std::cout << "on the line 2 km out: line track " << own << "\n";
+        check(own != 0, "the line before Albashi has its track's number");
+        simulation::TrackTraveller t = train;
+        t.reverse();
+        const std::uint32_t other = own == 1 ? 2 : 1;
+        simulation::EkState state;
+        std::uint32_t last_target = ~0u;
+        double last_distance = 0.0;
+        int targets = 0, on_other = 0, backs = 0, nearer = 0, steps = 0, matched = 0;
+        for (double moved = 0.0; moved < 4000.0; moved += 10.0) {
+            const auto target = map.update(state, *network, t.node(), t.offset(), t.forward(), other, {});
+            ++steps;
+            if (target.matched && target.has_target) {
+                ++matched;
+                if (target.object != last_target) {
+                    ++targets;
+                    const auto it = placed.find(target.object);
+                    const bool its = it != placed.end() && map.line_number(it->second.node) == other;
+                    on_other += its ? 1 : 0;
+                    std::cout << "  target " << target.object << (its ? " on line " + std::to_string(other) : std::string(" elsewhere"))
+                              << " in " << static_cast<int>(target.distance) << " m at +" << static_cast<int>(moved) << "\n";
+                    // Its back to the train: it faces the other way along its node
+                    // than the train runs abreast of it.
+                    if (it != placed.end()) {
+                        const auto a = network->point(t.node(), t.offset());
+                        const auto b = network->point(it->second.node, it->second.offset);
+                        if (a && b) {
+                            const double train_heading = a->heading + (t.forward() ? 0.0 : 3.14159265358979323846);
+                            const double faces = b->heading + (it->second.forward ? 0.0 : 3.14159265358979323846);
+                            const bool back = std::cos(faces - train_heading) < 0.0;
+                            backs += back ? 1 : 0;
+                            std::cout << "    " << (back ? "its back to the train" : "facing the train") << ", " << db.items[target.object].name
+                                      << " on node " << it->second.node << "\n";
+                        }
+                    }
+                } else if (target.distance < last_distance) {
+                    ++nearer;
+                }
+                last_target = target.object;
+                last_distance = target.distance;
+            }
+            if (!t.move(10.0).ok()) break;
+        }
+        std::cout << "line " << other << " entered on line " << own << ": " << matched << " of " << steps << " steps matched, " << targets
+                  << " targets, " << on_other << " on line " << other << ", " << backs << " with their backs\n";
+        check(matched == steps, "the other line track entered: the ЭК all the way");
+        check(targets >= 2 && on_other == targets, "its targets are the other line track's signals, one after another");
+        check(backs == targets, "their backs to the train (the other way's block signals)");
+        check(nearer > steps / 2, "each counts down as the train runs");
     }
     // The coordinate (Engine::CurrentMilepost, simulation/milepost.hpp):
     // driven 3 km on from 2 km out before Albashi, every 500 m it moves by

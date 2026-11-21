@@ -368,7 +368,15 @@ scenarios run with Brakes.dll and with openRTS side by side
    understood, a КЛУБ openRTS takes (with ТСКБМ and САУТ), no speed
    recorder — gets a `BRAKES` library without code
    (`AuxLibrarySpec::stub`: no DLL loaded; its parameters and Brakes.sms
-   kept). openRTS's КЛУБ and cab brakes stay on for that train on the
+   kept). Not in the host's process at all (2026-11-21): until then the
+   host loaded it at its start to report it, mapped with nothing of it
+   called; the Cab window says "не загружена (приборы openRTS)". The first
+   train of a run too: it is made before the first frame, which read the
+   box only then (until 2026-11-21 it always had Brakes.dll loaded, the
+   testers' ВЛ10У-053 with 75 cars; a train loaded later had not). Checked
+   on the stand with MaDaDev's Brakes.dll, its modules listed
+   (`EnumProcessModulesEx`): with the box on, the ВЛ10У-053's host has
+   vl10.dll and RTSConnector.dll, not Brakes.dll. openRTS's КЛУБ and cab brakes stay on for that train on the
    realistic air (to go back, load the train again with the box off). What
    the train's DLL reads from the brakes there (that they run, the
    distance, the ЭПТ's pressure, the 418, a braking position, the ALSN, the
@@ -511,6 +519,17 @@ Brakes.dll's way above.
   track's signal, whatever way the switches lie. The aspect stays the
   codes' (ALSN of the track the train is on). The screen names the target
   by its letter where the database has one.
+- **A side track is taken in front of its turn** (2026-11-21, the testers:
+  "the ЭК sees the tracks only in front of the signal the turns to the
+  side lie beyond"): a track whose way turns off MainRoute (a facing
+  junction's other branch) is taken, the ЭК not yet on, only where at most
+  one train signal stands before that turn. An entry Н with a route signal
+  НМ past it and the switches past НМ: "без ЭК" up to НМ, then НМ and the
+  track's signal; where the switches lie right past Н, from in front of Н
+  as before. Once taken it keeps it (out of its station onto the line);
+  the main track (no turn) at once. Kuban, 2 km out before Албаши with 3
+  entered: "без ЭК" up to the block signal, then the entry and track 3's
+  signal.
 - **In the station** (2026-11-20, the testers' request: on track 6 with 1
   entered the КЛУБ drew ЧМ6, on 1 with 3 НГ1; the way-to search had found
   the next station's track 1, through ЧМ6): the front on another track of a
@@ -520,15 +539,63 @@ Brakes.dll's way above.
   that track from its point abreast of the front (in the throat: the
   metres up to its near end, straight on, added); of two tracks of the
   number ("2", "2А"; "6н", "6ч") the nearest beside the front with a
-  signal ahead. Not taken past the entered track's far end, nor for a
-  track more than 500 m off (another park): the way-to search then, as
-  before. Over every station track with another of its station's numbers
-  entered, both ways: the entered track's signal in 76 % (Чернышевск), 84 %
+  signal ahead. Past the entered track's far end (its signal nearer than
+  the train's own) the metres the front is on past it count: that signal
+  passed, the next one on along its way (to 2026-11-21 the distance stood
+  at the metres from the track's end to its exit, 2, and past 50 m the
+  way-to search took it). However far aside the track is (a park of the
+  station's; the testers' 2026-11-21: "wherever the park is"; to then not
+  for a track more than 500 m off). Over every station track with another
+  of its station's numbers entered, both ways (measured with the 500 m
+  limit): the entered track's signal in 76 % (Чернышевск), 84 %
   (Новокузнецк), 87 % (Kuban).
+- **On the line** (2026-11-21, the testers' request: an odd train on track
+  1 with 2 entered follows track 2's block signals): the lines' tracks
+  carry the numbers of the station tracks they go on from, along MainRoute
+  from each end up to the next station's track, 40 km at most (not on
+  where a side track joins: its number stops there; a node led onto by two
+  numbers, a single line, gets none). The front on one of another number
+  than the entered, not in a station with the entered track nor left off
+  its way, takes the entered one's next train signal abreast (within
+  200 m) the way the train runs: those facing as most of that node's
+  signals do, so on a double line its block signals with their backs to
+  the train. Measured along that track from its point abreast of the
+  front (where it begins ahead, past a station's throat, the metres up to
+  it, straight on, added). Kuban, 2 km out before Албаши on track 1 with 2 entered: track
+  2's ALSO block signals one after another over 4 km, a back-facing head
+  (`T_Head_YGR_Back`) among them left out. With no such track abreast (a
+  side track's number on the line) as before: on along MainRoute.
+- **The track entered** (2026-11-21, the testers' request): П, the number,
+  ВВОД, then the screen's "ПРИЗН. ПРАВ." (1 the right track, "ПР"; 0 the
+  wrong one, "НП"), ВВОД. The number, and the ЭК's target and distance
+  with it, change only at the second ВВОД, as with command 799's speed
+  (Brakes.dll's at the first); 0, no track, at once
+  (`KlubState::pending_track`). Both fields show the last ones (the track
+  number, its sign) until a digit replaces them (Brakes.dll's 0). The
+  shadow sets nothing against Brakes.dll's meanwhile, and until the screen
+  redraws. Each entry, the
+  same number too, starts the ЭК afresh (`KlubState::track_entries`): left
+  off its way ("без ЭК"), the number entered again takes the map again.
+- **The next object line** (2026-11-21, the testers: checking the ЭК they
+  could not see which signal it took): the Train window's "КЛУБ:
+  platforms, crossings and limits in the next object line", off by
+  default (remembered as `klub_objects`). Off, the line (objects 21, 22,
+  the distance 20) always shows the target signal; on, as Brakes.dll's: a
+  platform, a crossing or a limit within 500 m in its place
+  (`KlubScreenInputs::objects_line`). Later, perhaps, the entered track's
+  objects.
 - **"Без ЭК":** no number, 99 (the instructions' way into it), a number no
-  station of the route has; or once the train passes the signal of another
-  track (it took another way: the testers' 3 → 1 → Н1 case), or the entry
-  signal of a station without the entered track. No target then, the
+  station of the route has; the entry signal of a station without the
+  entered track passed; or, a track other than the main ones (1, 2)
+  entered, past the first signal on past its own along its way
+  (2026-11-21, the testers): past its route signal НМ3 the exit Н1 after
+  the crossover, past its exit Н3 the first block signal. The train on
+  another track (its switches for its own) the same: past that track's
+  exit at once where the entered one's way leads on to it (Albashi with 3
+  on track 1: past Н1, the testers' 3 → 1 → Н1 case), else at the next
+  block signal. The main tracks' numbers stay the ЭК's out of the station
+  by the other main track: the line's track of the number (above). To
+  2026-11-21 at any other track's signal passed. No target then, the
   aspect's speeds (`KLUB_GRSPD`, `KLUB_YLSPD`); the screen shows "РЕЖИМ БЕЗ
   ЭК" and the number entered. Without a station track ahead the ЭК goes on
   along MainRoute while the train is on the entered track's way (out of its

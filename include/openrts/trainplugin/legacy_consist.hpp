@@ -266,6 +266,9 @@ struct LegacyWorld {
     // The speed posts' limits without the routes' +3 km/h
     // (simulation::without_tolerance) in RTSGetTrackItems too.
     bool limits_without_tolerance = false;
+    // openRTS's КЛУБ's next object line: platforms, crossings and limits in
+    // place of the target signal, as Brakes.dll's (KlubScreenInputs::objects_line).
+    bool klub_objects = true;
     // Every car's auxiliary libraries' variable stacks in its output
     // (CarOutput::aux_vars): the golden runs (openrts-train-check --record).
     bool record_aux_vars = false;
@@ -304,6 +307,20 @@ public:
         // the next step() puts them on Brakes.sms in place of Brakes.dll's.
         mutable std::vector<std::vector<std::uint16_t>> own_air_sounds;
         mutable std::vector<std::uint8_t> own_air;
+        // A locomotive's sections (own_brakes, the testers' 2026-11-21: the
+        // ВЛ10У's 254 braked and released the first section only): each
+        // car's driven car of its group (the sections next to it its DLL
+        // took, LocoFlags 0x10 without 1), -1 none; and what the driven
+        // cab's independent brake valve asks of them, by the driven car
+        // (its controller writes it; not a multiple unit's, BR_MODE 1,
+        // whose 254 is its head car's).
+        std::vector<std::int32_t> section_master;
+        struct SectionBrake {
+            bool set = false;
+            float independent{};        // the independent brake's target, atm
+            bool release_train = false; // the engine's own train brake let off (I)
+        };
+        mutable std::vector<SectionBrake> section_brake;
     };
 
     // nullptr (with `error`) when no car has a DLL or the host cannot start.
@@ -430,6 +447,7 @@ private:
     struct KlubCar;
     void klub_before(dllhost::StepRequest& request);
     void klub_after(const dllhost::StepRequest& request, const LegacyWorld& world);
+    void sections_after();
     // The air sounds of openRTS's cab brake devices in place of Brakes.dll's.
     void own_air_after();
     std::vector<std::int8_t> trans_sound_; // by car: TRANS_SOUND 1 (-1 not read yet)
