@@ -1476,10 +1476,33 @@ bool TrainView::keep_attached(const DrivenKeys& keep) {
     return true;
 }
 
+// The Train window's DLL brake choices, as last remembered, and "without
+// Brakes.dll" for the trains made from now on (docs/brakes-dll-replacement.md
+// "The rest", 7). Before the train's DLLs too: the first train of a run is
+// made before the first update (until 2026-11-21 it always had Brakes.dll
+// loaded, the box ticked or not: the testers' ВЛ10У).
+void TrainView::load_brake_choices() {
+    if (!dll_air_loaded_) {
+        dll_air_loaded_ = true;
+        dll_air_ = std::clamp(std::atoi(remembered("dll_air").value_or("0").c_str()), 0, 2);
+    }
+    if (!own_brakes_loaded_) {
+        own_brakes_loaded_ = true;
+        own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("0").c_str()), 0, 1);
+        brake_numbers_ = std::clamp(std::atoi(remembered("brake_numbers").value_or("0").c_str()), 0, 1);
+        own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("0").c_str()), 0, 1);
+        klub_map_ = remembered("klub_map").value_or("1") != "0";
+        klub_objects_ = remembered("klub_objects").value_or("0") == "1";
+        no_brakes_dll_ = remembered("no_brakes_dll").value_or("0") == "1";
+    }
+    trainplugin::LegacyConsist::set_without_brakes_dll(no_brakes_dll_ && realistic_air_ && dll_air_ != 0 && own_klub_ == 1 && own_brakes_ == 1);
+}
+
 void TrainView::attach_legacy() {
     legacy_.reset();
     legacy_status_.clear();
     if (units_.empty() || units_.front().role != Role::driven) return;
+    load_brake_choices();
     auto& unit = units_.front();
     std::vector<LegacyCarRef> cars;
     for (const auto& car : unit.cars) cars.push_back({car.definition, car.folder, car.uid, car.key});
@@ -5631,22 +5654,8 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     }
     const SceneInput& input = car_menu_ ? menu_input : given_input;
     frame_elapsed_ = elapsed;
-    // The DLL trains' air (the Train window's choice).
-    if (!dll_air_loaded_) {
-        dll_air_loaded_ = true;
-        dll_air_ = std::clamp(std::atoi(remembered("dll_air").value_or("0").c_str()), 0, 2);
-    }
+    load_brake_choices();
     if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
-    if (!own_brakes_loaded_) {
-        own_brakes_loaded_ = true;
-        own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("0").c_str()), 0, 1);
-        brake_numbers_ = std::clamp(std::atoi(remembered("brake_numbers").value_or("0").c_str()), 0, 1);
-        own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("0").c_str()), 0, 1);
-        klub_map_ = remembered("klub_map").value_or("1") != "0";
-        no_brakes_dll_ = remembered("no_brakes_dll").value_or("0") == "1";
-    }
-    // For the trains made from now on (docs/brakes-dll-replacement.md "The rest", 7).
-    trainplugin::LegacyConsist::set_without_brakes_dll(no_brakes_dll_ && realistic_air_ && dll_air_ != 0 && own_klub_ == 1 && own_brakes_ == 1);
     if (legacy_) legacy_->set_own_brakes(own_brakes_ == 1, brake_numbers_ == 1);
     if (legacy_) legacy_->set_own_klub(own_klub_ == 1);
     if (network_ && network_->rail_joints().layout() != rail_joint_layout()) network_->set_rail_joint_layout(rail_joint_layout());
@@ -9027,6 +9036,7 @@ void TrainView::feed_world(const Unit& unit) {
     world.night = night_;
     world.route_speed_limit = limits_ ? limits_->route_limit() : 0.0f;
     world.limits_without_tolerance = limits_without_tolerance_;
+    world.klub_objects = klub_objects_;
     // RTSGetTrackItems (RTS 0x4808DC): the items from the train's rear
     // forward over its length and further, and back from the rear; the
     // distance from the front (negative under the train, item_under) or the
@@ -11045,6 +11055,10 @@ void TrainView::draw_panel() {
             if (legacy_ && legacy_->without_brakes_dll())
                 ImGui::Text(tr("Brakes.dll is not loaded on %d cars of this train."), static_cast<int>(legacy_->without_brakes_dll()));
             if (can_own && own_klub_ == 1) {
+                if (ImGui::Checkbox(tr("КЛУБ: platforms, crossings and limits in the next object line"), &klub_objects_))
+                    remember("klub_objects", klub_objects_ ? "1" : "0");
+                ImGui::TextDisabled("%s", klub_objects_ ? tr("(as Brakes.dll's: one within 500 m in place of the target signal)")
+                                                        : tr("(off: the line always shows the target signal and its distance)"));
                 if (ImGui::Checkbox(tr("Electronic map (ЭК) from the route database"), &klub_map_)) remember("klub_map", klub_map_ ? "1" : "0");
                 const auto* map = klub_map_ ? electronic_map() : nullptr;
                 ImGui::TextDisabled("%s", !klub_map_ ? tr("(off: a track entered only turns the ЭК on, the target the next signal as the switches stand, as Brakes.dll's)")

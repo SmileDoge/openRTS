@@ -46,6 +46,8 @@ constexpr const char* help_text =
     "  assign <train> <nick>          give a player a train (they drive it)\n"
     "  unassign <train>               take it back (it stands, STATIC)\n"
     "  remove <train>                 delete a train\n"
+    "  number <train> <number>        its train number (RTS numbers its cars by it; not another train's)\n"
+    "  name <train> [text]            its name (the map shows it); notes <train> [text] its notes; none clears\n"
     "  couple <train> <train>         the second joins the first where they stand end to end\n"
     "  cut <train> <car>              cut before car <car> (from 0): its own train, the same owner\n"
     "  say <nick|*> <text>            a message to a player or everyone\n"
@@ -382,6 +384,24 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         }
         if (command == "unassign") return done(server.unassign(*train, error), "train " + std::to_string(*train) + " is nobody's");
         return done(server.remove_train(*train, error), "train " + std::to_string(*train) + " removed");
+    }
+    // The train form: its number, its name and its notes (one line here;
+    // the console's form takes several).
+    if (command == "number") {
+        const auto train = number_of(arg(1));
+        const auto number = number_of(arg(2));
+        if (!train || !number) return "usage: number <train> <number>";
+        return done(server.set_number(*train, *number, error), "train " + std::to_string(*train) + " is №" + std::to_string(*number));
+    }
+    if (command == "name" || command == "notes") {
+        const auto train = number_of(arg(1));
+        if (!train) return "usage: " + command + " <train> [text]";
+        std::string text;
+        for (std::size_t i = 2; i < words.size(); ++i) text += (i > 2 ? " " : "") + words[i];
+        auto [name, notes] = server.names(*train);
+        (command == "name" ? name : notes) = net::from_utf8(text);
+        return done(server.set_names(*train, std::move(name), std::move(notes), error),
+                    "train " + std::to_string(*train) + "'s " + command + (text.empty() ? " cleared" : " set"));
     }
     if (command == "couple") {
         const auto a = number_of(arg(1));

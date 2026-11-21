@@ -1,6 +1,7 @@
 #include "server_window.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -9,7 +10,9 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <set>
+#include <thread>
 
 #include <webgpu/wgpu.h>
 
@@ -1708,6 +1711,19 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
         const auto opened = std::chrono::steady_clock::now();
         std::optional<std::chrono::steady_clock::time_point> started;
         const auto queue = wgpuDeviceGetQueue(device.context.device());
+        // The game steps on a thread of its own, every 20 ms as without the
+        // window: a slow window (a computer without a video card draws it
+        // in software) no longer slows the game (2026-11-21: on such a
+        // server the players' world came in seconds apart). The console
+        // reads and changes the game under the same lock; the drawing and
+        // the present are outside it.
+        std::mutex game_lock;
+        std::atomic<bool> stepping = false;
+        std::thread stepper;
+        const auto stop_stepping = [&] {
+            stepping = false;
+            if (stepper.joinable()) stepper.join();
+        };
         bool running = true;
         while (running && !glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -1715,12 +1731,12 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
             glfwGetFramebufferSize(window, &width, &height);
             surface.resize(width, height);
             const auto now = std::chrono::steady_clock::now();
-            if (session) session->step(std::chrono::duration<double>(now - *started).count());
 
             ImGui_ImplWGPU_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
             if (console) {
+                const std::lock_guard lock(game_lock);
                 running = console->draw();
             } else if (draw_form(form)) {
                 SessionSettings chosen = settings;
@@ -1751,6 +1767,16 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
                     for (const auto& line : lines) console->log(line);
                     for (const auto& line : commands) console->run(line);
                     glfwSetWindowTitle(window, ("openRTS server: " + chosen.route).c_str());
+                    stepping = true;
+                    stepper = std::thread([&session, &game_lock, &stepping, start = *started] {
+                        while (stepping) {
+                            {
+                                const std::lock_guard lock(game_lock);
+                                session->step(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+                            }
+                            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                        }
+                    });
                 }
             }
             ImGui::Render();
@@ -1772,6 +1798,7 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
                 wgpuTextureRelease(frame);
             }
         }
+        stop_stepping();
         wgpuQueueRelease(queue);
         console.reset();
         session.reset();

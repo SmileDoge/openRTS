@@ -1,11 +1,27 @@
 #include "console_panel.hpp"
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
 #include <openrts/formats/rolling_stock.hpp>
 
 namespace openrts::viewer {
 
 std::optional<net::ConsolePlace> consist_place(const core::Vfs& vfs, const std::string& consist, std::string& error) {
-    const auto definition = formats::load_consist(vfs, consist);
+    // A .con from anywhere on this computer (the map's "Browse...", a path
+    // the server does not have): read here, its cars go (testers,
+    // 2026-11-21: until then "consist not found" for those, the VFS only).
+    formats::ConsistDefinition definition;
+    const std::filesystem::path file(std::u8string(consist.begin(), consist.end()));
+    std::error_code file_error;
+    if (file.is_absolute() && std::filesystem::is_regular_file(file, file_error)) {
+        std::ifstream input(file, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(input)), {});
+        definition = formats::parse_consist(bytes);
+    } else {
+        definition = formats::load_consist(vfs, consist);
+    }
     if (!definition.ok()) {
         error = definition.error;
         return std::nullopt;
@@ -136,8 +152,10 @@ void ConsolePanel::draw(NetSession& net, TrainView& trains, TrackControl* map, c
             for (const auto& t : state->trains) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                char label[64];
-                std::snprintf(label, sizeof label, "%u (%u)##train%u", t.number, t.id, t.id);
+                char label[320];
+                const auto* names = net.train_names(t.id);
+                const auto name = names ? net::to_utf8(names->name) : std::string();
+                std::snprintf(label, sizeof label, "%u%s%s (%u)##train%u", t.number, name.empty() ? "" : " ", name.c_str(), t.id, t.id);
                 if (ImGui::Selectable(label, selected_train_ == t.id, ImGuiSelectableFlags_SpanAllColumns)) {
                     selected_train_ = t.id;
                     if (map) {
@@ -173,6 +191,48 @@ void ConsolePanel::draw(NetSession& net, TrainView& trains, TrackControl* map, c
         if (chosen) {
             const auto id = std::to_string(chosen->id);
             ImGui::Text(tr("Train %u, %u cars"), chosen->number, chosen->cars);
+            // Its number, name and notes (RTS's train form; everyone at the
+            // server gets them, the map shows the name).
+            {
+                const auto* names = net.train_names(chosen->id);
+                const std::string server_name = names ? net::to_utf8(names->name) : std::string();
+                const std::string server_notes = names ? net::to_utf8(names->notes) : std::string();
+                const auto put = [](char* to, const std::size_t size, const std::string& from) { std::snprintf(to, size, "%s", from.c_str()); };
+                if (form_train_ != chosen->id) {
+                    form_train_ = chosen->id;
+                    std::snprintf(form_number_, sizeof form_number_, "%u", chosen->number);
+                    put(form_name_, sizeof form_name_, server_name);
+                    put(form_notes_, sizeof form_notes_, server_notes);
+                    form_name_seen_ = server_name;
+                    form_notes_seen_ = server_notes;
+                } else {
+                    if (server_name != form_name_seen_) {
+                        if (form_name_seen_ == form_name_) put(form_name_, sizeof form_name_, server_name);
+                        form_name_seen_ = server_name;
+                    }
+                    if (server_notes != form_notes_seen_) {
+                        if (form_notes_seen_ == form_notes_) put(form_notes_, sizeof form_notes_, server_notes);
+                        form_notes_seen_ = server_notes;
+                    }
+                }
+                ImGui::SetNextItemWidth(90.0f);
+                ImGui::InputTextWithHint("##train_number", tr("number"), form_number_, sizeof form_number_, ImGuiInputTextFlags_CharsDecimal);
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!form_number_[0] || std::strtoul(form_number_, nullptr, 10) == chosen->number);
+                if (ImGui::Button(tr("Set the number"))) net.send_command("number " + id + " " + std::string(form_number_));
+                ImGui::EndDisabled();
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                ImGui::InputTextWithHint("##train_name", tr("name (the map shows it)"), form_name_, sizeof form_name_);
+                ImGui::TextUnformatted(tr("Notes"));
+                ImGui::InputTextMultiline("##train_notes", form_notes_, sizeof form_notes_, ImVec2(-FLT_MIN, 90.0f));
+                ImGui::BeginDisabled(server_name == form_name_ && server_notes == form_notes_);
+                if (ImGui::Button(tr("Save the name and notes"))) {
+                    net.send_train_names(chosen->id, net::from_utf8(form_name_), net::from_utf8(form_notes_));
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", tr("everyone at the server sees them"));
+            }
             // Who drives it.
             ImGui::SetNextItemWidth(200.0f);
             const auto current = user_name(selected_user_);

@@ -571,6 +571,15 @@ public:
                                 const auto id = net->server_train(train);
                                 return id ? net->route_left(id) : std::nullopt;
                             },
+                            .train_names = [net = net_.get()](const std::uint64_t train) -> std::pair<std::string, std::string> {
+                                const auto id = net->server_train(train);
+                                if (!id) return {};
+                                const auto* names = net->train_names(id);
+                                const auto number = net->train_number(id);
+                                std::string title = number ? "№" + std::to_string(number) : std::string();
+                                if (names && !names->name.empty()) title += (title.empty() ? "" : " ") + net::to_utf8(names->name);
+                                return {title, names ? net::to_utf8(names->notes) : std::string()};
+                            },
                         });
                     }
                 } else {

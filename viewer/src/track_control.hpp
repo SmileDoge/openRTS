@@ -72,6 +72,9 @@ public:
         std::function<void(std::uint64_t train, const simulation::TrackLocation& to)> route_to;
         std::function<void(std::uint64_t train)> cancel_route;
         std::function<std::optional<std::pair<float, bool>>(std::uint64_t train)> route_left;
+        // The train's number and name as the server keeps them ("№101
+        // name", empty: its own label) and its notes (0x461A).
+        std::function<std::pair<std::string, std::string>(std::uint64_t train)> train_names;
     };
     // The train picked on the map (as drawn here, 0 none).
     [[nodiscard]] std::uint64_t selected() const noexcept { return selected_; }

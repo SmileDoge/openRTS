@@ -411,13 +411,14 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     }
     const auto cache = std::filesystem::temp_directory_path() / "openrts-cache";
     auto consist = trainplugin::LegacyConsist::create(vfs, cache, legacy, root / "RTS", &error);
+    if (consist && consist->without_brakes_dll()) std::printf("Brakes.dll not loaded on %zu cars\n", consist->without_brakes_dll());
     if (!consist) {
         std::fprintf(stderr, "legacy DLLs: %s\n", error.c_str());
         return 2;
     }
     for (const auto& m : consist->modules())
         std::printf("module %s: %s, TS_VERSION %u\n", trainplugin::utf16_to_utf8(m.path).c_str(),
-                    m.status == 0 ? "loaded" : "REFUSED", m.version[1]);
+                    m.status == 0 ? "loaded" : m.status > 0 ? "not loaded (openRTS's devices)" : "REFUSED", m.version[1]);
 
     simulation::Train train(setups);
     train.set_rails(rails);
@@ -545,6 +546,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     std::vector<simulation::KlubScreen> klub_screens(klub.cabs.size()); // a cab's each
     bool klub_alsn_on = false; // Engine::ALSNOn: the ЭПК key last turned, of any cab
     bool klub_799_settling = false; // command 799's speed entered, the screen not redrawn since
+    bool klub_track_settling = false; // a track's sign entered, the screen not redrawn since
     float klub_last_ur = 0.0f, klub_last_gauge = 0.0f; // the last step's (updateKLUB draws before the brakes run)
     std::vector<simulation::KlubPress> klub_keys;
     std::vector<simulation::SautKey> saut_keys; // САУТ's, the working cab's
@@ -770,12 +772,20 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         // While command 799 waits for its speed openRTS's КЛУБ is not on
         // white yet and Brakes.dll's is (KlubState::white_799_entry), and
         // once it is entered until its screen redraws (the lamps, the beep
-        // of the new aspect): only the entry is set against it then.
+        // of the new aspect): only the entry is set against it then. So
+        // too while a track is entered and waits for its sign (Brakes.dll's
+        // is the ЭК's at once; KlubState::pending_track), the entry too
+        // (ours shows the last track and sign, Brakes.dll's 0), and until
+        // the screen redraws after it.
         if (klub_state.white_799_entry) klub_799_settling = true;
         else if (klub_799_settling && klub_state.redraw == 0.0f) klub_799_settling = false;
-        const bool own_799 = klub_state.white_799_entry || klub_799_settling;
+        const bool track_pending = ((klub_state.flags & simulation::klub_flag::right_entry) && klub_state.pending_track)
+                                   || (klub_state.flags & simulation::klub_flag::track_entry);
+        if (track_pending) klub_track_settling = true;
+        else if (klub_track_settling && klub_state.redraw == 0.0f) klub_track_settling = false;
+        const bool own_entry = klub_state.white_799_entry || klub_799_settling || track_pending || klub_track_settling;
         const auto differ = [&](const char* name, const double golden, const double ours, const double within) {
-            if (own_799 && std::strcmp(name, "entry") != 0) return;
+            if (own_entry && (track_pending || std::strcmp(name, "entry") != 0)) return;
             if (std::abs(golden - ours) <= within) return;
             auto& d = shadow_diffs[name];
             if (d.steps++ == 0) {
@@ -916,7 +926,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                         if (o.text_set && k < screen.texts.size() && (!def || (def->char_width[1] > 0.0f && def->max_length > 0))) {
                             auto ours = o.text;
                             if (def && ours.size() > def->max_length) ours.resize(def->max_length);
-                            if (ours != screen.texts[k] && !own_799) {
+                            if (ours != screen.texts[k] && !own_entry) {
                                 if (shadow_printed < 30) {
                                     std::printf("%6.2f КЛУБ %s: Brakes.dll '%s', openRTS '%s'\n", now, name("text").c_str(),
                                                 trainplugin::utf16_to_utf8(screen.texts[k]).c_str(), trainplugin::utf16_to_utf8(ours).c_str());

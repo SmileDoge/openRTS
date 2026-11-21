@@ -235,6 +235,15 @@ struct KlubState {
     // real КЛУБ-У's way; Brakes.dll's is on white at once, at the speed
     // before). openRTS's own, not Brakes.dll's.
     bool white_799_entry = false;
+    // П N ВВОД (the field showing the last track) waits for its признак
+    // правильности (ПРИЗН. ПРАВ. ВВОД, the field showing the last sign): the track number, and the ЭК's target
+    // with it, change only then (the real КЛУБ-У's way, the testers'
+    // 2026-11-21; Brakes.dll's changes at the first ВВОД, its field 0).
+    // openRTS's own, not Brakes.dll's.
+    std::uint32_t pending_track{};
+    // Tracks entered (with their sign): a new one, the same number too,
+    // starts the ЭК afresh (EkState). openRTS's own.
+    std::uint32_t track_entries{};
     std::uint32_t drawn_flags = klub_flag::train_mode; // `flags` where the redraw shows the request (before its overspeed check)
     bool started = false;
     // The map gives nothing for the entered track ("без ЭК" with a number

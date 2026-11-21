@@ -618,8 +618,10 @@ void key(KlubState& s, const KlubSettings& k, const KlubInputs& in, const KlubPr
         sound.add(3197);
         s.flags |= f::fresh_entry;
         if (!(s.flags & f::track_entry)) {
+            // The field shows the last track until a digit replaces it (the
+            // real КЛУБ-У's, the testers' 2026-11-21; Brakes.dll's 0).
             s.flags |= f::track_entry;
-            s.entry = 0;
+            s.entry = s.track & 0x7Fu;
         } else {
             s.flags &= ~f::track_entry;
         }
@@ -670,9 +672,13 @@ void key(KlubState& s, const KlubSettings& k, const KlubInputs& in, const KlubPr
             confirm();
         } else if (!(s.flags & f::track_entry)) {
             if (s.flags & f::right_entry) {
+                // The track entered takes effect now, with its sign (1: the
+                // right track, "ПР").
                 s.flags &= ~f::right_entry;
-                if (s.entry) s.track |= 0x80;
-                else s.track &= ~0x80u;
+                const std::uint32_t number = s.pending_track ? s.pending_track : (s.track & 0x7Fu);
+                s.track = number | (s.entry ? 0x80u : 0u);
+                s.pending_track = 0;
+                ++s.track_entries;
                 s.entry = 0;
                 confirm();
             } else {
@@ -721,11 +727,22 @@ void key(KlubState& s, const KlubSettings& k, const KlubInputs& in, const KlubPr
                 }
             }
         } else {
+            // The number waits for its sign (KlubState::pending_track), the
+            // sign's field showing the last one (1 ПР, 0 НП) until a digit
+            // replaces it (the real КЛУБ-У's, the testers' 2026-11-21;
+            // Brakes.dll's 0); 0 (no track) at once.
             s.flags &= ~f::track_entry;
             s.flags |= f::right_entry;
-            s.track = s.entry > 0x7F ? 0x7F : s.entry;
-            if (!s.track) s.flags &= ~f::right_entry;
+            s.pending_track = s.entry > 0x7F ? 0x7F : s.entry;
             s.entry = 0;
+            if (!s.pending_track) {
+                s.track = 0;
+                s.flags &= ~f::right_entry;
+                ++s.track_entries;
+            } else {
+                s.entry = (s.track & 0x80u) ? 1 : 0;
+                s.flags |= f::fresh_entry;
+            }
             confirm();
         }
         return;

@@ -29,19 +29,33 @@
 // looked at), then on through the switches' MainRoute; the target is the
 // first train signal (a NORMAL head) along it. Without such a track ahead
 // the ЭК goes on along MainRoute while the train is on the entered track's
-// way (out of its station onto the line); it leaves it ("без ЭК") when the
-// train passes the signal of another track (an exit or a route signal at
-// another track's end), or the entry signal of a station without the
-// entered track, or when no station of the route has the number at all. It
+// way (out of its station onto the line); a track other than the main ones
+// (1, 2: the line's track of the number then, below) leaves it ("без ЭК")
+// past the first signal on past its own along its way (past its route
+// signal НМ3 the exit Н1 after the crossover, past its exit Н3 the first
+// block signal; the train on another track the same by that track's
+// signal; testers, 2026-11-21: to then at any other track's signal), the
+// entry signal of a station without the entered track too, and with no
+// station of the route having the number at all. It
 // comes back by itself before the entry signal of another station with the
 // track (the entry its target; where the entries are not known, one train
 // signal or none before the track). Track 99: "без ЭК" (the instructions' way into it).
+// The ЭК takes a track whose way turns off MainRoute (a side track) only
+// in front of the signal the turn lies beyond (testers, 2026-11-21: an
+// entry Н with a route signal НМ past it and the switches past НМ: "без
+// ЭК" up to НМ); once taken it keeps it as above.
 // The front on another track of a station that has the entered one (at its
 // platform, the switches set for the train's own): the entered track's
 // signal the train's way all the same, as the real КЛУБ-У's by its
 // coordinate (testers, 2026-11-20), measured from the point of that track
 // abreast of the front; so too in its throat past its entry signal, once
-// the entered track is no more ahead.
+// the entered track is no more ahead. On the line (testers, 2026-11-21) the
+// lines' tracks carry the numbers of the station tracks they go on from
+// (along MainRoute, not where a side track joins one): the front on one
+// with another number entered takes the next train signal of the entered
+// one's abreast that faces the way most of its node's do (its block
+// signals, with their backs to the train on a double line), measured from
+// its point abreast.
 // Not yet: the ALSN frequency, the limits, switches and crossings of the
 // map, К280 / К282.
 namespace openrts::simulation {
@@ -75,6 +89,11 @@ struct EkState {
     bool matched = false;       // the ЭК mode
     bool latched_off = false;   // left the entered track's way: back only near another station with it
     std::string left_at;        // the station it was left at
+    // A number other than the main tracks' (1, 2) entered, past the last
+    // signal of its way in the station (its own, or another track's with
+    // its way leading on to a block signal): the station; "без ЭК" from the
+    // next signal passed.
+    std::string leaving;
     // The station with the entered track the front is in: past its entry
     // signal, or on one of its tracks, until it passes a track's signal.
     std::string inside;
@@ -96,6 +115,9 @@ public:
     ElectronicMap(const TrackNetwork& network, const formats::RouteDatabase& database, std::vector<MapSignal> signals);
 
     [[nodiscard]] bool empty() const noexcept { return tracks_.empty(); }
+    // The line track's number of vector node `node` (0: none, or more
+    // than one led onto it).
+    [[nodiscard]] std::uint32_t line_number(std::uint32_t node) const;
     [[nodiscard]] const std::vector<MapTrack>& tracks() const noexcept { return tracks_; }
     // The map's track of `object` (the signal at its end or on it), else none.
     [[nodiscard]] const MapTrack* track_of(std::uint32_t object) const;
@@ -112,6 +134,10 @@ public:
 
     // How far the map's way is looked along, m.
     static constexpr double horizon = 10000.0;
+    // A line track's number carried at most this far from its station, m.
+    static constexpr double line_carry = 40000.0;
+    // A line track of the number entered taken at most this far aside, m.
+    static constexpr double line_reach = 200.0;
 
 private:
     struct Signal {
@@ -129,6 +155,9 @@ private:
         std::uint32_t object{};
         double distance{};
         std::size_t signals_before{}; // train signals before the entered track
+        // Train signals before the way first turns off MainRoute (a facing
+        // junction's other branch) on to the track; 0 where it does not.
+        std::size_t signals_before_turn{};
         std::size_t track{};          // the entered track's the way leads onto (tracks_)
     };
     [[nodiscard]] Found search(const TrackNetwork& network, std::uint32_t node, double offset, bool forward,
@@ -136,13 +165,19 @@ private:
     // The first train signal along MainRoute from (node, offset, forward),
     // `already` metres on, within the horizon.
     [[nodiscard]] Found along_main(const TrackNetwork& network, std::uint32_t node, double offset, bool forward, double already,
-                                   bool strictly_ahead) const;
+                                   bool strictly_ahead, bool line_way = false) const;
     // The station track whose span holds (node, offset), else none.
     [[nodiscard]] std::optional<std::size_t> track_at(std::uint32_t node, double offset) const;
     // Track `number` of `station`: its first train signal the way the front
     // at (node, offset, forward) runs, from its point abreast of the front.
     [[nodiscard]] Found abreast(const TrackNetwork& network, std::uint32_t node, double offset, bool forward, const std::string& station,
                                 std::uint32_t number) const;
+    // Line track `number` abreast of the front (within line_reach): its
+    // next train signal the way the front runs (`along_main`'s `line_way`:
+    // facing as most of its node's signals do, either way on a node where
+    // as many face each way).
+    [[nodiscard]] Found line_abreast(const TrackNetwork& network, std::uint32_t node, double offset, bool forward,
+                                     std::uint32_t number) const;
 
     std::vector<MapTrack> tracks_;
     std::unordered_map<std::uint32_t, std::vector<Signal>> signals_; // by node, by offset
@@ -152,6 +187,15 @@ private:
     std::unordered_map<std::uint32_t, std::string> signal_entry_;    // object -> the station it enters
     std::set<std::pair<std::string, std::uint32_t>> station_numbers_;
     std::set<std::uint32_t> numbers_;
+    // The lines' tracks: vector node -> number (0: more than one), and
+    // their points every 10 m by 64 m cells.
+    struct LinePoint {
+        std::uint32_t node{};
+        double offset{};
+    };
+    std::unordered_map<std::uint32_t, std::uint32_t> line_numbers_;
+    std::unordered_map<std::uint32_t, int> line_ways_; // line node -> its signals' way: 1 forward, -1 back (most of them)
+    std::unordered_map<std::uint64_t, std::vector<LinePoint>> line_cells_;
 };
 
 } // namespace openrts::simulation

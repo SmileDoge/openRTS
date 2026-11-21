@@ -293,7 +293,7 @@ struct SetupRequest {
 
 struct ModuleReport {             // per loaded module, in the setup reply
     std::u16string path;
-    std::int32_t status{};        // 0 ok, < 0 refused
+    std::int32_t status{};        // 0 ok, < 0 refused, 1 not loaded (AuxLibrarySpec::stub: openRTS's devices)
     std::uint32_t version[22]{};  // DLLVersion(1..21), [0] unused
 };
 

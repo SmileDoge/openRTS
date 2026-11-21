@@ -51,6 +51,12 @@ struct KlubScreenInputs {
     // "SKIP..." not at all.
     std::span<const KlubTrackItem> items;
     bool tskbm_switch = false; // this cab's TSKBM_SW on
+    // The next object line (21 / 22, its distance 20): a platform, a
+    // crossing or a limit within 500 m in place of the target signal, as
+    // Brakes.dll's; off, the target signal only (openRTS's setting, off in
+    // the game: the testers, 2026-11-21, could not see which signal the ЭК
+    // took).
+    bool objects_line = true;
     std::span<const std::pair<std::u16string, std::u16string>> station_names;
 };
 

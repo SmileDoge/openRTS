@@ -770,7 +770,14 @@ of MaDaDev's Brakes.dll:
 - the cab's Brakes.dll gauges and lamps (`BR_MAN*`, `BR_LAMP*`,
   `BR_VOLT`, `BR_AMP`) show theirs;
 - Brakes.dll's other cars of a multiple unit (`BR_MODE` 1) brake by the
-  ЭПТ's line, not by their own independent brake.
+  ЭПТ's line, not by their own independent brake;
+- a locomotive's other sections (next to the driven car, the cars its DLL
+  took: `LocoFlags` 0x10 without 1) take the driven cab's 254, its
+  independent brake and its I (the engine's own train brake let off),
+  through the sections' lines (2026-11-21, the testers: on the ВЛ10У the
+  254 braked and released the first section only, the second braked by
+  its distributor alone). Checked on the stand, ВЛ10-127: both sections'
+  independent brake alike through VI, II and the buffer.
 
 Brakes.dll goes on running for the КЛУБ, the ЭПК, its springs and sounds:
 its ЭПК's trip (`var + 8` `0x01000000`, protocol 16's `AuxExchange::flags`)

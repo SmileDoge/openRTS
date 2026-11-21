@@ -117,6 +117,7 @@ struct LegacyConsist::KlubCar {
     float last_ur = 0.0f, last_pipe = 0.0f;      // the last step's (updateKLUB draws before the brakes)
     float last_gauge = 0.0f;                     // the ТМ gauge's, Brakes.dll's var + 28, the last step's
     simulation::EkState ek;                      // openRTS's map for its entered track (LegacyWorld::electronic_map)
+    std::uint32_t ek_entries = 0;                // KlubState::track_entries it is for (a new entry: afresh)
     // What the log last said of it: the track, the ЭК or not, the target.
     std::uint32_t ek_logged_track = 0;
     int ek_logged_mode = -1;
@@ -346,6 +347,18 @@ public:
             demands.systems = static_cast<std::uint16_t>(demands.systems & ~2u);
             demands.release_train_brake = demands.release_independent_brake = false;
             brakes_started_ = false;
+            // A locomotive's other section: the driven cab's 254 (its
+            // independent brake and its I) through the sections' lines.
+            if (car_ < outputs->section_master.size()) {
+                const auto master = outputs->section_master[car_];
+                if (master >= 0 && static_cast<std::size_t>(master) < outputs->section_brake.size()) {
+                    const auto& b = outputs->section_brake[static_cast<std::size_t>(master)];
+                    if (b.set) {
+                        demands.independent_brake = b.independent;
+                        demands.release_train_brake = b.release_train;
+                    }
+                }
+            }
             return;
         }
         // Only the cab driven (LocoFlags 1) works the pipe: the DLLs of the
@@ -518,6 +531,13 @@ private:
         demands.release_train_brake = r.release_train_brake;
         demands.release_independent_brake = false;
         demands.cab_brakes = r;
+        // For its other sections (Outputs::section_brake).
+        if (o) {
+            if (o->section_brake.size() <= car_) o->section_brake.resize(car_ + 1);
+            o->section_brake[car_] = controls.multiple_unit
+                                         ? LegacyConsist::Outputs::SectionBrake{}
+                                         : LegacyConsist::Outputs::SectionBrake{true, r.independent_brake, r.release_train_brake};
+        }
     }
 
     std::weak_ptr<const LegacyConsist::Outputs> outputs_;
@@ -1234,6 +1254,7 @@ bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>&
     }
     outputs_->cars = std::move(reply.cars);
     outputs_->valid = true;
+    sections_after();
     own_air_after();
     klub_after(request, world);
     recorder_after(request, world);
@@ -1825,6 +1846,25 @@ void LegacyConsist::klub_before(StepRequest& request) {
     if (klub_working_) request.want_aux_vars = 1;
 }
 
+// Each car's driven car of its locomotive's sections: next to a driven
+// one (LocoFlags 1) the cars its DLL took (LocoFlags 0x10 without 1), in
+// its train (Outputs::section_master).
+void LegacyConsist::sections_after() {
+    const auto& cars = outputs_->cars;
+    auto& master = outputs_->section_master;
+    master.assign(cars.size(), -1);
+    if (outputs_->section_brake.size() != cars.size()) outputs_->section_brake.assign(cars.size(), {});
+    const auto taken = [&](const std::size_t k) { return cars[k].has_engine && (cars[k].loco_flags & 0x11u) == 0x10u; };
+    for (std::size_t t = 0; t + 1 < train_first_.size(); ++t) {
+        const std::size_t first = train_first_[t], end = (std::min)(train_first_[t + 1], cars.size());
+        for (std::size_t i = first; i < end; ++i) {
+            if (!cars[i].has_engine || !(cars[i].loco_flags & 1u)) continue;
+            for (std::size_t k = i + 1; k < end && taken(k); ++k) master[k] = static_cast<std::int32_t>(i);
+            for (std::size_t k = i; k-- > first && taken(k);) master[k] = static_cast<std::int32_t>(i);
+        }
+    }
+}
+
 void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& world) {
     outputs_->klub_vent.assign(outputs_->cars.size(), 0);
     if (!klub_working_) return;
@@ -2001,6 +2041,10 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
         // openRTS's map in the leading cab: the entered track's target.
         std::u16string target_name = signal_name;
         if (world.electronic_map && i == leading) {
+            if (car.state.track_entries != car.ek_entries) {
+                car.ek = {};
+                car.ek_entries = car.state.track_entries;
+            }
             const auto target = world.electronic_map(car.state.track & 0x7Fu, car.ek);
             in.ek = {.given = true, .matched = target.matched, .has_target = target.has_target, .distance = static_cast<float>(target.distance)};
             if (target.matched && target.has_target && world.route_database && target.unit >= 0
@@ -2048,6 +2092,7 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
         si.signal_name = target_name;
         si.items = items;
         si.station_names = station_names_;
+        si.objects_line = world.klub_objects;
         for (std::size_t c = 0; c < p.cabs.size(); ++c) {
             si.working_cab = static_cast<int>(c) == working;
             si.direction = p.flip == static_cast<std::int32_t>(c) ? -1 : 1; // PB_FLIP: the cab (from 0) the other way
