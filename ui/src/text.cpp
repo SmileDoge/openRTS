@@ -895,7 +895,7 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"Loading the route", "Загрузка маршрута"},
         {"Loading the train", "Загрузка поезда"},
         {"Loading the cab", "Загрузка кабины"},
-        {"(1 = RTS model; RTS shows it in the cab only)", "(1 = модель RTS; RTS показывает её только в кабине)"},
+        {"(how much of the swing: 1 as the \"%s\" model gives it, 0 none, 2 twice; the model: Settings, \"Body motion\")", "(размах качания: 1 — как даёт модель «%s», 0 — без качания, 2 — вдвое сильнее; модель — в настройках, «Движение кузова»)"},
         {"Car loops start at random points", "Петли звука вагонов со случайного места"},
         {"(openRTS: identical loops on many cars do not add up in phase; RTS starts them together)", "(openRTS: одинаковые петли на многих вагонах не складываются в фазе; RTS запускает их одновременно)"},
         {"Coupler sub-steps", "Подшаги сцепок"},

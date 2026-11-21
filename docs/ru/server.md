@@ -15,6 +15,11 @@
 
 ## Запуск
 
+Обновить openRTS на компьютере сервера без игры: `openrts-updater.exe`
+рядом с ним (окно, видеокарта не нужна) или `openrts-updater.exe --yes`
+из скрипта; затем запустить сервер заново и поставить расстановку
+`autosave-previous` (INSTALL.md, «Без игры»).
+
 ```
 openrts-server --route Kuban_RTS --root D:\Games\MDDRTS --port 800 --season summer --weather clear --time 10:00
 ```

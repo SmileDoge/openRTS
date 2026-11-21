@@ -350,6 +350,13 @@ TrainView::TrainView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath rou
     limits_ = std::make_unique<simulation::SpeedLimits>(network, definition.ok() ? definition.speed_limit : 0.0f);
     limits_without_tolerance_ = remembered("limits_without_tolerance").value_or("0") == "1";
     limits_->set_without_tolerance(limits_without_tolerance_);
+    // The body sway kept between games (testers 2026-11-21: it came back
+    // at 1.0 every time, the head's was kept).
+    if (const auto sway = remembered("body_sway")) {
+        char* end = nullptr;
+        const float value = std::strtof(sway->c_str(), &end);
+        if (end != sway->c_str() && value >= 0.0f && value <= 10.0f) sway_scale_ = value;
+    }
     route_tolerance_ = definition.ok() ? definition.timetable_tolerance : 0.0f;
     electrification_ = simulation::Electrification::load(*vfs_, route_, network);
     if (!electrification_->data().error.empty()) std::cout << "electrification: " << electrification_->data().error << '\n';
@@ -11076,9 +11083,17 @@ void TrainView::draw_panel() {
             ImGui::SameLine();
             ImGui::Checkbox(tr("EP brake (K)"), &driver_->ep_brake);
         }
-        ImGui::SliderFloat(tr("Body sway"), &sway_scale_, 0.0f, 10.0f, "%.1f");
+        if (ImGui::SliderFloat(tr("Body sway"), &sway_scale_, 0.0f, 10.0f, "%.1f")) {
+            char text[16];
+            std::snprintf(text, sizeof text, "%.2f", sway_scale_);
+            remember("body_sway", text);
+        }
         ImGui::SameLine();
-        ImGui::TextDisabled(tr("(1 = RTS model; RTS shows it in the cab only)"));
+        // The size of the swing of whichever model is chosen (testers
+        // 2026-11-21: "1 = RTS" read as "other values: openRTS's").
+        ImGui::TextDisabled("%s", trf("(how much of the swing: 1 as the \"%s\" model gives it, 0 none, 2 twice; the model: Settings, \"Body motion\")",
+                                      train.settings().body_motion == simulation::BodyMotionModel::rts ? "RTS" : "openRTS")
+                                      .c_str());
         if (ImGui::Checkbox(tr("Speed limits without the route's +3 km/h"), &limits_without_tolerance_)) {
             remember("limits_without_tolerance", limits_without_tolerance_ ? "1" : "0");
             limits_->set_without_tolerance(limits_without_tolerance_);

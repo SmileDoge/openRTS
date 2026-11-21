@@ -81,7 +81,7 @@ jobs:
         run: |
           $out = "openRTS-windows-x64"
           New-Item -ItemType Directory -Force "$out/tools" | Out-Null
-          Copy-Item build/game/Release/openrts_game.exe, build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll, build/viewer/Release/openrts-dllhost32.exe, build/server/Release/openrts-server.exe $out
+          Copy-Item build/game/Release/openrts_game.exe, build/game/Release/openrts-updater.exe, build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll, build/viewer/Release/openrts-dllhost32.exe, build/server/Release/openrts-server.exe $out
           Get-ChildItem build/tools -Recurse -Filter *.exe | Where-Object { $_.DirectoryName -like '*\Release' } |
               ForEach-Object { Copy-Item $_.FullName "$out/tools" }
           # Luau samples (the ВР 292) and how to script, for the brake stand.
@@ -112,6 +112,9 @@ jobs:
             '',
             '3. Запустите openrts_game.exe (стартовое меню) и укажите папку RTS.',
             '   Run openrts_game.exe (the start menu) and give it the RTS folder.',
+            '',
+            '4. Обновить openRTS без игры (например, на сервере): openrts-updater.exe.',
+            '   To update openRTS without the game (a server, say): openrts-updater.exe.',
             '',
             'Подробности / details: INSTALL.md (русский), INSTALL_EN.md (English).'
           ) | Out-File -Encoding utf8BOM "$out/README_FIRST.txt"

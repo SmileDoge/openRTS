@@ -148,6 +148,16 @@ void ActivityView::start(const double time_of_day, ActivityWorld& world) {
         if (player_.service != player->id) player_ = train_of(player->id);
         services_.insert(player->id);
     }
+    // The menu marked MainActivityMenu ( 1 ) is the report menu from the
+    // start, before any SetMainMenu (testers 2026-11-21: Novokuznetsk's
+    // "Смена на Грузовом (Вторая Часть)" has its first report, the brake
+    // test at Томусинская, only there; F8 said there was nothing to report).
+    for (const auto& menu : activity_->menus) {
+        if (!menu.main) continue;
+        main_menu_ = menu.id;
+        std::cout << "activity: menu " << main_menu_ << " (MainActivityMenu)" << std::endl;
+        break;
+    }
     for (auto& state : events_) {
         if (armed(state) && has_condition(*state.event, "activitystarts")) fire(state);
     }
