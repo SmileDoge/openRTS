@@ -62,6 +62,7 @@ struct CabBrakes {
     int position = -1; // the 395's (simulation::ValvePosition), -1 not known
     int raw = -1;      // its control's state
     int controller_raw = -1; // the КПТ's (BR_KPTID1): the handle moved last sets the position
+    bool by_controller = false; // the position is the КПТ's (it moved last)
     float charging{};  // the reducer's charging pressure (BR_REDID1), atm; 0: none
     int combined = 0;  // the combined valve (BR_KKID1): 0 normal, 1 double traction (cut out), 2 emergency
     // The blocking device усл. 367 (BR_367ID1) out of its operating state

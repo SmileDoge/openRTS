@@ -312,6 +312,8 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     double seconds = 30.0;
     bool per_car = false;
     bool show_triggers = false; // --triggers: every SMS trigger a DLL posts
+    bool show_anims = false;    // --anims: every change of a FreeAnimation the DLL leaves
+    std::map<std::pair<std::size_t, std::size_t>, std::string> anims_seen; // (car, cab anims first, k) -> last line
     // --body: each car's body motion (simulation/body_motion.hpp), the most
     // of each second: its acceleration, the sway, bounce and surge (cm),
     // roll, pitch and yaw (mrad).
@@ -365,6 +367,8 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             per_car = true;
         } else if (args[i] == "--triggers") {
             show_triggers = true;
+        } else if (args[i] == "--anims") {
+            show_anims = true;
         } else if (args[i] == "--body") {
             show_body = true;
         } else if (args[i] == "--screens") {
@@ -1376,6 +1380,22 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     print("cab", out->sound_cab);
                     for (std::size_t k = 0; k < out->aux_sound.size(); ++k)
                         print("aux " + std::to_string(k), out->aux_sound[k].triggers);
+                }
+                if (show_anims) {
+                    const auto print = [&](const char* where, const std::vector<dllhost::AnimState>& list, const std::size_t base) {
+                        for (std::size_t k = 0; k < list.size(); ++k) {
+                            const auto& a = list[k];
+                            char line[160];
+                            std::snprintf(line, sizeof line, "flags 0x%x to %u speed %.3f q %.3f max %.3f", a.flags, a.animate_to, a.speed, a.speed_q,
+                                          a.max_speed);
+                            auto& last = anims_seen[{i, base + k}];
+                            if (last == line) continue;
+                            last = line;
+                            std::printf("%6.1f car %zu %s anim %zu: %s\n", time, i, where, k, line);
+                        }
+                    };
+                    print("shape", out->anims, 0);
+                    print("cab", out->cab_anims, 1000);
                 }
                 if (show_triggers) {
                     for (const auto& m : out->messages)

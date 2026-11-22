@@ -416,6 +416,16 @@ void CabView::step_displays(const float elapsed) {
     for (std::size_t k = 0; k < free_anims_.size(); ++k) {
         auto& a = free_anims_[k];
         const bool running = k < free_anim_running_.size() && free_anim_running_[k] != 0;
+        if (!a.continuous) {
+            // Not CONTINUOUS (the ЭП20's mirrors: the DLL keeps it running
+            // while they are out): to the last key frame while running, back
+            // to the first when not. Until 2026-11-22 it went round and
+            // round and stood wherever the DLL stopped it.
+            const float step = elapsed / a.time;
+            a.phase = running ? (std::min)(a.phase + step, 1.0f) : (std::max)(a.phase - step, 0.0f);
+            a.moving = running ? a.phase < 1.0f : a.phase > 0.0f;
+            continue;
+        }
         if (!running && (!a.moving || !a.returns)) {
             a.moving = false; // stopped where it is
             continue;
@@ -443,6 +453,7 @@ void CabView::poll() {
         FreeAnim a;
         a.time = animation.anim_time > 0.0f ? animation.anim_time : 1.0f;
         a.returns = lower(animation.flags).find("returns") != std::string::npos;
+        a.continuous = lower(animation.flags).find("continuous") != std::string::npos;
         for (const auto& name : animation.nodes) {
             const auto it = geometry_->nodes.find(lower(name));
             if (it == geometry_->nodes.end()) continue; // a misspelt one (the ВЛ80Т's WIRER2) moves nothing, as in RTS

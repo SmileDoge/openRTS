@@ -315,11 +315,13 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
     // The valve's, while it works the pipe: I and II feeding it, V venting
     // it, II with the pipe up at the charge (0.4 under the pressure named:
     // Brakes.dll's (charge × 10 − 1 − 3) / 10).
-    if (connected) {
-        sound(0x8, at(ValvePosition::running) && air.pipe > c.charging - 0.4f, 132, c.sounds_130);
-        sound(0x10, at(ValvePosition::charge) && air.valve_feed > 0.05f, 124, c.sounds_130);
-        sound(0x20, at(ValvePosition::running) && air.valve_feed > 0.05f, 126, c.sounds_130);
-        sound(0x40, at(ValvePosition::service) && air.pipe > 0.1f, 128, c.sounds_130);
+    {
+        // Off too when the КПТ takes the position over (a loop running stops).
+        const bool own = connected && !c.by_controller;
+        sound(0x8, own && at(ValvePosition::running) && air.pipe > c.charging - 0.4f, 132, c.sounds_130);
+        sound(0x10, own && at(ValvePosition::charge) && air.valve_feed > 0.05f, 124, c.sounds_130);
+        sound(0x20, own && at(ValvePosition::running) && air.valve_feed > 0.05f, 126, c.sounds_130);
+        sound(0x40, own && at(ValvePosition::service) && air.pipe > 0.1f, 128, c.sounds_130);
     }
     // The pipe vented at the engine (VI, ЭТ, a stop valve, the ЭПК; Brakes.dll's
     // TrainPipeRate −1.2) while there is air in it.

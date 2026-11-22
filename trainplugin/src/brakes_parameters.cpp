@@ -184,6 +184,7 @@ simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const
             const int going = simulation::direct_state(static_cast<int>(s.set_state), 6, p.flipped);
             c.valve_resting = going <= now;
         }
+        c.by_controller = valve.by_controller && ids.controller >= 0;
         // The train's DLL takes the handle as IV (var + 32 0x8000, the 2ЭС6).
         if (exchange.before & 0x8000u) c.valve = simulation::ValvePosition::lap_feed;
     } else {

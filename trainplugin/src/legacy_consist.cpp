@@ -758,6 +758,16 @@ bool is_brakes_module(const std::string& module) {
     return m == "brakes.dll" || (m.size() > 11 && (m.ends_with("/brakes.dll") || m.ends_with("\\brakes.dll")));
 }
 
+// An AnimNode as RTS gives it to the DLL (dllhost::AnimSpec).
+dllhost::AnimSpec anim_spec(const formats::CabAnimation& a) {
+    std::string flags = a.flags;
+    for (auto& c : flags) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::uint32_t bits = 0;
+    if (flags.find("continuous") != std::string::npos) bits |= 2u;
+    if (flags.find("loop") != std::string::npos) bits |= 4u;
+    return {.key_frames = a.key_frames, .time = a.anim_time, .flags = bits};
+}
+
 BuiltCar build_spec(const core::Vfs& vfs, const std::filesystem::path& cache_root, const LegacyCar& car,
                     const core::VirtualPath* route, SoundTables& tables, std::string& problems, const bool without_brakes_dll) {
     BuiltCar out;
@@ -893,7 +903,10 @@ BuiltCar build_spec(const core::Vfs& vfs, const std::filesystem::path& cache_roo
                             c.tex_change_groups.push_back(change.values[1]);
                         }
                         c.display_count = cab.display_count;
-                        for (const auto& a : cab.animations) c.animations.push_back(u16(a.name));
+                        for (const auto& a : cab.animations) {
+                            c.animations.push_back(u16(a.name));
+                            c.animation_specs.push_back(anim_spec(a));
+                        }
                         out.cab = std::move(cab);
                     } else {
                         problems += "cab " + std::string(sd->str()) + ": " + cab.error + "\n";
@@ -923,7 +936,10 @@ BuiltCar build_spec(const core::Vfs& vfs, const std::filesystem::path& cache_roo
         if (const auto shape = car.file.parent().resolve(d.shape)) {
             if (const auto bytes = vfs.read(shape_description(vfs, *shape))) {
                 const auto ext = formats::parse_exterior_details(*bytes);
-                for (const auto& a : ext.animations) spec.animations.push_back(u16(a.name));
+                for (const auto& a : ext.animations) {
+                    spec.animations.push_back(u16(a.name));
+                    spec.animation_specs.push_back(anim_spec(a));
+                }
                 spec.doors = static_cast<std::uint32_t>(ext.doors.size());
                 for (const auto& door : ext.door_details) {
                     spec.door_times.push_back(door.anim_time);
@@ -1493,8 +1509,13 @@ CabBrakes BrakeCabControls::read(const formats::EngineDefinition::BrakesLibrary&
     if (valve_state >= 0) now.raw = valve_state;
     if (controller_state >= 0) now.controller_raw = controller_state;
     int known = -1;
-    if (controller_moved) known = position_of(controller, controller_state);
-    else if (valve_moved) known = position_of(valve, valve_state);
+    if (controller_moved) {
+        known = position_of(controller, controller_state);
+        now.by_controller = true;
+    } else if (valve_moved) {
+        known = position_of(valve, valve_state);
+        now.by_controller = false;
+    }
     else if (last.position < 0) known = valve_state >= 0 ? position_of(valve, valve_state) : controller_state >= 0 ? position_of(controller, controller_state) : -1;
     if (known >= 0) now.position = known;
     if (const int s = state(ids.reducer); s >= 0 && static_cast<std::size_t>(s) < reducer.size() && reducer[static_cast<std::size_t>(s)] > 0.0f) {

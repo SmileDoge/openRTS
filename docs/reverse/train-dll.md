@@ -897,6 +897,21 @@ without compliance and RTS refuses it too.
 
 ## 12. Content details DLLs rely on
 
+- **FreeAnimations** (`ts.h` `FreeAnimation`; openRTS 2026-11-22): the
+  host fills `NumKeyFrames`, `AnimTime` and the flags' CONTINUOUS (bit 1)
+  and LOOP (bit 2) from the `.sd` AnimNode, as the DLL reads them; `nodes`
+  stay null and `NumNodes` 0. The DLLs seen set only bit 0: the wipers'
+  rounds (the 2ЭС4К: one sweep, intermittent, continuous), the ЭП20's
+  mirrors held running while unfolded (`AnimateTo` 0). openRTS's cab: a
+  CONTINUOUS one goes round while running (RETURNS finishes its round), any
+  other goes to its last key frame while running and back to the first when
+  not. The 2ЭС4К's `Cab.sd` closes its lights with `}` for `)`, which puts
+  its `Animations` inside the lights' block: openRTS finds the block
+  wherever it is in `ESD_Interior`, as RTS finds a keyword anywhere.
+  The ЭД4М-0233 and later (`ed4mnew.dll`, `cab300`) start no wipers on the
+  harness from their switch 163 or 56 (`ed4m.dll` does from 56); not
+  checked in RTS.
+
 - **`.repaint` files** (RTS): a `Cabin` or a wagon shape can name
   `x.repaint` = `Repaint ( Shape ( "a.s" ) ShapeDescription ( "a.sd" )
   TextureReplace ( "old.ace" "new.ace" ) ... )`. Without resolving it the

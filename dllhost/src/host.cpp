@@ -792,8 +792,14 @@ void Host::build_car(CarMirror& car) {
     w->num_doors = static_cast<abi::u16>(car.doors.size());
     w->doors = car.doors.empty() ? nullptr : car.doors.data();
     car.anims.resize(spec.animations.size());
-    for (std::size_t i = 0; i < car.anims.size(); ++i)
+    for (std::size_t i = 0; i < car.anims.size(); ++i) {
         car.anims[i].name = const_cast<wchar_t*>(keep(strings_, spec.animations[i]));
+        if (i < spec.animation_specs.size()) {
+            car.anims[i].num_key_frames = spec.animation_specs[i].key_frames;
+            car.anims[i].anim_time = spec.animation_specs[i].time;
+            car.anims[i].flags = spec.animation_specs[i].flags;
+        }
+    }
     w->num_anim = static_cast<abi::u16>(car.anims.size());
     w->anims = car.anims.empty() ? nullptr : car.anims.data();
     car.sound_ext.flags = 1 | 2; // discrete triggers, on
@@ -880,8 +886,16 @@ void Host::build_car(CarMirror& car) {
             if (k < cab.door_groups.size()) d.global_id = cab.door_groups[k];
         }
         car.cab_anims.resize(cab.animations.size());
-        for (std::size_t i = 0; i < car.cab_anims.size(); ++i)
+        // As RTS fills them from the .sd (the ЭП20's mirrors go to a key
+        // frame of their NumKeyFrames).
+        for (std::size_t i = 0; i < car.cab_anims.size(); ++i) {
             car.cab_anims[i].name = const_cast<wchar_t*>(keep(strings_, cab.animations[i]));
+            if (i < cab.animation_specs.size()) {
+                car.cab_anims[i].num_key_frames = cab.animation_specs[i].key_frames;
+                car.cab_anims[i].anim_time = cab.animation_specs[i].time;
+                car.cab_anims[i].flags = cab.animation_specs[i].flags;
+            }
+        }
         c.num_switches = static_cast<abi::u32>(car.switches.size());
         c.switches = car.switches.empty() ? nullptr : car.switches.data();
         c.num_displays = static_cast<abi::u32>(car.displays.size());

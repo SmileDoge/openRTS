@@ -728,7 +728,10 @@ CabDescription parse_cab_description(std::string_view bytes) {
             cab.texture_changes.push_back(std::move(c));
         }
     }
-    if (const auto* animations = interior->child("animations")) {
+    // Nested too: RTS finds a keyword wherever it stands (parser_maybe); the
+    // 2ЭС4К's cabs close their lights with "}" for ")", which leaves their
+    // Animations inside the lights' block (their wipers stood still).
+    if (const auto* animations = child_or_nested(*interior, "animations")) {
         for (const auto& node : animations->children) {
             if (node.name != "animnode") continue;
             CabAnimation a;

@@ -343,6 +343,7 @@ private:
         std::vector<float> last; // each node's last key frame
         float time = 1.0f;
         bool returns = false;
+        bool continuous = false; // CONTINUOUS: rounds while running; else to its end and back
         float phase = 0.0f;      // 0..1 of a round
         bool moving = false;
     };

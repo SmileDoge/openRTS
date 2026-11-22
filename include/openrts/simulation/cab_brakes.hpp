@@ -90,6 +90,10 @@ struct CabBrakeControls {
     // The handle rests in its position (not passing through): VЭ and V lower
     // the УР only then.
     bool valve_resting = true;
+    // The position is the КПТ's (the ЭП2Д's controller moved last): the
+    // 395's own air sounds stay silent, as Brakes.dll's (the DLL sounds the
+    // КПТ itself: the ЭП2Д's kptR1 / kptR2; testers heard both at I).
+    bool by_controller = false;
     // The charging pressure named (BR_ZARPRESS, the reducer's label), atm.
     float charging = 5.0f;
     // The valve off the pipe: the 367 out of its working state, the
