@@ -114,6 +114,20 @@ int capture_panel_tab = -1;
 } // namespace
 
 void set_capture_panel(const int tab) noexcept { capture_panel_tab = tab; }
+
+namespace {
+std::optional<bool> developer_mode_value;
+} // namespace
+
+bool developer_mode() {
+    if (!developer_mode_value) developer_mode_value = remembered("developer_mode").value_or("0") == "1";
+    return *developer_mode_value;
+}
+
+void set_developer_mode(const bool on, const bool keep) {
+    developer_mode_value = on;
+    if (keep) remember("developer_mode", on ? "1" : "0");
+}
 int capture_panel() noexcept { return capture_panel_tab; }
 
 void apply_settings_defaults() {

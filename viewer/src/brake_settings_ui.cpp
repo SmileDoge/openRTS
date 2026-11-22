@@ -192,7 +192,7 @@ bool draw_brake_settings(BrakeSettings& s, const BrakeSettingsStatus* status, co
     if (capture_panel() >= 0) ImGui::SetScrollHereY(0.0f);
     // The preset and what it gives.
     if (begin_rows("##brake_preset")) {
-        row(tr("Brakes##preset_row"));
+        row(tr("Set##preset_row"));
         int preset = static_cast<int>(brake_preset_of(s));
         const std::vector<std::pair<const char*, int>> presets = {
             {tr("openRTS (recommended)"), static_cast<int>(BrakePreset::openrts)},
@@ -203,7 +203,7 @@ bool draw_brake_settings(BrakeSettings& s, const BrakeSettingsStatus* status, co
         const auto shown = brake_preset_of(s);
         note(tr(shown == BrakePreset::openrts ? "openRTS's air, valves and КЛУБ; Brakes.dll is not loaded where it is not needed."
                 : shown == BrakePreset::rts   ? "RTS's air model and Brakes.dll, as RTS has them."
-                                              : "Set by hand under \"Details\"."));
+                                              : "Set by hand under \"All brake settings\"."));
         if (!now.train.empty()) {
             row(tr("This train"));
             ImGui::TextWrapped("%s", now.train.c_str());
@@ -212,7 +212,7 @@ bool draw_brake_settings(BrakeSettings& s, const BrakeSettingsStatus* status, co
     }
 
     if (capture_panel() >= 0) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-    if (ImGui::TreeNode(tr("Details##brake_details"))) {
+    if (ImGui::TreeNode(tr("All brake settings##brake_details"))) {
         if (begin_rows("##brake_details_rows")) {
             row(tr("openRTS's air"));
             ImGui::Checkbox(tr("on##realistic_air"), &s.realistic);
@@ -262,7 +262,8 @@ bool draw_brake_settings(BrakeSettings& s, const BrakeSettingsStatus* status, co
                 row(tr("Shoe pressing"));
                 ImGui::SliderInt("##brake_pressing", &s.pressing, 50, 150, "%d %%");
                 note(now.pressing);
-            } else {
+            } else if (developer_mode()) {
+                // RTS's distributors' stability: for developers (F12).
                 row(tr("Distributors"));
                 ImGui::Checkbox(tr("a slow pipe fall does not brake"), &s.stability);
             }

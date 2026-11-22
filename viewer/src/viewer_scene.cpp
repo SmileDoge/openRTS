@@ -325,8 +325,18 @@ public:
         library_ = std::make_unique<renderer::ModelLibrary>(gpu.models, content_.vfs());
         library_->add(std::move(*asset_));
         asset_.reset();
+        // The model may be made on a loading thread (models_made_off_thread):
+        // taken in by a later update, so wait for it here (it froze the shape
+        // view: "GPU shape model creation failed" and out, 2026-11-22).
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(120);
         library_->update();
+        while (!library_->find(path_) && library_->stats().queued_uploads > 0 &&
+               std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            library_->update();
+        }
         if (!library_->find(path_)) return "GPU shape model creation failed.";
+        std::cout << "shape: " << path_.str() << " ready" << std::endl;
         return {};
     }
 
@@ -772,7 +782,9 @@ public:
         if (input.signal_names) signal_names_ = !signal_names_;
         if (input.place_names) place_names_ = !place_names_;
         cab_labels_ = input.cab_labels;
-        if (input.inspector) inspector_.toggle();
+        // F12 turns "for developers" on and off (window_viewer); the
+        // inspector opens and shuts with it, and shuts with its checkbox.
+        if (input.inspector || (inspector_.open() && !developer_mode())) inspector_.set_open(developer_mode());
         if (input.tape_window) tape_view_.toggle();
         // The ray under the mouse, from the last frame's camera.
         std::optional<glm::vec3> direction;
@@ -2000,8 +2012,10 @@ public:
     mutable std::optional<renderer::ShadowFocus> lamp_focus_;
     mutable std::optional<std::chrono::steady_clock::time_point> lamp_focus_clock_;
 
-    void draw_overlay([[maybe_unused]] const ViewerCamera& camera) const override {
-#ifdef OPENRTS_HAS_IMGUI
+    // The World tab's part for developers: where the camera is, the sky,
+    // what is loaded and drawn, culling and the labels.
+    void draw_world_debug(const ViewerCamera& camera) const {
+        ImGui::SeparatorText(tr("For developers"));
         const auto position = renderer::route_position(camera.eye(), origin_);
         ImGui::Text(tr("Local XYZ: %.1f, %.1f, %.1f"), position.x, position.y, position.z);
         ImGui::Text(tr("Tile X/Z: %d, %d"), position.tile_x, position.tile_z);
@@ -2018,12 +2032,6 @@ public:
         ImGui::Text(tr("Lights: %zu scenery lamps lit nearby, %zu in the rings, %zu in the nearest one (of 9)"), scenery_lamps_lit_,
                     light_rings_.placed(), light_rings_.lights[0].size());
         ImGui::Checkbox(tr("Distance and frustum culling"), &culling_);
-        // The world's extras (remembered): road traffic, rain and snow, diesel smoke.
-        if (ImGui::Checkbox(tr("Cars on the roads"), &effects_.traffic)) remember("world_traffic", effects_.traffic ? "1" : "0");
-        ImGui::SameLine();
-        if (ImGui::Checkbox(tr("Rain and snow"), &effects_.precipitation)) remember("world_precipitation", effects_.precipitation ? "1" : "0");
-        ImGui::SameLine();
-        if (ImGui::Checkbox(tr("Diesel smoke"), &effects_.smoke)) remember("world_smoke", effects_.smoke ? "1" : "0");
         ImGui::TextDisabled(tr("Water %zu patches, cars %zu, %s %zu, smoke puffs %zu"), terrain_ ? terrain_->water_quads() : std::size_t{0},
                             roads_ ? roads_->cars() : std::size_t{0}, precipitation_ && precipitation_->snow() ? tr("snowflakes") : tr("raindrops"),
                             precipitation_ ? precipitation_->drops() : std::size_t{0}, smoke_ ? smoke_->particles() : std::size_t{0});
@@ -2041,6 +2049,16 @@ public:
         ImGui::Text(tr("Models: %zu GPU, %zu CPU queued, %zu pending"), models.models, models.queued_uploads,
                     stream.pending_model_assets);
         ImGui::Checkbox(tr("Labels: junctions and signals (L)"), &labels_);
+    }
+
+    void draw_overlay([[maybe_unused]] const ViewerCamera& camera) const override {
+#ifdef OPENRTS_HAS_IMGUI
+        // The player's: the world's extras, on foot, the windows.
+        if (ImGui::Checkbox(tr("Cars on the roads"), &effects_.traffic)) remember("world_traffic", effects_.traffic ? "1" : "0");
+        ImGui::SameLine();
+        if (ImGui::Checkbox(tr("Rain and snow"), &effects_.precipitation)) remember("world_precipitation", effects_.precipitation ? "1" : "0");
+        ImGui::SameLine();
+        if (ImGui::Checkbox(tr("Diesel smoke"), &effects_.smoke)) remember("world_smoke", effects_.smoke ? "1" : "0");
         // Walking is the player's (with a train or without): on foot from
         // where the camera is; off, the free camera.
         if (train_) {
@@ -2049,13 +2067,6 @@ public:
                 train_->set_walking(walking, last_eye_);
             }
         }
-        draw_scene_marks();
-        {
-            const auto world = inspector_world();
-            inspector_.draw(world);
-            inspector_.add_selection_lines(world, pending_lines_);
-        }
-        if (train_) train_->add_placement_lines(pending_lines_);
         if (track_control_) {
             bool open = track_control_->is_open();
             if (ImGui::Checkbox(tr("Track control (Ctrl+Alt+F7)"), &open)) track_control_->toggle();
@@ -2068,9 +2079,20 @@ public:
             bool tape_open = tape_view_.is_open();
             if (ImGui::Checkbox(tr("Speed recorder tape (Ctrl+F9)"), &tape_open)) tape_view_.toggle();
         }
-        if (track_) track_->draw_overlay();
+        // The rest is for developers (F12): where the camera is, counts, culling, labels.
+        if (developer_mode()) draw_world_debug(camera);
+        draw_scene_marks();
+        {
+            const auto world = inspector_world();
+            inspector_.draw(world);
+            inspector_.add_selection_lines(world, pending_lines_);
+        }
+        if (train_) train_->add_placement_lines(pending_lines_);
+        if (developer_mode()) {
+            if (track_) track_->draw_overlay();
+            if (signals_) signals_->draw_overlay();
+        }
         if (train_) train_->draw_overlay();
-        if (signals_) signals_->draw_overlay();
         if (track_control_ && train_) {
             track_control_->set_viewer(camera.eye(), camera.forward(), origin_);
             track_control_->draw(*train_, signals_ ? signals_->system() : nullptr);
@@ -2091,7 +2113,7 @@ public:
         }
         if (train_) train_->draw_hud();
         if (activity_) activity_->draw();
-        content_.draw_overlay(library_.get());
+        if (developer_mode()) content_.draw_overlay(library_.get()); // the content: VFS, hot reload
 #endif
     }
 
@@ -2639,6 +2661,8 @@ private:
     static constexpr int sky_probe_rows = 4;
     double spawn_check_time_ = 0.0;
     bool spawn_check_done_ = false;
+    bool click_check_done_ = false;
+    bool click_check_seated_ = false;
     void spawn_check(const SceneClock& clock, const ViewerCamera& camera) {
         static const std::string consist = [] {
 #ifdef _WIN32
@@ -2666,8 +2690,60 @@ private:
                     break;
                 }
             }
-            const auto error = train_->spawn(consist, where, TrainView::Role::standing, std::nullopt, -1);
+            // OPENRTS_SPAWN_CHECK=load:<consist>[:cold|on]: the Train window's
+            // "Load on the path" instead, in that start state.
+            // drive:<consist>: put down cold far off, then "Drive" it (Track control).
+            if (consist.starts_with("drive:")) {
+                const auto name = consist.substr(6, consist.find('@') == std::string::npos ? std::string::npos : consist.find('@') - 6);
+                auto error = train_->spawn(name, where, TrainView::Role::standing, std::nullopt, 0);
+                if (error.empty()) error = train_->set_role(train_->last_train_id(), TrainView::Role::driven);
+                std::cout << "spawn check: " << name << " put down cold and driven: " << (error.empty() ? "ok" : error) << std::endl;
+                return;
+            }
+            // couple:<consist>: put down just ahead of the player's train, to couple.
+            if (consist.starts_with("couple:")) {
+                // couple:<consist>:<its length, m>
+                auto name = consist.substr(7, consist.find('@') == std::string::npos ? std::string::npos : consist.find('@') - 7);
+                const auto colon = name.rfind(':');
+                const double length = colon == std::string::npos ? 60.0 : std::atof(name.c_str() + colon + 1);
+                if (colon != std::string::npos) name.resize(colon);
+                const auto at = train_->ahead_of_player(length, 0.05);
+                const auto error = at ? train_->spawn(name, *at, TrainView::Role::standing, std::nullopt, 0) : std::string("no place");
+                std::cout << "spawn check: " << name << " ahead of the player, cold: " << (error.empty() ? "put down" : error) << std::endl;
+                return;
+            }
+            if (consist.starts_with("load:")) {
+                auto name = consist.substr(5, consist.find('@') == std::string::npos ? std::string::npos : consist.find('@') - 5);
+                int state = -1;
+                if (name.ends_with(":cold")) state = 0, name.resize(name.size() - 5);
+                else if (name.ends_with(":on")) state = 1, name.resize(name.size() - 3);
+                train_->set_start_state(state);
+                train_->request_load(name);
+                std::cout << "spawn check: loading " << name << " (start " << state << ")" << std::endl;
+                return;
+            }
+            const auto error = train_->spawn(consist.substr(0, consist.find('@')), where, TrainView::Role::standing, std::nullopt, -1);
             std::cout << "spawn check: " << consist << " at node " << where.node << ": " << (error.empty() ? "put down" : error) << std::endl;
+        }
+        // OPENRTS_SPAWN_CHECK=...@<switch id>: at 12 s the engineer sits in
+        // the cab and the mouse clicks that switch (a ray at its Position).
+        if (const auto at = consist.find('@'); at != std::string::npos && spawn_check_done_ && !click_check_seated_ && spawn_check_time_ > 12.0) {
+            click_check_seated_ = true;
+            train_->enter_cab();
+        }
+        if (const auto at = consist.find('@'); at != std::string::npos && click_check_seated_ && !click_check_done_ && spawn_check_time_ > 14.0) {
+            click_check_done_ = true;
+            const auto id = static_cast<std::uint32_t>(std::atoi(consist.c_str() + at + 1));
+            if (const auto point = train_->cab_switch_point(id)) {
+                const auto eye = camera.eye();
+                train_->pointer(eye, glm::normalize(*point - eye), true, false, 0.0f, false, {0.0f, 0.0f}, false);
+                std::cout << "spawn check: under the mouse switch " << train_->hovered_switch() << ", viewing inside " << train_->viewing_inside()
+                          << std::endl;
+                train_->pointer(eye, glm::normalize(*point - eye), false, false, 0.0f, true, {0.0f, 0.0f}, false);
+                std::cout << "spawn check: clicked switch " << id << " from " << glm::distance(eye, *point) << " m" << std::endl;
+            } else {
+                std::cout << "spawn check: switch " << id << " not in the engineer's cab" << std::endl;
+            }
         }
         if (spawn_check_done_ && spawn_check_time_ < 9.5 && std::fmod(spawn_check_time_, 1.0) < clock.elapsed) {
             std::cout << "spawn check: " << spawn_check_time_ << " s: keyboard captured " << keyboard_captured() << ", on foot "
@@ -2994,6 +3070,8 @@ private:
 } // namespace
 
 SceneLoadResult load_shape_scene(SceneContent content, const core::VirtualPath& shape) {
+    // Said as it goes: a big shape's textures take seconds (2026-11-22).
+    std::cout << "shape: loading " << shape.str() << " and its textures" << std::endl;
     auto asset = renderer::load_model_asset(*content.vfs, shape, {});
     if (!asset.ok()) return {.error = "Shape load failed: " + asset.error};
     return {.scene = std::make_unique<ShapeScene>(std::move(content), std::move(asset))};

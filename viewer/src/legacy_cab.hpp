@@ -132,6 +132,9 @@ public:
     void set_train_types(std::vector<std::uint32_t> types) {
         if (consist_) consist_->set_train_types(std::move(types));
     }
+    void set_train_starts(std::vector<std::int16_t> starts) {
+        if (consist_) consist_->set_train_starts(std::move(starts));
+    }
     // The DLL trains' air under the realistic air model (LegacyConsist::set_air).
     void set_air(const trainplugin::DllAir mode) {
         if (consist_) consist_->set_air(mode);

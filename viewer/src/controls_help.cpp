@@ -99,7 +99,7 @@ void draw_controls_help() {
         row(clock_key_name(), "the time of day on the screen / off (shown anyway while time runs faster)");
         row(tape_key_name(), "the tape (RTS_TAPES, read by RTS's lenta.xls): start on the locomotive driven / stop");
         if (key_layout() == KeyLayout::rts) row("Num5", "which locomotive the tape records");
-        row("F12", "the inspector: the map's objects and their properties");
+        row("F12", "settings for developers and the inspector (the map's objects)");
         row("RMB + mouse", "look around");
         row("Side button / Caps Lock", "mouse lock: the view always turns with the mouse, a click works what the dot in the middle is on; again: the cursor back");
         row("Wheel held + wheel", "zoom while held; let go: the view comes back");

@@ -23,7 +23,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 16;
+inline constexpr std::uint32_t protocol_version = 17;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -493,6 +493,7 @@ struct ReconsistCar {
 
 struct ReconsistTrain {
     std::uint8_t type = 3;            // RTS train type: 1 the player's, 3 a part cut off (LOOSE)
+    std::int16_t start_state = -1;    // its engines bound now Init so (TrainState: 0 cold, 1 on, 2 running); -1 the host's
     std::vector<ReconsistCar> cars;
 };
 
@@ -882,8 +883,12 @@ inline void read(Reader& r, StepRequest& s) {
 inline void write(Writer& w, const ReconsistCar& c) { w.put(c.from); write(w, c.spec); }
 inline void read(Reader& r, ReconsistCar& c) { c.from = r.get<std::int32_t>(); read(r, c.spec); }
 
-inline void write(Writer& w, const ReconsistTrain& t) { w.put(t.type); write_list(w, t.cars); }
-inline void read(Reader& r, ReconsistTrain& t) { t.type = r.get<std::uint8_t>(); read_list(r, t.cars, 2000); }
+inline void write(Writer& w, const ReconsistTrain& t) { w.put(t.type); w.put(t.start_state); write_list(w, t.cars); }
+inline void read(Reader& r, ReconsistTrain& t) {
+    t.type = r.get<std::uint8_t>();
+    t.start_state = r.get<std::int16_t>();
+    read_list(r, t.cars, 2000);
+}
 
 inline void write(Writer& w, const ReconsistRequest& q) {
     write_list(w, q.sound_tables); write_list(w, q.trains); w.put(static_cast<std::uint8_t>(q.running)); write_pod_list(w, q.inputs);

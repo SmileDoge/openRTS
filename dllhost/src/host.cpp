@@ -703,6 +703,7 @@ bool Host::reconsist(const ReconsistRequest& request, StepReply& reply) {
     for (std::size_t t = 0; t < request.trains.size(); ++t) {
         auto& train = *trains_[t];
         train.type = request.trains[t].type;
+        train.start_state = request.trains[t].start_state;
         train.object[0] = train.type;
         train.first = cars_.size();
         train.count = request.trains[t].cars.size();
@@ -746,6 +747,31 @@ bool Host::reconsist(const ReconsistRequest& request, StepReply& reply) {
     start_running_ = request.running;
     cables_.assign(cars_.size(), 0);
     for (std::size_t i = 0; i < cars_.size(); ++i) cables_[i] = cars_[i]->wagon()->flags & 0x30000u;
+    // A train put down beside the player's as RTS's PLAYER type (3, its
+    // DLLs running though nobody is in it; 2026-11-22): its masters bound
+    // and Init now, in its own start state (ReconsistTrain::start_state);
+    // regroup then takes their groups' slaves. A part cut off was bound
+    // already; a remote train (2) and STATIC ones (0) run none.
+    // A train put down and never run (no engine of it bound yet): its first
+    // engine with a DLL leads it (LocoFlags bit 0), as the player's does. A
+    // slave cut off keeps no master bit (RTS: dll_vl10k_couple).
+    for (std::size_t t = 1; t < train_count_; ++t) {
+        if (trains_[t]->type != 3) continue;
+        bool started = false;
+        CarMirror* first = nullptr;
+        for (auto& c : cars_) {
+            if (c->train != t || !c->is_loco()) continue;
+            if (c->initialised || (c->loco()->loco_flags & 1u)) started = true;
+            if (!first && !c->spec.module.empty()) first = c.get();
+        }
+        if (!started && first) first->loco()->loco_flags |= 1u;
+    }
+    for (auto& c : cars_) {
+        if (c->train == 0 || !c->is_loco() || c->initialised || train_of(*c).type != 3) continue;
+        abi::Locomotive* l = c->loco();
+        if ((l->loco_flags & 1u) == 0 || (l->loco_flags & 0x88u) != 0) continue;
+        if (bind(*c)) init_car(*c, init_state(*c, false));
+    }
     regroup();
     collect(reply);
     return true;
@@ -1070,6 +1096,15 @@ std::uint32_t Host::init_state(const CarMirror& car, bool player) const {
     if (start_running_) state |= 2;
     // An activity's TrainState replaces both bits (RTS 0x5026FC: train +0x14 -> +0x48).
     if (start_state_ >= 0) state = static_cast<std::uint32_t>(start_state_) & 0xFFu;
+    // A train put down cold or on beside the player's (ReconsistTrain).
+    // 2: running, whatever the player's train started as.
+    if (const auto own = train_of(car).start_state; own == 2) {
+        state = (state & 1u) | 2u;
+        for (const auto& c : cars_)
+            if (c->train == car.train && (!c->is_loco() || (c->loco()->loco_flags & 8))) state |= 1u;
+    } else if (own >= 0) {
+        state = static_cast<std::uint32_t>(own) & 0xFFu;
+    }
     if (player) state |= 0x100;
     const auto type = train_of(car).type;
     if (type == 4) state |= 0x200;

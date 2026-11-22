@@ -269,6 +269,7 @@ private:
         std::vector<abi::Wagon*> wagons; // FirstInGroup / LastInGroup point into it
         std::size_t first = 0, count = 0;
         std::uint8_t type = 1;
+        std::int16_t start_state = -1; // ReconsistTrain::start_state
     };
     std::vector<std::unique_ptr<TrainMirror>> trains_;
     std::size_t train_count_ = 0;

@@ -17,6 +17,7 @@
 // are as they are: both put (0, 0) at the image's top left.
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -118,7 +119,24 @@ struct Gltf {
     return 1.0f;
 }
 
+// What the export is doing, as it goes (testers 2026-11-22: a big shape
+// took a minute without a word and looked hung): each step with the
+// seconds since the start.
+class Progress {
+public:
+    void step(const std::string& what) const {
+        const std::chrono::duration<double> since = std::chrono::steady_clock::now() - start_;
+        char time[32];
+        std::snprintf(time, sizeof time, "[%5.1f s] ", since.count());
+        std::cout << time << what << std::endl;
+    }
+
+private:
+    std::chrono::steady_clock::time_point start_ = std::chrono::steady_clock::now();
+};
+
 int export_shape(const fs::path& file, fs::path out_folder) {
+    const Progress progress;
     std::error_code error;
     const auto absolute = fs::absolute(file, error);
     if (!fs::is_regular_file(absolute, error)) {
@@ -131,8 +149,10 @@ int export_shape(const fs::path& file, fs::path out_folder) {
     fs::path root;
     if (const auto installation = core::find_installation_root(absolute.parent_path())) {
         root = *installation;
+        progress.step("Reading the installation's file list: " + utf8(root));
         core::mount_installation(vfs, root, core::load_installation_config(root));
     } else {
+        progress.step("Not in an installation: textures from " + utf8(absolute.parent_path().parent_path()));
         root = absolute.parent_path().parent_path();
         vfs.mount_directory(root, {});
         vfs.build_index();
@@ -143,6 +163,7 @@ int export_shape(const fs::path& file, fs::path out_folder) {
         std::cerr << "openrts-shape: " << utf8(absolute) << " is not inside " << utf8(root) << '\n';
         return 1;
     }
+    progress.step("Reading the shape " + shape->str());
     const auto body = formats::load_binary_shape_body(vfs, *shape);
     if (!body.ok()) {
         std::cerr << "openrts-shape: " << shape->str() << ": " << body.error << '\n';
@@ -153,6 +174,7 @@ int export_shape(const fs::path& file, fs::path out_folder) {
         std::cerr << "openrts-shape: " << shape->str() << ": " << model.error << '\n';
         return 1;
     }
+    progress.step("The shape read: " + std::to_string(model.images.size()) + " images");
     if (out_folder.empty()) out_folder = absolute.parent_path() / (absolute.stem().u8string() + u8"_gltf");
     fs::create_directories(out_folder, error);
     if (error) {
@@ -174,6 +196,7 @@ int export_shape(const fs::path& file, fs::path out_folder) {
             std::cerr << "  texture not found: " << image_name << '\n';
             return std::nullopt;
         }
+        progress.step("Texture " + std::to_string(image_texture.size() + 1) + ": " + path->str());
         const auto decoded = formats::decode_ace_rgba(vfs, *path);
         if (!decoded.ok()) {
             std::cerr << "  texture " << path->str() << ": " << decoded.error << '\n';
@@ -335,6 +358,7 @@ int export_shape(const fs::path& file, fs::path out_folder) {
          << "],\"samplers\":[{\"magFilter\":9729,\"minFilter\":9987,\"wrapS\":10497,\"wrapT\":10497}],\"accessors\":[" << join(gltf.accessors)
          << "],\"bufferViews\":[" << join(gltf.buffer_views) << "],\"buffers\":[{\"uri\":" << json5::quote(bin_name)
          << ",\"byteLength\":" << gltf.buffer.size() << "}]}\n";
+    progress.step("Writing " + name + ".gltf and " + bin_name);
     std::ofstream(out_folder / from_utf8(name + ".gltf"), std::ios::binary) << json.str();
     std::cout << shape->str() << " -> " << utf8(out_folder / from_utf8(name + ".gltf")) << ": " << gltf.nodes.size() << " nodes, " << gltf.meshes.size()
               << " meshes, " << gltf.materials.size() << " materials, " << gltf.images.size() << " textures, " << triangles << " triangles\n";

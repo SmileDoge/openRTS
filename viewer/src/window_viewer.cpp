@@ -78,6 +78,10 @@ namespace {
 
 constexpr int initial_width = 1280;
 constexpr int initial_height = 720;
+#ifdef OPENRTS_HAS_IMGUI
+// The mark of a setting that waits for a restart (the only kind marked).
+constexpr ImVec4 restart_colour{1.00f, 0.72f, 0.30f, 1.0f};
+#endif
 // The vertical field of view, degrees, when neither the panel nor RTS's
 // config (FOV) gives one.
 constexpr float default_fov_degrees = 48.7f;
@@ -1007,11 +1011,12 @@ public:
             tab(tr("Graphics"), PanelState::Tab::graphics);
             if (scene.has_train_panel()) tab(tr("Train"), PanelState::Tab::train);
             tab(tr("World"), PanelState::Tab::world);
-            tab(tr("Performance"), PanelState::Tab::performance);
+            if (developer_mode()) tab(tr("Performance"), PanelState::Tab::performance);
             tab(tr("Controls"), PanelState::Tab::controls);
             ImGui::EndTabBar();
         }
         if (panel.tab == PanelState::Tab::train && !scene.has_train_panel()) panel.tab = PanelState::Tab::general;
+        if (panel.tab == PanelState::Tab::performance && !developer_mode()) panel.tab = PanelState::Tab::general;
         if (panel.tab == PanelState::Tab::controls) {
             draw_controls_help();
             draw_scene_unseen(scene, camera);
@@ -1029,6 +1034,9 @@ public:
         }
 
         if (panel.tab == PanelState::Tab::general) {
+            // "For developers" (also F12): the debug settings and readouts.
+            bool developer = developer_mode();
+            if (ImGui::Checkbox(tr("Settings for developers (F12)"), &developer)) set_developer_mode(developer);
             // The console: the game's messages (also F2).
             if (ImGui::Button(panel.console.open ? tr("Console (F2): close") : tr("Console (F2): the game's messages, warnings, errors")))
                 panel.console.open = !panel.console.open;
@@ -1207,9 +1215,13 @@ public:
                     save_graphics_settings(now, panel_graphics(panel));
                     panel.kept_graphics.msaa = now.msaa;
                 }
+                // Only what waits for a restart is marked (2026-11-22, the
+                // settings redesign): everything else applies at once.
+                ImGui::SameLine();
+                ImGui::TextColored(restart_colour, "%s", tr("after a restart"));
                 const auto drawn = renderer::render_sample_count();
                 if (panel.kept_graphics.msaa != panel.msaa_asked) {
-                    ImGui::TextDisabled("%s", tr("(from the next start)"));
+                    ImGui::TextDisabled(tr("(now %ux; the chosen one after a restart)"), panel.msaa_asked);
                 } else if (drawn != panel.msaa_asked) {
                     ImGui::TextDisabled(tr("(%ux: this video card does not take it here, drawn with %ux)"), panel.msaa_asked, drawn);
                 } else if (drawn <= 1) {
@@ -1233,8 +1245,8 @@ public:
             ImGui::SetNextItemWidth(220.0f);
             if (ImGui::Combo(tr("Graphics API"), &panel.backend_choice, backends, 4))
                 remember("backend", renderer::graphics_backend_key(static_cast<renderer::GraphicsBackend>(panel.backend_choice)));
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("Takes effect after a restart. Automatic: Vulkan, else DirectX 12. OpenGL is for old cards; the experimental renderer may not work there."));
+            ImGui::SameLine();
+            ImGui::TextColored(restart_colour, "%s", tr("after a restart"));
             ImGui::TextDisabled("%s", trf("now: %s", std::string(panel.backend_now).c_str()).c_str());
             ImGui::BeginDisabled(!panel.vsync_optional);
             const auto vsync_label = std::string(tr("VSync")) + " (" + panel.present_mode + ")###vsync";
@@ -1666,10 +1678,12 @@ public:
         }
 
         if (panel.tab == PanelState::Tab::world) {
-            ImGui::Text(tr("Camera: %s"), camera.fly ? "fly" : "orbit");
+            if (developer_mode()) ImGui::Text(tr("Camera: %s"), camera.fly ? "fly" : "orbit");
             scene.draw_overlay(camera);
-            if (ImGui::Button(tr("Save debug view (Ctrl+F6)"))) panel.save_view = true;
-            if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
+            if (developer_mode()) {
+                if (ImGui::Button(tr("Save debug view (Ctrl+F6)"))) panel.save_view = true;
+                if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
+            }
         } else {
             draw_scene_unseen(scene, camera);
         }
@@ -2411,6 +2425,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.tape_which = kp5 && !ctrl;
         in.board = board;
         in.walk_collision = walk_collision;
+        // F12: "for developers" on or off (viewer_state.hpp), the inspector with it.
+        if (f12) set_developer_mode(!developer_mode());
         in.inspector = f12;
         in.pointer = pointer;
         in.pointer_x = static_cast<float>(input.cursor_x / width * 2.0 - 1.0);

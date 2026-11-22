@@ -3,7 +3,11 @@
 Status: a first version (2026-11-08). The base for editing content inside
 the game: later a train and a cab editor.
 
-F12 opens two windows:
+F12 turns "settings for developers" on and off (since 2026-11-22; also a
+checkbox in the launcher's Settings and the panel's General tab). While it
+is on, the inspector is open, along with the debug settings and readouts
+in the Train and World tabs and the Performance tab. The inspector has two
+windows:
 
 - **The map's objects:** a tree of what is loaded around the camera.
   - *World:* the world tiles (3 x 3 round the camera), each with its

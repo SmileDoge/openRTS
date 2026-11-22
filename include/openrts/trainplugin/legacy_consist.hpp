@@ -367,6 +367,8 @@ public:
     // player's, 1, the rest LOOSE, 3); 2 (another player's) keeps a train's
     // DLLs bound without running them.
     void set_train_types(std::vector<std::uint32_t> types) { train_types_ = std::move(types); }
+    // Each train's start for its engines bound at the next reconsist (ReconsistTrain::start_state).
+    void set_train_starts(std::vector<std::int16_t> starts) { train_starts_ = std::move(starts); }
     // Cars with a DLL that came back from the parked ones (by their keys)
     // since the last call: their DLLs as they left them.
     [[nodiscard]] std::size_t take_restored() { return std::exchange(restored_, std::size_t{0}); }
@@ -511,6 +513,7 @@ private:
     std::size_t player_ = SIZE_MAX;
     std::vector<dllhost::CarAir> entered_air_;
     std::vector<std::uint32_t> train_types_;
+    std::vector<std::int16_t> train_starts_;
     std::size_t restored_ = 0;
     std::string messages_;
 public:

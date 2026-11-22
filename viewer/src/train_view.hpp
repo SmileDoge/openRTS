@@ -92,6 +92,7 @@ public:
         float target = -1.0f; // the test driver's target speed, m/s
         bool derailed = false;
         bool asleep = false;  // STATIC: not simulated until something moves it
+        bool live = false;    // RTS's PLAYER type: its DLLs run (TrainView::set_live)
     };
 
     TrainView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath route, formats::RoutePosition origin,
@@ -143,6 +144,20 @@ public:
     void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view = {});
     // The engineer into the driving cab's seat (--capture-cab).
     void enter_cab() { set_engineer(true); }
+    // The id of the train put on the track last (OPENRTS_SPAWN_CHECK).
+    [[nodiscard]] std::uint64_t last_train_id() const;
+    // Where a train `length` m long stands with its rear `gap` m ahead of
+    // the player's front (OPENRTS_SPAWN_CHECK=couple:...): its head.
+    [[nodiscard]] std::optional<simulation::TrackLocation> ahead_of_player(double length, double gap) const;
+    // Where switch `id` of the cab the engineer is in is, in the scene (its
+    // .sd Position): for OPENRTS_SPAWN_CHECK's click, a mouse's ray at it.
+    [[nodiscard]] std::optional<glm::vec3> cab_switch_point(std::uint32_t id) const;
+    // What the last pointer() found under the mouse: the switch's id, or -1.
+    [[nodiscard]] std::int64_t hovered_switch() const {
+        const auto* cab = engineer_cab();
+        if (!hovered_ || !hovered_->control || !cab || hovered_->index >= cab->description().switches.size()) return -1;
+        return cab->description().switches[hovered_->index].id;
+    }
     // Whether the player's train has a cab to go back into (Ctrl+F).
     [[nodiscard]] bool has_driving_cab() const noexcept { return cab_ != nullptr; }
     // Walking is the player's, not a train's (the main panel's "On foot"):
@@ -422,6 +437,8 @@ public:
     // Puts a saved situation back at the next update (the trains there now
     // and their sounds go first).
     void request_situation(std::filesystem::path file) { pending_situation_ = std::move(file); }
+    // The Train window's "Load on the path" (OPENRTS_LOAD_CHECK as well).
+    void request_load(std::string consist) { pending_load_ = std::move(consist); }
     // A train to put on the track: a situation's, or one from an RTS
     // snapshot (--mp-snapshot): its name, role, where car 0's front stands
     // and its cars front to back.
@@ -800,6 +817,9 @@ public:
     [[nodiscard]] std::string assign_route_path(std::uint64_t id, const formats::TrainPath& path);
     void clear_path(std::uint64_t id);
     [[nodiscard]] std::string set_role(std::uint64_t id, Role role);
+    // RTS's Cast to PLAYER (true: its DLLs run beside the driven train's)
+    // or STATIC (false: asleep, its DLLs parked with their state).
+    [[nodiscard]] std::string set_live(std::uint64_t id, bool live);
     [[nodiscard]] std::string remove(std::uint64_t id);
     // Uncouples train `id` before car `index` (end cocks closed, couplers left open).
     [[nodiscard]] std::string uncouple_at(std::uint64_t id, std::size_t index);

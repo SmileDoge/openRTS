@@ -1608,6 +1608,16 @@ void Launcher::State::draw_settings(const float height) {
         hint(tr("Others see \"Playing openRTS\": in the menu or driving which engine, on which route and for how long. Only the Discord program on this computer is told; nothing of a server's."));
         ImGui::Spacing();
         draw_ace_settings();
+        ImGui::Spacing();
+        // For developers (viewer_state.hpp): F12 in the game too.
+        ImGui::SeparatorText(tr("For developers"));
+        if (begin_form("##developer_form", label_width)) {
+            form_row(tr("Settings for developers (F12)"));
+            bool developer = viewer::developer_mode();
+            if (ImGui::Checkbox("##developer_mode", &developer)) viewer::set_developer_mode(developer);
+            ImGui::EndTable();
+        }
+        hint(tr("Debug settings and readouts, the Performance tab and the inspector."));
     }
     ImGui::EndChild();
 }

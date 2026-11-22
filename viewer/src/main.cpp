@@ -445,6 +445,9 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             fps_given = true;
         } else if (flags[i] == "--capture-drive" && has_value) {
             options.capture_drive = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--developer") {
+            // "For developers" on for this run only (viewer_state.hpp).
+            openrts::viewer::set_developer_mode(true, false);
         } else if (flags[i] == "--capture-panel" && has_value) {
             // The panels on a tab with their sections open: general,
             // graphics, train, world, performance, controls.

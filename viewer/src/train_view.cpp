@@ -284,6 +284,11 @@ struct TrainView::Unit {
     // Put down from Track control as cold, on or running (TrainView::spawn):
     // its DLLs' start when the player takes it; none: the Train window's.
     std::optional<int> start_state;
+    // RTS's "Cast to PLAYER" (2026-11-22): a standing train whose DLLs run
+    // in the host beside the driven one (as its cut-off parts' do), so it
+    // stays as it was left and the player can get in. Track control puts
+    // trains down so; "Static" ends it (the DLLs keep their state parked).
+    bool live = false;
     [[nodiscard]] simulation::TrainCategory speed_category() const noexcept {
         return category.value_or(simulation::category_from_cars(freight));
     }
@@ -1591,7 +1596,7 @@ void TrainView::attach_legacy() {
         // be bound when he gets in and to go on when he leaves.
         bool more = false;
         for (std::size_t u = 1; u < units_.size(); ++u) {
-            if (units_[u].remote || !boardable_.contains(units_[u].train->id())) continue;
+            if (units_[u].remote || !(boardable_.contains(units_[u].train->id()) || units_[u].live)) continue;
             units_[u].host = true;
             more = true;
         }
@@ -1634,6 +1639,7 @@ bool TrainView::reconsist_host() {
     std::vector<simulation::Train*> sims;
     std::vector<std::size_t> which;
     std::vector<std::uint32_t> types;
+    std::vector<std::int16_t> starts;
     units_.front().host = true;
     for (std::size_t u = 0; u < units_.size(); ++u) {
         auto& unit = units_[u];
@@ -1642,12 +1648,15 @@ bool TrainView::reconsist_host() {
         // Another client's now (a train taken away, the network): its DLLs
         // stay bound and keep their state, but do not run (RTS kind 2).
         types.push_back(unit.remote ? 2u : u == 0 ? 1u : 3u);
+        // Engines bound now start as the train was put down (cold, on), else running.
+        starts.push_back(u == 0 ? std::int16_t{-1} : unit.start_state ? static_cast<std::int16_t>(*unit.start_state) : std::int16_t{2});
         trains.emplace_back();
         for (const auto& car : unit.cars) trains.back().push_back({car.definition, car.folder, car.uid, car.key});
         sims.push_back(unit.train.get());
         which.push_back(u);
     }
     legacy_->set_train_types(std::move(types));
+    legacy_->set_train_starts(std::move(starts));
     if (!legacy_->reconsist(*vfs_, trains, sims)) return false;
     host_keys_.clear();
     for (std::size_t t = 0; t < which.size(); ++t) {
@@ -2500,7 +2509,8 @@ std::vector<TrainView::Summary> TrainView::summaries() const {
                           .length = unit.train->length(),
                           .target = unit.traffic ? unit.traffic->target_speed() : -1.0f,
                           .derailed = unit.train->derailed(),
-                          .asleep = unit.train->asleep()});
+                          .asleep = unit.train->asleep(),
+                          .live = unit.live && unit.host});
     }
     return result;
 }
@@ -2558,13 +2568,32 @@ std::string TrainView::set_role(const std::uint64_t id, const Role role) {
     // Another client's train (the network) moves by its owner's packages.
     if (unit->remote) return "another player drives this train";
     if (role == Role::driven) {
-        const auto index = static_cast<std::size_t>(unit - units_.data());
+        auto index = static_cast<std::size_t>(unit - units_.data());
+        const bool was_inside = engineer_.inside();
+        // Another train of this program: taken into the DLLs' host beside the
+        // one driven now, so that one keeps running (it went cold and its
+        // cab dead: testers 2026-11-22, Track control's "Drive" on a train
+        // just put down) and the player can go back to it.
+        if (legacy_ && index != 0 && !unit->host && !unit->remote) {
+            const auto wanted = unit->train->id();
+            unit->host = true;
+            if (!reconsist_host()) {
+                if (auto* again = find_unit(wanted)) again->host = false;
+                reconsist_host();
+            }
+            unit = find_unit(wanted);
+            if (!unit) return "no such train";
+            index = static_cast<std::size_t>(unit - units_.data());
+        }
         const bool host = legacy_ && index != 0 && unit->host;
         if (index != 0) {
             units_.front().role = Role::standing;
+            // The one left goes on as RTS's PLAYER type (its DLLs in the host).
+            units_.front().live = units_.front().host;
             attach_role(units_.front());
             std::swap(units_.front(), units_[index]);
         }
+        units_.front().live = false;
         units_.front().role = Role::driven;
         units_.front().traffic.reset();
         units_.front().train->set_kinematic(false);
@@ -2577,7 +2606,18 @@ std::string TrainView::set_role(const std::uint64_t id, const Role role) {
         if (!(host && take_over_host_unit())) reattach_driver();
         follow_id_ = 0;
         consist_ = units_.front().name;
+        // He was in a cab: now in the one he drives from.
+        if (was_inside && cab_) set_engineer(true);
         return {};
+    }
+    // Traffic and STATIC run no DLLs (RTS): out of the host, their state parked.
+    if (unit->host && unit != &units_.front()) {
+        const auto wanted = unit->train->id();
+        unit->host = false;
+        unit->live = false;
+        reconsist_host();
+        unit = find_unit(wanted);
+        if (!unit) return "no such train";
     }
     unit->role = role;
     attach_role(*unit);
@@ -2716,6 +2756,8 @@ std::string TrainView::spawn(const std::string_view consist, const simulation::T
     units_.push_back(std::move(unit));
     attach_role(units_.back());
     if (chocks != 0) (void)set_train_chocks(units_.back().train->id(), chocks);
+    // Standing, put down as RTS's PLAYER type: its DLLs run from now.
+    if (units_.back().role == Role::standing && !first) (void)set_live(units_.back().train->id(), true);
     // Without a train of the player's own (the menu's "no train"), the first
     // one put on the route becomes theirs. The camera stays the free one it
     // was put down from: following it from behind (the default with no start
@@ -7734,6 +7776,54 @@ void TrainView::outer_door_pointer(const glm::vec3& eye, const glm::vec3& direct
     }
 }
 
+std::string TrainView::set_live(const std::uint64_t id, const bool live) {
+    auto* unit = find_unit(id);
+    if (!unit) return "no such train";
+    if (unit->remote) return "another player drives this train";
+    if (unit == &units_.front()) return {};
+    if (live && unit->role == Role::ai) {
+        unit->role = Role::standing;
+        attach_role(*unit);
+    }
+    unit->live = live;
+    unit->train->set_asleep(!live && unit->role == Role::standing);
+    if (!legacy_) return live ? std::string{} : std::string{};
+    const bool had = unit->host;
+    unit->host = live;
+    if (had != live && !reconsist_host()) {
+        if (auto* again = find_unit(id)) again->host = had, again->live = had;
+        reconsist_host();
+        return "its DLLs could not be started";
+    }
+    return {};
+}
+
+std::uint64_t TrainView::last_train_id() const { return units_.empty() ? 0 : units_.back().train->id(); }
+
+std::optional<simulation::TrackLocation> TrainView::ahead_of_player(const double length, const double gap) const {
+    if (!placed()) return std::nullopt;
+    auto front = driven().front_end();
+    if (!front) return std::nullopt;
+    front->move(length + gap);
+    return simulation::TrackLocation{.node = front->node(), .offset = front->offset(), .forward = front->forward()};
+}
+
+std::optional<glm::vec3> TrainView::cab_switch_point(const std::uint32_t id) const {
+    const auto* cab = engineer_cab();
+    if (!cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return std::nullopt;
+    const auto body = body_pose(units_.front(), engineer_car_, false);
+    if (!body) return std::nullopt;
+    const glm::mat4 to_scene = cab_to_scene_ ? *cab_to_scene_ : body->transform * cab->placement();
+    const auto& all = cab->description().switches;
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        if (all[i].id != id) continue;
+        const auto at = cab->control_point(i); // its node, else its Position
+        if (!at) return std::nullopt;
+        return glm::vec3{to_scene * glm::vec4{*at, 1.0f}};
+    }
+    return std::nullopt;
+}
+
 void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& direction, const bool click, const bool shift,
                         const float scroll, const bool release, const glm::vec2& cursor, const bool held) {
     mouse_down_ = held;
@@ -11489,39 +11579,22 @@ void TrainView::draw_panel() {
         const auto& train = driven();
         const auto driven = driven_car();
         const bool dll_driven = driven != SIZE_MAX && dll_car(0, driven);
-        ImGui::SeparatorText(tr("Train settings"));
+        // A section each (testers 2026-11-22: the settings ran together):
+        // the camera and the body, the brakes, the line, the cars.
+        ImGui::SeparatorText(tr("Camera and body"));
         ImGui::Checkbox(tr("Camera follows (V)"), &follow_);
-        if (!dll_driven && driver_) {
-            ImGui::SameLine();
-            ImGui::Checkbox(tr("EP brake (K)"), &driver_->ep_brake);
-        }
         if (ImGui::SliderFloat(tr("Body sway"), &sway_scale_, 0.0f, 10.0f, "%.1f")) {
             char text[16];
             std::snprintf(text, sizeof text, "%.2f", sway_scale_);
             remember("body_sway", text);
         }
-        ImGui::SameLine();
         // The size of the swing of whichever model is chosen (testers
         // 2026-11-21: "1 = RTS" read as "other values: openRTS's").
-        ImGui::TextDisabled("%s", trf("(how much of the swing: 1 as the \"%s\" model gives it, 0 none, 2 twice; the model: Settings, \"Body motion\")",
+        ImGui::TextDisabled("%s", trf("1: as the \"%s\" model sways, 0: none",
                                       train.settings().body_motion == simulation::BodyMotionModel::rts ? "RTS" : "openRTS")
                                       .c_str());
-        if (ImGui::Checkbox(tr("Speed limits without the route's +3 km/h"), &limits_without_tolerance_)) {
-            remember("limits_without_tolerance", limits_without_tolerance_ ? "1" : "0");
-            limits_->set_without_tolerance(limits_without_tolerance_);
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", tr(limits_without_tolerance_
-                                         ? "(103 is 100, 83 is 80, 28 is 25: the order's limit, as a real КЛУБ-У's map has it; for the monitor, F5, the drivers and the DLLs. MaDaDev's КЛУБ then blinks from 3 km/h below the limit, sounds from 2 below and whistles over it: the route's +3 hid that)"
-                                         : "(as the route gives them: many give 3 km/h over the order's, 103 for 100)"));
-        ImGui::Checkbox(tr("Car loops start at random points"), &random_loop_phase_);
-        ImGui::SameLine();
-        ImGui::TextDisabled(tr("(openRTS: identical loops on many cars do not add up in phase; RTS starts them together)"));
-        if (ImGui::SliderInt(tr("Coupler sub-steps"), &substeps_, 1, 4)) {
-            for (auto& unit : units_) unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled(substeps_ == 1 ? "(RTS)" : "(experimental)");
+        ImGui::SeparatorText(tr("Brakes"));
+        if (!dll_driven && driver_) ImGui::Checkbox(tr("EP brake (K)"), &driver_->ep_brake);
         if (!gauges_air_loaded_) {
             gauges_air_loaded_ = true;
             gauges_air_ = remembered("gauges_openrts_air").value_or("1") == "1";
@@ -11540,19 +11613,11 @@ void TrainView::draw_panel() {
             if (legacy_) legacy_->set_own_brakes(own_brakes_ == 1, brake_numbers_ == 1);
         }
         if (line_engines_) {
+            ImGui::SeparatorText(tr("Overhead line"));
             ImGui::Checkbox(tr("pantographs can burn the wire"), &electrification_->wire_burning);
-            ImGui::SameLine();
-            ImGui::Checkbox(tr("each engine its own voltage##line"), &electrification_->own_voltage);
-            if (electrification_->mode() != simulation::Electrification::Mode::sections && !electrification_->own_voltage) {
-                ImGui::SameLine();
-                ImGui::TextDisabled(electrification_->mode() == simulation::Electrification::Mode::single_type
-                                        ? tr("(the route's one supply type)")
-                                    : electrification_->mode() == simulation::Electrification::Mode::by_engine
-                                        ? tr("(no .electrotype: the engine's own voltage, as RTS)")
-                                        : tr("(the route is not electrified)"));
-            }
         }
-        if (ImGui::TreeNode(tr("Cars and coupling"))) {
+        ImGui::SeparatorText(tr("Cars and coupling"));
+        if (ImGui::TreeNode(tr("Car list and uncoupling"))) {
             // Uncoupling as from the RTS menu: both end cocks closed, the
             // couplers left open so the parts do not couple again by themselves.
             const auto& cars = units_.front().cars;
@@ -11577,6 +11642,37 @@ void TrainView::draw_panel() {
             }
             ImGui::TreePop();
         }
+        // For developers (F12): what tests the simulation rather than plays it.
+        if (developer_mode()) {
+            ImGui::SeparatorText(tr("For developers"));
+            if (ImGui::Checkbox(tr("Speed limits without the route's +3 km/h"), &limits_without_tolerance_)) {
+                remember("limits_without_tolerance", limits_without_tolerance_ ? "1" : "0");
+                limits_->set_without_tolerance(limits_without_tolerance_);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", tr(limits_without_tolerance_
+                                             ? "(103 is 100, 83 is 80, 28 is 25: the order's limit, as a real КЛУБ-У's map has it; for the monitor, F5, the drivers and the DLLs. MaDaDev's КЛУБ then blinks from 3 km/h below the limit, sounds from 2 below and whistles over it: the route's +3 hid that)"
+                                             : "(as the route gives them: many give 3 km/h over the order's, 103 for 100)"));
+            ImGui::Checkbox(tr("Car loops start at random points"), &random_loop_phase_);
+            ImGui::SameLine();
+            ImGui::TextDisabled(tr("(openRTS: identical loops on many cars do not add up in phase; RTS starts them together)"));
+            if (ImGui::SliderInt(tr("Coupler sub-steps"), &substeps_, 1, 4)) {
+                for (auto& unit : units_) unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled(substeps_ == 1 ? "(RTS)" : "(experimental)");
+            if (line_engines_) {
+                ImGui::Checkbox(tr("each engine its own voltage##line"), &electrification_->own_voltage);
+                if (electrification_->mode() != simulation::Electrification::Mode::sections && !electrification_->own_voltage) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled(electrification_->mode() == simulation::Electrification::Mode::single_type
+                                            ? tr("(the route's one supply type)")
+                                        : electrification_->mode() == simulation::Electrification::Mode::by_engine
+                                            ? tr("(no .electrotype: the engine's own voltage, as RTS)")
+                                            : tr("(the route is not electrified)"));
+                }
+            }
+        }
     }
 
     // What the train is doing.
@@ -11599,6 +11695,16 @@ void TrainView::draw_panel() {
                 train.mass() / 1000.0);
     if (!placed()) {
         ImGui::TextUnformatted(tr("Not on the track: put it with Track control (Ctrl+Alt+F7) or on a path start."));
+        return;
+    }
+    // The readouts are for developers (F12); a player keeps the keys of a
+    // train without a DLL and the plugin's name.
+    if (!developer_mode()) {
+        if (native_) ImGui::Text(tr("Native plugin: %s (the cab's keys and mouse)"), native_->name().c_str());
+        if (driver_ && !legacy_ && !native_) {
+            ImGui::TextUnformatted(tr("Home/End: throttle  PgUp/PgDn: reverser  ] [: brake valve V..I (hold [ in I)  , .: independent"));
+            ImGui::TextUnformatted(tr("Horn Space, bell B, sander X, pantographs P, doors Y (left) and U (right)"));
+        }
         return;
     }
     const auto& head = train.cars().front();

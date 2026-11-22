@@ -250,7 +250,7 @@ std::string encode_png(const std::uint32_t width, const std::uint32_t height, co
     }
     uLongf packed_size = compressBound(static_cast<uLong>(filtered.size()));
     std::string packed(packed_size, '\0');
-    if (compress2(reinterpret_cast<Bytef*>(packed.data()), &packed_size, filtered.data(), static_cast<uLong>(filtered.size()), 9) != Z_OK)
+    if (compress2(reinterpret_cast<Bytef*>(packed.data()), &packed_size, filtered.data(), static_cast<uLong>(filtered.size()), 6) != Z_OK)
         return {};
     packed.resize(packed_size);
 

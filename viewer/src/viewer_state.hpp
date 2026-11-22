@@ -34,6 +34,15 @@ void apply_settings_defaults();
 void set_capture_panel(int tab) noexcept;
 [[nodiscard]] int capture_panel() noexcept;
 
+// "For developers" (2026-11-22, the settings redesign's stage 2): the
+// debug settings and readouts, the Performance tab and the inspector shown
+// only while it is on. Off by default; the launcher's Settings and the
+// panel's General tab have its checkbox, F12 turns it on and off in the
+// game. Remembered ("developer_mode").
+[[nodiscard]] bool developer_mode();
+// keep false: this run only (--developer, captures).
+void set_developer_mode(bool on, bool keep = true);
+
 [[nodiscard]] std::filesystem::path remembered_folder(std::string_view key);
 void remember_folder(std::string_view key, const std::filesystem::path& folder);
 
