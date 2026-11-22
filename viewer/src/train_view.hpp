@@ -850,8 +850,6 @@ public:
     void update_car_view(ViewerCamera& camera);
     void toggle_limits_panel() noexcept { limits_panel_ = !limits_panel_; }
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
-    // Shift+F7: the track profile behind and ahead of the train.
-    void set_track_profile(bool on) noexcept { track_profile_panel_ = on; }
     // Ctrl+F4: the profile strip at the top (profile_strip.hpp); remembered as profile_strip.
     void toggle_profile_strip();
     // F4: a small card of what the driver looks at most (openRTS; like
@@ -1202,7 +1200,6 @@ private:
     std::size_t car_page_ = 0;
     static constexpr std::size_t car_page_size = 15;
     bool limits_panel_ = false;
-    bool track_profile_panel_ = false; // Shift+F7
     bool stations_panel_ = false;
     // The profile strip (Ctrl+F4): built again every second, or when its
     // span or shift goes past what was built.
@@ -1235,7 +1232,6 @@ private:
     HudPanel limits_place_{.key = "hud_limits", .pivot_x = 1.0f};
     HudPanel drive_card_place_{.key = "hud_drive_card", .pivot_x = 1.0f};
     HudPanel stations_place_{.key = "hud_stations", .pivot_x = 1.0f};
-    HudPanel profile_place_{.key = "hud_profile", .pivot_x = 1.0f};
     HudPanel drive_place_{.key = "hud_drive", .pivot_x = 1.0f};
     // Starts a panel window at its place; false when it is not drawn.
     bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y);

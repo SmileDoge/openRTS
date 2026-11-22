@@ -5255,8 +5255,8 @@ void TrainView::draw_profile_strip(const Unit& unit) {
             const double margin = 0.25 * strip.span();
             const double ahead = (std::max)(right + margin, 100.0);
             const double behind = (std::max)(-left + margin, (std::max)(train.length(), 100.0) + 100.0);
-            profile_ = simulation::track_profile(*lead, ahead, behind, 10.0);
-            profile_elements_ = profile_.elements(0.1, 1.0);
+            profile_ = simulation::track_profile(*network_, *lead, ahead, behind);
+            profile_elements_ = profile_.elements();
             profile_left_ = -profile_.behind;
             profile_right_ = profile_.ahead;
             for (const auto& [km, distance] : limits_->mileposts_along(*lead, ahead, behind)) {
@@ -5740,78 +5740,6 @@ void TrainView::draw_hud() {
             ImGui::TextDisabled("%s", tr("Ctrl+F5: speed limits and the kilometre"));
         }
         end_panel(limits_place_);
-    }
-    if (track_profile_panel_ && limits_ && network_) {
-        if (begin_panel("##profile", profile_place_, 1.0f - margin_x, 0.30f)) {
-            const auto profile = simulation::build_track_window(train, *network_, limits_.get(), unit->speed_category(), signals_, {});
-            ImGui::Text(tr("Grade %+.1f per mille, rail %.2f m"), profile.grade_at_head, profile.elevation_at_head);
-            if (profile.current_limit > 0.0f) ImGui::Text(tr("Limit %.0f km/h"), profile.current_limit * 3.6f);
-            else ImGui::TextDisabled(tr("Limit -"));
-            const ImVec2 size(520.0f, 130.0f);
-            ImGui::Dummy(size);
-            const ImVec2 origin = ImGui::GetItemRectMin();
-            auto* draw = ImGui::GetWindowDrawList();
-            const auto& vertices = profile.vertices;
-            if (vertices.size() >= 2) {
-                const double first = vertices.front().distance;
-                const double last = vertices.back().distance;
-                double low = vertices.front().elevation;
-                double high = low;
-                for (const auto& vertex : vertices) {
-                    low = std::min(low, vertex.elevation);
-                    high = std::max(high, vertex.elevation);
-                }
-                if (high - low < 2.0) {
-                    const double middle = 0.5 * (low + high);
-                    low = middle - 1.0;
-                    high = middle + 1.0;
-                }
-                const double span = std::max(1.0, last - first);
-                const auto x_of = [&](const double distance) {
-                    return origin.x + static_cast<float>((distance - first) / span) * size.x;
-                };
-                const auto y_of = [&](const double elevation) {
-                    return origin.y + size.y * (1.0f - static_cast<float>((elevation - low) / (high - low)));
-                };
-                draw->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(120, 120, 120, 160));
-                for (const auto& occupied : profile.occupied) {
-                    draw->AddRectFilled(ImVec2(x_of(occupied.from), origin.y), ImVec2(x_of(occupied.to), origin.y + size.y),
-                                        IM_COL32(150, 150, 150, 50));
-                }
-                for (std::size_t i = 1; i < vertices.size(); ++i) {
-                    const auto& from = vertices[i - 1];
-                    const auto& to = vertices[i];
-                    draw->AddLine(ImVec2(x_of(from.distance), y_of(from.elevation)), ImVec2(x_of(to.distance), y_of(to.elevation)),
-                                  IM_COL32(240, 240, 240, 220), 1.5f);
-                }
-                for (const auto& mark : profile.marks) {
-                    if (mark.distance < first || mark.distance > last) continue;
-                    ImU32 colour = IM_COL32(160, 160, 160, 180);
-                    switch (mark.kind) {
-                    case simulation::ProfileMarkKind::signal:
-                        colour = mark.at_danger ? IM_COL32(230, 70, 70, 230) : IM_COL32(90, 210, 110, 230);
-                        break;
-                    case simulation::ProfileMarkKind::speed_post: colour = IM_COL32(230, 200, 80, 230); break;
-                    case simulation::ProfileMarkKind::station:
-                    case simulation::ProfileMarkKind::platform: colour = IM_COL32(110, 180, 230, 230); break;
-                    case simulation::ProfileMarkKind::siding: colour = IM_COL32(160, 160, 160, 180); break;
-                    }
-                    const float x = x_of(mark.distance);
-                    draw->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + size.y), colour, 1.2f);
-                    if (!mark.name.empty() && mark.kind != simulation::ProfileMarkKind::siding && std::abs(mark.distance) < 400.0) {
-                        draw->AddText(ImVec2(x + 2.0f, origin.y + 2.0f), colour, mark.name.c_str());
-                    }
-                }
-                const float head = x_of(0.0);
-                draw->AddLine(ImVec2(head, origin.y - 4.0f), ImVec2(head, origin.y + size.y + 4.0f), IM_COL32(255, 255, 255, 245),
-                              2.0f);
-            } else {
-                ImGui::TextDisabled(tr("no track"));
-            }
-            ImGui::TextDisabled(tr("%.0f m behind, %.0f m ahead%s"), profile.behind, profile.ahead,
-                                profile.cut_behind || profile.cut_ahead ? tr(" (cut)") : "");
-        }
-        end_panel(profile_place_);
     }
     if (!profile_strip_on_) profile_strip_on_ = remembered("profile_strip").value_or("0") == "1";
     if (*profile_strip_on_) draw_profile_strip(*unit);
