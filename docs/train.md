@@ -755,10 +755,17 @@ the pipe in III as in IV, so no leak showed there.
 
 #### Realistic air with DLL locomotives
 
+openRTS (2026-11-22, `viewer::apply_settings_defaults`): once per player, on
+the first run of this version, the brakes are set to the "realistic
+(openRTS)" preset with openRTS's brakes and КЛУБ and without Brakes.dll
+where all of it is openRTS's, over what was remembered (the
+`defaults_openrts_brakes` mark); later choices are kept.
+
 **openRTS's cab brakes over Brakes.dll** (2026-11-18, experimental; the
 Train window's "Brakes: Brakes.dll / openRTS" and "Brake numbers: as
 Brakes.dll / openRTS (from the books)", remembered as `own_brakes` and
-`brake_numbers`, Brakes.dll and "as Brakes.dll" by default; with the
+`brake_numbers`, openRTS and "as Brakes.dll" by default (before
+2026-11-22 Brakes.dll); with the
 realistic air and "Trains with DLLs" not as RTS;
 `trainplugin::DllAirSetting::own_brakes`,
 docs/brakes-dll-replacement.md). openRTS's devices
@@ -791,8 +798,8 @@ does not know (a 334, a custom 292, the ЭП2Д's ППТ, `BR_KID`, the ВЛ82м
 them in the harness.
 
 **openRTS's КЛУБ-У over Brakes.dll** (2026-11-19, experimental; the Train
-window's "КЛУБ: Brakes.dll / openRTS", remembered as `own_klub`, Brakes.dll
-by default; with the realistic air and "Trains with DLLs" not as RTS;
+window's "КЛУБ: Brakes.dll / openRTS", remembered as `own_klub`, openRTS
+by default (before 2026-11-22 Brakes.dll); with the realistic air and "Trains with DLLs" not as RTS;
 `LegacyConsist::set_own_klub`, docs/brakes-dll-replacement.md step 3).
 openRTS's КЛУБ (`simulation/klub.hpp`, `klub_screen.hpp`) does what
 Brakes.dll's does, step for step (docs/reverse/brakes-dll.md §11):

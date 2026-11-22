@@ -239,6 +239,9 @@ struct TrainView::Car {
     // a node (and those under it) and whether it is at the shape's front
     // end (its z), shown only while a chock is at that end.
     std::vector<std::pair<std::int32_t, bool>> chock_nodes;
+    // ESD_Interior_Parts with their children: not drawn while its outside
+    // is seen from its cab.
+    std::vector<std::int32_t> interior_part_nodes;
     std::shared_ptr<const formats::SoundScript> script;
     core::VirtualPath script_path;
     std::unique_ptr<audio::SoundInstance> sound;
@@ -926,14 +929,16 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
     unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
     if (!realistic_air_loaded_) {
         // As last chosen (2026-11-17, testers: it had to be set again every
-        // run); not in a network game, where the server's choice stands.
+        // run); in a network game too (each player's own train runs on his
+        // computer; testers 2026-11-21: the preset was lost on every login
+        // and set again in the cab, which charged the pipe over a cab change).
         realistic_air_loaded_ = true;
-        if (!network_game_) realistic_air_ = remembered("realistic_air").value_or("0") == "1";
+        realistic_air_ = remembered("realistic_air").value_or("1") == "1";
     }
     if (realistic_air_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
     if (!distributor_stability_loaded_) {
         distributor_stability_loaded_ = true;
-        distributor_stability_ = remembered("distributor_stability").value_or("0") == "1";
+        distributor_stability_ = remembered("distributor_stability").value_or("1") == "1";
     }
     unit.train->set_distributor_stability(distributor_stability_);
     return {};
@@ -1387,6 +1392,14 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
                     }
                 }
             }
+            for (const auto& name : details.interior_parts) {
+                for (std::size_t m = 0; m < rig.matrices.size(); ++m) {
+                    if (lower(rig.matrices[m].name) != lower(name)) continue;
+                    for (std::size_t c = 0; c < rig.matrices.size(); ++c)
+                        if (under(c, m)) car.interior_part_nodes.push_back(static_cast<std::int32_t>(c));
+                    break;
+                }
+            }
             for (std::size_t k = 0; k < details.door_details.size(); ++k) {
                 const auto& door = details.door_details[k];
                 car.door_groups.push_back(door.global_id);
@@ -1525,16 +1538,16 @@ bool TrainView::keep_attached(const DrivenKeys& keep) {
 void TrainView::load_brake_choices() {
     if (!dll_air_loaded_) {
         dll_air_loaded_ = true;
-        dll_air_ = std::clamp(std::atoi(remembered("dll_air").value_or("0").c_str()), 0, 2);
+        dll_air_ = std::clamp(std::atoi(remembered("dll_air").value_or("2").c_str()), 0, 2);
     }
     if (!own_brakes_loaded_) {
         own_brakes_loaded_ = true;
-        own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("0").c_str()), 0, 1);
+        own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("1").c_str()), 0, 1);
         brake_numbers_ = std::clamp(std::atoi(remembered("brake_numbers").value_or("0").c_str()), 0, 1);
-        own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("0").c_str()), 0, 1);
+        own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("1").c_str()), 0, 1);
         klub_map_ = remembered("klub_map").value_or("1") != "0";
         klub_objects_ = remembered("klub_objects").value_or("0") == "1";
-        no_brakes_dll_ = remembered("no_brakes_dll").value_or("0") == "1";
+        no_brakes_dll_ = remembered("no_brakes_dll").value_or("1") == "1";
     }
     trainplugin::LegacyConsist::set_without_brakes_dll(no_brakes_dll_ && realistic_air_ && dll_air_ != 0 && own_klub_ == 1 && own_brakes_ == 1);
 }
@@ -2258,8 +2271,34 @@ std::size_t TrainView::merge_units(const simulation::Train* survivor_train, cons
     return survivor;
 }
 
+void TrainView::step_parted() {
+    if (parted_.empty()) return;
+    std::vector<simulation::Train*> all;
+    for (const auto& u : units_) all.push_back(u.train.get());
+    std::erase_if(parted_, [&](const PartedJoint& p) {
+        const auto a = find_car(p.ahead);
+        const auto b = find_car(p.behind);
+        if (!a || !b) return true;
+        auto& ua = units_[a->first];
+        auto& ub = units_[b->first];
+        if (a->first == b->first) return true; // coupled again after all
+        // The ahead car is its part's last, the behind car its part's first.
+        const bool a_front = a->second + 1 != ua.cars.size();
+        const bool b_front = b->second == 0 || b->second + 1 != ub.cars.size();
+        const auto contact = simulation::end_contact(*ua.train, a_front, all, 5.0);
+        const bool together = contact && contact->other == ub.train.get() && contact->gap < 2.0;
+        if (together) return false;
+        ua.train->set_car_flags(a->second, simulation::Train::CarFlags::coupler_open,
+                                a_front ? simulation::coupler_open_front : simulation::coupler_open_rear, false);
+        ub.train->set_car_flags(b->second, simulation::Train::CarFlags::coupler_open,
+                                b_front ? simulation::coupler_open_front : simulation::coupler_open_rear, false);
+        return true;
+    });
+}
+
 void TrainView::step_trains() {
     OPENRTS_ZONE("trains: physics step");
+    step_parted();
     // Meetings first, on the positions the step starts from (the earlier
     // unit survives a coupling, so the driven train keeps its place).
     // Trains of this program first: in a meeting the earlier survives, and
@@ -6045,7 +6084,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         limit_brake_force_ = remembered("limit_brake_force").value_or("1") == "1";
         // The brakes' condition: in service (6) with the realistic air,
         // none with RTS's, until chosen (2026-11-18).
-        const bool realistic = remembered("realistic_air").value_or("0") == "1";
+        const bool realistic = remembered("realistic_air").value_or("1") == "1";
         brake_condition_ = std::clamp(std::atoi(remembered("brake_condition").value_or(realistic ? "6" : "0").c_str()), 0, 10);
         brake_pressing_ = std::clamp(std::atoi(remembered("brake_pressing").value_or("100").c_str()), 50, 150);
     }
@@ -6221,6 +6260,8 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         if (std::abs(driven().speed()) > 0.1) {
             message_ = tr("stop the train to uncouple");
         } else {
+            if (!units_.empty() && index > 0 && index < units_.front().cars.size())
+                parted_.push_back({units_.front().cars[index - 1].key, units_.front().cars[index].key});
             split(0, index, true, true);
             message_ = trf("uncoupled before car %zu (end cocks closed)", static_cast<std::size_t>(index + 1));
         }
@@ -8701,7 +8742,8 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
             message_ = tr("stop the train to uncouple");
             break;
         }
-        split(unit_index, *behind, false, false);
+        parted_.push_back({unit->cars[*ahead].key, unit->cars[*behind].key});
+        split(unit_index, *behind, false, true);
         message_ = trf("uncoupled before car %zu", static_cast<std::size_t>(*behind + 1));
         break;
     case 2: { // Disconnect train pipe: air escapes where a cock is open
@@ -8798,6 +8840,11 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
     case 14: // Unlock coupling: ready to couple again
     case 15: { // Lock coupling opened: it only pushes
         const bool open = id == 15;
+        // His own choice now: not closed by itself (step_parted).
+        std::erase_if(parted_, [&](const PartedJoint& p) {
+            return (ahead && (p.ahead == unit->cars[*ahead].key || p.behind == unit->cars[*ahead].key))
+                || (behind && (p.ahead == unit->cars[*behind].key || p.behind == unit->cars[*behind].key));
+        });
         if (ahead) {
             train.set_car_flags(*ahead, Flags::coupler_open, simulation::coupler_open_rear, open);
             trigger(*ahead, open ? 62 : 59);
@@ -10961,6 +11008,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                         for (const auto& door : car.exterior_doors) {
                             if (door.last_frame > 0.0f) adjustments.push_back({.matrix = door.node, .frame = door.open * door.last_frame});
                         }
+                        for (const auto node : car.interior_part_nodes) adjustments.push_back({.matrix = node, .hidden = true});
                         for (const auto& room : neighbour_rooms_now_) {
                             renderer.submit(*model, transform, adjustments);
                             renderer.set_portal(static_cast<std::int32_t>(9 + room.portal));
@@ -11012,6 +11060,12 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
         for (const auto& [node, shape_front] : car.chock_nodes) {
             const auto chock = shape_front != car.flipped ? simulation::chock_front : simulation::chock_rear;
             if ((state.chocks & chock) == 0) adjustments.push_back({.matrix = node, .hidden = true});
+        }
+        // Its outside seen from its own cab (DoNotHideExtInCabin, the head
+        // out of the window): its simple insides left out (RTS 0x438D50),
+        // the cab's own are there.
+        if (inside) {
+            for (const auto node : car.interior_part_nodes) adjustments.push_back({.matrix = node, .hidden = true});
         }
         for (std::size_t k = 0; k < car.bogies.size(); ++k) {
             const auto& [matrix, shape_front] = car.bogies[k];

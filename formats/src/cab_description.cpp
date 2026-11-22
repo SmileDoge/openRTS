@@ -540,6 +540,8 @@ ExteriorDetails parse_exterior_details(std::string_view bytes) {
     if (!source) return out;
     TextNode root;
     detail::read_text_tree(*source, root);
+    if (const auto* parts = find(root, "esd_interior_parts"))
+        for (std::size_t i = 1; i < parts->values.size(); ++i) out.interior_parts.push_back(parts->values[i]);
     const TextNode* exterior = find(root, "esd_exterior_details");
     if (!exterior) return out;
     if (const auto* animations = exterior->child("animations"))

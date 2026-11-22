@@ -1258,6 +1258,15 @@ private:
     [[nodiscard]] bool walk_blocked(const glm::vec3& from, const glm::vec3& to) const;
     // A car by its key: (unit, car).
     [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> find_car(std::uint32_t key) const;
+    // A joint just uncoupled by hand (the car menu): its couplers stay open,
+    // so the parts only push, till they are more than 2 m apart; then they
+    // close and couple again when run together (testers 2026-11-21: a cut
+    // coupled again at once as the parts touched, five times running).
+    struct PartedJoint {
+        std::uint32_t ahead{}, behind{}; // the cars' keys
+    };
+    std::vector<PartedJoint> parted_;
+    void step_parted();
     // Car i of unit u's outside as the engineer walks it this frame (none:
     // nothing to walk on, or not placed).
     [[nodiscard]] std::optional<CarOutside> car_outside(std::size_t u, std::size_t i, bool with_cab = true);

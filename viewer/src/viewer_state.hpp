@@ -22,6 +22,13 @@ namespace openrts::viewer {
 [[nodiscard]] std::optional<std::string> remembered(std::string_view key);
 void remember(std::string_view key, std::string_view value);
 
+// Once per player (2026-11-22, testers: most new players asked why the
+// train does not go): the brakes set to openRTS's realistic preset with
+// openRTS's brakes and КЛУБ and no Brakes.dll where all of it is openRTS's,
+// over whatever was remembered; later choices are kept. Called by the
+// launcher and the viewer before they read the settings.
+void apply_settings_defaults();
+
 [[nodiscard]] std::filesystem::path remembered_folder(std::string_view key);
 void remember_folder(std::string_view key, const std::filesystem::path& folder);
 

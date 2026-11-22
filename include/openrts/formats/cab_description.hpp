@@ -388,6 +388,11 @@ struct WagonObject {
 };
 
 struct ExteriorDetails {
+    // ESD_Interior_Parts ( n node ... ): the outside's own simple cab or
+    // salon, hidden with their children while the outside is seen from the
+    // car's cab (DoNotHideExtInCabin, the head out of the window; RTS
+    // 0x4F0BC8 marks them, 0x438D50 hides them).
+    std::vector<std::string> interior_parts;
     std::vector<CabAnimation> animations;
     std::vector<std::string> doors;
     std::vector<ExteriorDoor> door_details; // in the same order

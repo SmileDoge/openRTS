@@ -453,6 +453,7 @@ struct Launcher::State {
     }
 
     void load_settings() {
+        viewer::apply_settings_defaults();
         fs::path folder;
         if (const auto value = remembered("root"); value && is_installation(from_utf8(*value))) folder = from_utf8(*value);
         if (folder.empty()) {
@@ -485,8 +486,8 @@ struct Launcher::State {
         viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
         viewer::set_body_motion_model(viewer::parse_body_motion_model(remembered("body_motion").value_or("openrts").c_str()));
         vsync = remembered_int("launcher_vsync", 1) != 0;
-        realistic_air = remembered_int("realistic_air", 0) != 0;
-        dll_air = std::clamp(remembered_int("dll_air", 0), 0, 2);
+        realistic_air = remembered_int("realistic_air", 1) != 0;
+        dll_air = std::clamp(remembered_int("dll_air", 2), 0, 2);
         gauges_air = remembered_int("gauges_openrts_air", 1) != 0;
         load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
@@ -927,6 +928,16 @@ struct Launcher::State {
         // (no console window); a network game's steps are read back from it.
         SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
         const auto log_path = viewer::user_data_directory() / L"openrts.log";
+        // The last two runs' logs kept beside it (openrts.1.log, then
+        // openrts.2.log): a player who starts the game again has not lost
+        // what happened (testers 2026-11-21: a helper's log, needed for a
+        // network bug, was gone once he logged in again).
+        {
+            const auto older = viewer::user_data_directory() / L"openrts.2.log";
+            const auto old = viewer::user_data_directory() / L"openrts.1.log";
+            MoveFileExW(old.c_str(), older.c_str(), MOVEFILE_REPLACE_EXISTING);
+            MoveFileExW(log_path.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING);
+        }
         const HANDLE log = CreateFileW(log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit,
                                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         STARTUPINFOW startup{};
@@ -1579,7 +1590,7 @@ void Launcher::State::draw_settings(const float height) {
         if (begin_form("##brakes_form", label_width)) {
             form_row(tr("Realistic air (openRTS)"));
             if (ImGui::Checkbox("##realistic_air", &realistic_air)) remember("realistic_air", realistic_air ? "1" : "0");
-            ImGui::TextDisabled("%s", realistic_air ? tr("(flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed; not in network games)")
+            ImGui::TextDisabled("%s", realistic_air ? tr("(flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed)")
                                                     : tr("(off: RTS's model, as RTS brakes)"));
             form_row(tr("Trains with DLLs"));
             const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),

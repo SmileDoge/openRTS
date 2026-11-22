@@ -32,7 +32,7 @@ openRTS changes nothing in it.
    `D:\Games\openRTS`: beside RTS, inside its folder or in `Program Files`.
    The settings and the log are kept in `%LOCALAPPDATA%\openRTS`:
    - `viewer_state.ini` — the settings;
-   - `openrts.log` — the game's log;
+   - `openrts.log` — the game's log (`openrts.1.log`, `openrts.2.log`: the two runs before);
    - `imgui.ini` — where the windows are;
    - `debug_views` — saved views;
    - `user_paths` — Track control's paths.

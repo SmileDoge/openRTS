@@ -1576,8 +1576,18 @@ void Host::run_car(CarMirror& car, float dt, float air_temperature) {
             apply_aux_writes(car, car.aux_info[i], true);
         }
     }
-    // A library without a Run this step still takes its writes.
+    // A library without a Run this step still takes its writes. One not
+    // loaded (AuxLibrarySpec::stub: openRTS's devices in place of
+    // Brakes.dll) has its exchange word read after the train's DLL ran and
+    // its commands (0x10 .. 0x8000) cleared, as Brakes.dll's Run ends
+    // (docs/reverse/brakes-dll.md 5): until 2026-11-21 the word was never
+    // read there, and the ЭД9М's ЭПТ requests at low speed went nowhere.
     for (auto& aux : car.aux_info) {
+        if (aux.module && !aux.module->run && aux.var.size() > 8) {
+            aux.exchange_before = exchange_word(aux);
+            const std::uint32_t kept = aux.exchange_before & ~0xFFF0u;
+            std::memcpy(&aux.var[8], &kept, sizeof(kept));
+        }
         apply_aux_writes(car, aux, false);
         apply_aux_writes(car, aux, true);
     }

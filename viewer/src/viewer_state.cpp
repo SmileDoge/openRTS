@@ -109,6 +109,22 @@ void remember(const std::string_view key, const std::string_view value) {
     for (const auto& [name, text] : values) output << name << '=' << text << '\n';
 }
 
+void apply_settings_defaults() {
+    constexpr std::string_view mark = "defaults_openrts_brakes";
+    auto values = read_state();
+    if (values[std::string(mark)] == "1") return;
+    // The Train window's "realistic (openRTS)" preset and openRTS's devices.
+    const std::pair<const char*, const char*> settings[] = {
+        {"realistic_air", "1"}, {"dll_air", "2"},     {"gauges_openrts_air", "1"}, {"rails", "1"},
+        {"limit_brake_force", "1"}, {"distributor_stability", "1"}, {"brake_condition", "6"}, {"brake_pressing", "100"},
+        {"own_brakes", "1"},    {"own_klub", "1"},    {"no_brakes_dll", "1"},
+    };
+    for (const auto& [key, value] : settings) values[key] = value;
+    values[std::string(mark)] = "1";
+    std::ofstream output(state_file(), std::ios::binary | std::ios::trunc);
+    for (const auto& [name, text] : values) output << name << '=' << text << '\n';
+}
+
 std::filesystem::path remembered_folder(const std::string_view key) {
     const auto value = remembered(key);
     if (!value) return {};

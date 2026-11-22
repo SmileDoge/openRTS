@@ -782,11 +782,17 @@ II, III, IV, VЭ, V, VI — состояния 0..6 органа управле�
 
 #### Реалистичный воздух с DLL локомотивов
 
+openRTS (2026-11-22, `viewer::apply_settings_defaults`): один раз у
+каждого игрока, при первом запуске этой версии, тормоза ставятся на пресет
+«реалистичные (openRTS)» с тормозами и КЛУБ openRTS и без Brakes.dll, где
+всё делает openRTS, поверх запомненного (метка `defaults_openrts_brakes`);
+дальнейший выбор игрока сохраняется.
+
 **Тормоза кабины openRTS поверх Brakes.dll** (2026-11-18,
 экспериментально; в окне «Поезд» «Тормоза: Brakes.dll / openRTS» и
 «Параметры тормозов: как Brakes.dll / openRTS (по книгам)», запоминаются
-как `own_brakes` и `brake_numbers`, по умолчанию Brakes.dll и «как
-Brakes.dll»; при реалистичном воздухе и «Поезда с DLL» не как в RTS;
+как `own_brakes` и `brake_numbers`, по умолчанию openRTS и «как
+Brakes.dll» (до 2026-11-22 Brakes.dll); при реалистичном воздухе и «Поезда с DLL» не как в RTS;
 `trainplugin::DllAirSetting::own_brakes`,
 docs/brakes-dll-replacement.md). Приборы openRTS
 (`simulation/cab_brakes.hpp`) работают с краном 395 или 130, 254 или 224,
@@ -818,8 +824,8 @@ DLL поезда (`var + 32` до `Run` Brakes.dll: перекрыша и тор
 
 **КЛУБ-У openRTS поверх Brakes.dll** (2026-11-19, экспериментально; в окне
 «Поезд» «КЛУБ: Brakes.dll / openRTS», запоминается как `own_klub`, по
-умолчанию Brakes.dll; при реалистичном воздухе и «Поезда с DLL» не как в
-RTS; `LegacyConsist::set_own_klub`, docs/brakes-dll-replacement.md, шаг 3).
+умолчанию openRTS (до 2026-11-22 Brakes.dll); при реалистичном воздухе и
+«Поезда с DLL» не как в RTS; `LegacyConsist::set_own_klub`, docs/brakes-dll-replacement.md, шаг 3).
 КЛУБ openRTS (`simulation/klub.hpp`, `klub_screen.hpp`) делает то же, что
 КЛУБ Brakes.dll, шаг в шаг (docs/reverse/brakes-dll.md §11):
 - **КЛУБ Brakes.dll выключается.** На машинах поезда игрока, у которых в

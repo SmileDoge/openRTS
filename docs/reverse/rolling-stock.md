@@ -329,6 +329,19 @@ the head cars barely moved. openRTS's instead:
   (its shape instance flag +88 = 20) unless bits 4-5 are set; putting the
   head out of the window (camera mode 4) shows it again (flag 0), back in
   the cab hides it. Bits 6-7 do the same for a salon.
+- **CONFIRMED** the outside's simple insides: the car's `.sd` `shape`
+  block `ESD_Interior_Parts ( n node ... )` (the car's setup, `0x4F0BC8`)
+  marks those nodes and their children (node state bit 2). Whenever the
+  outside is seen from the car's cab (`DoNotHideExtInCabin`, or the head
+  out of the window) `0x438D50` hides them (state flag 1, `sub_4AC0D4`),
+  and shows them back for an outside camera (`sub_4AC128`). The shunters'
+  `DoNotHideExtInCabin ( 1 )` (ТЭМ2, ЧМЭ3) keeps the hood in sight from
+  the cab, their `ESD_Interior_Parts` (the ТЭМ2: `cab_1`, `obich`, `ui`,
+  `control`, doors, wipers) are the outside's own cab. openRTS
+  (2026-11-22): the same, `ExteriorDetails::interior_parts`; before that
+  their simple seats and desk stood in the 3D cab. The cab `.sd`'s
+  `ExteriorNodes` (node state bit 4, `0x515434`) are hidden the same way;
+  not in openRTS yet.
 - **CONFIRMED** only the current cab or salon is drawn (`0x438D50` hands
   its object to the draw list, `sub_4E0954`); the cars coupled to it stay
   their outsides. Through the passage door one sees the next car's end wall

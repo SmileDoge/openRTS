@@ -265,6 +265,7 @@ std::optional<openrts::net::Bytes> wait_for_world(openrts::net::RtsConnection& c
 }
 
 int run_window(std::string_view mode, std::string_view path, const std::vector<std::string_view>& flags) {
+    openrts::viewer::apply_settings_defaults();
     openrts::viewer::WindowOptions options;
     // The volume last set (viewer panel or the start menu); --volume overrides it.
     if (const auto volume = openrts::viewer::remembered("volume")) {
