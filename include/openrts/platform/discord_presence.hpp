@@ -31,10 +31,10 @@
 
 namespace openrts::platform {
 
-// The Discord application openRTS shows as ("Играет в openRTS"): its id
-// from discord.com/developers. Empty: no presence at all.
+// The Discord application DTRE shows as ("Играет в DTRE"): its id from
+// discord.com/developers. Empty: no presence at all.
 // viewer_state.ini's "discord_application_id" overrides it (a test).
-inline constexpr std::string_view discord_application_id = "1571494138317111337";
+inline constexpr std::string_view discord_application_id = "1574133159162028213";
 
 struct DiscordActivity {
     std::string details;     // the first line under the game's name
