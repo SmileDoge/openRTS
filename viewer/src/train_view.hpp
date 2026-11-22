@@ -62,6 +62,7 @@
 #include "brake_settings_ui.hpp"
 #include "camera.hpp"
 #include "cab_view.hpp"
+#include "train_extra_sounds.hpp"
 #include "engineer.hpp"
 #include "head_motion.hpp"
 #include "legacy_cab.hpp"
@@ -1589,6 +1590,12 @@ private:
     std::size_t joints_ = 0, junctions_ = 0, coupler_breaks_ = 0, derailments_ = 0;
     bool end_of_track_ = false;
     std::unique_ptr<audio::SoundBank> bank_;
+    // openRTS's own braking sound (train_extra_sounds.hpp), and which scripts
+    // have a squeal of their own.
+    std::unique_ptr<TrainExtraSounds> extra_sounds_;
+    std::unordered_map<const formats::SoundScript*, bool> script_squeals_;
+    [[nodiscard]] bool script_squeals(const formats::SoundScript* script);
+    void update_extra_sounds(float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound);
     // Wheel flats (ползуны): their knocks are real wheel-rail blows of the
     // RTS install (SOUND/ra_euro_joint*.wav, else mp_joint*.wav), one at
     // random each time, its pitch and loudness a little different.

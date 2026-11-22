@@ -477,6 +477,13 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_viewer)
     add_test(NAME openrts.content.engineer_vl10k COMMAND openrts_engineer_test "${OPENRTS_TEST_ROOT}")
 endif()
 
+# openRTS's braking sound: the squeal's highs remade, a train braking to a
+# stop squeals, its moan ends with the stop, all quiet standing.
+add_executable(openrts_brake_squeal_test brake_squeal_test.cpp ../viewer/src/train_extra_sounds.cpp)
+openrts_configure_target(openrts_brake_squeal_test)
+target_link_libraries(openrts_brake_squeal_test PRIVATE openrts_audio openrts_core)
+add_test(NAME openrts.brake_squeal COMMAND openrts_brake_squeal_test)
+
 add_executable(openrts_discord_presence_test discord_presence_test.cpp)
 openrts_configure_target(openrts_discord_presence_test)
 target_link_libraries(openrts_discord_presence_test PRIVATE openrts_platform)

@@ -1214,6 +1214,43 @@ void test_content_3sl2m(const std::filesystem::path& root) {
 
 } // namespace
 
+// openRTS's own sounds: the Doppler factor, and the echo that the voices
+// placed in space get (the cab's own, heard at the listener, none).
+void test_doppler_and_echo() {
+    check(near(audio::doppler_pitch(0.0f), 1.0f), "no Doppler shift standing");
+    check(audio::doppler_pitch(-30.0f) > 1.08f && audio::doppler_pitch(30.0f) < 0.93f, "coming higher, going lower");
+    check(near(audio::doppler_pitch(-1000.0f), audio::doppler_pitch(-90.0f)), "the speed is held within 90 m/s");
+
+    constexpr std::uint32_t rate = 22050;
+    auto burst = std::make_shared<audio::AudioClip>();
+    burst->channels = 1;
+    burst->sample_rate = rate;
+    burst->frames = rate / 20; // 50 ms
+    for (std::uint64_t i = 0; i < burst->frames; ++i)
+        burst->samples.push_back(0.5f * static_cast<float>(std::sin(2.0 * 3.14159265 * 300.0 * static_cast<double>(i) / rate)));
+    // The energy in the half second after the burst.
+    const auto tail = [&](const float echo, const audio::VoiceSpace space) {
+        audio::AudioEngine engine({.device = false, .channels = 2, .sample_rate = rate});
+        engine.set_listener({0, 0, 0}, {0, 0, 1});
+        engine.set_echo(echo);
+        std::vector<float> mix(2 * rate);
+        engine.render(mix.data(), rate); // the echo eased in
+        const auto voice = engine.play(burst, audio::VoicePlayback::once, space);
+        engine.set(voice, 1.0f, 1.0f, {0, 0, 5});
+        engine.render(mix.data(), rate / 10);
+        engine.render(mix.data(), rate / 2);
+        double sum = 0.0;
+        for (const float v : std::span(mix.data(), rate)) sum += static_cast<double>(v) * v;
+        return sum;
+    };
+    const double dry = tail(0.0f, audio::VoiceSpace::panned);
+    const double tunnel = tail(1.0f, audio::VoiceSpace::panned);
+    const double cab = tail(1.0f, audio::VoiceSpace::flat);
+    check(dry < 1e-6, "no echo: silence after the burst");
+    check(tunnel > 0.5, "in a tunnel the burst rings on");
+    check(cab < 1e-6, "the cab's own sounds get no echo");
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
         test_content_ed9m_cab(argv[1]);
@@ -1239,6 +1276,7 @@ int main(int argc, char** argv) {
     test_sources_and_window();
     test_decoding();
     test_engine();
+    test_doppler_and_echo();
     if (failures == 0) std::cout << "sound: all checks passed\n";
     return failures == 0 ? 0 : 1;
 }

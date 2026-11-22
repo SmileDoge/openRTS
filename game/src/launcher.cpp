@@ -42,6 +42,7 @@
 #include "frame_limiter.hpp"
 #include "brake_settings_ui.hpp"
 #include "graphics_presets_ui.hpp"
+#include "sound_extras_ui.hpp"
 #include "graphics_settings.hpp"
 #include "key_layout.hpp"
 #include "rts_config.hpp"
@@ -1555,6 +1556,10 @@ void Launcher::State::draw_settings(const float height) {
                 viewer::set_background_sound(static_cast<viewer::BackgroundSound>(quiet));
                 remember("background_sound", viewer::background_sound_key(viewer::background_sound()));
             }
+            form_row(tr("Own sounds"));
+            ImGui::BeginGroup();
+            viewer::draw_sound_extras();
+            ImGui::EndGroup();
             ImGui::EndDisabled();
             form_row(tr("Rail joints"));
             int joints = viewer::rail_joint_layout() == simulation::RailJointLayout::rts ? 1 : 0;

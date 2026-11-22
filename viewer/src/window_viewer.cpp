@@ -44,6 +44,7 @@
 #include "discord_status.hpp"
 #include "frame_limiter.hpp"
 #include "graphics_presets_ui.hpp"
+#include "sound_extras_ui.hpp"
 #include "graphics_settings.hpp"
 #include "weather_cycle.hpp"
 #include <openrts/renderer/gpu_pass_timer.hpp>
@@ -1667,6 +1668,7 @@ public:
                     set_background_sound(static_cast<BackgroundSound>(quiet));
                     remember("background_sound", background_sound_key(background_sound()));
                 }
+                draw_sound_extras();
             } else {
                 ImGui::TextDisabled("%s", tr("Sound: off"));
             }
@@ -3700,6 +3702,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
         if (sound) {
             sound->set_listener(camera.eye(), camera.forward());
+            sound->set_doppler(sound_extras().doppler);
+            sound->set_echo(sound_extras().echo ? scene.echo_amount() : 0.0f);
             sound->update();
         }
         const auto environment = scene.environment();

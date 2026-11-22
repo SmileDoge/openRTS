@@ -713,8 +713,8 @@ public:
         if (world_sounds_ && audio_) world_sounds_->stop(*audio_);
         if (train_ && audio_) train_->stop_sound(*audio_);
         if (crossings_ && audio_) crossings_->stop_sound(*audio_);
-        if (weather_sound_ && audio_) weather_sound_->stop(*audio_);
-        weather_sound_.reset();
+        weather_stop(weather_out_);
+        weather_stop(weather_in_);
         if (thunder_ && audio_) thunder_->stop(*audio_);
         thunder_.reset();
         track_control_.reset();
@@ -930,6 +930,8 @@ public:
             // second, closed in a second (a tunnel's mouth passed).
             const float light_speed = sky_light_seen_ > sky_light_open_ ? 2.0f : 1.0f;
             sky_light_open_ += (sky_light_seen_ - sky_light_open_) * (1.0f - std::exp(-light_speed * clock.elapsed));
+            // The echo's: as the sky's light, without its saturation.
+            enclosure_ += (enclosure_seen_ - enclosure_) * (1.0f - std::exp(-1.5f * clock.elapsed));
         }
         update_lightning(clock, camera.eye(), camera.forward(), camera_position);
         if (native_sky_ && sky_state_) {
@@ -1454,7 +1456,10 @@ public:
                 weight += w;
                 ++known;
             }
-            if (known >= 2 && weight > 1e-6f) sky_light_seen_ = std::clamp(2.0f * sum / weight - 0.1f, 0.0f, 1.0f);
+            if (known >= 2 && weight > 1e-6f) {
+                sky_light_seen_ = std::clamp(2.0f * sum / weight - 0.1f, 0.0f, 1.0f);
+                enclosure_seen_ = std::clamp(1.0f - sum / weight, 0.0f, 1.0f);
+            }
         }
         probe_frames_.pop_front();
     }
@@ -2250,41 +2255,66 @@ private:
     // In the cab RTS plays the outside sound too, through the room's doors
     // and windows: rain_in / snow_in list only CabCam and PassengerCam, which
     // RTS starts for the player's train's objects, never for the weather's
-    // (0x44AB7C), so they stay silent (docs/sound.md).
+    // (0x44AB7C), so they stay silent (docs/sound.md). openRTS (the "Rain on
+    // the body inside" sound setting, on by default): in the train's cab or
+    // salon they play as well, the drops on the roof, at the listener.
+    struct WeatherSound {
+        std::shared_ptr<const formats::SoundScript> script;
+        std::unique_ptr<audio::SoundInstance> sound;
+        bool snow = false;
+        bool missing = false; // no such script: not looked for again until the weather changes
+    };
+    void weather_load(WeatherSound& slot, const bool snow, const bool inside) {
+        slot = {};
+        slot.snow = snow;
+        const std::string name = std::string(snow ? "snow" : "rain") + (inside ? "_in.sms" : "_ex.sms");
+        std::vector<core::VirtualPath> candidates{child(child(route_, "SOUND"), name)};
+        if (const auto global = core::VirtualPath::parse("SOUND/" + name)) candidates.push_back(*global);
+        for (const auto& candidate : candidates) {
+            if (!content_.vfs()->exists(candidate)) continue;
+            auto script = std::make_shared<formats::SoundScript>(formats::load_sound_script(*content_.vfs(), candidate));
+            const auto* group = script->ok() ? script->select_group(formats::SoundOwner::environment) : nullptr;
+            if (!group) continue;
+            if (!weather_bank_) weather_bank_ = std::make_unique<audio::SoundBank>(content_.vfs());
+            auto lookup = [this, candidate](const std::string& file) -> std::shared_ptr<const audio::AudioClip> {
+                const auto found = audio::find_sound_file(*content_.vfs(), candidate, file);
+                return found ? weather_bank_->get(*found) : nullptr;
+            };
+            slot.script = std::move(script);
+            slot.sound = std::make_unique<audio::SoundInstance>(slot.script, *group, formats::SoundOwner::environment, std::move(lookup),
+                                                                inside ? 8u : 7u);
+            return;
+        }
+        slot.missing = true;
+    }
+    void weather_stop(WeatherSound& slot) {
+        if (slot.sound && audio_) slot.sound->stop(*audio_);
+        slot = {};
+    }
     void update_weather_sound(const float elapsed, const glm::vec3& eye, const float gain) {
         const bool falling = audio_ && precipitation_ && precipitation_->drops() > 0;
         const bool snow = precipitation_ && precipitation_->snow();
-        if (weather_sound_ && (!falling || snow != weather_snow_)) {
-            weather_sound_->stop(*audio_);
-            weather_sound_.reset();
-        }
-        if (!falling) return;
-        if (!weather_sound_) {
-            weather_snow_ = snow;
-            const std::string name = snow ? "snow_ex.sms" : "rain_ex.sms";
-            std::vector<core::VirtualPath> candidates{child(child(route_, "SOUND"), name)};
-            if (const auto global = core::VirtualPath::parse("SOUND/" + name)) candidates.push_back(*global);
-            for (const auto& candidate : candidates) {
-                if (!content_.vfs()->exists(candidate)) continue;
-                auto script = std::make_shared<formats::SoundScript>(formats::load_sound_script(*content_.vfs(), candidate));
-                const auto* group = script->ok() ? script->select_group(formats::SoundOwner::environment) : nullptr;
-                if (!group) continue;
-                if (!weather_bank_) weather_bank_ = std::make_unique<audio::SoundBank>(content_.vfs());
-                auto lookup = [this, candidate](const std::string& file) -> std::shared_ptr<const audio::AudioClip> {
-                    const auto found = audio::find_sound_file(*content_.vfs(), candidate, file);
-                    return found ? weather_bank_->get(*found) : nullptr;
-                };
-                weather_script_ = std::move(script);
-                weather_sound_ = std::make_unique<audio::SoundInstance>(weather_script_, *group, formats::SoundOwner::environment,
-                                                                        std::move(lookup), 7u);
-                break;
-            }
-        }
-        if (!weather_sound_) return;
-        audio::SoundInputs inputs{.camera = audio::SoundCamera::external, .position = eye};
         // The dynamic weather's light rain is quieter, its heavy one louder.
-        inputs.gain = gain * (dynamic_weather_ ? std::clamp(0.3f + 0.8f * weather_cycle().shown.precipitation, 0.3f, 1.1f) : 1.0f);
-        weather_sound_->update(elapsed, inputs, *audio_);
+        const float amount = dynamic_weather_ ? std::clamp(0.3f + 0.8f * weather_cycle().shown.precipitation, 0.3f, 1.1f) : 1.0f;
+        if ((weather_out_.sound || weather_out_.missing) && (!falling || snow != weather_out_.snow)) weather_stop(weather_out_);
+        const auto camera = train_ ? train_->sound_camera() : audio::SoundCamera::external;
+        const bool inside = falling && sound_extras().rain_inside && camera != audio::SoundCamera::external;
+        if ((weather_in_.sound || weather_in_.missing) && (!inside || snow != weather_in_.snow)) weather_stop(weather_in_);
+        if (!falling) return;
+        if (!weather_out_.sound && !weather_out_.missing) weather_load(weather_out_, snow, false);
+        if (weather_out_.sound) {
+            audio::SoundInputs inputs{.camera = audio::SoundCamera::external, .position = eye};
+            inputs.gain = gain * amount;
+            weather_out_.sound->update(elapsed, inputs, *audio_);
+        }
+        if (!inside) return;
+        if (!weather_in_.sound && !weather_in_.missing) weather_load(weather_in_, snow, true);
+        if (weather_in_.sound) {
+            audio::SoundInputs inputs{.camera = camera, .position = eye};
+            inputs.gain = amount;
+            inputs.at_listener = true;
+            weather_in_.sound->update(elapsed, inputs, *audio_);
+        }
     }
 
     void rebase_near(ViewerCamera& camera) {
@@ -2858,6 +2888,23 @@ private:
     static constexpr int sky_light_rows = 6;
     float sky_light_seen_ = 1.0f;
     float sky_light_open_ = 1.0f;
+    // The share of the ways out round the eye (above the horizon, past 6 m)
+    // that the world closes (the bins' mean, 1 - open), and eased: the
+    // sounds' echo (echo_amount). Only while the sky's light is measured
+    // (PBR stage 2); else 0.
+    float enclosure_seen_ = 0.0f;
+    float enclosure_ = 0.0f;
+
+public:
+    // A street or a station's tracks keep most of the sky (no echo), a
+    // cutting or a platform's roof about half, a tunnel all of it.
+    [[nodiscard]] float echo_amount() const override {
+        if (!renderer::frame_sky_light()) return 0.0f;
+        const float t = std::clamp((enclosure_ - 0.3f) / 0.55f, 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    }
+
+private:
     // What the probe last saw each way round the eye in the world (azimuth
     // by height above the horizon): the share of its ways out that reached
     // the sky, and where the eye was then. The openness is their mean, those
@@ -3048,9 +3095,8 @@ private:
     std::unique_ptr<PrecipitationView> precipitation_;
     std::unique_ptr<SmokeView> smoke_;
     std::unique_ptr<audio::SoundBank> weather_bank_;
-    std::shared_ptr<const formats::SoundScript> weather_script_;
-    std::unique_ptr<audio::SoundInstance> weather_sound_;
-    bool weather_snow_ = false;
+    WeatherSound weather_out_; // rain_ex / snow_ex
+    WeatherSound weather_in_;  // rain_in / snow_in (openRTS)
     // The world's extras the viewer panel turns on and off (remembered).
     struct WorldEffects {
         bool traffic = true;

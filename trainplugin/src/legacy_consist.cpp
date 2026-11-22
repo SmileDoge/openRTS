@@ -139,6 +139,13 @@ struct LegacyConsist::RecorderCar {
     std::uint32_t last_var4 = 0;        // as the step before left them (read first)
     float last_ep = 0.0f;
     std::uint32_t random = 1;           // the needle's error: an LCG as the C library's rand
+    // The cab objects it set, as last set: Brakes.dll sets the needle once
+    // a second and the cab keeps it (RTS); the host's displays here are the
+    // DLLs' own, 0 for the needle with Brakes.dll's recorder off, so every
+    // step shows what was last set (testers: the ВЛ80т's and ЭР2Т's needle
+    // at 0 but for a flick each second).
+    std::map<std::int32_t, float> held_values;
+    std::map<std::int32_t, std::uint32_t> held_states;
 };
 
 namespace {
@@ -2393,6 +2400,8 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             // Brakes.dll's Init's: its random odometer (it ran on this step).
             car.started = true;
             car.state = {};
+            car.held_values.clear();
+            car.held_states.clear();
             car.state.distance = static_cast<float>(var_at(224, 0.0f) - std::abs(static_cast<double>(speed)) * request.dt);
             car.last_var4 = var_bits(4);
             car.last_ep = var_at(40, 0.0f);
@@ -2446,10 +2455,12 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
         car.last_var4 = var_bits(4);
         car.last_ep = var_at(40, 0.0f);
         car.switches = out.switches;
-        // Its cab objects.
-        for (const auto& [id, v] : car.out.values)
+        // Its cab objects, as last set.
+        for (const auto& [id, v] : car.out.values) car.held_values[id] = v;
+        for (const auto& [id, v] : car.out.states) car.held_states[id] = v;
+        for (const auto& [id, v] : car.held_values)
             if (id >= 0 && static_cast<std::size_t>(id) < out.displays.size()) out.displays[static_cast<std::size_t>(id)].value = v;
-        for (const auto& [id, v] : car.out.states)
+        for (const auto& [id, v] : car.held_states)
             if (id >= 0 && static_cast<std::size_t>(id) < out.displays.size()) out.displays[static_cast<std::size_t>(id)].state = v;
         if (car.out.cab_aspect >= 0) out.cab_aspect = static_cast<std::uint32_t>(car.out.cab_aspect);
         // Its sounds on Brakes.sms in place of Brakes.dll's (its Switched's

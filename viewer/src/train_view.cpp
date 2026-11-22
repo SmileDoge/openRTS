@@ -10748,9 +10748,70 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
         }
     }
     }
+    update_extra_sounds(elapsed, camera, sound);
+}
+
+// A script with a stop sound of its own (a squeal or a skrip, not a
+// flange's or a switch's): openRTS's squeal then stays silent for the car.
+bool TrainView::script_squeals(const formats::SoundScript* script) {
+    if (!script) return false;
+    if (const auto it = script_squeals_.find(script); it != script_squeals_.end()) return it->second;
+    bool found = false;
+    for (const auto& group : script->groups)
+        for (const auto& stream : group.streams)
+            for (const auto& trigger : stream.triggers)
+                for (const auto& action : trigger.actions)
+                    for (const auto& file : action.files) {
+                        auto name = file.name;
+                        for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                        // The cars' own stop sounds: DHsqueal (freight), rw_ / x_wagon_squeal
+                        // (coaches), braking_squeal (ТУ6), the ТЭМ2's skrip; not a flange's
+                        // squeal in the curves nor the switches' skrip_strelka.
+                        const bool squeal = name.find("squeal") != std::string::npos && name.find("flange") == std::string::npos;
+                        const bool skrip = name.find("skrip") != std::string::npos && name.find("strelk") == std::string::npos;
+                        if (squeal || skrip) found = true;
+                    }
+    script_squeals_.emplace(script, found);
+    return found;
+}
+
+void TrainView::update_extra_sounds(const float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound) {
+    if (!extra_sounds_) {
+        extra_sounds_ = std::make_unique<TrainExtraSounds>([this](const core::VirtualPath& path) -> std::shared_ptr<const audio::AudioClip> {
+            return vfs_ && vfs_->exists(path) ? bank_->get(path) : nullptr;
+        });
+    }
+    const bool squeal = sound_extras().brake_squeal;
+    std::vector<ExtraSoundTrain> trains;
+    if (squeal) {
+        const glm::vec3 eye = camera.eye();
+        for (std::size_t u = 0; u < units_.size(); ++u) {
+            auto& unit = units_[u];
+            if (!unit.train) continue;
+            const auto& states = unit.train->cars();
+            if (states.empty() || unit.current.empty()) continue;
+            // Only trains within earshot.
+            if (glm::distance(pose(unit, 0).front, eye) > 600.0f && glm::distance(pose(unit, states.size() - 1).rear, eye) > 600.0f) continue;
+            ExtraSoundTrain t;
+            t.id = unit.train->id();
+            t.speed = std::abs(states.front().velocity);
+            t.deceleration = states.front().velocity >= 0.0f ? -states.front().acceleration : states.front().acceleration;
+            t.inside = u == 0 && viewing_inside();
+            for (std::size_t i = 0; i < unit.cars.size() && i < states.size() && i < unit.current.size(); ++i) {
+                const auto here = pose(unit, i);
+                t.cars.push_back({.position = (here.front + here.rear) * 0.5f,
+                                  .speed = std::abs(states[i].velocity),
+                                  .cylinder = states[i].cylinder,
+                                  .squeals = !script_squeals(unit.cars[i].script.get())});
+            }
+            trains.push_back(std::move(t));
+        }
+    }
+    extra_sounds_->update(elapsed, trains, camera.eye(), outside_gain_, squeal, sound);
 }
 
 void TrainView::stop_sound(audio::AudioEngine& sound) {
+    if (extra_sounds_) extra_sounds_->stop(sound);
     for (auto& unit : units_) {
         for (auto& car : unit.cars) {
             if (car.sound) car.sound->stop(sound);

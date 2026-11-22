@@ -354,6 +354,9 @@ public:
     virtual void report_hand_switch() const {}
     // --capture-passage: the engineer at the passage door of car `index`.
     virtual void stand_at_passage(std::size_t) {}
+    // How closed in the listener is, for the sounds' echo (openRTS, the
+    // "Echo" sound setting): 0 in the open .. 1 deep in a tunnel.
+    [[nodiscard]] virtual float echo_amount() const { return 0.0f; }
     [[nodiscard]] virtual std::string car_menu_report() const { return {}; }
     // --capture-ok: the scenario's open message closed (its OK).
     virtual void close_activity_message() {}

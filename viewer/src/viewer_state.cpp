@@ -9,6 +9,7 @@
 #include <iostream>
 #include <map>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -129,6 +130,30 @@ void set_developer_mode(const bool on, const bool keep) {
     if (keep) remember("developer_mode", on ? "1" : "0");
 }
 int capture_panel() noexcept { return capture_panel_tab; }
+
+namespace {
+std::optional<SoundExtras> sound_extras_value;
+constexpr std::pair<const char*, bool SoundExtras::*> sound_extra_keys[] = {
+    {"sound_rain_inside", &SoundExtras::rain_inside}, {"sound_doppler", &SoundExtras::doppler},
+    {"sound_echo", &SoundExtras::echo},               {"sound_brake_squeal", &SoundExtras::brake_squeal},
+};
+} // namespace
+
+const SoundExtras& sound_extras() {
+    if (!sound_extras_value) {
+        SoundExtras extras;
+        for (const auto& [key, member] : sound_extra_keys) extras.*member = remembered(key).value_or("1") != "0";
+        sound_extras_value = extras;
+    }
+    return *sound_extras_value;
+}
+
+void set_sound_extras(const SoundExtras& extras) {
+    const SoundExtras before = sound_extras();
+    sound_extras_value = extras;
+    for (const auto& [key, member] : sound_extra_keys)
+        if (before.*member != extras.*member) remember(key, extras.*member ? "1" : "0");
+}
 
 void apply_settings_defaults() {
     constexpr std::string_view mark = "defaults_openrts_brakes";

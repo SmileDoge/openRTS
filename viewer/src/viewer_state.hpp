@@ -43,6 +43,18 @@ void set_capture_panel(int tab) noexcept;
 // keep false: this run only (--developer, captures).
 void set_developer_mode(bool on, bool keep = true);
 
+// openRTS's own sounds, beyond RTS (2026-11-22, testers): each on by
+// default, remembered ("sound_rain_inside", "sound_doppler", "sound_echo",
+// "sound_brake_squeal").
+struct SoundExtras {
+    bool rain_inside = true;  // rain_in / snow_in in the train's cab or salon
+    bool doppler = true;      // a sound moving to or from the listener
+    bool echo = true;         // tunnels, cuttings, platforms' roofs
+    bool brake_squeal = true; // the shoes on the wheels, slowing to a stop (train_extra_sounds.hpp)
+};
+[[nodiscard]] const SoundExtras& sound_extras();
+void set_sound_extras(const SoundExtras& extras);
+
 [[nodiscard]] std::filesystem::path remembered_folder(std::string_view key);
 void remember_folder(std::string_view key, const std::filesystem::path& folder);
 
