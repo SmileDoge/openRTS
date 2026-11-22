@@ -4,11 +4,15 @@
 #include <charconv>
 #include <cstdlib>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 
 #include <openrts/core/virtual_path.hpp>
 #include <openrts/formats/signal_config.hpp>
+#include <openrts/net/placement.hpp>
 #include <openrts/net/wire.hpp>
 
 namespace openrts::server {
@@ -46,6 +50,15 @@ constexpr const char* help_text =
     "  assign <train> <nick>          give a player a train (they drive it)\n"
     "  unassign <train>               take it back (it stands, STATIC)\n"
     "  remove <train>                 delete a train\n"
+    "  weather [clear|snow|rain|storm|dynamic [seed]]  the weather while the game runs (openRTS players)\n"
+    "  placement save <name>          every train on the track saved (its cars, place, number, name, kind, state, chocks)\n"
+    "  placement load <name> [add]    the saved trains put back, with those of the placements it includes (the ones on the track removed first, unless add)\n"
+    "  placement list | delete <name> the placements saved; get [name] one's file (none: the trains now); clear: every train removed\n"
+    "  placement include|exclude <name> <other>  another placement put with it, or no more\n"
+    "  move <train> <node> <offset> <0|1>  a standing train put again there (its front, facing along the node with 1)\n"
+    "  chocks <train> none|head|tail|both  chocks under a standing train's ends (it is put again)\n"
+    "  number <train> <number>        its train number (RTS numbers its cars by it; not another train's)\n"
+    "  name <train> [text]            its name (the map shows it); notes <train> [text] its notes; none clears\n"
     "  couple <train> <train>         the second joins the first where they stand end to end\n"
     "  cut <train> <car>              cut before car <car> (from 0): its own train, the same owner\n"
     "  say <nick|*> <text>            a message to a player or everyone\n"
@@ -156,7 +169,7 @@ std::optional<NewTrain> train_on_path(ServerRoute& route, const std::string_view
     return train;
 }
 
-std::string place_cars(GameServer& server, ServerRoute& route, const net::ConsolePlace& place) {
+std::string place_cars(GameServer& server, ServerRoute& route, const net::ConsolePlace& place, std::uint32_t* placed) {
     std::vector<formats::ConsistEntry> entries;
     for (const auto& car : place.cars) {
         formats::ConsistEntry entry;
@@ -165,6 +178,7 @@ std::string place_cars(GameServer& server, ServerRoute& route, const net::Consol
         entry.engine = car.engine;
         entry.flipped = car.flipped;
         entry.cold = car.cold;
+        entry.place_drag = car.chocks;
         if (car.handbrake >= 0.0f) entry.handbrake = car.handbrake;
         entries.push_back(std::move(entry));
     }
@@ -195,10 +209,223 @@ std::string place_cars(GameServer& server, ServerRoute& route, const net::Consol
         train->offset = place.offset;
         train->forward = place.forward;
     }
+    train->name = place.name;
+    train->kind = place.kind <= 3 ? place.kind : 0;
+    train->state = place.state <= 2 ? place.state : 0;
     const auto id = server.add_train(std::move(*train), error);
     if (!id) return "error: " + name + ": " + error;
+    if (placed) *placed = *id;
+    if (!place.notes.empty()) server.set_names(*id, place.name, place.notes, error);
     return "train " + std::to_string(*id) + " (№" + std::to_string(number) + ", " + name + ", " + std::to_string(place.cars.size()) +
            " cars) stands there; give it to a player: assign " + std::to_string(*id) + " <nick>";
+}
+
+namespace {
+
+std::filesystem::path placement_file(ServerRoute& route, const std::string& name) {
+    return route.placements_folder() / std::filesystem::path(std::u8string(name.begin(), name.end()) + u8".placement");
+}
+
+} // namespace
+
+namespace {
+
+net::PlacementTrain placement_of(const StandingTrain& t) {
+    net::PlacementTrain p{.number = t.number, .name = t.name, .notes = t.notes, .kind = t.kind, .subtype = t.subtype, .state = t.state,
+                          .top_speed = t.top_speed, .node = t.node, .offset = t.offset, .forward = t.forward};
+    // The records' flags as they go (flipped, cold, the chocks 0x100 / 0x200).
+    for (const auto& car : t.cars) p.cars.push_back({.flags = car.flags & 0x303u, .handbrake = car.handbrake, .file = car.file});
+    p.owner = net::to_utf8(t.owner);
+    p.own_state = t.own_state;
+    return p;
+}
+
+// A placement's train on the track again: its owner waited for, its state kept.
+std::string place_back(GameServer& server, ServerRoute& route, const net::PlacementTrain& t, std::uint32_t* placed) {
+    std::uint32_t id = 0;
+    auto answer = place_cars(server, route, net::place_of(t), &id);
+    if (id != 0) {
+        if (!t.own_state.empty()) server.set_train_state(id, t.own_state);
+        if (!t.owner.empty()) server.give_when_back(id, net::from_utf8(t.owner));
+    }
+    if (placed) *placed = id;
+    return answer;
+}
+
+} // namespace
+
+std::vector<net::PlacementTrain> standing_placement(const GameServer& server) {
+    std::vector<net::PlacementTrain> out;
+    for (const auto& t : server.standing_trains()) out.push_back(placement_of(t));
+    return out;
+}
+
+std::uint8_t train_chocks(const GameServer& server, const std::uint32_t train) {
+    for (const auto& t : server.standing_trains()) {
+        if (t.id != train || t.cars.empty()) continue;
+        return static_cast<std::uint8_t>(((t.cars.front().flags & 0x100u) ? 1u : 0u) | ((t.cars.back().flags & 0x200u) ? 2u : 0u));
+    }
+    return 0;
+}
+
+std::string replace_train(GameServer& server, ServerRoute& route, const std::uint32_t train, const std::optional<simulation::TrackLocation>& at,
+                          const std::optional<std::uint8_t> chocks, std::uint32_t* placed) {
+    for (const auto& t : server.trains()) {
+        if (t.id == train && !t.owner.empty()) return "error: train " + std::to_string(train) + " is " + t.owner + "'s: take it back first";
+    }
+    const auto standing = server.standing_trains();
+    const auto it = std::find_if(standing.begin(), standing.end(), [&](const StandingTrain& t) { return t.id == train; });
+    if (it == standing.end()) return "error: no train " + std::to_string(train) + " on the track";
+    const auto before = placement_of(*it);
+    auto after = before;
+    if (at) {
+        after.node = at->node;
+        after.offset = at->offset;
+        after.forward = at->forward;
+    }
+    if (chocks && !after.cars.empty()) {
+        for (auto& car : after.cars) car.flags &= ~0x300u;
+        if (*chocks & 1u) after.cars.front().flags |= 0x100u;
+        if (*chocks & 2u) after.cars.back().flags |= 0x200u;
+    }
+    std::string error;
+    if (!server.remove_train(train, error)) return "error: " + error;
+    std::uint32_t id = 0;
+    const auto answer = place_back(server, route, after, &id);
+    if (answer.rfind("error", 0) == 0) {
+        std::uint32_t back = 0;
+        (void)place_back(server, route, before, &back);
+        if (placed) *placed = back;
+        return answer + " (left where it was" + (back ? ": now train " + std::to_string(back) : std::string()) + ")";
+    }
+    if (placed) *placed = id;
+    return "train " + std::to_string(train) + " put again: now train " + std::to_string(id);
+}
+
+std::optional<net::Placement> placement_file_read(ServerRoute& route, const std::string& name, std::string& error) {
+    const auto text = placement_text(route, name);
+    if (!text) {
+        error = "no placement " + name;
+        return std::nullopt;
+    }
+    auto placement = net::parse_placement(*text, error);
+    if (!error.empty()) {
+        error = name + ": " + error;
+        return std::nullopt;
+    }
+    return placement;
+}
+
+std::string placement_file_write(ServerRoute& route, const std::string& name, const net::Placement& placement) {
+    if (!net::placement_name_ok(name)) return "error: a placement's name: letters, digits, spaces";
+    std::error_code error;
+    std::filesystem::create_directories(route.placements_folder(), error);
+    const auto path = placement_file(route, name);
+    auto temporary = path;
+    temporary += u8".new";
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        out << net::write_placement(placement);
+        if (!out) return "error: could not write " + path.string();
+    }
+    std::filesystem::rename(temporary, path, error);
+    if (error) return "error: could not write " + path.string() + ": " + error.message();
+    return {};
+}
+
+std::vector<net::PlacementTrain> placement_resolved(ServerRoute& route, const net::Placement& placement, const std::string& name,
+                                                    std::vector<std::string>& problems) {
+    return net::resolve_placement(placement, name, [&](const std::string& other) { return placement_text(route, other); }, problems);
+}
+
+std::string placement_include(ServerRoute& route, const std::string& name, const std::string& other, const bool add) {
+    std::string error;
+    auto placement = placement_file_read(route, name, error);
+    if (!placement) return "error: " + error;
+    auto& includes = placement->includes;
+    const auto it = std::find(includes.begin(), includes.end(), other);
+    if (add) {
+        if (other == name) return "error: a placement cannot include itself";
+        if (!placement_text(route, other)) return "error: no placement " + other;
+        if (it != includes.end()) return "placement " + name + " includes " + other + " already";
+        includes.push_back(other);
+    } else {
+        if (it == includes.end()) return "error: " + name + " does not include " + other;
+        includes.erase(it);
+    }
+    if (auto written = placement_file_write(route, name, *placement); !written.empty()) return written;
+    return "placement " + name + (add ? " includes " : " no more includes ") + other;
+}
+
+std::string save_placement(GameServer& server, ServerRoute& route, const std::string& name) {
+    if (!net::placement_name_ok(name)) return "error: a placement's name: letters, digits, spaces";
+    const auto trains = standing_placement(server);
+    if (auto written = placement_file_write(route, name, net::Placement{.route = route.folder(), .trains = trains}); !written.empty()) return written;
+    std::size_t cars = 0;
+    for (const auto& t : trains) cars += t.cars.size();
+    return "placement " + name + ": " + std::to_string(trains.size()) + " trains, " + std::to_string(cars) + " cars saved";
+}
+
+std::string autosave_placement(GameServer& server, ServerRoute& route) {
+    if (server.standing_trains().empty()) return {};
+    return save_placement(server, route, autosave_name);
+}
+
+void keep_previous_autosave(ServerRoute& route) {
+    std::error_code error;
+    const auto last = placement_file(route, autosave_name);
+    if (!std::filesystem::exists(last, error)) return;
+    std::filesystem::rename(last, placement_file(route, autosave_previous_name), error);
+}
+
+std::optional<std::string> placement_text(ServerRoute& route, const std::string& name) {
+    if (!net::placement_name_ok(name)) return std::nullopt;
+    std::ifstream in(placement_file(route, name), std::ios::binary);
+    if (!in) return std::nullopt;
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+std::size_t clear_trains(GameServer& server) {
+    std::string error;
+    std::size_t removed = 0;
+    for (const auto& t : server.trains()) removed += server.remove_train(t.id, error) ? 1 : 0;
+    return removed;
+}
+
+std::string load_placement(GameServer& server, ServerRoute& route, const std::string& name, const bool add) {
+    if (!net::placement_name_ok(name)) return "error: a placement's name: letters, digits, spaces";
+    const auto text = placement_text(route, name);
+    if (!text) return "error: no placement " + name;
+    std::string error;
+    const auto placement = net::parse_placement(*text, error);
+    if (!error.empty()) return "error: " + name + ": " + error;
+    if (!net::placement_route_fits(placement.route, route.folder())) return "error: " + name + " is a placement of route " + placement.route;
+    std::vector<std::string> missing;
+    const auto saved = placement_resolved(route, placement, name, missing);
+    const auto removed = add ? 0 : clear_trains(server);
+    std::size_t put = 0;
+    std::string problems;
+    for (const auto& m : missing) problems += "\n  " + m;
+    for (const auto& t : saved) {
+        const auto answer = place_back(server, route, t, nullptr);
+        if (answer.rfind("error", 0) == 0) problems += "\n  №" + std::to_string(t.number) + (t.from.empty() ? "" : " (" + t.from + ")") + ": " + answer;
+        else ++put;
+    }
+    std::string result = "placement " + name + ": " + std::to_string(put) + " of " + std::to_string(saved.size()) + " trains put";
+    if (!add) result += " (" + std::to_string(removed) + " removed first)";
+    return result + problems;
+}
+
+std::vector<std::string> placement_names(ServerRoute& route) {
+    std::vector<std::string> names;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(route.placements_folder(), error)) {
+        if (!entry.is_regular_file(error) || entry.path().extension() != ".placement") continue;
+        const auto stem = entry.path().stem().u8string();
+        names.emplace_back(stem.begin(), stem.end());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
 }
 
 std::vector<std::string> command_words(const std::string_view line) {
@@ -383,6 +610,108 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         if (command == "unassign") return done(server.unassign(*train, error), "train " + std::to_string(*train) + " is nobody's");
         return done(server.remove_train(*train, error), "train " + std::to_string(*train) + " removed");
     }
+    // Placements: every train on the track saved, and put back.
+    if (command == "placement") {
+        const auto what = lower(arg(1));
+        if (what == "save" && words.size() >= 3) return save_placement(server, route, std::string(arg(2)));
+        if (what == "load" && words.size() >= 3) return load_placement(server, route, std::string(arg(2)), lower(arg(3)) == "add");
+        // The list as "placements:" and a name a line (a console reads it).
+        if (what == "list" || words.size() == 1) {
+            out << "placements:\n";
+            for (const auto& name : placement_names(route)) out << name << '\n';
+            return out.str();
+        }
+        // A placement's file as it is (a console keeps it, puts its trains
+        // it picks); none named: the trains on the track now.
+        // With the trains of the placements it includes (`from` theirs),
+        // its includes listed: what a console shows (it puts trains one by
+        // one; a copy kept there is written without them).
+        if (what == "get") {
+            if (words.size() < 3) return net::write_placement(net::Placement{.route = route.folder(), .trains = standing_placement(server)});
+            const auto name = std::string(arg(2));
+            auto placement = placement_file_read(route, name, error);
+            if (!placement) return "error: " + error;
+            std::vector<std::string> problems;
+            placement->trains = placement_resolved(route, *placement, name, problems);
+            return net::write_placement(*placement);
+        }
+        if ((what == "include" || what == "exclude") && words.size() >= 4) {
+            return placement_include(route, std::string(arg(2)), std::string(arg(3)), what == "include");
+        }
+        // A console's placement sent here in parts (placement_upload_commands),
+        // written when the last part comes.
+        if (what == "upload" && words.size() >= 5) {
+            static std::map<std::string, std::vector<std::string>> parts_of;
+            const auto name = std::string(arg(2));
+            const auto part = number_of(arg(3));
+            const auto parts = number_of(arg(4));
+            if (!net::placement_name_ok(name)) return "error: a placement's name: letters, digits, spaces";
+            if (!part || !parts || *part == 0 || *part > *parts || *parts > 4096) return "error: placement upload: a part " + std::string(arg(3)) + " of " + std::string(arg(4));
+            auto& got = parts_of[name];
+            if (*part == 1) got.assign(*parts, {});
+            if (got.size() != *parts) return "error: placement upload " + name + ": its first part did not come";
+            got[*part - 1] = words.size() > 5 ? words[5] : std::string();
+            if (*part != *parts) return {};
+            std::string joined;
+            for (const auto& p : got) joined += p;
+            parts_of.erase(name);
+            const auto text = net::placement_from_line(joined);
+            auto placement = net::parse_placement(text, error);
+            if (!error.empty()) return "error: " + name + ": " + error;
+            if (!net::placement_route_fits(placement.route, route.folder())) return "error: " + name + " is a placement of route " + placement.route;
+            if (placement.route.empty()) placement.route = route.folder();
+            if (auto written = placement_file_write(route, name, placement); !written.empty()) return written;
+            return "placement " + name + " saved here: " + std::to_string(placement.trains.size()) + " trains, " +
+                   std::to_string(placement.includes.size()) + " included";
+        }
+        if (what == "clear") return std::to_string(clear_trains(server)) + " trains removed";
+        if (what == "delete" && words.size() >= 3) {
+            const auto name = std::string(arg(2));
+            if (!net::placement_name_ok(name)) return "error: a placement's name: letters, digits, spaces";
+            std::error_code fs_error;
+            return std::filesystem::remove(placement_file(route, name), fs_error) ? "placement " + name + " deleted" : "error: no placement " + name;
+        }
+        return "usage: placement save|load|delete|get <name> | placement load <name> add | placement include|exclude <name> <other> | placement get | list | clear";
+    }
+    // A standing train put again: elsewhere, or with chocks (2026-11-21).
+    if (command == "move") {
+        const auto train = number_of(arg(1));
+        const auto node = number_of(arg(2));
+        char* end = nullptr;
+        const auto offset_text = std::string(arg(3));
+        const double offset = std::strtod(offset_text.c_str(), &end);
+        if (!train || !node || offset_text.empty() || end == offset_text.c_str() || words.size() < 5) return "usage: move <train> <node> <offset> <0|1>";
+        return replace_train(server, route, *train, simulation::TrackLocation{*node, offset, arg(4) != "0"}, std::nullopt);
+    }
+    if (command == "chocks") {
+        const auto train = number_of(arg(1));
+        const auto which = lower(arg(2));
+        const std::optional<std::uint8_t> mask = which == "none" ? std::optional<std::uint8_t>{0}
+                                               : which == "head" ? std::optional<std::uint8_t>{1}
+                                               : which == "tail" ? std::optional<std::uint8_t>{2}
+                                               : which == "both" ? std::optional<std::uint8_t>{3}
+                                                                 : std::nullopt;
+        if (!train || !mask) return "usage: chocks <train> none|head|tail|both";
+        return replace_train(server, route, *train, std::nullopt, mask);
+    }
+    // The train form: its number, its name and its notes (one line here;
+    // the console's form takes several).
+    if (command == "number") {
+        const auto train = number_of(arg(1));
+        const auto number = number_of(arg(2));
+        if (!train || !number) return "usage: number <train> <number>";
+        return done(server.set_number(*train, *number, error), "train " + std::to_string(*train) + " is №" + std::to_string(*number));
+    }
+    if (command == "name" || command == "notes") {
+        const auto train = number_of(arg(1));
+        if (!train) return "usage: " + command + " <train> [text]";
+        std::string text;
+        for (std::size_t i = 2; i < words.size(); ++i) text += (i > 2 ? " " : "") + words[i];
+        auto [name, notes] = server.names(*train);
+        (command == "name" ? name : notes) = net::from_utf8(text);
+        return done(server.set_names(*train, std::move(name), std::move(notes), error),
+                    "train " + std::to_string(*train) + "'s " + command + (text.empty() ? " cleared" : " set"));
+    }
     if (command == "couple") {
         const auto a = number_of(arg(1));
         const auto b = number_of(arg(2));
@@ -400,6 +729,29 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         std::string text;
         for (std::size_t i = 2; i < words.size(); ++i) text += (i > 2 ? " " : "") + words[i];
         return done(server.message(arg(1), net::from_utf8(text), error), "sent");
+    }
+    // The weather while it runs: one that stands, or the dynamic one.
+    if (command == "weather") {
+        auto w = server.weather();
+        static constexpr const char* names[] = {"clear", "snow", "rain", "thunderstorm"};
+        if (words.size() < 2) {
+            return w.dynamic ? "weather: dynamic, seed " + std::to_string(w.seed) + ", " + std::to_string(static_cast<int>(w.clock / 60.0)) + " min run"
+                             : std::string("weather: ") + names[w.weather < 4 ? w.weather : 0];
+        }
+        if (lower(arg(1)) == "dynamic") {
+            w.dynamic = 1;
+            if (words.size() > 2) {
+                if (const auto seed = number_of(arg(2))) w.seed = *seed;
+            }
+            server.set_weather(w);
+            return "weather: dynamic, seed " + std::to_string(w.seed);
+        }
+        const auto kind = parse_weather(arg(1));
+        if (!kind) return "usage: weather [clear|snow|rain|storm|dynamic [seed]]";
+        w.dynamic = 0;
+        w.weather = *kind;
+        server.set_weather(w);
+        return std::string("weather: ") + names[*kind];
     }
     if (command == "pause" || command == "resume") {
         server.set_paused(command == "pause");

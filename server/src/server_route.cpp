@@ -204,6 +204,10 @@ std::filesystem::path ServerRoute::saved_database_path() const {
     return data_ / "server" / std::filesystem::path(net::from_utf8(folder_)) / std::filesystem::path(net::from_utf8(database_name_));
 }
 
+std::filesystem::path ServerRoute::placements_folder() const {
+    return data_ / "server" / std::filesystem::path(net::from_utf8(folder_)) / "placements";
+}
+
 bool ServerRoute::save_signal_defaults(std::string& result) {
     if (!signals_ || !signals_->dispatched()) {
         result = "the route's signals did not load";
@@ -358,7 +362,8 @@ ConsistTrain ServerRoute::cars(const std::vector<formats::ConsistEntry>& entries
         }
         car.file = net::from_utf8(file);
         car.uid = (number << 18) | static_cast<std::uint32_t>(i);
-        car.flags = (entry.flipped ? 1u : 0u) | (entry.engine && entry.cold ? 2u : 0u);
+        // RTS's PlaceDrag as the record's 0x100 / 0x200 (docs/reverse/multiplayer-protocol.md).
+        car.flags = (entry.flipped ? 1u : 0u) | (entry.engine && entry.cold ? 2u : 0u) | (static_cast<std::uint32_t>(entry.place_drag & 3u) << 8);
         car.mass = definition->mass;
         car.width = definition->width;
         car.length = definition->length;

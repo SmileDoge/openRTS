@@ -8,7 +8,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include <openrts/formats/route_world.hpp>
@@ -57,6 +56,19 @@ public:
     void send_command(std::string_view line);
     // A consist put on the track by its cars (console_place).
     void send_place(const net::ConsolePlace& place);
+    // The station routes server train `train` can take next (console_next),
+    // `back` the other way; the server's answer comes in next_routes().
+    void ask_next_routes(std::uint32_t train, bool back);
+    [[nodiscard]] const std::optional<net::ConsoleNext>& next_routes() const noexcept { return next_routes_; }
+    // The game's weather as the server last told it (openrts_weather), and
+    // how many times it has: nothing from an older server.
+    [[nodiscard]] const std::optional<net::OpenrtsWeather>& server_weather() const noexcept { return server_weather_; }
+    [[nodiscard]] std::uint32_t weather_serial() const noexcept { return weather_serial_; }
+    // Placements (docs/server.md, "Placements"): the server's list
+    // ("placement list") and a placement's file ("placement get [name]"),
+    // as its last answers came; the file taken once.
+    [[nodiscard]] const std::vector<std::string>& placement_names() const noexcept { return placement_names_; }
+    [[nodiscard]] std::optional<std::string> take_placement_text() { return std::exchange(placement_text_, std::nullopt); }
     // A line in the console's log (a problem found here).
     void note(std::string line) { console_log_.push_back(std::move(line)); }
     // The game as the server last told the console (every second).
@@ -80,6 +92,18 @@ public:
     // The distance a train's route has left, as the server last sent it
     // (0x4619), and whether it is laid from the rear; nothing: no route.
     [[nodiscard]] std::optional<std::pair<float, bool>> route_left(std::uint32_t server_train) const;
+    // A train's name and notes (0x461A, the console's train form's
+    // "Название" and "Заметки"; RTS's server sends them to everyone, its
+    // clients keep none): as the server last sent them, nothing none.
+    struct TrainNames {
+        std::u16string name, notes;
+    };
+    [[nodiscard]] const TrainNames* train_names(std::uint32_t server_train) const;
+    // Its number as the console's state has it (0: not known).
+    [[nodiscard]] std::uint32_t train_number(std::uint32_t server_train) const;
+    // The console's: a train's name and notes for the server (0x461A), which
+    // sends them to everyone.
+    void send_train_names(std::uint32_t server_train, const std::u16string& name, const std::u16string& notes);
     // The TrainView train a server train is drawn as (0 none), and back.
     [[nodiscard]] std::uint64_t view_train(std::uint32_t server_train) const;
     [[nodiscard]] std::uint32_t server_train(std::uint64_t view_train) const;
@@ -89,6 +113,15 @@ public:
     [[nodiscard]] bool openrts_server() const noexcept { return openrts_server_; }
     // Its game is a thunderstorm (its answer to openrts_hello).
     [[nodiscard]] bool server_storm() const noexcept { return server_storm_; }
+    // The server lets its game be joined from Discord: the address it gives
+    // (empty: the one we connected to), its players and places (0 no
+    // limit); nothing: not allowed.
+    struct DiscordJoin {
+        std::string address;
+        int players = 0;
+        int places = 0;
+    };
+    [[nodiscard]] const std::optional<DiscordJoin>& discord_join() const noexcept { return discord_join_; }
     // A server train as the players know it: its name or number.
     [[nodiscard]] std::string train_label(std::uint32_t server_train) const;
     // The other players as the server relays their places (player_pos),
@@ -133,6 +166,7 @@ private:
         // lights, looks and sounds meanwhile (audience 4 goes by the
         // player's place, which is the camera's).
         bool far = false;
+        double next_relay = 0.0; // laid again from its head now and then (move_trains)
     };
 
     void apply(const net::ReceivedPackage& package, simulation::TrackNetwork& network, simulation::SignalSystem* signals,
@@ -156,6 +190,14 @@ private:
         std::vector<std::vector<std::uint8_t>> lights_sent;    // by car, by light
         std::vector<std::pair<std::uint8_t, bool>> looks_sent; // by car: pantographs, running
         std::size_t derailed_sent = 0; // derailed cars the last 0x4636 named
+        double next_state = 0.0;       // 0x45FB, its own state for the server, every 30 s
+        // Its state kept on this computer too (train_states): written once
+        // it has been ours a while (a state put back is in by then), the
+        // last one put back when the server has none.
+        double ours_since = -1.0;      // t it came on the track here
+        double next_keep = 0.0;        // the next dated copy
+        bool offered = false;          // its kept states offered once (the window)
+        std::vector<std::uint8_t> doors_sent; // 0x45FC, the doors as last sent
     };
     // Puts an own train on the track at record.pos; `drive`: the player
     // takes it (its DLLs start in the server's state).
@@ -191,6 +233,44 @@ private:
     std::map<std::uint16_t, std::size_t> not_handled_; // of them, the ones the observer leaves
     double report_at_ = 10.0;
     std::map<std::uint32_t, Owned> owned_;
+    // Our trains' own states (0x45FB): coming in parts, and those waiting for
+    // their train to be on the track here.
+    std::map<std::uint32_t, std::vector<net::Bytes>> state_parts_;
+    std::map<std::uint32_t, std::string> pending_states_;
+    // The cab doors on the train we are on (ours, or the one we help on),
+    // by car, as last sent or taken (0x45FD).
+    std::uint32_t cab_doors_train_ = 0;
+    std::map<std::size_t, std::vector<std::uint8_t>> cab_doors_seen_;
+    std::map<std::size_t, const void*> cab_doors_view_; // the cab's view last seen per car
+    void send_states(TrainView& trains, double t);
+    void put_back_state(std::uint32_t id, TrainView& trains);
+    // The folder of an own train's states kept here: by its name and cars.
+    [[nodiscard]] std::filesystem::path kept_states_folder(const Owned& own, const TrainView& trains) const;
+    void keep_state(const Owned& own, const TrainView& trains, const std::string& text, double t, bool dated);
+    std::optional<std::filesystem::path> restore_asked_;
+
+public:
+    // The states of the train driven here kept on this computer, newest
+    // first: (file, label). Put back by hand (it goes to the server too).
+    struct KeptState {
+        std::filesystem::path file;
+        std::string label;
+    };
+    [[nodiscard]] std::vector<KeptState> kept_states(const TrainView& trains) const;
+    void ask_restore(const std::filesystem::path& file) { restore_asked_ = file; }
+    // The server's address: the kept states are by server.
+    void set_server_key(const std::string& address) { server_key_ = address; }
+    // Kept states to choose from when the train became ours (the window):
+    // shown while true, closed by its answer.
+    [[nodiscard]] bool states_offered() const noexcept { return states_offer_; }
+    void answer_states_offer(const std::optional<std::filesystem::path>& file) {
+        states_offer_ = false;
+        if (file) restore_asked_ = *file;
+    }
+
+private:
+    std::string server_key_;
+    bool states_offer_ = false;
     std::size_t triggers_sent_ = 0, values_sent_ = 0; // for the log
     double position_at_ = 0.0;                           // the next player_pos due
     double range_at_ = 0.0;                              // the next check of the remote trains' distance
@@ -200,6 +280,7 @@ private:
     bool hello_sent_ = false;
     bool openrts_server_ = false;
     bool server_storm_ = false;
+    std::optional<DiscordJoin> discord_join_;
     std::map<std::uint32_t, Player> players_;
     // Each player's places of the last seconds (heard time, place): one in
     // a train drawn behind by its delay is shown as far behind (players()).
@@ -223,7 +304,13 @@ private:
     bool test_asked_ = false, test_switched_ = false;
     std::map<std::uint32_t, std::pair<std::size_t, std::uint32_t>> cab_seen_; // by car: packages, the test switch's state
     std::map<std::uint32_t, std::pair<float, bool>> routes_; // by server train: 0x4619
+    std::map<std::uint32_t, TrainNames> names_;             // by server train: 0x461A
+    std::vector<std::string> placement_names_;
+    std::optional<net::OpenrtsWeather> server_weather_;
+    std::uint32_t weather_serial_ = 0;
+    std::optional<std::string> placement_text_;
     std::optional<net::ConsoleState> console_state_;
+    std::optional<net::ConsoleNext> next_routes_;
     std::vector<std::string> console_log_;
 };
 

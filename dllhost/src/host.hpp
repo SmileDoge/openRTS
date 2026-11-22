@@ -231,7 +231,8 @@ private:
     // StepRequest::aux_parameters (at once) and aux_writes (kept for the
     // library's Run, apply_aux_writes: those before it, or those after it).
     void write_aux(const StepRequest& request);
-    static void apply_aux_writes(AuxMirror& aux, bool after_run);
+    static void apply_aux_writes(CarMirror& car, AuxMirror& aux, bool after_run);
+    Module* stub_module(const std::wstring& path);
     void write_cabs(const StepRequest& request);
     void run_car(CarMirror& car, float dt, float air_temperature);
     void signals(const StepRequest& request);

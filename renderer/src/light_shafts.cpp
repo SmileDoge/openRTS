@@ -59,13 +59,13 @@ constexpr char march_wgsl[] = R"(
 // The clouds' shadow at a point (as effects_cloud_shadow in the models).
 fn cloud_light(world: vec3<f32>) -> f32 {
     let strength = effects.cloud_sun.w;
-    if (strength <= 0.0) { return 1.0; }
+    if (strength <= 0.0) { return effects.cloud_edge.z; }
     let sun = effects.cloud_sun.xyz;
     let d = world - effects.eye.xyz;
     let q = d.xz + sun.xz * ((effects.cloud_area.w - d.y) / max(sun.y, 0.05));
     let uv = (q - effects.cloud_area.xy) / (2.0 * effects.cloud_area.z) + vec2<f32>(0.5);
     let lit = smoothstep(effects.cloud_edge.x, effects.cloud_edge.y, textureSampleLevel(cloud_shadow_map, cloud_sampler, uv, 0.0).r);
-    return mix(1.0, lit, strength);
+    return effects.cloud_edge.z - strength * (1.0 - lit);
 }
 
 // Whether the sun reaches a point of the air: the cab's map where it covers

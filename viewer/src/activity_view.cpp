@@ -148,6 +148,16 @@ void ActivityView::start(const double time_of_day, ActivityWorld& world) {
         if (player_.service != player->id) player_ = train_of(player->id);
         services_.insert(player->id);
     }
+    // The menu marked MainActivityMenu ( 1 ) is the report menu from the
+    // start, before any SetMainMenu (testers 2026-11-21: Novokuznetsk's
+    // "Смена на Грузовом (Вторая Часть)" has its first report, the brake
+    // test at Томусинская, only there; F8 said there was nothing to report).
+    for (const auto& menu : activity_->menus) {
+        if (!menu.main) continue;
+        main_menu_ = menu.id;
+        std::cout << "activity: menu " << main_menu_ << " (MainActivityMenu)" << std::endl;
+        break;
+    }
     for (auto& state : events_) {
         if (armed(state) && has_condition(*state.event, "activitystarts")) fire(state);
     }
@@ -850,6 +860,15 @@ bool ActivityView::run_outcome(Script& script, const formats::ActivityNode& o, A
         std::cout << "activity: cuts from train " << train.service << ' ' << train.train << " become "
                   << (rule.new_id ? std::to_string(rule.new_id->service) + ' ' + std::to_string(rule.new_id->train) : std::string("unnamed"))
                   << (rule.new_type.empty() ? std::string() : ' ' + rule.new_type) << std::endl;
+        return true;
+    }
+    if (name == "spawntrain") {
+        // activity.pdf 4.2 16: the train starts now (a traffic train waiting
+        // for it, without a TrainStartTime of its own).
+        const auto service = service_in(number(&o, 0, -2), script.service);
+        const auto id = static_cast<std::uint32_t>(number(&o, 1, 1));
+        world.spawn_train({service, id});
+        std::cout << "activity: spawn train " << service << ' ' << id << " at " << clock_text(now_) << std::endl;
         return true;
     }
     if (name == "changeservicestartuptype") {

@@ -300,6 +300,10 @@ struct ScreenQuadRenderer::Impl {
         WGPUBindGroup area_group = nullptr;
         glm::vec4 covered{0.0f, 0.0f, 1.0f, 1.0f};
         bool drawn = false;
+        // What it was last drawn from (its draws, vertices, textures, the
+        // part covered): unchanged, it is not drawn again.
+        std::uint64_t content = 0;
+        bool content_valid = false;
 
         void release() {
             for (auto group : down_groups)
@@ -319,6 +323,7 @@ struct ScreenQuadRenderer::Impl {
             area_group = nullptr;
             area = nullptr;
             width = height = levels = 0;
+            content_valid = false;
         }
     };
 
@@ -763,6 +768,42 @@ void ScreenQuadRenderer::prepare(const WGPUCommandEncoder encoder) {
         };
         auto& image = impl.image_for(s, side(surface.width, high.x - low.x), side(surface.height, high.y - low.y));
         if (!image.texture || !image.area_group) continue;
+        // Drawn again only when what it shows changed (2026-11-20): a
+        // screen's figures change a few times a second, and every screen
+        // with its mip levels (a pass each) every frame took the ЭД9М's cab
+        // from 350 to 270 fps (testers). Its textures never change under an
+        // id (add_texture), so the ids, the vertices and the part covered
+        // say it all.
+        std::uint64_t content = 1469598103934665603ull;
+        const auto mix = [&](const void* data, const std::size_t size) {
+            const auto* bytes = static_cast<const unsigned char*>(data);
+            for (std::size_t b = 0; b < size; ++b) {
+                content ^= bytes[b];
+                content *= 1099511628211ull;
+            }
+        };
+        mix(&low, sizeof low);
+        mix(&high, sizeof high);
+        const bool linear = frame_linear();
+        mix(&linear, sizeof linear);
+        for (const auto& draw : impl.draws) {
+            if (draw.surface != s) continue;
+            mix(&draw.texture, sizeof draw.texture);
+            mix(&draw.blend, sizeof draw.blend);
+            mix(&draw.count, sizeof draw.count);
+            for (std::uint32_t v = draw.first; v < draw.first + draw.count; ++v) {
+                const auto& vertex = impl.frame_vertices[v];
+                mix(&vertex.uv, sizeof vertex.uv);
+                mix(&vertex.colour, sizeof vertex.colour);
+                mix(&vertex.local, sizeof vertex.local);
+            }
+        }
+        if (image.content_valid && image.content == content) {
+            image.drawn = true;
+            continue;
+        }
+        image.content = content;
+        image.content_valid = true;
         image.covered = {low.x, low.y, high.x, high.y};
         wgpuQueueWriteBuffer(queue, image.area, 0, &image.covered, sizeof(glm::vec4));
 

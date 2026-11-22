@@ -524,6 +524,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     demands.equalising_kept = out.equalising;
     demands.emergency = out.emergency;
     demands.pipe_feed = out.feed;
+    demands.pipe_direct = out.direct;
     demands.systems = out.systems;
     if (out.ep_value >= 0.0f) {
         demands.ep_value = out.ep_value;
@@ -673,6 +674,29 @@ void Train::set_axle_dynamics(const bool on) noexcept {
 
 void Train::set_coupler_substeps(const std::uint32_t substeps) noexcept {
     settings_.coupler_substeps = std::clamp<std::uint32_t>(substeps, 1, 8);
+}
+
+void Train::show_car_derailed(const std::size_t car, const bool derailed, const float tilt, const float tilt_target) {
+    if (car >= cars_.size()) return;
+    auto& c = cars_[car];
+    c.derailed = derailed;
+    c.derail = derailed ? DerailKind::tipping : DerailKind::none;
+    if (!derailed) {
+        c.tilt = c.tilt_target = 0.0f;
+        return;
+    }
+    // A roll already shown goes on from where it is (the owner sends it
+    // again with each position): only a fresh one starts at the owner's.
+    if (c.tilt == 0.0f) c.tilt = tilt;
+    c.tilt_target = tilt_target;
+}
+
+void Train::ease_shown_derail(const float elapsed, const float rate) {
+    for (auto& c : cars_) {
+        if (c.derail == DerailKind::none) continue;
+        const float step = rate * elapsed;
+        c.tilt = c.tilt < c.tilt_target ? (std::min)(c.tilt_target, c.tilt + step) : (std::max)(c.tilt_target, c.tilt - step);
+    }
 }
 
 void Train::set_car_flags(const std::size_t car, const CarFlags which, const std::uint8_t mask, const bool on) {
@@ -1379,6 +1403,9 @@ void Train::step() {
             .main_reservoir = car.main_reservoir,
             .cylinder = car.cylinder,
             .independent = car.independent,
+            .valve_feed = car.valve_feed,
+            .distributor_channel = car.distributor_channel,
+            .distributor_discharge = car.distributor_discharge,
             .flipped = car.flipped,
             .definition = car.definition,
             .cargo_mass = car.cargo_mass,
@@ -1586,6 +1613,7 @@ void Train::step() {
             }
             i = j + 1;
         }
+        for (auto& car : cars_) car.distributor_discharge = false; // this air step's
         // The valves a hand opened vent the pipe and the cylinder before the
         // air is solved, so the distributors see the fall of the pipe.
         for (auto& car : cars_) {
@@ -1602,6 +1630,7 @@ void Train::step() {
             }
         }
     }
+
 
     // 4. Resistance, grade, curve.
     for (auto& car : cars_) {

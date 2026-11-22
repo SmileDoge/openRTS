@@ -1,7 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 // openRTS's КЛУБ-У in place of MaDaDev's Brakes.dll's
@@ -21,6 +24,64 @@ struct KlubSignal {
     std::uint32_t aspect[4]{};    // NORMAL, DISTANCE, SHUNTING, INFO heads' states
     std::uint32_t flags{};        // 1 NORMAL, 2 DISTANCE, 0x10 beyond an obstruction; 0x20: Б forced
     float speed_limit = -1.0f;    // m/s, -1 none
+};
+
+// A track item as RTSGetTrackItems gives it (the screen's lines, САУТ's
+// announcements).
+struct KlubTrackItem {
+    std::uint8_t type{};        // 2 speed post, 3 platform, 4 siding, 5 level crossing
+    float distance{};           // m from the front ahead (under the train: < 0), from the rear behind
+    std::uint16_t pos{};        // 1 ahead, 2 behind, 4 under the train
+    std::u16string name;        // a platform's station, a siding's name
+    std::uint32_t flags{};      // a speed post's
+    float value{};              // a speed post's limit, m/s
+};
+
+// САУТ's keys (SAUT_*ID<n>).
+enum class SautKey : std::uint8_t { kom, gr, yk, k20, pod, otp };
+
+// What САУТ (PB_SETUP 1, docs/brakes-dll-replacement.md "The rest", 3) reads besides
+// the КЛУБ's: openRTS's (`own`) runs in the КЛУБ's step in place of
+// Brakes.dll's.
+struct SautInputs {
+    bool own = false;
+    bool powered = false;        // every SAUT_PIT on
+    bool high = false;           // SAUT_MODE 1, or SAUT_MODET's switch at SAUT_MODEON: 162 km/h at most (else 102)
+    bool clock = false;          // PB_SETUP 16: the clock on its screen
+    float acceleration{};        // Wagon +72, m/s²
+    float cylinder{};            // Wagon +96, atm
+    bool ept = false;            // Engine +104 bit 2
+    std::uint32_t brake_bits{};  // the valve in a braking position
+    std::int32_t reverser{};     // Engine +128
+    bool traction = false;       // Engine +136 not 0
+    float equalising{};          // Engine +84
+    float milepost{};            // Engine +140, km (CurrentMilepost)
+    std::u16string_view signal_name; // Cabin +136's (RTSSignalData +16)
+    std::span<const KlubTrackItem> items; // RTSGetTrackItems'
+    bool flipped = false;        // the car's Wagon::Flags bit 0 (RTSGetTrackItems swaps ahead and behind)
+    std::span<const SautKey> keys;        // the working cab's pressed (CanSwitch)
+    // Each cab (BR_NUMCABS): working (the only one, or its 367 in
+    // BR_367OPPOL), SAUT_SWID on, SAUT_OSID on, KLUB_KASS on; after this
+    // step's Run (Switched): SAUT_SWID turned on, PB_RB moved.
+    struct Cab {
+        bool working = false, on = false, os = false, cassette = false;
+        bool turned_on = false, rb_moved = false;
+    };
+    std::span<const Cab> cabs;
+    std::int32_t flip = -1; // PB_FLIP: the cab (from 0) whose forward is the car's back
+};
+
+// A САУТ display's objects as one step left them (SAUT_DBID's 0 .. 5,
+// SAUT_DFID's 0 .. 4); what it did not set is the cab's.
+struct SautObject {
+    std::int32_t state{};
+    float blink{};
+    std::u16string text;
+    bool state_set = false, blink_set = false, text_set = false;
+};
+struct SautScreen {
+    std::array<SautObject, 6> db{};
+    std::array<SautObject, 5> df{};
 };
 
 // The КЛУБ's keys (KLUB_B*ID).
@@ -76,7 +137,7 @@ struct KlubInputs {
     bool powered = true;   // every KLUB_PIT on
     bool epk_key = true;   // the ЭПК key (Engine::ALSNOn)
     bool rb_held = false;  // the РБ down (ВК, МП)
-    bool tskbm = false;    // ТСКБМ switched on (TSKBM_SW): no periodic vigilance
+    bool tskbm = false;    // ТСКБМ switched on (TSKBM_SW of any cab): no periodic vigilance
     bool saut = false;     // САУТ switched on (SAUT_SWID; PB_SETUP 1)
     float saut_permitted{}; // its permitted speed, km/h
     bool wheelslip = false; // Engine::WheelSlip
@@ -90,6 +151,26 @@ struct KlubInputs {
     // `epk_key_to` (Engine::ALSNOn from then: `epk_key` the next step).
     bool rb = false, rbs = false;
     bool epk_key_turned = false, epk_key_to = false;
+    // A switch of the car moved after this step's Run (Brakes.dll's
+    // Switched): ТСКБМ's timer starts again.
+    bool switched = false;
+    // Engine::ALSNOn as this step's Run found it (the train's DLL sets it
+    // too, as the ЭП20 started "on"): ТСКБМ's; -1 as `epk_key`.
+    int alsn_on = -1;
+    // САУТ (PB_SETUP 1): openRTS's with `saut_in.own` (then `saut` and
+    // `saut_permitted` above are its own), else Brakes.dll's.
+    SautInputs saut_in;
+    // openRTS's electronic map (electronic_map.hpp) for the entered track,
+    // the leading cab's: the ЭК mode or "без ЭК", and the distance to the
+    // map's target (the entered track's signal, whatever way the switches
+    // lie). Not given: Brakes.dll's way (a number entered is the ЭК, the
+    // target the next signal as the switches stand).
+    struct ElectronicMap {
+        bool given = false;
+        bool matched = false;
+        bool has_target = false;
+        float distance{}; // m
+    } ek;
 };
 
 // var + 8 (KlubState::flags).
@@ -105,7 +186,7 @@ inline constexpr std::uint32_t command_mode = 0x1, kgf = 0x2, lamp_test = 0x4, v
 // var + 4's bits the КЛУБ keeps (KlubState::device).
 namespace klub_device {
 inline constexpr std::uint32_t tskbm_on = 0x8, saut_on = 0x40, kon_vented = 0x200, kon = 0x400, reversed = 0x800,
-                               after_kzh = 0x100000, distance_white = 0x200000;
+                               tskbm_whistle = 0x2000, after_kzh = 0x100000, distance_white = 0x200000, tskbm_warning = 0x400000;
 }
 
 struct KlubState {
@@ -119,6 +200,10 @@ struct KlubState {
     float timer{};                        // + 24: vigilance (5 the whistle, 12 the ЭПК, 45 vented)
     float limit{};                        // + 80, km/h
     float signal_from_50{};               // + 84
+    // САУТ's (it knows where the train is by its track devices): the
+    // signal actually ahead, not the ЭК's target (the testers, 2026-11-21);
+    // the same where openRTS's map gives none.
+    float saut_signal_distance{}, saut_from_50{};
     float target_speed{}, target_distance{}; // + 116, + 120
     float permitted{};                    // + 140, km/h
     float signal_metres{};                // + 144
@@ -154,9 +239,49 @@ struct KlubState {
     // real КЛУБ-У's way; Brakes.dll's is on white at once, at the speed
     // before). openRTS's own, not Brakes.dll's.
     bool white_799_entry = false;
+    // П N ВВОД (the field showing the last track) waits for its признак
+    // правильности (ПРИЗН. ПРАВ. ВВОД, the field showing the last sign): the track number, and the ЭК's target
+    // with it, change only then (the real КЛУБ-У's way, the testers'
+    // 2026-11-21; Brakes.dll's changes at the first ВВОД, its field 0).
+    // openRTS's own, not Brakes.dll's.
+    std::uint32_t pending_track{};
+    // Tracks entered (with their sign): a new one, the same number too,
+    // starts the ЭК afresh (EkState). openRTS's own.
+    std::uint32_t track_entries{};
     std::uint32_t drawn_flags = klub_flag::train_mode; // `flags` where the redraw shows the request (before its overspeed check)
     bool started = false;
+    // The map gives nothing for the entered track ("без ЭК" with a number
+    // entered: none of the map's, 99, off its way; KlubInputs::ek).
+    bool ek_off = false;
+    // ТСКБМ (PB_SETUP 4; docs/brakes-dll-replacement.md "The rest", 2):
+    // its timer (s; 90 at the start and on any switch, 60 in the
+    // developer's mode) and the timer as this step's screens show it
+    // (before its fall).
+    float tskbm_timer = 90.0f;
+    float tskbm_shown = 90.0f;
+    // САУТ (PB_SETUP 1), openRTS's: its flags (beside the КЛУБ's
+    // limit_marks), its timers and values.
+    std::uint32_t saut_flags{};           // + 88 (0x1 .. 0x20000 but the КЛУБ's)
+    float saut_display_timer{};           // + 92
+    float saut_reminder{};                // + 96
+    float saut_target{};                  // + 100, km/h
+    float saut_mode_distance{};           // + 104, m
+    float saut_mode_start{};              // + 108 (the coordinate, km × 1000... as Brakes.dll keeps it)
+    float saut_mode_time{};               // + 112, s
+    std::uint32_t saut_aspect{};          // + 124: the aspect last announced
+    float saut_coefficient_timer{};       // + 252
+    float saut_shown{};                   // + 256, km/h
+    float saut_stop_timer{};              // + 260
+    float saut_clock{};                   // + 288 (0.3 s)
+    float saut_caught{};                  // + 292: the УР where it caught up
+    float saut_distance{};                // + 308, m
+    std::uint32_t saut_coefficient = 33;  // Engine +120 (Flags): Init's 33, 67 in the 162 km/h mode
+    bool saut_started = false;
+    bool saut_braking = false;            // its braking (kept between its redraws)
 };
+
+// The ЭК mode: a track entered and the map (when there is one) has it.
+[[nodiscard]] inline bool klub_ek(const KlubState& s) noexcept { return (s.track & 0x7F) != 0 && !s.ek_off; }
 
 struct KlubOutput {
     bool vent = false;            // the ЭПК or КОН vents the pipe (TrainPipeRate -1.2, EPTValue -1)
@@ -166,6 +291,9 @@ struct KlubOutput {
     // only then.
     bool epk_bit_written = false;
     bool safety_powered = false;  // var + 32 bit 4
+    bool saut_braking = false;    // САУТ's braking (the train's DLLs cut traction)
+    // САУТ's displays this step, a cab's each (openRTS's САУТ).
+    std::vector<SautScreen> saut_screens;
     std::vector<std::uint16_t> sounds; // its SMS triggers (56 / 57, 3192 .. 3199)
 };
 

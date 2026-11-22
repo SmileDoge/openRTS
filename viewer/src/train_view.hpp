@@ -10,6 +10,8 @@
 #include <map>
 #include <set>
 #include <memory>
+#include <cstdint>
+#include <tuple>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -27,6 +29,8 @@
 #include <openrts/audio/sound_instance.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/electronic_map.hpp>
+#include <openrts/simulation/milepost.hpp>
 #include <openrts/simulation/stock_rules.hpp>
 #include <openrts/simulation/track_profile.hpp>
 #include <openrts/formats/activity.hpp>
@@ -194,8 +198,28 @@ public:
     // The player's cab keys are on (a locomotive DLL's cab): the viewer's
     // camera and default driving keys are off.
     [[nodiscard]] bool keyboard_captured() const noexcept;
+    // A cab control in the mouse's hand (a handle or a blind dragged, RTS
+    // 0x4121BC): the helper's, else the engineer's.
+    [[nodiscard]] bool control_in_hand() const noexcept;
+    // Brakes.dll's springs of the brake handles with openRTS's devices.
+    void spring_brake_handles();
+    bool mouse_down_ = false; // the left button down, as the pointer last saw it
     // Standing in a cab, outside or on a car (not in a chair).
     [[nodiscard]] bool engineer_on_foot() const noexcept { return engineer_.on_foot(); }
+    // On foot with something for Enter where he stands (the prompt shown
+    // offers it; not with the car menu open): E does it, else E opens the
+    // car menu (key_layout.hpp).
+    [[nodiscard]] bool engineer_action_at_hand() const;
+    // On foot outside: collide with the world's objects or only with the
+    // ground and the trains (the Train window's checkbox; Num/ or Shift+=).
+    void toggle_walk_objects();
+    // A world object's collision (its world tile and UiD): off, the engineer
+    // walks through it and a sliding car passes it (the inspector; for this
+    // session).
+    [[nodiscard]] bool object_collides(std::int32_t tile_x, std::int32_t tile_z, std::uint32_t uid) const {
+        return !collision_off_.contains({tile_x, tile_z, uid});
+    }
+    void set_object_collides(std::int32_t tile_x, std::int32_t tile_z, std::uint32_t uid, bool collides);
     // Whether the driving keys (the DLL's cab keys, openRTS's handles) reach
     // the driven cab: not while the engineer is on foot out of the driven car
     // (on the platform, in another car). With the engineer off (an outside
@@ -210,6 +234,13 @@ public:
     [[nodiscard]] float outside_gain() const noexcept { return outside_gain_; }
     [[nodiscard]] bool following() const noexcept { return follow_; }
     void stop_following() noexcept { follow_ = false; }
+    // A network player with no train of his own: the camera put once
+    // behind the first train, then free (not following a train that is not
+    // his; testers 2026-11-21).
+    void look_once_then_free() noexcept {
+        follow_ = true;
+        free_after_look_ = true;
+    }
     // Terrain height at a scene point (x, z), when its tile has heights.
     [[nodiscard]] std::optional<float> ground_at(const glm::vec3& point) const { return ground_height(point); }
     // The driven train.
@@ -273,6 +304,11 @@ public:
     // The DLLs' start state for the next loaded consist: -1 running (the
     // default), 0 cold, 1 on (an activity's TrainState, docs/train-dll.md).
     void set_start_state(int state) noexcept { start_state_ = state; }
+    // The state train `id` starts its DLLs in (0 cold, 1 on, -1 running):
+    // the network's, as the server keeps it, whichever way the player gets
+    // into it (testers 2026-11-21: a cold ВЛ80Т given to a player already
+    // in the world started running).
+    void set_unit_start_state(std::uint64_t id, int state);
     // Where the player starts once the driven train stands on the track
     // (--spawn): in its cab; on foot beside the cab car, as RTS starts an
     // activity by default (0x42F4A4: 2 m off the car's left side at its
@@ -361,6 +397,8 @@ public:
     void activity_default_uncouple(ActivityId train, UncoupleRule rule) { uncouple_rules_[train] = std::move(rule); }
     // ChangeServiceStartupType: the service's trains not started yet wait
     // (NONE, `starts` false) or start at their times.
+    // SpawnTrain: that traffic train starts now (one waiting for it).
+    void activity_spawn_train(std::uint32_t service, std::uint32_t train);
     void activity_service_startup(std::uint32_t service, bool starts);
     // SetSpeedLimit: the train's limit, m/s (not positive: none); the
     // driven train's DLL and the speed panel see it, traffic keeps under it.
@@ -379,6 +417,12 @@ public:
     // state once their shapes are fitted, the DLLs' once the host has them.
     // An error, or empty.
     [[nodiscard]] std::string load_game(const std::string& text);
+    // One train's own state for the network (2026-11-21): its cars' air,
+    // switches and flags (Train::save_state) and, when its DLLs run here,
+    // theirs by car index; put back into the train when it is the player's
+    // again (the DLLs' once they run). Empty: no such train of ours.
+    [[nodiscard]] std::string own_state(std::uint64_t id);
+    void restore_own_state(std::uint64_t id, const std::string& text);
     // Placements (docs/placements.md): trains picked in the free flight - a
     // click picks a train, Ctrl+click adds or drops another, Shift+click
     // drops or takes back one car of a picked train - kept as a set in
@@ -470,6 +514,25 @@ public:
     // A network game (--mp-connect): the panel leaves out what puts trains
     // on the track (paths, consists, situations).
     void set_network(bool on) noexcept { network_game_ = on; }
+    // The dispatcher's placements of the network game (net/placement.hpp):
+    // the single player's folder, one file format for both (a player's
+    // placement sent to the organiser is put there and seen by both).
+    [[nodiscard]] std::filesystem::path network_placement_folder() const { return placement_folder(); }
+    // Where a network game's own trains' states are kept on this computer
+    // (user_data_directory()/train_states/<route>).
+    [[nodiscard]] std::filesystem::path train_states_folder() const;
+    // The dispatcher's console (2026-11-21, the organiser): the camera does
+    // not follow a train put on the track (with none of its own the first
+    // one was followed: the dispatcher was taken to each train he put), and
+    // no car view (F3).
+    void set_console(bool on) noexcept {
+        console_ = on;
+        if (on) follow_ = false;
+    }
+    [[nodiscard]] bool console() const noexcept { return console_; }
+    // On foot or flying, asked for from a panel (the scene does it as Ctrl+F).
+    void ask_walk_toggle() noexcept { walk_toggle_asked_ = true; }
+    [[nodiscard]] bool take_walk_toggle() noexcept { return std::exchange(walk_toggle_asked_, false); }
     // A train's category for speed posts as the server says (network).
     void set_category(std::uint64_t id, simulation::TrainCategory category);
     void set_boardable(std::uint64_t id, bool on) {
@@ -491,6 +554,34 @@ public:
     // conditions and pantograph rules are not worked out (0x4F07D4).
     void set_remote_light(std::uint64_t id, std::size_t car, std::size_t light, bool on);
     void set_remote_look(std::uint64_t id, std::size_t car, std::uint8_t pantographs, bool running);
+    // The passenger doors open, a byte per car (bit n: GlobalID n + 1): ours
+    // as drawn (to send), another computer's train's as it says (0x45FC).
+    [[nodiscard]] std::vector<std::uint8_t> door_groups(std::uint64_t id) const;
+    void set_remote_doors(std::uint64_t id, const std::vector<std::uint8_t>& groups);
+    // The doors of the cabs open on the train he is on (his or the one he
+    // helps on: units_.front()), by car: to send, and as another sent them.
+    struct CabDoors {
+        std::size_t car{};
+        std::vector<std::uint8_t> open;
+        const void* cab = nullptr; // the cab's view: made anew, its doors are not a change
+    };
+    [[nodiscard]] std::vector<CabDoors> cab_doors() const;
+    void set_cab_doors(std::size_t car, const std::vector<std::uint8_t>& open);
+    // Car menu items done here, for the network (0x45FE), and one done on
+    // another computer carried out here.
+    struct CarAction {
+        std::uint64_t train{};
+        std::size_t car{};
+        bool coupling = false, front = true;
+        int item{};
+    };
+    [[nodiscard]] std::vector<CarAction> take_car_actions() { return std::exchange(car_actions_, {}); }
+    void apply_car_action(const CarAction& action);
+    // Another computer's train derailed (0x4636): a flag per car, the rolls
+    // (now, at rest) of those that came off; the falling runs on here, as in
+    // RTS (testers 2026-11-21: helpers and consoles saw nothing).
+    void set_remote_derail(std::uint64_t id, const std::vector<std::uint8_t>& derailed,
+                           const std::vector<std::array<float, 3>>& rolls); // car, roll now, roll at rest
     // The train the server gives this client (docs/net.md, "Own train"):
     // put on the track now as the driven train, every train there now gone;
     // its DLLs, cab and keyboard as with --situation. An error, or empty.
@@ -649,6 +740,14 @@ public:
         double length{};             // the whole train, as Train::length()
     };
     [[nodiscard]] std::string consist_layout(std::string_view consist, ConsistLayout& layout) const;
+    // Track control's train menu (2026-11-21, the organiser): the train's
+    // cars laid out as a consist's; the train put again at another place
+    // (the front of its first car, facing the way it runs; standing still);
+    // chocks under its ends (1 its head, 2 its tail: RTS's PlaceDrag).
+    [[nodiscard]] std::string train_layout(std::uint64_t id, ConsistLayout& layout) const;
+    [[nodiscard]] std::string move_train(std::uint64_t id, const simulation::TrackLocation& head);
+    [[nodiscard]] std::uint8_t train_chocks(std::uint64_t id) const;
+    [[nodiscard]] std::string set_train_chocks(std::uint64_t id, std::uint8_t chocks);
     // The 3-D cab: the caption of the control under the mouse, and with Alt
     // (`all`) the captions of every control near `eye`.
     void collect_cab_labels(std::vector<WorldLabel>& labels, const glm::vec3& eye, bool all) const;
@@ -709,7 +808,7 @@ public:
     [[nodiscard]] bool viewing_inside() const noexcept { return engineer_.inside() && car_view_ == CarView::off; }
     // The eye back from a screen of the cab the wheel took it to, smoothly
     // (the * key: TME's CameraReset does the same).
-    void restore_screen_focus() { engineer_.release_focus(); }
+    void restore_screen_focus() {}
     // The engineer sits in a cab's chair and the view is his.
     [[nodiscard]] bool seated_in_cab() const noexcept { return engineer_.mode() == Engineer::Mode::seated && car_view_ == CarView::off; }
     // F3: the camera orbits the train's first car, then its last, then back.
@@ -732,7 +831,7 @@ public:
     // none: the Train window's).
     [[nodiscard]] std::string spawn(std::string_view consist, const simulation::TrackLocation& where, Role role,
                                     std::optional<simulation::TrainCategory> category = std::nullopt,
-                                    std::optional<int> start_state = std::nullopt);
+                                    std::optional<int> start_state = std::nullopt, std::uint8_t chocks = 0);
     // Saves train `id`'s path as <user_path_folder>/<name>.pat (never into the route).
     [[nodiscard]] std::string save_path(std::uint64_t id, const std::string& name);
     // The camera follows train `id` (0: the driven train).
@@ -741,6 +840,7 @@ public:
     void set_signals(const simulation::SignalSystem* signals) noexcept { signals_ = signals; }
     // The ALSN codes the track gives the trains (viewer_scene updates it).
     void set_alsn(const simulation::AlsnSystem* alsn) noexcept { alsn_ = alsn; }
+    [[nodiscard]] const simulation::SignalSystem* signals() const noexcept { return signals_; }
     // Text about train `id`'s path: leg, reserved way, what it waits for.
     [[nodiscard]] std::string path_status(std::uint64_t id) const;
     // RTS's information keys (docs/reverse/dispatcher.md): F5 a page of the
@@ -752,9 +852,12 @@ public:
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
     // Shift+F7: the track profile behind and ahead of the train.
     void set_track_profile(bool on) noexcept { track_profile_panel_ = on; }
-    void toggle_drive_panel();
     // Ctrl+F4: the profile strip at the top (profile_strip.hpp); remembered as profile_strip.
     void toggle_profile_strip();
+    // F4: a small card of what the driver looks at most (openRTS; like
+    // RTS's old F4 in spirit, not its look): time, speed, limit now and
+    // next, the signal ahead.
+    void toggle_drive_card();
     // The names of signal objects (the route database's), for the F4 panel.
     void set_signal_names(std::function<std::string(std::uint32_t object)> names) { signal_names_ = std::move(names); }
     void draw_hud();
@@ -915,9 +1018,12 @@ private:
     int placement_choice_ = -1;
     std::vector<Unit> preview_units_;
     std::vector<std::unique_ptr<formats::WagonDefinition>> preview_stock_;
+    std::vector<std::string> preview_trains_; // each preview train's included placement (empty: its own)
     bool preview_blocked_ = false;
     bool placement_checked_ = false; // OPENRTS_PLACEMENT_CHECK done
     std::string preview_name_;
+    // A placement of placement_folder() by name (included ones).
+    [[nodiscard]] std::optional<std::string> placement_text(const std::string& name) const;
     [[nodiscard]] std::filesystem::path placement_folder() const;
     [[nodiscard]] std::vector<std::string> placements() const;
     [[nodiscard]] std::string save_placement(const std::string& name) const;
@@ -936,6 +1042,9 @@ private:
     std::set<std::uint64_t> shared_sound_; // take_sound
     std::set<std::uint64_t> boardable_;    // set_boardable
     bool network_game_ = false;            // set_network
+    bool console_ = false;                 // set_console
+    bool walk_toggle_asked_ = false;       // ask_walk_toggle
+    std::vector<CarAction> car_actions_;   // take_car_actions
     std::vector<Coupling> couplings_;      // take_couplings
     std::vector<Cut> cuts_;                // take_cuts
     std::string board_prompt_;             // Enter at another cab's door (his other trains, the far end of his own)
@@ -991,6 +1100,7 @@ private:
         std::optional<std::int32_t> remove; // TrainRemoveTime
         bool started = false;               // started, or given up
         bool waiting = false;               // CHECK_IF_BUSY: its place was taken
+        bool on_spawn = false;              // no TrainStartTime and a SpawnTrain names it: it waits for that
     };
     // A scenario's block point (service 0: a global one).
     struct ActivityBlock {
@@ -1094,18 +1204,13 @@ private:
     bool limits_panel_ = false;
     bool track_profile_panel_ = false; // Shift+F7
     bool stations_panel_ = false;
-    // F4: the driver's summary (openRTS): moving or standing, the speed and
-    // its limit, the pressures, the next signal and platform, the time.
-    // On at first; remembered as drive_panel.
-    std::optional<bool> drive_panel_;
-    void draw_drive_panel(const Unit& unit);
     // The profile strip (Ctrl+F4): built again every second, or when its
     // span or shift goes past what was built.
     std::optional<bool> profile_strip_on_;
+    std::optional<bool> drive_card_on_; // F4, remembered
     std::unique_ptr<ProfileStrip> profile_strip_;
     simulation::TrackProfile profile_;
-    std::vector<simulation::TrackProfileElement> profile_elements_;
-    double profile_element_length_ = 0.0; // the shortest element they were made for
+    std::vector<simulation::TrackProfileElement> profile_elements_; // the track's own (TrackProfile::elements)
     std::vector<ProfileMark> profile_marks_;
     double profile_built_at_ = -1e9;               // ImGui's time
     double profile_left_ = 0.0, profile_right_ = 0.0; // the way built, m from the leading end
@@ -1128,6 +1233,7 @@ private:
     };
     HudPanel car_info_place_{.key = "hud_car_info"};
     HudPanel limits_place_{.key = "hud_limits", .pivot_x = 1.0f};
+    HudPanel drive_card_place_{.key = "hud_drive_card", .pivot_x = 1.0f};
     HudPanel stations_place_{.key = "hud_stations", .pivot_x = 1.0f};
     HudPanel profile_place_{.key = "hud_profile", .pivot_x = 1.0f};
     HudPanel drive_place_{.key = "hud_drive", .pivot_x = 1.0f};
@@ -1247,7 +1353,22 @@ private:
     };
     std::shared_future<std::shared_ptr<const SignalUnits>> signal_units_;
     [[nodiscard]] const SignalUnits* signal_units();
+    // openRTS's КЛУБ's electronic map (simulation/electronic_map.hpp) from
+    // the route database's station tracks, made aside once the database
+    // and the signals are there; the Train window's "ЭК" turns it off.
+    std::shared_future<std::shared_ptr<const simulation::ElectronicMap>> electronic_map_;
+    [[nodiscard]] const simulation::ElectronicMap* electronic_map();
+    bool klub_map_ = true;
+    // The КЛУБ's next object line: platforms, crossings and limits in place
+    // of the target signal (Brakes.dll's); off by default, the target only
+    // (the testers, 2026-11-21: checking the ЭК). Remembered as klub_objects.
+    bool klub_objects_ = false;
+    void load_brake_choices();
     double items_searched_[2]{}; // how far the item list's walks went (ahead, behind), m
+    // The player's train's coordinate (Engine::CurrentMilepost; RTS works it
+    // out while the train moves, simulation/milepost.hpp).
+    simulation::MilepostState milepost_;
+    const simulation::Train* milepost_train_ = nullptr;
     const CabView* listener_cab_ = nullptr;
     glm::vec3 listener_local_{};
     int listener_room_ = audio::InteriorAcoustics::outside;
@@ -1257,6 +1378,7 @@ private:
     bool visit_requested_ = false;
     std::future<renderer::StreamedModelAsset> visit_loading_;
     std::optional<CabView::Picked> hovered_; // the control under the mouse
+    bool screen_focus_ = false;              // a cab screen held the eye (the wheel lets it go)
     // A door under the mouse (openRTS): where the ray met it (scene) and
     // what a click does, for its label.
     struct DoorHover {
@@ -1384,6 +1506,7 @@ private:
     std::uint64_t helping_ = 0;                                // the train he helps on (TrainView id), 0 none
     std::uint64_t helper_own_ = 0;                             // his own driven train before, to drive again after
     std::map<std::size_t, dllhost::CarOutput> helper_outputs_; // the engineer's cabs, by car
+    std::map<std::size_t, dllhost::CarOutput> helper_shown_;   // as drawn: switch frames and gauges eased towards them
     std::unique_ptr<LegacyCab> helper_cab_;                    // the helper's hands on them
     std::vector<HelperHand> helper_hands_;
     // The engineer's: the cab triggers for his helpers since the last
@@ -1425,6 +1548,13 @@ private:
     // Writes the companion of `car`'s type and gives it to its cars; how many
     // cars took it; `listed` when the mod was added to openrts.ini.
     std::size_t keep_distributor(const Car& car, formats::BrakeDistributor distributor, bool& listed, std::string& error);
+    // The car menu's 418 for locomotive `car`'s type (none: as its
+    // distributor gives), kept and given the same way.
+    void choose_sensor418(const Car& car, std::optional<bool> fitted);
+    // The companion of `car`'s type through `edit`, then `apply` on the
+    // definition of every car of that type; how many cars.
+    std::size_t keep_in_companion(const Car& car, const std::function<std::string(std::string_view)>& edit,
+                                  const std::function<void(formats::WagonDefinition&)>& apply, bool& listed, std::string& error);
     glm::vec3 look_{0.0f, 0.0f, 1.0f}; // the camera's direction, for the cab labels
     // The frame's view this frame (the window's, from ViewerCamera): the
     // aspect and the vertical field of view drawn, radians. The wheel on a
@@ -1434,6 +1564,10 @@ private:
     // Outside he collides with the world's objects and stands on them
     // (platforms, ballast, bridges), or only with the ground and the trains.
     bool walk_objects_ = true;
+    std::set<std::tuple<std::int32_t, std::int32_t, std::uint32_t>> collision_off_; // world objects without collision (tile, UiD)
+    // The hotkey's note on the screen (the panel may be hidden) until then (ImGui time).
+    std::string walk_note_;
+    double walk_note_until_ = -1.0;
     struct WalkMesh {
         std::future<std::shared_ptr<CabCollision>> loading;
         std::shared_ptr<CabCollision> mesh; // null while loading or when it does not read
@@ -1457,6 +1591,7 @@ private:
     std::optional<std::uint32_t> outside_car_;
     double accumulator_{};
     bool follow_ = true;
+    bool free_after_look_ = false; // look_once_then_free
     std::size_t joints_ = 0, junctions_ = 0, coupler_breaks_ = 0, derailments_ = 0;
     bool end_of_track_ = false;
     std::unique_ptr<audio::SoundBank> bank_;
@@ -1492,6 +1627,7 @@ private:
     // The Train window's "КЛУБ": Brakes.dll's (0) or openRTS's (1)
     // (docs/brakes-dll-replacement.md, step 3); remembered as own_klub.
     int own_klub_ = 0;
+    bool no_brakes_dll_ = false; // Brakes.dll not loaded where all of it is openRTS's (the next train)
     // Each engine's Brakes.dll parameters (trainplugin::brakes_parameters).
     mutable std::unordered_map<const formats::EngineDefinition*, trainplugin::BrakesParameters> brakes_parameters_;
     [[nodiscard]] const trainplugin::BrakesParameters& brakes_parameters_of(const formats::EngineDefinition& engine) const;

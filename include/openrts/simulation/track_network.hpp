@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
@@ -112,6 +113,23 @@ public:
     // owner's reservation and clearance, and set the switch to the next
     // reservation's branch or to MainRoute.
     void release_junction(std::uint32_t node, std::uint64_t owner);
+    // The network game's track (the server's and its clients'): a switch
+    // stays where it was set until someone sets it again; a release (back
+    // to MainRoute or the next reservation) or a run-through (thrown to the
+    // branch it came from) is kept as wanted, with the train that wants it,
+    // instead (take_wanted_switches): as RTS, the train's owner sets them
+    // and tells the server (0x460A), the server tells everyone else
+    // (testers 2026-11-21: each side set them its own way and they drifted
+    // apart). A cancelled reservation leaves the switch as it is.
+    void set_switches_stay(bool on) noexcept { switches_stay_ = on; }
+    [[nodiscard]] bool switches_stay() const noexcept { return switches_stay_; }
+    struct WantedSwitch {
+        std::uint32_t node{};
+        std::uint32_t branch{};
+        std::uint64_t owner{}; // the train (simulation::Train::id) that would set it
+    };
+    void want_switch(std::uint32_t node, std::uint32_t branch, std::uint64_t owner);
+    [[nodiscard]] std::vector<WantedSwitch> take_wanted_switches() { return std::exchange(wanted_, {}); }
     // The junction whose switch shape is world object `uid` on tile (x, z).
     [[nodiscard]] std::optional<std::uint32_t> junction_for_object(std::int32_t tile_x, std::int32_t tile_z,
                                                                    std::uint32_t uid) const;
@@ -141,6 +159,8 @@ public:
     void set_rail_joint_layout(RailJointLayout layout);
 
 private:
+    bool switches_stay_ = false;
+    std::vector<WantedSwitch> wanted_;
     formats::TrackDatabase database_;
     formats::TrackSectionLibrary sections_;
     std::vector<NetworkNode> nodes_; // by node index; [0] unused

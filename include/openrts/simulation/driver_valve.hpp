@@ -58,6 +58,10 @@ struct ValveOutput {
     // The realistic air: the relay may feed the pipe from the main reservoir
     // (not in III, lap without feed: the pipe's leaks are not made up).
     bool feed = true;
+    // I: the main reservoir feeds the pipe straight through the 395's wide
+    // channel, past the relay (the realistic air): the pipe runs ahead of
+    // the УР, the faster the shorter the train.
+    bool direct = false;
     float ep_value = -1.0f; // the ЭПТ demand, < 0 none
     // With the realistic air the valves' command (the cars' ЭВР fill, hold
     // or let out at their own rates); else target (ep_value).

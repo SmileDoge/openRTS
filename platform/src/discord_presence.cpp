@@ -242,10 +242,34 @@ std::string discord_activity_command(const std::optional<DiscordActivity>& activ
             append_text_field(out, "large_text", a.large_text);
             out += '}';
         }
+        if (!a.party_id.empty()) {
+            if (out.back() != '{') out += ',';
+            out += R"("party":{)";
+            append_json_string(out, "id");
+            out += ':';
+            append_json_string(out, cut_utf8(a.party_id, text_limit));
+            // Its size only with its most (no limit: none shown).
+            if (a.party_max > 0) {
+                const int max = a.party_max;
+                const int size = a.party_size < 1 ? 1 : a.party_size > max ? max : a.party_size;
+                out += R"(,"size":[)" + std::to_string(size) + "," + std::to_string(max) + "]";
+            }
+            out += '}';
+        }
+        const bool joinable = !a.join_secret.empty();
+        if (joinable) {
+            if (out.back() != '{') out += ',';
+            out += R"("secrets":{)";
+            append_json_string(out, "join");
+            out += ':';
+            append_json_string(out, cut_utf8(a.join_secret, text_limit));
+            out += '}';
+        }
         std::string buttons;
         std::size_t count = 0;
         for (const auto& button : a.buttons) {
-            if (count == 2 || button.url.empty() || button.label.empty()) continue;
+            // Discord takes no buttons of the game's own with a join secret.
+            if (joinable || count == 2 || button.url.empty() || button.label.empty()) continue;
             buttons += count++ == 0 ? "{" : ",{";
             append_json_string(buttons, "label");
             buttons += ':';
@@ -261,7 +285,7 @@ std::string discord_activity_command(const std::optional<DiscordActivity>& activ
             out += R"("buttons":[)" + buttons + "]";
         }
         if (out.back() != '{') out += ',';
-        out += R"("instance":false})";
+        out += joinable ? R"("instance":true})" : R"("instance":false})";
     }
     out += R"(},"nonce":")" + std::to_string(nonce) + "\"}";
     return out;
@@ -276,6 +300,7 @@ struct DiscordPresence::State {
     std::optional<DiscordActivity> wanted;
     std::uint64_t wanted_version = 0;
     Status status;
+    std::vector<std::string> joins; // ACTIVITY_JOIN secrets not taken yet
     std::thread thread;
 
     void run();
@@ -326,15 +351,44 @@ void DiscordPresence::State::run() {
             if (opcode == op_frame) {
                 const auto evt = json_string_field(json, "evt");
                 const auto cmd = json_string_field(json, "cmd");
-                const std::lock_guard lock(mutex);
-                if (evt && *evt == "READY") {
-                    ready = status.ready = true;
-                    status.error.clear();
-                } else if (evt && *evt == "ERROR") {
-                    status.error = json_string_field(json, "message").value_or("error");
-                } else if (cmd && *cmd == "SET_ACTIVITY") {
-                    ++status.accepted;
+                std::vector<std::string> writes; // answers, written after the lock
+                {
+                    const std::lock_guard lock(mutex);
+                    if (evt && *evt == "READY") {
+                        ready = status.ready = true;
+                        status.error.clear();
+                        // The join events wanted, as discord-rpc subscribes them.
+                        const auto subscribe = [&](const char* event) {
+                            writes.push_back(std::string(R"({"cmd":"SUBSCRIBE","evt":")") + event + R"(","args":{},"nonce":")" +
+                                             std::to_string(++nonce) + "\"}");
+                        };
+                        if (options.join_events) subscribe("ACTIVITY_JOIN");
+                        if (options.accept_join_requests) subscribe("ACTIVITY_JOIN_REQUEST");
+                    } else if (evt && *evt == "ERROR") {
+                        status.error = json_string_field(json, "message").value_or("error");
+                    } else if (evt && *evt == "ACTIVITY_JOIN") {
+                        if (auto secret = json_string_field(json, "secret"); secret && !secret->empty()) {
+                            joins.push_back(std::move(*secret));
+                            ++status.joins;
+                        }
+                    } else if (evt && *evt == "ACTIVITY_JOIN_REQUEST") {
+                        // "Ask to Join": yes while the game may be joined.
+                        const auto user = json_string_field(json, "id");
+                        if (user && options.accept_join_requests) {
+                            const bool joinable = wanted && !wanted->join_secret.empty();
+                            std::string args = R"("args":{"user_id":)";
+                            append_json_string(args, *user);
+                            writes.push_back(std::string(R"({"cmd":")") + (joinable ? "SEND_ACTIVITY_JOIN_INVITE" : "CLOSE_ACTIVITY_REQUEST") +
+                                             R"(",)" + args + R"(},"nonce":")" + std::to_string(++nonce) + "\"}");
+                            if (joinable) ++status.join_requests;
+                        }
+                    } else if (cmd && *cmd == "SET_ACTIVITY") {
+                        ++status.accepted;
+                    } else if (cmd && *cmd == "SUBSCRIBE") {
+                        ++status.subscribed;
+                    }
                 }
+                for (const auto& write : writes) pipe.write_frame(op_frame, write);
             } else if (opcode == op_ping) {
                 pipe.write_frame(op_pong, json);
             } else if (opcode == op_close) {
@@ -418,6 +472,40 @@ void DiscordPresence::set(std::optional<DiscordActivity> activity) {
 DiscordPresence::Status DiscordPresence::status() const {
     const std::lock_guard lock(state_->mutex);
     return state_->status;
+}
+
+std::vector<std::string> DiscordPresence::take_joins() {
+    const std::lock_guard lock(state_->mutex);
+    return std::exchange(state_->joins, {});
+}
+
+bool register_discord_launch(const std::string_view application_id, const std::filesystem::path& exe, std::string& error) {
+#ifdef _WIN32
+    if (application_id.empty() || exe.empty()) {
+        error = "no application or program";
+        return false;
+    }
+    const std::wstring id(application_id.begin(), application_id.end()); // digits
+    const std::wstring base = L"Software\\Classes\\discord-" + id;
+    const auto set = [&](const std::wstring& key, const wchar_t* name, const std::wstring& value) {
+        HKEY handle = nullptr;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &handle, nullptr) != ERROR_SUCCESS) return false;
+        const auto bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
+        const bool ok = RegSetValueExW(handle, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()), bytes) == ERROR_SUCCESS;
+        RegCloseKey(handle);
+        return ok;
+    };
+    const auto program = exe.wstring();
+    const bool ok = set(base, nullptr, L"URL:Run game " + id + L" protocol") && set(base, L"URL Protocol", L"") &&
+                    set(base + L"\\DefaultIcon", nullptr, program) && set(base + L"\\shell\\open\\command", nullptr, L"\"" + program + L"\"");
+    if (!ok) error = "the registry key could not be written";
+    return ok;
+#else
+    (void)application_id;
+    (void)exe;
+    error = "only on Windows";
+    return false;
+#endif
 }
 
 } // namespace openrts::platform

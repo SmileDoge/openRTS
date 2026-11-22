@@ -119,6 +119,9 @@ struct EngineDemands {
     bool emergency = false;
     // The relay may feed the pipe (not in III: ValveOutput::feed).
     bool pipe_feed = true;
+    // I: the main reservoir feeds the pipe straight, past the relay
+    // (ValveOutput::direct).
+    bool pipe_direct = false;
     // openRTS's cab brake devices in place of a DLL's (cab_brakes.hpp): what
     // they did this step, for the cab's gauges and lamps.
     std::optional<CabBrakeOutput> cab_brakes;
@@ -141,6 +144,12 @@ struct EngineInputs {
     float main_reservoir{}; // atm
     float cylinder{};       // train brake cylinder, atm
     float independent{};    // independent brake cylinder, atm
+    // Realistic air: how fast its driver's valve's relay fed the pipe at
+    // this car over the last step, atm/s (CarState::valve_feed).
+    float valve_feed{};
+    // Its distributor's ТЦ channel and additional discharge (CarState's).
+    float distributor_channel{};
+    bool distributor_discharge = false;
     bool flipped = false;   // the car faces the train rear
     const formats::WagonDefinition* definition = nullptr;
     float cargo_mass{};     // kg, on top of the definition's
@@ -352,6 +361,15 @@ struct CarState {
     float ep_fill = 1.0f; // atm/s its ЭВР 305 fills at (scatter_ep_fill)
     float handbrake{}; // 0..1
     float main_reservoir{}; // engines
+    // Realistic air: how fast the engine's driver's valve (its relay, I's
+    // wide channel) fed the pipe at this car over the last air step, atm/s
+    // (the cab's air sounds; Brakes.dll's TrainPipeRate > 0).
+    float valve_feed{};
+    // Realistic air: its distributor's ТЦ channel (atm) and whether an
+    // application began with its additional discharge over the last air
+    // step: the 418's ДТЦ and ДДР (cab_brakes.hpp).
+    float distributor_channel{};
+    bool distributor_discharge = false;
     // Bogie positions from the car centre towards the train front / rear, m
     // (RTS takes them from the shape's BOGIE nodes); 0: 35 % of the length.
     float bogie_ahead{};
@@ -503,6 +521,12 @@ public:
     // open, valves or brake shoes. A sleeping train wakes.
     enum class CarFlags : std::uint8_t { pipe_ends, coupler_open, valves, chocks, cables };
     void set_car_flags(std::size_t car, CarFlags which, std::uint8_t mask, bool on);
+    // A car of a train another computer runs, derailed as it says (0x4636):
+    // tipping towards `tilt_target`, `tilt` the roll now; not derailed puts
+    // it back upright.
+    void show_car_derailed(std::size_t car, bool derailed, float tilt, float tilt_target);
+    // The roll of such a car eased towards its target (rad/s).
+    void ease_shown_derail(float elapsed, float rate);
     // Car `car`'s handbrake, 0..1.
     void set_handbrake(std::size_t car, float value);
     // Car `car`'s distributor switches (the realistic air model reads them).

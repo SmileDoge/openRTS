@@ -19,16 +19,6 @@
 // the distance as bars, 35 .. 127) as it draws them too.
 namespace openrts::simulation {
 
-// A track item as RTSGetTrackItems gives it, for the screen's lines.
-struct KlubTrackItem {
-    std::uint8_t type{};        // 2 speed post, 3 platform, 4 siding, 5 level crossing
-    float distance{};           // m from the front ahead (under the train: < 0), from the rear behind
-    std::uint16_t pos{};        // 1 ahead, 2 behind, 4 under the train
-    std::u16string name;        // a platform's station, a siding's name
-    std::uint32_t flags{};      // a speed post's
-    float value{};              // a speed post's limit, m/s
-};
-
 // What the screen shows besides the КЛУБ's state.
 struct KlubScreenInputs {
     bool powered = true;
@@ -53,12 +43,20 @@ struct KlubScreenInputs {
     float tskbm_timer = 100.0f;     // ТСКБМ's (var + 12; under 7 the vigilance sign, the БЛОК's 35 / 36)
     float block_value{};            // var + 296 (the ЭП20's DLL writes it): the БЛОК's object 37
     float saut_distance{};          // САУТ's distance (var + 308): the БЛОК's object 5
+    bool saut_caught = false;       // САУТ caught up with its speed: "СРЫВ ЭПК САУТ"
     std::u16string signal_name; // the target signal's (RTSSignalData)
     // RTSGetTrackItems' entries of the player's train (the leading cab's
     // ahead first), and mdd_Libraries/Brakes/ChangeStanc.bto's names: a
     // station starting with the first (upper case) shown as the second,
     // "SKIP..." not at all.
     std::span<const KlubTrackItem> items;
+    bool tskbm_switch = false; // this cab's TSKBM_SW on
+    // The next object line (21 / 22, its distance 20): a platform, a
+    // crossing or a limit within 500 m in place of the target signal, as
+    // Brakes.dll's; off, the target signal only (openRTS's setting, off in
+    // the game: the testers, 2026-11-21, could not see which signal the ЭК
+    // took).
+    bool objects_line = true;
     std::span<const std::pair<std::u16string, std::u16string>> station_names;
 };
 
@@ -78,6 +76,12 @@ struct KlubScreen {
     std::array<std::int8_t, 8> lamps{};   // KLUB_B1POM .. B8POM: 0 off, 1 lit
     std::int8_t lamp = 0;                 // KLUB_PLAMP
     std::int8_t backlight = 0;            // KLUB_TCHNUM's texture
+    // ТСКБМ's (PB_SETUP 4): TSKBM_DISP's objects 0 .. 2, TSKBM_PIT, L1 ..
+    // L3 (0 off, 1 lit) and L2's blink (its Fade's second value, s).
+    std::array<KlubScreenObject, 3> tskbm{};
+    std::int8_t tskbm_power = 0;
+    std::array<std::int8_t, 3> tskbm_lamps{};
+    float tskbm_l2_blink{};
     bool drawn = false;                   // a step has been drawn
 };
 

@@ -27,6 +27,13 @@ struct CloudShadow {
     // so a shadow is dark through and its edge a narrow band, as a cumulus's
     // on the fields seen from a plane (narrower with the sharpness).
     glm::vec2 edge{0.0f, 1.0f};
+    // The sunlight let through where the map's shadow is not (1 none taken):
+    // the map fades out as the sun goes down to the horizon (its rays then
+    // cross the layer kilometres away, off the map), and a low sun is taken
+    // by the clouds' cover there instead (2026-11-21: until then a rising
+    // sun under a thunderstorm's 97 % lit the cab and the land as on a clear
+    // morning, testers). The shaders: low_sun - sun.w x (1 - the map's).
+    float low_sun = 1.0f;
 };
 #endif
 

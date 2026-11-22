@@ -21,6 +21,9 @@ enum class Package : std::uint16_t {
     not_a_login = 0x4704,
     bad_version = 0x4705,
     flooding = 0x4706,
+    // openRTS's own: a dispatcher console's password missing or wrong (only
+    // to 0x4500, which no RTS program sends to openRTS's server).
+    wrong_password = 0x4707,
     drop_receive = 0x47FD,
     drop_short = 0x47FE,
     drop_bad = 0x47FF,
@@ -124,15 +127,19 @@ enum class Package : std::uint16_t {
     console_reply = 0x45F1,   // server -> console: what it printed
     console_state = 0x45F2,   // server -> consoles: the players and the trains with their owners
     console_place = 0x45F3,   // console -> server: a consist's cars to put on the track
+    console_next = 0x45F8,       // console -> server: the station routes a train can take next (net::ConsoleNextAsk)
+    console_next_reply = 0x45F9, // server -> console: those routes (net::ConsoleNext)
+    openrts_weather = 0x45FA,    // server -> openRTS players and consoles: the game's weather (net::OpenrtsWeather)
+    openrts_train_state = 0x45FB, // owner <-> server: a train's own state (air, switches, DLLs), in parts (net::TrainStatePart)
+    openrts_doors = 0x45FC,       // owner -> server -> openRTS players and consoles: the passenger doors open (net::OpenrtsDoors)
+    openrts_cab_doors = 0x45FD,   // engineer / helper -> server -> the others on the train: a cab's doors (net::OpenrtsCabDoors)
+    openrts_car_action = 0x45FE,  // a player -> server -> the openRTS players: a car menu item done (net::OpenrtsCarAction)
     // Between openRTS's server and openRTS players (docs/net.md, "Players
     // and helpers"); a player sends them only after the server's hello.
     openrts_hello = 0x45F4,   // player -> server after the snapshot, the server's answer back: both are openRTS
     helper = 0x45F5,          // asking, answering and the helpers' news (net::HelperNote)
     helper_cab = 0x45F6,      // engineer -> server -> his helpers: a cab as his DLLs show it
     helper_input = 0x45F7,    // helper -> server -> the engineer: a control worked, the car he is in
-    // The weather the server keeps for the whole route, to openRTS players
-    // (docs/weather.md): net::WeatherReport, sent whole.
-    openrts_weather = 0x45F8, // server -> players: the weather it keeps for everyone
 };
 
 [[nodiscard]] constexpr std::uint16_t id(const Package package) noexcept { return static_cast<std::uint16_t>(package); }

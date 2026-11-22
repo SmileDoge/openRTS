@@ -1,5 +1,7 @@
 #include <openrts/simulation/klub.hpp>
 
+#include "saut_part.hpp"
+
 #include <cmath>
 #include <cstdint>
 
@@ -94,6 +96,10 @@ void alsn(KlubState& s, const KlubInputs& in) {
         s.signal.aspect[0] = 2;
         s.signal.speed_limit = white_limit;
     }
+    // openRTS's map: the target where the map has it, the aspect as the
+    // codes give it. САУТ keeps the signal actually ahead.
+    s.saut_signal_distance = s.signal.distance;
+    if (in.ek.given && in.ek.matched && in.ek.has_target) s.signal.distance = in.ek.distance;
     auto& aspect = s.signal.aspect[0];
     if (aspect == 1) {
         s.signal.speed_limit = 0.0f;
@@ -120,6 +126,8 @@ void alsn(KlubState& s, const KlubInputs& in) {
     else s.limit_marks &= ~0x4000u;
     s.signal_from_50 = static_cast<float>(whole(s.signal.distance) - 50u);
     if (s.signal_from_50 > 9999.0f) s.signal_from_50 = 0.0f;
+    s.saut_from_50 = static_cast<float>(whole(s.saut_signal_distance) - 50u);
+    if (s.saut_from_50 > 9999.0f) s.saut_from_50 = 0.0f;
     s.signal_metres = static_cast<float>(whole(s.signal.distance));
 }
 
@@ -199,7 +207,7 @@ void update(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sou
     }
     // Without the ЭК: KLUB_GRSPD, and KLUB_YLSPD / 20 after a yellow / КЖ.
     if (k.green_speed > -1.0f && k.green_speed < s.limit) s.limit = k.green_speed;
-    if ((s.track & 0x7F) == 0) {
+    if (!klub_ek(s)) {
         if (k.block_length < s.yellow_run) s.yellow_run = k.block_length;
         if (aspect == 3 || aspect == 4 || aspect == 5) {
             s.limit = k.green_speed;
@@ -219,7 +227,7 @@ void update(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sou
         }
     }
     // The curve: 0.08 km/h a metre.
-    if (aspect <= 1 && in.powered && (s.track & 0x7F)) {
+    if (aspect <= 1 && in.powered && klub_ek(s)) {
         if (static_cast<float>(whole(s.limit)) * 12.5f <= s.signal_metres) {
             s.marks &= ~2u;
             s.permitted = s.limit;
@@ -351,13 +359,15 @@ void update(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sou
         // in the x87's precision). Brakes.dll's ЭП1 run shows it on both
         // cabs' screens, though its code reads as doing it in the first
         // cab drawn only (PROBABLE: all of them).
+        // САУТ's speed shown: openRTS's own, else Brakes.dll's.
+        const float saut_permitted = in.saut_in.own ? s.saut_shown : in.saut_permitted;
         if (k.setup & 8) {
-            if (s.permitted > in.saut_permitted) {
-                s.permitted = in.saut_permitted;
+            if (s.permitted > saut_permitted) {
+                s.permitted = saut_permitted;
                 s.saut_rules = true;
             }
-        } else if (static_cast<double>(in.saut_permitted) + 5.0 < static_cast<double>(s.permitted)) {
-            s.permitted = static_cast<float>(static_cast<double>(in.saut_permitted) + 5.0);
+        } else if (static_cast<double>(saut_permitted) + 5.0 < static_cast<double>(s.permitted)) {
+            s.permitted = static_cast<float>(static_cast<double>(saut_permitted) + 5.0);
             s.saut_rules = true;
         }
     }
@@ -446,6 +456,63 @@ void epk(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sounds
         s.timer = 0.0f;
     }
     out.vent = s.timer >= 12.0f || s.kon_vented;
+}
+
+// ТСКБМ (after the КЛУБ's permitted speed): while its switch is on, on the
+// move with the ЭПК key in, its timer runs down; under 15 s the lamp L2
+// blinks, under 7 the whistle and the request, at 0
+// the ЭПК vents (the vigilance timer held at 45, TrainPipeRate -1.2). At a
+// stand it waits at 6.9. With the БЛОК (PB_SETUP 8): it runs at a stand
+// too, its request from 15 s, its beep 3196 at 15 and 7 s.
+void tskbm(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput& out) {
+    const auto whistle = [&](const bool on) {
+        const bool block = (k.setup & 8) && !k.block_mode;
+        out.sounds.push_back(on ? (block ? 3956 : 56) : (block ? 3957 : 57));
+    };
+    auto& timer = s.tskbm_timer;
+    if (s.flags & f::developer) timer = 60.0f;
+    s.tskbm_shown = timer;
+    if (!in.tskbm) return;
+    const bool moving = std::abs(in.speed) > 0.1f;
+    const bool may = !(k.setup & 2) || in.powered;
+    if (moving && may) {
+        if (timer >= 7.0f) {
+            if (s.device & d::tskbm_whistle) {
+                s.device &= ~d::tskbm_whistle;
+                whistle(false);
+            }
+        } else {
+            s.flags |= f::tskbm | f::vigilance;
+            if (!(s.device & d::tskbm_whistle) && timer > 0.0f) {
+                whistle(true);
+                s.device |= d::tskbm_whistle;
+            }
+        }
+        if (timer <= 0.0f) {
+            if (s.device & d::tskbm_whistle) {
+                s.device &= ~d::tskbm_whistle;
+                whistle(false);
+            }
+            s.timer = 45.0f;
+            out.vent = true;
+        }
+    }
+    bool warn = false;
+    const bool alsn = in.alsn_on >= 0 ? in.alsn_on == 1 : in.epk_key;
+    if ((moving || (k.setup & 8)) && alsn && may) {
+        timer -= in.dt;
+        if (!moving && timer < 7.0f) timer = 6.9f;
+        if ((k.setup & 8) && timer < 15.0f) s.flags |= f::tskbm;
+        warn = timer < 7.0f || (timer < 15.0f && timer > 14.0f);
+    }
+    if (warn) {
+        if (!(s.device & d::tskbm_warning)) {
+            s.device |= d::tskbm_warning;
+            if (k.setup & 8) out.sounds.push_back(3196);
+        }
+    } else {
+        s.device &= ~d::tskbm_warning;
+    }
 }
 
 // The РБ, the РБС and the ЭПК key (Switched).
@@ -554,8 +621,10 @@ void key(KlubState& s, const KlubSettings& k, const KlubInputs& in, const KlubPr
         sound.add(3197);
         s.flags |= f::fresh_entry;
         if (!(s.flags & f::track_entry)) {
+            // The field shows the last track until a digit replaces it (the
+            // real КЛУБ-У's, the testers' 2026-11-21; Brakes.dll's 0).
             s.flags |= f::track_entry;
-            s.entry = 0;
+            s.entry = s.track & 0x7Fu;
         } else {
             s.flags &= ~f::track_entry;
         }
@@ -606,9 +675,13 @@ void key(KlubState& s, const KlubSettings& k, const KlubInputs& in, const KlubPr
             confirm();
         } else if (!(s.flags & f::track_entry)) {
             if (s.flags & f::right_entry) {
+                // The track entered takes effect now, with its sign (1: the
+                // right track, "ПР").
                 s.flags &= ~f::right_entry;
-                if (s.entry) s.track |= 0x80;
-                else s.track &= ~0x80u;
+                const std::uint32_t number = s.pending_track ? s.pending_track : (s.track & 0x7Fu);
+                s.track = number | (s.entry ? 0x80u : 0u);
+                s.pending_track = 0;
+                ++s.track_entries;
                 s.entry = 0;
                 confirm();
             } else {
@@ -657,11 +730,22 @@ void key(KlubState& s, const KlubSettings& k, const KlubInputs& in, const KlubPr
                 }
             }
         } else {
+            // The number waits for its sign (KlubState::pending_track), the
+            // sign's field showing the last one (1 ПР, 0 НП) until a digit
+            // replaces it (the real КЛУБ-У's, the testers' 2026-11-21;
+            // Brakes.dll's 0); 0 (no track) at once.
             s.flags &= ~f::track_entry;
             s.flags |= f::right_entry;
-            s.track = s.entry > 0x7F ? 0x7F : s.entry;
-            if (!s.track) s.flags &= ~f::right_entry;
+            s.pending_track = s.entry > 0x7F ? 0x7F : s.entry;
             s.entry = 0;
+            if (!s.pending_track) {
+                s.track = 0;
+                s.flags &= ~f::right_entry;
+                ++s.track_entries;
+            } else {
+                s.entry = (s.track & 0x80u) ? 1 : 0;
+                s.flags |= f::fresh_entry;
+            }
             confirm();
         }
         return;
@@ -737,21 +821,33 @@ void step_klub(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOu
         s.started = true;
         s.delay_timer = k.alsn_delay;
     }
+    // The map's answer for the track entered (the last step's number).
+    s.ek_off = in.ek.given && !in.ek.matched;
     if (in.tskbm) s.device |= d::tskbm_on;
     else s.device &= ~d::tskbm_on;
-    if (in.saut) s.device |= d::saut_on;
-    else s.device &= ~d::saut_on;
+    // САУТ's "on": openRTS's САУТ sets it, else Brakes.dll's.
+    if (!in.saut_in.own) {
+        if (in.saut) s.device |= d::saut_on;
+        else s.device &= ~d::saut_on;
+    }
+    out.saut_screens.clear();
     // The keys before the step (CanSwitch).
     if ((k.setup & 2) && in.powered)
         for (const auto& press : in.keys) key(s, k, in, press, sound);
+    const bool saut_here = in.saut_in.own && (k.setup & 1);
+    if (saut_here) saut::keys(s, k, in, out);
     if (in.alsn) alsn(s, in);
     delay(s, k, in);
-    if (k.setup & 2) {
-        update(s, k, in, sound, out);
-        epk(s, k, in, sound, out);
-    }
-    // Switched after Run: the РБ, the РБС, the ЭПК key.
+    // САУТ first, before the permitted speed (it reads this step's ALSN).
+    if (saut_here) saut::step(s, k, in, out);
+    if (k.setup & 2) update(s, k, in, sound, out);
+    if (k.setup & 4) tskbm(s, k, in, out);
+    if (k.setup & 2) epk(s, k, in, sound, out);
+    // Switched after Run: the РБ, the РБС, the ЭПК key; any switch starts
+    // ТСКБМ's timer again unless it asks.
     answers(s, k, in, sound);
+    if (in.switched && !(s.flags & f::tskbm)) s.tskbm_timer = 90.0f;
+    if (in.saut_in.own && (k.setup & 1)) saut::switched(s, in, out);
 }
 
 } // namespace openrts::simulation

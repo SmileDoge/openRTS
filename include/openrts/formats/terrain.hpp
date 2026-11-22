@@ -51,9 +51,10 @@ struct TerrainTile {
     std::vector<TerrainShader> shaders;
     std::uint32_t patches_per_side{};
     std::vector<TerrainPatch> patches; // row-major, row 0 at the north edge
-    // terrain_water_height_offset (token 251): four heights as stored; RTS
-    // (0x4A2A5C) spreads them over the patch corners. Patches with flag bits
-    // 0xC0 are water (0x49B088, 0x4A2144).
+    // terrain_water_height_offset (token 251): the water's height at the
+    // tile's corners SW, SE, NE, NW as stored (missing ones 0); water_height
+    // spreads them. Patches with flag bits 0xC0 are water (0x49B088,
+    // 0x4A2144).
     std::optional<std::array<float, 4>> water_heights;
     std::string error;
 
@@ -62,6 +63,17 @@ struct TerrainTile {
     [[nodiscard]] float height(std::uint32_t row, std::uint32_t column) const {
         return sample_floor + sample_scale * heights[static_cast<std::size_t>(row) * sample_count + column];
     }
+    // The water's height (m) at a point of the tile: `east` 0 at its west
+    // edge .. 1 at its east edge, `south` 0 at its north edge .. 1 at its
+    // south edge. The corners' heights spread bilinearly from corner to
+    // corner; a corner given as 0 takes the SW one, so a tile with only its
+    // first height set is level. As Open Rails reads and lays them
+    // (Orts.Formats.Msts/TerrainFile.cs, RunActivity/Viewer3D/Tiles.cs and
+    // Water.cs, the Open Rails project, GPL-3.0). rts1.exe (0x4A2A5C) spreads
+    // them away from the first values instead of towards the others: equal
+    // corners (every water tile of the installed routes) come out the same,
+    // sloped water did not (testers 2026-11-20).
+    [[nodiscard]] float water_height(float east, float south) const;
 };
 
 [[nodiscard]] TerrainTile load_terrain_tile(const std::filesystem::path& tiles_directory,

@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <map>
@@ -1660,13 +1661,232 @@ private:
 std::atomic<std::uint64_t> live_geometry_bytes{0};
 std::atomic<std::uint64_t> live_train_geometry_bytes{0};
 
-// Vertex and index buffers of one model generation.
+// openRTS (2026-11-20): the models' vertices, indices and materials in
+// shared pages, so draws of different models with the same textures share
+// their buffers and their binding, and one multi-draw call takes them all.
+// Each model had its own (a binding per model and texture): a station's
+// 585 draws were 541 commands, each some 1.2 us of the CPU in wgpu, the
+// most of the frame there (Kuban, testers).
+
+// Free ranges of [0, capacity) units, first fit.
+class RangeAllocator {
+public:
+    explicit RangeAllocator(const std::uint64_t capacity) {
+        if (capacity > 0) free_.emplace(0, capacity);
+    }
+    [[nodiscard]] std::optional<std::uint64_t> allocate(const std::uint64_t size) {
+        if (size == 0) return std::nullopt;
+        for (auto it = free_.begin(); it != free_.end(); ++it) {
+            if (it->second < size) continue;
+            const auto offset = it->first;
+            const auto left = it->second - size;
+            free_.erase(it);
+            if (left > 0) free_.emplace(offset + size, left);
+            return offset;
+        }
+        return std::nullopt;
+    }
+    void release(const std::uint64_t offset, const std::uint64_t size) {
+        if (size == 0) return;
+        auto [it, added] = free_.emplace(offset, size);
+        if (!added) return;
+        if (const auto next = std::next(it); next != free_.end() && it->first + it->second == next->first) {
+            it->second += next->second;
+            free_.erase(next);
+        }
+        if (it != free_.begin()) {
+            if (const auto previous = std::prev(it); previous->first + previous->second == it->first) {
+                previous->second += it->second;
+                free_.erase(it);
+            }
+        }
+    }
+
+private:
+    std::map<std::uint64_t, std::uint64_t> free_; // offset -> size
+};
+
+// A shared vertex and index buffer: models' ranges in it.
+struct GeometryPage {
+    static constexpr std::uint64_t vertex_capacity = 1u << 20; // vertices (40 MB of GpuVertex)
+    static constexpr std::uint64_t index_capacity = 1u << 22;  // indices (16 MB)
+    WGPUBuffer vertices = nullptr;
+    WGPUBuffer indices = nullptr;
+    RangeAllocator vertex_ranges{vertex_capacity};
+    RangeAllocator index_ranges{index_capacity};
+    ~GeometryPage() {
+        if (indices) wgpuBufferRelease(indices);
+        if (vertices) wgpuBufferRelease(vertices);
+    }
+};
+
+// A shared storage buffer of MaterialUniforms (draws[] in the shaders):
+// models' slot ranges in it.
+struct MaterialPage {
+    std::uint64_t slots = 0;
+    WGPUBuffer buffer = nullptr;
+    RangeAllocator ranges{0};
+    explicit MaterialPage(const std::uint64_t capacity) : slots(capacity), ranges(capacity) {}
+    ~MaterialPage() {
+        if (buffer) wgpuBufferRelease(buffer);
+    }
+};
+
+// A bind group the draws share: a material page and its textures. Alive
+// while a model holds it (the models hold the textures it samples).
+struct SharedBinding {
+    WGPUBindGroup group = nullptr;
+    SharedBinding() = default;
+    SharedBinding(const SharedBinding&) = delete;
+    SharedBinding& operator=(const SharedBinding&) = delete;
+    ~SharedBinding() {
+        if (group) wgpuBindGroupRelease(group);
+    }
+};
+using BindingKey = std::tuple<const MaterialPage*, WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, int>;
+
+// The pages and the bindings, shared by the renderer and its models (a
+// model may outlive the renderer in its library).
+struct ModelPools {
+    static constexpr std::uint64_t material_slots = 1u << 16; // a page's (14.7 MB of 224-byte MaterialUniforms)
+    WGPUDevice device = nullptr;
+    // Off (OPENRTS_SHARED_MODEL_BUFFERS=0): every model its own buffers, as
+    // before 2026-11-20 (a check, or a driver that does not take them).
+    bool enabled = true;
+    std::mutex mutex;
+    std::vector<std::unique_ptr<GeometryPage>> geometry_pages;
+    std::vector<std::unique_ptr<MaterialPage>> material_pages;
+    std::map<BindingKey, std::weak_ptr<SharedBinding>> bindings;
+
+    struct GeometryRange {
+        GeometryPage* page = nullptr;
+        std::uint64_t vertex_base = 0, vertex_count = 0, index_base = 0, index_count = 0;
+    };
+    // `vertex_count` vertices of `stride` bytes and `index_count` indices put
+    // in a page (written now); none when they do not fit a page.
+    [[nodiscard]] std::optional<GeometryRange> place_geometry(const void* vertices, const std::uint64_t vertex_count,
+                                                             const std::uint64_t stride, const std::uint32_t* indices,
+                                                             const std::uint64_t index_count) {
+        if (!enabled || vertex_count == 0 || index_count == 0 || vertex_count > GeometryPage::vertex_capacity
+            || index_count > GeometryPage::index_capacity) {
+            return std::nullopt;
+        }
+        const std::lock_guard lock(mutex);
+        const auto fit = [&](GeometryPage& page) -> std::optional<GeometryRange> {
+            const auto v = page.vertex_ranges.allocate(vertex_count);
+            if (!v) return std::nullopt;
+            const auto i = page.index_ranges.allocate(index_count);
+            if (!i) {
+                page.vertex_ranges.release(*v, vertex_count);
+                return std::nullopt;
+            }
+            return GeometryRange{&page, *v, vertex_count, *i, index_count};
+        };
+        std::optional<GeometryRange> range;
+        for (auto& page : geometry_pages) {
+            if ((range = fit(*page))) break;
+        }
+        if (!range) {
+            auto page = std::make_unique<GeometryPage>();
+            WGPUBufferDescriptor vertex_descriptor{.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst,
+                                                   .size = GeometryPage::vertex_capacity * stride};
+            vertex_descriptor.label = {.data = "model vertices (shared)", .length = WGPU_STRLEN};
+            page->vertices = wgpuDeviceCreateBuffer(device, &vertex_descriptor);
+            WGPUBufferDescriptor index_descriptor{.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst,
+                                                  .size = GeometryPage::index_capacity * sizeof(std::uint32_t)};
+            index_descriptor.label = {.data = "model indices (shared)", .length = WGPU_STRLEN};
+            page->indices = wgpuDeviceCreateBuffer(device, &index_descriptor);
+            if (!page->vertices || !page->indices) return std::nullopt;
+            geometry_pages.push_back(std::move(page));
+            range = fit(*geometry_pages.back());
+            if (!range) return std::nullopt;
+        }
+        if (const auto queue = wgpuDeviceGetQueue(device)) {
+            wgpuQueueWriteBuffer(queue, range->page->vertices, range->vertex_base * stride, vertices, vertex_count * stride);
+            wgpuQueueWriteBuffer(queue, range->page->indices, range->index_base * sizeof(std::uint32_t), indices,
+                                 index_count * sizeof(std::uint32_t));
+            wgpuQueueRelease(queue);
+        }
+        return range;
+    }
+    // Queue writes run after the frames submitted before them, so a range
+    // freed and placed again is not overwritten under a frame in flight.
+    void free_geometry(const GeometryRange& range) {
+        const std::lock_guard lock(mutex);
+        range.page->vertex_ranges.release(range.vertex_base, range.vertex_count);
+        range.page->index_ranges.release(range.index_base, range.index_count);
+    }
+
+    struct MaterialRange {
+        MaterialPage* page = nullptr;
+        std::uint32_t base = 0, count = 0;
+    };
+    // `count` MaterialUniforms (`bytes`) in a page, written now.
+    [[nodiscard]] std::optional<MaterialRange> place_materials(const void* bytes, const std::uint32_t count, const std::uint64_t stride) {
+        if (!enabled || count == 0 || count > material_slots) return std::nullopt;
+        const std::lock_guard lock(mutex);
+        std::optional<MaterialRange> range;
+        for (auto& page : material_pages) {
+            if (const auto at = page->ranges.allocate(count)) {
+                range = MaterialRange{page.get(), static_cast<std::uint32_t>(*at), count};
+                break;
+            }
+        }
+        if (!range) {
+            auto page = std::make_unique<MaterialPage>(material_slots);
+            WGPUBufferDescriptor descriptor{.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst, .size = material_slots * stride};
+            descriptor.label = {.data = "model materials (shared)", .length = WGPU_STRLEN};
+            page->buffer = wgpuDeviceCreateBuffer(device, &descriptor);
+            if (!page->buffer) return std::nullopt;
+            const auto at = page->ranges.allocate(count);
+            if (!at) return std::nullopt;
+            range = MaterialRange{page.get(), static_cast<std::uint32_t>(*at), count};
+            material_pages.push_back(std::move(page));
+        }
+        if (const auto queue = wgpuDeviceGetQueue(device)) {
+            wgpuQueueWriteBuffer(queue, range->page->buffer, std::uint64_t{range->base} * stride, bytes, std::uint64_t{count} * stride);
+            wgpuQueueRelease(queue);
+        }
+        return range;
+    }
+    void free_materials(const MaterialRange& range) {
+        if (!range.page) return;
+        const std::lock_guard lock(mutex);
+        range.page->ranges.release(range.base, range.count);
+    }
+
+    // The binding for `key`, made by `make` when none is alive.
+    template <typename Make>
+    [[nodiscard]] std::shared_ptr<SharedBinding> binding(const BindingKey& key, Make&& make) {
+        const std::lock_guard lock(mutex);
+        auto& slot = bindings[key];
+        if (auto alive = slot.lock()) return alive;
+        auto made = std::make_shared<SharedBinding>();
+        made->group = make();
+        if (!made->group) return nullptr;
+        slot = made;
+        // The dead ones out now and then.
+        if (bindings.size() > 64 && (bindings.size() & 255u) == 0) std::erase_if(bindings, [](const auto& b) { return b.second.expired(); });
+        return made;
+    }
+};
+
+// Vertex and index buffers of one model generation: a range of a shared
+// page (ModelPools), or its own (a normal-mapped model's with its tangents,
+// one too big for a page).
 struct GpuGeometry {
     WGPUBuffer vertices = nullptr;
     WGPUBuffer indices = nullptr;
     WGPUBuffer tangents = nullptr; // a normal-mapped model's (PBR stage 4), else none
     std::uint64_t bytes{};
     bool train = false; // a TRAINS/ shape's
+    // In a page: its buffers are the page's, its draws offset by these.
+    std::shared_ptr<ModelPools> pools;
+    ModelPools::GeometryRange range;
+    [[nodiscard]] std::uint32_t first_index() const noexcept { return static_cast<std::uint32_t>(range.index_base); }
+    [[nodiscard]] std::int32_t base_vertex() const noexcept { return static_cast<std::int32_t>(range.vertex_base); }
+    // Draws with the same key share the vertex and index buffers.
+    [[nodiscard]] const void* buffers() const noexcept { return range.page ? static_cast<const void*>(range.page) : this; }
 
     GpuGeometry() = default;
     GpuGeometry(const GpuGeometry&) = delete;
@@ -1675,6 +1895,10 @@ struct GpuGeometry {
         live_geometry_bytes -= bytes;
         if (train) live_train_geometry_bytes -= bytes;
         if (tangents) wgpuBufferRelease(tangents);
+        if (range.page) {
+            if (pools) pools->free_geometry(range);
+            return;
+        }
         if (indices) wgpuBufferRelease(indices);
         if (vertices) wgpuBufferRelease(vertices);
     }
@@ -1722,18 +1946,20 @@ struct RenderModel::Impl {
         WGPUTextureView emissive_view = nullptr;
         WGPUTextureView height_view = nullptr;
     };
-    // The model's bindings, one per texture, sampler filter and unlit (the
-    // draws' own, a TextureOverride's, an unlit node's), made when first
-    // asked for; each Draw::binding is one of them. The textures of the
-    // overrides stay alive with the generation.
-    mutable std::map<std::tuple<WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, int, bool>, WGPUBindGroup>
-        bindings;
+    // The bindings its draws take, one per material page, texture and
+    // sampler filter (the draws' own, a TextureOverride's, an unlit node's),
+    // made when first asked for, shared with every model with the same
+    // (ModelPools) and held while it lives; each Draw::binding is one of
+    // them. The textures of the overrides stay alive with the generation.
+    mutable std::map<BindingKey, std::shared_ptr<SharedBinding>> bindings;
     // The material maps' textures (PBR stage 4), alive with the generation.
     std::vector<std::shared_ptr<const GpuTexture>> material_textures;
     mutable std::vector<std::shared_ptr<const GpuTexture>> variant_textures;
     // The draws' MaterialUniforms with the unlit light material, made for the
-    // first unlit node.
-    mutable WGPUBuffer unlit_materials = nullptr;
+    // first unlit node: a range as material_range (a draw's there at its
+    // slot's place in it).
+    mutable ModelPools::MaterialRange unlit_range;
+    mutable std::unique_ptr<MaterialPage> unlit_own; // when no shared page had room
 
     core::VirtualPath source;
     std::vector<std::string> dependencies;
@@ -1765,9 +1991,13 @@ struct RenderModel::Impl {
         if (level >= level_draws.size()) return {};
         return level_draws[level];
     }
-    // The draws' MaterialUniforms by slot (a storage buffer), and how many
-    // slots: a draw keeps its slot when one before it is dropped.
-    WGPUBuffer materials = nullptr;
+    // The draws' MaterialUniforms: slots [base, base + slot_count) of a
+    // shared page (ModelPools), or of a page of its own (material_own); each
+    // Draw::slot is its own there. A draw keeps its slot when one before it
+    // is dropped.
+    std::shared_ptr<ModelPools> pools;
+    ModelPools::MaterialRange material_range;
+    std::unique_ptr<MaterialPage> material_own;
     std::uint32_t slot_count = 0;
     std::uint16_t model_flags = 0;
     ModelBounds bounds{};
@@ -1779,11 +2009,11 @@ struct RenderModel::Impl {
     Impl& operator=(const Impl&) = delete;
 
     ~Impl() {
-        for (auto& [_, binding] : bindings) {
-            if (binding) wgpuBindGroupRelease(binding);
+        // Its slots back to the pages (a queue write after the frames using them).
+        if (pools) {
+            if (!material_own) pools->free_materials(material_range);
+            if (!unlit_own) pools->free_materials(unlit_range);
         }
-        if (materials) wgpuBufferRelease(materials);
-        if (unlit_materials) wgpuBufferRelease(unlit_materials);
     }
 };
 
@@ -1883,6 +2113,8 @@ struct ModelRenderer::Impl {
 
     WGPUDevice device = nullptr;
     WGPUBindGroupLayout material_layout = nullptr;
+    // The models' shared vertex, index and material pages and bindings.
+    std::shared_ptr<ModelPools> pools;
     WGPUBindGroupLayout frame_layout = nullptr;
     std::array<std::array<WGPURenderPipeline, pipeline_variant_count>, shading_path_count> pipelines{};
     std::array<std::array<WGPURenderPipeline, pipeline_variant_count>, shading_path_count> pipelines_two_sided{};
@@ -2010,6 +2242,7 @@ struct ModelRenderer::Impl {
         std::uint32_t instance;
         int phase;
         WGPUBindGroup binding;
+        std::uint32_t slot; // its MaterialUniform (slot_for)
     };
     struct Translucent {
         std::size_t instance;
@@ -2097,22 +2330,45 @@ struct ModelRenderer::Impl {
         }
         if (!texture && !unlit) return draw.binding;
         const auto& model = *queued.model;
-        if (unlit && !model.unlit_materials) {
+        if (unlit && !model.unlit_range.page) {
             std::vector<std::byte> materials(std::size_t{model.slot_count} * material_stride);
             for (const auto& each : model.draws) {
                 const auto uniform = material_uniform(each, night_texture_material);
-                std::memcpy(materials.data() + std::size_t{each.slot} * material_stride, &uniform, sizeof(uniform));
+                std::memcpy(materials.data() + std::size_t{each.slot - model.material_range.base} * material_stride, &uniform,
+                            sizeof(uniform));
             }
-            model.unlit_materials = create_buffer(device, WGPUBufferUsage_Storage, materials.size(), materials.data());
-            if (!model.unlit_materials) return draw.binding;
+            if (const auto range = pools->place_materials(materials.data(), model.slot_count, material_stride)) {
+                model.unlit_range = *range;
+            } else {
+                model.unlit_own = std::make_unique<MaterialPage>(model.slot_count);
+                model.unlit_own->buffer = create_buffer(device, WGPUBufferUsage_Storage, materials.size(), materials.data());
+                model.unlit_range = {model.unlit_own.get(), 0, model.slot_count};
+            }
+            if (!model.unlit_range.page->buffer) {
+                model.unlit_range = {};
+                model.unlit_own.reset();
+                return draw.binding;
+            }
         }
         const auto binding = model_binding(model, texture ? texture->view : draw.view, draw, unlit);
         if (held && std::find(model.variant_textures.begin(), model.variant_textures.end(), held) == model.variant_textures.end())
             model.variant_textures.push_back(held);
         return binding ? binding : draw.binding;
     }
-    // A model's binding for a texture, filter and unlit: every draw of the
-    // model with them shares it (made when first asked for).
+    // The draw's MaterialUniform slot for this instance: an unlit node's in
+    // the model's unlit range (after binding_for made it).
+    [[nodiscard]] std::uint32_t slot_for(const QueuedModel& queued, const RenderModel::Impl::Draw& draw) const {
+        const auto& model = *queued.model;
+        if (!model.unlit_range.page) return draw.slot;
+        for (std::uint32_t k = 0; k < queued.unlit_count; ++k) {
+            if (frame_unlit[queued.unlit + k] == draw.range.matrix_index)
+                return model.unlit_range.base + (draw.slot - model.material_range.base);
+        }
+        return draw.slot;
+    }
+    // The binding for a model's draw with a texture, filter and unlit (its
+    // material page): every draw of every model with the same page and
+    // textures shares it (ModelPools), made when first asked for.
     [[nodiscard]] WGPUBindGroup model_binding(const RenderModel::Impl& model, const WGPUTextureView view,
                                               const RenderModel::Impl::Draw& draw, const bool unlit) {
         const auto filter = draw.material.filter;
@@ -2120,10 +2376,12 @@ struct ModelRenderer::Impl {
         const auto normal = draw.normal_view ? draw.normal_view : flat_normal_view;
         const auto emissive = draw.emissive_view ? draw.emissive_view : black_view;
         const auto height = draw.height_view ? draw.height_view : white_view;
-        const auto key = std::tuple{view, orm, normal, emissive, height, static_cast<int>(filter), unlit};
-        if (const auto it = model.bindings.find(key); it != model.bindings.end()) return it->second;
-        const auto buffer = unlit ? model.unlit_materials : model.materials;
-        if (!buffer || !view) return nullptr;
+        const MaterialPage* page = unlit ? model.unlit_range.page : model.material_range.page;
+        if (!page || !page->buffer || !view) return nullptr;
+        const BindingKey key{page, view, orm, normal, emissive, height, static_cast<int>(filter)};
+        if (const auto it = model.bindings.find(key); it != model.bindings.end()) return it->second->group;
+        const auto buffer = page->buffer;
+        const auto shared = pools->binding(key, [&] {
         std::array<WGPUBindGroupEntry, 7> entries{};
         entries[6].binding = 6;
         entries[6].textureView = height;
@@ -2140,11 +2398,13 @@ struct ModelRenderer::Impl {
         entries[2].binding = 2;
         entries[2].buffer = buffer;
         entries[2].offset = 0;
-        entries[2].size = std::uint64_t{model.slot_count} * material_stride;
+        entries[2].size = page->slots * material_stride;
         const WGPUBindGroupDescriptor descriptor{.layout = material_layout, .entryCount = entries.size(), .entries = entries.data()};
-        const auto binding = wgpuDeviceCreateBindGroup(device, &descriptor);
-        model.bindings.emplace(key, binding);
-        return binding;
+        return wgpuDeviceCreateBindGroup(device, &descriptor);
+        });
+        if (!shared) return nullptr;
+        model.bindings.emplace(key, shared);
+        return shared->group;
     }
     GpuRetireQueue retired;
 
@@ -2569,9 +2829,16 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
                                                         : draw.material.light_material);
         std::memcpy(materials.data() + i * material_stride, &uniform, sizeof(uniform));
     }
-    gpu.materials = create_buffer(device, WGPUBufferUsage_Storage, materials.size(), materials.data());
     gpu.slot_count = static_cast<std::uint32_t>(gpu.draws.size());
-    if (!gpu.materials) {
+    gpu.pools = pools;
+    if (const auto range = pools->place_materials(materials.data(), gpu.slot_count, material_stride)) {
+        gpu.material_range = *range;
+    } else {
+        gpu.material_own = std::make_unique<MaterialPage>(gpu.slot_count);
+        gpu.material_own->buffer = create_buffer(device, WGPUBufferUsage_Storage, materials.size(), materials.data());
+        gpu.material_range = {gpu.material_own.get(), 0, gpu.slot_count};
+    }
+    if (!gpu.material_range.page->buffer) {
         gpu.draws.clear();
         return;
     }
@@ -2581,7 +2848,7 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
     // its slot even when one before it is dropped (the buffer is in slots).
     for (std::size_t i = 0; i < gpu.draws.size(); ++i) {
         auto& draw = gpu.draws[i];
-        draw.slot = static_cast<std::uint32_t>(i);
+        draw.slot = gpu.material_range.base + static_cast<std::uint32_t>(i);
         draw.view = views[i];
         draw.binding = model_binding(gpu, views[i], draw, false);
     }
@@ -2596,6 +2863,18 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
 ModelRenderer::ModelRenderer(const WGPUDevice device, const WGPUTextureFormat target_format)
     : impl_(std::make_unique<Impl>()) {
     impl_->device = device;
+    impl_->pools = std::make_shared<ModelPools>();
+    impl_->pools->device = device;
+    {
+#ifdef _WIN32
+        char* value = nullptr;
+        std::size_t length = 0;
+        if (_dupenv_s(&value, &length, "OPENRTS_SHARED_MODEL_BUFFERS") == 0 && value && value[0] == '0') impl_->pools->enabled = false;
+        std::free(value);
+#else
+        if (const char* value = std::getenv("OPENRTS_SHARED_MODEL_BUFFERS"); value && value[0] == '0') impl_->pools->enabled = false;
+#endif
+    }
     impl_->multi_draw_supported = wgpuDeviceHasFeature(device, WGPUFeatureName_IndirectFirstInstance);
     impl_->bc_textures = wgpuDeviceHasFeature(device, WGPUFeatureName_TextureCompressionBC);
     impl_->material_layout = create_material_layout(device);
@@ -2800,13 +3079,27 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
         });
     }
     auto geometry = std::make_shared<GpuGeometry>();
-    geometry->vertices = create_buffer(
-        impl_->device, WGPUBufferUsage_Vertex, vertices.size() * sizeof(GpuVertex), vertices.data());
-    geometry->indices = create_buffer(
-        impl_->device, WGPUBufferUsage_Index, model.indices.size() * sizeof(std::uint32_t), model.indices.data());
+    // In a shared page (ModelPools); a normal-mapped model keeps its own,
+    // its tangents beside its vertices.
+    const bool tangents = asset.tangents.size() == model.vertices.size();
+    if (!tangents) {
+        if (const auto range = impl_->pools->place_geometry(vertices.data(), vertices.size(), sizeof(GpuVertex), model.indices.data(),
+                                                            model.indices.size())) {
+            geometry->pools = impl_->pools;
+            geometry->range = *range;
+            geometry->vertices = range->page->vertices;
+            geometry->indices = range->page->indices;
+        }
+    }
+    if (!geometry->range.page) {
+        geometry->vertices = create_buffer(
+            impl_->device, WGPUBufferUsage_Vertex, vertices.size() * sizeof(GpuVertex), vertices.data());
+        geometry->indices = create_buffer(
+            impl_->device, WGPUBufferUsage_Index, model.indices.size() * sizeof(std::uint32_t), model.indices.data());
+    }
     if (!geometry->vertices || !geometry->indices) return result;
     geometry->bytes = vertices.size() * sizeof(GpuVertex) + model.indices.size() * sizeof(std::uint32_t);
-    if (asset.tangents.size() == model.vertices.size()) {
+    if (tangents) {
         geometry->tangents = create_buffer(impl_->device, WGPUBufferUsage_Vertex, asset.tangents.size() * sizeof(asset.tangents[0]),
                                            asset.tangents.data());
         if (geometry->tangents) geometry->bytes += asset.tangents.size() * sizeof(asset.tangents[0]);
@@ -2919,29 +3212,30 @@ std::string ModelRenderer::draw_report(const std::size_t top) const {
         << " of one instance; " << impl_->last_commands << " commands (multi-draw " << (impl_->use_multi_draw() ? "on" : "off")
         << ")\n";
     // What changes between calls as they are recorded (render()): the
-    // pipeline, the model (vertex and index buffers), the draw's binding
-    // (texture and the draw's uniform); and how often the texture alone
-    // would change if a model's draws shared a binding per texture.
+    // pipeline, the vertex and index buffers (a shared page's or a model's
+    // own, ModelPools), the draw's binding (its material page and textures);
+    // and how often it would change were a binding per model and texture
+    // (as until 2026-11-20).
     {
-        std::size_t pipelines = 0, models = 0, bindings = 0, textures = 0, translucent = 0;
+        std::size_t pipelines = 0, buffers = 0, bindings = 0, textures = 0, translucent = 0;
         std::size_t last_pipeline = SIZE_MAX;
-        const void* last_model = nullptr;
+        const void* last_buffers = nullptr;
         const void* last_binding = nullptr;
         std::pair<const void*, const void*> last_texture{nullptr, nullptr};
         for (const auto& batch : impl_->batches) {
             if (batch.pipeline.index() != last_pipeline) ++pipelines;
-            if (batch.model != last_model) ++models;
+            if (batch.model->geometry->buffers() != last_buffers) ++buffers;
             if (batch.binding != last_binding) ++bindings;
             const std::pair<const void*, const void*> texture{batch.model, batch.draw ? static_cast<const void*>(batch.draw->view) : nullptr};
             if (texture != last_texture || batch.pipeline.index() != last_pipeline) ++textures;
             last_pipeline = batch.pipeline.index();
-            last_model = batch.model;
+            last_buffers = batch.model->geometry->buffers();
             last_binding = batch.binding;
             last_texture = texture;
             if (batch.translucent) ++translucent;
         }
-        out << "  switches: " << pipelines << " pipelines, " << models << " models, " << bindings << " bindings; "
-            << textures << " if a binding were per model and texture; " << translucent << " translucent calls; "
+        out << "  switches: " << pipelines << " pipelines, " << buffers << " buffers, " << bindings << " bindings; "
+            << textures << " were a binding per model and texture; " << translucent << " translucent calls; "
             << impl_->frame_locals.size() << " node matrices of animated instances ("
             << impl_->frame_locals.size() * sizeof(impl_->frame_locals[0]) / 1024 << " KB a frame)\n";
     }
@@ -3042,6 +3336,10 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) 
     }
     impl_->queue.push_back({.model = model.impl_.get(), .transform = transform, .level = level});
     impl_->queue.back().moving = impl_->submit_moving;
+}
+
+void ModelRenderer::set_room(const std::optional<ModelRoom>& room) noexcept {
+    if (impl_) impl_->frame.lighting.room = room;
 }
 
 void ModelRenderer::set_moving(const bool moving) noexcept {
@@ -3304,8 +3602,9 @@ void ModelRenderer::prepare() {
     const auto emit = [&](const std::size_t instance, const RenderModel::Impl::Draw& draw, const PipelineKey pipeline,
                           const int phase) {
         const auto& queued = impl_->queue[instance];
-        items.push_back({&draw, queued.model, pipeline, static_cast<std::uint32_t>(instance), phase,
-                         impl_->binding_for(queued, draw)});
+        const auto binding = impl_->binding_for(queued, draw); // before slot_for: it makes an unlit range
+        items.push_back({&draw, queued.model, pipeline, static_cast<std::uint32_t>(instance), phase, binding,
+                         impl_->slot_for(queued, draw)});
     };
 
     if (impl_->shading == ShadingPath::rts_compatible) {
@@ -3448,6 +3747,12 @@ void ModelRenderer::prepare() {
             const auto px = x.pipeline.index();
             const auto py = y.pipeline.index();
             if (px != py) return px < py;
+            // By the buffers and the binding: the draws of every model in a
+            // page with the same textures one after another, one multi-draw.
+            const auto bx = x.model->geometry->buffers();
+            const auto by = y.model->geometry->buffers();
+            if (bx != by) return std::less<const void*>{}(bx, by);
+            if (x.binding != y.binding) return std::less<const void*>{}(x.binding, y.binding);
             if (x.model != y.model) return std::less<const void*>{}(x.model, y.model);
             return a < b;
         });
@@ -3461,7 +3766,7 @@ void ModelRenderer::prepare() {
         ids.resize(next);
         for (std::size_t k = from; k < to; ++k) {
             const auto group = scratch.item_group[k];
-            if (group != ungrouped) ids[scratch.cursor[group]++] = {items[k].instance, items[k].draw->slot};
+            if (group != ungrouped) ids[scratch.cursor[group]++] = {items[k].instance, items[k].slot};
         }
         for (const auto k : scratch.blended) {
             const auto& item = items[k];
@@ -3475,7 +3780,7 @@ void ModelRenderer::prepare() {
             } else {
                 batches.push_back(batch_of(item, static_cast<std::uint32_t>(ids.size()), 1));
             }
-            ids.push_back({item.instance, item.draw->slot});
+            ids.push_back({item.instance, item.slot});
         }
         from = to;
     }
@@ -3487,7 +3792,9 @@ void ModelRenderer::prepare() {
     if (impl_->multi_draw_supported) {
         indirect.reserve(batches.size());
         for (const auto& batch : batches) {
-            indirect.push_back({batch.draw->range.index_count, batch.count, batch.draw->range.first_index, 0, batch.first});
+            const auto& geometry = *batch.model->geometry;
+            indirect.push_back({batch.draw->range.index_count, batch.count, batch.draw->range.first_index + geometry.first_index(),
+                                geometry.base_vertex(), batch.first});
         }
     }
 
@@ -3641,7 +3948,7 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function
     };
     bind_frame();
     std::optional<std::size_t> bound_pipeline;
-    const RenderModel::Impl* bound_model = nullptr;
+    const void* bound_buffers = nullptr;
     WGPUBindGroup bound_draw = nullptr;
     // The primitives waiting to be drawn with the bound state: one multi-draw
     // call for several (the order kept: a decal after its body), a plain call
@@ -3660,7 +3967,9 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function
         } else {
             for (std::size_t k = run_first; k < run_first + run_count; ++k) {
                 const auto& b = batches[k];
-                wgpuRenderPassEncoderDrawIndexed(pass, b.draw->range.index_count, b.count, b.draw->range.first_index, 0, b.first);
+                const auto& geometry = *b.model->geometry;
+                wgpuRenderPassEncoderDrawIndexed(pass, b.draw->range.index_count, b.count, b.draw->range.first_index + geometry.first_index(),
+                                                 geometry.base_vertex(), b.first);
                 ++commands;
             }
         }
@@ -3677,7 +3986,7 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function
             }
             // The helpers set their own pipelines and bindings.
             bound_pipeline.reset();
-            bound_model = nullptr;
+            bound_buffers = nullptr;
             bound_draw = nullptr;
             bind_frame();
         }
@@ -3696,13 +4005,13 @@ void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function
                 wgpuRenderPassEncoderSetPipeline(pass, set[path_index(impl_->shading)][*bound_pipeline]);
             }
         }
-        if (bound_model != batch.model) {
+        if (bound_buffers != batch.model->geometry->buffers()) {
             flush();
-            bound_model = batch.model;
-            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, bound_model->geometry->vertices, 0, WGPU_WHOLE_SIZE);
-            if (tangents) wgpuRenderPassEncoderSetVertexBuffer(pass, 1, bound_model->geometry->tangents, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(pass, bound_model->geometry->indices, WGPUIndexFormat_Uint32, 0,
-                                                WGPU_WHOLE_SIZE);
+            const auto& geometry = *batch.model->geometry;
+            bound_buffers = geometry.buffers();
+            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, geometry.vertices, 0, WGPU_WHOLE_SIZE);
+            if (tangents) wgpuRenderPassEncoderSetVertexBuffer(pass, 1, geometry.tangents, 0, WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetIndexBuffer(pass, geometry.indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
         }
         if (bound_draw != batch.binding) {
             flush();
@@ -3778,6 +4087,19 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
         }
     }
     if (runs.empty()) return;
+    // By pipeline, buffers and binding (an opaque one by its material page
+    // alone: it samples no texture): runs of the same, one multi-draw.
+    const auto binding_key = [](const Run& run) -> const void* {
+        return run.batch->alpha_test ? static_cast<const void*>(run.batch->binding) : static_cast<const void*>(run.batch->model->material_range.page);
+    };
+    std::stable_sort(runs.begin(), runs.end(), [&](const Run& a, const Run& b) {
+        if (a.batch->alpha_test != b.batch->alpha_test) return b.batch->alpha_test;
+        if (a.portal != b.portal) return b.portal;
+        const auto ba = a.batch->model->geometry->buffers();
+        const auto bb = b.batch->model->geometry->buffers();
+        if (ba != bb) return std::less<const void*>{}(ba, bb);
+        return std::less<const void*>{}(binding_key(a), binding_key(b));
+    });
     if (shadow) {
         // Shadow maps (2026-11-17): the opaque casters first, then the
         // alpha-tested ones (trees, fences), and in each batch the nearest
@@ -3812,7 +4134,11 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
         if (multi) {
             std::vector<IndirectDraw> indirect;
             indirect.reserve(runs.size());
-            for (const auto& run : runs) indirect.push_back({run.batch->draw->range.index_count, run.count, run.batch->draw->range.first_index, 0, run.first});
+            for (const auto& run : runs) {
+                const auto& geometry = *run.batch->model->geometry;
+                indirect.push_back({run.batch->draw->range.index_count, run.count, run.batch->draw->range.first_index + geometry.first_index(),
+                                    geometry.base_vertex(), run.first});
+            }
             wgpuQueueWriteBuffer(ids_queue, impl.indirect_buffer, indirect_base * sizeof(IndirectDraw), indirect.data(),
                                  indirect.size() * sizeof(IndirectDraw));
         }
@@ -3821,8 +4147,8 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
     const auto offset = static_cast<std::uint32_t>(slot * Impl::depth_stride);
     wgpuRenderPassEncoderSetBindGroup(pass, 1, impl.depth_binding, 1, &offset);
     WGPURenderPipeline bound = nullptr;
-    const RenderModel::Impl* bound_model = nullptr;
-    WGPUBindGroup bound_draw = nullptr;
+    const void* bound_buffers = nullptr;
+    const void* bound_draw = nullptr;
     std::size_t run_first = 0;
     std::size_t run_count = 0;
     const auto flush = [&] {
@@ -3833,8 +4159,9 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
         } else {
             for (std::size_t k = run_first; k < run_first + run_count; ++k) {
                 const auto& run = runs[k];
-                wgpuRenderPassEncoderDrawIndexed(pass, run.batch->draw->range.index_count, run.count, run.batch->draw->range.first_index,
-                                                 0, run.first);
+                const auto& geometry = *run.batch->model->geometry;
+                wgpuRenderPassEncoderDrawIndexed(pass, run.batch->draw->range.index_count, run.count,
+                                                 run.batch->draw->range.first_index + geometry.first_index(), geometry.base_vertex(), run.first);
             }
         }
         run_count = 0;
@@ -3851,15 +4178,16 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
             bound = pipeline;
             wgpuRenderPassEncoderSetPipeline(pass, pipeline);
         }
-        if (bound_model != batch.model) {
+        if (bound_buffers != batch.model->geometry->buffers()) {
             flush();
-            bound_model = batch.model;
-            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, bound_model->geometry->vertices, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(pass, bound_model->geometry->indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+            const auto& geometry = *batch.model->geometry;
+            bound_buffers = geometry.buffers();
+            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, geometry.vertices, 0, WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetIndexBuffer(pass, geometry.indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
         }
-        if (bound_draw != batch.binding) {
+        if (bound_draw != binding_key(runs[i])) {
             flush();
-            bound_draw = batch.binding;
+            bound_draw = binding_key(runs[i]);
             wgpuRenderPassEncoderSetBindGroup(pass, 0, batch.binding, 0, nullptr);
         }
         if (run_count == 0) run_first = i;

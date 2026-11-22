@@ -42,6 +42,10 @@ struct ServerOptions {
     std::u16string description;    // "Маршрут: …\r\nСезон: …"
     std::uint8_t season = 1;       // 0 spring .. 3 winter
     std::uint8_t weather = 0;      // 0 clear, 1 snow, 2 rain
+    // openRTS's dynamic weather from the start (the weather above its
+    // first; openrts_weather), its seed (0: one drawn).
+    bool weather_dynamic = false;
+    std::uint64_t weather_seed = 0;
     // A thunderstorm (openRTS's own; the weather is rain): told to openRTS
     // players in the answer to their openrts_hello.
     bool storm = false;
@@ -50,14 +54,26 @@ struct ServerOptions {
     // rts_server.exe sends the time every 300 s (live capture 2026-11-05).
     double time_period = 300.0;
     bool admit = true;             // new players taken (else 0x4702)
-    // Remote dispatcher consoles (0x4500: rts_server_DSP.exe, openRTS's in
-    // the game). Off: refused with 0x4702. They come after the server
-    // itself, which is the dispatcher's as rts_server.exe is (the user's
-    // call, 2026-11-09); the code stays, the tests run it.
+    // Dispatcher consoles (0x4500: openRTS's in the game; rts_server_DSP.exe
+    // expects replies not read yet). Off: refused with 0x4702. Hidden from
+    // 2026-11-09 until the server was done; on since 2026-11-21.
     bool consoles = false;
-    // Nicks that may log in as a console from anywhere; from this computer
-    // any nick may.
+    // A console from this computer comes in with any nick. From another one
+    // it needs this password (0x4707 when wrong); without one it is refused
+    // (0x4702). Until 2026-11-21 a nick of `dispatchers` alone let it in.
+    std::string dispatcher_password;
+    // When not empty, a console from another computer also needs one of
+    // these nicks.
     std::vector<std::string> dispatchers;
+    // The game may be joined from the players' Discord profiles (their
+    // "Join" button; told to openRTS players in the hello's answer), at this
+    // address (empty: the one each player connected to).
+    bool discord_join = false;
+    std::string public_address;
+    // Places: a new player beyond so many playing is refused (0x4702), as
+    // when new players are not taken; one coming back under his nick is not.
+    // 0: no limit.
+    std::uint32_t max_players = 0;
 };
 
 // A train the dispatcher puts on the track.
@@ -73,6 +89,25 @@ struct NewTrain {
     float top_speed{};         // m/s
     std::uint32_t number{};    // the train number (the cars' uids carry it)
     std::u16string name;       // the console's name, may be empty
+};
+
+// A train as it stands, for a placement saved (docs/server.md,
+// "Placements"): its cars, the front of its first car, its number, names,
+// kind and state.
+struct StandingTrain {
+    std::uint32_t id{}, number{};
+    std::u16string name, notes;
+    std::uint16_t kind{}, subtype{};
+    std::uint8_t state{};
+    float top_speed{};
+    std::uint32_t node{};
+    double offset{};
+    bool forward = true;
+    std::vector<net::TrainCar> cars;
+    // Whose it is (its owner's nick, or the one it waits for) and its own
+    // state as the owner's openRTS sent it (0x45FB), empty none (2026-11-21).
+    std::u16string owner;
+    net::Bytes own_state;
 };
 
 // One line of a report for the console.
@@ -127,6 +162,20 @@ public:
     bool assign(std::uint32_t train, std::string_view nick, std::string& error);
     bool unassign(std::uint32_t train, std::string& error);
     bool remove_train(std::uint32_t train, std::string& error);
+    // The console's train form (testers, 2026-11-21): its number (0x4605 to
+    // everyone, as rts_server.exe sends it when the console changes it: RTS
+    // numbers the cars by it; not one another train has), and its name and
+    // notes (0x461A to everyone; the console's free text "Название" and its
+    // memo "Заметки"; empty both: none).
+    bool set_number(std::uint32_t train, std::uint32_t number, std::string& error);
+    bool set_names(std::uint32_t train, std::u16string name, std::u16string notes, std::string& error);
+    // A placement's train put back (2026-11-21): given to the player of
+    // that nick, at once when logged in, else when he logs in; its own
+    // state (0x45FB), given back to its owner's openRTS.
+    void give_when_back(std::uint32_t train, std::u16string nick);
+    void set_train_state(std::uint32_t train, net::Bytes state);
+    // A train's name and notes, empty none.
+    [[nodiscard]] std::pair<std::u16string, std::u16string> names(std::uint32_t train) const;
     // The server joins two trains standing end to end (the nearest ends
     // within 50 m), as rts_server.exe does with a LOOSE train run into
     // another (0x40DCDC -> 0x4501E0): `0x460F` to everyone, A's owner too.
@@ -259,6 +308,11 @@ public:
         std::optional<std::uint32_t> after;    // the segment it follows, nothing from the train
     };
     [[nodiscard]] std::optional<NextFrom> next_from(std::uint32_t train, bool back) const;
+    // The station routes the train can take next from there (as the
+    // window's "Станционные маршруты" lists them: main tracks first, onto a
+    // wrong track last, the nearest first between): a console's
+    // console_next answered.
+    [[nodiscard]] net::ConsoleNext next_routes(std::uint32_t train, bool back) const;
     void set_admit(bool admit) noexcept { options_.admit = admit; }
     [[nodiscard]] bool admits() const noexcept { return options_.admit; }
     // What a console's command line (console_command) runs: the server's
@@ -268,6 +322,13 @@ public:
     void set_console_place(std::function<std::string(const net::ConsolePlace&)> place) { console_place_ = std::move(place); }
 
     [[nodiscard]] std::vector<TrainSummary> trains() const;
+    // The game's weather while it runs (openrts_weather to the openRTS
+    // players and consoles; RTS's players keep their login's). The clock of
+    // a dynamic one the server's.
+    void set_weather(net::OpenrtsWeather weather);
+    [[nodiscard]] const net::OpenrtsWeather& weather() const noexcept { return weather_; }
+    // Every train on the server's track as it stands (StandingTrain).
+    [[nodiscard]] std::vector<StandingTrain> standing_trains() const;
     [[nodiscard]] std::vector<UserSummary> users() const;
     [[nodiscard]] std::uint32_t free_number() const; // the lowest train number not in use, from 101
     // Lines worth logging since the last call (logins, couplings, refusals).
@@ -294,6 +355,11 @@ private:
     void send_helper(const User& user, const net::HelperNote& note);
     // `helper` asks or helps no more: he and the engineer are told.
     void end_helping(User& helper, net::HelperState why);
+    // The players connected (not the consoles).
+    [[nodiscard]] std::uint32_t players_connected() const;
+    // The answer to an openRTS player's hello: the storm, the Discord join
+    // with the players and the places.
+    [[nodiscard]] net::Bytes hello_answer() const;
     // He helps on `train` now: he and its engineer are told.
     void start_helping(User& helper, std::uint32_t train);
     // A helper's train gone or given to another: his help ends.
@@ -301,6 +367,8 @@ private:
     std::unique_ptr<Impl> impl_;
     Transport& transport_;
     ServerOptions options_;
+    net::OpenrtsWeather weather_;
+    double weather_sent_ = -1.0; // when openrts_weather last went out (server clock)
     double time_{};
     bool paused_ = false;
     std::function<std::string(std::string_view)> console_commands_;

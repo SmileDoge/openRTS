@@ -34,6 +34,10 @@ struct AirCar {
     float ep_chamber{};
     bool ep_side = false;
     float pipe_low{}; // 483: the pipe's lowest while braking
+    // The 418's channels: an application's one additional discharge, and the
+    // ТЦ channel that keeps its target with the cylinder let off outside.
+    bool discharge = false;
+    float channel{};
     // ORTSBrakeDistributor: the car's own distributor in Luau (null: the
     // built-in one; also after a script error, reported once).
     std::shared_ptr<ScriptDistributor> script;

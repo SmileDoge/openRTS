@@ -1,6 +1,7 @@
 #include "server_window.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -9,7 +10,9 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <set>
+#include <thread>
 
 #include <webgpu/wgpu.h>
 
@@ -31,6 +34,7 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_wgpu.h>
 
+#include <openrts/net/placement.hpp>
 #include <openrts/core/core.hpp>
 #include <openrts/core/user_data.hpp>
 #include <openrts/core/virtual_path.hpp>
@@ -271,6 +275,11 @@ struct StartForm {
     char time[16] = "12:00";
     int port = 800;
     bool admit = true;
+    char password[64]{}; // the dispatcher's, for a console from another computer
+    int places = 16;      // ServerOptions::max_players, 0 no limit
+    bool weather_dynamic = false; // openRTS's dynamic weather from the start
+    bool discord = false; // the players' Discord "Join"
+    char address[128]{};  // the address it hands over (empty: the one each connected to)
     std::string error;
     int loading = 0; // frames since "Start": the load runs after "Loading" is shown
 
@@ -306,6 +315,11 @@ struct StartForm {
                 else if (key == "time") std::snprintf(time, sizeof time, "%s", value.c_str());
                 else if (key == "port") port = std::clamp(std::stoi(value), 0, 65535);
                 else if (key == "admit") admit = value == "1";
+                else if (key == "dispatcher_password") std::snprintf(password, sizeof password, "%s", value.c_str());
+                else if (key == "discord_join") discord = value == "1";
+                else if (key == "places") places = std::clamp(std::stoi(value), 0, 999);
+                else if (key == "weather_dynamic") weather_dynamic = value == "1";
+                else if (key == "public_address") std::snprintf(address, sizeof address, "%s", value.c_str());
             } catch (const std::exception&) {
                 // a number spoilt by hand: the default kept
             }
@@ -316,7 +330,9 @@ struct StartForm {
     void save(const fs::path& file) const {
         std::ofstream out(file);
         out << "root=" << root << "\nroute=" << (route >= 0 ? routes[static_cast<std::size_t>(route)] : std::string()) << "\nseason=" << season
-            << "\nweather=" << weather << "\ntime=" << time << "\nport=" << port << "\nadmit=" << (admit ? 1 : 0) << '\n';
+            << "\nweather=" << weather << "\ntime=" << time << "\nport=" << port << "\nadmit=" << (admit ? 1 : 0)
+            << "\ndispatcher_password=" << password << "\nplaces=" << places << "\ndiscord_join=" << (discord ? 1 : 0) << "\npublic_address=" << address
+            << "\nweather_dynamic=" << (weather_dynamic ? 1 : 0) << '\n';
     }
 };
 
@@ -501,6 +517,35 @@ private:
         ImGui::SameLine();
         bool paused = game.paused();
         if (ImGui::Checkbox(tr("Pause"), &paused)) game.set_paused(paused);
+        // The weather while the game runs (openRTS's players and consoles):
+        // one that stands, or openRTS's dynamic one.
+        {
+            auto weather = game.weather();
+            ImGui::SameLine();
+            const char* weathers[] = {tr("clear"), tr("snow"), tr("rain"), tr("thunderstorm")};
+            int kind = weather.weather < 4 ? weather.weather : 0;
+            ImGui::SetNextItemWidth(110.0f);
+            ImGui::BeginDisabled(weather.dynamic != 0);
+            if (ImGui::Combo("##weather", &kind, weathers, 4)) {
+                weather.weather = static_cast<std::uint8_t>(kind);
+                game.set_weather(weather);
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            bool dynamic = weather.dynamic != 0;
+            if (ImGui::Checkbox(tr("Dynamic weather"), &dynamic)) {
+                weather.dynamic = dynamic ? 1 : 0;
+                game.set_weather(weather);
+            }
+            if (dynamic) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton(tr("Another"))) {
+                    weather.seed = weather.seed * 6364136223846793005ull + 1442695040888963407ull;
+                    weather.clock = 0.0;
+                    game.set_weather(weather);
+                }
+            }
+        }
         ImGui::SameLine();
         bool admit = game.admits();
         if (ImGui::Checkbox(tr("Take new players"), &admit)) game.set_admit(admit);
@@ -509,7 +554,13 @@ private:
         ImGui::SameLine();
         std::size_t playing = 0;
         for (const auto& user : game.users()) playing += user.connected ? 1 : 0;
-        ImGui::Text("%s", trf("players: %zu", playing).c_str());
+        const auto places = s_.settings().max_players;
+        ImGui::Text("%s", places > 0 ? trf("players: %zu of %u", playing, places).c_str() : trf("players: %zu", playing).c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+        ImGui::TextUnformatted(s_.settings().dispatcher_password.empty() ? tr("dispatcher: this computer only")
+                                                                         : tr("dispatcher: from anywhere, by password"));
         ImGui::SameLine(ImGui::GetWindowWidth() - 170.0f);
         if (ImGui::Button(tr("Stop the server"))) running = false;
         // The line stays, empty when nothing is shown: the panels below keep their place.
@@ -653,6 +704,31 @@ private:
         set_status(trf("placing %s: check where it stands, then put it", consist.c_str()));
     }
 
+    // The train menu's "Move it": the preview from the train's cars, its
+    // front where the train's is; put, the server puts the train again there.
+    void start_moving(const std::uint32_t id) {
+        const auto standing = s_.game().standing_trains();
+        const auto it = std::find_if(standing.begin(), standing.end(), [&](const StandingTrain& t) { return t.id == id; });
+        if (it == standing.end() || it->cars.empty()) {
+            report(false, {}, trf("train %u is not on the track", id));
+            return;
+        }
+        Placement p;
+        p.active = true;
+        p.moving = id;
+        p.consist = trf("train %u (№%u)", id, it->number);
+        for (const auto& car : it->cars) {
+            p.fronts.push_back(p.length);
+            p.lengths.push_back(car.length);
+            p.engines.push_back(car.kind != 0);
+            p.length += car.length;
+        }
+        p.head = {it->node, it->offset, it->forward};
+        placing_ = std::move(p);
+        lay_placement();
+        set_status(trf("moving %s: drag it along the track, click another track to move it there", placing_.consist.c_str()));
+    }
+
     void lay_placement() {
         auto& p = placing_;
         auto& network = s_.route().network();
@@ -676,6 +752,7 @@ private:
         // server decides when it is put.
         double t = 0.0;
         for (const auto& train : s_.game().trains()) {
+            if (train.id == p.moving) continue;
             for (const auto& car : s_.game().train_cars(train.id)) {
                 const double ax = map_.world_x(car.front), az = map_.world_z(car.front);
                 const double bx = map_.world_x(car.rear), bz = map_.world_z(car.rear);
@@ -745,9 +822,30 @@ private:
         }
         auto& game = s_.game();
         std::string error;
-        const auto number = game.free_number();
+        if (placing_.moving != 0) {
+            std::uint32_t placed = 0;
+            const auto answer = replace_train(game, s_.route(), placing_.moving, placing_.head, std::nullopt, &placed);
+            const bool ok = answer.rfind("error", 0) != 0;
+            report(ok, answer, answer);
+            if (placed) selected_train_ = placed;
+            if (ok) placing_ = {};
+            return;
+        }
+        const auto number = new_number_[0] ? static_cast<std::uint32_t>(std::strtoul(new_number_, nullptr, 10)) : game.free_number();
         auto made = train_at(s_.route(), placing_.consist, placing_.head, number, error);
+        if (made) {
+            static constexpr std::uint16_t kinds[] = {kind_static, kind_player, 3, kind_traffic}; // STATIC, PLAYER, LOOSE, TRAFFIC
+            made->name = net::from_utf8(new_name_);
+            made->kind = kinds[std::clamp(new_kind_, 0, 3)];
+            made->state = static_cast<std::uint8_t>(std::clamp(new_state_, 0, 2));
+            // Chocks under its head and tail (the records' 0x100 / 0x200).
+            if (!made->records.empty()) {
+                if (new_chocks_ & 1) made->records.front().flags |= 0x100u;
+                if (new_chocks_ & 2) made->records.back().flags |= 0x200u;
+            }
+        }
         const auto id = made ? game.add_train(std::move(*made), error) : std::nullopt;
+        if (id) new_number_[0] = 0;
         report(id.has_value(), trf("train %u (№%u) placed", id.value_or(0), number), error);
         if (!id) return;
         selected_train_ = *id;
@@ -868,6 +966,28 @@ private:
                 break;
             }
             ImGui::TextDisabled("%s", trf("Train %u (№%u), %zu cars", id, it->number, it->cars).c_str());
+            // Its number and name (0x4605, 0x461A to everyone).
+            if (ImGui::BeginMenu(tr("Number and name"))) {
+                if (form_train_ != id || ImGui::IsWindowAppearing()) {
+                    form_train_ = id;
+                    std::snprintf(form_number_, sizeof form_number_, "%u", it->number);
+                    std::snprintf(form_name_, sizeof form_name_, "%s", net::to_utf8(game.names(id).first).c_str());
+                }
+                ImGui::SetNextItemWidth(90.0f);
+                ImGui::InputTextWithHint("##form_number", tr("number"), form_number_, sizeof form_number_, ImGuiInputTextFlags_CharsDecimal);
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::InputTextWithHint("##form_name", tr("name (the map shows it)"), form_name_, sizeof form_name_);
+                if (ImGui::Button(tr("Apply"))) {
+                    const auto number = static_cast<std::uint32_t>(std::strtoul(form_number_, nullptr, 10));
+                    bool ok = true;
+                    if (number && number != it->number) ok = game.set_number(id, number, error);
+                    auto [old_name, notes] = game.names(id);
+                    if (ok && net::from_utf8(form_name_) != old_name) ok = game.set_names(id, net::from_utf8(form_name_), std::move(notes), error);
+                    report(ok, trf("train %u: №%s, %s", id, form_number_, form_name_), error);
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndMenu();
+            }
             if (it->owner.empty()) {
                 if (ImGui::BeginMenu(tr("Give it to a player"))) {
                     for (const auto& user : game.users()) {
@@ -881,6 +1001,20 @@ private:
             }
             if (ImGui::MenuItem(tr("Cancel the route"), nullptr, false, !game.route_junctions(id).empty() || game.route_leg(id).has_value())) {
                 report(game.cancel_route(id, error), trf("train %u's route freed", id), error);
+            }
+            // Put again (a new id): elsewhere, or with chocks; nobody's train.
+            if (ImGui::MenuItem(tr("Move it (on the map)"), nullptr, false, it->owner.empty())) start_moving(id);
+            if (ImGui::BeginMenu(tr("Chocks"), it->owner.empty())) {
+                const auto now = train_chocks(game, id);
+                const char* labels[] = {tr("none"), tr("under the head"), tr("under the tail"), tr("under both ends")};
+                for (std::uint8_t mask = 0; mask < 4; ++mask) {
+                    if (!ImGui::MenuItem(labels[mask], nullptr, now == mask)) continue;
+                    std::uint32_t placed = 0;
+                    const auto answer = replace_train(game, route, id, std::nullopt, mask, &placed);
+                    report(answer.rfind("error", 0) != 0, answer, answer);
+                    if (placed) selected_train_ = placed;
+                }
+                ImGui::EndMenu();
             }
             if (ImGui::MenuItem(tr("Remove train"))) report(game.remove_train(id, error), trf("train %u removed", id), error);
             break;
@@ -1046,6 +1180,24 @@ private:
             }
             ImGui::EndCombo();
         }
+        // The new train's number, name, kind and state (here and on the map).
+        ImGui::SetNextItemWidth(90.0f);
+        ImGui::InputTextWithHint("##new_number", tr("number"), new_number_, sizeof new_number_, ImGuiInputTextFlags_CharsDecimal);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint("##new_name", tr("name (the map shows it)"), new_name_, sizeof new_name_);
+        {
+            static constexpr const char* kind_names[] = {"STATIC", "PLAYER", "LOOSE", "TRAFFIC"};
+            const char* states[] = {tr("Cold"), tr("Switched on"), tr("Running")};
+            ImGui::SetNextItemWidth(110.0f);
+            ImGui::Combo("##new_kind", &new_kind_, kind_names, 4);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(130.0f);
+            ImGui::Combo("##new_state", &new_state_, states, 3);
+            const char* chocks[] = {tr("no chocks"), tr("chocks under the head"), tr("chocks under the tail"), tr("chocks under both ends")};
+            ImGui::SetNextItemWidth(190.0f);
+            ImGui::Combo("##new_chocks", &new_chocks_, chocks, 4);
+        }
         const bool ready = consist_ >= 0 && path_ >= 0;
         ImGui::BeginDisabled(!ready);
         if (ImGui::Button(tr("At the path's start (preview)"))) {
@@ -1064,6 +1216,187 @@ private:
         ImGui::TextWrapped("%s", tr("Or right-click the track on the map: \"Put a train\". The consist shows where it will stand; it is put when "
                                     "confirmed. Right-click a train, a junction or a signal for what can be done with it; the wheel zooms, a "
                                     "right drag moves the map."));
+        placements_ui();
+    }
+
+    // Placements: every train on the track saved under a name (the route's
+    // placements folder, the dispatchers' consoles take the same files),
+    // put back the trains there removed first, or added to them.
+    // A placement opened: as saved, its trains with those it includes.
+    void open_placement(const std::string& name) {
+        auto& route = s_.route();
+        opened_ = name;
+        opened_trains_.clear();
+        opened_problems_.clear();
+        std::string error;
+        auto placement = placement_file_read(route, name, error);
+        if (!placement) {
+            report(false, {}, error);
+            opened_.clear();
+            return;
+        }
+        opened_placement_ = std::move(*placement);
+        opened_trains_ = placement_resolved(route, opened_placement_, name, opened_problems_);
+        opened_picked_.assign(opened_trains_.size(), 1);
+    }
+
+    void placements_ui() {
+        auto& game = s_.game();
+        auto& route = s_.route();
+        ImGui::SeparatorText(tr("Placements"));
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::InputTextWithHint("##placement_name", tr("placement's name"), placement_name_, sizeof placement_name_);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!net::placement_name_ok(placement_name_));
+        if (ImGui::Button(tr("Save every train"))) {
+            const auto answer = save_placement(game, route, placement_name_);
+            report(answer.rfind("error", 0) != 0, answer, answer);
+            placements_listed_ = false;
+        }
+        ImGui::EndDisabled();
+        if (s_.settings().autosave_minutes > 0.0) {
+            ImGui::TextDisabled("%s", trf("autosave: every %.0f min and at the stop; autosave-previous: the last run's (after a crash or a restart)",
+                                          s_.settings().autosave_minutes).c_str());
+        }
+        if (!placements_listed_) {
+            placements_ = placement_names(route);
+            placements_listed_ = true;
+        }
+        if (ImGui::SmallButton(tr("Refresh##placements"))) placements_listed_ = false;
+        if (placements_.empty()) {
+            ImGui::TextDisabled("%s", tr("none saved yet"));
+            return;
+        }
+        if (ImGui::BeginTable("placements", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+            for (const auto& name : placements_) {
+                ImGui::PushID(name.c_str());
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                const bool autosave = name == autosave_name || name == autosave_previous_name;
+                ImGui::TextUnformatted(autosave ? (name + " " + tr(name == autosave_name ? "(autosave)" : "(the last run's autosave)")).c_str() : name.c_str());
+                ImGui::TableNextColumn();
+                if (ImGui::SmallButton(tr("Put (the trains now removed)"))) {
+                    const auto answer = load_placement(game, route, name, false);
+                    report(answer.rfind("error", 0) != 0, answer, answer);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton(tr("Add"))) {
+                    const auto answer = load_placement(game, route, name, true);
+                    report(answer.rfind("error", 0) != 0, answer, answer);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton(tr(opened_ == name ? "Close##open" : "Open: includes, trains"))) {
+                    if (opened_ == name) opened_.clear();
+                    else open_placement(name);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton(tr("Delete"))) {
+                    std::error_code error;
+                    std::filesystem::remove(route.placements_folder() / std::filesystem::path(std::u8string(name.begin(), name.end()) + u8".placement"), error);
+                    if (opened_ == name) opened_.clear();
+                    placements_listed_ = false;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        if (opened_.empty()) return;
+        // The one opened: the placements it includes, its trains.
+        ImGui::SeparatorText(opened_.c_str());
+        ImGui::TextUnformatted(trf("Includes (%zu):", opened_placement_.includes.size()).c_str());
+        for (std::size_t i = 0; i < opened_placement_.includes.size(); ++i) {
+            ImGui::SameLine();
+            const auto other = opened_placement_.includes[i];
+            if (ImGui::SmallButton(trf("%s ×##inc%zu", other.c_str(), i).c_str())) {
+                const auto answer = placement_include(route, opened_, other, false);
+                report(answer.rfind("error", 0) != 0, answer, answer);
+                open_placement(opened_);
+                break;
+            }
+        }
+        ImGui::SetNextItemWidth(240.0f);
+        if (ImGui::BeginCombo("##include_other", tr("include another placement"))) {
+            for (const auto& other : placements_) {
+                const auto& includes = opened_placement_.includes;
+                if (other == opened_ || std::find(includes.begin(), includes.end(), other) != includes.end()) continue;
+                if (ImGui::Selectable(other.c_str())) {
+                    const auto answer = placement_include(route, opened_, other, true);
+                    report(answer.rfind("error", 0) != 0, answer, answer);
+                    open_placement(opened_);
+                    break;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        for (const auto& problem : opened_problems_) ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.3f, 1.0f), "%s", problem.c_str());
+        if (opened_.empty()) return;
+        if (ImGui::SmallButton(tr("All"))) std::fill(opened_picked_.begin(), opened_picked_.end(), 1);
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("None"))) std::fill(opened_picked_.begin(), opened_picked_.end(), 0);
+        static constexpr const char* kinds[] = {"STATIC", "PLAYER", "TRAFFIC", "LOOSE"};
+        const char* states[] = {tr("Cold"), tr("Switched on"), tr("Running")};
+        if (ImGui::BeginTable("##opened_trains", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY, ImVec2(0.0f, 180.0f))) {
+            ImGui::TableSetupColumn("");
+            ImGui::TableSetupColumn(tr("No."));
+            ImGui::TableSetupColumn(tr("Name"));
+            ImGui::TableSetupColumn(tr("Kind"));
+            ImGui::TableSetupColumn(tr("Cars"));
+            ImGui::TableSetupColumn(tr("From"));
+            ImGui::TableHeadersRow();
+            for (std::size_t i = 0; i < opened_trains_.size(); ++i) {
+                const auto& t = opened_trains_[i];
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                bool on = opened_picked_[i] != 0;
+                if (ImGui::Checkbox("##pick", &on)) opened_picked_[i] = on ? 1 : 0;
+                ImGui::TableNextColumn();
+                ImGui::Text("%u", t.number);
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(net::to_utf8(t.name).c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%s, %s", t.kind < 4 ? kinds[t.kind] : "?", t.state < 3 ? states[t.state] : "?");
+                ImGui::TableNextColumn();
+                const bool chocked = std::any_of(t.cars.begin(), t.cars.end(), [](const net::PlacementCar& c) { return c.chocks() != 0; });
+                ImGui::Text("%zu%s", t.cars.size(), chocked ? tr(", chocks") : "");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(t.from.empty() ? tr("its own") : t.from.c_str());
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        const auto count = static_cast<std::size_t>(std::count(opened_picked_.begin(), opened_picked_.end(), 1));
+        ImGui::BeginDisabled(count == 0);
+        if (ImGui::Button(trf("Put the %zu picked", count).c_str())) {
+            std::size_t put = 0;
+            std::string problems;
+            for (std::size_t i = 0; i < opened_trains_.size(); ++i) {
+                if (!opened_picked_[i]) continue;
+                const auto answer = place_cars(game, route, net::place_of(opened_trains_[i]));
+                if (answer.rfind("error", 0) == 0) problems += (problems.empty() ? "" : "; ") + answer;
+                else ++put;
+            }
+            report(problems.empty(), trf("%zu of %zu trains put", put, count), problems);
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(200.0f);
+        ImGui::InputTextWithHint("##subset_name", tr("another placement's name"), subset_name_, sizeof subset_name_);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!net::placement_name_ok(subset_name_));
+        if (ImGui::Button(tr("Save the picked as it"))) {
+            net::Placement subset{.route = route.folder()};
+            for (std::size_t i = 0; i < opened_trains_.size(); ++i) {
+                if (!opened_picked_[i]) continue;
+                auto t = opened_trains_[i];
+                t.from.clear();
+                subset.trains.push_back(std::move(t));
+            }
+            const auto written = placement_file_write(route, subset_name_, subset);
+            report(written.empty(), trf("placement %s: %zu trains saved", subset_name_, subset.trains.size()), written);
+            placements_listed_ = false;
+        }
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
     }
 
     // The point a train's next station route is looked for from (rts_server.exe's
@@ -1501,6 +1834,29 @@ private:
     char consist_filter_[64]{};
     int consist_ = -1;
     int path_ = -1;
+    // A new train's number (empty: the lowest free), name, kind (STATIC,
+    // PLAYER, LOOSE, TRAFFIC) and state (cold, on, running): STATIC and cold
+    // by default (the organiser, 2026-11-21).
+    char new_number_[16]{};
+    char new_name_[128]{};
+    int new_kind_ = 0;
+    int new_state_ = 0;
+    int new_chocks_ = 0; // 0 none, 1 head, 2 tail, 3 both
+    // Placements (placements_ui); the one opened: its includes and trains
+    // (with the included ones'), the picked put or saved as another.
+    char placement_name_[80]{};
+    std::vector<std::string> placements_;
+    bool placements_listed_ = false;
+    std::string opened_;
+    net::Placement opened_placement_;
+    std::vector<net::PlacementTrain> opened_trains_;
+    std::vector<std::string> opened_problems_;
+    std::vector<char> opened_picked_;
+    char subset_name_[80]{};
+    // The train menu's number and name, for that train.
+    std::uint32_t form_train_ = 0;
+    char form_number_[16]{};
+    char form_name_[128]{};
     std::vector<std::string> stations_;
     int station_ = -1;
     char route_filter_[64]{};
@@ -1536,6 +1892,7 @@ private:
         bool fits = true;
         std::string overlaps; // the train it runs into, empty none
         int grabbed = -1;
+        std::uint32_t moving = 0; // a standing train put again (replace_train), 0: a consist
     } placing_;
     char menu_filter_[64]{};
 };
@@ -1568,10 +1925,23 @@ bool draw_form(StartForm& form) {
     ImGui::Combo(tr("Season"), &form.season, seasons, 4);
     const char* weathers[] = {tr("clear"), tr("snow"), tr("rain"), tr("thunderstorm")};
     ImGui::Combo(tr("Weather"), &form.weather, weathers, 4);
+    ImGui::SameLine();
+    ImGui::Checkbox(tr("Dynamic (openRTS)"), &form.weather_dynamic);
     ImGui::InputText(tr("Time (HH:MM)"), form.time, sizeof form.time);
     ImGui::InputInt(tr("Port"), &form.port);
     form.port = std::clamp(form.port, 0, 65535); // 0: any free port
     ImGui::Checkbox(tr("Take new players"), &form.admit);
+    ImGui::InputInt(tr("Places (0: no limit)"), &form.places);
+    form.places = std::clamp(form.places, 0, 999);
+    ImGui::InputText(tr("Dispatcher password"), form.password, sizeof form.password);
+    ImGui::TextDisabled("%s", form.password[0] ? tr("The dispatcher's console from another computer logs in with this password.")
+                                               : tr("No password: the dispatcher's console only from this computer."));
+    ImGui::Checkbox(tr("Join from Discord"), &form.discord);
+    ImGui::BeginDisabled(!form.discord);
+    ImGui::InputTextWithHint(tr("Address for the players"), tr("as the players connect, e.g. 26.1.2.3:800"), form.address, sizeof form.address);
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%s", form.discord ? tr("openRTS players' Discord profiles get \"Join\": it hands over this address (empty: the one each player connected to).")
+                                           : tr("Without it the players' Discord profiles show no \"Join\"."));
     ImGui::TextUnformatted(tr("The server's folder (the route database it saves)"));
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##data", form.data, sizeof form.data);
@@ -1594,7 +1964,8 @@ bool draw_form(StartForm& form) {
 
 } // namespace
 
-int run_server_window(SessionSettings settings, const std::vector<std::string>& commands, const fs::path& capture, const double capture_at) {
+int run_server_window(SessionSettings settings, const std::vector<std::string>& commands, const fs::path& capture, const double capture_at,
+                      const WindowGiven given) {
 #ifndef _WIN32
     (void)settings;
     (void)commands;
@@ -1652,11 +2023,27 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
         std::snprintf(form.time, sizeof form.time, "%s", clock_text(settings.time_of_day).substr(0, 5).c_str());
         form.port = settings.port;
         form.admit = settings.admit;
+        std::snprintf(form.password, sizeof form.password, "%s", settings.dispatcher_password.c_str());
+        form.discord = settings.discord_join;
+        if (settings.max_players > 0) form.places = static_cast<int>(settings.max_players);
+        std::snprintf(form.address, sizeof form.address, "%s", settings.public_address.c_str());
         form.list_routes();
         form.pick_route(settings.route);
-        // Started without a route: the form as it was last started.
+        // Started without a route: the form as it was last started, but for
+        // what the command line gave (the start menu: the folder, the port).
         const auto remembered = settings.data / "server_window.ini";
-        if (settings.route.empty()) form.load(remembered);
+        if (settings.route.empty()) {
+            form.load(remembered);
+            if (given.root) {
+                std::snprintf(form.root, sizeof form.root, "%s", utf8_path(settings.root).c_str());
+                const auto kept = form.route >= 0 ? form.routes[static_cast<std::size_t>(form.route)] : std::string();
+                form.list_routes();
+                form.route = -1;
+                form.pick_route(kept);
+            }
+            if (given.port) form.port = settings.port;
+            if (given.password) std::snprintf(form.password, sizeof form.password, "%s", settings.dispatcher_password.c_str());
+        }
         // A check (--capture) starts the route given at once.
         if (!capture.empty() && form.route >= 0) form.loading = 1;
 
@@ -1665,6 +2052,19 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
         const auto opened = std::chrono::steady_clock::now();
         std::optional<std::chrono::steady_clock::time_point> started;
         const auto queue = wgpuDeviceGetQueue(device.context.device());
+        // The game steps on a thread of its own, every 20 ms as without the
+        // window: a slow window (a computer without a video card draws it
+        // in software) no longer slows the game (2026-11-21: on such a
+        // server the players' world came in seconds apart). The console
+        // reads and changes the game under the same lock; the drawing and
+        // the present are outside it.
+        std::mutex game_lock;
+        std::atomic<bool> stepping = false;
+        std::thread stepper;
+        const auto stop_stepping = [&] {
+            stepping = false;
+            if (stepper.joinable()) stepper.join();
+        };
         bool running = true;
         while (running && !glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -1672,12 +2072,12 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
             glfwGetFramebufferSize(window, &width, &height);
             surface.resize(width, height);
             const auto now = std::chrono::steady_clock::now();
-            if (session) session->step(std::chrono::duration<double>(now - *started).count());
 
             ImGui_ImplWGPU_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
             if (console) {
+                const std::lock_guard lock(game_lock);
                 running = console->draw();
             } else if (draw_form(form)) {
                 SessionSettings chosen = settings;
@@ -1686,9 +2086,14 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
                 chosen.route = form.routes[static_cast<std::size_t>(form.route)];
                 chosen.season = static_cast<std::uint8_t>(form.season);
                 chosen.weather = static_cast<std::uint8_t>(form.weather);
+                chosen.weather_dynamic = form.weather_dynamic;
                 chosen.time_of_day = parse_time_of_day(form.time).value_or(12.0 * 3600.0);
                 chosen.port = static_cast<std::uint16_t>(form.port);
                 chosen.admit = form.admit;
+                chosen.dispatcher_password = form.password;
+                chosen.discord_join = form.discord;
+                chosen.max_players = static_cast<std::uint32_t>(form.places);
+                chosen.public_address = form.address;
                 std::string error;
                 std::vector<std::string> lines;
                 std::error_code made;
@@ -1704,6 +2109,16 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
                     for (const auto& line : lines) console->log(line);
                     for (const auto& line : commands) console->run(line);
                     glfwSetWindowTitle(window, ("openRTS server: " + chosen.route).c_str());
+                    stepping = true;
+                    stepper = std::thread([&session, &game_lock, &stepping, start = *started] {
+                        while (stepping) {
+                            {
+                                const std::lock_guard lock(game_lock);
+                                session->step(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+                            }
+                            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                        }
+                    });
                 }
             }
             ImGui::Render();
@@ -1725,6 +2140,7 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
                 wgpuTextureRelease(frame);
             }
         }
+        stop_stepping();
         wgpuQueueRelease(queue);
         console.reset();
         session.reset();

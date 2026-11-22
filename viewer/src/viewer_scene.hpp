@@ -109,6 +109,7 @@ struct SceneInput {
     bool toggle_track = false;   // T
     bool toggle_labels = false;  // L: junction and signal labels
     bool car_menu = false;       // Num3 / `: the car menu at a coupling or bogie (edge)
+    bool walk_collision = false; // Num/ / Shift+=: on foot, collide with the world's objects or not (edge)
     bool flashlight = false;     // Num2 / Shift+`: RTS's flashlight on or off (edge)
     bool clock = false;          // Num4 / Shift+-: the world's time on the screen or not (edge; the viewer's)
     bool tape = false;           // Ctrl+Num5 / Ctrl+`: the tape on or off (edge)
@@ -141,8 +142,8 @@ struct SceneInput {
     bool car_info_shift = false;  // Shift held with F5: the train as a whole
     bool limits_panel = false;    // Ctrl+F5: speed limits and the kilometre
     bool stations_panel = false;  // F6: the stations ahead
-    bool drive_panel = false;     // F4: the driver's summary (openRTS)
     bool profile_strip = false;   // Ctrl+F4: the track's profile at the top (openRTS)
+    bool drive_card = false;      // F4: a small card: time, speed, limits, the signal ahead (openRTS)
     bool car_view = false;        // F3: orbit the train's first car, then its last, then back
     bool signal_names = false;    // Ctrl+F7: signal names near the camera
     bool activity_journal = false; // F11 (RTS): the scenario's messages
@@ -209,6 +210,12 @@ struct SceneLoading {
 struct ScenePresence {
     std::string details; // what the player does ("Ведёт VL80s-606")
     std::string state;   // where ("Маршрут Lviv")
+    // A network game others may join from Discord (the server allows it):
+    // its party and the secret the one who joins gets ("openrts1 host:port").
+    std::string party_id;
+    int party_size = 0;
+    int party_max = 0;
+    std::string join_secret;
     bool operator==(const ScenePresence&) const = default;
 };
 
@@ -266,9 +273,15 @@ public:
     // The scene takes the keyboard (a cab's own keys): the camera and the
     // default driving keys stay off.
     [[nodiscard]] virtual bool keyboard_captured() const { return false; }
+    // A cab control in hand (dragged): in the mouse lock the mouse moves it
+    // rather than the view.
+    [[nodiscard]] virtual bool control_in_hand() const { return false; }
     // The engineer on his feet (standing in a cab, outside, on a car), not
     // in a chair: W A S D walk him (key_layout.hpp, wasd_walking).
     [[nodiscard]] virtual bool engineer_on_foot() const { return false; }
+    // On foot with something for Enter where he stands (key_layout.hpp,
+    // offers_enter): E does it, else E opens the car menu.
+    [[nodiscard]] virtual bool engineer_action_at_hand() const { return false; }
     // The scene is done: its window closes (the start menu, updated, starts again).
     [[nodiscard]] virtual bool wants_close() const { return false; }
     // The program's exit code when the scene closed it (exit_codes.hpp).
@@ -294,6 +307,9 @@ public:
     // error, or empty); a file put back over this game (the same route and
     // scenario); the names there. Empty folder: this scene has no saves.
     [[nodiscard]] virtual std::filesystem::path saves_folder() const { return {}; }
+    // A network game: no pause of one's own (the others run on; the
+    // server's pause is everyone's).
+    [[nodiscard]] virtual bool networked() const { return false; }
     [[nodiscard]] virtual std::vector<std::string> saved_games() const { return {}; }
     [[nodiscard]] virtual std::string save_game(const std::string& /*name*/) { return "nothing to save"; }
     [[nodiscard]] virtual std::string load_game(const std::filesystem::path& /*file*/) { return "nothing to load into"; }
@@ -311,6 +327,10 @@ public:
     [[nodiscard]] virtual SceneLoading loading() const { return {}; }
     // For the Discord profile, asked about once a second; none: nothing shown.
     [[nodiscard]] virtual std::optional<ScenePresence> presence() const { return std::nullopt; }
+    // Discord's "Join" from a player's profile: the start menu takes the
+    // games joined so (DiscordStatus hands it the secret).
+    [[nodiscard]] virtual bool wants_discord_joins() const { return false; }
+    virtual void discord_join(const std::string& secret) { (void)secret; }
     // Car `car` of the driven train, shape space to world (--capture-camera).
     [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
     // The engineer into the driven train's cab (--capture-cab).
@@ -397,6 +417,7 @@ struct SceneContent {
     // the scene watches its game (NetSession). `early`: packages that came
     // after the snapshot's end.
     std::shared_ptr<net::RtsConnection> connection;
+    std::string server_address; // as --mp-connect gave it
     std::vector<net::ReceivedPackage> early;
     // Route scenes: logged in to an openRTS server as the dispatcher's
     // console (--mp-console): Track control and the console's window.

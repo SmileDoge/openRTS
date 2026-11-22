@@ -280,7 +280,9 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                                    .kdr = a.kdr,
                                    .ep_chamber = a.ep_chamber,
                                    .ep_side = a.ep_side,
-                                   .pipe_low = a.pipe_low};
+                                   .pipe_low = a.pipe_low,
+                                   .discharge = false,
+                                   .channel = a.channel};
             bool stepped = false;
             // A built-in one named (the car menu, a mod) stands in for a script.
             if (a.script && car.definition->brakes.distributor == formats::BrakeDistributor::inferred) {
@@ -302,6 +304,7 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
             a.ep_chamber = state.ep_chamber;
             a.ep_side = state.ep_side;
             a.pipe_low = state.pipe_low;
+            a.channel = state.channel;
             // A script may start the emergency front itself.
             if (state.emergency) a.emergency = true;
             // Gone into emergency: its accelerator opens for 3 s.

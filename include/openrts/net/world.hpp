@@ -59,6 +59,13 @@ struct CarFile {
 // its assignment, else "train <id>".
 [[nodiscard]] std::string train_name(const SnapshotTrain& train);
 
+// The junctions under a train and in front of it as far as it runs in 4 s
+// (5 m standing, 150 m at most): another player's switch there would move it
+// (testers 2026-11-21: a switch set back behind one train's tail ran
+// another train, standing on it, down the wrong track everywhere but on
+// its owner's computer).
+[[nodiscard]] std::vector<std::uint32_t> junctions_under(simulation::TrackNetwork& network, const simulation::Train& train);
+
 // Sets a junction the way the server says, whatever holds it here (an RTS
 // client takes 0x460A as it comes, 0x4C3DE0). False for no such junction.
 bool set_junction(simulation::TrackNetwork& network, const JunctionState& junction);

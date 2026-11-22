@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 #include <openrts/simulation/driver_valve.hpp>
 
@@ -51,13 +52,30 @@ struct CabBrakeNumbers {
     // The needles: the ТЦ's moves at most `cylinder_needle_near` atm/s
     // within `cylinder_needle_band` of the pressure, `cylinder_needle_far`
     // beyond; the ТМ's follows a rise at once and a fall at most
-    // `pipe_needle_fall` atm/s. 0: the pressure as it is.
+    // `pipe_needle_fall` + `pipe_needle_per_wagon` × the wagons (up to
+    // 100) atm/s, in II `pipe_needle_fall_running` + `..._per_wagon_running`
+    // × them, in III .. VI `pipe_needle_fall_braking` (Brakes.dll's: its k
+    // is RTSGetInteger 2, the train's wagons). 0: the pressure as it is.
     float cylinder_needle_near{}, cylinder_needle_far{}, cylinder_needle_band{};
-    float pipe_needle_fall{};
-    // The 418 (the pipe's break, lamp ТМ): the pipe falling faster than
-    // `sensor418_rate` atm/s for longer than `sensor418_time` s without the
-    // ЭПТ; out again once the cylinder is over `sensor418_cylinder` atm.
+    float pipe_needle_fall{}, pipe_needle_per_wagon{};
+    float pipe_needle_fall_running{}, pipe_needle_per_wagon_running{};
+    float pipe_needle_fall_braking{};
+    // The 418 (the pipe's break, lamp ТМ). With the distributor's
+    // channels (the realistic air) as the real one (Афонин §4.7, Асадченко
+    // §4.3.5; testers 2026-11-20), on a locomotive with the ВР 483 only (a
+    // 292 has none): its ДДР closes when that 483 starts an application
+    // with its additional discharge; with its ДТЦ still closed (the
+    // distributor's ТЦ channel under `sensor418_dtc` atm) the relay picks
+    // up and holds itself: the lamp and no traction, until that channel is
+    // over `sensor418_dtc` (a service application: a flash; a break: lit
+    // while the channel fills, out once it is over). The engine's own
+    // cylinder (the 254's release) does not count, nor a slow fall (an
+    // overcharge going), nor a release. Without them
+    // (Brakes.dll's way): the pipe falling faster than `sensor418_rate`
+    // atm/s for longer than `sensor418_time` s without the ЭПТ, out again
+    // once the cylinder is over `sensor418_cylinder` atm.
     float sensor418_rate{}, sensor418_time{}, sensor418_cylinder{};
+    float sensor418_dtc{};
 
     [[nodiscard]] static CabBrakeNumbers brakes_dll();
     [[nodiscard]] static CabBrakeNumbers openrts();
@@ -95,6 +113,13 @@ struct CabBrakeControls {
     bool ep_hold_asked = false, ep_apply_asked = false;
     bool multiple_unit = false; // BR_MODE 1: the П lamp in III .. VI
     bool sensor418 = false;     // the 418 switched on (BR_418PID)
+    // The train's wagons, not engines (RTSGetInteger 2): the ТМ needle's fall.
+    std::uint32_t wagons{};
+    // The air sounds' codes: BR_130MODE (the valve's, the ЭПТ's, the pipe
+    // gauge's) and BR_224MODE (the independent brake's) not 0: the 31xx ones.
+    bool sounds_130 = false, sounds_224 = false;
+    // BR_254ID1 given: the independent brake's sounds by its cylinder and value.
+    bool independent_sounds = false;
 };
 
 // The air as the model has it at the engine.
@@ -103,6 +128,19 @@ struct CabBrakeAir {
     float main_reservoir{};
     float cylinder{};    // the train brake's
     float independent{}; // the independent brake's
+    // How fast the valve's relay fed the pipe at the engine over the last
+    // step, atm/s (Train: CarState::valve_feed); Brakes.dll's air sounds
+    // take it for its TrainPipeRate.
+    float valve_feed{};
+    // The engine's distributor (the realistic air): its ТЦ channel and an
+    // application begun with its additional discharge since the last step
+    // (the 418's ДТЦ and ДДР); `distributor_known` false: none. With it,
+    // `sensor418_fitted`: the engine has the 418 at all (a locomotive's 483,
+    // simulation::sensor418_fitted); without, no lamp ТМ from it.
+    bool distributor_known = false;
+    bool sensor418_fitted = false;
+    float distributor_channel{};
+    bool distributor_discharge = false;
 };
 
 // What the devices keep between steps.
@@ -114,6 +152,7 @@ struct CabBrakeState {
     bool sensor418 = false;
     float last_pipe = -1.0f;
     bool started = false;
+    std::uint32_t sounds{}; // the air sounds playing, a bit each (docs/reverse/brakes-dll.md §10)
 };
 
 struct CabBrakeOutput {
@@ -122,7 +161,9 @@ struct CabBrakeOutput {
     float equalising = -1.0f;
     float equalising_kept{};
     bool emergency = false; // the pipe opened at the engine
+    bool braking = false;   // the 395 in a braking position (V, VЭ), for the train's DLL
     bool feed = true;       // the relay may feed the pipe (not in III)
+    bool direct = false;    // I: the main reservoir straight into the pipe (ValveOutput::direct)
     // The ЭПТ: its level (>= 0 while on) and its command to the cars' ЭВР;
     // BrakeSystemsEngaged.
     float ep_value = -1.0f;
@@ -135,6 +176,12 @@ struct CabBrakeOutput {
     bool lamp_ep_on = false, lamp_ep_hold = false, lamp_ep_brake = false;
     bool lamp_pipe = false; // the 418
     float ep_volts{}, ep_amps{};
+    // The air sounds' triggers this step for Brakes.sms (on / off pairs:
+    // 124 / 125 I feeding, 126 / 127 II feeding, 128 / 129 V, 130 / 131 the
+    // pipe vented, 132 / 133 II at the charge, 134 / 135 the ЭПТ applying,
+    // 122 / 123 its release, 136 / 137 the pipe gauge over the pipe, 120 ..
+    // 123 the 4ВК), as Brakes.dll posts them.
+    std::vector<std::uint16_t> sounds;
 };
 
 // One step of `dt` s. Only the working cab's devices count: the caller
@@ -149,9 +196,10 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& state, const CabBrakeControls& con
     return flipped ? state : last - state;
 }
 // The 395's (130's) position for its state 0..6; the 254's (224's) 0..5;
-// the 4ВК's 0..2. Out of range: none.
+// the 4ВК's 0..2 (BR_FLIPCABS 1: 2 applies, 0 lets off; 0: the other
+// way). Out of range: none.
 [[nodiscard]] std::optional<ValvePosition> valve_position_of(int state, bool flipped);
 [[nodiscard]] std::optional<IndependentPosition> independent_position_of(int state, bool flipped);
-[[nodiscard]] std::optional<Vk4Position> vk4_position_of(int state);
+[[nodiscard]] std::optional<Vk4Position> vk4_position_of(int state, bool flipped = true);
 
 } // namespace openrts::simulation

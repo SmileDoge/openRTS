@@ -1523,7 +1523,13 @@ CloudShadow NativeSky::cloud_shadow() const noexcept {
     // pass), or before and read where it was drawn: the eye and the clouds
     // have moved on in the field since.
     const bool usable = impl.shadow_drawn || impl.shadow_due;
-    const float strength = usable && cloud_shadows() ? impl.shadow_strength * std::clamp(cloud_shadow_darkness(), 0.0f, 1.0f) : 0.0f;
+    const float darkness = std::clamp(cloud_shadow_darkness(), 0.0f, 1.0f);
+    const float weight = usable && cloud_shadows() ? impl.shadow_strength : 0.0f;
+    const float strength = weight * darkness;
+    // A low sun's way runs under kilometres of the layer: through its
+    // clouds, as many as it covers, each taking `darkness` of it.
+    const float cover = std::clamp(impl.frame.clouds[0], 0.0f, 1.0f);
+    const float low = cloud_shadows() ? 1.0f - darkness * cover : 1.0f;
     const glm::dvec2 moved = impl.eye_field - impl.shadow_field;
     // The edge band: half of 1 / sqrt(sharpness) either side of a half let
     // through (sharpness 1: the whole range, 3: 0.21..0.79, 10: 0.34..0.66).
@@ -1532,7 +1538,8 @@ CloudShadow NativeSky::cloud_shadow() const noexcept {
             .area = {impl.shadow_centre.x - static_cast<float>(moved.x), impl.shadow_centre.y - static_cast<float>(moved.y), cloud_shadow_half,
                      impl.shadow_above},
             .sun = glm::vec4{impl.shadow_sun, strength},
-            .edge = {0.5f - band, 0.5f + band}};
+            .edge = {0.5f - band, 0.5f + band},
+            .low_sun = (1.0f - weight) * low + weight};
 }
 
 float NativeSky::cloud_base() const noexcept {

@@ -47,9 +47,10 @@ constexpr std::pair<std::string_view, std::int32_t Cab::*> cab_ids[] = {
 };
 
 // Devices openRTS does not have yet: a car with one fitted (not -1) keeps
-// Brakes.dll. The 334 (the ЭР2's and ЭР9's valve), the ЭП2Д's ППТ, BR_KID
-// (not traced).
-constexpr std::string_view cab_devices_not_known[] = {"br_334id", "br_pptid", "br_kid"};
+// Brakes.dll. The 334 (the ЭР2's and ЭР9's valve), the ЭП2Д's ППТ. BR_KID
+// is not a brake device: only the speed recorder reads it (its cock on, no
+// ЭПК for running with the ALSN off; simulation/recorder.hpp).
+constexpr std::string_view cab_devices_not_known[] = {"br_334id", "br_pptid"};
 
 // Global parameters openRTS takes or that only Brakes.dll's other parts
 // (its sounds, the ЭПК's mode) read, which go on running.
@@ -83,6 +84,7 @@ BrakesParameters brakes_parameters(const formats::EngineDefinition& engine) {
     };
     for (const auto& parameter : library->parameters) {
         const auto name = core::fold_case(parameter.name);
+        if (name == "trans_sound") p.trans_sound = parameter.value == 1.0f;
         if (!name.starts_with("br_")) continue; // the КЛУБ's and the rest: Brakes.dll's own
         std::size_t digits = name.size();
         while (digits > 0 && name[digits - 1] >= '0' && name[digits - 1] <= '9') --digits;
@@ -95,10 +97,10 @@ BrakesParameters brakes_parameters(const formats::EngineDefinition& engine) {
         }
         const auto field = std::find_if(std::begin(cab_ids), std::end(cab_ids), [&](const auto& c) { return c.first == base; });
         if (field != std::end(cab_ids)) {
-            if (index < 1 || index > 8) {
-                not_known(parameter.name); // BR_OTID without its cab (the ВЛ82м's): Brakes.dll's reading not known
-                continue;
-            }
+            // Without its cab's number (the ВЛ82м's BR_OTID): Brakes.dll asks
+            // for the name with the cab's appended and never finds it (no
+            // such device), as openRTS.
+            if (index < 1 || index > 8) continue;
             const auto k = static_cast<std::size_t>(index - 1);
             if (p.cabs.size() <= k) p.cabs.resize(k + 1);
             p.cabs[k].*(field->second) = value;
@@ -108,6 +110,7 @@ BrakesParameters brakes_parameters(const formats::EngineDefinition& engine) {
             if (value != -1) not_known(parameter.name);
             continue;
         }
+        if (base == "br_kid") continue; // the speed recorder's
         if (name == "br_292custom") {
             if (parameter.value != 0.0f) not_known(parameter.name);
             continue;
@@ -122,8 +125,11 @@ BrakesParameters brakes_parameters(const formats::EngineDefinition& engine) {
         else if (name == "br_zarpress") p.charging = parameter.value;
         else if (name == "br_367oppol") p.block_operating = value;
         else if (name == "br_razobshk") p.separating_fitted = value != 0;
+        else if (name == "br_epkmode") p.epk_sounds = parameter.value != 0.0f;
         else if (name == "br_buferkvt") p.buffer_kvt = value != 0;
         else if (name == "br_sknum") stop_valves = value;
+        else if (name == "br_130mode") p.sounds_130 = parameter.value != 0.0f;
+        else if (name == "br_224mode") p.sounds_224 = parameter.value != 0.0f;
     }
     if (p.cabs.size() < cabs) p.cabs.resize(cabs);
     if (!p.separating_fitted)
@@ -132,6 +138,21 @@ BrakesParameters brakes_parameters(const formats::EngineDefinition& engine) {
     for (const auto& [n, id] : stops)
         if ((stop_valves < 0 || n <= stop_valves) && id >= 0) p.stop_valves.push_back(id);
     return p;
+}
+
+std::vector<BrakeSpring> brake_springs(const BrakesParameters& p) {
+    std::vector<BrakeSpring> springs;
+    const auto add = [&](const std::int32_t id, const std::uint32_t last) {
+        if (id < 0) return;
+        springs.push_back(p.flipped ? BrakeSpring{.id = id, .from = 0, .to = 1, .direction = -1}
+                                    : BrakeSpring{.id = id, .from = last, .to = last - 1, .direction = 1});
+    };
+    for (const auto& cab : p.cabs) {
+        add(cab.independent, 5);
+        add(cab.controller, 6);
+        add(cab.independent2, 5);
+    }
+    return springs;
 }
 
 simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const std::size_t cab,
@@ -176,7 +197,7 @@ simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const
     };
     c.independent = independent(ids.independent, ids.independent_cock);
     c.independent2 = independent(ids.independent2, ids.independent2_cock);
-    if (ids.vk4 >= 0 && !(ids.vk4_cock >= 0 && state(ids.vk4_cock) == 0)) c.vk4 = simulation::vk4_position_of(state(ids.vk4));
+    if (ids.vk4 >= 0 && !(ids.vk4_cock >= 0 && state(ids.vk4_cock) == 0)) c.vk4 = simulation::vk4_position_of(state(ids.vk4), p.flipped);
     c.buffer_kvt = p.buffer_kvt;
     c.release_train_brake = on(ids.release);
     c.ep_on = (systems & 2u) != 0;
@@ -186,6 +207,9 @@ simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const
     c.ep_apply_asked = (exchange.before & 0x20u) != 0;
     c.multiple_unit = p.multiple_unit;
     c.sensor418 = on(ids.sensor418);
+    c.sounds_130 = p.sounds_130;
+    c.sounds_224 = p.sounds_224;
+    c.independent_sounds = !p.cabs.empty() && p.cabs.front().independent >= 0;
     return c;
 }
 

@@ -174,6 +174,11 @@ DistributorKind default_distributor_kind(const formats::WagonDefinition& definit
     }
 }
 
+bool sensor418_fitted(const formats::WagonDefinition& definition) noexcept {
+    return definition.kind == formats::WagonKind::engine && distributor_kind(definition) == DistributorKind::vr483 &&
+           definition.brakes.sensor418.value_or(true);
+}
+
 DistributorKind inferred_distributor_kind(const formats::WagonDefinition& definition) noexcept {
     if (definition.brakes.equipment & 4 || definition.brakes.system & 2) return DistributorKind::evr305;
     if (definition.kind == formats::WagonKind::freight) return DistributorKind::vr483;
@@ -210,10 +215,12 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
     rates.release *= car.pace;
     rates.emergency *= car.pace;
     if (s.emergency) {
+        if (!s.braking) s.discharge = true;
         s.braking = true;
         const float fill = (car.kind == DistributorKind::vr483 ? 0.45f * car.pace : rates.emergency) * h;
         const float rise = (std::min)(tc_max - s.cylinder, fill);
         if (rise > 0.0f && s.auxiliary > s.cylinder) take_for_cylinder(rise);
+        s.channel = (std::min)(tc_max, s.channel + fill);
         if (s.cylinder >= s.ep_chamber) s.ep_side = false;
         return;
     }
@@ -236,12 +243,17 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         const float drop = s.reference - p;
         if (!s.braking && drop >= apply_483 * car.sensitivity) {
             s.braking = true;
+            s.discharge = true;
             s.pipe = (std::max)(s.pipe - quick_service, 0.0f); // quick service
             s.pipe_low = s.pipe;
         }
         if (s.braking && (car.mountain ? drop < step_483 : p >= s.reference - release_483)) s.braking = false;
         if (s.braking) {
             const float target = (std::min)(tc_max, tc_max / 1.5f * drop);
+            // Its channel goes to the target at the cylinder's pace (down
+            // only in mountain mode's graduated release).
+            if (s.channel < target) s.channel = (std::min)(target, s.channel + tc_max * 0.9f / 18.0f * car.pace * h);
+            else if (car.mountain) s.channel = (std::max)(target, s.channel - tc_max / 35.0f * car.pace * h);
             const bool filling = s.cylinder < target - 0.02f && s.auxiliary > s.cylinder;
             if (filling) take_for_cylinder((std::min)(target - s.cylinder, tc_max * 0.9f / 18.0f * car.pace * h));
             // The pipe's level in lap: while it fills, where the pipe is (a
@@ -267,6 +279,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         } else if (s.cylinder > 0.0f) {
             s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * car.pace * h, 0.0f);
         }
+        if (!s.braking && s.channel > 0.0f) s.channel = (std::max)(s.channel - tc_max / 35.0f * car.pace * h, 0.0f);
         if (s.cylinder < 1.0e-4f) s.cylinder = 0.0f;
         return;
     }
@@ -285,6 +298,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         // from a charging pressure of 5.2-5.4 could brake nothing.
         if (s.auxiliary - p >= apply_292 * car.sensitivity) {
             s.braking = true;
+            s.discharge = true;
             s.reference = s.auxiliary;
             s.pipe = (std::max)(s.pipe - s.pipe * kdr_292 / (car.pipe_volume + kdr_292), 0.0f); // its КДР
         }
@@ -297,6 +311,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         // drop past it. Up to the gap and the band, it stays at lap.
         const float target = (std::min)(tc_max, ratio * (std::max)(s.reference - p - spool_band, 0.0f));
         pneumatic = target;
+        if (s.channel < pneumatic) s.channel = (std::min)(pneumatic, s.channel + rates.fill * h);
         if (s.cylinder < pneumatic && s.auxiliary > s.cylinder) {
             take_for_cylinder((std::min)(pneumatic - s.cylinder, rates.fill * h));
             if (s.cylinder > s.ep_chamber) s.ep_side = false;
@@ -304,10 +319,13 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         // A rise above the ЗР releases fully.
         if (p >= s.auxiliary + release_292) s.braking = false;
     }
+    if (!s.braking && s.channel > 0.0f) s.channel = (std::max)(s.channel - rates.release * h, 0.0f);
     if (!evr) {
         if (!s.braking && s.cylinder > 0.0f) s.cylinder = (std::max)(s.cylinder - rates.release * h, 0.0f);
         return;
     }
+    // The 305's side fills its channel to its РК.
+    s.channel = (std::max)(s.channel, s.ep_chamber);
     if (s.ep_chamber > 0.0f && s.ep_chamber >= s.cylinder - 1e-4f) {
         // The 305's side: its relay fills the ТЦ from the ЗР up to its РК.
         if (s.ep_chamber > s.cylinder && s.auxiliary > s.cylinder) take_for_cylinder((std::min)(s.ep_chamber - s.cylinder, ep_relay * h));

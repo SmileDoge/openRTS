@@ -90,6 +90,37 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     const std::uint32_t aspect = s.signal.aspect[0];
     screen.lamp = 0;
     screen.backlight = 0;
+    // ТСКБМ's display and lamps (every step): out, and with this
+    // cab's switch on lit (30 s shown); on the move with the КЛУБ powered
+    // its seconds (at most 30) as the step began, L2 blinking under 15,
+    // the request (object 1) and L3 under 7.
+    if (k.setup & 4) {
+        auto& t = screen.tskbm;
+        hide(t[0]);
+        hide(t[1]);
+        value(t[2], 0.0f);
+        screen.tskbm_power = 0;
+        screen.tskbm_lamps = {0, 0, 0};
+        if (in.tskbm_switch) {
+            show(t[0]);
+            value(t[2], 30.0f);
+            screen.tskbm_power = 1;
+            screen.tskbm_lamps = {1, 0, 0};
+            screen.tskbm_l2_blink = 0.0f;
+            const float timer = s.tskbm_shown;
+            if (std::abs(in.speed) > 0.1f && (!(k.setup & 2) || in.powered)) {
+                value(t[2], timer >= 30.0f ? 30.0f : static_cast<float>(whole(timer)));
+                if (timer < 15.0f && timer > 7.0f) {
+                    screen.tskbm_lamps[1] = 1;
+                    screen.tskbm_l2_blink = 0.5f;
+                }
+                if (timer < 7.0f) {
+                    show(t[1]);
+                    screen.tskbm_lamps[2] = 1;
+                }
+            }
+        }
+    }
     // Cleared at every redraw, and every step while unpowered.
     if (!in.powered || redraw) {
         for (int j = 0; j < 14; ++j) hide(b[j]);
@@ -115,9 +146,9 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     screen.backlight = (s.flags & f::backlight) ? 1 : 0;
     // The lines 21 / 22 (kind, name or value) and the message.
     std::u16string kind, what, message = u" ", message_value, signal_name;
-    if (!(s.track & 0x7F)) message = u" РЕЖИМ БЕЗ ЭК";
+    if (!klub_ek(s)) message = u" РЕЖИМ БЕЗ ЭК";
     float next = 100000.0f, signal_at = 0.0f;
-    if (in.epk_key && (s.track & 0x7F)) {
+    if (in.epk_key && klub_ek(s)) {
         if (!in.signal_name.empty()) what = signal_name = in.signal_name;
         kind = u"СВЕТОФОР";
         next = s.signal_metres;
@@ -152,9 +183,10 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
             break;
         }
     }
-    if (!(s.track & 0x7F)) text(b[27], u"");
-    // The next object within 500 m (an odd track number: its bit 0).
-    if ((s.track & 1) && in.epk_key) {
+    if (!klub_ek(s)) text(b[27], u"");
+    // The next object within 500 m (an odd track number: its bit 0); not
+    // with the objects' line off (the target signal only).
+    if ((s.track & 1) && in.epk_key && in.objects_line) {
         bool first = true;
         for (std::size_t i = 0; i < in.items.size(); ++i) {
             const auto& item = in.items[i];
@@ -224,6 +256,10 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
         message = std::u16string(u"    1234657") + ((s.device & d::saut_on) ? u"8" : u"-") + u"9А" + ((s.device & d::tskbm_on) ? u"В" : u"-");
         message_value.clear();
     }
+    if (in.saut_caught) {
+        message = u"СРЫВ ЭПК САУТ";
+        what.clear();
+    }
     if ((s.flags & f::tskbm) && std::abs(in.speed) >= 0.1f) {
         message = u"СРЫВ ЭПК ТСКБМ";
         what.clear();
@@ -277,7 +313,7 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     std::uint32_t shown = whole(std::abs(static_cast<double>(in.speed) * 3.6));
     if (in.wheelslip) shown = static_cast<std::uint32_t>(static_cast<std::int64_t>(static_cast<float>(shown) + 20.0f * s.slip_time));
     // The БЛОК keeps lines 21 / 22 and shows the message in 6 and 8.
-    if (!block && (message[0] != u' ' || (s.flags & f::lamp_test) || s.slip_time > 0.3f || !(s.track & 0x7F))) {
+    if (!block && (message[0] != u' ' || (s.flags & f::lamp_test) || s.slip_time > 0.3f || !klub_ek(s))) {
         kind = message;
         what = message_value;
     }
@@ -318,12 +354,13 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
         }
     }
     if (bil2) show(b[(s.flags & f::second_set) ? 36 : 35]);
-    if (s.track & 0x7F) {
+    if (klub_ek(s)) {
         text(b[16], u"ЭК");
         text(b[17], ascii("%d", static_cast<int>(s.track & 0x7F)) + (block ? u" " : u"") + ((s.track & 0x80) ? u"ПР" : u"НП"));
     } else {
         text(b[16], (s.alsen_table && s.alsen_table < 5) ? u"ЕН" : in.line_frequency == 0.0f ? u"50ГЦ" : u"25ГЦ");
-        text(b[17], u"0");
+        // A number entered the map has nothing for (openRTS's map): that number.
+        text(b[17], (s.track & 0x7F) ? ascii("%d", static_cast<int>(s.track & 0x7F)) : u"0");
     }
     if ((s.device & d::saut_on) && (k.setup & 1) && !(s.flags & f::white_799) && (!(s.flags & f::white_809) || aspect != 2) &&
         (s.flags & f::train_mode) && s.saut_rules)
@@ -344,7 +381,7 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     if (in.working_cab) {
         text(b[21], kind);
         text(b[22], what);
-        if (in.epk_key && (s.track & 0x7F) && next != signal_at) {
+        if (in.epk_key && klub_ek(s) && next != signal_at) {
             text(b[43], signal_name);
             text(b[44], ascii("%1.0f", static_cast<double>(signal_at)) + u" М");
         }
@@ -428,8 +465,8 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
     if ((k.setup & 1) && in.saut_coefficient >= 0.0f && in.working_cab) text(b[19], ascii("%0.2f", static_cast<double>(in.saut_coefficient)));
     else if (block) text(b[19], u"0.67");
     if (in.working_cab || block) {
-        if ((!(s.flags & f::command_mode) && !s.field && s.alsen_table != 5 && (s.track & 0x7F) && s.time_shown == -1.0f && !in.wheelslip) ||
-            (bil2 && (s.track & 0x7F))) {
+        if ((!(s.flags & f::command_mode) && !s.field && s.alsen_table != 5 && klub_ek(s) && s.time_shown == -1.0f && !in.wheelslip) ||
+            (bil2 && klub_ek(s))) {
             if (next >= 10000.0f) text(b[20], std::u16string());
             else text(b[20], block ? ascii("%0.0f", static_cast<double>(next)) + u" М" : ascii("%04.0f", static_cast<double>(next)));
             if (bil2 && next < 10000.0f) {
@@ -482,7 +519,7 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
             screen.lamps[static_cast<std::size_t>(lamp - 1)] = 1;
         });
     }
-    if (s.limit_marks & 0x100) show(b[13]);
+    if (in.saut_caught) show(b[13]); // САУТ caught up
     if (s.flags & f::train_mode) show(b[11]);
     else show(b[10]);
     blink(b[11], (s.flags & f::double_traction) ? 0.5f : 0.0f);

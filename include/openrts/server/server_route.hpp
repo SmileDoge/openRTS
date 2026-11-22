@@ -99,6 +99,8 @@ public:
     // The route database the server writes and reads first:
     // <data>/server/<route folder>/<the installation's file name>.
     [[nodiscard]] std::filesystem::path saved_database_path() const;
+    // The server's placements of this route: <data>/server/<route>/placements.
+    [[nodiscard]] std::filesystem::path placements_folder() const;
     // rts_server.exe's "Сохранить всё" for the signals (0x448914): the route
     // database with every signal unit's defaults (UnitFlags bits 2 and 4,
     // DefaultAspect, the name and the other flags as they were) and the

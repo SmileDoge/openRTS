@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <optional>
 #include <set>
 #include <string>
@@ -187,10 +189,10 @@ constexpr const char* net_spawn_names[] = {"In the cab", "Above the train"};
 constexpr const char* net_role_names[] = {"Driver", "Dispatcher (console)"};
 constexpr const char* net_role_keys[] = {"driver", "dispatcher"};
 constexpr int net_role_dispatcher = 1;
-// The dispatcher's console in the game waits until the server is done, as
-// rts_server.exe with its own console (the user's call, 2026-11-09): the
-// choice is hidden, the viewer keeps --mp-console.
-constexpr bool console_role_shown = false;
+// The dispatcher's console in the game (an openRTS server's): hidden from
+// 2026-11-09 until the server was done, shown since 2026-11-21. From another
+// computer it logs in with the server's dispatcher password.
+constexpr bool console_role_shown = true;
 constexpr const char* net_spawn_keys[] = {"cab", "above"};
 constexpr int net_spawn_cab = 0;
 
@@ -343,10 +345,12 @@ struct Launcher::State {
     std::vector<std::string> servers;
     int net_spawn = 1; // net_spawn_names
     int net_role = 0;  // net_role_names
-    // An own server: only its settings' place, the server is not there yet
-    // (docs/roadmap.md, stage 3).
-    int host_port = 800;
-    int host_players = 0; // 0: RTS and openRTS (Legacy), 1: openRTS only
+    bool net_no_train = false; // in without a train (--mp-no-train)
+    // The dispatcher's password for a server elsewhere (not kept: passed to
+    // the game in OPENRTS_MP_PASSWORD, off its command line).
+    std::array<char, 64> password{};
+    // An own server: openrts-server.exe started from here with the RTS
+    // folder; its window takes the rest, the port too (docs/server.md).
     // The running game; for a network game, how far it got in joining.
     bool network_game = false;
     bool cancelled = false;
@@ -362,6 +366,7 @@ struct Launcher::State {
     std::chrono::steady_clock::time_point next_situation_scan{};
 #ifdef _WIN32
     HANDLE process = nullptr;
+    HANDLE server_process = nullptr; // openrts-server.exe started here
 #endif
     // Updates (update.hpp): a check at the start ("update_check"), the offer
     // as a modal window; a version skipped there ("update_skip") is not
@@ -429,6 +434,13 @@ struct Launcher::State {
         return false;
 #endif
     }
+    [[nodiscard]] bool server_running() const {
+#ifdef _WIN32
+        return server_process != nullptr;
+#else
+        return false;
+#endif
+    }
 
     // A network game still joining: it can be cancelled.
     [[nodiscard]] bool joining() const noexcept {
@@ -466,6 +478,8 @@ struct Launcher::State {
         sound = remembered_int("launcher_sound", 1) != 0;
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
         viewer::set_mouse_sensitivity(remembered_float("mouse_sensitivity", 1.0f));
+        viewer::set_mouse_smoothing(remembered_float("mouse_smoothing_ms", viewer::default_mouse_smoothing));
+        viewer::set_mouse_lock(remembered_int("mouse_lock", 0) != 0);
         viewer::set_head_motion(remembered_float("head_motion", viewer::default_head_motion));
         viewer::set_background_sound(viewer::parse_background_sound(remembered("background_sound").value_or("").c_str()));
         viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
@@ -490,6 +504,7 @@ struct Launcher::State {
             for (int i = 0; i < 2; ++i)
                 if (*value == net_spawn_keys[i]) net_spawn = i;
         }
+        net_no_train = remembered("mp_no_train").value_or("0") == "1";
         if (const auto value = remembered("mp_role"); value && console_role_shown) {
             for (int i = 0; i < 2; ++i)
                 if (*value == net_role_keys[i]) net_role = i;
@@ -543,6 +558,7 @@ struct Launcher::State {
         remember("mp_servers", join_list(servers));
         remember("mp_spawn", net_spawn_keys[net_spawn]);
         remember("mp_role", net_role_keys[net_role]);
+        remember("mp_no_train", net_no_train ? "1" : "0");
     }
 
     void scan() {
@@ -710,6 +726,29 @@ struct Launcher::State {
         }
     }
 
+    // The port the own server's window was last started with (its
+    // server_window.ini, in the same user data folder); 800 by default.
+    [[nodiscard]] static int own_server_port() {
+        std::ifstream in(viewer::user_data_directory() / "server_window.ini");
+        for (std::string line; std::getline(in, line);) {
+            if (!line.starts_with("port=")) continue;
+            const int port = std::atoi(line.c_str() + 5);
+            if (port > 0 && port <= 65535) return port;
+        }
+        return 800;
+    }
+
+    [[nodiscard]] fs::path server_exe() const {
+        const std::vector<fs::path> candidates{
+            exe_dir / "openrts-server.exe",
+            exe_dir.parent_path().parent_path() / "server" / exe_dir.filename() / "openrts-server.exe",
+        };
+        std::error_code error;
+        for (const auto& candidate : candidates)
+            if (fs::is_regular_file(candidate, error)) return candidate;
+        return {};
+    }
+
     [[nodiscard]] fs::path game_exe() const {
         const std::vector<fs::path> candidates{
             exe_dir / "openrts_viewer.exe",
@@ -732,8 +771,9 @@ struct Launcher::State {
             args.insert(args.end(), {"--mp-connect", address_text(), "--mp-nick", nick_text(), "--root", utf8(root)});
             if (net_role == net_role_dispatcher) {
                 args.push_back("--mp-console");
-            } else if (net_spawn == net_spawn_cab) {
-                args.insert(args.end(), {"--spawn", "cab"});
+            } else {
+                if (net_spawn == net_spawn_cab) args.insert(args.end(), {"--spawn", "cab"});
+                if (net_no_train) args.push_back("--mp-no-train");
             }
         } else {
             args.insert(args.end(), {"--route", routes[static_cast<std::size_t>(route)], "--root", utf8(root)});
@@ -792,8 +832,10 @@ struct Launcher::State {
         if (net_reason == "unreachable") return trf("The server %s does not answer: check the address and the port.", net_address.c_str());
         if (net_reason == "refused") {
             if (net_detail == "nick") return trf("The nick %s is in use on the server: choose another.", net_nick.c_str());
-            if (net_detail == "full") return tr("The server takes no new players.");
+            if (net_detail == "full") return tr("The server takes no new players: all its places are taken, or it lets nobody new in.");
             if (net_detail == "version") return tr("The server speaks another protocol version (RTS's is 101).");
+            if (net_detail == "console") return tr("The server lets in the dispatcher from another computer only with its dispatcher password, and it has none set.");
+            if (net_detail == "password") return tr("The dispatcher password is wrong.");
             return trf("The server refused the login (code %s).", net_detail.c_str());
         }
         if (net_reason == "closed") return tr("The server closed the connection.");
@@ -896,8 +938,18 @@ struct Launcher::State {
             startup.hStdInput = nullptr;
         }
         PROCESS_INFORMATION info{};
+        // The dispatcher's password goes in the game's environment alone.
+        const bool with_password = network_game && net_role == net_role_dispatcher && password[0] != 0;
+        if (with_password) {
+            const std::string text(password.data());
+            const int units = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+            std::wstring value(static_cast<std::size_t>((std::max)(units, 1)), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, value.data(), units);
+            SetEnvironmentVariableW(L"OPENRTS_MP_PASSWORD", value.c_str());
+        }
         const BOOL ok = CreateProcessW(nullptr, wide.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
                                        &startup, &info);
+        if (with_password) SetEnvironmentVariableW(L"OPENRTS_MP_PASSWORD", nullptr);
         if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
         if (!ok) {
             net_step = NetStep::none;
@@ -910,6 +962,76 @@ struct Launcher::State {
 #else
         status = tr("Starting the game is only done on Windows yet.");
 #endif
+    }
+
+    // openrts-server.exe in its own window (its start form: the route, the
+    // season, the weather, the time, the port, the dispatcher password),
+    // with the RTS folder given; its log beside the settings.
+    void start_server() {
+#ifdef _WIN32
+        if (server_running()) return;
+        const auto exe = server_exe();
+        if (exe.empty()) {
+            status = tr("openrts-server.exe is not found next to the menu.");
+            return;
+        }
+        std::vector<std::string> args{utf8(exe)};
+        if (!root.empty()) args.insert(args.end(), {"--root", utf8(root)});
+        std::string command;
+        for (const auto& a : args) command += (command.empty() ? "" : " ") + quoted(a);
+        const int length = MultiByteToWideChar(CP_UTF8, 0, command.c_str(), -1, nullptr, 0);
+        std::wstring wide(static_cast<std::size_t>((std::max)(length, 1)), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, command.c_str(), -1, wide.data(), length);
+        SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+        const auto log_path = viewer::user_data_directory() / L"openrts-server.log";
+        const HANDLE log = CreateFileW(log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit,
+                                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        STARTUPINFOW startup{};
+        startup.cb = sizeof startup;
+        if (log != INVALID_HANDLE_VALUE) {
+            startup.dwFlags = STARTF_USESTDHANDLES;
+            startup.hStdOutput = log;
+            startup.hStdError = log;
+            startup.hStdInput = nullptr;
+        }
+        PROCESS_INFORMATION info{};
+        const BOOL ok = CreateProcessW(nullptr, wide.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
+                                       &startup, &info);
+        if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
+        if (!ok) {
+            status = viewer::trf("The server did not start (error %lu).", static_cast<unsigned long>(GetLastError()));
+            return;
+        }
+        CloseHandle(info.hThread);
+        server_process = info.hProcess;
+        status = tr("The server's window opens: pick the route there and press \"Start\".");
+#else
+        status = tr("Starting the server is only done on Windows yet.");
+#endif
+    }
+
+    // A game joined from a player's Discord profile ("Join"; Discord started
+    // this menu for it, or it was open): its server in the address, as a
+    // driver, joined at once when the nick and the RTS folder are there.
+    void join_from_discord(const std::string& secret) {
+        constexpr std::string_view prefix = "openrts1 ";
+        const auto where = secret.starts_with(prefix) ? secret.substr(prefix.size()) : std::string();
+        constexpr std::string_view allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:[]";
+        if (where.empty() || where.size() > 100 || where.find_first_not_of(allowed) != std::string::npos) {
+            status = tr("Discord handed over a game that is not an openRTS server's.");
+            return;
+        }
+        set_text(address, where);
+        net_role = 0;
+        tab = Tab::network;
+        select_tab = true;
+        if (running()) {
+            status = viewer::trf("Discord: joining %s. Close the running game first, then press \"Connect\".", where.c_str());
+        } else if (!network_ready()) {
+            status = viewer::trf("Discord: the server %s is filled in. Give a nick (and the RTS folder in Settings), then press \"Connect\".", where.c_str());
+        } else {
+            launch(Tab::network);
+        }
     }
 
     // Stops a network game that is still joining (the server sees the
@@ -929,6 +1051,11 @@ struct Launcher::State {
             refresh_saves();
         }
 #ifdef _WIN32
+        // The own server's window closed: it is stopped.
+        if (server_process && WaitForSingleObject(server_process, 0) == WAIT_OBJECT_0) {
+            CloseHandle(server_process);
+            server_process = nullptr;
+        }
         if (!process) return;
         const bool ended = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
         const auto now = std::chrono::steady_clock::now();
@@ -1193,8 +1320,7 @@ void Launcher::State::draw_single(const float height) {
     ImGui::EndChild();
 }
 
-// Network play: joining a server on the left; an own server on the right,
-// its place kept for when there is one.
+// Network play: joining a server on the left; an own server on the right.
 void Launcher::State::draw_network(const float height) {
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float host_width = std::clamp(ImGui::GetIO().DisplaySize.x * 0.36f, 430.0f, 540.0f);
@@ -1214,20 +1340,28 @@ void Launcher::State::draw_network(const float height) {
                 form_row(tr("Join as"));
                 ImGui::Combo("##net_role", &net_role, roles, 2);
             }
+            if (net_role == net_role_dispatcher) {
+                form_row(tr("Dispatcher password"));
+                ImGui::InputText("##password", password.data(), password.size(), ImGuiInputTextFlags_Password);
+            }
             if (net_role != net_role_dispatcher) {
                 const char* spawns[2];
                 for (int i = 0; i < 2; ++i) spawns[i] = tr(net_spawn_names[i]);
                 form_row(tr("Start at"));
                 ImGui::Combo("##net_spawn", &net_spawn, spawns, 2);
+                form_row(tr("Without a train"));
+                ImGui::Checkbox(tr("Go in without a train (to look round, to help a driver)##no_train"), &net_no_train);
             }
             ImGui::EndTable();
         }
         if (net_role == net_role_dispatcher) {
-            hint(tr("The dispatcher's console of an openRTS server: the route's map and the console's window (trains, players, routes, signals, time). "
-                    "The server lets in a console from its own computer with any nick, from elsewhere the nicks given to it with --dispatcher."));
+            hint(tr("The dispatcher's console of an openRTS server: the route's map and the console's window (trains, players, station routes, signals, time). "
+                    "On the server's own computer no password is needed; from another one the dispatcher password set in the server's window."));
         } else {
             hint(net_spawn == net_spawn_cab ? tr("When the dispatcher assigns your train, you sit at its desk.")
                                             : tr("When the dispatcher assigns your train, the camera follows it from above."));
+            hint(net_no_train ? tr("You go into the world at once, without a train: the dispatcher may give you one later, a driver may take you as his helper.")
+                              : tr("As in RTS, the game waits until the dispatcher gives you a train."));
         }
         hint(tr("The port is 800 when none is given. The nick is how the other players and the dispatcher see you."));
         const auto length = characters(nick_text());
@@ -1261,24 +1395,31 @@ void Launcher::State::draw_network(const float height) {
     ImGui::SameLine();
 
     if (ImGui::BeginChild("##host", {host_width, height}, panel_flags)) {
-        const float label_width = std::clamp(host_width * 0.40f, 150.0f, 210.0f);
         ImGui::SeparatorText(tr("Own server"));
-        hint(tr("Not there yet: an openRTS server is the next stage. For now start an RTS server (rts_server.exe) and join it."));
+        hint(tr("openRTS's server opens a window of its own: there the route, season, weather, time and the dispatcher password are set, "
+                "then it is the dispatcher's console on the route's map. openRTS and RTS (rts1.exe) players join it."));
         ImGui::Spacing();
-        ImGui::BeginDisabled(true);
-        if (begin_form("##host_form", label_width)) {
-            form_row(tr("Port"));
-            ImGui::InputInt("##host_port", &host_port, 0, 0);
-            form_row(tr("Players"));
-            const char* kinds[] = {tr("RTS and openRTS (Legacy)"), tr("openRTS only")};
-            ImGui::Combo("##host_players", &host_players, kinds, 2);
-            ImGui::EndTable();
+        if (server_running()) {
+            ImGui::TextUnformatted(tr("The server's window is open. Closing it stops the server."));
+            ImGui::BeginDisabled(running());
+            if (ImGui::Button(tr("Join my server"), {-FLT_MIN, 0.0f})) {
+                set_text(address, "127.0.0.1:" + std::to_string(own_server_port()));
+                launch(Tab::network);
+            }
+            ImGui::EndDisabled();
+            hint(tr("Joins 127.0.0.1 at the port set in the server's window, with the nick and the role on the left, once the route is started there."));
+        } else {
+            const bool found = !server_exe().empty();
+            ImGui::BeginDisabled(!found);
+            if (ImGui::Button(tr("Open the server's start window"), {-FLT_MIN, 0.0f})) start_server();
+            ImGui::EndDisabled();
+            if (!found) warning(tr("openrts-server.exe is not found next to the menu."));
         }
-        hint(host_players == 0 ? tr("Legacy: rts1.exe joins too; the simulation follows RTS for everyone.")
-                               : tr("openRTS only: its own protocol, and the server's simulation settings."));
         ImGui::Spacing();
-        ImGui::Button(tr("Start the server"), {-FLT_MIN, 0.0f});
-        ImGui::EndDisabled();
+        ImGui::SeparatorText(tr("For the players"));
+        hint(tr("Players join by this computer's address and the port. From the internet the port (TCP) must be open on the router, "
+                "or everyone plays in one virtual network (Radmin VPN, ZeroTier and the like)."));
+        hint(tr("A dispatcher at another computer joins as \"Dispatcher (console)\" with the dispatcher password."));
     }
     ImGui::EndChild();
 }
@@ -1361,6 +1502,21 @@ void Launcher::State::draw_settings(const float height) {
                 viewer::set_mouse_sensitivity(sensitivity);
                 remember("mouse_sensitivity", std::to_string(viewer::mouse_sensitivity()));
             }
+            form_row(tr("Mouse smoothing, ms"));
+            float smooth = viewer::mouse_smoothing();
+            ImGui::SetNextItemWidth(220.0f);
+            if (viewer::slider_with_input("##mouse_smoothing", &smooth, 0.0f, viewer::max_mouse_smoothing, "%.0f", "%.0f")) {
+                viewer::set_mouse_smoothing(smooth);
+                remember("mouse_smoothing_ms", std::to_string(viewer::mouse_smoothing()));
+            }
+            ImGui::TextDisabled("%s", tr("(0: the view turns at once with the mouse; more: smoother, a little behind it)"));
+            form_row(tr("Mouse lock (the wheel's click)"));
+            bool lock = viewer::mouse_lock();
+            if (ImGui::Checkbox("##mouse_lock", &lock)) {
+                viewer::set_mouse_lock(lock);
+                remember("mouse_lock", lock ? "1" : "0");
+            }
+            ImGui::TextDisabled("%s", tr("(the view always turns with the mouse, the cursor hidden; a dot in the middle clicks the cab's controls; while the panel (Esc) is shown the cursor is free)"));
             form_row(tr("Head motion in the cab"));
             float head = viewer::head_motion();
             ImGui::SetNextItemWidth(220.0f);
@@ -2229,6 +2385,8 @@ void Launcher::set_updated_from(std::string version) {
 }
 
 bool Launcher::wants_close() const { return state_->restart; }
+
+void Launcher::discord_join(const std::string& secret) { state_->join_from_discord(secret); }
 
 std::optional<viewer::ScenePresence> Launcher::presence() const {
     if (state_->running()) return std::nullopt;

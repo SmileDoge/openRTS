@@ -146,6 +146,11 @@ struct BrakeEquipment {
     // car menu's choice, kept in a mod).
     BrakeDistributor default_distributor = BrakeDistributor::inferred;
     bool distributor_in_companion = false;
+    // openRTS: ORTSBrakeSensor418 ( 0 | 1 ), the 418 (the pipe's break
+    // sensor) on a locomotive; none: as its distributor gives (a locomotive
+    // with the 483 has it, testers 2026-11-20). Only a locomotive with the
+    // 483 has one: 1 adds none to a 292 (simulation::sensor418_fitted).
+    std::optional<bool> sensor418;
     std::string distributor_script;
     std::string distributor_source;
     std::string distributor_error;
@@ -432,6 +437,8 @@ using WagonRules = std::function<WagonOverrides(const struct WagonDefinition& ca
 // ORTSBrakeDistributor set to `distributor`, or taken out for inferred; the
 // rest kept. Empty when nothing is left in it.
 [[nodiscard]] std::string set_override_distributor(std::string_view text, BrakeDistributor distributor);
+// The same with ORTSBrakeSensor418 ( 0 | 1 ), taken out for none.
+[[nodiscard]] std::string set_override_sensor418(std::string_view text, std::optional<bool> fitted);
 
 // RTS value readers, exposed for tests.
 [[nodiscard]] double rts_quantity_value(std::string_view token);

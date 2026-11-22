@@ -126,7 +126,7 @@ std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::ve
         return nullptr;
     }
     for (const auto& m : consist->modules()) {
-        if (m.status != 0) status += "refused: " + trainplugin::utf16_to_utf8(m.path) + "\n";
+        if (m.status < 0) status += "refused: " + trainplugin::utf16_to_utf8(m.path) + "\n";
     }
     cab->consist_ = std::move(consist);
     cab->bind_keys(player);
@@ -508,6 +508,7 @@ void LegacyCab::operate(std::uint32_t id, std::uint32_t state, std::size_t car) 
 }
 
 void LegacyCab::release_keys() {
+    keys_down_.clear();
     if (!working()) return;
     const auto car = player();
     const auto* out = out_of(car);
@@ -528,7 +529,15 @@ bool key_reaches(const formats::CabSwitch& control, const std::optional<glm::vec
     return glm::distance(*eye, at) <= control.radius;
 }
 
+bool LegacyCab::key_held(const std::uint32_t id, const int direction) const {
+    for (const auto& b : bindings_)
+        if (b.id == id && (direction == 0 || b.direction == direction) && keys_down_.contains(b.key)) return true;
+    return false;
+}
+
 void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) {
+    if (event.down) keys_down_.insert(event.key);
+    else keys_down_.erase(event.key);
     if (!working() || !keyboard()) return;
     const auto* out = out_of(player());
     for (const auto& b : bindings_) {
@@ -578,7 +587,7 @@ void LegacyCab::draw_window(const std::function<void()>& extra) {
         const auto path = trainplugin::utf16_to_utf8(m.path);
         const auto slash = path.find_last_of("/\\");
         ImGui::TextDisabled("%s: %s, TS_VERSION %u", path.substr(slash == std::string::npos ? 0 : slash + 1).c_str(),
-                            m.status == 0 ? tr("loaded") : tr("refused"), m.version[1]);
+                            m.status == 0 ? tr("loaded") : m.status > 0 ? tr("not loaded (openRTS's devices)") : tr("refused"), m.version[1]);
     }
     // On foot they are on whatever is chosen (the box shows it, greyed).
     bool keys_on = keyboard();

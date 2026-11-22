@@ -77,8 +77,6 @@ void draw_controls_help() {
         row("Y / U", "left / right doors (standing)");
         ImGui::EndTable();
     }
-    note("RTS cannot drive a locomotive without a DLL; openRTS drives MSTS stock without one and Track control's test trains with these keys.");
-    note("A locomotive with a DLL is driven from its cab with the mouse and the cab keys of its .sd, as in RTS: on foot (the 3D cab) the keys work at once; with the free camera \"Cab keys of the locomotive DLL\" in the Train window gives them the keyboard (the camera keys are off then, the F keys work).");
 
     if (begin_section("Engineer and cab", "##controls_cab")) {
         row("Enter", "in the chair: rise at the desk and sit back / sit down / open a door / climb up");
@@ -103,7 +101,6 @@ void draw_controls_help() {
         row("Alt", "captions of the cab's controls");
         ImGui::EndTable();
     }
-    note("The 3D cab: \"3D cab view\" in the Train window.");
 
     if (begin_section("Information (as in RTS)", "##controls_info")) {
         row("Esc", "the openRTS panel and the DLL cab window: show / hide");

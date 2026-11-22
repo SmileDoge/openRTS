@@ -56,6 +56,9 @@ struct DistributorModes {
 // The one the car has with no companion naming one: its file's, else the
 // stock rules', else inferred (formats::BrakeEquipment::default_distributor).
 [[nodiscard]] DistributorKind default_distributor_kind(const formats::WagonDefinition& definition) noexcept;
+// Whether the car has the 418 (the pipe's break sensor, cab_brakes.hpp): a
+// locomotive with the ВР 483, unless ORTSBrakeSensor418 (0) takes it off.
+[[nodiscard]] bool sensor418_fitted(const formats::WagonDefinition& definition) noexcept;
 
 // The cylinder pressure (atm) at which the realistic air gives a car its
 // full brake force. RTS has no load modes: its content gives an empty car
@@ -100,6 +103,12 @@ struct DistributorState {
     bool ep_side = false;
     // 483: the lowest the pipe stood while braking (its flat release).
     float pipe_low{};
+    // The 418's channels (cab_brakes.hpp): an application begins with one
+    // additional discharge, and the channel keeps the ТЦ's target even when
+    // the cylinder is let off outside the distributor (an engine's own
+    // release, the 254).
+    bool discharge = false;
+    float channel{};
 };
 
 // What the car gives its distributor.
