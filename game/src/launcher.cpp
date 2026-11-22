@@ -40,6 +40,7 @@
 #include "discord_status.hpp"
 #include "file_dialog.hpp"
 #include "frame_limiter.hpp"
+#include "brake_settings_ui.hpp"
 #include "graphics_presets_ui.hpp"
 #include "graphics_settings.hpp"
 #include "key_layout.hpp"
@@ -321,12 +322,8 @@ struct Launcher::State {
     bool sound = true;
     float volume = 0.5f;
     bool vsync = true;
-    // The brakes, the game's Train window's too: the realistic air
-    // ("realistic_air") and the air of trains with locomotive DLLs
-    // ("dll_air": 0 RTS's, 1 the DLL's valve, 2 openRTS's valve).
-    bool realistic_air = false;
-    int dll_air = 0;
-    bool gauges_air = true; // gauges_openrts_air: the cab's air gauges from the realistic air
+    // The brakes, the game's Train window's too (brake_settings_ui.hpp).
+    viewer::BrakeSettings brakes;
     // The graphics settings, the game's panel's too (graphics_settings.hpp):
     // each change written at once, only what changed.
     viewer::GraphicsSettings graphics;
@@ -486,9 +483,7 @@ struct Launcher::State {
         viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
         viewer::set_body_motion_model(viewer::parse_body_motion_model(remembered("body_motion").value_or("openrts").c_str()));
         vsync = remembered_int("launcher_vsync", 1) != 0;
-        realistic_air = remembered_int("realistic_air", 1) != 0;
-        dll_air = std::clamp(remembered_int("dll_air", 2), 0, 2);
-        gauges_air = remembered_int("gauges_openrts_air", 1) != 0;
+        brakes = viewer::load_brake_settings();
         load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
@@ -1583,35 +1578,10 @@ void Launcher::State::draw_settings(const float height) {
                                                   : tr("(each body on its own springs over its bogies: the track's errors under each bogie, rail joints and switches, hunting, curves; bounce, pitch, sway, yaw and roll)"));
             ImGui::EndTable();
         }
-        // The brakes (the game's Train window has the same; both remembered):
-        // set once here, not in the game every run (testers, 2026-11-17).
+        // The brakes: the game's Train window's section (brake_settings_ui.hpp).
         ImGui::Spacing();
         ImGui::SeparatorText(tr("Brakes"));
-        if (begin_form("##brakes_form", label_width)) {
-            form_row(tr("Realistic air (openRTS)"));
-            if (ImGui::Checkbox("##realistic_air", &realistic_air)) remember("realistic_air", realistic_air ? "1" : "0");
-            ImGui::TextDisabled("%s", realistic_air ? tr("(flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed)")
-                                                    : tr("(off: RTS's model, as RTS brakes)"));
-            form_row(tr("Trains with DLLs"));
-            const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),
-                                   tr("openRTS valve over Brakes.dll (experimental)")};
-            ImGui::BeginDisabled(!realistic_air);
-            ImGui::SetNextItemWidth(330.0f);
-            if (ImGui::Combo("##dll_air", &dll_air, modes, 3)) remember("dll_air", std::to_string(dll_air));
-            ImGui::EndDisabled();
-            ImGui::TextDisabled("%s", tr(!realistic_air ? "(works with the realistic air on)"
-                                         : dll_air == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
-                                         : dll_air == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
-                                                        : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
-            form_row(tr("Cab gauges"));
-            ImGui::BeginDisabled(!realistic_air);
-            if (ImGui::Checkbox(tr("show openRTS's air (pipe, cylinders, main reservoir)"), &gauges_air)) remember("gauges_openrts_air", gauges_air ? "1" : "0");
-            ImGui::EndDisabled();
-            ImGui::TextDisabled("%s", tr(!realistic_air ? "(works with the realistic air on; without it the gauges are the DLL's, as in RTS)"
-                                         : gauges_air ? "(the gauges named DTM, DTC1, DTC2, DGR show what F5 shows; the others stay the DLL's)"
-                                                      : "(as the DLL draws them: its own needles, which may lag or run ahead of F5)"));
-            ImGui::EndTable();
-        }
+        viewer::draw_brake_settings(brakes, nullptr, label_width);
     }
     ImGui::EndChild();
     ImGui::SameLine();

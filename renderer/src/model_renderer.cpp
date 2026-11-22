@@ -96,7 +96,8 @@ struct MaterialUniform {
     float emissive[4];
     float maps[4];
     // The height map's relief (parallax): x its depth (m), y 1: a height
-    // map, z the map's level the model's surface lies at (0..1).
+    // map, z the map's level the model's surface lies at (0..1); w the
+    // axes its UVs keep inside the image (1 U, 2 V: keep_inside).
     float height[4];
 };
 // The model's draws one after another in a storage buffer (WGSL array<Draw>,
@@ -263,6 +264,27 @@ fn coverage_alpha(alpha: f32, cutoff: f32, width: f32, mip: f32) -> f32 {
 @group(1) @binding(3) var<storage, read> locals: array<Local>;
 // The primitive being drawn: set first thing in each entry point.
 var<private> draw: Draw;
+
+// A draw whose UVs stay within 0..1 on an axis does not repeat its image
+// there: the sample is kept half a texel inside, so linear filtering does
+// not take the other edge's texels (the Kuban backdrops' tree walls: their
+// image's opaque bottom row showed as a thin line along their top, whose
+// row is clear). draw.height.w: 1 U, 2 V.
+fn keep_inside(uv: vec2<f32>) -> vec2<f32> {
+    let axes = u32(draw.height.w + 0.5);
+    if (axes == 0u) {
+        return uv;
+    }
+    let half_texel = 0.5 / vec2<f32>(textureDimensions(source_texture));
+    var kept = uv;
+    if ((axes & 1u) != 0u) {
+        kept.x = clamp(uv.x, half_texel.x, 1.0 - half_texel.x);
+    }
+    if ((axes & 2u) != 0u) {
+        kept.y = clamp(uv.y, half_texel.y, 1.0 - half_texel.y);
+    }
+    return kept;
+}
 
 struct Placement {
     model: mat4x4<f32>,
@@ -471,9 +493,10 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
     draw = draws[input.draw_slot];
-    let texel = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
+    let uv_in = keep_inside(input.uv);
+    let texel = textureSampleBias(source_texture, source_sampler, uv_in, draw.lod_bias);
     let alpha_width = fwidth(texel.w);
-    let texels = input.uv * vec2<f32>(textureDimensions(source_texture));
+    let texels = uv_in * vec2<f32>(textureDimensions(source_texture));
     let texels_dx = dpdx(texels);
     let texels_dy = dpdy(texels);
     let alpha_mip = 0.5 * log2(max(max(dot(texels_dx, texels_dx), dot(texels_dy, texels_dy)), 1e-8));
@@ -693,11 +716,12 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
     draw = draws[input.draw_slot];
+    let uv_in = keep_inside(input.uv);
     // The texture as RTS reads it (its LOD bias); the material's maps with
     // these gradients (in any branch).
-    var sampled = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
-    let uv_step_x = dpdx(input.uv);
-    let uv_step_y = dpdy(input.uv);
+    var sampled = textureSampleBias(source_texture, source_sampler, uv_in, draw.lod_bias);
+    let uv_step_x = dpdx(uv_in);
+    let uv_step_y = dpdy(uv_in);
     let uv_dx = uv_step_x * exp2(draw.lod_bias);
     let uv_dy = uv_step_y * exp2(draw.lod_bias);
     let world_dx = dpdx(input.world.xyz);
@@ -708,13 +732,13 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     // coordinates' own would jump at the relief's steps). Its alpha stays
     // the unshifted one: a cut-out (a body's windows) is the model's edge,
     // as the depth pre-pass has it. Not for blended surfaces (glass).
-    var uv = input.uv;
+    var uv = uv_in;
     if (!blended && draw.height.y > 0.5 && effects.views.y > 0.0) {
         let to_eye = frame.eye.xyz - input.world.xyz;
         let distance = length(to_eye);
         let fade = 1.0 - smoothstep(effects.views.y * 0.75, effects.views.y, distance);
         if (fade > 0.0) {
-            uv = parallax_uv(input.uv, to_eye / max(distance, 1e-4), normalize(input.normal), draw.height.x * fade, draw.height.z, world_dx,
+            uv = parallax_uv(uv_in, to_eye / max(distance, 1e-4), normalize(input.normal), draw.height.x * fade, draw.height.z, world_dx,
                              world_dy, uv_step_x, uv_step_y, uv_dx, uv_dy, effects.views.z);
             sampled = vec4<f32>(textureSampleGrad(source_texture, source_sampler, uv, uv_dx, uv_dy).xyz, sampled.w);
         }
@@ -722,7 +746,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     // The material's base colour factor (openRTS's material; 1 without one).
     let texel = vec4<f32>(sampled.xyz, sampled.w * draw.base_color.w);
     let alpha_width = fwidth(texel.w);
-    let texels = input.uv * vec2<f32>(textureDimensions(source_texture));
+    let texels = uv_in * vec2<f32>(textureDimensions(source_texture));
     let texels_dx = dpdx(texels);
     let texels_dy = dpdy(texels);
     let alpha_mip = 0.5 * log2(max(max(dot(texels_dx, texels_dx), dot(texels_dy, texels_dy)), 1e-8));
@@ -2775,6 +2799,7 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
 
         glm::vec3 local_sum{};
         std::uint32_t point_count = 0;
+        float u_low = 1e9f, u_high = -1e9f, v_low = 1e9f, v_high = -1e9f;
         const auto end = (std::min)(range.first_index + range.index_count, static_cast<std::uint32_t>(model.indices.size()));
         for (auto index = range.first_index; index < end; ++index) {
             const auto vertex = model.indices[index];
@@ -2783,6 +2808,11 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
             bounds.add(glm::vec3{draw.world * glm::vec4{local, 1.0f}});
             local_sum += local;
             ++point_count;
+            const auto& uv = model.vertices[vertex].uv;
+            u_low = (std::min)(u_low, uv[0]);
+            u_high = (std::max)(u_high, uv[0]);
+            v_low = (std::min)(v_low, uv[1]);
+            v_high = (std::max)(v_high, uv[1]);
         }
         if (point_count > 0) {
             draw.center = glm::vec3{draw.world * glm::vec4{local_sum / static_cast<float>(point_count), 1.0f}};
@@ -2812,6 +2842,13 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
             draw.height_view = map_view(m.height);
             draw.height = {f.height_scale, draw.height_view ? 1.0f : 0.0f, f.height_reference, 0.0f};
             if (const auto base = map_view(m.base_color)) view = base;
+        }
+        // The axes whose UVs stay within the image (keep_inside).
+        if (point_count > 0) {
+            constexpr float slack = 1e-3f;
+            const bool u_inside = u_low >= -slack && u_high <= 1.0f + slack;
+            const bool v_inside = v_low >= -slack && v_high <= 1.0f + slack;
+            draw.height.w = (u_inside ? 1.0f : 0.0f) + (v_inside ? 2.0f : 0.0f);
         }
         gpu.draws.push_back(draw);
         views.push_back(*view);

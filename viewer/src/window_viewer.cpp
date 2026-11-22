@@ -951,6 +951,7 @@ public:
             set_panels_shown(!panels_shown());
             if (!panels_shown()) panel.panels_hint_until = ImGui::GetTime() + 8.0;
         }
+        if (capture_panel() >= 0) set_panels_shown(true);
         if (!panels_shown()) {
             // The scene's own windows and HUD as ever; its lines for the
             // panel go nowhere.
@@ -978,6 +979,10 @@ public:
         }
         draw_fps_counter(panel);
         draw_world_clock(panel, clock);
+        if (capture_panel() >= 0) {
+            ImGui::SetNextWindowPos({8.0f, 8.0f}, ImGuiCond_Always);
+            ImGui::SetNextWindowSize({680.0f, ImGui::GetIO().DisplaySize.y - 16.0f}, ImGuiCond_Always);
+        }
         ImGui::Begin(tr("openRTS viewer###viewer"));
         // What is open and how fast it runs; then a tab each: general,
         // graphics, the train, the world, performance, the keys.
@@ -992,7 +997,8 @@ public:
         }
         if (ImGui::BeginTabBar("##panel_tabs")) {
             const auto tab = [&](const char* name, const PanelState::Tab which) {
-                if (ImGui::BeginTabItem(name)) {
+                const bool captured = capture_panel() == static_cast<int>(which);
+                if (ImGui::BeginTabItem(name, nullptr, captured ? ImGuiTabItemFlags_SetSelected : 0)) {
                     panel.tab = which;
                     ImGui::EndTabItem();
                 }

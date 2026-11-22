@@ -445,6 +445,14 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             fps_given = true;
         } else if (flags[i] == "--capture-drive" && has_value) {
             options.capture_drive = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--capture-panel" && has_value) {
+            // The panels on a tab with their sections open: general,
+            // graphics, train, world, performance, controls.
+            const std::string tab(flags[++i]);
+            const char* tabs[] = {"general", "graphics", "train", "world", "performance", "controls"};
+            for (int k = 0; k < 6; ++k)
+                if (tab == tabs[k]) openrts::viewer::set_capture_panel(k);
+            options.capture_ui = true;
         } else if (flags[i] == "--capture-cab") {
             options.capture_cab = true;
         } else if (flags[i] == "--capture-car" && has_value) {

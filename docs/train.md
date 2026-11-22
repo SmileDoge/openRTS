@@ -761,6 +761,17 @@ the first run of this version, the brakes are set to the "realistic
 where all of it is openRTS's, over what was remembered (the
 `defaults_openrts_brakes` mark); later choices are kept.
 
+The brakes' settings are one section in the start menu's Settings page and
+the game's Train window (`viewer/src/brake_settings_ui.hpp`, 2026-11-22):
+the preset on top ("openRTS", "as in RTS", "my own") with a line of what it
+gives, and in the game a line of what the driven train has now (whose
+brakes and КЛУБ, whether Brakes.dll is loaded and why it stays,
+`trainplugin::brakes_dll_kept_reason`). Under "Details" the settings one
+by one, each shown only where it works (those of openRTS's air hidden
+without it); "Brakes.dll not loaded" says it takes effect from the next
+train, the rest at once. Any change by hand makes the preset "my own",
+remembered as `brakes_custom` (twelve figures).
+
 **openRTS's cab brakes over Brakes.dll** (2026-11-18, experimental; the
 Train window's "Brakes: Brakes.dll / openRTS" and "Brake numbers: as
 Brakes.dll / openRTS (from the books)", remembered as `own_brakes` and

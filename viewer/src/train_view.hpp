@@ -59,6 +59,7 @@
 #include <openrts/simulation/traffic.hpp>
 #include <openrts/trainplugin/native_plugin.hpp>
 
+#include "brake_settings_ui.hpp"
 #include "camera.hpp"
 #include "cab_view.hpp"
 #include "engineer.hpp"
@@ -77,21 +78,6 @@ namespace openrts::viewer {
 // collide as RTS decides (simulation::resolve_contacts).
 class TrainView {
 public:
-    // The brakes' presets (the Train window, testers 2026-11-18: not three or
-    // four settings to switch each time): RTS's, openRTS's realistic, or the
-    // player's own (any of them changed by hand), remembered as
-    // brakes_custom and given back when chosen again.
-    struct BrakeSet {
-        bool realistic = false; // realistic_air
-        int dll_air = 0;        // DllAir
-        bool gauges = false;    // gauges_openrts_air
-        int rails = 0;          // rails
-        bool limit = false;     // limit_brake_force
-        bool stability = false; // distributor_stability
-        int condition = 0;      // brake_condition (0: none)
-        int pressing = 100;     // brake_pressing, %
-        bool operator==(const BrakeSet&) const = default;
-    };
     // Who drives a train: the keyboard, the test driver along its path, or
     // nobody (it stands with its brakes as they are).
     enum class Role : std::uint8_t { driven, ai, standing };
@@ -1642,9 +1628,10 @@ private:
     // brake_condition and brake_pressing; read with the rails.
     int brake_condition_ = 0;
     int brake_pressing_ = 100;
-    [[nodiscard]] BrakeSet brake_set() const noexcept;
-    void apply_brake_set(const BrakeSet& set);
-    std::string brake_custom_code_; // the own set as last remembered
+    // The brakes' section (brake_settings_ui.hpp): its settings taken, and
+    // what the driven train has now.
+    void apply_brake_settings(const BrakeSettings& settings);
+    [[nodiscard]] BrakeSettingsStatus brake_settings_status();
     [[nodiscard]] simulation::RailCondition rails_now() const noexcept;
     // cab_state() with openRTS's valve over Brakes.dll: the DLL's output with
     // its УР gauge showing the valve's УР.

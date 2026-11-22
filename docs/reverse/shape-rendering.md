@@ -42,6 +42,13 @@ width, height, RGBA8 texels) and a mode; the upload (`0x44150C`) creates the
 texture with `GL_LINEAR_MIPMAP_LINEAR` (set for MIN and MAG; MAG rejects it
 and stays linear), `GL_REPEAT`, `GL_GENERATE_MIPMAP` 0, and then:
 
+(openRTS, 2026-11-22: a draw whose UVs stay within 0..1 on an axis does
+not repeat its image there, the sample kept half a texel inside,
+`keep_inside` in the model shader. The Kuban backdrops' tree walls,
+`v_back6.s`, reach V 0.0 at their top, where the image's row is clear and
+its bottom row opaque: with the repeat, linear filtering drew a thin line
+along every wall's top.)
+
 - options 17 or 21 (DXT1 with mipmaps): the file's levels, uploaded with
   `glCompressedTexImage2D`;
 - options exactly 5 (raw channels with mipmaps): the file's levels, read in

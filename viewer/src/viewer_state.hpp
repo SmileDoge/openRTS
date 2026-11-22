@@ -29,6 +29,11 @@ void remember(std::string_view key, std::string_view value);
 // launcher and the viewer before they read the settings.
 void apply_settings_defaults();
 
+// Captures of the panels (--capture-panel <tab>): the panels shown on that
+// tab (the viewer's PanelState::Tab, -1 none) with their sections open.
+void set_capture_panel(int tab) noexcept;
+[[nodiscard]] int capture_panel() noexcept;
+
 [[nodiscard]] std::filesystem::path remembered_folder(std::string_view key);
 void remember_folder(std::string_view key, const std::filesystem::path& folder);
 

@@ -109,6 +109,13 @@ void remember(const std::string_view key, const std::string_view value) {
     for (const auto& [name, text] : values) output << name << '=' << text << '\n';
 }
 
+namespace {
+int capture_panel_tab = -1;
+} // namespace
+
+void set_capture_panel(const int tab) noexcept { capture_panel_tab = tab; }
+int capture_panel() noexcept { return capture_panel_tab; }
+
 void apply_settings_defaults() {
     constexpr std::string_view mark = "defaults_openrts_brakes";
     auto values = read_state();
