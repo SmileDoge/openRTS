@@ -2248,6 +2248,17 @@ struct FovKeys {
     bool changed = false;
 };
 
+// Num*: the field of view easing back to its start, smoothstep, not a jump
+// (our tester's request): the view slides to where it began.
+struct FovReturn {
+    static constexpr float seconds = 0.35f;
+    bool active = false;
+    float t = 0.0f;
+    float from = 0.0f;
+    float to = 0.0f;
+    float zoom_from = 1.0f;
+};
+
 // True when the key that changed the field of view was let go (remember it).
 [[nodiscard]] bool update_fov_keys(GLFWwindow* window, FovKeys& state, float& fov, const float seconds, const bool keyboard_free) {
     const auto down = [window](const int key) { return glfwGetKey(window, key) == GLFW_PRESS; };
@@ -3309,6 +3320,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     StageClock stage_clock;
     StageTimes stages{};
     FovKeys fov_keys;
+    FovReturn fov_return;
     double last_time = glfwGetTime();
     // Every 10 s the frame's breakdown goes to the console (openrts.log when
     // the menu runs the game): what a frame waits on, without the panel.
@@ -3384,12 +3396,27 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                && (held(GLFW_KEY_KP_MULTIPLY)
                                    || ((held(GLFW_KEY_LEFT_CONTROL) || held(GLFW_KEY_RIGHT_CONTROL)) && held(GLFW_KEY_0)));
             if (reset && !fov_reset_down) {
-                panel.fov = base_fov;
-                camera.zoom_target = 1.0f;
-                camera.hold_zoom.reset();
-                remember("fov", std::to_string(panel.fov));
+                fov_return.active = true;
+                fov_return.t = 0.0f;
+                fov_return.from = panel.fov;
+                fov_return.to = base_fov;
+                fov_return.zoom_from = camera.view_zoom;
+                scene.restore_screen_focus();
             }
             fov_reset_down = reset;
+            // The wheel (or Num+ / Num-) meanwhile: the view is taken by hand,
+            // the ease lets go.
+            if (fov_keys.changed) fov_return.active = false;
+            if (fov_return.active) {
+                fov_return.t = (std::min)(1.0f, fov_return.t + elapsed / FovReturn::seconds);
+                const float t = fov_return.t * fov_return.t * (3.0f - 2.0f * fov_return.t);
+                panel.fov = fov_return.from + (fov_return.to - fov_return.from) * t;
+                camera.set_zoom(fov_return.zoom_from + (1.0f - fov_return.zoom_from) * t);
+                if (fov_return.t >= 1.0f) {
+                    fov_return.active = false;
+                    remember("fov", std::to_string(panel.fov));
+                }
+            }
         }
         last_time = now;
 
