@@ -6037,8 +6037,9 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
                        renderer::ModelLibrary& library, audio::AudioEngine* sound) {
     OPENRTS_ZONE("trains: update");
     camera_eye_ = camera.eye();
-    // The wheel on a cab's screen fits the frame in; the window's own aspect
-    // and field of view are not published, so these stay at their defaults.
+    // The frame the window will draw (the wheel on a cab's screen fits it in).
+    frame_aspect_ = camera.aspect;
+    frame_fov_ = camera.frame_fov;
     // While the car menu is open its window has the arrows and Enter.
     SceneInput menu_input;
     if (car_menu_) {
@@ -6898,7 +6899,7 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
     if (engineer_.inside()) {
         camera.position += sway_offset(unit, engineer_car_, camera.position);
         // A screen of the cab holding the eye keeps the head still.
-        if (!screen_focus_) move_head(unit, engineer_car_, elapsed, camera);
+        if (!engineer_.focused()) move_head(unit, engineer_car_, elapsed, camera);
         else head_.started = false;
     } else {
         head_.started = false;
@@ -7744,15 +7745,15 @@ void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& di
     // up close to read it, then back — the wheel down lets it go, and so does
     // * (restore_screen_focus). A switch in front of the screen keeps the
     // wheel: it turns the handle below.
-    if (screen_focus_) {
+    if (engineer_.focused()) {
         if (scroll != 0.0f) {
-            if (scroll < 0.0f) screen_focus_ = false;
+            if (scroll < 0.0f) engineer_.release_focus();
             return;
         }
     } else if (scroll > 0.0f && engineer_.inside() && !helping_ && !(hovered_ && hovered_->control)) {
         if (const auto screen = cab->pick_screen(origin, along, 4.0f)) {
             if (const auto focus = cab_screen_focus(screen->plane, origin, frame_fov_, frame_aspect_)) {
-                screen_focus_ = true;
+                engineer_.focus_screen(focus->eye, focus->forward);
                 hovered_.reset();
                 return;
             }

@@ -808,7 +808,7 @@ public:
     [[nodiscard]] bool viewing_inside() const noexcept { return engineer_.inside() && car_view_ == CarView::off; }
     // The eye back from a screen of the cab the wheel took it to, smoothly
     // (the * key: TME's CameraReset does the same).
-    void restore_screen_focus() {}
+    void restore_screen_focus() { engineer_.release_focus(); }
     // The engineer sits in a cab's chair and the view is his.
     [[nodiscard]] bool seated_in_cab() const noexcept { return engineer_.mode() == Engineer::Mode::seated && car_view_ == CarView::off; }
     // F3: the camera orbits the train's first car, then its last, then back.
@@ -1374,7 +1374,6 @@ private:
     bool visit_requested_ = false;
     std::future<renderer::StreamedModelAsset> visit_loading_;
     std::optional<CabView::Picked> hovered_; // the control under the mouse
-    bool screen_focus_ = false;              // a cab screen held the eye (the wheel lets it go)
     // A door under the mouse (openRTS): where the ray met it (scene) and
     // what a click does, for its label.
     struct DoorHover {

@@ -3745,6 +3745,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const bool hdr = tone && surface.hdr_view();
 
         const auto aspect = static_cast<float>(width) / static_cast<float>(height);
+        // What the frame is drawn with, for the wheel on a cab's screen: the
+        // eye fits the screen into the frame with it (cab_screen_focus).
+        camera.aspect = aspect;
+        camera.frame_fov = camera.vertical_fov(glm::radians(panel.fov));
         seated_cab_near = panel.cab_near_plane > 0.0f && scene.seated_in_cab() ? panel.cab_near_plane : 0.0f;
         FrameView frame{
             .eye = camera.eye(),
