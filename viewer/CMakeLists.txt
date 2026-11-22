@@ -63,6 +63,7 @@ endif()
 add_executable(openrts_viewer src/main.cpp src/crash_report.cpp)
 openrts_configure_target(openrts_viewer)
 openrts_add_icon(openrts_viewer)
+openrts_embed_dllhost(openrts_viewer)
 target_link_libraries(openrts_viewer PRIVATE openrts_viewer_core)
 if(WIN32)
     # dbghelp: the crash report; shell32: the command line as UTF-16.
@@ -75,4 +76,3 @@ if(MSVC)
 endif()
 
 openrts_copy_wgpu_runtime(openrts_viewer)
-openrts_copy_dllhost(openrts_viewer)

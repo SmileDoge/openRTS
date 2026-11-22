@@ -9,15 +9,14 @@ if(TARGET openrts_viewer_core)
         src/menu/ui_sound.cpp)
     openrts_configure_target(openrts_game)
     openrts_add_icon(openrts_game)
+    openrts_embed_dllhost(openrts_game)
     target_link_libraries(openrts_game PRIVATE openrts_viewer_core winmm)
     if(WIN32)
         # WIC decodes the menu's pictures; ShellExecute opens its links.
         target_link_libraries(openrts_game PRIVATE windowscodecs ole32 shell32)
     endif()
     openrts_copy_wgpu_runtime(openrts_game)
-    # The 32-bit DLL host beside the game too: the menu's trains load their
-    # legacy DLLs from the game's own process.
-    openrts_copy_dllhost(openrts_game)
+    # The 32-bit host is embedded (openrts_embed_dllhost): no separate file.
     # The menu's faces and pictures beside the program, so a build folder
     # starts as is.
     add_custom_command(TARGET openrts_game POST_BUILD
@@ -31,5 +30,6 @@ else()
     add_executable(openrts_game src/main.cpp)
     openrts_configure_target(openrts_game)
     openrts_add_icon(openrts_game)
+    openrts_embed_dllhost(openrts_game)
     target_link_libraries(openrts_game PRIVATE openrts_assets openrts_renderer openrts_platform openrts_simulation)
 endif()

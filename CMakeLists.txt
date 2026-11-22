@@ -186,6 +186,18 @@ else()
     endfunction()
 endif()
 
+# The 32-bit DLL host inside the 64-bit program too: one file to ship, the
+# host extracted from resource 101 on the first train with legacy DLLs.
+function(openrts_embed_dllhost target)
+    if(WIN32 AND TARGET openrts_dllhost32)
+        set(dllhost_rc "${CMAKE_BINARY_DIR}/${target}_dllhost.rc")
+        file(GENERATE OUTPUT "${dllhost_rc}"
+             CONTENT "101 RCDATA \"${OPENRTS_DLLHOST_DIR}/$<CONFIG>/openrts-dllhost32.exe\"\n")
+        target_sources(${target} PRIVATE "${dllhost_rc}")
+        add_dependencies(${target} openrts_dllhost32)
+    endif()
+endfunction()
+
 # The Tracy profiler's client, optional (docs/profiling.md): the zones of
 # include/openrts/core/profile.hpp. Off, they compile to nothing. On demand
 # (nothing kept until the Tracy program connects) and on localhost only.

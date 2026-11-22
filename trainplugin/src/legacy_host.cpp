@@ -82,11 +82,50 @@ std::string LegacyHost::take_messages() { return std::exchange(messages_, {}); }
 
 #ifdef _WIN32
 
+// The 32-bit host embedded in the game's resource 101 (CMakeLists.txt). A
+// 64-bit process cannot load the old x86 locomotive DLLs, so the host is
+// extracted once and run as a child; the shipped game stays one file.
+std::filesystem::path embedded_dllhost() {
+    const auto module = GetModuleHandleW(nullptr);
+    const auto resource = FindResourceW(module, MAKEINTRESOURCEW(101), MAKEINTRESOURCEW(10));
+    if (!resource) return {};
+    const auto size = SizeofResource(module, resource);
+    const auto loaded = LoadResource(module, resource);
+    const auto* bytes = loaded ? static_cast<const unsigned char*>(LockResource(loaded)) : nullptr;
+    if (!bytes || size == 0) return {};
+
+    wchar_t local[MAX_PATH * 2]{};
+    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local, static_cast<DWORD>(std::size(local)));
+    std::filesystem::path directory =
+        length > 0 && length < std::size(local) ? std::filesystem::path(local) : std::filesystem::temp_directory_path();
+    directory /= L"openRTS";
+    directory /= L"dllhost";
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    const auto file = directory / (L"openrts-dllhost32-" + std::to_wstring(size) + L".exe");
+    if (std::filesystem::is_regular_file(file, ec) && std::filesystem::file_size(file, ec) == size) return file;
+
+    const HANDLE output = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (output == INVALID_HANDLE_VALUE) return {};
+    DWORD written = 0;
+    const bool ok = WriteFile(output, bytes, size, &written, nullptr) && written == size;
+    CloseHandle(output);
+    if (!ok) {
+        std::filesystem::remove(file, ec);
+        return {};
+    }
+    return file;
+}
+
 std::filesystem::path LegacyHost::default_executable() {
     wchar_t buffer[MAX_PATH * 2];
     const DWORD n = GetModuleFileNameW(nullptr, buffer, static_cast<DWORD>(std::size(buffer)));
     std::filesystem::path self(std::wstring(buffer, n));
-    return self.parent_path() / L"openrts-dllhost32.exe";
+    const auto beside = self.parent_path() / L"openrts-dllhost32.exe";
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(beside, ec)) return beside;
+    if (const auto embedded = embedded_dllhost(); !embedded.empty()) return embedded;
+    return beside;
 }
 
 std::unique_ptr<LegacyHost> LegacyHost::start(std::string* error, const std::filesystem::path& executable) {
