@@ -27,7 +27,7 @@ namespace {
 std::optional<bool> enabled_setting;
 
 // The project's page, as the menu's link.
-constexpr const char* project_page = "https://github.com/SmileDoge/openRTS";
+constexpr const char* project_page = "https://github.com/davydov-dt/DTRE";
 // Discord's large activity image: the DTRE logo from this repository.
 constexpr const char* logo_url = "https://raw.githubusercontent.com/davydov-dt/DTRE/v.1.0.0-devel/resources/logo.png";
 
@@ -117,7 +117,7 @@ void DiscordStatus::update(ViewerScene& scene) {
         activity.large_image = logo_url;
         activity.large_text = "DTRE " + core::version_text();
         activity.start = start_;
-        activity.buttons = {{tr("openRTS on GitHub"), project_page}};
+        activity.buttons = {{tr("DTRE on GitHub"), project_page}};
         activity.party_id = what->party_id;
         activity.party_size = what->party_size;
         activity.party_max = what->party_max;
