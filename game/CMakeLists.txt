@@ -14,6 +14,9 @@ if(TARGET openrts_viewer_core)
         target_link_libraries(openrts_game PRIVATE windowscodecs ole32 shell32)
     endif()
     openrts_copy_wgpu_runtime(openrts_game)
+    # The 32-bit DLL host beside the game too: the menu's trains load their
+    # legacy DLLs from the game's own process.
+    openrts_copy_dllhost(openrts_game)
     # The menu's faces and pictures beside the program, so a build folder
     # starts as is.
     add_custom_command(TARGET openrts_game POST_BUILD

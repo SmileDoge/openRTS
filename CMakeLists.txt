@@ -141,7 +141,7 @@ endfunction()
 # (<bin32>/<config>/) either way.
 set(OPENRTS_DLLHOST_GENERATOR "" CACHE STRING "Visual Studio generator for openrts-dllhost32 when the build's is not one (empty: the newest installed)")
 set(openrts_dllhost_generator "")
-if(WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
     if(CMAKE_GENERATOR MATCHES "Visual Studio")
         set(openrts_dllhost_generator "${CMAKE_GENERATOR}")
     elseif(OPENRTS_DLLHOST_GENERATOR)
