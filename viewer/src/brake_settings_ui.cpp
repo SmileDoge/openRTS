@@ -224,8 +224,8 @@ bool draw_brake_settings(BrakeSettings& s, const BrakeSettingsStatus* status, co
                     row(tr("Brake devices"));
                     choice("##own_brakes", s.own_brakes, {{"openRTS", 1}, {"Brakes.dll", 0}});
                     if (s.own_brakes == 1) {
-                        row(tr("Their numbers"));
-                        choice("##brake_numbers", s.brake_numbers, {{tr("as Brakes.dll's"), 0}, {tr("from the books"), 1}});
+                        row(tr("How the valves and gauges work"));
+                        choice("##brake_numbers", s.brake_numbers, {{tr("as Brakes.dll's"), 0}, {tr("as the real ones (from the books)"), 1}});
                     }
                     row("КЛУБ");
                     choice("##own_klub", s.own_klub, {{"openRTS", 1}, {"Brakes.dll", 0}});

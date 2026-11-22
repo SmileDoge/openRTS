@@ -275,6 +275,12 @@ struct TrainView::Car {
         std::shared_ptr<const formats::SoundScript> script;
         core::VirtualPath path;
         std::unique_ptr<audio::SoundInstance> instance;
+        // openRTS: its ЭПК's stream alone (Brakes.sms: the whistle, the
+        // block's, the key), heard from the first or last car's view (F3)
+        // too, where the cab's own sounds are silent (testers).
+        std::shared_ptr<const formats::SoundScript> alert_script;
+        std::unique_ptr<audio::SoundInstance> alerts;
+        bool alerts_tried = false;
     };
     bool aux_sounds_tried = false;
     std::vector<AuxSound> aux_sounds;
@@ -5920,6 +5926,36 @@ void TrainView::draw_hud() {
             } else {
                 ImGui::TextDisabled("%s", tr("No signal ahead"));
             }
+            // The cab's locomotive signal (the КЛУБ's, the АЛС-МУ's: Cabin::
+            // Signal.Aspect[0], 0 К, 1 КЖ, 2 Б, 3 .. 5 Ж, 6 .. 7 З), out
+            // while the ALSN is off.
+            const auto driven = driven_car();
+            if (const auto* out = legacy_ && driven < unit->cars.size() ? legacy_->output(driven) : nullptr; out && out->has_engine) {
+                const auto a = out->cab_aspect;
+                const bool lit = out->engine.alsn_on != 0 && a < 8;
+                const std::uint32_t colour = !lit ? IM_COL32(90, 90, 90, 255)
+                                             : a == 0 ? IM_COL32(230, 50, 40, 255)
+                                             : a == 1 ? IM_COL32(240, 130, 40, 255)
+                                             : a == 2 ? IM_COL32(240, 240, 240, 255)
+                                             : a <= 5 ? IM_COL32(250, 210, 40, 255)
+                                                      : IM_COL32(60, 210, 90, 255);
+                const char* name = !lit ? tr("out") : a == 0 ? "К" : a == 1 ? "КЖ" : a == 2 ? "Б" : a <= 5 ? "Ж" : "З";
+                const auto at = ImGui::GetCursorScreenPos();
+                const float h = ImGui::GetTextLineHeight();
+                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(at.x + h * 0.5f, at.y + h * 0.5f), h * 0.38f, colour);
+                ImGui::Dummy(ImVec2(h, h));
+                ImGui::SameLine(0.0f, 4.0f);
+                ImGui::Text(tr("Cab signal: %s"), name);
+            }
+            // The brakes at the driven car: ТЦ, ТМ, УР, ЗР.
+            if (const auto& states = train.cars(); driven < states.size()) {
+                const auto& c = states[driven];
+                const auto ur = equalising_of(0, driven);
+                char line[96];
+                if (ur) std::snprintf(line, sizeof line, tr("ТЦ %.1f  ТМ %.2f  УР %.2f  ЗР %.2f"), c.cylinder, c.pipe, *ur, c.auxiliary);
+                else std::snprintf(line, sizeof line, tr("ТЦ %.1f  ТМ %.2f  ЗР %.2f"), c.cylinder, c.pipe, c.auxiliary);
+                ImGui::TextUnformatted(line);
+            }
         }
         end_panel(drive_card_place_);
     }
@@ -10848,8 +10884,10 @@ void TrainView::stop_sound(audio::AudioEngine& sound) {
         for (auto& car : unit.cars) {
             if (car.sound) car.sound->stop(sound);
             if (car.cab_sound) car.cab_sound->stop(sound);
-            for (auto& aux : car.aux_sounds)
+            for (auto& aux : car.aux_sounds) {
                 if (aux.instance) aux.instance->stop(sound);
+                if (aux.alerts) aux.alerts->stop(sound);
+            }
             for (auto& extra : car.activity_sounds)
                 if (extra.instance) extra.instance->stop(sound);
         }
@@ -10860,6 +10898,26 @@ void TrainView::stop_sound(audio::AudioEngine& sound) {
 // an SMS of its own, fed with what that library posts. SingleWagon: only
 // while the player is in that car; External: it fades with distance, else
 // it is heard as if at the listener; AMBIENT has no position.
+// A library script's ЭПК stream alone (the streams taking Brakes.sms's ЭПК
+// codes: 56 / 57 the whistle, 106 its block's, 3956 / 3957), for the view
+// from a car (F3); none when the script has no such stream.
+std::shared_ptr<const formats::SoundScript> TrainView::epk_alert_script(const formats::SoundScript& script) {
+    auto alert = std::make_shared<formats::SoundScript>(script);
+    bool any = false;
+    for (auto& group : alert->groups) {
+        std::vector<formats::SoundStream> kept;
+        for (const auto& stream : group.streams) {
+            const bool epk = std::any_of(stream.triggers.begin(), stream.triggers.end(), [](const formats::SoundTrigger& t) {
+                return t.kind == formats::SoundTriggerKind::discrete && (t.code == 56 || t.code == 57 || t.code == 106 || t.code == 3956 || t.code == 3957);
+            });
+            if (epk) kept.push_back(stream);
+        }
+        any = any || !kept.empty();
+        group.streams = std::move(kept);
+    }
+    return any ? alert : nullptr;
+}
+
 void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::size_t i, const audio::SoundInputs& exterior,
                                   const float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound) {
     auto& car = unit.cars[i];
@@ -10875,6 +10933,7 @@ void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::si
     if (!host) {
         for (auto& aux : car.aux_sounds) {
             if (aux.instance) aux.instance->stop(sound);
+            if (aux.alerts) aux.alerts->stop(sound);
             aux.instance.reset();
         }
         car.pending_aux_triggers.clear();
@@ -10913,6 +10972,36 @@ void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::si
     for (auto& aux : car.aux_sounds) {
         const auto& library = libraries[aux.library];
         auto* pending = aux.library < car.pending_aux_triggers.size() ? &car.pending_aux_triggers[aux.library] : nullptr;
+        // F3 (the view from the first or last car) of the driven train: the
+        // cab's ЭПК whistle all the same, a little quieter.
+        const bool car_view = player_train && car_view_ != CarView::off && i == cab_car_ && library.sound_single_wagon;
+        if (car_view) {
+            if (!aux.alerts_tried) {
+                aux.alerts_tried = true;
+                aux.alert_script = epk_alert_script(*aux.script);
+                if (const auto* group = aux.alert_script ? aux.alert_script->select_group(owner) : nullptr) {
+                    auto lookup = [this, path = aux.path](const std::string& name) -> std::shared_ptr<const audio::AudioClip> {
+                        const auto file = audio::find_sound_file(*vfs_, path, name);
+                        return file ? bank_->get(*file) : nullptr;
+                    };
+                    aux.alerts = std::make_unique<audio::SoundInstance>(aux.alert_script, *group, owner, std::move(lookup),
+                                                                        static_cast<std::uint32_t>(7919u * (i + 1) + aux.library));
+                }
+            }
+            if (aux.alerts) {
+                audio::SoundInputs heard = exterior;
+                heard.camera = audio::SoundCamera::cab;
+                heard.at_listener = true;
+                heard.position = camera.eye();
+                heard.gain = 0.6f;
+                heard[formats::SoundVariable::distance] = 0.0f;
+                heard.events = {};
+                heard.discrete = pending ? std::span<const std::uint32_t>(*pending) : std::span<const std::uint32_t>(none);
+                aux.alerts->update(elapsed, heard, sound);
+            }
+        } else if (aux.alerts && aux.alerts->active()) {
+            aux.alerts->stop(sound);
+        }
         if (library.sound_single_wagon && !in_car) {
             if (aux.instance && aux.instance->active()) aux.instance->stop(sound);
             if (pending) pending->clear();

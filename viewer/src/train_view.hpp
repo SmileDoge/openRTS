@@ -1595,6 +1595,7 @@ private:
     std::unique_ptr<TrainExtraSounds> extra_sounds_;
     std::unordered_map<const formats::SoundScript*, bool> script_squeals_;
     [[nodiscard]] bool script_squeals(const formats::SoundScript* script);
+    [[nodiscard]] static std::shared_ptr<const formats::SoundScript> epk_alert_script(const formats::SoundScript& script);
     void update_extra_sounds(float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound);
     // Wheel flats (ползуны): their knocks are real wheel-rail blows of the
     // RTS install (SOUND/ra_euro_joint*.wav, else mp_joint*.wav), one at
