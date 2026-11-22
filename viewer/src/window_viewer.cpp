@@ -49,7 +49,6 @@
 #include <openrts/renderer/gpu_pass_timer.hpp>
 #include <openrts/renderer/video_memory.hpp>
 #include "key_layout.hpp"
-#include "mouse_look.hpp"
 #include "ui_fonts.hpp"
 #include "ui_slider.hpp"
 #include "ui_text.hpp"
@@ -256,13 +255,9 @@ private:
 
 class Window {
 public:
-    // Hidden until shown (glfwShowWindow): the viewer shows it once its
-    // first frame is drawn, never Windows's white of a window not yet drawn.
     Window(const int width, const int height, const char* title) {
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         handle_ = glfwCreateWindow(width, height, title, nullptr, nullptr);
-        glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
     }
     ~Window() {
         if (handle_) glfwDestroyWindow(handle_);
@@ -676,10 +671,6 @@ struct PanelState {
     WindowMode full_mode = WindowMode::fullscreen;
     bool window_mode_fixed = false;
     bool menu = false; // the scene draws the whole interface
-    // The mouse lock in force this frame: the dot in the middle, the
-    // panels without the mouse; its switch's note until then (ImGui time).
-    bool mouse_locked = false;
-    double lock_note_until = -1.0;
     bool hdr = false;  // the frame is HDR: the tone curve and exposure apply
     std::string_view backend_now = "-"; // the graphics API this run draws through
     bool reshade_depth = false;         // keep the depth and copy it single-sample (INSTALL.md, ReShade)
@@ -881,17 +872,6 @@ public:
 
     [[nodiscard]] bool ok() const noexcept { return initialized_; }
 
-    // A frame of the loading screen while the viewer starts, before the
-    // scene's own: `title` (the route and the train, may be empty) and
-    // `stage` (English, for tr()) under an empty bar.
-    void build_startup(const std::string& title, const char* stage) const {
-        ImGui_ImplWGPU_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
-        draw_loading_screen({.done = false, .progress = 0.0f, .stage = stage, .title = title});
-        ImGui::Render();
-    }
-
     void build(const ViewerScene& scene,
                const ViewerCamera& camera,
                renderer::ModelRenderer& renderer,
@@ -900,9 +880,6 @@ public:
                PanelState& panel) const {
         ImGui_ImplWGPU_NewFrame();
         ImGui_ImplGlfw_NewFrame();
-        // In the mouse lock the panels get no mouse: the hidden cursor is
-        // nowhere for them (on_cursor_moved does not pass its moves on).
-        if (panel.mouse_locked) ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
         ImGui::NewFrame();
         // The console (F2): the game's messages, on every screen (the
         // loading's too).
@@ -942,8 +919,6 @@ public:
             list->AddRectFilled({at.x - 10.0f, at.y - 6.0f}, {at.x + size.x + 10.0f, at.y + size.y + 6.0f}, 0xb0000000u, 4.0f);
             list->AddText(at, 0xff40e0ffu, text);
         }
-        draw_lock_dot(panel);
-        draw_lock_note(panel);
         // Esc shows and hides this panel and the DLL cab window, hidden at
         // the start (testers: they cluttered the picture); not while Esc
         // closes something of the scene's, nor in a text field.
@@ -1067,19 +1042,6 @@ public:
                 set_mouse_sensitivity(sensitivity);
                 remember("mouse_sensitivity", std::to_string(mouse_sensitivity()));
             }
-            float smooth = mouse_smoothing();
-            ImGui::SetNextItemWidth(220.0f);
-            if (slider_with_input(tr("Mouse smoothing, ms"), &smooth, 0.0f, max_mouse_smoothing, "%.0f", "%.0f")) {
-                set_mouse_smoothing(smooth);
-                remember("mouse_smoothing_ms", std::to_string(mouse_smoothing()));
-            }
-            ImGui::TextDisabled("%s", tr("(0: the view turns at once with the mouse; more: smoother, a little behind it)"));
-            bool lock = mouse_lock();
-            if (ImGui::Checkbox(tr("Mouse lock (the side mouse button or Caps Lock)"), &lock)) {
-                set_mouse_lock(lock);
-                remember("mouse_lock", lock ? "1" : "0");
-            }
-            ImGui::TextDisabled("%s", tr("(the view always turns with the mouse, the cursor hidden; a dot in the middle clicks the cab's controls; while the panel (Esc) is shown the cursor is free)"));
             float head = head_motion();
             ImGui::SetNextItemWidth(220.0f);
             if (slider_with_input(tr("Head motion in the cab"), &head, 0.0f, max_head_motion, "%.2f", "%.2f")) {
@@ -1088,7 +1050,7 @@ public:
             }
             ImGui::TextDisabled("%s", tr("(the head nods with speeding up, braking and rail joints and leans in curves; 0: as RTS, the cab only sways)"));
             int joints = rail_joint_layout() == simulation::RailJointLayout::rts ? 1 : 0;
-            const char* joint_layouts[] = {"openRTS", "RTS"};
+            const char* joint_layouts[] = {"DTRE", "RTS"};
             ImGui::SetNextItemWidth(220.0f);
             if (ImGui::Combo(tr("Rail joints"), &joints, joint_layouts, 2)) {
                 set_rail_joint_layout(joints == 1 ? simulation::RailJointLayout::rts : simulation::RailJointLayout::openrts);
@@ -1097,7 +1059,7 @@ public:
             ImGui::TextDisabled("%s", joints == 1 ? tr("(as RTS: a joint every 50 m; on stretches over 2 km four joints 12.5 m apart every 600 m)")
                                                   : tr("(25 m rails; on stretches of 1 km or more between switches welded strings of about 800 m with 3 or 4 joints 12.5 m apart between them)"));
             int bodies = body_motion_model() == simulation::BodyMotionModel::rts ? 1 : 0;
-            const char* body_models[] = {"openRTS", "RTS"};
+            const char* body_models[] = {"DTRE", "RTS"};
             ImGui::SetNextItemWidth(220.0f);
             if (ImGui::Combo(tr("Body motion"), &bodies, body_models, 2)) {
                 set_body_motion_model(bodies == 1 ? simulation::BodyMotionModel::rts : simulation::BodyMotionModel::openrts);
@@ -1114,8 +1076,7 @@ public:
                 }
                 ImGui::TextDisabled("%s", tr("(1: a smooth push of the bogie, harder with the speed and on the diverging route; 0: none)"));
             }
-            if (scene.networked()) ImGui::TextDisabled("%s", tr("No pause in a network game: the others play on."));
-            else ImGui::Checkbox(tr("Pause (Pause or F1)"), &panel.paused);
+            ImGui::Checkbox(tr("Pause (Pause or F1)"), &panel.paused);
             if (const auto folder = scene.saves_folder(); !folder.empty()) {
                 // Saved games: as RTS, F2 saves at once (the quick save).
                 ImGui::SeparatorText(tr("Saved games"));
@@ -1786,32 +1747,6 @@ private:
         list->AddText(at, 0xff80ff80u, text);
     }
 
-    // The mouse lock's dot in the screen's middle: what a click works.
-    static void draw_lock_dot(const PanelState& panel) {
-        if (!panel.mouse_locked) return;
-        const auto display = ImGui::GetIO().DisplaySize;
-        const ImVec2 at{display.x * 0.5f, display.y * 0.5f};
-        const float radius = (std::max)(2.0f, ImGui::GetFontSize() * 0.12f);
-        auto* list = ImGui::GetForegroundDrawList();
-        list->AddCircleFilled(at, radius + 1.25f, IM_COL32(0, 0, 0, 150));
-        list->AddCircleFilled(at, radius, IM_COL32(255, 255, 255, 235));
-    }
-
-    // A few seconds after the side button or Caps Lock: the lock on or off, and how to
-    // switch it back.
-    static void draw_lock_note(const PanelState& panel) {
-        if (ImGui::GetTime() >= panel.lock_note_until) return;
-        const char* text = !mouse_lock()     ? tr("Mouse lock off (the side button or Caps Lock: on)")
-                           : panels_shown() ? tr("Mouse lock on: in force once the panel (Esc) is hidden")
-                                            : tr("Mouse lock on: the view turns with the mouse, a click works what the dot is on (the side button or Caps Lock: off)");
-        const auto display = ImGui::GetIO().DisplaySize;
-        const auto size = ImGui::CalcTextSize(text);
-        auto* list = ImGui::GetForegroundDrawList();
-        const ImVec2 at{(display.x - size.x) * 0.5f, display.y * 0.18f};
-        list->AddRectFilled({at.x - 10.0f, at.y - 6.0f}, {at.x + size.x + 10.0f, at.y + size.y + 6.0f}, 0xb0000000u, 4.0f);
-        list->AddText(at, 0xffe0e0e0u, text);
-    }
-
     // RTS's clock (0x408574): the world's time as H:MM:SS (0x45CA30) in the
     // top right corner, white, with " x60" while time runs faster, which
     // shows it as well; below the FPS counter when that is on.
@@ -2009,7 +1944,6 @@ struct CameraInput {
     bool kp5_down = false;
     bool kp4_down = false;
     bool kp7_down = false;
-    bool kp_divide_down = false;
     bool inspector_key_down = false;
     bool tape_window_key_down = false; // F9
     bool free_camera_key_down = false; // Ctrl+F
@@ -2025,23 +1959,8 @@ struct CameraInput {
     std::vector<KeyEvent> key_events; // since the last scene_input()
     bool keyboard_captured = false;   // the scene takes the keyboard (cab keys)
     bool on_foot = false;             // the engineer stands or walks (not in a chair): W A S D walk
-    bool action_at_hand = false;      // on foot, something for Enter where he stands (E does it, key_layout.hpp)
-    bool use_key_down = false;        // E
-    // Where the mouse points, window pixels: the cursor; in the mouse lock
-    // the screen's middle, or where a control in hand was moved from it.
     double cursor_x = 0.0;
     double cursor_y = 0.0;
-    // GLFW's cursor at its last move (a captured cursor's virtual one).
-    double last_x = 0.0;
-    double last_y = 0.0;
-    MouseLook look; // the mouse's moves the view has yet to take (apply_look())
-    // The mouse lock (key_layout.hpp) in force this frame: wanted, and
-    // neither the panel (Esc) nor the start menu shown.
-    bool locked = false;
-    bool lock_toggled = false;    // the side button or Caps Lock: the main loop switches the lock
-    bool zoom_held = false;       // the wheel held down: it zooms (ViewerCamera::hold_zoom)
-    bool control_in_hand = false; // a cab control is dragged: in the lock the mouse moves it, not the view
-    bool cursor_captured = false; // hidden and held in the window (set_cursor_captured)
     // The cursor was captured or let go in this poll: its moves do not turn
     // the camera till the next (set_cursor_captured).
     bool skip_motion = false;
@@ -2057,43 +1976,10 @@ struct CameraInput {
 // cursor on capturing: a move still queued from before (the mouse moving
 // as the button went down) became a step from the middle to where the
 // button was pressed, and the camera turned at random.
-void set_cursor_captured(GLFWwindow* window, CameraInput& input, const bool captured) {
+void set_cursor_captured(GLFWwindow* window, const bool captured) {
     if (captured && glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     glfwSetInputMode(window, GLFW_CURSOR, captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
-    input.cursor_captured = captured;
-    input.skip_motion = true;
-    glfwGetCursorPos(window, &input.last_x, &input.last_y);
-    // Out of the lock the mouse points where the cursor came back, not at
-    // the middle till it moves.
-    if (!input.locked) {
-        input.cursor_x = input.last_x;
-        input.cursor_y = input.last_y;
-    }
-}
-
-// The cursor captured while the lock is in force or a button turns the view.
-void update_cursor_capture(GLFWwindow* window, CameraInput& input) {
-    const bool wanted = input.locked || input.fly_looking || input.orbit_right;
-    if (wanted != input.cursor_captured) set_cursor_captured(window, input, wanted);
-}
-
-// The mouse's moves since the last frame turn the view, smoothed
-// (mouse_smoothing(), key_layout.hpp; mouse_look.hpp): each frame's move
-// spread over that many milliseconds.
-void apply_look(CameraInput& input, const float seconds) {
-    if (input.look.idle()) return;
-    const auto turn = input.look.take(seconds, mouse_smoothing() * 0.001f);
-    input.camera->rotate(static_cast<float>(turn.x), static_cast<float>(turn.y));
-}
-
-// In the lock the mouse points at the screen's middle (the dot), but for a
-// control in hand, which moves with it from there.
-void center_locked_cursor(GLFWwindow* window, CameraInput& input) {
-    if (!input.locked || input.control_in_hand) return;
-    int width = 0, height = 0;
-    glfwGetWindowSize(window, &width, &height);
-    input.cursor_x = width * 0.5;
-    input.cursor_y = height * 0.5;
+    if (auto* input = static_cast<CameraInput*>(glfwGetWindowUserPointer(window))) input->skip_motion = true;
 }
 
 void on_mouse_button(GLFWwindow* window, const int button, const int action, [[maybe_unused]] const int mods) {
@@ -2122,64 +2008,29 @@ void on_mouse_button(GLFWwindow* window, const int button, const int action, [[m
             // well, as the look does elsewhere.
             input->fly_looking = input->camera->fly;
             input->orbit_right = !input->camera->fly;
+            set_cursor_captured(window, true);
         } else if (action == GLFW_RELEASE) {
+            const bool held = input->fly_looking || input->orbit_right;
             input->fly_looking = false;
             input->orbit_right = false;
-        }
-    }
-    // The side button (back) switches the mouse lock (the main loop, next
-    // frame), as Caps Lock does; the wheel held down zooms while it turns,
-    // let go the view comes back (2026-11-21; the wheel's click was the lock).
-    if (button == GLFW_MOUSE_BUTTON_4 && pressed) input->lock_toggled = true;
-    if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
-        if (pressed) {
-            input->zoom_held = true;
-        } else if (action == GLFW_RELEASE) {
-            input->zoom_held = false;
-            input->camera->hold_zoom.reset();
+            if (held) set_cursor_captured(window, false);
         }
     }
     input->orbit_dragging = input->orbit_left || input->orbit_right;
-    update_cursor_capture(window, *input);
-    glfwGetCursorPos(window, &input->last_x, &input->last_y);
-    if (!input->locked) {
-        input->cursor_x = input->last_x;
-        input->cursor_y = input->last_y;
-    }
+    glfwGetCursorPos(window, &input->cursor_x, &input->cursor_y);
 }
 
 void on_cursor_moved(GLFWwindow* window, const double x, const double y) {
-    auto* input = camera_input(window);
-    // In the lock the panels get no mouse (DebugOverlay::build): a hidden
-    // cursor's wandering would hover them and stop the view.
-    const bool locked = input && input->locked;
 #ifdef OPENRTS_HAS_IMGUI
-    if (!locked) ImGui_ImplGlfw_CursorPosCallback(window, x, y);
+    ImGui_ImplGlfw_CursorPosCallback(window, x, y);
 #endif
-    if (!input || (!locked && overlay_wants_mouse())) return;
+    if (overlay_wants_mouse()) return;
+    auto* input = camera_input(window);
+    if (!input) return;
 
-    const double dx = x - input->last_x;
-    const double dy = y - input->last_y;
-    input->last_x = x;
-    input->last_y = y;
-    if (input->skip_motion) {
-        if (!locked) {
-            input->cursor_x = x;
-            input->cursor_y = y;
-        }
-        return;
+    if ((input->orbit_dragging || input->fly_looking) && !input->skip_motion) {
+        input->camera->rotate(static_cast<float>(x - input->cursor_x), static_cast<float>(y - input->cursor_y));
     }
-    if (locked) {
-        // A control in hand follows the mouse from the dot; else the view turns.
-        if (input->control_in_hand) {
-            input->cursor_x += dx;
-            input->cursor_y += dy;
-        } else {
-            input->look.add(dx, dy);
-        }
-        return;
-    }
-    if (input->orbit_dragging || input->fly_looking) input->look.add(dx, dy);
     input->cursor_x = x;
     input->cursor_y = y;
 }
@@ -2194,10 +2045,7 @@ void on_scroll(GLFWwindow* window, [[maybe_unused]] const double x, const double
         // too (its controls then keep still); else outside the cab the wheel
         // brings the camera nearer, in it the cab has it.
         const bool ctrl = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
-        if (input->zoom_held) {
-            // The wheel held down: the held zoom, nothing else.
-            input->camera->zoom_hold(static_cast<float>(y));
-        } else if (ctrl) {
+        if (ctrl) {
             input->camera->zoom_view(static_cast<float>(y));
             input->fov_touched = true; // a * return eases no more
         } else {
@@ -2218,7 +2066,6 @@ void on_key([[maybe_unused]] GLFWwindow* window,
 #endif
     if (action == GLFW_REPEAT) return;
     if (auto* input = camera_input(window)) {
-        if (key == GLFW_KEY_CAPS_LOCK && action == GLFW_PRESS) input->lock_toggled = true;
         input->key_events.push_back({.key = key,
                                      .down = action == GLFW_PRESS,
                                      .shift = (mods & GLFW_MOD_SHIFT) != 0,
@@ -2323,7 +2170,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         camera.toggle_fly();
         if (!camera.fly) {
             input.fly_looking = false;
-            update_cursor_capture(window, input); // held still in the lock
+            set_cursor_captured(window, false);
         }
     }
     input.toggle_key_down = toggle;
@@ -2378,9 +2225,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool kp4 = rts_keys ? pressed(GLFW_KEY_KP_4, input.kp4_down) : minus && shift;
     // Ctrl+= is the boarding's in openRTS's layout, not the head out.
     const bool equal = pressed(rts_keys ? GLFW_KEY_KP_1 : GLFW_KEY_EQUAL, input.kp1_down);
-    const bool kp1 = equal && (rts_keys || (!ctrl && !shift));
-    // On foot outside, collide with objects or not (Shift+= in openRTS's keys).
-    const bool walk_collision = rts_keys ? pressed(GLFW_KEY_KP_DIVIDE, input.kp_divide_down) && !ctrl && !alt : equal && shift && !ctrl && !alt;
+    const bool kp1 = equal && (rts_keys || !ctrl);
     // ` alone the car menu, Shift+` the flashlight, Ctrl+` the tape (RTS:
     // Num3, Num2 and Ctrl+Num5).
     const bool grave = !rts_keys && pressed(GLFW_KEY_GRAVE_ACCENT, input.kp3_down);
@@ -2388,44 +2233,33 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool kp2 = rts_keys ? pressed(GLFW_KEY_KP_2, input.kp2_down) : grave && shift && !ctrl;
     const bool kp5 = rts_keys && pressed(GLFW_KEY_KP_5, input.kp5_down);
     const bool tape = rts_keys ? kp5 && ctrl : grave && ctrl;
-    // E on foot in openRTS's keys (key_layout.hpp): Enter's action where
-    // he stands, Shift+E Ctrl+Enter's; with nothing for Enter the car menu.
-    const bool use_now = !rts_keys && input.on_foot && down(GLFW_KEY_E) && !ctrl && !alt;
-    const bool use = use_now && !input.use_key_down;
-    input.use_key_down = use_now;
     // The boarding at a scenario's stop (RTS: Ctrl+Num7, 0x403208).
     const bool board = rts_keys ? pressed(GLFW_KEY_KP_7, input.kp7_down) && ctrl : equal && ctrl;
     int width = 0, height = 0;
     glfwGetWindowSize(window, &width, &height);
-    // In the lock: the dot in the middle (the panels get no mouse then).
-    const bool in_window = input.cursor_x >= 0.0 && input.cursor_y >= 0.0 && input.cursor_x < width && input.cursor_y < height;
-    const bool pointer = !input.fly_looking && width > 0 && height > 0 && (input.locked || (!overlay_wants_mouse() && in_window));
+    const bool pointer = !input.fly_looking && width > 0 && height > 0 && !overlay_wants_mouse()
+                         && input.cursor_x >= 0.0 && input.cursor_y >= 0.0 && input.cursor_x < width && input.cursor_y < height;
     const int clicks = std::exchange(input.clicks, 0);
     const int releases = std::exchange(input.releases, 0);
     const double scroll = std::exchange(input.scroll, 0.0);
     // W A S D walk the engineer on his feet (key_layout.hpp): not the cab's
     // then, nor the free camera's.
     const bool wasd = wasd_walking() && input.on_foot && !ctrl && !alt;
-    // E too in openRTS's keys (the engineer's use, above).
     const auto walk_keys_out = [&](std::vector<KeyEvent>& keys) {
-        if (!input.on_foot) return;
-        const bool wasd_out = wasd_walking();
-        std::erase_if(keys, [&](const KeyEvent& e) {
-            if (e.ctrl || e.alt) return false;
-            if (!rts_keys && e.key == GLFW_KEY_E) return true;
-            return wasd_out && (e.key == GLFW_KEY_W || e.key == GLFW_KEY_A || e.key == GLFW_KEY_S || e.key == GLFW_KEY_D);
+        if (!wasd_walking() || !input.on_foot) return;
+        std::erase_if(keys, [](const KeyEvent& e) {
+            return !e.ctrl && !e.alt && (e.key == GLFW_KEY_W || e.key == GLFW_KEY_A || e.key == GLFW_KEY_S || e.key == GLFW_KEY_D);
         });
     };
     const auto engineer = [&](SceneInput& in) {
         in.cab_window = kp0;
         in.head_out = kp1;
-        in.car_menu = kp3 || (use && !shift && !input.action_at_hand);
+        in.car_menu = kp3;
         in.flashlight = kp2;
         in.clock = kp4;
         in.tape = tape;
         in.tape_which = kp5 && !ctrl;
         in.board = board;
-        in.walk_collision = walk_collision;
         in.inspector = f12;
         in.pointer = pointer;
         in.pointer_x = static_cast<float>(input.cursor_x / width * 2.0 - 1.0);
@@ -2445,8 +2279,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.walk_run = shift;
         in.walk_slow = down(GLFW_KEY_END);
         // Alt+Enter is the window's (full screen / window), not a door.
-        in.engineer_action = (enter && !alt) || (use && (shift || input.action_at_hand));
-        in.engineer_action_ctrl = (enter && ctrl && !alt) || (use && shift);
+        in.engineer_action = enter && !alt;
+        in.engineer_action_ctrl = enter && ctrl && !alt;
         in.cab_labels = alt;
     };
     if (input.keyboard_captured) {
@@ -2459,8 +2293,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .car_info_shift = shift,
             .limits_panel = f5 && ctrl,
             .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+            .drive_panel = f4 && !ctrl,
             .profile_strip = f4 && ctrl,
-            .drive_card = f4 && !ctrl,
             .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
             .signal_names = f7 && ctrl && !alt,
             .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -2477,8 +2311,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .step_up = down(GLFW_KEY_UP),
         .step_down = down(GLFW_KEY_DOWN),
         .toggle_follow = pressed(GLFW_KEY_V, input.follow_key_down),
-        // Not with Ctrl: Ctrl+T is Track control's teleport.
-        .toggle_track = pressed(GLFW_KEY_T, input.track_key_down) && !ctrl,
+        .toggle_track = pressed(GLFW_KEY_T, input.track_key_down),
         .toggle_labels = pressed(GLFW_KEY_L, input.labels_key_down),
         .throttle_up = pressed(GLFW_KEY_HOME, input.train_keys_down[1]),
         .throttle_down = pressed(GLFW_KEY_END, input.train_keys_down[2]),
@@ -2503,8 +2336,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .car_info_shift = shift,
         .limits_panel = f5 && ctrl,
         .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+        .drive_panel = f4 && !ctrl,
         .profile_strip = f4 && ctrl,
-        .drive_card = f4 && !ctrl,
         .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
         .signal_names = f7 && ctrl && !alt,
         .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -3024,69 +2857,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     PresentationSurface surface(context.context, window.get(), capture);
     if (!surface.ok()) return exit_code::surface_failed;
 
-    // The interface language chosen last time (Russian by default).
-    set_ui_language(remembered("language").value_or("ru") == "en" ? UiLanguage::english : UiLanguage::russian);
-#ifdef OPENRTS_HAS_IMGUI
-    const DebugOverlay overlay(window.get(), device, surface.format(), options.menu);
-    if (!overlay.ok()) {
-        std::cerr << "ImGui initialization failed.\n";
-        return exit_code::renderer_failed;
-    }
-    // The loading screen while the viewer starts (the renderer's pipelines,
-    // the effects, the sound, the scene's GPU side: seconds on a cold
-    // shader cache) until the scene's own: the window, made hidden, shows
-    // with it, not white as Windows leaves a window not yet drawn (it
-    // dazzled, 2026-11-20). `stage`: English, for tr().
-    const std::string startup_title = scene.loading().title;
-    const auto startup_frame = [&](const char* stage) {
-        glfwPollEvents();
-        int width = 0, height = 0;
-        glfwGetFramebufferSize(window.get(), &width, &height);
-        if (width <= 0 || height <= 0) return;
-        surface.resize(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
-        const auto texture = surface.acquire();
-        if (!texture) return;
-        overlay.build_startup(startup_title, stage);
-        const auto view = wgpuTextureCreateView(texture, nullptr);
-        const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
-        constexpr glm::vec4 dark{22.0f / 255.0f, 24.0f / 255.0f, 29.0f / 255.0f, 1.0f};
-        WGPURenderPassEncoder pass = nullptr;
-        if (renderer::scene_hdr()) {
-            // ImGui draws in a pass of its own then: no depth, one sample.
-            const WGPURenderPassColorAttachment colour{
-                .view = view,
-                .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
-                .loadOp = WGPULoadOp_Clear,
-                .storeOp = WGPUStoreOp_Store,
-                .clearValue = {.r = dark.r, .g = dark.g, .b = dark.b, .a = 1.0},
-            };
-            const WGPURenderPassDescriptor descriptor{.colorAttachmentCount = 1, .colorAttachments = &colour};
-            pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
-        } else {
-            pass = begin_main_pass(encoder, {.color = view, .depth = surface.depth_view(), .msaa = surface.msaa_view()}, dark, std::nullopt,
-                                   nullptr);
-        }
-        overlay.render(pass);
-        wgpuRenderPassEncoderEnd(pass);
-        wgpuRenderPassEncoderRelease(pass);
-        const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
-        const auto queue = wgpuDeviceGetQueue(device);
-        wgpuQueueSubmit(queue, 1, &commands);
-        wgpuQueueRelease(queue);
-        wgpuCommandBufferRelease(commands);
-        wgpuCommandEncoderRelease(encoder);
-        surface.present();
-        wgpuTextureViewRelease(view);
-        wgpuTextureRelease(texture);
-    };
-#else
-    const auto startup_frame = [](const char*) {};
-#endif
-    // Drawn, shown, drawn again (what a hidden window was given may not stay).
-    startup_frame("Starting the graphics");
-    glfwShowWindow(window.get());
-    startup_frame("Starting the graphics");
-
     renderer::ModelRenderer renderer(device, surface.scene_format());
     std::unique_ptr<renderer::ToneMapper> tone;
     std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
@@ -3102,7 +2872,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     }
     renderer.set_shading_path(experimental_supported ? options.shading : renderer::ShadingPath::rts_compatible);
     renderer.set_batching(options.batching);
-    startup_frame("Preparing the shaders");
     // The experimental path's shadows, lamps, occlusion and haze.
     renderer::SceneEffects effects(device);
     effects.set_shadow_cache_check(options.shadow_cache_check);
@@ -3117,6 +2886,16 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         return exit_code::renderer_failed;
     }
 
+#ifdef OPENRTS_HAS_IMGUI
+    const DebugOverlay overlay(window.get(), device, surface.format(), options.menu);
+    if (!overlay.ok()) {
+        std::cerr << "ImGui initialization failed.\n";
+        return exit_code::renderer_failed;
+    }
+#endif
+
+    // The interface language chosen last time (Russian by default).
+    set_ui_language(remembered("language").value_or("ru") == "en" ? UiLanguage::english : UiLanguage::russian);
     // The keys chosen last time (RTS's, with the keypad, by default since
     // 2026-11-14: most players come from RTS; openRTS's for laptops).
     set_key_layout(remembered("key_layout").value_or("rts") == "openrts" ? KeyLayout::openrts : KeyLayout::rts);
@@ -3144,8 +2923,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     set_key_hints(remembered("key_hints").value_or("1") != "0");
     set_wasd_walking(remembered("wasd_walk").value_or("1") != "0");
     set_mouse_sensitivity(parse_mouse_sensitivity(remembered("mouse_sensitivity").value_or("1").c_str()));
-    set_mouse_smoothing(parse_mouse_smoothing(remembered("mouse_smoothing_ms").value_or("").c_str()));
-    set_mouse_lock(remembered("mouse_lock").value_or("0") == "1");
     set_head_motion(parse_head_motion(remembered("head_motion").value_or("").c_str()));
     set_background_sound(parse_background_sound(remembered("background_sound").value_or("").c_str()));
     set_rail_joint_layout(parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
@@ -3162,7 +2939,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
     }
 
-    startup_frame("Preparing the scene");
     const SceneAttachment attachment(scene);
     if (const auto error = scene.attach(
             {.device = device, .target_format = surface.scene_format(), .models = renderer, .audio = sound.get()}, camera);
@@ -3354,18 +3130,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         limiter.set(frame_limit(panel.fps_limit, !loading.done, background));
         limiter.wait();
         stage_clock.start();
-        // The mouse lock: the wheel's click switches it; in force but over
-        // the panel (Esc), the start menu, the loading and a capture.
-        if (std::exchange(input.lock_toggled, false)) {
-            set_mouse_lock(!mouse_lock());
-            remember("mouse_lock", mouse_lock() ? "1" : "0");
-            panel.lock_note_until = ImGui::GetTime() + 3.0;
-        }
-        input.locked = mouse_lock() && !capture && !panel.menu && loading.done && !panels_shown();
-        input.control_in_hand = scene.control_in_hand();
-        update_cursor_capture(window.get(), input);
-        center_locked_cursor(window.get(), input);
-        panel.mouse_locked = input.locked;
         glfwPollEvents();
         input.skip_motion = false;
         const double now = glfwGetTime();
@@ -3387,10 +3151,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const auto elapsed = static_cast<float>((std::min)(now - last_time, max_frame_seconds));
         input.keyboard_captured = scene.keyboard_captured();
         input.on_foot = scene.engineer_on_foot();
-        input.action_at_hand = scene.engineer_action_at_hand();
         if (scene.wants_close()) glfwSetWindowShouldClose(window.get(), GLFW_TRUE);
         input.scene_takes_scroll = scene.takes_scroll();
-        apply_look(input, elapsed);
         update_camera_from_keyboard(window.get(), input, elapsed);
 #ifdef OPENRTS_HAS_IMGUI
         const bool fov_keyboard_free = !ImGui::GetIO().WantCaptureKeyboard;
@@ -3398,7 +3160,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const bool fov_keyboard_free = true;
 #endif
         if (update_fov_keys(window.get(), fov_keys, panel.fov, elapsed, fov_keyboard_free)) remember("fov", std::to_string(panel.fov));
-        camera.ease_zoom(elapsed);
         {
             const auto held = [&](const int key) { return glfwGetKey(window.get(), key) == GLFW_PRESS; };
             const bool down = fov_keyboard_free
@@ -3445,9 +3206,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                        || (glfwGetKey(window.get(), GLFW_KEY_F1) == GLFW_PRESS && !shift));
             if (pause_key && !input.pause_key_down) panel.paused = !panel.paused;
             input.pause_key_down = pause_key;
-            // A network game has none of its own: the engineer's or the
-            // dispatcher's clock would stand while the others' run on.
-            if (scene.networked()) panel.paused = false;
         }
         if (sound) {
             sound->set_paused(panel.paused || !loading.done);
@@ -3677,6 +3435,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 panel.game_status_until = ImGui::GetTime() + 8.0;
             }
         }
+        if (scene.take_resume_request()) panel.paused = false;
         auto scene_clock = clock.advance(panel.paused || scene.paused() || loading.hold_time ? 0.0f : elapsed);
         scene_clock.background = background;
         camera.head_nod = camera.head_tilt = 0.0f;
@@ -3755,7 +3514,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const bool hdr = tone && surface.hdr_view();
 
         const auto aspect = static_cast<float>(width) / static_cast<float>(height);
-        (void)aspect;
+        // What the frame is drawn with, for the wheel on a cab's screen: the
+        // eye fits the screen into the frame with it (cab_screen_focus).
+        camera.aspect = aspect;
+        camera.frame_fov = camera.vertical_fov(glm::radians(panel.fov));
         seated_cab_near = panel.cab_near_plane > 0.0f && scene.seated_in_cab() ? panel.cab_near_plane : 0.0f;
         FrameView frame{
             .eye = camera.eye(),
@@ -3801,13 +3563,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             .lighting = environment.lighting,
         });
         scene.submit(renderer, frame);
-        // The cab or salon as this frame drew it (the environment's room was
-        // the last frame's, behind the moving cab).
-        if (const auto room = scene.light_shaft_room()) {
-            renderer.set_room(renderer::ModelRoom{room->to_room, room->lower, room->upper});
-        } else {
-            renderer.set_room(std::nullopt);
-        }
         effects.set_focus(scene.shadow_focus(), scene.lamp_shadow_focus(camera));
         stage_clock.mark(FrameStage::cull, stages);
         renderer.prepare();
