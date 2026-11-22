@@ -157,6 +157,7 @@ struct CabBrakeState {
     float last_pipe = -1.0f;
     bool started = false;
     std::uint32_t sounds{}; // the air sounds playing, a bit each (docs/reverse/brakes-dll.md §10)
+    float pipe_rise{};      // the pipe's rise at the engine, atm/s, smoothed over about a second
 };
 
 struct CabBrakeOutput {

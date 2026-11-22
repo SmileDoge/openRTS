@@ -55,6 +55,7 @@
 #include "exit_codes.hpp"
 #include "players_panel.hpp"
 #include "crossing_view.hpp"
+#include "speed_post_view.hpp"
 #include "particle_effects.hpp"
 #include "road_traffic.hpp"
 #include "signal_view.hpp"
@@ -446,6 +447,11 @@ public:
         if (!wide_lines_->ready()) wide_lines_.reset();
         screens_ = std::make_unique<renderer::ScreenQuadRenderer>(gpu.device, gpu.target_format);
         if (!screens_->ready()) screens_.reset();
+        // The speed posts' numbers: drawn straight (never prepared into
+        // images, as the supersampled cab screens are).
+        post_digits_ = std::make_unique<renderer::ScreenQuadRenderer>(gpu.device, gpu.target_format);
+        if (!post_digits_->ready()) post_digits_.reset();
+        post_textures_.clear();
         train_glows_ = std::make_unique<renderer::GlowSpriteRenderer>(gpu.device, gpu.target_format);
         if (!train_glows_->ready()) train_glows_.reset();
         train_glow_textures_.clear();
@@ -457,6 +463,7 @@ public:
             signals_ = std::make_unique<SignalView>(content_.vfs(), route_, origin_, track_->network());
             signals_->attach(gpu.device, gpu.target_format);
             crossings_ = std::make_unique<CrossingView>(content_.vfs(), route_, &track_->network());
+            posts_ = std::make_unique<SpeedPostView>(content_.vfs(), route_, &track_->network());
         }
         roads_ = std::make_unique<RoadTraffic>(content_.vfs(), route_, origin_);
         if (!roads_->ready()) roads_.reset();
@@ -1618,6 +1625,7 @@ public:
     // the cab is drawn last of the models (its pass 3), and its panel would
     // cover screens drawn before it.
     void draw_foreground(const WGPURenderPassEncoder pass, const FrameView& frame) override {
+        draw_post_digits(pass, frame);
         if (screens_ && train_ && !train_->screen_batches().empty()) {
             // Not laid out before the pass (no before_main_pass this frame):
             // straight onto the panel.
@@ -1625,6 +1633,45 @@ public:
             screens_->render(pass, frame.projection * frame.view, frame.eye);
         }
         screens_set_ = false;
+    }
+
+    // The numbers on the speed and kilometre posts near the eye, lit as the
+    // scene (the sun's and the sky's light, a flash), never brighter.
+    void draw_post_digits(const WGPURenderPassEncoder pass, const FrameView& frame) {
+        if (!post_digits_ || !posts_ || !streamer_) return;
+        const auto batches = posts_->collect(streamer_->visible_instances(), frame.eye);
+        if (batches.empty()) return;
+        const auto& lighting = environment().lighting;
+        const float factor = std::clamp(-lighting.sun_direction.y * 2.0f, 0.0f, 1.0f);
+        const glm::vec3 light = glm::clamp(glm::vec3{glm::max(glm::max(lighting.sun_ambient, lighting.sun_diffuse * factor), glm::vec4{0.0f})
+                                                     + lighting.flash},
+                                           glm::vec3{0.0f}, glm::vec3{1.0f});
+        const auto byte = [](const float v) { return static_cast<std::uint32_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+        const std::uint32_t colour = byte(light.r) | byte(light.g) << 8 | byte(light.b) << 16 | 0xFFu << 24;
+        std::vector<renderer::ScreenQuadVertex> vertices;
+        std::vector<renderer::ScreenQuadDraw> draws;
+        for (const auto& batch : batches) {
+            const auto texture = post_texture(batch.texture);
+            if (texture == 0 || batch.vertices.empty()) continue;
+            draws.push_back({texture, true, static_cast<std::uint32_t>(vertices.size()), static_cast<std::uint32_t>(batch.vertices.size()), 0});
+            for (const auto& v : batch.vertices) vertices.push_back({v.position, {v.u, v.v}, colour, {}});
+        }
+        if (draws.empty()) return;
+        post_digits_->set(std::move(vertices), std::move(draws), {});
+        post_digits_->render(pass, frame.projection * frame.view, frame.eye);
+    }
+    std::uint32_t post_texture(const core::VirtualPath& path) {
+        if (const auto it = post_textures_.find(path.key()); it != post_textures_.end()) return it->second;
+        std::uint32_t id = 0;
+        const auto decoded = formats::decode_ace_rgba(*content_.vfs(), path);
+        if (decoded.ok()) {
+            const auto& image = *decoded.image;
+            id = post_digits_->add_texture({.width = image.width, .height = image.height, .pixels = &image.pixels, .mips = &image.mips});
+        } else {
+            std::cout << "speed post digits " << path.str() << ": " << decoded.error << '\n';
+        }
+        post_textures_.emplace(path.key(), id);
+        return id;
     }
 
     // This frame's cab screens to the renderer: the supersampled ones blend
@@ -3091,6 +3138,9 @@ private:
     std::unique_ptr<SignalView> signals_;
     bool snapshot_signals_ = false; // the snapshot's aspects wait for the signals to load
     std::unique_ptr<CrossingView> crossings_;
+    std::unique_ptr<SpeedPostView> posts_;                        // the speed posts' numbers
+    std::unique_ptr<renderer::ScreenQuadRenderer> post_digits_;
+    std::unordered_map<std::string, std::uint32_t> post_textures_; // ACE path key -> texture (0: failed)
     std::unique_ptr<RoadTraffic> roads_;
     std::unique_ptr<PrecipitationView> precipitation_;
     std::unique_ptr<SmokeView> smoke_;

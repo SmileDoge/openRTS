@@ -15,6 +15,7 @@ add_library(openrts_viewer_core STATIC
     src/weather_cycle.cpp
     src/train_view.cpp
     src/train_extra_sounds.cpp
+    src/speed_post_view.cpp
     src/signal_view.cpp
     src/track_control.cpp
     src/inspector.cpp

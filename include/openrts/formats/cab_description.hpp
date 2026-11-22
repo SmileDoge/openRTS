@@ -385,6 +385,12 @@ struct WagonObject {
     bool first_state_invisible = false; // state 0: the nodes are not drawn
     std::vector<float> state_key_frames; // StateKeyFrames, after its count
     float anim_time{};
+    // Or a shape of its own (most cars' chocks: Shape ( DRAG.s 0 )), placed
+    // at Position in the car's shape, turned by Direction (degrees about x,
+    // y, z).
+    std::string shape;
+    std::array<float, 3> position{};
+    std::array<float, 3> direction{};
 };
 
 struct ExteriorDetails {

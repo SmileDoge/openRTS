@@ -115,6 +115,32 @@ void read_static_field(Tokenizer& tokens,
             const auto id = parse_integer<std::uint32_t>(*item);
             if (db && id) (*db == 0 && object.kind != WorldObjectKind::car_spawner ? object.rail_items : object.road_items).push_back(*id);
         }
+    } else if (object.kind == WorldObjectKind::speed_post && equals_ignore_case(field, "Speed_Digit_Tex")) {
+        if (const auto value = tokens.next()) object.speed_digit_texture = *value;
+    } else if (object.kind == WorldObjectKind::speed_post && equals_ignore_case(field, "Speed_Sign_Shape")) {
+        const auto count = tokens.next();
+        const auto n = count ? parse_integer<std::uint32_t>(*count) : std::nullopt;
+        for (std::uint32_t i = 0; n && i < *n && i < 16; ++i) {
+            std::array<float, 4> sign{};
+            bool whole = true;
+            for (auto& v : sign) {
+                const auto token = tokens.next();
+                const auto parsed = token ? parse_double(*token) : std::nullopt;
+                if (!parsed) {
+                    whole = false;
+                    break;
+                }
+                v = static_cast<float>(*parsed);
+            }
+            if (!whole) break;
+            object.speed_signs.push_back(sign);
+        }
+    } else if (object.kind == WorldObjectKind::speed_post && equals_ignore_case(field, "Speed_Text_Size")) {
+        for (auto& v : object.speed_text_size) {
+            if (const auto token = tokens.next()) {
+                if (const auto parsed = parse_double(*token)) v = static_cast<float>(*parsed);
+            }
+        }
     } else if (object.kind == WorldObjectKind::forest) {
         const auto pair = [&](std::array<float, 2>& out) {
             for (auto& value : out) {

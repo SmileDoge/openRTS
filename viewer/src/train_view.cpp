@@ -239,6 +239,15 @@ struct TrainView::Car {
     // a node (and those under it) and whether it is at the shape's front
     // end (its z), shown only while a chock is at that end.
     std::vector<std::pair<std::int32_t, bool>> chock_nodes;
+    // Or chocks of their own shape (most cars: DragA ( Shape ( DRAG.s 0 )
+    // Position .. Direction .. )): its path in freight_shapes (loaded and let
+    // go with them), where it stands in the car's shape, the end it is at.
+    struct ChockShape {
+        std::size_t shape{}; // in freight_shapes
+        glm::mat4 placement{1.0f};
+        bool shape_front = true;
+    };
+    std::vector<ChockShape> chock_shapes;
     // ESD_Interior_Parts with their children: not drawn while its outside
     // is seen from its cab.
     std::vector<std::int32_t> interior_part_nodes;
@@ -1385,6 +1394,29 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
             };
             for (const auto& object : details.wagon_objects) {
                 if ((object.kind != "draga" && object.kind != "dragb") || !object.first_state_invisible) continue;
+                if (!object.shape.empty() && object.nodes.empty()) {
+                    // A shape of its own: the car's folder, else GLOBAL\SHAPES
+                    // (DRAG.s, UZDdrag.s), else TRAINS\OBJECTS.
+                    core::VirtualPath found;
+                    for (const std::string base : {"TRAINS/TRAINSET/" + car.folder + "/", std::string("GLOBAL/SHAPES/"), std::string("TRAINS/OBJECTS/")}) {
+                        if (auto path = core::VirtualPath::parse(base + object.shape); path && vfs_->exists(*path)) {
+                            found = *path;
+                            break;
+                        }
+                    }
+                    if (found.str().empty()) continue;
+                    const auto& p = object.position;
+                    const auto& d = object.direction;
+                    glm::mat4 placement = glm::translate(glm::mat4{1.0f}, glm::vec3{p[0], p[1], p[2]});
+                    placement = glm::rotate(placement, glm::radians(d[1]), glm::vec3{0.0f, 1.0f, 0.0f});
+                    placement = glm::rotate(placement, glm::radians(d[0]), glm::vec3{1.0f, 0.0f, 0.0f});
+                    placement = glm::rotate(placement, glm::radians(d[2]), glm::vec3{0.0f, 0.0f, 1.0f});
+                    const bool shape_front = p[2] != 0.0f ? p[2] > 0.0f : object.kind == "draga";
+                    car.chock_shapes.push_back({car.freight_shapes.size(), placement, shape_front});
+                    car.freight_shapes.push_back(found);
+                    car.freight_requested = false;
+                    continue;
+                }
                 for (const auto& name : object.nodes) {
                     for (std::size_t m = 0; m < rig.matrices.size(); ++m) {
                         if (lower(rig.matrices[m].name) != lower(name)) continue;
@@ -11282,6 +11314,12 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 renderer.submit(*room_model, transform * room_cab->placement(), room_adjustments);
                 renderer.set_portal(code);
             }
+        }
+        // The chocks of their own shape, at the ends that have one.
+        for (const auto& chock : car.chock_shapes) {
+            const auto end = chock.shape_front != car.flipped ? simulation::chock_front : simulation::chock_rear;
+            if ((state.chocks & end) == 0 || chock.shape >= car.freight_shapes.size()) continue;
+            if (auto* model = library.find(car.freight_shapes[chock.shape])) renderer.submit(*model, transform * chock.placement);
         }
         // FreightAnim: objects fastened to the car, at FreightAnimPosition.
         for (std::size_t k = 0; k < car.freight_shapes.size() && k < car.freight.size(); ++k) {

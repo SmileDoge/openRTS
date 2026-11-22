@@ -406,12 +406,19 @@ void sounds() {
     // II, the pipe at the charge: 132 once.
     run(1.0f);
     check(heard(all, 132) == 1 && heard(all, 133) == 0, "II at the charge: 132 once");
-    // II feeding the pipe: 126, then 127 once it stops.
+    // II feeding a steady pipe at the charge (making up the train's leaks):
+    // no loud feed, the quiet 132 alone.
     rig.air.valve_feed = 0.3f;
-    run(0.5f);
+    run(1.0f);
+    check(heard(all, 126) == 0, "II making up leaks at the charge: no 126");
+    // II feeding the pipe while it rises: 126, then 127 once it stops.
+    for (int k = 0; k < 10; ++k) {
+        rig.air.pipe += 0.01f;
+        run(0.1f);
+    }
     rig.air.valve_feed = 0.0f;
     run(0.5f);
-    check(heard(all, 126) == 1 && heard(all, 127) == 1, "II feeding: 126 then 127");
+    check(heard(all, 126) == 1 && heard(all, 127) == 1, "II feeding a rising pipe: 126 then 127");
     // V: 133 and 128 (the pipe venting), the ЭПТ applying 134; III: 129, 135.
     rig.controls.valve = ValvePosition::service;
     run(1.0f);

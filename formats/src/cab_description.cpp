@@ -613,6 +613,11 @@ ExteriorDetails parse_exterior_details(std::string_view bytes) {
                 for (std::size_t k = 1; k < frames->values.size(); ++k) object.state_key_frames.push_back(static_cast<float>(frames->number(k)));
             }
             object.anim_time = number(node.child("animtime"), 0, 0.0f);
+            if (const auto* shape = node.child("shape"); shape && !shape->values.empty()) object.shape = shape->values[0];
+            for (int k = 0; k < 3; ++k) {
+                object.position[static_cast<std::size_t>(k)] = number(node.child("position"), static_cast<std::size_t>(k), 0.0f);
+                object.direction[static_cast<std::size_t>(k)] = number(node.child("direction"), static_cast<std::size_t>(k), 0.0f);
+            }
             out.wagon_objects.push_back(std::move(object));
         }
     }
