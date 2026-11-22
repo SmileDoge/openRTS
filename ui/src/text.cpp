@@ -1707,6 +1707,8 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"the stations ahead and the sidings (yellow)", "станции впереди и запасные пути (жёлтым)"},
         {"Sound in the background (minimised or behind another window)", "Звук в фоне (окно свёрнуто или за другим окном)"},
         {"Own sounds", "Свои звуки"},
+        {"Its night textures at night (TEXTURES\\NIGHT)", "Ночные текстуры этой модели ночью (TEXTURES\\NIGHT)"},
+        {"Off: the day's textures at night too, for a shape whose night ones look lit up (only this shape, kept in a mod).", "Выключено: ночью у модели дневные текстуры — для модели, которая ночью будто светится (только эта модель, хранится в моде)."},
         {"Cab signal: %s", "Локомотивный светофор: %s"},
         {"out", "погашен"},
         {"ТЦ %.1f  ТМ %.2f  УР %.2f  ЗР %.2f", "ТЦ %.1f  ТМ %.2f  УР %.2f  ЗР %.2f"},

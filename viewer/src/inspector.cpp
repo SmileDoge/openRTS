@@ -556,6 +556,14 @@ void Inspector::draw_materials(const InspectorWorld& world, const core::VirtualP
         return;
     }
     auto& over = edited(world, shape);
+    // The whole shape: its night textures (TEXTURES\NIGHT) at night or not.
+    bool night = !over.night_textures || *over.night_textures;
+    if (ImGui::Checkbox(tr("Its night textures at night (TEXTURES\\NIGHT)"), &night)) {
+        over.night_textures = night ? std::nullopt : std::optional<bool>{false};
+        dirty_ = true;
+        apply_edit(world, shape);
+    }
+    ImGui::TextDisabled("%s", tr("Off: the day's textures at night too, for a shape whose night ones look lit up (only this shape, kept in a mod)."));
     ImGui::TextWrapped("%s", tr("FullBright materials ignore the sun and the lamps; ticked, one is lit as an ordinary material (only this shape, kept in a mod)."));
     // The parts (primitive states) with the same texture, shader and light
     // are one row with their count: a shape of a hundred animated pieces

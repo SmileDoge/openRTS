@@ -230,6 +230,12 @@ void override_checks() {
     check(again.prim_states.size() == 1 && again.prim_states[0].index == 1 && again.prim_states[0].image == "platform.ace"
               && again.prim_states[0].light_material == -5,
           "an override written and read back");
+    ShapeOverride dark;
+    check(dark.empty(), "an override without changes is empty");
+    dark.night_textures = false;
+    const auto dark_again = parse_shape_override(write_shape_override(dark));
+    check(!dark.empty() && dark_again.night_textures == false && dark_again.prim_states.empty(),
+          "NightTextures ( 0 ) written and read back");
 
     ShapeModel model;
     model.images = {"sign.ace", "platform.ace"};
