@@ -356,8 +356,15 @@ scenarios run with Brakes.dll and with openRTS side by side
      Brakes.dll's brakes.
    - Brakes.dll's still, each its own port: the 334 (`BR_334ID`, the ЭР9's,
      ЭР9П's, ЭР9ПК's valve: 51 `.eng`) and the custom 292 (`BR_292CUSTOM`:
-     170, the same families); the ЭП2Д's ППТ (`BR_PPTID`: 26); the КПД-3,
-     the УКБМ, the МУ blocks (stage 4).
+     170, the same families); the ДТ116's `BR_AUTO` (5); the КПД-3, the
+     УКБМ, the МУ blocks (stage 4).
+   - 2026-11-22: the ЭП2Д's ППТ (`BR_PPTID`, 26 `.eng`) is openRTS's: at
+     0, with the ЭПТ on, its КПТ commands the ЭПТ by itself (VI, V, VЭ
+     hold and apply, IV and III hold; PROBABLE, from Brakes.dll's `_Run`).
+     The ЧС2's `BR_OTIDID1` (a typo, 23 `.eng`) is a name Brakes.dll never
+     reads and no longer keeps it. `openrts-train-check <root>
+     --brakes-survey` lists every family and why "without Brakes.dll"
+     leaves it loaded (`trainplugin::brakes_dll_kept_reason`).
    - Every other parameter the installation gives Brakes.dll is read by
      openRTS's devices (the brakes' `understood()` rules over every
      `.eng`).

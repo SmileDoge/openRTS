@@ -34,6 +34,7 @@
 
 namespace openrts {
 int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std::vector<std::string>& args);
+int brakes_survey(const core::Vfs& vfs);
 int cab_check(const core::Vfs& vfs, const std::vector<std::string>& args);
 int shape_check(const core::Vfs& vfs, const std::vector<std::string>& args);
 int prim_flags_check(const core::Vfs& vfs, const std::vector<std::string>& args);
@@ -627,6 +628,7 @@ int main(int argc, char** argv) {
     if (argc > 2 && std::string(argv[2]) == "--cab") {
         return cab_check(vfs, std::vector<std::string>(argv + 3, argv + argc));
     }
+    if (argc > 2 && std::string(argv[2]) == "--brakes-survey") return brakes_survey(vfs);
     if (argc > 2 && std::string(argv[2]) == "--dll") {
         return dll_check(vfs, root, std::vector<std::string>(argv + 3, argv + argc));
     }

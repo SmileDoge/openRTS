@@ -263,6 +263,43 @@ void write_screen_images(const core::Vfs& vfs, const trainplugin::LegacyCar& car
 
 } // namespace
 
+// --brakes-survey: every TRAINSET .eng with Brakes.dll, and why "without
+// Brakes.dll" keeps it loaded (trainplugin::brakes_dll_kept_reason): by
+// family (the folder without its number), the .eng counted per reason.
+int brakes_survey(const core::Vfs& vfs) {
+    std::map<std::string, std::map<std::string, int>> families;
+    std::map<std::string, int> totals;
+    const auto top = core::VirtualPath::parse("TRAINS/TRAINSET");
+    if (!top) return 1;
+    for (const auto& folder : vfs.list(*top)) {
+        if (!folder.directory) continue;
+        const auto folder_name = std::string(folder.path.filename());
+        for (const auto& entry : vfs.list(folder.path)) {
+            const auto name = std::string(entry.path.filename());
+            if (entry.directory || name.size() < 5 || core::fold_case(name.substr(name.size() - 4)) != ".eng") continue;
+            const auto wagon = formats::load_wagon(vfs, folder_name, name.substr(0, name.size() - 4), true, simulation::StockRules::of(vfs));
+            if (!wagon.ok() || !wagon.engine) continue;
+            auto reason = trainplugin::brakes_dll_kept_reason(*wagon.engine);
+            if (reason == "no Brakes.dll") continue;
+            if (reason.empty()) reason = "openRTS's (not loaded)";
+            auto family = folder_name;
+            while (!family.empty() && (std::isdigit(static_cast<unsigned char>(family.back())) || family.back() == '-' || family.back() == '_'))
+                family.pop_back();
+            ++families[family][reason];
+            ++totals[reason];
+        }
+    }
+    for (const auto& [family, reasons] : families) {
+        std::printf("%-28s", family.c_str());
+        for (const auto& [reason, count] : reasons) std::printf("  %s: %d", reason.c_str(), count);
+        std::printf("\n");
+    }
+    std::printf("\ntotal:");
+    for (const auto& [reason, count] : totals) std::printf("  %s: %d", reason.c_str(), count);
+    std::printf("\n");
+    return 0;
+}
+
 int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std::vector<std::string>& args) {
     if (args.empty()) {
         std::fprintf(stderr, "--dll <TRAINSET folder> <eng|wag>[!] ... [--script <file>] [--seconds <s>] [--start cold|on|running] [--rails dry|wet|snow|ice|leaves] [--cars [--light-defs]] [--triggers] [--body]\n");

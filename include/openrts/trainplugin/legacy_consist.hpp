@@ -127,6 +127,7 @@ struct BrakesParameters {
         std::int32_t gauge_cylinder = -1, gauge_pipe = -1, gauge_main_reservoir = -1, gauge_equalising = -1;
         std::int32_t lamp_ep_on = -1, lamp_ep_hold = -1, lamp_ep_brake = -1, lamp_pipe = -1;
         std::int32_t ep_volts = -1, ep_amps = -1;
+        std::int32_t ppt = -1; // BR_PPTID: at 0 the КПТ works the ЭПТ by itself (the ЭП2Д)
     };
     std::vector<Cab> cabs; // BR_NUMCABS of them, at least one
     [[nodiscard]] bool understood() const noexcept { return present && unknown.empty(); }
@@ -204,6 +205,11 @@ struct RecorderParameters {
     bool trans_sound = false;
 };
 [[nodiscard]] RecorderParameters recorder_parameters(const formats::EngineDefinition& engine);
+// Why "without Brakes.dll" leaves Brakes.dll loaded on this engine: empty
+// when openRTS has all of it; else "no Brakes.dll", "no КЛУБ", "speed
+// recorder", "КПД-3", "УКБМ / МУ" or the brake parameter openRTS does not
+// know (BR_PPTID1, BR_334ID1...).
+[[nodiscard]] std::string brakes_dll_kept_reason(const formats::EngineDefinition& engine);
 // mdd_Libraries/Brakes/ChangeStanc.bto: the КЛУБ's station names (upper case).
 [[nodiscard]] std::vector<std::pair<std::u16string, std::u16string>> load_klub_station_names(const core::Vfs& vfs);
 // The working cab's devices for step_cab_brakes, as its switches stand.

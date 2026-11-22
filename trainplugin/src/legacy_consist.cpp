@@ -751,13 +751,7 @@ TrackItemSpec item_spec(const formats::TrackItem& item, const float route_speed_
 // Every part of Brakes.dll this engine uses is openRTS's: its brakes
 // understood, a КЛУБ openRTS takes, no speed recorder (its ALSN delay and
 // the КПД-3, УКБМ, МУ blocks are Brakes.dll's).
-bool brakes_dll_all_ours(const formats::EngineDefinition& e) {
-    if (!brakes_parameters(e).understood()) return false;
-    const auto k = klub_parameters(e);
-    if (!k.present || k.setup_index < 0 || !(k.settings.setup & 2u)) return false;
-    const auto r = recorder_parameters(e);
-    return !r.present && !(r.settings.setup & 0x18u);
-}
+bool brakes_dll_all_ours(const formats::EngineDefinition& e) { return brakes_dll_kept_reason(e).empty(); }
 
 bool is_brakes_module(const std::string& module) {
     const auto m = core::fold_case(module);
@@ -2458,6 +2452,18 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
 }
 
 // --- Brakes.dll not loaded (docs/brakes-dll-replacement.md "The rest", 7) ---
+
+std::string brakes_dll_kept_reason(const formats::EngineDefinition& e) {
+    const auto b = brakes_parameters(e);
+    if (!b.present) return "no Brakes.dll";
+    if (!b.understood()) return b.unknown;
+    const auto k = klub_parameters(e);
+    if (!k.present || k.setup_index < 0 || !(k.settings.setup & 2u)) return "no КЛУБ";
+    const auto r = recorder_parameters(e);
+    if (r.settings.setup & 0x18u) return "УКБМ / МУ";
+    if (r.present) return r.settings.needle ? "speed recorder" : "КПД-3";
+    return {};
+}
 
 void LegacyConsist::set_without_brakes_dll(const bool on) noexcept { without_brakes_dll_choice = on; }
 
