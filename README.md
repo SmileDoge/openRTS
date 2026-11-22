@@ -12,4 +12,4 @@ Main language for this game development is C++20. You must ensure that your C++ 
  - Git
  - SDK [wgpu-native](https://github.com/gfx-rs/wgpu-native/releases) SDK v27.0.4.0
    
- For more information, you can visit our [official website](https://dark-team.ru) as well as our group on the [VK social network](https://vk.com/darkteamdev), or our [Telegram-channel](t.me/darkteamdev) (all in Russian).
+ For more information, you can visit our [official website](https://dark-team.ru) as well as our group on the [VK social network](https://vk.com/darkteamdev), or our [Telegram-channel](https://t.me/darkteamdev) (all in Russian).
