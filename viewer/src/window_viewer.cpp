@@ -1129,7 +1129,8 @@ public:
                 }
                 ImGui::TextDisabled("%s", tr("(1: a smooth push of the bogie, harder with the speed and on the diverging route; 0: none)"));
             }
-            ImGui::Checkbox(tr("Pause (Pause or F1)"), &panel.paused);
+            if (scene.networked()) ImGui::TextDisabled("%s", tr("No pause in a network game: the others play on."));
+            else ImGui::Checkbox(tr("Pause (Pause or F1)"), &panel.paused);
             if (const auto folder = scene.saves_folder(); !folder.empty()) {
                 // Saved games: as RTS, F2 saves at once (the quick save).
                 ImGui::SeparatorText(tr("Saved games"));
@@ -2452,6 +2453,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .limits_panel = f5 && ctrl,
             .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
             .profile_strip = f4 && ctrl,
+            .drive_card = f4 && !ctrl,
             .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
             .signal_names = f7 && ctrl && !alt,
             .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -2468,7 +2470,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .step_up = down(GLFW_KEY_UP),
         .step_down = down(GLFW_KEY_DOWN),
         .toggle_follow = pressed(GLFW_KEY_V, input.follow_key_down),
-        .toggle_track = pressed(GLFW_KEY_T, input.track_key_down),
+        // Not with Ctrl: Ctrl+T is Track control's teleport.
+        .toggle_track = pressed(GLFW_KEY_T, input.track_key_down) && !ctrl,
         .toggle_labels = pressed(GLFW_KEY_L, input.labels_key_down),
         .throttle_up = pressed(GLFW_KEY_HOME, input.train_keys_down[1]),
         .throttle_down = pressed(GLFW_KEY_END, input.train_keys_down[2]),
@@ -2493,6 +2496,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .limits_panel = f5 && ctrl,
         .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
         .profile_strip = f4 && ctrl,
+        .drive_card = f4 && !ctrl,
         .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
         .signal_names = f7 && ctrl && !alt,
         .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -3418,6 +3422,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                        || (glfwGetKey(window.get(), GLFW_KEY_F1) == GLFW_PRESS && !shift));
             if (pause_key && !input.pause_key_down) panel.paused = !panel.paused;
             input.pause_key_down = pause_key;
+            // A network game has none of its own: the engineer's or the
+            // dispatcher's clock would stand while the others' run on.
+            if (scene.networked()) panel.paused = false;
         }
         if (sound) {
             sound->set_paused(panel.paused || !loading.done);

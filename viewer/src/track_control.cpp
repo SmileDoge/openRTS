@@ -1,6 +1,7 @@
 #ifdef OPENRTS_HAS_WGPU
 #include "track_control.hpp"
 
+#include "console_panel.hpp"
 #include "file_dialog.hpp"
 #include "ui_fonts.hpp"
 #include "ui_text.hpp"
@@ -178,6 +179,55 @@ void TrackControl::start_placement(TrainView& trains, const std::string& consist
     message_ = trf("placing %s: drag it along the track, click another track to move it there", placement_.layout.name.c_str());
 }
 
+std::optional<double> TrackControl::way_to(const simulation::TrackLocation& from, const simulation::TrackLocation& to) const {
+    // Metre by metre along the junctions as they stand: where the place is
+    // passed (within 3 m of it), the distance.
+    simulation::TrackTraveller walk(*network_, from.node, from.offset, from.forward);
+    for (double done = 0.0; done < route_preview_metres; done += 1.0) {
+        if (walk.node() == to.node && std::abs(walk.offset() - to.offset) < 3.0) return done;
+        if (walk.move(1.0).moved <= 0.0) break;
+    }
+    return std::nullopt;
+}
+
+void TrackControl::start_moving(TrainView& trains, const std::uint64_t id) {
+    TrainView::ConsistLayout layout;
+    if (const auto error = trains.train_layout(id, layout); !error.empty()) {
+        message_ = tr(error.c_str());
+        return;
+    }
+    const auto* train = trains.train_by_id(id);
+    const auto front = train ? train->front_end() : std::nullopt;
+    if (!front) {
+        message_ = tr("the train is not on the track");
+        return;
+    }
+    placement_ = {};
+    placement_.active = true;
+    placement_.layout = std::move(layout);
+    placement_.moving = id;
+    placement_.head = {front->node(), front->offset(), front->forward()};
+    lay_placement(trains);
+    message_ = trf("moving %s: drag it along the track, click another track to move it there", placement_.layout.name.c_str());
+}
+
+void TrackControl::chocks_menu(TrainView& trains, const std::uint64_t id) {
+    if (!ImGui::BeginMenu(tr("Chocks"))) return;
+    const auto now = trains.train_chocks(id);
+    const char* labels[] = {tr("none"), tr("under the head"), tr("under the tail"), tr("under both ends")};
+    for (std::uint8_t mask = 0; mask < 4; ++mask) {
+        if (!ImGui::MenuItem(labels[mask], nullptr, now == mask)) continue;
+        if (network_actions_.throw_junction) {
+            if (network_actions_.set_chocks) network_actions_.set_chocks(id, mask);
+            message_ = tr("asked the server to put the train again with them");
+        } else {
+            const auto error = trains.set_train_chocks(id, mask);
+            message_ = error.empty() ? trf("chocks: %s", labels[mask]) : std::string(tr(error.c_str()));
+        }
+    }
+    ImGui::EndMenu();
+}
+
 void TrackControl::lay_placement(TrainView& trains) {
     auto& p = placement_;
     p.cars.clear();
@@ -199,6 +249,7 @@ void TrackControl::lay_placement(TrainView& trains) {
     // 1.6 m of one of its cars (tracks lie 4 m and more apart).
     double t = 0.0;
     for (const auto& summary : trains.summaries()) {
+        if (summary.id == p.moving) continue;
         const auto* train = trains.train_by_id(summary.id);
         if (!train || !train->placed()) continue;
         for (const auto& car : train->placements()) {
@@ -266,10 +317,35 @@ void TrackControl::finish_placement(TrainView& trains) {
         message_ = tr("the consist does not fit here: not enough track");
         return;
     }
+    // A train put again: the server's (a network game) or here.
+    if (placement_.moving != 0) {
+        const auto id = placement_.moving;
+        if (network_actions_.throw_junction) {
+            if (network_actions_.move_train) network_actions_.move_train(id, placement_.head);
+            message_ = trf("%s: asked the server to put it there", placement_.layout.name.c_str());
+        } else {
+            const auto error = trains.move_train(id, placement_.head);
+            if (!error.empty()) {
+                message_ = tr(error.c_str());
+                return;
+            }
+            message_ = trf("%s put there", placement_.layout.name.c_str());
+        }
+        placement_ = {};
+        return;
+    }
     // A network game: the server places it (the console), nothing here.
     if (network_actions_.throw_junction) {
         if (network_actions_.place_consist) {
-            network_actions_.place_consist(placement_.consist, placement_.head);
+            const NetworkActions::PlaceOptions options{
+                .number = net_number_[0] ? static_cast<std::uint32_t>(std::strtoul(net_number_, nullptr, 10)) : 0u,
+                .name = net_name_,
+                .kind = static_cast<std::uint16_t>(new_train_kind(net_kind_)),
+                .state = static_cast<std::uint8_t>(net_state_),
+                .chocks = static_cast<std::uint8_t>(std::clamp(net_chocks_, 0, 3)),
+            };
+            network_actions_.place_consist(placement_.consist, placement_.head, options);
+            net_number_[0] = 0;
             message_ = trf("%s: asked the server to place it", placement_.layout.name.c_str());
         }
         placement_ = {};
@@ -282,7 +358,7 @@ void TrackControl::finish_placement(TrainView& trains) {
                                : std::nullopt;
     const int state = spawn_state_ == 2 ? 0 : spawn_state_ == 1 ? 1 : -1;
     const auto error = trains.spawn(placement_.consist, placement_.head, spawn_ai_ ? TrainView::Role::ai : TrainView::Role::standing, category,
-                                    state);
+                                    state, static_cast<std::uint8_t>(std::clamp(spawn_chocks_, 0, 3)));
     if (!error.empty()) {
         message_ = error;
         return;
@@ -320,6 +396,17 @@ void TrackControl::start_editing(TrainView& trains, const std::uint64_t id) {
 
 // The consist's type and state, as the ТЧД console's train form gives them
 // ("Редактирование поезда": its type and Холодный / Включен / Движется).
+void TrackControl::net_spawn_options() {
+    ImGui::SetNextItemWidth(90.0f);
+    ImGui::InputTextWithHint("##net_number", tr("number"), net_number_, sizeof net_number_, ImGuiInputTextFlags_CharsDecimal);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::InputTextWithHint("##net_name", tr("name (the map shows it)"), net_name_, sizeof net_name_);
+    new_train_kind_and_state(net_kind_, net_state_);
+    ImGui::SameLine();
+    new_train_chocks(net_chocks_);
+}
+
 void TrackControl::spawn_options() {
     const char* categories[] = {tr("by its cars"), tr("passenger"), tr("freight"), tr("other")};
     ImGui::SetNextItemWidth(150.0f);
@@ -334,6 +421,7 @@ void TrackControl::spawn_options() {
     ImGui::TextDisabled("%s", tr(spawn_state_ == 2   ? "(everything off: no air in the pipe, reservoirs and main reservoirs, pantographs down)"
                                  : spawn_state_ == 1 ? "(standing ready: its DLLs start on, the air charged)"
                                                      : "(ready to go, as before)"));
+    new_train_chocks(spawn_chocks_);
 }
 
 void TrackControl::draw(TrainView& trains, simulation::SignalSystem* signals) {
@@ -458,6 +546,26 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
             map_.lines.push_back(std::move(line));
         }
     }
+    // RTS's hand route: the picked train's way from its head along the
+    // junctions as they stand (and from its rear, fainter); the dispatcher
+    // throws them, then sets the end on this line.
+    if (network_actions_.route_length && selected_ != 0 && !(network_actions_.route_left && network_actions_.route_left(selected_))) {
+        if (const auto* train = trains.train_by_id(selected_); train && train->placed()) {
+            for (const bool rear : {false, true}) {
+                const auto end = rear ? train->rear_end() : train->front_end();
+                if (!end) continue;
+                simulation::TrackTraveller walk(*network_, end->node(), end->offset(), rear ? !end->forward() : end->forward());
+                trackmap::MapLine line{.colour = rear ? IM_COL32(0, 170, 220, 110) : IM_COL32(0, 200, 255, 220), .width = rear ? 3.0f : 4.0f};
+                line.points.push_back(walk.pose());
+                const double step = (std::max)(2.0, 6.0 / map_.scale());
+                for (double done = 0.0; done < route_preview_metres; done += step) {
+                    if (walk.move(step).moved <= 0.0) break;
+                    line.points.push_back(walk.pose());
+                }
+                map_.lines.push_back(std::move(line));
+            }
+        }
+    }
     // Trains: their cars, in the colour of their role.
     for (const auto& summary : trains.summaries()) {
         const auto* train = trains.train_by_id(summary.id);
@@ -548,6 +656,12 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
     };
     const auto frame = map_.draw(signals, ImGui::IsPopupOpen("track_control_menu"));
     map_.overlay = nullptr;
+    // Ctrl+T: the camera to the point under the cursor (the menu's
+    // "Teleport here" stays; 2026-11-21, the organiser).
+    if (frame.hovered && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_T, false)) {
+        const auto picked = map_.pick(frame.mouse, signals);
+        request_teleport(picked.x, picked.z, nullptr);
+    }
     // A right click without a drag opens the menu for what is under it (the
     // map panned with a right drag); a left click selects.
     if (frame.right_click) {
@@ -640,6 +754,26 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
                 message_ = tr("route cancelled");
             }
             if (network_actions_.route_to && !routed) ImGui::TextDisabled("%s", tr("a route: pick the train, then right-click the track"));
+            if (network_actions_.train_form && network_actions_.set_train_form && ImGui::BeginMenu(tr("Number and name"))) {
+                if (form_train_ != id || ImGui::IsWindowAppearing()) {
+                    form_train_ = id;
+                    const auto [number, name] = network_actions_.train_form(id);
+                    std::snprintf(form_number_, sizeof form_number_, "%u", number);
+                    std::snprintf(form_name_, sizeof form_name_, "%s", name.c_str());
+                }
+                ImGui::SetNextItemWidth(90.0f);
+                ImGui::InputTextWithHint("##form_number", tr("number"), form_number_, sizeof form_number_, ImGuiInputTextFlags_CharsDecimal);
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::InputTextWithHint("##form_name", tr("name (the map shows it)"), form_name_, sizeof form_name_);
+                if (ImGui::Button(tr("Apply"))) {
+                    network_actions_.set_train_form(id, static_cast<std::uint32_t>(std::strtoul(form_number_, nullptr, 10)), form_name_);
+                    message_ = tr("asked the server to change it");
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndMenu();
+            }
+            if (network_actions_.move_train && ImGui::MenuItem(tr("Move it (on the map)"))) start_moving(trains, id);
+            if (network_actions_.set_chocks) chocks_menu(trains, id);
             if (network_actions_.remove_train && ImGui::MenuItem(tr("Remove train"))) {
                 network_actions_.remove_train(id);
                 message_ = tr("asked the server to remove it");
@@ -650,6 +784,8 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
         if (ImGui::MenuItem(tr("Drive it (keyboard)"), nullptr, it->role == TrainView::Role::driven)) message_ = trains.set_role(id, TrainView::Role::driven);
         if (ImGui::MenuItem(tr("Test driver follows its path"), nullptr, it->role == TrainView::Role::ai)) message_ = trains.set_role(id, TrainView::Role::ai);
         if (ImGui::MenuItem(tr("Standing"), nullptr, it->role == TrainView::Role::standing)) message_ = trains.set_role(id, TrainView::Role::standing);
+        if (ImGui::MenuItem(tr("Move it (on the map)"))) start_moving(trains, id);
+        chocks_menu(trains, id);
         ImGui::Separator();
         if (editing_ && selected_ == id) {
             if (ImGui::MenuItem(tr("Stop editing the path"))) editing_ = false;
@@ -880,9 +1016,50 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
     case PickKind::track:
         ImGui::TextDisabled(tr("Track node %u, %.0f m"), menu_.location.node, menu_.location.offset);
         if (placement_.active && ImGui::MenuItem(tr("Move the consist being placed here"))) move_placement(trains, menu_.location);
-        if (network_actions_.route_to && selected_ != 0 && ImGui::MenuItem(tr("Route for the selected train to here"))) {
-            network_actions_.route_to(selected_, menu_.location);
-            message_ = tr("route sent to the server");
+        if (network_actions_.route_length && selected_ != 0) {
+            // RTS's way: the end on the line the junctions make now.
+            if (ImGui::MenuItem(tr("Route end here (along the switches as they stand)"))) {
+                const auto* train = trains.train_by_id(selected_);
+                std::optional<std::pair<double, bool>> found;
+                for (const bool rear : {false, true}) {
+                    const auto end = train && train->placed() ? (rear ? train->rear_end() : train->front_end()) : std::nullopt;
+                    if (!end) continue;
+                    if (const auto d = way_to({end->node(), end->offset(), rear ? !end->forward() : end->forward()}, menu_.location)) {
+                        found = std::pair{*d, rear};
+                        break;
+                    }
+                }
+                if (found && found->first > 1.0) {
+                    network_actions_.route_length(selected_, static_cast<float>(found->first), found->second);
+                    message_ = trf("route sent to the server: %.0f m", found->first);
+                } else {
+                    message_ = tr("not on the train's line: throw the switches so that the line runs here");
+                }
+            }
+        }
+        if (network_actions_.route_to && selected_ != 0) {
+            // Points to pass first (as many as needed, in order), then the end.
+            if (route_via_train_ != selected_) {
+                route_via_.clear();
+                route_via_train_ = selected_;
+            }
+            if (ImGui::MenuItem(trf("Point to pass for the route (%zu set)", route_via_.size()).c_str())) {
+                route_via_.push_back(menu_.location);
+                message_ = trf("%zu points to pass; then \"Route for the selected train to here\"", route_via_.size());
+            }
+            if (!route_via_.empty() && ImGui::MenuItem(tr("Forget the points to pass"))) {
+                route_via_.clear();
+                message_ = tr("the points to pass forgotten");
+            }
+            if (ImGui::MenuItem(tr("Route for the selected train to here"))) {
+                const auto error = network_actions_.route_to(selected_, route_via_, menu_.location);
+                if (error.empty()) {
+                    message_ = tr("route sent to the server");
+                    route_via_.clear();
+                } else {
+                    message_ = error;
+                }
+            }
         }
         if (ImGui::MenuItem(tr("Teleport here"))) {
             if (const auto at = network_->point(menu_.location.node, menu_.location.offset)) {
@@ -905,7 +1082,8 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
             }
             if (ImGui::MenuItem(tr("Place reverse point"))) add_point(simulation::PlanPointKind::reverse);
             if (ImGui::MenuItem(tr("Place end point"))) add_point(simulation::PlanPointKind::end);
-        } else if (selected_ != 0 && ImGui::MenuItem(tr("Path for the selected train to here"))) {
+        } else if (selected_ != 0 && !network_actions_.throw_junction && ImGui::MenuItem(tr("Path for the selected train to here"))) {
+            // Single player's path editor; the network's routes are the server's (above).
             start_editing(trains, selected_);
             plan_.points.clear();
             add_point(simulation::PlanPointKind::end);
@@ -941,8 +1119,12 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
                 }
                 ImGui::EndListBox();
             }
-            ImGui::Checkbox(tr("as traffic (AI)"), &spawn_ai_);
-            spawn_options();
+            if (network_actions_.place_consist) {
+                net_spawn_options();
+            } else {
+                ImGui::Checkbox(tr("as traffic (AI)"), &spawn_ai_);
+                spawn_options();
+            }
             // A .con from anywhere: the system's dialog, starting in the
             // folder the last one came from.
             if (ImGui::Button(tr("Browse..."))) {
@@ -973,7 +1155,7 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
         break;
     case PickKind::none:
         ImGui::TextDisabled(tr("Nothing here"));
-        if (ImGui::MenuItem(tr("Teleport here"))) request_teleport(menu_.x, menu_.z, nullptr);
+        if (ImGui::MenuItem(tr("Teleport here"), "Ctrl+T")) request_teleport(menu_.x, menu_.z, nullptr);
         break;
     }
     ImGui::EndPopup();
@@ -1059,6 +1241,10 @@ void TrackControl::draw_signal_window(simulation::SignalSystem* signals) {
 
 void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signals) {
 #ifdef OPENRTS_HAS_IMGUI
+    // The map back to where the camera (the player's figure) is.
+    if (ImGui::Button(tr("Centre on me"))) map_.centre(map_x(eye_.x), map_z(eye_.z));
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", tr("Ctrl+T: teleport to the cursor"));
     if (placement_.active) {
         ImGui::SeparatorText(tr("Placing a consist"));
         ImGui::TextWrapped("%s", placement_.layout.name.c_str());
@@ -1080,13 +1266,16 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
         if (ImGui::Button(tr("1 m >"))) slide_placement(trains, 1.0);
         ImGui::SameLine();
         if (ImGui::Button(tr("10 m >>"))) slide_placement(trains, 10.0);
-        ImGui::Checkbox(tr("As traffic (AI)"), &spawn_ai_);
-        ImGui::SameLine();
+        if (!network_actions_.place_consist) {
+            ImGui::Checkbox(tr("As traffic (AI)"), &spawn_ai_);
+            ImGui::SameLine();
+        }
         if (ImGui::Button(tr("Drop (Esc)"))) {
             placement_ = {};
             message_ = tr("placing dropped");
         }
-        spawn_options();
+        if (network_actions_.place_consist) net_spawn_options();
+        else spawn_options();
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextDisabled(tr("Drag a car along the track; click another\ntrack to move it there. Arrows nudge it\n(1 m, Shift 10 m); > is the way it faces."));
         ImGui::PopTextWrapPos();

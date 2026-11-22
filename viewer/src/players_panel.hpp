@@ -32,5 +32,8 @@ bool draw_players_section(NetSession& net, const TrainView& trains, const glm::v
 // Windows of their own, the panel shown or not: a player asking to help
 // the engineer (take him or not); the helper's waiting and the answer.
 void draw_helper_windows(NetSession& net);
+// The train just became ours and states of it are kept here for this
+// server (less than a day old): put one back or none.
+void draw_state_offer(NetSession& net, const TrainView& trains);
 
 } // namespace openrts::viewer

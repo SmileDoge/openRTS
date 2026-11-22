@@ -42,6 +42,10 @@ struct ServerOptions {
     std::u16string description;    // "Маршрут: …\r\nСезон: …"
     std::uint8_t season = 1;       // 0 spring .. 3 winter
     std::uint8_t weather = 0;      // 0 clear, 1 snow, 2 rain
+    // openRTS's dynamic weather from the start (the weather above its
+    // first; openrts_weather), its seed (0: one drawn).
+    bool weather_dynamic = false;
+    std::uint64_t weather_seed = 0;
     // A thunderstorm (openRTS's own; the weather is rain): told to openRTS
     // players in the answer to their openrts_hello.
     bool storm = false;
@@ -85,6 +89,25 @@ struct NewTrain {
     float top_speed{};         // m/s
     std::uint32_t number{};    // the train number (the cars' uids carry it)
     std::u16string name;       // the console's name, may be empty
+};
+
+// A train as it stands, for a placement saved (docs/server.md,
+// "Placements"): its cars, the front of its first car, its number, names,
+// kind and state.
+struct StandingTrain {
+    std::uint32_t id{}, number{};
+    std::u16string name, notes;
+    std::uint16_t kind{}, subtype{};
+    std::uint8_t state{};
+    float top_speed{};
+    std::uint32_t node{};
+    double offset{};
+    bool forward = true;
+    std::vector<net::TrainCar> cars;
+    // Whose it is (its owner's nick, or the one it waits for) and its own
+    // state as the owner's openRTS sent it (0x45FB), empty none (2026-11-21).
+    std::u16string owner;
+    net::Bytes own_state;
 };
 
 // One line of a report for the console.
@@ -146,6 +169,11 @@ public:
     // memo "Заметки"; empty both: none).
     bool set_number(std::uint32_t train, std::uint32_t number, std::string& error);
     bool set_names(std::uint32_t train, std::u16string name, std::u16string notes, std::string& error);
+    // A placement's train put back (2026-11-21): given to the player of
+    // that nick, at once when logged in, else when he logs in; its own
+    // state (0x45FB), given back to its owner's openRTS.
+    void give_when_back(std::uint32_t train, std::u16string nick);
+    void set_train_state(std::uint32_t train, net::Bytes state);
     // A train's name and notes, empty none.
     [[nodiscard]] std::pair<std::u16string, std::u16string> names(std::uint32_t train) const;
     // The server joins two trains standing end to end (the nearest ends
@@ -294,6 +322,13 @@ public:
     void set_console_place(std::function<std::string(const net::ConsolePlace&)> place) { console_place_ = std::move(place); }
 
     [[nodiscard]] std::vector<TrainSummary> trains() const;
+    // The game's weather while it runs (openrts_weather to the openRTS
+    // players and consoles; RTS's players keep their login's). The clock of
+    // a dynamic one the server's.
+    void set_weather(net::OpenrtsWeather weather);
+    [[nodiscard]] const net::OpenrtsWeather& weather() const noexcept { return weather_; }
+    // Every train on the server's track as it stands (StandingTrain).
+    [[nodiscard]] std::vector<StandingTrain> standing_trains() const;
     [[nodiscard]] std::vector<UserSummary> users() const;
     [[nodiscard]] std::uint32_t free_number() const; // the lowest train number not in use, from 101
     // Lines worth logging since the last call (logins, couplings, refusals).
@@ -332,6 +367,8 @@ private:
     std::unique_ptr<Impl> impl_;
     Transport& transport_;
     ServerOptions options_;
+    net::OpenrtsWeather weather_;
+    double weather_sent_ = -1.0; // when openrts_weather last went out (server clock)
     double time_{};
     bool paused_ = false;
     std::function<std::string(std::string_view)> console_commands_;

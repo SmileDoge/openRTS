@@ -49,7 +49,7 @@ constexpr const char* usage =
     "usage: openrts-server [--route <folder>] [--root <RTS installation>] [--port 800]\n"
     "                      [--season spring|summer|autumn|winter] [--weather clear|snow|rain|storm] [--time HH:MM]\n"
     "                      [--no-admit] [--data <folder>] [--dispatcher-password <text>]\n"
-    "                      [--discord-join] [--public-address <host:port>] [--max-players <n>]\n"
+    "                      [--discord-join] [--public-address <host:port>] [--max-players <n>] [--autosave <minutes>]\n"
     "                      [--run <seconds>] [--command \"<line>\"]... [--no-window]\n"
     "  without --no-window (or --run) the server's window opens: its start form, then its map console;\n"
     "  --no-window runs it at the console (--route needed)\n"
@@ -59,7 +59,9 @@ constexpr const char* usage =
     "  --discord-join  openRTS players may be joined from their Discord profiles (\"Join\"),\n"
     "              at --public-address (else the address each one connected to)\n"
     "  --max-players  places: a new player beyond so many is refused (0, as by default: no limit)\n"
-    "  --run       stop after so many seconds (tests); --command runs a console line at start\n"
+    "  --autosave  every train saved as the placement autosave so often (2 minutes by default, 0 never)\n"
+    "              and at the stop; the last run's kept as autosave-previous\n"
+    "  --run      stop after so many seconds (tests); --command runs a console line at start\n"
     "  players get their trains from the dispatcher at the server's console\n";
 
 #ifdef _WIN32
@@ -142,6 +144,7 @@ int main(int argc, char** argv) {
     bool discord_join = false;
     std::string public_address;
     std::uint32_t max_players = 0;
+    double autosave_minutes = 2.0;
     double run_for = -1.0;
     std::vector<std::string> commands;
     bool no_window = false;
@@ -160,6 +163,8 @@ int main(int argc, char** argv) {
             discord_join = true;
         } else if (a == "--public-address" && has_value) {
             public_address = args[++i];
+        } else if (a == "--autosave" && has_value) {
+            autosave_minutes = std::clamp(std::stod(args[++i]), 0.0, 24.0 * 60.0);
         } else if (a == "--max-players" && has_value) {
             max_players = static_cast<std::uint32_t>(std::clamp(std::stoi(args[++i]), 0, 65535));
         } else if (a == "--dispatcher-password" && has_value) {
@@ -213,7 +218,8 @@ int main(int argc, char** argv) {
     server::SessionSettings settings{.root = root, .route = route_name, .data = data, .port = port, .season = season,
                                      .weather = weather, .time_of_day = time_of_day, .admit = admit,
                                      .dispatcher_password = dispatcher_password, .discord_join = discord_join,
-                                     .public_address = public_address, .max_players = max_players};
+                                     .public_address = public_address, .max_players = max_players,
+                                     .autosave_minutes = autosave_minutes};
 #ifdef OPENRTS_SERVER_WINDOW
     // The window (as rts_server.exe: its start form, then its map console),
     // unless the console is asked for or a test runs it.

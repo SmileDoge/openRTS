@@ -129,6 +129,34 @@ and "Check now", which offers the update even for a skipped version.
 Without the window: `openrts_game.exe --check-update` prints the latest
 release; `--no-update-check` starts the menu without the check.
 
+### Without the game: openrts-updater.exe
+
+`openrts-updater.exe`, next to `openrts_game.exe`, updates openRTS without
+the menu or the game: for a server's computer (one without a graphics card
+too) and for anyone who would rather not open the game to update it. It is
+a plain Windows window:
+
+- this version and GitHub's latest at the top;
+- what is new below;
+- **Обновить** (download, check, replace the files, as the menu does),
+  **Страница релиза**, **Закрыть**; once updated, **Запустить openRTS**.
+
+When a server or the game runs from that folder the window says so: the
+update goes on, but they run the old version until started again. A
+server saves its trains as the placement `autosave` when it stops, to be
+put back after its start (docs/server.md, "Placements").
+
+Without the window, for a script or the task scheduler:
+
+- `openrts-updater.exe --check`: only tells (exit code 0: up to date, 3: a
+  newer release);
+- `openrts-updater.exe --yes`: installs a newer one without a question;
+- `--folder <dir>`: another openRTS folder (with the window too).
+
+The lines go to the console it was started from. A `.bat` waits for it;
+at the command prompt, `start /wait openrts-updater.exe --yes`. Exit
+codes: 0 done or up to date, 1 failed, 2 wrong arguments.
+
 ## Running without the menu
 
 The viewer can be started directly with options:

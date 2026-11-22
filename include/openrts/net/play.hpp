@@ -107,6 +107,52 @@ struct Derail {
     std::vector<DerailedCar> cars;
 };
 [[nodiscard]] Bytes encode_derail(const Derail& derail);
+[[nodiscard]] std::optional<Derail> decode_derail(ByteView body);
+// 0x45FB openrts_train_state (openRTS's own, 2026-11-21): a train's state as
+// its owner's openRTS keeps it (the cars' air and switches, its DLLs'
+// saved state: TrainView::own_state), compressed and opaque to the server,
+// which keeps it with the train (and in its placements) and gives it back
+// to the owner who gets the train again. In parts: a package holds 0x3C00
+// bytes at most. u32 train, u16 part (0-based), u16 parts, the bytes.
+struct TrainStatePart {
+    std::uint32_t train{};
+    std::uint16_t part{}, parts{};
+    Bytes bytes;
+};
+[[nodiscard]] std::vector<Bytes> encode_train_state(std::uint32_t train, ByteView state);
+// 0x45FC openrts_doors (openRTS's own, 2026-11-21): a train's passenger
+// doors as its owner shows them, a byte per car (bit n: the doors of
+// GlobalID n + 1 open; 1 the right ones, 2 the left). RTS shares none
+// (reverse/multiplayer-protocol.md): sent when they change.
+struct OpenrtsDoors {
+    std::uint32_t train{};
+    std::vector<std::uint8_t> groups; // by car
+};
+[[nodiscard]] Bytes encode_openrts_doors(const OpenrtsDoors& doors);
+[[nodiscard]] std::optional<OpenrtsDoors> decode_openrts_doors(ByteView body);
+// 0x45FD openrts_cab_doors (openRTS's own, 2026-11-21): the doors of one
+// car's cab or salon (its .sd's doors: to the vestibule, the passageway,
+// the passengers' from inside) as whoever is in it opened or shut them, a
+// byte each (1 open), for the engineer and his helpers alike.
+struct OpenrtsCabDoors {
+    std::uint32_t train{}, car{};
+    std::vector<std::uint8_t> open;
+};
+[[nodiscard]] Bytes encode_openrts_cab_doors(const OpenrtsCabDoors& doors);
+[[nodiscard]] std::optional<OpenrtsCabDoors> decode_openrts_cab_doors(ByteView body);
+// 0x45FE openrts_car_action (openRTS's own, 2026-11-21): a car menu item
+// done on a car of any train (a chock, the handbrake, a valve, a hose, a
+// cock, a cable), carried out on every openRTS computer, its owner's too:
+// RTS keeps them on the one that did it (reverse/multiplayer-protocol.md).
+// u32 train, u32 car, u8 coupling (0 a bogie's menu), u8 front, u32 item.
+struct OpenrtsCarAction {
+    std::uint32_t train{}, car{};
+    bool coupling = false, front = true;
+    std::uint32_t item{};
+};
+[[nodiscard]] Bytes encode_openrts_car_action(const OpenrtsCarAction& action);
+[[nodiscard]] std::optional<OpenrtsCarAction> decode_openrts_car_action(ByteView body);
+[[nodiscard]] std::optional<TrainStatePart> decode_train_state(ByteView body);
 // 0x4617 car_light, as rts1.exe sends it: the receiver takes the radius,
 // colour and position too (0x4C3DE0).
 struct CarLightState {
@@ -340,6 +386,7 @@ struct ConsoleCar {
     bool flipped = false;
     bool cold = false;
     float handbrake = -1.0f; // percent; below 0 none given
+    std::uint8_t chocks{};   // PlaceDrag: 1 a chock at its end towards the train's front, 2 the other (2026-11-21)
 };
 struct ConsolePlace {
     std::u16string consist;  // its name, for the log
@@ -352,8 +399,33 @@ struct ConsolePlace {
     std::uint32_t node{};
     double offset{};
     bool forward = true;
+    // Since 2026-11-21, after the cars (an older console's place has none):
+    // the train's name (0x461A), its kind (0 STATIC, 1 PLAYER, 2 TRAFFIC,
+    // 3 LOOSE) and state (0 "Холодный", 1 "Включен", 2 "Движется").
+    std::u16string name;
+    std::uint16_t kind{};
+    std::uint8_t state{};
+    std::u16string notes; // after the state (0x461A's second text)
 };
 [[nodiscard]] Bytes encode_console_place(const ConsolePlace& place);
+
+// 0x45FA openrts_weather (openRTS's own, 2026-11-21): the game's weather, as
+// the server sets it while it runs. `dynamic` 0: `weather` stands (0 clear,
+// 1 snow, 2 rain, 3 thunderstorm); 1: openRTS's dynamic weather
+// (docs/weather.md), the same for everyone by its seed and clock (the
+// game seconds its cycle has run when this was sent; the server sends it
+// again every 30 s), its climate by the season or the sliders'.
+struct OpenrtsWeather {
+    std::uint8_t dynamic{};
+    std::uint8_t weather{};
+    std::uint64_t seed = 1;
+    double clock{};
+    std::uint8_t by_season = 1;
+    float cloudiness = 0.5f, wet = 0.3f, storms = 0.2f;
+    float spell_minutes = 45.0f, change_minutes = 12.0f;
+};
+[[nodiscard]] Bytes encode_openrts_weather(const OpenrtsWeather& weather);
+[[nodiscard]] std::optional<OpenrtsWeather> decode_openrts_weather(ByteView body);
 [[nodiscard]] std::optional<ConsolePlace> decode_console_place(ByteView body);
 
 // console_next: the station routes a train can take next, as the server's

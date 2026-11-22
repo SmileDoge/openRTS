@@ -200,6 +200,10 @@ struct KlubState {
     float timer{};                        // + 24: vigilance (5 the whistle, 12 the ЭПК, 45 vented)
     float limit{};                        // + 80, km/h
     float signal_from_50{};               // + 84
+    // САУТ's (it knows where the train is by its track devices): the
+    // signal actually ahead, not the ЭК's target (the testers, 2026-11-21);
+    // the same where openRTS's map gives none.
+    float saut_signal_distance{}, saut_from_50{};
     float target_speed{}, target_distance{}; // + 116, + 120
     float permitted{};                    // + 140, km/h
     float signal_metres{};                // + 144

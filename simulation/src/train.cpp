@@ -576,6 +576,29 @@ void Train::set_coupler_substeps(const std::uint32_t substeps) noexcept {
     settings_.coupler_substeps = std::clamp<std::uint32_t>(substeps, 1, 8);
 }
 
+void Train::show_car_derailed(const std::size_t car, const bool derailed, const float tilt, const float tilt_target) {
+    if (car >= cars_.size()) return;
+    auto& c = cars_[car];
+    c.derailed = derailed;
+    c.derail = derailed ? DerailKind::tipping : DerailKind::none;
+    if (!derailed) {
+        c.tilt = c.tilt_target = 0.0f;
+        return;
+    }
+    // A roll already shown goes on from where it is (the owner sends it
+    // again with each position): only a fresh one starts at the owner's.
+    if (c.tilt == 0.0f) c.tilt = tilt;
+    c.tilt_target = tilt_target;
+}
+
+void Train::ease_shown_derail(const float elapsed, const float rate) {
+    for (auto& c : cars_) {
+        if (c.derail == DerailKind::none) continue;
+        const float step = rate * elapsed;
+        c.tilt = c.tilt < c.tilt_target ? (std::min)(c.tilt_target, c.tilt + step) : (std::max)(c.tilt_target, c.tilt - step);
+    }
+}
+
 void Train::set_car_flags(const std::size_t car, const CarFlags which, const std::uint8_t mask, const bool on) {
     if (car >= cars_.size()) return;
     auto& state = cars_[car];

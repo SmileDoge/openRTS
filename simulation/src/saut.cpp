@@ -114,7 +114,7 @@ void keys(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput&
         case SautKey::k20:
             if (!working->on) break;
             if (aspect < 2 || ((s.flags & f::white_permit) && aspect == 2)) {
-                if (s.signal_from_50 > 300.0f || aspect == 0) return;
+                if (s.saut_from_50 > 300.0f || aspect == 0) return;
                 if (kmh < 1 || working->os) {
                     s.saut_mode_distance = 600.0f;
                     s.saut_flags |= k20;
@@ -125,7 +125,7 @@ void keys(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput&
             break;
         case SautKey::pod:
             if (!working->on || (aspect != 1 && aspect != 2)) break;
-            if (s.signal_from_50 >= 560.0f) return;
+            if (s.saut_from_50 >= 560.0f) return;
             if (in.speed <= 0.01 && in.speed >= -0.01) {
                 s.saut_mode_distance = 50.0f;
                 s.saut_flags |= pod_standing;
@@ -138,7 +138,7 @@ void keys(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput&
             break;
         case SautKey::otp:
             if (!working->on || aspect != 2) break;
-            if (s.signal_from_50 >= 560.0f) return;
+            if (s.saut_from_50 >= 560.0f) return;
             s.saut_mode_distance = 600.0f;
             s.saut_flags |= otp;
             s.saut_mode_time = 0.0f;
@@ -233,7 +233,7 @@ void step(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput&
         }
         if (cab.on) {
             // The signal's name within 500 m; the items ahead (behind reversed).
-            if (named_signal(u.signal_name) && s.signal.distance <= 500.0f) {
+            if (named_signal(u.signal_name) && s.saut_signal_distance <= 500.0f) {
                 if (!(s.saut_flags & entry_named)) {
                     s.saut_flags |= entry_named;
                     out.sounds.push_back(3202);
@@ -322,7 +322,7 @@ void step(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput&
             }
         }
         // The target.
-        float shown_distance = s.signal_from_50;
+        float shown_distance = s.saut_from_50;
         double gone = 0.0;
         if (aspect > 1) {
             if (s.limit <= s.target_speed || static_cast<double>(whole(s.limit - s.target_speed)) * 12.49999999999999974 <= s.target_distance)
@@ -333,7 +333,7 @@ void step(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput&
             s.saut_mode_start = 0.0f;
             s.saut_mode_distance = 0.0f;
         } else {
-            if ((s.signal_from_50 < 1.0f || (s.saut_flags & k20)) && !(s.saut_flags & measured) && s.saut_mode_distance > 0.0f) {
+            if ((s.saut_from_50 < 1.0f || (s.saut_flags & k20)) && !(s.saut_flags & measured) && s.saut_mode_distance > 0.0f) {
                 s.saut_flags |= measured;
                 s.saut_mode_start = u.milepost;
             }
@@ -351,10 +351,10 @@ void step(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput&
                     if (s.saut_flags & k20) s.saut_target = static_cast<float>((44.0 - over) * 0.5);
                     if (s.saut_flags & otp) s.saut_target = static_cast<float>((104.0 - over) * 0.5);
                 }
-            } else if (static_cast<double>(whole(s.limit)) * 12.49999999999999974 <= s.signal_from_50) {
+            } else if (static_cast<double>(whole(s.limit)) * 12.49999999999999974 <= s.saut_from_50) {
                 s.saut_target = (std::max)(s.limit - 1.0f, 0.0f);
             } else {
-                s.saut_target = static_cast<float>(static_cast<double>(s.signal_from_50) * 0.08);
+                s.saut_target = static_cast<float>(static_cast<double>(s.saut_from_50) * 0.08);
                 if (s.saut_flags & pod) s.saut_target += 17.0f;
                 if (s.saut_flags & k20) s.saut_target = (std::max)(s.saut_target, 22.0f);
                 if (s.saut_flags & otp) s.saut_target = (std::max)(s.saut_target, 52.0f);
@@ -427,11 +427,11 @@ void step(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput&
                 }
                 if (margin > 5.0 && (s.saut_flags & caught)) s.saut_flags &= ~caught;
             }
-            if (s.signal_from_50 <= 100.0f && s.signal_from_50 > 90.0f && !(s.saut_flags & near_red) && aspect == 1 &&
+            if (s.saut_from_50 <= 100.0f && s.saut_from_50 > 90.0f && !(s.saut_flags & near_red) && aspect == 1 &&
                 (s.limit_marks & 0x4000)) {
                 s.saut_flags |= near_red;
                 out.sounds.push_back(3213);
-            } else if (s.signal_from_50 > 100.0f) {
+            } else if (s.saut_from_50 > 100.0f) {
                 s.saut_flags &= ~near_red;
             }
         } else if (s.saut_clock == 0.0f) {

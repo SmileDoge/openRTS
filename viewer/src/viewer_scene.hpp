@@ -142,6 +142,7 @@ struct SceneInput {
     bool limits_panel = false;    // Ctrl+F5: speed limits and the kilometre
     bool stations_panel = false;  // F6: the stations ahead
     bool profile_strip = false;   // Ctrl+F4: the track's profile at the top (openRTS)
+    bool drive_card = false;      // F4: a small card: time, speed, limits, the signal ahead (openRTS)
     bool car_view = false;        // F3: orbit the train's first car, then its last, then back
     bool signal_names = false;    // Ctrl+F7: signal names near the camera
     bool activity_journal = false; // F11 (RTS): the scenario's messages
@@ -302,6 +303,9 @@ public:
     // error, or empty); a file put back over this game (the same route and
     // scenario); the names there. Empty folder: this scene has no saves.
     [[nodiscard]] virtual std::filesystem::path saves_folder() const { return {}; }
+    // A network game: no pause of one's own (the others run on; the
+    // server's pause is everyone's).
+    [[nodiscard]] virtual bool networked() const { return false; }
     [[nodiscard]] virtual std::vector<std::string> saved_games() const { return {}; }
     [[nodiscard]] virtual std::string save_game(const std::string& /*name*/) { return "nothing to save"; }
     [[nodiscard]] virtual std::string load_game(const std::filesystem::path& /*file*/) { return "nothing to load into"; }

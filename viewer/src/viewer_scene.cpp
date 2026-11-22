@@ -165,6 +165,7 @@ public:
         trains_.activity_default_uncouple({train.service, train.train}, std::move(own));
     }
     void set_service_startup(const std::uint32_t service, const bool starts) override { trains_.activity_service_startup(service, starts); }
+    void spawn_train(const ActivityTrainId train) override { trains_.activity_spawn_train(train.service, train.train); }
     void set_speed_limit(const ActivityTrainId train, const float limit) override {
         trains_.activity_speed_limit({train.service, train.train}, limit);
     }
@@ -502,7 +503,10 @@ public:
                     // Watching a live game: the session puts the trains on
                     // the track and keeps the world as the server says.
                     net_ = std::make_unique<NetSession>(content_.connection(), *snapshot, content_.take_early(), content_.console());
+                    net_->set_server_key(content_.server_address());
                     train_->set_network(true);
+                    train_->set_console(content_.console());
+                    track_->network().set_switches_stay(true);
                     if (track_control_) {
                         // The console's map: junctions and signals are the server's.
                         track_control_->set_network_actions({
@@ -514,7 +518,8 @@ public:
                                                   (aspect ? std::to_string(static_cast<int>(*aspect)) : std::string("auto")));
                             },
                             .place_consist = [net = net_.get(), vfs = content_.vfs()](const std::string& consist,
-                                                                                    const simulation::TrackLocation& front) {
+                                                                                    const simulation::TrackLocation& front,
+                                                                                    const TrackControl::NetworkActions::PlaceOptions& options) {
                                 // By its cars, not its name: the consist is the
                                 // dispatcher's, the server needs only the cars' files.
                                 std::string error;
@@ -522,6 +527,11 @@ public:
                                     place->node = front.node;
                                     place->offset = front.offset;
                                     place->forward = front.forward;
+                                    place->number = options.number;
+                                    place->name = net::from_utf8(options.name);
+                                    place->kind = options.kind;
+                                    place->state = options.state;
+                                    put_chocks(*place, options.chocks);
                                     net->send_place(*place);
                                 } else {
                                     net->note(consist + ": " + error);
@@ -534,38 +544,74 @@ public:
                             // (or rear) to the place, its junctions thrown on the
                             // server one by one, then the length (0x4619).
                             .route_to = [net = net_.get(), trains = train_.get(), network = &track_->network()](
-                                            const std::uint64_t train, const simulation::TrackLocation& to) {
+                                            const std::uint64_t train, const std::vector<simulation::TrackLocation>& via,
+                                            const simulation::TrackLocation& to) -> std::string {
                                 const auto id = net->server_train(train);
                                 const auto* t = trains->train_by_id(train);
-                                if (!id || !t || !t->placed()) return;
+                                if (!id || !t || !t->placed()) return tr("the train is not on the track");
+                                // Another train on the way: the first one met
+                                // along the leg (its cars looked at every 5 m).
+                                const auto blocker = [&](const simulation::RouteLeg& leg) -> std::optional<std::string> {
+                                    for (const auto& s : trains->summaries()) {
+                                        if (s.id == train) continue;
+                                        const auto* other = trains->train_by_id(s.id);
+                                        const auto front = other && other->placed() ? other->front_end() : std::nullopt;
+                                        if (!front) continue;
+                                        auto walk = *front;
+                                        walk.reverse();
+                                        for (double done = 0.0; done <= other->length() + 0.1; done += 5.0) {
+                                            if (const auto at = leg.locate(walk.node(), walk.offset()); at && *at > 1.0) return s.name;
+                                            if (!walk.move((std::min)(5.0, other->length() - done + 0.1)).ok()) break;
+                                        }
+                                    }
+                                    return std::nullopt;
+                                };
                                 std::optional<simulation::TrainRoute> best;
                                 bool rear_first = false;
+                                std::string blocked;
                                 for (const bool rear : {false, true}) {
                                     const auto end = rear ? t->rear_end() : t->front_end();
                                     if (!end) continue;
                                     simulation::PathPlan plan;
                                     plan.name = "route";
                                     plan.start = {end->node(), end->offset(), rear ? !end->forward() : end->forward()};
+                                    // The points to pass, in order (as the single
+                                    // player's path editor's), then the end.
+                                    for (const auto& p : via) plan.points.push_back({.kind = simulation::PlanPointKind::via, .node = p.node, .offset = p.offset});
                                     plan.points.push_back({.kind = simulation::PlanPointKind::end, .node = to.node, .offset = to.offset});
                                     auto route = simulation::build_route(*network, plan);
                                     if (!route.ok() || route.legs.size() != 1) continue;
+                                    // Not through a train standing there (testers
+                                    // 2026-11-21: the shortest way ran through them).
+                                    if (const auto who = blocker(route.legs[0])) {
+                                        if (blocked.empty()) blocked = *who;
+                                        continue;
+                                    }
                                     if (!best || route.legs[0].length() < best->legs[0].length()) {
                                         best = std::move(route);
                                         rear_first = rear;
                                     }
                                 }
                                 if (!best) {
-                                    net->note(trf("train %u: no way to there", id));
-                                    return;
+                                    const auto text = blocked.empty() ? trf("train %u: no way to there", id)
+                                                                      : trf("train %u: the way runs into %s; add a point to pass round it", id, blocked.c_str());
+                                    net->note(text);
+                                    return text;
                                 }
+                                // The train's old route first lets its switches go.
+                                if (net->route_left(id)) net->send_route(id, -1.0f, false);
                                 for (const auto& j : best->legs[0].junctions) {
                                     const auto* state = network->junction(j.junction);
                                     if (state && state->selected != j.branch) net->request_junction(j.junction, j.branch);
                                 }
                                 net->send_route(id, static_cast<float>(best->legs[0].length()), rear_first);
+                                return {};
                             },
                             .cancel_route = [net = net_.get()](const std::uint64_t train) {
                                 if (const auto id = net->server_train(train)) net->send_route(id, -1.0f, false);
+                            },
+                            .route_length = [net = net_.get()](const std::uint64_t train, const float length, const bool rear_first) {
+                                if (const auto id = net->server_train(train)) net->send_route(id, length, rear_first);
                             },
                             .route_left = [net = net_.get()](const std::uint64_t train) -> std::optional<std::pair<float, bool>> {
                                 const auto id = net->server_train(train);
@@ -579,6 +625,32 @@ public:
                                 std::string title = number ? "№" + std::to_string(number) : std::string();
                                 if (names && !names->name.empty()) title += (title.empty() ? "" : " ") + net::to_utf8(names->name);
                                 return {title, names ? net::to_utf8(names->notes) : std::string()};
+                            },
+                            .train_form = [net = net_.get()](const std::uint64_t train) -> std::pair<std::uint32_t, std::string> {
+                                const auto id = net->server_train(train);
+                                if (!id) return {};
+                                const auto* names = net->train_names(id);
+                                return {net->train_number(id), names ? net::to_utf8(names->name) : std::string()};
+                            },
+                            .set_train_form = [net = net_.get()](const std::uint64_t train, const std::uint32_t number, const std::string& name) {
+                                const auto id = net->server_train(train);
+                                if (!id) return;
+                                if (number && number != net->train_number(id)) net->send_command("number " + std::to_string(id) + " " + std::to_string(number));
+                                const auto* names = net->train_names(id);
+                                const auto old_name = names ? names->name : std::u16string();
+                                if (net::from_utf8(name) != old_name)
+                                    net->send_train_names(id, net::from_utf8(name), names ? names->notes : std::u16string());
+                            },
+                            .move_train = [net = net_.get()](const std::uint64_t train, const simulation::TrackLocation& head) {
+                                const auto id = net->server_train(train);
+                                if (!id) return;
+                                char line[96];
+                                std::snprintf(line, sizeof line, "move %u %u %.3f %d", id, head.node, head.offset, head.forward ? 1 : 0);
+                                net->send_command(line);
+                            },
+                            .set_chocks = [net = net_.get()](const std::uint64_t train, const std::uint8_t chocks) {
+                                static constexpr const char* words[] = {"none", "head", "tail", "both"};
+                                if (const auto id = net->server_train(train)) net->send_command("chocks " + std::to_string(id) + " " + words[chocks & 3u]);
                             },
                         });
                     }
@@ -723,7 +795,10 @@ public:
         // the chair of the driving cab. In a cab with a DLL every letter may
         // be the cab's, F among them, and nothing let the player out but the
         // panel (testers 2026-11-18).
-        if (input.free_camera && train_) {
+        // Without a driving cab (the dispatcher, or no train): between the
+        // free camera and on foot where it is (2026-11-21, the organiser).
+        const bool walk_toggle = train_ && train_->take_walk_toggle();
+        if ((input.free_camera || walk_toggle) && train_) {
             if (train_->walking()) {
                 const auto eye = camera.eye();
                 train_->set_walking(false, last_eye_);
@@ -731,10 +806,10 @@ public:
                 camera.fly = true;
                 camera.position = eye;
                 camera.target = eye + camera.forward() * camera.distance;
-            } else if (train_->has_driving_cab()) {
+            } else if (train_->has_driving_cab() && !train_->console()) {
                 train_->enter_cab();
             } else {
-                camera.toggle_fly();
+                train_->set_walking(true, camera.eye());
             }
         }
         if (const auto fly = inspector_.take_fly_to()) {
@@ -768,6 +843,7 @@ public:
             if (input.limits_panel) train_->toggle_limits_panel();
             if (input.stations_panel) train_->toggle_stations_panel();
             if (input.profile_strip) train_->toggle_profile_strip();
+            if (input.drive_card) train_->toggle_drive_card();
             if (input.activity_journal && activity_) activity_->toggle_journal();
             if (input.activity_menu && activity_) activity_->toggle_menu();
             if (input.car_view) train_->car_view_key(camera);
@@ -829,7 +905,8 @@ public:
             sky_state_ = sky_simulation_->update(clock.time_of_day_exact, clock.elapsed, camera_position.tile_z, clock.season);
         }
         // A thunderstorm: the game's (or the server's) with the rain.
-        storm_ = clock.weather == renderer::rts::Weather::rain && (clock.storm || (net_ && net_->server_storm()));
+        // The hello's thunderstorm only from a server that sends no weather.
+        storm_ = clock.weather == renderer::rts::Weather::rain && (clock.storm || (net_ && !net_->server_weather() && net_->server_storm()));
         take_probe_results();
         {
             // How open the sky is round the eye (sky_open_seen_): the flashes
@@ -1620,6 +1697,7 @@ public:
     // One text file: a header (route, scenario, clock), then parts after
     // "@@ <part>" lines: the junctions, the trains (TrainView::save_game),
     // the scenario (ActivityView::save).
+    [[nodiscard]] bool networked() const override { return net_ != nullptr; }
     [[nodiscard]] std::filesystem::path saves_folder() const override {
         if (!train_ || net_) return {};
         return user_data_directory() / "saves" / std::string(route_.filename());
@@ -2004,6 +2082,7 @@ public:
                 remember("player_names", player_names_ ? "1" : "0");
             }
             draw_helper_windows(*net_);
+            draw_state_offer(*net_, *train_);
         }
         {
             // The tape window: the file rolling now, and the RTS installation's tapes.
@@ -2602,6 +2681,7 @@ private:
     // game, whose weather is the server's); begun from the weather chosen.
     bool dynamic_weather_ = false;
     bool weather_started_ = false;
+    std::uint32_t weather_serial_ = 0; // the server's weather last taken (NetSession::weather_serial)
     // The weather this frame from the dynamic weather: its clock on by the
     // game's, the mix shown eased towards the cycle's (a setting changed by
     // hand comes over some 20 game seconds, also with the clock stopped).
@@ -2623,7 +2703,37 @@ private:
 #endif
         }();
         if (check) cycle.settings.dynamic = true;
-        dynamic_weather_ = cycle.settings.dynamic && !content_.connection();
+        // A network game: the server's weather (openrts_weather), one that
+        // stands or its dynamic one, the same for everyone by its seed and
+        // clock (2026-11-21: the server could not change it while it ran).
+        if (net_ && net_->server_weather()) {
+            const auto& w = *net_->server_weather();
+            if (!w.dynamic) {
+                dynamic_weather_ = false;
+                cycle.shown_valid = false;
+                weather_started_ = false;
+                clock.weather = w.weather == 1 ? renderer::rts::Weather::snow
+                              : w.weather >= 2 ? renderer::rts::Weather::rain
+                                               : renderer::rts::Weather::clear;
+                clock.storm = w.weather == 3;
+                return;
+            }
+            cycle.settings.dynamic = true;
+            cycle.settings.by_season = w.by_season != 0;
+            cycle.settings.climate = {.cloudiness = w.cloudiness, .wet = w.wet, .storms = w.storms};
+            cycle.settings.spell_minutes = w.spell_minutes;
+            cycle.settings.change_minutes = w.change_minutes;
+            cycle.seed = w.seed;
+            cycle.forced.reset();
+            if (net_->weather_serial() != weather_serial_) {
+                weather_serial_ = net_->weather_serial();
+                cycle.time = w.clock;
+            }
+            weather_started_ = true; // from the cycle's own, not a weather chosen here
+            dynamic_weather_ = true;
+        } else {
+            dynamic_weather_ = cycle.settings.dynamic && !content_.connection();
+        }
         if (!dynamic_weather_) {
             cycle.shown_valid = false;
             weather_started_ = false;

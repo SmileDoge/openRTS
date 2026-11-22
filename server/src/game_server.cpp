@@ -1,6 +1,7 @@
 #include <openrts/server/game_server.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <random>
 #include <cmath>
@@ -114,16 +115,24 @@ struct GameServer::Train {
     double placed_at = -1.0;                // when record.pos last came (server clock)
     double stood_at = -1.0;                 // when it last came to a stand
     bool count_warned = false;              // a position with another car count noted
+    std::u16string waiting_owner;           // given to this nick when he logs in (a placement put back)
+    net::Bytes own_state;                   // its owner's openRTS's state of it (0x45FB), kept and given back
 };
 
 struct GameServer::Impl {
     simulation::TrackNetwork& network;
     simulation::SignalSystem* signals;
     std::map<std::uint32_t, User> users;
+    std::map<std::uint32_t, std::vector<net::Bytes>> state_parts; // a train's 0x45FB as it comes, by train
     std::map<ConnectionId, std::uint32_t> by_connection; // logged in
     std::map<ConnectionId, std::string> fresh;           // connected, no login yet: address
     std::map<std::uint32_t, Train> trains;
     std::uint32_t next_user = 1;
+    // Each junction's branch as last told to the players (any change by the
+    // server's own trains goes out too).
+    std::map<std::uint32_t, std::uint32_t> told_branch;
+    double next_junction_check = 0.0;
+    std::size_t junction_resync = 0; // the next junction told again (all of them over and over)
     std::set<std::uint32_t> locked; // junction nodes the dispatcher locked
     // Routes the dispatcher set, by train: the leg and its junctions with
     // their distances along it, held until the train's rear has passed.
@@ -377,6 +386,14 @@ struct GameServer::Impl {
 
 GameServer::GameServer(Transport& transport, ServerOptions options, simulation::TrackNetwork& network, simulation::SignalSystem* signals)
     : impl_(std::make_unique<Impl>(network, signals)), transport_(transport), options_(std::move(options)), time_(options_.time_of_day) {
+    // The weather it starts with (the start form's, --weather; openrts_weather).
+    weather_.weather = options_.storm ? 3 : options_.weather;
+    // The switches stay where the dispatcher, a route or a player set them:
+    // not back to MainRoute behind each train (TrackNetwork::set_switches_stay).
+    network.set_switches_stay(true);
+    weather_.dynamic = options_.weather_dynamic ? 1 : 0;
+    weather_.seed = options_.weather_seed ? options_.weather_seed : static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) | 1u;
+
     if (signals) {
         // The players' trains run the heads ahead of both ends (RTS train kinds 1 and 4).
         signals->set_player([this](const simulation::Train& train) {
@@ -588,6 +605,20 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         impl.note((console ? "dispatcher " : "user ") + utf8(nick) + " (" + std::to_string(user->id) + ") logged in from " + address);
         if (console) return; // it asks for the world at once
 
+        // A placement's trains put back for this nick (the server started
+        // again): his again, as before (2026-11-21).
+        for (auto& [tid, t] : impl.trains) {
+            if (t.waiting_owner.empty() || t.waiting_owner != nick || t.owner != 0) continue;
+            t.waiting_owner.clear();
+            t.owner = user->id;
+            if (t.record.kind != kind_player) {
+                t.record.kind = kind_player;
+                const auto info = info_package(t.record, t.number);
+                for (auto& [uid, other] : impl.users)
+                    if (uid != user->id && other.playing && other.connection) transport_.send(other.connection, info);
+            }
+            impl.note("train " + std::to_string(tid) + " is " + utf8(nick) + "'s again (a placement)");
+        }
         // The menu waits for the dispatcher's assignment; a player coming
         // back gets its trains again.
         for (const auto& [tid, t] : impl.trains) {
@@ -622,6 +653,56 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         if (!user->openrts) impl.note("user " + utf8(user->nick) + " plays openRTS");
         user->openrts = true;
         send_to(*user, hello_answer());
+        // Its trains' own states, for its openRTS to put back (0x45FB).
+        for (const auto& [tid, t] : impl.trains) {
+            if (t.owner != user->id || t.own_state.empty()) continue;
+            for (const auto& part : net::encode_train_state(tid, t.own_state)) send_to(*user, framed(P(Package::openrts_train_state), part));
+        }
+        if (user->playing) send_to(*user, framed(P(Package::openrts_weather), net::encode_openrts_weather(weather_)));
+        return;
+    }
+
+    // A car menu item done (0x45FE): to the other openRTS players.
+    if (id == P(Package::openrts_car_action)) {
+        const auto bytes = framed(id, body);
+        for (auto& [uid, other] : impl.users)
+            if (uid != user->id && other.playing && other.connection && other.openrts) transport_.send(other.connection, bytes);
+        return;
+    }
+    // A cab's doors from the engineer or a helper (0x45FD): to the other
+    // openRTS players (theirs take it for the train they are on).
+    if (id == P(Package::openrts_cab_doors)) {
+        const auto bytes = framed(id, body);
+        for (auto& [uid, other] : impl.users)
+            if (uid != user->id && other.playing && other.connection && other.openrts) transport_.send(other.connection, bytes);
+        return;
+    }
+    // A train's passenger doors from its owner's openRTS (0x45FC): to the
+    // other openRTS players and the consoles (not to rts1.exe).
+    if (id == P(Package::openrts_doors)) {
+        net::WireReader r(body);
+        const auto* t = impl.train(r.u32());
+        if (!r.ok() || !t || t->owner != user->id) return;
+        const auto bytes = framed(id, body);
+        for (auto& [uid, other] : impl.users)
+            if (uid != user->id && other.playing && other.connection && (other.openrts || other.console)) transport_.send(other.connection, bytes);
+        return;
+    }
+    // A train's own state from its owner's openRTS, in parts (0x45FB).
+    if (id == P(Package::openrts_train_state)) {
+        const auto part = net::decode_train_state(body);
+        if (!part || part->parts > 64) return;
+        auto* t = impl.train(part->train);
+        if (!t || t->owner != user->id) return;
+        auto& parts = impl.state_parts[part->train];
+        if (part->part == 0) parts.assign(part->parts, {});
+        if (parts.size() != part->parts) return;
+        parts[part->part] = part->bytes;
+        if (part->part + 1u != part->parts) return;
+        net::Bytes whole;
+        for (const auto& p : parts) whole.insert(whole.end(), p.begin(), p.end());
+        impl.state_parts.erase(part->train);
+        t->own_state = std::move(whole);
         return;
     }
 
@@ -670,6 +751,7 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         }
         if (paused_) s.pause = 1;
         send_to(*user, net::write_snapshot(s));
+        if (user->openrts || user->console) send_to(*user, framed(P(Package::openrts_weather), net::encode_openrts_weather(weather_)));
         // A console gets every signal unit's 0x4618 and every segment's
         // 0x450B (rts_server.exe 0x41733C).
         if (user->console && impl.signals && impl.signals->dispatched()) {
@@ -1013,7 +1095,40 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         if (t->record.pos) to_playing(pos_package(t->record), user->id);
         return;
     }
-    case P(Package::junction):
+    case P(Package::junction): {
+        // A player's train ran through it, or left it behind (rts1.exe
+        // 0x4CBFC4): taken as sent, as rts_server.exe does (0x40C52C), but
+        // a junction the dispatcher locked; told to the others.
+        net::WireReader r(body);
+        const auto index = r.u32();
+        const auto branch = r.u32();
+        if (!r.ok()) return;
+        const auto node = index + 1;
+        const auto* n = impl.network.node(node);
+        auto* state = impl.network.junction(node);
+        if (!n || n->kind != formats::TrackNodeKind::junction || !state || branch >= n->branch_count()) return;
+        // Not one the dispatcher locked, nor one a laid route holds (the
+        // dispatcher's routes hold till the train's tail is past them), nor
+        // one under another train or just in front of it (a switch set back
+        // behind the sender's tail ran a train standing on it down the
+        // wrong track; testers 2026-11-21).
+        bool under_other = false;
+        for (const auto& [_, t] : impl.trains) {
+            if (!t.sim || !t.sim->placed() || t.owner == user->id) continue;
+            const auto under = net::junctions_under(impl.network, *t.sim);
+            if (std::find(under.begin(), under.end(), node) != under.end()) {
+                under_other = true;
+                break;
+            }
+        }
+        if (!impl.locked.contains(node) && !impl.holder(node) && !under_other) state->selected = branch;
+        const auto now_state = net::JunctionState{.index = index, .branch = state->selected,
+                                                  .lock = static_cast<std::uint8_t>(impl.locked.contains(node) ? 1 : 0)};
+        impl.told_branch[node] = state->selected;
+        if (state->selected == branch) to_playing(junction_package(now_state), user->id);
+        else send_to(*user, junction_package(now_state));
+        return;
+    }
     case P(Package::junction_request): {
         net::WireReader r(body);
         const auto index = r.u32();
@@ -1075,6 +1190,10 @@ void GameServer::tick(const double now) {
     const double dt = impl.last_tick < 0.0 ? 0.0 : std::clamp(now - impl.last_tick, 0.0, 0.5);
     impl.last_tick = now;
     impl.now = now;
+    // The dynamic weather's clock runs with the game's (not while paused),
+    // told again every 30 s so the players' cycles stay with it.
+    if (weather_.dynamic && !paused_) weather_.clock += dt;
+    if (weather_.dynamic && now - weather_sent_ >= 30.0) set_weather(weather_);
     // Discord's party: the openRTS players told again when their number
     // changes (their profiles show it).
     if (options_.discord_join) {
@@ -1146,6 +1265,47 @@ void GameServer::tick(const double now) {
             if (user.playing && user.connection) transport_.send(user.connection, bytes);
         }
     };
+
+    // The switches as the server has them, whoever set them: its own trains
+    // set a switch back to MainRoute behind their tails and on a cancelled
+    // reservation, and nobody heard of it (testers 2026-11-21: the
+    // dispatcher's console showed it to the siding, the players and the
+    // server straight; a console logging in again saw it straight).
+    // The switches the server's own trains set as they run (no player's:
+    // theirs come from their owners, 0x460A).
+    for (const auto& w : impl.network.take_wanted_switches()) {
+        bool own = false;
+        for (const auto& [_, t] : impl.trains) {
+            if (t.sim && t.sim->id() == w.owner) {
+                own = t.owner == 0;
+                break;
+            }
+        }
+        if (!own || impl.locked.contains(w.node)) continue;
+        if (auto* state = impl.network.junction(w.node)) state->selected = w.branch;
+    }
+    if (now >= impl.next_junction_check) {
+        impl.next_junction_check = now + 0.25;
+        const bool first = impl.told_branch.empty();
+        for (const auto& j : impl.junction_states()) {
+            auto [it, added] = impl.told_branch.try_emplace(j.index + 1, j.branch);
+            if (added || it->second == j.branch) continue;
+            it->second = j.branch;
+            if (!first) to_playing(junction_package(j));
+        }
+        // Every junction told again, a few at a time, round and round: a
+        // client that missed one, or moved one itself, has it back within
+        // seconds, not only when it logs in again (testers 2026-11-21: the
+        // dispatcher's map ran a train down the wrong track till he logged
+        // in again). 40 every 0.25 s: 3000 junctions in under 20 s.
+        if (!first) {
+            const auto all = impl.junction_states();
+            for (std::size_t k = 0; k < 40 && !all.empty(); ++k) {
+                if (impl.junction_resync >= all.size()) impl.junction_resync = 0;
+                to_playing(junction_package(all[impl.junction_resync++]));
+            }
+        }
+    }
 
     time_ = std::fmod(time_ + dt, 86400.0);
     if (now >= impl.next_time) {
@@ -1288,6 +1448,12 @@ std::optional<std::uint32_t> GameServer::add_train(NewTrain made, std::string& e
     t.number = made.number;
     t.sim = std::make_unique<simulation::Train>(std::move(made.cars));
     t.sim->scatter_ep_fill(std::random_device{}()); // its ЭПТ's own pace (the server's for everyone)
+    // The records' chocks (0x100 / 0x200, RTS's PlaceDrag) hold it here too.
+    for (std::size_t i = 0; i < t.record.cars.size(); ++i) {
+        if (const auto chocks = static_cast<std::uint8_t>((t.record.cars[i].flags >> 8) & 3u); chocks != 0) {
+            t.sim->set_car_flags(i, simulation::Train::CarFlags::chocks, chocks, true);
+        }
+    }
     if (!t.sim->place(impl.network, made.node, made.offset, made.forward, &error)) return std::nullopt;
     for (const auto& [other_id, other] : impl.trains) {
         if (!other.sim || !other.sim->placed()) continue;
@@ -1337,6 +1503,10 @@ bool GameServer::assign(const std::uint32_t train, const std::string_view nick, 
     const bool kind_changed = t->record.kind != kind_player;
     t->record.kind = kind_player;
     if (user->connection) transport_.send(user->connection, assign_package(train, true, t->number, t->record.subtype, kind_player));
+    if (user->connection && user->openrts && !t->own_state.empty()) {
+        for (const auto& part : net::encode_train_state(train, t->own_state))
+            transport_.send(user->connection, framed(P(Package::openrts_train_state), part));
+    }
     if (kind_changed) {
         const auto info = info_package(t->record, t->number);
         for (auto& [uid, other] : impl.users) {
@@ -1345,6 +1515,22 @@ bool GameServer::assign(const std::uint32_t train, const std::string_view nick, 
     }
     impl.note("train " + std::to_string(train) + " assigned to " + std::string(nick));
     return true;
+}
+
+void GameServer::give_when_back(const std::uint32_t train, std::u16string nick) {
+    auto& impl = *impl_;
+    auto* t = impl.train(train);
+    if (!t || nick.empty()) return;
+    // Logged in now: his at once.
+    if (const auto* user = impl.user_named(nick)) {
+        std::string error;
+        if (assign(train, utf8(nick), error)) return;
+    }
+    t->waiting_owner = std::move(nick);
+}
+
+void GameServer::set_train_state(const std::uint32_t train, net::Bytes state) {
+    if (auto* t = impl_->train(train)) t->own_state = std::move(state);
 }
 
 bool GameServer::unassign(const std::uint32_t train, std::string& error) {
@@ -1610,6 +1796,16 @@ bool GameServer::set_junction(const std::uint32_t node, const std::optional<std:
         if (*branch >= n->branch_count()) {
             error = "junction " + std::to_string(node) + " has " + std::to_string(n->branch_count()) + " branches";
             return false;
+        }
+        // Not out from under a train's route laid over it (the console's too;
+        // testers 2026-11-21): cancel that route first.
+        if (const auto held = impl.holder(node); held && state->selected != *branch) {
+            for (const auto& [junction, wanted] : impl.routes.at(*held).junctions) {
+                if (junction == node && wanted != *branch) {
+                    error = "junction " + std::to_string(node) + " is on train " + std::to_string(*held) + "'s route: cancel it first";
+                    return false;
+                }
+            }
         }
         if (state->selected != *branch && !impl.network.throw_junction(node, *branch)) {
             error = "junction " + std::to_string(node) + " is occupied or reserved";
@@ -2079,6 +2275,46 @@ bool GameServer::lay_route(const std::uint32_t train, const double length, const
     return true;
 }
 
+void GameServer::set_weather(net::OpenrtsWeather weather) {
+    auto& impl = *impl_;
+    if (weather.weather > 3) weather.weather = 0;
+    const bool changed = weather.dynamic != weather_.dynamic || weather.weather != weather_.weather || weather.seed != weather_.seed;
+    weather_ = weather;
+    weather_sent_ = impl.now;
+    const auto bytes = framed(P(Package::openrts_weather), net::encode_openrts_weather(weather_));
+    for (auto& [_, user] : impl.users) {
+        if ((user.openrts || user.console) && user.playing && user.connection) transport_.send(user.connection, bytes);
+    }
+    if (changed) {
+        static constexpr const char* names[] = {"clear", "snow", "rain", "thunderstorm"};
+        impl.note(weather_.dynamic ? "weather: dynamic, seed " + std::to_string(weather_.seed) : std::string("weather: ") + names[weather_.weather]);
+    }
+}
+
+std::vector<StandingTrain> GameServer::standing_trains() const {
+    std::vector<StandingTrain> out;
+    for (const auto& [id, t] : impl_->trains) {
+        if (!t.sim || !t.sim->placed()) continue;
+        const auto front = t.sim->front_end();
+        if (!front) continue;
+        StandingTrain s{.id = id, .number = t.number, .kind = t.record.kind, .subtype = t.record.subtype, .state = t.record.state,
+                        .top_speed = t.record.top_speed, .node = front->node(), .offset = front->offset(), .forward = front->forward(),
+                        .cars = t.record.cars};
+        if (t.record.names) {
+            s.name = (*t.record.names)[0];
+            s.notes = (*t.record.names)[1];
+        }
+        if (t.owner) {
+            if (const auto u = impl_->users.find(t.owner); u != impl_->users.end()) s.owner = u->second.nick;
+        } else {
+            s.owner = t.waiting_owner;
+        }
+        s.own_state = t.own_state;
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
 std::vector<TrainSummary> GameServer::trains() const {
     std::vector<TrainSummary> out;
     for (const auto& [id, t] : impl_->trains) {
@@ -2366,13 +2602,44 @@ std::optional<std::uint32_t> GameServer::add_segment(const SegmentRequest& reque
         // On from that end the way the train goes (0x435278 from the
         // previous route's end; PROBABLE that it looks only ahead).
         bool way = false;
-        if (from && to) {
+        // A route the console's list offers from there (next_routes, the
+        // way chosen with "Направление") is taken as it is: the list and
+        // this check agree (testers 2026-11-21: "Ч4 => Ч Рогожская" after
+        // "Ч => 4 путь" was offered and refused, the previous route ending
+        // at the track's far point, past Ч4).
+        for (const bool back : {false, true}) {
+            if (way) break;
+            const auto offered = next_routes(s.train, back);
+            for (const auto& choice : offered.routes) {
+                if (choice.route == request.route && choice.reverse == request.reverse) {
+                    way = true;
+                    break;
+                }
+            }
+        }
+        if (!way && from && to) {
+            // The way the train goes on there (the list's "Направление"
+            // turns it: the same as next_from offers).
+            auto start = *from;
+            if (s.reversed != p.reversed) start.forward = !start.forward;
+            // The new route starts where the previous one ended (its own
+            // signal, a few metres either side): it follows on (testers
+            // 2026-11-21: a route the list offered was refused).
+            const auto a_point = impl.network.point(start.node, start.offset);
+            const auto b_point = impl.network.point(to->node, to->offset);
+            if (a_point && b_point) {
+                const double dx = (b_point->tile_x - a_point->tile_x) * 2048.0 + (b_point->x - a_point->x);
+                const double dz = (b_point->tile_z - a_point->tile_z) * 2048.0 + (b_point->z - a_point->z);
+                way = dx * dx + dz * dz < 60.0 * 60.0;
+            }
             simulation::PathPlan plan;
             plan.name = "segments";
-            plan.start = *from;
+            plan.start = start;
             plan.points = {{.kind = simulation::PlanPointKind::end, .node = to->node, .offset = to->offset}};
-            const auto built = simulation::build_route(impl.network, plan);
-            way = built.ok() && built.legs.size() == 1 && built.legs[0].length() < stretch_reach;
+            if (!way) {
+                const auto built = simulation::build_route(impl.network, plan);
+                way = built.ok() && built.legs.size() == 1 && built.legs[0].length() < stretch_reach;
+            }
         }
         if (!way) {
             error = "no way from the previous segment's end to the new route";

@@ -567,6 +567,14 @@ struct DoorState {
     std::uint32_t state{}, set_state{};
 };
 
+// A FreeAnimation (the .sd's AnimNode: wipers, a main switch's arm) as
+// the DLL left it after the step: its flags (bit 0 running), the frame it
+// is to go to, its speed.
+struct AnimState {
+    std::uint32_t flags{}, animate_to{};
+    float speed{}, speed_q{}, max_speed{};
+};
+
 // What an AuxLibrary posted to its own SMS (AuxLibrarySound) this step.
 struct AuxSoundOutput {
     std::vector<std::uint16_t> triggers; // discrete triggers, in order
@@ -626,6 +634,8 @@ struct CarOutput {
     std::vector<AuxVarsOutput> aux_vars;
     // Per AuxLibrary, its var + 32 word (AuxExchange).
     std::vector<AuxExchange> aux_exchange;
+    // The FreeAnimations of the car's shape and of its cab, in .sd order.
+    std::vector<AnimState> anims, cab_anims;
 };
 
 // A car's air as the DLLs left it in its Wagon (enter only: Init writes
@@ -906,6 +916,8 @@ inline void write(Writer& w, const CarOutput& c) {
     write_pod_list(w, c.exhausts);
     write_list(w, c.aux_vars);
     write_pod_list(w, c.aux_exchange);
+    write_pod_list(w, c.anims);
+    write_pod_list(w, c.cab_anims);
 }
 inline void read(Reader& r, CarOutput& c) {
     c.has_engine = r.get<std::uint8_t>() != 0; c.engine = r.get<EngineOutput>();
@@ -921,6 +933,8 @@ inline void read(Reader& r, CarOutput& c) {
     read_pod_list(r, c.exhausts, 16);
     read_list(r, c.aux_vars, 64);
     read_pod_list(r, c.aux_exchange, 64);
+    read_pod_list(r, c.anims, 256);
+    read_pod_list(r, c.cab_anims, 256);
 }
 
 inline void write(Writer& w, const StepReply& s) {

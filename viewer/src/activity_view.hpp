@@ -95,6 +95,8 @@ public:
     // ChangeServiceStartupType: a service's trains not started yet start at
     // their times (`starts`) or not at all (NONE).
     virtual void set_service_startup(std::uint32_t /*service*/, bool /*starts*/) {}
+    // SpawnTrain ( ServiceID TrainID ): that traffic train starts now.
+    virtual void spawn_train(ActivityTrainId /*train*/) {}
     // SetSpeedLimit: the train's speed limit (m/s) till another; not
     // positive: none.
     virtual void set_speed_limit(ActivityTrainId /*train*/, float /*limit*/) {}

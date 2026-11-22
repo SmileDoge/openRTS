@@ -528,15 +528,20 @@ private:
         demands.ep_command = r.ep_command;
         demands.systems = static_cast<std::uint16_t>((demands.systems & 4u) | r.systems);
         demands.independent_brake = r.independent_brake;
-        demands.release_train_brake = r.release_train_brake;
-        demands.release_independent_brake = false;
+        // The train's DLL's own release requests (Engine::EngineFlags 1, 2:
+        // the ЭП20's "Отпуск тормозов" button) beside the devices': until
+        // 2026-11-21 the devices' replaced them (the testers: the button did
+        // nothing on openRTS's brakes).
+        const bool dll_release = (out.engine.engine_flags & 1u) != 0;
+        demands.release_train_brake = r.release_train_brake || dll_release;
+        demands.release_independent_brake = (out.engine.engine_flags & 2u) != 0;
         demands.cab_brakes = r;
         // For its other sections (Outputs::section_brake).
         if (o) {
             if (o->section_brake.size() <= car_) o->section_brake.resize(car_ + 1);
-            o->section_brake[car_] = controls.multiple_unit
-                                         ? LegacyConsist::Outputs::SectionBrake{}
-                                         : LegacyConsist::Outputs::SectionBrake{true, r.independent_brake, r.release_train_brake};
+            o->section_brake[car_] = controls.multiple_unit ? LegacyConsist::Outputs::SectionBrake{}
+                                                            : LegacyConsist::Outputs::SectionBrake{true, r.independent_brake,
+                                                                                                   r.release_train_brake || dll_release};
         }
     }
 

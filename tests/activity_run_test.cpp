@@ -536,8 +536,50 @@ void test_vylnik(const std::filesystem::path& root) {
 
 } // namespace
 
+// MainActivityMenu ( 1 ): the report menu from the start, before any
+// SetMainMenu; Novokuznetsk's "Смена на Грузовом (Вторая Часть)" offers the
+// brake test at Томусинская so (testers 2026-11-21).
+void test_main_menu(const std::filesystem::path* root) {
+    constexpr const char* text = R"(SIMISA@@@@@@@@@@JINX0a1t______
+Tr_Activity_Header ( RouteID ( R ) Name ( "Main" ) ActivityStarts ( 09:20:00 ) PlayerStartsInTile ( 1 2 ) PlayerStartPosition ( 0 0 0 ) )
+ActivityMenus ( 2
+	ActivityMenu ( MenuID ( 1 ) Name ( "Later" ) MenuItems ( 1 MenuItem ( ItemLabel ( "Go" ) MenuItemID ( 1 ) Enabled ( 1 ) Visible ( 1 ) ) ) MainActivityMenu ( 0 ) )
+	ActivityMenu ( MenuID ( 2 ) Name ( "First" ) MenuItems ( 1 MenuItem ( ItemLabel ( "Brakes" ) MenuItemID ( 1 ) Enabled ( 1 ) Visible ( 1 ) ) ) MainActivityMenu ( 1 ) )
+)
+Services (
+	Service ( ID ( 1 ) Name ( "Shift" ) Type ( PLAYER ) Path ( A 1 )
+		ServiceTrains ( 1 Train ( ID ( 1 ) Consist ( Loco 1 ) TrainStartTime ( 09:19:00 ) ) )
+		ServiceEvents ( 0 ) )
+)
+)";
+    auto activity = std::make_shared<const formats::Activity>(formats::parse_activity(text));
+    ActivityView view(activity);
+    FakeWorld world;
+    double clock = 9 * 3600 + 20 * 60;
+    view.start(clock, world);
+    check(view.main_menu() == 2, "MainActivityMenu ( 1 ): the report menu from the start");
+    if (!root) return;
+    core::Vfs vfs;
+    core::mount_installation(vfs, *root, core::load_installation_config(*root));
+    vfs.build_index();
+    const auto route = core::VirtualPath::parse("ROUTES/Novokuznetsk");
+    auto file = route ? formats::load_activity(vfs, *route, "Смена на Грузовом (Вторая Часть)") : std::nullopt;
+    if (!file) {
+        std::cout << "  no \"Смена на Грузовом (Вторая Часть)\" in " << root->string() << ": skipped\n";
+        return;
+    }
+    auto shift = std::make_shared<const formats::Activity>(std::move(file->activity));
+    ActivityView shift_view(shift);
+    double shift_clock = shift->start_time;
+    shift_view.start(shift_clock, world);
+    const auto* menu = shift->menu(shift_view.main_menu());
+    check(menu && menu->id == 1 && !menu->items.empty() && menu->items.front().label == "Проба тормозов",
+          "Смена на Грузовом (Вторая Часть): F8 offers the brake test from the start");
+}
+
 int main(int argc, char* argv[]) {
     test_sample();
+    test_main_menu(nullptr);
     test_semantics();
     test_timers();
     test_exam();
@@ -545,6 +587,7 @@ int main(int argc, char* argv[]) {
         const std::filesystem::path root(std::u8string(reinterpret_cast<const char8_t*>(argv[1])));
         test_express(root);
         test_vylnik(root);
+        test_main_menu(&root);
     }
     if (failures == 0) std::cout << "activity run: all checks passed\n";
     return failures == 0 ? 0 : 1;

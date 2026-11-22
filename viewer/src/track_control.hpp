@@ -64,17 +64,39 @@ public:
         // The console: a consist placed on the map goes to the server (it
         // stands there, nobody's, until given to a player); a train removed.
         // Empty: a player, who cannot.
-        std::function<void(const std::string& consist, const simulation::TrackLocation& front)> place_consist;
+        struct PlaceOptions {
+            std::uint32_t number{}; // 0: the server's lowest free
+            std::string name;
+            std::uint16_t kind{};   // RTS's: 0 STATIC, 1 PLAYER, 2 TRAFFIC, 3 LOOSE
+            std::uint8_t state{};   // 0 cold, 1 on, 2 running
+            std::uint8_t chocks{};  // under its head 1, its tail 2 (RTS's PlaceDrag)
+        };
+        std::function<void(const std::string& consist, const simulation::TrackLocation& front, const PlaceOptions& options)> place_consist;
         std::function<void(std::uint64_t train)> remove_train; // the train as drawn here
         // RTS's hand route from the console: the selected train to a place
         // of the track (its junctions thrown, then 0x4619), cancelled; and
         // the route a train has (the distance left, laid from its rear).
-        std::function<void(std::uint64_t train, const simulation::TrackLocation& to)> route_to;
+        // Through the points to pass in order (Track control's "Точка
+        // проезда"), not through another train; what was wrong, or empty.
+        std::function<std::string(std::uint64_t train, const std::vector<simulation::TrackLocation>& via, const simulation::TrackLocation& to)> route_to;
         std::function<void(std::uint64_t train)> cancel_route;
+        // RTS's own way: the route's length from the train's head (its rear,
+        // `rear_first`) along the junctions as they stand (0x4619); the
+        // dispatcher throws them first, then sets the end on the line.
+        std::function<void(std::uint64_t train, float length, bool rear_first)> route_length;
         std::function<std::optional<std::pair<float, bool>>(std::uint64_t train)> route_left;
         // The train's number and name as the server keeps them ("№101
         // name", empty: its own label) and its notes (0x461A).
         std::function<std::pair<std::string, std::string>(std::uint64_t train)> train_names;
+        // Its number and name as the server keeps them, and set (the
+        // train's menu; 2026-11-21, the organiser).
+        std::function<std::pair<std::uint32_t, std::string>(std::uint64_t train)> train_form;
+        std::function<void(std::uint64_t train, std::uint32_t number, const std::string& name)> set_train_form;
+        // A standing train put again by the server (2026-11-21): elsewhere
+        // (the front of its first car) or with chocks under its ends (1 the
+        // head, 2 the tail). Its chocks as the train here has them.
+        std::function<void(std::uint64_t train, const simulation::TrackLocation& head)> move_train;
+        std::function<void(std::uint64_t train, std::uint8_t chocks)> set_chocks;
     };
     // The train picked on the map (as drawn here, 0 none).
     [[nodiscard]] std::uint64_t selected() const noexcept { return selected_; }
@@ -140,6 +162,17 @@ private:
     int spawn_category_ = 0;
     int spawn_state_ = 0;
     void spawn_options();
+    // A network game's placement: the number, name, kind and state the
+    // server puts it with (STATIC and cold by default).
+    char net_number_[16]{};
+    char net_name_[128]{};
+    int net_kind_ = 0;
+    int net_state_ = 0;
+    void net_spawn_options();
+    // The train menu's number and name, for that train.
+    std::uint64_t form_train_ = 0;
+    char form_number_[16]{};
+    char form_name_[128]{};
     bool focused_ = false; // the window has the keyboard focus
 
     // Putting a consist down: first a preview on the map, with the front car
@@ -155,8 +188,24 @@ private:
         std::vector<std::pair<simulation::TrackPoint, simulation::TrackPoint>> cars;
         bool fits = false;
         std::string overlaps; // a train the preview runs into
+        std::uint64_t moving = 0; // a train put again (its id), 0: a consist put on the track
     };
     Placement placement_;
+    // The train menu's "Move it": the preview made from the train's cars,
+    // its front where the train's is.
+    void start_moving(TrainView& trains, std::uint64_t id);
+    // The train menu's chocks (none, head, tail, both).
+    void chocks_menu(TrainView& trains, std::uint64_t id);
+    // The consist put down: its chocks (0 none, 1 head, 2 tail, 3 both).
+    int spawn_chocks_ = 0;
+    // The network's hand route: the points to pass, for train route_via_train_.
+    std::vector<simulation::TrackLocation> route_via_;
+    std::uint64_t route_via_train_ = 0;
+    // The way a train would go from its head (or rear) along the junctions
+    // as they stand: drawn for the train picked, its route's end set on it.
+    static constexpr double route_preview_metres = 6000.0;
+    [[nodiscard]] std::optional<double> way_to(const simulation::TrackLocation& from, const simulation::TrackLocation& to) const;
+    int net_chocks_ = 0;
     void start_placement(TrainView& trains, const std::string& consist, simulation::TrackLocation where);
     void lay_placement(TrainView& trains);
     // Moves the preview `metres` along the track (positive: the way it
