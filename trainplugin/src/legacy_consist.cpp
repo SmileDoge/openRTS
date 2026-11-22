@@ -309,7 +309,29 @@ public:
         // volume never drains, their compressors may never run, and they
         // take their own air from it), so openRTS runs the compressors, by
         // the .eng's governor; started cold, not before the train has power.
-        demands.main_reservoir_rate = outputs->cold ? 0.0f : simulation::compressor_rate(compressor_, inputs);
+        // A DLL with a governor of its own says so by the sound codes 12 /
+        // 13 (MSTS's compressor on / off): from its 12 openRTS's compressor
+        // runs on to its 13, past the .eng's cut-out (the ВЛ10's DLL: 12 at
+        // 7.5 atm, 13 above the .eng's 8.7, where its KT-6 sounded for good;
+        // testers 2026-11-22). At most 1 atm over the .eng's cut-out and 10
+        // atm (a 12 of another meaning: the ЧС2's hiss, the ТЭМ7's ПК-35).
+        for (const auto* codes : {&out.sound_ext, &out.sound_cab})
+            for (const auto code : *codes) {
+                if (code == 12) dll_compressor_ = true;
+                if (code == 13) dll_compressor_ = false;
+            }
+        if (outputs->cold) {
+            demands.main_reservoir_rate = 0.0f;
+        } else if (dll_compressor_ &&
+                   inputs.main_reservoir < (std::min)(10.0f, simulation::compressor_range(inputs.definition && inputs.definition->engine
+                                                                                               ? &*inputs.definition->engine
+                                                                                               : nullptr)
+                                                                     .off + 1.0f)) {
+            compressor_ = true;
+            demands.main_reservoir_rate = simulation::compressor_delivery(inputs);
+        } else {
+            demands.main_reservoir_rate = simulation::compressor_rate(compressor_, inputs);
+        }
         // The realistic air works the pipe. The DLL's TrainPipeRate counts
         // only as a direct vent (its VI, the ЭПК, a stop valve): faster than
         // 0.6 atm/s and faster than its own valve would vent, which follows
@@ -554,6 +576,7 @@ private:
     bool valve_started_ = false;
     std::size_t last_cab_ = 0; // the working cab at the last step
     bool compressor_ = false;
+    bool dll_compressor_ = false; // its DLL's compressor sound on (12, not yet 13)
     float last_dll_ur_{};      // the DLL's УР at the last step
     bool dll_ur_known_ = false;
     BrakesParameters brakes_;      // its Brakes.dll's (own_brakes)

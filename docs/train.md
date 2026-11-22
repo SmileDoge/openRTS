@@ -945,7 +945,11 @@ The other two choices take the air after the valve from the model:
   governor; after a cold start not before the train has power): the DLLs keep
   RTS's main reservoir (its huge volume never drains; the ЭД9М's DLLs never
   run a compressor and take their own air from it), and their
-  MainResRate is not taken. An engine releasing its own brake (EngineFlags
+  MainResRate is not taken. A DLL with a governor of its own tells it by
+  the sound codes 12 / 13 (MSTS's compressor on / off): from its 12 the
+  compressor runs on to its 13 past the .eng's cut-out, at most 1 atm over
+  it and 10 atm (2026-11-22: the ВЛ10's DLL posts 12 at 7.5 and 13 at 9.0
+  atm; by the .eng's 8.7 its КТ-6 sounded for good). An engine releasing its own brake (EngineFlags
   1, the 254 in I) vents its cylinder as in the RTS model, and, as RTS
   (`0x5031D8`), the bit is cleared once the cylinder is empty (bit 2 with
   the independent brake's): the ВЛ80Т's master sets its second section's
