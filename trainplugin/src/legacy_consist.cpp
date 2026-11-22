@@ -1046,6 +1046,25 @@ std::vector<CarInput> LegacyConsist::inputs(const std::vector<const simulation::
         in.brake_force = c.brake_force;
         in.brake_cylinder = c.cylinder;
         in.independent = c.independent;
+        // openRTS's cab brake devices in place of Brakes.dll's: a multiple
+        // unit's car (its Brakes.dll in BR_MODE 1) has its ЭПТ pressure in
+        // its independent brake under RTS, its train brake's cylinder the
+        // air's alone; openRTS's ЭПТ fills that one cylinder. The train DLL
+        // is shown them as RTS has them: the ЭПТ's part as the independent
+        // brake, the rest as the cylinder. The ЭП2Д's parking brake (АСТ)
+        // goes on with the cylinder at the auxiliary reservoir (a full
+        // service) and off with the independent over 3.5 atm and the
+        // cylinder under it (a full service with the ЭПТ); it never let off
+        // (testers).
+        if (air_ && air_->own_brakes && c.ep >= 0.0f && c.definition && c.definition->engine) {
+            const void* key = &*c.definition->engine;
+            auto found = multiple_unit_.find(key);
+            if (found == multiple_unit_.end()) found = multiple_unit_.emplace(key, brakes_parameters(*c.definition->engine).multiple_unit).first;
+            if (found->second) {
+                in.independent = (std::max)(in.independent, c.ep);
+                in.brake_cylinder = (std::max)(c.cylinder - c.ep, 0.0f);
+            }
+        }
         in.auxiliary = c.auxiliary;
         in.control = c.control;
         in.train_pipe = c.pipe;

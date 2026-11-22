@@ -7040,10 +7040,25 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
         // 0x431270): in up the steps and out down them.
         std::vector<bool> ways(cab->description().doors.size(), false);
         if (const auto& outside = unit.cars[engineer_car_].outside) {
+            const auto& doors = outside->door_details;
+            const bool any_way = std::any_of(doors.begin(), doors.end(), [](const auto& d) { return !d.trajectory.empty(); });
             for (std::size_t d = 0; d < ways.size(); ++d) {
-                const auto name = lower(cab->description().doors[d].name);
-                for (const auto& door : outside->door_details)
-                    if (!door.trajectory.empty() && lower(door.name) == name) ways[d] = true;
+                const auto& cab_door = cab->description().doors[d];
+                const auto name = lower(cab_door.name);
+                bool named = false;
+                for (const auto& door : doors) {
+                    if (lower(door.name) != name) continue;
+                    named = true;
+                    if (!door.trajectory.empty()) ways[d] = true;
+                    // A leaf without a way: its parent's (climb_in).
+                    else if (door.parent >= 0 && static_cast<std::size_t>(door.parent) < doors.size()
+                             && !doors[static_cast<std::size_t>(door.parent)].trajectory.empty())
+                        ways[d] = true;
+                }
+                // None of that name: the nearest door with a way (climb_in), for
+                // an outer door of a salon borrowed from another car.
+                const bool outer = lower(cab_door.from) == "exterior" || lower(cab_door.to) == "exterior";
+                if (!named && any_way && cab_door.has_position && outer) ways[d] = true;
             }
         }
         engineer_.set_door_ways(std::move(ways));
@@ -7410,13 +7425,16 @@ void TrainView::stand_at_cab_door(const std::size_t car) {
     if (!loaded() || units_.front().role != Role::driven || car >= units_.front().cars.size()) return;
     const auto& unit = units_.front();
     const auto& c = unit.cars[car];
-    if (!c.definition || !c.definition->engine) return;
+    if (!c.definition || !CabView::has_room(*c.definition)) return;
     auto& cab = board_cabs_[c.key];
-    if (!cab) cab = CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, true));
+    if (!cab) cab = CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, c.definition->engine.has_value()));
     const auto body = body_pose(unit, car, false);
     if (!cab || !body) return;
     const auto points = Engineer::get_on_points(*cab);
     if (points.empty()) return;
+    // A passenger door (the driver opens it): opened for the test.
+    if (const auto door = points.front().first; door < cab->description().doors.size() && !cab->description().doors[door].can_be_opened)
+        cab->open_door(door);
     const glm::vec3 at{body->transform * cab->placement() * glm::vec4(points.front().second, 1.0f)};
     const auto mode = engineer_.mode();
     std::cout << "test: the engineer was " << (mode == Engineer::Mode::outside ? "outside" : mode == Engineer::Mode::seated ? "seated" : engineer_.inside() ? "inside" : "off")
@@ -7434,7 +7452,23 @@ void TrainView::stand_at_cab_door(const std::size_t car) {
         for (std::size_t k = 0; k < out->switches.size() && k < 12; ++k) std::cout << ' ' << out->switches[k].state;
     }
     std::cout << std::endl;
+    // A passenger car's salon: it becomes his room's car, as walking up to it
+    // (its door opened again: the cab taken is the same).
+    const auto door = points.front().first;
+    const glm::mat4 placement = cab->placement();
+    const auto d = cab->description().doors[door];
+    if (!c.definition->engine) {
+        // The train's passenger doors of the car open, as the driver opens them.
+        units_.front().cars[car].door_groups_open = 0xFFu;
+        if (auto* taken = take_engineer_cab(car); taken && !d.can_be_opened) taken->open_door(door);
+    }
     engineer_.stand_outside(at);
+    // Facing the door.
+    if (d.has_position) {
+        const glm::vec3 door_at{body->transform * placement * glm::vec4(d.position[0], d.position[1], d.position[2], 1.0f)};
+        const glm::vec3 eye = at + glm::vec3{0.0f, engineer_.height(), 0.0f};
+        if (glm::length(door_at - eye) > 1e-3f) look_once_ = glm::normalize(door_at - eye);
+    }
     std::cout << "test: on foot at the door of the cab of car " << car + 1 << std::endl;
 }
 
@@ -7619,16 +7653,38 @@ void TrainView::carry_out(const Engineer::Event& event) {
         const std::size_t i = engineer_car_;
         const auto outside = car_outside(0, i);
         if (!outside) return;
-        const auto name = lower(cab->description().doors[event.door].name);
-        for (std::size_t k = 0; k < outside->details->door_details.size(); ++k) {
-            const auto& door = outside->details->door_details[k];
-            if (door.trajectory.empty() || lower(door.name) != name) continue;
-            engineer_.go_through(*outside, k);
-            outside_car_ = units_.front().cars[i].key;
-            hovered_.reset();
-            std::cout << "the engineer climbs up into car " << i + 1 << " by its door " << door.name << std::endl;
-            return;
+        const auto& doors = outside->details->door_details;
+        const auto& cab_door = cab->description().doors[event.door];
+        const auto name = lower(cab_door.name);
+        // The car's door of that name with a way; a leaf without one (a
+        // coach's DOOR_B, ParentObject ( 0 )) by its parent's; no door of
+        // that name (a salon borrowed from another car, its doors named
+        // otherwise): the car's door with a way nearest the salon's.
+        std::optional<std::size_t> way;
+        for (std::size_t k = 0; k < doors.size() && !way; ++k) {
+            if (lower(doors[k].name) != name) continue;
+            if (!doors[k].trajectory.empty()) way = k;
+            else if (doors[k].parent >= 0 && static_cast<std::size_t>(doors[k].parent) < doors.size()
+                     && !doors[static_cast<std::size_t>(doors[k].parent)].trajectory.empty())
+                way = static_cast<std::size_t>(doors[k].parent);
         }
+        if (!way && cab_door.has_position) {
+            const glm::vec3 at{cab_door.position[0], cab_door.position[1], cab_door.position[2]};
+            float best = 1e30f;
+            for (std::size_t k = 0; k < doors.size(); ++k) {
+                if (doors[k].trajectory.empty() || !doors[k].has_position) continue;
+                const float d = glm::distance(at, glm::vec3{doors[k].position[0], doors[k].position[1], doors[k].position[2]});
+                if (d < best) {
+                    best = d;
+                    way = k;
+                }
+            }
+        }
+        if (!way) return;
+        engineer_.go_through(*outside, *way);
+        outside_car_ = units_.front().cars[i].key;
+        hovered_.reset();
+        std::cout << "the engineer climbs up into car " << i + 1 << " by its door " << doors[*way].name << std::endl;
         return;
     }
     const auto at = outside_car_ ? find_car(*outside_car_) : std::nullopt;

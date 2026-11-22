@@ -1270,6 +1270,18 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 // klub openrts | brakes: switch the КЛУБ on the way, as the
                 // Train window's setting does (needs the realistic air)
                 consist->set_own_klub(c.args[0] == "openrts");
+            } else if (c.verb == "handbrake" && c.args.size() >= 2) {
+                // handbrake <car> <percent>: that car's handbrake (the car menu's)
+                const auto car = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
+                if (car < train.cars().size()) train.set_handbrake(car, static_cast<float>(std::atof(c.args[1].c_str())) / 100.0f);
+            } else if (c.verb == "handbrakes") {
+                // handbrakes: every car's handbrake and cylinder
+                std::printf("%6.1f handbrakes:", time);
+                for (std::size_t k = 0; k < train.cars().size(); ++k)
+                    std::printf(" %zu=%.0f%%/TC %.2f/IND %.2f/ZR %.2f/EP %.2f", k, 100.0f * train.cars()[k].handbrake, train.cars()[k].cylinder,
+                                train.cars()[k].independent, train.cars()[k].auxiliary, train.cars()[k].ep);
+                if (const auto* out = consist->output(player); out && out->has_engine) std::printf(" systems %u", static_cast<unsigned>(out->engine.systems));
+                std::printf("\n");
             } else if (c.verb == "voltage" && !c.args.empty()) {
                 world.line_voltage = static_cast<float>(std::atof(c.args[0].c_str()));
                 world.line_frequency = c.args.size() > 1 ? static_cast<float>(std::atof(c.args[1].c_str())) : 0.0f;

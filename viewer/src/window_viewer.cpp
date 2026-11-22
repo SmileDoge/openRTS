@@ -3540,6 +3540,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 if (phase == 0) {
                     scene.stand_at_cab_door(options.capture_board[board]);
                 } else {
+                    // Again before Enter: a salon's model is in by now (its
+                    // place in the car with it).
+                    if (phase == 1) scene.stand_at_cab_door(options.capture_board[board]);
                     // Enter (to that cab, its door opened), then Ctrl+Enter (up the steps).
                     frame_input.engineer_action = true;
                     frame_input.engineer_action_ctrl = phase == 2;

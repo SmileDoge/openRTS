@@ -510,6 +510,10 @@ private:
     std::vector<dllhost::ModuleReport> modules_;
     std::shared_ptr<Outputs> outputs_ = std::make_shared<Outputs>();
     std::shared_ptr<DllAirSetting> air_ = std::make_shared<DllAirSetting>();
+    // Each engine's Brakes.dll in BR_MODE 1 (a multiple unit's), by its
+    // definition: inputs() gives such a car its ЭПТ level in its independent
+    // brake under openRTS's devices, as that Brakes.dll does.
+    mutable std::unordered_map<const void*, bool> multiple_unit_;
     std::size_t player_ = SIZE_MAX;
     std::vector<dllhost::CarAir> entered_air_;
     std::vector<std::uint32_t> train_types_;
