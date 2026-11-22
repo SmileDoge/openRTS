@@ -33,13 +33,15 @@ std::string lower(std::string s) {
     return s;
 }
 
-bool is_exterior(const formats::CabDoor& door) {
-    return lower(door.from) == "exterior" || lower(door.to) == "exterior";
-}
-
 // A door to the car coupled at that end (WAGON_FRONT / WAGON_BACK).
 bool is_passage(const formats::CabDoor& door) {
     return lower(door.from).rfind("wagon", 0) == 0 || lower(door.to).rfind("wagon", 0) == 0;
+}
+
+// A door out to the ground. The ChS7's and 2M62's end doors say
+// Connects ( EXTERIOR WAGON_BACK ): a way to the next section, not out.
+bool is_exterior(const formats::CabDoor& door) {
+    return !is_passage(door) && (lower(door.from) == "exterior" || lower(door.to) == "exterior");
 }
 
 // A door out onto the car's own outside (EXT_WAG: the ChME3's cab doors to

@@ -7531,7 +7531,7 @@ void TrainView::carry_out(const Engineer::Event& event) {
         std::string end = "ext_wag";
         if (event.by_path && event.door < cab->description().doors.size()) {
             const auto& door = cab->description().doors[event.door];
-            if (lower(door.from) == "exterior" || lower(door.to) == "exterior") end = "exterior";
+            if (!passage_door(door) && (lower(door.from) == "exterior" || lower(door.to) == "exterior")) end = "exterior";
         }
         if (end == "exterior") std::cout << "the engineer climbs down from car " << i + 1 << std::endl;
         engineer_.step_onto_car(*outside, at_car, path, end);
