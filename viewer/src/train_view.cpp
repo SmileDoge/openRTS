@@ -8043,6 +8043,11 @@ std::string TrainView::systems_report() const {
         std::snprintf(line, sizeof line, "; dll player car %zu, cab car %zu, engineer %s in car %zu", legacy_->player() + 1, cab_car_ + 1,
                       mode, engineer_car_ + 1);
         text += line;
+        // Engine::CurrentMilepost as the DLLs get it (RTS's, by the km posts;
+        // not the F5 ordinate).
+        std::snprintf(line, sizeof line, "; milepost %s %.3f km%s at %.1f km/h", milepost_.known ? "" : "(none)", milepost_.base,
+                      milepost_.decreasing ? " falling" : "", units_.empty() ? 0.0 : units_.front().train->speed() * 3.6);
+        text += line;
         // The host's trains: the driven one, then the parts cut off from it.
         text += "; dll host trains " + std::to_string(legacy_->trains()) + " (";
         for (std::size_t t = 0; t < legacy_->trains(); ++t) {
@@ -9578,7 +9583,8 @@ void TrainView::feed_world(const Unit& unit) {
             milepost_ = {};
         }
         if (const auto rear = unit.train->rear_end(); rear && (!milepost_.known || std::abs(unit.train->speed()) > 0.0))
-            simulation::update_milepost(milepost_, *network, rear->node(), rear->offset(), rear->forward());
+            simulation::update_milepost(milepost_, *network, rear->node(), rear->offset(), rear->forward(),
+                                        unit.train->speed() * simulation::train_step);
         world.milepost = milepost_;
         const double length = unit.train->length();
         const auto not_signal = [](const formats::TrackItem& item) { return item.kind != formats::TrackItemKind::signal; };

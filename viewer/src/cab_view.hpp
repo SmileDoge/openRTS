@@ -344,6 +344,8 @@ private:
         float time = 1.0f;
         bool returns = false;
         bool continuous = false; // CONTINUOUS: rounds while running; else to its end and back
+        bool loop = false;       // LOOP: a CONTINUOUS one starts again at frame 0; else it goes back (ts.h's "goes down")
+        bool down = false;       // going back towards frame 0
         float phase = 0.0f;      // 0..1 of a round
         bool moving = false;
     };

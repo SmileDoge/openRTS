@@ -20,8 +20,14 @@ struct MilepostState {
     bool known = false;      // worked out once (RTS: when the train is made)
 };
 
-// One step: from the train's rear, facing its front.
-void update_milepost(MilepostState& state, const TrackNetwork& network, std::uint32_t node, double offset, bool forward);
+// One step: from the train's rear, facing its front. `moved`: the metres the
+// rear went towards the front since the last update. openRTS (2026-11-22):
+// where the search finds no post (looking back through a switch that leads
+// away from where the train came, a dead end ahead) the coordinate it had
+// goes on by `moved` instead of falling to -1 (the САВПЭ's distance stood:
+// Novokuznetsk, testers).
+void update_milepost(MilepostState& state, const TrackNetwork& network, std::uint32_t node, double offset, bool forward,
+                     double moved = 0.0);
 
 // A car's (RTS 0x50B690): `along` its centre's metres from the rear.
 [[nodiscard]] float car_milepost(const MilepostState& state, double along);

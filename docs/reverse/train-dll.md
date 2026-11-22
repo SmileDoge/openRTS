@@ -903,9 +903,13 @@ without compliance and RTS refuses it too.
   stay null and `NumNodes` 0. The DLLs seen set only bit 0: the wipers'
   rounds (the 2ЭС4К: one sweep, intermittent, continuous), the ЭП20's
   mirrors held running while unfolded (`AnimateTo` 0). openRTS's cab: a
-  CONTINUOUS one goes round while running (RETURNS finishes its round), any
-  other goes to its last key frame while running and back to the first when
-  not. The 2ЭС4К's `Cab.sd` closes its lights with `}` for `)`, which puts
+  CONTINUOUS one goes to its last key frame and back while running (with
+  LOOP round from frame 0; `ts.h`'s "goes down" bit), RETURNS going on to
+  frame 0 when stopped; any other goes to its last key frame while running
+  and back to the first when not. The ЭП1М-500's `CabNew.s` keys its wipers
+  one way (3 keys, first and last apart): going round they jumped back
+  (testers, 2026-11-22); the old cab's and the ЭД4М's keys go there and
+  back, the same either way. The 2ЭС4К's `Cab.sd` closes its lights with `}` for `)`, which puts
   its `Animations` inside the lights' block: openRTS finds the block
   wherever it is in `ESD_Interior`, as RTS finds a keyword anywhere.
   The ЭД4М-0233 and later (`ed4mnew.dll`, `cab300`) start no wipers on the
@@ -1458,6 +1462,14 @@ at the start too:
 - none behind, one ahead: that one minus the metres to it (its second look
   ahead finds the same post again);
 - none: −1.
+
+openRTS (2026-11-22, not RTS's): where neither search finds a post (looking
+back through a switch set away from the track the train came by, a dead
+end ahead: Novokuznetsk's station tracks) the coordinate it had goes on by
+the metres run instead of falling to −1. The САВПЭ (`Usavp.dll`) counts its
+distance as the next stop's `MDD_INFO_R<route>_<train>_S<n>_POS` (100 m)
+less `CurrentMilepost`; at −1 it stood (testers: in RTS it ran there).
+`openrts-path-check ... --mileposts` prints it along a path.
 
 Each engine's `CurrentMilepost` (`0x50B690`) is the train's plus its car's
 `zord` / 1000 (minus with the falling bit), −1 with none: openRTS's

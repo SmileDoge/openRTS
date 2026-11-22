@@ -1248,6 +1248,12 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 // line_aspect <name> <aspect>: the signal cleared or put back
                 for (auto& s : line_signals)
                     if (s.name == c.args[0]) s.aspect = static_cast<std::uint32_t>(std::atoi(c.args[1].c_str()));
+            } else if (c.verb == "milepost" && !c.args.empty()) {
+                // milepost <km> [falling]: Engine::CurrentMilepost from now on
+                // (the game's, by the km posts, simulation/milepost.hpp)
+                world.milepost.known = true;
+                world.milepost.base = static_cast<float>(std::atof(c.args[0].c_str()));
+                world.milepost.decreasing = c.args.size() > 1 && c.args[1] == "falling";
             } else if (c.verb == "line_post" && c.args.size() >= 2) {
                 // line_post <metres> <km/h>: a speed post on the line
                 line = true;
@@ -1565,7 +1571,12 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     for (std::size_t i = 0; i < legacy.size(); ++i) {
                         const auto* o = consist->output(i);
                         const auto& cs = train.cars()[i];
-                        if (!o || !o->has_engine) continue;
+                        if (!o || !o->has_engine) {
+                            // A wagon: its air and the ЭПТ it is given.
+                            std::printf("         car %zu: pipe %.2f, aux %.2f, cylinder %.2f, EP %.2f\n", i, cs.pipe, cs.auxiliary,
+                                        cs.cylinder, cs.ep);
+                            continue;
+                        }
                         std::printf("         car %zu: F %.1f kN, notch %u, rev %d, panto %u, BV %u, car force %.1f kN, flags 0x%X, "
                                     "pipe rate %.3f, systems %u, pipe %.2f, aux %.2f, cylinder %.2f, independent %.2f (wants %.2f), "
                                     "EP %.2f (asks %.2f), UR %.2f, brake %.1f kN (DLL %.1f), ALSNOn %d, cab aspect %u, MR %.2f (rate %.3f), engine flags 0x%X\n",

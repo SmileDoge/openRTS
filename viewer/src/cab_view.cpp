@@ -426,6 +426,31 @@ void CabView::step_displays(const float elapsed) {
             a.moving = running ? a.phase < 1.0f : a.phase > 0.0f;
             continue;
         }
+        if (!a.loop) {
+            // CONTINUOUS without LOOP goes to its last key frame and back
+            // (ts.h's FreeAnimation: bit 2 LOOP, byte 1's "goes down"). The
+            // ЭП1М-500's new cab keys its wipers one way only: going round
+            // they jumped back to the left (testers, 2026-11-22). Keys made
+            // there and back (the old cab's, the ЭД4М's) look the same either
+            // way. Stopped, RETURNS goes on to frame 0, else it stands.
+            if (!running && (!a.moving || !a.returns)) {
+                a.moving = false;
+                continue;
+            }
+            a.moving = true;
+            const float step = elapsed / a.time;
+            a.phase += a.down ? -step : step;
+            if (a.phase >= 1.0f) {
+                a.phase = 2.0f - a.phase;
+                a.down = true;
+            }
+            if (a.phase <= 0.0f) {
+                a.phase = 0.0f;
+                a.down = false;
+                if (!running) a.moving = false; // back at frame 0
+            }
+            continue;
+        }
         if (!running && (!a.moving || !a.returns)) {
             a.moving = false; // stopped where it is
             continue;
@@ -454,6 +479,7 @@ void CabView::poll() {
         a.time = animation.anim_time > 0.0f ? animation.anim_time : 1.0f;
         a.returns = lower(animation.flags).find("returns") != std::string::npos;
         a.continuous = lower(animation.flags).find("continuous") != std::string::npos;
+        a.loop = lower(animation.flags).find("loop") != std::string::npos;
         for (const auto& name : animation.nodes) {
             const auto it = geometry_->nodes.find(lower(name));
             if (it == geometry_->nodes.end()) continue; // a misspelt one (the ВЛ80Т's WIRER2) moves nothing, as in RTS

@@ -29,6 +29,7 @@
 #include <openrts/formats/train_path.hpp>
 #include <openrts/simulation/auto_driver.hpp>
 #include <openrts/simulation/dispatcher.hpp>
+#include <openrts/simulation/milepost.hpp>
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/speed_limits.hpp>
 #include <openrts/simulation/train.hpp>
@@ -46,6 +47,7 @@ struct Runner {
     bool freight = true;
     float wait_left = -1.0f;
     double travelled = 0.0;
+    simulation::MilepostState milepost; // as the game keeps it (--mileposts)
     double over_limit = 0.0; // worst speed above the limit, m/s
     double top_speed = 0.0;
     std::size_t stops = 0;
@@ -87,10 +89,13 @@ int main(int argc, char** argv) {
     double seconds = 1800.0;
     bool together = false;
     double following = 0.0;
+    bool mileposts = false; // --mileposts: Engine::CurrentMilepost every 10 s
     for (int i = 4; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--seconds" && i + 1 < argc) {
             seconds = std::atof(argv[++i]);
+        } else if (arg == "--mileposts") {
+            mileposts = true;
         } else if (arg == "--together") {
             together = true;
         } else if (arg == "--following" && i + 1 < argc) {
@@ -318,6 +323,21 @@ int main(int argc, char** argv) {
                 }
             }
             contacts += simulation::resolve_contacts(moving).size();
+            // Engine::CurrentMilepost as the game gives the DLLs (RTS's rule,
+            // simulation/milepost.hpp), every 10 s with --mileposts.
+            if (mileposts) {
+                for (auto& r : runners) {
+                    const auto rear = r->train->rear_end();
+                    if (!rear) continue;
+                    if (!r->milepost.known || std::abs(r->train->speed()) > 0.0)
+                        simulation::update_milepost(r->milepost, *network, rear->node(), rear->offset(), rear->forward(),
+                                                    r->train->speed() * simulation::train_step);
+                    if (step % static_cast<int>(10.0 / simulation::train_step) != 0) continue;
+                    const auto& m = r->milepost;
+                    std::printf("    %s %6.0f s: milepost %.3f km%s, %.0f km/h, %.0f m run\n", r->path_name.c_str(), step * simulation::train_step,
+                                m.base, m.decreasing ? " falling" : "", std::abs(r->train->speed()) * 3.6, r->travelled);
+                }
+            }
             for (auto& r : runners) {
                 const auto before = r->train->front_end();
                 r->train->step();
