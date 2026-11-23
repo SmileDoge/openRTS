@@ -10929,6 +10929,14 @@ std::optional<renderer::ModelRainGlass> TrainView::rain_glass(const float amount
         const glm::vec2 dir = glm::normalize(way);
         r.side_dir_x = dir.x;
         r.side_dir_y = dir.y;
+        // The snow: pushed only on the move (standing it stays where it
+        // stuck), at some third of the water's pace.
+        snow_flow_ = std::fmod(snow_flow_ + (0.01f + r.speed * 0.0008f) * moving * dt, 1000.0f);
+        snow_side_ += glm::vec2{-(0.008f + r.speed * 0.0015f), -0.002f} * moving * dt;
+        snow_side_ = glm::vec2{std::fmod(snow_side_.x, 1000.0f), std::fmod(snow_side_.y, 1000.0f)};
+        r.snow_flow = snow_flow_;
+        r.snow_side_x = snow_side_.x;
+        r.snow_side_y = snow_side_.y;
     }
     std::vector<glm::vec3> points;
     cab->wiper_points(points);

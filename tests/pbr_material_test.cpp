@@ -1,6 +1,6 @@
 // PBR stage 1's surfaces from RTS's data (renderer/pbr.hpp): every light
 // material a dielectric; LoShine and HiShine reflect fully, their highlight's
-// peak at normal incidence (GGX, Smith, Schlick, as pbr_wgsl.hpp) near the
+// peak at normal incidence (GGX, Smith, Schlick, as shaders/common/pbr.wgsl) near the
 // Blinn-Phong one the experimental path had before (strength 0.25 and 0.6);
 // Normal matte, its reflection at a grazing mirror angle (a lamp ahead over
 // the ballast) under a tenth of the light; Circumference, DarkShade and the

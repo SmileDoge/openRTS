@@ -33,6 +33,7 @@
 | [experimental-effects.md](experimental-effects.md) | новый рендер: что делает и сколько стоит |
 | [pbr-materials.md](pbr-materials.md) | материалы openRTS (PBR): файлы JSON5, карты, выгрузка модели в glTF, инспектор |
 | [profiling.md](profiling.md) | профилирование с Tracy: сборка, что размечено, как добавить зону |
+| [shaders.md](shaders.md) | шейдеры рендерера: файлы `renderer/shaders`, как попадают в программу, правка без сборки |
 | [vfs.md](vfs.md) | виртуальная файловая система, паки и моды |
 | [inspector.md](inspector.md) | инспектор (F12): объекты карты, свойства, переопределения моделей |
 | [tape.md](tape.md) | лента как в RTS: клавиши, файл, поля строки, что читает `lenta.xls`; окно ленты скоростемера |

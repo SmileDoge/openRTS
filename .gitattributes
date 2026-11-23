@@ -1,2 +1,4 @@
 # Shell scripts run on Linux (GitHub Actions): always LF.
 *.sh text eol=lf
+# The renderer's shaders: LF, as built into the program.
+*.wgsl text eol=lf

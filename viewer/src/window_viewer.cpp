@@ -1691,7 +1691,7 @@ public:
 
         if (panel.tab == PanelState::Tab::general) {
             ImGui::SeparatorText(tr("Time and weather"));
-            draw_clock(clock, time_of_day_applies);
+            draw_clock(clock, time_of_day_applies, scene.networked());
         }
 
         if (panel.tab == PanelState::Tab::world) {
@@ -1881,7 +1881,10 @@ private:
         ImGui::EndChild();
     }
 
-    static void draw_clock(ClockControls& clock, const bool time_of_day_applies) {
+    static void draw_clock(ClockControls& clock, const bool time_of_day_applies, const bool networked) {
+        // A network game: the server sets them; shown, not changed here.
+        if (networked) ImGui::TextWrapped("%s", tr("In a network game the server sets the time, its speed, the season and the weather."));
+        ImGui::BeginDisabled(networked);
         auto hours = static_cast<float>(clock.time_of_day / 3600.0);
         const auto seconds = static_cast<int>(clock.time_of_day);
         ImGui::Text(tr("Time %02d:%02d:%02d"), seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -1911,6 +1914,7 @@ private:
             ImGui::TextDisabled("%s", tr("(the dynamic weather began from it)"));
         }
         draw_dynamic_weather(clock.season);
+        ImGui::EndDisabled();
         if (clock.weather == 3 || (cycle.settings.dynamic && cycle.settings.by_season ? clock.season != 3 : cycle.settings.dynamic && cycle.settings.climate.storms > 0.0f)) {
             if (ImGui::SliderFloat(tr("Lightning strikes a minute"), &renderer::lightning_rate(), 0.0f, 30.0f, "%.0f"))
                 remember("lightning_rate", std::to_string(renderer::lightning_rate()));
@@ -3103,7 +3107,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     glfwShowWindow(window.get());
     startup_frame("Starting the graphics");
 
+    // The shaders' pipelines take long on some drivers (a Radeon's D3D12 sat
+    // minutes here): the log says how long.
+    const auto shaders_started = std::chrono::steady_clock::now();
+    const auto seconds_since = [](const std::chrono::steady_clock::time_point from) {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+    };
     renderer::ModelRenderer renderer(device, surface.scene_format());
+    std::cout << "graphics: the models' shaders ready in " << seconds_since(shaders_started) << " s" << std::endl;
     std::unique_ptr<renderer::ToneMapper> tone;
     std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
     bool auto_exposure_was_on = false;
@@ -3128,6 +3139,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // Workers for the parallel recording: a cascade or the pre-pass each.
     renderer::TaskPool recording_pool((std::min)((std::max)(std::thread::hardware_concurrency(), 2u) - 1u, 5u));
     renderer.set_task_pool(&recording_pool);
+    std::cout << "graphics: the effects' shaders ready, " << seconds_since(shaders_started) << " s from the start of the graphics" << std::endl;
     if (!effects.ready()) {
         std::cerr << "Scene effects initialization failed.\n";
         return exit_code::renderer_failed;
@@ -3346,6 +3358,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     bool fov_reset_down = false; // Num* held
     StageClock stage_clock;
     StageTimes stages{};
+    std::unique_ptr<std::ofstream> frame_log;
+    const double frame_log_start = glfwGetTime();
+    if (!options.frame_log.empty()) {
+        frame_log = std::make_unique<std::ofstream>(std::filesystem::path(std::u8string(options.frame_log.begin(), options.frame_log.end())));
+        *frame_log << "t,frame_ms";
+        for (const auto* name : frame_stage_names) *frame_log << ',' << name;
+        *frame_log << ",gpu_ms,lights,lamp_shadows,instances\n";
+    }
     FovKeys fov_keys;
     double last_time = glfwGetTime();
     // Every 10 s the frame's breakdown goes to the console (openrts.log when
@@ -3396,7 +3416,20 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
         // The place and size in a window only (not the monitor's when full).
         if (placement_keeper && window_mode.applied() == WindowMode::windowed) placement_keeper->update(window.get(), now);
-        panel.stats.add(now - last_time, stages, pass_timer.take());
+        {
+            const auto gpu_times = pass_timer.take();
+            if (frame_log) {
+                // t, frame ms, the stages, the GPU's frame (blank: not read
+                // this frame), the lamps and their shadows, the instances.
+                *frame_log << now - frame_log_start << ',' << (now - last_time) * 1000.0;
+                for (const double ms : stages) *frame_log << ',' << ms;
+                *frame_log << ',';
+                if (gpu_times.frames > 0) *frame_log << gpu_times.frame_ms / gpu_times.frames;
+                const auto effect_stats = effects.stats();
+                *frame_log << ',' << effect_stats.lights << ',' << effect_stats.lamp_shadows << ',' << renderer.stats().instances << '\n';
+            }
+            panel.stats.add(now - last_time, stages, gpu_times);
+        }
         stages = {};
         const auto elapsed = static_cast<float>((std::min)(now - last_time, max_frame_seconds));
         input.keyboard_captured = scene.keyboard_captured();
@@ -3648,6 +3681,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
         }
         if (const auto time = scene.take_time_of_day()) clock.time_of_day = *time;
+        // A network game: the server's pace and season (its time comes above).
+        if (const auto server = scene.server_clock()) {
+            clock.speed = server->speed;
+            if (server->season) clock.season = *server->season;
+        }
         if (const auto saved = scene.take_saved_clock()) {
             // A loaded game's clock, season and weather.
             clock.time_of_day = saved->time_of_day;

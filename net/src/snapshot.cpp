@@ -1593,6 +1593,23 @@ Bytes encode_openrts_weather(const OpenrtsWeather& w) {
     return out.take();
 }
 
+Bytes encode_openrts_clock(const OpenrtsClock& c) {
+    WireWriter out;
+    out.f32(c.speed);
+    out.u8(c.season);
+    return out.take();
+}
+
+std::optional<OpenrtsClock> decode_openrts_clock(const ByteView body) {
+    OpenrtsClock c;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        c.speed = r.f32();
+        c.season = r.u8();
+    });
+    if (!ok || !(c.speed >= 0.0f && c.speed <= 3600.0f) || c.season > 3) return std::nullopt;
+    return c;
+}
+
 std::optional<OpenrtsWeather> decode_openrts_weather(const ByteView body) {
     OpenrtsWeather w;
     const bool ok = parse_body(body, [&](WireReader& r) {

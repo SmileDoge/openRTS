@@ -26,7 +26,7 @@
 #include <webgpu/wgpu.h> // wgpuDevicePoll (the cache's check)
 
 #include "rts_light_shapes.hpp"
-#include "scene_effects_wgsl.hpp"
+#include "shader_code.hpp"
 
 namespace openrts::renderer {
 namespace {
@@ -39,7 +39,7 @@ constexpr std::uint32_t cluster_count = cluster_x * cluster_y * cluster_z;
 constexpr WGPUTextureFormat shadow_format = WGPUTextureFormat_Depth32Float;
 constexpr WGPUTextureFormat ao_format = WGPUTextureFormat_R32Float;
 
-// Laid out as `Effects` in scene_effects_wgsl.hpp.
+// Laid out as `Effects` in shaders/common/effects_struct.wgsl.
 struct EffectsUniform {
     glm::mat4 cascades[SceneEffects::max_cascades];
     glm::vec4 splits{0.0f};
@@ -144,350 +144,6 @@ static_assert(sizeof(EffectsUniform) % 16 == 0);
 // so the focus map's fine texels do not draw a razor edge.
 constexpr float min_penumbra = 0.004f;
 
-// The view depth for the occlusion (2026-11-21, as XeGTAO's prefilter):
-// the camera's depth made linear once (metres along the view; the sky far
-// off), and three more levels each from the one before, each texel the 2 x 2
-// below weighed towards the farthest (XeGTAO's DepthMIPFilter: a near
-// sliver does not pull a far wall in). Until then GTAO and its blur turned
-// every depth they read back through the inverse projection, and the far
-// steps read the full-sized depth all over the frame: in a cab at 1440p
-// 0.6 ms and 0.22 ms (testers). A ВЛ80С's cab at 720p: GTAO with this 0.19
-// -> 0.11 ms, the blur 0.056 -> 0.027 (DirectX 12, a 9800X3D's RTX 4070 Ti
-// SUPER; the medians of three runs each in turn).
-constexpr char prefilter_wgsl[] = R"(
-@group(0) @binding(0) var<uniform> effects: Effects;
-@group(0) @binding(1) var depth_texture: texture_depth_2d;
-@group(0) @binding(2) var level0: texture_storage_2d<r32float, write>;
-@group(0) @binding(3) var level1: texture_storage_2d<r32float, write>;
-@group(0) @binding(4) var level2: texture_storage_2d<r32float, write>;
-@group(0) @binding(5) var level3: texture_storage_2d<r32float, write>;
-
-fn view_distance(depth: f32) -> f32 {
-    if (depth <= 0.0) { return 1.0e6; } // the sky (reversed Z cleared to 0)
-    let v = effects.inv_projection * vec4<f32>(0.0, 0.0, depth, 1.0);
-    return -v.z / v.w;
-}
-
-fn level_filter(d0: f32, d1: f32, d2: f32, d3: f32) -> f32 {
-    let far = max(max(d0, d1), max(d2, d3));
-    let radius = 0.75 * effects.ao.x;
-    let range = 0.615 * radius;
-    let from_near = radius * (1.0 - 0.615);
-    let mul = -1.0 / range;
-    let add = from_near / range + 1.0;
-    let w0 = clamp((far - d0) * mul + add, 0.0, 1.0);
-    let w1 = clamp((far - d1) * mul + add, 0.0, 1.0);
-    let w2 = clamp((far - d2) * mul + add, 0.0, 1.0);
-    let w3 = clamp((far - d3) * mul + add, 0.0, 1.0);
-    return (w0 * d0 + w1 * d1 + w2 * d2 + w3 * d3) / max(w0 + w1 + w2 + w3, 1e-4);
-}
-
-fn put(level: i32, texel: vec2<i32>, value: f32) {
-    if (level == 2) {
-        if (all(texel < vec2<i32>(textureDimensions(level2)))) { textureStore(level2, texel, vec4<f32>(value)); }
-    } else if (all(texel < vec2<i32>(textureDimensions(level3)))) {
-        textureStore(level3, texel, vec4<f32>(value));
-    }
-}
-
-// Level 1's 8 x 8 of the group's tile, then each smaller level from it.
-var<workgroup> tile: array<f32, 64>;
-
-// A group a 16 x 16 tile, a thread a 2 x 2 block of it: its four texels of
-// level 0, one of level 1; then 16 and 4 of its threads levels 2 and 3 from
-// the shared memory. Four levels: the farthest step (96 pixels) reads level
-// 3 (and four storage textures are WebGPU's least a stage).
-@compute @workgroup_size(8, 8)
-fn prefilter(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>,
-             @builtin(workgroup_id) group: vec3<u32>) {
-    let size = vec2<i32>(textureDimensions(depth_texture));
-    let base = vec2<i32>(id.xy) * 2;
-    var d: array<f32, 4>;
-    for (var k = 0; k < 4; k = k + 1) {
-        let p = base + vec2<i32>(k & 1, k >> 1);
-        let q = min(p, size - vec2<i32>(1));
-        d[k] = view_distance(textureLoad(depth_texture, q, 0));
-        if (p.x < size.x && p.y < size.y) { textureStore(level0, p, vec4<f32>(d[k])); }
-    }
-    let one = level_filter(d[0], d[1], d[2], d[3]);
-    if (all(vec2<i32>(id.xy) < vec2<i32>(textureDimensions(level1)))) { textureStore(level1, vec2<i32>(id.xy), vec4<f32>(one)); }
-    let at = vec2<i32>(local.xy);
-    tile[at.y * 8 + at.x] = one;
-    workgroupBarrier();
-    // Levels 2 and 3: 4 x 4 and 2 x 2 of the tile, in place.
-    var span = 8;
-    for (var level = 2; level <= 3; level = level + 1) {
-        let half_span = span / 2;
-        var value = 0.0;
-        let working = at.x < half_span && at.y < half_span;
-        if (working) {
-            let b = at * 2;
-            value = level_filter(tile[b.y * 8 + b.x], tile[b.y * 8 + b.x + 1], tile[(b.y + 1) * 8 + b.x], tile[(b.y + 1) * 8 + b.x + 1]);
-            put(level, vec2<i32>(group.xy) * half_span + at, value);
-        }
-        workgroupBarrier();
-        if (working) { tile[at.y * 8 + at.x] = value; }
-        workgroupBarrier();
-        span = half_span;
-    }
-}
-)";
-
-// Ground-truth ambient occlusion (Jimenez et al. 2016, as XeGTAO lays it
-// out): two slices a pixel, six steps each way, horizons weighted down
-// beyond the radius; normals from the depth. The steps read the view depth
-// (prefilter_wgsl), the far ones from its smaller levels (XeGTAO: the level
-// log2 of the step's pixels less 3.3, at most 3), the place a step's from
-// its ray.
-// Then a 5 x 5 blur that keeps to surfaces of about the same depth.
-constexpr char gtao_wgsl[] = R"(
-@group(0) @binding(0) var<uniform> effects: Effects;
-@group(0) @binding(1) var view_depth: texture_2d<f32>;
-@group(0) @binding(2) var ao_out: texture_storage_2d<r32float, write>;
-
-// High: every pixel, two slices of six steps. Low: a texel for each 2 x 2
-// pixels (the depth pixel at twice its place), one slice of four steps,
-// the steps' reach capped nearer.
-override slices: i32 = 2;
-override steps: i32 = 6;
-override scale: i32 = 1;
-override max_radius: f32 = 96.0;
-
-// The view ray through a point of the screen (NDC), at a metre's distance:
-// ray_mul * ndc + ray_add (from the inverse projection, per thread).
-var<private> ray_mul: vec2<f32>;
-var<private> ray_add: vec2<f32>;
-var<private> depth_size: vec2<i32>;
-
-fn ray_at(ndc: vec2<f32>) -> vec2<f32> {
-    let v = effects.inv_projection * vec4<f32>(ndc, 0.5, 1.0);
-    return v.xy / -v.z;
-}
-
-fn view_position(pixel: vec2<i32>, level: i32) -> vec3<f32> {
-    let p = clamp(pixel, vec2<i32>(0), depth_size - vec2<i32>(1));
-    // A level's size: the frame's halved, at least a texel (no array with
-    // a dynamic index: GPUs keep those in memory, not registers).
-    let shift = vec2<u32>(u32(level));
-    let last = max(depth_size >> shift, vec2<i32>(1)) - vec2<i32>(1);
-    let distance = textureLoad(view_depth, min(p >> shift, last), level).r;
-    let uv = (vec2<f32>(p) + vec2<f32>(0.5)) / vec2<f32>(depth_size);
-    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    return vec3<f32>((ray_mul * ndc + ray_add) * distance, -distance);
-}
-
-@compute @workgroup_size(8, 8)
-fn gtao(@builtin(global_invocation_id) id: vec3<u32>) {
-    depth_size = vec2<i32>(textureDimensions(view_depth, 0));
-    let texel = vec2<i32>(id.xy);
-    let out_size = vec2<i32>(textureDimensions(ao_out));
-    if (texel.x >= out_size.x || texel.y >= out_size.y) { return; }
-    let pixel = min(texel * scale, depth_size - vec2<i32>(1));
-    if (textureLoad(view_depth, pixel, 0).r >= 1.0e5) { // the sky
-        textureStore(ao_out, texel, vec4<f32>(1.0));
-        return;
-    }
-    ray_add = ray_at(vec2<f32>(0.0));
-    ray_mul = vec2<f32>(ray_at(vec2<f32>(1.0, 0.0)).x, ray_at(vec2<f32>(0.0, 1.0)).y) - ray_add;
-    let p = view_position(pixel, 0);
-    let l = view_position(pixel - vec2<i32>(1, 0), 0);
-    let r = view_position(pixel + vec2<i32>(1, 0), 0);
-    let u = view_position(pixel - vec2<i32>(0, 1), 0);
-    let d = view_position(pixel + vec2<i32>(0, 1), 0);
-    let dx = select(p - l, r - p, abs(r.z - p.z) < abs(p.z - l.z));
-    let dy = select(p - u, d - p, abs(d.z - p.z) < abs(p.z - u.z));
-    let v = normalize(-p);
-    var n = normalize(cross(dy, dx));
-    if (dot(n, v) < 0.0) { n = -n; }
-
-    let radius = effects.ao.x;
-    // Pixels a metre covers at this depth.
-    let pixels_per_metre = f32(depth_size.y) * 0.5 / (effects.ao.z * max(-p.z, 0.01));
-    let radius_px = min(radius * pixels_per_metre, max_radius);
-    if (radius_px < 1.0) {
-        textureStore(ao_out, texel, vec4<f32>(1.0));
-        return;
-    }
-    let levels = 3;
-    let noise = fract(52.9829189 * fract(0.06711056 * f32(texel.x) + 0.00583715 * f32(texel.y)));
-    let noise2 = fract(noise * 7.13 + 0.37);
-    let falloff_range = 0.615 * radius;
-    let falloff_from = radius * (1.0 - 0.615);
-    let falloff_mul = -1.0 / falloff_range;
-    let falloff_add = falloff_from / falloff_range + 1.0;
-    const PI = 3.14159265;
-    var visibility = 0.0;
-    for (var slice = 0; slice < slices; slice = slice + 1) {
-        let phi = (f32(slice) + noise) * PI / f32(slices);
-        let omega = vec2<f32>(cos(phi), -sin(phi)); // screen, y down
-        let direction = vec3<f32>(omega.x, -omega.y, 0.0);
-        let ortho = direction - dot(direction, v) * v;
-        let axis = normalize(cross(ortho, v));
-        let projected = n - axis * dot(n, axis);
-        let projected_length = length(projected);
-        if (projected_length < 1e-4) { continue; }
-        let sign_n = sign(dot(ortho, projected));
-        let cos_n = clamp(dot(projected, v) / projected_length, 0.0, 1.0);
-        let angle_n = sign_n * acos(cos_n);
-        let low0 = cos(angle_n + PI * 0.5);
-        let low1 = cos(angle_n - PI * 0.5);
-        var horizon0 = low0;
-        var horizon1 = low1;
-        for (var step = 0; step < steps; step = step + 1) {
-            var s = (f32(step) + noise2) / f32(steps);
-            s = s * s;
-            let offset = omega * max(s * radius_px, f32(step) + 1.0);
-            let level = clamp(i32(round(log2(length(offset)) - 3.3)), 0, levels);
-            let q0 = view_position(pixel + vec2<i32>(round(offset)), level);
-            let q1 = view_position(pixel - vec2<i32>(round(offset)), level);
-            let delta0 = q0 - p;
-            let delta1 = q1 - p;
-            let dist0 = length(delta0);
-            let dist1 = length(delta1);
-            let weight0 = clamp(dist0 * falloff_mul + falloff_add, 0.0, 1.0);
-            let weight1 = clamp(dist1 * falloff_mul + falloff_add, 0.0, 1.0);
-            let cos0 = mix(low0, dot(delta0 / max(dist0, 1e-4), v), weight0);
-            let cos1 = mix(low1, dot(delta1 / max(dist1, 1e-4), v), weight1);
-            horizon0 = max(horizon0, cos0);
-            horizon1 = max(horizon1, cos1);
-        }
-        var h0 = -acos(clamp(horizon1, -1.0, 1.0));
-        var h1 = acos(clamp(horizon0, -1.0, 1.0));
-        h0 = angle_n + clamp(h0 - angle_n, -PI * 0.5, PI * 0.5);
-        h1 = angle_n + clamp(h1 - angle_n, -PI * 0.5, PI * 0.5);
-        let arc0 = (cos_n + 2.0 * h0 * sin(angle_n) - cos(2.0 * h0 - angle_n)) * 0.25;
-        let arc1 = (cos_n + 2.0 * h1 * sin(angle_n) - cos(2.0 * h1 - angle_n)) * 0.25;
-        visibility = visibility + projected_length * (arc0 + arc1);
-    }
-    // A slice of a tilted surface can see more than 1; the average over
-    // slices (the blur) is 1 unoccluded, so it is clamped only after it (XeGTAO).
-    visibility = max(visibility / f32(slices), 0.0);
-    textureStore(ao_out, texel, vec4<f32>(pow(visibility, effects.ao.y)));
-}
-)";
-
-// The blur (2026-11-21): a group's tile of the occlusion and of the view
-// depth read once into its shared memory, the taps from there.
-constexpr char blur_wgsl[] = R"(
-@group(0) @binding(0) var<uniform> effects: Effects;
-@group(0) @binding(1) var view_depth: texture_2d<f32>;
-@group(0) @binding(2) var ao_in: texture_2d<f32>;
-@group(0) @binding(3) var ao_out: texture_storage_2d<r32float, write>;
-
-// High: 5 x 5 of the frame-sized occlusion. Low: 3 x 3 texels of the
-// half-sized one round the pixel (as far as high's 5 x 5), each weighed by
-// its depth pixel's (twice its place) against the pixel's, so a texel of
-// another surface does not bleed over an edge.
-override scale: i32 = 1;
-override reach: i32 = 2;
-
-// A group's 8 x 8 pixels: 8 / scale texels of ao_in a side, `reach` round
-// (12 x 12 at most).
-var<workgroup> tile_ao: array<f32, 144>;
-var<workgroup> tile_depth: array<f32, 144>;
-
-@compute @workgroup_size(8, 8)
-fn blur(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) index: u32,
-        @builtin(workgroup_id) group: vec3<u32>) {
-    let size = vec2<i32>(textureDimensions(ao_out));
-    let in_size = vec2<i32>(textureDimensions(ao_in));
-    let depth_size = vec2<i32>(textureDimensions(view_depth, 0));
-    let span = 8 / scale + 2 * reach;
-    let origin = vec2<i32>(group.xy) * (8 / scale) - vec2<i32>(reach);
-    for (var k = i32(index); k < span * span; k = k + 64) {
-        let q = clamp(origin + vec2<i32>(k % span, k / span), vec2<i32>(0), in_size - vec2<i32>(1));
-        tile_ao[k] = textureLoad(ao_in, q, 0).r;
-        tile_depth[k] = textureLoad(view_depth, min(q * scale, depth_size - vec2<i32>(1)), 0).r;
-    }
-    workgroupBarrier();
-    let pixel = vec2<i32>(id.xy);
-    if (pixel.x >= size.x || pixel.y >= size.y) { return; }
-    let centre = textureLoad(view_depth, min(pixel, depth_size - vec2<i32>(1)), 0).r;
-    let at = pixel / scale - origin;
-    // Joined up, no texel may be of the pixel's own surface (a thin pole):
-    // then they count alike rather than not at all.
-    let least = select(0.0, 0.001, scale > 1);
-    var sum = 0.0;
-    var weights = 0.0;
-    for (var y = -reach; y <= reach; y = y + 1) {
-        for (var x = -reach; x <= reach; x = x + 1) {
-            let t = at + vec2<i32>(x, y);
-            let k = t.y * span + t.x;
-            let w = max(exp(-abs(tile_depth[k] - centre) / max(centre * 0.03, 0.02)), least);
-            sum = sum + tile_ao[k] * w;
-            weights = weights + w;
-        }
-    }
-    textureStore(ao_out, pixel, vec4<f32>(clamp(sum / max(weights, 1e-4), 0.03, 1.0)));
-}
-)";
-
-// Each cluster (a screen tile between two depths, as a view-space box) gets
-// the lights whose spheres reach it and, a cone's (headlights, searchlights,
-// lamps shining down), whose cone does, nearest first, at most `clusters.w`.
-// Until 2026-11-17 the sphere alone: a cone's sphere is its whole reach
-// round the lamp, so a headlight's 100 m came into every cluster near the
-// train, and every pixel there tried it (the night's main pass, testers).
-constexpr char cluster_wgsl[] = R"(
-@group(0) @binding(0) var<uniform> effects: Effects;
-// Three per light, view space: its sphere (centre, radius); its cone's apex
-// and reach from it (w < 0: no cone, the sphere alone); its axis and the
-// tangent of its half angle.
-@group(0) @binding(1) var<storage, read> spheres: array<vec4<f32>>;
-@group(0) @binding(2) var<storage, read_write> counts: array<u32>;
-@group(0) @binding(3) var<storage, read_write> indices: array<u32>;
-
-@compute @workgroup_size(64)
-fn assign(@builtin(global_invocation_id) id: vec3<u32>) {
-    let grid = effects.clusters;
-    let total = grid.x * grid.y * grid.z;
-    let cluster = id.x;
-    if (cluster >= total) { return; }
-    let x = cluster % grid.x;
-    let y = (cluster / grid.x) % grid.y;
-    let z = cluster / (grid.x * grid.y);
-    let near = exp((f32(z) - effects.cluster_params.w) / effects.cluster_params.z);
-    let far = exp((f32(z + 1u) - effects.cluster_params.w) / effects.cluster_params.z);
-    let x0 = min(f32(x) * effects.cluster_params.x * effects.screen.z, 1.0) * 2.0 - 1.0;
-    let x1 = min(f32(x + 1u) * effects.cluster_params.x * effects.screen.z, 1.0) * 2.0 - 1.0;
-    let y0 = 1.0 - min(f32(y + 1u) * effects.cluster_params.y * effects.screen.w, 1.0) * 2.0;
-    let y1 = 1.0 - min(f32(y) * effects.cluster_params.y * effects.screen.w, 1.0) * 2.0;
-    let tx = effects.ao.z * effects.ao.w;
-    let ty = effects.ao.z;
-    let xs = vec4<f32>(x0 * near, x1 * near, x0 * far, x1 * far) * tx;
-    let ys = vec4<f32>(y0 * near, y1 * near, y0 * far, y1 * far) * ty;
-    let lo = vec3<f32>(min(min(xs.x, xs.y), min(xs.z, xs.w)), min(min(ys.x, ys.y), min(ys.z, ys.w)), -far);
-    let hi = vec3<f32>(max(max(xs.x, xs.y), max(xs.z, xs.w)), max(max(ys.x, ys.y), max(ys.z, ys.w)), -near);
-    // The cluster's bounding sphere, for the cones.
-    let middle = 0.5 * (lo + hi);
-    let bound = 0.5 * length(hi - lo);
-    var count = 0u;
-    let base = cluster * grid.w;
-    for (var i = 0u; i < effects.flags.w; i = i + 1u) {
-        if (count >= grid.w) { break; }
-        let s = spheres[3u * i];
-        let closest = clamp(s.xyz, lo, hi);
-        let d = closest - s.xyz;
-        if (dot(d, d) > s.w * s.w) { continue; }
-        let apex = spheres[3u * i + 1u];
-        if (apex.w >= 0.0) {
-            // The bounding sphere against the cone (Wronski, "Cull that
-            // cone!"): its centre's distance to the cone's side, past its
-            // reach, or behind its apex.
-            let cone = spheres[3u * i + 2u];
-            let v = middle - apex.xyz;
-            let along = dot(v, cone.xyz);
-            let side = sqrt(max(dot(v, v) - along * along, 0.0));
-            let cos_half = inverseSqrt(1.0 + cone.w * cone.w);
-            if (side * cos_half - along * cone.w * cos_half > bound || along > apex.w + bound || along < -bound) { continue; }
-        }
-        indices[base + count] = i;
-        count = count + 1u;
-    }
-    counts[cluster] = count;
-}
-)";
-
 [[nodiscard]] WGPUStringView name(const char* text) {
     return {.data = text, .length = WGPU_STRLEN};
 }
@@ -516,75 +172,6 @@ fn assign(@builtin(global_invocation_id) id: vec3<u32>) {
     wgpuShaderModuleRelease(shader);
     return pipeline;
 }
-
-// The sun's shadow cache (2026-11-17): a cascade's working map from the
-// still casters' layer, kept toroidally (each global texel at its place
-// modulo the size), then the moving casters over it; a piece of the layer
-// drawn again first set to the far plane.
-constexpr char still_wgsl[] = R"(
-struct Unwrap {
-    at: array<vec4<u32>, 4>, // the window's offset in the layer (x, y), the layer, the size
-};
-@group(0) @binding(0) var<uniform> unwrap: Unwrap;
-@group(0) @binding(1) var still: texture_depth_2d_array;
-
-struct FullOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) which: u32,
-};
-
-@vertex
-fn vs_full(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> FullOut {
-    let xy = vec2<f32>(f32((v << 1u) & 2u), f32(v & 2u)) * 2.0 - 1.0;
-    var out: FullOut;
-    out.position = vec4<f32>(xy, 0.0, 1.0);
-    out.which = i;
-    return out;
-}
-
-@fragment
-fn fs_unwrap(input: FullOut) -> @builtin(frag_depth) f32 {
-    let a = unwrap.at[input.which];
-    let p = vec2<u32>(input.position.xy);
-    let at = vec2<u32>((p.x + a.x) % a.w, (p.y + a.y) % a.w);
-    return textureLoad(still, vec2<i32>(at), i32(a.z), 0);
-}
-)";
-
-constexpr char far_wgsl[] = R"(
-@vertex
-fn vs_full(@builtin(vertex_index) v: u32) -> @builtin(position) vec4<f32> {
-    let xy = vec2<f32>(f32((v << 1u) & 2u), f32(v & 2u)) * 2.0 - 1.0;
-    return vec4<f32>(xy, 0.0, 1.0);
-}
-
-@fragment
-fn fs_far() -> @builtin(frag_depth) f32 {
-    return 1.0;
-}
-)";
-
-// --shadow-cache-check: the texels of the working maps that differ from the
-// cascades drawn whole.
-constexpr char check_wgsl[] = R"(
-@group(0) @binding(0) var working: texture_depth_2d_array;
-@group(0) @binding(1) var whole: texture_depth_2d_array;
-@group(0) @binding(2) var<storage, read_write> counts: array<atomic<u32>, 8>;
-
-@compute @workgroup_size(8, 8)
-fn compare(@builtin(global_invocation_id) id: vec3<u32>) {
-    let size = textureDimensions(whole);
-    if (id.x >= size.x || id.y >= size.y) { return; }
-    let a = textureLoad(working, vec2<i32>(id.xy), i32(id.z), 0);
-    let b = textureLoad(whole, vec2<i32>(id.xy), i32(id.z), 0);
-    if (abs(a - b) > 2e-5) {
-        atomicAdd(&counts[id.z], 1u);
-    }
-    if (b < 1.0) {
-        atomicAdd(&counts[id.z + 4u], 1u);
-    }
-}
-)";
 
 [[nodiscard]] WGPURenderPipeline make_full_pipeline(const WGPUDevice device, const WGPUPipelineLayout layout, const std::string& code,
                                                     const char* fragment_entry) {
@@ -674,19 +261,15 @@ struct Texture {
     return {position, radius};
 }
 
+} // namespace
+
 // A cone light's cone for the clusters (kinds 1 and 4, one lamp): its apex,
 // axis (unit), reach from the apex and the tangent of its half angle, as
 // physical_light and light_factor bound it (d <= 1, 0 < z <= reach). A
 // spotlight's source radius (Size.w) moves the apex back to where its sides
 // meet. None for a light array (its lamps along a line) or a cone wider than
 // some 84 degrees each way.
-struct LightCone {
-    glm::vec3 apex;
-    glm::vec3 axis;
-    float reach;
-    float tangent;
-};
-[[nodiscard]] std::optional<LightCone> light_cone(const ModelExtraLight& light) {
+std::optional<ExtraLightCone> extra_light_cone(const ModelExtraLight& light) {
     const int kind = static_cast<int>(light.kind) & 31;
     if ((kind != 1 && kind != 4) || light.array_count >= 2) return std::nullopt;
     const float reach = (std::max)(light.size.z * (light.attenuation.y + light.attenuation.z), 0.0f);
@@ -703,10 +286,9 @@ struct LightCone {
         back = light.size.w / tangent;
     }
     apex -= axis * back;
-    return LightCone{apex, axis, reach + back, tangent};
+    return ExtraLightCone{apex, axis, reach + back, tangent};
 }
 
-} // namespace
 
 WGPUBindGroupLayout create_scene_effects_layout(const WGPUDevice device) {
     std::array<WGPUBindGroupLayoutEntry, 14> entries{};
@@ -1474,18 +1056,18 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
         const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
         impl.cluster_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
     }
-    const std::string header = detail::effects_struct_wgsl;
-    impl.gtao = make_compute(device, impl.gtao_layout, header + gtao_wgsl, "gtao");
-    impl.blur = make_compute(device, impl.blur_layout, header + blur_wgsl, "blur");
-    impl.gtao_low = make_compute(device, impl.gtao_layout, header + gtao_wgsl, "gtao",
+    const std::string header = detail::shader_code("common/effects_struct");
+    impl.gtao = make_compute(device, impl.gtao_layout, header + detail::shader_code("effects/gtao"), "gtao");
+    impl.blur = make_compute(device, impl.blur_layout, header + detail::shader_code("effects/gtao_blur"), "blur");
+    impl.gtao_low = make_compute(device, impl.gtao_layout, header + detail::shader_code("effects/gtao"), "gtao",
                                  {{.key = name("slices"), .value = 1.0},
                                   {.key = name("steps"), .value = 4.0},
                                   {.key = name("scale"), .value = 2.0},
                                   {.key = name("max_radius"), .value = 64.0}});
-    impl.blur_low = make_compute(device, impl.blur_layout, header + blur_wgsl, "blur",
+    impl.blur_low = make_compute(device, impl.blur_layout, header + detail::shader_code("effects/gtao_blur"), "blur",
                                  {{.key = name("scale"), .value = 2.0}, {.key = name("reach"), .value = 1.0}});
-    impl.cluster = make_compute(device, impl.cluster_layout, header + cluster_wgsl, "assign");
-    impl.prefilter = make_compute(device, impl.prefilter_layout, header + prefilter_wgsl, "prefilter");
+    impl.cluster = make_compute(device, impl.cluster_layout, header + detail::shader_code("effects/light_clusters"), "assign");
+    impl.prefilter = make_compute(device, impl.prefilter_layout, header + detail::shader_code("effects/prefilter"), "prefilter");
 
     {
         // The sun's shadow cache: the unwrap (its offsets, the cache's
@@ -1503,11 +1085,11 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
         impl.unwrap_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
         const WGPUPipelineLayoutDescriptor with{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl.unwrap_layout};
         const auto unwrap_layout = wgpuDeviceCreatePipelineLayout(device, &with);
-        impl.unwrap = make_full_pipeline(device, unwrap_layout, still_wgsl, "fs_unwrap");
+        impl.unwrap = make_full_pipeline(device, unwrap_layout, detail::shader_code("effects/shadow_cache_still"), "fs_unwrap");
         wgpuPipelineLayoutRelease(unwrap_layout);
         const WGPUPipelineLayoutDescriptor none{.bindGroupLayoutCount = 0, .bindGroupLayouts = nullptr};
         const auto far_layout = wgpuDeviceCreatePipelineLayout(device, &none);
-        impl.fill_far = make_full_pipeline(device, far_layout, far_wgsl, "fs_far");
+        impl.fill_far = make_full_pipeline(device, far_layout, detail::shader_code("effects/shadow_cache_far"), "fs_far");
         wgpuPipelineLayoutRelease(far_layout);
         impl.unwrap_params = make_buffer(device, WGPUBufferUsage_Uniform, sizeof(impl.unwrap_at));
     }
@@ -1525,7 +1107,7 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
         entries[2].buffer.type = WGPUBufferBindingType_Storage;
         const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
         impl.check_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
-        impl.check = make_compute(device, impl.check_layout, check_wgsl, "compare");
+        impl.check = make_compute(device, impl.check_layout, detail::shader_code("effects/shadow_cache_check"), "compare");
         impl.check_counts = make_buffer(device, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc, 8 * sizeof(std::uint32_t));
     }
 
@@ -1703,7 +1285,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
             detail::pack_light(packed[i], *candidates[i].light);
             impl.packed_lights.push_back(*candidates[i].light);
             spheres[3 * i] = glm::vec4{glm::vec3(view.view * glm::vec4{candidates[i].centre, 1.0f}), candidates[i].radius};
-            if (const auto cone = light_cone(*candidates[i].light)) {
+            if (const auto cone = extra_light_cone(*candidates[i].light)) {
                 spheres[3 * i + 1] = glm::vec4{glm::vec3(view.view * glm::vec4{cone->apex, 1.0f}), cone->reach};
                 spheres[3 * i + 2] = glm::vec4{glm::normalize(glm::vec3(view.view * glm::vec4{cone->axis, 0.0f})), cone->tangent};
             }

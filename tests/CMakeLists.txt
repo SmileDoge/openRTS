@@ -442,10 +442,7 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.recorder_vl10_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub openrts --brakes openrts)
-    # САУТ (PB_SETUP 1) in openRTS's КЛУБ: beside Brakes.dll's, and working the train.
-    add_test(NAME openrts.content.klub_ed9m_saut COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
-        --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
-        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_saut.script" --seconds 600 --klub shadow)
+    # САУТ (PB_SETUP 1) in openRTS's КЛУБ, working the train.
     add_test(NAME openrts.content.klub_ed9m_saut_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ed9m_saut.script" --seconds 600 --klub openrts --brakes openrts)

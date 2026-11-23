@@ -1602,6 +1602,8 @@ private:
     const CabView* rain_cab_ = nullptr;
     float rain_flow_ = 0.0f, rain_flow_time_ = 0.0f;
     glm::vec2 rain_side_{0.0f};
+    float snow_flow_ = 0.0f; // the snow's run on the glass (rain_glass)
+    glm::vec2 snow_side_{0.0f};
     std::vector<glm::vec3> rain_prev_; // the blades' corners last frame
     float rain_front_ = 1.0f;
     bool rain_has_grid_ = false;

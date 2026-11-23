@@ -51,6 +51,19 @@ struct ModelExtraLight {
     std::uint32_t owner{};
 };
 
+// A cone light's cone (kinds 1 and 4, one lamp): its apex, axis (unit),
+// reach from the apex and the tangent of its half angle, as the shaders'
+// physical_light and light_factor bound it. None for a light array or a
+// cone wider than some 84 degrees each way. The clusters and the falling
+// rain and snow (the headlights' beams) take it.
+struct ExtraLightCone {
+    glm::vec3 apex;
+    glm::vec3 axis;
+    float reach;
+    float tangent;
+};
+[[nodiscard]] std::optional<ExtraLightCone> extra_light_cone(const ModelExtraLight& light);
+
 // RTS's further lights, in rings around the camera (rts1.exe, CONFIRMED).
 // Ring k is centred (k + 1) tenths of MaxLightDistance from the camera and
 // reaches a tenth of it to each side; a light goes into every ring its reach
@@ -147,6 +160,9 @@ struct ModelRainGlass {
     // which way they run now (unit): back and down on the move, down standing.
     float side_x{}, side_y{};
     float side_dir_x{}, side_dir_y{-1.0f};
+    // The snow's run (m): only on the move, slower than water (it sticks),
+    // up the front glass and back along the side windows.
+    float snow_flow{}, snow_side_x{}, snow_side_y{};
     // The wipers' glass: the room's front (+z) or back (-z) wall, its x and
     // y range, and when each cell of it (rain_grid_columns x _rows, rows
     // up from y0) was last wiped (on `time`'s clock; very old: never).

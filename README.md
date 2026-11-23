@@ -495,6 +495,8 @@ DLL RTS.
   стоит;
 - [профилирование](docs/ru/profiling.md) — сборка с Tracy, что размечено,
   как добавить зону;
+- [шейдеры](docs/ru/shaders.md) — где лежит WGSL рендерера, как он попадает
+  в программу, правка без сборки (`--shader-dir`);
 - [объекты мира](docs/ru/world-objects.md) — леса, переезды, автомобили,
   вода, осадки и дым, как их строит и ведёт RTS;
 - [погода](docs/ru/weather.md) — погода RTS и гроза openRTS: молнии, их свет
@@ -532,4 +534,7 @@ Creative Commons 0. Подробности — в `packs/thunder/CREDITS.txt`.
 openRTS распространяется по лицензии **GNU General Public License v3.0**:
 программу можно свободно использовать, изучать, изменять и распространять, а
 изменённые версии — только под той же лицензией и с исходным кодом. Полный
-текст — в файле [LICENSE](LICENSE).
+текст — в файле [LICENSE](LICENSE). Дополнительное разрешение — выпуск
+идёт вместе с компилятором шейдеров Microsoft DXC (`dxcompiler.dll`,
+`dxil.dll`, их условия в `licenses/dxc`) — в
+[LICENSE-EXCEPTIONS.md](LICENSE-EXCEPTIONS.md).

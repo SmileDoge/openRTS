@@ -104,6 +104,14 @@ renderer::rts::Weather rts_weather(const WeatherMix& mix) noexcept {
 
 bool storming(const WeatherMix& mix) noexcept { return !mix.snow && mix.storm >= 0.3f && mix.precipitation >= 0.08f; }
 
+float sky_cover(const WeatherMix& mix) noexcept {
+    const float falling = (std::min)(mix.precipitation / 0.12f, 1.0f);
+    if (falling <= 0.0f) return mix.cloud;
+    const float closed = mix.snow ? 0.85f : 0.9f + 0.07f * std::clamp(mix.storm / 0.6f, 0.0f, 1.0f);
+    const float s = falling * falling * (3.0f - 2.0f * falling);
+    return mix.cloud + ((std::max)(mix.cloud, closed) - mix.cloud) * s;
+}
+
 WeatherMix WeatherCycle::now(const renderer::rts::Season season) const {
     const auto cycle = weather_at(time, seed, settings, season);
     if (!forced) return cycle;

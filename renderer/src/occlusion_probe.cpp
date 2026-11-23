@@ -8,21 +8,10 @@
 
 #include <glm/vec4.hpp>
 #include <webgpu/wgpu.h> // wgpuDevicePoll
+#include "shader_code.hpp"
 
 namespace openrts::renderer {
 namespace {
-
-constexpr const char* probe_shader = R"(
-@vertex
-fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
-    return position;
-}
-
-@fragment
-fn fs_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.0);
-}
-)";
 
 [[nodiscard]] WGPUStringView text(const char* value) { return {.data = value, .length = WGPU_STRLEN}; }
 
@@ -99,7 +88,7 @@ OcclusionProbe::OcclusionProbe(const WGPUDevice device, const WGPUTextureFormat 
         slot.readback = wgpuDeviceCreateBuffer(device, &readback);
     }
 
-    const WGPUShaderSourceWGSL source{.chain = {.sType = WGPUSType_ShaderSourceWGSL}, .code = text(probe_shader)};
+    const WGPUShaderSourceWGSL source{.chain = {.sType = WGPUSType_ShaderSourceWGSL}, .code = text(detail::shader_code("world/occlusion_probe"))};
     const WGPUShaderModuleDescriptor shader_descriptor{.nextInChain = &source.chain};
     const auto shader = wgpuDeviceCreateShaderModule(device, &shader_descriptor);
     const WGPUPipelineLayoutDescriptor layout_descriptor{.bindGroupLayoutCount = 0, .bindGroupLayouts = nullptr};

@@ -64,6 +64,8 @@ constexpr const char* help_text =
     "  say <nick|*> <text>            a message to a player or everyone\n"
     "  pause | resume                 stop or start the game\n"
     "  time [HH:MM[:SS]]              show or set the time of day\n"
+    "  speed [1|60|600|3600]          show or set how fast the clock runs (openRTS players follow)\n"
+    "  season [spring|summer|autumn|winter]  show or set the season (openRTS players at once)\n"
     "  route <train> <signal> [signal...]  set and hold the junctions from the train to a signal\n"
     "                                 (its name, \"литера\", from the route database), through the others in turn\n"
     "  route <train> cancel           free the route's junctions\n"
@@ -763,6 +765,25 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         if (!seconds) return "usage: time HH:MM[:SS]";
         server.set_time(*seconds);
         return "time " + time_text(*seconds);
+    }
+    if (command == "speed") {
+        if (words.size() < 2) return "clock x" + std::to_string(static_cast<int>(server.clock_speed()));
+        const auto value = number_of(arg(1));
+        if (!value || *value < 1 || *value > 3600) return "usage: speed 1..3600";
+        server.set_clock(static_cast<float>(*value), server.season());
+        return "clock x" + std::to_string(static_cast<int>(server.clock_speed()));
+    }
+    if (command == "season") {
+        static constexpr const char* seasons[] = {"spring", "summer", "autumn", "winter"};
+        if (words.size() < 2) return seasons[(std::min)(server.season(), std::uint8_t{3})];
+        const auto wanted = lower(arg(1));
+        for (std::uint8_t i = 0; i < 4; ++i) {
+            if (wanted == seasons[i]) {
+                server.set_clock(server.clock_speed(), i);
+                return std::string("season ") + seasons[i];
+            }
+        }
+        return "usage: season spring|summer|autumn|winter";
     }
     if (command == "route") {
         const auto train = number_of(arg(1));

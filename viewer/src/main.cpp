@@ -30,6 +30,7 @@
 #include <openrts/net/connection.hpp>
 #include <openrts/net/packages.hpp>
 #include <openrts/net/play.hpp>
+#include <openrts/renderer/shader_directory.hpp>
 #include <openrts/renderer/webgpu_context.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
 
@@ -135,7 +136,8 @@ struct ContentTarget {
 // Track control window at start), (
 // the route start), `--experimental`, `--backend auto|vulkan|dx12|opengl`, `--reshade-depth on|off`, `--situation <name|file>`, `--spawn cab|car|above`, `--realistic-air` (every train on the openRTS realistic air), `--no-vsync`, `--no-batching`, `--msaa 1|2|4|8` (default 4; 2 and 8 where the video card takes them, else 4), `--no-sound`, `--no-discord` (nothing in the Discord profile), `--sound-offline`, `--volume <0..1>` (default 0.5),
 // `--time HH:MM[:SS]`, `--speed <multiplier>`, `--paused` (start paused),
-// `--window-mode windowed|borderless|fullscreen`,
+// `--window-mode windowed|borderless|fullscreen`, `--shader-dir <folder>`
+// (the renderer's WGSL read from there, docs/shaders.md),
 // `--season spring|summer|autumn|winter` and `--weather clear|snow|rain|storm`.
 // A step of joining a server for the start menu (game/src/launcher.cpp reads
 // openrts.log): one line "status: <word> [detail]".
@@ -480,6 +482,13 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
                 return exit_code::content_failed;
             }
             options.pbr = value == "on";
+        } else if (flags[i] == "--frame-log" && has_value) {
+            options.frame_log = std::string(flags[++i]);
+        } else if (flags[i] == "--shader-dir" && has_value) {
+            // The renderer's WGSL read from this folder (renderer/shaders of a
+            // source tree) instead of the built-in copy (docs/shaders.md).
+            const auto folder = std::string(flags[++i]);
+            openrts::renderer::set_shader_directory(fs::path(std::u8string(folder.begin(), folder.end())));
         } else if (flags[i] == "--native-sky" && has_value) {
             const auto value = flags[++i];
             if (value != "on" && value != "off") {
@@ -708,11 +717,32 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         }
     }
     vfs->build_index();
-    // A server names its route in lower case: the folder's own spelling.
+    // A server names its route as rts_server.exe does: the .trk's RouteID in
+    // lower case. The folder of that name in its own spelling; else the
+    // folder whose RouteID it is (Suojarvi V2's is suojarvi).
     if (connection) {
         if (const auto folder = openrts::core::VirtualPath::parse("ROUTES")) {
-            for (const auto& entry : vfs->list(*folder))
-                if (entry.directory && entry.path.key() == target->path.key()) target->path = entry.path;
+            bool found = false;
+            for (const auto& entry : vfs->list(*folder)) {
+                if (entry.directory && entry.path.key() == target->path.key()) {
+                    target->path = entry.path;
+                    found = true;
+                }
+            }
+            for (const auto& entry : vfs->list(*folder)) {
+                if (found) break;
+                if (!entry.directory) continue;
+                try {
+                    const auto definition = openrts::formats::load_route_definition(*vfs, entry.path);
+                    if (!definition.route_id.empty() && openrts::core::fold_case(definition.route_id) == openrts::core::fold_case(server_route)) {
+                        std::cout << "net: route " << server_route << " is the RouteID of " << entry.path.str() << std::endl;
+                        target->path = entry.path;
+                        found = true;
+                    }
+                } catch (const std::exception&) {
+                    // Not a route (no .trk, or one that does not read): not this one.
+                }
+            }
         }
     }
     const auto stats = vfs->stats();
