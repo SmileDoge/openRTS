@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(openRTS
-    VERSION 0.39.0
+    VERSION 0.39.1
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
 if(WIN32)
@@ -309,8 +309,9 @@ if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
 
-# openRTS's own packs (docs/vfs.md, "openRTS's own packs"): packs/thunder and
-# packs/stock (the stock rules in Luau, docs/scripting.md)
+# openRTS's own packs (docs/vfs.md, "openRTS's own packs"): packs/thunder,
+# packs/stock (the stock rules in Luau, docs/scripting.md) and packs/snow (the
+# bodies' snow masks in MATERIALS, docs/pbr-materials.md)
 # packed by openrts-pack into PACKS beside the game and the viewer, on every
 # build (a second).
 if(OPENRTS_BUILD_TOOLS AND TARGET openrts_pack)
@@ -329,6 +330,9 @@ if(OPENRTS_BUILD_TOOLS AND TARGET openrts_pack)
                     --kind global
             COMMAND $<TARGET_FILE:openrts_pack> pack "${CMAKE_SOURCE_DIR}/packs/stock" --as TRAINS/OPENRTS/STOCK
                     -o "$<TARGET_FILE_DIR:${program}>/PACKS/openrts-stock.zip" --method deflate --name openrts-stock
+                    --kind trains
+            COMMAND $<TARGET_FILE:openrts_pack> pack "${CMAKE_SOURCE_DIR}/packs/snow" --as MATERIALS
+                    -o "$<TARGET_FILE_DIR:${program}>/PACKS/openrts-snow.zip" --method deflate --name openrts-snow
                     --kind trains)
     endforeach()
     if(openrts_pack_commands)

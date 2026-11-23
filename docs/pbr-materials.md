@@ -17,6 +17,7 @@ without touching the content (PBR stage 4, 2026-11-17).
 | File | For | Format |
 |---|---|---|
 | `body.material.json5` beside `body.ace` | every model drawing that texture | `openrts-material/1` |
+| `MATERIALS/body.material.json5`, `MATERIALS/<train>/body.material.json5` | every `body.ace` wherever it lies; below a folder, only in the train folders whose name holds it (`#`: any characters) | `openrts-material/1` |
 | `loco.s.material.json5` beside `loco.s` | some parts of that shape | `openrts-shape-material/1` |
 
 A texture's file comes first (one texture is often drawn by dozens of
@@ -27,6 +28,27 @@ texture shared with the body). For a night or season texture
 variant's own (`NIGHT/body.material.json5`) over it.
 
 A mod puts them at the same path: `MODS_OPENRTS/<mod>/TRAINS/TRAINSET/LOCO/body.material.json5`.
+
+**The MATERIALS folder** (2026-11-23, testers: snow masks without
+touching the trains). A folder `MATERIALS` in the installation's root (or
+a mod's) holds materials found by the texture's name, wherever the
+texture lies: one file dresses every train drawing it (there are 18 ChS7
+folders, each with its own `zdsLoco_chs7-6A.ace`).
+
+- A file right in `MATERIALS` applies to every texture of its name.
+- A file in a folder below applies only to textures whose train folder
+  (the one in `TRAINS/TRAINSET`, else the texture's own) holds that
+  folder's name, ignoring case: `MATERIALS/chs7/` for `mdd_CHS7-016` ..
+  `mdd_CHS7-318`, `MATERIALS/mdd_vl10-/` for the VL10s but not the VL10u's
+  (`mdd_vl10u-…`). With `#` the name is a pattern of the whole folder name,
+  `#` any run of characters (`MATERIALS/mdd_CHS7-2#/`; Windows keeps `*` and
+  `?` out of a folder's name). A common name (`kuz1.ace`) belongs in such a
+  folder, not right in `MATERIALS`.
+- Deeper folders are only for order; the top one decides.
+- Maps in the file are found beside it, as anywhere.
+- Layered as a texture's file: the general ones, then the folders', then
+  the one beside the texture, each over the one before.
+- The folder is listed again when the VFS changes (hot reload).
 
 ## How a part's material is made
 
