@@ -10,12 +10,14 @@
 //   Far, a streak thinner than a pixel keeps one pixel and its light shrinks
 //   with it (no shimmer).
 // - Snow: soft round flakes, tumbling as they fall slowly, carried by the
-//   wind; drawn out a little at speed.
+//   wind; on the move drawn out into streaks (a 1/60 s exposure).
 //
-// Both lit by the scene's light, depth-tested without writing depth (a cab's
+// Both lit by the scene's light and the nearest headlights' beams, depth-tested without writing depth (a cab's
 // walls, a tunnel's roof hide them), blended over the frame.
 
 #ifdef OPENRTS_HAS_WGPU
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -26,6 +28,8 @@
 #include <glm/vec4.hpp>
 #include <webgpu/webgpu.h>
 
+#include <openrts/renderer/model_renderer.hpp>
+
 namespace openrts::renderer {
 
 // The rain's and snow's look: openRTS's particles (true, the default) or
@@ -35,8 +39,15 @@ inline bool& own_precipitation() {
     return on;
 }
 
+// A headlight's or searchlight's beam lighting the falling drops and
+// flakes (ExtraLightCone, its colour as the light's, display 0..1).
+struct ParticleLamp {
+    ExtraLightCone cone;
+    glm::vec3 colour{1.0f};
+};
+
 struct WeatherParticles {
-    float amount{};          // 0..2: RTS's density 1, a storm more
+    float amount{};          // 0..3: RTS's density 1, a storm more, a blizzard 3
     bool snow = false;
     glm::vec3 wind{};        // m/s, world
     glm::vec3 eye{};         // scene
@@ -52,6 +63,10 @@ struct WeatherParticles {
     bool has_room = false;
     glm::mat4 to_room{1.0f};
     glm::vec3 room_lower{}, room_upper{};
+    // The beams the flakes and drops shine in (the nearest few).
+    static constexpr std::size_t max_lamps = 4;
+    std::array<ParticleLamp, max_lamps> lamps{};
+    std::size_t lamp_count = 0;
 };
 
 class WeatherParticleRenderer {

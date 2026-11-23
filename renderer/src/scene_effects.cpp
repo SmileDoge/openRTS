@@ -261,19 +261,15 @@ struct Texture {
     return {position, radius};
 }
 
+} // namespace
+
 // A cone light's cone for the clusters (kinds 1 and 4, one lamp): its apex,
 // axis (unit), reach from the apex and the tangent of its half angle, as
 // physical_light and light_factor bound it (d <= 1, 0 < z <= reach). A
 // spotlight's source radius (Size.w) moves the apex back to where its sides
 // meet. None for a light array (its lamps along a line) or a cone wider than
 // some 84 degrees each way.
-struct LightCone {
-    glm::vec3 apex;
-    glm::vec3 axis;
-    float reach;
-    float tangent;
-};
-[[nodiscard]] std::optional<LightCone> light_cone(const ModelExtraLight& light) {
+std::optional<ExtraLightCone> extra_light_cone(const ModelExtraLight& light) {
     const int kind = static_cast<int>(light.kind) & 31;
     if ((kind != 1 && kind != 4) || light.array_count >= 2) return std::nullopt;
     const float reach = (std::max)(light.size.z * (light.attenuation.y + light.attenuation.z), 0.0f);
@@ -290,10 +286,9 @@ struct LightCone {
         back = light.size.w / tangent;
     }
     apex -= axis * back;
-    return LightCone{apex, axis, reach + back, tangent};
+    return ExtraLightCone{apex, axis, reach + back, tangent};
 }
 
-} // namespace
 
 WGPUBindGroupLayout create_scene_effects_layout(const WGPUDevice device) {
     std::array<WGPUBindGroupLayoutEntry, 14> entries{};
@@ -1290,7 +1285,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
             detail::pack_light(packed[i], *candidates[i].light);
             impl.packed_lights.push_back(*candidates[i].light);
             spheres[3 * i] = glm::vec4{glm::vec3(view.view * glm::vec4{candidates[i].centre, 1.0f}), candidates[i].radius};
-            if (const auto cone = light_cone(*candidates[i].light)) {
+            if (const auto cone = extra_light_cone(*candidates[i].light)) {
                 spheres[3 * i + 1] = glm::vec4{glm::vec3(view.view * glm::vec4{cone->apex, 1.0f}), cone->reach};
                 spheres[3 * i + 2] = glm::vec4{glm::normalize(glm::vec3(view.view * glm::vec4{cone->axis, 0.0f})), cone->tangent};
             }

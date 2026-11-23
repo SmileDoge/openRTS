@@ -276,7 +276,13 @@ on by default).
   roof lights, stay dry (`rain_on_glass` in the models' shaders).
 - **Which glass, more.** Only large primitives (their box's middle extent
   at least 25 cm): a gauge's glass and its needle stay dry even close to
-  the windscreen.
+  the windscreen. Nor labels laid over a desk (a translucent primitive of
+  lettering on an opaque surface, the VL82m's desk: testers): at the
+  model's load (`mark_labels`) from up to 32 points of each large
+  translucent primitive a segment 3 cm each way along its normal; most of
+  them meeting the model's opaque triangles, it lies on a surface and
+  takes no drops. A window has nothing behind it but its frame at its
+  edges.
 - **The drops.** In four layers of cells (0.9–3.7 cm, turned against each
   other: no grid), the small ones the most, as many as the time since it
   was wiped and the rain's amount give: in a rain standing most of the
@@ -298,7 +304,12 @@ on by default).
   turned against each other), each flake anywhere in the middle 0.6 of its
   cell, the density patchy by a smooth noise of some 11 and 4 cm (0.35 ..
   1.45 of it): no rows to be seen (until 2026-11-23 two layers on one
-  lattice, flakes in neat rows, testers).
+  lattice, flakes in neat rows, testers). On the move it is pushed up the
+  windscreen and back along the side windows, the clumps the most, drawn
+  out into streaks (1 + up to 1.5 by the speed); standing it stays where
+  it stuck. Its run is TrainView's, only while the train moves, a third of
+  the water's pace (`snow_cover.yzw` of the frame). At night it stays a
+  light grey (at least 0.22 of the sky's light), not black.
 - **The wipers.** The cab's running FreeAnimations (the wipers the DLL
   starts, `CabView::wiper_points`, the animated nodes and all below them):
   their triangles where they are each frame, and the strips their edges
@@ -331,17 +342,28 @@ sprites) draws its own (`renderer::WeatherParticleRenderer`):
   the train and longer as it runs. A streak far off thinner than a pixel
   stays one pixel, its light shrinking with it.
 - **Snow.** Soft round flakes falling 0.7–1.4 m/s, each tumbling on its
-  own, carried by the environment's lowest wind layer; drawn out a little
-  at speed.
+  own, carried by the environment's lowest wind layer; on the move drawn
+  out into streaks along their speed against the camera (a 1/60 s
+  exposure, at most 0.8 m): at speed they fly at the eye.
+- **The lamps' beams.** The nearest four cones (headlights, searchlights,
+  a mast's floodlight; `extra_light_cone`, reach at least 5 m) whose beam
+  reaches the box light the drops and flakes inside them in their colour,
+  brightest near the lamp, softly to the cone's edge and its reach
+  (`PrecipitationView::set_lamps`): a snowfall white in the headlights at
+  night.
 - Both lit by the scene's light, fading in near the eye and out at the
   box's edge, hidden by the cab's walls and a tunnel's roof (depth-tested);
   none fall inside the cab the eye is in. They stay in the world when the
   scene's origin moves.
 - **Strength.** "Rain and snow strength": as the weather, drizzle, rain, a
-  downpour or the player's own (0.1–2); it sets the particles, the drops on
+  downpour, the player's own (0.1–3) or a blizzard (3: snow's flakes
+  40 000 × the strength, past 2 thickening by 1 + 1.5 × the excess, so
+  300 000; some 0.1 ms of the GPU on an RTX 4070 Ti SUPER); it sets the particles, the drops on
   the glass and the fog. With the dynamic weather it is how hard its rain
   falls, not that it falls: the rain still comes and goes by the weather,
   grown to the strength from its first drops (a quarter of the
   precipitation).
 - **Fog.** "Fog in rain and snow" (on by default): while it falls the fog
-  ends nearer, 3500 m (snow 2200 m) over 1 + 1.5 × the strength.
+  ends nearer, 3500 m (snow 2200 m) over 1 + 1.5 × the strength + 25 ×
+  its excess over 2 squared: a blizzard's some 70 m, the land beyond white
+  by day; at night its fog no darker than a dim grey (0.09).

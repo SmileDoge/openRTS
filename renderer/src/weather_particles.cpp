@@ -24,6 +24,9 @@ struct Uniform {
     float room_lower[4]; // w 1: there is a room
     float room_upper[4];
     float origin[4];     // the origin's shift, within the box
+    // Each lamp: apex and reach, axis and the tangent of its half angle, colour.
+    float lamps[WeatherParticles::max_lamps][3][4];
+    float lamp_count[4];
 };
 
 WGPUStringView name(const char* text) {
@@ -47,7 +50,9 @@ struct WeatherParticleRenderer::Impl {
 };
 
 std::uint32_t WeatherParticleRenderer::count(const float amount, const bool snow) noexcept {
-    const float n = (snow ? 40000.0f : 60000.0f) * std::clamp(amount, 0.0f, 2.0f);
+    // A blizzard (snow past 2) thickens fast: 3 is 300 000 flakes.
+    const float a = std::clamp(amount, 0.0f, snow ? 3.0f : 2.0f);
+    const float n = (snow ? 40000.0f : 60000.0f) * a * (snow && a > 2.0f ? 1.0f + 1.5f * (a - 2.0f) : 1.0f);
     return static_cast<std::uint32_t>(n);
 }
 
@@ -155,6 +160,14 @@ void WeatherParticleRenderer::render(const WGPURenderPassEncoder pass, const glm
         }
         u.room_lower[3] = 1.0f;
     }
+    const auto lamps = (std::min)(weather.lamp_count, WeatherParticles::max_lamps);
+    for (std::size_t i = 0; i < lamps; ++i) {
+        const auto& l = weather.lamps[i];
+        const glm::vec4 rows[3] = {{l.cone.apex, l.cone.reach}, {l.cone.axis, l.cone.tangent}, {l.colour, 1.0f}};
+        for (int r = 0; r < 3; ++r)
+            for (int k = 0; k < 4; ++k) u.lamps[i][r][k] = rows[r][k];
+    }
+    u.lamp_count[0] = static_cast<float>(lamps);
     const auto queue = wgpuDeviceGetQueue(impl.device);
     if (!queue) return;
     wgpuQueueWriteBuffer(queue, impl.uniform, 0, &u, sizeof(u));

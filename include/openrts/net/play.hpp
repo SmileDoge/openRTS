@@ -425,6 +425,16 @@ struct OpenrtsWeather {
     float spell_minutes = 45.0f, change_minutes = 12.0f;
 };
 [[nodiscard]] Bytes encode_openrts_weather(const OpenrtsWeather& weather);
+// openrts_clock (0x45EF): how fast the server's clock runs (1 as real time,
+// up to 3600; its pause is RTS's own package) and the season, 0 spring ..
+// 3 winter. A package of its own: openrts_weather's length is fixed, and
+// an older openRTS drops one it does not know.
+struct OpenrtsClock {
+    float speed = 1.0f;
+    std::uint8_t season = 1;
+};
+[[nodiscard]] Bytes encode_openrts_clock(const OpenrtsClock& clock);
+[[nodiscard]] std::optional<OpenrtsClock> decode_openrts_clock(ByteView body);
 [[nodiscard]] std::optional<OpenrtsWeather> decode_openrts_weather(ByteView body);
 [[nodiscard]] std::optional<ConsolePlace> decode_console_place(ByteView body);
 

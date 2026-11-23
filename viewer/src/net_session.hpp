@@ -63,6 +63,9 @@ public:
     // The game's weather as the server last told it (openrts_weather), and
     // how many times it has: nothing from an older server.
     [[nodiscard]] const std::optional<net::OpenrtsWeather>& server_weather() const noexcept { return server_weather_; }
+    // The server's clock pace and season (openrts_clock); none from a server
+    // without it (its clock runs as real time).
+    [[nodiscard]] const std::optional<net::OpenrtsClock>& server_clock() const noexcept { return server_clock_; }
     [[nodiscard]] std::uint32_t weather_serial() const noexcept { return weather_serial_; }
     // Placements (docs/server.md, "Placements"): the server's list
     // ("placement list") and a placement's file ("placement get [name]"),
@@ -307,6 +310,7 @@ private:
     std::map<std::uint32_t, TrainNames> names_;             // by server train: 0x461A
     std::vector<std::string> placement_names_;
     std::optional<net::OpenrtsWeather> server_weather_;
+    std::optional<net::OpenrtsClock> server_clock_;
     std::uint32_t weather_serial_ = 0;
     std::optional<std::string> placement_text_;
     std::optional<net::ConsoleState> console_state_;

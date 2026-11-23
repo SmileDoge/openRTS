@@ -1676,7 +1676,7 @@ public:
 
         if (panel.tab == PanelState::Tab::general) {
             ImGui::SeparatorText(tr("Time and weather"));
-            draw_clock(clock, time_of_day_applies);
+            draw_clock(clock, time_of_day_applies, scene.networked());
         }
 
         if (panel.tab == PanelState::Tab::world) {
@@ -1866,7 +1866,10 @@ private:
         ImGui::EndChild();
     }
 
-    static void draw_clock(ClockControls& clock, const bool time_of_day_applies) {
+    static void draw_clock(ClockControls& clock, const bool time_of_day_applies, const bool networked) {
+        // A network game: the server sets them; shown, not changed here.
+        if (networked) ImGui::TextWrapped("%s", tr("In a network game the server sets the time, its speed, the season and the weather."));
+        ImGui::BeginDisabled(networked);
         auto hours = static_cast<float>(clock.time_of_day / 3600.0);
         const auto seconds = static_cast<int>(clock.time_of_day);
         ImGui::Text(tr("Time %02d:%02d:%02d"), seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -1896,6 +1899,7 @@ private:
             ImGui::TextDisabled("%s", tr("(the dynamic weather began from it)"));
         }
         draw_dynamic_weather(clock.season);
+        ImGui::EndDisabled();
         if (clock.weather == 3 || (cycle.settings.dynamic && cycle.settings.by_season ? clock.season != 3 : cycle.settings.dynamic && cycle.settings.climate.storms > 0.0f)) {
             if (ImGui::SliderFloat(tr("Lightning strikes a minute"), &renderer::lightning_rate(), 0.0f, 30.0f, "%.0f"))
                 remember("lightning_rate", std::to_string(renderer::lightning_rate()));
@@ -3663,6 +3667,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
         }
         if (const auto time = scene.take_time_of_day()) clock.time_of_day = *time;
+        // A network game: the server's pace and season (its time comes above).
+        if (const auto server = scene.server_clock()) {
+            clock.speed = server->speed;
+            if (server->season) clock.season = *server->season;
+        }
         if (const auto saved = scene.take_saved_clock()) {
             // A loaded game's clock, season and weather.
             clock.time_of_day = saved->time_of_day;

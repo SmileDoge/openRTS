@@ -452,6 +452,10 @@ public:
                 players_tab();
                 ImGui::EndTabItem();
             }
+            if (ImGui::BeginTabItem(tr("Time and weather"))) {
+                clock_tab();
+                ImGui::EndTabItem();
+            }
             if (ImGui::BeginTabItem(tr("Log"))) {
                 log_tab();
                 ImGui::EndTabItem();
@@ -1801,6 +1805,94 @@ private:
         ImGui::EndDisabled();
     }
 
+    // The game's clock and weather for everyone (openRTS's players and
+    // consoles at once; RTS's: the time, the weather of their login).
+    void clock_tab() {
+        auto& game = s_.game();
+        const int seconds = static_cast<int>(game.time_of_day());
+        ImGui::Text(tr("Time %02d:%02d:%02d"), seconds / 3600, seconds / 60 % 60, seconds % 60);
+        // The slider while dragged shows where it goes; let go, the time is set.
+        if (!time_dragged_) time_hours_ = static_cast<float>(game.time_of_day() / 3600.0);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::SliderFloat("##clock_time", &time_hours_, 0.0f, 24.0f, "%.2f h");
+        time_dragged_ = ImGui::IsItemActive();
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            game.set_time(static_cast<double>(time_hours_) * 3600.0);
+            report(true, trf("time set to %s", clock_text(game.time_of_day()).c_str()), {});
+        }
+        ImGui::TextUnformatted(tr("Speed:"));
+        for (const float speed : {0.0f, 1.0f, 60.0f, 600.0f, 3600.0f}) {
+            ImGui::SameLine();
+            const auto label = speed == 0.0f ? std::string(tr("pause")) : "x" + std::to_string(static_cast<int>(speed));
+            const bool on = speed == 0.0f ? game.paused() : !game.paused() && game.clock_speed() == speed;
+            if (ImGui::RadioButton((label + "##clock_speed").c_str(), on)) {
+                if (speed == 0.0f) {
+                    game.set_paused(true);
+                } else {
+                    game.set_paused(false);
+                    game.set_clock(speed, game.season());
+                }
+            }
+        }
+        const char* seasons[] = {tr("Spring"), tr("Summer"), tr("Autumn"), tr("Winter")};
+        int season = game.season();
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::Combo(tr("Season"), &season, seasons, 4)) game.set_clock(game.clock_speed(), static_cast<std::uint8_t>(season));
+        ImGui::TextWrapped("%s", tr("RTS players see the time jump at each sync when the clock runs faster, and take a new season when they log in again."));
+
+        ImGui::SeparatorText(tr("Weather"));
+        auto weather = game.weather();
+        bool changed = false;
+        const char* weathers[] = {tr("Clear"), tr("Snow"), tr("Rain"), tr("Thunderstorm")};
+        int kind = weather.weather < 4 ? weather.weather : 0;
+        ImGui::BeginDisabled(weather.dynamic != 0);
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::Combo("##clock_weather", &kind, weathers, 4)) {
+            weather.weather = static_cast<std::uint8_t>(kind);
+            changed = true;
+        }
+        ImGui::EndDisabled();
+        bool dynamic = weather.dynamic != 0;
+        if (ImGui::Checkbox(tr("Dynamic weather (openRTS)"), &dynamic)) {
+            weather.dynamic = dynamic ? 1 : 0;
+            changed = true;
+        }
+        ImGui::TextDisabled("%s", tr(dynamic ? "(clouds, rain or snow and thunderstorms change by themselves, alike for every openRTS player)"
+                                             : "(off: the weather chosen stays, as in RTS)"));
+        if (dynamic) {
+            if (ImGui::Button(tr("Another weather"))) {
+                weather.seed = weather.seed * 6364136223846793005ull + 1442695040888963407ull;
+                weather.clock = 0.0;
+                changed = true;
+            }
+            bool by_season = weather.by_season != 0;
+            if (ImGui::Checkbox(tr("By the season##weather"), &by_season)) {
+                weather.by_season = by_season ? 1 : 0;
+                changed = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", tr(by_season ? "(winter overcast with snow; spring and autumn rainy; summer clearer, with thunderstorms)"
+                                                   : "(the climate below)"));
+            const auto slider = [&](const char* label, float& value, const float scale, const float least, const float most, const char* format) {
+                float shown = value * scale;
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::SliderFloat(label, &shown, least, most, format)) {
+                    value = shown / scale;
+                    changed = true;
+                }
+            };
+            ImGui::BeginDisabled(by_season);
+            slider(tr("Usual cloud cover"), weather.cloudiness, 100.0f, 0.0f, 100.0f, "%.0f %%");
+            slider(tr("Spells with rain or snow"), weather.wet, 100.0f, 0.0f, 100.0f, "%.0f %%");
+            slider(tr("Thunderstorms among the rains"), weather.storms, 100.0f, 0.0f, 100.0f, "%.0f %%");
+            ImGui::EndDisabled();
+            slider(tr("A weather lasts, game minutes"), weather.spell_minutes, 1.0f, 10.0f, 240.0f, "%.0f");
+            slider(tr("Turns into the next over, game minutes"), weather.change_minutes, 1.0f, 1.0f, 60.0f, "%.0f");
+        }
+        if (changed) game.set_weather(weather);
+        ImGui::TextWrapped("%s", tr("The weather reaches openRTS players at once; RTS players keep the weather of their login."));
+    }
+
     void log_tab() {
         ImGui::BeginChild("log", ImVec2(0.0f, -ImGui::GetFrameHeightWithSpacing() * 1.2f), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
         for (const auto& line : log_) ImGui::TextUnformatted(line.c_str());
@@ -1825,6 +1917,8 @@ private:
     bool log_scroll_ = false;
     char command_[512]{};
     char time_[16] = "12:00";
+    float time_hours_ = 12.0f; // the Time and weather tab's slider
+    bool time_dragged_ = false;
     std::string status_;
     bool status_error_ = false;
     double status_until_ = 0.0; // ImGui time it is shown until

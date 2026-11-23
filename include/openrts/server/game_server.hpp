@@ -190,6 +190,13 @@ public:
     [[nodiscard]] bool paused() const noexcept { return paused_; }
     void set_time(double seconds);
     [[nodiscard]] double time_of_day() const noexcept { return time_; }
+    // The clock's pace (1 real time .. 3600) and the season: openrts_clock
+    // to the openRTS players and consoles, the time again to everyone. RTS's
+    // players keep their login's season (a new one logs in with this one)
+    // and see the time jump at each of its syncs when it runs faster.
+    void set_clock(float speed, std::uint8_t season);
+    [[nodiscard]] float clock_speed() const noexcept { return speed_; }
+    [[nodiscard]] std::uint8_t season() const noexcept { return options_.season; }
     // Throws junction `node` (TDB node number); `lock` set or cleared when given.
     bool set_junction(std::uint32_t node, std::optional<std::uint32_t> branch, std::optional<bool> lock, std::string& error);
     // Holds the signal of TDB signal item `item` at `aspect`, the dispatcher's
@@ -370,6 +377,7 @@ private:
     net::OpenrtsWeather weather_;
     double weather_sent_ = -1.0; // when openrts_weather last went out (server clock)
     double time_{};
+    float speed_ = 1.0f; // the clock's pace (set_clock)
     bool paused_ = false;
     std::function<std::string(std::string_view)> console_commands_;
     std::function<std::string(const net::ConsolePlace&)> console_place_;

@@ -97,7 +97,7 @@ struct MaterialUniform {
     // map, z the map's level the model's surface lies at (0..1); w the
     // axes its UVs keep inside the image (1 U, 2 V: keep_inside).
     float height[4];
-    // x the primitive's second largest extent (m, its box in the model):
+    // x the primitive's second largest extent (m, its box in the model), z 1: a label laid over a surface (mark_labels: no raindrops):
     // a window's glass is large, a gauge's and its needle small.
     float extent[4];
 };
@@ -177,7 +177,7 @@ struct FrameUniform {
     float rain_grid[4];
     float rain_front[4];
     float rain_side[4]; // xy the side drops' run (m), zw their way now
-    float snow_cover[4]; // x how much of the snow maps' snow lies (0..1)
+    float snow_cover[4]; // x how much of the snow maps' snow lies (0..1); y the snow's run up the front glass, zw along the side windows (m)
     float rain_wiped[rain_grid_columns * rain_grid_rows];
 };
 // WebGPU's least maxUniformBufferBindingSize.
@@ -307,6 +307,11 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
         for (std::size_t i = 0; i < r.wiped.size(); ++i) result.rain_wiped[i] = r.wiped[i];
     }
     result.snow_cover[0] = std::clamp(lighting.snow_cover, 0.0f, 1.0f);
+    if (lighting.rain) {
+        result.snow_cover[1] = lighting.rain->snow_flow;
+        result.snow_cover[2] = lighting.rain->snow_side_x;
+        result.snow_cover[3] = lighting.rain->snow_side_y;
+    }
     return result;
 }
 
@@ -1007,6 +1012,7 @@ struct RenderModel::Impl {
         glm::vec4 maps{1.0f, 1.0f, 0.0f, 0.0f};
         glm::vec4 height{0.0f};
         float extent{};
+        bool label = false; // a label laid over an opaque surface (mark_labels): no raindrops on it
         WGPUTextureView orm_view = nullptr;
         WGPUTextureView normal_view = nullptr;
         WGPUTextureView emissive_view = nullptr;
@@ -1374,7 +1380,7 @@ struct ModelRenderer::Impl {
             .emissive = {draw.emissive.x, draw.emissive.y, draw.emissive.z, draw.emissive.w},
             .maps = {draw.maps.x, draw.maps.y, draw.maps.z, draw.maps.w},
             .height = {draw.height.x, draw.height.y, draw.height.z, draw.height.w},
-            .extent = {draw.extent, draw.snow_view ? 1.0f : 0.0f, 0.0f, 0.0f},
+            .extent = {draw.extent, draw.snow_view ? 1.0f : 0.0f, draw.label ? 1.0f : 0.0f, 0.0f},
         };
     }
 
@@ -1815,6 +1821,93 @@ std::shared_ptr<const GpuTexture> ModelRenderer::Impl::material_texture(const Ma
     return made;
 }
 
+// Labels laid over a desk (a translucent primitive whose lettering sits on
+// an opaque surface of the same model, the VL82m's desk: testers): no
+// raindrops on them, though they lie at the windscreen as large as a pane.
+// From some points of each large translucent primitive a segment 3 cm each
+// way along its normal: most of them meeting the model's opaque triangles,
+// it lies on a surface; a window has nothing behind it but its frame at its
+// edges.
+template <typename Draw>
+void mark_labels(const formats::ShapeModel& model, std::vector<Draw>& draws) {
+    struct Triangle {
+        glm::vec3 a, b, c, low, high;
+    };
+    const auto triangles = [&](const Draw& draw, std::vector<Triangle>& out) {
+        const auto end = (std::min)(draw.range.first_index + draw.range.index_count, static_cast<std::uint32_t>(model.indices.size()));
+        for (auto i = draw.range.first_index; i + 2 < end; i += 3) {
+            const auto ia = model.indices[i], ib = model.indices[i + 1], ic = model.indices[i + 2];
+            if (ia >= model.vertices.size() || ib >= model.vertices.size() || ic >= model.vertices.size()) continue;
+            Triangle t{glm::vec3{draw.world * glm::vec4{to_vec3(model.vertices[ia].position), 1.0f}},
+                       glm::vec3{draw.world * glm::vec4{to_vec3(model.vertices[ib].position), 1.0f}},
+                       glm::vec3{draw.world * glm::vec4{to_vec3(model.vertices[ic].position), 1.0f}}, {}, {}};
+            t.low = glm::min(glm::min(t.a, t.b), t.c);
+            t.high = glm::max(glm::max(t.a, t.b), t.c);
+            out.push_back(t);
+        }
+    };
+    std::vector<std::size_t> candidates;
+    for (std::size_t i = 0; i < draws.size(); ++i)
+        if ((draws[i].material.flags & rts::primitive_translucent) && draws[i].extent >= 0.25f) candidates.push_back(i);
+    if (candidates.empty()) return;
+    std::vector<Triangle> opaque;
+    for (const auto& draw : draws)
+        if (!(draw.material.flags & rts::primitive_translucent)) triangles(draw, opaque);
+    if (opaque.empty()) return;
+    constexpr float reach = 0.03f;
+    // Moller-Trumbore: the segment from `from` along `way` (its length) meets the triangle.
+    const auto meets = [](const glm::vec3& from, const glm::vec3& way, const Triangle& t) {
+        const glm::vec3 e1 = t.b - t.a, e2 = t.c - t.a;
+        const glm::vec3 p = glm::cross(way, e2);
+        const float det = glm::dot(e1, p);
+        if (std::abs(det) < 1e-12f) return false;
+        const float inv = 1.0f / det;
+        const glm::vec3 s0 = from - t.a;
+        const float u = glm::dot(s0, p) * inv;
+        if (u < 0.0f || u > 1.0f) return false;
+        const glm::vec3 q = glm::cross(s0, e1);
+        const float v = glm::dot(way, q) * inv;
+        if (v < 0.0f || u + v > 1.0f) return false;
+        const float t_along = glm::dot(e2, q) * inv;
+        return t_along >= 0.0f && t_along <= 1.0f;
+    };
+    std::vector<Triangle> own, near;
+    for (const auto index : candidates) {
+        own.clear();
+        triangles(draws[index], own);
+        if (own.empty()) continue;
+        glm::vec3 low{1e9f}, high{-1e9f};
+        for (const auto& t : own) {
+            low = glm::min(low, t.low);
+            high = glm::max(high, t.high);
+        }
+        low -= glm::vec3{reach};
+        high += glm::vec3{reach};
+        near.clear();
+        for (const auto& t : opaque)
+            if (glm::all(glm::lessThanEqual(t.low, high)) && glm::all(glm::greaterThanEqual(t.high, low))) near.push_back(t);
+        if (near.empty()) continue;
+        // Up to 32 of its triangles, spread over it.
+        const std::size_t step = (std::max)(std::size_t{1}, own.size() / 32);
+        std::size_t samples = 0, hits = 0;
+        for (std::size_t k = 0; k < own.size(); k += step) {
+            const auto& t = own[k];
+            const glm::vec3 n = glm::cross(t.b - t.a, t.c - t.a);
+            if (glm::length(n) < 1e-10f) continue;
+            const glm::vec3 unit = glm::normalize(n);
+            const glm::vec3 centre = (t.a + t.b + t.c) / 3.0f;
+            ++samples;
+            for (const auto& o : near) {
+                if (meets(centre - unit * reach, unit * (2.0f * reach), o)) {
+                    ++hits;
+                    break;
+                }
+            }
+        }
+        draws[index].label = samples > 0 && hits * 10 >= samples * 6;
+    }
+}
+
 void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedModelAsset& asset) {
     const auto& model = asset.model;
     gpu.model_flags = rts::model_flags(model);
@@ -1914,6 +2007,7 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
     }
     gpu.bounds = bounds.sphere();
     if (gpu.draws.empty()) return;
+    mark_labels(model, gpu.draws);
 
     std::vector<std::byte> materials(gpu.draws.size() * material_stride);
     for (std::size_t i = 0; i < gpu.draws.size(); ++i) {

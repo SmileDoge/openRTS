@@ -658,7 +658,10 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
             if (t.owner != user->id || t.own_state.empty()) continue;
             for (const auto& part : net::encode_train_state(tid, t.own_state)) send_to(*user, framed(P(Package::openrts_train_state), part));
         }
-        if (user->playing) send_to(*user, framed(P(Package::openrts_weather), net::encode_openrts_weather(weather_)));
+        if (user->playing) {
+            send_to(*user, framed(P(Package::openrts_weather), net::encode_openrts_weather(weather_)));
+            send_to(*user, framed(P(Package::openrts_clock), net::encode_openrts_clock({.speed = speed_, .season = options_.season})));
+        }
         return;
     }
 
@@ -751,7 +754,10 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         }
         if (paused_) s.pause = 1;
         send_to(*user, net::write_snapshot(s));
-        if (user->openrts || user->console) send_to(*user, framed(P(Package::openrts_weather), net::encode_openrts_weather(weather_)));
+        if (user->openrts || user->console) {
+            send_to(*user, framed(P(Package::openrts_weather), net::encode_openrts_weather(weather_)));
+            send_to(*user, framed(P(Package::openrts_clock), net::encode_openrts_clock({.speed = speed_, .season = options_.season})));
+        }
         // A console gets every signal unit's 0x4618 and every segment's
         // 0x450B (rts_server.exe 0x41733C).
         if (user->console && impl.signals && impl.signals->dispatched()) {
@@ -1192,7 +1198,7 @@ void GameServer::tick(const double now) {
     impl.now = now;
     // The dynamic weather's clock runs with the game's (not while paused),
     // told again every 30 s so the players' cycles stay with it.
-    if (weather_.dynamic && !paused_) weather_.clock += dt;
+    if (weather_.dynamic && !paused_) weather_.clock += dt * speed_;
     if (weather_.dynamic && now - weather_sent_ >= 30.0) set_weather(weather_);
     // Discord's party: the openRTS players told again when their number
     // changes (their profiles show it).
@@ -1307,7 +1313,7 @@ void GameServer::tick(const double now) {
         }
     }
 
-    time_ = std::fmod(time_ + dt, 86400.0);
+    time_ = std::fmod(time_ + dt * speed_, 86400.0);
     if (now >= impl.next_time) {
         if (impl.next_time > 0.0) to_playing(time_package(time_));
         impl.next_time = now + options_.time_period;
@@ -1772,6 +1778,25 @@ void GameServer::set_paused(const bool paused) {
     const auto bytes = package(P(Package::pause), [&](net::WireWriter& w) { w.u8(paused ? 1 : 0); });
     for (auto& [_, user] : impl_->users) {
         if (user.playing && user.connection) transport_.send(user.connection, bytes);
+    }
+}
+
+void GameServer::set_clock(const float speed, const std::uint8_t season) {
+    auto& impl = *impl_;
+    const float pace = std::clamp(speed, 1.0f, 3600.0f);
+    const std::uint8_t chosen = (std::min)(season, std::uint8_t{3});
+    if (pace == speed_ && chosen == options_.season) return;
+    static constexpr const char* seasons[] = {"spring", "summer", "autumn", "winter"};
+    if (pace != speed_) impl.note("clock: x" + std::to_string(static_cast<int>(pace)));
+    if (chosen != options_.season) impl.note(std::string("season: ") + seasons[chosen]);
+    speed_ = pace;
+    options_.season = chosen;
+    const auto clock = framed(P(Package::openrts_clock), net::encode_openrts_clock({.speed = speed_, .season = options_.season}));
+    const auto time = time_package(time_);
+    for (auto& [_, user] : impl.users) {
+        if (!user.playing || !user.connection) continue;
+        if (user.openrts || user.console) transport_.send(user.connection, clock);
+        transport_.send(user.connection, time);
     }
 }
 

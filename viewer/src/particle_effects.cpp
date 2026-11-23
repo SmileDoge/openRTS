@@ -63,6 +63,29 @@ void PrecipitationView::set_environment(const formats::EnvPrecipitation* precipi
     }
 }
 
+void PrecipitationView::set_lamps(const std::vector<renderer::SceneLight>& lights, const glm::vec3& eye) {
+    // Some 25 m around the eye: the box the particles fill.
+    constexpr float box = 25.0f;
+    struct Pick {
+        float distance;
+        renderer::ParticleLamp lamp;
+    };
+    std::vector<Pick> picks;
+    for (const auto& entry : lights) {
+        const auto cone = renderer::extra_light_cone(entry.light);
+        if (!cone || cone->reach < 5.0f) continue; // a cab's or a salon's lamp, not a beam
+        // The nearest point of its axis within its reach.
+        const float t = std::clamp(glm::dot(eye - cone->apex, cone->axis), 0.0f, cone->reach);
+        const float distance = glm::length(cone->apex + cone->axis * t - eye);
+        if (distance > box + cone->reach * cone->tangent) continue;
+        const glm::vec3 colour = glm::clamp(glm::vec3(entry.light.diffuse), glm::vec3(0.0f), glm::vec3(1.0f));
+        picks.push_back({distance, {*cone, colour}});
+    }
+    std::sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) { return a.distance < b.distance; });
+    weather_.lamp_count = (std::min)(picks.size(), renderer::WeatherParticles::max_lamps);
+    for (std::size_t i = 0; i < weather_.lamp_count; ++i) weather_.lamps[i] = picks[i].lamp;
+}
+
 void PrecipitationView::update(const float elapsed, const glm::vec3& eye, const glm::vec3& right, const float amount, const glm::vec4& light) {
     drawn_ = false;
     own_drawn_ = false;

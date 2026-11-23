@@ -441,11 +441,11 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         if (effects.flags.z == 0u && input.fog.w > 0.0) {
             light = mix(light, to_linear(input.fog.xyz), input.fog.w);
         }
-        return rain_on_glass(input.world.xyz, input.normal, vec4<f32>(light, coverage), blended, draw.extent.x);
+        return rain_on_glass(input.world.xyz, input.normal, vec4<f32>(light, coverage), blended, select(draw.extent.x, 0.0, draw.extent.z > 0.5));
     }
     var display = to_display(select(shoulder(colour), max(colour, vec3<f32>(0.0)), hdr_output));
     if (effects.flags.z == 0u && input.fog.w > 0.0) {
         display = mix(display, input.fog.xyz, input.fog.w);
     }
-    return rain_on_glass(input.world.xyz, input.normal, vec4<f32>(display, coverage), blended, draw.extent.x);
+    return rain_on_glass(input.world.xyz, input.normal, vec4<f32>(display, coverage), blended, select(draw.extent.x, 0.0, draw.extent.z > 0.5));
 }

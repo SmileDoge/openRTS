@@ -48,16 +48,20 @@ fn rain_sky() -> f32 {
 // A layer of flakes: cells of `size` (m) turned by `turn` (rad), a flake in
 // some of them anywhere inside (not on a lattice: the layers are turned
 // against each other and each flake set off up to 0.3 of its cell).
-fn snow_flake(uv: vec2<f32>, size: f32, turn: f32, seed: f32, density: f32) -> f32 {
+// On the move the flakes are pushed along the glass (`run`, m) and drawn
+// out along the airflow (`along`, unit, by `stretch`).
+fn snow_flake(uv: vec2<f32>, size: f32, turn: f32, seed: f32, density: f32, run: vec2<f32>, along: vec2<f32>, stretch: f32) -> f32 {
     let rot = mat2x2<f32>(cos(turn), sin(turn), -sin(turn), cos(turn));
-    let q = rot * uv / size;
+    let q = rot * (uv - run) / size;
     let cell = floor(q);
     let h = rain_hash(cell, seed + 3.0);
     if (h.x > density) {
         return 0.0;
     }
     let c = cell + vec2<f32>(0.2, 0.2) + h.yz * 0.6;
-    let off = q - c;
+    let way = rot * along;
+    let off0 = q - c;
+    let off = vec2<f32>(dot(off0, vec2<f32>(way.y, -way.x)), dot(off0, way) / stretch);
     let angle = atan2(off.y, off.x);
     let r = (0.07 + 0.13 * h.w) * (1.0 + 0.35 * sin(angle * 5.0 + h.y * 6.2831853) * h.z);
     let d = length(off);
@@ -86,14 +90,23 @@ fn snow_on_glass(uv: vec2<f32>, seed: f32, age: f32, side: bool, colour: vec4<f3
     // Uneven: patches denser and thinner (0.35 .. 1.45 of it).
     let patchy = 0.35 + 1.1 * (0.65 * snow_patches(uv, 0.11, seed + 41.0) + 0.35 * snow_patches(uv, 0.037, seed + 43.0));
     let density = clamp(gathered * patchy, 0.0, 0.95);
-    let fine = snow_flake(uv, 0.009, 0.45, seed, density);
-    let middle = snow_flake(uv + vec2<f32>(0.13, 0.29), 0.016, 1.7, seed + 7.0, density * 0.7);
-    let clump = snow_flake(uv + vec2<f32>(0.37, 0.71), 0.038, 2.9, seed + 11.0, density * 0.4);
+    // On the move pushed up the windscreen and back along the side windows
+    // (frame.snow_cover.yzw: the run TrainView integrates while it moves;
+    // standing it stays put), the clumps the most, drawn out in streaks.
+    let moving = clamp((speed - 3.0) / 12.0, 0.0, 1.0);
+    let run = select(vec2<f32>(0.0, frame.snow_cover.y), frame.snow_cover.zw, side);
+    let along = select(vec2<f32>(0.0, 1.0), normalize(vec2<f32>(-1.0, -0.25)), side);
+    let stretch = 1.0 + moving * min(speed * 0.04, 1.5);
+    let fine = snow_flake(uv, 0.009, 0.45, seed, density, run * 0.6, along, stretch);
+    let middle = snow_flake(uv + vec2<f32>(0.13, 0.29), 0.016, 1.7, seed + 7.0, density * 0.7, run * 0.8, along, stretch);
+    let clump = snow_flake(uv + vec2<f32>(0.37, 0.71), 0.038, 2.9, seed + 11.0, density * 0.4, run, along, stretch);
     let cover = clamp(max(max(fine, middle * 1.1), clump * 1.25), 0.0, 1.0);
     if (cover <= 0.0) {
         return colour;
     }
-    let light = select(0.85, 0.5, frame.shading.z > 0.5) * rain_sky();
+    // Snow stays light at night (a grey, not the black of the sky): lit a
+    // little by the cab and the lamps around.
+    let light = select(0.85, 0.5, frame.shading.z > 0.5) * max(rain_sky(), 0.22);
     let white = vec3<f32>(light);
     return vec4<f32>(mix(colour.xyz, white, cover * 0.9), max(colour.w, cover * 0.85));
 }

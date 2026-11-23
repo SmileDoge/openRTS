@@ -306,6 +306,13 @@ public:
     // A network game: no pause of one's own (the others run on; the
     // server's pause is everyone's).
     [[nodiscard]] virtual bool networked() const { return false; }
+    // A network game's clock pace and season as the server runs them (pace
+    // 1 and no season from a server that does not say).
+    struct ServerClock {
+        float speed = 1.0f;
+        std::optional<int> season;
+    };
+    [[nodiscard]] virtual std::optional<ServerClock> server_clock() const { return std::nullopt; }
     [[nodiscard]] virtual std::vector<std::string> saved_games() const { return {}; }
     [[nodiscard]] virtual std::string save_game(const std::string& /*name*/) { return "nothing to save"; }
     [[nodiscard]] virtual std::string load_game(const std::filesystem::path& /*file*/) { return "nothing to load into"; }

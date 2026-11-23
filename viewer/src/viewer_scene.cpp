@@ -1068,6 +1068,7 @@ public:
                 // Under a thunderstorm heavier; the dynamic weather's by its amount.
                 const float amount = weather_precipitation();
                 precipitation_->set_room(train_ ? train_->light_shaft_room() : std::nullopt);
+                precipitation_->set_lamps(lighting.light_rings.all, camera.eye());
                 precipitation_->update(clock.elapsed, camera.eye(), right, effects_.precipitation ? amount : 0.0f, opaque);
             }
             if (smoke_) {
@@ -1191,10 +1192,19 @@ public:
         // A light fog while it rains or snows (openRTS): the farther land
         // greyed, the nearer the heavier it falls.
         if (effects_.fog && effects_.precipitation && precipitation_ && precipitation_->drops() > 0) {
-            const float end = (precipitation_->snow() ? 2200.0f : 3500.0f) / (1.0f + 1.5f * weather_precipitation());
+            // Past a downpour's the fog closes in fast: a blizzard's (3) some 70 m.
+            const float amount = weather_precipitation();
+            const float beyond = (std::max)(amount - 2.0f, 0.0f);
+            const float end = (precipitation_->snow() ? 2200.0f : 3500.0f) / (1.0f + 1.5f * amount + 25.0f * beyond * beyond);
             if (lighting.fog_end > end) {
                 lighting.fog_end = end;
                 lighting.fog_start = (std::min)(lighting.fog_start, 0.05f * end);
+            }
+            // A blizzard at night: the snow in the air a dim grey, not the
+            // night's black (the lamps' light it scatters).
+            if (beyond > 0.0f) {
+                const float grey = 0.09f * (std::min)(beyond, 1.0f);
+                lighting.fog_colour = glm::max(lighting.fog_colour, glm::vec4{grey, grey, grey * 1.05f, lighting.fog_colour.w});
             }
         }
         return {
@@ -1804,6 +1814,15 @@ public:
     // "@@ <part>" lines: the junctions, the trains (TrainView::save_game),
     // the scenario (ActivityView::save).
     [[nodiscard]] bool networked() const override { return net_ != nullptr; }
+    [[nodiscard]] std::optional<ServerClock> server_clock() const override {
+        if (!net_) return std::nullopt;
+        ServerClock out;
+        if (const auto& c = net_->server_clock()) {
+            out.speed = c->speed;
+            out.season = c->season;
+        }
+        return out;
+    }
     [[nodiscard]] std::filesystem::path saves_folder() const override {
         if (!train_ || net_) return {};
         return user_data_directory() / "saves" / std::string(route_.filename());
@@ -2162,14 +2181,14 @@ public:
         ImGui::SameLine();
         if (ImGui::Checkbox(tr("Fog in rain and snow"), &effects_.fog)) remember("world_precipitation_fog", effects_.fog ? "1" : "0");
         {
-            const char* strengths[] = {tr("as the weather"), tr("drizzle"), tr("rain##strength"), tr("downpour"), tr("my own##strength")};
+            const char* strengths[] = {tr("as the weather"), tr("drizzle"), tr("rain##strength"), tr("downpour"), tr("my own##strength"), tr("blizzard")};
             ImGui::SetNextItemWidth(160.0f);
-            if (ImGui::Combo(tr("Rain and snow strength"), &effects_.strength, strengths, 5))
+            if (ImGui::Combo(tr("Rain and snow strength"), &effects_.strength, strengths, 6))
                 remember("world_precipitation_strength", std::to_string(effects_.strength));
             if (effects_.strength == 4) {
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(160.0f);
-                if (ImGui::SliderFloat("##precipitation_custom", &effects_.strength_custom, 0.1f, 2.0f, "%.2f"))
+                if (ImGui::SliderFloat("##precipitation_custom", &effects_.strength_custom, 0.1f, 3.0f, "%.2f"))
                     remember("world_precipitation_custom", std::to_string(effects_.strength_custom));
             }
         }
@@ -3217,7 +3236,8 @@ private:
         bool smoke = true;
         bool rain_glass = true; // raindrops on the cab's glass, the wipers wiping them (openRTS)
         // How hard it rains or snows: 0 the weather's, 1 a drizzle, 2 rain,
-        // 3 a downpour, 4 the player's (`strength_custom`, 0.1..2).
+        // 3 a downpour, 4 the player's (`strength_custom`, 0.1..3), 5 a
+        // blizzard (3: half again a downpour's flakes, the fog some 200 m).
         int strength = 0;
         float strength_custom = 1.0f;
         bool fog = true; // a light fog while it rains or snows
@@ -3231,7 +3251,8 @@ private:
         case 1: return 0.35f * ramp;
         case 2: return 1.0f * ramp;
         case 3: return 1.9f * ramp;
-        case 4: return std::clamp(effects_.strength_custom, 0.1f, 2.0f) * ramp;
+        case 4: return std::clamp(effects_.strength_custom, 0.1f, 3.0f) * ramp;
+        case 5: return 3.0f * ramp;
         default: return weather;
         }
     }
@@ -3248,8 +3269,8 @@ private:
         effects.precipitation = remembered("world_precipitation").value_or("1") != "0";
         effects.smoke = remembered("world_smoke").value_or("1") != "0";
         effects.rain_glass = remembered("world_rain_glass").value_or("1") != "0";
-        effects.strength = std::clamp(std::atoi(remembered("world_precipitation_strength").value_or("0").c_str()), 0, 4);
-        effects.strength_custom = std::clamp(static_cast<float>(std::atof(remembered("world_precipitation_custom").value_or("1").c_str())), 0.1f, 2.0f);
+        effects.strength = std::clamp(std::atoi(remembered("world_precipitation_strength").value_or("0").c_str()), 0, 5);
+        effects.strength_custom = std::clamp(static_cast<float>(std::atof(remembered("world_precipitation_custom").value_or("1").c_str())), 0.1f, 3.0f);
         effects.fog = remembered("world_precipitation_fog").value_or("1") != "0";
         renderer::own_precipitation() = remembered("world_own_precipitation").value_or("1") != "0";
         return effects;

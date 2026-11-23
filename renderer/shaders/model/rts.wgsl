@@ -136,7 +136,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     }
 
     // openRTS: raindrops on the cab's glass.
-    color = rain_on_glass(input.world.xyz, input.normal, color, blended, draw.extent.x);
+    color = rain_on_glass(input.world.xyz, input.normal, color, blended, select(draw.extent.x, 0.0, draw.extent.z > 0.5));
 
     // Fixed-function alpha test of RTS: GL_GREATER 0.3; with MSAA its edge
     // as coverage.

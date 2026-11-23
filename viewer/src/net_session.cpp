@@ -744,6 +744,12 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
             console_log_.push_back(net::to_utf8(*text));
         }
         return;
+    case P(net::Package::openrts_clock):
+        if (const auto c = net::decode_openrts_clock(body)) {
+            server_clock_ = *c;
+            std::cout << "net: the server's clock x" << c->speed << ", season " << static_cast<int>(c->season) << std::endl;
+        }
+        return;
     case P(net::Package::openrts_weather):
         if (const auto w = net::decode_openrts_weather(body)) {
             server_weather_ = *w;

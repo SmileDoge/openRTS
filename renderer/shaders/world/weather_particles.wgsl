@@ -11,6 +11,8 @@ struct Uniform {
     room_lower: vec4<f32>,
     room_upper: vec4<f32>,
     origin: vec4<f32>,
+    lamps: array<vec4<f32>, 12>, // per lamp: apex, reach; axis, tangent; colour
+    lamp_count: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniform;
 
@@ -19,6 +21,7 @@ struct Out {
     @location(0) uv: vec2<f32>,
     @location(1) alpha: f32,
     @location(2) @interpolate(flat) snow: f32,
+    @location(3) lamp: vec3<f32>, // the headlights' light on it (display)
 };
 
 fn hash(n: u32) -> vec4<f32> {
@@ -81,10 +84,11 @@ fn vs_main(@builtin(vertex_index) vertex: u32) -> Out {
     var width: f32;
     if (snow) {
         let r = 0.012 + 0.016 * h2.y;
-        // A little drawn out by the speed against it.
-        let stretch = clamp(length(rel) * 0.004, 0.0, 0.05);
         let along = select(up, normalize(rel), length(rel) > 0.1);
-        a = p + along * (r + stretch);
+        // Drawn out by the speed against it: a 1/60 s exposure, at most
+        // 0.8 m (on the move, streaks flying at the eye, a blizzard's).
+        let stretch = min(length(rel) * (1.0 / 60.0), 0.8);
+        a = p + along * r;
         b = p - along * (r + stretch);
         width = r * 2.0;
     } else {
@@ -129,6 +133,24 @@ fn vs_main(@builtin(vertex_index) vertex: u32) -> Out {
     out.clip = vec4<f32>((n + offset * side) * c.w, c.z, c.w);
     out.uv = vec2<f32>(side, select(-1.0, 1.0, at_b));
     out.alpha = fade;
+    // The headlights' beams: a flake or drop inside a cone shines in its
+    // colour, brightest near the lamp, softly to the cone's edge and its reach.
+    var lamp = vec3<f32>(0.0);
+    let lamps = u32(u.lamp_count.x);
+    for (var k = 0u; k < lamps; k = k + 1u) {
+        let apex = u.lamps[k * 3u];
+        let axis = u.lamps[k * 3u + 1u];
+        let v = p - apex.xyz;
+        let along = dot(v, axis.xyz);
+        if (along <= 0.0 || along >= apex.w) {
+            continue;
+        }
+        let off = length(v - axis.xyz * along) / max(along * axis.w, 1e-3);
+        let edge = 1.0 - smoothstep(0.6, 1.0, off);
+        let reach = 1.0 - along / apex.w;
+        lamp = lamp + u.lamps[k * 3u + 2u].xyz * edge * reach * (6.0 / (1.0 + along * 0.12));
+    }
+    out.lamp = lamp;
     return out;
 }
 
@@ -144,13 +166,13 @@ fn fs_main(input: Out) -> @location(0) vec4<f32> {
         // A soft disk.
         let r = length(input.uv);
         a = (1.0 - smoothstep(0.35, 1.0, r)) * 0.9 * input.alpha;
-        colour = min(u.light.xyz * 1.1, vec3<f32>(1.0));
+        colour = min(u.light.xyz * 1.1 + input.lamp, vec3<f32>(1.0));
     } else {
         // A thin streak, soft across, its ends fading.
         let across = 1.0 - abs(input.uv.x);
         let along = 1.0 - abs(input.uv.y);
         a = across * smoothstep(0.0, 0.35, along) * 0.55 * input.alpha;
-        colour = min(u.light.xyz * 1.1, vec3<f32>(1.0)); // the scene's light: dark at night
+        colour = min(u.light.xyz * 1.1 + input.lamp, vec3<f32>(1.0)); // the scene's light (dark at night) and the beams'
     }
     if (a <= 0.002) {
         discard;
