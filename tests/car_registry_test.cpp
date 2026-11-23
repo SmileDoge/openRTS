@@ -3,11 +3,13 @@
 // more, running out is an error; a saved game's keys come back without
 // clashing with the world's cars (a save from before the keys gets new
 // ones); a client that connects again finds its cars by the server's uids.
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <limits>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -139,6 +141,44 @@ void network() {
     check(!client.server_uid_of(CarId{12345}), "an unknown id has no uid");
 }
 
+// Step 2: a car's components (its doors) live by its id, as long as it.
+void components() {
+    CarRegistry cars;
+    const auto a = cars.create(), b = cars.create();
+    check(!cars.find_components(a), "nothing made for a car until asked");
+    auto& doors = cars.components(a).doors;
+    doors.doors.push_back({.name = "door_r", .index = 0, .group = 1, .time = 2.0f});
+    doors.doors.push_back({.name = "door_l", .index = 2, .group = 2, .time = 2.0f});
+    doors.groups = {1, 0, 2};
+    // Many more cars: the reference stays good.
+    for (int i = 0; i < 1000; ++i) (void)cars.components(cars.create());
+    check(&cars.components(a).doors == &doors && doors.doors.size() == 2, "a car's components stay where they are");
+    doors.step(0, true, 1.0f);
+    check(std::abs(doors.doors[0].open - 0.5f) < 1e-6f && doors.doors[1].open == 0.0f, "a door opens at its AnimTime's pace");
+    check(doors.open_groups() == 0x01u, "half open: its group is open");
+    doors.step(0, true, 5.0f);
+    doors.step(1, true, 0.5f);
+    check(doors.doors[0].open == 1.0f && doors.open_groups() == 0x01u, "open, no further; the other a quarter: shut yet");
+    doors.step(0, false, 0.5f);
+    check(std::abs(doors.doors[0].open - 0.75f) < 1e-6f, "and shuts at the same pace");
+    doors.step(9, true, 1.0f);
+    doors.groups_open = 0x02u;
+    check(doors.group_sent_open(2) && !doors.group_sent_open(1) && !doors.group_sent_open(0) && !doors.group_sent_open(9),
+          "the groups another computer sends");
+    check(doors.has_group(2) && doors.has_group(0) && !doors.has_group(3), "the car's GlobalIDs");
+    check(doors.at_index(2) == &doors.doors[1] && !doors.at_index(1), "a door by its .sd index; none without a node");
+    check(!cars.find_components(b) && cars.find_components(a) == &cars.components(a), "made only for the car asked");
+    cars.release(a);
+    check(!cars.find_components(a), "released: its components gone with it");
+    bool thrown = false;
+    try {
+        (void)cars.components(a);
+    } catch (const std::out_of_range&) {
+        thrown = true;
+    }
+    check(thrown, "no components for a car gone");
+}
+
 } // namespace
 
 int main() {
@@ -146,6 +186,7 @@ int main() {
     exhausted();
     saved_games();
     network();
+    components();
     if (failures == 0) std::cout << "car registry: all checks passed\n";
     return failures == 0 ? 0 : 1;
 }

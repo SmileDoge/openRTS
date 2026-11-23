@@ -1073,6 +1073,12 @@ private:
     std::map<std::uint32_t, std::unique_ptr<CabView>> board_cabs_;
     // A car's cab let go, and the pointers kept to it with it.
     void drop_board_cab(std::uint32_t key);
+    // The car's doors: its component in this world (car_components.hpp),
+    // kept by its CarId, gone with it.
+    [[nodiscard]] simulation::CarDoors& doors_of(const Car& car) const;
+    mutable simulation::CarDoors no_doors_; // doors_of() of a car not in this world
+    // The car's outer doors' frames, for drawing its shape.
+    void add_door_frames(const Car& car, std::vector<renderer::NodeAdjustment>& adjustments) const;
     struct BoardTarget {
         std::uint64_t train{};
         std::size_t car{};

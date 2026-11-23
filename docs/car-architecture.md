@@ -1,7 +1,8 @@
 # Car and train architecture (design)
 
 Status: a design under discussion (2026-11-06). Step 1 (`CarId`) is built
-(2026-11-23, "Step 1: CarId" below); the rest is not.
+(2026-11-23, "Step 1: CarId" below); of step 2 the doors ("Step 2:
+doors"); the rest is not.
 - The plan it serves is the roadmap step "Cars as entities"
   (`roadmap.md`); the replaceable train systems there build on it.
 - **Proposed** marks what this document suggests; the user's questions are
@@ -221,6 +222,31 @@ protocol behave as before.
   `openrts.train` `test_car_ids` (a cut in the middle and back, a flipped
   car, a train tail first, a turn); `openrts.server` `car_identity` (add,
   couple, cut, couple back, delete: ids kept, then retired, never reused).
+
+### Step 2: doors (built 2026-11-23)
+
+Architecture only: the doors open, shut, sound and go over the network as
+before.
+- **Components** (`car_components.hpp`): `CarComponents`, kept by
+  `CarRegistry` by the car's id (`components(id)`, `find_components(id)`).
+  Made empty when first asked, they stay where they are until the car is
+  released, and go with it.
+- **`CarDoors`**: the car's outer doors (the `.sd`'s `ExteriorDoors` with a
+  node of their own): name, `.sd` index, GlobalID, AnimTime, how far open,
+  the engineer's wish from outside; every door's GlobalID in `.sd` order
+  (the DLL's door order); the groups another computer sends open (0x45FC).
+  `step()` moves a door, `open_groups()` is what goes out.
+- **The viewer** keeps only what draws a door: its shape node and last
+  frame (`Car::door_nodes`, door k is node k). `doors_of(car)` reads the
+  component; a train made anew (a train put back) starts its doors shut, as
+  before.
+- **Still the viewer's:** what decides a door's target (the DLL's door
+  states, the cab's doors, the Y / U keys, a helper's cabs) waits for the
+  modules (step 4); the cab's InteriorDoors stay the cab's (step 3).
+- **Tests:** `openrts.car_registry` `components` (lifetime, doors' pace,
+  groups); `openrts.train` `test_car_ids` (a car's doors with it after a
+  cut); the viewer's door pick, boarding and passage runs printed the same
+  before and after.
 
 ## Open questions (the user's)
 

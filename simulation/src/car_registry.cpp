@@ -1,6 +1,7 @@
 #include <openrts/simulation/car_registry.hpp>
 
 #include <limits>
+#include <string>
 
 namespace openrts::simulation {
 
@@ -24,10 +25,21 @@ CarId CarRegistry::restore(const CarId saved) {
 
 void CarRegistry::release(const CarId id) {
     if (alive_.erase(id.value) == 0) return;
+    components_.erase(id.value);
     if (const auto it = uid_of_.find(id.value); it != uid_of_.end()) {
         by_uid_.erase(it->second);
         uid_of_.erase(it);
     }
+}
+
+CarComponents& CarRegistry::components(const CarId id) {
+    if (!alive(id)) throw std::out_of_range("car " + std::to_string(id.value) + " is not in this world");
+    return components_[id.value];
+}
+
+const CarComponents* CarRegistry::find_components(const CarId id) const noexcept {
+    const auto it = components_.find(id.value);
+    return it != components_.end() ? &it->second : nullptr;
 }
 
 CarId CarRegistry::for_server_uid(const std::uint32_t uid, const std::set<std::uint32_t>& taken) {

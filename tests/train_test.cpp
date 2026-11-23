@@ -1048,6 +1048,18 @@ void test_car_ids(const Stock& stock) {
             check(train.couple(*cut, false, true, (std::max)(gap, 0.0)), "ids: coupled back");
             check(train.car_ids() == ids && cut->car_ids().empty(), "ids: coupled back: the same ids in the same order");
             check(flips(train) == before, "ids: coupled back: each car's direction as before");
+            // Its doors are the car's (kept by its id): wherever the car goes.
+            for (std::size_t i = 0; i < ids.size(); ++i) registry.components(ids[i]).doors.groups_open = static_cast<std::uint8_t>(i + 1);
+            auto part = train.uncouple(2, true, false);
+            bool kept = part != nullptr;
+            for (const auto* t : {&train, part.get()}) {
+                if (!t) continue;
+                for (std::size_t i = 0; i < t->cars().size(); ++i) {
+                    const auto at = std::find(ids.begin(), ids.end(), t->cars()[i].id) - ids.begin();
+                    kept = kept && registry.components(t->cars()[i].id).doors.groups_open == static_cast<std::uint8_t>(at + 1);
+                }
+            }
+            check(kept, "ids: each car's doors with it after a cut");
         }
     }
     // A train standing tail first: it is coupled reversed, its cars turned.

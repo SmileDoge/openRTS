@@ -182,23 +182,19 @@ struct TrainView::Car {
     std::uint32_t pantograph_frames{};    // frames of the shape's animation
     std::array<float, 4> pantograph_frame{}; // current frame of pantographs 1..4
     std::uint8_t pantograph_raised{};     // bit n-1: pantograph n wanted up
-    // The shape's ExteriorDoors: the passenger doors open by the DLL's door
-    // states (GM_DOOR_OPEN by GlobalID), the cab doors as the cab's doors.
-    struct ExteriorDoorAnim {
+    // The shape's ExteriorDoors as drawn: door k of the car's doors
+    // (simulation::CarDoors, doors_of(): their state is the car's, kept by
+    // its CarId) is node door_nodes[k] of the shape. The passenger doors open
+    // by the DLL's door states (GM_DOOR_OPEN by GlobalID), the cab doors as
+    // the cab's doors.
+    struct DoorNode {
         std::int32_t node = -1;
-        std::string name;
-        float time = 1.0f;
-        float open{};
-        std::size_t index{};    // in the .sd's ExteriorDoors (the DLL host's door order)
-        std::uint32_t group{};  // GlobalID: 1 the right doors, 2 the left ones, 0 none
-        float last_frame{};     // the node's own last key frame (the shape's animation is longer)
-        std::optional<bool> wanted; // the engineer opened or shut it from outside (no cab door of its name)
+        float last_frame{}; // the node's own last key frame (the shape's animation is longer)
     };
-    std::vector<ExteriorDoorAnim> exterior_doors;
+    std::vector<DoorNode> door_nodes;
     // Its shape .sd's ESD_Exterior_Details when the engineer can walk on it
     // or climb it (ExteriorPlanes, ExteriorLadders, ExteriorLedges: RTS mode 6).
     std::shared_ptr<const formats::ExteriorDetails> outside;
-    std::vector<std::uint32_t> door_groups; // every ExteriorDoor's GlobalID, in .sd order
     std::vector<simulation::LightRunner> lights; // by LightID: fading and the States shown
     bool cold = false;      // an engine started cold (the consist's Cold; RTS LocoFlags bit 3)
     std::uint8_t pantographs_heard{}; // the raised pantographs the sounds last knew (non-DLL)
@@ -216,7 +212,6 @@ struct TrainView::Car {
     // Each light's wanted state the last update (update_lights), for the network.
     std::vector<std::uint8_t> lit_now;
     std::uint8_t remote_pantographs{};
-    std::uint8_t door_groups_open{};   // bit n: the doors of GlobalID n + 1 open (as drawn; another computer's: as sent)
     // FreightAnim of its consist entry: objects fastened to the car and the cargo.
     std::vector<formats::ConsistFreight> freight;
     std::vector<core::VirtualPath> freight_shapes; // resolved, empty when missing
@@ -917,6 +912,22 @@ void TrainView::clear_preview_units() {
     for (const auto key : gone) car_registry_.release(simulation::CarId{key});
 }
 
+simulation::CarDoors& TrainView::doors_of(const Car& car) const {
+    const simulation::CarId id{car.key};
+    if (car_registry_.alive(id)) return car_registry_.components(id).doors;
+    // Not a car of this world (none should be): no doors, nothing kept.
+    no_doors_ = {};
+    return no_doors_;
+}
+
+void TrainView::add_door_frames(const Car& car, std::vector<renderer::NodeAdjustment>& adjustments) const {
+    const auto& doors = doors_of(car).doors;
+    for (std::size_t k = 0; k < doors.size() && k < car.door_nodes.size(); ++k) {
+        const auto& drawn = car.door_nodes[k];
+        if (drawn.last_frame > 0.0f) adjustments.push_back({.matrix = drawn.node, .frame = doors[k].open * drawn.last_frame});
+    }
+}
+
 void TrainView::drop_board_cab(const std::uint32_t key) {
     const auto it = board_cabs_.find(key);
     if (it == board_cabs_.end()) return;
@@ -962,6 +973,9 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
                                                               : new_car_key();
             made_keys.push_back(car.key);
         }
+        // Its doors as a car new here has them (read with its shape:
+        // fit_shapes), whatever its id's were before (a train put back).
+        doors_of(car) = {};
         car.uid = entry.uid;
         car.folder = entry.folder;
         car.file = entry.name;
@@ -1501,17 +1515,20 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
                     break;
                 }
             }
+            auto& doors = doors_of(car);
+            doors.doors.clear();
+            doors.groups.clear();
+            car.door_nodes.clear();
             for (std::size_t k = 0; k < details.door_details.size(); ++k) {
                 const auto& door = details.door_details[k];
-                car.door_groups.push_back(door.global_id);
+                doors.groups.push_back(door.global_id);
                 for (std::size_t m = 0; m < rig.matrices.size(); ++m) {
                     if (lower(rig.matrices[m].name) != lower(door.name)) continue;
-                    car.exterior_doors.push_back({.node = static_cast<std::int32_t>(m),
-                                                  .name = door.name,
-                                                  .time = (std::max)(door.anim_time, 0.05f),
-                                                  .index = k,
-                                                  .group = door.global_id,
-                                                  .last_frame = node_last_frame(m)});
+                    doors.doors.push_back({.name = door.name,
+                                           .index = k,
+                                           .group = door.global_id,
+                                           .time = (std::max)(door.anim_time, 0.05f)});
+                    car.door_nodes.push_back({.node = static_cast<std::int32_t>(m), .last_frame = node_last_frame(m)});
                     break;
                 }
             }
@@ -4101,19 +4118,14 @@ std::vector<std::uint8_t> TrainView::door_groups(const std::uint64_t id) const {
     std::vector<std::uint8_t> out;
     const auto* unit = find_unit(id);
     if (!unit || unit->remote) return out;
-    for (const auto& car : unit->cars) {
-        std::uint8_t groups = 0;
-        for (const auto& door : car.exterior_doors)
-            if (door.group >= 1 && door.group <= 8 && door.open >= 0.5f) groups |= static_cast<std::uint8_t>(1u << (door.group - 1));
-        out.push_back(groups);
-    }
+    for (const auto& car : unit->cars) out.push_back(doors_of(car).open_groups());
     return out;
 }
 
 void TrainView::set_remote_doors(const std::uint64_t id, const std::vector<std::uint8_t>& groups) {
     auto* unit = find_unit(id);
     if (!unit || !unit->remote) return;
-    for (std::size_t i = 0; i < unit->cars.size() && i < groups.size(); ++i) unit->cars[i].door_groups_open = groups[i];
+    for (std::size_t i = 0; i < unit->cars.size() && i < groups.size(); ++i) doors_of(unit->cars[i]).groups_open = groups[i];
 }
 
 void TrainView::set_remote_look(const std::uint64_t id, const std::size_t car, const std::uint8_t pantographs,
@@ -6968,16 +6980,19 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
                 std::vector<glm::vec3> lo, hi;
                 data->mesh.node_bounds(data->rig.matrices.size(), lo, hi);
                 std::cout << "door pick, outer doors" << (door_pick_stage_ == 2 ? ", clicked" : ", after") << ":\n";
-                for (const auto& door : car.exterior_doors) {
-                    if (door.node < 0 || static_cast<std::size_t>(door.node) >= lo.size()) continue;
-                    const auto n = static_cast<std::size_t>(door.node);
+                const auto& car_doors = doors_of(car).doors;
+                for (std::size_t k = 0; k < car_doors.size() && k < car.door_nodes.size(); ++k) {
+                    const auto& door = car_doors[k];
+                    const auto& drawn = car.door_nodes[k];
+                    if (drawn.node < 0 || static_cast<std::size_t>(drawn.node) >= lo.size()) continue;
+                    const auto n = static_cast<std::size_t>(drawn.node);
                     if (lo[n].x > hi[n].x) {
                         std::cout << "outer door " << door.name << ": no surfaces of its own\n";
                         continue;
                     }
                     glm::vec3 centre = (lo[n] + hi[n]) * 0.5f;
-                    if (door.open > 0.0f && door.last_frame > 0.0f)
-                        centre = glm::vec3{CabCollision::pose_of(data->rig, door.node, door.open * door.last_frame) * glm::vec4{centre, 1.0f}};
+                    if (door.open > 0.0f && drawn.last_frame > 0.0f)
+                        centre = glm::vec3{CabCollision::pose_of(data->rig, drawn.node, door.open * drawn.last_frame) * glm::vec4{centre, 1.0f}};
                     const glm::vec3 eye_car = centre + glm::vec3{centre.x >= 0.0f ? 1.5f : -1.5f, 0.0f, 0.0f};
                     const glm::vec3 eye{body->transform * glm::vec4{eye_car, 1.0f}};
                     const glm::vec3 at{body->transform * glm::vec4{centre, 1.0f}};
@@ -7534,7 +7549,7 @@ void TrainView::stand_at_cab_door(const std::size_t car) {
               << " in car " << engineer_car_ + 1 << ", the cab of car " << cab_car_ + 1 << " driven; outer doors open:";
     for (std::size_t i = 0; i < unit.cars.size(); ++i) {
         std::size_t open = 0;
-        for (const auto& door : unit.cars[i].exterior_doors) open += door.open > 0.5f ? 1 : 0;
+        for (const auto& door : doors_of(unit.cars[i]).doors) open += door.open > 0.5f ? 1 : 0;
         std::cout << " car " << i + 1 << " " << open;
     }
     // Each DLL car's switches as its DLL holds them.
@@ -7552,7 +7567,7 @@ void TrainView::stand_at_cab_door(const std::size_t car) {
     const auto d = cab->description().doors[door];
     if (!c.definition->engine) {
         // The train's passenger doors of the car open, as the driver opens them.
-        units_.front().cars[car].door_groups_open = 0xFFu;
+        doors_of(units_.front().cars[car]).groups_open = 0xFFu;
         if (auto* taken = take_engineer_cab(car); taken && !d.can_be_opened) taken->open_door(door);
     }
     engineer_.stand_outside(at);
@@ -7660,13 +7675,13 @@ std::optional<CarOutside> TrainView::car_outside(const std::size_t u, const std:
     out.transform = body->transform;
     out.width = car.definition && car.definition->width > 1.0f ? car.definition->width : 3.1f;
     const auto* details = car.outside.get();
-    const auto* anims = &car.exterior_doors;
-    out.door_open = [details, anims](std::size_t k) {
+    // The car's doors live as long as the car (its CarId's components).
+    const auto* doors = &doors_of(car);
+    out.door_open = [details, doors](std::size_t k) {
         // A leaf has its door's state (ParentObject).
         for (int guard = 0; k < details->door_details.size() && details->door_details[k].parent >= 0 && guard < 8; ++guard)
             k = static_cast<std::size_t>(details->door_details[k].parent);
-        for (const auto& door : *anims)
-            if (door.index == k) return door.open >= 0.6f;
+        if (const auto* door = doors->at_index(k)) return door->open >= 0.6f;
         return true; // no node of its own: a doorway
     };
     if (with_cab) {
@@ -7863,11 +7878,7 @@ void TrainView::work_outer_door(const std::size_t u, const std::size_t i, const 
             return;
         }
     }
-    for (auto& door : car.exterior_doors) {
-        if (door.index != k) continue;
-        door.wanted = !(door.open >= 0.6f);
-        return;
-    }
+    if (auto* door = doors_of(car).at_index(k)) door->wanted = !(door->open >= 0.6f);
 }
 
 const TrainView::CarMeshData* TrainView::car_mesh(const core::VirtualPath& shape) {
@@ -7913,7 +7924,8 @@ void TrainView::outer_door_pointer(const glm::vec3& eye, const glm::vec3& direct
         if (unit.remote || unit.current.empty()) continue;
         for (std::size_t i = 0; i < unit.cars.size() && i < unit.current.size(); ++i) {
             const auto& car = unit.cars[i];
-            if (car.exterior_doors.empty() || !car.outside || !car.definition) continue;
+            const auto& car_doors = doors_of(car).doors;
+            if (car_doors.empty() || !car.outside || !car.definition) continue;
             const auto body = body_pose(unit, i, false);
             if (!body) continue;
             const float length = car.definition->length > 1.0f ? car.definition->length : 20.0f;
@@ -7941,10 +7953,11 @@ void TrainView::outer_door_pointer(const glm::vec3& eye, const glm::vec3& direct
             };
             std::vector<std::vector<std::int32_t>> door_nodes;
             std::vector<std::uint8_t> skip(rig.matrices.size(), 0);
-            for (const auto& door : car.exterior_doors) {
-                door_nodes.push_back(door.node >= 0 ? nodes_of(door.node) : std::vector<std::int32_t>{});
+            for (std::size_t a = 0; a < car_doors.size() && a < car.door_nodes.size(); ++a) {
+                const auto& drawn = car.door_nodes[a];
+                door_nodes.push_back(drawn.node >= 0 ? nodes_of(drawn.node) : std::vector<std::int32_t>{});
                 // An open door is tried where it is drawn, below.
-                if (door.open >= 0.6f && door.last_frame > 0.0f)
+                if (car_doors[a].open >= 0.6f && drawn.last_frame > 0.0f)
                     for (const auto n : door_nodes.back())
                         if (static_cast<std::size_t>(n) < skip.size()) skip[static_cast<std::size_t>(n)] = 1;
             }
@@ -7955,10 +7968,11 @@ void TrainView::outer_door_pointer(const glm::vec3& eye, const glm::vec3& direct
                 for (std::size_t a = 0; a < door_nodes.size() && !hit_door; ++a)
                     if (std::find(door_nodes[a].begin(), door_nodes[a].end(), rest->node) != door_nodes[a].end()) hit_door = a;
             }
-            for (std::size_t a = 0; a < car.exterior_doors.size(); ++a) {
-                const auto& door = car.exterior_doors[a];
-                if (door.node < 0 || door.last_frame <= 0.0f || door.open < 0.6f) continue;
-                if (const auto hit = data->mesh.ray_posed(rig, door.node, door.open * door.last_frame, door_nodes[a], o, d, limit)) {
+            for (std::size_t a = 0; a < door_nodes.size(); ++a) {
+                const auto& door = car_doors[a];
+                const auto& drawn = car.door_nodes[a];
+                if (drawn.node < 0 || drawn.last_frame <= 0.0f || door.open < 0.6f) continue;
+                if (const auto hit = data->mesh.ray_posed(rig, drawn.node, door.open * drawn.last_frame, door_nodes[a], o, d, limit)) {
                     limit = hit->distance;
                     hit_door = a;
                 }
@@ -7968,7 +7982,7 @@ void TrainView::outer_door_pointer(const glm::vec3& eye, const glm::vec3& direct
                 if (rest && best && rest->distance < best->distance) best.reset();
                 continue;
             }
-            best = Best{u, i, car.exterior_doors[*hit_door].index, limit};
+            best = Best{u, i, car_doors[*hit_door].index, limit};
         }
     }
     if (!best) return;
@@ -7978,9 +7992,8 @@ void TrainView::outer_door_pointer(const glm::vec3& eye, const glm::vec3& direct
     std::size_t k = best->k;
     for (int guard = 0; k < details.size() && details[k].parent >= 0 && guard < 8; ++guard) k = static_cast<std::size_t>(details[k].parent);
     if (k >= details.size()) return;
-    bool open = false;
-    for (const auto& door : car.exterior_doors)
-        if (door.index == k) open = door.open >= 0.6f;
+    const auto* hovered = doors_of(car).at_index(k);
+    const bool open = hovered && hovered->open >= 0.6f;
     const bool by_hand = details[k].can_be_opened;
     door_hover_ = DoorHover{.at = eye + direction * best->distance,
                             .text = !by_hand ? tr("The passenger doors are opened from the driver's cab.")
@@ -10115,7 +10128,7 @@ void TrainView::apply_default_systems(const SceneInput& input) {
         for (auto& car : unit.cars) {
             // The cab's side: a car turned the other way has it under the other GlobalID.
             const std::uint32_t group = (side == 0) != door_side_turned(car) ? 1u : 2u;
-            if (std::find(car.door_groups.begin(), car.door_groups.end(), group) == car.door_groups.end()) continue;
+            if (!doors_of(car).has_group(group)) continue;
             car.pending_triggers.push_back(open ? 48u : 49u);
         }
         message_ = side == 0 ? (open ? tr("right doors open") : tr("right doors shut")) : (open ? tr("left doors open") : tr("left doors shut"));
@@ -10171,7 +10184,7 @@ void TrainView::update_neighbour_rooms(const float elapsed, const glm::vec3& eye
         }
         if (facing) room->set_door(*facing, cab->door_wanted(k));
         // Its doors move here unless the car's outer doors move them (update_exterior_doors).
-        if (unit.cars[j].exterior_doors.empty()) room->step_doors(elapsed);
+        if (doors_of(unit.cars[j]).doors.empty()) room->step_doors(elapsed);
         // Open, or shut too by the setting (his door's glass shows the next
         // car's room, its own door shut with his).
         if ((!neighbour_rooms_shut_ && cab->door_openness(k) < 0.02f) || portals_.size() >= renderer::max_portals) continue;
@@ -10500,7 +10513,7 @@ void TrainView::update_exterior_doors(const float elapsed) {
     if (helped) {
         for (const auto& [car_index, o] : helper_outputs_) {
             if (car_index >= helped->cars.size()) continue;
-            const auto& groups = helped->cars[car_index].door_groups;
+            const auto& groups = doors_of(helped->cars[car_index]).groups;
             for (std::size_t k = 0; k < groups.size() && k < o.doors.size(); ++k)
                 if (groups[k] != 0 && o.doors[k].set_state != 0) helper_groups.insert(groups[k]);
         }
@@ -10510,7 +10523,8 @@ void TrainView::update_exterior_doors(const float elapsed) {
         const bool helped_train = helped && &unit == helped;
         for (std::size_t i = 0; i < unit.cars.size(); ++i) {
             auto& car = unit.cars[i];
-            if (car.exterior_doors.empty()) continue;
+            auto& car_doors = doors_of(car);
+            if (car_doors.doors.empty()) continue;
             const auto* out = dll_output(u, i);
             CabView* cab = u == 0 && i == cab_car_ ? cab_.get() : u == 0 && i == engineer_car_ ? visit_cab_.get() : nullptr;
             // A cab he left (or stood at) keeps its doors; they move on here.
@@ -10528,11 +10542,11 @@ void TrainView::update_exterior_doors(const float elapsed) {
             }
             // The train's doors of a GlobalID in this car (GM_DOOR_OPEN / CLOSE).
             const auto group_open = [&](const std::uint32_t group) {
-                if (unit.remote && group >= 1 && group <= 8) return ((car.door_groups_open >> (group - 1)) & 1u) != 0;
+                if (unit.remote && group >= 1 && group <= 8) return car_doors.group_sent_open(group);
                 if (!out && helped_train) return group != 0 && helper_groups.contains(group);
                 if (!out || group == 0) return false;
-                for (std::size_t k = 0; k < car.door_groups.size() && k < out->doors.size(); ++k)
-                    if (car.door_groups[k] == group && out->doors[k].set_state != 0) return true;
+                for (std::size_t k = 0; k < car_doors.groups.size() && k < out->doors.size(); ++k)
+                    if (car_doors.groups[k] == group && out->doors[k].set_state != 0) return true;
                 return false;
             };
             // The passenger doors seen from inside (the cab's or salon's
@@ -10542,8 +10556,8 @@ void TrainView::update_exterior_doors(const float elapsed) {
                 for (std::size_t j = 0; j < doors.size(); ++j)
                     if (doors[j].global_id != 0) cab->set_door(j, group_open(doors[j].global_id));
             }
-            for (std::size_t k = 0; k < car.exterior_doors.size(); ++k) {
-                auto& door = car.exterior_doors[k];
+            for (std::size_t k = 0; k < car_doors.doors.size(); ++k) {
+                const auto& door = car_doors.doors[k];
                 bool target = false;
                 bool decided = false;
                 if (cab && door.group == 0) {
@@ -10563,7 +10577,7 @@ void TrainView::update_exterior_doors(const float elapsed) {
                 }
                 // Another computer's train: its doors as its owner sends them (0x45FC).
                 if (!decided && unit.remote && door.group >= 1 && door.group <= 8) {
-                    target = ((car.door_groups_open >> (door.group - 1)) & 1u) != 0;
+                    target = car_doors.group_sent_open(door.group);
                     decided = true;
                 }
                 if (!decided && out && door.index < out->doors.size()) target = out->doors[door.index].set_state != 0;
@@ -10573,9 +10587,7 @@ void TrainView::update_exterior_doors(const float elapsed) {
                 // way has them swapped).
                 if (!decided && !out && u == 0 && !legacy_ && !native_ && (door.group == 1 || door.group == 2))
                     target = doors_open_[(door.group == 1) != door_side_turned(car) ? 0 : 1];
-                const float goal = target ? 1.0f : 0.0f;
-                const float step = elapsed / door.time;
-                door.open = goal > door.open ? (std::min)(goal, door.open + step) : (std::max)(goal, door.open - step);
+                car_doors.step(k, target, elapsed);
             }
         }
     }
@@ -11569,9 +11581,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                     // the next car's), no shadow (ModelPortal).
                     if (model && !neighbour_rooms_now_.empty()) {
                         adjustments.clear();
-                        for (const auto& door : car.exterior_doors) {
-                            if (door.last_frame > 0.0f) adjustments.push_back({.matrix = door.node, .frame = door.open * door.last_frame});
-                        }
+                        add_door_frames(car, adjustments);
                         for (const auto node : car.interior_part_nodes) adjustments.push_back({.matrix = node, .hidden = true});
                         for (const auto& room : neighbour_rooms_now_) {
                             renderer.submit(*model, transform, adjustments);
@@ -11615,9 +11625,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 adjustments.push_back({.matrix = node, .frame = car.pantograph_frame[number - 1u]});
             }
         }
-        for (const auto& door : car.exterior_doors) {
-            if (door.last_frame > 0.0f) adjustments.push_back({.matrix = door.node, .frame = door.open * door.last_frame});
-        }
+        add_door_frames(car, adjustments);
         // A wheel chock is drawn only while it lies at its end of the car
         // (the chock flags go by the train's front: a turned car's shape
         // front is the train's rear).
