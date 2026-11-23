@@ -761,12 +761,13 @@ struct Launcher::State {
 #else
         std::string viewer_name = "openrts_viewer";
 #endif
-          const std::vector<fs::path>
-              candidates{
-                  exe_dir / viewer_name,
-                  exe_dir.parent_path().parent_path() / "viewer" /
-                      exe_dir.filename() / viewer_name,
-      };
+        const std::vector<fs::path>
+            candidates{
+                exe_dir / viewer_name,
+                exe_dir.parent_path().parent_path() / "viewer" /
+                        exe_dir.filename() / viewer_name,
+                exe_dir.parent_path() / "viewer" / viewer_name,
+        };
         std::error_code error;
         for (const auto& candidate : candidates)
             if (fs::is_regular_file(candidate, error)) return candidate;
@@ -913,6 +914,15 @@ struct Launcher::State {
         }
         CloseHandle(file);
 #endif
+        const auto log_path = viewer::user_data_directory() / L"openrts.log";
+        std::ifstream file(log_path);
+        if (file.is_open()) {
+            std::string buffer;
+            while(std::getline(file, buffer)) {
+                take_status(buffer);
+            }
+        }
+        file.close();
     }
 
     void launch(const Tab which) {

@@ -55,12 +55,17 @@ private:
     std::uint8_t* view_ = nullptr;
     void* request_ = nullptr;
     void* reply_ = nullptr;
+#ifdef _WIN32
     void* process_ = nullptr;
+#else
+    pid_t process_ = 0;
+#endif
     std::uint32_t sequence_ = 0;
     std::uint32_t step_timeout_ = 3000;
     bool alive_ = false;
     std::string error_;
     std::string messages_;
+    std::string name_;
 };
 
 [[nodiscard]] std::u16string utf8_to_utf16(std::string_view utf8);
