@@ -1568,6 +1568,29 @@ void test_wheel_slip(const Stock& stock) {
         check(t.cars()[0].wheelslip == 0, "motors with no force of their own: no slip (RTS)");
     }
     {
+        // openRTS's adhesion: a DLL that leaves its motors' forces at 0 (the
+        // ЭД4М's) has its force over the axles evenly, and they slip
+        // (testers 2026-11-23: every axle at 0 %, never a slip).
+        Stock motors = stock;
+        motors.engine.engine->num_engines = 4;
+        motors.engine.engine->num_axles = 4;
+        motors.engine.engine->engine_axles = {{0}, {1}, {2}, {3}};
+        simulation::Train t(motors.cars(0), {.rails = simulation::RailCondition::dry});
+        check(t.place(*network, 1, 500.0, true, &error), "placed: " + error);
+        auto made = std::make_unique<Puller>();
+        auto* p = made.get();
+        t.set_controller(0, std::move(made));
+        p->count = 4;
+        p->force = 100000.0f;
+        t.step();
+        const auto& car = t.cars()[0];
+        check(car.axles == 4 && car.slip_ratio[0] > 0.2f && car.slip_ratio[3] > 0.2f && car.wheelslip == 0,
+              "motors at 0, the force evenly: each axle's share of its grip shown: " + std::to_string(car.slip_ratio[0]));
+        p->force = 900000.0f;
+        t.step();
+        check(t.cars()[0].wheelslip != 0, "motors at 0, over the adhesion: the axles slip");
+    }
+    {
         // The RTS air: a brake far over the adhesion stands the wheels.
         Stock heavy = stock;
         heavy.wagon.brakes.max_brake_force = 2.0e6f;

@@ -97,7 +97,12 @@ using formats::WagonDefinition;
     std::array<float, 8> axle_force{};
     bool by_motor = false;
     const std::size_t motors = (std::min)(static_cast<std::size_t>(demands.engine_force_count), engine.engine_axles.size());
-    if (engine.num_engines > 0) {
+    // A DLL that leaves its motors' forces at 0 (the ЭД4М's: its 64 kN all
+    // in Force; testers 2026-11-23, every axle at 0 %, never a slip) gives
+    // no split: its force goes evenly over the axles.
+    float motors_total = 0.0f;
+    for (std::size_t m = 0; m < motors; ++m) motors_total += std::abs(demands.engine_forces[m]);
+    if (engine.num_engines > 0 && motors_total > 0.01f * std::abs(force)) {
         for (std::size_t m = 0; m < motors; ++m) {
             const auto& turned = engine.engine_axles[m];
             if (turned.empty()) continue;
