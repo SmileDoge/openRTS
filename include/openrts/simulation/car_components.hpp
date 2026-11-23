@@ -3,12 +3,14 @@
 // Cars as entities (docs/car-architecture.md): a car's components, plain
 // data kept by its CarId in its world's CarRegistry. They live as long as
 // the car: a coupling, a cut, a train handed over do not touch them; the car
-// released, they go with it. Step 2: the doors.
+// released, they go with it. Step 2: the doors, the lights.
 
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include <openrts/simulation/train_lights.hpp>
 
 namespace openrts::simulation {
 
@@ -45,9 +47,24 @@ struct CarDoors {
     [[nodiscard]] CarDoor* at_index(std::size_t index) noexcept;
 };
 
+// The car's lights (its definition's Lights, by LightID).
+struct CarLights {
+    std::vector<LightRunner> runners; // fading and the States shown
+    // Each light's wanted state at the last update, for the network.
+    std::vector<std::uint8_t> lit;
+    // Another computer's car: its lights as its owner sends them.
+    std::vector<std::uint8_t> sent;
+
+    // Light `k` sent on or off (the list grows to it).
+    void set_sent(std::size_t k, bool on);
+    // The lights shining (fading in or out too).
+    [[nodiscard]] std::size_t shining() const noexcept;
+};
+
 // Everything a car has besides its physics (that is the train's CarState).
 struct CarComponents {
     CarDoors doors;
+    CarLights lights;
 };
 
 } // namespace openrts::simulation

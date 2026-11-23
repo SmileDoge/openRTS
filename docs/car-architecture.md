@@ -1,8 +1,8 @@
 # Car and train architecture (design)
 
 Status: a design under discussion (2026-11-06). Step 1 (`CarId`) is built
-(2026-11-23, "Step 1: CarId" below); of step 2 the doors ("Step 2:
-doors"); the rest is not.
+(2026-11-23, "Step 1: CarId" below); of step 2 the doors and the lights
+("Step 2: doors", "Step 2: lights"); the rest is not.
 - The plan it serves is the roadmap step "Cars as entities"
   (`roadmap.md`); the replaceable train systems there build on it.
 - **Proposed** marks what this document suggests; the user's questions are
@@ -247,6 +247,20 @@ before.
   groups); `openrts.train` `test_car_ids` (a car's doors with it after a
   cut); the viewer's door pick, boarding and passage runs printed the same
   before and after.
+
+### Step 2: lights (built 2026-11-23)
+
+As the doors: the lights shine, fade and go over the network as before.
+- **`CarLights`** (`CarComponents::lights`): each light's runner (its
+  level, the States' clock and the State shown), each light's wanted state
+  at the last update (what goes out), the lights another computer sends.
+- **The viewer** keeps nothing of them: `lights_of(car)` reads the
+  component; a train made anew starts its lights out, as before.
+- **Still the viewer's:** what decides a light (the DLL's light flags, the
+  MSTS conditions, the owner's) waits for the modules (step 4).
+- **Tests:** `openrts.car_registry` `components` (lights sent, shining);
+  the viewer's runs of the ChS7 and the ЭД9М gave the same lights, glows
+  and beams before and after.
 
 ## Open questions (the user's)
 

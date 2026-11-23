@@ -39,4 +39,15 @@ CarDoor* CarDoors::at_index(const std::size_t index) noexcept {
     return nullptr;
 }
 
+void CarLights::set_sent(const std::size_t k, const bool on) {
+    if (k >= sent.size()) sent.resize(k + 1, 0);
+    sent[k] = on ? 1 : 0;
+}
+
+std::size_t CarLights::shining() const noexcept {
+    std::size_t n = 0;
+    for (const auto& runner : runners) n += runner.level > 0.0f ? 1 : 0;
+    return n;
+}
+
 } // namespace openrts::simulation

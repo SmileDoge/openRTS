@@ -195,12 +195,9 @@ struct TrainView::Car {
     // Its shape .sd's ESD_Exterior_Details when the engineer can walk on it
     // or climb it (ExteriorPlanes, ExteriorLadders, ExteriorLedges: RTS mode 6).
     std::shared_ptr<const formats::ExteriorDetails> outside;
-    std::vector<simulation::LightRunner> lights; // by LightID: fading and the States shown
     bool cold = false;      // an engine started cold (the consist's Cold; RTS LocoFlags bit 3)
     std::uint8_t pantographs_heard{}; // the raised pantographs the sounds last knew (non-DLL)
-    // A remote train's car (Unit::remote): its lights and pantographs as the
-    // owner sends them (set_remote_light / set_remote_look).
-    std::vector<std::uint8_t> remote_lights;
+    // Its lights' state is the car's (simulation::CarLights, lights_of()).
     // A remote car's Var1..Var8 as its owner sends them (0x463D).
     std::optional<std::array<float, 8>> remote_sound_vars;
     // Its owner's whole sound state (0x463A) until its sound object is made.
@@ -209,8 +206,6 @@ struct TrainView::Car {
     std::vector<std::uint32_t> net_triggers;
     std::array<float, 8> net_vars{};
     float net_travelled{};
-    // Each light's wanted state the last update (update_lights), for the network.
-    std::vector<std::uint8_t> lit_now;
     std::uint8_t remote_pantographs{};
     // FreightAnim of its consist entry: objects fastened to the car and the cargo.
     std::vector<formats::ConsistFreight> freight;
@@ -912,12 +907,20 @@ void TrainView::clear_preview_units() {
     for (const auto key : gone) car_registry_.release(simulation::CarId{key});
 }
 
-simulation::CarDoors& TrainView::doors_of(const Car& car) const {
+simulation::CarComponents& TrainView::components_of(const Car& car) const {
     const simulation::CarId id{car.key};
-    if (car_registry_.alive(id)) return car_registry_.components(id).doors;
-    // Not a car of this world (none should be): no doors, nothing kept.
-    no_doors_ = {};
-    return no_doors_;
+    if (car_registry_.alive(id)) return car_registry_.components(id);
+    // Not a car of this world (none should be): nothing, nothing kept.
+    no_components_ = {};
+    return no_components_;
+}
+
+simulation::CarDoors& TrainView::doors_of(const Car& car) const {
+    return components_of(car).doors;
+}
+
+simulation::CarLights& TrainView::lights_of(const Car& car) const {
+    return components_of(car).lights;
 }
 
 void TrainView::add_door_frames(const Car& car, std::vector<renderer::NodeAdjustment>& adjustments) const {
@@ -973,9 +976,10 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
                                                               : new_car_key();
             made_keys.push_back(car.key);
         }
-        // Its doors as a car new here has them (read with its shape:
-        // fit_shapes), whatever its id's were before (a train put back).
-        doors_of(car) = {};
+        // Its doors and lights as a car new here has them (the doors read
+        // with its shape: fit_shapes), whatever its id's were before (a train
+        // put back).
+        components_of(car) = {};
         car.uid = entry.uid;
         car.folder = entry.folder;
         car.file = entry.name;
@@ -4060,9 +4064,7 @@ std::uint64_t TrainView::add_unit(const PlacedTrain& placed, const bool remote, 
 void TrainView::set_remote_light(const std::uint64_t id, const std::size_t car, const std::size_t light, const bool on) {
     for (auto& unit : units_) {
         if (unit.train->id() != id || !unit.remote || car >= unit.cars.size()) continue;
-        auto& lights = unit.cars[car].remote_lights;
-        if (light >= lights.size()) lights.resize(light + 1, 0);
-        lights[light] = on ? 1 : 0;
+        lights_of(unit.cars[car]).set_sent(light, on);
     }
 }
 
@@ -4246,11 +4248,12 @@ std::vector<TrainView::CarLook> TrainView::look_of(const std::uint64_t id) const
         look.running = !car.cold;
         if (car.definition) {
             const auto& lights = car.definition->lights;
+            const auto& state = lights_of(car);
             for (std::size_t k = 0; k < lights.size(); ++k) {
                 LightLook l;
-                l.on = k < car.lit_now.size() && car.lit_now[k] != 0;
+                l.on = k < state.lit.size() && state.lit[k] != 0;
                 if (!lights[k].states.empty()) {
-                    const auto shown = k < car.lights.size() ? car.lights[k].state : 0;
+                    const auto shown = k < state.runners.size() ? state.runners[k].state : 0;
                     l.state = &lights[k].states[(std::min)(shown, lights[k].states.size() - 1)];
                 }
                 look.lights.push_back(l);
@@ -4363,7 +4366,7 @@ bool TrainView::take_back(const std::uint64_t id) {
     unit->remote = false;
     unit->role = Role::standing;
     for (auto& car : unit->cars) {
-        car.remote_lights.clear();
+        lights_of(car).sent.clear();
         car.remote_sound_vars.reset();
     }
     // Its DLLs, bound while it was ours, go on where they stopped; a train
@@ -8320,8 +8323,7 @@ std::string TrainView::systems_report() const {
     for (const auto& unit : units_) {
         const auto& states = unit.train->cars();
         std::size_t lit = 0;
-        for (const auto& car : unit.cars)
-            for (const auto& l : car.lights) lit += l.level > 0.0f ? 1 : 0;
+        for (const auto& car : unit.cars) lit += lights_of(car).shining();
         std::snprintf(line, sizeof line, "; %s (%s, %zu cars, %s air): lights %zu", unit.name.c_str(),
                       unit.role == Role::driven ? "driven" : unit.role == Role::ai ? "ai" : "standing", unit.cars.size(),
                       unit.train->brake_model() == simulation::BrakeModel::realistic ? "realistic" : "RTS", lit);
@@ -10382,21 +10384,22 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
         const bool engine = car.definition->engine.has_value();
         // A remote train's lights are only what its owner sent.
         std::vector<bool> wanted;
+        auto& car_lights = lights_of(car);
         if (each.remote) {
-            for (const auto lit : car.remote_lights) wanted.push_back(lit != 0);
+            for (const auto lit : car_lights.sent) wanted.push_back(lit != 0);
         } else if (!out) {
             wanted = simulation::car_lights(*car.definition, i, each.cars.size(), kind, reversed, engine && car.cold, light_world);
         }
-        car.lights.resize(lights.size());
+        car_lights.runners.resize(lights.size());
         const auto body = body_pose(each, i, !(u == 0 && viewing_inside() && i == engineer_car_));
         for (std::size_t k = 0; k < lights.size(); ++k) {
             const auto& light = lights[k];
             const std::uint32_t flags = out && k < out->light_flags.size() ? out->light_flags[k] : 0u;
             const bool on = !light.states.empty() && (out ? (flags & 9u) != 0 : (k < wanted.size() && wanted[k]));
-            auto& runner = car.lights[k];
+            auto& runner = car_lights.runners[k];
             runner.step(light, on, elapsed);
-            if (car.lit_now.size() != lights.size()) car.lit_now.assign(lights.size(), 0);
-            car.lit_now[k] = on ? 1 : 0;
+            if (car_lights.lit.size() != lights.size()) car_lights.lit.assign(lights.size(), 0);
+            car_lights.lit[k] = on ? 1 : 0;
             const float level = runner.level;
             if (level <= 0.0f || !body) continue;
             const auto& s = light.states[(std::min)(runner.state, light.states.size() - 1)];

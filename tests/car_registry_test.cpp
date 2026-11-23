@@ -168,6 +168,17 @@ void components() {
     check(doors.has_group(2) && doors.has_group(0) && !doors.has_group(3), "the car's GlobalIDs");
     check(doors.at_index(2) == &doors.doors[1] && !doors.at_index(1), "a door by its .sd index; none without a node");
     check(!cars.find_components(b) && cars.find_components(a) == &cars.components(a), "made only for the car asked");
+    // Its lights: what another computer sends, how many shine.
+    auto& lights = cars.components(a).lights;
+    lights.set_sent(3, true);
+    check(lights.sent == std::vector<std::uint8_t>{0, 0, 0, 1}, "a light sent: the list grows to it");
+    lights.set_sent(1, true);
+    lights.set_sent(3, false);
+    check(lights.sent == std::vector<std::uint8_t>{0, 1, 0, 0}, "lights sent on and off");
+    lights.runners.resize(3);
+    lights.runners[0].level = 1.0f;
+    lights.runners[2].level = 0.3f;
+    check(lights.shining() == 2, "the lights shining, fading ones too");
     cars.release(a);
     check(!cars.find_components(a), "released: its components gone with it");
     bool thrown = false;
