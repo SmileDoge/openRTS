@@ -296,8 +296,14 @@ fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_ble
     // as the sky (at night the fog's grey is no light: the drops shone white
     // on dark glass, testers 2026-11-23): at night a drop shows what lies
     // behind it, lit by the lamps.
-    let sky = mix(base.xyz, horizon * bright, 0.5) * 1.1;
-    let ground = base.xyz * 0.5 + horizon * 0.08 * bright;
+    // `base` is the glass as lit, the cab's lamps on it too: a drop is no
+    // brighter than the light from outside lets it be (testers 2026-11-23:
+    // with the cab's light on the drops went opaque white, like snow or
+    // mud); the lamps give it a glint only.
+    let outside = horizon * (0.25 + 0.75 * bright) + vec3<f32>(0.02);
+    let through = min(base.xyz, outside * 1.3);
+    let sky = mix(through, horizon * bright, 0.5) * 1.1;
+    let ground = through * 0.5 + horizon * 0.08 * bright;
     let d = length(best_off);
     let height = dot(best_off, best_up); // -1 its bottom .. 1 its top
     var lens = mix(ground, sky, 1.0 - smoothstep(-0.55, 0.45, height));
@@ -308,9 +314,14 @@ fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_ble
     lens = lens + sky * 0.35 * smoothstep(0.7, 0.92, d) * (1.0 - smoothstep(0.92, 1.0, d)) * (1.0 - smoothstep(-0.9, -0.3, height));
     // The highlight: the sky's light off its dome, up and to one side.
     let spot = best_off - best_up * 0.45 - vec2<f32>(best_up.y, -best_up.x) * 0.25;
-    let glint = exp(-dot(spot, spot) * 40.0) * select(0.7, 0.5, lin) * bright;
+    // The glint: the sky's, and the lamps' that light the glass.
+    let lamp = max(dot(base.xyz - through, vec3<f32>(0.333)), 0.0);
+    let glint = exp(-dot(spot, spot) * 40.0) * select(0.7, 0.5, lin) * min(bright + lamp * 2.0, 1.0);
     lens = lens + vec3<f32>(glint);
-    return vec4<f32>(mix(base.xyz, lens, best * 0.92), max(base.w, best * 0.85));
+    // A drop is clear: its middle mostly lets the view through, its rim
+    // (the refraction's dark ring) the most opaque.
+    let cover = best * mix(0.45, 0.85, rim);
+    return vec4<f32>(mix(base.xyz, lens, cover * 1.08), max(base.w, cover));
 }
 
 // One primitive of the shape (static per model generation).
