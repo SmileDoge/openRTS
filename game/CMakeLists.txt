@@ -33,3 +33,8 @@ else()
     openrts_embed_dllhost(openrts_game)
     target_link_libraries(openrts_game PRIVATE openrts_assets openrts_renderer openrts_platform openrts_simulation)
 endif()
+
+if(WIN32 AND TARGET openrts_game)
+    # The game is a GUI program: no console window appears when it starts.
+    set_target_properties(openrts_game PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
