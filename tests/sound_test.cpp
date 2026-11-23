@@ -583,6 +583,29 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( CabCam ( ) ) Deactivation ( ExternalCa
     check(clicks == 0, "no one-shot started at all");
 }
 
+// RTS (0x4A8284, 0x4A78A0): a stream's Volume is where its volume starts;
+// SetStreamVolume replaces it, not multiplies it. The ED4M / ED9M motor
+// cars' gear streams (Volume 0.1, SetStreamVolume 0.3 by the speed) were
+// 0.03 for it, all but silent.
+void test_set_stream_volume_replaces() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( Distance ( 300 ) ) Volume ( 1 ) Streams ( 1
+    Stream ( Volume ( 0.1 ) Triggers ( 2
+        Initial_Trigger ( StartLoop ( 1 File ( "gear.wav" -1 ) ) )
+        Variable_Trigger ( Speed_Inc_Past 1 SetStreamVolume ( 0.3 ) ) ) ) ) ) ))"));
+    const auto clip = test_clip();
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train, [&](const std::string&) { return clip; }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::external;
+    inputs[SoundVariable::distance] = 0;
+    sound.update(0.01f, inputs, sink);
+    check(!sink.voices.empty() && std::abs(sink.voices.begin()->second.volume - 0.1f) < 1e-4f, "standing: the stream's Volume");
+    inputs[SoundVariable::speed] = 2.0f;
+    sound.update(0.01f, inputs, sink);
+    check(std::abs(sink.voices.begin()->second.volume - 0.3f) < 1e-4f, "SetStreamVolume replaces the Volume (0.3, not 0.03)");
+}
+
 // Codes that came while the group was off are taken as states only: a horn
 // blown in the cab does not sound outside when the engineer steps out; a
 // loop started there is on, one started and released is not.
@@ -1341,6 +1364,7 @@ int main(int argc, char** argv) {
     test_cab_round_trip();
     test_region_round_trip();
     test_speed_on_the_move();
+    test_set_stream_volume_replaces();
     test_past_codes();
     test_world_fade();
     test_trigger_pairs();

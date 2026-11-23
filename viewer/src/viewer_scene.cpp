@@ -2073,6 +2073,26 @@ public:
     [[nodiscard]] std::optional<renderer::LightShaftRoom> light_shaft_room() const override {
         return train_ ? train_->light_shaft_room() : std::nullopt;
     }
+    // While it snows or rains the lamps' beams light the air: the same cones
+    // that light the flakes, the air as thick as the fog it makes (snow
+    // scatters three times its fog's extinction, rain one).
+    [[nodiscard]] renderer::LightShaftBeams light_shaft_beams() const override {
+        renderer::LightShaftBeams out;
+        if (!effects_.precipitation || !effects_.fog || !precipitation_ || precipitation_->drops() == 0) return out;
+        const auto& weather = precipitation_->weather();
+        out.count = static_cast<std::uint32_t>((std::min)(weather.lamp_count, out.beams.size()));
+        for (std::uint32_t k = 0; k < out.count; ++k) {
+            const auto& lamp = weather.lamps[k];
+            out.beams[k] = {.apex = lamp.cone.apex, .axis = lamp.cone.axis, .reach = lamp.cone.reach, .tangent = lamp.cone.tangent,
+                            .colour = lamp.colour};
+        }
+        const float amount = weather_precipitation();
+        const float beyond = (std::max)(amount - 2.0f, 0.0f);
+        const bool snow = precipitation_->snow();
+        const float end = (snow ? 2200.0f : 3500.0f) / (1.0f + 1.5f * amount + 25.0f * beyond * beyond);
+        out.air = (snow ? 3.0f : 1.0f) / end;
+        return out;
+    }
     // In flight the lamps' shadows go where the camera looks: along the view
     // to the ground (up to 200 m; looking up or level, 40 m), the sphere over
     // that stretch from the camera, bigger the farther. Low over a station it

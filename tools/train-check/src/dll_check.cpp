@@ -1170,8 +1170,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             } else if (c.verb == "sounds") {
                 // sounds: the SMSObject Var1..8 the DLL set (exterior, cab)
                 // and the triggers it posted this step.
-                if (const auto* out = consist->output(player)) {
-                    std::printf("%6.1f sounds ext vars", time);
+                // sounds [car]: that car's (default: the player's).
+                const std::size_t sound_car = c.args.empty() ? player : static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
+                if (const auto* out = consist->output(sound_car)) {
+                    std::printf("%6.1f sounds car %zu ext vars", time, sound_car);
                     for (const auto v : out->sms_ext) std::printf(" %.3g", v);
                     std::printf(" | cab vars");
                     for (const auto v : out->sms_cab) std::printf(" %.3g", v);

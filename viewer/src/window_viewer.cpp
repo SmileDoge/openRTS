@@ -3800,7 +3800,16 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // pre-pass with its occlusion and the lamp clusters, before the
         // main pass (renderer::SceneEffects).
         const bool experimental = renderer.shading_path() == renderer::ShadingPath::experimental;
-        effects.set_settings(panel.effects);
+        // The lamps' beams in snow or rain go through the light shafts'
+        // pass (its depth pre-pass wanted too), the sun's shafts or not.
+        const auto beams = scene.light_shaft_beams();
+        if (beams.any()) {
+            auto settings = panel.effects;
+            settings.light_shafts = true;
+            effects.set_settings(settings);
+        } else {
+            effects.set_settings(panel.effects);
+        }
         effects.begin_frame({.view = frame.view,
                              .projection = frame.projection,
                              .eye = frame.eye,
@@ -3937,8 +3946,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             // The light shafts (the experimental path): the sun's beams
             // marched through the effects' shadows to the camera's depth.
             WGPUTextureView shafts_view = nullptr;
-            if (experimental && settings.curve != renderer::ToneCurve::none && panel.effects.light_shafts
-                && panel.effects.light_shafts_strength > 0.0f) {
+            const bool sun_shafts = panel.effects.light_shafts && panel.effects.light_shafts_strength > 0.0f;
+            if (experimental && settings.curve != renderer::ToneCurve::none && (sun_shafts || beams.any())) {
                 if (!shafts) shafts = std::make_unique<renderer::LightShaftRenderer>(device);
                 if (const auto depth = effects.camera_depth(); depth && shafts->ready()) {
                     shafts_view = shafts->render(encoder, effects.bind_group(), depth,
@@ -3947,10 +3956,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                                   .eye = frame.eye,
                                                   .width = static_cast<std::uint32_t>(width),
                                                   .height = static_cast<std::uint32_t>(height),
-                                                  .strength = panel.effects.light_shafts_strength,
+                                                  .strength = sun_shafts ? panel.effects.light_shafts_strength : 0.0f,
                                                   .shadow_distance = panel.effects.shadow_distance,
                                                   .fog_end = environment.lighting.fog_end,
-                                                  .room = scene.light_shaft_room()});
+                                                  .room = scene.light_shaft_room(),
+                                                  .beams = beams});
                     settings.shafts = shafts_view != nullptr;
                 }
             }

@@ -10954,9 +10954,15 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
                 if (car.net_triggers.size() < 96) car.net_triggers.push_back(code); // RTS's queue holds 96
             }
         }
+        // The cab's (salon's) script hears the car's rail events too: the
+        // ЭД4М / ЭД9М cab and motor-car salon scripts have their switch
+        // knock there (Event_Trigger WagonOnJunction), silent before.
+        const auto car_events = std::move(car.pending_events);
+        inputs.events = car_events;
         car.pending_events.clear();
         car.pending_triggers.clear();
         update_cab_sound(unit, u, i, inputs, elapsed, camera, sound);
+        inputs.events = {};
         update_aux_sounds(unit, u, i, inputs, elapsed, camera, sound);
         // The scenario's sounds on the car (SendSoundTrigger): heard as its
         // cab's while the player is in it, else from the car.
@@ -11466,7 +11472,6 @@ void TrainView::update_cab_sound(Unit& unit, const std::size_t u, const std::siz
             inputs.variables[static_cast<std::size_t>(formats::SoundVariable::variable1) + static_cast<std::size_t>(k)] =
                 (*vars)[static_cast<std::size_t>(k)];
     }
-    inputs.events = {};
     inputs.discrete = car.pending_cab_triggers;
     car.cab_sound->update(elapsed, inputs, sound);
     car.pending_cab_triggers.clear();

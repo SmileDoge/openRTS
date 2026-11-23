@@ -382,6 +382,8 @@ public:
     // The room the engineer is in (the cab's or salon's box), for the light
     // shafts' dust (renderer/light_shafts.hpp).
     [[nodiscard]] virtual std::optional<renderer::LightShaftRoom> light_shaft_room() const { return std::nullopt; }
+    // The lamps' beams in the falling snow or rain this frame (none: clear).
+    [[nodiscard]] virtual renderer::LightShaftBeams light_shaft_beams() const { return {}; }
     // In flight: the sphere the lamps' shadows cover, where the camera looks
     // (nullopt: the shadow focus, or around the view).
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> lamp_shadow_focus(const ViewerCamera&) const { return std::nullopt; }

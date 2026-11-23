@@ -168,8 +168,8 @@ The action of a trigger is the first keyword found in this order:
   - `…WithJump`: from (data length − the place reached), or from the loop
     start when that is past it; with the loop alone, from the place reached;
     on to the end of the file.
-- **Each update** (`0x4A78A0`): volume = `Volume` × the volume curve ×
-  `SetStreamVolume` × the object's volume × `Attenuation` by distance
+- **Each update** (`0x4A78A0`): volume = the stream's volume × the volume
+  curve × the object's volume × `Attenuation` by distance
   (unless the curve is distance-controlled), × the fades, to the buffer as
   `log10(volume) × 3000` hundredths of a dB (floor −10000). Frequency: the
   curve's value in Hz (100 000 at most); below 100 Hz the sound is silent.
@@ -445,8 +445,13 @@ car's sound is made.
 
 ### Volume, pitch and position
 
-- **Volume:** group volume × stream `Volume` × `SetStreamVolume` × volume
-  curve × random volume × fade.
+- **Volume:** group volume × the stream's volume × volume curve × fade.
+  The stream's volume (RTS stream state +36) starts as its `Volume`;
+  `SetStreamVolume` and a random trigger's `Volume_Min_Max` replace it
+  (`0x4A8284`, `0x4A7C64`), they do not multiply it. Until 2026-11-23
+  openRTS multiplied them: the ЭД4М / ЭД9М motor cars' gear streams
+  (`Volume ( 0.1 )`, `SetStreamVolume ( 0.3 )` by the speed) were all but
+  silent.
 - **Curves:** `VolumeCurve` / `FrequencyCurve` are linear between points and
   clamped at the ends. `Granularity` is not used.
 - **Frequency:** the frequency curve gives Hz; pitch = Hz / the file's sample

@@ -7,6 +7,8 @@ struct Shafts {
     room_upper: vec4<f32>, // w: the outdoor dust (per metre)
     sizes: vec4<f32>,      // the half image's width, height; the frame's width, height
     march: vec4<f32>,      // x: the cascades' end (m), y: the clouds' march's end (m), z: the light's strength
+    beams: array<vec4<f32>, 12>, // the lamps' beams in snow or rain: apex + reach, axis + tangent, colour
+    beam: vec4<f32>,       // x: beams, y: the air's scattering in them (per metre)
 };
 @group(0) @binding(0) var<uniform> shafts: Shafts;
 @group(0) @binding(1) var scene_depth: texture_depth_2d;

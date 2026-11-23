@@ -69,7 +69,10 @@ struct SoundInstance::Stream {
     std::vector<std::size_t> sequence; // next file of sequential selections, per trigger
     Voice loop;
     std::vector<Voice> one_shots;
-    float volume = 1.0f; // SetStreamVolume
+    // The stream's volume (RTS stream state +36): its Volume at the start,
+    // replaced by SetStreamVolume and by a random trigger's Volume_Min_Max
+    // (0x4A8284, 0x4A7C64), times the curve (0x4A78A0).
+    float volume = 1.0f;
     // The trigger whose StartLoop / StartLoopRelease is this stream's loop
     // (RTS: the stream state's current trigger and its flag bit 0), and,
     // after a deactivation, the frame to resume the loop at.
@@ -216,7 +219,7 @@ void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
     for (auto& stream : streams_) {
         std::fill(stream.enabled.begin(), stream.enabled.end(), true);
         stream.running = true;
-        stream.volume = 1.0f;
+        stream.volume = stream.definition->volume;
         const auto& triggers = stream.definition->triggers;
         for (std::size_t i = 0; i < triggers.size(); ++i) {
             std::uniform_real_distribution<float> pick(triggers[i].minimum, (std::max)(triggers[i].minimum, triggers[i].maximum));
@@ -714,7 +717,8 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
                 stream.countdown[i] = (std::max)(pick(random_), 0.05f);
                 std::uniform_real_distribution<float> volume(trigger.volume_minimum,
                                                              (std::max)(trigger.volume_minimum, trigger.volume_maximum));
-                fire(stream, i, volume(random_), inputs, sink);
+                stream.volume = volume(random_);
+                fire(stream, i, 1.0f, inputs, sink);
                 break;
             }
             }
@@ -730,7 +734,7 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
             return curve.control == SoundVariable::unknown ? 0.0f
                                                            : inputs.variables[static_cast<std::size_t>(curve.control)];
         };
-        float volume = group_->volume * definition.volume * stream.volume * inputs.gain;
+        float volume = group_->volume * stream.volume * inputs.gain;
         if (definition.volume_curve) volume *= evaluate_curve(*definition.volume_curve, curve_input(*definition.volume_curve));
         // The head out of a window silences the streams not allowed there.
         if (inputs.window && !definition.allow_on_window_camera) volume = 0.0f;

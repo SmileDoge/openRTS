@@ -55,6 +55,8 @@ public:
         }
     }
     [[nodiscard]] bool snow() const noexcept { return precipitation_ && precipitation_->snow; }
+    // This frame's particles, the beams that light them (set_lamps) among them.
+    [[nodiscard]] const renderer::WeatherParticles& weather() const noexcept { return weather_; }
     // The scene's lights: the nearest beams (cones: headlights, searchlights)
     // that reach the box of falling drops around `eye` light them.
     void set_lamps(const std::vector<renderer::SceneLight>& lights, const glm::vec3& eye);

@@ -367,3 +367,13 @@ sprites) draws its own (`renderer::WeatherParticleRenderer`):
   ends nearer, 3500 m (snow 2200 m) over 1 + 1.5 × the strength + 25 ×
   its excess over 2 squared: a blizzard's some 70 m, the land beyond white
   by day; at night its fog no darker than a dim grey (0.09).
+- **The air in the lamps' beams** (2026-11-24; the experimental path with
+  the HDR frame). While it snows or rains, the same four cones that light
+  the flakes light the air between them: the light shafts' pass
+  (`LightShaftFrame::beams`) marches each pixel's view ray from the eye to
+  what the frame shows (24 steps, closer near the eye), the air as thick as
+  the fog the precipitation makes (snow 3 / its fog's distance per metre,
+  rain 1 /), dimmed by the air between. At night a blizzard shows as a
+  bright haze in the headlights, the land past it gone; before, only the
+  flakes shone and the air between them stayed black. The pass runs for it
+  with the sun's shafts off too (the sun's part then left out).

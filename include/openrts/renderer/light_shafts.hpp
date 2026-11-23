@@ -19,6 +19,7 @@
 // before its exposure (scene-linear).
 
 #ifdef OPENRTS_HAS_WGPU
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -35,6 +36,25 @@ struct LightShaftRoom {
     glm::vec3 lower{}, upper{};
 };
 
+// A lamp's beam (a headlight's, a searchlight's cone) in falling snow or
+// rain: the air in it shines (openRTS, 2026-11-24).
+struct LightShaftBeam {
+    glm::vec3 apex{};
+    glm::vec3 axis{0.0f, 0.0f, 1.0f};
+    float reach = 0.0f;   // m
+    float tangent = 0.0f; // of the cone's half angle
+    glm::vec3 colour{1.0f};
+};
+
+// The lamps' beams in the falling snow or rain (at most four), and how much
+// the air scatters (per metre; 0: none).
+struct LightShaftBeams {
+    std::array<LightShaftBeam, 4> beams{};
+    std::uint32_t count = 0;
+    float air = 0.0f;
+    [[nodiscard]] bool any() const noexcept { return count > 0 && air > 0.0f; }
+};
+
 struct LightShaftFrame {
     glm::mat4 view{1.0f};
     glm::mat4 projection{1.0f}; // reversed Z (depth.hpp)
@@ -45,6 +65,7 @@ struct LightShaftFrame {
     float shadow_distance = 250.0f; // m: the last cascade's end (SceneEffectSettings)
     float fog_end = 3000.0f;     // m: RTS's fog distance (the haze thickens the dust)
     std::optional<LightShaftRoom> room;
+    LightShaftBeams beams;
 };
 
 class LightShaftRenderer {
