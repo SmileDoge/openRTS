@@ -1,6 +1,7 @@
 # Car and train architecture (design)
 
-Status: a design under discussion (2026-11-06). Nothing here is built.
+Status: a design under discussion (2026-11-06). Step 1 (`CarId`) is built
+(2026-11-23, "Step 1: CarId" below); the rest is not.
 - The plan it serves is the roadmap step "Cars as entities"
   (`roadmap.md`); the replaceable train systems there build on it.
 - **Proposed** marks what this document suggests; the user's questions are
@@ -181,6 +182,45 @@ Steps:
    the server can run it without a window.
 6. **Interior:** the graph and occupants.
 7. **Standard classes.**
+
+### Step 1: CarId (built 2026-11-23)
+
+Architecture only: physics, doors, brakes, cabs, the DLLs and the network
+protocol behave as before.
+- **`simulation::CarId`** (`car_registry.hpp`) is the car key the viewer
+  always kept (one u32, 0 none): no second id system.
+- **`CarRegistry`**, one per world: the viewer's (`TrainView`) and the
+  server's (`GameServer`), never shared.
+  - `create()` gives an id never given in that world; ids are never used
+    again, not after the car is gone either. Running out (2^32 - 1) throws
+    `CarIdsExhausted`.
+  - `release()` retires a car's id when the car is gone for good: a train
+    deleted, every train replaced (a saved game, a situation, a consist
+    loaded), a preview closed, a train that could not be made. A retired id
+    is found no more.
+- **Trains:** `CarSetup::id` and `CarState::id`. The id lives in the car's
+  state, so a cut, a coupling (a train standing tail first included) and a
+  turn move it with the car; `Train::car_ids()` is the ordered list,
+  `index_of()` finds a car. The viewer checks at each coupling and cut that
+  its cars' keys are the train's ids, in order (an error line once if not).
+- **Saved games:** keys are saved as before (the car line's 7th field).
+  Loaded into a world that never gave them they stay; else they map to new
+  ids (`restore_saved_keys`), the DLLs' states and the trains' first keys
+  following. A save from before the keys gets new ids.
+- **Network:** identity is the server's uid. The client maps
+  `server uid -> CarId` (`for_server_uid`): connected again, it finds the
+  cars it has; ids need not match between computers. A uid repeats with a
+  train number, so a uid another live record holds gets a new car. A train
+  deleted on the server releases its cars; one only taken off keeps them.
+- **The DLLs:** slots stay positional, in the train's order and direction;
+  the host follows cars by key as before.
+- **Pointers:** a car's cab freed (`drop_board_cab`) clears the listener's
+  and the rain's pointers to it.
+- **Tests:** `openrts.car_registry` (create, release, no reuse, running
+  out, saves with and without keys, the server's uids and reconnecting);
+  `openrts.train` `test_car_ids` (a cut in the middle and back, a flipped
+  car, a train tail first, a turn); `openrts.server` `car_identity` (add,
+  couple, cut, couple back, delete: ids kept, then retired, never reused).
 
 ## Open questions (the user's)
 

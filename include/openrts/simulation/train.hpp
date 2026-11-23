@@ -16,6 +16,7 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/body_motion.hpp>
+#include <openrts/simulation/car_registry.hpp>
 #include <openrts/simulation/cab_brakes.hpp>
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/state_text.hpp>
@@ -63,6 +64,9 @@ struct TrainSettings {
 
 struct CarSetup {
     const formats::WagonDefinition* definition = nullptr;
+    // The car's identity in its world (car_registry.hpp); none: a car only
+    // simulated (a test run), not one of the world's.
+    CarId id{};
     bool flipped = false;
     float handbrake{}; // 0..1 (consist HandbrakePercent / 100)
     // The front and rear bogie's brake shoes (the consist's ORTSBrakeShoes);
@@ -322,6 +326,9 @@ struct BrakeWear {
 // State of one car (the ts.h Wagon fields RTS simulates on).
 struct CarState {
     const formats::WagonDefinition* definition = nullptr;
+    // Its identity (CarSetup::id): moves with the car through couplings,
+    // cuts and turns, as the car's state does.
+    CarId id{};
     bool flipped = false;
     // The brake shoes of its front and rear bogie (its own ends): their
     // friction under the realistic air (brake_shoes.hpp).
@@ -599,6 +606,11 @@ public:
     void set_drive_acceleration(float acceleration) noexcept { drive_acceleration_ = acceleration; }
 
     [[nodiscard]] const std::vector<CarState>& cars() const noexcept { return cars_; }
+    // The train's cars by identity, front to rear: the ordered list the
+    // train refers to its cars by (CarState::id, as cars()).
+    [[nodiscard]] std::vector<CarId> car_ids() const;
+    // Where the car of `id` is in this train; none: not in it.
+    [[nodiscard]] std::optional<std::size_t> index_of(CarId id) const noexcept;
     // The force each joint passes after the last step (tension +; joint j is
     // behind car j). On the move it is what the cars behind it need (Newton:
     // each one's m·a less its own forces, its brake and resistance against

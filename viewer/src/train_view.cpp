@@ -344,6 +344,7 @@ struct TrainView::Unit {
 
     // Both interpolation ends at the train's present state.
     void settle() {
+        check_ids();
         previous = current = train->placements();
         current_travelled.resize(train->cars().size());
         for (std::size_t i = 0; i < current_travelled.size(); ++i) current_travelled[i] = train->cars()[i].travelled;
@@ -352,6 +353,21 @@ struct TrainView::Unit {
         previous_rolled = current_rolled;
         take_body();
         previous_body = current_body;
+    }
+    // Cars as entities, step 1: the view's cars and the simulation's are the
+    // same cars in the same order (their keys the train's CarIds), after a
+    // coupling, a cut, a train made. Told once if they part; nothing else
+    // changes.
+    void check_ids() const {
+        const auto& sim = train->cars();
+        bool same = sim.size() == cars.size();
+        for (std::size_t i = 0; same && i < cars.size(); ++i) same = sim[i].id.value == cars[i].key;
+        static bool told = false;
+        if (!same && !told) {
+            told = true;
+            std::cerr << "cars: a train's cars and its simulation's CarIds are out of step (" << cars.size() << " / " << sim.size()
+                      << " cars)" << std::endl;
+        }
     }
     void take_body() {
         current_body.resize(train->cars().size());
@@ -874,18 +890,41 @@ std::string TrainView::make_unit(const std::string_view consist_name, Unit& unit
     return make_unit_from(consist.name, consist.entries, unit, stock);
 }
 
-namespace {
-std::atomic<std::uint32_t> last_car_key{0};
-} // namespace
-
-std::uint32_t TrainView::new_car_key() {
-    return ++last_car_key;
+std::uint32_t TrainView::new_car_key() const {
+    return car_registry_.create().value;
 }
 
-void TrainView::reserve_car_keys(const std::uint32_t up_to) {
-    auto now = last_car_key.load();
-    while (now < up_to && !last_car_key.compare_exchange_weak(now, up_to)) {
+std::uint32_t TrainView::car_for_server_uid(const std::uint32_t uid, const std::set<std::uint32_t>& taken) const {
+    return car_registry_.for_server_uid(uid, taken).value;
+}
+
+void TrainView::release_cars(const std::vector<std::uint32_t>& keys) {
+    for (const auto key : keys) {
+        car_registry_.release(simulation::CarId{key});
+        // What this view kept by the car (its cab, the car view's place):
+        // nothing is left that a later car could be taken for.
+        drop_board_cab(key);
+        car_view_memory_.erase(key);
     }
+}
+
+void TrainView::clear_preview_units() {
+    // A preview's cars are this world's only while shown.
+    std::vector<std::uint32_t> gone;
+    for (const auto& unit : preview_units_)
+        for (const auto& car : unit.cars) gone.push_back(car.key);
+    preview_units_.clear();
+    for (const auto key : gone) car_registry_.release(simulation::CarId{key});
+}
+
+void TrainView::drop_board_cab(const std::uint32_t key) {
+    const auto it = board_cabs_.find(key);
+    if (it == board_cabs_.end()) return;
+    // Nothing may keep pointing at the cab freed (a later cab at its address
+    // was taken for it: the rain on its glass not started again).
+    if (listener_cab_ == it->second.get()) listener_cab_ = nullptr;
+    if (rain_cab_ == it->second.get()) rain_cab_ = nullptr;
+    board_cabs_.erase(it);
 }
 
 std::string TrainView::make_unit_from(std::string name, const std::vector<formats::ConsistEntry>& entries, Unit& unit,
@@ -898,18 +937,31 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
                                       const std::vector<std::uint32_t>& keys) const {
     std::vector<Car> cars;
     std::vector<simulation::CarSetup> setups;
+    std::vector<std::uint32_t> made_keys; // ids this call gave
     bool passenger = false;
     for (const auto& entry : entries) {
         auto wagon = std::make_unique<formats::WagonDefinition>(
             formats::load_wagon(*vfs_, entry.folder, entry.name, entry.engine, stock_rules()));
-        if (!wagon->ok()) return entry.folder + "/" + entry.name + ": " + wagon->error;
+        if (!wagon->ok()) {
+            // Not made: the ids given to its cars so far were never a car's.
+            for (const auto key : made_keys) car_registry_.release(simulation::CarId{key});
+            return entry.folder + "/" + entry.name + ": " + wagon->error;
+        }
         passenger = passenger || wagon->kind == formats::WagonKind::passenger;
         // The cargo's mass rides with the car (RTS counts it in the car's mass).
         for (const auto& f : entry.freight) wagon->mass += (std::max)(f.mass, 0.0f);
         Car car;
         car.definition = wagon.get();
         const auto index = cars.size();
-        car.key = index < keys.size() && keys[index] != 0 ? keys[index] : new_car_key();
+        // The key given (restored from a saved game, the server's car) when
+        // this world holds it; another the world restores; else a new car.
+        if (index < keys.size() && keys[index] != 0 && car_registry_.alive(simulation::CarId{keys[index]})) {
+            car.key = keys[index];
+        } else {
+            car.key = index < keys.size() && keys[index] != 0 ? car_registry_.restore(simulation::CarId{keys[index]}).value
+                                                              : new_car_key();
+            made_keys.push_back(car.key);
+        }
         car.uid = entry.uid;
         car.folder = entry.folder;
         car.file = entry.name;
@@ -931,6 +983,7 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
         }
         car.shape = core::VirtualPath::parse("TRAINS/TRAINSET/" + entry.folder + "/" + wagon->shape).value_or(core::VirtualPath{});
         setups.push_back({.definition = wagon.get(),
+                          .id = simulation::CarId{car.key},
                           .flipped = entry.flipped,
                           .handbrake = entry.handbrake ? *entry.handbrake / 100.0f : 0.0f,
                           .shoes = entry.shoes});
@@ -968,9 +1021,14 @@ std::string TrainView::load(const std::string_view consist_name) {
     Unit unit;
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock;
     if (auto error = make_unit(consist_name, unit, stock); !error.empty()) return error;
-    for (const auto& old : units_) dispatcher_->clear(old.train->id());
+    std::vector<std::uint32_t> gone;
+    for (const auto& old : units_) {
+        dispatcher_->clear(old.train->id());
+        for (const auto& car : old.cars) gone.push_back(car.key);
+    }
     consist_ = unit.name;
     units_.clear();
+    release_cars(gone);
     stock_ = std::move(stock);
     number_cars(unit);
     unit.role = Role::driven;
@@ -2678,7 +2736,11 @@ std::string TrainView::remove(const std::uint64_t id) {
     unit->train->vacate();
     const bool host = unit->host;
     retire_sounds(*unit);
+    std::vector<std::uint32_t> gone;
+    if (!network_game_)
+        for (const auto& car : unit->cars) gone.push_back(car.key);
     units_.erase(units_.begin() + (unit - units_.data()));
+    release_cars(gone);
     if (host) reconsist_host();
     if (follow_id_ == id) follow_id_ = 0;
     return {};
@@ -3298,9 +3360,20 @@ std::string TrainView::load_game(const std::string& text) {
     std::erase_if(trains, [](const PlacedTrain& t) { return t.cars.empty(); });
     std::erase_if(extras, [](const SavedTrain& e) { return e.first_key == 0 && e.state.empty(); });
     if (trains.empty()) return tr("the save has no trains");
-    // The saved keys come back; the cars made from now on take keys above them.
-    for (const auto& train : trains)
-        for (const auto k : train.keys) reserve_car_keys(k);
+    // The saved keys come back as this world's ids: the same when the world
+    // has never given them out (a game loaded at the start), else new ones,
+    // the trains' state and the DLLs' following them (the keys are never
+    // given twice in a world).
+    {
+        std::map<std::uint32_t, std::uint32_t> mapped;
+        for (auto& train : trains) simulation::restore_saved_keys(car_registry_, train.keys, mapped);
+        const auto map_key = [&](const std::uint32_t k) {
+            const auto it = mapped.find(k);
+            return it != mapped.end() ? it->second : k;
+        };
+        for (auto& extra : extras) extra.first_key = map_key(extra.first_key);
+        for (auto& [k, bytes] : dlls) k = map_key(k);
+    }
     pending_game_ = std::move(extras);
     pending_dlls_ = std::move(dlls);
     pending_dll_tries_ = 0;
@@ -3562,7 +3635,7 @@ std::optional<std::string> TrainView::placement_text(const std::string& name) co
 }
 
 std::string TrainView::preview_placement(const std::filesystem::path& file) {
-    preview_units_.clear();
+    clear_preview_units();
     preview_stock_.clear();
     preview_trains_.clear();
     preview_blocked_ = false;
@@ -3672,7 +3745,7 @@ std::string TrainView::place_preview() {
         units_.push_back(std::move(unit));
         attach_role(units_.back());
     }
-    preview_units_.clear();
+    clear_preview_units();
     preview_trains_.clear();
     if (first) {
         if (const auto error = set_role(units_.front().train->id(), Role::driven); !error.empty()) return error;
@@ -3776,7 +3849,7 @@ void TrainView::draw_placements() {
         if (!preview_units_.empty()) {
             ImGui::SameLine();
             if (ImGui::Button(tr("Cancel##placement"))) {
-                preview_units_.clear();
+                clear_preview_units();
                 preview_stock_.clear();
                 preview_trains_.clear();
                 message_.clear();
@@ -4298,7 +4371,7 @@ void TrainView::retire_sounds(Unit& unit) {
     shared_sound_.erase(unit.train->id());
     boardable_.erase(unit.train->id());
     for (auto& car : unit.cars) {
-        board_cabs_.erase(car.key);
+        drop_board_cab(car.key);
         if (car.sound) retired_sounds_.push_back(std::move(car.sound));
         if (car.cab_sound) retired_sounds_.push_back(std::move(car.cab_sound));
         for (auto& aux : car.aux_sounds)
@@ -4323,6 +4396,21 @@ std::string TrainView::put_back(std::vector<PlacedTrain> saved, const std::strin
         const auto& train = saved[i];
         Unit unit;
         if (auto error = make_unit_from(train.name, train.cars, unit, stock, train.keys); !error.empty()) {
+            // Its cars never were (a network game's stay its records').
+            if (!network_game_) {
+                std::set<std::uint32_t> held;
+                for (const auto& u : units_)
+                    for (const auto& car : u.cars) held.insert(car.key);
+                for (const auto& made : built)
+                    for (const auto& car : made.cars) held.insert(car.key);
+                std::vector<std::uint32_t> unmade;
+                for (const auto key : train.keys)
+                    if (key != 0 && !held.contains(key)) unmade.push_back(key);
+                if (!skip_broken)
+                    for (const auto& made : built)
+                        for (const auto& car : made.cars) unmade.push_back(car.key);
+                release_cars(unmade);
+            }
             if (!skip_broken) return error;
             std::cout << source << ": " << train.name << " left out: " << error << '\n';
             ++broken;
@@ -4336,11 +4424,16 @@ std::string TrainView::put_back(std::vector<PlacedTrain> saved, const std::strin
     }
     if (built.empty()) return trf("none of the %zu trains could be made (see openrts.log)", saved.size());
     set_engineer(false);
+    std::vector<std::uint32_t> gone;
     for (auto& old : units_) {
         dispatcher_->clear(old.train->id());
         old.train->vacate();
+        // Gone for good, unless a network game keeps them (its records).
+        if (!network_game_)
+            for (const auto& car : old.cars) gone.push_back(car.key);
     }
     units_.clear();
+    release_cars(gone);
     driver_.reset();
     stock_ = std::move(stock);
     std::size_t skipped = 0;
@@ -6320,7 +6413,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         }
         std::cout << "placement check: " << preview_units_.size() << " trains, " << shown << " cars shown, the worst " << worst
                   << " m from where they came from" << std::endl;
-        preview_units_.clear();
+        clear_preview_units();
         preview_stock_.clear();
         preview_trains_.clear();
         selection_.clear();

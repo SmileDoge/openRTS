@@ -127,6 +127,10 @@ struct GameServer::Impl {
     std::map<ConnectionId, std::uint32_t> by_connection; // logged in
     std::map<ConnectionId, std::string> fresh;           // connected, no login yet: address
     std::map<std::uint32_t, Train> trains;
+    // The server's world's cars (car_registry.hpp): each car's CarId, made
+    // when its train is added, retired when it is deleted.
+    // Never shared with a client's world.
+    simulation::CarRegistry cars;
     std::uint32_t next_user = 1;
     // Each junction's branch as last told to the players (any change by the
     // server's own trains goes out too).
@@ -1452,6 +1456,9 @@ std::optional<std::uint32_t> GameServer::add_train(NewTrain made, std::string& e
     t.record.value_88 = 2.0f;
     if (!made.name.empty()) t.record.names = std::array<std::u16string, 2>{made.name, u""};
     t.number = made.number;
+    // Each car's identity in the server's world: a new one (the server is
+    // where the cars are made; a uid is not unique, numbers repeat).
+    for (auto& car : made.cars) car.id = impl.cars.create();
     t.sim = std::make_unique<simulation::Train>(std::move(made.cars));
     t.sim->scatter_ep_fill(std::random_device{}()); // its ЭПТ's own pace (the server's for everyone)
     // The records' chocks (0x100 / 0x200, RTS's PlaceDrag) hold it here too.
@@ -1460,19 +1467,24 @@ std::optional<std::uint32_t> GameServer::add_train(NewTrain made, std::string& e
             t.sim->set_car_flags(i, simulation::Train::CarFlags::chocks, chocks, true);
         }
     }
-    if (!t.sim->place(impl.network, made.node, made.offset, made.forward, &error)) return std::nullopt;
+    // Not added: its cars never were.
+    const auto unmade = [&] {
+        for (const auto id : t.sim->car_ids()) impl.cars.release(id);
+        return std::nullopt;
+    };
+    if (!t.sim->place(impl.network, made.node, made.offset, made.forward, &error)) return unmade();
     for (const auto& [other_id, other] : impl.trains) {
         if (!other.sim || !other.sim->placed()) continue;
         if (impl.covers(*t.sim, *other.sim) || impl.covers(*other.sim, *t.sim)) {
             t.sim->vacate();
             error = "occupied by train " + std::to_string(other_id);
-            return std::nullopt;
+            return unmade();
         }
     }
     const auto pos = net::position_of(*t.sim);
     if (!pos) {
         error = "the train could not be placed";
-        return std::nullopt;
+        return unmade();
     }
     t.record.pos = *pos;
     t.record.stands = true;
@@ -1563,6 +1575,16 @@ bool GameServer::unassign(const std::uint32_t train, std::string& error) {
     return true;
 }
 
+std::vector<simulation::CarId> GameServer::car_ids(const std::uint32_t train) const {
+    const auto it = impl_->trains.find(train);
+    if (it == impl_->trains.end() || !it->second.sim) return {};
+    return it->second.sim->car_ids();
+}
+
+const simulation::CarRegistry& GameServer::car_registry() const noexcept {
+    return impl_->cars;
+}
+
 bool GameServer::remove_train(const std::uint32_t train, std::string& error) {
     auto& impl = *impl_;
     auto* t = impl.train(train);
@@ -1573,7 +1595,11 @@ bool GameServer::remove_train(const std::uint32_t train, std::string& error) {
     // The owner is told first: rts1.exe crashed when its own train was taken
     // off the track under it (live capture 2026-11-05).
     if (t->owner) unassign(train, error);
-    if (t->sim) t->sim->vacate();
+    if (t->sim) {
+        t->sim->vacate();
+        // Deleted: its cars are gone for good.
+        for (const auto id : t->sim->car_ids()) impl.cars.release(id);
+    }
     if (const auto route = impl.routes.find(train); route != impl.routes.end()) {
         impl.close_signals(route->second);
         impl.routes.erase(route);
@@ -1627,6 +1653,10 @@ bool GameServer::couple_trains(const std::uint32_t a_id, const std::uint32_t b_i
         a->sim->couple(*b->sim, at_front, other_front, gap);
         if (const auto pos = net::position_of(*a->sim)) a->record.pos = *pos;
     }
+    // B's cars went into A with their ids; any left in B (not coupled on the
+    // track) go with it.
+    if (b->sim)
+        for (const auto id : b->sim->car_ids()) impl.cars.release(id);
     a->count_warned = false;
     impl.trains.erase(b_id);
     b = nullptr;

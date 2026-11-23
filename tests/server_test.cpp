@@ -1971,6 +1971,72 @@ void placement_format() {
     check(net::placement_from_line(payload) == text, "the upload's text back");
 }
 
+// Cars as entities, step 1 (docs/car-architecture.md): the server's world
+// gives each car a CarId; a coupling, a cut in the middle and the coupling
+// back keep every car's id and order; a train deleted retires its cars' ids
+// (found no more, never given again).
+void car_identity() {
+    auto network = switch_track();
+    const auto car = car_definition();
+    Recorder rec;
+    server::ServerOptions options;
+    options.route_id = "testroute";
+    options.description = server::game_description("TestRoute", 1);
+    server::GameServer game(rec, options, *network, nullptr);
+    std::string error;
+    game.tick(0.0);
+    const auto& cars = game.car_registry();
+    // Both on node 1 (100 m), 16 m cars: train 1 ahead (front at 90 m),
+    // train 2 8 m behind its rear.
+    check(game.add_train(new_train(car, 1, 90.0, 101), error) == 1u, "ids: train 1: " + error);
+    check(game.add_train(new_train(car, 1, 50.0, 102), error) == 2u, "ids: train 2: " + error);
+    const auto a = game.car_ids(1), b = game.car_ids(2);
+    check(a.size() == 2 && b.size() == 2 && cars.size() == 4, "ids: each car has one");
+    std::set<std::uint32_t> distinct;
+    for (const auto& list : {a, b})
+        for (const auto id : list) distinct.insert(id.value);
+    check(distinct.size() == 4 && !distinct.contains(0), "ids: four, all valid, all different");
+    // Where train 1 stood, a train that cannot be placed: no id taken.
+    check(!game.add_train(new_train(car, 1, 85.0, 199), error), "ids: not placed over train 1");
+    error.clear();
+    check(cars.size() == 4 && cars.last() == 6u && !cars.alive(simulation::CarId{5}) && !cars.alive(simulation::CarId{6}),
+          "ids: the unplaced train's two ids retired, not alive");
+
+    check(game.couple(1, 2, error), "ids: coupled: " + error);
+    const auto joined = game.car_ids(1);
+    auto ahead = b;
+    ahead.insert(ahead.end(), a.begin(), a.end()); // train 2 ahead of train 1's front
+    auto behind = a;
+    behind.insert(behind.end(), b.begin(), b.end());
+    check(joined.size() == 4 && (joined == ahead || joined == behind), "ids: the coupled train holds both trains' cars in order");
+    check(game.car_ids(2).empty() && cars.size() == 4, "ids: train 2 gone into train 1, its cars alive");
+
+    // A cut in the middle (before car 2), then the server couples them back.
+    check(game.cut(1, 2, error), "ids: cut in the middle: " + error);
+    std::uint32_t part = 0;
+    for (const auto& t : game.trains())
+        if (t.id != 1) part = t.id;
+    const auto head = game.car_ids(1), tail = game.car_ids(part);
+    check(head == std::vector<simulation::CarId>(joined.begin(), joined.begin() + 2) &&
+              tail == std::vector<simulation::CarId>(joined.begin() + 2, joined.end()),
+          "ids: the cut: each part keeps its cars' ids, in order");
+    check(game.couple(1, part, error), "ids: coupled back: " + error);
+    check(game.car_ids(1) == joined, "ids: coupled back: the same ids in the same order");
+    check(cars.size() == 4, "ids: still four cars");
+
+    // Deleted: its ids are found no more, and new cars never get them.
+    const auto before = cars.last();
+    check(game.remove_train(1, error), "ids: train 1 deleted: " + error);
+    bool any_alive = false;
+    for (const auto id : joined) any_alive = any_alive || cars.alive(id);
+    check(!any_alive && cars.size() == 0, "ids: a deleted train's cars are found no more");
+    check(game.add_train(new_train(car, 1, 90.0, 103), error).has_value(), "ids: a new train: " + error);
+    bool reused = false;
+    for (const auto id : game.car_ids(game.trains().front().id))
+        for (const auto old : joined) reused = reused || id == old || id.value <= before;
+    check(!reused, "ids: a new train's cars never take an old id");
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
         content(argv[1]);
@@ -1982,6 +2048,7 @@ int main(int argc, char** argv) {
     placement_format();
     game();
     helpers();
+    car_identity();
     station_segments();
     hand_route();
     over_tcp();

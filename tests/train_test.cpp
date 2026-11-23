@@ -993,6 +993,89 @@ void test_contacts(const Stock& stock) {
     }
 }
 
+// Cars as entities, step 1 (docs/car-architecture.md): a train refers to its
+// cars by an ordered list of CarIds that moves with the cars: a cut in the
+// middle, the coupling back, a coupling with a train standing tail first and
+// a turn keep every car's id with its car, in order, its direction with it.
+void test_car_ids(const Stock& stock) {
+    using simulation::CarId;
+    simulation::CarRegistry registry;
+    // Cars with ids; the third flipped (its direction is the car's own).
+    // `count` cars: the engine and its wagons.
+    const auto made = [&](const std::size_t count, const std::size_t flipped = SIZE_MAX) {
+        auto setups = stock.cars(count - 1);
+        for (std::size_t i = 0; i < setups.size(); ++i) {
+            setups[i].id = registry.create();
+            setups[i].flipped = i == flipped;
+        }
+        return setups;
+    };
+    const auto flips = [](const simulation::Train& train) {
+        std::vector<bool> out;
+        for (const auto& car : train.cars()) out.push_back(car.flipped);
+        return out;
+    };
+    const auto ids_of = [](const std::vector<simulation::CarSetup>& setups) {
+        std::vector<CarId> out;
+        for (const auto& setup : setups) out.push_back(setup.id);
+        return out;
+    };
+    {
+        const auto setups = made(5, 2);
+        simulation::Train train(setups);
+        const auto ids = ids_of(setups);
+        check(train.car_ids() == ids, "ids: the train's cars by id, in the setup's order");
+        check(train.index_of(ids[3]) == std::optional<std::size_t>{3}, "ids: a car found by its id");
+        check(!train.index_of(CarId{}) && !train.index_of(registry.create()), "ids: no id, another car's: not in the train");
+        check(flips(train) == std::vector<bool>{false, false, true, false, false}, "ids: the flipped car");
+    }
+    // Uncoupling in the middle and coupling back.
+    {
+        auto network = simulation::straight_test_track(3000.0);
+        const auto setups = made(5, 2);
+        const auto ids = ids_of(setups);
+        simulation::Train train(setups);
+        check(train.place(*network, 1, 1500.0, true), "ids: placed");
+        const auto before = flips(train);
+        auto cut = train.uncouple(3, true, false);
+        check(cut != nullptr, "ids: cut before car 3");
+        if (cut) {
+            check(train.car_ids() == std::vector<CarId>(ids.begin(), ids.begin() + 3) &&
+                      cut->car_ids() == std::vector<CarId>(ids.begin() + 3, ids.end()),
+                  "ids: a cut in the middle: each part its cars' ids, in order");
+            check(flips(train) == std::vector<bool>(before.begin(), before.begin() + 3), "ids: the cut: the flipped car still flipped");
+            const double gap = train.rear_end()->offset() - cut->front_end()->offset();
+            check(train.couple(*cut, false, true, (std::max)(gap, 0.0)), "ids: coupled back");
+            check(train.car_ids() == ids && cut->car_ids().empty(), "ids: coupled back: the same ids in the same order");
+            check(flips(train) == before, "ids: coupled back: each car's direction as before");
+        }
+    }
+    // A train standing tail first: it is coupled reversed, its cars turned.
+    {
+        auto network = simulation::straight_test_track(3000.0);
+        const auto a_setups = made(2);
+        const auto b_setups = made(3, 1);
+        const auto a_ids = ids_of(a_setups);
+        auto b_ids = ids_of(b_setups);
+        simulation::Train a(a_setups);
+        simulation::Train b(b_setups);
+        check(a.place(*network, 1, 1500.0, true), "ids: ahead placed");
+        check(b.place(*network, 1, a.rear_end()->offset() - 5.0, true), "ids: behind placed");
+        check(b.turn_around(), "ids: behind turned: tail first");
+        std::reverse(b_ids.begin(), b_ids.end());
+        check(b.car_ids() == b_ids, "ids: a turn reverses the order, the ids with their cars");
+        check(flips(b) == std::vector<bool>{true, false, true}, "ids: a turn turns every car");
+        // Its rear (its old front) faces the ahead train's rear.
+        const double gap = a.rear_end()->offset() - b.rear_end()->offset();
+        check(a.couple(b, false, false, (std::max)(std::abs(gap), 0.0)), "ids: coupled with the train tail first");
+        auto expected = a_ids;
+        expected.insert(expected.end(), b_ids.rbegin(), b_ids.rend());
+        check(a.car_ids() == expected, "ids: coupled tail first: its cars reversed behind, each its id");
+        // Behind ahead's cars, its cars turned back as they were placed.
+        check(flips(a) == std::vector<bool>{false, false, false, true, false}, "ids: coupled tail first: each car's direction its own");
+    }
+}
+
 } // namespace
 
 // ЭПТ: every car fills at once, the pipe stays charged, I/II release.
@@ -1794,6 +1877,7 @@ int main() {
     test_adhesion(stock);
     test_uncouple(stock);
     test_contacts(stock);
+    test_car_ids(stock);
     test_ept();
     test_realistic_air(stock);
     test_brake_condition(stock);

@@ -86,6 +86,13 @@ openrts_configure_target(openrts_track_test)
 target_link_libraries(openrts_track_test PRIVATE openrts_simulation)
 add_test(NAME openrts.track COMMAND openrts_track_test)
 
+# The world's cars: ids given once, released, saved and restored, the
+# server's uids (docs/car-architecture.md, step 1).
+add_executable(openrts_car_registry_test car_registry_test.cpp)
+openrts_configure_target(openrts_car_registry_test)
+target_link_libraries(openrts_car_registry_test PRIVATE openrts_simulation)
+add_test(NAME openrts.car_registry COMMAND openrts_car_registry_test)
+
 add_executable(openrts_train_test train_test.cpp)
 openrts_configure_target(openrts_train_test)
 target_link_libraries(openrts_train_test PRIVATE openrts_simulation openrts_formats)

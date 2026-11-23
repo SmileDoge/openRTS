@@ -464,10 +464,17 @@ public:
         // once, 0x5026FC).
         std::vector<std::uint32_t> keys;
     };
-    // A new car key (unique in this program).
-    [[nodiscard]] static std::uint32_t new_car_key();
-    // Keys up to `up_to` are taken (a saved game's): new ones come after them.
-    static void reserve_car_keys(std::uint32_t up_to);
+    // A new car's key: its CarId in this view's world (car_registry_; never
+    // given out before in it).
+    [[nodiscard]] std::uint32_t new_car_key() const;
+    // The car of a server uid in this world (a network game): the same key
+    // when the client connects again and finds the car it has; `taken`, the
+    // keys other cars of the game hold now (a uid is not unique).
+    [[nodiscard]] std::uint32_t car_for_server_uid(std::uint32_t uid, const std::set<std::uint32_t>& taken) const;
+    // Cars gone for good (a train deleted): their keys retired, never given
+    // again; what this view kept by them (cabs, the car view) let go.
+    void release_cars(const std::vector<std::uint32_t>& keys);
+    [[nodiscard]] const simulation::CarRegistry& car_registry() const noexcept { return car_registry_; }
     // Puts these trains back at the next update, as a situation does;
     // `source` names them in the messages.
     void request_trains(std::vector<PlacedTrain> trains, std::string source) {
@@ -1019,6 +1026,7 @@ private:
     std::array<char, 64> placement_name_{};
     int placement_choice_ = -1;
     std::vector<Unit> preview_units_;
+    void clear_preview_units(); // and their cars' ids retired
     std::vector<std::unique_ptr<formats::WagonDefinition>> preview_stock_;
     std::vector<std::string> preview_trains_; // each preview train's included placement (empty: its own)
     bool preview_blocked_ = false;
@@ -1063,6 +1071,8 @@ private:
     // doors as he left them (RTS keeps each car's cabin, wagon +556); a car's
     // outer doors follow its cab's.
     std::map<std::uint32_t, std::unique_ptr<CabView>> board_cabs_;
+    // A car's cab let go, and the pointers kept to it with it.
+    void drop_board_cab(std::uint32_t key);
     struct BoardTarget {
         std::uint64_t train{};
         std::size_t car{};
@@ -1169,6 +1179,10 @@ private:
     simulation::TrackNetwork* network_ = nullptr;
     std::string consist_;
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock_;
+    // This world's cars (cars as entities, step 1: docs/car-architecture.md):
+    // every car's key is its CarId here. Mutable: units are made by const
+    // members.
+    mutable simulation::CarRegistry car_registry_;
     std::vector<Unit> units_; // [0]: the driven train; the rest: cuts and trains from Track control
     std::unique_ptr<simulation::Dispatcher> dispatcher_;
     std::unique_ptr<simulation::SpeedLimits> limits_;

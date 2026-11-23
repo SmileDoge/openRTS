@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -236,6 +237,10 @@ private:
     std::map<std::uint16_t, std::size_t> not_handled_; // of them, the ones the observer leaves
     double report_at_ = 10.0;
     std::map<std::uint32_t, Owned> owned_;
+    // The car keys the game's other records hold now (all but `record`'s):
+    // a server uid already given to one of them gets a new car (uids repeat
+    // with train numbers).
+    [[nodiscard]] std::set<std::uint32_t> record_keys_but(const net::SnapshotTrain& record) const;
     // Our trains' own states (0x45FB): coming in parts, and those waiting for
     // their train to be on the track here.
     std::map<std::uint32_t, std::vector<net::Bytes>> state_parts_;

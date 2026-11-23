@@ -470,7 +470,7 @@ Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
     : impl_(std::make_unique<Impl>()), settings_(settings), id_(next_train_id++) {
     settings_.coupler_substeps = std::clamp<std::uint32_t>(settings_.coupler_substeps, 1, 8);
     for (const auto& setup : cars) {
-        CarState car{.definition = setup.definition, .flipped = setup.flipped, .handbrake = setup.handbrake};
+        CarState car{.definition = setup.definition, .id = setup.id, .flipped = setup.flipped, .handbrake = setup.handbrake};
         for (std::size_t k = 0; k < 2; ++k) {
             car.shoes[k] = setup.shoes[k] != formats::BrakeShoe::unknown || !setup.definition ? setup.shoes[k] : shoe_of(*setup.definition);
         }
@@ -755,6 +755,20 @@ void Train::vacate() {
         auto* state = network_->junction(node);
         if (state && state->clearance.contains(id_)) network_->release_junction(node, id_);
     }
+}
+
+std::vector<CarId> Train::car_ids() const {
+    std::vector<CarId> out;
+    out.reserve(cars_.size());
+    for (const auto& car : cars_) out.push_back(car.id);
+    return out;
+}
+
+std::optional<std::size_t> Train::index_of(const CarId id) const noexcept {
+    if (!id) return std::nullopt;
+    for (std::size_t i = 0; i < cars_.size(); ++i)
+        if (cars_[i].id == id) return i;
+    return std::nullopt;
 }
 
 bool Train::turn_around() {

@@ -14,6 +14,7 @@
 #include <openrts/net/wire.hpp>
 #include <openrts/server/server_route.hpp>
 #include <openrts/server/transport.hpp>
+#include <openrts/simulation/car_registry.hpp>
 
 namespace openrts::simulation {
 class SignalSystem;
@@ -196,6 +197,10 @@ public:
     // and see the time jump at each of its syncs when it runs faster.
     void set_clock(float speed, std::uint8_t season);
     [[nodiscard]] float clock_speed() const noexcept { return speed_; }
+    // The server's world's cars (car_registry.hpp): a train's by identity,
+    // front to rear (none: no such train, or not on the track).
+    [[nodiscard]] std::vector<simulation::CarId> car_ids(std::uint32_t train) const;
+    [[nodiscard]] const simulation::CarRegistry& car_registry() const noexcept;
     [[nodiscard]] std::uint8_t season() const noexcept { return options_.season; }
     // Throws junction `node` (TDB node number); `lock` set or cleared when given.
     bool set_junction(std::uint32_t node, std::optional<std::uint32_t> branch, std::optional<bool> lock, std::string& error);
