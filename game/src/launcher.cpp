@@ -449,7 +449,7 @@ void soon_badge(ImDrawList* draw, const ImVec2 at, const float scale, const floa
     return pressed;
 }
 
-// A small outlined button of the header ("Войти ↗").
+// A small outlined button of the header ("Войти").
 [[nodiscard]] bool header_button(ImDrawList* draw, const char* id, const Rect area, const char* text, const float scale, float& hover) {
     hover += ((ImGui::IsMouseHoveringRect(area.min, area.max) ? 1.0f : 0.0f) - hover) * (std::min)(1.0f, ImGui::GetIO().DeltaTime * 14.0f);
     ImGui::SetCursorScreenPos(area.min);
@@ -496,7 +496,7 @@ void page_heading(ImDrawList* draw, const Rect content, const char* name, const 
     const auto button = Rect{{content.max.x - 132.0f * scale, avatar_centre.y - 22.0f * scale},
                              {content.max.x, avatar_centre.y + 22.0f * scale}};
     (void)back_box;
-    account_clicked = header_button(draw, "##account", button, guest ? "Войти ↗" : "Выход ↗", scale, account_hover);
+    account_clicked = header_button(draw, "##account", button, guest ? "Войти" : "Выход", scale, account_hover);
 }
 
 #endif
@@ -1301,7 +1301,7 @@ void Launcher::State::draw_home() {
           "Уровень 0");
     const auto account = Rect{{top_right - 132.0f * scale, avatar_centre.y - 22.0f * scale},
                               {top_right, avatar_centre.y + 22.0f * scale}};
-    if (header_button(draw, "##account", account, "Войти ↗", scale, account_hover)) page = Page::account;
+    if (header_button(draw, "##account", account, "Войти", scale, account_hover)) page = Page::account;
 
     const auto content = Rect{{margin, 156.0f * scale}, {display.x - margin, display.y - 88.0f * scale}};
     const auto gap = 24.0f * scale;
@@ -1499,7 +1499,7 @@ void Launcher::State::draw_account() {
     const auto [clock, date] = header_clock();
     const Rect header{{margin, 26.0f * scale}, {display.x - margin, 94.0f * scale}};
     bool back = false, account_clicked = false;
-    page_heading(draw, header, "Профиль", "Аккаунт dark-team.ru", scale, clock, date, true, account_hover, back, account_clicked);
+    page_heading(draw, header, "Профиль", "Личный кабинет", scale, clock, date, true, account_hover, back, account_clicked);
     if (back) page = Page::home;
 
     const auto width = 560.0f * scale;
@@ -1512,20 +1512,10 @@ void Launcher::State::draw_account() {
     const auto title = std::string("Вы вошли как гость");
     const auto title_size = label_size(ui::heading_font(), 24.0f * scale, title);
     label(draw, ui::heading_font(), 24.0f * scale, {box.centre().x - title_size.x * 0.5f, box.min.y + 128.0f * scale}, white, title);
-    const auto text = std::string("Вход нужен только для мультиплеера. Одиночная игра доступна без аккаунта.");
+    const auto text = std::string("Вход в аккаунт появится в следующих обновлениях. Одиночная игра доступна без аккаунта.");
     const auto text_size = label_size(ui::body_font(), 14.0f * scale, text);
     label(draw, ui::body_font(), 14.0f * scale, {box.centre().x - text_size.x * 0.5f, box.min.y + 166.0f * scale}, grey, text);
-    const Rect site{{box.centre().x - 120.0f * scale, box.min.y + 205.0f * scale}, {box.centre().x + 120.0f * scale, box.min.y + 247.0f * scale}};
-    ImGui::SetCursorScreenPos(site.min);
-    const bool pressed = ImGui::InvisibleButton("##site", {site.width(), site.height()});
-    const bool hovered = ImGui::IsItemHovered();
-    draw->AddRectFilled(site.min, site.max, hovered ? rgb(255, 255, 255, 24) : rgb(255, 255, 255, 10), 12.0f * scale);
-    draw->AddRect(site.min, site.max, hovered ? rgb(255, 255, 255, 90) : rgb(255, 255, 255, 45), 12.0f * scale);
-    const auto site_text = std::string("Открыть dark-team.ru ↗");
-    const auto site_size = label_size(ui::button_font(), 14.0f * scale, site_text);
-    label(draw, ui::button_font(), 14.0f * scale, {site.centre().x - site_size.x * 0.5f, site.centre().y - site_size.y * 0.5f}, white,
-          site_text);
-    if (pressed) open_link("https://dark-team.ru/lk");
+    soon_badge(draw, {box.centre().x - 36.0f * scale, box.min.y + 212.0f * scale}, scale, 1.0f);
 }
 
 void Launcher::State::draw_soon() {
