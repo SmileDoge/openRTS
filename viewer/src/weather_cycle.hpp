@@ -55,6 +55,11 @@ struct WeatherSettings {
 // falls, and a thunderstorm once its strength is 0.3 with rain.
 [[nodiscard]] renderer::rts::Weather rts_weather(const WeatherMix& mix) noexcept;
 [[nodiscard]] bool storming(const WeatherMix& mix) noexcept;
+// The cover the sky shows: the mix's clouds, closed ahead of what falls
+// (the rain or snow comes under a grey sky, not out of a fair one while a
+// change blends both at one pace): most of the way by the time it begins
+// to fall, all of it (rain 90 %, snow 85 %, storm 97 %) soon after.
+[[nodiscard]] float sky_cover(const WeatherMix& mix) noexcept;
 // Smoothly between two mixes (t 0..1).
 [[nodiscard]] WeatherMix blend(const WeatherMix& a, const WeatherMix& b, float t) noexcept;
 

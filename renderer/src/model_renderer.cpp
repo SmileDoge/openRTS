@@ -214,7 +214,7 @@ struct Frame {
 };
 
 // openRTS: raindrops on the cab's glass (ModelRainGlass). The blended
-// surfaces at the room box's walls facing out; the drops in cells of 14 mm
+// surfaces at the room box's walls facing out; the drops in cells of 6 to 27 mm
 // on the glass's plane, as many as the time since it was wiped and the
 // rain give, each cell's drop drawn anew by the wipe's time; on the move
 // they run up the front glass and back along the side windows, longer the
@@ -265,6 +265,39 @@ fn snow_on_glass(uv: vec2<f32>, seed: f32, age: f32, side: bool, colour: vec4<f3
     let white = vec3<f32>(light);
     return vec4<f32>(mix(colour.xyz, white, cover * 0.9), max(colour.w, cover * 0.85));
 }
+// The last wipe at a point of the wipers' glass (else the rain's start):
+// of the four nearest cells the newest wipe that holds at least half their
+// weight there. Between a wiped cell and one not its edge is a smooth line
+// half way (no squares of the grid), and a drop and its pixels ask alike:
+// a drop is cut where that line crosses it.
+fn rain_wipe_at(uv: vec2<f32>) -> f32 {
+    let g = (uv - frame.rain_grid.xy) / max(frame.rain_grid.zw - frame.rain_grid.xy, vec2<f32>(0.01));
+    if (any(g < vec2<f32>(0.0)) || any(g >= vec2<f32>(1.0))) {
+        return frame.rain.w;
+    }
+    let f = g * vec2<f32>(128.0, 64.0) - vec2<f32>(0.5);
+    let base = floor(f);
+    let t = f - base;
+    var times: array<f32, 4>;
+    var weights: array<f32, 4>;
+    for (var k = 0; k < 4; k = k + 1) {
+        let c = clamp(vec2<i32>(base) + vec2<i32>(k % 2, k / 2), vec2<i32>(0), vec2<i32>(127, 63));
+        let index = c.y * 128 + c.x;
+        times[k] = max(frame.rain_wiped[index / 4][index % 4], frame.rain.w);
+        weights[k] = select(1.0 - t.x, t.x, k % 2 == 1) * select(1.0 - t.y, t.y, k / 2 == 1);
+    }
+    var wiped = frame.rain.w;
+    for (var k = 0; k < 4; k = k + 1) {
+        var held = 0.0;
+        for (var j = 0; j < 4; j = j + 1) {
+            held = held + select(0.0, weights[j], times[j] >= times[k]);
+        }
+        if (held >= 0.5) {
+            wiped = max(wiped, times[k]);
+        }
+    }
+    return wiped;
+}
 fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_blended: bool, extent: f32) -> vec4<f32> {
     // A window's glass is large; a gauge's glass and its needle small.
     if (!is_blended || extent < 0.25 || frame.rain.x <= 0.0 || frame.room_lower.w < 0.5) {
@@ -298,41 +331,21 @@ fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_ble
         uv = vec2<f32>(p.z, p.y);
         side = true;
     }
-    // The time since wiped: the rain's, the wipers' glass by its cell.
-    var age = frame.rain.y - frame.rain.w;
-    var seed = 0.0;
-    if (!side && frame.rain_front.y > 0.5 && sign(rel.z) == frame.rain_front.x) {
-        let g = (uv - frame.rain_grid.xy) / max(frame.rain_grid.zw - frame.rain_grid.xy, vec2<f32>(0.01));
-        if (all(g >= vec2<f32>(0.0)) && all(g < vec2<f32>(1.0))) {
-            // The wipe's time between the four nearest cells, its edge torn
-            // a little: no squares of the grid on the glass.
-            let ragged = (rain_hash(floor(uv / 0.008), 41.0).xy - vec2<f32>(0.5)) * 0.9;
-            let f = g * vec2<f32>(128.0, 64.0) - vec2<f32>(0.5) + ragged;
-            let base = floor(f);
-            let t = f - base;
-            var times: array<f32, 4>;
-            for (var k = 0; k < 4; k = k + 1) {
-                let c = clamp(vec2<i32>(base) + vec2<i32>(k % 2, k / 2), vec2<i32>(0), vec2<i32>(127, 63));
-                let index = c.y * 128 + c.x;
-                times[k] = max(frame.rain_wiped[index / 4][index % 4], frame.rain.w);
-            }
-            let wiped = mix(mix(times[0], times[1], t.x), mix(times[2], times[3], t.x), t.y);
-            if (frame.rain.y - wiped < age) {
-                age = frame.rain.y - wiped;
-                seed = floor(max(max(times[0], times[1]), max(times[2], times[3])) * 4.0);
-            }
-        }
-    }
+    // The time since wiped: the rain's, the wipers' glass by its point.
+    let gridded = !side && frame.rain_front.y > 0.5 && sign(rel.z) == frame.rain_front.x;
+    let wiped_here = select(frame.rain.w, rain_wipe_at(uv), gridded);
+    let age = frame.rain.y - wiped_here;
     if (frame.rain_front.z > 0.5) {
-        return snow_on_glass(uv, seed, age, side, colour);
+        return snow_on_glass(uv, floor(wiped_here * 4.0), age, side, colour);
     }
     // On the move the windscreen meets more of them, the side windows fewer.
     let speed = frame.rain.z;
     let hit = select(1.0 + min(speed * 0.1, 3.0), 1.0 - 0.4 * clamp(speed / 15.0, 0.0, 1.0), side);
-    // Gathering slower the more there are (half the most in about a minute
-    // of rain standing; faster in a downpour and on the move).
-    let density = 0.7 * (1.0 - exp(-max(age, 0.0) * frame.rain.x * 0.02 * hit));
-    if (density <= 0.0) {
+    // Gathering slower the more there are: in a rain standing most of the
+    // glass is taken in half a minute, in a downpour in some fifteen seconds,
+    // faster on the move.
+    let gather = frame.rain.x * 0.06 * hit;
+    if (frame.rain.y - frame.rain.w <= 0.0 || gather <= 0.0) {
         return colour;
     }
     // The flow: up (front) or back (side) on the move, down standing.
@@ -341,59 +354,98 @@ fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_ble
     // moves them on from where they are, not the whole film at once).
     let flow = frame.rain_front.w;
     let stretch = 1.0 + moving * min(speed * 0.08, 3.0);
-    // Three layers of different sizes, shifted and turned against each
-    // other: no grid to be seen.
+    // Four layers of sizes, from fine drops (two or three millimetres)
+    // to a few big ones, shifted and turned against each other: no grid to
+    // be seen. The small ones the most, the big ones run the most.
     var best = 0.0;
     var best_off = vec2<f32>(0.0);
-    var best_r = 1.0;
-    for (var layer = 0; layer < 3; layer = layer + 1) {
+    var best_up = vec2<f32>(0.0, 1.0);
+    for (var layer = 0; layer < 4; layer = layer + 1) {
         let fl = f32(layer);
-        let s = 0.017 + 0.009 * fl;
+        let s = 0.009 * pow(1.6, fl);
         let turn = 0.6 + 1.1 * fl;
         let rot = mat2x2<f32>(cos(turn), sin(turn), -sin(turn), cos(turn));
-        var q = rot * (uv + vec2<f32>(0.37, 0.11) * fl) / s;
+        let shift = vec2<f32>(0.37, 0.11) * fl;
         // Each layer at its own pace: drops of a size run alike, not all.
         // The front glass's drops run along its up; the side windows' their
         // own way (back and down on the move).
-        let run = select(vec2<f32>(0.0, flow), frame.rain_side.xy, side) * (0.7 + 0.35 * fl);
-        q = q - (rot * run) / s;
+        let run = select(vec2<f32>(0.0, flow), frame.rain_side.xy, side) * (0.35 + 0.3 * fl);
+        let q = rot * (uv + shift - run) / s;
         let cell = floor(q);
-        let h = rain_hash(cell, seed + fl * 5.0);
-        if (h.x > density * (0.6 - 0.15 * fl)) {
+        // The drops of a cell are drawn anew by the wipe at its middle (the
+        // glass there wiped: new ones gather); a drop is there once the
+        // time since gives enough of them.
+        let middle = transpose(rot) * ((cell + vec2<f32>(0.5)) * s) - shift + run;
+        let wiped_middle = select(frame.rain.w, rain_wipe_at(middle), gridded);
+        let density = 0.9 * (1.0 - exp(-max(frame.rain.y - wiped_middle, 0.0) * gather));
+        let h = rain_hash(cell, floor(wiped_middle * 4.0) + fl * 5.0);
+        if (h.x > density * (0.62 - 0.13 * fl)) {
             continue;
         }
-        let c = cell + vec2<f32>(0.2, 0.2) + h.yz * 0.6;
-        let r = (0.1 + 0.2 * h.w) * (1.0 - 0.2 * fl);
+        // A blade that went over a part of it took that part only: the
+        // rest stays, cut along the blade's way.
+        if (wiped_here > wiped_middle + 0.01) {
+            continue;
+        }
+        let c = cell + vec2<f32>(0.25, 0.25) + h.yz * 0.5;
+        let r = 0.16 + 0.2 * h.w;
         // Drawn out along the flow (the glass's up, turned into the layer).
         let along = rot * select(vec2<f32>(0.0, 1.0), frame.rain_side.zw, side);
+        let across = vec2<f32>(along.y, -along.x);
         let o = q - c;
-        let o2 = vec2<f32>(dot(o, vec2<f32>(along.y, -along.x)), dot(o, along) / stretch);
+        let o2 = vec2<f32>(dot(o, across), dot(o, along) / stretch) / r;
         let d = length(o2);
-        let drop = 1.0 - smoothstep(r * 0.7, r, d);
+        // Its edge soft, the smallest the most (a pixel or two across).
+        let soft = 0.3 - 0.06 * fl;
+        let drop = 1.0 - smoothstep(1.0 - soft, 1.0, d);
         if (drop > best) {
             best = drop;
             best_off = o2;
-            best_r = r;
+            // The glass's up in the drop's frame: the lens's sky and ground.
+            let up = rot * vec2<f32>(0.0, 1.0);
+            best_up = normalize(vec2<f32>(dot(up, across), dot(up, along) * stretch) + vec2<f32>(0.0, 1e-4));
         }
     }
     // A thin film of water left between the drops: the view behind a little
     // hazy, unevenly (wiped: clear again).
-    let film_amount = 0.22 * (1.0 - exp(-max(age, 0.0) * frame.rain.x * 0.015 * hit));
-    let film_noise = rain_hash(floor(uv / 0.06), seed + 23.0).x * 0.5 + rain_hash(floor(uv / 0.023), seed + 29.0).y * 0.5;
-    let film = film_amount * (0.55 + 0.45 * film_noise);
+    let film_amount = 0.22 * (1.0 - exp(-max(age, 0.0) * frame.rain.x * 0.03 * hit));
+    let film_seed = floor(wiped_here * 4.0);
+    let film_noise = rain_hash(floor(uv / 0.06), film_seed + 23.0).x * 0.5 + rain_hash(floor(uv / 0.023), film_seed + 29.0).y * 0.5;
+    // Behind a blade a thin streak of water, gone in a second.
+    let streak = select(0.0, 0.14 * exp(-max(age, 0.0) / 0.6), gridded && wiped_here > frame.rain.w);
+    let film = film_amount * (0.55 + 0.45 * film_noise) + streak * (0.4 + 0.6 * film_noise);
     let film_light = select(0.7, 0.45, frame.shading.z > 0.5) * rain_sky();
-    var base = vec4<f32>(mix(colour.xyz, vec3<f32>(film_light), film), max(colour.w, film));
+    let base = vec4<f32>(mix(colour.xyz, vec3<f32>(film_light), film), max(colour.w, film));
     if (best <= 0.0) {
         return base;
     }
-    // A lens: the sky's light caught on its upper edge, its lower half a
-    // little darker (the ground seen through it upside down).
+    // A drop is a lens: the world behind it seen small and upside down. Its
+    // lower part shows the sky (the fog's grey, the horizon's colour), its
+    // upper the ground, dark; at its rim almost no light comes through (a
+    // dark ring), and the sky shines on its top as a spot of light.
+    let lin = frame.shading.z > 0.5;
+    var horizon = frame.fog_colour.xyz;
+    if (lin) {
+        horizon = pow(max(horizon, vec3<f32>(0.0)), vec3<f32>(2.2));
+    }
+    let bright = rain_sky();
+    // Seen through it about as bright as what lies behind, the sky below
+    // a little lighter, the ground above darker.
+    let sky = mix(base.xyz, horizon * (0.5 + 0.5 * bright), 0.5) * 1.1;
+    let ground = base.xyz * 0.5 + horizon * 0.08;
     let d = length(best_off);
-    let edge = smoothstep(best_r * 0.4, best_r * 0.95, d);
-    let up = clamp(best_off.y / max(best_r, 0.001) * 0.5 + 0.5, 0.0, 1.0);
-    let light = select(0.75, 0.55, frame.shading.z > 0.5) * rain_sky();
-    let lens = mix(base.xyz * 0.82, vec3<f32>(light), edge * up * 0.6);
-    return vec4<f32>(mix(base.xyz, lens, best * 0.85), max(base.w, best * 0.45));
+    let height = dot(best_off, best_up); // -1 its bottom .. 1 its top
+    var lens = mix(ground, sky, 1.0 - smoothstep(-0.55, 0.45, height));
+    // The rim: darker towards the edge, a thin bright line of refracted sky
+    // right at its bottom.
+    let rim = smoothstep(0.5, 0.97, d);
+    lens = lens * (1.0 - 0.6 * rim);
+    lens = lens + sky * 0.35 * smoothstep(0.7, 0.92, d) * (1.0 - smoothstep(0.92, 1.0, d)) * (1.0 - smoothstep(-0.9, -0.3, height));
+    // The highlight: the sky's light off its dome, up and to one side.
+    let spot = best_off - best_up * 0.45 - vec2<f32>(best_up.y, -best_up.x) * 0.25;
+    let glint = exp(-dot(spot, spot) * 40.0) * select(0.7, 0.5, lin) * (0.2 + 0.8 * bright);
+    lens = lens + vec3<f32>(glint);
+    return vec4<f32>(mix(base.xyz, lens, best * 0.92), max(base.w, best * 0.85));
 }
 
 // One primitive of the shape (static per model generation).

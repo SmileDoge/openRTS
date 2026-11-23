@@ -205,7 +205,11 @@ strength (0..1). The scene makes of it:
   their sound, the rails by the weather. That switch is a step, as RTS's
   is when a scenario changes the weather; the rest comes gradually;
 - the clouds' cover of openRTS's sky (the player's own cover, «Облачность
-  по погоде» off, still wins);
+  по погоде» off, still wins), closed ahead of what falls (`sky_cover`): a
+  change blends the clouds and the rain at one pace, so by the cover alone
+  the rain would begin under some 40 % of clouds; the sky is most of the
+  way grey (75 %) when it begins and all of it (rain 90 %, snow 85 %, a
+  thunderstorm 97 %) at 12 % of the precipitation;
 - the drops: 0.3 + 1.4 x the precipitation times RTS's density (a light
   rain 0.4, a downpour 1.7, a thunderstorm's as before), its sound 0.3 ..
   1.1 as loud;
@@ -273,11 +277,17 @@ on by default).
 - **Which glass, more.** Only large primitives (their box's middle extent
   at least 25 cm): a gauge's glass and its needle stay dry even close to
   the windscreen.
-- **The drops.** In three layers of cells (1.7–3.5 cm, turned against each
-  other: no grid), as many as the time since it was wiped and the rain's
-  amount give, more on the windscreen at speed, fewer on the side windows;
-  each a small lens (the sky caught on its upper edge), over a thin uneven
-  film of water that hazes the view. On the move they run up the windscreen
+- **The drops.** In four layers of cells (0.9–3.7 cm, turned against each
+  other: no grid), the small ones the most, as many as the time since it
+  was wiped and the rain's amount give: in a rain standing most of the
+  glass is taken in half a minute, in a downpour in some fifteen seconds;
+  more on the windscreen at speed, fewer on the side windows. Each a lens:
+  as bright as what lies behind, its lower part lighter (the sky seen
+  upside down, the fog's colour), its upper darker (the ground), a dark rim
+  with a thin light line at its bottom, and the sky's highlight on its
+  dome; there is no copy of the frame to refract, so that is the look of
+  it, not the view bent. Over a thin uneven film of water that hazes the
+  view. On the move they run up the windscreen
   and back along the side windows, drawn out the faster; standing they
   slide down. How far they have run is integrated each frame, so a change
   of speed carries them on from where they are.
@@ -288,11 +298,19 @@ on by default).
 - **The wipers.** The cab's running FreeAnimations (the wipers the DLL
   starts, `CabView::wiper_points`, the animated nodes and all below them):
   their triangles where they are each frame, and the strips their edges
-  swept since the last, are marked wiped in a 64 x 32 grid over the room's
+  swept since the last, are marked wiped in a 128 x 64 grid over the room's
   wall they are on (`TrainView::rain_glass`); there the drops start again
   from none, gathering slower the more there are. A blade at rest wipes
   nothing, and what it wiped stays wiped while it rests (a DLL's wipers
   running with pauses).
+- **Cut, not taken whole.** A point's wipe is the newest of its four
+  nearest cells that holds at least half their weight there
+  (`rain_wipe_at`): between a wiped cell and one not, a smooth line half
+  way. A cell of drops is drawn anew by the wipe at its middle, and each
+  pixel of a drop is gone where the glass was wiped after that: a blade
+  that touches a drop with its edge takes that part only, the rest stays
+  cut along the blade's way (until the blade passes its middle). Behind a
+  blade a thin streak of water, gone in a second.
 
 ## openRTS's rain and snow (2026-11-22)
 
@@ -317,6 +335,9 @@ sprites) draws its own (`renderer::WeatherParticleRenderer`):
   scene's origin moves.
 - **Strength.** "Rain and snow strength": as the weather, drizzle, rain, a
   downpour or the player's own (0.1–2); it sets the particles, the drops on
-  the glass and the fog.
+  the glass and the fog. With the dynamic weather it is how hard its rain
+  falls, not that it falls: the rain still comes and goes by the weather,
+  grown to the strength from its first drops (a quarter of the
+  precipitation).
 - **Fog.** "Fog in rain and snow" (on by default): while it falls the fog
   ends nearer, 3500 m (snow 2200 m) over 1 + 1.5 × the strength.

@@ -955,7 +955,7 @@ public:
                              static_cast<double>(camera_position.tile_z) * formats::route_tile_size + camera_position.z};
             // The cover the player chose, else the dynamic weather's, else the weather's.
             sky.coverage = renderer::cloud_cover() >= 0.0f                    ? renderer::cloud_cover()
-                           : dynamic_weather_                               ? weather_cycle().shown.cloud
+                           : dynamic_weather_                               ? sky_cover(weather_cycle().shown)
                            : storm_                                         ? 0.97f
                            : clock.weather == renderer::rts::Weather::rain ? 0.92f
                            : clock.weather == renderer::rts::Weather::snow ? 0.85f
@@ -3224,11 +3224,14 @@ private:
     };
     // The precipitation's amount (0..2) by the player's strength, from the weather's.
     [[nodiscard]] float precipitation_amount(const float weather) const {
+        // A strength chosen by hand: the dynamic weather's rain still comes
+        // and goes by its own, grown to it from the first drops (a third of it).
+        const float ramp = dynamic_weather_ ? std::clamp(weather_cycle().shown.precipitation / 0.24f, 0.0f, 1.0f) : 1.0f;
         switch (effects_.strength) {
-        case 1: return 0.35f;
-        case 2: return 1.0f;
-        case 3: return 1.9f;
-        case 4: return std::clamp(effects_.strength_custom, 0.1f, 2.0f);
+        case 1: return 0.35f * ramp;
+        case 2: return 1.0f * ramp;
+        case 3: return 1.9f * ramp;
+        case 4: return std::clamp(effects_.strength_custom, 0.1f, 2.0f) * ramp;
         default: return weather;
         }
     }

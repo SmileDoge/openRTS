@@ -115,11 +115,32 @@ void test_forced() {
     check(jump(cycle.now(season), viewer::weather_at(cycle.time, 5, cycle.settings, season)) < 1e-5f, "forced: back to the cycle");
 }
 
+// The sky closes ahead of the rain: a change from fair to rain blends the
+// clouds and the rain at one pace, yet the rain never falls from a fair sky.
+void test_sky_cover() {
+    const WeatherMix fair{.cloud = 0.3f};
+    const WeatherMix rain{.cloud = 0.9f, .precipitation = 0.6f};
+    check(std::abs(viewer::sky_cover(fair) - 0.3f) < 1e-6f, "sky cover: fair as its clouds");
+    float lowest_raining = 1.0f, last = 0.0f;
+    bool rising = true;
+    for (int i = 0; i <= 1000; ++i) {
+        const auto mix = viewer::blend(fair, rain, static_cast<float>(i) / 1000.0f);
+        const float cover = viewer::sky_cover(mix);
+        if (cover < last - 1e-6f) rising = false;
+        last = cover;
+        if (viewer::rts_weather(mix) != renderer::rts::Weather::clear) lowest_raining = (std::min)(lowest_raining, cover);
+    }
+    check(rising, "sky cover: closes without going back");
+    check(lowest_raining > 0.7f, "sky cover: the rain begins under a grey sky (" + std::to_string(lowest_raining) + ")");
+    check(viewer::sky_cover({.cloud = 0.9f, .precipitation = 0.9f, .storm = 0.9f}) > 0.96f, "sky cover: a thunderstorm's sky");
+}
+
 } // namespace
 
 int main() {
     test_cycle();
     test_forced();
+    test_sky_cover();
     if (failures == 0) std::cout << "weather cycle tests passed\n";
     return failures == 0 ? 0 : 1;
 }
