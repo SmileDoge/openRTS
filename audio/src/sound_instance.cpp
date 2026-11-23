@@ -161,7 +161,17 @@ void SoundInstance::stop(VoiceSink& sink) {
         if (stream.loop.id && stream.current && sink.playing(stream.loop.id) && stream.loop.clip &&
             stream.loop.clip->frames > 0) {
             const auto played = static_cast<std::uint64_t>(stream.loop.age * static_cast<float>(stream.loop.clip->sample_rate));
-            stream.resume_frame = (stream.loop.start_frame + played) % stream.loop.clip->frames;
+            const auto& clip = *stream.loop.clip;
+            const std::uint64_t at = stream.loop.start_frame + played;
+            // A StartLoopRelease past its start goes round its loop region,
+            // not the whole file: taken round the file it came back in its
+            // start part, which played again when the group came on (the
+            // ChS7's fans starting anew on coming back into the cab from
+            // the outside view, testers 2026-11-23).
+            if (stream.loop.region && clip.has_loop() && at >= clip.loop_end)
+                stream.resume_frame = clip.loop_start + (at - clip.loop_start) % (clip.loop_end - clip.loop_start);
+            else
+                stream.resume_frame = at % clip.frames;
         } else {
             stream.current.reset();
         }
@@ -677,8 +687,19 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
                 // the camera appears next to starts at once. Other variables
                 // start from their current value (no spurious one-shots).
                 const bool from_outside = !has_previous_ && trigger.variable == SoundVariable::distance;
+                // Speed the same way from standing: a group that comes on with
+                // the train already running (the engineer into the cab on the
+                // move, the second section's cab) starts the loops its
+                // Speed_Inc_Past triggers would have started, not its
+                // one-shots (testers 2026-11-23: the ChS7's 3СЛ-2М, Speed_Inc_Past
+                // 1.38 StartLoop, stayed silent on the move).
+                const bool from_standing = !has_previous_ && trigger.variable == SoundVariable::speed && trigger.increase &&
+                                           std::none_of(trigger.actions.begin(), trigger.actions.end(), [](const formats::SoundAction& a) {
+                                               return a.kind == SoundActionKind::play_one_shot;
+                                           });
                 const auto previous = from_outside ? (trigger.increase ? -std::numeric_limits<float>::infinity()
                                                                        : std::numeric_limits<float>::infinity())
+                    : from_standing ? 0.0f
                     : has_previous_ ? previous_[index]
                                     : current;
                 const bool crossed = trigger.increase ? previous < trigger.threshold && current >= trigger.threshold

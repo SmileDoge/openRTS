@@ -512,6 +512,77 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCa
     check(sink.seeks.contains(hum) && sink.seeks[hum] >= 30 && sink.seeks[hum] <= 50, "the hum resumes where it was");
 }
 
+// A StartLoopRelease's loop (its file's start, then its loop region round
+// and round) taken off with the group and back: it goes on inside its
+// region, the start not played again (testers 2026-11-23: the ChS7's fans
+// started anew on coming back into the cab from the outside view, when they
+// had played past the file's length).
+void test_region_round_trip() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( CabCam ( ) ) Deactivation ( ExternalCam ( ) ) Streams ( 1
+    Stream ( Triggers ( 1 Discrete_Trigger ( 100 StartLoopRelease ( 1 File ( "vent.wav" -1 ) ) ) ) ) ) ) ))"));
+    auto vent = std::make_shared<audio::AudioClip>();
+    vent->channels = 1;
+    vent->sample_rate = 1000;
+    vent->frames = 100;
+    vent->samples.assign(100, 0.0f);
+    vent->loop_start = 40; // 0 .. 40 its start (the fans spinning up)
+    vent->loop_end = 80;
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string&) { return std::shared_ptr<const audio::AudioClip>(vent); }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::cab;
+    inputs[SoundVariable::distance] = 0;
+    const std::uint32_t start = 100;
+    inputs.discrete = std::span(&start, 1);
+    sound.update(0.01f, inputs, sink);
+    inputs.discrete = {};
+    sound.update(0.11f, inputs, sink); // 0.12 s: 120 frames, past the file's 100
+    inputs.camera = audio::SoundCamera::external;
+    sound.update(0.01f, inputs, sink);
+    check(!sound.active(), "outside: the cab group is off");
+    const auto before = sink.voices.size();
+    inputs.camera = audio::SoundCamera::cab;
+    sound.update(0.01f, inputs, sink);
+    const auto again = static_cast<audio::VoiceId>(before + 1);
+    check(sink.voices.size() == before + 1 && sink.seeks.contains(again), "back in the cab: the fans' loop goes on");
+    check(sink.seeks.contains(again) && sink.seeks[again] >= 40 && sink.seeks[again] < 80,
+          "inside its loop region, its start not again");
+}
+
+// A group coming on with the train already running (the engineer into the
+// cab on the move): its Speed_Inc_Past loops start as if the speed had risen
+// from standing, its one-shots do not (testers 2026-11-23: the ChS7's
+// 3СЛ-2М silent on the move).
+void test_speed_on_the_move() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( CabCam ( ) ) Deactivation ( ExternalCam ( ) ) Streams ( 2
+    Stream ( Triggers ( 2
+        Variable_Trigger ( Speed_Inc_Past 1.38 StartLoop ( 1 File ( "sl.wav" -1 ) ) )
+        Variable_Trigger ( Speed_Dec_Past 1.38 ReleaseLoopRelease ( ) ) ) )
+    Stream ( Triggers ( 1 Variable_Trigger ( Speed_Inc_Past 2 PlayOneShot ( 1 File ( "click.wav" -1 ) ) ) ) ) ) ) ))"));
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips{{"sl.wav", test_clip()}, {"click.wav", test_clip()}};
+    const auto playing = [&](RecordingSink& sink, const std::string& name) {
+        for (const auto& [id, voice] : sink.voices)
+            if (voice.clip == clips.at(name) && sink.playing(id) && !voice.released) return true;
+        return false;
+    };
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string& name) { return clips.at(name); }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::cab;
+    inputs[SoundVariable::distance] = 0;
+    inputs[SoundVariable::speed] = 10.0f;
+    sound.update(0.01f, inputs, sink);
+    check(playing(sink, "sl.wav"), "on the move into the cab: the speed's loop starts");
+    check(!playing(sink, "click.wav"), "its one-shot does not");
+    std::size_t clicks = 0;
+    for (const auto& [id, voice] : sink.voices) clicks += voice.clip == clips.at("click.wav") ? 1 : 0;
+    check(clicks == 0, "no one-shot started at all");
+}
+
 // Codes that came while the group was off are taken as states only: a horn
 // blown in the cab does not sound outside when the engineer steps out; a
 // loop started there is on, one started and released is not.
@@ -1268,6 +1339,8 @@ int main(int argc, char** argv) {
     test_one_shot_fade();
     test_day_night();
     test_cab_round_trip();
+    test_region_round_trip();
+    test_speed_on_the_move();
     test_past_codes();
     test_world_fade();
     test_trigger_pairs();
