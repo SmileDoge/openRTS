@@ -214,9 +214,10 @@ fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_ble
     // moves them on from where they are, not the whole film at once).
     let flow = frame.rain_front.w;
     let stretch = 1.0 + moving * min(speed * 0.08, 3.0);
-    // Four layers of sizes, from fine drops (two or three millimetres)
-    // to a few big ones, shifted and turned against each other: no grid to
-    // be seen. The small ones the most, the big ones run the most.
+    // Four layers of sizes, from fine drops (one and a half to two and a
+    // half millimetres) to a few of up to six, shifted and turned against each
+    // other: no grid to be seen. The small ones the most, the big ones run
+    // the most.
     var best = 0.0;
     var best_off = vec2<f32>(0.0);
     var best_up = vec2<f32>(0.0, 1.0);
@@ -250,7 +251,11 @@ fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_ble
             continue;
         }
         let c = cell + vec2<f32>(0.25, 0.25) + h.yz * 0.5;
-        let r = 0.16 + 0.2 * h.w;
+        // Its size: 0.6 to all of its layer's largest, 2.5, 3.7, 4.9, 6.1 mm
+        // across (in the cell's units). A drop on upright glass holds up to
+        // some 6 mm before it runs; they were up to 26 mm (testers
+        // 2026-11-23: some drops too big).
+        let r = (0.6 + 0.4 * h.w) * (0.00125 + 0.0006 * fl) / s;
         // Drawn out along the flow (the glass's up, turned into the layer).
         let along = rot * select(vec2<f32>(0.0, 1.0), frame.rain_side.zw, side);
         let across = vec2<f32>(along.y, -along.x);
@@ -318,10 +323,7 @@ fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_ble
     let lamp = max(dot(base.xyz - through, vec3<f32>(0.333)), 0.0);
     let glint = exp(-dot(spot, spot) * 40.0) * select(0.7, 0.5, lin) * min(bright + lamp * 2.0, 1.0);
     lens = lens + vec3<f32>(glint);
-    // A drop is clear: its middle mostly lets the view through, its rim
-    // (the refraction's dark ring) the most opaque.
-    let cover = best * mix(0.45, 0.85, rim);
-    return vec4<f32>(mix(base.xyz, lens, cover * 1.08), max(base.w, cover));
+    return vec4<f32>(mix(base.xyz, lens, best * 0.92), max(base.w, best * 0.85));
 }
 
 // One primitive of the shape (static per model generation).
