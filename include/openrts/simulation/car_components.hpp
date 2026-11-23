@@ -3,8 +3,10 @@
 // Cars as entities (docs/car-architecture.md): a car's components, plain
 // data kept by its CarId in its world's CarRegistry. They live as long as
 // the car: a coupling, a cut, a train handed over do not touch them; the car
-// released, they go with it. Step 2: the doors, the lights.
+// released, they go with it. Step 2: the doors, the lights, the
+// pantographs.
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -61,10 +63,25 @@ struct CarLights {
     [[nodiscard]] std::size_t shining() const noexcept;
 };
 
+// The car's pantographs (1..4), bit n - 1 for pantograph n.
+struct CarPantographs {
+    std::uint8_t wanted{}; // wanted up (the DLL's, the rules', the owner's)
+    std::uint8_t heard{};  // as the sounds last knew them (no DLL: 45 / 46, 66 / 67)
+    std::uint8_t sent{};   // another computer's car: as its owner sends them
+    // How far each has risen, 0 down .. 1 up (its shape's animation: RTS
+    // takes a pantograph as up when its animation has risen, 0x5031D8).
+    std::array<float, 4> rise{};
+
+    // Each one towards up or down by `wanted`, a whole rise in `raise_time`
+    // s (PantographRaiseTime).
+    void step(float elapsed, float raise_time);
+};
+
 // Everything a car has besides its physics (that is the train's CarState).
 struct CarComponents {
     CarDoors doors;
     CarLights lights;
+    CarPantographs pantographs;
 };
 
 } // namespace openrts::simulation

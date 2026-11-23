@@ -180,8 +180,8 @@ struct TrainView::Car {
     std::vector<std::pair<std::int32_t, std::uint8_t>> pantograph_nodes;
     std::array<float, 4> pantograph_z{};
     std::uint32_t pantograph_frames{};    // frames of the shape's animation
-    std::array<float, 4> pantograph_frame{}; // current frame of pantographs 1..4
-    std::uint8_t pantograph_raised{};     // bit n-1: pantograph n wanted up
+    // The pantographs' state is the car's (simulation::CarPantographs,
+    // pantographs_of()): wanted up, risen, heard, sent.
     // The shape's ExteriorDoors as drawn: door k of the car's doors
     // (simulation::CarDoors, doors_of(): their state is the car's, kept by
     // its CarId) is node door_nodes[k] of the shape. The passenger doors open
@@ -196,7 +196,6 @@ struct TrainView::Car {
     // or climb it (ExteriorPlanes, ExteriorLadders, ExteriorLedges: RTS mode 6).
     std::shared_ptr<const formats::ExteriorDetails> outside;
     bool cold = false;      // an engine started cold (the consist's Cold; RTS LocoFlags bit 3)
-    std::uint8_t pantographs_heard{}; // the raised pantographs the sounds last knew (non-DLL)
     // Its lights' state is the car's (simulation::CarLights, lights_of()).
     // A remote car's Var1..Var8 as its owner sends them (0x463D).
     std::optional<std::array<float, 8>> remote_sound_vars;
@@ -206,7 +205,6 @@ struct TrainView::Car {
     std::vector<std::uint32_t> net_triggers;
     std::array<float, 8> net_vars{};
     float net_travelled{};
-    std::uint8_t remote_pantographs{};
     // FreightAnim of its consist entry: objects fastened to the car and the cargo.
     std::vector<formats::ConsistFreight> freight;
     std::vector<core::VirtualPath> freight_shapes; // resolved, empty when missing
@@ -515,7 +513,7 @@ std::optional<double> TrainView::activity_car_value(const ActivityId train, cons
     if (key == "panto") {
         // WAGON: the raised pantographs; CABIN: the ones the cab asks up
         // (the DLL's Engine Panto). Idx 0 the bit mask, 1..8 one of them.
-        const std::uint32_t mask = where == "cabin" && out ? out->engine.panto : unit->cars[index].pantograph_raised;
+        const std::uint32_t mask = where == "cabin" && out ? out->engine.panto : pantographs_of(unit->cars[index]).wanted;
         if (idx <= 0) return static_cast<double>(mask);
         return idx <= 8 ? static_cast<double>((mask >> (idx - 1)) & 1u) : 0.0;
     }
@@ -923,6 +921,10 @@ simulation::CarLights& TrainView::lights_of(const Car& car) const {
     return components_of(car).lights;
 }
 
+simulation::CarPantographs& TrainView::pantographs_of(const Car& car) const {
+    return components_of(car).pantographs;
+}
+
 void TrainView::add_door_frames(const Car& car, std::vector<renderer::NodeAdjustment>& adjustments) const {
     const auto& doors = doors_of(car).doors;
     for (std::size_t k = 0; k < doors.size() && k < car.door_nodes.size(); ++k) {
@@ -976,9 +978,9 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
                                                               : new_car_key();
             made_keys.push_back(car.key);
         }
-        // Its doors and lights as a car new here has them (the doors read
-        // with its shape: fit_shapes), whatever its id's were before (a train
-        // put back).
+        // Its doors, lights and pantographs as a car new here has them (the
+        // doors read with its shape: fit_shapes), whatever its id's were
+        // before (a train put back).
         components_of(car) = {};
         car.uid = entry.uid;
         car.folder = entry.folder;
@@ -4135,7 +4137,7 @@ void TrainView::set_remote_look(const std::uint64_t id, const std::size_t car, c
     for (auto& unit : units_) {
         if (unit.train->id() != id || !unit.remote || car >= unit.cars.size()) continue;
         auto& c = unit.cars[car];
-        c.remote_pantographs = pantographs;
+        pantographs_of(c).sent = pantographs;
         // A diesel runs or stands cold (RTS: LocoFlags bit 3, 0x4C3DE0).
         if (c.definition && c.definition->engine && c.definition->engine->kind == formats::EngineKind::diesel) c.cold = !running;
     }
@@ -4244,7 +4246,7 @@ std::vector<TrainView::CarLook> TrainView::look_of(const std::uint64_t id) const
                       : car.definition->engine->kind == formats::EngineKind::diesel   ? 2
                                                                                        : 0;
         }
-        look.pantographs = car.pantograph_raised;
+        look.pantographs = pantographs_of(car).wanted;
         look.running = !car.cold;
         if (car.definition) {
             const auto& lights = car.definition->lights;
@@ -8332,7 +8334,7 @@ std::string TrainView::systems_report() const {
             const auto& c = states[i];
             if (!c.definition->engine) continue;
             std::snprintf(line, sizeof line, ", car %zu panto 0x%X line %.0f V %.0f A heat %.0f%s cables 0x%X%s", i + 1,
-                          unit.cars[i].pantograph_raised, c.line_voltage, c.line_current, c.line_heat, c.line_burnt ? " BURNT" : "",
+                          pantographs_of(unit.cars[i]).wanted, c.line_voltage, c.line_current, c.line_heat, c.line_burnt ? " BURNT" : "",
                           c.cables, c.sanding ? " sanding" : "");
             text += line;
         }
@@ -10044,9 +10046,10 @@ std::uint8_t TrainView::pantographs_up(const std::size_t u, const std::size_t i)
     if (!engine || engine->kind != formats::EngineKind::electric) return 0;
     std::uint8_t raised = 0;
     if (!car.pantograph_nodes.empty() && car.pantograph_frames >= 2) {
-        const float top = static_cast<float>(car.pantograph_frames - 1u) - 0.01f;
+        const float last = static_cast<float>(car.pantograph_frames - 1u);
+        const auto& rise = pantographs_of(car).rise;
         for (const auto& [node, number] : car.pantograph_nodes) {
-            if (car.pantograph_frame[number - 1u] >= top) raised |= static_cast<std::uint8_t>(1u << (number - 1u));
+            if (rise[number - 1u] * last >= last - 0.01f) raised |= static_cast<std::uint8_t>(1u << (number - 1u));
         }
     } else if (const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr) {
         raised = out->panto_raised;
@@ -10611,6 +10614,7 @@ void TrainView::update_pantographs(const float elapsed) {
             // The wanted pantographs are worked out for every car, a shape
             // without their animation too: the network sends them.
             if (!car.definition) continue;
+            auto& pantos = pantographs_of(car);
             const auto* engine = car.definition->engine ? &*car.definition->engine : nullptr;
             const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr;
             const bool plugin = u == 0 && native_ && i == native_car_;
@@ -10621,11 +10625,11 @@ void TrainView::update_pantographs(const float elapsed) {
             // pantograph, numbered by where it stands, is the number its
             // .rtseng excludes (testers 2026-11-21).
             if (unit.remote) {
-                car.pantograph_raised = car.remote_pantographs;
+                pantos.wanted = pantos.sent;
             } else if (out) {
-                car.pantograph_raised = out->panto_raised;
+                pantos.wanted = out->panto_raised;
             } else if (plugin) {
-                car.pantograph_raised = static_cast<std::uint8_t>(native_->outputs().pantographs);
+                pantos.wanted = static_cast<std::uint8_t>(native_->outputs().pantographs);
             } else if (engine && engine->kind == formats::EngineKind::electric && working && !car.cold && !(u == 0 && pantographs_down_)) {
                 std::uint8_t main = 1, second = 2;
                 if (unit.role == Role::ai) {
@@ -10660,31 +10664,26 @@ void TrainView::update_pantographs(const float elapsed) {
                     raised = static_cast<std::uint8_t>(raised & ~engine->lower_panto_on_stop);
                 raised |= engine->always_use_panto;
                 raised = static_cast<std::uint8_t>(raised & ~engine->exclude_pantographs);
-                car.pantograph_raised = raised;
+                pantos.wanted = raised;
             } else {
-                car.pantograph_raised = 0;
+                pantos.wanted = 0;
             }
             // Without a DLL the pantographs sound as MSTS scripts expect:
             // 45 / 46 the first up / down, 66 / 67 the second.
-            if (!out && car.pantograph_raised != car.pantographs_heard) {
+            if (!out && pantos.wanted != pantos.heard) {
                 for (std::uint8_t n = 0; n < 2; ++n) {
-                    const bool was = (car.pantographs_heard >> n) & 1u, now = (car.pantograph_raised >> n) & 1u;
+                    const bool was = (pantos.heard >> n) & 1u, now = (pantos.wanted >> n) & 1u;
                     if (was == now) continue;
                     const std::uint32_t trigger = n == 0 ? (now ? 45u : 46u) : (now ? 66u : 67u);
                     car.pending_triggers.push_back(trigger);
                     if (u == 0 && i == cab_car_) car.pending_cab_triggers.push_back(trigger);
                 }
-                car.pantographs_heard = car.pantograph_raised;
+                pantos.heard = pantos.wanted;
             }
+            // They rise only with an animation to rise by (pantographs_up).
             if (car.pantograph_nodes.empty() || car.pantograph_frames < 2) continue;
-            const float last = static_cast<float>(car.pantograph_frames - 1u);
             // PantographRaiseTime (default 3 s).
-            const float step = last * elapsed / (std::max)(car.definition->pantograph_raise_time, 0.1f);
-            for (std::size_t n = 0; n < car.pantograph_frame.size(); ++n) {
-                const float target = (car.pantograph_raised >> n) & 1u ? last : 0.0f;
-                float& frame = car.pantograph_frame[n];
-                frame = frame < target ? (std::min)(frame + step, target) : (std::max)(frame - step, target);
-            }
+            pantos.step(elapsed, car.definition->pantograph_raise_time);
         }
     }
 }
@@ -11624,8 +11623,10 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
             adjustments.push_back({.matrix = car.wheels[w], .local = loose ? on_rails(car.wheel_rest[w]) * turn : turn});
         }
         if (car.pantograph_frames > 1) {
+            const auto& rise = pantographs_of(car).rise;
+            const float last = static_cast<float>(car.pantograph_frames - 1u);
             for (const auto& [node, number] : car.pantograph_nodes) {
-                adjustments.push_back({.matrix = node, .frame = car.pantograph_frame[number - 1u]});
+                adjustments.push_back({.matrix = node, .frame = rise[number - 1u] * last});
             }
         }
         add_door_frames(car, adjustments);

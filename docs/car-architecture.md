@@ -1,8 +1,8 @@
 # Car and train architecture (design)
 
 Status: a design under discussion (2026-11-06). Step 1 (`CarId`) is built
-(2026-11-23, "Step 1: CarId" below); of step 2 the doors and the lights
-("Step 2: doors", "Step 2: lights"); the rest is not.
+(2026-11-23, "Step 1: CarId" below), step 2 too (the doors, the lights,
+the pantographs: "Step 2: ..."); the rest is not.
 - The plan it serves is the roadmap step "Cars as entities"
   (`roadmap.md`); the replaceable train systems there build on it.
 - **Proposed** marks what this document suggests; the user's questions are
@@ -261,6 +261,24 @@ As the doors: the lights shine, fade and go over the network as before.
 - **Tests:** `openrts.car_registry` `components` (lights sent, shining);
   the viewer's runs of the ChS7 and the ЭД9М gave the same lights, glows
   and beams before and after.
+
+### Step 2: pantographs (built 2026-11-23)
+
+As the doors and the lights: the pantographs rise, sound, give the line
+and go over the network as before.
+- **`CarPantographs`** (`CarComponents::pantographs`): the ones wanted up,
+  the ones the sounds last knew (45 / 46, 66 / 67 without a DLL), the ones
+  another computer sends, how far each has risen (0 .. 1, `step()` at
+  PantographRaiseTime's pace).
+- **The viewer** keeps the shape's side: the nodes, where each stands
+  along the car (the rear one by the direction), the animation's frames.
+  Drawn at `rise x` the last frame; up when risen (RTS 0x5031D8), so the
+  line still comes when the animation has risen.
+- **Still the viewer's:** what decides them (the DLL's, a native plugin's,
+  the rules: RaiseSecondPantoWhenSpeedBelow, ExcludePantograph, the AI's)
+  waits for the modules (step 4).
+- **Tests:** `openrts.car_registry` `components` (the pace up and down);
+  the viewer's ChS7 and ЭД9М runs: the same pantographs and line as before.
 
 ## Open questions (the user's)
 

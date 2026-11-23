@@ -50,4 +50,13 @@ std::size_t CarLights::shining() const noexcept {
     return n;
 }
 
+void CarPantographs::step(const float elapsed, const float raise_time) {
+    const float step = elapsed / (std::max)(raise_time, 0.1f);
+    for (std::size_t n = 0; n < rise.size(); ++n) {
+        const float target = (wanted >> n) & 1u ? 1.0f : 0.0f;
+        float& r = rise[n];
+        r = r < target ? (std::min)(r + step, target) : (std::max)(r - step, target);
+    }
+}
+
 } // namespace openrts::simulation

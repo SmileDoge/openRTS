@@ -179,6 +179,18 @@ void components() {
     lights.runners[0].level = 1.0f;
     lights.runners[2].level = 0.3f;
     check(lights.shining() == 2, "the lights shining, fading ones too");
+    // Its pantographs rise and fall at PantographRaiseTime's pace.
+    auto& pantos = cars.components(a).pantographs;
+    pantos.wanted = 0b01;
+    pantos.step(1.5f, 3.0f);
+    check(std::abs(pantos.rise[0] - 0.5f) < 1e-6f && pantos.rise[1] == 0.0f, "pantograph 1 half up in half its raise time");
+    pantos.step(5.0f, 3.0f);
+    check(pantos.rise[0] == 1.0f, "up, no further");
+    pantos.wanted = 0b10;
+    pantos.step(0.75f, 3.0f);
+    check(std::abs(pantos.rise[0] - 0.75f) < 1e-6f && std::abs(pantos.rise[1] - 0.25f) < 1e-6f, "one going down as the other goes up");
+    pantos.step(1.0f, 0.0f);
+    check(pantos.rise[0] == 0.0f && pantos.rise[1] == 1.0f, "a raise time of 0 counts as 0.1 s");
     cars.release(a);
     check(!cars.find_components(a), "released: its components gone with it");
     bool thrown = false;
