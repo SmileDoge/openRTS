@@ -306,7 +306,7 @@ public:
         }
         const auto& out = outputs->cars[car_];
         apply_engine_output(out.engine, demands);
-        const auto mode = air_ ? air_->mode : DllAir::rts;
+        const auto mode = air_mode();
         if (mode == DllAir::rts || !inputs.realistic_air) {
             valve_started_ = false;
             brakes_started_ = false;
@@ -482,7 +482,17 @@ public:
             demands.equalising_kept = out.engine.equalising;
         }
     }
-    [[nodiscard]] bool rts_brakes() const override { return !air_ || air_->mode == DllAir::rts; }
+    [[nodiscard]] bool rts_brakes() const override { return air_mode() == DllAir::rts; }
+    // The air this car's brakes run on: RTS's where its Brakes.dll has a
+    // device openRTS does not know (a 334, a custom 292, the ЭП2Д's ППТ):
+    // that device stays Brakes.dll's and works RTS's air only. On the
+    // realistic air the ЭР9П's 334 let its pipe leak away (testers
+    // 2026-11-24).
+    [[nodiscard]] DllAir air_mode() const noexcept {
+        if (!air_) return DllAir::rts;
+        if (brakes_.present && !brakes_.unknown.empty()) return DllAir::rts;
+        return air_->mode;
+    }
     // A saved game: openRTS's valve over the DLL (its УР, its ЭПТ demand),
     // the compressor's governor and the DLL УР last seen. The DLL's own
     // state goes with LegacyConsist::save_state.

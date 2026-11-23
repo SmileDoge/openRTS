@@ -610,7 +610,12 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
             return;
         }
         activate(inputs, sink);
-    } else if (camera_deactivates || (distances && distance > deactivate_beyond)) {
+    // openRTS: an active group whose deactivation distance is not beyond
+    // its activation one goes off a little past it (5 %, at least 2 m). The ЭР9П's motor cars (50 / 50 m) stood
+    // at the edge: their TED came and went every few frames as the camera
+    // swayed (testers 2026-11-24). RTS tests the same distance every frame
+    // (0x44AB7C) without a margin.
+    } else if (camera_deactivates || (distances && distance > deactivate_beyond + (deactivate_beyond <= activate_within ? (std::max)(2.0f, 0.05f * deactivate_beyond) : 0.0f))) {
         if (!trace_.empty()) {
             char text[96];
             std::snprintf(text, sizeof text, "group off (%s, distance %.1f m)", camera_deactivates ? "camera" : "distance", distance);

@@ -326,6 +326,12 @@ car's sound is made.
     again and the loops a DLL had started were lost after a trip into the
     cab.
 - The free camera of the viewer counts as `ExternalCam`.
+- **A margin going off** (openRTS, 2026-11-24): an active group whose
+  deactivation distance is not beyond its activation one goes off only 5 %
+  (at least 2 m) past it. RTS tests the
+  same distance every frame (`0x44AB7C`) without one; the ЭР9П's motor
+  cars (`Activation` and `Deactivation` 50 m) stood at the edge and their
+  TED came and went every few frames.
 - **Deactivation distance below the activation distance** (four installed
   groups: the ED4M, ED9M and EP2D `engMotor` scripts, 1000 / 300 m):
   deactivation wins. Between the two distances the group stays silent
