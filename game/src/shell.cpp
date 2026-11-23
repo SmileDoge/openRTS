@@ -596,26 +596,30 @@ void GameShell::draw_loading_overlay() const {
     const auto panel_top = panel_bottom - panel_height;
     const ImVec2 panel_min{margin, panel_top};
     const ImVec2 panel_max{display.x - margin, panel_bottom};
-    // The mockup's frosted glass: the train stays visible through the panel,
-    // with a light top edge and a thin outline.
+    // The mockup's frosted glass is a dark, almost black pane: the white of
+    // the design is the 1 px outline and the top highlight, not the fill.
+    // White at a low alpha over the bright sky reads as grey, so the pane is
+    // kept dark and opaque and the frame is white enough to stay white.
     const auto radius = 24.0f * scale;
-    draw->AddRectFilled(panel_min, panel_max, IM_COL32(10, 13, 18, 118), radius);
+    draw->AddRectFilled(panel_min, panel_max, IM_COL32(6, 8, 12, 225), radius);
     // The frosted band follows the panel's rounded top instead of a square
     // overlay showing through its corners.
     const auto gloss_bottom = panel_min.y + panel_height * 0.58f;
     const auto top_band = (std::min)(radius, gloss_bottom - panel_min.y);
-    draw->AddRectFilled(panel_min, {panel_max.x, panel_min.y + top_band}, IM_COL32(255, 255, 255, 18), radius,
+    draw->AddRectFilled(panel_min, {panel_max.x, panel_min.y + top_band}, IM_COL32(255, 255, 255, 24), radius,
                         ImDrawFlags_RoundCornersTop);
     constexpr int gloss_steps = 12;
     for (int i = 0; i < gloss_steps; ++i) {
         const auto y0 = panel_min.y + top_band + (gloss_bottom - panel_min.y - top_band) * i / gloss_steps;
         const auto y1 = panel_min.y + top_band + (gloss_bottom - panel_min.y - top_band) * (i + 1) / gloss_steps;
-        const auto alpha = static_cast<int>(18.0f * (1.0f - (i + 1.0f) / gloss_steps));
+        const auto alpha = static_cast<int>(24.0f * (1.0f - (i + 1.0f) / gloss_steps));
         draw->AddRectFilled({panel_min.x, y0}, {panel_max.x, y1}, IM_COL32(255, 255, 255, alpha));
     }
-    draw->AddRect(panel_min, panel_max, IM_COL32(255, 255, 255, 36), radius, 0, 1.0f);
+    // The frame is the mockup's pure white: #FFFFFF, not a translucent white
+    // that the dark pane would turn grey.
+    draw->AddRect(panel_min, panel_max, IM_COL32(255, 255, 255, 255), radius, 0, 1.0f * scale);
     draw->AddLine({panel_min.x + radius, panel_min.y + 1.0f * scale},
-                  {panel_max.x - radius, panel_min.y + 1.0f * scale}, IM_COL32(255, 255, 255, 90), 1.0f);
+                  {panel_max.x - radius, panel_min.y + 1.0f * scale}, IM_COL32(255, 255, 255, 255), 1.0f * scale);
     // The mockup's inner separator and its progress track.
     draw->AddLine({panel_min.x + 33.0f * scale, panel_min.y + 116.0f * scale},
                   {panel_max.x - 33.0f * scale, panel_min.y + 116.0f * scale}, IM_COL32(255, 255, 255, 26), 1.0f);
