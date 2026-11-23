@@ -755,10 +755,28 @@ the pipe in III as in IV, so no leak showed there.
 
 #### Realistic air with DLL locomotives
 
+openRTS (2026-11-22, `viewer::apply_settings_defaults`): once per player, on
+the first run of this version, the brakes are set to the "realistic
+(openRTS)" preset with openRTS's brakes and КЛУБ and without Brakes.dll
+where all of it is openRTS's, over what was remembered (the
+`defaults_openrts_brakes` mark); later choices are kept.
+
+The brakes' settings are one section in the start menu's Settings page and
+the game's Train window (`viewer/src/brake_settings_ui.hpp`, 2026-11-22):
+the preset on top ("openRTS", "as in RTS", "my own") with a line of what it
+gives, and in the game a line of what the driven train has now (whose
+brakes and КЛУБ, whether Brakes.dll is loaded and why it stays,
+`trainplugin::brakes_dll_kept_reason`). Under "Details" the settings one
+by one, each shown only where it works (those of openRTS's air hidden
+without it); "Brakes.dll not loaded" says it takes effect from the next
+train, the rest at once. Any change by hand makes the preset "my own",
+remembered as `brakes_custom` (twelve figures).
+
 **openRTS's cab brakes over Brakes.dll** (2026-11-18, experimental; the
 Train window's "Brakes: Brakes.dll / openRTS" and "Brake numbers: as
 Brakes.dll / openRTS (from the books)", remembered as `own_brakes` and
-`brake_numbers`, Brakes.dll and "as Brakes.dll" by default; with the
+`brake_numbers`, openRTS and "as Brakes.dll" by default (before
+2026-11-22 Brakes.dll); with the
 realistic air and "Trains with DLLs" not as RTS;
 `trainplugin::DllAirSetting::own_brakes`,
 docs/brakes-dll-replacement.md). openRTS's devices
@@ -791,8 +809,8 @@ does not know (a 334, a custom 292, the ЭП2Д's ППТ, `BR_KID`, the ВЛ82м
 them in the harness.
 
 **openRTS's КЛУБ-У over Brakes.dll** (2026-11-19, experimental; the Train
-window's "КЛУБ: Brakes.dll / openRTS", remembered as `own_klub`, Brakes.dll
-by default; with the realistic air and "Trains with DLLs" not as RTS;
+window's "КЛУБ: Brakes.dll / openRTS", remembered as `own_klub`, openRTS
+by default (before 2026-11-22 Brakes.dll); with the realistic air and "Trains with DLLs" not as RTS;
 `LegacyConsist::set_own_klub`, docs/brakes-dll-replacement.md step 3).
 openRTS's КЛУБ (`simulation/klub.hpp`, `klub_screen.hpp`) does what
 Brakes.dll's does, step for step (docs/reverse/brakes-dll.md §11):
@@ -938,7 +956,11 @@ The other two choices take the air after the valve from the model:
   governor; after a cold start not before the train has power): the DLLs keep
   RTS's main reservoir (its huge volume never drains; the ЭД9М's DLLs never
   run a compressor and take their own air from it), and their
-  MainResRate is not taken. An engine releasing its own brake (EngineFlags
+  MainResRate is not taken. A DLL with a governor of its own tells it by
+  the sound codes 12 / 13 (MSTS's compressor on / off): from its 12 the
+  compressor runs on to its 13 past the .eng's cut-out, at most 1 atm over
+  it and 10 atm (2026-11-22: the ВЛ10's DLL posts 12 at 7.5 and 13 at 9.0
+  atm; by the .eng's 8.7 its КТ-6 sounded for good). An engine releasing its own brake (EngineFlags
   1, the 254 in I) vents its cylinder as in the RTS model, and, as RTS
   (`0x5031D8`), the bit is cleared once the cylinder is empty (bit 2 with
   the independent brake's): the ВЛ80Т's master sets its second section's

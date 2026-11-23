@@ -22,6 +22,39 @@ namespace openrts::viewer {
 [[nodiscard]] std::optional<std::string> remembered(std::string_view key);
 void remember(std::string_view key, std::string_view value);
 
+// Once per player (2026-11-22, testers: most new players asked why the
+// train does not go): the brakes set to openRTS's realistic preset with
+// openRTS's brakes and КЛУБ and no Brakes.dll where all of it is openRTS's,
+// over whatever was remembered; later choices are kept. Called by the
+// launcher and the viewer before they read the settings.
+void apply_settings_defaults();
+
+// Captures of the panels (--capture-panel <tab>): the panels shown on that
+// tab (the viewer's PanelState::Tab, -1 none) with their sections open.
+void set_capture_panel(int tab) noexcept;
+[[nodiscard]] int capture_panel() noexcept;
+
+// "For developers" (2026-11-22, the settings redesign's stage 2): the
+// debug settings and readouts, the Performance tab and the inspector shown
+// only while it is on. Off by default; the launcher's Settings and the
+// panel's General tab have its checkbox, F12 turns it on and off in the
+// game. Remembered ("developer_mode").
+[[nodiscard]] bool developer_mode();
+// keep false: this run only (--developer, captures).
+void set_developer_mode(bool on, bool keep = true);
+
+// openRTS's own sounds, beyond RTS (2026-11-22, testers): each on by
+// default, remembered ("sound_rain_inside", "sound_doppler", "sound_echo",
+// "sound_brake_squeal").
+struct SoundExtras {
+    bool rain_inside = true;  // rain_in / snow_in in the train's cab or salon
+    bool doppler = true;      // a sound moving to or from the listener
+    bool echo = true;         // tunnels, cuttings, platforms' roofs
+    bool brake_squeal = true; // the shoes on the wheels, slowing to a stop (train_extra_sounds.hpp)
+};
+[[nodiscard]] const SoundExtras& sound_extras();
+void set_sound_extras(const SoundExtras& extras);
+
 [[nodiscard]] std::filesystem::path remembered_folder(std::string_view key);
 void remember_folder(std::string_view key, const std::filesystem::path& folder);
 

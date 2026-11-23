@@ -722,3 +722,52 @@ no room.
   room <name> outside <share>`. In the ChS4t's cab it is CABIN1, 0.50.
 - **Not traced:** where RTS's `pos_in_train` is while the head is out of the
   window. openRTS uses the eye, which is mostly outside the rooms.
+
+## openRTS's own sounds, beyond RTS (2026-11-22)
+
+Each has its checkbox in the sound settings (the launcher's and the
+panel's General tab), all on by default (`viewer_state.hpp`,
+`SoundExtras`).
+
+- **Rain and snow on the body inside.** In the cab or a salon of the
+  player's train `rain_in.sms` / `snow_in.sms` play too (CabCam,
+  PassengerCam: RTS never starts them for the weather), heard at the
+  listener, by the dynamic weather's amount (`viewer_scene.cpp`,
+  `update_weather_sound`).
+- **Doppler.** A voice placed in space has its pitch times
+  c / (c + v), v the speed its distance to the listener grows at, by the
+  wall clock between sets, smoothed over about 0.15 s, held within
+  ±90 m/s; a jump of more than 150 m/s (a camera put elsewhere) starts
+  over (`AudioEngine::set_doppler`, `doppler_pitch`).
+- **Echo.** The voices placed in space go through a group and a small
+  reverberation (`audio/src/echo_node.cpp`: four damped combs and two
+  allpasses as in Freeverb, a pre-delay, the dry sound passing through).
+  Its amount is how closed in the eye is: the share of the ways out above
+  the horizon, past 6 m, that the world closes, from the same occlusion
+  probe as the sky's light (`RouteScene::echo_amount`: none in the open,
+  some under a platform's roof or in a cutting, all in a tunnel); only
+  while the sky's light is measured (PBR stage 2). The cab's own sounds
+  (heard at the listener) have none.
+- **Brake squeal** (`viewer/src/train_extra_sounds.cpp`), where a car's
+  own script has no stop sound of its own (a file named `...squeal...`
+  or `...skrip...`: `DHsqueal` of the freight cars, `rw_` / `x_wagon_squeal`
+  of the coaches, the ТУ6's `braking_squeal`, the ТЭМ2's `skrip`; a
+  flange's squeal and the switches' `skrip_strelka` aside):
+  - every car near the listener (four at most a train) with 0.5 atm or
+    more in its brake cylinder squeals below 26 km/h, loudest at a few
+    km/h; it catches and holds a second or three and drops out (more and
+    longer the slower), steps now and then to another mode (±3–6 %),
+    creeps up as it slows; the cars differ in pitch;
+  - its clip: the ТУ6's `braking_squeal.wav` when installed, else
+    `SOUND/x_uk_brakesqueal02a.wav` or `SOUND/squeal.wav`, its highs remade
+    when loaded (an 11 kHz recording: a harmonic exciter over its top
+    band, air following its loudness), its loudest stretch looped with a
+    little grit; without any recording no squeal (a made one sounded
+    cheap);
+  - the stop's moan (`SOUND/OPENRTS/BRAKES/stop_moan.wav`, when there is
+    one: openRTS ships none, a player's mod may lay one down in
+    `MODS_OPENRTS/<mod>/SOUND/OPENRTS/BRAKES`) once, begun when the stop (speed over
+    deceleration) is its length away, the squeal giving way under it; let
+    go if the train runs on;
+  - a quiet squeak from about 3 km/h to the stop (`stop_squeak.wav`, the
+    same way).

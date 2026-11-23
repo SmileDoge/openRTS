@@ -62,6 +62,7 @@ struct CabBrakes {
     int position = -1; // the 395's (simulation::ValvePosition), -1 not known
     int raw = -1;      // its control's state
     int controller_raw = -1; // the КПТ's (BR_KPTID1): the handle moved last sets the position
+    bool by_controller = false; // the position is the КПТ's (it moved last)
     float charging{};  // the reducer's charging pressure (BR_REDID1), atm; 0: none
     int combined = 0;  // the combined valve (BR_KKID1): 0 normal, 1 double traction (cut out), 2 emergency
     // The blocking device усл. 367 (BR_367ID1) out of its operating state
@@ -127,6 +128,7 @@ struct BrakesParameters {
         std::int32_t gauge_cylinder = -1, gauge_pipe = -1, gauge_main_reservoir = -1, gauge_equalising = -1;
         std::int32_t lamp_ep_on = -1, lamp_ep_hold = -1, lamp_ep_brake = -1, lamp_pipe = -1;
         std::int32_t ep_volts = -1, ep_amps = -1;
+        std::int32_t ppt = -1; // BR_PPTID: at 0 the КПТ works the ЭПТ by itself (the ЭП2Д)
     };
     std::vector<Cab> cabs; // BR_NUMCABS of them, at least one
     [[nodiscard]] bool understood() const noexcept { return present && unknown.empty(); }
@@ -204,6 +206,11 @@ struct RecorderParameters {
     bool trans_sound = false;
 };
 [[nodiscard]] RecorderParameters recorder_parameters(const formats::EngineDefinition& engine);
+// Why "without Brakes.dll" leaves Brakes.dll loaded on this engine: empty
+// when openRTS has all of it; else "no Brakes.dll", "no КЛУБ", "speed
+// recorder", "КПД-3", "УКБМ / МУ" or the brake parameter openRTS does not
+// know (BR_PPTID1, BR_334ID1...).
+[[nodiscard]] std::string brakes_dll_kept_reason(const formats::EngineDefinition& engine);
 // mdd_Libraries/Brakes/ChangeStanc.bto: the КЛУБ's station names (upper case).
 [[nodiscard]] std::vector<std::pair<std::u16string, std::u16string>> load_klub_station_names(const core::Vfs& vfs);
 // The working cab's devices for step_cab_brakes, as its switches stand.
@@ -360,6 +367,8 @@ public:
     // player's, 1, the rest LOOSE, 3); 2 (another player's) keeps a train's
     // DLLs bound without running them.
     void set_train_types(std::vector<std::uint32_t> types) { train_types_ = std::move(types); }
+    // Each train's start for its engines bound at the next reconsist (ReconsistTrain::start_state).
+    void set_train_starts(std::vector<std::int16_t> starts) { train_starts_ = std::move(starts); }
     // Cars with a DLL that came back from the parked ones (by their keys)
     // since the last call: their DLLs as they left them.
     [[nodiscard]] std::size_t take_restored() { return std::exchange(restored_, std::size_t{0}); }
@@ -501,9 +510,14 @@ private:
     std::vector<dllhost::ModuleReport> modules_;
     std::shared_ptr<Outputs> outputs_ = std::make_shared<Outputs>();
     std::shared_ptr<DllAirSetting> air_ = std::make_shared<DllAirSetting>();
+    // Each engine's Brakes.dll in BR_MODE 1 (a multiple unit's), by its
+    // definition: inputs() gives such a car its ЭПТ level in its independent
+    // brake under openRTS's devices, as that Brakes.dll does.
+    mutable std::unordered_map<const void*, bool> multiple_unit_;
     std::size_t player_ = SIZE_MAX;
     std::vector<dllhost::CarAir> entered_air_;
     std::vector<std::uint32_t> train_types_;
+    std::vector<std::int16_t> train_starts_;
     std::size_t restored_ = 0;
     std::string messages_;
 public:

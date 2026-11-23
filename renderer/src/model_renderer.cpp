@@ -96,13 +96,17 @@ struct MaterialUniform {
     float emissive[4];
     float maps[4];
     // The height map's relief (parallax): x its depth (m), y 1: a height
-    // map, z the map's level the model's surface lies at (0..1).
+    // map, z the map's level the model's surface lies at (0..1); w the
+    // axes its UVs keep inside the image (1 U, 2 V: keep_inside).
     float height[4];
+    // x the primitive's second largest extent (m, its box in the model):
+    // a window's glass is large, a gauge's and its needle small.
+    float extent[4];
 };
 // The model's draws one after another in a storage buffer (WGSL array<Draw>,
-// stride 224): a binding serves every draw of the model with its texture.
+// stride 240): a binding serves every draw of the model with its texture.
 constexpr std::uint64_t material_stride = sizeof(MaterialUniform);
-static_assert(sizeof(MaterialUniform) == 224);
+static_assert(sizeof(MaterialUniform) == 240);
 
 // One instance of one draw call: the instance and the primitive it draws (its
 // slot in the model's draws). A multi-draw call covers several primitives of
@@ -169,6 +173,14 @@ struct FrameUniform {
     glm::mat4 room;
     float room_lower[4];
     float room_upper[4];
+    // ModelRainGlass: x amount, y time, z speed, w since; the grid's x0 y0
+    // x1 y1; x the front's sign, y 1 a grid; each cell's wipe, four a vec4.
+    float rain[4];
+    float rain_grid[4];
+    float rain_front[4];
+    float rain_side[4]; // xy the side drops' run (m), zw their way now
+    float snow_cover[4]; // x how much of the snow maps' snow lies (0..1)
+    float rain_wiped[rain_grid_columns * rain_grid_rows];
 };
 // WebGPU's least maxUniformBufferBindingSize.
 static_assert(sizeof(FrameUniform) <= 65536);
@@ -193,7 +205,196 @@ struct Frame {
     room: mat4x4<f32>,      // world -> the room the eye is in (ModelRoom)
     room_lower: vec4<f32>,  // its box; w 1: there is one
     room_upper: vec4<f32>,
+    rain: vec4<f32>,        // ModelRainGlass: amount, time, speed, since
+    rain_grid: vec4<f32>,   // the wipers' glass: x0, y0, x1, y1 (room)
+    rain_front: vec4<f32>,  // x the front's sign, y 1 a grid
+    rain_side: vec4<f32>,   // xy the side drops' run (m, z y), zw their way now
+    snow_cover: vec4<f32>,  // x how much of the snow maps' snow lies (0..1)
+    rain_wiped: array<vec4<f32>, 2048>, // each cell's last wipe (128 x 64, four a vec4)
 };
+
+// openRTS: raindrops on the cab's glass (ModelRainGlass). The blended
+// surfaces at the room box's walls facing out; the drops in cells of 14 mm
+// on the glass's plane, as many as the time since it was wiped and the
+// rain give, each cell's drop drawn anew by the wipe's time; on the move
+// they run up the front glass and back along the side windows, longer the
+// faster, standing they slide down.
+fn rain_hash(p: vec2<f32>, seed: f32) -> vec4<f32> {
+    var q = vec4<f32>(dot(p, vec2<f32>(127.1, 311.7)), dot(p, vec2<f32>(269.5, 183.3)), dot(p, vec2<f32>(419.2, 371.9)), dot(p, vec2<f32>(91.7, 233.1)));
+    q = q + seed * vec4<f32>(17.13, 31.71, 7.37, 13.97);
+    return fract(sin(q) * 43758.5453);
+}
+// Snow on the glass: flakes that stick where they hit and stay (no flow),
+// gathering with the time since wiped; on the move the front glass takes
+// them faster, the side windows slower. Two sizes: fine flakes and clumps;
+// a flake's edge ragged, its middle denser.
+// How light the sky is (the sun's ambient and diffuse): the drops' and the
+// film's highlights follow it, dark at night.
+fn rain_sky() -> f32 {
+    let sun = frame.lights[0];
+    return clamp(dot(sun.ambient.xyz + sun.diffuse.xyz * 0.5, vec3<f32>(0.333)), 0.03, 1.0);
+}
+fn snow_flake(uv: vec2<f32>, size: f32, seed: f32, density: f32) -> f32 {
+    let q = uv / size;
+    let cell = floor(q);
+    let h = rain_hash(cell, seed + 3.0);
+    if (h.x > density) {
+        return 0.0;
+    }
+    let c = cell + vec2<f32>(0.25, 0.25) + h.yz * 0.5;
+    let off = q - c;
+    let angle = atan2(off.y, off.x);
+    let r = (0.12 + 0.2 * h.w) * (1.0 + 0.3 * sin(angle * 5.0 + h.y * 6.2831853) * h.z);
+    let d = length(off);
+    return (1.0 - smoothstep(r * 0.4, r, d)) * (0.55 + 0.45 * h.w);
+}
+fn snow_on_glass(uv: vec2<f32>, seed: f32, age: f32, side: bool, colour: vec4<f32>) -> vec4<f32> {
+    let speed = frame.rain.z;
+    let hit = select(1.0 + min(speed * 0.08, 2.0), 1.0 - 0.5 * clamp(speed / 15.0, 0.0, 1.0), side);
+    let density = clamp(age * frame.rain.x * 0.03 * hit, 0.0, 0.9);
+    if (density <= 0.0) {
+        return colour;
+    }
+    let fine = snow_flake(uv, 0.012, seed, density);
+    let clump = snow_flake(uv + vec2<f32>(0.37, 0.71), 0.035, seed + 11.0, density * 0.45);
+    let cover = clamp(max(fine, clump * 1.2), 0.0, 1.0);
+    if (cover <= 0.0) {
+        return colour;
+    }
+    let light = select(0.85, 0.5, frame.shading.z > 0.5) * rain_sky();
+    let white = vec3<f32>(light);
+    return vec4<f32>(mix(colour.xyz, white, cover * 0.9), max(colour.w, cover * 0.85));
+}
+fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_blended: bool, extent: f32) -> vec4<f32> {
+    // A window's glass is large; a gauge's glass and its needle small.
+    if (!is_blended || extent < 0.25 || frame.rain.x <= 0.0 || frame.room_lower.w < 0.5) {
+        return colour;
+    }
+    let p = (frame.room * vec4<f32>(world, 1.0)).xyz;
+    let lo = frame.room_lower.xyz;
+    let hi = frame.room_upper.xyz;
+    if (any(p < lo - vec3<f32>(0.3)) || any(p > hi + vec3<f32>(0.3))) {
+        return colour;
+    }
+    let n = normalize((frame.room * vec4<f32>(n_world, 0.0)).xyz);
+    let centre = (lo + hi) * 0.5;
+    let rel = (p - centre) / max((hi - lo) * 0.5, vec3<f32>(0.01));
+    if (abs(n.y) > 0.75) {
+        return colour; // a roof light
+    }
+    var uv = vec2<f32>(p.x, p.y);
+    var side = false;
+    // A window: at the room's wall (within 0.4 m of the box's front or back,
+    // 0.25 m of its side); deeper in, a gauge's glass stays dry.
+    let wall = min(p - lo, hi - p);
+    if (abs(n.z) >= abs(n.x)) {
+        if (wall.z > 0.6) {
+            return colour;
+        }
+    } else {
+        if (wall.x > 0.25) {
+            return colour;
+        }
+        uv = vec2<f32>(p.z, p.y);
+        side = true;
+    }
+    // The time since wiped: the rain's, the wipers' glass by its cell.
+    var age = frame.rain.y - frame.rain.w;
+    var seed = 0.0;
+    if (!side && frame.rain_front.y > 0.5 && sign(rel.z) == frame.rain_front.x) {
+        let g = (uv - frame.rain_grid.xy) / max(frame.rain_grid.zw - frame.rain_grid.xy, vec2<f32>(0.01));
+        if (all(g >= vec2<f32>(0.0)) && all(g < vec2<f32>(1.0))) {
+            // The wipe's time between the four nearest cells, its edge torn
+            // a little: no squares of the grid on the glass.
+            let ragged = (rain_hash(floor(uv / 0.008), 41.0).xy - vec2<f32>(0.5)) * 0.9;
+            let f = g * vec2<f32>(128.0, 64.0) - vec2<f32>(0.5) + ragged;
+            let base = floor(f);
+            let t = f - base;
+            var times: array<f32, 4>;
+            for (var k = 0; k < 4; k = k + 1) {
+                let c = clamp(vec2<i32>(base) + vec2<i32>(k % 2, k / 2), vec2<i32>(0), vec2<i32>(127, 63));
+                let index = c.y * 128 + c.x;
+                times[k] = max(frame.rain_wiped[index / 4][index % 4], frame.rain.w);
+            }
+            let wiped = mix(mix(times[0], times[1], t.x), mix(times[2], times[3], t.x), t.y);
+            if (frame.rain.y - wiped < age) {
+                age = frame.rain.y - wiped;
+                seed = floor(max(max(times[0], times[1]), max(times[2], times[3])) * 4.0);
+            }
+        }
+    }
+    if (frame.rain_front.z > 0.5) {
+        return snow_on_glass(uv, seed, age, side, colour);
+    }
+    // On the move the windscreen meets more of them, the side windows fewer.
+    let speed = frame.rain.z;
+    let hit = select(1.0 + min(speed * 0.1, 3.0), 1.0 - 0.4 * clamp(speed / 15.0, 0.0, 1.0), side);
+    // Gathering slower the more there are (half the most in about a minute
+    // of rain standing; faster in a downpour and on the move).
+    let density = 0.7 * (1.0 - exp(-max(age, 0.0) * frame.rain.x * 0.02 * hit));
+    if (density <= 0.0) {
+        return colour;
+    }
+    // The flow: up (front) or back (side) on the move, down standing.
+    let moving = clamp((speed - 3.0) / 12.0, 0.0, 1.0);
+    // How far they have run (m, integrated by the viewer: a change of speed
+    // moves them on from where they are, not the whole film at once).
+    let flow = frame.rain_front.w;
+    let stretch = 1.0 + moving * min(speed * 0.08, 3.0);
+    // Three layers of different sizes, shifted and turned against each
+    // other: no grid to be seen.
+    var best = 0.0;
+    var best_off = vec2<f32>(0.0);
+    var best_r = 1.0;
+    for (var layer = 0; layer < 3; layer = layer + 1) {
+        let fl = f32(layer);
+        let s = 0.017 + 0.009 * fl;
+        let turn = 0.6 + 1.1 * fl;
+        let rot = mat2x2<f32>(cos(turn), sin(turn), -sin(turn), cos(turn));
+        var q = rot * (uv + vec2<f32>(0.37, 0.11) * fl) / s;
+        // Each layer at its own pace: drops of a size run alike, not all.
+        // The front glass's drops run along its up; the side windows' their
+        // own way (back and down on the move).
+        let run = select(vec2<f32>(0.0, flow), frame.rain_side.xy, side) * (0.7 + 0.35 * fl);
+        q = q - (rot * run) / s;
+        let cell = floor(q);
+        let h = rain_hash(cell, seed + fl * 5.0);
+        if (h.x > density * (0.6 - 0.15 * fl)) {
+            continue;
+        }
+        let c = cell + vec2<f32>(0.2, 0.2) + h.yz * 0.6;
+        let r = (0.1 + 0.2 * h.w) * (1.0 - 0.2 * fl);
+        // Drawn out along the flow (the glass's up, turned into the layer).
+        let along = rot * select(vec2<f32>(0.0, 1.0), frame.rain_side.zw, side);
+        let o = q - c;
+        let o2 = vec2<f32>(dot(o, vec2<f32>(along.y, -along.x)), dot(o, along) / stretch);
+        let d = length(o2);
+        let drop = 1.0 - smoothstep(r * 0.7, r, d);
+        if (drop > best) {
+            best = drop;
+            best_off = o2;
+            best_r = r;
+        }
+    }
+    // A thin film of water left between the drops: the view behind a little
+    // hazy, unevenly (wiped: clear again).
+    let film_amount = 0.22 * (1.0 - exp(-max(age, 0.0) * frame.rain.x * 0.015 * hit));
+    let film_noise = rain_hash(floor(uv / 0.06), seed + 23.0).x * 0.5 + rain_hash(floor(uv / 0.023), seed + 29.0).y * 0.5;
+    let film = film_amount * (0.55 + 0.45 * film_noise);
+    let film_light = select(0.7, 0.45, frame.shading.z > 0.5) * rain_sky();
+    var base = vec4<f32>(mix(colour.xyz, vec3<f32>(film_light), film), max(colour.w, film));
+    if (best <= 0.0) {
+        return base;
+    }
+    // A lens: the sky's light caught on its upper edge, its lower half a
+    // little darker (the ground seen through it upside down).
+    let d = length(best_off);
+    let edge = smoothstep(best_r * 0.4, best_r * 0.95, d);
+    let up = clamp(best_off.y / max(best_r, 0.001) * 0.5 + 0.5, 0.0, 1.0);
+    let light = select(0.75, 0.55, frame.shading.z > 0.5) * rain_sky();
+    let lens = mix(base.xyz * 0.82, vec3<f32>(light), edge * up * 0.6);
+    return vec4<f32>(mix(base.xyz, lens, best * 0.85), max(base.w, best * 0.45));
+}
 
 // One primitive of the shape (static per model generation).
 struct Draw {
@@ -208,6 +409,7 @@ struct Draw {
     emissive: vec4<f32>,   // rgb the emission (linear), w 1: an emissive map
     maps: vec4<f32>,       // x the occlusion map's strength, y the normal map's, z 1: an ORM map, w 1: a normal map
     height: vec4<f32>,     // x the height map's depth (m), y 1: a height map, z the map's level the surface lies at
+    extent: vec4<f32>,     // x the primitive's second largest extent (m), y 1: a snow map
 };
 
 struct Instance {
@@ -255,6 +457,16 @@ fn coverage_alpha(alpha: f32, cutoff: f32, width: f32, mip: f32) -> f32 {
 @group(0) @binding(5) var emissive_texture: texture_2d<f32>;
 // Its height map (white the surface; without one a white stand-in).
 @group(0) @binding(6) var height_texture: texture_2d<f32>;
+// openRTS's snow map (the material's `snow`): the snow's colour, its alpha
+// where it lies; laid over the texture as much as frame.snow_cover says.
+@group(0) @binding(7) var snow_texture: texture_2d<f32>;
+fn with_snow(texel: vec4<f32>, uv: vec2<f32>, uv_dx: vec2<f32>, uv_dy: vec2<f32>) -> vec4<f32> {
+    let snow = textureSampleGrad(snow_texture, source_sampler, uv, uv_dx, uv_dy);
+    let cover = select(0.0, frame.snow_cover.x, draw.extent.y > 0.5);
+    // The cover grows from where the snow is thickest (its alpha highest).
+    let lies = clamp((snow.w - (1.0 - cover)) / max(cover, 0.001), 0.0, 1.0) * select(0.0, 1.0, cover > 0.0);
+    return vec4<f32>(mix(texel.xyz, snow.xyz, lies), texel.w);
+}
 @group(1) @binding(0) var<uniform> frame: Frame;
 @group(1) @binding(1) var<storage, read> instances: array<Instance>;
 // Per draw call a contiguous run of (instance, primitive) entries, starting at
@@ -263,6 +475,27 @@ fn coverage_alpha(alpha: f32, cutoff: f32, width: f32, mip: f32) -> f32 {
 @group(1) @binding(3) var<storage, read> locals: array<Local>;
 // The primitive being drawn: set first thing in each entry point.
 var<private> draw: Draw;
+
+// A draw whose UVs stay within 0..1 on an axis does not repeat its image
+// there: the sample is kept half a texel inside, so linear filtering does
+// not take the other edge's texels (the Kuban backdrops' tree walls: their
+// image's opaque bottom row showed as a thin line along their top, whose
+// row is clear). draw.height.w: 1 U, 2 V.
+fn keep_inside(uv: vec2<f32>) -> vec2<f32> {
+    let axes = u32(draw.height.w + 0.5);
+    if (axes == 0u) {
+        return uv;
+    }
+    let half_texel = 0.5 / vec2<f32>(textureDimensions(source_texture));
+    var kept = uv;
+    if ((axes & 1u) != 0u) {
+        kept.x = clamp(uv.x, half_texel.x, 1.0 - half_texel.x);
+    }
+    if ((axes & 2u) != 0u) {
+        kept.y = clamp(uv.y, half_texel.y, 1.0 - half_texel.y);
+    }
+    return kept;
+}
 
 struct Placement {
     model: mat4x4<f32>,
@@ -471,9 +704,11 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
     draw = draws[input.draw_slot];
-    let texel = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
+    let uv_in = keep_inside(input.uv);
+    let texel = with_snow(textureSampleBias(source_texture, source_sampler, uv_in, draw.lod_bias), uv_in,
+                          dpdx(uv_in) * exp2(draw.lod_bias), dpdy(uv_in) * exp2(draw.lod_bias));
     let alpha_width = fwidth(texel.w);
-    let texels = input.uv * vec2<f32>(textureDimensions(source_texture));
+    let texels = uv_in * vec2<f32>(textureDimensions(source_texture));
     let texels_dx = dpdx(texels);
     let texels_dy = dpdy(texels);
     let alpha_mip = 0.5 * log2(max(max(dot(texels_dx, texels_dx), dot(texels_dy, texels_dy)), 1e-8));
@@ -525,6 +760,9 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     if (frame.shading.z > 0.5) {
         color = vec4<f32>(pow(max(color.xyz, vec3<f32>(0.0)), vec3<f32>(2.2)), color.w);
     }
+
+    // openRTS: raindrops on the cab's glass.
+    color = rain_on_glass(input.world.xyz, input.normal, color, blended, draw.extent.x);
 
     // Fixed-function alpha test of RTS: GL_GREATER 0.3; with MSAA its edge
     // as coverage.
@@ -693,11 +931,12 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
     draw = draws[input.draw_slot];
+    let uv_in = keep_inside(input.uv);
     // The texture as RTS reads it (its LOD bias); the material's maps with
     // these gradients (in any branch).
-    var sampled = textureSampleBias(source_texture, source_sampler, input.uv, draw.lod_bias);
-    let uv_step_x = dpdx(input.uv);
-    let uv_step_y = dpdy(input.uv);
+    var sampled = textureSampleBias(source_texture, source_sampler, uv_in, draw.lod_bias);
+    let uv_step_x = dpdx(uv_in);
+    let uv_step_y = dpdy(uv_in);
     let uv_dx = uv_step_x * exp2(draw.lod_bias);
     let uv_dy = uv_step_y * exp2(draw.lod_bias);
     let world_dx = dpdx(input.world.xyz);
@@ -708,21 +947,21 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     // coordinates' own would jump at the relief's steps). Its alpha stays
     // the unshifted one: a cut-out (a body's windows) is the model's edge,
     // as the depth pre-pass has it. Not for blended surfaces (glass).
-    var uv = input.uv;
+    var uv = uv_in;
     if (!blended && draw.height.y > 0.5 && effects.views.y > 0.0) {
         let to_eye = frame.eye.xyz - input.world.xyz;
         let distance = length(to_eye);
         let fade = 1.0 - smoothstep(effects.views.y * 0.75, effects.views.y, distance);
         if (fade > 0.0) {
-            uv = parallax_uv(input.uv, to_eye / max(distance, 1e-4), normalize(input.normal), draw.height.x * fade, draw.height.z, world_dx,
+            uv = parallax_uv(uv_in, to_eye / max(distance, 1e-4), normalize(input.normal), draw.height.x * fade, draw.height.z, world_dx,
                              world_dy, uv_step_x, uv_step_y, uv_dx, uv_dy, effects.views.z);
             sampled = vec4<f32>(textureSampleGrad(source_texture, source_sampler, uv, uv_dx, uv_dy).xyz, sampled.w);
         }
     }
     // The material's base colour factor (openRTS's material; 1 without one).
-    let texel = vec4<f32>(sampled.xyz, sampled.w * draw.base_color.w);
+    let texel = with_snow(vec4<f32>(sampled.xyz, sampled.w * draw.base_color.w), uv, uv_dx, uv_dy);
     let alpha_width = fwidth(texel.w);
-    let texels = input.uv * vec2<f32>(textureDimensions(source_texture));
+    let texels = uv_in * vec2<f32>(textureDimensions(source_texture));
     let texels_dx = dpdx(texels);
     let texels_dy = dpdy(texels);
     let alpha_mip = 0.5 * log2(max(max(dot(texels_dx, texels_dx), dot(texels_dy, texels_dy)), 1e-8));
@@ -985,13 +1224,13 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         if (effects.flags.z == 0u && input.fog.w > 0.0) {
             light = mix(light, to_linear(input.fog.xyz), input.fog.w);
         }
-        return vec4<f32>(light, coverage);
+        return rain_on_glass(input.world.xyz, input.normal, vec4<f32>(light, coverage), blended, draw.extent.x);
     }
     var display = to_display(select(shoulder(colour), max(colour, vec3<f32>(0.0)), hdr_output));
     if (effects.flags.z == 0u && input.fog.w > 0.0) {
         display = mix(display, input.fog.xyz, input.fog.w);
     }
-    return vec4<f32>(display, coverage);
+    return rain_on_glass(input.world.xyz, input.normal, vec4<f32>(display, coverage), blended, draw.extent.x);
 }
 )";
 
@@ -1098,13 +1337,34 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
         }
         result.room_lower[3] = 1.0f;
     }
+    if (lighting.room && lighting.rain && lighting.rain->amount > 0.0f) {
+        const auto& r = *lighting.rain;
+        result.rain[0] = r.amount;
+        result.rain[1] = r.time;
+        result.rain[2] = r.speed;
+        result.rain[3] = r.since;
+        result.rain_grid[0] = r.x0;
+        result.rain_grid[1] = r.y0;
+        result.rain_grid[2] = r.x1;
+        result.rain_grid[3] = r.y1;
+        result.rain_front[0] = r.front;
+        result.rain_front[1] = r.wiped_glass ? 1.0f : 0.0f;
+        result.rain_front[2] = r.snow ? 1.0f : 0.0f;
+        result.rain_front[3] = r.flow;
+        result.rain_side[0] = r.side_x;
+        result.rain_side[1] = r.side_y;
+        result.rain_side[2] = r.side_dir_x;
+        result.rain_side[3] = r.side_dir_y;
+        for (std::size_t i = 0; i < r.wiped.size(); ++i) result.rain_wiped[i] = r.wiped[i];
+    }
+    result.snow_cover[0] = std::clamp(lighting.snow_cover, 0.0f, 1.0f);
     return result;
 }
 
 [[nodiscard]] WGPUBindGroupLayout create_material_layout(const WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, 7> entries{};
-    // openRTS's material maps (ORM, normal, emissive, height).
-    for (std::uint32_t i = 3; i < 7; ++i) {
+    std::array<WGPUBindGroupLayoutEntry, 8> entries{};
+    // openRTS's material maps (ORM, normal, emissive, height, snow).
+    for (std::uint32_t i = 3; i < 8; ++i) {
         entries[i].binding = i;
         entries[i].visibility = WGPUShaderStage_Fragment;
         entries[i].texture.sampleType = WGPUTextureSampleType_Float;
@@ -1243,6 +1503,7 @@ struct Draw { // as the shading paths' (MaterialUniform)
     emissive: vec4<f32>,
     maps: vec4<f32>,
     height: vec4<f32>,
+    extent: vec4<f32>,
 };
 struct Instance {
     transform: mat4x4<f32>,
@@ -1743,12 +2004,12 @@ struct SharedBinding {
         if (group) wgpuBindGroupRelease(group);
     }
 };
-using BindingKey = std::tuple<const MaterialPage*, WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, int>;
+using BindingKey = std::tuple<const MaterialPage*, WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, WGPUTextureView, int>;
 
 // The pages and the bindings, shared by the renderer and its models (a
 // model may outlive the renderer in its library).
 struct ModelPools {
-    static constexpr std::uint64_t material_slots = 1u << 16; // a page's (14.7 MB of 224-byte MaterialUniforms)
+    static constexpr std::uint64_t material_slots = 1u << 16; // a page's (15.7 MB of 240-byte MaterialUniforms)
     WGPUDevice device = nullptr;
     // Off (OPENRTS_SHARED_MODEL_BUFFERS=0): every model its own buffers, as
     // before 2026-11-20 (a check, or a driver that does not take them).
@@ -1941,10 +2202,12 @@ struct RenderModel::Impl {
         glm::vec4 emissive{0.0f};
         glm::vec4 maps{1.0f, 1.0f, 0.0f, 0.0f};
         glm::vec4 height{0.0f};
+        float extent{};
         WGPUTextureView orm_view = nullptr;
         WGPUTextureView normal_view = nullptr;
         WGPUTextureView emissive_view = nullptr;
         WGPUTextureView height_view = nullptr;
+        WGPUTextureView snow_view = nullptr;
     };
     // The bindings its draws take, one per material page, texture and
     // sampler filter (the draws' own, a TextureOverride's, an unlit node's),
@@ -2307,6 +2570,7 @@ struct ModelRenderer::Impl {
             .emissive = {draw.emissive.x, draw.emissive.y, draw.emissive.z, draw.emissive.w},
             .maps = {draw.maps.x, draw.maps.y, draw.maps.z, draw.maps.w},
             .height = {draw.height.x, draw.height.y, draw.height.z, draw.height.w},
+            .extent = {draw.extent, draw.snow_view ? 1.0f : 0.0f, 0.0f, 0.0f},
         };
     }
 
@@ -2376,13 +2640,16 @@ struct ModelRenderer::Impl {
         const auto normal = draw.normal_view ? draw.normal_view : flat_normal_view;
         const auto emissive = draw.emissive_view ? draw.emissive_view : black_view;
         const auto height = draw.height_view ? draw.height_view : white_view;
+        const auto snow = draw.snow_view ? draw.snow_view : black_view;
         const MaterialPage* page = unlit ? model.unlit_range.page : model.material_range.page;
         if (!page || !page->buffer || !view) return nullptr;
-        const BindingKey key{page, view, orm, normal, emissive, height, static_cast<int>(filter)};
+        const BindingKey key{page, view, orm, normal, emissive, height, snow, static_cast<int>(filter)};
         if (const auto it = model.bindings.find(key); it != model.bindings.end()) return it->second->group;
         const auto buffer = page->buffer;
         const auto shared = pools->binding(key, [&] {
-        std::array<WGPUBindGroupEntry, 7> entries{};
+        std::array<WGPUBindGroupEntry, 8> entries{};
+        entries[7].binding = 7;
+        entries[7].textureView = snow;
         entries[6].binding = 6;
         entries[6].textureView = height;
         entries[3].binding = 3;
@@ -2775,17 +3042,34 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
 
         glm::vec3 local_sum{};
         std::uint32_t point_count = 0;
+        float u_low = 1e9f, u_high = -1e9f, v_low = 1e9f, v_high = -1e9f;
+        glm::vec3 own_low{1e9f}, own_high{-1e9f};
         const auto end = (std::min)(range.first_index + range.index_count, static_cast<std::uint32_t>(model.indices.size()));
         for (auto index = range.first_index; index < end; ++index) {
             const auto vertex = model.indices[index];
             if (vertex >= model.vertices.size()) continue;
             const auto local = to_vec3(model.vertices[vertex].position);
             bounds.add(glm::vec3{draw.world * glm::vec4{local, 1.0f}});
+            {
+                const glm::vec3 w{draw.world * glm::vec4{local, 1.0f}};
+                own_low = glm::min(own_low, w);
+                own_high = glm::max(own_high, w);
+            }
             local_sum += local;
             ++point_count;
+            const auto& uv = model.vertices[vertex].uv;
+            u_low = (std::min)(u_low, uv[0]);
+            u_high = (std::max)(u_high, uv[0]);
+            v_low = (std::min)(v_low, uv[1]);
+            v_high = (std::max)(v_high, uv[1]);
         }
         if (point_count > 0) {
             draw.center = glm::vec3{draw.world * glm::vec4{local_sum / static_cast<float>(point_count), 1.0f}};
+            glm::vec3 size = own_high - own_low;
+            if (size.x > size.y) std::swap(size.x, size.y);
+            if (size.y > size.z) std::swap(size.y, size.z);
+            if (size.x > size.y) std::swap(size.x, size.y);
+            draw.extent = size.y; // the middle one
         }
 
         auto view = primitive_texture(gpu, model, state);
@@ -2811,7 +3095,15 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
             // surface to one in the image by the screen's derivatives.
             draw.height_view = map_view(m.height);
             draw.height = {f.height_scale, draw.height_view ? 1.0f : 0.0f, f.height_reference, 0.0f};
+            draw.snow_view = map_view(m.snow);
             if (const auto base = map_view(m.base_color)) view = base;
+        }
+        // The axes whose UVs stay within the image (keep_inside).
+        if (point_count > 0) {
+            constexpr float slack = 1e-3f;
+            const bool u_inside = u_low >= -slack && u_high <= 1.0f + slack;
+            const bool v_inside = v_low >= -slack && v_high <= 1.0f + slack;
+            draw.height.w = (u_inside ? 1.0f : 0.0f) + (v_inside ? 2.0f : 0.0f);
         }
         gpu.draws.push_back(draw);
         views.push_back(*view);

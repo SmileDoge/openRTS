@@ -265,6 +265,7 @@ std::optional<openrts::net::Bytes> wait_for_world(openrts::net::RtsConnection& c
 }
 
 int run_window(std::string_view mode, std::string_view path, const std::vector<std::string_view>& flags) {
+    openrts::viewer::apply_settings_defaults();
     openrts::viewer::WindowOptions options;
     // The volume last set (viewer panel or the start menu); --volume overrides it.
     if (const auto volume = openrts::viewer::remembered("volume")) {
@@ -444,6 +445,17 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             fps_given = true;
         } else if (flags[i] == "--capture-drive" && has_value) {
             options.capture_drive = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--developer") {
+            // "For developers" on for this run only (viewer_state.hpp).
+            openrts::viewer::set_developer_mode(true, false);
+        } else if (flags[i] == "--capture-panel" && has_value) {
+            // The panels on a tab with their sections open: general,
+            // graphics, train, world, performance, controls.
+            const std::string tab(flags[++i]);
+            const char* tabs[] = {"general", "graphics", "train", "world", "performance", "controls"};
+            for (int k = 0; k < 6; ++k)
+                if (tab == tabs[k]) openrts::viewer::set_capture_panel(k);
+            options.capture_ui = true;
         } else if (flags[i] == "--capture-cab") {
             options.capture_cab = true;
         } else if (flags[i] == "--capture-car" && has_value) {

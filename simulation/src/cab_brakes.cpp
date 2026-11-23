@@ -10,8 +10,13 @@ CabBrakeNumbers CabBrakeNumbers::brakes_dll() {
     CabBrakeNumbers n;
     n.charge_ur_rate = 0.18f;
     n.charge_ur_gain = 2.0f;
-    n.running_ur_rate = 0.1f;
-    n.running_ur_gain = 2.0f;
+    // II: at most 0.25 atm/s, slower near the charge (measured on the ЭП2Д
+    // after a full service: 1.67 to 3.92 at 0.25 atm/s, the charge 5 s
+    // later). 0.1 had been taken from a step's return, all of it near the
+    // charge; after a full service the pipe came back at 0.1 and the
+    // brakes took some 40 s to let off (testers).
+    n.running_ur_rate = 0.25f;
+    n.running_ur_gain = 1.0f;
     n.stabiliser = 0.002f;
     n.charging_drop = 0.1f;
     n.lap_ur_rate = 0.1f;
@@ -59,6 +64,10 @@ CabBrakeNumbers CabBrakeNumbers::openrts() {
     // books'. Крылов В. И., Крылов В. В., «Автоматические тормоза
     // подвижного состава», 1983 (pages of the book).
     CabBrakeNumbers n = brakes_dll();
+    // II: the reducer's charging as before (0.1 atm/s, closing in on the
+    // charge 2 x the gap).
+    n.running_ur_rate = 0.1f;
+    n.running_ur_gain = 2.0f;
     // The reducer holds the УР at the pressure it is set to, within 0.005
     // MPa (§24, p. 100); Brakes.dll holds it 0.1 atm below the one named.
     n.charging_drop = 0.0f;
@@ -279,6 +288,7 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
         s.sensor418 = false;
         s.sensor418_time = 0.0f;
     }
+    if (dt > 0.0f && s.last_pipe >= 0.0f) s.pipe_rise += ((air.pipe - s.last_pipe) / dt - s.pipe_rise) * std::min(1.0f, dt);
     s.last_pipe = air.pipe;
     out.lamp_pipe = s.sensor418;
 
@@ -315,11 +325,20 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
     // The valve's, while it works the pipe: I and II feeding it, V venting
     // it, II with the pipe up at the charge (0.4 under the pressure named:
     // Brakes.dll's (charge × 10 − 1 − 3) / 10).
-    if (connected) {
-        sound(0x8, at(ValvePosition::running) && air.pipe > c.charging - 0.4f, 132, c.sounds_130);
-        sound(0x10, at(ValvePosition::charge) && air.valve_feed > 0.05f, 124, c.sounds_130);
-        sound(0x20, at(ValvePosition::running) && air.valve_feed > 0.05f, 126, c.sounds_130);
-        sound(0x40, at(ValvePosition::service) && air.pipe > 0.1f, 128, c.sounds_130);
+    {
+        // Off too when the КПТ takes the position over (a loop running stops).
+        const bool own = connected && !c.by_controller;
+        sound(0x8, own && at(ValvePosition::running) && air.pipe > c.charging - 0.4f, 132, c.sounds_130);
+        sound(0x10, own && at(ValvePosition::charge) && air.valve_feed > 0.05f, 124, c.sounds_130);
+        // II feeding: while the pipe is being charged (rising, or still
+        // short of the charge), not while it only makes up its leaks at the
+        // charge (the realistic air's train leaks through the engine's
+        // relay all the time: the loud feed went on with the pipe steady,
+        // testers on the ЧС7 and the ВЛ80т); there the quiet 132 alone.
+        const float rising = (s.sounds & 0x20u) ? 0.003f : 0.01f; // on over 0.01 atm/s, off under 0.003
+        const bool charging = air.pipe < c.charging - 0.4f || s.pipe_rise > rising;
+        sound(0x20, own && at(ValvePosition::running) && air.valve_feed > 0.05f && charging, 126, c.sounds_130);
+        sound(0x40, own && at(ValvePosition::service) && air.pipe > 0.1f, 128, c.sounds_130);
     }
     // The pipe vented at the engine (VI, ЭТ, a stop valve, the ЭПК; Brakes.dll's
     // TrainPipeRate −1.2) while there is air in it.

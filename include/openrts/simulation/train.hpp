@@ -198,6 +198,8 @@ struct DriverHandles {
 // on below 7.5 atm, off above 9; with the realistic air a КТ-6's 0.088
 // m³·atm/s into the real reservoir volume. The rate for MainResRate, atm/s.
 [[nodiscard]] float compressor_rate(bool& running, const EngineInputs& inputs);
+// The same compressor's delivery while it runs, whoever governs it, atm/s.
+[[nodiscard]] float compressor_delivery(const EngineInputs& inputs);
 // The compressor governor of an engine, atm: {cut-in, cut-out}. The .eng's
 // AirBrakesCompressorRestartPressure and AirBrakesMainMaxAirPressure (a
 // ЭД4М's real one is 6.5-8.0, a locomotive's 7.5-9.0), else 7.5 / 9.0.

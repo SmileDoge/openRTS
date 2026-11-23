@@ -42,7 +42,9 @@
 #include "discord_status.hpp"
 #include "file_dialog.hpp"
 #include "frame_limiter.hpp"
+#include "brake_settings_ui.hpp"
 #include "graphics_presets_ui.hpp"
+#include "sound_extras_ui.hpp"
 #include "graphics_settings.hpp"
 #include "key_layout.hpp"
 #include "rts_config.hpp"
@@ -328,12 +330,8 @@ struct Launcher::State {
     bool sound = true;
     float volume = 0.5f;
     bool vsync = true;
-    // The brakes, the game's Train window's too: the realistic air
-    // ("realistic_air") and the air of trains with locomotive DLLs
-    // ("dll_air": 0 RTS's, 1 the DLL's valve, 2 openRTS's valve).
-    bool realistic_air = false;
-    int dll_air = 0;
-    bool gauges_air = true; // gauges_openrts_air: the cab's air gauges from the realistic air
+    // The brakes, the game's Train window's too (brake_settings_ui.hpp).
+    viewer::BrakeSettings brakes;
     // The graphics settings, the game's panel's too (graphics_settings.hpp):
     // each change written at once, only what changed.
     viewer::GraphicsSettings graphics;
@@ -462,6 +460,7 @@ struct Launcher::State {
     }
 
     void load_settings() {
+        viewer::apply_settings_defaults();
         fs::path folder;
         if (const auto value = remembered("root"); value && is_installation(from_utf8(*value))) folder = from_utf8(*value);
         if (folder.empty()) {
@@ -494,9 +493,7 @@ struct Launcher::State {
         viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
         viewer::set_body_motion_model(viewer::parse_body_motion_model(remembered("body_motion").value_or("openrts").c_str()));
         vsync = remembered_int("launcher_vsync", 1) != 0;
-        realistic_air = remembered_int("realistic_air", 0) != 0;
-        dll_air = std::clamp(remembered_int("dll_air", 0), 0, 2);
-        gauges_air = remembered_int("gauges_openrts_air", 1) != 0;
+        brakes = viewer::load_brake_settings();
         load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
@@ -950,6 +947,16 @@ struct Launcher::State {
         // (no console window); a network game's steps are read back from it.
         SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
         const auto log_path = viewer::user_data_directory() / L"openrts.log";
+        // The last two runs' logs kept beside it (openrts.1.log, then
+        // openrts.2.log): a player who starts the game again has not lost
+        // what happened (testers 2026-11-21: a helper's log, needed for a
+        // network bug, was gone once he logged in again).
+        {
+            const auto older = viewer::user_data_directory() / L"openrts.2.log";
+            const auto old = viewer::user_data_directory() / L"openrts.1.log";
+            MoveFileExW(old.c_str(), older.c_str(), MOVEFILE_REPLACE_EXISTING);
+            MoveFileExW(log_path.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING);
+        }
         const HANDLE log = CreateFileW(log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit,
                                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         STARTUPINFOW startup{};
@@ -1592,6 +1599,10 @@ void Launcher::State::draw_settings(const float height) {
                 viewer::set_background_sound(static_cast<viewer::BackgroundSound>(quiet));
                 remember("background_sound", viewer::background_sound_key(viewer::background_sound()));
             }
+            form_row(tr("Own sounds"));
+            ImGui::BeginGroup();
+            viewer::draw_sound_extras();
+            ImGui::EndGroup();
             ImGui::EndDisabled();
             form_row(tr("Rail joints"));
             int joints = viewer::rail_joint_layout() == simulation::RailJointLayout::rts ? 1 : 0;
@@ -1615,35 +1626,10 @@ void Launcher::State::draw_settings(const float height) {
                                                   : tr("(each body on its own springs over its bogies: the track's errors under each bogie, rail joints and switches, hunting, curves; bounce, pitch, sway, yaw and roll)"));
             ImGui::EndTable();
         }
-        // The brakes (the game's Train window has the same; both remembered):
-        // set once here, not in the game every run (testers, 2026-11-17).
+        // The brakes: the game's Train window's section (brake_settings_ui.hpp).
         ImGui::Spacing();
         ImGui::SeparatorText(tr("Brakes"));
-        if (begin_form("##brakes_form", label_width)) {
-            form_row(tr("Realistic air (openRTS)"));
-            if (ImGui::Checkbox("##realistic_air", &realistic_air)) remember("realistic_air", realistic_air ? "1" : "0");
-            ImGui::TextDisabled("%s", realistic_air ? tr("(flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed; not in network games)")
-                                                    : tr("(off: RTS's model, as RTS brakes)"));
-            form_row(tr("Trains with DLLs"));
-            const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),
-                                   tr("openRTS valve over Brakes.dll (experimental)")};
-            ImGui::BeginDisabled(!realistic_air);
-            ImGui::SetNextItemWidth(330.0f);
-            if (ImGui::Combo("##dll_air", &dll_air, modes, 3)) remember("dll_air", std::to_string(dll_air));
-            ImGui::EndDisabled();
-            ImGui::TextDisabled("%s", tr(!realistic_air ? "(works with the realistic air on)"
-                                         : dll_air == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
-                                         : dll_air == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
-                                                        : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
-            form_row(tr("Cab gauges"));
-            ImGui::BeginDisabled(!realistic_air);
-            if (ImGui::Checkbox(tr("show openRTS's air (pipe, cylinders, main reservoir)"), &gauges_air)) remember("gauges_openrts_air", gauges_air ? "1" : "0");
-            ImGui::EndDisabled();
-            ImGui::TextDisabled("%s", tr(!realistic_air ? "(works with the realistic air on; without it the gauges are the DLL's, as in RTS)"
-                                         : gauges_air ? "(the gauges named DTM, DTC1, DTC2, DGR show what F5 shows; the others stay the DLL's)"
-                                                      : "(as the DLL draws them: its own needles, which may lag or run ahead of F5)"));
-            ImGui::EndTable();
-        }
+        viewer::draw_brake_settings(brakes, nullptr, label_width);
     }
     ImGui::EndChild();
     ImGui::SameLine();
@@ -1670,6 +1656,16 @@ void Launcher::State::draw_settings(const float height) {
         hint(tr("Others see \"Playing openRTS\": in the menu or driving which engine, on which route and for how long. Only the Discord program on this computer is told; nothing of a server's."));
         ImGui::Spacing();
         draw_ace_settings();
+        ImGui::Spacing();
+        // For developers (viewer_state.hpp): F12 in the game too.
+        ImGui::SeparatorText(tr("For developers"));
+        if (begin_form("##developer_form", label_width)) {
+            form_row(tr("Settings for developers (F12)"));
+            bool developer = viewer::developer_mode();
+            if (ImGui::Checkbox("##developer_mode", &developer)) viewer::set_developer_mode(developer);
+            ImGui::EndTable();
+        }
+        hint(tr("Debug settings and readouts, the Performance tab and the inspector."));
     }
     ImGui::EndChild();
 }

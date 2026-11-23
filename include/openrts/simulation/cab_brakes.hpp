@@ -90,6 +90,10 @@ struct CabBrakeControls {
     // The handle rests in its position (not passing through): VЭ and V lower
     // the УР only then.
     bool valve_resting = true;
+    // The position is the КПТ's (the ЭП2Д's controller moved last): the
+    // 395's own air sounds stay silent, as Brakes.dll's (the DLL sounds the
+    // КПТ itself: the ЭП2Д's kptR1 / kptR2; testers heard both at I).
+    bool by_controller = false;
     // The charging pressure named (BR_ZARPRESS, the reducer's label), atm.
     float charging = 5.0f;
     // The valve off the pipe: the 367 out of its working state, the
@@ -153,6 +157,7 @@ struct CabBrakeState {
     float last_pipe = -1.0f;
     bool started = false;
     std::uint32_t sounds{}; // the air sounds playing, a bit each (docs/reverse/brakes-dll.md §10)
+    float pipe_rise{};      // the pipe's rise at the engine, atm/s, smoothed over about a second
 };
 
 struct CabBrakeOutput {

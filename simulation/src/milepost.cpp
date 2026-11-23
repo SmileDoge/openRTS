@@ -16,7 +16,9 @@ bool is_milepost(const formats::TrackItem& item) {
 
 } // namespace
 
-void update_milepost(MilepostState& state, const TrackNetwork& network, const std::uint32_t node, const double offset, const bool forward) {
+void update_milepost(MilepostState& state, const TrackNetwork& network, const std::uint32_t node, const double offset, const bool forward,
+                     const double moved) {
+    const MilepostState before = state;
     state.known = true;
     state.base = -1.0f;
     state.decreasing = false;
@@ -43,6 +45,10 @@ void update_milepost(MilepostState& state, const TrackNetwork& network, const st
     } else if (first(forward, ahead, ahead_km)) {
         // Its second search ahead finds the same post again.
         state.base = ahead - ahead_km;
+    }
+    if (state.base < 0.0f && before.known && before.base >= 0.0f) {
+        state.decreasing = before.decreasing;
+        state.base = static_cast<float>(before.base + (before.decreasing ? -moved : moved) * 0.001);
     }
 }
 

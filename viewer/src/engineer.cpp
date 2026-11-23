@@ -5,7 +5,6 @@
 #include <array>
 #include <cctype>
 #include <cmath>
-#include <cstdlib>
 #include <string>
 
 #include <glm/geometric.hpp>
@@ -33,13 +32,15 @@ std::string lower(std::string s) {
     return s;
 }
 
-bool is_exterior(const formats::CabDoor& door) {
-    return lower(door.from) == "exterior" || lower(door.to) == "exterior";
-}
-
 // A door to the car coupled at that end (WAGON_FRONT / WAGON_BACK).
 bool is_passage(const formats::CabDoor& door) {
     return lower(door.from).rfind("wagon", 0) == 0 || lower(door.to).rfind("wagon", 0) == 0;
+}
+
+// A door out to the ground. The ChS7's and 2M62's end doors say
+// Connects ( EXTERIOR WAGON_BACK ): a way to the next section, not out.
+bool is_exterior(const formats::CabDoor& door) {
+    return !is_passage(door) && (lower(door.from) == "exterior" || lower(door.to) == "exterior");
 }
 
 // A door out onto the car's own outside (EXT_WAG: the ChME3's cab doors to
@@ -1135,7 +1136,10 @@ void Engineer::end_passage(const CarOutside* car, const Outdoors& outdoors) {
     if (mode_ != Mode::on_car || !car || !car->details) return;
     if (word == "exterior") {
         get_off_car(*car, feet_); // RTS -1: on the ground
-    } else if (word == "interior") {
+    } else if (word == "interior" || word == "interiorpass") {
+        // INTERIOR (RTS -3) the cab, INTERIORPASS (-7) a passenger car's
+        // salon: either is the car's room (the coaches' doors say the
+        // second, UZ_4-CAPITALS; he stayed on the steps, testers).
         event_ = {.kind = Event::Kind::into_cab, .door = door, .at = feet_}; // RTS -3: the cab
     } else if (word == "wagon_front" || word == "wagon_back") {
         event_ = {.kind = Event::Kind::next_car, .side = word == "wagon_front" ? 1 : -1, .at = feet_};
@@ -1182,7 +1186,7 @@ void Engineer::walk_on_car(const CarOutside& car, const glm::vec3& step, const O
         }
     } else if (last_.kind == OutsideFooting::Kind::door && last_.index < d.door_details.size()) {
         const auto& door = d.door_details[last_.index];
-        if (door.to == "interior" && car.cab_holds && car.cab_holds(to)) {
+        if ((door.to == "interior" || door.to == "interiorpass") && car.cab_holds && car.cab_holds(to)) {
             // Into the cab along the door's way (RTS 0x4310B0).
             passage_.start(door.trajectory.empty() ? std::vector<formats::TrajectoryPoint>{{{to.x, to.y, to.z}, 0}} : door.trajectory,
                            feet_, false);

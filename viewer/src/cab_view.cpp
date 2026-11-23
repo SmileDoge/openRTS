@@ -124,6 +124,17 @@ CabCollision CabCollision::build(const formats::ShapeModel& model) {
     return out;
 }
 
+void CabCollision::node_points(const std::int32_t node, std::vector<glm::vec3>& out, const std::size_t step) const {
+    std::size_t k = 0;
+    for (const auto& t : triangles_) {
+        if (t.node != node) continue;
+        if (k++ % (std::max)(step, std::size_t{1}) != 0) continue;
+        out.push_back(t.a);
+        out.push_back(t.b);
+        out.push_back(t.c);
+    }
+}
+
 void CabCollision::node_bounds(const std::size_t nodes, std::vector<glm::vec3>& lower, std::vector<glm::vec3>& upper) const {
     lower.assign(nodes, glm::vec3{1e9f});
     upper.assign(nodes, glm::vec3{-1e9f});
@@ -416,6 +427,41 @@ void CabView::step_displays(const float elapsed) {
     for (std::size_t k = 0; k < free_anims_.size(); ++k) {
         auto& a = free_anims_[k];
         const bool running = k < free_anim_running_.size() && free_anim_running_[k] != 0;
+        if (!a.continuous) {
+            // Not CONTINUOUS (the ЭП20's mirrors: the DLL keeps it running
+            // while they are out): to the last key frame while running, back
+            // to the first when not. Until 2026-11-22 it went round and
+            // round and stood wherever the DLL stopped it.
+            const float step = elapsed / a.time;
+            a.phase = running ? (std::min)(a.phase + step, 1.0f) : (std::max)(a.phase - step, 0.0f);
+            a.moving = running ? a.phase < 1.0f : a.phase > 0.0f;
+            continue;
+        }
+        if (!a.loop) {
+            // CONTINUOUS without LOOP goes to its last key frame and back
+            // (ts.h's FreeAnimation: bit 2 LOOP, byte 1's "goes down"). The
+            // ЭП1М-500's new cab keys its wipers one way only: going round
+            // they jumped back to the left (testers, 2026-11-22). Keys made
+            // there and back (the old cab's, the ЭД4М's) look the same either
+            // way. Stopped, RETURNS goes on to frame 0, else it stands.
+            if (!running && (!a.moving || !a.returns)) {
+                a.moving = false;
+                continue;
+            }
+            a.moving = true;
+            const float step = elapsed / a.time;
+            a.phase += a.down ? -step : step;
+            if (a.phase >= 1.0f) {
+                a.phase = 2.0f - a.phase;
+                a.down = true;
+            }
+            if (a.phase <= 0.0f) {
+                a.phase = 0.0f;
+                a.down = false;
+                if (!running) a.moving = false; // back at frame 0
+            }
+            continue;
+        }
         if (!running && (!a.moving || !a.returns)) {
             a.moving = false; // stopped where it is
             continue;
@@ -443,6 +489,8 @@ void CabView::poll() {
         FreeAnim a;
         a.time = animation.anim_time > 0.0f ? animation.anim_time : 1.0f;
         a.returns = lower(animation.flags).find("returns") != std::string::npos;
+        a.continuous = lower(animation.flags).find("continuous") != std::string::npos;
+        a.loop = lower(animation.flags).find("loop") != std::string::npos;
         for (const auto& name : animation.nodes) {
             const auto it = geometry_->nodes.find(lower(name));
             if (it == geometry_->nodes.end()) continue; // a misspelt one (the ВЛ80Т's WIRER2) moves nothing, as in RTS
@@ -1055,6 +1103,43 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             for (auto it = out.begin() + static_cast<std::ptrdiff_t>(first); it != out.end();) {
                 it = it->matrix == node && it->hidden ? out.erase(it) : it + 1;
             }
+        }
+    }
+}
+
+void CabView::wiper_points(std::vector<glm::vec3>& out) const {
+    if (!geometry_ || !geometry_->rig) return;
+    const auto& rig = *geometry_->rig;
+    const auto count = static_cast<std::int32_t>(rig.matrices.size());
+    const auto parent_of = [&](const std::int32_t n) {
+        return n >= 0 && static_cast<std::size_t>(n) < rig.hierarchy.size() ? rig.hierarchy[static_cast<std::size_t>(n)] : -1;
+    };
+    std::vector<glm::vec3> rest;
+    for (const auto& a : free_anims_) {
+        if (!a.moving) continue; // a blade at rest wipes nothing
+        // Every node the animation moves: its nodes and all below them (a
+        // blade is often a child of the arm the keys turn), each by the
+        // corrections of its animated ancestors, outermost last.
+        for (std::int32_t node = 0; node < count; ++node) {
+            glm::mat4 pose{1.0f};
+            bool moved = false;
+            std::int32_t guard = 0;
+            for (std::int32_t up = node; up >= 0 && up < count && guard <= count; up = parent_of(up), ++guard) {
+                for (std::size_t n = 0; n < a.nodes.size(); ++n) {
+                    if (a.nodes[n] != up) continue;
+                    pose = CabCollision::pose_of(rig, up, a.phase * (n < a.last.size() ? a.last[n] : 0.0f)) * pose;
+                    moved = true;
+                }
+            }
+            if (!moved) continue;
+            rest.clear();
+            geometry_->collision.node_points(node, rest, 1);
+            // Whole triangles, at most some 150 a node.
+            const std::size_t triangles = rest.size() / 3;
+            if (triangles == 0) continue;
+            const std::size_t step = (std::max)(std::size_t{1}, triangles / 150);
+            for (std::size_t t = 0; t < triangles; t += step)
+                for (std::size_t k = 0; k < 3; ++k) out.push_back(glm::vec3{pose * glm::vec4{rest[t * 3 + k], 1.0f}});
         }
     }
 }

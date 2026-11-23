@@ -244,6 +244,14 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
         result.alternative_texture = description.value->alternative_texture;
         result.lights = description.value->lights;
     }
+    // openRTS's own changes to it (the inspector's, from a mod): NightTextures
+    // ( 0 ) drops the night from its alternative textures (256 none, 257 the
+    // snow alone), so every key made of them agrees.
+    const auto own = find_shape_override(vfs, shape);
+    if (own.night_textures && !*own.night_textures) {
+        if (result.alternative_texture == 0x100) result.alternative_texture = 0;
+        else if (result.alternative_texture == 0x101) result.alternative_texture = 1;
+    }
     result.texture_folders = alternative_texture_folders(result.alternative_texture, variant);
 
     const auto body = formats::load_binary_shape_body(vfs, geometry);
@@ -256,8 +264,7 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
         result.error = result.model.error;
         return result;
     }
-    // openRTS's own changes to it (the inspector's, from a mod).
-    result.original_light = formats::apply_shape_override(result.model, find_shape_override(vfs, shape));
+    result.original_light = formats::apply_shape_override(result.model, own);
 
     // Images drawn only on FullBright surfaces (light material -8).
     std::vector<int> fullbright_use(result.model.images.size(), 0); // 1 FullBright only, 2 also other

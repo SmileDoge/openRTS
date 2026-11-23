@@ -322,6 +322,11 @@ float compressor_rate(bool& running, const EngineInputs& inputs) {
     if (inputs.main_reservoir < range.on) running = true;
     if (inputs.main_reservoir >= range.off) running = false;
     if (!running) return 0.0f;
+    return compressor_delivery(inputs);
+}
+
+float compressor_delivery(const EngineInputs& inputs) {
+    const auto* engine = inputs.definition && inputs.definition->engine ? &*inputs.definition->engine : nullptr;
     if (inputs.realistic_air && engine) {
         // Its delivery (m³ of free air a minute) into the real main reservoir
         // volume: the .eng's or the stock rules' ORTSCompressorCapacity, else

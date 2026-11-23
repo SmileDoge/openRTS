@@ -59,8 +59,10 @@
 #include <openrts/simulation/traffic.hpp>
 #include <openrts/trainplugin/native_plugin.hpp>
 
+#include "brake_settings_ui.hpp"
 #include "camera.hpp"
 #include "cab_view.hpp"
+#include "train_extra_sounds.hpp"
 #include "engineer.hpp"
 #include "head_motion.hpp"
 #include "legacy_cab.hpp"
@@ -77,21 +79,6 @@ namespace openrts::viewer {
 // collide as RTS decides (simulation::resolve_contacts).
 class TrainView {
 public:
-    // The brakes' presets (the Train window, testers 2026-11-18: not three or
-    // four settings to switch each time): RTS's, openRTS's realistic, or the
-    // player's own (any of them changed by hand), remembered as
-    // brakes_custom and given back when chosen again.
-    struct BrakeSet {
-        bool realistic = false; // realistic_air
-        int dll_air = 0;        // DllAir
-        bool gauges = false;    // gauges_openrts_air
-        int rails = 0;          // rails
-        bool limit = false;     // limit_brake_force
-        bool stability = false; // distributor_stability
-        int condition = 0;      // brake_condition (0: none)
-        int pressing = 100;     // brake_pressing, %
-        bool operator==(const BrakeSet&) const = default;
-    };
     // Who drives a train: the keyboard, the test driver along its path, or
     // nobody (it stands with its brakes as they are).
     enum class Role : std::uint8_t { driven, ai, standing };
@@ -106,6 +93,7 @@ public:
         float target = -1.0f; // the test driver's target speed, m/s
         bool derailed = false;
         bool asleep = false;  // STATIC: not simulated until something moves it
+        bool live = false;    // RTS's PLAYER type: its DLLs run (TrainView::set_live)
     };
 
     TrainView(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath route, formats::RoutePosition origin,
@@ -157,6 +145,20 @@ public:
     void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view = { nullptr, {}, 0.0f, 0.0f });
     // The engineer into the driving cab's seat (--capture-cab).
     void enter_cab() { set_engineer(true); }
+    // The id of the train put on the track last (OPENRTS_SPAWN_CHECK).
+    [[nodiscard]] std::uint64_t last_train_id() const;
+    // Where a train `length` m long stands with its rear `gap` m ahead of
+    // the player's front (OPENRTS_SPAWN_CHECK=couple:...): its head.
+    [[nodiscard]] std::optional<simulation::TrackLocation> ahead_of_player(double length, double gap) const;
+    // Where switch `id` of the cab the engineer is in is, in the scene (its
+    // .sd Position): for OPENRTS_SPAWN_CHECK's click, a mouse's ray at it.
+    [[nodiscard]] std::optional<glm::vec3> cab_switch_point(std::uint32_t id) const;
+    // What the last pointer() found under the mouse: the switch's id, or -1.
+    [[nodiscard]] std::int64_t hovered_switch() const {
+        const auto* cab = engineer_cab();
+        if (!hovered_ || !hovered_->control || !cab || hovered_->index >= cab->description().switches.size()) return -1;
+        return cab->description().switches[hovered_->index].id;
+    }
     // Whether the player's train has a cab to go back into (Ctrl+F).
     [[nodiscard]] bool has_driving_cab() const noexcept { return cab_ != nullptr; }
     // Walking is the player's, not a train's (the main panel's "On foot"):
@@ -177,6 +179,11 @@ public:
     [[nodiscard]] std::optional<renderer::LightShaftRoom> light_shaft_room() const {
         return viewing_inside() ? cab_room_ : std::nullopt;
     }
+    // Raindrops on the glass of the cab or salon he is in (openRTS, the
+    // "Raindrops on the glass" setting): `amount` the rain's (0: none),
+    // `time` the scene's clock, `since` when it began on it. Each call marks
+    // where the wipers are now as wiped at `time`.
+    [[nodiscard]] std::optional<renderer::ModelRainGlass> rain_glass(float amount, float time, float since);
     // Every frame: the DLL's cab window and what Enter does where he stands.
     void draw_overlay();
     // The panel's Train tab: the buttons and switches on top, what the train
@@ -436,6 +443,8 @@ public:
     // Puts a saved situation back at the next update (the trains there now
     // and their sounds go first).
     void request_situation(std::filesystem::path file) { pending_situation_ = std::move(file); }
+    // The Train window's "Load on the path" (OPENRTS_LOAD_CHECK as well).
+    void request_load(std::string consist) { pending_load_ = std::move(consist); }
     // A train to put on the track: a situation's, or one from an RTS
     // snapshot (--mp-snapshot): its name, role, where car 0's front stands
     // and its cars front to back.
@@ -814,6 +823,9 @@ public:
     [[nodiscard]] std::string assign_route_path(std::uint64_t id, const formats::TrainPath& path);
     void clear_path(std::uint64_t id);
     [[nodiscard]] std::string set_role(std::uint64_t id, Role role);
+    // RTS's Cast to PLAYER (true: its DLLs run beside the driven train's)
+    // or STATIC (false: asleep, its DLLs parked with their state).
+    [[nodiscard]] std::string set_live(std::uint64_t id, bool live);
     [[nodiscard]] std::string remove(std::uint64_t id);
     // Uncouples train `id` before car `index` (end cocks closed, couplers left open).
     [[nodiscard]] std::string uncouple_at(std::uint64_t id, std::size_t index);
@@ -1258,6 +1270,15 @@ private:
     [[nodiscard]] bool walk_blocked(const glm::vec3& from, const glm::vec3& to) const;
     // A car by its key: (unit, car).
     [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> find_car(std::uint32_t key) const;
+    // A joint just uncoupled by hand (the car menu): its couplers stay open,
+    // so the parts only push, till they are more than 2 m apart; then they
+    // close and couple again when run together (testers 2026-11-21: a cut
+    // coupled again at once as the parts touched, five times running).
+    struct PartedJoint {
+        std::uint32_t ahead{}, behind{}; // the cars' keys
+    };
+    std::vector<PartedJoint> parted_;
+    void step_parted();
     // Car i of unit u's outside as the engineer walks it this frame (none:
     // nothing to walk on, or not placed).
     [[nodiscard]] std::optional<CarOutside> car_outside(std::size_t u, std::size_t i, bool with_cab = true);
@@ -1574,6 +1595,22 @@ private:
     std::size_t joints_ = 0, junctions_ = 0, coupler_breaks_ = 0, derailments_ = 0;
     bool end_of_track_ = false;
     std::unique_ptr<audio::SoundBank> bank_;
+    // openRTS's own braking sound (train_extra_sounds.hpp), and which scripts
+    // have a squeal of their own.
+    // rain_glass: the cab whose glass it is, and when each cell of its
+    // wipers' glass was last wiped.
+    const CabView* rain_cab_ = nullptr;
+    float rain_flow_ = 0.0f, rain_flow_time_ = 0.0f;
+    glm::vec2 rain_side_{0.0f};
+    std::vector<glm::vec3> rain_prev_; // the blades' corners last frame
+    float rain_front_ = 1.0f;
+    bool rain_has_grid_ = false;
+    std::array<float, renderer::rain_grid_columns * renderer::rain_grid_rows> rain_wiped_{};
+    std::unique_ptr<TrainExtraSounds> extra_sounds_;
+    std::unordered_map<const formats::SoundScript*, bool> script_squeals_;
+    [[nodiscard]] bool script_squeals(const formats::SoundScript* script);
+    [[nodiscard]] static std::shared_ptr<const formats::SoundScript> epk_alert_script(const formats::SoundScript& script);
+    void update_extra_sounds(float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound);
     // Wheel flats (ползуны): their knocks are real wheel-rail blows of the
     // RTS install (SOUND/ra_euro_joint*.wav, else mp_joint*.wav), one at
     // random each time, its pitch and loudness a little different.
@@ -1633,9 +1670,10 @@ private:
     // brake_condition and brake_pressing; read with the rails.
     int brake_condition_ = 0;
     int brake_pressing_ = 100;
-    [[nodiscard]] BrakeSet brake_set() const noexcept;
-    void apply_brake_set(const BrakeSet& set);
-    std::string brake_custom_code_; // the own set as last remembered
+    // The brakes' section (brake_settings_ui.hpp): its settings taken, and
+    // what the driven train has now.
+    void apply_brake_settings(const BrakeSettings& settings);
+    [[nodiscard]] BrakeSettingsStatus brake_settings_status();
     [[nodiscard]] simulation::RailCondition rails_now() const noexcept;
     // cab_state() with openRTS's valve over Brakes.dll: the DLL's output with
     // its УР gauge showing the valve's УР.

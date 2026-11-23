@@ -99,7 +99,7 @@ void draw_controls_help() {
         row(clock_key_name(), "the time of day on the screen / off (shown anyway while time runs faster)");
         row(tape_key_name(), "the tape (RTS_TAPES, read by RTS's lenta.xls): start on the locomotive driven / stop");
         if (key_layout() == KeyLayout::rts) row("Num5", "which locomotive the tape records");
-        row("F12", "the inspector: the map's objects and their properties");
+        row("F12", "settings for developers and the inspector (the map's objects)");
         row("RMB + mouse", "look around");
         row("Side button / Caps Lock", "mouse lock: the view always turns with the mouse, a click works what the dot in the middle is on; again: the cursor back");
         row("Wheel held + wheel", "zoom while held; let go: the view comes back");
@@ -119,7 +119,7 @@ void draw_controls_help() {
         row("F5", "the train's cars; again: the next page");
         row("Shift+F5", "the train as a whole");
         row("Ctrl+F5", "speed limits and the kilometre");
-        row("F4", "a small card: the time, the speed, the limit now and next, the signal ahead (openRTS)");
+        row("F4", "a small card: the time, the speed, the limit now and next, the signal ahead, the cab signal, ТЦ ТМ УР ЗР (openRTS)");
         row("Ctrl+F4", "the track's profile at the top: the grade, the kilometres, the limits, the signals and the stations; the wheel over it changes the span, a drag shifts it, a double click puts it back (openRTS)");
         row("F6", "the stations ahead and the sidings (yellow); in a scenario with a timetable, the timetable");
         row(board_key_name(), "a scenario's stop: start the boarding of the passengers");

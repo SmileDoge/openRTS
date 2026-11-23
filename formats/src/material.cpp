@@ -77,6 +77,7 @@ void MaterialPatch::merge(const MaterialPatch& over) {
     take(height, over.height);
     take(height_scale, over.height_scale);
     take(height_reference, over.height_reference);
+    take(snow, over.snow);
     take(alpha_mode, over.alpha_mode);
     take(alpha_cutoff, over.alpha_cutoff);
     take(double_sided, over.double_sided);
@@ -115,6 +116,7 @@ Material resolve_material(const Material& rts, const std::span<const MaterialPat
     if (merged.height) m.height = merged.height;
     if (merged.height_scale) m.height_scale = *merged.height_scale;
     if (merged.height_reference) m.height_reference = *merged.height_reference;
+    if (merged.snow) m.snow = merged.snow;
     if (merged.wet) m.wet = *merged.wet;
     return m;
 }
@@ -179,6 +181,8 @@ public:
             patch.emissive_strength = number(key, value, 0.0f, 100.0f);
         } else if (key == "height") {
             patch.height = map(key, value);
+        } else if (key == "snow") {
+            patch.snow = map(key, value);
         } else if (key == "height_scale") {
             patch.height_scale = number(key, value, 0.0f, 0.1f);
         } else if (key == "height_reference") {
@@ -420,6 +424,7 @@ void write_patch(std::ostream& out, const MaterialPatch& p) {
     if (p.height) field("height", json5::quote(p.height->path));
     if (p.height_scale) field("height_scale", num(*p.height_scale));
     if (p.height_reference) field("height_reference", num(*p.height_reference));
+    if (p.snow) field("snow", json5::quote(p.snow->path));
     if (p.wet) field("wet", *p.wet ? "true" : "false");
 }
 

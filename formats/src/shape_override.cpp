@@ -50,6 +50,10 @@ ShapeOverride parse_shape_override(std::string_view text) {
     const auto* top = root.child("openrtsshapeoverride");
     if (!top) return result;
     for (const auto& node : top->children) {
+        if (node.name == "nighttextures" && !node.values.empty()) {
+            result.night_textures = node.number(0, 1.0) != 0.0;
+            continue;
+        }
         if (node.name != "primstate" || node.values.empty()) continue;
         const double index = node.number(0, -1.0);
         if (index < 0.0) continue;
@@ -65,6 +69,7 @@ ShapeOverride parse_shape_override(std::string_view text) {
 
 std::string write_shape_override(const ShapeOverride& data) {
     std::string out = "OpenRTSShapeOverride ( 1\n";
+    if (data.night_textures) out += *data.night_textures ? "\tNightTextures ( 1 )\n" : "\tNightTextures ( 0 )\n";
     for (const auto& state : data.prim_states) {
         char line[96];
         std::snprintf(line, sizeof line, "\tPrimState ( %u", state.index);

@@ -47,6 +47,7 @@ public:
     Inspector();
 
     void toggle() noexcept { open_ = !open_; }
+    void set_open(const bool open) noexcept { open_ = open; }
     [[nodiscard]] bool open() const noexcept { return open_; }
     // Clicks in the scene choose an object instead of working it.
     [[nodiscard]] bool picking() const noexcept { return open_ && picking_; }

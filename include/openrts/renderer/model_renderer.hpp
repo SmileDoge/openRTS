@@ -131,6 +131,31 @@ struct ModelRoom {
     glm::vec3 lower{}, upper{};
 };
 
+// openRTS (beyond RTS): raindrops on the glass of the cab the eye is in
+// (ModelLighting::room): the blended surfaces at its box's walls facing out.
+// They gather with the time since the glass was last wiped and the rain's
+// amount; on the move they run up and back, standing they slide down.
+inline constexpr int rain_grid_columns = 128, rain_grid_rows = 64;
+struct ModelRainGlass {
+    float amount{};      // 0..1, the rain's
+    float time{};        // s, the clock the times below are on
+    float since{};       // s on that clock the glass has been wet from (the rain's start)
+    float speed{};       // m/s, the train's (without its sign)
+    bool snow = false;   // snowflakes sticking, not drops running
+    float flow{};        // m the drops have run along the glass's up (TrainView integrates it)
+    // On the side windows (their z, y): how far the drops have run (m), and
+    // which way they run now (unit): back and down on the move, down standing.
+    float side_x{}, side_y{};
+    float side_dir_x{}, side_dir_y{-1.0f};
+    // The wipers' glass: the room's front (+z) or back (-z) wall, its x and
+    // y range, and when each cell of it (rain_grid_columns x _rows, rows
+    // up from y0) was last wiped (on `time`'s clock; very old: never).
+    bool wiped_glass = false;
+    float front = 1.0f;
+    float x0{}, y0{}, x1{}, y1{};
+    std::array<float, rain_grid_columns * rain_grid_rows> wiped{};
+};
+
 struct ModelLighting {
     glm::vec4 sun_diffuse{1.0f};
     glm::vec4 sun_ambient{0.5f, 0.5f, 0.5f, 1.0f};
@@ -153,6 +178,11 @@ struct ModelLighting {
     std::vector<ModelPortal> portals;
     // The cab or salon he is in.
     std::optional<ModelRoom> room;
+    // Raindrops on its glass (with `room`).
+    std::optional<ModelRainGlass> rain;
+    // How much of the snow the models' snow maps paint lies now (0: none,
+    // summer; 1: all of it).
+    float snow_cover = 0.0f;
 };
 
 // RTS sun direction from the environment's azimuth and elevation in degrees.

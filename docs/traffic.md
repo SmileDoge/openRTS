@@ -109,6 +109,27 @@ openRTS's values: its engines' lowest `MaxVelocity` (else the route's limit,
 else 33 m/s), 0.4 m/s² up and 0.5 down (RTS asks the dispatcher for none).
 It needs an engine. Taken over by the player it gets its physics back.
 
+## Train kinds in Track control (RTS's Cast to PLAYER / STATIC / TRAFFIC)
+
+Since 2026-11-22 a train is one of three kinds (Track control, "Kind", or
+its menu):
+
+- **Player's** (RTS's PLAYER type, train type 3 in the DLLs' host): it
+  stands, its DLLs run beside the driven train's (its compressor,
+  battery, protections), cold or on as it was put down; the player walks
+  up and gets in, or "Move into this train". A train put down in Track
+  control is this kind. The host binds its first engine with a DLL as
+  its master and starts it in the train's own state
+  (`ReconsistTrain::start_state`); a slave cut off stays a slave.
+- **Static**: everything still (asleep), no DLLs; their state is kept
+  parked and comes back when it is the player's again.
+- **Traffic**: as above.
+
+"Move into this train" (it was "Drive"): the train left goes on as the
+player's kind, its DLLs running; the engineer who was in a cab sits in
+the new one. Every live train costs its DLLs' step; far ones are not
+frozen yet.
+
 ## Not yet
 
 - The server running the traffic (it will step the same `simulation`

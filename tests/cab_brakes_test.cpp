@@ -56,10 +56,15 @@ void valve() {
                                                               std::to_string(rig.out.equalising));
     }
     {
-        // At most 0.1 atm/s on the way.
+        // At most 0.25 atm/s on the way (Brakes.dll's after a full service),
+        // the books' 0.1.
         Rig rig(0.0f);
         rig.run(5.0f);
-        check(rig.out.equalising <= 0.51f && rig.out.equalising > 0.45f, "II: the УР up 0.1 atm/s: " + std::to_string(rig.out.equalising));
+        check(rig.out.equalising <= 1.26f && rig.out.equalising > 1.2f, "II: the УР up 0.25 atm/s: " + std::to_string(rig.out.equalising));
+        Rig books(0.0f);
+        books.numbers = CabBrakeNumbers::openrts();
+        books.run(5.0f);
+        check(books.out.equalising <= 0.51f && books.out.equalising > 0.45f, "II (books): the УР up 0.1 atm/s: " + std::to_string(books.out.equalising));
     }
     {
         // The stabiliser takes an overcharge off at 0.002 atm/s.
@@ -406,12 +411,19 @@ void sounds() {
     // II, the pipe at the charge: 132 once.
     run(1.0f);
     check(heard(all, 132) == 1 && heard(all, 133) == 0, "II at the charge: 132 once");
-    // II feeding the pipe: 126, then 127 once it stops.
+    // II feeding a steady pipe at the charge (making up the train's leaks):
+    // no loud feed, the quiet 132 alone.
     rig.air.valve_feed = 0.3f;
-    run(0.5f);
+    run(1.0f);
+    check(heard(all, 126) == 0, "II making up leaks at the charge: no 126");
+    // II feeding the pipe while it rises: 126, then 127 once it stops.
+    for (int k = 0; k < 10; ++k) {
+        rig.air.pipe += 0.01f;
+        run(0.1f);
+    }
     rig.air.valve_feed = 0.0f;
     run(0.5f);
-    check(heard(all, 126) == 1 && heard(all, 127) == 1, "II feeding: 126 then 127");
+    check(heard(all, 126) == 1 && heard(all, 127) == 1, "II feeding a rising pipe: 126 then 127");
     // V: 133 and 128 (the pipe venting), the ЭПТ applying 134; III: 129, 135.
     rig.controls.valve = ValvePosition::service;
     run(1.0f);

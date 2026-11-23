@@ -352,7 +352,7 @@ int main(int argc, char** argv) {
         auto added = loco(module, 30.0f);
         added.key = 4;
         ReconsistRequest r;
-        r.trains = {{1, {{reconsist_new, added}, {0, {}}, {1, {}}, {2, {}}}}};
+        r.trains = {{1, -1, {{reconsist_new, added}, {0, {}}, {1, {}}, {2, {}}}}};
         r.inputs = {input(0x20000), input(0x30000), input(0x10000 | 1), input(0)};
         check(host->reconsist(r, reply), "reconsist: an engine coupled on ahead");
         check(reply.cars.size() == 4, "four cars after the coupling");
@@ -376,7 +376,7 @@ int main(int argc, char** argv) {
         // The old slave (key 2) is cut off: LostMaster, and it goes on in a
         // train of its own (the player's train first, then the cut part).
         ReconsistRequest cut;
-        cut.trains = {{1, {{0, {}}, {1, {}}, {3, {}}}}, {3, {{2, {}}}}};
+        cut.trains = {{1, -1, {{0, {}}, {1, {}}, {3, {}}}}, {3, -1, {{2, {}}}}};
         cut.inputs = {input(0x20000), input(0x10000), input(0), input(0)};
         cut.inputs[3].velocity = 3.0f;
         check(host->reconsist(cut, reply), "reconsist: a slave cut off into its own train");
@@ -394,7 +394,7 @@ int main(int argc, char** argv) {
 
         // And coupled back behind the player's engine: from the cut train.
         ReconsistRequest back;
-        back.trains = {{1, {{0, {}}, {1, {}}, {3, {}}, {2, {}}}}};
+        back.trains = {{1, -1, {{0, {}}, {1, {}}, {3, {}}, {2, {}}}}};
         back.inputs = {input(0x20000), input(0x30000), input(0x10000), input(0)};
         check(host->reconsist(back, reply), "reconsist: the cut engine coupled again");
         if (reply.cars.size() == 4) {
@@ -407,13 +407,13 @@ int main(int argc, char** argv) {
 
         // A car in no train is kept aside and comes back as it was.
         ReconsistRequest gone;
-        gone.trains = {{1, {{0, {}}, {1, {}}, {3, {}}}}};
+        gone.trains = {{1, -1, {{0, {}}, {1, {}}, {3, {}}}}};
         gone.inputs = {input(0x20000), input(0x10000), input(0)};
         check(host->reconsist(gone, reply) && reply.cars.size() == 3, "reconsist: the engine leaves every train");
         ReconsistRequest again;
         CarSpec parked;
         parked.key = 2;
-        again.trains = {{1, {{0, {}}, {1, {}}, {reconsist_parked, parked}, {2, {}}}}};
+        again.trains = {{1, -1, {{0, {}}, {1, {}}, {reconsist_parked, parked}, {2, {}}}}};
         again.inputs = back.inputs;
         check(host->reconsist(again, reply) && reply.cars.size() == 4 && reply.cars[2].engine.auxiliary_rate == 7.0f,
               "and comes back with its state");

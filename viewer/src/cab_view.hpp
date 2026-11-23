@@ -75,6 +75,9 @@ public:
                                                const glm::vec3& direction, float reach) const;
     // The box around each node's own surfaces, by matrix index (lower > upper: none).
     void node_bounds(std::size_t nodes, std::vector<glm::vec3>& lower, std::vector<glm::vec3>& upper) const;
+    // The corners of node `node`'s own surfaces (rest pose), every `step`-th
+    // triangle's, appended to `out`.
+    void node_points(std::int32_t node, std::vector<glm::vec3>& out, std::size_t step = 1) const;
 
 private:
     struct Triangle {
@@ -333,6 +336,14 @@ private:
     std::unique_ptr<CabScreens> screens_;
     std::vector<std::vector<std::int32_t>> state_nodes_; // a DISPLAY's StateNodes, by display
     std::vector<float> blink_clock_;                     // by display (RTS display +72)
+public:
+    // The wipers running (the FreeAnimations' surfaces) where they are drawn
+    // now, in shape coordinates: some of their corners (the raindrops'
+    // wiping; a blade at rest on the glass wipes nothing): their triangles'
+    // corners, three a triangle, in the same order from frame to frame.
+    void wiper_points(std::vector<glm::vec3>& out) const;
+
+private:
     // The .sd's AnimNodes a DLL runs (FreeAnimation: the wipers): while its
     // flag 0 is set they go round their key frames, AnimTime a round; let
     // go, a RETURNS one finishes the round back to frame 0, another stops
@@ -343,6 +354,9 @@ private:
         std::vector<float> last; // each node's last key frame
         float time = 1.0f;
         bool returns = false;
+        bool continuous = false; // CONTINUOUS: rounds while running; else to its end and back
+        bool loop = false;       // LOOP: a CONTINUOUS one starts again at frame 0; else it goes back (ts.h's "goes down")
+        bool down = false;       // going back towards frame 0
         float phase = 0.0f;      // 0..1 of a round
         bool moving = false;
     };

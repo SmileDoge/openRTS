@@ -19,6 +19,7 @@ using Cab = BrakesParameters::Cab;
 constexpr std::pair<std::string_view, std::int32_t Cab::*> cab_ids[] = {
     {"br_395id", &Cab::valve},
     {"br_kptid", &Cab::controller},
+    {"br_pptid", &Cab::ppt},
     {"br_redid", &Cab::reducer},
     {"br_kkid", &Cab::combined},
     {"br_367id", &Cab::block},
@@ -47,10 +48,14 @@ constexpr std::pair<std::string_view, std::int32_t Cab::*> cab_ids[] = {
 };
 
 // Devices openRTS does not have yet: a car with one fitted (not -1) keeps
-// Brakes.dll. The 334 (the ЭР2's and ЭР9's valve), the ЭП2Д's ППТ. BR_KID
+// Brakes.dll. The 334 (the ЭР2's and ЭР9's valve). BR_KID
 // is not a brake device: only the speed recorder reads it (its cock on, no
 // ЭПК for running with the ALSN off; simulation/recorder.hpp).
-constexpr std::string_view cab_devices_not_known[] = {"br_334id", "br_pptid"};
+constexpr std::string_view cab_devices_not_known[] = {"br_334id"};
+
+// Names Brakes.dll never reads (a typo in content): nothing to do. The ЧС2's
+// BR_OTIDID1 (Brakes.dll asks for BR_OTID<cab>).
+constexpr std::string_view never_read[] = {"br_otidid"};
 
 // Global parameters openRTS takes or that only Brakes.dll's other parts
 // (its sounds, the ЭПК's mode) read, which go on running.
@@ -111,6 +116,7 @@ BrakesParameters brakes_parameters(const formats::EngineDefinition& engine) {
             continue;
         }
         if (base == "br_kid") continue; // the speed recorder's
+        if (std::find(std::begin(never_read), std::end(never_read), base) != std::end(never_read)) continue;
         if (name == "br_292custom") {
             if (parameter.value != 0.0f) not_known(parameter.name);
             continue;
@@ -178,6 +184,7 @@ simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const
             const int going = simulation::direct_state(static_cast<int>(s.set_state), 6, p.flipped);
             c.valve_resting = going <= now;
         }
+        c.by_controller = valve.by_controller && ids.controller >= 0;
         // The train's DLL takes the handle as IV (var + 32 0x8000, the 2ЭС6).
         if (exchange.before & 0x8000u) c.valve = simulation::ValvePosition::lap_feed;
     } else {
@@ -205,6 +212,14 @@ simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const
     c.ep_release_button = on(ids.ep_release);
     c.ep_hold_asked = (exchange.before & 0x10u) != 0;
     c.ep_apply_asked = (exchange.before & 0x20u) != 0;
+    // The ЭП2Д's ППТ at 0 with the ЭПТ on: its КПТ commands the ЭПТ by
+    // itself (docs/reverse/brakes-dll.md, the КПТ): VI, V, VЭ hold and
+    // apply, IV and III hold.
+    if (ids.controller >= 0 && ids.ppt >= 0 && state(ids.ppt) == 0 && c.ep_on && state(ids.controller) >= 0) {
+        const int position = simulation::direct_state(state(ids.controller), 6, p.flipped); // 0 is I
+        if (position >= 4) c.ep_hold_asked = c.ep_apply_asked = true;
+        else if (position >= 2) c.ep_hold_asked = true;
+    }
     c.multiple_unit = p.multiple_unit;
     c.sensor418 = on(ids.sensor418);
     c.sounds_130 = p.sounds_130;

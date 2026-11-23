@@ -176,6 +176,12 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
         if (!image) return failed(error);
         return finished(std::move(*image));
     }
+    case MaterialMapKind::snow: {
+        // As painted: the snow's colour and where it lies (alpha).
+        auto image = one(*m.snow);
+        if (!image) return failed(error);
+        return finished(std::move(*image));
+    }
     case MaterialMapKind::normal: {
         auto image = one(*m.normal);
         if (!image) return failed(error);
@@ -265,6 +271,7 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
     case MaterialMapKind::emissive: return "material emissive " + file(m.emissive);
     case MaterialMapKind::normal: return std::string("material normal ") + formats::normal_y_name(m.normal_y) + " " + file(m.normal);
     case MaterialMapKind::height: return "material height " + file(m.height);
+    case MaterialMapKind::snow: return "material snow " + file(m.snow);
     case MaterialMapKind::orm:
         return std::string("material orm ") + formats::layout_name(m.layout) + " " + file(m.orm) + " " + file(m.ao_map) + " "
             + file(m.roughness_map) + " " + file(m.metallic_map);
@@ -495,7 +502,7 @@ void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, Textu
                 if (cache) cache->emplace(cache_key, image);
             }
             // The maps' files are dependencies whether they load or not.
-            for (const auto* map : {&m.base_color, &m.orm, &m.ao_map, &m.roughness_map, &m.metallic_map, &m.normal, &m.emissive, &m.height}) {
+            for (const auto* map : {&m.base_color, &m.orm, &m.ao_map, &m.roughness_map, &m.metallic_map, &m.normal, &m.emissive, &m.height, &m.snow}) {
                 if (*map) {
                     if (const auto path = map_path(**map)) asset.material_files.push_back(*path);
                 }
@@ -531,6 +538,7 @@ void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, Textu
             if (m.normal) out.normal = add_map(MaterialMapKind::normal, m);
             if (m.emissive) out.emissive = add_map(MaterialMapKind::emissive, m);
             if (m.height) out.height = add_map(MaterialMapKind::height, m);
+            if (m.snow) out.snow = add_map(MaterialMapKind::snow, m);
         }
 
         // Tangents for the primitives with a normal map.

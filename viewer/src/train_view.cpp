@@ -239,6 +239,18 @@ struct TrainView::Car {
     // a node (and those under it) and whether it is at the shape's front
     // end (its z), shown only while a chock is at that end.
     std::vector<std::pair<std::int32_t, bool>> chock_nodes;
+    // Or chocks of their own shape (most cars: DragA ( Shape ( DRAG.s 0 )
+    // Position .. Direction .. )): its path in freight_shapes (loaded and let
+    // go with them), where it stands in the car's shape, the end it is at.
+    struct ChockShape {
+        std::size_t shape{}; // in freight_shapes
+        glm::mat4 placement{1.0f};
+        bool shape_front = true;
+    };
+    std::vector<ChockShape> chock_shapes;
+    // ESD_Interior_Parts with their children: not drawn while its outside
+    // is seen from its cab.
+    std::vector<std::int32_t> interior_part_nodes;
     std::shared_ptr<const formats::SoundScript> script;
     core::VirtualPath script_path;
     std::unique_ptr<audio::SoundInstance> sound;
@@ -263,6 +275,12 @@ struct TrainView::Car {
         std::shared_ptr<const formats::SoundScript> script;
         core::VirtualPath path;
         std::unique_ptr<audio::SoundInstance> instance;
+        // openRTS: its ЭПК's stream alone (Brakes.sms: the whistle, the
+        // block's, the key), heard from the first or last car's view (F3)
+        // too, where the cab's own sounds are silent (testers).
+        std::shared_ptr<const formats::SoundScript> alert_script;
+        std::unique_ptr<audio::SoundInstance> alerts;
+        bool alerts_tried = false;
     };
     bool aux_sounds_tried = false;
     std::vector<AuxSound> aux_sounds;
@@ -281,6 +299,11 @@ struct TrainView::Unit {
     // Put down from Track control as cold, on or running (TrainView::spawn):
     // its DLLs' start when the player takes it; none: the Train window's.
     std::optional<int> start_state;
+    // RTS's "Cast to PLAYER" (2026-11-22): a standing train whose DLLs run
+    // in the host beside the driven one (as its cut-off parts' do), so it
+    // stays as it was left and the player can get in. Track control puts
+    // trains down so; "Static" ends it (the DLLs keep their state parked).
+    bool live = false;
     [[nodiscard]] simulation::TrainCategory speed_category() const noexcept {
         return category.value_or(simulation::category_from_cars(freight));
     }
@@ -926,14 +949,16 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
     unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
     if (!realistic_air_loaded_) {
         // As last chosen (2026-11-17, testers: it had to be set again every
-        // run); not in a network game, where the server's choice stands.
+        // run); in a network game too (each player's own train runs on his
+        // computer; testers 2026-11-21: the preset was lost on every login
+        // and set again in the cab, which charged the pipe over a cab change).
         realistic_air_loaded_ = true;
-        if (!network_game_) realistic_air_ = remembered("realistic_air").value_or("0") == "1";
+        realistic_air_ = remembered("realistic_air").value_or("1") == "1";
     }
     if (realistic_air_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
     if (!distributor_stability_loaded_) {
         distributor_stability_loaded_ = true;
-        distributor_stability_ = remembered("distributor_stability").value_or("0") == "1";
+        distributor_stability_ = remembered("distributor_stability").value_or("1") == "1";
     }
     unit.train->set_distributor_stability(distributor_stability_);
     return {};
@@ -1375,6 +1400,29 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
             };
             for (const auto& object : details.wagon_objects) {
                 if ((object.kind != "draga" && object.kind != "dragb") || !object.first_state_invisible) continue;
+                if (!object.shape.empty() && object.nodes.empty()) {
+                    // A shape of its own: the car's folder, else GLOBAL\SHAPES
+                    // (DRAG.s, UZDdrag.s), else TRAINS\OBJECTS.
+                    core::VirtualPath found;
+                    for (const std::string base : {"TRAINS/TRAINSET/" + car.folder + "/", std::string("GLOBAL/SHAPES/"), std::string("TRAINS/OBJECTS/")}) {
+                        if (auto path = core::VirtualPath::parse(base + object.shape); path && vfs_->exists(*path)) {
+                            found = *path;
+                            break;
+                        }
+                    }
+                    if (found.str().empty()) continue;
+                    const auto& p = object.position;
+                    const auto& d = object.direction;
+                    glm::mat4 placement = glm::translate(glm::mat4{1.0f}, glm::vec3{p[0], p[1], p[2]});
+                    placement = glm::rotate(placement, glm::radians(d[1]), glm::vec3{0.0f, 1.0f, 0.0f});
+                    placement = glm::rotate(placement, glm::radians(d[0]), glm::vec3{1.0f, 0.0f, 0.0f});
+                    placement = glm::rotate(placement, glm::radians(d[2]), glm::vec3{0.0f, 0.0f, 1.0f});
+                    const bool shape_front = p[2] != 0.0f ? p[2] > 0.0f : object.kind == "draga";
+                    car.chock_shapes.push_back({car.freight_shapes.size(), placement, shape_front});
+                    car.freight_shapes.push_back(found);
+                    car.freight_requested = false;
+                    continue;
+                }
                 for (const auto& name : object.nodes) {
                     for (std::size_t m = 0; m < rig.matrices.size(); ++m) {
                         if (lower(rig.matrices[m].name) != lower(name)) continue;
@@ -1385,6 +1433,14 @@ void TrainView::fit_shapes(renderer::ModelLibrary& library) {
                         }
                         break;
                     }
+                }
+            }
+            for (const auto& name : details.interior_parts) {
+                for (std::size_t m = 0; m < rig.matrices.size(); ++m) {
+                    if (lower(rig.matrices[m].name) != lower(name)) continue;
+                    for (std::size_t c = 0; c < rig.matrices.size(); ++c)
+                        if (under(c, m)) car.interior_part_nodes.push_back(static_cast<std::int32_t>(c));
+                    break;
                 }
             }
             for (std::size_t k = 0; k < details.door_details.size(); ++k) {
@@ -1525,16 +1581,16 @@ bool TrainView::keep_attached(const DrivenKeys& keep) {
 void TrainView::load_brake_choices() {
     if (!dll_air_loaded_) {
         dll_air_loaded_ = true;
-        dll_air_ = std::clamp(std::atoi(remembered("dll_air").value_or("0").c_str()), 0, 2);
+        dll_air_ = std::clamp(std::atoi(remembered("dll_air").value_or("2").c_str()), 0, 2);
     }
     if (!own_brakes_loaded_) {
         own_brakes_loaded_ = true;
-        own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("0").c_str()), 0, 1);
+        own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("1").c_str()), 0, 1);
         brake_numbers_ = std::clamp(std::atoi(remembered("brake_numbers").value_or("0").c_str()), 0, 1);
-        own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("0").c_str()), 0, 1);
+        own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("1").c_str()), 0, 1);
         klub_map_ = remembered("klub_map").value_or("1") != "0";
         klub_objects_ = remembered("klub_objects").value_or("0") == "1";
-        no_brakes_dll_ = remembered("no_brakes_dll").value_or("0") == "1";
+        no_brakes_dll_ = remembered("no_brakes_dll").value_or("1") == "1";
     }
     trainplugin::LegacyConsist::set_without_brakes_dll(no_brakes_dll_ && realistic_air_ && dll_air_ != 0 && own_klub_ == 1 && own_brakes_ == 1);
 }
@@ -1578,7 +1634,7 @@ void TrainView::attach_legacy() {
         // be bound when he gets in and to go on when he leaves.
         bool more = false;
         for (std::size_t u = 1; u < units_.size(); ++u) {
-            if (units_[u].remote || !boardable_.contains(units_[u].train->id())) continue;
+            if (units_[u].remote || !(boardable_.contains(units_[u].train->id()) || units_[u].live)) continue;
             units_[u].host = true;
             more = true;
         }
@@ -1621,6 +1677,7 @@ bool TrainView::reconsist_host() {
     std::vector<simulation::Train*> sims;
     std::vector<std::size_t> which;
     std::vector<std::uint32_t> types;
+    std::vector<std::int16_t> starts;
     units_.front().host = true;
     for (std::size_t u = 0; u < units_.size(); ++u) {
         auto& unit = units_[u];
@@ -1629,12 +1686,15 @@ bool TrainView::reconsist_host() {
         // Another client's now (a train taken away, the network): its DLLs
         // stay bound and keep their state, but do not run (RTS kind 2).
         types.push_back(unit.remote ? 2u : u == 0 ? 1u : 3u);
+        // Engines bound now start as the train was put down (cold, on), else running.
+        starts.push_back(u == 0 ? std::int16_t{-1} : unit.start_state ? static_cast<std::int16_t>(*unit.start_state) : std::int16_t{2});
         trains.emplace_back();
         for (const auto& car : unit.cars) trains.back().push_back({car.definition, car.folder, car.uid, car.key});
         sims.push_back(unit.train.get());
         which.push_back(u);
     }
     legacy_->set_train_types(std::move(types));
+    legacy_->set_train_starts(std::move(starts));
     if (!legacy_->reconsist(*vfs_, trains, sims)) return false;
     host_keys_.clear();
     for (std::size_t t = 0; t < which.size(); ++t) {
@@ -2258,8 +2318,34 @@ std::size_t TrainView::merge_units(const simulation::Train* survivor_train, cons
     return survivor;
 }
 
+void TrainView::step_parted() {
+    if (parted_.empty()) return;
+    std::vector<simulation::Train*> all;
+    for (const auto& u : units_) all.push_back(u.train.get());
+    std::erase_if(parted_, [&](const PartedJoint& p) {
+        const auto a = find_car(p.ahead);
+        const auto b = find_car(p.behind);
+        if (!a || !b) return true;
+        auto& ua = units_[a->first];
+        auto& ub = units_[b->first];
+        if (a->first == b->first) return true; // coupled again after all
+        // The ahead car is its part's last, the behind car its part's first.
+        const bool a_front = a->second + 1 != ua.cars.size();
+        const bool b_front = b->second == 0 || b->second + 1 != ub.cars.size();
+        const auto contact = simulation::end_contact(*ua.train, a_front, all, 5.0);
+        const bool together = contact && contact->other == ub.train.get() && contact->gap < 2.0;
+        if (together) return false;
+        ua.train->set_car_flags(a->second, simulation::Train::CarFlags::coupler_open,
+                                a_front ? simulation::coupler_open_front : simulation::coupler_open_rear, false);
+        ub.train->set_car_flags(b->second, simulation::Train::CarFlags::coupler_open,
+                                b_front ? simulation::coupler_open_front : simulation::coupler_open_rear, false);
+        return true;
+    });
+}
+
 void TrainView::step_trains() {
     OPENRTS_ZONE("trains: physics step");
+    step_parted();
     // Meetings first, on the positions the step starts from (the earlier
     // unit survives a coupling, so the driven train keeps its place).
     // Trains of this program first: in a meeting the earlier survives, and
@@ -2461,7 +2547,8 @@ std::vector<TrainView::Summary> TrainView::summaries() const {
                           .length = unit.train->length(),
                           .target = unit.traffic ? unit.traffic->target_speed() : -1.0f,
                           .derailed = unit.train->derailed(),
-                          .asleep = unit.train->asleep()});
+                          .asleep = unit.train->asleep(),
+                          .live = unit.live && unit.host});
     }
     return result;
 }
@@ -2519,13 +2606,32 @@ std::string TrainView::set_role(const std::uint64_t id, const Role role) {
     // Another client's train (the network) moves by its owner's packages.
     if (unit->remote) return "another player drives this train";
     if (role == Role::driven) {
-        const auto index = static_cast<std::size_t>(unit - units_.data());
+        auto index = static_cast<std::size_t>(unit - units_.data());
+        const bool was_inside = engineer_.inside();
+        // Another train of this program: taken into the DLLs' host beside the
+        // one driven now, so that one keeps running (it went cold and its
+        // cab dead: testers 2026-11-22, Track control's "Drive" on a train
+        // just put down) and the player can go back to it.
+        if (legacy_ && index != 0 && !unit->host && !unit->remote) {
+            const auto wanted = unit->train->id();
+            unit->host = true;
+            if (!reconsist_host()) {
+                if (auto* again = find_unit(wanted)) again->host = false;
+                reconsist_host();
+            }
+            unit = find_unit(wanted);
+            if (!unit) return "no such train";
+            index = static_cast<std::size_t>(unit - units_.data());
+        }
         const bool host = legacy_ && index != 0 && unit->host;
         if (index != 0) {
             units_.front().role = Role::standing;
+            // The one left goes on as RTS's PLAYER type (its DLLs in the host).
+            units_.front().live = units_.front().host;
             attach_role(units_.front());
             std::swap(units_.front(), units_[index]);
         }
+        units_.front().live = false;
         units_.front().role = Role::driven;
         units_.front().traffic.reset();
         units_.front().train->set_kinematic(false);
@@ -2538,7 +2644,18 @@ std::string TrainView::set_role(const std::uint64_t id, const Role role) {
         if (!(host && take_over_host_unit())) reattach_driver();
         follow_id_ = 0;
         consist_ = units_.front().name;
+        // He was in a cab: now in the one he drives from.
+        if (was_inside && cab_) set_engineer(true);
         return {};
+    }
+    // Traffic and STATIC run no DLLs (RTS): out of the host, their state parked.
+    if (unit->host && unit != &units_.front()) {
+        const auto wanted = unit->train->id();
+        unit->host = false;
+        unit->live = false;
+        reconsist_host();
+        unit = find_unit(wanted);
+        if (!unit) return "no such train";
     }
     unit->role = role;
     attach_role(*unit);
@@ -2677,6 +2794,8 @@ std::string TrainView::spawn(const std::string_view consist, const simulation::T
     units_.push_back(std::move(unit));
     attach_role(units_.back());
     if (chocks != 0) (void)set_train_chocks(units_.back().train->id(), chocks);
+    // Standing, put down as RTS's PLAYER type: its DLLs run from now.
+    if (units_.back().role == Role::standing && !first) (void)set_live(units_.back().train->id(), true);
     // Without a train of the player's own (the menu's "no train"), the first
     // one put on the route becomes theirs. The camera stays the free one it
     // was put down from: following it from behind (the default with no start
@@ -2779,76 +2898,106 @@ void TrainView::collect_exhausts(std::vector<ExhaustSource>& out) const {
     }
 }
 
-namespace {
-
-// The brakes' presets (TrainView::BrakeSet): RTS's model as RTS has it; the
-// realistic air with openRTS's valve over Brakes.dll, the model's gauges,
-// the weather's rails, the brake force at most real stock's and the
-// distributors' stability.
-// The realistic set has brakes in service (condition 6, testers'
-// proposal); RTS's has no wear.
-constexpr TrainView::BrakeSet rts_brakes{.realistic = false, .dll_air = 0, .gauges = false, .rails = 0, .limit = false, .stability = false,
-                                         .condition = 0, .pressing = 100};
-constexpr TrainView::BrakeSet real_brakes{.realistic = true, .dll_air = 2, .gauges = true, .rails = 1, .limit = true, .stability = true,
-                                          .condition = 6, .pressing = 100};
-
-[[nodiscard]] std::string brake_set_code(const TrainView::BrakeSet& s) {
-    return std::to_string(s.realistic ? 1 : 0) + ',' + std::to_string(s.dll_air) + ',' + std::to_string(s.gauges ? 1 : 0) + ',' +
-           std::to_string(s.rails) + ',' + std::to_string(s.limit ? 1 : 0) + ',' + std::to_string(s.stability ? 1 : 0) + ',' +
-           std::to_string(s.condition) + ',' + std::to_string(s.pressing);
-}
-
-// Six figures (before the condition and pressing, 2026-11-18) or eight.
-[[nodiscard]] std::optional<TrainView::BrakeSet> brake_set_from(const std::string& code) {
-    int v[8]{0, 0, 0, 0, 0, 0, 0, 100};
-    std::istringstream fields(code);
-    char comma = ',';
-    int read = 0;
-    for (int k = 0; k < 8; ++k) {
-        if (k > 0 && !(fields >> comma)) break;
-        if (comma != ',' || !(fields >> v[k])) return std::nullopt;
-        ++read;
-    }
-    if (read != 6 && read != 8) return std::nullopt;
-    return TrainView::BrakeSet{.realistic = v[0] != 0, .dll_air = std::clamp(v[1], 0, 2), .gauges = v[2] != 0,
-                               .rails = std::clamp(v[3], 0, 6), .limit = v[4] != 0, .stability = v[5] != 0,
-                               .condition = std::clamp(v[6], 0, 10), .pressing = std::clamp(v[7], 50, 150)};
-}
-
-} // namespace
-
-TrainView::BrakeSet TrainView::brake_set() const noexcept {
-    return {.realistic = realistic_air_, .dll_air = dll_air_, .gauges = gauges_air_, .rails = rails_, .limit = limit_brake_force_,
-            .stability = distributor_stability_, .condition = brake_condition_, .pressing = brake_pressing_};
-}
-
-void TrainView::apply_brake_set(const BrakeSet& set) {
-    realistic_air_ = set.realistic;
+void TrainView::apply_brake_settings(const BrakeSettings& s) {
+    realistic_air_ = s.realistic;
     realistic_air_loaded_ = true;
-    remember("realistic_air", realistic_air_ ? "1" : "0");
-    dll_air_ = set.dll_air;
+    dll_air_ = s.dll_air;
     dll_air_loaded_ = true;
-    remember("dll_air", std::to_string(dll_air_));
-    if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
-    for (auto& unit : units_)
-        if (unit.train) unit.train->set_brake_model(realistic_air_ ? simulation::BrakeModel::realistic : simulation::BrakeModel::rts);
-    gauges_air_ = set.gauges;
+    gauges_air_ = s.gauges;
     gauges_air_loaded_ = true;
-    remember("gauges_openrts_air", gauges_air_ ? "1" : "0");
-    rails_ = set.rails;
-    limit_brake_force_ = set.limit;
+    rails_ = s.rails;
+    limit_brake_force_ = s.limit;
     rails_loaded_ = true;
-    remember("rails", std::to_string(rails_));
-    remember("limit_brake_force", limit_brake_force_ ? "1" : "0");
-    distributor_stability_ = set.stability;
+    distributor_stability_ = s.stability;
     distributor_stability_loaded_ = true;
-    remember("distributor_stability", distributor_stability_ ? "1" : "0");
-    for (auto& unit : units_)
-        if (unit.train) unit.train->set_distributor_stability(distributor_stability_);
-    brake_condition_ = set.condition;
-    brake_pressing_ = set.pressing;
-    remember("brake_condition", std::to_string(brake_condition_));
-    remember("brake_pressing", std::to_string(brake_pressing_));
+    brake_condition_ = s.condition;
+    brake_pressing_ = s.pressing;
+    own_brakes_ = s.own_brakes;
+    brake_numbers_ = s.brake_numbers;
+    own_klub_ = s.own_klub;
+    no_brakes_dll_ = s.no_brakes_dll;
+    klub_objects_ = s.klub_objects;
+    klub_map_ = s.klub_map;
+    own_brakes_loaded_ = true;
+    if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
+    for (auto& unit : units_) {
+        if (!unit.train) continue;
+        unit.train->set_brake_model(realistic_air_ ? simulation::BrakeModel::realistic : simulation::BrakeModel::rts);
+        unit.train->set_distributor_stability(distributor_stability_);
+    }
+    load_brake_choices();
+}
+
+BrakeSettingsStatus TrainView::brake_settings_status() {
+    BrakeSettingsStatus out;
+    switch (rails_now()) {
+    case simulation::RailCondition::dry: out.rails = tr("now dry"); break;
+    case simulation::RailCondition::wet: out.rails = tr("now wet"); break;
+    case simulation::RailCondition::snow: out.rails = tr("now snow"); break;
+    case simulation::RailCondition::ice: out.rails = tr("now ice"); break;
+    case simulation::RailCondition::leaves: out.rails = tr("now leaves"); break;
+    default: break;
+    }
+    if (units_.empty() || !units_.front().train) return out;
+    const auto& train = *units_.front().train;
+    if (realistic_air_ && brake_condition_ != 0 && !train.cars().empty()) {
+        float leak = 0.0f, slow = 9.0f, fast = 0.0f;
+        for (const auto& car : train.cars()) {
+            leak += car.wear.pipe_leak;
+            slow = (std::min)(slow, car.wear.pace);
+            fast = (std::max)(fast, car.wear.pace);
+        }
+        out.condition = trf("this train: the pipe leaks %.2f atm/min, the distributors' pace %.0f-%.0f %%",
+                            leak / static_cast<float>(train.cars().size()), slow * 100.0f, fast * 100.0f);
+    }
+    if (realistic_air_) out.pressing = trf("this train: %.0f tf per 100 tf of weight", train.brake_pressing());
+    if (klub_map_) {
+        const auto* map = electronic_map();
+        out.map = !map          ? tr("the map is being made")
+                  : map->empty() ? tr("the route database has no station tracks")
+                                 : trf("%zu station tracks", map->tracks().size());
+    }
+    // The driven locomotive: whose brakes and КЛУБ, and Brakes.dll.
+    if (units_.front().role != Role::driven || !legacy_) return out;
+    const auto car = driven_car();
+    if (car == SIZE_MAX || car >= train.cars().size() || !train.cars()[car].definition || !train.cars()[car].definition->engine) return out;
+    const auto& engine = *train.cars()[car].definition->engine;
+    const auto parameters = brakes_parameters_of(engine);
+    if (!parameters.present) return out;
+    if (!realistic_air_ || dll_air_ == 0) {
+        out.train = tr("RTS's air and Brakes.dll.");
+        return out;
+    }
+    std::string text = own_brakes_ == 1 && parameters.understood() ? tr("openRTS's brakes") : tr("Brakes.dll's brakes");
+    text += ", ";
+    const auto reason = trainplugin::brakes_dll_kept_reason(engine);
+    // Its КЛУБ: openRTS's when working or Brakes.dll gone; Brakes.dll's on
+    // a locomotive with two cabs (LegacyConsist: openRTS's in one cab only).
+    const auto klub = trainplugin::klub_parameters(engine);
+    const bool stubbed = legacy_->without_brakes_dll() > 0 && reason.empty();
+    if (klub.present) {
+        const bool ours = own_klub_ == 1 && (legacy_->klub_cars() > 0 || stubbed || klub.cabs.size() < 2);
+        text += ours ? tr("openRTS's КЛУБ") : tr("Brakes.dll's КЛУБ");
+    } else {
+        text += tr("no КЛУБ");
+    }
+    if (no_brakes_dll_ && own_brakes_ == 1 && own_klub_ == 1) {
+        text += "; ";
+        if (reason.empty()) {
+            text += stubbed ? tr("Brakes.dll is not loaded.") : tr("Brakes.dll goes with the next train.");
+        } else {
+            const char* why = reason == "no КЛУБ"          ? tr("the locomotive has no КЛУБ")
+                              : reason == "speed recorder" ? tr("its speed recorder is still Brakes.dll's")
+                              : reason == "КПД-3"          ? tr("its КПД-3 is still Brakes.dll's")
+                              : reason == "УКБМ / МУ"      ? tr("its УКБМ is still Brakes.dll's")
+                                                           : nullptr;
+            text += why ? trf("Brakes.dll stays: %s.", why) : trf("Brakes.dll stays: a brake device openRTS does not have yet (%s).", reason.c_str());
+        }
+    } else {
+        text += ".";
+    }
+    out.train = text;
+    return out;
 }
 
 std::filesystem::path TrainView::situation_folder() const {
@@ -3590,7 +3739,7 @@ std::string TrainView::set_train_chocks(const std::uint64_t id, const std::uint8
 }
 
 void TrainView::draw_placements() {
-    if (!ImGui::TreeNode(tr("Placements"))) return;
+    if (!ImGui::TreeNode(tr("Placements##train_placements"))) return;
     ImGui::Checkbox(tr("Pick trains with the mouse (free flight)"), &selecting_);
     ImGui::TextDisabled("%s", tr("(a click: a train; Ctrl+click: one more or one less; Shift+click: a car of a picked train, out or back)"));
     std::size_t cars = 0;
@@ -5777,6 +5926,36 @@ void TrainView::draw_hud() {
             } else {
                 ImGui::TextDisabled("%s", tr("No signal ahead"));
             }
+            // The cab's locomotive signal (the КЛУБ's, the АЛС-МУ's: Cabin::
+            // Signal.Aspect[0], 0 К, 1 КЖ, 2 Б, 3 .. 5 Ж, 6 .. 7 З), out
+            // while the ALSN is off.
+            const auto driven = driven_car();
+            if (const auto* out = legacy_ && driven < unit->cars.size() ? legacy_->output(driven) : nullptr; out && out->has_engine) {
+                const auto a = out->cab_aspect;
+                const bool lit = out->engine.alsn_on != 0 && a < 8;
+                const std::uint32_t colour = !lit ? IM_COL32(90, 90, 90, 255)
+                                             : a == 0 ? IM_COL32(230, 50, 40, 255)
+                                             : a == 1 ? IM_COL32(240, 130, 40, 255)
+                                             : a == 2 ? IM_COL32(240, 240, 240, 255)
+                                             : a <= 5 ? IM_COL32(250, 210, 40, 255)
+                                                      : IM_COL32(60, 210, 90, 255);
+                const char* name = !lit ? tr("out") : a == 0 ? "К" : a == 1 ? "КЖ" : a == 2 ? "Б" : a <= 5 ? "Ж" : "З";
+                const auto at = ImGui::GetCursorScreenPos();
+                const float h = ImGui::GetTextLineHeight();
+                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(at.x + h * 0.5f, at.y + h * 0.5f), h * 0.38f, colour);
+                ImGui::Dummy(ImVec2(h, h));
+                ImGui::SameLine(0.0f, 4.0f);
+                ImGui::Text(tr("Cab signal: %s"), name);
+            }
+            // The brakes at the driven car: ТЦ, ТМ, УР, ЗР.
+            if (const auto& states = train.cars(); driven < states.size()) {
+                const auto& c = states[driven];
+                const auto ur = equalising_of(0, driven);
+                char line[96];
+                if (ur) std::snprintf(line, sizeof line, tr("ТЦ %.1f  ТМ %.2f  УР %.2f  ЗР %.2f"), c.cylinder, c.pipe, *ur, c.auxiliary);
+                else std::snprintf(line, sizeof line, tr("ТЦ %.1f  ТМ %.2f  ЗР %.2f"), c.cylinder, c.pipe, c.auxiliary);
+                ImGui::TextUnformatted(line);
+            }
         }
         end_panel(drive_card_place_);
     }
@@ -6045,7 +6224,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         limit_brake_force_ = remembered("limit_brake_force").value_or("1") == "1";
         // The brakes' condition: in service (6) with the realistic air,
         // none with RTS's, until chosen (2026-11-18).
-        const bool realistic = remembered("realistic_air").value_or("0") == "1";
+        const bool realistic = remembered("realistic_air").value_or("1") == "1";
         brake_condition_ = std::clamp(std::atoi(remembered("brake_condition").value_or(realistic ? "6" : "0").c_str()), 0, 10);
         brake_pressing_ = std::clamp(std::atoi(remembered("brake_pressing").value_or("100").c_str()), 50, 150);
     }
@@ -6221,6 +6400,8 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         if (std::abs(driven().speed()) > 0.1) {
             message_ = tr("stop the train to uncouple");
         } else {
+            if (!units_.empty() && index > 0 && index < units_.front().cars.size())
+                parted_.push_back({units_.front().cars[index - 1].key, units_.front().cars[index].key});
             split(0, index, true, true);
             message_ = trf("uncoupled before car %zu (end cocks closed)", static_cast<std::size_t>(index + 1));
         }
@@ -6859,10 +7040,25 @@ void TrainView::update_engineer(const SceneInput& input, ViewerCamera& camera, c
         // 0x431270): in up the steps and out down them.
         std::vector<bool> ways(cab->description().doors.size(), false);
         if (const auto& outside = unit.cars[engineer_car_].outside) {
+            const auto& doors = outside->door_details;
+            const bool any_way = std::any_of(doors.begin(), doors.end(), [](const auto& d) { return !d.trajectory.empty(); });
             for (std::size_t d = 0; d < ways.size(); ++d) {
-                const auto name = lower(cab->description().doors[d].name);
-                for (const auto& door : outside->door_details)
-                    if (!door.trajectory.empty() && lower(door.name) == name) ways[d] = true;
+                const auto& cab_door = cab->description().doors[d];
+                const auto name = lower(cab_door.name);
+                bool named = false;
+                for (const auto& door : doors) {
+                    if (lower(door.name) != name) continue;
+                    named = true;
+                    if (!door.trajectory.empty()) ways[d] = true;
+                    // A leaf without a way: its parent's (climb_in).
+                    else if (door.parent >= 0 && static_cast<std::size_t>(door.parent) < doors.size()
+                             && !doors[static_cast<std::size_t>(door.parent)].trajectory.empty())
+                        ways[d] = true;
+                }
+                // None of that name: the nearest door with a way (climb_in), for
+                // an outer door of a salon borrowed from another car.
+                const bool outer = lower(cab_door.from) == "exterior" || lower(cab_door.to) == "exterior";
+                if (!named && any_way && cab_door.has_position && outer) ways[d] = true;
             }
         }
         engineer_.set_door_ways(std::move(ways));
@@ -7229,13 +7425,16 @@ void TrainView::stand_at_cab_door(const std::size_t car) {
     if (!loaded() || units_.front().role != Role::driven || car >= units_.front().cars.size()) return;
     const auto& unit = units_.front();
     const auto& c = unit.cars[car];
-    if (!c.definition || !c.definition->engine) return;
+    if (!c.definition || !CabView::has_room(*c.definition)) return;
     auto& cab = board_cabs_[c.key];
-    if (!cab) cab = CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, true));
+    if (!cab) cab = CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, c.definition->engine.has_value()));
     const auto body = body_pose(unit, car, false);
     if (!cab || !body) return;
     const auto points = Engineer::get_on_points(*cab);
     if (points.empty()) return;
+    // A passenger door (the driver opens it): opened for the test.
+    if (const auto door = points.front().first; door < cab->description().doors.size() && !cab->description().doors[door].can_be_opened)
+        cab->open_door(door);
     const glm::vec3 at{body->transform * cab->placement() * glm::vec4(points.front().second, 1.0f)};
     const auto mode = engineer_.mode();
     std::cout << "test: the engineer was " << (mode == Engineer::Mode::outside ? "outside" : mode == Engineer::Mode::seated ? "seated" : engineer_.inside() ? "inside" : "off")
@@ -7253,7 +7452,23 @@ void TrainView::stand_at_cab_door(const std::size_t car) {
         for (std::size_t k = 0; k < out->switches.size() && k < 12; ++k) std::cout << ' ' << out->switches[k].state;
     }
     std::cout << std::endl;
+    // A passenger car's salon: it becomes his room's car, as walking up to it
+    // (its door opened again: the cab taken is the same).
+    const auto door = points.front().first;
+    const glm::mat4 placement = cab->placement();
+    const auto d = cab->description().doors[door];
+    if (!c.definition->engine) {
+        // The train's passenger doors of the car open, as the driver opens them.
+        units_.front().cars[car].door_groups_open = 0xFFu;
+        if (auto* taken = take_engineer_cab(car); taken && !d.can_be_opened) taken->open_door(door);
+    }
     engineer_.stand_outside(at);
+    // Facing the door.
+    if (d.has_position) {
+        const glm::vec3 door_at{body->transform * placement * glm::vec4(d.position[0], d.position[1], d.position[2], 1.0f)};
+        const glm::vec3 eye = at + glm::vec3{0.0f, engineer_.height(), 0.0f};
+        if (glm::length(door_at - eye) > 1e-3f) look_once_ = glm::normalize(door_at - eye);
+    }
     std::cout << "test: on foot at the door of the cab of car " << car + 1 << std::endl;
 }
 
@@ -7418,7 +7633,7 @@ void TrainView::carry_out(const Engineer::Event& event) {
         std::string end = "ext_wag";
         if (event.by_path && event.door < cab->description().doors.size()) {
             const auto& door = cab->description().doors[event.door];
-            if (lower(door.from) == "exterior" || lower(door.to) == "exterior") end = "exterior";
+            if (!passage_door(door) && (lower(door.from) == "exterior" || lower(door.to) == "exterior")) end = "exterior";
         }
         if (end == "exterior") std::cout << "the engineer climbs down from car " << i + 1 << std::endl;
         engineer_.step_onto_car(*outside, at_car, path, end);
@@ -7438,16 +7653,38 @@ void TrainView::carry_out(const Engineer::Event& event) {
         const std::size_t i = engineer_car_;
         const auto outside = car_outside(0, i);
         if (!outside) return;
-        const auto name = lower(cab->description().doors[event.door].name);
-        for (std::size_t k = 0; k < outside->details->door_details.size(); ++k) {
-            const auto& door = outside->details->door_details[k];
-            if (door.trajectory.empty() || lower(door.name) != name) continue;
-            engineer_.go_through(*outside, k);
-            outside_car_ = units_.front().cars[i].key;
-            hovered_.reset();
-            std::cout << "the engineer climbs up into car " << i + 1 << " by its door " << door.name << std::endl;
-            return;
+        const auto& doors = outside->details->door_details;
+        const auto& cab_door = cab->description().doors[event.door];
+        const auto name = lower(cab_door.name);
+        // The car's door of that name with a way; a leaf without one (a
+        // coach's DOOR_B, ParentObject ( 0 )) by its parent's; no door of
+        // that name (a salon borrowed from another car, its doors named
+        // otherwise): the car's door with a way nearest the salon's.
+        std::optional<std::size_t> way;
+        for (std::size_t k = 0; k < doors.size() && !way; ++k) {
+            if (lower(doors[k].name) != name) continue;
+            if (!doors[k].trajectory.empty()) way = k;
+            else if (doors[k].parent >= 0 && static_cast<std::size_t>(doors[k].parent) < doors.size()
+                     && !doors[static_cast<std::size_t>(doors[k].parent)].trajectory.empty())
+                way = static_cast<std::size_t>(doors[k].parent);
         }
+        if (!way && cab_door.has_position) {
+            const glm::vec3 at{cab_door.position[0], cab_door.position[1], cab_door.position[2]};
+            float best = 1e30f;
+            for (std::size_t k = 0; k < doors.size(); ++k) {
+                if (doors[k].trajectory.empty() || !doors[k].has_position) continue;
+                const float d = glm::distance(at, glm::vec3{doors[k].position[0], doors[k].position[1], doors[k].position[2]});
+                if (d < best) {
+                    best = d;
+                    way = k;
+                }
+            }
+        }
+        if (!way) return;
+        engineer_.go_through(*outside, *way);
+        outside_car_ = units_.front().cars[i].key;
+        hovered_.reset();
+        std::cout << "the engineer climbs up into car " << i + 1 << " by its door " << doors[*way].name << std::endl;
         return;
     }
     const auto at = outside_car_ ? find_car(*outside_car_) : std::nullopt;
@@ -7661,6 +7898,54 @@ void TrainView::outer_door_pointer(const glm::vec3& eye, const glm::vec3& direct
         std::cout << "the engineer " << (open ? "shuts" : "opens") << " door " << details[k].name << " of car " << best->i + 1
                   << " with the mouse" << std::endl;
     }
+}
+
+std::string TrainView::set_live(const std::uint64_t id, const bool live) {
+    auto* unit = find_unit(id);
+    if (!unit) return "no such train";
+    if (unit->remote) return "another player drives this train";
+    if (unit == &units_.front()) return {};
+    if (live && unit->role == Role::ai) {
+        unit->role = Role::standing;
+        attach_role(*unit);
+    }
+    unit->live = live;
+    unit->train->set_asleep(!live && unit->role == Role::standing);
+    if (!legacy_) return live ? std::string{} : std::string{};
+    const bool had = unit->host;
+    unit->host = live;
+    if (had != live && !reconsist_host()) {
+        if (auto* again = find_unit(id)) again->host = had, again->live = had;
+        reconsist_host();
+        return "its DLLs could not be started";
+    }
+    return {};
+}
+
+std::uint64_t TrainView::last_train_id() const { return units_.empty() ? 0 : units_.back().train->id(); }
+
+std::optional<simulation::TrackLocation> TrainView::ahead_of_player(const double length, const double gap) const {
+    if (!placed()) return std::nullopt;
+    auto front = driven().front_end();
+    if (!front) return std::nullopt;
+    front->move(length + gap);
+    return simulation::TrackLocation{.node = front->node(), .offset = front->offset(), .forward = front->forward()};
+}
+
+std::optional<glm::vec3> TrainView::cab_switch_point(const std::uint32_t id) const {
+    const auto* cab = engineer_cab();
+    if (!cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return std::nullopt;
+    const auto body = body_pose(units_.front(), engineer_car_, false);
+    if (!body) return std::nullopt;
+    const glm::mat4 to_scene = cab_to_scene_ ? *cab_to_scene_ : body->transform * cab->placement();
+    const auto& all = cab->description().switches;
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        if (all[i].id != id) continue;
+        const auto at = cab->control_point(i); // its node, else its Position
+        if (!at) return std::nullopt;
+        return glm::vec3{to_scene * glm::vec4{*at, 1.0f}};
+    }
+    return std::nullopt;
 }
 
 void TrainView::pointer(const glm::vec3& eye, const std::optional<glm::vec3>& direction, const bool click, const bool shift,
@@ -7971,6 +8256,11 @@ std::string TrainView::systems_report() const {
                          : engineer_.mode() == Engineer::Mode::outside ? "outside" : "off";
         std::snprintf(line, sizeof line, "; dll player car %zu, cab car %zu, engineer %s in car %zu", legacy_->player() + 1, cab_car_ + 1,
                       mode, engineer_car_ + 1);
+        text += line;
+        // Engine::CurrentMilepost as the DLLs get it (RTS's, by the km posts;
+        // not the F5 ordinate).
+        std::snprintf(line, sizeof line, "; milepost %s %.3f km%s at %.1f km/h", milepost_.known ? "" : "(none)", milepost_.base,
+                      milepost_.decreasing ? " falling" : "", units_.empty() ? 0.0 : units_.front().train->speed() * 3.6);
         text += line;
         // The host's trains: the driven one, then the parts cut off from it.
         text += "; dll host trains " + std::to_string(legacy_->trains()) + " (";
@@ -8701,7 +8991,8 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
             message_ = tr("stop the train to uncouple");
             break;
         }
-        split(unit_index, *behind, false, false);
+        parted_.push_back({unit->cars[*ahead].key, unit->cars[*behind].key});
+        split(unit_index, *behind, false, true);
         message_ = trf("uncoupled before car %zu", static_cast<std::size_t>(*behind + 1));
         break;
     case 2: { // Disconnect train pipe: air escapes where a cock is open
@@ -8798,6 +9089,11 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
     case 14: // Unlock coupling: ready to couple again
     case 15: { // Lock coupling opened: it only pushes
         const bool open = id == 15;
+        // His own choice now: not closed by itself (step_parted).
+        std::erase_if(parted_, [&](const PartedJoint& p) {
+            return (ahead && (p.ahead == unit->cars[*ahead].key || p.behind == unit->cars[*ahead].key))
+                || (behind && (p.ahead == unit->cars[*behind].key || p.behind == unit->cars[*behind].key));
+        });
         if (ahead) {
             train.set_car_flags(*ahead, Flags::coupler_open, simulation::coupler_open_rear, open);
             trigger(*ahead, open ? 62 : 59);
@@ -9501,7 +9797,8 @@ void TrainView::feed_world(const Unit& unit) {
             milepost_ = {};
         }
         if (const auto rear = unit.train->rear_end(); rear && (!milepost_.known || std::abs(unit.train->speed()) > 0.0))
-            simulation::update_milepost(milepost_, *network, rear->node(), rear->offset(), rear->forward());
+            simulation::update_milepost(milepost_, *network, rear->node(), rear->offset(), rear->forward(),
+                                        unit.train->speed() * simulation::train_step);
         world.milepost = milepost_;
         const double length = unit.train->length();
         const auto not_signal = [](const formats::TrackItem& item) { return item.kind != formats::TrackItemKind::signal; };
@@ -10448,7 +10745,7 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
                 car.sound->preload();
                 if (!car.remote_sound_restore.empty()) car.sound->restore(std::exchange(car.remote_sound_restore, {}));
                 // OPENRTS_SOUND_TRACE: the player's train's cars too.
-                if (sound_trace() && u == 0) car.sound->set_trace("car " + std::to_string(i + 1) + " " + car.definition->name);
+                if (sound_trace() && u == 0) car.sound->set_trace("car " + std::to_string(i + 1) + " " + car.definition->name + " (" + car.script_path.str() + ")");
             }
         }
         if (car.sound) car.sound->set_random_loop_phase(random_loop_phase_);
@@ -10575,15 +10872,177 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
         }
     }
     }
+    update_extra_sounds(elapsed, camera, sound);
+}
+
+// A script with a stop sound of its own (a squeal or a skrip, not a
+// flange's or a switch's): openRTS's squeal then stays silent for the car.
+bool TrainView::script_squeals(const formats::SoundScript* script) {
+    if (!script) return false;
+    if (const auto it = script_squeals_.find(script); it != script_squeals_.end()) return it->second;
+    bool found = false;
+    for (const auto& group : script->groups)
+        for (const auto& stream : group.streams)
+            for (const auto& trigger : stream.triggers)
+                for (const auto& action : trigger.actions)
+                    for (const auto& file : action.files) {
+                        auto name = file.name;
+                        for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                        // The cars' own stop sounds: DHsqueal (freight), rw_ / x_wagon_squeal
+                        // (coaches), braking_squeal (ТУ6), the ТЭМ2's skrip; not a flange's
+                        // squeal in the curves nor the switches' skrip_strelka.
+                        const bool squeal = name.find("squeal") != std::string::npos && name.find("flange") == std::string::npos;
+                        const bool skrip = name.find("skrip") != std::string::npos && name.find("strelk") == std::string::npos;
+                        if (squeal || skrip) found = true;
+                    }
+    script_squeals_.emplace(script, found);
+    return found;
+}
+
+std::optional<renderer::ModelRainGlass> TrainView::rain_glass(const float amount, const float time, const float since) {
+    if (amount <= 0.0f || !viewing_inside() || !cab_room_ || units_.empty() || !units_.front().train) return std::nullopt;
+    const CabView* cab = engineer_cab();
+    if (!cab) return std::nullopt;
+    renderer::ModelRainGlass r{.amount = amount, .time = time, .since = since, .speed = static_cast<float>(std::abs(units_.front().train->speed()))};
+    if (rain_cab_ != cab) {
+        rain_cab_ = cab;
+        rain_wiped_.fill(-1.0e9f);
+        rain_has_grid_ = false;
+        rain_prev_.clear();
+    }
+    // The drops' run: up (back, on the side) on the move, down standing;
+    // integrated, so a change of speed carries them on smoothly.
+    {
+        const float dt = std::clamp(time - rain_flow_time_, 0.0f, 0.1f);
+        rain_flow_time_ = time;
+        const float moving = std::clamp((r.speed - 3.0f) / 12.0f, 0.0f, 1.0f);
+        const float rate = -0.004f + (0.03f + r.speed * 0.002f + 0.004f) * moving;
+        rain_flow_ = std::fmod(rain_flow_ + rate * dt, 1000.0f);
+        r.flow = rain_flow_;
+        // The side windows: blown back (towards -z, the cab's rear) and a
+        // little down on the move, sliding down standing.
+        const glm::vec2 way{-(0.02f + r.speed * 0.004f) * moving, -0.004f - 0.01f * moving};
+        rain_side_ += way * dt;
+        rain_side_ = glm::vec2{std::fmod(rain_side_.x, 1000.0f), std::fmod(rain_side_.y, 1000.0f)};
+        r.side_x = rain_side_.x;
+        r.side_y = rain_side_.y;
+        const glm::vec2 dir = glm::normalize(way);
+        r.side_dir_x = dir.x;
+        r.side_dir_y = dir.y;
+    }
+    std::vector<glm::vec3> points;
+    cab->wiper_points(points);
+    const auto& room = *cab_room_;
+    r.x0 = room.lower.x;
+    r.x1 = room.upper.x;
+    r.y0 = room.lower.y;
+    r.y1 = room.upper.y;
+    // The wipers' glass: the room's wall their blades are nearer (kept
+    // while they rest: what they wiped stays wiped, the drops coming back).
+    if (!points.empty()) {
+        const glm::vec3 centre = (room.lower + room.upper) * 0.5f;
+        float z = 0.0f;
+        for (const auto& p : points) z += p.z;
+        rain_front_ = z / static_cast<float>(points.size()) >= centre.z ? 1.0f : -1.0f;
+        rain_has_grid_ = true;
+    }
+    r.front = rain_front_;
+    r.wiped_glass = rain_has_grid_;
+    r.wiped = rain_wiped_;
+    if (points.empty()) {
+        rain_prev_.clear();
+        return r;
+    }
+    constexpr int columns = renderer::rain_grid_columns, rows = renderer::rain_grid_rows;
+    const float w = (std::max)(r.x1 - r.x0, 0.01f), h = (std::max)(r.y1 - r.y0, 0.01f);
+    const auto cell = [&](const glm::vec3& p) {
+        return glm::vec2{(p.x - r.x0) / w * columns, (p.y - r.y0) / h * rows};
+    };
+    // Every cell a triangle (in cells) covers or comes within 0.75 of.
+    const auto fill = [&](const glm::vec2 a, const glm::vec2 b, const glm::vec2 c) {
+        const glm::vec2 lo = glm::min(a, glm::min(b, c)) - 1.0f, hi = glm::max(a, glm::max(b, c)) + 1.0f;
+        const int x0 = (std::max)(0, static_cast<int>(std::floor(lo.x))), x1 = (std::min)(columns - 1, static_cast<int>(std::floor(hi.x)));
+        const int y0 = (std::max)(0, static_cast<int>(std::floor(lo.y))), y1 = (std::min)(rows - 1, static_cast<int>(std::floor(hi.y)));
+        const auto cross = [](const glm::vec2 u, const glm::vec2 v) { return u.x * v.y - u.y * v.x; };
+        const auto near_edge = [](const glm::vec2 p, const glm::vec2 u, const glm::vec2 v) {
+            const glm::vec2 d = v - u;
+            const float l = glm::dot(d, d);
+            const float t = l > 1e-8f ? std::clamp(glm::dot(p - u, d) / l, 0.0f, 1.0f) : 0.0f;
+            return glm::length(p - (u + d * t)) <= 0.75f;
+        };
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const glm::vec2 p{static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f};
+                const float d1 = cross(b - a, p - a), d2 = cross(c - b, p - b), d3 = cross(a - c, p - c);
+                const bool inside = (d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0);
+                if (inside || near_edge(p, a, b) || near_edge(p, b, c) || near_edge(p, c, a))
+                    rain_wiped_[static_cast<std::size_t>(y * columns + x)] = time;
+            }
+    };
+    // The blades where they are, and the strip each edge swept since the
+    // last frame (a blade moves farther than a cell in one).
+    const bool sweep = rain_prev_.size() == points.size();
+    for (std::size_t t = 0; t + 2 < points.size(); t += 3) {
+        const glm::vec2 v[3] = {cell(points[t]), cell(points[t + 1]), cell(points[t + 2])};
+        fill(v[0], v[1], v[2]);
+        if (!sweep) continue;
+        for (int e = 0; e < 3; ++e) {
+            const glm::vec2 a = v[e], b = v[(e + 1) % 3];
+            const glm::vec2 pa = cell(rain_prev_[t + e]), pb = cell(rain_prev_[t + (e + 1) % 3]);
+            fill(pa, a, b);
+            fill(pa, b, pb);
+        }
+    }
+    rain_prev_ = std::move(points);
+    r.wiped = rain_wiped_;
+    return r;
+}
+
+void TrainView::update_extra_sounds(const float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound) {
+    if (!extra_sounds_) {
+        extra_sounds_ = std::make_unique<TrainExtraSounds>([this](const core::VirtualPath& path) -> std::shared_ptr<const audio::AudioClip> {
+            return vfs_ && vfs_->exists(path) ? bank_->get(path) : nullptr;
+        });
+    }
+    const bool squeal = sound_extras().brake_squeal;
+    std::vector<ExtraSoundTrain> trains;
+    if (squeal) {
+        const glm::vec3 eye = camera.eye();
+        for (std::size_t u = 0; u < units_.size(); ++u) {
+            auto& unit = units_[u];
+            if (!unit.train) continue;
+            const auto& states = unit.train->cars();
+            if (states.empty() || unit.current.empty()) continue;
+            // Only trains within earshot.
+            if (glm::distance(pose(unit, 0).front, eye) > 600.0f && glm::distance(pose(unit, states.size() - 1).rear, eye) > 600.0f) continue;
+            ExtraSoundTrain t;
+            t.id = unit.train->id();
+            t.speed = std::abs(states.front().velocity);
+            t.deceleration = states.front().velocity >= 0.0f ? -states.front().acceleration : states.front().acceleration;
+            t.inside = u == 0 && viewing_inside();
+            for (std::size_t i = 0; i < unit.cars.size() && i < states.size() && i < unit.current.size(); ++i) {
+                const auto here = pose(unit, i);
+                t.cars.push_back({.position = (here.front + here.rear) * 0.5f,
+                                  .speed = std::abs(states[i].velocity),
+                                  .cylinder = states[i].cylinder,
+                                  .squeals = !script_squeals(unit.cars[i].script.get())});
+            }
+            trains.push_back(std::move(t));
+        }
+    }
+    extra_sounds_->update(elapsed, trains, camera.eye(), outside_gain_, squeal, sound);
 }
 
 void TrainView::stop_sound(audio::AudioEngine& sound) {
+    if (extra_sounds_) extra_sounds_->stop(sound);
     for (auto& unit : units_) {
         for (auto& car : unit.cars) {
             if (car.sound) car.sound->stop(sound);
             if (car.cab_sound) car.cab_sound->stop(sound);
-            for (auto& aux : car.aux_sounds)
+            for (auto& aux : car.aux_sounds) {
                 if (aux.instance) aux.instance->stop(sound);
+                if (aux.alerts) aux.alerts->stop(sound);
+            }
             for (auto& extra : car.activity_sounds)
                 if (extra.instance) extra.instance->stop(sound);
         }
@@ -10594,6 +11053,26 @@ void TrainView::stop_sound(audio::AudioEngine& sound) {
 // an SMS of its own, fed with what that library posts. SingleWagon: only
 // while the player is in that car; External: it fades with distance, else
 // it is heard as if at the listener; AMBIENT has no position.
+// A library script's ЭПК stream alone (the streams taking Brakes.sms's ЭПК
+// codes: 56 / 57 the whistle, 106 its block's, 3956 / 3957), for the view
+// from a car (F3); none when the script has no such stream.
+std::shared_ptr<const formats::SoundScript> TrainView::epk_alert_script(const formats::SoundScript& script) {
+    auto alert = std::make_shared<formats::SoundScript>(script);
+    bool any = false;
+    for (auto& group : alert->groups) {
+        std::vector<formats::SoundStream> kept;
+        for (const auto& stream : group.streams) {
+            const bool epk = std::any_of(stream.triggers.begin(), stream.triggers.end(), [](const formats::SoundTrigger& t) {
+                return t.kind == formats::SoundTriggerKind::discrete && (t.code == 56 || t.code == 57 || t.code == 106 || t.code == 3956 || t.code == 3957);
+            });
+            if (epk) kept.push_back(stream);
+        }
+        any = any || !kept.empty();
+        group.streams = std::move(kept);
+    }
+    return any ? alert : nullptr;
+}
+
 void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::size_t i, const audio::SoundInputs& exterior,
                                   const float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound) {
     auto& car = unit.cars[i];
@@ -10609,6 +11088,7 @@ void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::si
     if (!host) {
         for (auto& aux : car.aux_sounds) {
             if (aux.instance) aux.instance->stop(sound);
+            if (aux.alerts) aux.alerts->stop(sound);
             aux.instance.reset();
         }
         car.pending_aux_triggers.clear();
@@ -10647,6 +11127,36 @@ void TrainView::update_aux_sounds(Unit& unit, const std::size_t u, const std::si
     for (auto& aux : car.aux_sounds) {
         const auto& library = libraries[aux.library];
         auto* pending = aux.library < car.pending_aux_triggers.size() ? &car.pending_aux_triggers[aux.library] : nullptr;
+        // F3 (the view from the first or last car) of the driven train: the
+        // cab's ЭПК whistle all the same, a little quieter.
+        const bool car_view = player_train && car_view_ != CarView::off && i == cab_car_ && library.sound_single_wagon;
+        if (car_view) {
+            if (!aux.alerts_tried) {
+                aux.alerts_tried = true;
+                aux.alert_script = epk_alert_script(*aux.script);
+                if (const auto* group = aux.alert_script ? aux.alert_script->select_group(owner) : nullptr) {
+                    auto lookup = [this, path = aux.path](const std::string& name) -> std::shared_ptr<const audio::AudioClip> {
+                        const auto file = audio::find_sound_file(*vfs_, path, name);
+                        return file ? bank_->get(*file) : nullptr;
+                    };
+                    aux.alerts = std::make_unique<audio::SoundInstance>(aux.alert_script, *group, owner, std::move(lookup),
+                                                                        static_cast<std::uint32_t>(7919u * (i + 1) + aux.library));
+                }
+            }
+            if (aux.alerts) {
+                audio::SoundInputs heard = exterior;
+                heard.camera = audio::SoundCamera::cab;
+                heard.at_listener = true;
+                heard.position = camera.eye();
+                heard.gain = 0.6f;
+                heard[formats::SoundVariable::distance] = 0.0f;
+                heard.events = {};
+                heard.discrete = pending ? std::span<const std::uint32_t>(*pending) : std::span<const std::uint32_t>(none);
+                aux.alerts->update(elapsed, heard, sound);
+            }
+        } else if (aux.alerts && aux.alerts->active()) {
+            aux.alerts->stop(sound);
+        }
         if (library.sound_single_wagon && !in_car) {
             if (aux.instance && aux.instance->active()) aux.instance->stop(sound);
             if (pending) pending->clear();
@@ -10760,7 +11270,7 @@ void TrainView::update_cab_sound(Unit& unit, const std::size_t u, const std::siz
             car.cab_sound = std::make_unique<audio::SoundInstance>(car.cab_script, *group, owner, std::move(lookup), 104729u);
             car.cab_sound->preload();
             // OPENRTS_SOUND_TRACE: what its streams do, in the log.
-            if (sound_trace()) car.cab_sound->set_trace("cab " + car.definition->name);
+            if (sound_trace()) car.cab_sound->set_trace("cab " + car.definition->name + " (" + car.cab_script_path.str() + ")");
         }
     }
     if (!car.cab_sound) {
@@ -10961,6 +11471,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                         for (const auto& door : car.exterior_doors) {
                             if (door.last_frame > 0.0f) adjustments.push_back({.matrix = door.node, .frame = door.open * door.last_frame});
                         }
+                        for (const auto node : car.interior_part_nodes) adjustments.push_back({.matrix = node, .hidden = true});
                         for (const auto& room : neighbour_rooms_now_) {
                             renderer.submit(*model, transform, adjustments);
                             renderer.set_portal(static_cast<std::int32_t>(9 + room.portal));
@@ -11013,6 +11524,12 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
             const auto chock = shape_front != car.flipped ? simulation::chock_front : simulation::chock_rear;
             if ((state.chocks & chock) == 0) adjustments.push_back({.matrix = node, .hidden = true});
         }
+        // Its outside seen from its own cab (DoNotHideExtInCabin, the head
+        // out of the window): its simple insides left out (RTS 0x438D50),
+        // the cab's own are there.
+        if (inside) {
+            for (const auto node : car.interior_part_nodes) adjustments.push_back({.matrix = node, .hidden = true});
+        }
         for (std::size_t k = 0; k < car.bogies.size(); ++k) {
             const auto& [matrix, shape_front] = car.bogies[k];
             // A bogie follows the track heading at its own position.
@@ -11041,6 +11558,12 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 renderer.submit(*room_model, transform * room_cab->placement(), room_adjustments);
                 renderer.set_portal(code);
             }
+        }
+        // The chocks of their own shape, at the ends that have one.
+        for (const auto& chock : car.chock_shapes) {
+            const auto end = chock.shape_front != car.flipped ? simulation::chock_front : simulation::chock_rear;
+            if ((state.chocks & end) == 0 || chock.shape >= car.freight_shapes.size()) continue;
+            if (auto* model = library.find(car.freight_shapes[chock.shape])) renderer.submit(*model, transform * chock.placement);
         }
         // FreightAnim: objects fastened to the car, at FreightAnimPosition.
         for (std::size_t k = 0; k < car.freight_shapes.size() && k < car.freight.size(); ++k) {
@@ -11359,7 +11882,7 @@ void TrainView::draw_panel() {
             ImGui::TreePop();
         }
         // The trains as they stand: saved, and put back (here or from the start menu).
-        if (ImGui::TreeNode(tr("Situations"))) {
+        if (ImGui::TreeNode(tr("Situations##train_situations"))) {
             ImGui::SetNextItemWidth(220.0f);
             ImGui::InputTextWithHint("##situation_name", tr("name"), situation_name_.data(), situation_name_.size());
             ImGui::SameLine();
@@ -11399,282 +11922,45 @@ void TrainView::draw_panel() {
         const auto& train = driven();
         const auto driven = driven_car();
         const bool dll_driven = driven != SIZE_MAX && dll_car(0, driven);
-        ImGui::SeparatorText(tr("Train settings"));
+        // A section each (testers 2026-11-22: the settings ran together):
+        // the camera and the body, the brakes, the line, the cars.
+        ImGui::SeparatorText(tr("Camera and body"));
         ImGui::Checkbox(tr("Camera follows (V)"), &follow_);
-        if (!dll_driven && driver_) {
-            ImGui::SameLine();
-            ImGui::Checkbox(tr("EP brake (K)"), &driver_->ep_brake);
-        }
         if (ImGui::SliderFloat(tr("Body sway"), &sway_scale_, 0.0f, 10.0f, "%.1f")) {
             char text[16];
             std::snprintf(text, sizeof text, "%.2f", sway_scale_);
             remember("body_sway", text);
         }
-        ImGui::SameLine();
         // The size of the swing of whichever model is chosen (testers
         // 2026-11-21: "1 = RTS" read as "other values: openRTS's").
-        ImGui::TextDisabled("%s", trf("(how much of the swing: 1 as the \"%s\" model gives it, 0 none, 2 twice; the model: Settings, \"Body motion\")",
+        ImGui::TextDisabled("%s", trf("1: as the \"%s\" model sways, 0: none",
                                       train.settings().body_motion == simulation::BodyMotionModel::rts ? "RTS" : "openRTS")
                                       .c_str());
-        if (ImGui::Checkbox(tr("Speed limits without the route's +3 km/h"), &limits_without_tolerance_)) {
-            remember("limits_without_tolerance", limits_without_tolerance_ ? "1" : "0");
-            limits_->set_without_tolerance(limits_without_tolerance_);
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", tr(limits_without_tolerance_
-                                         ? "(103 is 100, 83 is 80, 28 is 25: the order's limit, as a real КЛУБ-У's map has it; for the monitor, F5, the drivers and the DLLs. MaDaDev's КЛУБ then blinks from 3 km/h below the limit, sounds from 2 below and whistles over it: the route's +3 hid that)"
-                                         : "(as the route gives them: many give 3 km/h over the order's, 103 for 100)"));
-        ImGui::Checkbox(tr("Car loops start at random points"), &random_loop_phase_);
-        ImGui::SameLine();
-        ImGui::TextDisabled(tr("(openRTS: identical loops on many cars do not add up in phase; RTS starts them together)"));
-        if (ImGui::SliderInt(tr("Coupler sub-steps"), &substeps_, 1, 4)) {
-            for (auto& unit : units_) unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled(substeps_ == 1 ? "(RTS)" : "(experimental)");
+        ImGui::SeparatorText(tr("Brakes"));
+        if (!dll_driven && driver_) ImGui::Checkbox(tr("EP brake (K)"), &driver_->ep_brake);
         if (!gauges_air_loaded_) {
             gauges_air_loaded_ = true;
             gauges_air_ = remembered("gauges_openrts_air").value_or("1") == "1";
         }
         {
-            // One choice for the brakes' settings below (BrakeSet); changed one
-            // by one they are the player's own, kept for when chosen again.
-            const auto now = brake_set();
-            const int preset = now == rts_brakes ? 0 : now == real_brakes ? 1 : 2;
-            if (brake_custom_code_.empty()) brake_custom_code_ = remembered("brakes_custom").value_or("");
-            if (preset == 2) {
-                const auto code = brake_set_code(now);
-                if (code != brake_custom_code_) {
-                    brake_custom_code_ = code;
-                    remember("brakes_custom", code);
-                }
-            }
-            const char* presets[] = {tr("as RTS"), tr("realistic (openRTS)"), tr("my own")};
-            int chosen = preset;
-            ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::Combo(tr("Brakes##preset"), &chosen, presets, 3) && chosen != preset) {
-                if (chosen == 0) {
-                    apply_brake_set(rts_brakes);
-                } else if (chosen == 1) {
-                    apply_brake_set(real_brakes);
-                } else if (const auto saved = brake_set_from(brake_custom_code_)) {
-                    apply_brake_set(*saved);
-                }
-            }
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", tr(preset == 0   ? "(RTS's air and adhesion, the DLLs' gauges)"
-                                         : preset == 1 ? "(openRTS's air, its valve over Brakes.dll, rails by the weather, real brake forces)"
-                                                       : "(your own: the settings below as you set them)"));
-        }
-        if (ImGui::Checkbox(tr("Realistic air (openRTS)"), &realistic_air_)) {
-            realistic_air_loaded_ = true;
-            remember("realistic_air", realistic_air_ ? "1" : "0");
-            for (auto& unit : units_)
-                unit.train->set_brake_model(realistic_air_ ? simulation::BrakeModel::realistic : simulation::BrakeModel::rts);
-        }
-        ImGui::SameLine();
-        if (!units_.empty() && realistic_air_ && units_.front().train->brake_model() == simulation::BrakeModel::rts) {
-            ImGui::TextDisabled("%s", tr("(the player's train keeps RTS air: its DLL's valve is made for it)"));
-        } else {
-            ImGui::TextDisabled("%s", tr("(off: RTS model; flow along the pipe, 483 / 292 / 305 distributors, 280 m/s emergency wave, the shoes' friction by speed)"));
-        }
-        {
-            // Trains with locomotive DLLs under the realistic air (docs/train.md).
-            const char* modes[] = {tr("RTS air (their valves are made for it)"), tr("the DLL's valve, its УР into the realistic air"),
-                                   tr("openRTS valve over Brakes.dll (experimental)")};
-            ImGui::SetNextItemWidth(330.0f);
-            if (ImGui::Combo(tr("Trains with DLLs##dll_air"), &dll_air_, modes, 3)) {
-                dll_air_loaded_ = true;
-                remember("dll_air", std::to_string(dll_air_));
-                if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
-                if (realistic_air_) {
-                    for (auto& unit : units_) unit.train->set_brake_model(simulation::BrakeModel::realistic);
-                }
-            }
-            ImGui::TextDisabled("%s", tr(!realistic_air_ ? "(works with the realistic air on)"
-                                         : dll_air_ == 0 ? "(as RTS: the DLL works RTS's pipe and triple valves)"
-                                         : dll_air_ == 1 ? "(the DLL keeps its valve, gauges and protections; the pipe follows its УР, its ЭПК vents it)"
-                                                         : "(the cab's 395 handle (BR_395ID1) works openRTS's valve; the УР gauge shows it; Brakes.dll's ЭПК, КЛУБ and ЭПТ stay)"));
-            // Brakes.dll's brakes or openRTS's devices in their place
-            // (docs/brakes-dll-replacement.md), and whose numbers.
-            const bool can_own = realistic_air_ && dll_air_ != 0;
-            ImGui::BeginDisabled(!can_own);
-            const char* owners[] = {tr("Brakes.dll"), tr("openRTS (experimental)")};
-            ImGui::SetNextItemWidth(330.0f);
-            if (ImGui::Combo(tr("Brakes##own_brakes"), &own_brakes_, owners, 2)) {
-                own_brakes_loaded_ = true;
-                remember("own_brakes", std::to_string(own_brakes_));
-            }
-            const char* numbers[] = {tr("as Brakes.dll"), tr("openRTS (from the books)")};
-            ImGui::SetNextItemWidth(330.0f);
-            if (ImGui::Combo(tr("Brake numbers##brake_numbers"), &brake_numbers_, numbers, 2)) {
-                own_brakes_loaded_ = true;
-                remember("brake_numbers", std::to_string(brake_numbers_));
-            }
-            ImGui::SetNextItemWidth(330.0f);
-            if (ImGui::Combo(tr("КЛУБ##own_klub"), &own_klub_, owners, 2)) {
-                own_brakes_loaded_ = true;
-                remember("own_klub", std::to_string(own_klub_));
-            }
-            ImGui::EndDisabled();
+            // The brakes' section, as the start menu's (brake_settings_ui.hpp).
+            load_brake_choices();
+            BrakeSettings settings{.realistic = realistic_air_, .dll_air = dll_air_, .gauges = gauges_air_, .rails = rails_,
+                                   .limit = limit_brake_force_, .stability = distributor_stability_, .condition = brake_condition_,
+                                   .pressing = brake_pressing_, .own_brakes = own_brakes_, .brake_numbers = brake_numbers_,
+                                   .own_klub = own_klub_, .no_brakes_dll = no_brakes_dll_, .klub_objects = klub_objects_,
+                                   .klub_map = klub_map_};
+            const auto status = brake_settings_status();
+            if (draw_brake_settings(settings, &status)) apply_brake_settings(settings);
             if (legacy_) legacy_->set_own_klub(own_klub_ == 1);
             if (legacy_) legacy_->set_own_brakes(own_brakes_ == 1, brake_numbers_ == 1);
-            ImGui::TextDisabled("%s", tr(!can_own ? "(works with the realistic air on and Trains with DLLs not as RTS)"
-                                         : own_brakes_ == 0 ? "(MaDaDev's Brakes.dll works the 395, the 254, the cocks and the ЭПТ)"
-                                         : brake_numbers_ == 0 ? "(openRTS's 395, 254, cocks and ЭПТ with Brakes.dll's numbers; Brakes.dll keeps the КЛУБ, the ЭПК and the sounds)"
-                                                               : "(openRTS's 395, 254, cocks and ЭПТ with the books' numbers; Brakes.dll keeps the КЛУБ, the ЭПК and the sounds)"));
-            ImGui::TextDisabled("%s", tr(!can_own ? "(works with the realistic air on and Trains with DLLs not as RTS)"
-                                         : own_klub_ == 0 ? "(MaDaDev's Brakes.dll's КЛУБ-У)"
-                                                          : "(openRTS's КЛУБ-У as Brakes.dll's: the ЭПК, the screen, the lamps; switched on, the track and the train's data are entered again)"));
-            if (can_own && own_klub_ == 1 && legacy_)
-                ImGui::TextUnformatted(legacy_->klub_cars() ? tr("This train's КЛУБ is openRTS's.")
-                                                            : tr("This train keeps Brakes.dll's КЛУБ (none, or a locomotive with two cabs)."));
-            ImGui::BeginDisabled(!can_own || own_klub_ != 1 || own_brakes_ != 1);
-            if (ImGui::Checkbox(tr("Without Brakes.dll where all of it is openRTS's (from the next train)"), &no_brakes_dll_))
-                remember("no_brakes_dll", no_brakes_dll_ ? "1" : "0");
-            ImGui::EndDisabled();
-            ImGui::TextDisabled("%s", tr("(a КЛУБ's locomotive on openRTS's brakes, no speed recorder: Brakes.dll is not loaded on it, openRTS's devices do all; to go back, load the train again with it off)"));
-            if (legacy_ && legacy_->without_brakes_dll())
-                ImGui::Text(tr("Brakes.dll is not loaded on %d cars of this train."), static_cast<int>(legacy_->without_brakes_dll()));
-            if (can_own && own_klub_ == 1) {
-                if (ImGui::Checkbox(tr("КЛУБ: platforms, crossings and limits in the next object line"), &klub_objects_))
-                    remember("klub_objects", klub_objects_ ? "1" : "0");
-                ImGui::TextDisabled("%s", klub_objects_ ? tr("(as Brakes.dll's: one within 500 m in place of the target signal)")
-                                                        : tr("(off: the line always shows the target signal and its distance)"));
-                if (ImGui::Checkbox(tr("Electronic map (ЭК) from the route database"), &klub_map_)) remember("klub_map", klub_map_ ? "1" : "0");
-                const auto* map = klub_map_ ? electronic_map() : nullptr;
-                ImGui::TextDisabled("%s", !klub_map_ ? tr("(off: a track entered only turns the ЭК on, the target the next signal as the switches stand, as Brakes.dll's)")
-                                          : !map      ? tr("(the map is being made)")
-                                          : map->empty()
-                                              ? tr("(the route database has no station tracks: as Brakes.dll's, the next signal as the switches stand)")
-                                              : trf("(%zu station tracks: the target the entered track's signal whatever way the switches lie; a number the map has not: \"без ЭК\")",
-                                                    map->tracks().size()).c_str());
-            }
-            // The player's locomotive: openRTS's devices, or why it keeps Brakes.dll.
-            if (can_own && own_brakes_ == 1 && !units_.empty()) {
-                const auto& player_train = *units_.front().train;
-                const auto player_car = driven_car();
-                if (player_car != SIZE_MAX && player_car < player_train.cars().size() && player_train.cars()[player_car].definition &&
-                    player_train.cars()[player_car].definition->engine) {
-                    const auto& parameters = brakes_parameters_of(*player_train.cars()[player_car].definition->engine);
-                    if (!parameters.present) {
-                        ImGui::TextUnformatted(tr("This locomotive has no Brakes.dll."));
-                    } else if (!parameters.understood()) {
-                        ImGui::Text(tr("This locomotive keeps Brakes.dll: openRTS does not know its %s."), parameters.unknown.c_str());
-                    } else {
-                        ImGui::TextUnformatted(tr("This locomotive's brakes are openRTS's."));
-                    }
-                }
-            }
-            // The cab's gauges of the pipe, the cylinders and the main
-            // reservoir from the model's air (CabView::AirGauges).
-            ImGui::BeginDisabled(!realistic_air_);
-            if (ImGui::Checkbox(tr("Cab gauges show openRTS's air (pipe, cylinders, main reservoir)"), &gauges_air_))
-                remember("gauges_openrts_air", gauges_air_ ? "1" : "0");
-            ImGui::EndDisabled();
-            ImGui::TextDisabled("%s", tr(!realistic_air_ ? "(works with the realistic air on; without it the gauges are the DLL's, as in RTS)"
-                                         : gauges_air_ ? "(the gauges named DTM, DTC1, DTC2, DGR show what F5 shows; the others stay the DLL's)"
-                                                       : "(as the DLL draws them: its own needles, which may lag or run ahead of F5)"));
         }
-        {
-            // The rails' adhesion (adhesion.hpp): traction and, with the realistic
-            // air, wheel slide and the shoes' wetness and warmth.
-            const char* rails[] = {tr("as RTS (no weather)"), tr("by the weather"), tr("dry"), tr("wet"), tr("snow"), tr("ice"), tr("leaves")};
-            ImGui::SetNextItemWidth(200.0f);
-            if (ImGui::Combo(tr("Rails##rails"), &rails_, rails, 7)) {
-                rails_loaded_ = true;
-                remember("rails", std::to_string(rails_));
-            }
-            ImGui::SameLine();
-            const auto now = rails_now();
-            ImGui::TextDisabled("%s", tr(now == simulation::RailCondition::rts    ? "(RTS's adhesion; no wheel slide limit by weather)"
-                                         : now == simulation::RailCondition::dry  ? "(now dry: adhesion 0.33 standing, 0.21 at 100 km/h)"
-                                         : now == simulation::RailCondition::wet  ? "(now wet: 0.65 of dry; the shoes get wet, braking dries them)"
-                                         : now == simulation::RailCondition::snow ? "(now snow: 0.5 of dry; the shoes get wet, braking dries them)"
-                                         : now == simulation::RailCondition::ice  ? "(now ice: 0.35 of dry)"
-                                                                                  : "(now leaves: 0.3 of dry)"));
-        }
-        if (ImGui::Checkbox(tr("Limit the brake force to real stock's (openRTS)"), &limit_brake_force_)) {
-            rails_loaded_ = true;
-            remember("limit_brake_force", limit_brake_force_ ? "1" : "0");
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", tr(limit_brake_force_
-                                         ? "(with the realistic air: at most what real stock with its shoes gives; some content brakes 3x harder and slides on dry rails)"
-                                         : "(off: the brake force as the stock's files give it)"));
-        {
-            // The brakes' condition and pressing (realistic air; docs/train.md
-            // "Brake condition", testers' proposal 2026-11-17).
-            ImGui::BeginDisabled(!realistic_air_);
-            std::array<std::string, 11> names;
-            names[0] = tr("off: as the files give it");
-            for (int c = 1; c <= 10; ++c) names[static_cast<std::size_t>(c)] = std::to_string(c);
-            names[1] = tr("1: due for an overhaul");
-            names[6] = tr("6: in service");
-            names[10] = tr("10: from the works");
-            ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::BeginCombo(tr("Brake condition##condition"), names[static_cast<std::size_t>(brake_condition_)].c_str())) {
-                for (int c = 0; c <= 10; ++c) {
-                    if (ImGui::Selectable(names[static_cast<std::size_t>(c)].c_str(), c == brake_condition_)) {
-                        brake_condition_ = c;
-                        remember("brake_condition", std::to_string(c));
-                    }
-                }
-                ImGui::EndCombo();
-            }
-            ImGui::SameLine();
-            ImGui::TextDisabled("%s", tr(!realistic_air_ ? "(works with the realistic air on)"
-                                         : brake_condition_ == 0
-                                             ? "(every car as its files give it: no leaks of its own, its distributor as the book's)"
-                                             : "(the worse, the more the pipe, cylinders and main reservoir leak, the slower and less alike the distributors, the weaker the rigging; even at 10 the cars differ a little)"));
-            // What the driven train has now.
-            if (realistic_air_ && brake_condition_ != 0 && !units_.empty() && units_.front().train) {
-                const auto& cars = units_.front().train->cars();
-                float leak = 0.0f, slow = 9.0f, fast = 0.0f, weak = 9.0f, strong = 0.0f;
-                for (const auto& car : cars) {
-                    leak += car.wear.pipe_leak;
-                    slow = (std::min)(slow, car.wear.pace);
-                    fast = (std::max)(fast, car.wear.pace);
-                    weak = (std::min)(weak, car.wear.rigging);
-                    strong = (std::max)(strong, car.wear.rigging);
-                }
-                if (!cars.empty())
-                    ImGui::TextDisabled(tr("(this train: the pipe leaks %.2f atm/min by itself, the distributors' pace %.0f-%.0f %%, the rigging %.0f-%.0f %%)"),
-                                        leak / static_cast<float>(cars.size()), slow * 100.0f, fast * 100.0f, weak * 100.0f, strong * 100.0f);
-            }
-            ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::SliderInt(tr("Brake pressing##pressing"), &brake_pressing_, 50, 150, "%d %%")) remember("brake_pressing", std::to_string(brake_pressing_));
-            ImGui::SameLine();
-            if (realistic_air_ && !units_.empty() && units_.front().train)
-                ImGui::TextDisabled(tr("(the shoes' force of every car; the driven train now %.0f tf per 100 tf of weight, as cast-iron shoes)"),
-                                    units_.front().train->brake_pressing());
-            else
-                ImGui::TextDisabled("%s", tr("(the shoes' force of every car, as a factor; works with the realistic air on)"));
-            ImGui::EndDisabled();
-        }
-        if (ImGui::Checkbox(tr("Distributor stability in the RTS model (openRTS)"), &distributor_stability_)) {
-            distributor_stability_loaded_ = true;
-            remember("distributor_stability", distributor_stability_ ? "1" : "0");
-            for (auto& unit : units_) unit.train->set_distributor_stability(distributor_stability_);
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", tr(distributor_stability_
-                                         ? "(a slow pipe fall, as the stabiliser's, brakes nothing: 483 up to 0.3, 292 up to 0.5 atm/min)"
-                                         : "(off: as RTS, any pipe fall below the reservoir brakes, the stabiliser's slow one too)"));
         if (line_engines_) {
+            ImGui::SeparatorText(tr("Overhead line"));
             ImGui::Checkbox(tr("pantographs can burn the wire"), &electrification_->wire_burning);
-            ImGui::SameLine();
-            ImGui::Checkbox(tr("each engine its own voltage##line"), &electrification_->own_voltage);
-            if (electrification_->mode() != simulation::Electrification::Mode::sections && !electrification_->own_voltage) {
-                ImGui::SameLine();
-                ImGui::TextDisabled(electrification_->mode() == simulation::Electrification::Mode::single_type
-                                        ? tr("(the route's one supply type)")
-                                    : electrification_->mode() == simulation::Electrification::Mode::by_engine
-                                        ? tr("(no .electrotype: the engine's own voltage, as RTS)")
-                                        : tr("(the route is not electrified)"));
-            }
         }
-        if (ImGui::TreeNode(tr("Cars and coupling"))) {
+        ImGui::SeparatorText(tr("Cars and coupling"));
+        if (ImGui::TreeNode(tr("Car list and uncoupling"))) {
             // Uncoupling as from the RTS menu: both end cocks closed, the
             // couplers left open so the parts do not couple again by themselves.
             const auto& cars = units_.front().cars;
@@ -11699,6 +11985,37 @@ void TrainView::draw_panel() {
             }
             ImGui::TreePop();
         }
+        // For developers (F12): what tests the simulation rather than plays it.
+        if (developer_mode()) {
+            ImGui::SeparatorText(tr("For developers"));
+            if (ImGui::Checkbox(tr("Speed limits without the route's +3 km/h"), &limits_without_tolerance_)) {
+                remember("limits_without_tolerance", limits_without_tolerance_ ? "1" : "0");
+                limits_->set_without_tolerance(limits_without_tolerance_);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", tr(limits_without_tolerance_
+                                             ? "(103 is 100, 83 is 80, 28 is 25: the order's limit, as a real КЛУБ-У's map has it; for the monitor, F5, the drivers and the DLLs. MaDaDev's КЛУБ then blinks from 3 km/h below the limit, sounds from 2 below and whistles over it: the route's +3 hid that)"
+                                             : "(as the route gives them: many give 3 km/h over the order's, 103 for 100)"));
+            ImGui::Checkbox(tr("Car loops start at random points"), &random_loop_phase_);
+            ImGui::SameLine();
+            ImGui::TextDisabled(tr("(openRTS: identical loops on many cars do not add up in phase; RTS starts them together)"));
+            if (ImGui::SliderInt(tr("Coupler sub-steps"), &substeps_, 1, 4)) {
+                for (auto& unit : units_) unit.train->set_coupler_substeps(static_cast<std::uint32_t>(substeps_));
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled(substeps_ == 1 ? "(RTS)" : "(experimental)");
+            if (line_engines_) {
+                ImGui::Checkbox(tr("each engine its own voltage##line"), &electrification_->own_voltage);
+                if (electrification_->mode() != simulation::Electrification::Mode::sections && !electrification_->own_voltage) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled(electrification_->mode() == simulation::Electrification::Mode::single_type
+                                            ? tr("(the route's one supply type)")
+                                        : electrification_->mode() == simulation::Electrification::Mode::by_engine
+                                            ? tr("(no .electrotype: the engine's own voltage, as RTS)")
+                                            : tr("(the route is not electrified)"));
+                }
+            }
+        }
     }
 
     // What the train is doing.
@@ -11721,6 +12038,16 @@ void TrainView::draw_panel() {
                 train.mass() / 1000.0);
     if (!placed()) {
         ImGui::TextUnformatted(tr("Not on the track: put it with Track control (Ctrl+Alt+F7) or on a path start."));
+        return;
+    }
+    // The readouts are for developers (F12); a player keeps the keys of a
+    // train without a DLL and the plugin's name.
+    if (!developer_mode()) {
+        if (native_) ImGui::Text(tr("Native plugin: %s (the cab's keys and mouse)"), native_->name().c_str());
+        if (driver_ && !legacy_ && !native_) {
+            ImGui::TextUnformatted(tr("Home/End: throttle  PgUp/PgDn: reverser  ] [: brake valve V..I (hold [ in I)  , .: independent"));
+            ImGui::TextUnformatted(tr("Horn Space, bell B, sander X, pantographs P, doors Y (left) and U (right)"));
+        }
         return;
     }
     const auto& head = train.cars().front();

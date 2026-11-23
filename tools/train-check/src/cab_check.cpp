@@ -456,6 +456,27 @@ int shape_check(const core::Vfs& vfs, const std::vector<std::string>& args) {
         std::printf("prim state %zu: %s, shader %s, light material %d, flags 0x%X\n", i, image.c_str(), shader.c_str(), material, p.flags);
     }
     report_shape(model, args);
+    // The animated nodes (a second argument: only names containing it):
+    // what a FreeAnimation's ChildNodes can move.
+    const std::string filter = args.size() > 1 ? core::fold_case(args[1]) : std::string();
+    for (std::size_t a = 0; a < model.animations.size(); ++a) {
+        for (const auto& node : model.animations[a].nodes) {
+            const auto m = static_cast<std::size_t>(node.matrix_index);
+            const auto name = m < model.matrices.size() ? model.matrices[m].name : std::string("?");
+            if (!filter.empty() && core::fold_case(name).find(filter) == std::string::npos) continue;
+            std::printf("animation %zu node %s: %zu position keys, %zu rotation keys", a, name.c_str(), node.positions.size(),
+                        node.rotations.size());
+            // The first and the last rotation: equal, the keys make a whole
+            // round (there and back); else one way.
+            if (!node.rotations.empty()) {
+                const auto& f = node.rotations.front();
+                const auto& l = node.rotations.back();
+                std::printf(", frames %u..%u, first (%.3f %.3f %.3f %.3f) last (%.3f %.3f %.3f %.3f)", f.frame, l.frame, f.value[0], f.value[1],
+                            f.value[2], f.value[3], l.value[0], l.value[1], l.value[2], l.value[3]);
+            }
+            std::printf("\n");
+        }
+    }
     std::printf("shape: %zu nodes, %zu draws\n", model.matrices.size(), model.draws.size());
     return 0;
 }
