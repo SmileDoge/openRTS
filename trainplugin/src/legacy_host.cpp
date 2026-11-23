@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <openrts/trainplugin/legacy_host.hpp>
 
 #include <openrts/core/profile.hpp>
@@ -20,6 +21,7 @@
 #include <semaphore.h>
 #include <time.h>
 #include <signal.h>
+#include <spawn.h>
 #endif
 
 #include <atomic>
@@ -266,16 +268,22 @@ std::unique_ptr<LegacyHost> LegacyHost::start(std::string* error, const std::fil
 
     if (host->view_ == MAP_FAILED || !host->request_ || !host->reply_) return fail("shared memory / semaphore setup failed");
 
+    // pid_t pid = fork();
+    // if (pid == 0) {
+    //     execlp("wine", "wine", exe.c_str(), "--serve", name.c_str(), "--parent", std::to_string(getpid()).c_str(), nullptr);
+    //     _exit(1);
+    // } else if (pid < 0) {
+    //     return fail("fork failed");
+    // }
     pid_t pid = 0;
-    if (pid == 0) {
-        execlp("wine", "wine", exe.c_str(), "--serve", name.c_str(), "--parent", std::to_string(getpid()).c_str(), nullptr);
-        _exit(1);
-    } else if (pid < 0) {
-        return fail("fork failed");
+    const char* argv[] = {"wine", exe.c_str(), "--serve", name.c_str(), "--parent", std::to_string(getpid()).c_str(), nullptr};
+    int result = posix_spawnp(&pid, "wine", nullptr, nullptr, (char**)argv, nullptr);
+    if (result == 0) {
+        host->process_ = pid;
+        host->alive_ = true;
+    } else {
+        fail("openrts-dllhost32.exe did not start (error " + std::to_string(result) + ")");
     }
-
-    host->process_ = pid;
-    host->alive_ = true;
 
     std::uint32_t version = 0, input_size = 0, output_size = 0, switch_size = 0, display_size = 0, signal_size = 0, limit_size = 0;
     const bool ok = host->call(
