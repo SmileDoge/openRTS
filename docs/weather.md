@@ -294,7 +294,11 @@ on by default).
 - **Snow.** While it snows the glass gathers flakes instead: they stick
   where they hit and stay, fine flakes and clumps with ragged edges; on the
   move the windscreen takes them faster, the side windows slower. The
-  wipers clear them the same way.
+  wipers clear them the same way. Three layers (cells of 9, 16 and 38 mm,
+  turned against each other), each flake anywhere in the middle 0.6 of its
+  cell, the density patchy by a smooth noise of some 11 and 4 cm (0.35 ..
+  1.45 of it): no rows to be seen (until 2026-11-23 two layers on one
+  lattice, flakes in neat rows, testers).
 - **The wipers.** The cab's running FreeAnimations (the wipers the DLL
   starts, `CabView::wiper_points`, the animated nodes and all below them):
   their triangles where they are each frame, and the strips their edges

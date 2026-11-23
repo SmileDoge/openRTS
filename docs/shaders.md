@@ -62,3 +62,22 @@ frames (the new renderer by day in rain from the cab, at night, in a
 thunderstorm; the RTS path by day), `--paused`, Kuban, Krasnodar-1, are
 the same before and after within a run's own noise (1-2 of 255; one pixel
 of the thunderstorm's, its lightning).
+
+## Direct3D 12: DXC, not FXC (2026-11-23)
+
+wgpu turns the WGSL into HLSL on Direct3D 12 and compiles it with FXC unless
+it is given Microsoft's DXC. FXC took 20 s for the models' pipelines on a
+Ryzen 9800X3D and minutes on a Radeon RX 570's machine (the start menu
+"not responding" at "starting the graphics"; it got there in the end).
+Vulkan: 2.5 s, 0.1 s once its driver has them cached.
+
+`dxcompiler.dll` and `dxil.dll` beside the program (`wgpu_context.cpp`,
+`dxc_beside_program`) make Direct3D 12 use DXC: 1.0-2.2 s, the frames the
+same within a few pixels' rounding. The release carries them (CI downloads
+DirectXShaderCompiler v1.9.2609; CMake's `OPENRTS_DXC_ROOT` copies them
+beside the programs), their terms in `licenses/dxc`, the GPL's additional
+permission in `LICENSE-EXCEPTIONS.md`. The log says which:
+`graphics: Direct3D 12's shaders by DXC` (or FXC), then
+`graphics: the models' shaders ready in N s`.
+
+wgpu keeps no pipeline cache on Direct3D 12; with DXC it is not needed.

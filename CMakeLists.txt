@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(openRTS
-    VERSION 0.38.3
+    VERSION 0.38.4
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
 if(WIN32)
@@ -18,6 +18,11 @@ option(OPENRTS_BUILD_TOOLS "Build command-line tools" ON)
 option(OPENRTS_ENABLE_GLFW "Build the GLFW-based viewer window" ON)
 option(OPENRTS_ENABLE_WGPU "Enable the wgpu-native WebGPU backend" OFF)
 set(OPENRTS_WGPU_ROOT "" CACHE PATH "Root of an extracted wgpu-native SDK")
+# Microsoft's DirectX Shader Compiler, a release from its GitHub (bin/x64:
+# dxcompiler.dll, dxil.dll): beside the programs, Direct3D 12 compiles the
+# shaders with it (seconds) instead of FXC (tens of seconds to minutes).
+# Optional; docs/shaders.md.
+set(OPENRTS_DXC_ROOT "" CACHE PATH "Root of an extracted DirectX Shader Compiler release (optional)")
 option(OPENRTS_FETCH_ZLIB "Fetch zlib when a system package is unavailable" ON)
 option(OPENRTS_FETCH_ZSTD "Fetch Zstandard when a system package is unavailable" ON)
 option(OPENRTS_ENABLE_TRACY "Build the Tracy profiler client in (docs/profiling.md)" OFF)

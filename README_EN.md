@@ -536,4 +536,7 @@ TSP-Talk, Creative Commons 0. Details in `packs/thunder/CREDITS.txt`.
 
 openRTS is licensed under the **GNU General Public License v3.0**: you may
 use, study, change and share it, and modified versions only under the same
-licence and with their source. The full text is in [LICENSE](LICENSE).
+licence and with their source. The full text is in [LICENSE](LICENSE). An
+additional permission, for the release carrying Microsoft's DXC shader
+compiler (`dxcompiler.dll`, `dxil.dll`, their terms in `licenses/dxc`), is in
+[LICENSE-EXCEPTIONS.md](LICENSE-EXCEPTIONS.md).

@@ -91,6 +91,12 @@ function(openrts_copy_wgpu_runtime target)
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:openrts_wgpu_native>" "$<TARGET_FILE_DIR:${target}>")
+        # DXC beside it when given (renderer/src/wgpu_context.cpp takes it).
+        if(OPENRTS_DXC_ROOT AND EXISTS "${OPENRTS_DXC_ROOT}/bin/x64/dxcompiler.dll")
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${OPENRTS_DXC_ROOT}/bin/x64/dxcompiler.dll" "${OPENRTS_DXC_ROOT}/bin/x64/dxil.dll" "$<TARGET_FILE_DIR:${target}>")
+        endif()
     endif()
 endfunction()
 

@@ -45,30 +45,51 @@ fn rain_sky() -> f32 {
     let sun = frame.lights[0];
     return clamp(dot(sun.ambient.xyz + sun.diffuse.xyz * 0.5, vec3<f32>(0.333)), 0.03, 1.0);
 }
-fn snow_flake(uv: vec2<f32>, size: f32, seed: f32, density: f32) -> f32 {
-    let q = uv / size;
+// A layer of flakes: cells of `size` (m) turned by `turn` (rad), a flake in
+// some of them anywhere inside (not on a lattice: the layers are turned
+// against each other and each flake set off up to 0.3 of its cell).
+fn snow_flake(uv: vec2<f32>, size: f32, turn: f32, seed: f32, density: f32) -> f32 {
+    let rot = mat2x2<f32>(cos(turn), sin(turn), -sin(turn), cos(turn));
+    let q = rot * uv / size;
     let cell = floor(q);
     let h = rain_hash(cell, seed + 3.0);
     if (h.x > density) {
         return 0.0;
     }
-    let c = cell + vec2<f32>(0.25, 0.25) + h.yz * 0.5;
+    let c = cell + vec2<f32>(0.2, 0.2) + h.yz * 0.6;
     let off = q - c;
     let angle = atan2(off.y, off.x);
-    let r = (0.12 + 0.2 * h.w) * (1.0 + 0.3 * sin(angle * 5.0 + h.y * 6.2831853) * h.z);
+    let r = (0.07 + 0.13 * h.w) * (1.0 + 0.35 * sin(angle * 5.0 + h.y * 6.2831853) * h.z);
     let d = length(off);
-    return (1.0 - smoothstep(r * 0.4, r, d)) * (0.55 + 0.45 * h.w);
+    return (1.0 - smoothstep(r * 0.35, r, d)) * (0.5 + 0.5 * h.w);
+}
+// Smooth value noise (0..1) on cells of `size` (m): where the snow sticks
+// more and where less, patches of some 10 cm.
+fn snow_patches(uv: vec2<f32>, size: f32, seed: f32) -> f32 {
+    let q = uv / size;
+    let i = floor(q);
+    let f = q - i;
+    let s = f * f * (vec2<f32>(3.0) - 2.0 * f);
+    let a = rain_hash(i, seed).x;
+    let b = rain_hash(i + vec2<f32>(1.0, 0.0), seed).x;
+    let c = rain_hash(i + vec2<f32>(0.0, 1.0), seed).x;
+    let d = rain_hash(i + vec2<f32>(1.0, 1.0), seed).x;
+    return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
 }
 fn snow_on_glass(uv: vec2<f32>, seed: f32, age: f32, side: bool, colour: vec4<f32>) -> vec4<f32> {
     let speed = frame.rain.z;
     let hit = select(1.0 + min(speed * 0.08, 2.0), 1.0 - 0.5 * clamp(speed / 15.0, 0.0, 1.0), side);
-    let density = clamp(age * frame.rain.x * 0.03 * hit, 0.0, 0.9);
-    if (density <= 0.0) {
+    let gathered = clamp(age * frame.rain.x * 0.03 * hit, 0.0, 0.9);
+    if (gathered <= 0.0) {
         return colour;
     }
-    let fine = snow_flake(uv, 0.012, seed, density);
-    let clump = snow_flake(uv + vec2<f32>(0.37, 0.71), 0.035, seed + 11.0, density * 0.45);
-    let cover = clamp(max(fine, clump * 1.2), 0.0, 1.0);
+    // Uneven: patches denser and thinner (0.35 .. 1.45 of it).
+    let patchy = 0.35 + 1.1 * (0.65 * snow_patches(uv, 0.11, seed + 41.0) + 0.35 * snow_patches(uv, 0.037, seed + 43.0));
+    let density = clamp(gathered * patchy, 0.0, 0.95);
+    let fine = snow_flake(uv, 0.009, 0.45, seed, density);
+    let middle = snow_flake(uv + vec2<f32>(0.13, 0.29), 0.016, 1.7, seed + 7.0, density * 0.7);
+    let clump = snow_flake(uv + vec2<f32>(0.37, 0.71), 0.038, 2.9, seed + 11.0, density * 0.4);
+    let cover = clamp(max(max(fine, middle * 1.1), clump * 1.25), 0.0, 1.0);
     if (cover <= 0.0) {
         return colour;
     }
@@ -81,6 +102,21 @@ fn snow_on_glass(uv: vec2<f32>, seed: f32, age: f32, side: bool, colour: vec4<f3
 // weight there. Between a wiped cell and one not its edge is a smooth line
 // half way (no squares of the grid), and a drop and its pixels ask alike:
 // a drop is cut where that line crosses it.
+// One cell's last wipe (else the rain's start).
+fn rain_wiped_cell(c: vec2<i32>) -> f32 {
+    let at = clamp(c, vec2<i32>(0), vec2<i32>(127, 63));
+    let index = at.y * 128 + at.x;
+    return max(frame.rain_wiped[index / 4][index % 4], frame.rain.w);
+}
+// A corner's wipe if the corners wiped at that time or later hold at least
+// half the weight, else the rain's start.
+fn rain_wipe_held(times: vec4<f32>, weights: vec4<f32>, time: f32) -> f32 {
+    let held = dot(weights, select(vec4<f32>(0.0), vec4<f32>(1.0), times >= vec4<f32>(time)));
+    return select(frame.rain.w, time, held >= 0.5);
+}
+// Without loops or local arrays: D3D12's shader compiler unrolled the loops
+// over arrays (called five times a pixel) for minutes or for ever on some
+// drivers (a Radeon RX 570 hung at "starting the graphics", v0.38.3).
 fn rain_wipe_at(uv: vec2<f32>) -> f32 {
     let g = (uv - frame.rain_grid.xy) / max(frame.rain_grid.zw - frame.rain_grid.xy, vec2<f32>(0.01));
     if (any(g < vec2<f32>(0.0)) || any(g >= vec2<f32>(1.0))) {
@@ -89,25 +125,12 @@ fn rain_wipe_at(uv: vec2<f32>) -> f32 {
     let f = g * vec2<f32>(128.0, 64.0) - vec2<f32>(0.5);
     let base = floor(f);
     let t = f - base;
-    var times: array<f32, 4>;
-    var weights: array<f32, 4>;
-    for (var k = 0; k < 4; k = k + 1) {
-        let c = clamp(vec2<i32>(base) + vec2<i32>(k % 2, k / 2), vec2<i32>(0), vec2<i32>(127, 63));
-        let index = c.y * 128 + c.x;
-        times[k] = max(frame.rain_wiped[index / 4][index % 4], frame.rain.w);
-        weights[k] = select(1.0 - t.x, t.x, k % 2 == 1) * select(1.0 - t.y, t.y, k / 2 == 1);
-    }
-    var wiped = frame.rain.w;
-    for (var k = 0; k < 4; k = k + 1) {
-        var held = 0.0;
-        for (var j = 0; j < 4; j = j + 1) {
-            held = held + select(0.0, weights[j], times[j] >= times[k]);
-        }
-        if (held >= 0.5) {
-            wiped = max(wiped, times[k]);
-        }
-    }
-    return wiped;
+    let b = vec2<i32>(base);
+    let times = vec4<f32>(rain_wiped_cell(b), rain_wiped_cell(b + vec2<i32>(1, 0)), rain_wiped_cell(b + vec2<i32>(0, 1)),
+                          rain_wiped_cell(b + vec2<i32>(1, 1)));
+    let weights = vec4<f32>((1.0 - t.x) * (1.0 - t.y), t.x * (1.0 - t.y), (1.0 - t.x) * t.y, t.x * t.y);
+    return max(max(rain_wipe_held(times, weights, times.x), rain_wipe_held(times, weights, times.y)),
+               max(rain_wipe_held(times, weights, times.z), rain_wipe_held(times, weights, times.w)));
 }
 fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_blended: bool, extent: f32) -> vec4<f32> {
     // A window's glass is large; a gauge's glass and its needle small.

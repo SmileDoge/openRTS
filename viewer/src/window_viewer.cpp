@@ -3088,7 +3088,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     glfwShowWindow(window.get());
     startup_frame("Starting the graphics");
 
+    // The shaders' pipelines take long on some drivers (a Radeon's D3D12 sat
+    // minutes here): the log says how long.
+    const auto shaders_started = std::chrono::steady_clock::now();
+    const auto seconds_since = [](const std::chrono::steady_clock::time_point from) {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+    };
     renderer::ModelRenderer renderer(device, surface.scene_format());
+    std::cout << "graphics: the models' shaders ready in " << seconds_since(shaders_started) << " s" << std::endl;
     std::unique_ptr<renderer::ToneMapper> tone;
     std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
     bool auto_exposure_was_on = false;
@@ -3113,6 +3120,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // Workers for the parallel recording: a cascade or the pre-pass each.
     renderer::TaskPool recording_pool((std::min)((std::max)(std::thread::hardware_concurrency(), 2u) - 1u, 5u));
     renderer.set_task_pool(&recording_pool);
+    std::cout << "graphics: the effects' shaders ready, " << seconds_since(shaders_started) << " s from the start of the graphics" << std::endl;
     if (!effects.ready()) {
         std::cerr << "Scene effects initialization failed.\n";
         return exit_code::renderer_failed;

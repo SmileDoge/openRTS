@@ -534,4 +534,7 @@ Creative Commons 0. Подробности — в `packs/thunder/CREDITS.txt`.
 openRTS распространяется по лицензии **GNU General Public License v3.0**:
 программу можно свободно использовать, изучать, изменять и распространять, а
 изменённые версии — только под той же лицензией и с исходным кодом. Полный
-текст — в файле [LICENSE](LICENSE).
+текст — в файле [LICENSE](LICENSE). Дополнительное разрешение — выпуск
+идёт вместе с компилятором шейдеров Microsoft DXC (`dxcompiler.dll`,
+`dxil.dll`, их условия в `licenses/dxc`) — в
+[LICENSE-EXCEPTIONS.md](LICENSE-EXCEPTIONS.md).

@@ -320,8 +320,10 @@ scenarios run with Brakes.dll and with openRTS side by side
    Новокузнецк, Чернышевск, Павловск, Кубань and Степи Приазовья have
    them); the КЛУБ's screen shows "СРЫВ ЭПК САУТ". Checked: every КЛУБ
    script (the ЭД9М's, 2ЭС6, ЭП20, ЭП2К, ЭП1) and a new one,
-   `openrts.content.klub_ed9m_saut` (the modes, the aspects, a red at 90 ..
-   100 m), with its own run (`..._own`). Not in the checks: the ЭД9М's
+   `openrts.content.klub_ed9m_saut_own` (the modes, the aspects, a red at
+   90 .. 100 m) on openRTS's own КЛУБ and brakes. Its run beside Brakes.dll's
+   (`klub_ed9m_saut`) was dropped 2026-11-23: late in its 600 s the content's
+   DLL parts from it for reasons outside the КЛУБ. Not in the checks: the ЭД9М's
    braking coefficient (it brakes with its ЭПТ), the announcements (the
    check runs on a line without them).
 4. **The speed recorder** (done 2026-11-20 for the 3СЛ-2М): with "КЛУБ:
