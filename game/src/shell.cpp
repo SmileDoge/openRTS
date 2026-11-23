@@ -596,13 +596,22 @@ void GameShell::draw_loading_overlay() const {
     const auto panel_top = panel_bottom - panel_height;
     const ImVec2 panel_min{margin, panel_top};
     const ImVec2 panel_max{display.x - margin, panel_bottom};
-    // The mockup's glass is almost clear: the train stays visible through the
-    // panel, which is only a faint dark tint under a thin white outline.
+    // The mockup's glass: the train stays visible through the panel, which is
+    // a faint dark tint under a soft outline, with a light top sheen and a
+    // shadow that lifts it off the picture.
     const auto radius = 24.0f * scale;
-    draw->AddRectFilled(panel_min, panel_max, IM_COL32(6, 8, 12, 46), radius);
-    draw->AddRect(panel_min, panel_max, IM_COL32(255, 255, 255, 190), radius, 0, 1.0f * scale);
+    for (int i = 3; i >= 1; --i) {
+        const auto grow = static_cast<float>(i) * 3.0f * scale;
+        draw->AddRectFilled({panel_min.x - grow, panel_min.y - grow + 2.0f * scale},
+                            {panel_max.x + grow, panel_max.y + grow + 2.0f * scale}, IM_COL32(0, 0, 0, 12), radius + grow);
+    }
+    draw->AddRectFilled(panel_min, panel_max, IM_COL32(10, 14, 22, 58), radius);
+    draw->AddRectFilledMultiColor({panel_min.x + radius, panel_min.y + 1.0f * scale},
+                                  {panel_max.x - radius, panel_min.y + 54.0f * scale}, IM_COL32(255, 255, 255, 16),
+                                  IM_COL32(255, 255, 255, 16), IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0));
+    draw->AddRect(panel_min, panel_max, IM_COL32(255, 255, 255, 84), radius, 0, 1.0f * scale);
     draw->AddLine({panel_min.x + radius, panel_min.y + 1.0f * scale},
-                  {panel_max.x - radius, panel_min.y + 1.0f * scale}, IM_COL32(255, 255, 255, 220), 1.0f * scale);
+                  {panel_max.x - radius, panel_min.y + 1.0f * scale}, IM_COL32(255, 255, 255, 120), 1.0f * scale);
     // The mockup's inner separator and its progress track.
     draw->AddLine({panel_min.x + 33.0f * scale, panel_min.y + 116.0f * scale},
                   {panel_max.x - 33.0f * scale, panel_min.y + 116.0f * scale}, IM_COL32(255, 255, 255, 40), 1.0f);
