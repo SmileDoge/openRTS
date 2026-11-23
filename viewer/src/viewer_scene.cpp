@@ -1084,8 +1084,10 @@ public:
             const bool snowing = precipitation_ && precipitation_->drops() > 0 && precipitation_->snow();
             const bool winter = clock.season == renderer::rts::Season::winter;
             const float target = snowing ? 1.0f : winter ? 0.8f : 0.0f;
-            if (!snow_cover_started_) {
+            // From the start, and when the season is changed: at once.
+            if (!snow_cover_started_ || winter != snow_cover_winter_) {
                 snow_cover_started_ = true;
+                snow_cover_winter_ = winter;
                 snow_cover_ = winter ? target : 0.0f;
             }
             const float rate = target > snow_cover_ ? 1.0f / 240.0f : 1.0f / 600.0f;
@@ -3235,7 +3237,7 @@ private:
     }
     float rain_clock_ = 0.0f, rain_since_ = 0.0f; // s
     float snow_cover_ = 0.0f; // the snow on the models (0..1)
-    bool snow_cover_started_ = false;
+    bool snow_cover_started_ = false, snow_cover_winter_ = false;
     bool was_raining_ = false;
     mutable WorldEffects effects_ = [] {
         WorldEffects effects;
