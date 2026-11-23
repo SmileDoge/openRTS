@@ -4,7 +4,7 @@
 // data kept by its CarId in its world's CarRegistry. They live as long as
 // the car: a coupling, a cut, a train handed over do not touch them; the car
 // released, they go with it. Step 2: the doors, the lights, the
-// pantographs.
+// pantographs. Step 3: the cab's (or salon's) own state.
 
 #include <array>
 #include <cstdint>
@@ -77,11 +77,38 @@ struct CarPantographs {
     void step(float elapsed, float raise_time);
 };
 
+// A door or window of the car's cab or salon (its .sd's InteriorDoors,
+// InteriorWindows), by position there.
+struct CabOpening {
+    float open{};        // 0 shut .. 1 open
+    bool target = false; // where it is going
+};
+
+// A FreeAnimation the DLL runs (the wipers, the ЭП20's mirrors): where it
+// is in its round.
+struct CabAnimation {
+    float phase{};       // 0 .. 1 of a round
+    bool down = false;   // going back towards frame 0
+    bool moving = false;
+};
+
+// The cab's or salon's state (cars as entities, step 3): what the engineer
+// and the DLL left it as, kept with the car whatever view draws it (a cab
+// left, come back to, drawn anew: as it was). The switches' states are the
+// DLL's (its host keeps them by the car).
+struct CarCab {
+    bool made = false; // its .sd's starting states taken (the first view of it)
+    std::vector<CabOpening> doors, windows;
+    std::vector<float> blink_clock; // by display: DisplayFade's clock (RTS display +72)
+    std::vector<CabAnimation> animations;
+};
+
 // Everything a car has besides its physics (that is the train's CarState).
 struct CarComponents {
     CarDoors doors;
     CarLights lights;
     CarPantographs pantographs;
+    CarCab cab;
 };
 
 } // namespace openrts::simulation

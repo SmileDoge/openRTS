@@ -888,11 +888,17 @@ std::uint32_t TrainView::car_for_server_uid(const std::uint32_t uid, const std::
 
 void TrainView::release_cars(const std::vector<std::uint32_t>& keys) {
     for (const auto key : keys) {
-        car_registry_.release(simulation::CarId{key});
         // What this view kept by the car (its cab, the car view's place):
-        // nothing is left that a later car could be taken for.
+        // nothing is left that a later car could be taken for; the cab views
+        // still drawing it keep a copy of its state (step 3: the state is
+        // the car's), before the car and its components go.
         drop_board_cab(key);
         car_view_memory_.erase(key);
+        if (const auto* parts = car_registry_.find_components(simulation::CarId{key})) {
+            for (auto* view : {cab_.get(), visit_cab_.get()})
+                if (view && view->bound_to(&parts->cab)) view->unbind_state();
+        }
+        car_registry_.release(simulation::CarId{key});
     }
 }
 
@@ -923,6 +929,15 @@ simulation::CarLights& TrainView::lights_of(const Car& car) const {
 
 simulation::CarPantographs& TrainView::pantographs_of(const Car& car) const {
     return components_of(car).pantographs;
+}
+
+std::unique_ptr<CabView> TrainView::make_cab(const Car& car, const bool engine_path) const {
+    auto cab = CabView::create(*vfs_, *car.definition,
+                               formats::wagon_path(car.folder, car.definition->name, engine_path || car.definition->engine.has_value()));
+    // Its state is the car's (step 3): a view made anew finds the doors and
+    // windows as they were left.
+    if (cab && car_registry_.alive(simulation::CarId{car.key})) cab->bind_state(components_of(car).cab);
+    return cab;
 }
 
 void TrainView::add_door_frames(const Car& car, std::vector<renderer::NodeAdjustment>& adjustments) const {
@@ -981,7 +996,12 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
         // Its doors, lights and pantographs as a car new here has them (the
         // doors read with its shape: fit_shapes), whatever its id's were
         // before (a train put back).
-        components_of(car) = {};
+        {
+            auto& made = components_of(car);
+            made.doors = {};
+            made.lights = {};
+            made.pantographs = {};
+        }
         car.uid = entry.uid;
         car.folder = entry.folder;
         car.file = entry.name;
@@ -1746,8 +1766,7 @@ void TrainView::attach_cab(std::size_t player) {
         if (unit.cars[i].definition && unit.cars[i].definition->engine) player = i;
     if (player < unit.cars.size()) {
         const auto& car = unit.cars[player];
-        cab_ = CabView::create(*vfs_, *car.definition,
-                               formats::wagon_path(car.folder, car.definition->name, car.definition->engine.has_value()));
+        cab_ = make_cab(car);
         if (cab_) cab_car_ = player;
     }
 }
@@ -7264,8 +7283,7 @@ std::optional<TrainView::BoardTarget> TrainView::board_target(const glm::vec3& f
             if (std::hypot(centre.x - feet.x, centre.z - feet.z) > car.definition->length * 0.5f + 10.0f) continue;
             auto& cab = board_cabs_[car.key];
             if (!cab) {
-                cab = CabView::create(*vfs_, *car.definition,
-                                      formats::wagon_path(car.folder, car.definition->name, true));
+                cab = make_cab(car, true);
                 if (!cab) continue;
             }
             // A driving cab: a CabView, or a driver's chair in its Cabin (the
@@ -7495,7 +7513,7 @@ std::unique_ptr<CabView> TrainView::take_cab(const std::size_t car) {
         board_cabs_.erase(it);
         return cab;
     }
-    return CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, c.definition->engine.has_value()));
+    return make_cab(c);
 }
 
 void TrainView::stand_at_hand_switch() {
@@ -7540,7 +7558,7 @@ void TrainView::stand_at_cab_door(const std::size_t car) {
     const auto& c = unit.cars[car];
     if (!c.definition || !CabView::has_room(*c.definition)) return;
     auto& cab = board_cabs_[c.key];
-    if (!cab) cab = CabView::create(*vfs_, *c.definition, formats::wagon_path(c.folder, c.definition->name, c.definition->engine.has_value()));
+    if (!cab) cab = make_cab(c);
     const auto body = body_pose(unit, car, false);
     if (!cab || !body) return;
     const auto points = Engineer::get_on_points(*cab);
@@ -7660,8 +7678,7 @@ CabView* TrainView::car_cab(const std::size_t u, const std::size_t i, const bool
     // A Cabin: a driving cab or a motor car's salon (the ED9M's); a
     // passenger car's Interior: its salon.
     if (!create || !car.definition || !CabView::has_room(*car.definition)) return nullptr;
-    auto cab = CabView::create(*vfs_, *car.definition,
-                               formats::wagon_path(car.folder, car.definition->name, car.definition->engine.has_value()));
+    auto cab = make_cab(car);
     if (!cab) return nullptr;
     auto* raw = cab.get();
     board_cabs_[car.key] = std::move(cab);

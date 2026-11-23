@@ -1079,6 +1079,9 @@ private:
     [[nodiscard]] simulation::CarDoors& doors_of(const Car& car) const;
     [[nodiscard]] simulation::CarLights& lights_of(const Car& car) const;
     [[nodiscard]] simulation::CarPantographs& pantographs_of(const Car& car) const;
+    // A cab view of the car, its state the car's (CarCab): `engine_path` the
+    // engine's file name even if the definition has no engine block.
+    [[nodiscard]] std::unique_ptr<CabView> make_cab(const Car& car, bool engine_path = false) const;
     mutable simulation::CarComponents no_components_; // components_of() of a car not in this world
     // The car's outer doors' frames, for drawing its shape.
     void add_door_frames(const Car& car, std::vector<renderer::NodeAdjustment>& adjustments) const;

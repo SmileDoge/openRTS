@@ -2,7 +2,8 @@
 
 Status: a design under discussion (2026-11-06). Step 1 (`CarId`) is built
 (2026-11-23, "Step 1: CarId" below), step 2 too (the doors, the lights,
-the pantographs: "Step 2: ..."); the rest is not.
+the pantographs: "Step 2: ..."), step 3 ("Step 3: the cab's state"); the
+rest is not.
 - The plan it serves is the roadmap step "Cars as entities"
   (`roadmap.md`); the replaceable train systems there build on it.
 - **Proposed** marks what this document suggests; the user's questions are
@@ -302,6 +303,27 @@ a line when they change; the cab's DLL lamps), run on the same scenarios.
   builds blink it at the same moments; a capture shows it lit or not by
   its moment.
 - No regression found.
+
+### Step 3: the cab's state (built 2026-11-23)
+
+The cab and the salon behave as before; their state is the car's.
+- **`CarCab`** (`CarComponents::cab`): the cab's (or salon's) doors and
+  windows (how far open, where going), the displays' blinking clocks, the
+  FreeAnimations (the wipers: phase, way, moving). The switches stay the
+  DLL's (its host keeps them by the car).
+- **`CabView`** keeps the drawing and the picking: the .sd, the nodes and
+  frames, the surfaces. `bind_state()` ties it to the car's state (a car
+  seen first takes the .sd's starting states); unbound (a test) it keeps
+  its own. TrainView makes every cab view through `make_cab()`, bound.
+- **`board_cabs_`** is only a cache of views now: a view dropped and made
+  anew finds the doors and windows as they were left. A car released: the
+  views drawing it unbind first (they keep a copy), then its state goes.
+- A train made anew (put back) keeps its cab's state, as the views kept by
+  the car's key kept it before.
+- **Tests:** `openrts.content.engineer_vl10k` (two views of a car share it,
+  a view made anew finds it, unbound keeps a copy); the viewer's door pick
+  (ChS7, ЭД9М), boarding cabs one after another and back, the passage
+  printed the same as step 2's build.
 
 ## Open questions (the user's)
 

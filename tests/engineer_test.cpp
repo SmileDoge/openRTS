@@ -103,6 +103,33 @@ int main(int argc, char** argv) {
         check(side < doors.size() && Engineer::get_on_prompt(*cab, side) == std::string(viewer::tr("Enter: open the door, Ctrl+Enter: climb in")),
               "one's own cab: Enter opens, Ctrl+Enter climbs in");
     }
+    // Cars as entities, step 3: the cab's state is the car's (CarCab). A
+    // view bound to it shows what another view of the car left; a view made
+    // anew finds it as it was; unbound, a view keeps its own copy.
+    {
+        const auto& doors = cab->description().doors;
+        std::size_t side = doors.size();
+        for (std::size_t i = 0; i < doors.size(); ++i)
+            if (doors[i].can_be_opened && !doors[i].opened && (doors[i].from == "EXTERIOR" || doors[i].to == "EXTERIOR")) side = i;
+        simulation::CarCab car;
+        auto first = viewer::CabView::create(vfs, definition, formats::wagon_path("ev_VL10k-1654", "vl10k-1654a", true));
+        auto second = viewer::CabView::create(vfs, definition, formats::wagon_path("ev_VL10k-1654", "vl10k-1654a", true));
+        if (first && second && side < doors.size()) {
+            first->bind_state(car);
+            check(car.made && car.doors.size() == doors.size() && !first->door_open(side), "step 3: a car seen first takes the .sd's states");
+            first->open_door(side);
+            check(car.doors[side].target && car.doors[side].open == 1.0f, "step 3: the door opened is the car's");
+            second->bind_state(car);
+            check(second->door_open(side), "step 3: another view of the car shows it open");
+            first.reset();
+            auto again = viewer::CabView::create(vfs, definition, formats::wagon_path("ev_VL10k-1654", "vl10k-1654a", true));
+            again->bind_state(car);
+            check(again->door_open(side), "step 3: a view made anew finds it as it was left");
+            again->unbind_state();
+            car = {};
+            check(again->door_open(side), "step 3: unbound (the car gone), the view keeps its copy");
+        }
+    }
     // The ED9M's head car (its cab not read yet, as at its door): in by the
     // crew's side doors (DOOR_1 / DOOR_2); its passenger doors (the train's,
     // shut) let nobody in. Before 2026-11-06 a cab not read had every door
