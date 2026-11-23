@@ -89,6 +89,7 @@ map with no factor anywhere takes 1; without a map nothing glows.
 | `height` | a file | relief: white its top, black `height_scale` under it (below) |
 | `height_scale` | 0..0.1 | the relief's depth, metres (0.01 default) |
 | `height_reference` | 0..1 | the map's level the model's surface lies at (1 default: white) |
+| `snow` | a file | snow lying on the model: its colour (gamma 2.2), alpha where it lies (below) |
 | `alpha_mode`, `alpha_cutoff`, `double_sided`, `wet` | | read, not applied yet (a warning says so) |
 
 Files are relative to the material file's folder (no absolute paths, no
@@ -150,6 +151,24 @@ What is brighter than it stands out, what is darker sinks.
 - A height map is the heights themselves: flat areas one grey, a rib a
   bright band as wide as the rib. An image of the details' outlines (an
   edge or curvature bake) lifts only the outlines and shows little.
+
+### Snow maps (2026-11-23)
+
+A map of the snow on the model, painted over its own texture's unwrap:
+the snow's colour, and in alpha where it lies (255 the thickest, 0 none).
+It is all a material needs; nothing else (no ORM) has to come with it:
+
+```json5
+// kuz1a.ace -> kuz1a.material.json5: every model drawing kuz1a.ace
+{ format: "openrts-material/1", snow: "kuz1a_snow.png" }
+```
+
+Since the unwrap is each model's own, a map goes with the texture (or a
+shape's entries, below), not with a kind of train. How much of it shows
+(`ModelLighting::snow_cover`, 0..1) is the scene's: none in summer, 0.8 in
+winter from the start, all of it after some 4 minutes of a snowfall,
+gone in some 10 minutes after one outside winter. It grows from the
+thickest snow (the alpha's highest) out. Off with "Rain and snow".
 
 ## The shape's file
 

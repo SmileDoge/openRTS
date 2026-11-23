@@ -56,10 +56,15 @@ void valve() {
                                                               std::to_string(rig.out.equalising));
     }
     {
-        // At most 0.1 atm/s on the way.
+        // At most 0.25 atm/s on the way (Brakes.dll's after a full service),
+        // the books' 0.1.
         Rig rig(0.0f);
         rig.run(5.0f);
-        check(rig.out.equalising <= 0.51f && rig.out.equalising > 0.45f, "II: the УР up 0.1 atm/s: " + std::to_string(rig.out.equalising));
+        check(rig.out.equalising <= 1.26f && rig.out.equalising > 1.2f, "II: the УР up 0.25 atm/s: " + std::to_string(rig.out.equalising));
+        Rig books(0.0f);
+        books.numbers = CabBrakeNumbers::openrts();
+        books.run(5.0f);
+        check(books.out.equalising <= 0.51f && books.out.equalising > 0.45f, "II (books): the УР up 0.1 atm/s: " + std::to_string(books.out.equalising));
     }
     {
         // The stabiliser takes an overcharge off at 0.002 atm/s.

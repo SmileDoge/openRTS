@@ -10,8 +10,13 @@ CabBrakeNumbers CabBrakeNumbers::brakes_dll() {
     CabBrakeNumbers n;
     n.charge_ur_rate = 0.18f;
     n.charge_ur_gain = 2.0f;
-    n.running_ur_rate = 0.1f;
-    n.running_ur_gain = 2.0f;
+    // II: at most 0.25 atm/s, slower near the charge (measured on the ЭП2Д
+    // after a full service: 1.67 to 3.92 at 0.25 atm/s, the charge 5 s
+    // later). 0.1 had been taken from a step's return, all of it near the
+    // charge; after a full service the pipe came back at 0.1 and the
+    // brakes took some 40 s to let off (testers).
+    n.running_ur_rate = 0.25f;
+    n.running_ur_gain = 1.0f;
     n.stabiliser = 0.002f;
     n.charging_drop = 0.1f;
     n.lap_ur_rate = 0.1f;
@@ -59,6 +64,10 @@ CabBrakeNumbers CabBrakeNumbers::openrts() {
     // books'. Крылов В. И., Крылов В. В., «Автоматические тормоза
     // подвижного состава», 1983 (pages of the book).
     CabBrakeNumbers n = brakes_dll();
+    // II: the reducer's charging as before (0.1 atm/s, closing in on the
+    // charge 2 x the gap).
+    n.running_ur_rate = 0.1f;
+    n.running_ur_gain = 2.0f;
     // The reducer holds the УР at the pressure it is set to, within 0.005
     // MPa (§24, p. 100); Brakes.dll holds it 0.1 atm below the one named.
     n.charging_drop = 0.0f;

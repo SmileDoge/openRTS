@@ -259,3 +259,64 @@ change by hand comes, holds and goes back). In the game
 logged every game hour; Kuban, 30 game hours): clouds 12..97 %, rains of
 1700..3300 drops, a thunderstorm of 0.91, the environment switched between
 clear and rain again and again.
+
+## Raindrops on the cab's glass (openRTS, 2026-11-22)
+
+While it rains (not the snow) and the engineer is in a cab or salon, its
+glass gathers drops (the panel's World tab: "Raindrops on the cab's glass",
+on by default).
+
+- **Which glass.** The blended surfaces of the room he is in
+  (`ModelLighting::room`, the cab shape's box) near its walls and facing
+  out: the windscreen and the side windows; the gauges' glass inside, and
+  roof lights, stay dry (`rain_on_glass` in the models' shaders).
+- **Which glass, more.** Only large primitives (their box's middle extent
+  at least 25 cm): a gauge's glass and its needle stay dry even close to
+  the windscreen.
+- **The drops.** In three layers of cells (1.7–3.5 cm, turned against each
+  other: no grid), as many as the time since it was wiped and the rain's
+  amount give, more on the windscreen at speed, fewer on the side windows;
+  each a small lens (the sky caught on its upper edge), over a thin uneven
+  film of water that hazes the view. On the move they run up the windscreen
+  and back along the side windows, drawn out the faster; standing they
+  slide down. How far they have run is integrated each frame, so a change
+  of speed carries them on from where they are.
+- **Snow.** While it snows the glass gathers flakes instead: they stick
+  where they hit and stay, fine flakes and clumps with ragged edges; on the
+  move the windscreen takes them faster, the side windows slower. The
+  wipers clear them the same way.
+- **The wipers.** The cab's running FreeAnimations (the wipers the DLL
+  starts, `CabView::wiper_points`, the animated nodes and all below them):
+  their triangles where they are each frame, and the strips their edges
+  swept since the last, are marked wiped in a 64 x 32 grid over the room's
+  wall they are on (`TrainView::rain_glass`); there the drops start again
+  from none, gathering slower the more there are. A blade at rest wipes
+  nothing, and what it wiped stays wiped while it rests (a DLL's wipers
+  running with pauses).
+
+## openRTS's rain and snow (2026-11-22)
+
+RTS draws a few thousand flat sprites of its environment's texture. openRTS
+(the World tab: "Rain and snow: openRTS's", on by default; off: RTS's
+sprites) draws its own (`renderer::WeatherParticleRenderer`):
+
+- **Made on the GPU.** 60 000 rain drops or 40 000 flakes at RTS's density
+  (twice in a thunderstorm), each made in the vertex shader from its index
+  and the clock in a box around the eye that wraps as it moves: the CPU
+  keeps none, the field never ends.
+- **Rain.** Thin streaks along each drop's speed against the camera's (a
+  1/40 s exposure, at most 3 m): straight down standing, slanting into
+  the train and longer as it runs. A streak far off thinner than a pixel
+  stays one pixel, its light shrinking with it.
+- **Snow.** Soft round flakes falling 0.7–1.4 m/s, each tumbling on its
+  own, carried by the environment's lowest wind layer; drawn out a little
+  at speed.
+- Both lit by the scene's light, fading in near the eye and out at the
+  box's edge, hidden by the cab's walls and a tunnel's roof (depth-tested);
+  none fall inside the cab the eye is in. They stay in the world when the
+  scene's origin moves.
+- **Strength.** "Rain and snow strength": as the weather, drizzle, rain, a
+  downpour or the player's own (0.1–2); it sets the particles, the drops on
+  the glass and the fog.
+- **Fog.** "Fog in rain and snow" (on by default): while it falls the fog
+  ends nearer, 3500 m (snow 2200 m) over 1 + 1.5 × the strength.

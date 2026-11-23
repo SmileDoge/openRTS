@@ -22,6 +22,8 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/environment.hpp>
 #include <openrts/renderer/glow_sprites.hpp>
+#include <openrts/renderer/light_shafts.hpp>
+#include <openrts/renderer/weather_particles.hpp>
 
 namespace openrts::viewer {
 
@@ -38,10 +40,31 @@ public:
     void update(float elapsed, const glm::vec3& eye, const glm::vec3& right, float amount, const glm::vec4& light);
     void render(WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view, float viewport_height);
     [[nodiscard]] std::size_t drops() const noexcept { return drops_.size(); }
+    // The scene's origin moved by `shift` (the drops stay in the world).
+    void set_origin_shift(const glm::vec3& shift) {
+        weather_.origin_shift += glm::dvec3{shift};
+        last_eye_ -= shift;
+    }
+    // The cab he is in (none fall inside it; openRTS's look).
+    void set_room(const std::optional<renderer::LightShaftRoom>& room) {
+        weather_.has_room = room.has_value();
+        if (room) {
+            weather_.to_room = room->to_room;
+            weather_.room_lower = room->lower;
+            weather_.room_upper = room->upper;
+        }
+    }
     [[nodiscard]] bool snow() const noexcept { return precipitation_ && precipitation_->snow; }
 
 private:
     std::unique_ptr<renderer::GlowSpriteRenderer> sprites_;
+    // openRTS's look (renderer::own_precipitation): particles made on the
+    // GPU; the eye's velocity (smoothed) and the clock they run on.
+    std::unique_ptr<renderer::WeatherParticleRenderer> particles_;
+    renderer::WeatherParticles weather_;
+    glm::vec3 last_eye_{};
+    bool has_eye_ = false;
+    bool own_drawn_ = false;
     std::shared_ptr<const core::Vfs> vfs_;
     std::optional<formats::EnvPrecipitation> precipitation_;
     std::vector<formats::EnvWindLayer> wind_;

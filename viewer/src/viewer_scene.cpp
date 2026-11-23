@@ -30,6 +30,7 @@
 #include <openrts/audio/world_sounds.hpp>
 #include <deque>
 #include <unordered_set>
+#include <openrts/renderer/weather_particles.hpp>
 #include <openrts/renderer/bc7.hpp>
 #include <openrts/renderer/depth.hpp>
 #include <openrts/renderer/forest_clearance.hpp>
@@ -1065,7 +1066,8 @@ public:
                 glm::vec3 right{forward.z, 0.0f, -forward.x};
                 right = glm::length(right) > 1e-4f ? glm::normalize(right) : glm::vec3{1.0f, 0.0f, 0.0f};
                 // Under a thunderstorm heavier; the dynamic weather's by its amount.
-                const float amount = dynamic_weather_ ? 0.3f + 1.4f * weather_cycle().shown.precipitation : storm_ ? 1.7f : 1.0f;
+                const float amount = weather_precipitation();
+                precipitation_->set_room(train_ ? train_->light_shaft_room() : std::nullopt);
                 precipitation_->update(clock.elapsed, camera.eye(), right, effects_.precipitation ? amount : 0.0f, opaque);
             }
             if (smoke_) {
@@ -1073,6 +1075,28 @@ public:
                 if (train_ && effects_.smoke) train_->collect_exhausts(sources);
                 smoke_->update(clock.elapsed, sources, opaque);
             }
+        }
+        // The snow lying on the models (their materials' snow maps): it
+        // gathers in a snowfall (some 4 minutes to all of it), stays in
+        // winter, goes in some 10 minutes otherwise. In winter it is there
+        // from the start.
+        {
+            const bool snowing = precipitation_ && precipitation_->drops() > 0 && precipitation_->snow();
+            const bool winter = clock.season == renderer::rts::Season::winter;
+            const float target = snowing ? 1.0f : winter ? 0.8f : 0.0f;
+            if (!snow_cover_started_) {
+                snow_cover_started_ = true;
+                snow_cover_ = winter ? target : 0.0f;
+            }
+            const float rate = target > snow_cover_ ? 1.0f / 240.0f : 1.0f / 600.0f;
+            snow_cover_ += std::clamp(target - snow_cover_, -rate * clock.elapsed, rate * clock.elapsed);
+        }
+        // The rain's clock (raindrops on the glass): when it began.
+        rain_clock_ += clock.elapsed;
+        {
+            const bool raining = precipitation_ && precipitation_->drops() > 0;
+            if (raining && !was_raining_) rain_since_ = rain_clock_;
+            was_raining_ = raining;
         }
         update_weather_sound(clock.elapsed, camera.eye(), outside_gain);
         // The thunder of the strikes seen (update_lightning), as it comes.
@@ -1137,7 +1161,14 @@ public:
         if (train_) lighting.portals = train_->portals();
         if (train_) {
             if (const auto room = train_->light_shaft_room()) lighting.room = renderer::ModelRoom{room->to_room, room->lower, room->upper};
+            // Raindrops on its glass while it rains, snowflakes while it snows.
+            if (lighting.room && effects_.rain_glass && effects_.precipitation && precipitation_ && precipitation_->drops() > 0) {
+                const float amount = weather_precipitation() * 0.6f;
+                lighting.rain = train_->rain_glass(amount, rain_clock_, rain_since_);
+                if (lighting.rain) lighting.rain->snow = precipitation_->snow();
+            }
         }
+        lighting.snow_cover = effects_.precipitation ? snow_cover_ : 0.0f;
         lighting.fog_colour = sky_state_->fog_colour;
         lighting.fog_start = sky_state_->fog_start;
         lighting.fog_end = sky_state_->fog_end;
@@ -1154,6 +1185,15 @@ public:
             lighting.fog_start = 0.4f * land_end;
             // Black under the sky: it adds itself over the moon drawn first.
             clear = glm::vec4{0.0f, 0.0f, 0.0f, 1.0f};
+        }
+        // A light fog while it rains or snows (openRTS): the farther land
+        // greyed, the nearer the heavier it falls.
+        if (effects_.fog && effects_.precipitation && precipitation_ && precipitation_->drops() > 0) {
+            const float end = (precipitation_->snow() ? 2200.0f : 3500.0f) / (1.0f + 1.5f * weather_precipitation());
+            if (lighting.fog_end > end) {
+                lighting.fog_end = end;
+                lighting.fog_start = (std::min)(lighting.fog_start, 0.05f * end);
+            }
         }
         return {
             .lighting = lighting,
@@ -2111,6 +2151,26 @@ public:
         if (ImGui::Checkbox(tr("Rain and snow"), &effects_.precipitation)) remember("world_precipitation", effects_.precipitation ? "1" : "0");
         ImGui::SameLine();
         if (ImGui::Checkbox(tr("Diesel smoke"), &effects_.smoke)) remember("world_smoke", effects_.smoke ? "1" : "0");
+        ImGui::SameLine();
+        if (ImGui::Checkbox(tr("Raindrops on the cab's glass"), &effects_.rain_glass))
+            remember("world_rain_glass", effects_.rain_glass ? "1" : "0");
+        ImGui::SameLine();
+        if (ImGui::Checkbox(tr("Rain and snow: openRTS's"), &renderer::own_precipitation()))
+            remember("world_own_precipitation", renderer::own_precipitation() ? "1" : "0");
+        ImGui::SameLine();
+        if (ImGui::Checkbox(tr("Fog in rain and snow"), &effects_.fog)) remember("world_precipitation_fog", effects_.fog ? "1" : "0");
+        {
+            const char* strengths[] = {tr("as the weather"), tr("drizzle"), tr("rain##strength"), tr("downpour"), tr("my own##strength")};
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::Combo(tr("Rain and snow strength"), &effects_.strength, strengths, 5))
+                remember("world_precipitation_strength", std::to_string(effects_.strength));
+            if (effects_.strength == 4) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(160.0f);
+                if (ImGui::SliderFloat("##precipitation_custom", &effects_.strength_custom, 0.1f, 2.0f, "%.2f"))
+                    remember("world_precipitation_custom", std::to_string(effects_.strength_custom));
+            }
+        }
         // Walking is the player's (with a train or without): on foot from
         // where the camera is; off, the free camera.
         if (train_) {
@@ -2379,6 +2439,7 @@ private:
         if (signals_) signals_->set_origin(origin_);
         if (roads_) roads_->set_origin(origin_);
         if (smoke_) smoke_->set_origin_shift(shift);
+        if (precipitation_) precipitation_->set_origin_shift(shift);
         if (world_sounds_) world_sounds_->set_origin(origin_);
     }
     mutable bool labels_ = false;
@@ -3152,12 +3213,40 @@ private:
         bool traffic = true;
         bool precipitation = true;
         bool smoke = true;
+        bool rain_glass = true; // raindrops on the cab's glass, the wipers wiping them (openRTS)
+        // How hard it rains or snows: 0 the weather's, 1 a drizzle, 2 rain,
+        // 3 a downpour, 4 the player's (`strength_custom`, 0.1..2).
+        int strength = 0;
+        float strength_custom = 1.0f;
+        bool fog = true; // a light fog while it rains or snows
     };
+    // The precipitation's amount (0..2) by the player's strength, from the weather's.
+    [[nodiscard]] float precipitation_amount(const float weather) const {
+        switch (effects_.strength) {
+        case 1: return 0.35f;
+        case 2: return 1.0f;
+        case 3: return 1.9f;
+        case 4: return std::clamp(effects_.strength_custom, 0.1f, 2.0f);
+        default: return weather;
+        }
+    }
+    [[nodiscard]] float weather_precipitation() const {
+        return precipitation_amount(dynamic_weather_ ? 0.3f + 1.4f * weather_cycle().shown.precipitation : storm_ ? 1.7f : 1.0f);
+    }
+    float rain_clock_ = 0.0f, rain_since_ = 0.0f; // s
+    float snow_cover_ = 0.0f; // the snow on the models (0..1)
+    bool snow_cover_started_ = false;
+    bool was_raining_ = false;
     mutable WorldEffects effects_ = [] {
         WorldEffects effects;
         effects.traffic = remembered("world_traffic").value_or("1") != "0";
         effects.precipitation = remembered("world_precipitation").value_or("1") != "0";
         effects.smoke = remembered("world_smoke").value_or("1") != "0";
+        effects.rain_glass = remembered("world_rain_glass").value_or("1") != "0";
+        effects.strength = std::clamp(std::atoi(remembered("world_precipitation_strength").value_or("0").c_str()), 0, 4);
+        effects.strength_custom = std::clamp(static_cast<float>(std::atof(remembered("world_precipitation_custom").value_or("1").c_str())), 0.1f, 2.0f);
+        effects.fog = remembered("world_precipitation_fog").value_or("1") != "0";
+        renderer::own_precipitation() = remembered("world_own_precipitation").value_or("1") != "0";
         return effects;
     }();
     std::size_t drawn_instances_ = 0;

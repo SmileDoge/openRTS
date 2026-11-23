@@ -10745,7 +10745,7 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
                 car.sound->preload();
                 if (!car.remote_sound_restore.empty()) car.sound->restore(std::exchange(car.remote_sound_restore, {}));
                 // OPENRTS_SOUND_TRACE: the player's train's cars too.
-                if (sound_trace() && u == 0) car.sound->set_trace("car " + std::to_string(i + 1) + " " + car.definition->name);
+                if (sound_trace() && u == 0) car.sound->set_trace("car " + std::to_string(i + 1) + " " + car.definition->name + " (" + car.script_path.str() + ")");
             }
         }
         if (car.sound) car.sound->set_random_loop_phase(random_loop_phase_);
@@ -10897,6 +10897,105 @@ bool TrainView::script_squeals(const formats::SoundScript* script) {
                     }
     script_squeals_.emplace(script, found);
     return found;
+}
+
+std::optional<renderer::ModelRainGlass> TrainView::rain_glass(const float amount, const float time, const float since) {
+    if (amount <= 0.0f || !viewing_inside() || !cab_room_ || units_.empty() || !units_.front().train) return std::nullopt;
+    const CabView* cab = engineer_cab();
+    if (!cab) return std::nullopt;
+    renderer::ModelRainGlass r{.amount = amount, .time = time, .since = since, .speed = static_cast<float>(std::abs(units_.front().train->speed()))};
+    if (rain_cab_ != cab) {
+        rain_cab_ = cab;
+        rain_wiped_.fill(-1.0e9f);
+        rain_has_grid_ = false;
+        rain_prev_.clear();
+    }
+    // The drops' run: up (back, on the side) on the move, down standing;
+    // integrated, so a change of speed carries them on smoothly.
+    {
+        const float dt = std::clamp(time - rain_flow_time_, 0.0f, 0.1f);
+        rain_flow_time_ = time;
+        const float moving = std::clamp((r.speed - 3.0f) / 12.0f, 0.0f, 1.0f);
+        const float rate = -0.004f + (0.03f + r.speed * 0.002f + 0.004f) * moving;
+        rain_flow_ = std::fmod(rain_flow_ + rate * dt, 1000.0f);
+        r.flow = rain_flow_;
+        // The side windows: blown back (towards -z, the cab's rear) and a
+        // little down on the move, sliding down standing.
+        const glm::vec2 way{-(0.02f + r.speed * 0.004f) * moving, -0.004f - 0.01f * moving};
+        rain_side_ += way * dt;
+        rain_side_ = glm::vec2{std::fmod(rain_side_.x, 1000.0f), std::fmod(rain_side_.y, 1000.0f)};
+        r.side_x = rain_side_.x;
+        r.side_y = rain_side_.y;
+        const glm::vec2 dir = glm::normalize(way);
+        r.side_dir_x = dir.x;
+        r.side_dir_y = dir.y;
+    }
+    std::vector<glm::vec3> points;
+    cab->wiper_points(points);
+    const auto& room = *cab_room_;
+    r.x0 = room.lower.x;
+    r.x1 = room.upper.x;
+    r.y0 = room.lower.y;
+    r.y1 = room.upper.y;
+    // The wipers' glass: the room's wall their blades are nearer (kept
+    // while they rest: what they wiped stays wiped, the drops coming back).
+    if (!points.empty()) {
+        const glm::vec3 centre = (room.lower + room.upper) * 0.5f;
+        float z = 0.0f;
+        for (const auto& p : points) z += p.z;
+        rain_front_ = z / static_cast<float>(points.size()) >= centre.z ? 1.0f : -1.0f;
+        rain_has_grid_ = true;
+    }
+    r.front = rain_front_;
+    r.wiped_glass = rain_has_grid_;
+    r.wiped = rain_wiped_;
+    if (points.empty()) {
+        rain_prev_.clear();
+        return r;
+    }
+    constexpr int columns = renderer::rain_grid_columns, rows = renderer::rain_grid_rows;
+    const float w = (std::max)(r.x1 - r.x0, 0.01f), h = (std::max)(r.y1 - r.y0, 0.01f);
+    const auto cell = [&](const glm::vec3& p) {
+        return glm::vec2{(p.x - r.x0) / w * columns, (p.y - r.y0) / h * rows};
+    };
+    // Every cell a triangle (in cells) covers or comes within 0.75 of.
+    const auto fill = [&](const glm::vec2 a, const glm::vec2 b, const glm::vec2 c) {
+        const glm::vec2 lo = glm::min(a, glm::min(b, c)) - 1.0f, hi = glm::max(a, glm::max(b, c)) + 1.0f;
+        const int x0 = (std::max)(0, static_cast<int>(std::floor(lo.x))), x1 = (std::min)(columns - 1, static_cast<int>(std::floor(hi.x)));
+        const int y0 = (std::max)(0, static_cast<int>(std::floor(lo.y))), y1 = (std::min)(rows - 1, static_cast<int>(std::floor(hi.y)));
+        const auto cross = [](const glm::vec2 u, const glm::vec2 v) { return u.x * v.y - u.y * v.x; };
+        const auto near_edge = [](const glm::vec2 p, const glm::vec2 u, const glm::vec2 v) {
+            const glm::vec2 d = v - u;
+            const float l = glm::dot(d, d);
+            const float t = l > 1e-8f ? std::clamp(glm::dot(p - u, d) / l, 0.0f, 1.0f) : 0.0f;
+            return glm::length(p - (u + d * t)) <= 0.75f;
+        };
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const glm::vec2 p{static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f};
+                const float d1 = cross(b - a, p - a), d2 = cross(c - b, p - b), d3 = cross(a - c, p - c);
+                const bool inside = (d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0);
+                if (inside || near_edge(p, a, b) || near_edge(p, b, c) || near_edge(p, c, a))
+                    rain_wiped_[static_cast<std::size_t>(y * columns + x)] = time;
+            }
+    };
+    // The blades where they are, and the strip each edge swept since the
+    // last frame (a blade moves farther than a cell in one).
+    const bool sweep = rain_prev_.size() == points.size();
+    for (std::size_t t = 0; t + 2 < points.size(); t += 3) {
+        const glm::vec2 v[3] = {cell(points[t]), cell(points[t + 1]), cell(points[t + 2])};
+        fill(v[0], v[1], v[2]);
+        if (!sweep) continue;
+        for (int e = 0; e < 3; ++e) {
+            const glm::vec2 a = v[e], b = v[(e + 1) % 3];
+            const glm::vec2 pa = cell(rain_prev_[t + e]), pb = cell(rain_prev_[t + (e + 1) % 3]);
+            fill(pa, a, b);
+            fill(pa, b, pb);
+        }
+    }
+    rain_prev_ = std::move(points);
+    r.wiped = rain_wiped_;
+    return r;
 }
 
 void TrainView::update_extra_sounds(const float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound) {
@@ -11171,7 +11270,7 @@ void TrainView::update_cab_sound(Unit& unit, const std::size_t u, const std::siz
             car.cab_sound = std::make_unique<audio::SoundInstance>(car.cab_script, *group, owner, std::move(lookup), 104729u);
             car.cab_sound->preload();
             // OPENRTS_SOUND_TRACE: what its streams do, in the log.
-            if (sound_trace()) car.cab_sound->set_trace("cab " + car.definition->name);
+            if (sound_trace()) car.cab_sound->set_trace("cab " + car.definition->name + " (" + car.cab_script_path.str() + ")");
         }
     }
     if (!car.cab_sound) {

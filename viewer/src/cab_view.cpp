@@ -124,6 +124,17 @@ CabCollision CabCollision::build(const formats::ShapeModel& model) {
     return out;
 }
 
+void CabCollision::node_points(const std::int32_t node, std::vector<glm::vec3>& out, const std::size_t step) const {
+    std::size_t k = 0;
+    for (const auto& t : triangles_) {
+        if (t.node != node) continue;
+        if (k++ % (std::max)(step, std::size_t{1}) != 0) continue;
+        out.push_back(t.a);
+        out.push_back(t.b);
+        out.push_back(t.c);
+    }
+}
+
 void CabCollision::node_bounds(const std::size_t nodes, std::vector<glm::vec3>& lower, std::vector<glm::vec3>& upper) const {
     lower.assign(nodes, glm::vec3{1e9f});
     upper.assign(nodes, glm::vec3{-1e9f});
@@ -1092,6 +1103,43 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             for (auto it = out.begin() + static_cast<std::ptrdiff_t>(first); it != out.end();) {
                 it = it->matrix == node && it->hidden ? out.erase(it) : it + 1;
             }
+        }
+    }
+}
+
+void CabView::wiper_points(std::vector<glm::vec3>& out) const {
+    if (!geometry_ || !geometry_->rig) return;
+    const auto& rig = *geometry_->rig;
+    const auto count = static_cast<std::int32_t>(rig.matrices.size());
+    const auto parent_of = [&](const std::int32_t n) {
+        return n >= 0 && static_cast<std::size_t>(n) < rig.hierarchy.size() ? rig.hierarchy[static_cast<std::size_t>(n)] : -1;
+    };
+    std::vector<glm::vec3> rest;
+    for (const auto& a : free_anims_) {
+        if (!a.moving) continue; // a blade at rest wipes nothing
+        // Every node the animation moves: its nodes and all below them (a
+        // blade is often a child of the arm the keys turn), each by the
+        // corrections of its animated ancestors, outermost last.
+        for (std::int32_t node = 0; node < count; ++node) {
+            glm::mat4 pose{1.0f};
+            bool moved = false;
+            std::int32_t guard = 0;
+            for (std::int32_t up = node; up >= 0 && up < count && guard <= count; up = parent_of(up), ++guard) {
+                for (std::size_t n = 0; n < a.nodes.size(); ++n) {
+                    if (a.nodes[n] != up) continue;
+                    pose = CabCollision::pose_of(rig, up, a.phase * (n < a.last.size() ? a.last[n] : 0.0f)) * pose;
+                    moved = true;
+                }
+            }
+            if (!moved) continue;
+            rest.clear();
+            geometry_->collision.node_points(node, rest, 1);
+            // Whole triangles, at most some 150 a node.
+            const std::size_t triangles = rest.size() / 3;
+            if (triangles == 0) continue;
+            const std::size_t step = (std::max)(std::size_t{1}, triangles / 150);
+            for (std::size_t t = 0; t < triangles; t += step)
+                for (std::size_t k = 0; k < 3; ++k) out.push_back(glm::vec3{pose * glm::vec4{rest[t * 3 + k], 1.0f}});
         }
     }
 }

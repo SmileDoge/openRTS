@@ -179,6 +179,11 @@ public:
     [[nodiscard]] std::optional<renderer::LightShaftRoom> light_shaft_room() const {
         return viewing_inside() ? cab_room_ : std::nullopt;
     }
+    // Raindrops on the glass of the cab or salon he is in (openRTS, the
+    // "Raindrops on the glass" setting): `amount` the rain's (0: none),
+    // `time` the scene's clock, `since` when it began on it. Each call marks
+    // where the wipers are now as wiped at `time`.
+    [[nodiscard]] std::optional<renderer::ModelRainGlass> rain_glass(float amount, float time, float since);
     // Every frame: the DLL's cab window and what Enter does where he stands.
     void draw_overlay();
     // The panel's Train tab: the buttons and switches on top, what the train
@@ -1592,6 +1597,15 @@ private:
     std::unique_ptr<audio::SoundBank> bank_;
     // openRTS's own braking sound (train_extra_sounds.hpp), and which scripts
     // have a squeal of their own.
+    // rain_glass: the cab whose glass it is, and when each cell of its
+    // wipers' glass was last wiped.
+    const CabView* rain_cab_ = nullptr;
+    float rain_flow_ = 0.0f, rain_flow_time_ = 0.0f;
+    glm::vec2 rain_side_{0.0f};
+    std::vector<glm::vec3> rain_prev_; // the blades' corners last frame
+    float rain_front_ = 1.0f;
+    bool rain_has_grid_ = false;
+    std::array<float, renderer::rain_grid_columns * renderer::rain_grid_rows> rain_wiped_{};
     std::unique_ptr<TrainExtraSounds> extra_sounds_;
     std::unordered_map<const formats::SoundScript*, bool> script_squeals_;
     [[nodiscard]] bool script_squeals(const formats::SoundScript* script);

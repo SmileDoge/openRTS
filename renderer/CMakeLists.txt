@@ -5,6 +5,7 @@ add_library(openrts_renderer STATIC
     src/occlusion_probe.cpp
     src/wide_lines.cpp
     src/glow_sprites.cpp
+    src/weather_particles.cpp
     src/screen_quads.cpp
     src/tone_map.cpp
     src/auto_exposure.cpp

@@ -1166,6 +1166,20 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     std::printf("%6.1f switch %zu: state %u, set %u, fixed %u, frame %.2f, flags 0x%X\n", time, id,
                                 sw.state, sw.set_state, sw.fixed_state, sw.current_frame, sw.flags);
                 }
+            } else if (c.verb == "sounds") {
+                // sounds: the SMSObject Var1..8 the DLL set (exterior, cab)
+                // and the triggers it posted this step.
+                if (const auto* out = consist->output(player)) {
+                    std::printf("%6.1f sounds ext vars", time);
+                    for (const auto v : out->sms_ext) std::printf(" %.3g", v);
+                    std::printf(" | cab vars");
+                    for (const auto v : out->sms_cab) std::printf(" %.3g", v);
+                    std::printf(" | ext triggers");
+                    for (const auto t : out->sound_ext) std::printf(" %u", static_cast<unsigned>(t));
+                    std::printf(" | cab triggers");
+                    for (const auto t : out->sound_cab) std::printf(" %u", static_cast<unsigned>(t));
+                    std::printf("\n");
+                }
             } else if (c.verb == "display" && !c.args.empty()) {
                 // display <id> ...: the cab displays' Value and State the DLL set
                 if (const auto* out = consist->output(player)) {
