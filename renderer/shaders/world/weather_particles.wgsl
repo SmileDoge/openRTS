@@ -83,7 +83,8 @@ fn vs_main(@builtin(vertex_index) vertex: u32) -> Out {
     var b: vec3<f32>;
     var width: f32;
     if (snow) {
-        let r = 0.012 + 0.016 * h2.y;
+        // Finer than they were (1.2 .. 2.8 cm; testers 2026-11-23).
+        let r = 0.007 + 0.01 * h2.y;
         let along = select(up, normalize(rel), length(rel) > 0.1);
         // Drawn out by the speed against it: a 1/60 s exposure, at most
         // 0.8 m (on the move, streaks flying at the eye, a blizzard's).

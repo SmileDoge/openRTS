@@ -62,10 +62,14 @@ fn snow_flake(uv: vec2<f32>, size: f32, turn: f32, seed: f32, density: f32, run:
     let way = rot * along;
     let off0 = q - c;
     let off = vec2<f32>(dot(off0, vec2<f32>(way.y, -way.x)), dot(off0, way) / stretch);
+    // A wet lump, no star: its outline only a little uneven (two slow
+    // waves round it, each flake its own), its edge soft (testers
+    // 2026-11-23: five-pointed stars on the glass).
     let angle = atan2(off.y, off.x);
-    let r = (0.07 + 0.13 * h.w) * (1.0 + 0.35 * sin(angle * 5.0 + h.y * 6.2831853) * h.z);
+    let uneven = 0.16 * sin(angle * 2.0 + h.y * 6.2831853) * h.z + 0.1 * sin(angle * 3.0 + h.w * 6.2831853);
+    let r = (0.07 + 0.13 * h.w) * (1.0 + uneven);
     let d = length(off);
-    return (1.0 - smoothstep(r * 0.35, r, d)) * (0.5 + 0.5 * h.w);
+    return (1.0 - smoothstep(r * 0.2, r, d)) * (0.45 + 0.45 * h.w);
 }
 // Smooth value noise (0..1) on cells of `size` (m): where the snow sticks
 // more and where less, patches of some 10 cm.
@@ -82,14 +86,17 @@ fn snow_patches(uv: vec2<f32>, size: f32, seed: f32) -> f32 {
 }
 fn snow_on_glass(uv: vec2<f32>, seed: f32, age: f32, side: bool, colour: vec4<f32>) -> vec4<f32> {
     let speed = frame.rain.z;
-    let hit = select(1.0 + min(speed * 0.08, 2.0), 1.0 - 0.5 * clamp(speed / 15.0, 0.0, 1.0), side);
-    let gathered = clamp(age * frame.rain.x * 0.03 * hit, 0.0, 0.9);
+    // On the move the windscreen meets the falling snow head on: at speed it
+    // gets plastered (testers 2026-11-23: it should stick up the glass when
+    // it falls), the side windows less.
+    let hit = select(1.0 + min(speed * 0.18, 6.0), 1.0 - 0.5 * clamp(speed / 15.0, 0.0, 1.0), side);
+    let gathered = clamp(age * frame.rain.x * 0.03 * hit, 0.0, 0.97);
     if (gathered <= 0.0) {
         return colour;
     }
     // Uneven: patches denser and thinner (0.35 .. 1.45 of it).
     let patchy = 0.35 + 1.1 * (0.65 * snow_patches(uv, 0.11, seed + 41.0) + 0.35 * snow_patches(uv, 0.037, seed + 43.0));
-    let density = clamp(gathered * patchy, 0.0, 0.95);
+    let density = clamp(gathered * patchy, 0.0, 0.97);
     // On the move pushed up the windscreen and back along the side windows
     // (frame.snow_cover.yzw: the run TrainView integrates while it moves;
     // standing it stays put), the clumps the most, drawn out in streaks.
@@ -104,10 +111,11 @@ fn snow_on_glass(uv: vec2<f32>, seed: f32, age: f32, side: bool, colour: vec4<f3
     if (cover <= 0.0) {
         return colour;
     }
-    // Snow stays light at night (a grey, not the black of the sky): lit a
-    // little by the cab and the lamps around.
-    let light = select(0.85, 0.5, frame.shading.z > 0.5) * max(rain_sky(), 0.22);
-    let white = vec3<f32>(light);
+    // Lit by the sky and by what light reaches the glass (the lamps, the
+    // cab's light in the glass's own colour), no glow of its own: at night
+    // dark unless a lamp is on it (testers 2026-11-23: it shone white).
+    let light = select(0.85, 0.5, frame.shading.z > 0.5) * rain_sky();
+    let white = vec3<f32>(light) + colour.xyz * 0.6;
     return vec4<f32>(mix(colour.xyz, white, cover * 0.9), max(colour.w, cover * 0.85));
 }
 // The last wipe at a point of the wipers' glass (else the rain's start):
@@ -135,7 +143,12 @@ fn rain_wipe_at(uv: vec2<f32>) -> f32 {
     if (any(g < vec2<f32>(0.0)) || any(g >= vec2<f32>(1.0))) {
         return frame.rain.w;
     }
-    let f = g * vec2<f32>(128.0, 64.0) - vec2<f32>(0.5);
+    // The edge of what was wiped follows the cells (some 2 x 4 cm): read
+    // a little off, by a smooth noise of some 3 cells, it is a wavy line,
+    // not the grid's steps (testers 2026-11-23). The same for a drop and
+    // its pixels.
+    let wobble = vec2<f32>(snow_patches(uv, 0.07, 61.0), snow_patches(uv, 0.07, 67.0)) - vec2<f32>(0.5);
+    let f = g * vec2<f32>(128.0, 64.0) - vec2<f32>(0.5) + wobble * 1.6;
     let base = floor(f);
     let t = f - base;
     let b = vec2<i32>(base);
@@ -226,7 +239,9 @@ fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_ble
         let wiped_middle = select(frame.rain.w, rain_wipe_at(middle), gridded);
         let density = 0.9 * (1.0 - exp(-max(frame.rain.y - wiped_middle, 0.0) * gather));
         let h = rain_hash(cell, floor(wiped_middle * 4.0) + fl * 5.0);
-        if (h.x > density * (0.62 - 0.13 * fl)) {
+        // The biggest layer the rarest (testers 2026-11-23: some drops
+        // stood out too big).
+        if (h.x > density * (0.62 - 0.13 * fl) * select(1.0, 0.35, layer == 3)) {
             continue;
         }
         // A blade that went over a part of it took that part only: the
@@ -277,9 +292,12 @@ fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_ble
     }
     let bright = rain_sky();
     // Seen through it about as bright as what lies behind, the sky below
-    // a little lighter, the ground above darker.
-    let sky = mix(base.xyz, horizon * (0.5 + 0.5 * bright), 0.5) * 1.1;
-    let ground = base.xyz * 0.5 + horizon * 0.08;
+    // a little lighter, the ground above darker. The horizon's part as light
+    // as the sky (at night the fog's grey is no light: the drops shone white
+    // on dark glass, testers 2026-11-23): at night a drop shows what lies
+    // behind it, lit by the lamps.
+    let sky = mix(base.xyz, horizon * bright, 0.5) * 1.1;
+    let ground = base.xyz * 0.5 + horizon * 0.08 * bright;
     let d = length(best_off);
     let height = dot(best_off, best_up); // -1 its bottom .. 1 its top
     var lens = mix(ground, sky, 1.0 - smoothstep(-0.55, 0.45, height));
@@ -290,7 +308,7 @@ fn rain_on_glass(world: vec3<f32>, n_world: vec3<f32>, colour: vec4<f32>, is_ble
     lens = lens + sky * 0.35 * smoothstep(0.7, 0.92, d) * (1.0 - smoothstep(0.92, 1.0, d)) * (1.0 - smoothstep(-0.9, -0.3, height));
     // The highlight: the sky's light off its dome, up and to one side.
     let spot = best_off - best_up * 0.45 - vec2<f32>(best_up.y, -best_up.x) * 0.25;
-    let glint = exp(-dot(spot, spot) * 40.0) * select(0.7, 0.5, lin) * (0.2 + 0.8 * bright);
+    let glint = exp(-dot(spot, spot) * 40.0) * select(0.7, 0.5, lin) * bright;
     lens = lens + vec3<f32>(glint);
     return vec4<f32>(mix(base.xyz, lens, best * 0.92), max(base.w, best * 0.85));
 }
