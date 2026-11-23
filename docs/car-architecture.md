@@ -280,6 +280,29 @@ and go over the network as before.
 - **Tests:** `openrts.car_registry` `components` (the pace up and down);
   the viewer's ChS7 and ЭД9М runs: the same pantographs and line as before.
 
+### Step 2 checked against v0.39.1 (2026-11-23)
+
+Both builds traced the same way (each car's pantographs, lights and doors
+a line when they change; the cab's DLL lamps), run on the same scenarios.
+- **Pantographs, single player (ChS7):** lowered and raised by the cab's
+  switch, twice each build: the same sequence of states; up 2.966 / 2.967
+  s after the command; the rise sampled every 0.25 s the same to 0.01.
+  The first second differs between runs of the same build (which car's
+  shape loads first), not between builds.
+- **Network (a local server, two clients, both builds):** the ChS7's
+  pantographs and lights and the ED9M's lights and doors seen by the other
+  client in the owner's order, ending the same; a client connecting again
+  gets the trains' present state; a change of cab (the ED9M's rear cab)
+  the same in both builds. The owner's first state reaches a remote train
+  one frame earlier or later from run to run, in both builds. Not carried
+  in either build: an outer door opened by a cab door (only the passenger
+  door groups go over the network).
+- **The ChS7's L_PSS lamp:** its DLL blinks it every second under the
+  ALSN's aspect 1 (as Kuban's start gives), steady under 3 and 7; both
+  builds blink it at the same moments; a capture shows it lit or not by
+  its moment.
+- No regression found.
+
 ## Open questions (the user's)
 
 1. **Without Legacy:** how far may openRTS depart from RTS (own physics,
