@@ -100,6 +100,10 @@ struct CabBrakeControls {
     // combined valve in double traction, the separating cock shut. Its УР
     // stays as it was.
     bool cut_off = false;
+    // The 367 out of its working state also cuts the valve off its feed (the
+    // main reservoir's line): its УР may fall (V, VI) but nothing raises it
+    // (testers 2026-11-23: the ВЛ10's УР charged in I / II, the 367 shut).
+    bool unfed = false;
     // The pipe opened at the engine: the combined valve in emergency, ЭТ, a
     // stop valve, the ЭПК tripped.
     bool emergency = false;

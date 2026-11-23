@@ -17,6 +17,7 @@
 #include <openrts/formats/sound.hpp>
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/driver_valve.hpp>
+#include <openrts/simulation/electrification.hpp>
 #include <openrts/simulation/klub_screen.hpp>
 #include <openrts/simulation/speed_limits.hpp>
 #include <openrts/formats/shape_binary.hpp>
@@ -327,8 +328,16 @@ public:
                 if (code == 12) dll_compressor_ = true;
                 if (code == 13) dll_compressor_ = false;
             }
-        if (outputs->cold) {
+        // An electric engine's compressor motor runs on the line: under a
+        // line it does not work on (its WorksOnLineVoltages; testers
+        // 2026-11-23: the ВЛ10, DC, charged its main reservoir under 25 kV
+        // AC) it stands.
+        const auto* engine_definition = inputs.definition && inputs.definition->engine ? &*inputs.definition->engine : nullptr;
+        const bool wrong_line = engine_definition && engine_definition->kind == formats::EngineKind::electric && inputs.line_voltage > 0.0f &&
+                                !simulation::Electrification::works_on(*engine_definition, {inputs.line_voltage, inputs.line_frequency});
+        if (outputs->cold || wrong_line) {
             demands.main_reservoir_rate = 0.0f;
+            if (wrong_line) compressor_ = false;
         } else if (dll_compressor_ &&
                    inputs.main_reservoir < (std::min)(10.0f, simulation::compressor_range(inputs.definition && inputs.definition->engine
                                                                                                ? &*inputs.definition->engine
@@ -437,7 +446,12 @@ public:
                 .ep_on = (out.engine.systems & 2u) != 0,
                 .slow_service = true,
             };
-            const auto valve_out = simulation::step_valve_395(state_, position, in, static_cast<float>(dt));
+            const float ur_before = state_.equalising;
+            auto valve_out = simulation::step_valve_395(state_, position, in, static_cast<float>(dt));
+            // The 367 shut cuts the valve off its feed too (the main
+            // reservoir's line): nothing raises its УР (testers 2026-11-23:
+            // the ВЛ10's УР charged in I / II, the 367 shut).
+            if (controls_.blocked) valve_out.equalising = state_.equalising = (std::min)(state_.equalising, ur_before);
             // The combined valve: double traction cuts the valve off the pipe
             // (its УР goes on), emergency vents the pipe. The 367 out of its
             // operating state cuts it off too.

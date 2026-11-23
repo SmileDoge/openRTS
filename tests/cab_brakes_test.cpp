@@ -132,6 +132,29 @@ void valve() {
         check(rig.out.emergency, "the ЭТ / a stop valve / the ЭПК open the pipe with the valve cut off");
     }
     {
+        // The 367 shut: off the pipe and off its feed. I and II raise
+        // nothing (testers 2026-11-23: the ВЛ10's УР charged), V lowers it;
+        // double traction and the separating cock leave the feed.
+        for (const auto position : {ValvePosition::charge, ValvePosition::running}) {
+            Rig rig(3.5f);
+            rig.controls.valve = position;
+            rig.controls.cut_off = rig.controls.unfed = true;
+            rig.run(10.0f);
+            check(near(rig.out.equalising_kept, 3.5f, 0.02f) && rig.out.equalising < 0.0f,
+                  "the 367 shut: the УР not charged in I / II: " + std::to_string(rig.out.equalising_kept));
+        }
+        Rig vented(5.0f);
+        vented.controls.valve = ValvePosition::service;
+        vented.controls.cut_off = vented.controls.unfed = true;
+        vented.run(2.0f);
+        check(vented.out.equalising_kept < 4.9f, "the 367 shut: V still lowers the УР: " + std::to_string(vented.out.equalising_kept));
+        Rig fed(3.5f);
+        fed.controls.valve = ValvePosition::running;
+        fed.controls.cut_off = true; // double traction, the separating cock
+        fed.run(10.0f);
+        check(fed.out.equalising_kept > 3.6f, "cut off from the pipe only: II still charges the УР: " + std::to_string(fed.out.equalising_kept));
+    }
+    {
         // The train's DLL keeps the УР (var + 32 0x4000).
         Rig rig(5.0f);
         rig.controls.valve = ValvePosition::service;
