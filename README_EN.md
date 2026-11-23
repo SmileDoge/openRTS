@@ -494,6 +494,7 @@ RTS's DLLs.
 - `docs/experimental-effects.md` — the experimental renderer: what it does
   and what it costs;
 - `docs/profiling.md` — building with Tracy, what is marked, adding a zone;
+- `docs/shaders.md` — where the renderer's WGSL lives, how it gets into the program, editing it without a build (`--shader-dir`);
 - `docs/world-objects.md` — forests, level crossings, road traffic, water,
   rain and snow and smoke, as RTS builds and runs them;
 - `docs/weather.md` — RTS's weather and openRTS's thunderstorm: lightning,

@@ -1,17 +1,4 @@
-#pragma once
 
-// openRTS's physically based light (PBR stage 1, docs/experimental-effects.md,
-// "Physically based light"): a light's reflection by GGX (Trowbridge-Reitz),
-// the height-correlated Smith visibility and Schlick's Fresnel, the rest
-// Lambert. In the scene's light scale: a white Lambert surface facing a light
-// shows that light (RTS's sun diffuse colour about 1 at noon), so Lambert is
-// the albedo times the light and a reflection is the specular BRDF times pi.
-// Shared by the model and terrain shaders of the experimental path; needs
-// `Light` (rts_light_shapes.hpp) declared before it.
-
-namespace openrts::renderer::detail {
-
-inline constexpr char pbr_wgsl[] = R"(
 const pbr_pi: f32 = 3.14159265;
 
 // What a surface is for the light: its Lambert albedo (the base colour less
@@ -137,6 +124,3 @@ fn pbr_lamp_way(light: Light, world: vec4<f32>) -> vec3<f32> {
     let turn = mat3x3<f32>(light.translation[0].xyz, light.translation[1].xyz, light.translation[2].xyz);
     return normalize(transpose(turn) * towards);
 }
-)";
-
-} // namespace openrts::renderer::detail

@@ -8,30 +8,10 @@
 #include <cstddef>
 
 #include <glm/vec4.hpp>
+#include "shader_code.hpp"
 
 namespace openrts::renderer {
 namespace {
-
-// Vertices come in clip space: the strip is built on the CPU each frame.
-constexpr const char* wide_line_shader = R"(
-struct VertexOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) colour: vec4<f32>,
-};
-
-@vertex
-fn vs_main(@location(0) position: vec4<f32>, @location(1) colour: vec4<f32>) -> VertexOut {
-    var out: VertexOut;
-    out.position = position;
-    out.colour = colour;
-    return out;
-}
-
-@fragment
-fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
-    return input.colour;
-}
-)";
 
 struct StripVertex {
     glm::vec4 position;
@@ -67,7 +47,7 @@ struct WideLineRenderer::Impl {
 WideLineRenderer::WideLineRenderer(const WGPUDevice device, const WGPUTextureFormat target_format)
     : impl_(std::make_unique<Impl>()) {
     impl_->device = device;
-    const WGPUShaderSourceWGSL source{.chain = {.sType = WGPUSType_ShaderSourceWGSL}, .code = wgsl_name(wide_line_shader)};
+    const WGPUShaderSourceWGSL source{.chain = {.sType = WGPUSType_ShaderSourceWGSL}, .code = wgsl_name(detail::shader_code("overlay/wide_lines"))};
     const WGPUShaderModuleDescriptor shader_descriptor{.nextInChain = &source.chain};
     const auto shader = wgpuDeviceCreateShaderModule(device, &shader_descriptor);
     const WGPUPipelineLayoutDescriptor layout_descriptor{.bindGroupLayoutCount = 0, .bindGroupLayouts = nullptr};

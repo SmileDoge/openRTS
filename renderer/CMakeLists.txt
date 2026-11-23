@@ -33,8 +33,23 @@ add_library(openrts_renderer STATIC
     src/sky_renderer.cpp
     src/sky_light.cpp
     src/native_sky.cpp
-    src/terrain_renderer.cpp)
+    src/terrain_renderer.cpp
+    src/shader_code.cpp)
 openrts_configure_target(openrts_renderer)
+
+# The WGSL under shaders/ built into the program (src/shader_code.hpp):
+# remade when a file there changes, or one comes or goes (CONFIGURE_DEPENDS).
+file(GLOB_RECURSE OPENRTS_SHADER_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")
+set(OPENRTS_SHADER_INC "${CMAKE_CURRENT_BINARY_DIR}/generated/shader_sources.inc")
+add_custom_command(
+    OUTPUT "${OPENRTS_SHADER_INC}"
+    COMMAND "${CMAKE_COMMAND}" "-DSHADER_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/shaders" "-DOUTPUT=${OPENRTS_SHADER_INC}"
+            -P "${PROJECT_SOURCE_DIR}/cmake/embed_shaders.cmake"
+    DEPENDS ${OPENRTS_SHADER_FILES} "${PROJECT_SOURCE_DIR}/cmake/embed_shaders.cmake"
+    COMMENT "Building the renderer's shaders in"
+    VERBATIM)
+target_sources(openrts_renderer PRIVATE "${OPENRTS_SHADER_INC}")
+target_include_directories(openrts_renderer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 # Public renderer headers expose formats types (ShapeModel, RoutePosition).
 target_link_libraries(openrts_renderer PUBLIC openrts_core openrts_formats glm::glm)
 target_link_libraries(openrts_renderer PUBLIC openrts_assets)

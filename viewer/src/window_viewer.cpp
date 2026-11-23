@@ -3332,6 +3332,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     bool fov_reset_down = false; // Num* held
     StageClock stage_clock;
     StageTimes stages{};
+    std::unique_ptr<std::ofstream> frame_log;
+    const double frame_log_start = glfwGetTime();
+    if (!options.frame_log.empty()) {
+        frame_log = std::make_unique<std::ofstream>(std::filesystem::path(std::u8string(options.frame_log.begin(), options.frame_log.end())));
+        *frame_log << "t,frame_ms";
+        for (const auto* name : frame_stage_names) *frame_log << ',' << name;
+        *frame_log << ",gpu_ms,lights,lamp_shadows,instances\n";
+    }
     FovKeys fov_keys;
     double last_time = glfwGetTime();
     // Every 10 s the frame's breakdown goes to the console (openrts.log when
@@ -3382,7 +3390,20 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
         // The place and size in a window only (not the monitor's when full).
         if (placement_keeper && window_mode.applied() == WindowMode::windowed) placement_keeper->update(window.get(), now);
-        panel.stats.add(now - last_time, stages, pass_timer.take());
+        {
+            const auto gpu_times = pass_timer.take();
+            if (frame_log) {
+                // t, frame ms, the stages, the GPU's frame (blank: not read
+                // this frame), the lamps and their shadows, the instances.
+                *frame_log << now - frame_log_start << ',' << (now - last_time) * 1000.0;
+                for (const double ms : stages) *frame_log << ',' << ms;
+                *frame_log << ',';
+                if (gpu_times.frames > 0) *frame_log << gpu_times.frame_ms / gpu_times.frames;
+                const auto effect_stats = effects.stats();
+                *frame_log << ',' << effect_stats.lights << ',' << effect_stats.lamp_shadows << ',' << renderer.stats().instances << '\n';
+            }
+            panel.stats.add(now - last_time, stages, gpu_times);
+        }
         stages = {};
         const auto elapsed = static_cast<float>((std::min)(now - last_time, max_frame_seconds));
         input.keyboard_captured = scene.keyboard_captured();
