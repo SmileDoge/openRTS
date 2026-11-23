@@ -12,7 +12,8 @@
 //   1    switch 38 2          # CanSwitch + move cab switch ID 38 to state 2
 //   2    switch B_S 1         # by .sd name
 //   3    switch B_S 0
-//   0    voltage 3000         # line voltage at the pantographs (V [Hz], DC without Hz)
+//   0    voltage 3000         # line voltage at the pantographs (V [Hz], DC without Hz),
+//                             # the DLLs' and the cars'
 //   30   expect force > 10000 # fails the run when false (force, throttle,
 //                             # reverse, panto, main_switch, speed (km/h),
 //                             # pipe, mr, ur, alive)
@@ -1299,6 +1300,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             } else if (c.verb == "voltage" && !c.args.empty()) {
                 world.line_voltage = static_cast<float>(std::atof(c.args[0].c_str()));
                 world.line_frequency = c.args.size() > 1 ? static_cast<float>(std::atof(c.args[1].c_str())) : 0.0f;
+                // The cars' line too, as the viewer's electrification gives
+                // the engines it (EngineInputs::line_voltage: the compressor
+                // stands under a line its engine does not work on).
+                for (std::size_t k = 0; k < train.cars().size(); ++k) train.set_line_supply(k, world.line_voltage, world.line_frequency);
             } else if (c.verb == "cut" && !c.args.empty() && !cut_train) {
                 // cut <index>: uncouple behind car index - 1 (the car menu's way: cocks closed)
                 const auto index = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));

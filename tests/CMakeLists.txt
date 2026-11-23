@@ -446,6 +446,13 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.recorder_vl10 COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub shadow)
+    # The ВЛ10's compressor on openRTS's brakes: none under 25 kV AC (a DC
+    # engine), its governor under 3 kV DC (testers 2026-11-23).
+    foreach(kind ac dc)
+        add_test(NAME openrts.content.vl10_compressor_${kind} COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+            --dll mdd_vl10u-053 mdd_VL10u-053A mdd_VL10u-053B --start on --brakes openrts --seconds 150
+            --script "${CMAKE_CURRENT_SOURCE_DIR}/data/vl10_compressor_${kind}.script")
+    endforeach()
     add_test(NAME openrts.content.recorder_vl10_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub openrts --brakes openrts)
