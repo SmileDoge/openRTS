@@ -1296,7 +1296,8 @@ void Train::save_state(StateWriter& out) const {
         out.put(p + "air", c.pipe, c.auxiliary, c.cylinder, c.independent, c.control, c.charging_pipe, c.ep, c.ep_command, c.ep_fill,
                 c.main_reservoir);
         out.put(p + "hand", c.handbrake, c.pipe_ends, c.coupler_open, c.cables, c.valves, c.chocks);
-        out.put(p + "distributor", c.distributor.load, c.distributor.mountain, c.distributor.plug);
+        out.put(p + "distributor", c.distributor.load, c.distributor.mountain, c.distributor.plug, c.valve_feed, c.distributor_channel,
+                c.distributor_discharge);
         out.put(p + "flat", c.flat[0], c.flat[1], c.flat_phase[0][0], c.flat_phase[0][1], c.flat_phase[1][0], c.flat_phase[1][1],
                 c.flat_seen[0], c.flat_seen[1]);
         out.put(p + "shoes", c.shoe_state[0].wet, c.shoe_state[0].heat, c.shoe_state[0].wear, c.shoe_state[0].burning,
@@ -1339,7 +1340,8 @@ void Train::restore_state(const StateReader& in) {
         in.get(p + "air", c.pipe, c.auxiliary, c.cylinder, c.independent, c.control, c.charging_pipe, c.ep, c.ep_command, c.ep_fill,
                c.main_reservoir);
         in.get(p + "hand", c.handbrake, c.pipe_ends, c.coupler_open, c.cables, c.valves, c.chocks);
-        in.get(p + "distributor", c.distributor.load, c.distributor.mountain, c.distributor.plug);
+        in.get(p + "distributor", c.distributor.load, c.distributor.mountain, c.distributor.plug, c.valve_feed, c.distributor_channel,
+               c.distributor_discharge);
         in.get(p + "flat", c.flat[0], c.flat[1], c.flat_phase[0][0], c.flat_phase[0][1], c.flat_phase[1][0], c.flat_phase[1][1],
                c.flat_seen[0], c.flat_seen[1]);
         in.get(p + "shoes", c.shoe_state[0].wet, c.shoe_state[0].heat, c.shoe_state[0].wear, c.shoe_state[0].burning,
