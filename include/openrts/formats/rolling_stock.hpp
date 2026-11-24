@@ -193,6 +193,9 @@ struct LightDefinition {
     // openRTS's photometric light (renderer/photometric.hpp; the experimental
     // path): ORTSCandela, ORTSLumens, ORTSKelvin; 0 not given.
     float candela{}, lumens{}, kelvin{};
+    // openRTS's own label (ORTSName ( "..." )), to tell lights apart in the
+    // inspector; RTS skips it.
+    std::string name;
 };
 
 // AuxLibrarySoundType: AMBIENT (no position), WAGON (at the car, with its

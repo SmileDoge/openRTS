@@ -40,7 +40,10 @@ inline bool& own_precipitation() {
 }
 
 // A headlight's or searchlight's beam lighting the falling drops and
-// flakes (ExtraLightCone, its colour as the light's, display 0..1).
+// flakes (ExtraLightCone, its colour as the light's, display 0..1); or a
+// lamp shining every way (a sphere: a platform's lamp, a pantograph's arc),
+// `cone.tangent` < 0, round `cone.apex` within `cone.reach` (2026-11-24,
+// testers: the flakes under a platform's lamp stayed dark).
 struct ParticleLamp {
     ExtraLightCone cone;
     glm::vec3 colour{1.0f};
@@ -63,8 +66,8 @@ struct WeatherParticles {
     bool has_room = false;
     glm::mat4 to_room{1.0f};
     glm::vec3 room_lower{}, room_upper{};
-    // The beams the flakes and drops shine in (the nearest few).
-    static constexpr std::size_t max_lamps = 4;
+    // The beams and lamps the flakes and drops shine in (the nearest few).
+    static constexpr std::size_t max_lamps = 8;
     std::array<ParticleLamp, max_lamps> lamps{};
     std::size_t lamp_count = 0;
 };

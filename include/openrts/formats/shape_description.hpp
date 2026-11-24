@@ -47,6 +47,9 @@ struct ShapeLight {
     // openRTS's photometric lamp (renderer/photometric.hpp; the experimental
     // path): ORTSCandela, ORTSLumens, ORTSKelvin; 0 not given.
     float candela{}, lumens{}, kelvin{};
+    // openRTS's own label (ORTSName ( "..." )), to tell lamps apart in the
+    // inspector; RTS skips it.
+    std::string name;
 };
 
 // A box the engineer walks on, climbs or is stopped by (RTS 0x4BB7BC,

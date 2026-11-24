@@ -350,7 +350,10 @@ sprites) draws its own (`renderer::WeatherParticleRenderer`):
   reaches the box light the drops and flakes inside them in their colour,
   brightest near the lamp, softly to the cone's edge and its reach
   (`PrecipitationView::set_lamps`): a snowfall white in the headlights at
-  night.
+  night. Since 2026-11-24 (testers: the flakes under a platform's lamp
+  stayed dark) the lamps shining every way (spheres: platforms' lamps, a
+  pantograph's arc) light them too, within their radius (at most 40 m),
+  brighter towards the lamp; eight lamps and beams at most, the nearest.
 - Both lit by the scene's light, fading in near the eye and out at the
   box's edge, hidden by the cab's walls and a tunnel's roof (depth-tested);
   none fall inside the cab the eye is in. They stay in the world when the

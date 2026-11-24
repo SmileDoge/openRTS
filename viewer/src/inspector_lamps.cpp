@@ -168,6 +168,17 @@ bool pick_one(const char* label, std::uint8_t& value, const char* const (&names)
 #endif
 
 #ifdef OPENRTS_HAS_IMGUI
+// openRTS's label of a light or lamp (ORTSName): only to tell them apart.
+bool name_field(std::string& name) {
+    char buffer[96];
+    std::snprintf(buffer, sizeof buffer, "%s", name.c_str());
+    if (!ImGui::InputText(tr("Label (openRTS's, to tell them apart)"), buffer, sizeof buffer)) return false;
+    name = buffer;
+    // Kept between quotes in the files: no quotes in it.
+    std::erase(name, '"');
+    return true;
+}
+
 // openRTS's photometric light (renderer/photometric.hpp): candela or lumen
 // and kelvin, for the experimental path; 0 each: the RTS colour as it is.
 bool photometric_fields(float& candela, float& lumens, float& kelvin) {
@@ -211,6 +222,9 @@ void Inspector::draw_lamps(const InspectorWorld& world, const core::VirtualPath&
         lamp_state_ = 0;
         lamp_status_.clear();
         lamp_dirty_ = false;
+        lamp_undo_.clear();
+        lamp_redo_.clear();
+        lamp_editing_ = false;
     }
     const bool car = selection_.kind == Selection::Kind::car;
     if (world.trains) world.trains->hold_car_light(selection_.train, selection_.car, std::nullopt);
@@ -218,11 +232,26 @@ void Inspector::draw_lamps(const InspectorWorld& world, const core::VirtualPath&
     ImGui::TextWrapped("%s", car ? tr("The lights of this car's type (every car of it changes at once). Kept in the mod as the car's <file>.eng.openrts / .wag.openrts.")
                                  : tr("The lamps of this object's shape (every object of it). Kept in the mod as the shape's <shape>.openrts."));
     ImGui::Checkbox(tr("Hold the chosen lamp on (to set it by day, paused too)"), &lamp_hold_);
+    // Undo and redo: the buttons, and Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z) while
+    // the inspector has the keyboard (not in a text field: its own).
+    ImGui::BeginDisabled(lamp_undo_.empty());
+    if (ImGui::Button(tr("Undo (Ctrl+Z)"))) step_lamps(world, shape, false);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(lamp_redo_.empty());
+    if (ImGui::Button(tr("Redo (Ctrl+Y)"))) step_lamps(world, shape, true);
+    ImGui::EndDisabled();
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput && ImGui::GetIO().KeyCtrl) {
+        const bool shift = ImGui::GetIO().KeyShift;
+        if (ImGui::IsKeyPressed(ImGuiKey_Z, false)) step_lamps(world, shape, shift);
+        else if (ImGui::IsKeyPressed(ImGuiKey_Y, false)) step_lamps(world, shape, true);
+    }
     if (car) {
         draw_car_lamps(world);
     } else {
         draw_shape_lamps(world, shape);
     }
+    if (!ImGui::IsAnyItemActive()) lamp_editing_ = false;
     if (!lamp_status_.empty()) ImGui::TextWrapped("%s", lamp_status_.c_str());
 #else
     (void)world;
@@ -237,6 +266,8 @@ void Inspector::draw_car_lamps(const InspectorWorld& world) {
         ImGui::TextDisabled("%s", tr("This car's type is not at hand."));
         return;
     }
+    // As they were before this frame's change (undo).
+    const LampSnapshot before{.key = lamp_key(), .car = true, .car_lights = *lights, .lamp = lamp_, .state = lamp_state_};
     static const char* const types[] = {"0: glow (sprite)", "1: spotlight", "2: sphere", "3: orthogonal (box)", "4: cone"};
     static const char* const headlight[] = {"any", "off", "dim", "bright", "dim or bright"};
     static const char* const unit[] = {"any", "middle", "first car", "last car", "last, turned", "first, turned"};
@@ -250,8 +281,9 @@ void Inspector::draw_car_lamps(const InspectorWorld& world) {
         for (std::size_t i = 0; i < lights->size(); ++i) {
             const auto& l = (*lights)[i];
             char label[160];
-            std::snprintf(label, sizeof label, "%zu: %s%s, %zu %s", i, tr(types[l.type < 5 ? l.type : 4]),
-                          l.states.empty() ? " (-)" : "", l.states.size(), tr("states"));
+            if (!l.name.empty()) std::snprintf(label, sizeof label, "%zu: %s (%s)%s", i, l.name.c_str(), tr(types[l.type < 5 ? l.type : 4]), l.states.empty() ? " (-)" : "");
+            else std::snprintf(label, sizeof label, "%zu: %s%s, %zu %s", i, tr(types[l.type < 5 ? l.type : 4]),
+                               l.states.empty() ? " (-)" : "", l.states.size(), tr("states"));
             if (ImGui::Selectable(label, static_cast<int>(i) == lamp_)) {
                 lamp_ = static_cast<int>(i);
                 lamp_state_ = 0;
@@ -278,6 +310,7 @@ void Inspector::draw_car_lamps(const InspectorWorld& world) {
     if (!lights->empty() && lamp_ < static_cast<int>(lights->size())) {
         auto& l = (*lights)[static_cast<std::size_t>(lamp_)];
         ImGui::SeparatorText(tr("Light"));
+        changed |= name_field(l.name);
         changed |= pick_one(tr("Type"), l.type, types);
         changed |= pick_one(tr("Headlight"), l.headlight, headlight);
         changed |= pick_one(tr("Unit (place in the train)"), l.unit, unit);
@@ -331,7 +364,10 @@ void Inspector::draw_car_lamps(const InspectorWorld& world) {
             }
             float rgba[4];
             to_rgba(s.colour, rgba);
-            if (ImGui::ColorEdit4(tr("Colour (alpha: brightness)"), rgba, ImGuiColorEditFlags_AlphaBar)) {
+            // A glow's alpha is its brightness; a beam's is its colour's
+            // lightness alone (RTS takes no alpha for it).
+            if (l.type == 0 ? ImGui::ColorEdit4(tr("Colour (alpha: brightness)"), rgba, ImGuiColorEditFlags_AlphaBar)
+                            : ImGui::ColorEdit3(tr("Colour (its lightness: the brightness)"), rgba)) {
                 s.colour = to_argb(rgba);
                 changed = true;
             }
@@ -343,7 +379,11 @@ void Inspector::draw_car_lamps(const InspectorWorld& world) {
             }
         }
     }
-    if (changed) lamp_dirty_ = true;
+    if (changed) {
+        lamp_dirty_ = true;
+        remember_lamps(before, lamp_editing_);
+        lamp_editing_ = ImGui::IsAnyItemActive();
+    }
     if (lamp_hold_ && !lights->empty())
         world.trains->hold_car_light(selection_.train, selection_.car,
                                      std::pair{static_cast<std::size_t>(lamp_), static_cast<std::size_t>((std::max)(lamp_state_, 0))});
@@ -356,6 +396,7 @@ void Inspector::draw_car_lamps(const InspectorWorld& world) {
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button(tr("As in the files"))) {
+        remember_lamps(before, false);
         world.trains->revert_car_lights(selection_.train, selection_.car);
         lamp_dirty_ = false;
         lamp_status_ = tr("The lights are as the files have them.");
@@ -377,6 +418,7 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
         return;
     }
     auto lamps = model->lights();
+    const LampSnapshot before{.key = lamp_key(), .shape_lamps = lamps, .lamp = lamp_, .state = lamp_state_};
     if (lamps.empty()) ImGui::TextDisabled("%s", tr("No lamps (ESD_LightSources): add one."));
     lamp_ = std::clamp(lamp_, 0, (std::max)(static_cast<int>(lamps.size()) - 1, 0));
     static const char* const kinds[] = {"cone", "sphere", "box"};
@@ -387,7 +429,8 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
     if (ImGui::BeginListBox("##shape_lamps", {-1.0f, list_height})) {
         for (std::size_t i = 0; i < lamps.size(); ++i) {
             char label[160];
-            std::snprintf(label, sizeof label, "%zu: %s, %s", i, tr(kinds[kind_of(lamps[i])]), lamps[i].flags.c_str());
+            if (!lamps[i].name.empty()) std::snprintf(label, sizeof label, "%zu: %s (%s)", i, lamps[i].name.c_str(), tr(kinds[kind_of(lamps[i])]));
+            else std::snprintf(label, sizeof label, "%zu: %s, %s", i, tr(kinds[kind_of(lamps[i])]), lamps[i].flags.c_str());
             if (ImGui::Selectable(label, static_cast<int>(i) == lamp_)) lamp_ = static_cast<int>(i);
         }
         ImGui::EndListBox();
@@ -419,6 +462,7 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
     if (!lamps.empty()) {
         auto& l = lamps[static_cast<std::size_t>(lamp_)];
         ImGui::SeparatorText(tr("Lamp"));
+        changed |= name_field(l.name);
         std::uint8_t kind = kind_of(l);
         if (pick_one(tr("Kind"), kind, kinds)) {
             set_flag(l.flags, "light_cone", kind == 0);
@@ -441,7 +485,7 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
         changed |= ImGui::DragFloat2(tr("Radius at the points-to plane (x, z), m"), l.radius.data(), 0.02f, 0.0f, 500.0f);
         float rgba[4];
         to_rgba(l.colour, rgba);
-        if (ImGui::ColorEdit4(tr("Colour (alpha: brightness)"), rgba, ImGuiColorEditFlags_AlphaBar)) {
+        if (ImGui::ColorEdit3(tr("Colour (its lightness: the brightness)"), rgba)) {
             l.colour = to_argb(rgba);
             changed = true;
         }
@@ -460,7 +504,11 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
         if (l.array_count >= 2) changed |= ImGui::DragFloat3(tr("Step of the row, m"), l.array_step.data(), 0.01f);
         changed |= photometric_fields(l.candela, l.lumens, l.kelvin);
     }
-    if (changed) apply_shape_lamps(world, shape, std::move(lamps));
+    if (changed) {
+        remember_lamps(before, lamp_editing_);
+        lamp_editing_ = ImGui::IsAnyItemActive();
+        apply_shape_lamps(world, shape, std::move(lamps));
+    }
     ImGui::Separator();
     ImGui::BeginDisabled(!lamp_dirty_ && !dirty_);
     if (ImGui::Button(tr("Save the lamps to the mod"))) {
@@ -471,6 +519,7 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button(tr("As in the .sd"))) {
+        remember_lamps(before, false);
         auto& over = edited(world, shape);
         over.lights.reset();
         renderer::hold_shape_override(shape, over);
@@ -487,6 +536,48 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
     (void)world;
     (void)shape;
 #endif
+}
+
+void Inspector::remember_lamps(LampSnapshot before, const bool continuing) {
+    if (continuing) return;
+    lamp_undo_.push_back(std::move(before));
+    if (lamp_undo_.size() > 200) lamp_undo_.erase(lamp_undo_.begin());
+    lamp_redo_.clear();
+}
+
+std::optional<Inspector::LampSnapshot> Inspector::lamp_snapshot(const InspectorWorld& world, const core::VirtualPath& shape) const {
+    LampSnapshot now{.key = lamp_key(), .lamp = lamp_, .state = lamp_state_};
+    if (selection_.kind == Selection::Kind::car) {
+        const auto* lights = world.trains ? world.trains->car_lights(selection_.train, selection_.car) : nullptr;
+        if (!lights) return std::nullopt;
+        now.car = true;
+        now.car_lights = *lights;
+        return now;
+    }
+    const auto* model = world.library ? world.library->find(shape) : nullptr;
+    if (!model) return std::nullopt;
+    now.shape_lamps = model->lights();
+    return now;
+}
+
+void Inspector::step_lamps(const InspectorWorld& world, const core::VirtualPath& shape, const bool redo) {
+    auto& from = redo ? lamp_redo_ : lamp_undo_;
+    auto& to = redo ? lamp_undo_ : lamp_redo_;
+    if (from.empty() || from.back().key != lamp_key() || drag_) return;
+    auto now = lamp_snapshot(world, shape);
+    if (!now) return;
+    auto back = std::move(from.back());
+    from.pop_back();
+    to.push_back(std::move(*now));
+    if (back.car) {
+        if (auto* lights = world.trains ? world.trains->car_lights(selection_.train, selection_.car) : nullptr) *lights = back.car_lights;
+    } else {
+        apply_shape_lamps(world, shape, back.shape_lamps);
+    }
+    lamp_ = back.lamp;
+    lamp_state_ = back.state;
+    lamp_dirty_ = true;
+    lamp_editing_ = false;
 }
 
 void Inspector::apply_shape_lamps(const InspectorWorld& world, const core::VirtualPath& shape, std::vector<formats::ShapeLight> lamps) {
@@ -702,6 +793,10 @@ bool Inspector::begin_drag(const glm::vec3& eye, const glm::vec3& direction, con
         if (!model) return false;
         d.shape = model->lights();
     }
+    // The drag is one step of the undo.
+    remember_lamps(LampSnapshot{.key = lamp_key(), .car = selection_.kind == Selection::Kind::car, .car_lights = d.car,
+                                .shape_lamps = d.shape, .lamp = lamp_, .state = lamp_state_},
+                   false);
     drag_ = std::move(d);
     hovered_ = index;
     return true;

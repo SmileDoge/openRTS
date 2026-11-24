@@ -2105,11 +2105,13 @@ public:
         renderer::LightShaftBeams out;
         if (!effects_.precipitation || !effects_.fog || !precipitation_ || precipitation_->drops() == 0) return out;
         const auto& weather = precipitation_->weather();
-        out.count = static_cast<std::uint32_t>((std::min)(weather.lamp_count, out.beams.size()));
-        for (std::uint32_t k = 0; k < out.count; ++k) {
+        // The beams only (a sphere's light on the flakes is the particles').
+        out.count = 0;
+        for (std::size_t k = 0; k < weather.lamp_count && out.count < out.beams.size(); ++k) {
             const auto& lamp = weather.lamps[k];
-            out.beams[k] = {.apex = lamp.cone.apex, .axis = lamp.cone.axis, .reach = lamp.cone.reach, .tangent = lamp.cone.tangent,
-                            .colour = lamp.colour};
+            if (lamp.cone.tangent < 0.0f) continue;
+            out.beams[out.count++] = {.apex = lamp.cone.apex, .axis = lamp.cone.axis, .reach = lamp.cone.reach, .tangent = lamp.cone.tangent,
+                                      .colour = lamp.colour};
         }
         const float amount = weather_precipitation();
         const float beyond = (std::max)(amount - 2.0f, 0.0f);

@@ -72,7 +72,16 @@ void PrecipitationView::set_lamps(const std::vector<renderer::SceneLight>& light
     };
     std::vector<Pick> picks;
     for (const auto& entry : lights) {
-        const auto cone = renderer::extra_light_cone(entry.light);
+        auto cone = renderer::extra_light_cone(entry.light);
+        if (!cone && (static_cast<int>(entry.light.kind) & 31) == 2) {
+            // A sphere (a platform's lamp, an arc): round its place, its widest radius (at most 40 m).
+            const glm::vec3 centre{glm::inverse(entry.light.to_light)[3]};
+            const float radius = (std::min)((std::max)({entry.light.size.x, entry.light.size.y, entry.light.size.z}), 40.0f);
+            if (radius < 0.5f || glm::distance(centre, eye) > box + radius) continue;
+            const glm::vec3 colour = glm::clamp(glm::vec3(entry.light.diffuse), glm::vec3(0.0f), glm::vec3(1.0f));
+            picks.push_back({(std::max)(glm::distance(centre, eye) - radius, 0.0f), {{centre, {0.0f, 1.0f, 0.0f}, radius, -1.0f}, colour}});
+            continue;
+        }
         if (!cone || cone->reach < 5.0f) continue; // a cab's or a salon's lamp, not a beam
         // The nearest point of its axis within its reach.
         const float t = std::clamp(glm::dot(eye - cone->apex, cone->axis), 0.0f, cone->reach);

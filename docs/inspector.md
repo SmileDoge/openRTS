@@ -58,6 +58,13 @@ The chosen car's lights or the chosen object's lamps, changed live
   - the one on the cone's rim opens or closes it (a car's half angle, a
     shape's radii in proportion); on a sphere or a glow, its size.
   The handle under the mouse turns white.
+- **A label** (openRTS's only, `ORTSName ( "..." )` in the Light or
+  LightSource block; RTS skips it): shown in the list, to tell the lamps
+  apart.
+- **Undo and redo:** the buttons, Ctrl+Z and Ctrl+Y (Ctrl+Shift+Z) while
+  the inspector has the keyboard: a field dragged, a lamp added or taken
+  out, a handle dragged, back to the files, each one step (200 kept; the
+  selection changed, they go).
 - **Photometric (PBR / HDR):** ORTSCandela (cd on its axis), ORTSLumens
   (its flux, spread over its cone or every way when there is no candela),
   ORTSKelvin (its colour; 0: its own colour). The experimental path then

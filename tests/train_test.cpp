@@ -1904,6 +1904,7 @@ Train ( TrainCfg ( "c"
             head.spot_exponent = 0.5f * 128.0f;
             head.candela = 200000.0f;
             head.kelvin = 4500.0f;
+            head.name = "Прожектор Левый";
             head.states.push_back({.colour = 0xFFFFF0E0u, .position = {0.3f, 2.1f, 9.4f}, .azimuth = {0.0f, 1.5f, 0.0f},
                                    .elevation = {2.0f, 0.0f, 0.0f}, .radius = 450.0f, .angle = 6.5f, .source_radius = 0.2f});
             formats::LightDefinition glow;
@@ -1927,6 +1928,7 @@ Train ( TrainCfg ( "c"
             const bool same = l.size() == 3 && l[0].type == 1 && l[0].headlight == 3 && l[0].unit == 2 && l[0].fade_in == 0.5f
                            && l[0].attenuation == head.attenuation && l[0].spot_exponent == head.spot_exponent && l[0].states.size() == 1
                            && l[0].candela == 200000.0f && l[0].kelvin == 4500.0f && l[0].lumens == 0.0f
+                           && l[0].name == "Прожектор Левый" && l[2].name.empty()
                            && l[0].states[0].position == head.states[0].position && l[0].states[0].azimuth == head.states[0].azimuth
                            && l[0].states[0].elevation == head.states[0].elevation && l[0].states[0].radius == 450.0f
                            && l[0].states[0].angle == 6.5f && l[0].states[0].colour == 0xFFFFF0E0u && l[1].states.empty()

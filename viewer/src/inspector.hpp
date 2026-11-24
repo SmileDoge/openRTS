@@ -192,6 +192,21 @@ private:
     };
     std::optional<Drag> drag_;
     void apply_shape_lamps(const InspectorWorld& world, const core::VirtualPath& shape, std::vector<formats::ShapeLight> lamps);
+    // The lamps' undo and redo: the lamps as they were before each change
+    // (a field dragged, a lamp added or taken out, a handle dragged, back to
+    // the files), of the selection `key`; a drag one step.
+    struct LampSnapshot {
+        std::string key;
+        bool car = false;
+        std::vector<formats::LightDefinition> car_lights;
+        std::vector<formats::ShapeLight> shape_lamps;
+        int lamp = 0, state = 0;
+    };
+    std::vector<LampSnapshot> lamp_undo_, lamp_redo_;
+    bool lamp_editing_ = false; // a field still held: its change goes on in the same step
+    [[nodiscard]] std::optional<LampSnapshot> lamp_snapshot(const InspectorWorld& world, const core::VirtualPath& shape) const;
+    void remember_lamps(LampSnapshot before, bool continuing);
+    void step_lamps(const InspectorWorld& world, const core::VirtualPath& shape, bool redo);
 };
 
 } // namespace openrts::viewer

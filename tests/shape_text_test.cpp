@@ -253,6 +253,7 @@ void override_checks() {
     lamp.array_step = {0.0f, 0.0f, 12.0f};
     lamp.lumens = 15000.0f;
     lamp.kelvin = 2000.0f;
+    lamp.name = "Фонарь Северный";
     lit.lights = std::vector<ShapeLight>{lamp, ShapeLight{.position = {0.0f, 3.0f, 0.0f}, .flags = "light_sphere running"}};
     const auto lit_again = parse_shape_override(write_shape_override(lit));
     const bool same_lamp = lit_again.lights && lit_again.lights->size() == 2 && (*lit_again.lights)[0].position == lamp.position
@@ -262,7 +263,7 @@ void override_checks() {
                         && (*lit_again.lights)[0].spot_exponent == lamp.spot_exponent && (*lit_again.lights)[0].light_fade == lamp.light_fade
                         && (*lit_again.lights)[0].array_count == 4 && (*lit_again.lights)[0].array_step == lamp.array_step
                         && (*lit_again.lights)[0].lumens == 15000.0f && (*lit_again.lights)[0].kelvin == 2000.0f
-                        && (*lit_again.lights)[0].candela == 0.0f && (*lit_again.lights)[1].flags == "light_sphere running";
+                        && (*lit_again.lights)[0].candela == 0.0f && (*lit_again.lights)[0].name == "Фонарь Северный" && (*lit_again.lights)[1].flags == "light_sphere running";
     check(!lit.empty() && same_lamp, "an override's lamps written and read back");
     ShapeOverride none_lit;
     none_lit.lights = std::vector<ShapeLight>{};

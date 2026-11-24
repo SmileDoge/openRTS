@@ -269,6 +269,7 @@ LightDefinition read_light(std::string_view text, TextRange light) {
     d.candela = static_cast<float>(values(text, "ortscandela", light).atof());
     d.lumens = static_cast<float>(values(text, "ortslumens", light).atof());
     d.kelvin = static_cast<float>(values(text, "ortskelvin", light).atof());
+    if (auto n = values(text, "ortsname", light); n.found()) d.name = n.token();
     return d;
 }
 
@@ -935,6 +936,7 @@ std::string write_lights(const std::vector<LightDefinition>& lights) {
         if (l.candela > 0.0f) out += numbers("ORTSCandela", {l.candela});
         if (l.lumens > 0.0f) out += numbers("ORTSLumens", {l.lumens});
         if (l.kelvin > 0.0f) out += numbers("ORTSKelvin", {l.kelvin});
+        if (!l.name.empty()) out += " ORTSName ( \"" + l.name + "\" )";
         out += " )\r\n";
     }
     // Every light is in Lights: the file's own RTSLights would add theirs again.

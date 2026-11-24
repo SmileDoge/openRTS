@@ -11,7 +11,7 @@ struct Uniform {
     room_lower: vec4<f32>,
     room_upper: vec4<f32>,
     origin: vec4<f32>,
-    lamps: array<vec4<f32>, 12>, // per lamp: apex, reach; axis, tangent; colour
+    lamps: array<vec4<f32>, 24>, // per lamp: apex, reach; axis, tangent (< 0: a sphere); colour
     lamp_count: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniform;
@@ -142,6 +142,16 @@ fn vs_main(@builtin(vertex_index) vertex: u32) -> Out {
         let apex = u.lamps[k * 3u];
         let axis = u.lamps[k * 3u + 1u];
         let v = p - apex.xyz;
+        if (axis.w < 0.0) {
+            // A lamp shining every way: brighter towards it, out at its reach.
+            let d = length(v);
+            if (d >= apex.w) {
+                continue;
+            }
+            let near = 1.0 - d / apex.w;
+            lamp = lamp + u.lamps[k * 3u + 2u].xyz * near * near * 3.0;
+            continue;
+        }
         let along = dot(v, axis.xyz);
         if (along <= 0.0 || along >= apex.w) {
             continue;
