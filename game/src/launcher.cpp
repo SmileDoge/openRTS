@@ -907,6 +907,7 @@ struct Launcher::State {
             request.weather = weather;
         }
         request.realistic_air = true;
+        request.brakes = brakes;
         request.sound = sound;
         request.volume = volume;
         request.title = request.route;

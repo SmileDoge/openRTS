@@ -3085,6 +3085,32 @@ void TrainView::apply_brake_set(const BrakeSet& set) {
     remember("brake_pressing", std::to_string(brake_pressing_));
 }
 
+void TrainView::set_brake_settings(const BrakeSettings& s) {
+    // The scene's start: the preset's fields before the first train exists,
+    // so its consist is made and attached as the settings say (the Train
+    // window's own section changes nothing at load).
+    realistic_air_ = true;
+    realistic_air_loaded_ = true;
+    dll_air_ = std::clamp(s.dll_air, 0, 2);
+    dll_air_loaded_ = true;
+    gauges_air_ = s.gauges;
+    gauges_air_loaded_ = true;
+    rails_ = std::clamp(s.rails, 0, 6);
+    rails_loaded_ = true;
+    limit_brake_force_ = s.limit;
+    distributor_stability_ = s.stability;
+    distributor_stability_loaded_ = true;
+    brake_condition_ = std::clamp(s.condition, 0, 10);
+    brake_pressing_ = std::clamp(s.pressing, 50, 150);
+    own_brakes_ = std::clamp(s.own_brakes, 0, 1);
+    brake_numbers_ = std::clamp(s.brake_numbers, 0, 1);
+    own_klub_ = std::clamp(s.own_klub, 0, 1);
+    no_brakes_dll_ = s.no_brakes_dll;
+    klub_objects_ = s.klub_objects;
+    klub_map_ = s.klub_map;
+    own_brakes_loaded_ = true;
+}
+
 void TrainView::apply_brake_settings(const BrakeSettings& s) {
     // The realistic air is the only model: the flag only marks it.
     realistic_air_ = true;

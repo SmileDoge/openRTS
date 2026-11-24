@@ -97,6 +97,7 @@ BuildResult build_session(const SessionRequest& request, std::atomic<int>& stage
         content.situation = request.situation;
         content.start_view = request.start_view;
         content.realistic_air = request.realistic_air;
+        content.brakes = request.brakes;
         content.root = request.root;
         content.activity = activity;
         content.activity_folder = activity_folder;

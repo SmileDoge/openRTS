@@ -20,6 +20,7 @@
 #include <string_view>
 
 #include "viewer_scene.hpp"
+#include "brake_settings_ui.hpp"
 
 namespace openrts::viewer {
 struct WindowOptions;
@@ -44,6 +45,10 @@ struct SessionRequest {
     int season = 1;
     int weather = 0;
     bool realistic_air = false;
+    // The brakes' preset of the start menu (brake_settings_ui.hpp): applied to
+    // the scene before its first train, so a Brakes.dll consist starts on the
+    // devices the settings name.
+    viewer::BrakeSettings brakes;
     bool sound = true;
     float volume = 0.5f;
     std::string title;
