@@ -321,6 +321,8 @@ struct Launcher::State {
     std::vector<formats::ActivityFile> activities;
     int activity = -1;
     bool sound = true;
+    bool vr = false; // the game in a headset (--vr, docs/vr.md)
+    int vr_scale = 150; // its resolution, % of the headset's recommended (--vr-scale)
     float volume = 0.5f;
     bool vsync = true;
     // The brakes, the game's Train window's too (brake_settings_ui.hpp).
@@ -475,6 +477,8 @@ struct Launcher::State {
         weather = std::clamp(remembered_int("launcher_weather", 0), 0, 3);
         start = std::clamp(remembered_int("launcher_start", 0), 0, 2);
         sound = remembered_int("launcher_sound", 1) != 0;
+        vr = remembered_int("launcher_vr", 0) != 0;
+        vr_scale = std::clamp(remembered_int("launcher_vr_scale", 150), 50, 250);
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
         viewer::set_mouse_sensitivity(remembered_float("mouse_sensitivity", 1.0f));
         viewer::set_mouse_smoothing(remembered_float("mouse_smoothing_ms", viewer::default_mouse_smoothing));
@@ -545,6 +549,8 @@ struct Launcher::State {
         remember("launcher_weather", std::to_string(weather));
         remember("launcher_start", std::to_string(start));
         remember("launcher_sound", sound ? "1" : "0");
+        remember("launcher_vr", vr ? "1" : "0");
+        remember("launcher_vr_scale", std::to_string(vr_scale));
         remember("volume", std::to_string(volume));
         remember("launcher_vsync", vsync ? "1" : "0");
         remember("launcher_spawn", std::to_string(spawn));
@@ -809,6 +815,9 @@ struct Launcher::State {
         if (!vsync) args.push_back("--no-vsync");
         if (graphics.experimental) args.push_back("--experimental");
         if (graphics.hdr) args.push_back("--hdr");
+#ifdef OPENRTS_HAS_XR
+        if (vr) args.insert(args.end(), {"--vr", "--vr-scale", std::to_string(vr_scale / 100.0f)});
+#endif
         std::string command;
         for (const auto& a : args) command += (command.empty() ? "" : " ") + quoted(a);
         return command;
@@ -1798,6 +1807,21 @@ void Launcher::State::draw_graphics(const float height) {
                 }
                 row_note(tr("In the background (another window in front, or minimised): at most 30 frames/s."));
             }
+            group_row(tr("VR headset (OpenXR)"), Load::unknown, Load::unknown);
+#ifdef OPENRTS_HAS_XR
+            ImGui::Checkbox("##vr", &vr);
+            group_row(tr("VR resolution"), Load::high, Load::high);
+            ImGui::BeginDisabled(!vr);
+            ImGui::SliderInt("##vr_scale", &vr_scale, 50, 250, tr("%d%% of the headset's"), ImGuiSliderFlags_AlwaysClamp);
+            ImGui::EndDisabled();
+            row_note(tr("Above 100%: sharper, fewer jagged edges (the headset takes the picture down), the video card works harder."));
+            row_note(tr("Seated in the cab, the keyboard and the mouse. The view centred again: Insert, or the left controller's menu button. Start SteamVR or the headset's app first."));
+#else
+            ImGui::BeginDisabled();
+            ImGui::Checkbox("##vr", &vr);
+            ImGui::EndDisabled();
+            row_note(tr("This build has no VR (it needs openRTS's own wgpu-native)."));
+#endif
             {
                 constexpr std::uint32_t counts[] = {1, 2, 4, 8};
                 const char* names[] = {tr("no anti-aliasing"), "2x", "4x", "8x"};

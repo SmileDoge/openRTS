@@ -1,4 +1,7 @@
 #include "window_viewer.hpp"
+#include "vr_session.hpp"
+
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <openrts/core/profile.hpp>
 
@@ -2637,6 +2640,21 @@ float seated_cab_near = 0.0f;
     return renderer::reversed_z_perspective(vertical_fov, aspect, near_plane_of(camera), camera.far_plane());
 }
 
+// An eye's projection (VR): its field's tangents, reversed Z as
+// renderer::reversed_z_perspective.
+[[nodiscard]] glm::mat4 eye_projection(const float left, const float right, const float up, const float down, const float near_plane,
+                                       const float far_plane) {
+    glm::mat4 m{0.0f};
+    m[0][0] = 2.0f / (right - left);
+    m[1][1] = 2.0f / (up - down);
+    m[2][0] = (right + left) / (right - left);
+    m[2][1] = (up + down) / (up - down);
+    m[2][2] = near_plane / (far_plane - near_plane);
+    m[2][3] = -1.0f;
+    m[3][2] = near_plane * far_plane / (far_plane - near_plane);
+    return m;
+}
+
 struct FrameTargets {
     WGPUTextureView color;   // the frame
     WGPUTextureView depth;
@@ -2962,6 +2980,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (!backend) {
         if (const auto key = remembered("backend")) backend = renderer::parse_graphics_backend(*key);
     }
+    // VR: the eyes' textures are shared with Vulkan only.
+    if (options.vr) backend = renderer::GraphicsBackend::vulkan;
     auto context = renderer::create_wgpu_device(backend.value_or(renderer::GraphicsBackend::automatic));
     if (!context.ok()) {
         std::cerr << "WebGPU device failed: " << context.error << '\n';
@@ -3028,6 +3048,17 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     std::cout << ", anisotropy " << renderer::max_anisotropy << "x" << std::endl;
     PresentationSurface surface(context.context, window.get(), capture);
     if (!surface.ok()) return exit_code::surface_failed;
+#ifdef OPENRTS_HAS_XR
+    std::unique_ptr<VrSession> vr;
+    if (options.vr) {
+        std::string error;
+        vr = VrSession::start(context.context.instance(), device, surface.format(), options.vr_scale, error);
+        if (!vr) std::cerr << "VR off: " << error << std::endl;
+    }
+    bool vr_recenter_down = false;
+#else
+    if (options.vr) std::cerr << "VR off: this build has no OpenXR (openRTS's wgpu-native, docs/vr.md)" << std::endl;
+#endif
 
     // The interface language chosen last time (Russian by default).
     set_ui_language(remembered("language").value_or("ru") == "en" ? UiLanguage::english : UiLanguage::russian);
@@ -3371,7 +3402,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const bool background = !options.fps_background
                                 && (glfwGetWindowAttrib(window.get(), GLFW_FOCUSED) == GLFW_FALSE
                                     || glfwGetWindowAttrib(window.get(), GLFW_ICONIFIED) == GLFW_TRUE);
-        limiter.set(frame_limit(panel.fps_limit, !loading.done, background));
+        // VR: the headset paces the frames (xrWaitFrame), never the limit.
+        const bool vr_paced =
+#ifdef OPENRTS_HAS_XR
+            vr != nullptr;
+#else
+            false;
+#endif
+        limiter.set(vr_paced ? 0 : frame_limit(panel.fps_limit, !loading.done, background));
         limiter.wait();
         stage_clock.start();
         // The mouse lock: the wheel's click switches it; in force but over
@@ -3716,6 +3754,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                          ? renderer::FrameEncoding::linear
                                          : renderer::FrameEncoding::gamma;
         scene.update(renderer, camera, scene_clock, frame_input);
+#ifdef OPENRTS_HAS_XR
+        // VR: the head is the player's own; the game's nods and tilts make sick.
+        if (vr) camera.head_nod = camera.head_tilt = 0.0f;
+#endif
         discord.update(scene);
         if (!scene.loading().done) loading_camera = camera;
         if (capture && options.capture_camera) {
@@ -3780,17 +3822,77 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         stage_clock.mark(FrameStage::wait, stages);
         if (!frame_texture) continue;
         pass_timer.begin_frame();
-        const auto frame_view = wgpuTextureCreateView(frame_texture, nullptr);
-        const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
-        const bool hdr = tone && surface.hdr_view();
-
-        const auto aspect = static_cast<float>(width) / static_cast<float>(height);
+        const auto window_view = wgpuTextureCreateView(frame_texture, nullptr);
+        const int window_width = width, window_height = height;
         seated_cab_near = panel.cab_near_plane > 0.0f && scene.seated_in_cab() ? panel.cab_near_plane : 0.0f;
+        // VR (docs/vr.md): the frame once per eye into the headset, the
+        // window then shows the left eye and the panels.
+#ifdef OPENRTS_HAS_XR
+        if (vr) {
+            // Insert or the keypad's point (the controller's button: VrSession).
+            const bool keys = glfwGetKey(window.get(), GLFW_KEY_INSERT) == GLFW_PRESS || glfwGetKey(window.get(), GLFW_KEY_KP_DECIMAL) == GLFW_PRESS;
+            if (keys && !vr_recenter_down) vr->recenter();
+            vr_recenter_down = keys;
+        }
+        const bool vr_frame = vr && !capture && vr->begin_frame();
+        const std::size_t view_count = vr_frame ? vr->eye_count() : 1;
+#else
+        constexpr bool vr_frame = false;
+        constexpr std::size_t view_count = 1;
+#endif
+        WGPURenderPassEncoder pass = nullptr;
+        WGPUCommandEncoder encoder = nullptr;
+        WGPUCommandBuffer commands = nullptr;
+        bool parallel = false;
+        bool depth_copy = false;
+        bool hdr = false;
+        FrameCapture shot, depth_shot, hdr_shot, shafts_shot;
+        bool hdr_linear = false;
+        for (std::size_t view_index = 0; view_index < view_count; ++view_index) {
+        if (encoder) {
+            // The eye before: its own submit (the frame's uniforms are one set).
+            wgpuRenderPassEncoderRelease(pass);
+            wgpuCommandEncoderRelease(encoder);
+        }
+        encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+        WGPUTextureView frame_view = window_view;
+        WGPUTextureView hdr_view = surface.hdr_view();
+        WGPUTextureView depth_view = surface.depth_view();
+        WGPUTextureView msaa_view = surface.msaa_view();
+        glm::mat4 view_matrix = camera.view();
+        glm::vec3 view_eye = camera.eye();
+        float vertical_fov = camera.vertical_fov(glm::radians(panel.fov));
+        float aspect = static_cast<float>(window_width) / static_cast<float>(window_height);
+        glm::mat4 projection_matrix = projection(camera, aspect, vertical_fov);
+        width = window_width;
+        height = window_height;
+#ifdef OPENRTS_HAS_XR
+        if (vr_frame) {
+            const auto& e = vr->eye(view_index);
+            frame_view = e.colour;
+            hdr_view = e.hdr;
+            depth_view = e.depth;
+            msaa_view = e.msaa;
+            width = static_cast<int>(e.width);
+            height = static_cast<int>(e.height);
+            // The head's pose in the seat's view space, after MSTS's mirrored
+            // X (camera.view() is mirror * look-at): the head turns and the
+            // eyes sit as the player's, on the screen's side of the mirror.
+            view_matrix = glm::inverse(e.pose) * camera.view();
+            view_eye = glm::vec3(glm::inverse(view_matrix)[3]);
+            projection_matrix = eye_projection(e.left, e.right, e.up, e.down, near_plane_of(camera), camera.far_plane());
+            // A symmetric field round it for the shadows' fit and the occlusion.
+            const float half_up = (std::max)(e.up, -e.down), half_side = (std::max)(e.right, -e.left);
+            vertical_fov = 2.0f * std::atan(half_up);
+            aspect = half_side / half_up;
+        }
+#endif
+        hdr = tone && hdr_view;
         FrameView frame{
-            .eye = camera.eye(),
-            .view = camera.view(),
-            .projection = projection(camera, aspect, camera.vertical_fov(glm::radians(panel.fov))),
-            .vertical_fov = camera.vertical_fov(glm::radians(panel.fov)),
+            .eye = view_eye,
+            .view = view_matrix,
+            .projection = projection_matrix,
+            .vertical_fov = vertical_fov,
             .view_zoom = camera.view_zoom,
             .aspect = aspect,
             .viewport_height = static_cast<float>(height),
@@ -3864,7 +3966,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // In parallel the workers record and finish a command buffer each
         // (the cascades, the pre-pass) while this thread records the main pass.
         renderer.set_multi_draw(panel.multi_draw);
-        const bool parallel = panel.parallel_recording && experimental;
+        parallel = panel.parallel_recording && experimental;
         if (parallel) {
             effects.record_parallel(device, recording_pool, depth_draw);
         } else {
@@ -3873,12 +3975,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         effects.record_check(encoder);
         scene.before_main_pass(encoder, frame);
         stage_clock.mark(FrameStage::effects, stages);
-        const auto pass =
+        pass =
             begin_main_pass(encoder,
-                            {.color = hdr ? surface.hdr_view() : frame_view,
-                             .depth = surface.depth_view(),
-                             .msaa = surface.msaa_view(),
-                             .keep_depth = reshade_depth},
+                            {.color = hdr ? hdr_view : frame_view,
+                             .depth = depth_view,
+                             .msaa = msaa_view,
+                             .keep_depth = reshade_depth && !vr_frame},
                             renderer::frame_linear()
                                 ? glm::vec4{glm::pow((glm::max)(glm::vec3{environment.clear_colour}, glm::vec3{0.0f}), glm::vec3{2.2f}),
                                             environment.clear_colour.a}
@@ -3892,18 +3994,18 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         stage_clock.mark(FrameStage::models, stages);
         scene.draw_foreground(pass, frame);
 #ifdef OPENRTS_HAS_IMGUI
-        if (!hdr && (!capture || options.capture_ui)) overlay.render(pass);
+        if (!hdr && !vr_frame && (!capture || options.capture_ui)) overlay.render(pass);
 #endif
         stage_clock.mark(FrameStage::foreground, stages);
         wgpuRenderPassEncoderEnd(pass);
         stage_clock.mark(FrameStage::end, stages);
         // The depth for ReShade: a single-sample copy of a multisampled one
         // (a single-sample depth is kept as it is, keep_depth above).
-        const bool depth_copy = reshade_depth && renderer::render_sample_count() > 1;
+        depth_copy = reshade_depth && !vr_frame && renderer::render_sample_count() > 1;
         if (depth_copy) {
             // Made on first use: its pipeline does not exist on OpenGL.
             if (!depth_export) depth_export = std::make_unique<renderer::DepthExport>(device);
-            depth_export->record(encoder, surface.depth_view(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+            depth_export->record(encoder, depth_view, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
         }
         if (hdr) {
             // The tone curve to the screen, then the panels over it.
@@ -3938,7 +4040,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                             wgpuRenderPassEncoderRelease(source);
                         }
                     }
-                    bloom_view = bloom->build(encoder, surface.hdr_view(), w, h,
+                    bloom_view = bloom->build(encoder, hdr_view, w, h,
                                               {.textures = panel.effects.bloom_textures, .night = panel.night, .linear = renderer::frame_linear()});
                     settings.bloom = 0.15f * panel.effects.bloom_strength;
                 }
@@ -3973,7 +4075,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                     // From the frame's light at once: turned on, or still loading
                     // (no adapting from the loading screen's dark).
                     if (!auto_exposure_was_on || !loading.done) auto_exposure->reset();
-                    auto_exposure->measure(encoder, surface.hdr_view(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+                    auto_exposure->measure(encoder, hdr_view, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
                                            renderer::frame_linear(), elapsed, panel.auto_exposure);
                     exposure_state = auto_exposure->state();
                     settings.auto_exposure = true;
@@ -3982,8 +4084,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 }
             }
             auto_exposure_was_on = exposure_state != nullptr;
-            tone->render(encoder, surface.hdr_view(), frame_view, settings, bloom_view, shafts_view, exposure_state);
+            tone->render(encoder, hdr_view, frame_view, settings, bloom_view, shafts_view, exposure_state);
 #ifdef OPENRTS_HAS_IMGUI
+            if (!vr_frame) {
             const WGPURenderPassColorAttachment ui_colour{
                 .view = frame_view,
                 .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
@@ -3997,6 +4100,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             if (!capture || options.capture_ui) overlay.render(ui);
             wgpuRenderPassEncoderEnd(ui);
             wgpuRenderPassEncoderRelease(ui);
+            }
 #endif
         }
         scene.after_main_pass(encoder);
@@ -4011,21 +4115,59 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                               .ground_albedo = std::clamp(panel.effects.ground_bounce, 0.0f, 0.5f)});
         }
 
-        FrameCapture shot;
-        FrameCapture depth_shot;
+        shot = {};
+        depth_shot = {};
         if (capture_now) shot = begin_capture(device, encoder, frame_texture, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
         if (capture_now && depth_copy && depth_export->texture())
             depth_shot = begin_capture(device, encoder, depth_export->texture(), static_cast<std::uint32_t>(width),
                                        static_cast<std::uint32_t>(height));
-        FrameCapture hdr_shot;
-        const bool hdr_linear = renderer::frame_linear();
+        hdr_shot = {};
+        hdr_linear = renderer::frame_linear();
         if (capture_now && hdr && surface.hdr_texture())
             hdr_shot = begin_capture(device, encoder, surface.hdr_texture(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 8);
-        FrameCapture shafts_shot;
+        shafts_shot = {};
         if (capture_now && shafts && shafts->texture() && panel.effects.light_shafts)
             shafts_shot = begin_capture(device, encoder, shafts->texture(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 8);
         stage_clock.mark(FrameStage::post, stages);
-        const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
+#ifdef OPENRTS_HAS_XR
+        if (vr_frame) {
+            const auto eye_commands = wgpuCommandEncoderFinish(encoder, nullptr);
+            auto eye_submitted = parallel ? effects.finish_parallel(recording_pool) : std::vector<WGPUCommandBuffer>{};
+            eye_submitted.push_back(eye_commands);
+            const auto queue = wgpuDeviceGetQueue(device);
+            const auto index = wgpuQueueSubmitForIndex(queue, eye_submitted.size(), eye_submitted.data());
+            for (const auto buffer : eye_submitted) wgpuCommandBufferRelease(buffer);
+            scene.frame_submitted();
+            renderer.frame_submitted(queue);
+            wgpuQueueRelease(queue);
+            vr->eye_done(view_index, index);
+            parallel = false;
+            if (view_index + 1 < view_count) continue;
+            vr->end_frame();
+            // The window: the left eye and the panels over it.
+            wgpuRenderPassEncoderRelease(pass);
+            wgpuCommandEncoderRelease(encoder);
+            encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+            vr->mirror(encoder, window_view);
+#ifdef OPENRTS_HAS_IMGUI
+            const WGPURenderPassColorAttachment ui_colour{
+                .view = window_view, .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED, .loadOp = WGPULoadOp_Load, .storeOp = WGPUStoreOp_Store};
+            const WGPURenderPassDescriptor ui_descriptor{.colorAttachmentCount = 1, .colorAttachments = &ui_colour};
+            pass = wgpuCommandEncoderBeginRenderPass(encoder, &ui_descriptor);
+            overlay.render(pass);
+            wgpuRenderPassEncoderEnd(pass);
+#else
+            pass = nullptr;
+#endif
+            frame_view = window_view;
+            width = window_width;
+            height = window_height;
+            hdr = false;
+        }
+#endif
+        }
+        const auto frame_view = window_view;
+        commands = wgpuCommandEncoderFinish(encoder, nullptr);
         stage_clock.mark(FrameStage::encode, stages);
         // The workers' command buffers first: the shadows and the occlusion
         // the main pass reads.
@@ -4045,7 +4187,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer.frame_submitted(queue);
         wgpuQueueRelease(queue);
         wgpuCommandBufferRelease(commands);
-        wgpuRenderPassEncoderRelease(pass);
+        if (pass) wgpuRenderPassEncoderRelease(pass);
         wgpuCommandEncoderRelease(encoder);
         wgpuTextureViewRelease(frame_view);
         if (shot.buffer) {

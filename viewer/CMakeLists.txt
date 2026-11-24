@@ -63,6 +63,11 @@ endif()
 if(WIN32)
     target_link_libraries(openrts_viewer_core PUBLIC comdlg32)
 endif()
+# VR seated in the cab (docs/vr.md), with openRTS's wgpu-native.
+target_sources(openrts_viewer_core PRIVATE src/vr_session.cpp)
+if(OPENRTS_HAS_XR)
+    target_link_libraries(openrts_viewer_core PUBLIC openrts_openxr_loader d3d11 dxgi)
+endif()
 
 add_executable(openrts_viewer src/main.cpp src/crash_report.cpp)
 openrts_configure_target(openrts_viewer)
