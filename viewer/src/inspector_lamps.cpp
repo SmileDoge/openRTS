@@ -12,6 +12,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 
 #include <glm/exponential.hpp>
 #include <glm/geometric.hpp>
@@ -118,7 +120,7 @@ void diamond(const glm::vec3& at, const float size, const std::uint32_t colour, 
 // shines), and its light: a cone (`tangent` of its half angles) to `reach`,
 // or a sphere of `reach`.
 void lamp_gizmo(const glm::mat4& place, const bool cone, const float tangent_x, const float tangent_y, const float reach,
-                const std::uint32_t colour, std::vector<renderer::WideLine>& lines) {
+                const std::uint32_t colour, std::vector<renderer::WideLine>& lines, const float source = 0.0f) {
     const glm::vec3 at{place[3]};
     const auto axis = [&](const int k) { return glm::normalize(glm::vec3{place[k]}); };
     lines.push_back({at, at + axis(0) * 0.4f, 0xff3040ffu, 3.0f});
@@ -129,14 +131,20 @@ void lamp_gizmo(const glm::mat4& place, const bool cone, const float tangent_x, 
     constexpr float two_pi = 6.2831853f;
     if (cone) {
         lines.push_back({at, at + axis(2) * d, colour, 1.5f});
-        glm::vec3 last{};
+        // From the source's disc (its radius) out to the reach drawn.
+        glm::vec3 last{}, last_start{};
         for (int s = 0; s <= segments; ++s) {
             const float a = two_pi * static_cast<float>(s) / segments;
-            const glm::vec3 local{std::cos(a) * tangent_x * d, std::sin(a) * tangent_y * d, d};
+            const glm::vec3 local{std::cos(a) * (tangent_x * d + source), std::sin(a) * (tangent_y * d + source), d};
             const glm::vec3 p{place * glm::vec4{local, 1.0f}};
-            if (s > 0) lines.push_back({last, p, colour, 1.5f});
-            if (s % 8 == 0 && s < segments) lines.push_back({at, p, colour, 1.0f});
+            const glm::vec3 start{place * glm::vec4{std::cos(a) * source, std::sin(a) * source, 0.0f, 1.0f}};
+            if (s > 0) {
+                lines.push_back({last, p, colour, 1.5f});
+                if (source > 0.0f) lines.push_back({last_start, start, colour, 1.5f});
+            }
+            if (s % 8 == 0 && s < segments) lines.push_back({source > 0.0f ? start : at, p, colour, 1.0f});
             last = p;
+            last_start = start;
         }
         return;
     }
@@ -183,19 +191,46 @@ bool name_field(std::string& name) {
 // and kelvin, for the experimental path; 0 each: the RTS colour as it is.
 bool photometric_fields(float& candela, float& lumens, float& kelvin) {
     bool changed = false;
-    ImGui::SeparatorText(tr("Photometric (PBR / HDR)"));
-    ImGui::TextDisabled("%s", tr("Real units for the experimental path: the light falls off as 1 / d², its colour by its temperature. 0: as RTS."));
-    changed |= ImGui::DragFloat(tr("Intensity, cd (on its axis)"), &candela, 50.0f, 0.0f, 2000000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
-    changed |= ImGui::DragFloat(tr("Luminous flux, lm (if no cd)"), &lumens, 20.0f, 0.0f, 500000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
-    changed |= ImGui::DragFloat(tr("Colour temperature, K (0: its colour)"), &kelvin, 10.0f, 0.0f, 12000.0f, "%.0f");
+    ImGui::SeparatorText(tr("Real brightness (new renderer)"));
+    ImGui::TextWrapped("%s", tr("Optional: the lamp's brightness in real units instead of its colour's. Works in the new renderer only; 0 in both fields: as in RTS."));
+    // A number typed or stepped (the arrows: x10 with Ctrl), and the usual lamps.
+    const auto number = [&](const char* label, float& v, const float step, const float big) {
+        if (!ImGui::InputFloat(label, &v, step, big, "%.0f")) return false;
+        v = (std::max)(v, 0.0f);
+        return true;
+    };
+    changed |= number(tr("Intensity on its axis, cd"), candela, 1000.0f, 50000.0f);
+    changed |= number(tr("or its whole light, lm (when no cd)"), lumens, 100.0f, 5000.0f);
+    const auto preset = [&](const char* label, const float cd, const float lm, const float k) {
+        if (!ImGui::SmallButton(label)) return;
+        candela = cd;
+        lumens = lm;
+        if (k > 0.0f) kelvin = k;
+        changed = true;
+    };
+    preset(tr("headlight 200 000 cd"), 200000.0f, 0.0f, 4500.0f);
+    ImGui::SameLine();
+    preset(tr("marker lamp 200 cd"), 200.0f, 0.0f, 2700.0f);
+    ImGui::SameLine();
+    preset(tr("street lamp 15 000 lm"), 0.0f, 15000.0f, 2000.0f);
+    ImGui::SameLine();
+    preset(tr("platform LED 5 000 lm"), 0.0f, 5000.0f, 4500.0f);
+    ImGui::SameLine();
+    preset(tr("saloon 1 000 lm"), 0.0f, 1000.0f, 3000.0f);
+    ImGui::SameLine();
+    preset(tr("as in RTS"), 0.0f, 0.0f, 0.0f);
+    changed |= ImGui::InputFloat(tr("Its colour by temperature, K (0: its own colour)"), &kelvin, 100.0f, 1000.0f, "%.0f");
+    kelvin = kelvin <= 0.0f ? 0.0f : std::clamp(kelvin, 1000.0f, 12000.0f);
     if (kelvin > 0.0f) {
         const auto c = glm::pow(renderer::kelvin_colour(kelvin) / 1.5f, glm::vec3{1.0f / 2.2f});
         ImGui::SameLine();
         ImGui::ColorButton("##kelvin", {c.x, c.y, c.z, 1.0f}, ImGuiColorEditFlags_NoTooltip, {18.0f, 18.0f});
     }
-    ImGui::TextDisabled("%s", tr("A locomotive headlight 100000-300000 cd, a marker lamp 50-500 cd; a street lamp 5000-20000 lm, a platform LED 3000-8000 lm, a saloon lamp 500-1500 lm; sodium 2000 K, a bulb 2700 K, an LED 4000-5000 K."));
-    float lux = renderer::lux_per_unit();
-    if (ImGui::DragFloat(tr("Lux a unit of the scene's light (every lamp)"), &lux, 0.25f, 1.0f, 500.0f, "%.1f")) renderer::lux_per_unit() = lux;
+    ImGui::TextDisabled("%s", tr("Sodium 2000 K, a bulb 2700 K, an LED 4000-5000 K, daylight 6500 K."));
+    // Every such lamp at once: brighter or dimmer to the eye (lux_per_unit 20 at x1).
+    float factor = 20.0f / (std::max)(renderer::lux_per_unit(), 1e-3f);
+    if (ImGui::SliderFloat(tr("Brightness of every such lamp, x"), &factor, 0.01f, 100.0f, "%.2f", ImGuiSliderFlags_Logarithmic))
+        renderer::lux_per_unit() = 20.0f / (std::max)(factor, 0.01f);
     return changed;
 }
 #endif
@@ -517,6 +552,16 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
         lamp_dirty_ = false;
     }
     ImGui::EndDisabled();
+    // A route's own shape: beside it in the route, to go with the route.
+    const bool in_route = shape.str().size() > 7 && core::fold_case(shape.str().substr(0, 7)) == "routes/";
+    if (in_route) {
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Save to the route"))) {
+            save_edit_to_route(world, shape);
+            lamp_status_ = status_;
+            lamp_dirty_ = false;
+        }
+    }
     ImGui::SameLine();
     if (ImGui::Button(tr("As in the .sd"))) {
         remember_lamps(before, false);
@@ -580,6 +625,35 @@ void Inspector::step_lamps(const InspectorWorld& world, const core::VirtualPath&
     lamp_editing_ = false;
 }
 
+void Inspector::save_edit_to_route(const InspectorWorld& world, const core::VirtualPath& shape) {
+    const auto origin = world.vfs ? world.vfs->origin(shape) : std::nullopt;
+    if (!origin || origin->archive) {
+        status_ = tr("The shape is not in a folder of the route (an archive or not found): saved nowhere.");
+        return;
+    }
+    auto file = origin->location;
+    file += ".openrts";
+    const auto& over = edited(world, shape);
+    std::error_code error;
+    if (over.empty()) {
+        std::filesystem::remove(file, error);
+    } else {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << formats::write_shape_override(over);
+        if (!out) {
+            const auto name = file.generic_u8string();
+            status_ = trf("Could not write %s", std::string(name.begin(), name.end()).c_str());
+            return;
+        }
+    }
+    dirty_ = false;
+    const auto shown = file.generic_u8string();
+    status_ = trf("Saved beside the shape in the route: %s", std::string(shown.begin(), shown.end()).c_str());
+    // A mod's copy wins over the route's (the mods are above): say so.
+    if (const auto in_effect = world.vfs->origin(renderer::shape_override_path(shape)); in_effect && in_effect->location != file)
+        status_ += std::string("\n") + trf("A mod's file of it is above the route's and still wins: %s", in_effect->source_name.c_str());
+}
+
 void Inspector::apply_shape_lamps(const InspectorWorld& world, const core::VirtualPath& shape, std::vector<formats::ShapeLight> lamps) {
     auto* model = world.library ? world.library->find(shape) : nullptr;
     if (!model) return;
@@ -612,6 +686,7 @@ std::optional<Inspector::LampGeometry> Inspector::lamp_geometry(const InspectorW
         g.tangent_x = g.tangent_y = t;
         g.reach = s.radius;
         g.size = (std::max)(s.radius, 0.05f);
+        g.source = s.source_radius;
     } else {
         auto* model = world.library ? world.library->find(shape) : nullptr;
         if (!model || index >= model->lights().size()) return std::nullopt;
@@ -626,6 +701,7 @@ std::optional<Inspector::LampGeometry> Inspector::lamp_geometry(const InspectorW
         g.tangent_y = rz / (std::max)(reach, 0.01f);
         g.reach = reach;
         g.size = (std::max)(rx, rz);
+        g.source = lamp.source_radius;
     }
     g.at = glm::vec3{g.place[3]};
     g.beam = glm::normalize(glm::vec3{g.place[2]});
@@ -678,14 +754,19 @@ void Inspector::add_lamp_lines(const InspectorWorld& world, const core::VirtualP
     }
     // Its light: the cone (or the sphere), its end to aim it, its rim to open it.
     const float d = g.cone ? std::clamp(g.reach, 0.5f, gizmo_reach) : g.size;
-    lamp_gizmo(g.place, g.cone, g.tangent_x, g.tangent_y, d, 0xff40e0ffu, lines);
+    lamp_gizmo(g.place, g.cone, g.tangent_x, g.tangent_y, d, 0xff40e0ffu, lines, g.cone ? g.source : 0.0f);
     if (g.cone) {
         const glm::vec3 end = g.at + g.beam * d;
         diamond(end, scale(end) * 1.3f, colour_of(0xff40e0ffu), lines);
         handles_.push_back({.kind = Handle::Kind::aim, .at = end});
-        const glm::vec3 rim{g.place * glm::vec4{g.tangent_x * d, 0.0f, d, 1.0f}};
+        const glm::vec3 rim{g.place * glm::vec4{g.tangent_x * d + g.source, 0.0f, d, 1.0f}};
         diamond(rim, scale(rim), colour_of(0xffff40ffu), lines);
         handles_.push_back({.kind = Handle::Kind::rim, .at = rim});
+        // The source's disc: its edge, dragged, its radius (at least a hand's breadth out to grab).
+        const float shown_source = (std::max)(g.source, scale(g.at) * 3.0f);
+        const glm::vec3 edge = g.at + glm::normalize(glm::vec3{g.place[1]}) * shown_source;
+        diamond(edge, scale(edge) * 0.8f, colour_of(0xff80ff80u), lines);
+        handles_.push_back({.kind = Handle::Kind::source, .at = edge});
     } else {
         const glm::vec3 rim = g.at + glm::normalize(glm::vec3{g.place[0]}) * d;
         diamond(rim, scale(rim), colour_of(0xffff40ffu), lines);
@@ -780,6 +861,7 @@ bool Inspector::begin_drag(const glm::vec3& eye, const glm::vec3& direction, con
     d.beam = geometry->beam;
     d.tangent = geometry->tangent_x;
     d.size = geometry->size;
+    d.source = geometry->source * glm::length(glm::vec3{geometry->frame[0]});
     if (handle.kind == Handle::Kind::axis) {
         const glm::vec3 axis = glm::normalize(glm::vec3{geometry->frame[handle.axis]});
         d.along = along_line(eye, direction, geometry->at, axis).value_or(0.0f);
@@ -810,7 +892,7 @@ void Inspector::drag(const glm::vec3& eye, const glm::vec3& direction, const Ins
     const float frame_scale = (std::max)(glm::length(glm::vec3{d.frame[0]}), 1e-4f);
     // The move in the scene (axis, free), the new way (aim), the new cone or size (rim).
     std::optional<glm::vec3> moved, way;
-    std::optional<float> tangent, size;
+    std::optional<float> tangent, size, source;
     switch (d.handle.kind) {
     case Handle::Kind::axis: {
         const glm::vec3 axis = glm::normalize(glm::vec3{d.frame[d.handle.axis]});
@@ -829,13 +911,20 @@ void Inspector::drag(const glm::vec3& eye, const glm::vec3& direction, const Ins
             const glm::vec3 rel = *p - d.lamp_at;
             const float along = glm::dot(rel, d.beam);
             const float radial = glm::length(rel - d.beam * along);
-            tangent = along > 0.05f ? radial / along : std::optional<float>{};
+            tangent = along > 0.05f ? (std::max)(radial - d.source, 0.0f) / along : std::optional<float>{};
             size = glm::length(rel);
+        }
+        break;
+    case Handle::Kind::source:
+        if (const auto p = on_plane(eye, direction, d.start, d.view)) {
+            const glm::vec3 rel = *p - d.lamp_at;
+            source = glm::length(rel - d.beam * glm::dot(rel, d.beam)) / frame_scale;
+            if (*source < 0.01f) source = 0.0f;
         }
         break;
     case Handle::Kind::lamp: break;
     }
-    if (!moved && !way && !tangent && !size) return;
+    if (!moved && !way && !tangent && !size && !source) return;
     const glm::vec3 local_move = moved ? glm::vec3{to_numbers * glm::vec4{*moved, 0.0f}} : glm::vec3{0.0f};
     const glm::vec3 local_way = way ? glm::normalize(glm::vec3{to_numbers * glm::vec4{*way, 0.0f}}) : glm::vec3{0.0f, 0.0f, 1.0f};
     if (selection_.kind == Selection::Kind::car) {
@@ -853,6 +942,7 @@ void Inspector::drag(const glm::vec3& eye, const glm::vec3& direction, const Ins
             s.azimuth[1] = glm::degrees(std::atan2(local_way.x, local_way.z));
             s.elevation[0] = glm::degrees(std::asin(std::clamp(-local_way.y, -1.0f, 1.0f)));
         }
+        if (source) s.source_radius = *source;
         if (d.handle.kind == Handle::Kind::rim) {
             if (l.type != 0 && tangent) s.angle = std::clamp(glm::degrees(std::atan(*tangent)), 0.5f, 89.0f);
             if (l.type == 0 && size) s.radius = (std::max)(*size / frame_scale, 0.01f);
@@ -877,6 +967,7 @@ void Inspector::drag(const glm::vec3& eye, const glm::vec3& direction, const Ins
         const glm::vec3 to = from + local_way * length;
         l.points_to = {to.x, to.y, to.z};
     }
+    if (source) l.source_radius = *source;
     if (d.handle.kind == Handle::Kind::rim) {
         const float rx = (std::max)(was.radius[0], 0.01f), rz = (std::max)(was.radius[1] > 0.0f ? was.radius[1] : was.radius[0], 0.01f);
         float ratio = 1.0f;

@@ -42,6 +42,20 @@ inline float& lux_per_unit() {
     return y > 0.0f ? c / y : glm::vec3{1.0f};
 }
 
+// A lamp's own colour (display, 0..1) in the hue of `kelvin`, its
+// lightness kept: the temperature without candela or lumen (both paths).
+// 0 kelvin: as it is.
+[[nodiscard]] inline glm::vec3 kelvin_tint(const glm::vec3& display, const float kelvin) noexcept {
+    if (kelvin <= 0.0f) return display;
+    const auto linear = [](const float v) { return std::pow(v < 0.0f ? 0.0f : v, 2.2f); };
+    const glm::vec3 lin{linear(display.x), linear(display.y), linear(display.z)};
+    const float y = 0.2126f * lin.x + 0.7152f * lin.y + 0.0722f * lin.z;
+    glm::vec3 c = kelvin_colour(kelvin) * y;
+    const float top = c.x > c.y ? (c.x > c.z ? c.x : c.z) : (c.y > c.z ? c.y : c.z);
+    if (top > 1.0f) c /= top;
+    return {std::pow(c.x, 1.0f / 2.2f), std::pow(c.y, 1.0f / 2.2f), std::pow(c.z, 1.0f / 2.2f)};
+}
+
 // A lamp's intensity on its axis, cd: `candela` when given, else `lumen`
 // over its cone (half angle `half_angle` radians; <= 0: every way, 4 pi).
 [[nodiscard]] inline float lamp_candela(const float candela, const float lumen, const float half_angle) noexcept {

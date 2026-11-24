@@ -117,6 +117,9 @@ private:
     formats::ShapeOverride& edited(const InspectorWorld& world, const core::VirtualPath& shape);
     void apply_edit(const InspectorWorld& world, const core::VirtualPath& shape);
     void save_edit(const InspectorWorld& world, const core::VirtualPath& shape);
+    // The same beside the shape in its route's folder (a route's own shape):
+    // it goes with the route to everyone who has it.
+    void save_edit_to_route(const InspectorWorld& world, const core::VirtualPath& shape);
     // The lamps (inspector_lamps.cpp): a car's lights, a shape's lamps.
     [[nodiscard]] std::string lamp_key() const;
     void draw_lamps(const InspectorWorld& world, const core::VirtualPath& shape);
@@ -156,7 +159,7 @@ private:
     // its middle (move in the view's plane), its beam's end (aim it), its
     // cone's rim (open or close it; a sphere's or a glow's size).
     struct Handle {
-        enum class Kind : std::uint8_t { lamp, axis, free, aim, rim } kind = Kind::lamp;
+        enum class Kind : std::uint8_t { lamp, axis, free, aim, rim, source } kind = Kind::lamp;
         glm::vec3 at{};
         int axis = 0;        // Kind::axis: 0 x, 1 y, 2 z
         std::size_t lamp{};  // Kind::lamp
@@ -174,6 +177,7 @@ private:
         glm::vec3 at{}, beam{0.0f, 0.0f, 1.0f};
         bool cone = false;
         float tangent_x{}, tangent_y{}, reach{}, size{};
+        float source{}; // its source's radius: the cone starts as a disc of it
     };
     [[nodiscard]] std::optional<LampGeometry> lamp_geometry(const InspectorWorld& world, const core::VirtualPath& shape,
                                                             const glm::mat4& transform) const;
@@ -186,6 +190,7 @@ private:
         glm::vec3 beam{};       // its way, the scene (unit)
         float tangent{};        // its cone's at the start
         float size{};           // its size at the start (a sphere, a glow)
+        float source{};         // its source's radius, the scene's m (the cone's start)
         float along{};          // Kind::axis: where on its axis the ray met it
         std::vector<formats::LightDefinition> car;  // as it was (a car)
         std::vector<formats::ShapeLight> shape;     // as it was (a shape)

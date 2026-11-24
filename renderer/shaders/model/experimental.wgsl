@@ -58,7 +58,8 @@ fn to_display(c: vec3<f32>) -> vec3<f32> {
 // One further light's linear contribution: physical falloff, or RTS's shape
 // factor taken in display space.
 fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> vec3<f32> {
-    if (physical) {
+    // A photometric lamp (ambient.w, photometric.hpp) is physical always.
+    if (physical || light.ambient.w > 0.5) {
         let strength = physical_light(light, world, n);
         if (strength > 0.0 && light.ambient.w > 0.5) {
             return light.ambient.xyz * strength; // photometric: linear already

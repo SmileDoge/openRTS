@@ -10517,7 +10517,16 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
             const glm::mat4 world = body->transform * car_light_local(light, s, (flags & 16u) != 0);
             const glm::vec3 at{world[3]};
             const glm::vec3 forward = glm::normalize(glm::vec3{world[2]});
-            const std::uint32_t argb = s.colour;
+            // Its colour, in its temperature's hue when one is given (openRTS's ORTSKelvin).
+            std::uint32_t argb = s.colour;
+            if (light.kelvin > 0.0f) {
+                const auto tinted = renderer::kelvin_tint({static_cast<float>((argb >> 16) & 0xFFu) / 255.0f,
+                                                           static_cast<float>((argb >> 8) & 0xFFu) / 255.0f,
+                                                           static_cast<float>(argb & 0xFFu) / 255.0f},
+                                                          light.kelvin);
+                const auto byte = [](const float v) { return static_cast<std::uint32_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+                argb = (argb & 0xFF000000u) | byte(tinted.x) << 16 | byte(tinted.y) << 8 | byte(tinted.z);
+            }
             const float r = static_cast<float>((argb >> 16) & 0xFFu) / 255.0f, g = static_cast<float>((argb >> 8) & 0xFFu) / 255.0f,
                         b = static_cast<float>(argb & 0xFFu) / 255.0f, a = static_cast<float>(argb >> 24) / 255.0f;
             if (light.type == 0) {

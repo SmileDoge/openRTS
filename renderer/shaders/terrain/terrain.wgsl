@@ -141,7 +141,8 @@ fn shoulder(c: vec3<f32>) -> vec3<f32> {
 // the further lights added, all in linear light (each light's falloff taken
 // in display space, as RTS's).
 fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> vec3<f32> {
-    if (physical) {
+    // A photometric lamp (ambient.w, photometric.hpp) is physical always.
+    if (physical || light.ambient.w > 0.5) {
         let strength = physical_light(light, world, n);
         if (strength > 0.0 && light.ambient.w > 0.5) {
             return light.ambient.xyz * strength; // photometric: linear already

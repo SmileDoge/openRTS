@@ -281,7 +281,7 @@ std::optional<ExtraLightCone> extra_light_cone(const ModelExtraLight& light) {
     const glm::vec3 axis = glm::normalize(along);
     glm::vec3 apex{to_world[3]};
     float back = 0.0f;
-    if (kind == 1 && light.size.w > 0.0f) {
+    if ((kind == 1 || kind == 4) && light.size.w > 0.0f) {
         if (tangent < 1e-4f) return std::nullopt; // a cylinder
         back = light.size.w / tangent;
     }

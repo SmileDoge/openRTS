@@ -157,7 +157,7 @@ fn vs_main(@builtin(vertex_index) vertex: u32) -> Out {
             continue;
         }
         let off = length(v - axis.xyz * along) / max(along * axis.w, 1e-3);
-        let edge = 1.0 - smoothstep(0.6, 1.0, off);
+        let edge = max(1.0 - smoothstep(0.4, 1.0, off), 0.2 * exp(-max(off - 0.8, 0.0) * 1.6));
         let reach = 1.0 - along / apex.w;
         lamp = lamp + u.lamps[k * 3u + 2u].xyz * edge * reach * (6.0 / (1.0 + along * 0.12));
     }

@@ -55,9 +55,15 @@ The chosen car's lights or the chosen object's lamps, changed live
     along them; its own diamond moves it in the view's plane;
   - the diamond at the beam's end aims it (a car's Azimuth and Elevation, a
     shape's PointsTo at the same distance);
+  - the green one by the lamp: its source's radius (SourceRadius), the cone
+    starting as a disc of it, not a point (a cone's too, since 2026-11-24);
   - the one on the cone's rim opens or closes it (a car's half angle, a
     shape's radii in proportion); on a sphere or a glow, its size.
   The handle under the mouse turns white.
+- **Save to the route** (a route's own shape, from `ROUTES/`): the same
+  file beside the shape in the route's folder, `<shape>.s.openrts`, to go
+  with the route to everyone who has it. A mod's copy is above the route's
+  and wins; the status says so.
 - **A label** (openRTS's only, `ORTSName ( "..." )` in the Light or
   LightSource block; RTS skips it): shown in the list, to tell the lamps
   apart.

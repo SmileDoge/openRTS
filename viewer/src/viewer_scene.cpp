@@ -2105,13 +2105,16 @@ public:
         renderer::LightShaftBeams out;
         if (!effects_.precipitation || !effects_.fog || !precipitation_ || precipitation_->drops() == 0) return out;
         const auto& weather = precipitation_->weather();
-        // The beams only (a sphere's light on the flakes is the particles').
+        // The beams first, then the lamps shining every way (a ball of
+        // lit air round each, tangent < 0), the nearest each.
         out.count = 0;
-        for (std::size_t k = 0; k < weather.lamp_count && out.count < out.beams.size(); ++k) {
-            const auto& lamp = weather.lamps[k];
-            if (lamp.cone.tangent < 0.0f) continue;
-            out.beams[out.count++] = {.apex = lamp.cone.apex, .axis = lamp.cone.axis, .reach = lamp.cone.reach, .tangent = lamp.cone.tangent,
-                                      .colour = lamp.colour};
+        for (const bool spheres : {false, true}) {
+            for (std::size_t k = 0; k < weather.lamp_count && out.count < out.beams.size(); ++k) {
+                const auto& lamp = weather.lamps[k];
+                if ((lamp.cone.tangent < 0.0f) != spheres) continue;
+                out.beams[out.count++] = {.apex = lamp.cone.apex, .axis = lamp.cone.axis, .reach = lamp.cone.reach,
+                                          .tangent = lamp.cone.tangent, .colour = lamp.colour};
+            }
         }
         const float amount = weather_precipitation();
         const float beyond = (std::max)(amount - 2.0f, 0.0f);
@@ -2574,6 +2577,8 @@ private:
         const std::uint32_t c = lamp.colour;
         light.diffuse = glm::vec4{static_cast<float>((c >> 16) & 0xFFu) / 255.0f, static_cast<float>((c >> 8) & 0xFFu) / 255.0f,
                                   static_cast<float>(c & 0xFFu) / 255.0f, 1.0f};
+        // Its temperature's hue, its lightness kept (openRTS's ORTSKelvin).
+        light.diffuse = glm::vec4{renderer::kelvin_tint(glm::vec3{light.diffuse}, lamp.kelvin), 1.0f};
         // openRTS's photometric lamp: its cone's half angle by its widest radius.
         light.photometric = renderer::photometric_light(lamp.candela, lamp.lumens, lamp.kelvin, cone ? std::atan((std::max)(rx, rz) / reach) : 0.0f,
                                                         glm::pow(glm::vec3{light.diffuse}, glm::vec3{2.2f}));

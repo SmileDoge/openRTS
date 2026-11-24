@@ -123,6 +123,9 @@ int main() {
         const auto light = renderer::photometric_light(200.0f, 0.0f, 0.0f, 0.1f, glm::vec3{1.0f});
         check(light.w == 1.0f && std::abs(light.g - 200.0f / renderer::lux_per_unit()) < 1e-3f, "200 cd white: 200 / lux_per_unit at 1 m");
         check(renderer::photometric_light(0.0f, 0.0f, 3000.0f, 0.1f, glm::vec3{1.0f}).w == 0.0f, "no cd, no lm: no photometric light");
+        // The temperature alone: the lamp's own colour in its hue.
+        const auto warm_white = renderer::kelvin_tint(glm::vec3{1.0f}, 2000.0f), as_is = renderer::kelvin_tint(glm::vec3{0.5f}, 0.0f);
+        check(warm_white.r > warm_white.b + 0.3f && warm_white.r <= 1.0f && as_is == glm::vec3{0.5f}, "2000 K tints a white lamp warm; 0 K leaves it");
     }
     if (failures == 0) std::cout << "pantograph arcs, photometric lamps: all passed" << std::endl;
     return failures == 0 ? 0 : 1;
