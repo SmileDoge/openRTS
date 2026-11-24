@@ -49,6 +49,7 @@
 #include "ui_text.hpp"
 #include "profile_strip.hpp"
 #include "drive_panel.hpp"
+#include "hud_style.hpp"
 #include "viewer_state.hpp"
 
 namespace openrts::viewer {
@@ -4485,8 +4486,11 @@ std::string TrainView::timetable_report() const {
 void TrainView::draw_timetable(const Unit& unit) {
 #ifdef OPENRTS_HAS_IMGUI
     const auto now = static_cast<std::int32_t>(std::floor(day_time_));
-    ImGui::TextUnformatted(trf("Train schedule. Service \"%s\", train %u  %s", timetable_service_.c_str(), timetable_train_,
-                               clock_text(now).c_str()).c_str());
+    hud::heading(tr("Train schedule"));
+    ImGui::Separator();
+    ImGui::TextDisabled("%s", trf("Service \"%s\", train %u  %s", timetable_service_.c_str(), timetable_train_,
+                                 clock_text(now).c_str())
+                                 .c_str());
     ImGui::Separator();
     const auto train = timetable_train(unit);
     const auto& stops = timetable_.stops();
@@ -5400,21 +5404,38 @@ bool TrainView::begin_panel(const char* id, HudPanel& place, const float default
     // anchor, so a right-anchored panel keeps its right edge while its text
     // gets wider or narrower.
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove
-        | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+        | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav
+        | ImGuiWindowFlags_NoBackground;
+    // The drive panel's plate replaces the stock window background; its
+    // opacity is the old bg_alpha, and 0 leaves the plate to the panel.
+    place.plate = bg_alpha > 0.0f;
+    place.plate_alpha = std::clamp(bg_alpha, 0.0f, 1.0f);
+    if (place.plate) hud::push_window_style();
     // Kept below the profile strip while it is shown.
     ImGui::SetNextWindowPos(ImVec2(place.x * display.x, (std::max)(place.y * display.y, hud_top_)), ImGuiCond_Always, ImVec2(place.pivot_x, 0.0f));
-    ImGui::SetNextWindowBgAlpha(bg_alpha);
+    ImGui::SetNextWindowBgAlpha(0.0f);
     const bool open = ImGui::Begin(id, nullptr, flags);
-    if (open && display.x > 0.0f && display.y > 0.0f) {
-        if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) place.dragging = true;
-        if (place.dragging) {
-            const auto delta = ImGui::GetIO().MouseDelta;
+    place.font = open;
+    if (open) {
+        hud::push_window_font();
+        if (place.plate) {
+            hud::plate(ImGui::GetWindowDrawList(), ImGui::GetWindowPos(), ImGui::GetWindowSize(), hud::plate_radius,
+                       place.plate_alpha);
+        }
+        if (display.x > 0.0f && display.y > 0.0f) {
+            // A panel wider than the screen or a remembered place from a
+            // narrower font: keep the whole panel on the screen, as a drag does.
             const auto size = ImGui::GetWindowSize();
-            // The whole panel stays on the screen.
             const float low_x = place.pivot_x * size.x / display.x;
             const float high_x = 1.0f - (1.0f - place.pivot_x) * size.x / display.x;
-            place.x = std::clamp(place.x + delta.x / display.x, (std::min)(low_x, high_x), (std::max)(low_x, high_x));
-            place.y = std::clamp(place.y + delta.y / display.y, 0.0f, (std::max)(1.0f - size.y / display.y, 0.0f));
+            place.x = std::clamp(place.x, (std::min)(low_x, high_x), (std::max)(low_x, high_x));
+            place.y = std::clamp(place.y, 0.0f, (std::max)(1.0f - size.y / display.y, 0.0f));
+            if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) place.dragging = true;
+            if (place.dragging) {
+                const auto delta = ImGui::GetIO().MouseDelta;
+                place.x = std::clamp(place.x + delta.x / display.x, (std::min)(low_x, high_x), (std::max)(low_x, high_x));
+                place.y = std::clamp(place.y + delta.y / display.y, 0.0f, (std::max)(1.0f - size.y / display.y, 0.0f));
+            }
         }
     }
     return open;
@@ -5430,7 +5451,11 @@ bool TrainView::begin_panel(const char* id, HudPanel& place, const float default
 
 void TrainView::end_panel(HudPanel& place) {
 #ifdef OPENRTS_HAS_IMGUI
+    if (place.font) hud::pop_window_font();
     ImGui::End();
+    if (place.plate) hud::pop_window_style();
+    place.font = false;
+    place.plate = false;
     if (place.dragging && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         place.dragging = false;
         char text[64];
@@ -5449,13 +5474,20 @@ void TrainView::draw_hud() {
         // The car menu's "Cargo information" (RTS shows it as a message for 30 s).
         const auto size = ImGui::GetIO().DisplaySize;
         ImGui::SetNextWindowPos(ImVec2{size.x * 0.5f, size.y * 0.25f}, ImGuiCond_Always, ImVec2{0.5f, 0.0f});
-        ImGui::SetNextWindowBgAlpha(0.8f);
+        hud::push_window_style();
+        ImGui::SetNextWindowBgAlpha(0.0f);
         if (ImGui::Begin("###cargo_info", nullptr,
                          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings
-                             | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+                             | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBackground)) {
+            hud::push_window_font();
+            hud::plate(ImGui::GetWindowDrawList(), ImGui::GetWindowPos(), ImGui::GetWindowSize());
+            hud::heading(tr("Cargo information"), 22.0f);
+            ImGui::Separator();
             ImGui::TextUnformatted(cargo_text_.c_str());
+            hud::pop_window_font();
         }
         ImGui::End();
+        hud::pop_window_style();
     }
     const auto* unit = shown_unit();
     if (!unit) return;
@@ -5470,6 +5502,8 @@ void TrainView::draw_hud() {
     const auto ordinate = limits_->ordinate(train);
     if (car_info_) {
         if (begin_panel("##car_info", car_info_place_, margin_x, margin_y)) {
+            hud::heading(tr("Train"));
+            ImGui::Separator();
             if (car_info_overall_) {
                 std::size_t passenger = 0, freight = 0, engines = 0;
                 for (const auto& car : unit->cars) {
@@ -5703,7 +5737,8 @@ void TrainView::draw_hud() {
     }
     if (limits_panel_) {
         if (begin_panel("##limits", limits_place_, 1.0f - margin_x, margin_y)) {
-            ImGui::TextDisabled("%s", tr("Speed limits"));
+            hud::heading(tr("Speed limits"));
+            ImGui::Separator();
             if (limit.current > 0.0f) {
                 ImGui::Text(tr("Limit %.0f km/h"), limit.current * 3.6f);
             } else {
@@ -5848,7 +5883,7 @@ void TrainView::draw_hud() {
                 // A scenario's timetable: RTS shows it here when the train has one.
                 draw_timetable(*unit);
             } else {
-                ImGui::TextUnformatted(tr("Stations ahead"));
+                hud::heading(tr("Stations ahead"));
                 ImGui::Separator();
                 if (!service_marks_loaded_) {
                     service_marks_loaded_ = true;
@@ -8984,11 +9019,16 @@ void TrainView::draw_car_menu() {
     }
     const auto display = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2{display.x * 0.5f, display.y * 0.5f}, ImGuiCond_Always, ImVec2{0.5f, 0.5f});
-    ImGui::SetNextWindowBgAlpha(0.9f);
-    const char* title = menu.coupling ? tr("Coupling") : tr("Bogie");
-    if (ImGui::Begin((std::string(title) + "###car_menu").c_str(), nullptr,
-                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize
-                         | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove)) {
+    hud::push_window_style();
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    if (ImGui::Begin("###car_menu", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse
+                         | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove
+                         | ImGuiWindowFlags_NoBackground)) {
+        hud::push_window_font();
+        hud::plate(ImGui::GetWindowDrawList(), ImGui::GetWindowPos(), ImGui::GetWindowSize());
+        hud::heading(menu.coupling ? tr("Coupling") : tr("Bogie"), 22.0f);
+        ImGui::Separator();
         const auto* unit = find_unit(menu.train);
         if (unit) {
             const auto n = unit->train->cars().size();
@@ -9010,9 +9050,12 @@ void TrainView::draw_car_menu() {
             if (ImGui::Selectable(tr(item.label), k == menu.highlight)) car_menu_choice_ = item.id;
             if (ImGui::IsItemHovered()) menu.highlight = k;
         }
+        ImGui::Separator();
         ImGui::TextDisabled("%s", trf("%s or Esc: close", car_menu_key_name()).c_str());
+        hud::pop_window_font();
     }
     ImGui::End();
+    hud::pop_window_style();
 #endif
 }
 

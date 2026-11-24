@@ -356,6 +356,8 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"in %.2f km", "через %.2f км"},
         {"in %.0f m", "через %.0f м"},
         // F6's timetable (RTS 0x466F70) and the boarding (Ctrl+Num7).
+        {"Train schedule", "Расписание поезда"},
+        {"Service \"%s\", train %u  %s", "Сервис «%s», поезд %u  %s"},
         {"Train schedule. Service \"%s\", train %u  %s", "Расписание поезда. Сервис «%s», поезд %u  %s"},
         {"Station", "Станция"},
         {"Arrival", "Прибытие"},

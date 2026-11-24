@@ -1228,14 +1228,20 @@ private:
         float pivot_x = 0.0f; // 0: anchored by the left edge, 1: by the right one
         bool loaded = false;
         bool dragging = false;
+        // The plate's state for this frame: its style is pushed around the
+        // window and the plate itself is drawn behind the content.
+        bool plate = false;
+        bool font = false;
+        float plate_alpha = 1.0f;
     };
     HudPanel car_info_place_{.key = "hud_car_info"};
     HudPanel limits_place_{.key = "hud_limits", .pivot_x = 1.0f};
     HudPanel stations_place_{.key = "hud_stations", .pivot_x = 1.0f};
     HudPanel drive_place_{.key = "hud_drive", .pivot_x = 1.0f};
     // Starts a panel window at its place; false when it is not drawn.
-    // `bg_alpha` 0: the panel draws its own plate (the driver's summary).
-    bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y, float bg_alpha = 0.75f);
+    // `bg_alpha` is the plate's opacity, 0: the panel draws its own plate
+    // (the driver's summary).
+    bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y, float bg_alpha = 1.0f);
     void end_panel(HudPanel& place);
     std::shared_ptr<simulation::DriverHandles> driver_;
     // The player's train runs locomotive DLLs (legacy_cab.hpp).

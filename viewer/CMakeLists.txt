@@ -22,6 +22,7 @@ add_library(openrts_viewer_core STATIC
     src/tape_view.cpp
     src/profile_strip.cpp
     src/drive_panel.cpp
+    src/hud_style.cpp
     src/key_repeat.cpp
     src/file_dialog.cpp
     src/viewer_state.cpp

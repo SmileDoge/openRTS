@@ -2,156 +2,29 @@
 
 #ifdef OPENRTS_HAS_IMGUI
 
-#include <algorithm>
-#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <string>
-#include <string_view>
 
 #include <imgui.h>
 
 #include <openrts/ui/fonts.hpp>
 
+#include "hud_style.hpp"
 #include "ui_text.hpp"
 
 namespace openrts::viewer {
+
+using namespace hud;
+
 namespace {
 
 constexpr float width = drive_panel_width;
 constexpr float height = drive_panel_height;
 // The design's text column (Макеты/F4, 382x511): its text starts 31.7 px
 // from the plate's left edge and ends at 350.5.
-constexpr float inset = 31.7f;
 constexpr float right_edge = 350.5f;
-// The separators run 20 px in from both edges (the user's request).
-constexpr float separator_left = 20.0f;
-constexpr float separator_right = width - separator_left;
 constexpr float centre_x = 191.0f;
-
-constexpr ImU32 text_colour = IM_COL32(214, 214, 214, 255);
-constexpr ImU32 label_colour = IM_COL32(198, 198, 198, 255);
-constexpr ImU32 dim_colour = IM_COL32(178, 178, 178, 255);
-constexpr ImU32 green_colour = IM_COL32(122, 214, 10, 255);
-constexpr ImU32 red_colour = IM_COL32(245, 48, 40, 255);
-constexpr ImU32 dark_red_colour = IM_COL32(97, 0, 0, 255);
-// The mockup's #8CFF00 at 0.8, and a dim green that still reads on the plate.
-constexpr ImU32 tape_on_colour = IM_COL32(140, 255, 0, 204);
-constexpr ImU32 tape_off_colour = IM_COL32(86, 104, 88, 255);
-constexpr ImU32 separator_colour = IM_COL32(200, 200, 200, 64);
-
-// The baseline (the design's numbers are the glyph outlines' bottoms) to the
-// top of ImGui's line box, for the face's ascent at `size`.
-float line_top(ImFont* face, const float size, const float baseline) {
-    if (face && face->FontSize > 0.0f) return baseline - face->Ascent * (size / face->FontSize);
-    return baseline - size * 0.97f;
-}
-
-std::size_t glyph_count(const std::string_view text) {
-    std::size_t count = 0;
-    for (const unsigned char byte : text) {
-        if ((byte & 0xC0) != 0x80) ++count;
-    }
-    return count;
-}
-
-float text_width(ImFont* face, const float size, const std::string_view text, const float tracking = 0.0f) {
-    if (text.empty()) return 0.0f;
-    const float width = face ? face->CalcTextSizeA(size, FLT_MAX, 0.0f, text.data(), text.data() + text.size()).x
-                             : ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
-    return width + tracking * static_cast<float>((std::max)(std::size_t{1}, glyph_count(text)) - 1);
-}
-
-// Text with letter spacing; ImGui spaces whole strings only, so a code point
-// at a time. `y` is the top of the line box, not the cap's.
-void text(ImDrawList* draw, ImFont* face, const float size, const ImVec2 at, const ImU32 colour,
-          const std::string_view value, const float tracking = 0.0f) {
-    if (value.empty()) return;
-    const char* begin = value.data();
-    const char* end = begin + value.size();
-    if (tracking <= 0.0f) {
-        draw->AddText(face, size, at, colour, begin, end);
-        return;
-    }
-    ImVec2 where = at;
-    for (const char* point = begin; point < end;) {
-        const char* next = point + 1;
-        while (next < end && (static_cast<unsigned char>(*next) & 0xC0) == 0x80) ++next;
-        draw->AddText(face, size, where, colour, point, next);
-        where.x += (face ? face->CalcTextSizeA(size, FLT_MAX, 0.0f, point, next).x : ImGui::CalcTextSize(point, next).x) + tracking;
-        point = next;
-    }
-}
-
-void at_baseline(ImDrawList* draw, ImFont* face, const float size, const float x, const float baseline,
-                 const ImU32 colour, const std::string_view value, const float tracking = 0.0f) {
-    text(draw, face, size, ImVec2{x, line_top(face, size, baseline)}, colour, value, tracking);
-}
-
-void centred_baseline(ImDrawList* draw, ImFont* face, const float size, const float x, const float baseline,
-                      const ImU32 colour, const std::string_view value, const float tracking = 0.0f) {
-    text(draw, face, size, ImVec2{x - text_width(face, size, value, tracking) * 0.5f, line_top(face, size, baseline)},
-         colour, value, tracking);
-}
-
-void right_baseline(ImDrawList* draw, ImFont* face, const float size, const float x, const float baseline,
-                    const ImU32 colour, const std::string_view value, const float tracking = 0.0f) {
-    text(draw, face, size, ImVec2{x - text_width(face, size, value, tracking), line_top(face, size, baseline)},
-         colour, value, tracking);
-}
-
-std::string elide(ImFont* face, const float size, const std::string_view value, const float max_width) {
-    if (text_width(face, size, value) <= max_width) return std::string(value);
-    const float dots = text_width(face, size, "…");
-    std::string out;
-    float used = 0.0f;
-    const char* end = value.data() + value.size();
-    for (const char* point = value.data(); point < end;) {
-        const char* next = point + 1;
-        while (next < end && (static_cast<unsigned char>(*next) & 0xC0) == 0x80) ++next;
-        const float w = face ? face->CalcTextSizeA(size, FLT_MAX, 0.0f, point, next).x : ImGui::CalcTextSize(point, next).x;
-        if (used + w + dots > max_width) break;
-        out.append(point, next);
-        used += w;
-        point = next;
-    }
-    out += "…";
-    return out;
-}
-
-float corner_inset(const float y) {
-    constexpr float radius = 24.0f;
-    if (y < radius) {
-        const float d = radius - y;
-        return radius - std::sqrt((std::max)(0.0f, radius * radius - d * d));
-    }
-    if (y > height - radius) {
-        const float d = radius - (height - y);
-        return radius - std::sqrt((std::max)(0.0f, radius * radius - d * d));
-    }
-    return 0.0f;
-}
-
-// The design's translucent plate: a gradient drawn a row at a time so that
-// its corners are rounded, and a one-pixel light stroke. No drop shadow.
-void background(ImDrawList* draw, const ImVec2 origin) {
-    constexpr int rows = static_cast<int>(height);
-    for (int row = 0; row < rows; ++row) {
-        const float y = static_cast<float>(row) + 0.5f;
-        const float edge = corner_inset(y);
-        const float t = y / height;
-        const auto channel = static_cast<int>(62.0f + (47.0f - 62.0f) * t);
-        draw->AddRectFilled(ImVec2{origin.x + edge, origin.y + static_cast<float>(row)},
-                            ImVec2{origin.x + width - edge, origin.y + static_cast<float>(row) + 1.0f},
-                            IM_COL32(channel, channel, channel, 226));
-    }
-    draw->AddRect(origin, ImVec2{origin.x + width, origin.y + height}, IM_COL32(255, 255, 255, 38), 24.0f, 0, 1.0f);
-}
-
-void separator(ImDrawList* draw, const ImVec2 origin, const float y) {
-    draw->AddLine(ImVec2{origin.x + separator_left, origin.y + y},
-                  ImVec2{origin.x + separator_right, origin.y + y}, separator_colour, 1.0f);
-}
 
 const char* aspect_name(const formats::SignalAspect aspect) {
     using A = formats::SignalAspect;
@@ -215,7 +88,7 @@ void draw_drive_panel(const DrivePanelData& data) {
     auto* small = ui::hud_small_font();
     auto* tiny = ui::hud_tiny_font();
 
-    background(draw, origin);
+    plate(draw, origin, ImVec2{width, height});
 
     // ДВИЖЕНИЕ / СТОЯНКА (Montserrat SemiBold 32, the design's 61.9 baseline;
     // the face itself gives the design's 167 px, so no extra tracking here).
@@ -256,7 +129,7 @@ void draw_drive_panel(const DrivePanelData& data) {
     char acceleration[80];
     std::snprintf(acceleration, sizeof acceleration, tr("Acceleration: %.1f m/s2"), data.acceleration);
     at_baseline(draw, small, 15.0f, x + 31.2f, y + 175.1f, label_colour, acceleration, 0.9f);
-    separator(draw, origin, 188.5f);
+    separator(draw, origin, 188.5f, width);
 
     // ДАВЛЕНИЕ: ТМ, УР, ПМ, ТЦ (labels Montserrat Medium 15, values Onest 35).
     const char* names[4] = {tr("TM"), tr("UR"), tr("PM"), tr("TC")};
@@ -268,7 +141,7 @@ void draw_drive_panel(const DrivePanelData& data) {
                          pressure_text(data.pressures[i]));
     }
     centred_baseline(draw, tiny, 10.0f, x + centre_x, y + 273.1f, dim_colour, tr("PRESSURE | KGF/CM2"), 1.25f);
-    separator(draw, origin, 285.5f);
+    separator(draw, origin, 285.5f, width);
 
     // СЛЕДУЮЩИЙ СИГНАЛ (Montserrat Medium 15; the design's wide letter
     // spacing). The circle's centre is the cap height's centre of the name,
@@ -296,7 +169,7 @@ void draw_drive_panel(const DrivePanelData& data) {
     } else {
         at_baseline(draw, text_face, 15.0f, x + 53.7f, y + 342.9f, dim_colour, tr("none ahead"), 1.0f);
     }
-    separator(draw, origin, 356.5f);
+    separator(draw, origin, 356.5f, width);
 
     // ПЛАТФОРМА (Montserrat Medium 15).
     centred_baseline(draw, label, 15.0f, x + centre_x, y + 388.5f, text_colour, tr("PLATFORM"), 6.5f);
@@ -309,7 +182,7 @@ void draw_drive_panel(const DrivePanelData& data) {
     } else {
         at_baseline(draw, text_face, 15.0f, x + 32.2f, y + 407.0f, dim_colour, tr("none ahead"), 1.0f);
     }
-    separator(draw, origin, 434.5f);
+    separator(draw, origin, 434.5f, width);
 
     // ВРЕМЯ and FPS; F4 hides the panel.
     char time[48];

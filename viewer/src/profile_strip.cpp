@@ -6,8 +6,11 @@
 
 #ifdef OPENRTS_HAS_IMGUI
 #include <imgui.h>
+
+#include <openrts/ui/fonts.hpp>
 #endif
 
+#include "hud_style.hpp"
 #include "ui_text.hpp"
 
 namespace openrts::viewer {
@@ -55,6 +58,7 @@ double ProfileStrip::span() const noexcept { return spans[std::clamp(span_index_
 
 float ProfileStrip::height() {
 #ifdef OPENRTS_HAS_IMGUI
+    if (const auto* face = ui::hud_text_font()) return face->FontSize * 9.8f;
     return ImGui::GetFontSize() * 9.8f;
 #else
     return 0.0f;
@@ -74,17 +78,19 @@ void ProfileStrip::draw(const ProfileView& view) {
     const auto& io = ImGui::GetIO();
     const auto display = io.DisplaySize;
     if (display.x < 50.0f || display.y < 50.0f) return;
-    const float font = ImGui::GetFontSize();
+    const float font = ui::hud_text_font() ? ui::hud_text_font()->FontSize : ImGui::GetFontSize();
     const float height = ProfileStrip::height();
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
         | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse
-        | ImGuiWindowFlags_NoBringToFrontOnFocus;
+        | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoBackground;
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(display.x, height), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.72f);
+    ImGui::SetNextWindowBgAlpha(0.0f);
     if (ImGui::Begin("##profile_strip", nullptr, flags)) {
         auto* draw = ImGui::GetWindowDrawList();
         const ImVec2 origin = ImGui::GetWindowPos();
+        hud::push_window_font();
+        hud::plate(draw, origin, ImVec2(display.x, height), 12.0f, 0.95f);
         const float pad = font * 0.6f;
         const float x0 = origin.x + pad, x1 = origin.x + display.x - pad;
         const float row0 = origin.y + pad * 0.4f;     // the grade, the stations, the span
@@ -143,7 +149,7 @@ void ProfileStrip::draw(const ProfileView& view) {
             const float x = x_of(mark.distance);
             const float w = ImGui::CalcTextSize(mark.text.c_str()).x;
             if (x - w * 0.5f < km_end + font * 0.4f || x + w * 0.5f > x1) continue;
-            draw->AddText(ImVec2(x - w * 0.5f, bottom + font * 1.35f), IM_COL32(220, 220, 220, 255), mark.text.c_str());
+            draw->AddText(ImVec2(x - w * 0.5f, bottom + font * 1.35f), hud::label_colour, mark.text.c_str());
             km_end = x + w * 0.5f;
         }
         // The elements' grades under the line, per mille with the sign
@@ -173,14 +179,14 @@ void ProfileStrip::draw(const ProfileView& view) {
                 for (int k = 1; k <= steps; ++k) {
                     const double d = from + (to - from) * k / steps;
                     const ImVec2 next(x_of(d), line_y(d));
-                    draw->AddLine(last, next, IM_COL32(255, 255, 255, 255), 5.0f);
+                    draw->AddLine(last, next, hud::text_colour, 5.0f);
                     last = next;
                 }
                 const std::string label = trf("%.0f t, %zu cars", view.mass_tonnes, view.cars);
                 const float w = ImGui::CalcTextSize(label.c_str()).x;
                 const float cx = std::clamp(x_of((from + to) * 0.5) - w * 0.5f, x0, x1 - w);
                 const float ty = (std::max)(top - font * 0.2f, line_y((from + to) * 0.5) - font * 1.6f);
-                draw->AddText(ImVec2(cx, ty), IM_COL32(255, 255, 255, 255), label.c_str());
+                draw->AddText(ImVec2(cx, ty), hud::text_colour, label.c_str());
             }
         }
         // The signals on the line, their names over them on the near spans.
@@ -195,7 +201,7 @@ void ProfileStrip::draw(const ProfileView& view) {
             if (span() <= 5000.0 && !mark.text.empty()) {
                 const float w = ImGui::CalcTextSize(mark.text.c_str()).x;
                 if (x - w * 0.5f > name_end + font * 0.3f && x + w * 0.5f < x1) {
-                    draw->AddText(ImVec2(x - w * 0.5f, y - font * 1.45f), IM_COL32(230, 230, 230, 230), mark.text.c_str());
+                    draw->AddText(ImVec2(x - w * 0.5f, y - font * 1.45f), hud::text_colour, mark.text.c_str());
                     name_end = x + w * 0.5f;
                 }
             }
@@ -209,17 +215,17 @@ void ProfileStrip::draw(const ProfileView& view) {
             if (x - size.x * 0.5f - 3.0f < limit_end + 2.0f || x + size.x * 0.5f + 3.0f > x1) continue;
             const ImVec2 a(x - size.x * 0.5f - 3.0f, row1), b(x + size.x * 0.5f + 3.0f, row1 + size.y + 2.0f);
             draw->AddRectFilled(a, b, IM_COL32(255, 255, 255, 235), 3.0f);
-            draw->AddRect(a, b, IM_COL32(210, 40, 40, 255), 3.0f, 0, 2.0f);
+            draw->AddRect(a, b, hud::red_colour, 3.0f, 0, 2.0f);
             draw->AddText(ImVec2(a.x + 3.0f, a.y + 1.0f), IM_COL32(20, 20, 20, 255), mark.text.c_str());
             draw->AddLine(ImVec2(x, b.y), ImVec2(x, top - font * 0.2f), IM_COL32(210, 40, 40, 160), 1.0f);
             limit_end = b.x;
         }
         // The first row: the grade under the train, the stations, the span.
         const std::string grade = trf("Grade = %s ‰", grade_text(profile.grade(-(std::max)(view.train_length, 1.0), 0.0)).c_str());
-        draw->AddText(ImVec2(x0, row0), IM_COL32(255, 255, 255, 255), grade.c_str());
+        draw->AddText(ImVec2(x0, row0), hud::text_colour, grade.c_str());
         const std::string scale = trf("%.0f km", span() / 1000.0);
         const float scale_w = ImGui::CalcTextSize(scale.c_str()).x;
-        draw->AddText(ImVec2(x1 - scale_w, row0), IM_COL32(200, 200, 200, 255), scale.c_str());
+        draw->AddText(ImVec2(x1 - scale_w, row0), hud::dim_colour, scale.c_str());
         float station_end = x0 + ImGui::CalcTextSize(grade.c_str()).x + font;
         for (const auto& mark : view.marks) {
             if ((mark.kind != ProfileMark::Kind::station && mark.kind != ProfileMark::Kind::siding) || mark.distance < left ||
@@ -229,7 +235,7 @@ void ProfileStrip::draw(const ProfileView& view) {
             const float w = ImGui::CalcTextSize(mark.text.c_str()).x;
             const float at = x - w * 0.5f;
             if (at < station_end || x + w * 0.5f > x1 - scale_w - font) continue;
-            const ImU32 colour = mark.kind == ProfileMark::Kind::siding ? IM_COL32(240, 220, 90, 255) : IM_COL32(255, 255, 255, 255);
+            const ImU32 colour = mark.kind == ProfileMark::Kind::siding ? IM_COL32(240, 220, 90, 255) : hud::text_colour;
             draw->AddText(ImVec2(at, row0), colour, mark.text.c_str());
             draw->AddTriangleFilled(ImVec2(x - 4.0f, row0 + font * 1.05f), ImVec2(x + 4.0f, row0 + font * 1.05f),
                                     ImVec2(x, row0 + font * 1.45f), colour);
@@ -252,6 +258,7 @@ void ProfileStrip::draw(const ProfileView& view) {
                 changed_ = true;
             }
         }
+        hud::pop_window_font();
     }
     ImGui::End();
 #else
