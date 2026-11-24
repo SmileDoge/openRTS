@@ -141,9 +141,8 @@ struct SceneInput {
     bool car_info_shift = false;  // Shift held with F5: the train as a whole
     bool limits_panel = false;    // Ctrl+F5: speed limits and the kilometre
     bool stations_panel = false;  // F6: the stations ahead
-    bool drive_panel = false;     // F4: the driver's summary (openRTS)
+    bool drive_panel = false;     // F4: the driver's summary: moving or standing, speed and limit, pressures, the next signal and platform, the time
     bool profile_strip = false;   // Ctrl+F4: the track's profile at the top (openRTS)
-    bool drive_card = false;      // F4: a small card: time, speed, limits, the signal ahead (openRTS)
     bool car_view = false;        // F3: orbit the train's first car, then its last, then back
     bool signal_names = false;    // Ctrl+F7: signal names near the camera
     bool activity_journal = false; // F11 (RTS): the scenario's messages

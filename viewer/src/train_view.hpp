@@ -852,10 +852,11 @@ public:
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
     // Ctrl+F4: the profile strip at the top (profile_strip.hpp); remembered as profile_strip.
     void toggle_profile_strip();
-    // F4: a small card of what the driver looks at most (openRTS; like
-    // RTS's old F4 in spirit, not its look): time, speed, limit now and
-    // next, the signal ahead.
-    void toggle_drive_card();
+    // F4: the driver's summary (TME's DrivingHudWindow, the design's
+    // 382x511 panel at the top right): moving or standing, the speed and
+    // its limit, the acceleration, the pressures, the next signal and
+    // platform, the time and the frame rate.
+    void toggle_drive_panel();
     // The names of signal objects (the route database's), for the F4 panel.
     void set_signal_names(std::function<std::string(std::uint32_t object)> names) { signal_names_ = std::move(names); }
     void draw_hud();
@@ -1204,7 +1205,7 @@ private:
     // The profile strip (Ctrl+F4): built again every second, or when its
     // span or shift goes past what was built.
     std::optional<bool> profile_strip_on_;
-    std::optional<bool> drive_card_on_; // F4, remembered
+    std::optional<bool> drive_panel_on_; // F4, remembered
     std::unique_ptr<ProfileStrip> profile_strip_;
     simulation::TrackProfile profile_;
     std::vector<simulation::TrackProfileElement> profile_elements_; // the track's own (TrackProfile::elements)
@@ -1230,11 +1231,11 @@ private:
     };
     HudPanel car_info_place_{.key = "hud_car_info"};
     HudPanel limits_place_{.key = "hud_limits", .pivot_x = 1.0f};
-    HudPanel drive_card_place_{.key = "hud_drive_card", .pivot_x = 1.0f};
     HudPanel stations_place_{.key = "hud_stations", .pivot_x = 1.0f};
     HudPanel drive_place_{.key = "hud_drive", .pivot_x = 1.0f};
     // Starts a panel window at its place; false when it is not drawn.
-    bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y);
+    // `bg_alpha` 0: the panel draws its own plate (the driver's summary).
+    bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y, float bg_alpha = 0.75f);
     void end_panel(HudPanel& place);
     std::shared_ptr<simulation::DriverHandles> driver_;
     // The player's train runs locomotive DLLs (legacy_cab.hpp).
@@ -1626,6 +1627,10 @@ private:
     // Each engine's Brakes.dll parameters (trainplugin::brakes_parameters).
     mutable std::unordered_map<const formats::EngineDefinition*, trainplugin::BrakesParameters> brakes_parameters_;
     [[nodiscard]] const trainplugin::BrakesParameters& brakes_parameters_of(const formats::EngineDefinition& engine) const;
+    // Each engine's speed recorder parameters (trainplugin::recorder_parameters),
+    // for the F4 panel's vigilance lamp (`SL_PSS`).
+    mutable std::unordered_map<const formats::EngineDefinition*, trainplugin::RecorderParameters> recorder_parameters_;
+    [[nodiscard]] const trainplugin::RecorderParameters& recorder_parameters_of(const formats::EngineDefinition& engine) const;
     // The cab's air gauges (DTM, DTC1/2, DGR) from the realistic air's model
     // (CabView::AirGauges); remembered as gauges_openrts_air, on by default.
     mutable bool gauges_air_ = true;

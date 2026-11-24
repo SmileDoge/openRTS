@@ -1,5 +1,6 @@
 #include "window_viewer.hpp"
 
+#include <openrts/core/installation.hpp>
 #include <openrts/core/profile.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
@@ -1962,7 +1963,25 @@ private:
         }
     }
 
-    static void load_font() { ui::load_fonts(); }
+    static void load_font() {
+        // The menu's Montserrat and Onest faces: beside the viewer (the
+        // game's folder) or in a sibling game folder of a build tree.
+        std::error_code error;
+        const auto exe = core::program_directory();
+        const std::filesystem::path candidates[] = {
+            exe / "menu",
+            exe.parent_path() / "game" / "menu",
+            exe / "assets" / "menu",
+            exe.parent_path().parent_path() / "game" / "assets" / "menu",
+        };
+        for (const auto& folder : candidates) {
+            if (std::filesystem::is_regular_file(folder / "Montserrat-SemiBold.ttf", error)) {
+                ui::set_font_folder(folder);
+                break;
+            }
+        }
+        ui::load_fonts();
+    }
 
     std::string layout_file_; // ImGui keeps the pointer until the context goes
     bool initialized_ = false;
@@ -2448,8 +2467,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .car_info_shift = shift,
             .limits_panel = f5 && ctrl,
             .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+            .drive_panel = f4 && !ctrl,
             .profile_strip = f4 && ctrl,
-            .drive_card = f4 && !ctrl,
             .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
             .signal_names = f7 && ctrl && !alt,
             .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -2491,8 +2510,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .car_info_shift = shift,
         .limits_panel = f5 && ctrl,
         .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+        .drive_panel = f4 && !ctrl,
         .profile_strip = f4 && ctrl,
-        .drive_card = f4 && !ctrl,
         .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
         .signal_names = f7 && ctrl && !alt,
         .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),

@@ -33,6 +33,7 @@
 #include <openrts/formats/sound.hpp>
 #include <openrts/formats/terrain.hpp>
 #include <openrts/simulation/distributor.hpp>
+#include <openrts/simulation/klub.hpp>
 #include <openrts/simulation/track_traveller.hpp>
 #include <openrts/simulation/train_lights.hpp>
 #include <openrts/simulation/track_profile.hpp>
@@ -47,6 +48,7 @@
 #include "ui_fonts.hpp"
 #include "ui_text.hpp"
 #include "profile_strip.hpp"
+#include "drive_panel.hpp"
 #include "viewer_state.hpp"
 
 namespace openrts::viewer {
@@ -1809,6 +1811,12 @@ std::optional<CabView::AirGauges> TrainView::air_gauges(const Unit& unit, const 
 const trainplugin::BrakesParameters& TrainView::brakes_parameters_of(const formats::EngineDefinition& engine) const {
     auto [at, made] = brakes_parameters_.try_emplace(&engine);
     if (made) at->second = trainplugin::brakes_parameters(engine);
+    return at->second;
+}
+
+const trainplugin::RecorderParameters& TrainView::recorder_parameters_of(const formats::EngineDefinition& engine) const {
+    auto [at, made] = recorder_parameters_.try_emplace(&engine);
+    if (made) at->second = trainplugin::recorder_parameters(engine);
     return at->second;
 }
 
@@ -5228,10 +5236,10 @@ void TrainView::toggle_profile_strip() {
     profile_built_at_ = -1e9;
 }
 
-void TrainView::toggle_drive_card() {
-    if (!drive_card_on_) drive_card_on_ = remembered("drive_card").value_or("0") == "1";
-    drive_card_on_ = !*drive_card_on_;
-    remember("drive_card", *drive_card_on_ ? "1" : "0");
+void TrainView::toggle_drive_panel() {
+    if (!drive_panel_on_) drive_panel_on_ = remembered("drive_panel").value_or("0") == "1";
+    drive_panel_on_ = !*drive_panel_on_;
+    remember("drive_panel", *drive_panel_on_ ? "1" : "0");
 }
 
 void TrainView::draw_profile_strip(const Unit& unit) {
@@ -5368,7 +5376,8 @@ std::vector<TrainView::PlaceAhead> TrainView::stations_ahead(const Unit& unit) c
     return result;
 }
 
-bool TrainView::begin_panel(const char* id, HudPanel& place, const float default_x, const float default_y) {
+bool TrainView::begin_panel(const char* id, HudPanel& place, const float default_x, const float default_y,
+                            const float bg_alpha) {
 #ifdef OPENRTS_HAS_IMGUI
     const auto display = ImGui::GetIO().DisplaySize;
     if (!place.loaded) {
@@ -5394,7 +5403,7 @@ bool TrainView::begin_panel(const char* id, HudPanel& place, const float default
         | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
     // Kept below the profile strip while it is shown.
     ImGui::SetNextWindowPos(ImVec2(place.x * display.x, (std::max)(place.y * display.y, hud_top_)), ImGuiCond_Always, ImVec2(place.pivot_x, 0.0f));
-    ImGui::SetNextWindowBgAlpha(0.75f);
+    ImGui::SetNextWindowBgAlpha(bg_alpha);
     const bool open = ImGui::Begin(id, nullptr, flags);
     if (open && display.x > 0.0f && display.y > 0.0f) {
         if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) place.dragging = true;
@@ -5414,6 +5423,7 @@ bool TrainView::begin_panel(const char* id, HudPanel& place, const float default
     (void)place;
     (void)default_x;
     (void)default_y;
+    (void)bg_alpha;
     return false;
 #endif
 }
@@ -5743,59 +5753,94 @@ void TrainView::draw_hud() {
     }
     if (!profile_strip_on_) profile_strip_on_ = remembered("profile_strip").value_or("0") == "1";
     if (*profile_strip_on_) draw_profile_strip(*unit);
-    if (!drive_card_on_) drive_card_on_ = remembered("drive_card").value_or("0") == "1";
-    if (*drive_card_on_) {
-        // F4: compact, every line short; dragged anywhere like the others.
-        if (begin_panel("##drive_card", drive_card_place_, 1.0f - margin_x, 0.30f)) {
-            const auto distance_text = [](const double m) {
-                char text[32];
-                std::snprintf(text, sizeof text, m >= 1000.0 ? tr("%.1f km") : tr("%.0f m"), m >= 1000.0 ? m / 1000.0 : m);
-                return std::string(text);
-            };
-            const auto seconds = static_cast<long>(std::fmod((std::max)(day_time_, 0.0), 86400.0));
-            const double kmh = std::abs(train.speed()) * 3.6;
-            const bool over = limit.current > 0.0f && kmh > limit.current * 3.6 + 0.5;
-            ImGui::Text("%02ld:%02ld:%02ld", seconds / 3600, seconds / 60 % 60, seconds % 60);
-            ImGui::SameLine(0.0f, 16.0f);
-            if (over) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(240, 70, 60, 255));
-            ImGui::Text(tr("%.0f km/h"), kmh);
-            if (over) ImGui::PopStyleColor();
-            if (limit.current > 0.0f) ImGui::Text(tr("Limit %.0f"), limit.current * 3.6f);
-            else ImGui::TextUnformatted(tr("Limit: none"));
-            if (limit.ahead > 0.0f && std::abs(limit.ahead - limit.current) > 0.1f) {
-                ImGui::SameLine(0.0f, 12.0f);
-                ImGui::TextDisabled(tr("then %.0f in %s"), limit.ahead * 3.6f, distance_text(limit.ahead_distance).c_str());
-            }
-            const auto next = signals_ ? signals_->ahead(train) : simulation::SignalAhead{};
-            if (next.valid) {
-                using A = formats::SignalAspect;
-                const auto aspect = next.aspect;
-                const std::uint32_t colour = aspect == A::stop || aspect == A::stop_and_proceed ? IM_COL32(230, 50, 40, 255)
-                                             : aspect == A::restricting                       ? IM_COL32(240, 240, 240, 255)
-                                             : aspect <= A::approach_3                        ? IM_COL32(250, 210, 40, 255)
-                                             : aspect <= A::clear_2                           ? IM_COL32(60, 210, 90, 255)
-                                                                                              : IM_COL32(120, 120, 120, 255);
-                const char* name = aspect == A::stop               ? tr("stop signal")
-                                   : aspect == A::stop_and_proceed ? tr("stop, pass allowed")
-                                   : aspect == A::restricting      ? tr("call-on signal")
-                                   : aspect <= A::approach_3       ? tr("yellow")
-                                   : aspect <= A::clear_2          ? tr("green")
-                                                                   : tr("aspect unknown");
-                const auto at = ImGui::GetCursorScreenPos();
-                const float h = ImGui::GetTextLineHeight();
-                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(at.x + h * 0.5f, at.y + h * 0.5f), h * 0.38f, colour);
-                ImGui::Dummy(ImVec2(h, h));
-                ImGui::SameLine(0.0f, 4.0f);
-                ImGui::Text("%s  %s", name, distance_text(next.distance).c_str());
-                if (next.speed > 0.0f) {
-                    ImGui::SameLine(0.0f, 8.0f);
-                    ImGui::TextDisabled("(%.0f)", next.speed * 3.6f);
-                }
-            } else {
-                ImGui::TextDisabled("%s", tr("No signal ahead"));
+    if (!drive_panel_on_) drive_panel_on_ = remembered("drive_panel").value_or("0") == "1";
+    if (*drive_panel_on_) {
+        // F4: the driver's summary (TME's DrivingHudWindow), the design's
+        // 382x511 panel. Always the driven train: following another one
+        // moves the camera, not whose cab this is.
+        const auto& drive_unit = units_.front();
+        const auto& drive_train = *drive_unit.train;
+        const auto& states = drive_train.cars();
+        DrivePanelData data;
+        const double kmh = std::abs(drive_train.speed()) * 3.6;
+        data.moving = std::abs(drive_train.speed()) >= 0.1f;
+        data.speed_kmh = kmh;
+        const auto drive_limit = limit_of(drive_unit);
+        data.limit_kmh = drive_limit.current > 0.0f ? drive_limit.current * 3.6 : 0.0;
+        data.overspeed = drive_limit.current > 0.0f && kmh > data.limit_kmh + 0.5;
+        const double acceleration = states.empty() ? 0.0 : states.front().acceleration;
+        data.acceleration = std::abs(acceleration) < 0.005 ? 0.0 : (drive_train.speed() >= 0.0f ? acceleration : -acceleration);
+        data.tape_recording = tape_rolling();
+        const auto driven = driven_car();
+        const auto* car = driven < states.size() ? &states[driven] : (states.empty() ? nullptr : &states.front());
+        // The locomotive's vigilance check: openRTS's KLUB's sign, else the
+        // speed recorder's SL_PSS lamp (Brakes.dll's or openRTS's). Both
+        // blink, so the triangle follows the lamp's state rather than a
+        // timer of the panel's own.
+        if (legacy_) {
+            if (const auto* klub = legacy_->klub_state(driven);
+                klub && (klub->flags & simulation::klub_flag::vigilance)) {
+                data.vigilance = true;
+                data.vigilance_lit = !(klub->blink > 1.5f || (klub->blink > 0.5f && klub->blink < 1.0f));
             }
         }
-        end_panel(drive_card_place_);
+        if (!data.vigilance && driven < drive_unit.cars.size() && drive_unit.cars[driven].definition &&
+            drive_unit.cars[driven].definition->engine) {
+            const auto& recorder = recorder_parameters_of(*drive_unit.cars[driven].definition->engine);
+            const auto pss = recorder.settings.cabs.empty() ? -1 : recorder.settings.cabs.front().pss;
+            if (pss >= 0) {
+                if (const auto* out = cab_state(driven);
+                    out && static_cast<std::size_t>(pss) < out->displays.size()) {
+                    data.vigilance = true;
+                    data.vigilance_lit = out->displays[static_cast<std::size_t>(pss)].state != 0;
+                }
+            }
+        }
+        const float unknown = std::numeric_limits<float>::quiet_NaN();
+        data.pressures[0] = car ? (std::max)(0.0f, car->pipe) : unknown;
+        if (const auto ur = car && driven != SIZE_MAX ? equalising_of(0, driven) : std::nullopt) {
+            data.pressures[1] = (std::max)(0.0f, *ur);
+        } else {
+            data.pressures[1] = unknown;
+        }
+        data.pressures[2] = unknown;
+        for (std::size_t i = 0; i < states.size() && i < drive_unit.cars.size(); ++i) {
+            if (drive_unit.cars[i].definition && drive_unit.cars[i].definition->engine && states[i].main_reservoir > 0.0f) {
+                data.pressures[2] = states[i].main_reservoir;
+                break;
+            }
+        }
+        data.pressures[3] = car ? (std::max)(0.0f, (std::max)(car->cylinder, car->independent)) : unknown;
+        const auto next = signals_ ? signals_->ahead(drive_train) : simulation::SignalAhead{};
+        data.signal = next.valid;
+        if (next.valid) {
+            data.signal_aspect = next.aspect;
+            data.signal_distance = next.distance;
+            if (signal_names_) data.signal_name = signal_names_(next.object);
+        }
+        for (const auto& station : stations_ahead(drive_unit)) {
+            if (station.siding) continue;
+            data.platform = true;
+            data.platform_name = station.name;
+            data.platform_distance = station.distance;
+            break;
+        }
+        const auto seconds = static_cast<long>(std::fmod((std::max)(day_time_, 0.0), 86400.0));
+        data.hour = static_cast<int>(seconds / 3600);
+        data.minute = static_cast<int>(seconds / 60 % 60);
+        data.second = static_cast<int>(seconds % 60);
+        data.fps = ImGui::GetIO().Framerate;
+        // The design's place: 62 px off the right edge, 41 px from the top;
+        // its own plate, so no window padding, background or border (the
+        // border is the light rectangle the default style draws around it).
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2{0.0f, 0.0f});
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        if (begin_panel("##drive", drive_place_, 1.0f - (display.x > 0.0f ? 62.0f / display.x : 0.0f),
+                        display.y > 0.0f ? 41.0f / display.y : 0.0f, 0.0f)) {
+            draw_drive_panel(data);
+        }
+        end_panel(drive_place_);
+        ImGui::PopStyleVar(2);
     }
     if (stations_panel_) {
         if (begin_panel("##stations", stations_place_, 1.0f - margin_x, 0.45f)) {

@@ -22,6 +22,17 @@ ImFont* add(const std::filesystem::path& file, const float size, const ImWchar* 
     return ImGui::GetIO().Fonts->AddFontFromFileTTF(file.string().c_str(), size, nullptr, ranges);
 }
 
+// A face of the driver's summary: the shell's file, or a system face of the
+// same size where the shell's folder is not there (openrts_viewer alone).
+ImFont* add_with_fallback(const std::filesystem::path& shell, const char* const* system, const int count, const float size,
+                          const ImWchar* ranges) {
+    if (auto* font = add(shell, size, ranges)) return font;
+    for (int i = 0; i < count; ++i) {
+        if (auto* font = add(system[i], size, ranges)) return font;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 void set_font_folder(std::filesystem::path folder) { font_folder() = std::move(folder); }
@@ -47,6 +58,38 @@ ImFont*& body_font() {
     return font;
 }
 ImFont*& small_font() {
+    static ImFont* font = nullptr;
+    return font;
+}
+ImFont*& hud_title_font() {
+    static ImFont* font = nullptr;
+    return font;
+}
+ImFont*& hud_label_font() {
+    static ImFont* font = nullptr;
+    return font;
+}
+ImFont*& hud_value_font() {
+    static ImFont* font = nullptr;
+    return font;
+}
+ImFont*& hud_pressure_font() {
+    static ImFont* font = nullptr;
+    return font;
+}
+ImFont*& hud_section_font() {
+    static ImFont* font = nullptr;
+    return font;
+}
+ImFont*& hud_text_font() {
+    static ImFont* font = nullptr;
+    return font;
+}
+ImFont*& hud_small_font() {
+    static ImFont* font = nullptr;
+    return font;
+}
+ImFont*& hud_tiny_font() {
     static ImFont* font = nullptr;
     return font;
 }
@@ -104,6 +147,18 @@ void load_fonts() {
     button_font() = add(folder / "Montserrat-Medium.ttf", 15.0f, ranges);
     body_font() = add(folder / "Onest-Regular.ttf", 15.0f, ranges);
     small_font() = add(folder / "Onest-Regular.ttf", 13.0f, ranges);
+    // The driver's summary (F4): the same faces at the panel's own sizes.
+    static const char* const bold_faces[] = {"C:/Windows/Fonts/arialbd.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"};
+    static const char* const regular_faces[] = {"C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/segoeui.ttf",
+                                                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"};
+    hud_title_font() = add_with_fallback(folder / "Montserrat-SemiBold.ttf", bold_faces, 2, 32.0f, ranges);
+    hud_value_font() = add_with_fallback(folder / "Onest-Regular.ttf", regular_faces, 3, 55.0f, ranges);
+    hud_pressure_font() = add_with_fallback(folder / "Onest-Regular.ttf", regular_faces, 3, 35.0f, ranges);
+    hud_label_font() = add_with_fallback(folder / "Montserrat-Medium.ttf", regular_faces, 3, 15.0f, ranges);
+    hud_section_font() = hud_label_font();
+    hud_text_font() = hud_label_font();
+    hud_small_font() = hud_label_font();
+    hud_tiny_font() = add_with_fallback(folder / "Onest-Regular.ttf", regular_faces, 3, 10.0f, ranges);
     if (!brand_font()) brand_font() = title_font();
     if (!heading_font()) heading_font() = large_font();
     if (!clock_font()) clock_font() = title_font();
