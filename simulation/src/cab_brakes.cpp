@@ -23,6 +23,7 @@ CabBrakeNumbers CabBrakeNumbers::brakes_dll() {
     n.slow_service = 0.03f;
     n.service = 0.22f;
     n.emergency_ur = 0.4f;
+    n.valve334_rate = 0.5f;
     n.independent_steps = {1.0f, 2.0f, 3.0f, 4.0f};
     // 0.1 a step; RTS steps its DLLs about 30 times a second.
     n.independent_release = 3.0f;
@@ -142,8 +143,35 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
     const float ur_before = ur;
     const float charging = (std::max)(c.charging - n.charging_drop, 0.0f);
     bool emergency = false;
-    if (c.valve) {
-        switch (*c.valve) {
+    // The 334 (§10, "The 334") as the 395's position its lamps, the ЭПТ's
+    // commands and the sounds go by: 0 VI; 1 V, or VЭ with the ЭПТ on (the
+    // pipe held, no venting); 2 III; 3 .. 5 II (3 holding the ЭПТ).
+    std::optional<ValvePosition> valve = c.valve;
+    bool hold334 = false;
+    if (c.valve334) {
+        const int k = *c.valve334;
+        valve = k <= 0   ? ValvePosition::emergency
+              : k == 1   ? (c.ep_on ? ValvePosition::ep_service : ValvePosition::service)
+              : k == 2   ? ValvePosition::lap
+                         : ValvePosition::running;
+        hold334 = k == 3;
+        if (k == 1) {
+            // Braking: the УР down without the ЭПТ; with it the ЭПТ alone.
+            if (!c.ep_on) ur = (std::max)(ur - n.service * dt, 0.0f);
+            out.braking = true;
+        } else if (k == 2) {
+            if (ur > air.pipe) ur = (std::max)(ur - n.lap_ur_rate * dt, air.pipe);
+            out.feed = false;
+        } else if (k >= 3) {
+            // Train and charge: the УР to the charging pressure either way.
+            const float top = (std::min)(charging, mr);
+            ur += std::clamp(top - ur, -n.valve334_rate * dt, n.valve334_rate * dt);
+        } else {
+            ur = (std::max)(ur - n.emergency_ur * dt, 0.0f);
+            emergency = true;
+        }
+    } else if (valve) {
+        switch (*valve) {
         case ValvePosition::charge:
             ur += (std::min)((std::max)(n.charge_ur_gain * (mr - ur), 0.0f), n.charge_ur_rate) * dt;
             ur = (std::min)(ur, mr);
@@ -180,8 +208,8 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
     }
     if (c.keep_equalising) ur = ur_before;
     if (c.unfed) ur = (std::min)(ur, ur_before);
-    const bool connected = c.valve.has_value() && !c.cut_off;
-    out.direct = connected && *c.valve == ValvePosition::charge;
+    const bool connected = valve.has_value() && !c.cut_off;
+    out.direct = connected && *valve == ValvePosition::charge && !c.valve334;
     out.equalising_kept = ur;
     out.equalising = connected ? ur : -1.0f;
     out.emergency = (connected && emergency) || c.emergency;
@@ -191,8 +219,8 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
     if (c.ep_on) {
         bool hold = false, apply = false, handle_hold = false;
         if (connected) {
-            if (lap(*c.valve)) handle_hold = true;
-            if (braking(*c.valve)) handle_hold = apply = true;
+            if (lap(*valve) || hold334) handle_hold = true;
+            if (braking(*valve)) handle_hold = apply = true;
         }
         hold = handle_hold;
         if (c.ep_apply_button) hold = apply = true;
@@ -213,9 +241,9 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
             out.ep_command = apply ? EpCommand::apply : hold ? EpCommand::hold : EpCommand::release;
         }
         out.lamp_ep_on = true;
-        if (c.valve) {
-            const auto p = *c.valve;
-            out.lamp_ep_hold = lap(p) || (c.multiple_unit && braking(p));
+        if (valve) {
+            const auto p = *valve;
+            out.lamp_ep_hold = lap(p) || hold334 || (c.multiple_unit && braking(p));
             out.lamp_ep_brake = braking(p);
             const bool released = p == ValvePosition::charge || p == ValvePosition::running;
             out.ep_volts = released ? n.ept_volts_release : n.ept_volts_brake;
@@ -263,8 +291,8 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
         // the rest faster the more wagons (to 100).
         const float wagons = c.wagons <= 100 ? static_cast<float>(c.wagons) : 0.0f;
         float fall = n.pipe_needle_fall + n.pipe_needle_per_wagon * wagons;
-        if (c.valve && *c.valve == ValvePosition::running) fall = n.pipe_needle_fall_running + n.pipe_needle_per_wagon_running * wagons;
-        else if (c.valve && *c.valve >= ValvePosition::lap) fall = n.pipe_needle_fall_braking;
+        if (valve && *valve == ValvePosition::running) fall = n.pipe_needle_fall_running + n.pipe_needle_per_wagon_running * wagons;
+        else if (valve && *valve >= ValvePosition::lap) fall = n.pipe_needle_fall_braking;
         s.pipe_needle = (std::max)(s.pipe_needle - fall * dt, air.pipe);
     }
     out.gauge_cylinder = s.cylinder_needle;
@@ -303,7 +331,7 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
         const auto code = static_cast<std::uint16_t>(on ? code_on : code_on + 1);
         out.sounds.push_back(static_cast<std::uint16_t>(mode_31 ? code + 3000 : code));
     };
-    const auto at = [&](const ValvePosition p) { return c.valve && *c.valve == p; };
+    const auto at = [&](const ValvePosition p) { return valve && *valve == p; };
     // The independent brake: filling (120) applying with the cylinder
     // under the value, letting out (122) releasing with it over; the 4ВК's
     // by its position, then (BR_254ID1 given) the 254's by 0.05 atm either

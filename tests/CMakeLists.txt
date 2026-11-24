@@ -289,6 +289,12 @@ openrts_configure_target(openrts_cab_brakes_test)
 target_link_libraries(openrts_cab_brakes_test PRIVATE openrts_simulation)
 add_test(NAME openrts.cab_brakes COMMAND openrts_cab_brakes_test)
 
+# The speed recorder's УКБМ check and КПД-3 screen, openRTS's.
+add_executable(openrts_recorder_test recorder_test.cpp)
+openrts_configure_target(openrts_recorder_test)
+target_link_libraries(openrts_recorder_test PRIVATE openrts_simulation)
+add_test(NAME openrts.recorder COMMAND openrts_recorder_test)
+
 add_executable(openrts_klub_test klub_test.cpp)
 openrts_configure_target(openrts_klub_test)
 target_link_libraries(openrts_klub_test PRIVATE openrts_simulation)
@@ -456,6 +462,11 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.recorder_vl10_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub openrts --brakes openrts)
+    # The same without Brakes.dll at all (2026-11-24): the cab without the
+    # КЛУБ, its vigilance the speed recorder's, the ALSN delay openRTS's.
+    add_test(NAME openrts.content.recorder_vl10_no_brakes_dll COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub openrts --brakes openrts --brakes-dll none)
     # САУТ (PB_SETUP 1) in openRTS's КЛУБ, working the train.
     add_test(NAME openrts.content.klub_ed9m_saut_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
@@ -494,6 +505,13 @@ add_executable(openrts_brake_squeal_test brake_squeal_test.cpp ../viewer/src/tra
 openrts_configure_target(openrts_brake_squeal_test)
 target_link_libraries(openrts_brake_squeal_test PRIVATE openrts_audio openrts_core)
 add_test(NAME openrts.brake_squeal COMMAND openrts_brake_squeal_test)
+
+# openRTS's pantograph arcs: at the touch and the leaving, on ice only at
+# the leading pantograph, none on a dead line; the made crack.
+add_executable(openrts_pantograph_arcs_test pantograph_arcs_test.cpp ../viewer/src/pantograph_arcs.cpp)
+openrts_configure_target(openrts_pantograph_arcs_test)
+target_link_libraries(openrts_pantograph_arcs_test PRIVATE openrts_audio openrts_core)
+add_test(NAME openrts.pantograph_arcs COMMAND openrts_pantograph_arcs_test)
 
 add_executable(openrts_discord_presence_test discord_presence_test.cpp)
 openrts_configure_target(openrts_discord_presence_test)

@@ -60,6 +60,9 @@ fn to_display(c: vec3<f32>) -> vec3<f32> {
 fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> vec3<f32> {
     if (physical) {
         let strength = physical_light(light, world, n);
+        if (strength > 0.0 && light.ambient.w > 0.5) {
+            return light.ambient.xyz * strength; // photometric: linear already
+        }
         if (strength > 0.0) {
             return to_linear(light.diffuse.xyz) * strength;
         }

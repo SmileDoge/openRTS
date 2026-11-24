@@ -115,7 +115,7 @@ std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::ve
     std::size_t player = SIZE_MAX;
     for (std::size_t i = 0; i < cars.size(); ++i) {
         if (!consist->has_dll(i)) continue;
-        train.set_controller(i, consist->controller(i));
+        train.set_module(i, consist->controller(i));
         if (player == SIZE_MAX) player = i;
     }
     // A train just made takes its air from Init, as in RTS.
@@ -187,7 +187,7 @@ bool LegacyCab::reconsist(const core::Vfs& vfs, const std::vector<std::vector<Le
         if ((k >> 32) == before) going_down[(static_cast<std::uint64_t>(player) << 32) | (k & 0xFFFFFFFFu)] = v;
     going_down_ = std::move(going_down);
     for (std::size_t i = 0; i < cars.size(); ++i)
-        if (consist_->has_dll(i)) train.set_controller(i, consist_->controller(i));
+        if (consist_->has_dll(i)) train.set_module(i, consist_->controller(i));
     if (player < cars.size()) bind_keys(player);
     return true;
 }

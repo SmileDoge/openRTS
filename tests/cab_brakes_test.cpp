@@ -481,6 +481,52 @@ void sounds() {
     check(near(running.out.gauge_pipe, 5.0f - 0.8f, 0.05f), "the ТМ needle in II, 50 wagons: 0.2 + 0.6 atm/s");
 }
 
+// The 334 (the ЭР2's and ЭР9's valve, docs/reverse/brakes-dll.md §10): 0
+// emergency, 1 braking (with the ЭПТ: the ЭПТ alone, the pipe held), 2 lap
+// holding the ЭПТ, 3 train holding it, 4 and 5 train and charge, the УР to
+// the charging pressure at 0.5 atm/s either way.
+void valve334() {
+    {
+        Rig rig(3.0f);
+        rig.controls.valve334 = 4;
+        rig.run(2.0f, true);
+        check(near(rig.out.equalising, 4.0f, 0.02f), "334 train: the УР up 0.5 atm/s: " + std::to_string(rig.out.equalising));
+        rig.run(10.0f, true);
+        check(near(rig.out.equalising, 4.9f, 0.02f), "334 train: the УР to the charge: " + std::to_string(rig.out.equalising));
+        rig.state.valve.equalising = 6.0f;
+        rig.run(1.0f);
+        check(near(rig.out.equalising, 5.5f, 0.02f), "334 train: an overcharge down 0.5 atm/s: " + std::to_string(rig.out.equalising));
+        check(rig.out.feed && !rig.out.emergency && !rig.out.braking, "334 train: the pipe fed");
+    }
+    {
+        Rig rig(5.0f);
+        rig.controls.valve334 = 1;
+        rig.run(2.0f, true);
+        check(near(rig.out.equalising, 4.56f) && rig.out.braking, "334 braking, no ЭПТ: the УР down 0.22 atm/s: " + std::to_string(rig.out.equalising));
+        Rig ep(5.0f);
+        ep.controls.valve334 = 1;
+        ep.controls.ep_on = true;
+        ep.run(2.0f, true);
+        check(near(ep.out.equalising, 5.0f) && ep.out.ep_command == EpCommand::apply && ep.out.lamp_ep_brake,
+              "334 braking with the ЭПТ: the ЭПТ applies, the pipe held");
+        ep.controls.valve334 = 2;
+        ep.run(1.0f, true);
+        check(ep.out.ep_command == EpCommand::hold && !ep.out.feed && ep.out.lamp_ep_hold, "334 lap: the ЭПТ held, no feed");
+        ep.controls.valve334 = 3;
+        ep.run(1.0f, true);
+        check(ep.out.ep_command == EpCommand::hold && ep.out.feed, "334 at 3: train, the ЭПТ held");
+        ep.controls.valve334 = 4;
+        ep.run(1.0f, true);
+        check(ep.out.ep_command == EpCommand::release, "334 at 4: the ЭПТ released");
+    }
+    {
+        Rig rig(5.0f);
+        rig.controls.valve334 = 0;
+        rig.run(1.0f);
+        check(rig.out.emergency && near(rig.out.equalising, 4.6f), "334 at 0: emergency");
+    }
+}
+
 int main() {
     valve();
     sounds();
@@ -488,6 +534,7 @@ int main() {
     independent();
     gauges();
     positions();
+    valve334();
     if (failures) {
         std::cerr << failures << " check(s) failed\n";
         return 1;

@@ -38,6 +38,10 @@ fn physical_light(light: Light, world: vec4<f32>, normal: vec3<f32>) -> f32 {
     var towards = -p.xyz / distance;
     if (kind == 3) {
         towards = vec3<f32>(0.0, 0.0, -1.0); // parallel light: no distance falloff
+    } else if (light.ambient.w > 0.5) {
+        // A photometric lamp (photometric.hpp): the inverse square, its
+        // light at 1 m in ambient.rgb (lamp_light); no nearer than 10 cm.
+        falloff = 1.0 / max(distance * distance, 0.01);
     } else {
         let reference = max(light.size[2] * light.attenuation[1], 0.01);
         falloff = min(reference * reference / (distance * distance), 8.0);

@@ -31,6 +31,47 @@ windows:
     and last number (a hundred animated pieces of four textures read as 301
     rows before); above them the textures and the parts counted.
 
+## Lamps (openRTS)
+
+The chosen car's lights or the chosen object's lamps, changed live
+(paused too), the first step of a car editor (`viewer/src/inspector_lamps.cpp`).
+- **A car:** the lights of its type (every car of that file changes at
+  once): type (glow, spotlight, sphere, box, cone), the conditions
+  (headlight, place in the train, control, service, time of day, weather),
+  fades, and each State's position, azimuth, elevation, reach, half angle,
+  source radius, colour (alpha: brightness), duration; the fall-off and the
+  focus (SpotExponent). A light removed keeps its place (no states: off),
+  since DLLs switch lights by their index.
+- **A world object:** its shape's lamps (ESD_LightSources; every object of
+  that shape): kind (cone, sphere, box), POSITIONAL, RUNNING, NIGHT_AUTO,
+  NIGHT_ONLY, position, points-to, radius, colour, fall-off, focus, source
+  radius, distance, AutoWhenWorldLit, fade, a row (LightArray).
+- **Held on:** the chosen lamp burns full while chosen, by day and paused
+  too, to set it.
+- **The gizmo:** every lamp of the chosen car or object is a diamond in the
+  world; a click on one chooses it. The chosen one: its cone or sphere (to
+  25 m) and handles, dragged with the left button:
+  - the arrows (x red, y green, z blue: the car's or shape's axes) move it
+    along them; its own diamond moves it in the view's plane;
+  - the diamond at the beam's end aims it (a car's Azimuth and Elevation, a
+    shape's PointsTo at the same distance);
+  - the one on the cone's rim opens or closes it (a car's half angle, a
+    shape's radii in proportion); on a sphere or a glow, its size.
+  The handle under the mouse turns white.
+- **Photometric (PBR / HDR):** ORTSCandela (cd on its axis), ORTSLumens
+  (its flux, spread over its cone or every way when there is no candela),
+  ORTSKelvin (its colour; 0: its own colour). The experimental path then
+  lights by them: 1 / d², the scene's light being lux over "Lux a unit of
+  the scene's light" (20 by default, `renderer/photometric.hpp`). The RTS
+  path keeps the lamp's colour and fall-off. Written in the same blocks
+  (Light, LightSource); RTS skips them.
+- **Kept in the mod** (the inspector's mod field): a car's lights in its
+  companion `<file>.eng.openrts` / `.wag.openrts` (a `Lights` block with
+  every light by LightID and an empty `RTSLights`, its other entries kept);
+  a shape's lamps in its override `<shape>.openrts` (a `LightSources`
+  block in the .sd's syntax). "As in the files" / "As in the .sd" goes
+  back.
+
 ## FullBright made ordinary, per shape
 
 MSTS's FullBright surfaces (light material -8) take neither the sun nor the

@@ -377,7 +377,7 @@ std::shared_ptr<DriverHandles> attach_keyboard_driver(Train& train, std::size_t 
     if (engine(master)->throttle_notches > 0) handles->notches = engine(master)->throttle_notches;
     for (std::size_t i = 0; i < train.cars().size(); ++i) {
         if (!engine(i)) continue;
-        train.set_controller(i, std::make_unique<KeyboardController>(handles, i == master));
+        train.set_module(i, std::make_unique<KeyboardController>(handles, i == master));
     }
     return handles;
 }
@@ -449,7 +449,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
 struct Train::Impl {
     std::optional<TrackTraveller> head; // front end of car 0
     std::optional<TrackTraveller> tail; // rear end of the last car
-    std::vector<std::unique_ptr<LocomotiveController>> controllers;
+    std::vector<std::unique_ptr<CarModule>> controllers;
     std::vector<EngineDemands> demands;
     // Per car and bogie: the node and offset along it at the last update.
     struct BogieTrack {
@@ -737,11 +737,11 @@ void Train::set_bogies(const std::size_t car, const float ahead, const float beh
     cars_[car].bogie_behind = (std::max)(behind, 0.0f);
 }
 
-void Train::set_controller(const std::size_t car, std::unique_ptr<LocomotiveController> controller) {
+void Train::set_module(const std::size_t car, std::unique_ptr<CarModule> controller) {
     if (car < impl_->controllers.size()) impl_->controllers[car] = std::move(controller);
 }
 
-LocomotiveController* Train::controller(const std::size_t car) {
+CarModule* Train::module(const std::size_t car) {
     return car < impl_->controllers.size() ? impl_->controllers[car].get() : nullptr;
 }
 
@@ -1195,8 +1195,15 @@ void Train::save_state(StateWriter& out) const {
         out.put(p + "wear", c.wear.pipe_leak, c.wear.reservoir_leak, c.wear.cylinder_leak, c.wear.pace, c.wear.sensitivity, c.wear.rigging);
     }
     impl.air.save(out);
+    // Each module its own block: "k<car>.<name> <version>", its keys under
+    // "k<car>.<name>.". "modules": a save of blocks.
+    out.put("modules", 1);
     for (std::size_t i = 0; i < impl.controllers.size(); ++i) {
-        if (impl.controllers[i]) impl.controllers[i]->save(out, "k" + std::to_string(i) + ".");
+        const auto* module = impl.controllers[i].get();
+        if (!module) continue;
+        const auto key = "k" + std::to_string(i) + "." + std::string(module->name());
+        out.put(key, module->version());
+        module->save(out, key + ".");
     }
 }
 
@@ -1234,8 +1241,22 @@ void Train::restore_state(const StateReader& in) {
         c.body_rate[0] = c.body_rate[1] = c.body_rate[2] = 0.0f;
     }
     impl.air.restore(in);
+    // A block of another module (the car's system changed) or of a version
+    // it does not read is left out: the module keeps its starting state.
+    // Saves before blocks (v0.39, no "modules") kept a module's keys under
+    // "k<car>.".
+    const bool blocks = in.has("modules");
     for (std::size_t i = 0; i < impl.controllers.size(); ++i) {
-        if (impl.controllers[i]) impl.controllers[i]->restore(in, "k" + std::to_string(i) + ".");
+        auto* module = impl.controllers[i].get();
+        if (!module) continue;
+        const auto car = "k" + std::to_string(i) + ".";
+        const auto key = car + std::string(module->name());
+        int version{};
+        if (in.get(key, version)) {
+            if (module->reads(version)) module->restore(in, key + ".");
+        } else if (!blocks) {
+            module->restore(in, car);
+        }
     }
     asleep_ = asleep;
 }

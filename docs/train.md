@@ -289,7 +289,7 @@ the start). Off by default;
 the RTS model (`docs/reverse/brakes.md`) stays as it is and is the only path
 with Legacy on (the server fixes the choice, like the coupler sub-steps). A
 train with a legacy DLL keeps the RTS model
-(`LocomotiveController::rts_brakes`): its valve is tuned to RTS's triple
+(`CarModule::rts_brakes`): its valve is tuned to RTS's triple
 valve; since 2026-11-13 the Train window's "Trains with DLLs" can give it
 the realistic air too ("Realistic air with DLL locomotives" below). What is
 built, against the proposal below:
@@ -1201,7 +1201,7 @@ The controller (keyboard now, DLL later) only sets the `Engine` demands:
 ### Locomotive controller interface
 
 - **Interface:** a locomotive gets its forces and brake demands from a
-  `LocomotiveController`. Inputs and outputs are as in `docs/train-dll.md`:
+  `CarModule`. Inputs and outputs are as in `docs/train-dll.md`:
   - inputs: speed, pressures, line voltage, flags;
   - outputs: traction force, dynamic brake, brake pipe rate, main reservoir
     rate, independent brake, sanding.

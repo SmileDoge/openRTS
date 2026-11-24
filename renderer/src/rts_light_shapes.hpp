@@ -28,6 +28,8 @@ static_assert(sizeof(GpuLight) == 192);
 
 inline void pack_light(GpuLight& to, const ModelExtraLight& from) {
     std::memcpy(to.diffuse, &from.diffuse[0], sizeof(to.diffuse));
+    // Extra lights have no ambient of their own: it carries a photometric lamp.
+    std::memcpy(to.ambient, &from.photometric[0], sizeof(to.ambient));
     std::memcpy(to.translation, &from.to_light[0][0], sizeof(to.translation));
     to.direction[0] = from.direction.x;
     to.direction[1] = from.direction.y;

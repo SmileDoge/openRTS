@@ -190,6 +190,9 @@ struct LightDefinition {
     std::vector<LightState> states;
     std::array<float, 3> attenuation{2.0f, 0.6f, 0.4f}; // kind (2 linear), start share, length share
     float spot_exponent = 64.0f;        // SpotExponent x 128
+    // openRTS's photometric light (renderer/photometric.hpp; the experimental
+    // path): ORTSCandela, ORTSLumens, ORTSKelvin; 0 not given.
+    float candela{}, lumens{}, kelvin{};
 };
 
 // AuxLibrarySoundType: AMBIENT (no position), WAGON (at the car, with its
@@ -437,6 +440,12 @@ using WagonRules = std::function<WagonOverrides(const struct WagonDefinition& ca
 [[nodiscard]] std::string set_override_distributor(std::string_view text, BrakeDistributor distributor);
 // The same with ORTSBrakeSensor418 ( 0 | 1 ), taken out for none.
 [[nodiscard]] std::string set_override_sensor418(std::string_view text, std::optional<bool> fitted);
+// The lights as a companion's Lights block (every light, by LightID) and an
+// empty RTSLights (the file's own would be added after them).
+[[nodiscard]] std::string write_lights(const std::vector<LightDefinition>& lights);
+// `text` (a companion's) with its Lights / RTSLights blocks replaced by
+// `lights`' (the inspector's lamps), or taken out for none.
+[[nodiscard]] std::string set_override_lights(std::string_view text, const std::optional<std::vector<LightDefinition>>& lights);
 
 // RTS value readers, exposed for tests.
 [[nodiscard]] double rts_quantity_value(std::string_view token);

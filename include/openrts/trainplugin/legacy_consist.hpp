@@ -103,8 +103,8 @@ struct BrakeCabControls {
 // brake devices take them (simulation/cab_brakes.hpp,
 // docs/brakes-dll-replacement.md, step 2): each cab's switches and
 // displays, and whether openRTS knows every one. A car with a parameter it
-// does not know (a 334, a custom 292, the ЭП2Д's ППТ) keeps
-// Brakes.dll; an id of -1 is no device.
+// does not know keeps Brakes.dll (the 334 and the custom 292 known since
+// 2026-11-24); an id of -1 is no device.
 struct BrakesParameters {
     bool present = false;
     std::string unknown;        // the first parameter openRTS does not know
@@ -119,6 +119,7 @@ struct BrakesParameters {
     // TRANS_SOUND 1, on the locomotive's SMS too.
     bool sounds_130 = false, sounds_224 = false, trans_sound = false;
     bool epk_sounds = false; // BR_EPKMODE not 0: the ЭПК key's 3903
+    bool custom292 = false;  // BR_292CUSTOM: the engine's own 292 (openRTS's air has its distributor)
     struct Cab {
         std::int32_t valve = -1, controller = -1, reducer = -1, combined = -1, block = -1, separating = -1;
         std::int32_t independent = -1, independent_cock = -1, independent2 = -1, independent2_cock = -1;
@@ -129,6 +130,7 @@ struct BrakesParameters {
         std::int32_t lamp_ep_on = -1, lamp_ep_hold = -1, lamp_ep_brake = -1, lamp_pipe = -1;
         std::int32_t ep_volts = -1, ep_amps = -1;
         std::int32_t ppt = -1; // BR_PPTID: at 0 the КПТ works the ЭПТ by itself (the ЭП2Д)
+        std::int32_t valve334 = -1; // BR_334ID: the ЭР2's and ЭР9's valve in place of the 395
     };
     std::vector<Cab> cabs; // BR_NUMCABS of them, at least one
     [[nodiscard]] bool understood() const noexcept { return present && unknown.empty(); }
@@ -203,6 +205,8 @@ struct RecorderParameters {
     simulation::RecorderSettings settings;
     std::int32_t speed1_index = -1, kpd_index = -1; // SL_SPEED1's and SL_KPDSPD1's in the library's parameters
     float speed1 = -1.0f;                           // SL_SPEED1's value (given back with Brakes.dll's recorder)
+    float kpd_value = -1.0f;                        // SL_KPDSPD1's (the same, the КПД-3's)
+    std::int32_t setup_index = -1;                  // SL_SETUP's (the МУ's gate: its 0x10)
     bool trans_sound = false;
 };
 [[nodiscard]] RecorderParameters recorder_parameters(const formats::EngineDefinition& engine);
@@ -387,7 +391,7 @@ public:
     // Train `train`'s car `car` (train 0: the player's, as output(car)).
     [[nodiscard]] const dllhost::CarOutput* output(std::size_t train, std::size_t car) const;
     [[nodiscard]] bool has_dll(std::size_t train, std::size_t car) const;
-    [[nodiscard]] std::unique_ptr<simulation::LocomotiveController> controller(std::size_t train, std::size_t car) const;
+    [[nodiscard]] std::unique_ptr<simulation::CarModule> controller(std::size_t train, std::size_t car) const;
     // The player moves a cab switch of `car` to `state`: CanSwitch, then the
     // host moves it (Switched fires when it gets there). False if refused.
     bool operate(std::size_t car, std::uint32_t id, std::uint32_t state);
@@ -416,7 +420,7 @@ public:
     [[nodiscard]] std::string error() const;
     [[nodiscard]] std::string take_messages();
     // A controller for `car` reading this consist's outputs.
-    [[nodiscard]] std::unique_ptr<simulation::LocomotiveController> controller(std::size_t car) const;
+    [[nodiscard]] std::unique_ptr<simulation::CarModule> controller(std::size_t car) const;
     // The air of its trains under the realistic air model (every controller
     // of this consist follows it at once).
     void set_air(DllAir mode) noexcept {
@@ -573,7 +577,7 @@ bool enter_new_train(LegacyConsist& consist, std::size_t car, simulation::Train&
 // controls (brake_cab_controls); empty: the 395's states I..VI, no reducer.
 // `brakes`: its Brakes.dll's parameters, `brakes_library` that library's
 // number in the host (aux_library; -1 none), for DllAirSetting::own_brakes.
-[[nodiscard]] std::unique_ptr<simulation::LocomotiveController> make_legacy_controller(
+[[nodiscard]] std::unique_ptr<simulation::CarModule> make_legacy_controller(
     std::weak_ptr<const LegacyConsist::Outputs> outputs, std::size_t car, std::shared_ptr<const DllAirSetting> air,
     BrakeCabControls cab = {}, BrakesParameters brakes = {}, int brakes_library = -1);
 

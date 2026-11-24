@@ -474,7 +474,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     std::size_t player = SIZE_MAX;
     for (std::size_t i = 0; i < legacy.size(); ++i) {
         if (consist->has_dll(i)) {
-            train.set_controller(i, consist->controller(i));
+            train.set_module(i, consist->controller(i));
             if (player == SIZE_MAX) player = i;
         }
     }
@@ -1105,9 +1105,9 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         if (cut_train) parts.push_back(cut_cars);
         const bool ok = consist->reconsist(vfs, parts, host_trains());
         for (std::size_t i = 0; i < legacy.size(); ++i)
-            if (consist->has_dll(i)) train.set_controller(i, consist->controller(i));
+            if (consist->has_dll(i)) train.set_module(i, consist->controller(i));
         for (std::size_t i = 0; cut_train && i < cut_cars.size(); ++i)
-            if (consist->has_dll(1, i)) cut_train->set_controller(i, consist->controller(1, i));
+            if (consist->has_dll(1, i)) cut_train->set_module(i, consist->controller(1, i));
         player = consist->player();
         cab = consist->cab(player);
         std::printf("%6.1f %s: %zu cars, %s, the player in car %zu\n", time, what, legacy.size(),

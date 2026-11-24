@@ -35,6 +35,7 @@
 #include <openrts/formats/activity.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/train_path.hpp>
+#include <openrts/renderer/lightning.hpp>
 #include <openrts/renderer/frustum.hpp>
 #include <openrts/renderer/model_assets.hpp>
 #include <openrts/renderer/model_library.hpp>
@@ -62,6 +63,7 @@
 #include "brake_settings_ui.hpp"
 #include "camera.hpp"
 #include "cab_view.hpp"
+#include "pantograph_arcs.hpp"
 #include "train_extra_sounds.hpp"
 #include "engineer.hpp"
 #include "head_motion.hpp"
@@ -301,6 +303,21 @@ public:
         std::optional<glm::mat4> transform; // shape space to the scene, when drawn
     };
     [[nodiscard]] std::vector<InspectedCar> inspected_cars(std::uint64_t train) const;
+    // The inspector's lamp editor (F12): the lights of a car's type, changed
+    // in place (every car of that type, at once, paused too); nullptr for no
+    // such car.
+    [[nodiscard]] std::vector<formats::LightDefinition>* car_lights(std::uint64_t train, std::size_t car);
+    // Kept in the edits mod's companion (<file>.eng.openrts / .wag.openrts):
+    // what was done, for the inspector.
+    [[nodiscard]] std::string save_car_lights(std::uint64_t train, std::size_t car, const std::string& mod);
+    // Back to the files' (the companion's in effect, if any).
+    void revert_car_lights(std::uint64_t train, std::size_t car);
+    // Light `light` of that car's type held on in its State `state` (to set
+    // it by day, standing); none: as the rules say.
+    void hold_car_light(std::uint64_t train, std::size_t car, std::optional<std::pair<std::size_t, std::size_t>> light);
+    // Where light `light` of the car is (its State `state`): the light's own
+    // space to the scene (+Z the way it shines), as update_lights places it.
+    [[nodiscard]] std::optional<glm::mat4> car_light_place(std::uint64_t train, std::size_t car, std::size_t light, std::size_t state) const;
     [[nodiscard]] const simulation::Train* train_by_id(std::uint64_t id) const;
     [[nodiscard]] simulation::Dispatcher& dispatcher() noexcept { return *dispatcher_; }
     [[nodiscard]] const simulation::Dispatcher& dispatcher() const noexcept { return *dispatcher_; }
@@ -679,6 +696,9 @@ public:
         core::VirtualPath texture;
     };
     [[nodiscard]] const std::vector<LightGlow>& light_glows() const noexcept { return light_glows_; }
+    // The pantographs' arcs' threads this frame (pantograph_arcs.hpp), drawn
+    // as lightning's are.
+    [[nodiscard]] const std::vector<renderer::LightningStrip>& arc_strips() const noexcept { return arc_strips_; }
     [[nodiscard]] const std::vector<renderer::ModelExtraLight>& light_beams() const noexcept { return light_beams_; }
     // The lamps of the cab or salon the engineer is in that are on.
     [[nodiscard]] const std::vector<renderer::ModelExtraLight>& interior_lights() const noexcept { return interior_lights_; }
@@ -1191,6 +1211,10 @@ private:
     simulation::TrackNetwork* network_ = nullptr;
     std::string consist_;
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock_;
+    [[nodiscard]] static glm::mat4 car_light_local(const formats::LightDefinition& light, const formats::LightState& s, bool turned);
+    // The inspector's held light (hold_car_light): its type, light, State.
+    const formats::WagonDefinition* held_light_type_ = nullptr;
+    std::size_t held_light_ = 0, held_light_state_ = 0;
     // This world's cars (cars as entities, step 1: docs/car-architecture.md):
     // every car's key is its CarId here. Mutable: units are made by const
     // members.
@@ -1639,6 +1663,16 @@ private:
     [[nodiscard]] bool script_squeals(const formats::SoundScript* script);
     [[nodiscard]] static std::shared_ptr<const formats::SoundScript> epk_alert_script(const formats::SoundScript& script);
     void update_extra_sounds(float elapsed, const ViewerCamera& camera, audio::AudioEngine& sound);
+    // openRTS's arcs at the pantographs (pantograph_arcs.hpp): worked out
+    // with the lights, their cracks played with the sounds.
+    PantographArcs arcs_;
+    std::vector<PantographArcs::Start> arc_sounds_;
+    std::shared_ptr<const audio::AudioClip> arc_snap_, arc_buzz_ac_, arc_buzz_dc_;
+    bool arc_clip_tried_ = false;
+    std::unordered_map<std::uint64_t, audio::VoiceId> arc_voices_; // the buzzes burning, by arc
+    std::vector<renderer::LightningStrip> arc_strips_;
+    void update_arcs(float elapsed, const glm::vec3& eye, std::vector<renderer::ModelExtraLight>& lights, std::vector<float>& distances);
+    void play_arcs(audio::AudioEngine& sound);
     // Wheel flats (ползуны): their knocks are real wheel-rail blows of the
     // RTS install (SOUND/ra_euro_joint*.wav, else mp_joint*.wav), one at
     // random each time, its pitch and loudness a little different.

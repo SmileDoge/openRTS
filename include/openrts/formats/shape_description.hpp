@@ -44,6 +44,9 @@ struct ShapeLight {
     // one lamp.
     std::uint32_t array_count{};
     std::array<float, 3> array_step{};
+    // openRTS's photometric lamp (renderer/photometric.hpp; the experimental
+    // path): ORTSCandela, ORTSLumens, ORTSKelvin; 0 not given.
+    float candela{}, lumens{}, kelvin{};
 };
 
 // A box the engineer walks on, climbs or is stopped by (RTS 0x4BB7BC,
@@ -77,5 +80,10 @@ struct ShapeDescriptionResult {
 [[nodiscard]] ShapeDescriptionResult parse_shape_description(std::string_view text);
 [[nodiscard]] ShapeDescriptionResult load_shape_description(const std::filesystem::path& file);
 [[nodiscard]] ShapeDescriptionResult load_shape_description(const core::Vfs& vfs, const core::VirtualPath& file);
+
+// `lights` as a LightSources ( n LightSource ( ... ) ... ) block (the .sd's
+// ESD_LightSources syntax), each line led by `indent`: openRTS's override of
+// a shape keeps its lamps so (shape_override.hpp).
+[[nodiscard]] std::string write_shape_lights(const std::vector<ShapeLight>& lights, std::string_view indent = {});
 
 } // namespace openrts::formats

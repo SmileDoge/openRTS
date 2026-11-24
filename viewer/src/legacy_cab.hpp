@@ -166,7 +166,7 @@ public:
     [[nodiscard]] trainplugin::CabBrakes cab_brakes(std::size_t train, std::size_t car) const {
         return consist_ ? consist_->cab_brakes(train, car) : trainplugin::CabBrakes{};
     }
-    [[nodiscard]] std::unique_ptr<simulation::LocomotiveController> controller(std::size_t train, std::size_t car) const {
+    [[nodiscard]] std::unique_ptr<simulation::CarModule> controller(std::size_t train, std::size_t car) const {
         return consist_ ? consist_->controller(train, car) : nullptr;
     }
     [[nodiscard]] const std::array<float, 8>* sound_variables(std::size_t train, std::size_t car) const;

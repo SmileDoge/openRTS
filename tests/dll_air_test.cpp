@@ -97,7 +97,7 @@ struct Rig {
         cab.switches[5].state = 1; // the separating cock open
         cab.engine.equalising = 5.0f;
         air->mode = mode;
-        train->set_controller(0, trainplugin::make_legacy_controller(outputs, 0, air));
+        train->set_module(0, trainplugin::make_legacy_controller(outputs, 0, air));
     }
     auto& cab() { return outputs->cars[0]; }
     void run(const double seconds) {

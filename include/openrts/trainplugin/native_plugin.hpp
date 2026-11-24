@@ -54,7 +54,7 @@ private:
     std::vector<Indicator> indicators_;
 };
 
-class NativeLocomotive final : public simulation::LocomotiveController {
+class NativeLocomotive final : public simulation::CarModule {
 public:
     // Loads `dll` and creates the plugin for `engine`; nullptr with `error`.
     [[nodiscard]] static std::unique_ptr<NativeLocomotive> load(const std::filesystem::path& dll,
@@ -62,6 +62,7 @@ public:
                                                                 const formats::CabDescription* cab, std::string* error);
     ~NativeLocomotive() override;
 
+    [[nodiscard]] std::string_view name() const override { return "plugin"; }
     void step(double dt, const simulation::EngineInputs& inputs, simulation::EngineDemands& demands) override;
     // The driver moves control `handle` to `state`: the plugin may refuse.
     bool operate(OrtsHandle handle, float state);
@@ -71,7 +72,7 @@ public:
     [[nodiscard]] const OrtsTrainOutputs& outputs() const noexcept { return outputs_; }
     [[nodiscard]] std::vector<std::uint32_t> take_sounds(bool cab);
     [[nodiscard]] std::vector<std::string> take_messages();
-    [[nodiscard]] const std::string& name() const noexcept { return name_; }
+    [[nodiscard]] const std::string& plugin_name() const noexcept { return name_; }
     [[nodiscard]] const formats::WagonDefinition* definition() const noexcept { return engine_; }
 
 private:

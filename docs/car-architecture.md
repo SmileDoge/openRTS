@@ -2,8 +2,8 @@
 
 Status: a design under discussion (2026-11-06). Step 1 (`CarId`) is built
 (2026-11-23, "Step 1: CarId" below), step 2 too (the doors, the lights,
-the pantographs: "Step 2: ..."), step 3 ("Step 3: the cab's state"); the
-rest is not.
+the pantographs: "Step 2: ..."), step 3 ("Step 3: the cab's state"), step 4 ("Step 4:
+modules"); the rest is not.
 - The plan it serves is the roadmap step "Cars as entities"
   (`roadmap.md`); the replaceable train systems there build on it.
 - **Proposed** marks what this document suggests; the user's questions are
@@ -325,15 +325,82 @@ The cab and the salon behave as before; their state is the car's.
   (ChS7, ЭД9М), boarding cabs one after another and back, the passage
   printed the same as step 2's build.
 
-## Open questions (the user's)
+### Step 4: modules (built 2026-11-24)
 
-1. **Without Legacy:** how far may openRTS depart from RTS (own physics,
-   own brake modules)?
-2. **Saved situations:** placement only, or each car's full state
-   (switches, doors)? A DLL's own state is opaque: only what the host shows
-   could be kept.
-3. **Compartments:** a class of car, or rooms inside a car (a coach with
-   compartments and a conductor's room)?
-4. **Passengers:** in this step or later?
-5. **Lua modules:** the sandbox and a step budget (from the roadmap's Lua
-   plan).
+What drives a car is one interface, `CarModule` (`train.hpp`, the former
+`LocomotiveController`); the train runs as before.
+- **The modules:** `keyboard` (driving without a DLL), `dll` (a legacy
+  DLL's adapter, openRTS's cab brake devices over it), `plugin` (an
+  openRTS 64-bit plugin). RTS's physics and air stay the train's, the
+  default under every module.
+- **The car's signals:** a step a module reads `EngineInputs` (speed,
+  pipe, reservoirs, cylinders, the line) and sets `EngineDemands` (force,
+  pipe and reservoir rates, ЭПТ, the valve's УР, sanding, power).
+- **`name()`, `version()`, `reads()`, `save()`, `restore()`:** a saved
+  game has each module's own block, `k<car>.<name> <version>` with its keys
+  under `k<car>.<name>.`, and `modules 1`. A block of another module (the
+  car's system changed) or of a version the module does not read is left
+  out: it keeps its starting state. A save from before blocks (no
+  `modules`) is read as before. A DLL's own state stays the DLL host's
+  (`LegacyConsist::save_state`).
+- `Train::set_module()` / `module()`; modules move with their cars (a cut,
+  a coupling, a train turned).
+- One module a car for now; a car of several (its own brakes beside the
+  DLL) comes with the first such system.
+- **Tests:** `openrts.train` "module blocks" (the block written, restored;
+  an old save; another version and another module left out), the rest of
+  the suite unchanged.
+
+## The user's answers (2026-11-24)
+
+1. **Without Legacy:** as far as it can go, without overdoing it. RTS's
+   behaviour stays the default module; openRTS's own (physics, brakes) are
+   modules beside it, chosen. Content formats (.eng, .wag, .sd) stay as
+   they are; openRTS departs only where RTS is wrong or at its limit.
+2. **Saved situations:** each module has `save` / `restore`, in the module
+   interface from step 4 on.
+   - The DLL module saves only what its host sees (switches, pressures,
+     doors); a DLL's own state is opaque, so a restored one may behave a
+     little differently, and that is said.
+   - Each module writes its own block with its name and version; an
+     unknown module or an old version: the block is skipped, the module
+     starts with its defaults, no error.
+   - Order: the car's components (doors, lights, cab) first, then the
+     modules.
+   - The same saved state can bring a car to a computer that joins a
+     server late. Text, in the placements' manner.
+3. **What a car is:** four separate properties, then its rooms.
+   - **Class:** passenger, freight, locomotive, service.
+   - **Place in the train:** head or intermediate (a head car may be a
+     motor car; an intermediate one may have a cab too). Only as the
+     author marks it; unmarked: not set, and everything works as now. It
+     is the car's design; where it stands in the coupling now is worked
+     out apart (two ЭД9М coupled: the second's head car is in the middle,
+     still a head car).
+   - **Traction:** motor, trailer, none. Marked by the author; unmarked:
+     .eng motor, .wag none (trailer is never guessed).
+   - **Layout:** compartments, open sleeper, seats, locomotive. A
+     template, one file for many cars.
+   - **Rooms:** nodes of a graph joined by doors: compartment 1..N,
+     corridor, vestibule, toilet; for a locomotive cab 1, cab 2, engine
+     room, vestibule, service room. One mechanism for every class.
+   - RTS content has no layouts: they are openRTS's own files. A car
+     without one gets its class's default (a passenger car: one saloon and
+     vestibules; a locomotive: the cabs of its .sd). No car changes.
+     Whatever a property needs is turned on only for cars marked so.
+4. **Passengers:** later. The room graph is made so that people can be in
+   it (the engineer, a helper, passengers later).
+5. **Lua modules:** yes, a sandbox and a step budget. A Lua module has the
+   same interface as a C++ one, `save` / `restore` too; over its budget it
+   skips the step and the train does not hang.
+6. **The network (2026-11-24):** openRTS with openRTS only, no Legacy
+   path: no RTS clients, no RTS protocol, no server Legacy switch. The
+   server runs the trains: a client sends its input (controller, keys, cab
+   buttons), the server steps the modules and the physics and sends the
+   state to everyone; the client draws, plays the sounds, moves the cab
+   (a lever moves at once, the gauges come from the server, the train's
+   motion smoothed between the server's states). A DLL train runs on the
+   server through the x86 host (it cannot be predicted on the client). The
+   cab's own state goes only to that train's engineer. This follows step 5;
+   the RTS network code goes when it is built. Content compatibility stays
+   (DLLs, formats, RTS physics as the default modules).

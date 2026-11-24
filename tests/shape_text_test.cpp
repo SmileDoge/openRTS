@@ -236,6 +236,38 @@ void override_checks() {
     const auto dark_again = parse_shape_override(write_shape_override(dark));
     check(!dark.empty() && dark_again.night_textures == false && dark_again.prim_states.empty(),
           "NightTextures ( 0 ) written and read back");
+    // The lamps' editor: a shape's lamps in place of its .sd's.
+    ShapeOverride lit;
+    ShapeLight lamp;
+    lamp.position = {1.5f, 7.25f, -2.0f};
+    lamp.points_to = {1.5f, 0.0f, 3.0f};
+    lamp.radius = {9.0f, 6.5f};
+    lamp.colour = 0x80FFE0B0u;
+    lamp.flags = "light_cone night_auto positional";
+    lamp.distance = 400.0f;
+    lamp.attenuation = {2.0f, 0.3f, 0.9f};
+    lamp.spot_exponent = 0.25f;
+    lamp.source_radius = 0.1f;
+    lamp.light_fade = 1.5f;
+    lamp.array_count = 4;
+    lamp.array_step = {0.0f, 0.0f, 12.0f};
+    lamp.lumens = 15000.0f;
+    lamp.kelvin = 2000.0f;
+    lit.lights = std::vector<ShapeLight>{lamp, ShapeLight{.position = {0.0f, 3.0f, 0.0f}, .flags = "light_sphere running"}};
+    const auto lit_again = parse_shape_override(write_shape_override(lit));
+    const bool same_lamp = lit_again.lights && lit_again.lights->size() == 2 && (*lit_again.lights)[0].position == lamp.position
+                        && (*lit_again.lights)[0].points_to == lamp.points_to && (*lit_again.lights)[0].radius == lamp.radius
+                        && (*lit_again.lights)[0].colour == lamp.colour && (*lit_again.lights)[0].flags == lamp.flags
+                        && (*lit_again.lights)[0].distance == lamp.distance && (*lit_again.lights)[0].attenuation == lamp.attenuation
+                        && (*lit_again.lights)[0].spot_exponent == lamp.spot_exponent && (*lit_again.lights)[0].light_fade == lamp.light_fade
+                        && (*lit_again.lights)[0].array_count == 4 && (*lit_again.lights)[0].array_step == lamp.array_step
+                        && (*lit_again.lights)[0].lumens == 15000.0f && (*lit_again.lights)[0].kelvin == 2000.0f
+                        && (*lit_again.lights)[0].candela == 0.0f && (*lit_again.lights)[1].flags == "light_sphere running";
+    check(!lit.empty() && same_lamp, "an override's lamps written and read back");
+    ShapeOverride none_lit;
+    none_lit.lights = std::vector<ShapeLight>{};
+    const auto none_again = parse_shape_override(write_shape_override(none_lit));
+    check(none_again.lights && none_again.lights->empty(), "an override with no lamps keeps the shape dark");
 
     ShapeModel model;
     model.images = {"sign.ace", "platform.ace"};

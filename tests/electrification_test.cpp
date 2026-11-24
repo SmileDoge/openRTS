@@ -252,10 +252,11 @@ void test_load() {
         std::string error;
         check(train.place(*network, 1, 300.0, true, &error), "placed: " + error);
         // CarState::power comes from the step; set it through a controller.
-        struct Draw final : simulation::LocomotiveController {
+        struct Draw final : simulation::CarModule {
+            [[nodiscard]] std::string_view name() const override { return "test"; }
             void step(double, const simulation::EngineInputs&, simulation::EngineDemands& d) override { d.power = 3.3e6f; }
         };
-        train.set_controller(0, std::make_unique<Draw>());
+        train.set_module(0, std::make_unique<Draw>());
         train.step();
         line.apply(train, {1}, simulation::train_step);
         const auto burns = line.take_burns();
@@ -276,10 +277,11 @@ void test_load() {
         simulation::Train train({{.definition = &gradual}});
         std::string error;
         check(train.place(*network, 1, 300.0, true, &error), "placed: " + error);
-        struct Draw final : simulation::LocomotiveController {
+        struct Draw final : simulation::CarModule {
+            [[nodiscard]] std::string_view name() const override { return "test"; }
             void step(double, const simulation::EngineInputs&, simulation::EngineDemands& d) override { d.power = 2.5e6f; }
         };
-        train.set_controller(0, std::make_unique<Draw>());
+        train.set_module(0, std::make_unique<Draw>());
         train.step();
         float seconds = 0.0f;
         bool burnt = false;

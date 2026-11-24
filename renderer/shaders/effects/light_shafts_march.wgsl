@@ -94,7 +94,10 @@ fn beams_in_air(eye: vec3<f32>, dir: vec3<f32>, nearest: f32, jitter: f32) -> ve
         let dt = end * (2.0 * f32(i) + 1.0) / f32(steps * steps);
         light = light + beam_light(eye + dir * t) * exp(-sigma * t) * sigma * dt;
     }
-    return light * 0.4;
+    // 0.4 until v0.39.6: beside the lit flakes near the eye the haze from
+    // the lamps to them hardly showed, the beam seemed to start where the
+    // flakes do, metres off its lamp (testers 2026-11-24).
+    return light * 1.0;
 }
 
 @fragment

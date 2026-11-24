@@ -87,8 +87,11 @@ float distance_xz(const glm::vec3& a, const glm::vec3& b) {
     return std::hypot(a.x - b.x, a.z - b.z);
 }
 
+bool doorway_in_reach(const CabView& cab, const glm::vec3& feet, const formats::CabDoor& door);
+
 // The open outer door whose face a step out reaches: from `feet` by `going`
-// (cab coordinates) his front comes to the door's plane, inside its width.
+// (cab coordinates) his front comes to the door's plane, inside its width,
+// with nothing of the cab between him and it (doorway_in_reach).
 std::optional<std::size_t> doorway_reached(const CabView& cab, const glm::vec3& feet, const glm::vec3& going) {
     const glm::vec2 g{going.x, going.z};
     if (glm::length(g) < 1e-6f) return std::nullopt;
@@ -107,6 +110,7 @@ std::optional<std::size_t> doorway_reached(const CabView& cab, const glm::vec3& 
         float half = 0.45f; // a door with only a point: about a doorway
         if (has_plane(d)) half = std::abs(glm::dot(glm::vec2{d.plane.a[0] - d.plane.b[0], d.plane.a[2] - d.plane.b[2]}, across)) * 0.5f;
         if (std::abs(glm::dot(from_mid, across)) > half + 0.1f) continue;
+        if (!doorway_in_reach(cab, feet, d)) continue;
         return i;
     }
     return std::nullopt;
@@ -190,6 +194,32 @@ std::optional<glm::vec3> nearest_plane_point(const CabView& cab, const float x, 
     for (std::size_t i = 0; i < sd.doors.size(); ++i)
         if (has_plane(sd.doors[i]) && cab.door_open(i)) consider(sd.doors[i].plane);
     return best;
+}
+
+// Nothing of the cab between `feet` and the doorway of `door` (testers
+// 2026-11-24: the ВЛ10's open outer door let him out through the cab's wall
+// from the room behind it): with the cab's surfaces, none crossed at his
+// waist and head on the way to it (the door's own leaf is left out, as
+// walking leaves it); without them, a floor all the way (a plane or an open
+// door's plane: the rooms' floors are apart where a wall stands).
+bool doorway_in_reach(const CabView& cab, const glm::vec3& feet, const formats::CabDoor& door) {
+    glm::vec3 to = door_point(door);
+    to.y = feet.y;
+    if (const auto* surfaces = cab.collision(); surfaces && !surfaces->empty()) {
+        for (const float h : {0.95f, 1.45f}) {
+            const glm::vec3 lift{0.0f, h, 0.0f};
+            if (surfaces->crosses(feet + lift, to + lift, cab.skip())) return false;
+        }
+        return true;
+    }
+    if (!walks_on_planes(cab)) return true;
+    const float length = distance_xz(feet, to);
+    const int steps = (std::max)(1, static_cast<int>(std::ceil(length / 0.1f)));
+    for (int k = 0; k <= steps; ++k) {
+        const glm::vec3 p = feet + (to - feet) * (static_cast<float>(k) / static_cast<float>(steps));
+        if (footing(cab, p.x, p.z, feet.y + 0.6f).kind == Footing::Kind::none) return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -444,7 +474,7 @@ std::optional<std::size_t> Engineer::open_door_near(const CabView& cab, const bo
         if (!has_point(doors[i]) || !cab.door_open(i)) continue;
         if (exterior ? !is_exterior(doors[i]) : !is_passage(doors[i])) continue;
         const float d = distance_xz(feet_, door_point(doors[i]));
-        if (d <= nearest) {
+        if (d <= nearest && doorway_in_reach(cab, feet_, doors[i])) {
             nearest = d;
             best = i;
         }

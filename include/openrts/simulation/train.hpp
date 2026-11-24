@@ -148,18 +148,29 @@ struct EngineInputs {
     float line_frequency{};
 };
 
-// Source of a locomotive's demands: the built-in keyboard controller now;
-// legacy DLLs and openRTS plugins later (docs/train-dll.md).
-class LocomotiveController {
+// One of a car's systems (cars as entities, step 4, docs/car-architecture.md):
+// what drives an engine. The keyboard driver, a legacy DLL (its adapter), an
+// openRTS plugin; later the replaceable train systems. A step it reads its
+// car's signals (EngineInputs) and sets the car's demands (EngineDemands);
+// the train's physics, air and couplers do the rest.
+class CarModule {
 public:
-    virtual ~LocomotiveController() = default;
+    virtual ~CarModule() = default;
+    // Its kind ("keyboard", "dll", "plugin"): a saved block is its name's.
+    [[nodiscard]] virtual std::string_view name() const = 0;
+    // Its saved block's layout; a block of another version is not read.
+    [[nodiscard]] virtual int version() const { return 1; }
+    // Whether it reads a block `saved` wrote (the same version by default;
+    // a newer module may read its older blocks).
+    [[nodiscard]] virtual bool reads(const int saved) const { return saved == version(); }
     virtual void step(double dt, const EngineInputs& inputs, EngineDemands& demands) = 0;
-    // The controller's valve is made for RTS's triple valve (legacy DLLs):
+    // The module's valve is made for RTS's triple valve (legacy DLLs):
     // the train keeps BrakeModel::rts.
     [[nodiscard]] virtual bool rts_brakes() const { return false; }
-    // A saved game (Train::save_state): what the controller keeps between
-    // steps (its handles, its valve, its compressor's governor), under keys
-    // starting with `prefix`. Nothing by default.
+    // A saved game (Train::save_state): what the module keeps between steps
+    // (its handles, its valve, its compressor's governor), under keys
+    // starting with `prefix`. Nothing by default. A DLL's own state is the
+    // DLL host's (LegacyConsist::save_state), not this.
     virtual void save(StateWriter& /*out*/, std::string_view /*prefix*/) const {}
     virtual void restore(const StateReader& /*in*/, std::string_view /*prefix*/) {}
 };
@@ -213,11 +224,12 @@ struct CompressorRange {
 };
 [[nodiscard]] CompressorRange compressor_range(const formats::EngineDefinition* engine) noexcept;
 
-class KeyboardController final : public LocomotiveController {
+class KeyboardController final : public CarModule {
 public:
     using BrakeHandle = DriverHandles::BrakeHandle;
 
     KeyboardController(std::shared_ptr<DriverHandles> handles, bool master);
+    [[nodiscard]] std::string_view name() const override { return "keyboard"; }
     void step(double dt, const EngineInputs& inputs, EngineDemands& demands) override;
     void save(StateWriter& out, std::string_view prefix) const override;
     void restore(const StateReader& in, std::string_view prefix) override;
@@ -571,11 +583,12 @@ public:
     void stop_slide(std::size_t index);
     [[nodiscard]] bool placed() const noexcept { return network_ != nullptr; }
 
-    // Controllers drive engines; cars without one get no demands.
-    void set_controller(std::size_t car, std::unique_ptr<LocomotiveController> controller);
+    // Modules drive engines; cars without one get no demands. They move
+    // with their cars (a cut, a coupling, a train turned).
+    void set_module(std::size_t car, std::unique_ptr<CarModule> module);
     // Bogie distances from the car centre, along the train (front, rear).
     void set_bogies(std::size_t car, float ahead, float behind);
-    [[nodiscard]] LocomotiveController* controller(std::size_t car);
+    [[nodiscard]] CarModule* module(std::size_t car);
 
     // One step of train_step seconds; nothing while asleep.
     void step();

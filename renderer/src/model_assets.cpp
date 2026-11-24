@@ -248,6 +248,7 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
     // ( 0 ) drops the night from its alternative textures (256 none, 257 the
     // snow alone), so every key made of them agrees.
     const auto own = find_shape_override(vfs, shape);
+    if (own.lights) result.lights = *own.lights; // the inspector's lamps over the .sd's
     if (own.night_textures && !*own.night_textures) {
         if (result.alternative_texture == 0x100) result.alternative_texture = 0;
         else if (result.alternative_texture == 0x101) result.alternative_texture = 1;

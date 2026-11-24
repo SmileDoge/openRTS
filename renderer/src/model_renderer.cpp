@@ -1150,6 +1150,10 @@ const std::vector<formats::ShapeLight>& RenderModel::lights() const noexcept {
     return impl_ ? impl_->lights : none;
 }
 
+void RenderModel::set_lights(std::vector<formats::ShapeLight> lights) {
+    if (impl_) impl_->lights = std::move(lights);
+}
+
 ModelAnimationInfo RenderModel::animation() const noexcept {
     if (!impl_ || !impl_->rig || impl_->rig->animations.empty()) return {};
     const auto& animation = impl_->rig->animations.front();

@@ -388,6 +388,60 @@ void test_save_restore(const Stock& stock, const simulation::BrakeModel model) {
     check(worst_air < 1e-3f, std::string("restored (") + name + "): its air the same");
 }
 
+// Each module saves its own block (cars as entities, step 4): "k<car>.<name>
+// <version>" and its keys under it. A save from before blocks still gives
+// the handles back; a block of another version, or another module's, is
+// left out and the module keeps its starting state.
+void test_module_blocks(const Stock& stock) {
+    using Handle = simulation::DriverHandles::BrakeHandle;
+    Run a(stock, {}, 1500.0);
+    a.driver->reverser = 1;
+    a.driver->brake = Handle::lap;
+    simulation::StateWriter saved;
+    a.train.save_state(saved);
+    const std::string text = saved.text();
+    std::size_t car = 0;
+    while (car < a.train.cars().size() && !a.train.module(car)) ++car;
+    const auto key = "k" + std::to_string(car) + ".keyboard";
+    check(text.find(key + " 1\n") != std::string::npos && text.find(key + ".handles ") != std::string::npos,
+          "a module's block: its name, version, keys");
+
+    const auto restored = [&](const std::string& with) {
+        Run b(stock, {}, 1500.0);
+        b.train.restore_state(simulation::StateReader(with));
+        return b.driver->brake == Handle::lap && b.driver->reverser == 1;
+    };
+    check(restored(text), "the block restores the handles");
+
+    std::string old, other;
+    std::istringstream lines(text);
+    for (std::string line; std::getline(lines, line);) {
+        if (line.rfind(key + " ", 0) == 0) {
+            other += key + " 7\n";
+            continue;
+        }
+        other += line + "\n";
+        if (line.rfind("modules ", 0) == 0) continue;
+        if (line.rfind(key + ".", 0) == 0) line.erase(key.size() - std::string("keyboard").size(), std::string("keyboard.").size());
+        old += line + "\n";
+    }
+    check(old.find(".keyboard") == std::string::npos && restored(old), "a save from before blocks: the handles back");
+    check(!restored(other), "a block of another version is left out");
+
+    struct Other final : simulation::CarModule {
+        [[nodiscard]] std::string_view name() const override { return "other"; }
+        void step(double, const simulation::EngineInputs&, simulation::EngineDemands&) override {}
+        void restore(const simulation::StateReader&, std::string_view) override { read = true; }
+        bool read = false;
+    };
+    Run c(stock, {}, 1500.0);
+    auto module = std::make_unique<Other>();
+    auto* seen = module.get();
+    c.train.set_module(car, std::move(module));
+    c.train.restore_state(simulation::StateReader(text));
+    check(!seen->read, "another module's block is not read");
+}
+
 // The brakes' condition (docs/train.md "Brake condition"): drawn per car
 // from the seed, worse with a lower condition, kept by a save; the pipe
 // left in III loses more the worse; the pressing follows the rigging and
@@ -1311,12 +1365,13 @@ void test_realistic_air(const Stock& stock) {
         check(c.cars()[1].ep_fill == 1.0f, "1 atm/s until drawn");
     }
     {
-        struct RtsValve final : simulation::LocomotiveController {
+        struct RtsValve final : simulation::CarModule {
+            [[nodiscard]] std::string_view name() const override { return "test"; }
             void step(double, const simulation::EngineInputs&, simulation::EngineDemands&) override {}
             [[nodiscard]] bool rts_brakes() const override { return true; }
         };
         Run r(stock, settings, 1000.0);
-        r.train.set_controller(0, std::make_unique<RtsValve>());
+        r.train.set_module(0, std::make_unique<RtsValve>());
         check(r.train.brake_model() == simulation::BrakeModel::rts, "a legacy valve keeps the RTS model");
     }
     // The wagons' distributor in Luau (ORTSBrakeDistributor,
@@ -1511,7 +1566,8 @@ void test_broken_and_sand(const Stock& stock) {
 // force against mass x 10 x Adheasion[1], x Adheasion[0] after a slip; by
 // motor when the .eng names their axles.
 void test_wheel_slip(const Stock& stock) {
-    struct Puller final : simulation::LocomotiveController {
+    struct Puller final : simulation::CarModule {
+        [[nodiscard]] std::string_view name() const override { return "test"; }
         float force = 0.0f;
         std::array<float, 8> motors{};
         std::uint8_t count = 0;
@@ -1529,7 +1585,7 @@ void test_wheel_slip(const Stock& stock) {
         check(t.place(*network, 1, 500.0, true, &error), "placed: " + error);
         auto made = std::make_unique<Puller>();
         auto* p = made.get();
-        t.set_controller(0, std::move(made));
+        t.set_module(0, std::move(made));
         p->force = 350000.0f;
         t.step();
         check(t.cars()[0].wheelslip == 15 && t.cars()[0].force == 0.0f, "over the adhesion it slips (Wheelslip 15) and pulls nothing");
@@ -1553,7 +1609,7 @@ void test_wheel_slip(const Stock& stock) {
         check(t.place(*network, 1, 500.0, true, &error), "placed: " + error);
         auto made = std::make_unique<Puller>();
         auto* p = made.get();
-        t.set_controller(0, std::move(made));
+        t.set_module(0, std::move(made));
         p->force = 200000.0f;
         p->motors = {170000.0f, 30000.0f};
         p->count = 2;
@@ -1579,7 +1635,7 @@ void test_wheel_slip(const Stock& stock) {
         check(t.place(*network, 1, 500.0, true, &error), "placed: " + error);
         auto made = std::make_unique<Puller>();
         auto* p = made.get();
-        t.set_controller(0, std::move(made));
+        t.set_module(0, std::move(made));
         p->count = 4;
         p->force = 100000.0f;
         t.step();
@@ -1836,6 +1892,53 @@ Train ( TrainCfg ( "c"
               "the rules leave a 2ТЭ10УТ (passenger) as its file gives it, no 418");
         check(formats::set_override_sensor418(formats::set_override_sensor418("", false), std::nullopt).empty(),
               "ORTSBrakeSensor418 taken out again: no companion left");
+        // The lamps' editor: a car's lights kept in its companion, over the
+        // file's (Lights and RTSLights), its other entries kept.
+        {
+            formats::LightDefinition head;
+            head.type = 1;
+            head.headlight = 3;
+            head.unit = 2;
+            head.fade_in = 0.5f;
+            head.attenuation = {2.0f, 0.2f, 0.7f};
+            head.spot_exponent = 0.5f * 128.0f;
+            head.candela = 200000.0f;
+            head.kelvin = 4500.0f;
+            head.states.push_back({.colour = 0xFFFFF0E0u, .position = {0.3f, 2.1f, 9.4f}, .azimuth = {0.0f, 1.5f, 0.0f},
+                                   .elevation = {2.0f, 0.0f, 0.0f}, .radius = 450.0f, .angle = 6.5f, .source_radius = 0.2f});
+            formats::LightDefinition glow;
+            glow.texture = "Common.Snd/lamp.ace";
+            glow.states.push_back({.colour = 0xC0FFFFFFu, .position = {-0.3f, 2.1f, 9.5f}, .radius = 0.25f});
+            const std::vector<formats::LightDefinition> lights{head, formats::LightDefinition{}, glow};
+            const auto companion = formats::set_override_lights(formats::set_override_sensor418("", true), lights);
+            const auto folder = set / "lamps";
+            std::filesystem::create_directories(folder);
+            auto lamp_eng = eng;
+            lamp_eng.replace(lamp_eng.find(plain), plain.size(),
+                             plain + " Lights ( 1 Light ( Type ( 0 ) States ( 1 State ( Position ( 0 1 0 ) Radius ( 1 ) ) ) ) )\n"
+                                     " RTSLights ( 1 RTSLight ( Type ( 0 ) States ( 1 State ( Position ( 0 2 0 ) Radius ( 1 ) ) ) ) )\n");
+            std::ofstream(folder / "lamps.eng", std::ios::binary) << lamp_eng;
+            std::ofstream(folder / "lamps.eng.openrts", std::ios::binary) << companion;
+            core::Vfs lamp_vfs;
+            lamp_vfs.mount_directory(work);
+            lamp_vfs.build_index();
+            const auto loaded = formats::load_wagon(lamp_vfs, "lamps", "lamps", true);
+            const auto& l = loaded.lights;
+            const bool same = l.size() == 3 && l[0].type == 1 && l[0].headlight == 3 && l[0].unit == 2 && l[0].fade_in == 0.5f
+                           && l[0].attenuation == head.attenuation && l[0].spot_exponent == head.spot_exponent && l[0].states.size() == 1
+                           && l[0].candela == 200000.0f && l[0].kelvin == 4500.0f && l[0].lumens == 0.0f
+                           && l[0].states[0].position == head.states[0].position && l[0].states[0].azimuth == head.states[0].azimuth
+                           && l[0].states[0].elevation == head.states[0].elevation && l[0].states[0].radius == 450.0f
+                           && l[0].states[0].angle == 6.5f && l[0].states[0].colour == 0xFFFFF0E0u && l[1].states.empty()
+                           && core::fold_case(l[2].texture) == "common.snd/lamp.ace" && l[2].states.size() == 1
+                           && l[2].states[0].colour == 0xC0FFFFFFu;
+            check(loaded.ok() && same, "a car's lights from its companion, in place of its file's (RTSLights too)");
+            check(loaded.brakes.sensor418 == true, "the companion's other entries kept beside the lights");
+            const auto again = formats::set_override_lights(companion, lights);
+            check(again == companion, "the lights written over the same: the companion unchanged");
+            check(formats::set_override_lights(formats::set_override_lights("", lights), std::nullopt).empty(),
+                  "the lights taken out again: no companion left");
+        }
         std::filesystem::remove_all(work);
     }
     const auto shod = formats::parse_consist(R"(SIMISA@@@@@@@@@@JINX0D0t______
@@ -1903,6 +2006,7 @@ int main() {
     test_travel_after_stop(stock);
     test_save_restore(stock, simulation::BrakeModel::rts);
     test_save_restore(stock, simulation::BrakeModel::realistic);
+    test_module_blocks(stock);
     test_rail_joints(stock);
     test_slide_off(stock);
     test_overturn(stock);

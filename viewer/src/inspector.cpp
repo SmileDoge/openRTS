@@ -213,6 +213,7 @@ void Inspector::add_selection_lines(const InspectorWorld& world, std::vector<ren
     }
     static constexpr int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
     for (const auto& edge : edges) lines.push_back({corners[edge[0]], corners[edge[1]], 0xff20e0ffu, 2.5f});
+    add_lamp_lines(world, chosen->shape, chosen->transform, lines);
 }
 
 std::string Inspector::report(const InspectorWorld& world) const {
@@ -539,6 +540,7 @@ void Inspector::draw_properties(const InspectorWorld& world) {
         }
         ImGui::EndTable();
     }
+    draw_lamps(world, chosen->shape);
     draw_materials(world, chosen->shape);
     draw_pbr_material(world, chosen->shape);
     ImGui::End();

@@ -4,6 +4,7 @@
 #include <openrts/net/placement.hpp>
 #include <openrts/core/profile.hpp>
 
+#include <openrts/renderer/photometric.hpp>
 #include <openrts/renderer/route_space.hpp>
 
 #include <algorithm>
@@ -1623,7 +1624,7 @@ void TrainView::reattach_driver(const DrivenKeys* keep) {
         for (std::size_t i = 0; i < cars.size(); ++i)
             if (cars[i].key == keep->cab) master = i;
     }
-    for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_controller(i, nullptr);
+    for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_module(i, nullptr);
     const auto old = driver_ ? std::optional<simulation::DriverHandles>{*driver_} : std::nullopt;
     driver_ = simulation::attach_keyboard_driver(train, master);
     if (driver_ && old) {
@@ -1806,7 +1807,7 @@ bool TrainView::reconsist_host() {
         // one sent off with a path keeps its driver.
         if (t == 0 || unit.role != Role::standing || unit.remote) continue;
         for (std::size_t i = 0; i < unit.cars.size(); ++i)
-            if (legacy_->has_dll(t, i)) unit.train->set_controller(i, legacy_->controller(t, i));
+            if (legacy_->has_dll(t, i)) unit.train->set_module(i, legacy_->controller(t, i));
     }
     return true;
 }
@@ -1854,7 +1855,7 @@ bool TrainView::take_over_host_unit() {
     if (player == SIZE_MAX) player = first;
     if (player == SIZE_MAX) return false;
     auto& train = *unit.train;
-    for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_controller(i, nullptr);
+    for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_module(i, nullptr);
     driver_ = simulation::attach_keyboard_driver(train, player);
     if (!reconsist_host()) return false;
     if (legacy_->player() != player && !legacy_->enter(player, train, unit.start_state.value_or(-1))) return false;
@@ -1900,11 +1901,12 @@ void TrainView::attach_native() {
             return;
         }
         native_ = std::move(loaded);
-        std::fprintf(stderr, "native plugin: %s on car %zu\n", native_->name().c_str(), cab_car_ + 1);
+        std::fprintf(stderr, "native plugin: %s on car %zu\n", native_->plugin_name().c_str(), cab_car_ + 1);
     }
     native_car_ = cab_car_;
     // The train's controller forwards to the plugin the viewer keeps.
-    struct Forward final : simulation::LocomotiveController {
+    struct Forward final : simulation::CarModule {
+        [[nodiscard]] std::string_view name() const override { return "plugin"; }
         std::shared_ptr<trainplugin::NativeLocomotive> plugin;
         void step(double dt, const simulation::EngineInputs& inputs, simulation::EngineDemands& demands) override {
             plugin->step(dt, inputs, demands);
@@ -1912,7 +1914,7 @@ void TrainView::attach_native() {
     };
     auto forward = std::make_unique<Forward>();
     forward->plugin = native_;
-    unit.train->set_controller(native_car_, std::move(forward));
+    unit.train->set_module(native_car_, std::move(forward));
     native_->set_player(true);
     if (cab_) {
         for (const auto& s : cab_->description().switches) {
@@ -2182,7 +2184,7 @@ void TrainView::change_cab(const std::size_t car) {
         // where a cab not driven from stands.
         auto& train = *unit.train;
         const auto keep = driver_ ? std::optional<simulation::DriverHandles>{*driver_} : std::nullopt;
-        for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_controller(i, nullptr);
+        for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_module(i, nullptr);
         driver_ = simulation::attach_keyboard_driver(train, car);
         if (driver_ && keep) {
             const auto notches = driver_->notches;
@@ -2341,7 +2343,7 @@ void TrainView::split(const std::size_t unit_index, const std::size_t index, con
         cuts_.push_back({from, unit.train->id(), cut.train->id(), index, swapped});
         if (cuts_.size() > 16) cuts_.erase(cuts_.begin());
     }
-    for (std::size_t i = 0; i < cut.train->cars().size(); ++i) cut.train->set_controller(i, nullptr);
+    for (std::size_t i = 0; i < cut.train->cars().size(); ++i) cut.train->set_module(i, nullptr);
     cut.name = unit.name + " (cut)";
     cut.freight = unit.freight;
     cut.category = unit.category; // a part keeps its train's (RTS: the new train takes its kind)
@@ -2569,7 +2571,7 @@ void TrainView::step_trains() {
 
 void TrainView::attach_role(Unit& unit) {
     auto& train = *unit.train;
-    for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_controller(i, nullptr);
+    for (std::size_t i = 0; i < train.cars().size(); ++i) train.set_module(i, nullptr);
     unit.traffic.reset();
     train.set_kinematic(false);
     if (unit.role == Role::ai) {
@@ -3068,8 +3070,12 @@ BrakeSettingsStatus TrainView::brake_settings_status() {
     const auto& engine = *train.cars()[car].definition->engine;
     const auto parameters = brakes_parameters_of(engine);
     if (!parameters.present) return out;
+    // MaDaDev's Brakes.dll, loaded, keeps a train under 40 km/h unless the
+    // game was started by MDD Launcher (testers 2026-11-24: "it will not go
+    // over 40" on the ЭР9ПК and the ЧС7 with openRTS's brakes chosen).
+    const char* launcher = tr(" While Brakes.dll is loaded, it lets the train go no faster than 40 km/h unless the game was started from MDD Launcher.");
     if (!realistic_air_ || dll_air_ == 0) {
-        out.train = tr("RTS's air and Brakes.dll.");
+        out.train = std::string(tr("RTS's air and Brakes.dll.")) + launcher;
         return out;
     }
     std::string text = own_brakes_ == 1 && parameters.understood() ? tr("openRTS's brakes") : tr("Brakes.dll's brakes");
@@ -3093,13 +3099,14 @@ BrakeSettingsStatus TrainView::brake_settings_status() {
             const char* why = reason == "no КЛУБ"          ? tr("the locomotive has no КЛУБ")
                               : reason == "speed recorder" ? tr("its speed recorder is still Brakes.dll's")
                               : reason == "КПД-3"          ? tr("its КПД-3 is still Brakes.dll's")
-                              : reason == "УКБМ / МУ"      ? tr("its УКБМ is still Brakes.dll's")
+                              : reason == "МУ"             ? tr("its МУ blocks are still Brakes.dll's")
                                                            : nullptr;
             text += why ? trf("Brakes.dll stays: %s.", why) : trf("Brakes.dll stays: a brake device openRTS does not have yet (%s).", reason.c_str());
         }
     } else {
         text += ".";
     }
+    if (!stubbed) text += launcher;
     out.train = text;
     return out;
 }
@@ -4372,7 +4379,7 @@ bool TrainView::give_away(const std::uint64_t id) {
     unit->remote = true;
     unit->traffic.reset();
     unit->train->set_kinematic(false);
-    for (std::size_t i = 0; i < unit->train->cars().size(); ++i) unit->train->set_controller(i, nullptr);
+    for (std::size_t i = 0; i < unit->train->cars().size(); ++i) unit->train->set_module(i, nullptr);
     unit->train->set_asleep(true);
     dispatcher_->clear(id);
     shared_sound_.erase(id);
@@ -8337,7 +8344,7 @@ std::string TrainView::car_menu_report() const {
 std::string TrainView::systems_report() const {
     std::string text = std::to_string(light_glows_.size()) + " light glows, " + std::to_string(light_beams_.size()) + " beams, "
         + std::to_string(interior_lights_.size()) + " cab lamps, " + std::to_string(cab_texture_changes_) + " cab texture changes";
-    if (native_) text += "; native plugin '" + native_->name() + "' on car " + std::to_string(native_car_ + 1);
+    if (native_) text += "; native plugin '" + native_->plugin_name() + "' on car " + std::to_string(native_car_ + 1);
     char line[200];
     for (const auto& unit : units_) {
         const auto& states = unit.train->cars();
@@ -10285,6 +10292,84 @@ void TrainView::update_neighbour_rooms(const float elapsed, const glm::vec3& eye
     }
 }
 
+// A car's light in the car's shape (its State `s`; `turned`: a DLL's flag
+// 16, the light turned round).
+glm::mat4 TrainView::car_light_local(const formats::LightDefinition& light, const formats::LightState& s, const bool turned) {
+    float yaw = glm::radians(s.azimuth[1]);
+    if (turned) yaw += pi;
+    // RTS (loader 0x50036C): X angle -Elevation, Y angle Azimuth + pi, the
+    // lamp facing its -Z (OpenGL's). In ours, facing +Z, that is a turn by
+    // +Elevation: a positive Elevation dips (the 2ES4k's headlights, +3), a
+    // negative one lifts (the ChS7's roof lamp on its sloping front, -38).
+    const float pitch = glm::radians(s.elevation[0]);
+    glm::mat4 local = glm::translate(glm::mat4{1.0f}, glm::vec3{s.position[0], s.position[1], s.position[2]});
+    local = glm::rotate(local, yaw, glm::vec3{0.0f, 1.0f, 0.0f});
+    local = glm::rotate(local, pitch, glm::vec3{1.0f, 0.0f, 0.0f});
+    // RTS (the car's light objects, 0x4F11A7): a light source (Type 1) for
+    // the train's last car (Unit 3 or 5) is written as if at the front and
+    // turned round the car's middle (Position x and z negated, its angle +
+    // 180). The VL80T's rear section has its marker beams at +7.6 (the
+    // coupling end) and their glows, not turned, at -7.6 (its cab).
+    if (light.type != 0 && (light.unit == 3 || light.unit == 5)) local = glm::rotate(glm::mat4{1.0f}, pi, glm::vec3{0.0f, 1.0f, 0.0f}) * local;
+    return local;
+}
+
+std::vector<formats::LightDefinition>* TrainView::car_lights(const std::uint64_t train, const std::size_t car) {
+    auto* unit = find_unit(train);
+    if (!unit || car >= unit->cars.size() || !unit->cars[car].definition) return nullptr;
+    for (auto& owned : stock_)
+        if (owned.get() == unit->cars[car].definition) return &owned->lights;
+    return nullptr;
+}
+
+std::string TrainView::save_car_lights(const std::uint64_t train, const std::size_t car, const std::string& mod) {
+    auto* unit = find_unit(train);
+    auto* lights = car_lights(train, car);
+    if (!unit || !lights) return tr("no such car");
+    if (install_root_.empty()) return tr("no installation to keep the mod in");
+    const auto kept = *lights;
+    if (!mod.empty()) remember("inspector_mod", mod);
+    bool listed = false;
+    std::string error;
+    (void)keep_in_companion(
+        unit->cars[car], [&](const std::string_view old) { return formats::set_override_lights(old, kept); },
+        [&](formats::WagonDefinition& owned) { owned.lights = kept; }, listed, error);
+    if (!error.empty()) return error;
+    std::string text = trf("%s: %zu lights kept in MODS_OPENRTS/%s", unit->cars[car].file.c_str(), kept.size(), edits_mod().c_str());
+    if (listed) text += std::string(" ") + tr("(the mod was added to openrts.ini)");
+    return text;
+}
+
+void TrainView::revert_car_lights(const std::uint64_t train, const std::size_t car) {
+    auto* unit = find_unit(train);
+    auto* lights = car_lights(train, car);
+    if (!unit || !lights || !vfs_) return;
+    const auto& c = unit->cars[car];
+    auto fresh = formats::load_wagon(*vfs_, c.folder, c.file, c.engine, stock_rules());
+    if (fresh.ok()) *lights = std::move(fresh.lights);
+}
+
+void TrainView::hold_car_light(const std::uint64_t train, const std::size_t car, const std::optional<std::pair<std::size_t, std::size_t>> light) {
+    const auto* unit = find_unit(train);
+    held_light_type_ = light && unit && car < unit->cars.size() ? unit->cars[car].definition : nullptr;
+    if (light) {
+        held_light_ = light->first;
+        held_light_state_ = light->second;
+    }
+}
+
+std::optional<glm::mat4> TrainView::car_light_place(const std::uint64_t train, const std::size_t car, const std::size_t light,
+                                                    const std::size_t state) const {
+    const auto* unit = find_unit(train);
+    if (!unit || car >= unit->cars.size() || !unit->cars[car].definition) return std::nullopt;
+    const auto& lights = unit->cars[car].definition->lights;
+    if (light >= lights.size() || lights[light].states.empty()) return std::nullopt;
+    const auto body = body_pose(*unit, car, !(unit == &units_.front() && viewing_inside() && car == engineer_car_));
+    if (!body) return std::nullopt;
+    const auto& l = lights[light];
+    return body->transform * car_light_local(l, l.states[(std::min)(state, l.states.size() - 1)], false);
+}
+
 void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
     // Every train's lights a frame: the ЭД9М's head cars have 920 each (its
     // route board's 900 dots, MARSHUZ), a matrix a lit one.
@@ -10415,34 +10500,21 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
         for (std::size_t k = 0; k < lights.size(); ++k) {
             const auto& light = lights[k];
             const std::uint32_t flags = out && k < out->light_flags.size() ? out->light_flags[k] : 0u;
-            const bool on = !light.states.empty() && (out ? (flags & 9u) != 0 : (k < wanted.size() && wanted[k]));
+            const bool held = held_light_type_ == car.definition && held_light_ == k && !light.states.empty();
+            const bool on = held || (!light.states.empty() && (out ? (flags & 9u) != 0 : (k < wanted.size() && wanted[k])));
             auto& runner = car_lights.runners[k];
             runner.step(light, on, elapsed);
+            if (held) {
+                // The inspector's: full on in its State, at once (paused too).
+                runner.level = 1.0f;
+                runner.state = (std::min)(held_light_state_, light.states.size() - 1);
+            }
             if (car_lights.lit.size() != lights.size()) car_lights.lit.assign(lights.size(), 0);
             car_lights.lit[k] = on ? 1 : 0;
             const float level = runner.level;
             if (level <= 0.0f || !body) continue;
             const auto& s = light.states[(std::min)(runner.state, light.states.size() - 1)];
-            float yaw = glm::radians(s.azimuth[1]);
-            if (flags & 16u) yaw += pi;
-            // RTS (loader 0x50036C): X angle -Elevation, Y angle Azimuth + pi,
-            // the lamp facing its -Z (OpenGL's). In ours, facing +Z, that is a
-            // turn by +Elevation: a positive Elevation dips (the 2ES4k's
-            // headlights, +3), a negative one lifts (the ChS7's roof lamp on
-            // its sloping front, -38).
-            const float pitch = glm::radians(s.elevation[0]);
-            glm::mat4 local = glm::translate(glm::mat4{1.0f}, glm::vec3{s.position[0], s.position[1], s.position[2]});
-            local = glm::rotate(local, yaw, glm::vec3{0.0f, 1.0f, 0.0f});
-            local = glm::rotate(local, pitch, glm::vec3{1.0f, 0.0f, 0.0f});
-            // RTS (the car's light objects, 0x4F11A7): a light source (Type 1)
-            // for the train's last car (Unit 3 or 5) is written as if at the
-            // front and turned round the car's middle (Position x and z
-            // negated, its angle + 180). The VL80T's rear section has its
-            // marker beams at +7.6 (the coupling end) and their glows, not
-            // turned, at -7.6 (its cab).
-            if (light.type != 0 && (light.unit == 3 || light.unit == 5))
-                local = glm::rotate(glm::mat4{1.0f}, pi, glm::vec3{0.0f, 1.0f, 0.0f}) * local;
-            const glm::mat4 world = body->transform * local;
+            const glm::mat4 world = body->transform * car_light_local(light, s, (flags & 16u) != 0);
             const glm::vec3 at{world[3]};
             const glm::vec3 forward = glm::normalize(glm::vec3{world[2]});
             const std::uint32_t argb = s.colour;
@@ -10486,13 +10558,173 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
             beam.light.kind = static_cast<float>(light.type);
             beam.light.spot_exponent = light.spot_exponent;
             beam.light.attenuation = glm::vec4{light.attenuation[0], light.attenuation[1], light.attenuation[2], 0.0f};
+            // openRTS's photometric light (the experimental path), faded as the rest.
+            const auto photometric = renderer::photometric_light(light.candela, light.lumens, light.kelvin,
+                                                                 glm::radians(std::clamp(s.angle, 0.5f, 89.0f)),
+                                                                 glm::pow(glm::vec3{r, g, b}, glm::vec3{2.2f}));
+            beam.light.photometric = glm::vec4{glm::vec3{photometric} * level, photometric.w};
             beam.distance = glm::distance(eye, at);
             beams.push_back(beam);
         }
     }
     }
+    {
+        std::vector<renderer::ModelExtraLight> arc_lights;
+        std::vector<float> arc_distances;
+        update_arcs(elapsed, eye, arc_lights, arc_distances);
+        for (std::size_t k = 0; k < arc_lights.size(); ++k) beams.push_back({arc_lights[k], arc_distances[k]});
+    }
     std::sort(beams.begin(), beams.end(), [](const Beam& x, const Beam& y) { return x.distance < y.distance; });
     for (std::size_t k = 0; k < beams.size() && k < 9; ++k) light_beams_.push_back(beams[k].light);
+}
+
+// openRTS's pantograph arcs (pantograph_arcs.hpp). Each pantograph's head
+// meets the wire over its PANTOGRAPH node's place along the car, at the
+// contact wire's height (6.25 m over the rails, which the shapes stand on).
+// At the wire: its animation at its top (as pantographs_up takes it),
+// without one what is wanted up. Live: the line's voltage at the car (none
+// modelled: live).
+void TrainView::update_arcs(const float elapsed, const glm::vec3& eye, std::vector<renderer::ModelExtraLight>& lights,
+                            std::vector<float>& distances) {
+    constexpr float wire_height = 6.25f;
+    std::vector<ArcPantograph> pantographs;
+    for (std::size_t u = 0; u < units_.size(); ++u) {
+        auto& unit = units_[u];
+        if (!unit.train || !unit.train->placed() || unit.current.empty()) continue;
+        const auto& states = unit.train->cars();
+        if (states.empty()) continue;
+        const auto head = pose(unit, 0).front, tail = pose(unit, states.size() - 1).rear;
+        if (glm::distance(head, eye) > 1500.0f && glm::distance(tail, eye) > 1500.0f) continue;
+        // The way it runs: towards the train front, or back.
+        glm::vec3 way = head - tail;
+        if (glm::length(way) < 1e-3f) way = {0.0f, 0.0f, 1.0f};
+        way = glm::normalize(way) * (unit.train->speed() < -0.1 ? -1.0f : 1.0f);
+        const std::size_t first = pantographs.size();
+        for (std::size_t i = 0; i < unit.cars.size() && i < states.size(); ++i) {
+            const auto& car = unit.cars[i];
+            const auto* engine = car.definition && car.definition->engine ? &*car.definition->engine : nullptr;
+            if (!engine || engine->kind != formats::EngineKind::electric || car.pantograph_nodes.empty()) continue;
+            const auto body = body_pose(unit, i);
+            if (!body) continue;
+            const auto& pantos = pantographs_of(car);
+            const bool animated = car.pantograph_frames >= 2;
+            std::uint8_t numbers = 0;
+            for (const auto& [node, number] : car.pantograph_nodes) numbers |= static_cast<std::uint8_t>(1u << (number - 1u));
+            for (std::uint8_t n = 1; n <= 4; ++n) {
+                const auto bit = static_cast<std::uint8_t>(1u << (n - 1u));
+                if (!(numbers & bit)) continue;
+                ArcPantograph p;
+                p.key = car.key * 8u + n;
+                p.position = glm::vec3{body->transform * glm::vec4{0.0f, wire_height, car.pantograph_z[n - 1u], 1.0f}};
+                p.contact = animated ? pantos.rise[n - 1u] >= 0.99f : (pantos.wanted & bit) != 0;
+                p.live = states[i].line_voltage != 0.0f;
+                p.speed = static_cast<float>(std::abs(unit.train->speed()));
+                p.ac = states[i].line_frequency > 0.0f;
+                p.back = -way;
+                pantographs.push_back(p);
+            }
+        }
+        // The train's first raised one the way it runs.
+        std::size_t lead = SIZE_MAX;
+        float most = -1e30f;
+        for (std::size_t k = first; k < pantographs.size(); ++k) {
+            if (!pantographs[k].contact) continue;
+            const float along = glm::dot(pantographs[k].position, way);
+            if (along > most) {
+                most = along;
+                lead = k;
+            }
+        }
+        if (lead != SIZE_MAX) pantographs[lead].leading = true;
+    }
+    // Ice on the wire: winter, or snow falling.
+    arcs_.update(elapsed, pantographs, season_ == 3 || weather_ == 1);
+    for (const auto& s : arcs_.started()) arc_sounds_.push_back(s);
+    if (arc_sounds_.size() > 32) arc_sounds_.erase(arc_sounds_.begin(), arc_sounds_.end() - 32);
+    arc_strips_.clear();
+    // The thread's light in the frame's encoding (gamma 2.2), blue-white, HDR.
+    const glm::vec3 encoded = glm::pow(glm::vec3{0.75f, 0.85f, 1.0f}, glm::vec3{1.0f / 2.2f});
+    for (const auto& arc : arcs_.arcs()) {
+        const float level = arc.level * arc.size;
+        // The thread: its pieces, a core of a few pixels in a halo.
+        for (std::size_t k = 0; k + 1 < arc.path.size(); ++k) {
+            renderer::LightningStrip strip;
+            strip.a = arc.path[k];
+            strip.b = arc.path[k + 1];
+            strip.width = 1.2f + 1.8f * level;
+            const float core = 6.0f * level;
+            strip.light_a = glm::vec4{encoded * core, 1.0f};
+            strip.light_b = glm::vec4{encoded * core, 1.0f};
+            arc_strips_.push_back(strip);
+        }
+        // A soft glow round it.
+        LightGlow glow;
+        glow.sprite.position = arc.path.empty() ? arc.position : (arc.path.front() + arc.path.back()) * 0.5f;
+        glow.sprite.radius = 0.12f + 0.25f * level;
+        const auto alpha = static_cast<std::uint32_t>(std::clamp(level * 0.6f, 0.0f, 1.0f) * 255.0f);
+        glow.sprite.colour = alpha << 24 | 0xFFu << 16 | 0xF0u << 8 | 0xE0u; // 0xAABBGGRR: blue-white
+        glow.sprite.spread_light = 1.0f;
+        light_glows_.push_back(glow);
+        // Its light round it: a sphere, lighting whatever way a surface faces.
+        renderer::ModelExtraLight light;
+        const float reach = 6.0f + 14.0f * level;
+        light.kind = 2.0f + 32.0f;
+        light.size = glm::vec4{reach, reach, reach, 0.1f};
+        glm::mat4 at{1.0f};
+        at[3] = glm::vec4{arc.position, 1.0f};
+        light.to_light = glm::inverse(at);
+        light.direction = {0.0f, -1.0f, 0.0f};
+        light.attenuation = glm::vec4{1.0f, 0.0f, 0.0f, 0.0f};
+        light.diffuse = glm::vec4{2.2f * level, 2.5f * level, 3.0f * level, 1.0f};
+        lights.push_back(light);
+        distances.push_back(glm::distance(eye, arc.position));
+    }
+}
+
+// The arcs' sounds: a snap as each strikes, and while it burns (longer than
+// a spark) its buzz looping at it, cut off as it goes out. The content's
+// SOUND/OPENRTS/PANTOGRAPH/arc_snap.wav and arc_buzz.wav (a mod's) when
+// there, else made here; the pitch a little different each time.
+void TrainView::play_arcs(audio::AudioEngine& sound) {
+    if (!arc_clip_tried_) {
+        arc_clip_tried_ = true;
+        const auto content = [&](const char* file) -> std::shared_ptr<const audio::AudioClip> {
+            const auto path = core::VirtualPath::parse(std::string("SOUND/OPENRTS/PANTOGRAPH/") + file);
+            return path && vfs_ && bank_ && vfs_->exists(*path) ? bank_->get(*path) : nullptr;
+        };
+        arc_snap_ = content("arc_snap.wav");
+        if (!arc_snap_) arc_snap_ = make_arc_snap();
+        arc_buzz_dc_ = arc_buzz_ac_ = content("arc_buzz.wav");
+        if (!arc_buzz_dc_) {
+            arc_buzz_dc_ = make_arc_buzz(false);
+            arc_buzz_ac_ = make_arc_buzz(true);
+        }
+    }
+    std::uint32_t salt = 0;
+    for (const auto& s : arc_sounds_) {
+        const float pitch = 0.85f + 0.3f * static_cast<float>((s.id * 2654435761u + ++salt * 40503u) % 1000u) / 1000.0f;
+        if (const auto voice = sound.play(arc_snap_, audio::VoicePlayback::once, audio::VoiceSpace::positional))
+            sound.set(voice, (0.5f + 0.5f * s.size) * outside_gain_, pitch, s.position);
+        if (s.length > 0.1f) {
+            if (const auto voice = sound.play(s.ac ? arc_buzz_ac_ : arc_buzz_dc_, audio::VoicePlayback::loop, audio::VoiceSpace::positional))
+                arc_voices_[s.id] = voice;
+        }
+    }
+    arc_sounds_.clear();
+    // The buzzes burning follow their arcs (louder the brighter); out with them.
+    std::unordered_map<std::uint64_t, const PantographArc*> burning;
+    for (const auto& arc : arcs_.arcs()) burning[arc.id] = &arc;
+    for (auto it = arc_voices_.begin(); it != arc_voices_.end();) {
+        const auto found = burning.find(it->first);
+        if (found == burning.end()) {
+            sound.stop(it->second);
+            it = arc_voices_.erase(it);
+            continue;
+        }
+        const auto& arc = *found->second;
+        sound.set(it->second, (0.35f + 0.5f * arc.level) * arc.size * outside_gain_, 1.0f, arc.position);
+        ++it;
+    }
 }
 
 // A car of the driven train standing the other way round from the cab the
@@ -11003,6 +11235,7 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
     }
     }
     update_extra_sounds(elapsed, camera, sound);
+    play_arcs(sound);
 }
 
 // A script with a stop sound of its own (a squeal or a skrip, not a
@@ -11173,6 +11406,8 @@ void TrainView::update_extra_sounds(const float elapsed, const ViewerCamera& cam
 
 void TrainView::stop_sound(audio::AudioEngine& sound) {
     if (extra_sounds_) extra_sounds_->stop(sound);
+    for (const auto& [id, voice] : arc_voices_) sound.stop(voice);
+    arc_voices_.clear();
     for (auto& unit : units_) {
         for (auto& car : unit.cars) {
             if (car.sound) car.sound->stop(sound);
@@ -12178,7 +12413,7 @@ void TrainView::draw_panel() {
     // The readouts are for developers (F12); a player keeps the keys of a
     // train without a DLL and the plugin's name.
     if (!developer_mode()) {
-        if (native_) ImGui::Text(tr("Native plugin: %s (the cab's keys and mouse)"), native_->name().c_str());
+        if (native_) ImGui::Text(tr("Native plugin: %s (the cab's keys and mouse)"), native_->plugin_name().c_str());
         if (driver_ && !legacy_ && !native_) {
             ImGui::TextUnformatted(tr("Home/End: throttle  PgUp/PgDn: reverser  ] [: brake valve V..I (hold [ in I)  , .: independent"));
             ImGui::TextUnformatted(tr("Horn Space, bell B, sander X, pantographs P, doors Y (left) and U (right)"));
@@ -12231,7 +12466,7 @@ void TrainView::draw_panel() {
         if (doors_open_[0]) add("right doors open");
         if (!now.empty()) ImGui::TextUnformatted(now.c_str());
     }
-    if (native_) ImGui::Text(tr("Native plugin: %s (the cab's keys and mouse)"), native_->name().c_str());
+    if (native_) ImGui::Text(tr("Native plugin: %s (the cab's keys and mouse)"), native_->plugin_name().c_str());
     if (line_engines_) {
         // Each electric engine's pantograph current and the wire's heat (RTS 0x503CE4).
         for (std::size_t i = 0; i < train.cars().size(); ++i) {

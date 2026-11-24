@@ -30,6 +30,7 @@
 #include <openrts/audio/world_sounds.hpp>
 #include <deque>
 #include <unordered_set>
+#include <openrts/renderer/photometric.hpp>
 #include <openrts/renderer/weather_particles.hpp>
 #include <openrts/renderer/bc7.hpp>
 #include <openrts/renderer/depth.hpp>
@@ -439,6 +440,9 @@ public:
         if (!native_sky_->ready()) native_sky_.reset();
         lightning_ = std::make_unique<renderer::LightningRenderer>(gpu.device, gpu.target_format);
         if (!lightning_->ready()) lightning_.reset();
+        // The pantographs' arcs: threads of light as lightning's.
+        arc_threads_ = std::make_unique<renderer::LightningRenderer>(gpu.device, gpu.target_format);
+        if (!arc_threads_->ready()) arc_threads_.reset();
         thunder_ = std::make_unique<ThunderView>(content_.vfs());
         test_strikes_.clear();
         terrain_ = std::make_unique<renderer::TerrainRenderer>(gpu.device, gpu.target_format, content_.vfs(), route_,
@@ -739,6 +743,7 @@ public:
         sky_renderer_.reset();
         native_sky_.reset();
         lightning_.reset();
+        arc_threads_.reset();
         lightning_channels_.clear();
         wide_lines_.reset();
         screens_.reset();
@@ -793,6 +798,8 @@ public:
         // F12 turns "for developers" on and off (window_viewer); the
         // inspector opens and shuts with it, and shuts with its checkbox.
         if (input.inspector || (inspector_.open() && !developer_mode())) inspector_.set_open(developer_mode());
+        // A car's light the lamps' editor held on goes back to its rules.
+        if (train_ && !inspector_.open()) train_->hold_car_light(0, 0, std::nullopt);
         if (input.tape_window) tape_view_.toggle();
         // The ray under the mouse, from the last frame's camera.
         std::optional<glm::vec3> direction;
@@ -806,8 +813,19 @@ public:
         }
         // The inspector choosing with a click: the click is its, not a control's.
         bool click = input.click;
+        // The lamps' gizmo first: a lamp's marker, a handle dragged while
+        // the button is held (inspector_lamps.cpp).
+        inspector_.hover(last_eye_, direction);
+        if (inspector_.dragging()) {
+            if (!input.held) {
+                inspector_.end_drag();
+            } else if (direction) {
+                inspector_.drag(last_eye_, *direction, inspector_world());
+            }
+            click = false;
+        }
         if (click && direction && inspector_.picking()) {
-            inspector_.pick(last_eye_, *direction, inspector_world());
+            if (!inspector_.begin_drag(last_eye_, *direction, inspector_world())) inspector_.pick(last_eye_, *direction, inspector_world());
             click = false;
         }
         // Ctrl+F (openRTS): from the engineer to the free camera where his
@@ -1376,6 +1394,8 @@ public:
         if (!experimental_) return;
         if (lightning_ && !lightning_->empty())
             lightning_->render_bloom(pass, frame.projection * frame.view, {frame.viewport_height * frame.aspect, frame.viewport_height});
+        if (arc_threads_ && !arc_threads_->empty())
+            arc_threads_->render_bloom(pass, frame.projection * frame.view, {frame.viewport_height * frame.aspect, frame.viewport_height});
         if (signals_) signals_->draw_bloom(pass, frame, frame.viewport_height);
         if (train_glows_ && train_ && !train_->light_glows().empty())
             train_glows_->render_bloom(pass, frame.projection, frame.view, frame.viewport_height);
@@ -1393,6 +1413,11 @@ public:
         // Lightning over the sky, behind whatever stands in front of it.
         if (lightning_ && !lightning_->empty())
             lightning_->render(pass, frame.projection * frame.view, {frame.viewport_height * frame.aspect, frame.viewport_height});
+        if (arc_threads_ && train_) {
+            arc_threads_->set_strips(train_->arc_strips());
+            if (!arc_threads_->empty())
+                arc_threads_->render(pass, frame.projection * frame.view, {frame.viewport_height * frame.aspect, frame.viewport_height});
+        }
         if (terrain_) terrain_->render_water(pass);
         if (signals_) signals_->draw(pass, frame, frame.viewport_height);
         if (track_) track_->draw(pass, frame.projection * frame.view, train_ && train_->placed() ? train_->head_position() : frame.eye);
@@ -2547,6 +2572,9 @@ private:
         const std::uint32_t c = lamp.colour;
         light.diffuse = glm::vec4{static_cast<float>((c >> 16) & 0xFFu) / 255.0f, static_cast<float>((c >> 8) & 0xFFu) / 255.0f,
                                   static_cast<float>(c & 0xFFu) / 255.0f, 1.0f};
+        // openRTS's photometric lamp: its cone's half angle by its widest radius.
+        light.photometric = renderer::photometric_light(lamp.candela, lamp.lumens, lamp.kelvin, cone ? std::atan((std::max)(rx, rz) / reach) : 0.0f,
+                                                        glm::pow(glm::vec3{light.diffuse}, glm::vec3{2.2f}));
         return light;
     }
 
@@ -2665,6 +2693,8 @@ private:
         // RTS's frame step in milliseconds, as its main loop clamps it.
         const float step_ms = std::clamp(elapsed * 1000.0f, 8.0f, 1000.0f);
         std::size_t lamps = 0;
+        // The inspector's lamp held on (its editor: set by day, paused too).
+        const auto held = inspector_.held_lamp();
         if (streamer_ && library_) {
             const auto& visible = streamer_->visible_instances();
             for (std::size_t index = 0; index < visible.size(); ++index) {
@@ -2684,9 +2714,14 @@ private:
                 fades.resize(model->lights().size());
                 for (std::size_t k = 0; k < model->lights().size(); ++k) {
                     const auto& lamp = model->lights()[k];
-                    if (lamp.distance > 0.0f && object_distance > lamp.distance * distance_scale) continue;
-                    auto& fade = fades[k];
-                    const bool lit = scenery_lamp_lit(lamp, night, world_lit);
+                    const bool held_here = held && held->index == k && held->uid == instance.uid && held->tile_x == instance.world_tile_x
+                                        && held->tile_z == instance.world_tile_z;
+                    if (!held_here && lamp.distance > 0.0f && object_distance > lamp.distance * distance_scale) continue;
+                    // A shape's lamps fade together (one fade a shape, as RTS);
+                    // the held one is full on, its own.
+                    LampFade held_fade{1.0f, 4u};
+                    auto& fade = held_here ? held_fade : fades[k];
+                    const bool lit = held_here || scenery_lamp_lit(lamp, night, world_lit);
                     step_lamp(fade, lit, lamp.light_fade, step_ms);
                     // Ringed while it burns or is still fading (0x408574).
                     if (!lit && (fade.state & 3u) == 0) continue;
@@ -2715,6 +2750,7 @@ private:
                         auto& d = light.diffuse;
                         if (experimental_) {
                             d *= fade.level;
+                            light.photometric = glm::vec4{glm::vec3{light.photometric} * fade.level, light.photometric.w};
                         } else {
                             d.r *= fade.level;
                             d.g *= fade.level * fade.level;
@@ -3070,6 +3106,7 @@ private:
     };
     std::array<OpenBin, open_azimuths * open_heights> open_bins_{};
     std::unique_ptr<renderer::LightningRenderer> lightning_;
+    std::unique_ptr<renderer::LightningRenderer> arc_threads_; // the pantographs' arcs (TrainView::arc_strips)
     std::unique_ptr<ThunderView> thunder_;
     std::vector<renderer::LightningStrike> test_strikes_; // the panel's, alight
     std::uint64_t test_strikes_made_ = 0;

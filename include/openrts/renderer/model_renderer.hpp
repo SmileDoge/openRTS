@@ -49,6 +49,10 @@ struct ModelExtraLight {
     // The instance it belongs to (ModelRenderer::set_owner), 0 none: with
     // lamp_skips_own_model() that instance is left out of its shadow.
     std::uint32_t owner{};
+    // A photometric lamp (photometric.hpp): rgb its light at 1 m in the
+    // scene's units, w 1; the experimental path's physical light takes it
+    // (inverse square) in place of `diffuse` and the fall-off. w 0: none.
+    glm::vec4 photometric{0.0f};
 };
 
 // A cone light's cone (kinds 1 and 4, one lamp): its apex, axis (unit),
@@ -339,6 +343,8 @@ public:
     [[nodiscard]] const std::vector<std::string>& texture_key() const noexcept;
     // ESD_Light_Sources of the shape (scenery lamps), in its space.
     [[nodiscard]] const std::vector<formats::ShapeLight>& lights() const noexcept;
+    // Its lamps changed in place (the inspector's, live; till it is loaded anew).
+    void set_lights(std::vector<formats::ShapeLight> lights);
     // Its primitive states, in the shape's order (the inspector).
     [[nodiscard]] const std::vector<ModelPrimitive>& primitives() const noexcept;
     // Its distance levels (m), nearest first; empty for one level.
