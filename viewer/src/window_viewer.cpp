@@ -681,7 +681,7 @@ struct PanelState {
     // The window (window_mode.hpp): the mode wanted, which the main loop
     // applies; the full screen kind Alt+Enter goes to; fixed: always a
     // window (a capture, the start menu).
-    WindowMode window_mode = WindowMode::windowed;
+    WindowMode window_mode = WindowMode::fullscreen;
     WindowMode full_mode = WindowMode::fullscreen;
     bool window_mode_fixed = false;
     bool menu = false; // the scene draws the whole interface
@@ -3307,7 +3307,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     WindowModeKeeper window_mode;
     panel.window_mode_fixed = capture || options.menu;
     if (!panel.window_mode_fixed) {
-        panel.window_mode = options.window_mode.value_or(WindowMode::windowed);
+        panel.window_mode = options.window_mode.value_or(WindowMode::fullscreen);
         if (panel.window_mode != WindowMode::windowed) panel.full_mode = panel.window_mode;
     }
     panel.hdr = renderer::scene_hdr();
