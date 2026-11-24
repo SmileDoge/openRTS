@@ -675,7 +675,9 @@ void GameShell::draw_pause_overlay() const {
     draw->AddRectFilled({0, 0}, display, IM_COL32(4, 6, 10, 188));
 
     const auto width = 470.0f * scale;
-    const auto height = (s.pause_settings ? 430.0f : 430.0f) * scale;
+    // One interval between every button; the plate hugs them, and a save
+    // note gets a line of its own below the last one.
+    const auto height = (s.pause_settings ? 430.0f : (s.pause_note.empty() ? 388.0f : 412.0f)) * scale;
     const ImVec2 min{(display.x - width) * 0.5f, (display.y - height) * 0.5f};
     const ImVec2 max{(display.x + width) * 0.5f, (display.y + height) * 0.5f};
     draw->AddRectFilled(min, max, IM_COL32(20, 22, 27, 252), 24.0f * scale);
@@ -683,7 +685,7 @@ void GameShell::draw_pause_overlay() const {
 
     const auto pad = 30.0f * scale;
     label(draw, ui::small_font(), 11.0f * scale, {min.x + pad, min.y + 24.0f * scale}, IM_COL32(120, 126, 138, 255), "ПАУЗА");
-    label(draw, ui::heading_font(), 27.0f * scale, {min.x + pad, min.y + 46.0f * scale}, IM_COL32(247, 248, 250, 255),
+    label(draw, ui::heading_font(), 27.0f * scale, {min.x + pad, min.y + 44.0f * scale}, IM_COL32(247, 248, 250, 255),
           s.pause_settings ? "Настройки" : "Одиночная игра");
 
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
@@ -730,11 +732,13 @@ void GameShell::draw_pause_overlay() const {
               IM_COL32(120, 126, 138, 255), "Остальные настройки — в главном меню.");
     } else {
         constexpr const char* items[4] = {"Продолжить", "Карта маршрута", "Сохранить игру", "Настройки"};
-        const auto top = min.y + 112.0f * scale;
-        const auto item_height = 52.0f * scale;
+        const auto top = min.y + 104.0f * scale;
+        const auto item_height = 44.0f * scale;
+        const auto item_gap = 8.0f * scale;
+        const auto item_pitch = item_height + item_gap;
         for (int i = 0; i < 4; ++i) {
-            const ImVec2 item_min{min.x + pad, top + item_height * static_cast<float>(i)};
-            const ImVec2 item_max{max.x - pad, item_min.y + item_height - 8.0f * scale};
+            const ImVec2 item_min{min.x + pad, top + item_pitch * static_cast<float>(i)};
+            const ImVec2 item_max{max.x - pad, item_min.y + item_height};
             ImGui::SetCursorScreenPos(item_min);
             ImGui::PushID(500 + i);
             const bool pressed = ImGui::InvisibleButton("##pause_item", {item_max.x - item_min.x, item_max.y - item_min.y});
@@ -747,7 +751,7 @@ void GameShell::draw_pause_overlay() const {
             draw->AddRectFilled(item_min, item_max, ImGui::ColorConvertFloat4ToU32(fill), 11.0f * scale);
             if (i != 0) draw->AddRect(item_min, item_max, IM_COL32(255, 255, 255, static_cast<int>(20 + 40 * h)), 11.0f * scale);
             const auto text_colour = i == 0 ? IM_COL32(19, 21, 25, 255) : IM_COL32(225, 229, 236, 255);
-            label(draw, ui::button_font(), 15.0f * scale, {item_min.x + 18.0f * scale, item_min.y + 15.0f * scale}, text_colour, items[i]);
+            label(draw, ui::button_font(), 15.0f * scale, {item_min.x + 18.0f * scale, item_min.y + 14.0f * scale}, text_colour, items[i]);
             const auto arrow_centre = ImVec2{item_max.x - 26.0f * scale, (item_min.y + item_max.y) * 0.5f};
             arrow_up_right(draw, arrow_centre, 12.0f * scale,
                            i == 0 ? IM_COL32(19, 21, 25, 255) : IM_COL32(140, 146, 158, 255));
@@ -784,13 +788,13 @@ void GameShell::draw_pause_overlay() const {
             }
         }
 
-        const ImVec2 exit_min{min.x + pad, min.y + 330.0f * scale};
-        const ImVec2 exit_max{max.x - pad, exit_min.y + 44.0f * scale};
+        const ImVec2 exit_min{min.x + pad, top + item_pitch * 4.0f};
+        const ImVec2 exit_max{max.x - pad, exit_min.y + item_height};
         ImGui::SetCursorScreenPos(exit_min);
         const bool exit_pressed = ImGui::InvisibleButton("##leave", {exit_max.x - exit_min.x, exit_max.y - exit_min.y});
         const bool exit_hovered = ImGui::IsItemHovered();
         draw->AddRect(exit_min, exit_max, exit_hovered ? IM_COL32(255, 255, 255, 70) : IM_COL32(255, 255, 255, 24), 11.0f * scale);
-        label(draw, ui::button_font(), 14.0f * scale, {exit_min.x + 18.0f * scale, exit_min.y + 12.0f * scale},
+        label(draw, ui::button_font(), 14.0f * scale, {exit_min.x + 18.0f * scale, exit_min.y + 14.0f * scale},
               exit_hovered ? IM_COL32(247, 248, 250, 255) : IM_COL32(160, 166, 178, 255), "Выйти в меню");
         if (exit_pressed) {
             s.end_session("Вы вышли в главное меню");
@@ -799,7 +803,7 @@ void GameShell::draw_pause_overlay() const {
         }
 
         if (!s.pause_note.empty()) {
-            label(draw, ui::small_font(), 12.0f * scale, {min.x + pad, max.y - 104.0f * scale},
+            label(draw, ui::small_font(), 12.0f * scale, {min.x + pad, max.y - 30.0f * scale},
                   IM_COL32(150, 156, 168, 255), s.pause_note);
         }
     }
