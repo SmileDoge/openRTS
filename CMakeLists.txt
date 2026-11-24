@@ -200,6 +200,11 @@ function(openrts_embed_dllhost target)
              CONTENT "101 RCDATA \"${OPENRTS_DLLHOST_DIR}/$<CONFIG>/openrts-dllhost32.exe\"\n")
         target_sources(${target} PRIVATE "${dllhost_rc}")
         add_dependencies(${target} openrts_dllhost32)
+        # The resource's bytes come from the host built above: a change of the
+        # host's layout or code rebuilds the program's resource too, not just
+        # its CMake graph.
+        set_source_files_properties("${dllhost_rc}" PROPERTIES OBJECT_DEPENDS
+            "${PROJECT_SOURCE_DIR}/include/openrts/dllhost/protocol.hpp;${PROJECT_SOURCE_DIR}/dllhost/src/host.cpp;${PROJECT_SOURCE_DIR}/dllhost/src/main.cpp")
     endif()
 endfunction()
 

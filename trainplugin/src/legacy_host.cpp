@@ -1,6 +1,7 @@
 #include <openrts/trainplugin/legacy_host.hpp>
 
 #include <openrts/core/profile.hpp>
+#include <openrts/dllhost/protocol.hpp>
 
 #include <utility>
 
@@ -102,7 +103,9 @@ std::filesystem::path embedded_dllhost() {
     directory /= L"dllhost";
     std::error_code ec;
     std::filesystem::create_directories(directory, ec);
-    const auto file = directory / (L"openrts-dllhost32-" + std::to_wstring(size) + L".exe");
+    // The protocol version in the name: a new build with a new layout never
+    // reuses an old extracted host of the same size.
+    const auto file = directory / (L"openrts-dllhost32-p" + std::to_wstring(dllhost::protocol_version) + L"-" + std::to_wstring(size) + L".exe");
     if (std::filesystem::is_regular_file(file, ec) && std::filesystem::file_size(file, ec) == size) return file;
 
     const HANDLE output = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
