@@ -46,6 +46,12 @@ std::string elide(ImFont* face, float size, std::string_view value, float max_wi
 void plate(ImDrawList* draw, ImVec2 origin, ImVec2 size, float radius = plate_radius, float opacity = 1.0f);
 // A one-pixel line `inset` in from both edges of the plate.
 void separator(ImDrawList* draw, ImVec2 origin, float y, float width, float inset = 20.0f);
+// A small F4-styled hint plate: the drive panel's face, a smaller radius and
+// padding; `coloured_edge` matches its outline to the text's state colour
+// (the cab's yellow focus, a door's green).
+ImVec2 hint_size(std::string_view value, float padding_x = 10.0f, float padding_y = 5.0f);
+ImVec2 hint(ImDrawList* draw, ImVec2 top_left, std::string_view value, ImU32 colour, float radius = 10.0f,
+            float padding_x = 10.0f, float padding_y = 5.0f, float opacity = 1.0f, bool coloured_edge = false);
 // ASCII and Cyrillic lower case to upper, for the design's capitalised labels.
 std::string upper(std::string_view value);
 

@@ -9063,7 +9063,7 @@ void TrainView::collect_cab_labels(std::vector<WorldLabel>& labels, const glm::v
     // The door under the mouse, in the cab or outside.
     if (door_hover_)
         labels.push_back({.position = door_hover_->at, .text = door_hover_->text, .colour = 0xff40ffffu, .occludable = false,
-                          .key = std::size_t{0xD002} << 40});
+                          .key = std::size_t{0xD002} << 40, .hint = true});
     const auto* cab = engineer_cab();
     if (!viewing_inside() || !cab || units_.empty() || engineer_car_ >= units_.front().cars.size()) return;
     if (!all && !hovered_) return;
@@ -9145,7 +9145,8 @@ void TrainView::collect_cab_labels(std::vector<WorldLabel>& labels, const glm::v
             }
         }
         const std::size_t key = (std::size_t{0xCAB} << 40) ^ (item.control ? std::size_t{1} << 32 : 0) ^ item.index;
-        labels.push_back({.position = item.at, .text = std::move(item.text), .colour = colour, .occludable = false, .key = key});
+        labels.push_back({.position = item.at, .text = std::move(item.text), .colour = colour, .occludable = false, .key = key,
+                          .hint = true});
     }
 }
 
@@ -11400,25 +11401,18 @@ void TrainView::draw_overlay() {
     // The walking collision switched (Num/ or Shift+=): a few seconds' note.
     if (ImGui::GetTime() < walk_note_until_ && !walk_note_.empty()) {
         const auto size = ImGui::GetIO().DisplaySize;
-        const auto text_size = ImGui::CalcTextSize(walk_note_.c_str());
-        const ImVec2 corner{(size.x - text_size.x) * 0.5f, size.y * 0.72f};
-        auto* list = ImGui::GetForegroundDrawList();
-        list->AddRectFilled({corner.x - 8.0f, corner.y - 4.0f}, {corner.x + text_size.x + 8.0f, corner.y + text_size.y + 4.0f},
-                            0xa0000000u, 4.0f);
-        list->AddText(corner, 0xffe0e0e0u, walk_note_.c_str());
+        const auto box = hud::hint_size(walk_note_, 12.0f, 6.0f);
+        const ImVec2 corner{(size.x - box.x) * 0.5f, size.y * 0.72f};
+        hud::hint(ImGui::GetForegroundDrawList(), corner, walk_note_, hud::text_colour, 10.0f, 12.0f, 6.0f);
     }
     // What Enter does where the engineer stands (unless the hints are off).
     if (key_hints() && engineer_.active() && car_view_ == CarView::off && (!board_prompt_.empty() || !engineer_.prompt().empty())) {
         const auto size = ImGui::GetIO().DisplaySize;
         // Its keys as pressed (on foot in openRTS's keys E and Shift+E).
         const auto shown = engineer_keys(!board_prompt_.empty() ? board_prompt_ : engineer_.prompt(), engineer_.on_foot());
-        const char* text = shown.c_str();
-        const auto text_size = ImGui::CalcTextSize(text);
-        const ImVec2 corner{(size.x - text_size.x) * 0.5f, size.y * 0.78f};
-        auto* list = ImGui::GetForegroundDrawList();
-        list->AddRectFilled({corner.x - 8.0f, corner.y - 4.0f}, {corner.x + text_size.x + 8.0f, corner.y + text_size.y + 4.0f},
-                            0xa0000000u, 4.0f);
-        list->AddText(corner, 0xffffffffu, text);
+        const auto box = hud::hint_size(shown, 12.0f, 6.0f);
+        const ImVec2 corner{(size.x - box.x) * 0.5f, size.y * 0.78f};
+        hud::hint(ImGui::GetForegroundDrawList(), corner, shown, hud::text_colour, 10.0f, 12.0f, 6.0f);
     }
 #endif
 }

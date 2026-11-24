@@ -5,6 +5,7 @@
 
 #include "ui_text.hpp"
 #include "key_layout.hpp"
+#include "hud_style.hpp"
 
 #ifdef OPENRTS_HAS_WGPU
 #include <algorithm>
@@ -2766,6 +2767,13 @@ private:
                     probe_labels.push_back(key);
                 }
                 if (hidden_labels_.contains(key)) continue;
+            }
+            if (label.hint) {
+                const auto box = hud::hint_size(label.text);
+                const ImVec2 corner{anchor.x - box.x * 0.5f, anchor.y - box.y};
+                const float opacity = static_cast<float>((label.colour >> 24) & 0xffu) / 255.0f;
+                hud::hint(list, corner, label.text, label.colour, 10.0f, 10.0f, 5.0f, opacity, true);
+                continue;
             }
             const auto text_size = ImGui::CalcTextSize(label.text.c_str());
             const ImVec2 corner{anchor.x - text_size.x * 0.5f, anchor.y - text_size.y};

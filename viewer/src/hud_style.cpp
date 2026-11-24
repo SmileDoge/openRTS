@@ -190,6 +190,29 @@ void separator(ImDrawList* draw, const ImVec2 origin, const float y, const float
                   separator_colour, 1.0f);
 }
 
+ImVec2 hint_size(const std::string_view value, const float padding_x, const float padding_y) {
+    auto* face = ui::hud_text_font();
+    const float size = face ? face->FontSize : ImGui::GetFontSize();
+    return ImVec2{text_width(face, size, value) + padding_x * 2.0f, size + padding_y * 2.0f};
+}
+
+ImVec2 hint(ImDrawList* draw, const ImVec2 top_left, const std::string_view value, const ImU32 colour, const float radius,
+            const float padding_x, const float padding_y, const float opacity, const bool coloured_edge) {
+    const ImVec2 size = hint_size(value, padding_x, padding_y);
+    if (value.empty()) return size;
+    plate(draw, top_left, size, radius, opacity);
+    if (coloured_edge) {
+        const auto edge = (colour & 0x00FFFFFFu) | 0x80000000u;
+        draw->AddRect(ImVec2{top_left.x - 1.0f, top_left.y - 1.0f},
+                      ImVec2{top_left.x + size.x + 1.0f, top_left.y + size.y + 1.0f}, edge, radius + 1.0f, 0, 1.0f);
+    }
+    auto* face = ui::hud_text_font();
+    const float font_size = face ? face->FontSize : ImGui::GetFontSize();
+    const float ascent = face && face->FontSize > 0.0f ? face->Ascent * (font_size / face->FontSize) : font_size * 0.97f;
+    at_baseline(draw, face, font_size, top_left.x + padding_x, top_left.y + padding_y + ascent, colour, value);
+    return size;
+}
+
 std::string upper(const std::string_view value) {
     std::string out(value);
     for (std::size_t i = 0; i < out.size(); ++i) {

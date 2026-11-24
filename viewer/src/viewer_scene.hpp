@@ -86,6 +86,8 @@ struct WorldLabel {
     // Who the label is, for the late occlusion answer; 0: its text and place
     // (a label riding a moving train needs a key of its own).
     std::size_t key{};
+    // A hint near the engineer (a cab control, a door): the F4-style plate.
+    bool hint = false;
 };
 
 // A line between two points of the scene, `thickness` pixels wide, e.g. a
