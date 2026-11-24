@@ -17,10 +17,34 @@
 
 #include <atomic>
 #include <cstring>
+#include <fstream>
 
 namespace openrts::trainplugin {
 
 using namespace dllhost;
+
+namespace {
+
+// The host's own log beside the settings (%LOCALAPPDATA%\openRTS\dllhost.log):
+// which executable was started and why it did not come up. The game is a GUI
+// program, its stderr goes nowhere (testers' report, 2026-11-24).
+void host_log(const std::string& text) {
+#ifdef _WIN32
+    wchar_t local[MAX_PATH * 2]{};
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", local, static_cast<DWORD>(sizeof(local) / sizeof(local[0])));
+    std::filesystem::path directory =
+        length > 0 && length < sizeof(local) / sizeof(local[0]) ? std::filesystem::path(local) : std::filesystem::temp_directory_path();
+    directory /= L"openRTS";
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    std::ofstream out(directory / L"dllhost.log", std::ios::app);
+    if (out) out << text << '\n';
+#else
+    (void)text;
+#endif
+}
+
+} // namespace
 
 std::u16string utf8_to_utf16(std::string_view s) {
     std::u16string out;
@@ -133,10 +157,12 @@ std::filesystem::path LegacyHost::default_executable() {
 
 std::unique_ptr<LegacyHost> LegacyHost::start(std::string* error, const std::filesystem::path& executable) {
     auto fail = [&](const std::string& why) -> std::unique_ptr<LegacyHost> {
+        host_log("fail: " + why);
         if (error) *error = why;
         return nullptr;
     };
     const auto exe = executable.empty() ? default_executable() : executable;
+    host_log("start: " + exe.string());
     std::error_code ec;
     if (!std::filesystem::exists(exe, ec)) return fail("openrts-dllhost32.exe not found: " + exe.string());
 
@@ -187,6 +213,7 @@ std::unique_ptr<LegacyHost> LegacyHost::start(std::string* error, const std::fil
         host->kill("protocol layout differs between the game and openrts-dllhost32.exe (rebuild both)");
         return fail(host->error_);
     }
+    host_log("hello: protocol " + std::to_string(version) + ", layout ok");
     return host;
 }
 
