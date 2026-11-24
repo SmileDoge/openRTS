@@ -256,6 +256,7 @@ public:
     [[nodiscard]] const std::filesystem::path& situation() const noexcept { return content_.situation; }
     [[nodiscard]] int start_view() const noexcept { return content_.start_view; }
     [[nodiscard]] bool realistic_air() const noexcept { return content_.realistic_air; }
+    [[nodiscard]] const BrakeSettings& brakes() const noexcept { return content_.brakes; }
     [[nodiscard]] const std::string& save_situation() const noexcept { return content_.save_situation; }
     [[nodiscard]] const std::shared_ptr<const net::Snapshot>& snapshot() const noexcept { return content_.snapshot; }
     [[nodiscard]] const std::shared_ptr<net::RtsConnection>& connection() const noexcept { return content_.connection; }
@@ -491,6 +492,7 @@ public:
             // A shape the route places too stays while the route keeps it.
             train_->set_shape_keeper([this](const std::string& key) { return streamer_ && streamer_->holds_model(key); });
             if (content_.realistic_air()) train_->set_realistic_air(true);
+            train_->set_brake_settings(content_.brakes());
             // Not in a network game: there the server and its dispatchers
             // own the trains and the track (docs/net.md); but the
             // dispatcher's console is the map.

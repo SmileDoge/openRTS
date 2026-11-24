@@ -16,6 +16,7 @@
 
 #include <openrts/audio/audio_engine.hpp>
 #include <openrts/core/vfs.hpp>
+#include "brake_settings_ui.hpp"
 #include <openrts/formats/activity.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/net/connection.hpp>
@@ -423,6 +424,9 @@ struct SceneContent {
     // Route scenes: every train on the openRTS realistic air (--realistic-air,
     // the Train window's "Realistic air (openRTS)" from the start).
     bool realistic_air = false;
+    // Route scenes: the start menu's brakes' preset (brake_settings_ui.hpp),
+    // applied before the first train is made.
+    BrakeSettings brakes;
     // Route scenes: save the situation under this name once the train
     // stands on the track (--save-situation).
     std::string save_situation;

@@ -557,7 +557,7 @@ struct Launcher::State {
     viewer::OwnPresetsUi own_presets; // the presets of one's own, to share
     std::optional<float> fov; // "fov", else RTS's config.ini
     int fps_limit = 0; // the game's FPS limit, shared with its panel ("fps_limit"): 0 none, 30..500
-    viewer::WindowMode window_mode = viewer::WindowMode::windowed; // the game's window ("window_mode"), shared with its panel
+    viewer::WindowMode window_mode = viewer::WindowMode::fullscreen; // the game's window ("window_mode"), shared with its panel
     std::string status;
     bool registry_missing = false; // "From the registry" found nothing
     Tab tab = Tab::single;
@@ -678,7 +678,7 @@ struct Launcher::State {
         load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
-        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);
+        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::fullscreen);
         if (const auto value = remembered("launcher_tab")) {
             for (int i = 0; i < tab_count; ++i)
                 if (*value == tab_keys[i]) tab = static_cast<Tab>(i);
@@ -907,6 +907,7 @@ struct Launcher::State {
             request.weather = weather;
         }
         request.realistic_air = true;
+        request.brakes = brakes;
         request.sound = sound;
         request.volume = volume;
         request.title = request.route;
@@ -1198,7 +1199,7 @@ struct Launcher::State {
         refresh_situations();
         // The game's panel may have changed it.
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
-        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);
+        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::fullscreen);
         load_graphics();
         if (cancelled) {
             net_step = NetStep::none;
@@ -2596,7 +2597,7 @@ void Launcher::session_finished(const std::string& note) {
     state_->scan();
     state_->load_graphics();
     state_->fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
-    state_->window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);
+    state_->window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::fullscreen);
 }
 
 void Launcher::session_failed(const std::string& error) {

@@ -279,6 +279,10 @@ public:
     // The air is always the realistic one; --realistic-air is kept for
     // older scripts and does nothing.
     void set_realistic_air(bool on) noexcept { (void)on; }
+    // The brakes' preset of the start menu (brake_settings_ui.hpp): the
+    // fields a train made after this starts with; the Train window's own
+    // settings then go from there.
+    void set_brake_settings(const BrakeSettings& settings);
     // Switch `id` of the player's cab to `state` (--capture-switch).
     void set_cab_switch(std::uint32_t id, std::uint32_t state) {
         if (legacy_) legacy_->set_switch(id, state);
