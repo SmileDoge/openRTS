@@ -45,6 +45,7 @@
 #include "discord_status.hpp"
 #include "frame_limiter.hpp"
 #include "graphics_presets_ui.hpp"
+#include "sound_extras_ui.hpp"
 #include "graphics_settings.hpp"
 #include "weather_cycle.hpp"
 #include <openrts/renderer/gpu_pass_timer.hpp>
@@ -79,6 +80,10 @@ namespace {
 
 constexpr int initial_width = 1280;
 constexpr int initial_height = 720;
+#ifdef OPENRTS_HAS_IMGUI
+// The mark of a setting that waits for a restart (the only kind marked).
+constexpr ImVec4 restart_colour{1.00f, 0.72f, 0.30f, 1.0f};
+#endif
 // The vertical field of view, degrees, when neither the panel nor RTS's
 // config (FOV) gives one.
 constexpr float default_fov_degrees = 48.7f;
@@ -654,7 +659,10 @@ struct PanelState {
     std::optional<std::filesystem::path> load_request;
     std::string game_status;                  // the last save's or load's outcome
     double game_status_until = 0.0;
-    bool quick_save_key_down = false;         // F2
+    // The field of view's plate at the top while Num+ / Num- change it: the
+    // last value shown and the seconds of the plate's fade left.
+    float fov_shown = -1.0f;
+    float fov_banner = 0.0f;    bool quick_save_key_down = false;         // F2
     // The panel's tab (testers, 2026-11-14: the sections one under another
     // lost what one looked for): general, graphics, train, world,
     // performance, the keys.
@@ -943,6 +951,36 @@ public:
             list->AddRectFilled({at.x - 10.0f, at.y - 6.0f}, {at.x + size.x + 10.0f, at.y + size.y + 6.0f}, 0xb0000000u, 4.0f);
             list->AddText(at, 0xff40e0ffu, text);
         }
+        // The field of view: while Num+ / Num- (or the reset) move it, a plate
+        // at the top names it, in the menus' style, and fades a moment later.
+        {
+            const float now_fov = panel.fov;
+            if (panel.fov_shown < 0.0f) panel.fov_shown = now_fov;
+            if (std::abs(now_fov - panel.fov_shown) > 0.03f) {
+                panel.fov_shown = now_fov;
+                panel.fov_banner = 1.0f;
+            } else {
+                panel.fov_banner = (std::max)(0.0f, panel.fov_banner - static_cast<float>(ImGui::GetIO().DeltaTime) / 0.9f);
+            }
+            if (panel.fov_banner > 0.0f) {
+                char text[48];
+                std::snprintf(text, sizeof text, "FOV: %.0f\u00b0", static_cast<double>(now_fov));
+                ImFont* font = ui::heading_font() ? ui::heading_font() : title_font();
+                if (!font) font = ImGui::GetFont();
+                const float left = (std::min)(1.0f, panel.fov_banner / 0.35f);
+                const float alpha = left * left * (3.0f - 2.0f * left);
+                const ImVec2 size = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, text);
+                const ImVec2 display = ImGui::GetIO().DisplaySize;
+                const ImVec2 at{(display.x - size.x) * 0.5f, 14.0f};
+                const float pad_x = 20.0f, pad_y = 8.0f;
+                auto* list = ImGui::GetForegroundDrawList();
+                const ImVec2 tl{at.x - pad_x, at.y - pad_y};
+                const ImVec2 br{at.x + size.x + pad_x, at.y + size.y + pad_y};
+                list->AddRectFilled(tl, br, IM_COL32(22, 24, 28, static_cast<int>(alpha * 235.0f)), 8.0f);
+                list->AddRect(tl, br, IM_COL32(255, 255, 255, static_cast<int>(alpha * 30.0f)), 8.0f);
+                list->AddText(font, font->FontSize, at, IM_COL32(235, 238, 242, static_cast<int>(alpha * 255.0f)), text);
+            }
+        }
         draw_lock_dot(panel);
         draw_lock_note(panel);
         // Esc shows and hides this panel and the DLL cab window, hidden at
@@ -952,6 +990,7 @@ public:
             set_panels_shown(!panels_shown());
             if (!panels_shown()) panel.panels_hint_until = ImGui::GetTime() + 8.0;
         }
+        if (capture_panel() >= 0) set_panels_shown(true);
         if (!panels_shown()) {
             // The scene's own windows and HUD as ever; its lines for the
             // panel go nowhere.
@@ -979,6 +1018,10 @@ public:
         }
         draw_fps_counter(panel);
         draw_world_clock(panel, clock);
+        if (capture_panel() >= 0) {
+            ImGui::SetNextWindowPos({8.0f, 8.0f}, ImGuiCond_Always);
+            ImGui::SetNextWindowSize({680.0f, ImGui::GetIO().DisplaySize.y - 16.0f}, ImGuiCond_Always);
+        }
         ImGui::Begin(tr("openRTS viewer###viewer"));
         // What is open and how fast it runs; then a tab each: general,
         // graphics, the train, the world, performance, the keys.
@@ -993,7 +1036,8 @@ public:
         }
         if (ImGui::BeginTabBar("##panel_tabs")) {
             const auto tab = [&](const char* name, const PanelState::Tab which) {
-                if (ImGui::BeginTabItem(name)) {
+                const bool captured = capture_panel() == static_cast<int>(which);
+                if (ImGui::BeginTabItem(name, nullptr, captured ? ImGuiTabItemFlags_SetSelected : 0)) {
                     panel.tab = which;
                     ImGui::EndTabItem();
                 }
@@ -1002,11 +1046,12 @@ public:
             tab(tr("Graphics"), PanelState::Tab::graphics);
             if (scene.has_train_panel()) tab(tr("Train"), PanelState::Tab::train);
             tab(tr("World"), PanelState::Tab::world);
-            tab(tr("Performance"), PanelState::Tab::performance);
+            if (developer_mode()) tab(tr("Performance"), PanelState::Tab::performance);
             tab(tr("Controls"), PanelState::Tab::controls);
             ImGui::EndTabBar();
         }
         if (panel.tab == PanelState::Tab::train && !scene.has_train_panel()) panel.tab = PanelState::Tab::general;
+        if (panel.tab == PanelState::Tab::performance && !developer_mode()) panel.tab = PanelState::Tab::general;
         if (panel.tab == PanelState::Tab::controls) {
             draw_controls_help();
             draw_scene_unseen(scene, camera);
@@ -1024,6 +1069,9 @@ public:
         }
 
         if (panel.tab == PanelState::Tab::general) {
+            // "For developers" (also F12): the debug settings and readouts.
+            bool developer = developer_mode();
+            if (ImGui::Checkbox(tr("Settings for developers (F12)"), &developer)) set_developer_mode(developer);
             // The console: the game's messages (also F2).
             if (ImGui::Button(panel.console.open ? tr("Console (F2): close") : tr("Console (F2): the game's messages, warnings, errors")))
                 panel.console.open = !panel.console.open;
@@ -1202,9 +1250,13 @@ public:
                     save_graphics_settings(now, panel_graphics(panel));
                     panel.kept_graphics.msaa = now.msaa;
                 }
+                // Only what waits for a restart is marked (2026-11-22, the
+                // settings redesign): everything else applies at once.
+                ImGui::SameLine();
+                ImGui::TextColored(restart_colour, "%s", tr("after a restart"));
                 const auto drawn = renderer::render_sample_count();
                 if (panel.kept_graphics.msaa != panel.msaa_asked) {
-                    ImGui::TextDisabled("%s", tr("(from the next start)"));
+                    ImGui::TextDisabled(tr("(now %ux; the chosen one after a restart)"), panel.msaa_asked);
                 } else if (drawn != panel.msaa_asked) {
                     ImGui::TextDisabled(tr("(%ux: this video card does not take it here, drawn with %ux)"), panel.msaa_asked, drawn);
                 } else if (drawn <= 1) {
@@ -1228,8 +1280,8 @@ public:
             ImGui::SetNextItemWidth(220.0f);
             if (ImGui::Combo(tr("Graphics API"), &panel.backend_choice, backends, 4))
                 remember("backend", renderer::graphics_backend_key(static_cast<renderer::GraphicsBackend>(panel.backend_choice)));
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("Takes effect after a restart. Automatic: Vulkan, else DirectX 12. OpenGL is for old cards; the experimental renderer may not work there."));
+            ImGui::SameLine();
+            ImGui::TextColored(restart_colour, "%s", tr("after a restart"));
             ImGui::TextDisabled("%s", trf("now: %s", std::string(panel.backend_now).c_str()).c_str());
             ImGui::BeginDisabled(!panel.vsync_optional);
             const auto vsync_label = std::string(tr("VSync")) + " (" + panel.present_mode + ")###vsync";
@@ -1650,6 +1702,7 @@ public:
                     set_background_sound(static_cast<BackgroundSound>(quiet));
                     remember("background_sound", background_sound_key(background_sound()));
                 }
+                draw_sound_extras();
             } else {
                 ImGui::TextDisabled("%s", tr("Sound: off"));
             }
@@ -1657,14 +1710,16 @@ public:
 
         if (panel.tab == PanelState::Tab::general) {
             ImGui::SeparatorText(tr("Time and weather"));
-            draw_clock(clock, time_of_day_applies);
+            draw_clock(clock, time_of_day_applies, scene.networked());
         }
 
         if (panel.tab == PanelState::Tab::world) {
-            ImGui::Text(tr("Camera: %s"), camera.fly ? "fly" : "orbit");
+            if (developer_mode()) ImGui::Text(tr("Camera: %s"), camera.fly ? "fly" : "orbit");
             scene.draw_overlay(camera);
-            if (ImGui::Button(tr("Save debug view (Ctrl+F6)"))) panel.save_view = true;
-            if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
+            if (developer_mode()) {
+                if (ImGui::Button(tr("Save debug view (Ctrl+F6)"))) panel.save_view = true;
+                if (!panel.save_status.empty()) ImGui::TextWrapped("%s", panel.save_status.c_str());
+            }
         } else {
             draw_scene_unseen(scene, camera);
         }
@@ -1845,7 +1900,10 @@ private:
         ImGui::EndChild();
     }
 
-    static void draw_clock(ClockControls& clock, const bool time_of_day_applies) {
+    static void draw_clock(ClockControls& clock, const bool time_of_day_applies, const bool networked) {
+        // A network game: the server sets them; shown, not changed here.
+        if (networked) ImGui::TextWrapped("%s", tr("In a network game the server sets the time, its speed, the season and the weather."));
+        ImGui::BeginDisabled(networked);
         auto hours = static_cast<float>(clock.time_of_day / 3600.0);
         const auto seconds = static_cast<int>(clock.time_of_day);
         ImGui::Text(tr("Time %02d:%02d:%02d"), seconds / 3600, seconds / 60 % 60, seconds % 60);
@@ -1875,6 +1933,7 @@ private:
             ImGui::TextDisabled("%s", tr("(the dynamic weather began from it)"));
         }
         draw_dynamic_weather(clock.season);
+        ImGui::EndDisabled();
         if (clock.weather == 3 || (cycle.settings.dynamic && cycle.settings.by_season ? clock.season != 3 : cycle.settings.dynamic && cycle.settings.climate.storms > 0.0f)) {
             if (ImGui::SliderFloat(tr("Lightning strikes a minute"), &renderer::lightning_rate(), 0.0f, 30.0f, "%.0f"))
                 remember("lightning_rate", std::to_string(renderer::lightning_rate()));
@@ -2263,7 +2322,6 @@ void install_input_callbacks(GLFWwindow* window, CameraInput& input) {
 struct FovKeys {
     int key = 0;        // 1 narrower, -1 wider, 0 none
     double held = 0.0;  // s since the press
-    double next = 0.0;  // s at the next repeat
     bool changed = false;
 };
 
@@ -2289,19 +2347,21 @@ struct FovReturn {
         state = {};
         return let_go;
     }
-    int steps = 0;
     if (key != state.key) {
         state.key = key;
         state.held = 0.0;
-        state.next = 0.5;
-        steps = 1;
-    } else {
-        state.held += seconds;
-        for (; state.held >= state.next && steps < 64; state.next += 1.0 / 30.0) ++steps;
     }
-    for (int k = 0; k < steps; ++k) {
-        if (key > 0 && fov > 15.0f) fov -= 0.5f;
-        if (key < 0 && fov < 90.0f) fov += 0.5f;
+    state.held += seconds;
+    // Smooth, frame by frame: 9 degrees a second at first, up to 28 as the key
+    // is kept down (it was 0.5 degree jumps every repeat, which read as steps).
+    const float speed = 9.0f + 19.0f * (std::min)(1.0f, static_cast<float>(state.held));
+    const float step = speed * seconds;
+    if (key > 0 && fov > 15.0f) {
+        fov = (std::max)(15.0f, fov - step);
+        state.changed = true;
+    }
+    if (key < 0 && fov < 90.0f) {
+        fov = (std::min)(90.0f, fov + step);
         state.changed = true;
     }
     return false;
@@ -2435,6 +2495,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         in.tape_which = kp5 && !ctrl;
         in.board = board;
         in.walk_collision = walk_collision;
+        // F12: "for developers" on or off (viewer_state.hpp), the inspector with it.
+        if (f12) set_developer_mode(!developer_mode());
         in.inspector = f12;
         in.pointer = pointer;
         in.pointer_x = static_cast<float>(input.cursor_x / width * 2.0 - 1.0);
@@ -3094,7 +3156,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     glfwShowWindow(window.get());
     startup_frame("Starting the graphics");
 
+    // The shaders' pipelines take long on some drivers (a Radeon's D3D12 sat
+    // minutes here): the log says how long.
+    const auto shaders_started = std::chrono::steady_clock::now();
+    const auto seconds_since = [](const std::chrono::steady_clock::time_point from) {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+    };
     renderer::ModelRenderer renderer(device, surface.scene_format());
+    std::cout << "graphics: the models' shaders ready in " << seconds_since(shaders_started) << " s" << std::endl;
     std::unique_ptr<renderer::ToneMapper> tone;
     std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
     bool auto_exposure_was_on = false;
@@ -3119,6 +3188,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // Workers for the parallel recording: a cascade or the pre-pass each.
     renderer::TaskPool recording_pool((std::min)((std::max)(std::thread::hardware_concurrency(), 2u) - 1u, 5u));
     renderer.set_task_pool(&recording_pool);
+    std::cout << "graphics: the effects' shaders ready, " << seconds_since(shaders_started) << " s from the start of the graphics" << std::endl;
     if (!effects.ready()) {
         std::cerr << "Scene effects initialization failed.\n";
         return exit_code::renderer_failed;
@@ -3338,6 +3408,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     bool fov_reset_down = false; // Num* held
     StageClock stage_clock;
     StageTimes stages{};
+    std::unique_ptr<std::ofstream> frame_log;
+    const double frame_log_start = glfwGetTime();
+    if (!options.frame_log.empty()) {
+        frame_log = std::make_unique<std::ofstream>(std::filesystem::path(std::u8string(options.frame_log.begin(), options.frame_log.end())));
+        *frame_log << "t,frame_ms";
+        for (const auto* name : frame_stage_names) *frame_log << ',' << name;
+        *frame_log << ",gpu_ms,lights,lamp_shadows,instances\n";
+    }
     FovKeys fov_keys;
     FovReturn fov_return;
     double last_time = glfwGetTime();
@@ -3389,7 +3467,20 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
         // The place and size in a window only (not the monitor's when full).
         if (placement_keeper && window_mode.applied() == WindowMode::windowed) placement_keeper->update(window.get(), now);
-        panel.stats.add(now - last_time, stages, pass_timer.take());
+        {
+            const auto gpu_times = pass_timer.take();
+            if (frame_log) {
+                // t, frame ms, the stages, the GPU's frame (blank: not read
+                // this frame), the lamps and their shadows, the instances.
+                *frame_log << now - frame_log_start << ',' << (now - last_time) * 1000.0;
+                for (const double ms : stages) *frame_log << ',' << ms;
+                *frame_log << ',';
+                if (gpu_times.frames > 0) *frame_log << gpu_times.frame_ms / gpu_times.frames;
+                const auto effect_stats = effects.stats();
+                *frame_log << ',' << effect_stats.lights << ',' << effect_stats.lamp_shadows << ',' << renderer.stats().instances << '\n';
+            }
+            panel.stats.add(now - last_time, stages, gpu_times);
+        }
         stages = {};
         const auto elapsed = static_cast<float>((std::min)(now - last_time, max_frame_seconds));
         input.keyboard_captured = scene.keyboard_captured();
@@ -3562,6 +3653,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 if (phase == 0) {
                     scene.stand_at_cab_door(options.capture_board[board]);
                 } else {
+                    // Again before Enter: a salon's model is in by now (its
+                    // place in the car with it).
+                    if (phase == 1) scene.stand_at_cab_door(options.capture_board[board]);
                     // Enter (to that cab, its door opened), then Ctrl+Enter (up the steps).
                     frame_input.engineer_action = true;
                     frame_input.engineer_action_ctrl = phase == 2;
@@ -3653,6 +3747,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
         }
         if (const auto time = scene.take_time_of_day()) clock.time_of_day = *time;
+        // A network game: the server's pace and season (its time comes above).
+        if (const auto server = scene.server_clock()) {
+            clock.speed = server->speed;
+            if (server->season) clock.season = *server->season;
+        }
         if (const auto saved = scene.take_saved_clock()) {
             // A loaded game's clock, season and weather.
             clock.time_of_day = saved->time_of_day;
@@ -3724,6 +3823,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
         if (sound) {
             sound->set_listener(camera.eye(), camera.forward());
+            sound->set_doppler(sound_extras().doppler);
+            sound->set_echo(sound_extras().echo ? scene.echo_amount() : 0.0f);
             sound->update();
         }
         const auto environment = scene.environment();
@@ -3783,7 +3884,16 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // pre-pass with its occlusion and the lamp clusters, before the
         // main pass (renderer::SceneEffects).
         const bool experimental = renderer.shading_path() == renderer::ShadingPath::experimental;
-        effects.set_settings(panel.effects);
+        // The lamps' beams in snow or rain go through the light shafts'
+        // pass (its depth pre-pass wanted too), the sun's shafts or not.
+        const auto beams = scene.light_shaft_beams();
+        if (beams.any()) {
+            auto settings = panel.effects;
+            settings.light_shafts = true;
+            effects.set_settings(settings);
+        } else {
+            effects.set_settings(panel.effects);
+        }
         effects.begin_frame({.view = frame.view,
                              .projection = frame.projection,
                              .eye = frame.eye,
@@ -3920,8 +4030,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             // The light shafts (the experimental path): the sun's beams
             // marched through the effects' shadows to the camera's depth.
             WGPUTextureView shafts_view = nullptr;
-            if (experimental && settings.curve != renderer::ToneCurve::none && panel.effects.light_shafts
-                && panel.effects.light_shafts_strength > 0.0f) {
+            const bool sun_shafts = panel.effects.light_shafts && panel.effects.light_shafts_strength > 0.0f;
+            if (experimental && settings.curve != renderer::ToneCurve::none && (sun_shafts || beams.any())) {
                 if (!shafts) shafts = std::make_unique<renderer::LightShaftRenderer>(device);
                 if (const auto depth = effects.camera_depth(); depth && shafts->ready()) {
                     shafts_view = shafts->render(encoder, effects.bind_group(), depth,
@@ -3930,10 +4040,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                                   .eye = frame.eye,
                                                   .width = static_cast<std::uint32_t>(width),
                                                   .height = static_cast<std::uint32_t>(height),
-                                                  .strength = panel.effects.light_shafts_strength,
+                                                  .strength = sun_shafts ? panel.effects.light_shafts_strength : 0.0f,
                                                   .shadow_distance = panel.effects.shadow_distance,
                                                   .fog_end = environment.lighting.fog_end,
-                                                  .room = scene.light_shaft_room()});
+                                                  .room = scene.light_shaft_room(),
+                                                  .beams = beams});
                     settings.shafts = shafts_view != nullptr;
                 }
             }

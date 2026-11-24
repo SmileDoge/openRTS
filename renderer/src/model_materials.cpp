@@ -41,6 +41,15 @@ struct Store {
     std::map<std::string, formats::ShapeMaterialFile> shape_good;
     std::map<std::string, formats::MaterialFile> texture_good;
     std::set<std::string> told; // messages printed once
+    // The MATERIALS folder's files by name (named_materials), for the VFS
+    // and its generation they were listed from.
+    const core::Vfs* named_vfs = nullptr;
+    std::uint64_t named_generation = 0;
+    struct Named {
+        std::string scope; // its top folder's name, folded (empty: every train)
+        core::VirtualPath file;
+    };
+    std::map<std::string, std::vector<Named>> named; // by the file's name, folded
 };
 
 Store& store() {
@@ -54,6 +63,71 @@ void tell(const std::vector<std::string>& messages) {
     for (const auto& message : messages) {
         if (s.told.insert(message).second) std::cout << "material: " << message << '\n';
     }
+}
+
+// The MATERIALS folder (of the installation or a mod; docs/pbr-materials.md):
+// a texture's material found by the texture's name wherever the texture
+// lies, so one folder dresses every train drawing it (a snow mask for every
+// ChS7) without touching the trains' folders. A file right in MATERIALS
+// applies to every texture of its name; one in a folder below, only to
+// those whose train folder's name holds that folder's name ("chs7":
+// mdd_CHS7-016, mdd_CHS7-218...; "mdd_vl10-": the VL10s, not the VL10u's).
+// With # a pattern of the whole name, # any run of characters ("mdd_CHS7-2#";
+// Windows keeps * and ? out of a folder's name). The ones that apply, the
+// general first.
+bool name_matches(const std::string_view pattern, const std::string_view text) {
+    if (pattern.find('#') == std::string_view::npos) return text.find(pattern) != std::string_view::npos;
+    // A wildcard pattern, whole: # any run.
+    std::size_t p = 0, t = 0, star = std::string_view::npos, from = 0;
+    while (t < text.size()) {
+        if (p < pattern.size() && pattern[p] != '#' && pattern[p] == text[t]) {
+            ++p;
+            ++t;
+        } else if (p < pattern.size() && pattern[p] == '#') {
+            star = p++;
+            from = t;
+        } else if (star != std::string_view::npos) {
+            p = star + 1;
+            t = ++from;
+        } else {
+            return false;
+        }
+    }
+    while (p < pattern.size() && pattern[p] == '#') ++p;
+    return p == pattern.size();
+}
+
+std::vector<core::VirtualPath> named_materials(const core::Vfs& vfs, const std::string& name, const std::string& train_folder) {
+    auto& s = store();
+    const std::lock_guard lock(s.mutex);
+    if (s.named_vfs != &vfs || s.named_generation != vfs.generation()) {
+        s.named_vfs = &vfs;
+        s.named_generation = vfs.generation();
+        s.named.clear();
+        if (const auto root = core::VirtualPath::parse("MATERIALS"); root && vfs.is_directory(*root)) {
+            std::vector<std::pair<core::VirtualPath, std::string>> folders{{*root, std::string()}};
+            while (!folders.empty()) {
+                const auto [folder, scope] = folders.back();
+                folders.pop_back();
+                for (const auto& entry : vfs.list(folder)) {
+                    if (entry.directory) {
+                        folders.emplace_back(entry.path, scope.empty() ? core::fold_case(entry.path.filename()) : scope);
+                    } else if (const auto file = core::fold_case(entry.path.filename()); file.ends_with(".material.json5")) {
+                        s.named[file].push_back({scope, entry.path});
+                    }
+                }
+            }
+        }
+    }
+    std::vector<core::VirtualPath> out;
+    const auto it = s.named.find(core::fold_case(name));
+    if (it == s.named.end()) return out;
+    const auto train = core::fold_case(train_folder);
+    for (const auto& each : it->second)
+        if (each.scope.empty()) out.push_back(each.file);
+    for (const auto& each : it->second)
+        if (!each.scope.empty() && name_matches(each.scope, train)) out.push_back(each.file);
+    return out;
 }
 
 // A texture's material file: its patch (none when there is no file, or it
@@ -176,6 +250,18 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
         if (!image) return failed(error);
         return finished(std::move(*image));
     }
+    case MaterialMapKind::snow: {
+        // As painted: the snow's colour and where it lies (alpha). An ACE of
+        // blocks (an openRTS BC7 one: openrts-ace to-ace --format bc7) goes
+        // to the GPU as it is, not compressed again at each start.
+        if (const auto file = map_path(*m.snow); file && core::fold_case(file->extension()) == ".ace") {
+            auto ace = formats::decode_ace_rgba(vfs, *file);
+            if (ace.ok() && !ace.image->blocks.empty()) return std::make_shared<formats::AceDecodeResult>(std::move(ace));
+        }
+        auto image = one(*m.snow);
+        if (!image) return failed(error);
+        return finished(std::move(*image));
+    }
     case MaterialMapKind::normal: {
         auto image = one(*m.normal);
         if (!image) return failed(error);
@@ -265,6 +351,7 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
     case MaterialMapKind::emissive: return "material emissive " + file(m.emissive);
     case MaterialMapKind::normal: return std::string("material normal ") + formats::normal_y_name(m.normal_y) + " " + file(m.normal);
     case MaterialMapKind::height: return "material height " + file(m.height);
+    case MaterialMapKind::snow: return "material snow " + file(m.snow);
     case MaterialMapKind::orm:
         return std::string("material orm ") + formats::layout_name(m.layout) + " " + file(m.orm) + " " + file(m.ao_map) + " "
             + file(m.roughness_map) + " " + file(m.metallic_map);
@@ -444,6 +531,22 @@ void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, Textu
         }
         const auto name = formats::texture_material_name(source.filename());
         const auto base_folder = variant ? folder.parent() : folder;
+        // MATERIALS by the texture's name (its train folder: the one in
+        // TRAINS/TRAINSET, else its own), under the one beside it.
+        {
+            std::string train = std::string(base_folder.filename());
+            for (auto up = base_folder; !up.str().empty(); up = up.parent()) {
+                if (core::fold_case(up.parent().filename()) == "trainset") {
+                    train = std::string(up.filename());
+                    break;
+                }
+                if (up.parent().str() == up.str()) break;
+            }
+            for (const auto& file : named_materials(vfs, name, train)) {
+                asset.material_files.push_back(file);
+                if (auto patch = read_texture_material(vfs, file, messages)) by_image[i].emplace_back(formats::MaterialLayer::texture, std::move(*patch));
+            }
+        }
         if (const auto file = base_folder.resolve(std::string_view(name))) {
             asset.material_files.push_back(*file);
             if (auto patch = read_texture_material(vfs, *file, messages)) by_image[i].emplace_back(formats::MaterialLayer::texture, std::move(*patch));
@@ -495,7 +598,7 @@ void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, Textu
                 if (cache) cache->emplace(cache_key, image);
             }
             // The maps' files are dependencies whether they load or not.
-            for (const auto* map : {&m.base_color, &m.orm, &m.ao_map, &m.roughness_map, &m.metallic_map, &m.normal, &m.emissive, &m.height}) {
+            for (const auto* map : {&m.base_color, &m.orm, &m.ao_map, &m.roughness_map, &m.metallic_map, &m.normal, &m.emissive, &m.height, &m.snow}) {
                 if (*map) {
                     if (const auto path = map_path(**map)) asset.material_files.push_back(*path);
                 }
@@ -531,6 +634,7 @@ void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, Textu
             if (m.normal) out.normal = add_map(MaterialMapKind::normal, m);
             if (m.emissive) out.emissive = add_map(MaterialMapKind::emissive, m);
             if (m.height) out.height = add_map(MaterialMapKind::height, m);
+            if (m.snow) out.snow = add_map(MaterialMapKind::snow, m);
         }
 
         // Tangents for the primitives with a normal map.

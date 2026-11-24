@@ -114,6 +114,13 @@ struct WorldObjectPlacement {
     // CarSpawner: CarFrequency (30 s), CarAvSpeed (20 m/s).
     float car_frequency = 30.0f;
     float car_average_speed = 20.0f;
+    // Speedpost (the game writes its number on it; MSTS speedpost.dat):
+    // Speed_Digit_Tex (0-9 in a 4 x 4 grid), Speed_Sign_Shape ( n then n
+    // plates: x y z in the shape and its turn about Y, radians ),
+    // Speed_Text_Size ( height, advance, raise ) in metres.
+    std::string speed_digit_texture;
+    std::vector<std::array<float, 4>> speed_signs;
+    std::array<float, 3> speed_text_size{};
 };
 
 struct WorldTile {

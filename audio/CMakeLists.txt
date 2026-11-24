@@ -1,5 +1,6 @@
 add_library(openrts_audio STATIC
     src/audio_engine.cpp
+    src/echo_node.cpp
     src/interior_acoustics.cpp
     src/miniaudio.cpp
     src/sound_bank.cpp

@@ -98,7 +98,12 @@ using formats::WagonDefinition;
     std::array<float, 8> axle_force{};
     bool by_motor = false;
     const std::size_t motors = (std::min)(static_cast<std::size_t>(demands.engine_force_count), engine.engine_axles.size());
-    if (engine.num_engines > 0) {
+    // A DLL that leaves its motors' forces at 0 (the ЭД4М's: its 64 kN all
+    // in Force; testers 2026-11-23, every axle at 0 %, never a slip) gives
+    // no split: its force goes evenly over the axles.
+    float motors_total = 0.0f;
+    for (std::size_t m = 0; m < motors; ++m) motors_total += std::abs(demands.engine_forces[m]);
+    if (engine.num_engines > 0 && motors_total > 0.01f * std::abs(force)) {
         for (std::size_t m = 0; m < motors; ++m) {
             const auto& turned = engine.engine_axles[m];
             if (turned.empty()) continue;
@@ -432,6 +437,15 @@ float compressor_rate(bool& running, const EngineInputs& inputs) {
     return 0.05f;
 }
 
+float compressor_delivery(const EngineInputs& inputs) {
+    const auto* engine = inputs.definition && inputs.definition->engine ? &*inputs.definition->engine : nullptr;
+    if (engine) {
+        const float capacity = engine->compressor_capacity > 0.0f ? engine->compressor_capacity / 60.0f : 0.088f;
+        return capacity / detail::main_reservoir_volume(*engine);
+    }
+    return 0.05f;
+}
+
 void KeyboardController::save(StateWriter& out, const std::string_view prefix) const {
     const std::string p(prefix);
     const auto& h = *handles_;
@@ -466,7 +480,7 @@ std::shared_ptr<DriverHandles> attach_keyboard_driver(Train& train, std::size_t 
     if (engine(master)->throttle_notches > 0) handles->notches = engine(master)->throttle_notches;
     for (std::size_t i = 0; i < train.cars().size(); ++i) {
         if (!engine(i)) continue;
-        train.set_controller(i, std::make_unique<KeyboardController>(handles, i == master));
+        train.set_module(i, std::make_unique<KeyboardController>(handles, i == master));
     }
     return handles;
 }
@@ -538,7 +552,7 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
 struct Train::Impl {
     std::optional<TrackTraveller> head; // front end of car 0
     std::optional<TrackTraveller> tail; // rear end of the last car
-    std::vector<std::unique_ptr<LocomotiveController>> controllers;
+    std::vector<std::unique_ptr<CarModule>> controllers;
     std::vector<EngineDemands> demands;
     // Per car and bogie: the node and offset along it at the last update.
     struct BogieTrack {
@@ -564,7 +578,7 @@ Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
     : impl_(std::make_unique<Impl>()), settings_(settings), id_(next_train_id++) {
     settings_.coupler_substeps = std::clamp<std::uint32_t>(settings_.coupler_substeps, 1, 8);
     for (const auto& setup : cars) {
-        CarState car{.definition = setup.definition, .flipped = setup.flipped, .handbrake = setup.handbrake};
+        CarState car{.definition = setup.definition, .id = setup.id, .flipped = setup.flipped, .handbrake = setup.handbrake};
         for (std::size_t k = 0; k < 2; ++k) {
             car.shoes[k] = setup.shoes[k] != formats::BrakeShoe::unknown || !setup.definition ? setup.shoes[k] : shoe_of(*setup.definition);
         }
@@ -827,11 +841,11 @@ void Train::set_bogies(const std::size_t car, const float ahead, const float beh
     cars_[car].bogie_behind = (std::max)(behind, 0.0f);
 }
 
-void Train::set_controller(const std::size_t car, std::unique_ptr<LocomotiveController> controller) {
+void Train::set_module(const std::size_t car, std::unique_ptr<CarModule> controller) {
     if (car < impl_->controllers.size()) impl_->controllers[car] = std::move(controller);
 }
 
-LocomotiveController* Train::controller(const std::size_t car) {
+CarModule* Train::module(const std::size_t car) {
     return car < impl_->controllers.size() ? impl_->controllers[car].get() : nullptr;
 }
 
@@ -850,6 +864,20 @@ void Train::vacate() {
         auto* state = network_->junction(node);
         if (state && state->clearance.contains(id_)) network_->release_junction(node, id_);
     }
+}
+
+std::vector<CarId> Train::car_ids() const {
+    std::vector<CarId> out;
+    out.reserve(cars_.size());
+    for (const auto& car : cars_) out.push_back(car.id);
+    return out;
+}
+
+std::optional<std::size_t> Train::index_of(const CarId id) const noexcept {
+    if (!id) return std::nullopt;
+    for (std::size_t i = 0; i < cars_.size(); ++i)
+        if (cars_[i].id == id) return i;
+    return std::nullopt;
 }
 
 bool Train::turn_around() {
@@ -1277,8 +1305,15 @@ void Train::save_state(StateWriter& out) const {
         out.put(p + "wear", c.wear.pipe_leak, c.wear.reservoir_leak, c.wear.cylinder_leak, c.wear.pace, c.wear.sensitivity, c.wear.rigging);
     }
     impl.air.save(out);
+    // Each module its own block: "k<car>.<name> <version>", its keys under
+    // "k<car>.<name>.". "modules": a save of blocks.
+    out.put("modules", 1);
     for (std::size_t i = 0; i < impl.controllers.size(); ++i) {
-        if (impl.controllers[i]) impl.controllers[i]->save(out, "k" + std::to_string(i) + ".");
+        const auto* module = impl.controllers[i].get();
+        if (!module) continue;
+        const auto key = "k" + std::to_string(i) + "." + std::string(module->name());
+        out.put(key, module->version());
+        module->save(out, key + ".");
     }
 }
 
@@ -1316,8 +1351,22 @@ void Train::restore_state(const StateReader& in) {
         c.body_rate[0] = c.body_rate[1] = c.body_rate[2] = 0.0f;
     }
     impl.air.restore(in);
+    // A block of another module (the car's system changed) or of a version
+    // it does not read is left out: the module keeps its starting state.
+    // Saves before blocks (v0.39, no "modules") kept a module's keys under
+    // "k<car>.".
+    const bool blocks = in.has("modules");
     for (std::size_t i = 0; i < impl.controllers.size(); ++i) {
-        if (impl.controllers[i]) impl.controllers[i]->restore(in, "k" + std::to_string(i) + ".");
+        auto* module = impl.controllers[i].get();
+        if (!module) continue;
+        const auto car = "k" + std::to_string(i) + ".";
+        const auto key = car + std::string(module->name());
+        int version{};
+        if (in.get(key, version)) {
+            if (module->reads(version)) module->restore(in, key + ".");
+        } else if (!blocks) {
+            module->restore(in, car);
+        }
     }
     asleep_ = asleep;
 }

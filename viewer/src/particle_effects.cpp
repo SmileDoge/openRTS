@@ -39,6 +39,8 @@ constexpr float drop_size = 4.0f;
 
 PrecipitationView::PrecipitationView(const WGPUDevice device, const WGPUTextureFormat target_format, std::shared_ptr<const core::Vfs> vfs)
     : sprites_(std::make_unique<renderer::GlowSpriteRenderer>(device, target_format)), vfs_(std::move(vfs)) {
+    particles_ = std::make_unique<renderer::WeatherParticleRenderer>(device, target_format);
+    if (!particles_->ready()) particles_.reset();
     sprites_->set_size_factor(1.0f);
 }
 
@@ -61,8 +63,67 @@ void PrecipitationView::set_environment(const formats::EnvPrecipitation* precipi
     }
 }
 
+void PrecipitationView::set_lamps(const std::vector<renderer::SceneLight>& lights, const glm::vec3& eye) {
+    // Some 25 m around the eye: the box the particles fill.
+    constexpr float box = 25.0f;
+    struct Pick {
+        float distance;
+        renderer::ParticleLamp lamp;
+    };
+    std::vector<Pick> picks;
+    for (const auto& entry : lights) {
+        auto cone = renderer::extra_light_cone(entry.light);
+        if (!cone && (static_cast<int>(entry.light.kind) & 31) == 2) {
+            // A sphere (a platform's lamp, an arc): round its place, its widest radius (at most 40 m).
+            const glm::vec3 centre{glm::inverse(entry.light.to_light)[3]};
+            const float radius = (std::min)((std::max)({entry.light.size.x, entry.light.size.y, entry.light.size.z}), 40.0f);
+            if (radius < 0.5f || glm::distance(centre, eye) > box + radius) continue;
+            const glm::vec3 colour = glm::clamp(glm::vec3(entry.light.diffuse), glm::vec3(0.0f), glm::vec3(1.0f));
+            picks.push_back({(std::max)(glm::distance(centre, eye) - radius, 0.0f), {{centre, {0.0f, 1.0f, 0.0f}, radius, -1.0f}, colour}});
+            continue;
+        }
+        if (!cone || cone->reach < 5.0f) continue; // a cab's or a salon's lamp, not a beam
+        // The nearest point of its axis within its reach.
+        const float t = std::clamp(glm::dot(eye - cone->apex, cone->axis), 0.0f, cone->reach);
+        const float distance = glm::length(cone->apex + cone->axis * t - eye);
+        if (distance > box + cone->reach * cone->tangent) continue;
+        const glm::vec3 colour = glm::clamp(glm::vec3(entry.light.diffuse), glm::vec3(0.0f), glm::vec3(1.0f));
+        picks.push_back({distance, {*cone, colour}});
+    }
+    std::sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) { return a.distance < b.distance; });
+    weather_.lamp_count = (std::min)(picks.size(), renderer::WeatherParticles::max_lamps);
+    for (std::size_t i = 0; i < weather_.lamp_count; ++i) weather_.lamps[i] = picks[i].lamp;
+}
+
 void PrecipitationView::update(const float elapsed, const glm::vec3& eye, const glm::vec3& right, const float amount, const glm::vec4& light) {
     drawn_ = false;
+    own_drawn_ = false;
+    // openRTS's look: the particles' frame (the drops' count kept for those
+    // who ask whether it falls).
+    if (renderer::own_precipitation() && particles_ && precipitation_ && amount > 0.0f) {
+        const auto count = static_cast<std::size_t>(static_cast<float>(precipitation_->density) * std::clamp(amount, 0.0f, 2.0f));
+        drops_.resize(count, eye);
+        weather_.amount = amount;
+        weather_.snow = precipitation_->snow;
+        weather_.wind = {};
+        if (!wind_.empty()) {
+            const auto& layer = wind_.front();
+            weather_.wind = glm::vec3{layer.direction[0], layer.direction[1], layer.direction[2]} * layer.speed;
+        }
+        // The eye's velocity, smoothed; a jump (a camera put elsewhere) starts over.
+        if (has_eye_ && elapsed > 1e-4f) {
+            const glm::vec3 v = (eye - last_eye_) / elapsed;
+            if (glm::length(v) > 120.0f) weather_.eye_velocity = {};
+            else weather_.eye_velocity += (v - weather_.eye_velocity) * (std::min)(1.0f, elapsed / 0.2f);
+        }
+        last_eye_ = eye;
+        has_eye_ = true;
+        weather_.eye = eye;
+        weather_.light = light;
+        weather_.time += elapsed;
+        own_drawn_ = count > 0;
+        return;
+    }
     if (!precipitation_ || amount <= 0.0f || texture_ == 0) {
         drops_.clear();
         return;
@@ -131,6 +192,11 @@ void PrecipitationView::update(const float elapsed, const glm::vec3& eye, const 
 
 void PrecipitationView::render(const WGPURenderPassEncoder pass, const glm::mat4& projection, const glm::mat4& view,
                                const float viewport_height) {
+    if (own_drawn_ && particles_) {
+        weather_.viewport_height = viewport_height;
+        particles_->render(pass, projection, view, weather_);
+        return;
+    }
     if (!drawn_ || drops_.empty()) return;
     sprites_->render(pass, projection, view, viewport_height, renderer::GlowBlend::over);
 }

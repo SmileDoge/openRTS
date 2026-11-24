@@ -32,7 +32,7 @@ openRTS — независимая реализация RTrainSim (RTS). Сво�
    Можно и отдельно от RTS, и внутрь её папки, и в `Program Files`.
    Настройки и журнал хранятся в `%LOCALAPPDATA%\openRTS`:
    - `viewer_state.ini` — настройки;
-   - `openrts.log` — журнал игры;
+   - `openrts.log` — журнал игры (`openrts.1.log`, `openrts.2.log` — два прошлых запуска);
    - `imgui.ini` — расположение окон;
    - `debug_views` — сохранённые виды;
    - `user_paths` — пути Track control.

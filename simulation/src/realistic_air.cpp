@@ -85,7 +85,7 @@ void RealisticAir::save(StateWriter& out) const {
     for (std::size_t i = 0; i < air_.size(); ++i) {
         const auto& a = air_[i];
         out.put("a" + std::to_string(i) + ".state", a.braking, a.emergency, a.reference, a.last_pipe, a.wave, a.accelerator, a.ep_chamber,
-                a.ep_side, a.pipe_low);
+                a.ep_side, a.pipe_low, a.zk, a.kdr, a.discharge, a.channel);
     }
     out.put_list("air.links", link_flow_);
 }
@@ -94,7 +94,7 @@ void RealisticAir::restore(const StateReader& in) {
     for (std::size_t i = 0; i < air_.size(); ++i) {
         auto& a = air_[i];
         in.get("a" + std::to_string(i) + ".state", a.braking, a.emergency, a.reference, a.last_pipe, a.wave, a.accelerator, a.ep_chamber,
-               a.ep_side, a.pipe_low);
+               a.ep_side, a.pipe_low, a.zk, a.kdr, a.discharge, a.channel);
     }
     std::vector<float> links;
     if (in.get_list("air.links", links) && links.size() == link_flow_.size()) {

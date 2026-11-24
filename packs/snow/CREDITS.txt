@@ -1,0 +1,22 @@
+openRTS snow (the openrts-snow pack) / снег openRTS (пак openrts-snow)
+
+Snow masks for the bodies of the ChS7, the VL10 (VL10u) and the 2TE10M, laid as the
+season's or a snowfall's snow cover (docs/pbr-materials.md, "Snow maps";
+the MATERIALS folder). Маски снега для кузовов ЧС7, ВЛ10 (ВЛ10у) и 2ТЭ10М: снег
+на кузове зимой и в снегопад (docs/ru/pbr-materials.md, папка MATERIALS).
+
+Author / автор: DmItRoNe, shipped with openRTS by the author's leave
+(с разрешения автора). Made for the MaDaDev ChS7 and VL10 and the 2TE10M textures; the
+textures themselves are not in this pack.
+
+From the author's 4096 x 4096 PNG masks, shrunk to 2048 x 2048 and
+compressed to BC7 ACE (openrts-ace to-ace --format bc7). Из авторских
+масок PNG 4096 x 4096, уменьшенных до 2048 x 2048 и сжатых в BC7 ACE.
+
+- chs7/: zdsLoco_chs7-6A, zdsLoco_chs7-6B (every mdd_CHS7-... folder)
+- vl10/: kuz1, kuz2, kuzovdet (the folders whose name holds "vl10")
+- 2te10m/: kuzov_a, kuzov_b, 2TE10L_W, 2TE10L_WA, 2TE10L_WB (the RTS_2TE10M-...
+  folders), 2026-11-24: PNG 2048 x 2048 / 1024 x 1024 as given, BC7 ACE
+
+Another pack, a mod or a MATERIALS folder in the installation replaces
+them: openRTS's own packs are below everything (docs/vfs.md).

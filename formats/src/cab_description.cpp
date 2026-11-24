@@ -540,6 +540,8 @@ ExteriorDetails parse_exterior_details(std::string_view bytes) {
     if (!source) return out;
     TextNode root;
     detail::read_text_tree(*source, root);
+    if (const auto* parts = find(root, "esd_interior_parts"))
+        for (std::size_t i = 1; i < parts->values.size(); ++i) out.interior_parts.push_back(parts->values[i]);
     const TextNode* exterior = find(root, "esd_exterior_details");
     if (!exterior) return out;
     if (const auto* animations = exterior->child("animations"))
@@ -611,6 +613,11 @@ ExteriorDetails parse_exterior_details(std::string_view bytes) {
                 for (std::size_t k = 1; k < frames->values.size(); ++k) object.state_key_frames.push_back(static_cast<float>(frames->number(k)));
             }
             object.anim_time = number(node.child("animtime"), 0, 0.0f);
+            if (const auto* shape = node.child("shape"); shape && !shape->values.empty()) object.shape = shape->values[0];
+            for (int k = 0; k < 3; ++k) {
+                object.position[static_cast<std::size_t>(k)] = number(node.child("position"), static_cast<std::size_t>(k), 0.0f);
+                object.direction[static_cast<std::size_t>(k)] = number(node.child("direction"), static_cast<std::size_t>(k), 0.0f);
+            }
             out.wagon_objects.push_back(std::move(object));
         }
     }
@@ -726,7 +733,10 @@ CabDescription parse_cab_description(std::string_view bytes) {
             cab.texture_changes.push_back(std::move(c));
         }
     }
-    if (const auto* animations = interior->child("animations")) {
+    // Nested too: RTS finds a keyword wherever it stands (parser_maybe); the
+    // 2ЭС4К's cabs close their lights with "}" for ")", which leaves their
+    // Animations inside the lights' block (their wipers stood still).
+    if (const auto* animations = child_or_nested(*interior, "animations")) {
         for (const auto& node : animations->children) {
             if (node.name != "animnode") continue;
             CabAnimation a;

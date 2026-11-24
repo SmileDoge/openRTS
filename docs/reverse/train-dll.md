@@ -897,6 +897,25 @@ without compliance and RTS refuses it too.
 
 ## 12. Content details DLLs rely on
 
+- **FreeAnimations** (`ts.h` `FreeAnimation`; openRTS 2026-11-22): the
+  host fills `NumKeyFrames`, `AnimTime` and the flags' CONTINUOUS (bit 1)
+  and LOOP (bit 2) from the `.sd` AnimNode, as the DLL reads them; `nodes`
+  stay null and `NumNodes` 0. The DLLs seen set only bit 0: the wipers'
+  rounds (the 2ЭС4К: one sweep, intermittent, continuous), the ЭП20's
+  mirrors held running while unfolded (`AnimateTo` 0). openRTS's cab: a
+  CONTINUOUS one goes to its last key frame and back while running (with
+  LOOP round from frame 0; `ts.h`'s "goes down" bit), RETURNS going on to
+  frame 0 when stopped; any other goes to its last key frame while running
+  and back to the first when not. The ЭП1М-500's `CabNew.s` keys its wipers
+  one way (3 keys, first and last apart): going round they jumped back
+  (testers, 2026-11-22); the old cab's and the ЭД4М's keys go there and
+  back, the same either way. The 2ЭС4К's `Cab.sd` closes its lights with `}` for `)`, which puts
+  its `Animations` inside the lights' block: openRTS finds the block
+  wherever it is in `ESD_Interior`, as RTS finds a keyword anywhere.
+  The ЭД4М-0233 and later (`ed4mnew.dll`, `cab300`) start no wipers on the
+  harness from their switch 163 or 56 (`ed4m.dll` does from 56); not
+  checked in RTS.
+
 - **`.repaint` files** (RTS): a `Cabin` or a wagon shape can name
   `x.repaint` = `Repaint ( Shape ( "a.s" ) ShapeDescription ( "a.sd" )
   TextureReplace ( "old.ace" "new.ace" ) ... )`. Without resolving it the
@@ -1423,6 +1442,39 @@ whatever its `Init` did.
 
 openRTS (2026-11-18): a situation keeps the trains' places and brake shoes
 only; the DLLs' state is not saved yet.
+
+## 21. Engine::CurrentMilepost (2026-11-20)
+
+CONFIRMED (rts1.exe, the old build's database: `0x508520`, `0x47FBE4`,
+`0x50B690`, `0x4FE92C`). The train keeps a coordinate at its reference
+point (Train `+112`, km; −1 none) and a direction (Train `+4` bit
+`0x800000`: the numbers fall towards its front); an engine takes it when
+made (`0x4FE92C`). Its update (`0x508520`), each step the train moves (its
+speed `+92` not 0), looks along the track from its position for the first
+kilometre post within 5000 m (`0x47FBE4`: a speed post, item type 2,
+without flag 2, its `KM` the post's number); openRTS's works it out once
+at the start too:
+
+- one behind: with one ahead, the one behind plus the metres to it where
+  the one ahead is not lower, else (falling) minus them; with none ahead
+  (its second look behind starts again from the train and finds the same
+  post) plus them;
+- none behind, one ahead: that one minus the metres to it (its second look
+  ahead finds the same post again);
+- none: −1.
+
+openRTS (2026-11-22, not RTS's): where neither search finds a post (looking
+back through a switch set away from the track the train came by, a dead
+end ahead: Novokuznetsk's station tracks) the coordinate it had goes on by
+the metres run instead of falling to −1. The САВПЭ (`Usavp.dll`) counts its
+distance as the next stop's `MDD_INFO_R<route>_<train>_S<n>_POS` (100 m)
+less `CurrentMilepost`; at −1 it stood (testers: in RTS it ran there).
+`openrts-path-check ... --mileposts` prints it along a path.
+
+Each engine's `CurrentMilepost` (`0x50B690`) is the train's plus its car's
+`zord` / 1000 (minus with the falling bit), −1 with none: openRTS's
+(`simulation/milepost.hpp`) from the rear, the cars' offsets along the
+train (the last car 0).
 
 ## Open questions
 

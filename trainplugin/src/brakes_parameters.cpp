@@ -18,7 +18,9 @@ using Cab = BrakesParameters::Cab;
 // Each cab's switches and displays, BR_<name><k> with k from 1.
 constexpr std::pair<std::string_view, std::int32_t Cab::*> cab_ids[] = {
     {"br_395id", &Cab::valve},
+    {"br_334id", &Cab::valve334},
     {"br_kptid", &Cab::controller},
+    {"br_pptid", &Cab::ppt},
     {"br_redid", &Cab::reducer},
     {"br_kkid", &Cab::combined},
     {"br_367id", &Cab::block},
@@ -46,17 +48,20 @@ constexpr std::pair<std::string_view, std::int32_t Cab::*> cab_ids[] = {
     {"br_amp", &Cab::ep_amps},
 };
 
-// Devices openRTS does not have yet: a car with one fitted (not -1) keeps
-// Brakes.dll. The 334 (the ЭР2's and ЭР9's valve), the ЭП2Д's ППТ. BR_KID
-// is not a brake device: only the speed recorder reads it (its cock on, no
-// ЭПК for running with the ALSN off; simulation/recorder.hpp).
-constexpr std::string_view cab_devices_not_known[] = {"br_334id", "br_pptid"};
+// BR_KID is not a brake device: only the speed recorder reads it (its cock
+// on, no ЭПК for running with the ALSN off; simulation/recorder.hpp).
+
+// Names Brakes.dll never reads (a typo in content): nothing to do. The ЧС2's
+// BR_OTIDID1 (Brakes.dll asks for BR_OTID<cab>).
+constexpr std::string_view never_read[] = {"br_otidid"};
 
 // Global parameters openRTS takes or that only Brakes.dll's other parts
-// (its sounds, the ЭПК's mode) read, which go on running.
+// (its sounds, the ЭПК's mode) read, which go on running. BR_AUTO 1 (the
+// ДТ116's): Brakes.dll takes no slave sections; openRTS's devices work each
+// car's own air anyway.
 constexpr std::string_view global_known[] = {"br_numcabs", "br_flipcabs", "br_mode",    "br_zarpress", "br_367oppol",
                                              "br_razobshk", "br_buferkvt", "br_ept",     "br_sknum",    "br_130mode",
-                                             "br_224mode",  "br_epkmode",  "br_ampdbl"};
+                                             "br_224mode",  "br_epkmode",  "br_ampdbl",   "br_auto"};
 
 bool is_brakes_dll(const std::string& module) {
     const auto m = core::fold_case(module);
@@ -106,13 +111,13 @@ BrakesParameters brakes_parameters(const formats::EngineDefinition& engine) {
             p.cabs[k].*(field->second) = value;
             continue;
         }
-        if (std::find(std::begin(cab_devices_not_known), std::end(cab_devices_not_known), base) != std::end(cab_devices_not_known)) {
-            if (value != -1) not_known(parameter.name);
-            continue;
-        }
         if (base == "br_kid") continue; // the speed recorder's
+        if (std::find(std::begin(never_read), std::end(never_read), base) != std::end(never_read)) continue;
+        // The engine's own 292 (docs/reverse/brakes-dll.md §10): on
+        // openRTS's air the car's distributor is a real one already, a 292
+        // as its type gives it; nothing more to take over.
         if (name == "br_292custom") {
-            if (parameter.value != 0.0f) not_known(parameter.name);
+            p.custom292 = parameter.value != 0.0f;
             continue;
         }
         if (std::find(std::begin(global_known), std::end(global_known), name) == std::end(global_known)) {
@@ -164,7 +169,12 @@ simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const
         return id >= 0 && static_cast<std::size_t>(id) < switches.size() ? static_cast<int>(switches[static_cast<std::size_t>(id)].state) : -1;
     };
     const auto on = [&](const std::int32_t id) { return state(id) > 0; };
-    if (ids.valve >= 0 || ids.controller >= 0) {
+    if (ids.valve334 >= 0) {
+        // The 334 (the ЭР2's and ЭР9's valve): its state 0 .. 5 as it is.
+        c.valve = simulation::ValvePosition::running;
+        const int k = state(ids.valve334);
+        c.valve334 = k >= 0 ? k : 4; // not read: train
+    } else if (ids.valve >= 0 || ids.controller >= 0) {
         std::optional<simulation::ValvePosition> position;
         if (valve.position >= 0 && valve.position <= 6) position = static_cast<simulation::ValvePosition>(valve.position);
         else position = simulation::valve_position_of(state(ids.valve), p.flipped);
@@ -178,6 +188,7 @@ simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const
             const int going = simulation::direct_state(static_cast<int>(s.set_state), 6, p.flipped);
             c.valve_resting = going <= now;
         }
+        c.by_controller = valve.by_controller && ids.controller >= 0;
         // The train's DLL takes the handle as IV (var + 32 0x8000, the 2ЭС6).
         if (exchange.before & 0x8000u) c.valve = simulation::ValvePosition::lap_feed;
     } else {
@@ -185,6 +196,7 @@ simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const
     }
     c.charging = valve.charging > 0.0f ? valve.charging : p.charging > 0.0f ? p.charging : 5.0f;
     c.cut_off = valve.combined == 1 || valve.blocked || valve.separated;
+    c.unfed = valve.blocked;
     // The pipe opens at the ЭПК's own trip (var + 8 0x01000000, its whistle's
     // 12 s; Brakes.dll's TrainPipeRate -1.2), not at var + 32 bit 1, which
     // only cuts the train DLL's traction and has more sources than the ЭПК.
@@ -205,6 +217,14 @@ simulation::CabBrakeControls cab_brake_controls(const BrakesParameters& p, const
     c.ep_release_button = on(ids.ep_release);
     c.ep_hold_asked = (exchange.before & 0x10u) != 0;
     c.ep_apply_asked = (exchange.before & 0x20u) != 0;
+    // The ЭП2Д's ППТ at 0 with the ЭПТ on: its КПТ commands the ЭПТ by
+    // itself (docs/reverse/brakes-dll.md, the КПТ): VI, V, VЭ hold and
+    // apply, IV and III hold.
+    if (ids.controller >= 0 && ids.ppt >= 0 && state(ids.ppt) == 0 && c.ep_on && state(ids.controller) >= 0) {
+        const int position = simulation::direct_state(state(ids.controller), 6, p.flipped); // 0 is I
+        if (position >= 4) c.ep_hold_asked = c.ep_apply_asked = true;
+        else if (position >= 2) c.ep_hold_asked = true;
+    }
     c.multiple_unit = p.multiple_unit;
     c.sensor418 = on(ids.sensor418);
     c.sounds_130 = p.sounds_130;

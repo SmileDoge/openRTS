@@ -23,7 +23,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 16;
+inline constexpr std::uint32_t protocol_version = 17;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -231,6 +231,14 @@ struct DisplaySpec {
     std::vector<ScreenObjectSpec> screen;
 };
 
+// A FreeAnimation's .sd AnimNode as RTS gives it to the DLL: its key frames,
+// AnimTime and flags (bit 1 CONTINUOUS, bit 2 LOOP), by animation.
+struct AnimSpec {
+    std::uint32_t key_frames{};
+    float time{};
+    std::uint32_t flags{};
+};
+
 struct CabSpec {
     bool present = false;
     std::vector<SwitchSpec> switches;    // indexed by .sd ID
@@ -242,6 +250,7 @@ struct CabSpec {
     std::uint32_t signal_aspects{};
     bool signal_scripted = false;        // Cabin::SignalScripted: ALSN is called
     std::vector<std::u16string> animations; // FreeAnimation names
+    std::vector<AnimSpec> animation_specs;  // by animation
     std::uint32_t switch_count{};        // Switches ( n ): RTS makes n switches
     std::uint32_t display_count{};       // Displays ( n )
     std::vector<std::uint32_t> internal_light_groups; // LightSource GlobalID, by lamp
@@ -266,6 +275,7 @@ struct CarSpec {
     std::uint32_t lights{};       // exterior LightObj count
     std::uint32_t doors{};
     std::vector<std::u16string> animations; // FreeAnimation names (wagon shape)
+    std::vector<AnimSpec> animation_specs;   // by animation
     std::vector<float> door_times;           // ExteriorDoor AnimTime, by door
     std::vector<std::uint32_t> door_groups;  // ExteriorDoor GlobalID, by door
     std::vector<LightSpec> light_specs;      // by LightID (lights of them)
@@ -483,6 +493,7 @@ struct ReconsistCar {
 
 struct ReconsistTrain {
     std::uint8_t type = 3;            // RTS train type: 1 the player's, 3 a part cut off (LOOSE)
+    std::int16_t start_state = -1;    // its engines bound now Init so (TrainState: 0 cold, 1 on, 2 running); -1 the host's
     std::vector<ReconsistCar> cars;
 };
 
@@ -758,7 +769,7 @@ inline void write(Writer& w, const CabSpec& c) {
     write_list(w, c.switches); write_list(w, c.displays);
     w.put(c.internal_lights); w.put(c.tex_changes); w.put(c.doors);
     w.put(c.signal_lights); w.put(c.signal_aspects); w.put(static_cast<std::uint8_t>(c.signal_scripted));
-    write_list(w, c.animations);
+    write_list(w, c.animations); write_pod_list(w, c.animation_specs);
     w.put(c.switch_count); w.put(c.display_count);
     write_pod_list(w, c.internal_light_groups);
     write_pod_list(w, c.tex_change_images); write_pod_list(w, c.tex_change_groups);
@@ -770,7 +781,7 @@ inline void read(Reader& r, CabSpec& c) {
     c.internal_lights = r.get<std::uint32_t>(); c.tex_changes = r.get<std::uint32_t>(); c.doors = r.get<std::uint32_t>();
     c.signal_lights = r.get<std::uint32_t>(); c.signal_aspects = r.get<std::uint32_t>();
     c.signal_scripted = r.get<std::uint8_t>() != 0;
-    read_list(r, c.animations);
+    read_list(r, c.animations); read_pod_list(r, c.animation_specs, 4096);
     c.switch_count = r.get<std::uint32_t>(); c.display_count = r.get<std::uint32_t>();
     read_pod_list(r, c.internal_light_groups, 4096);
     read_pod_list(r, c.tex_change_images, 4096); read_pod_list(r, c.tex_change_groups, 4096);
@@ -779,7 +790,7 @@ inline void read(Reader& r, CabSpec& c) {
 
 inline void write(Writer& w, const CarSpec& c) {
     w.put(c.kind); w.put(c.uid); w.put(c.key); w.put(c.mass); w.put(c.lights); w.put(c.doors);
-    write_list(w, c.animations); write_pod_list(w, c.door_times); write_pod_list(w, c.door_groups);
+    write_list(w, c.animations); write_pod_list(w, c.animation_specs); write_pod_list(w, c.door_times); write_pod_list(w, c.door_groups);
     write_pod_list(w, c.light_specs); w.text(c.name);
     w.text(c.series); w.text(c.module); w.put(c.lib_param); w.put(c.stack_size);
     w.put(c.num_engines); w.put(c.num_axles);
@@ -788,7 +799,7 @@ inline void write(Writer& w, const CarSpec& c) {
 inline void read(Reader& r, CarSpec& c) {
     c.kind = r.get<std::uint8_t>(); c.uid = r.get<std::uint32_t>(); c.key = r.get<std::uint32_t>(); c.mass = r.get<float>();
     c.lights = r.get<std::uint32_t>(); c.doors = r.get<std::uint32_t>();
-    read_list(r, c.animations); read_pod_list(r, c.door_times, 4096); read_pod_list(r, c.door_groups, 4096);
+    read_list(r, c.animations); read_pod_list(r, c.animation_specs, 4096); read_pod_list(r, c.door_times, 4096); read_pod_list(r, c.door_groups, 4096);
     read_pod_list(r, c.light_specs, 16384); c.name = r.text();
     c.series = r.text(); c.module = r.text(); c.lib_param = r.get<std::uint32_t>(); c.stack_size = r.get<std::uint32_t>();
     c.num_engines = r.get<std::uint32_t>(); c.num_axles = r.get<std::uint32_t>();
@@ -872,8 +883,12 @@ inline void read(Reader& r, StepRequest& s) {
 inline void write(Writer& w, const ReconsistCar& c) { w.put(c.from); write(w, c.spec); }
 inline void read(Reader& r, ReconsistCar& c) { c.from = r.get<std::int32_t>(); read(r, c.spec); }
 
-inline void write(Writer& w, const ReconsistTrain& t) { w.put(t.type); write_list(w, t.cars); }
-inline void read(Reader& r, ReconsistTrain& t) { t.type = r.get<std::uint8_t>(); read_list(r, t.cars, 2000); }
+inline void write(Writer& w, const ReconsistTrain& t) { w.put(t.type); w.put(t.start_state); write_list(w, t.cars); }
+inline void read(Reader& r, ReconsistTrain& t) {
+    t.type = r.get<std::uint8_t>();
+    t.start_state = r.get<std::int16_t>();
+    read_list(r, t.cars, 2000);
+}
 
 inline void write(Writer& w, const ReconsistRequest& q) {
     write_list(w, q.sound_tables); write_list(w, q.trains); w.put(static_cast<std::uint8_t>(q.running)); write_pod_list(w, q.inputs);

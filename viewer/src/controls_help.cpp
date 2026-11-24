@@ -1,4 +1,4 @@
-#include "controls_help.hpp"
+﻿#include "controls_help.hpp"
 
 #include "key_layout.hpp"
 #include "ui_text.hpp"
@@ -89,7 +89,7 @@ void draw_controls_help() {
         row(clock_key_name(), "the time of day on the screen / off (shown anyway while time runs faster)");
         row(tape_key_name(), "the tape (RTS_TAPES, read by RTS's lenta.xls): start on the locomotive driven / stop");
         if (key_layout() == KeyLayout::rts) row("Num5", "which locomotive the tape records");
-        row("F12", "the inspector: the map's objects and their properties");
+        row("F12", "settings for developers and the inspector (the map's objects)");
         row("RMB + mouse", "look around");
         row("Mouse", "click: a control; wheel: a handle one position (not buttons and switches); drag: handles and blinds");
         row("F3", "view from the first car, again from the last, again back; the wheel nearer, Ctrl+wheel zoom");
@@ -107,7 +107,6 @@ void draw_controls_help() {
         row("F5", "the train's cars; again: the next page");
         row("Shift+F5", "the train as a whole");
         row("Ctrl+F5", "speed limits and the kilometre");
-        row("F4", "the driver's summary: moving or standing, speed and limit, pressures, the next signal and platform, the time");
         row("Ctrl+F4", "the track's profile at the top: the grade, the kilometres, the limits, the signals and the stations; the wheel over it changes the span, a drag shifts it, a double click puts it back (openRTS)");
         row("F6", "the stations ahead and the sidings (yellow); in a scenario with a timetable, the timetable");
         row(board_key_name(), "a scenario's stop: start the boarding of the passengers");

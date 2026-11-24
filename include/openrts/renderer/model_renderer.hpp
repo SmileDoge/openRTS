@@ -49,7 +49,24 @@ struct ModelExtraLight {
     // The instance it belongs to (ModelRenderer::set_owner), 0 none: with
     // lamp_skips_own_model() that instance is left out of its shadow.
     std::uint32_t owner{};
+    // A photometric lamp (photometric.hpp): rgb its light at 1 m in the
+    // scene's units, w 1; the experimental path's physical light takes it
+    // (inverse square) in place of `diffuse` and the fall-off. w 0: none.
+    glm::vec4 photometric{0.0f};
 };
+
+// A cone light's cone (kinds 1 and 4, one lamp): its apex, axis (unit),
+// reach from the apex and the tangent of its half angle, as the shaders'
+// physical_light and light_factor bound it. None for a light array or a
+// cone wider than some 84 degrees each way. The clusters and the falling
+// rain and snow (the headlights' beams) take it.
+struct ExtraLightCone {
+    glm::vec3 apex;
+    glm::vec3 axis;
+    float reach;
+    float tangent;
+};
+[[nodiscard]] std::optional<ExtraLightCone> extra_light_cone(const ModelExtraLight& light);
 
 // RTS's further lights, in rings around the camera (rts1.exe, CONFIRMED).
 // Ring k is centred (k + 1) tenths of MaxLightDistance from the camera and
@@ -131,6 +148,34 @@ struct ModelRoom {
     glm::vec3 lower{}, upper{};
 };
 
+// openRTS (beyond RTS): raindrops on the glass of the cab the eye is in
+// (ModelLighting::room): the blended surfaces at its box's walls facing out.
+// They gather with the time since the glass was last wiped and the rain's
+// amount; on the move they run up and back, standing they slide down.
+inline constexpr int rain_grid_columns = 128, rain_grid_rows = 64;
+struct ModelRainGlass {
+    float amount{};      // 0..1, the rain's
+    float time{};        // s, the clock the times below are on
+    float since{};       // s on that clock the glass has been wet from (the rain's start)
+    float speed{};       // m/s, the train's (without its sign)
+    bool snow = false;   // snowflakes sticking, not drops running
+    float flow{};        // m the drops have run along the glass's up (TrainView integrates it)
+    // On the side windows (their z, y): how far the drops have run (m), and
+    // which way they run now (unit): back and down on the move, down standing.
+    float side_x{}, side_y{};
+    float side_dir_x{}, side_dir_y{-1.0f};
+    // The snow's run (m): only on the move, slower than water (it sticks),
+    // up the front glass and back along the side windows.
+    float snow_flow{}, snow_side_x{}, snow_side_y{};
+    // The wipers' glass: the room's front (+z) or back (-z) wall, its x and
+    // y range, and when each cell of it (rain_grid_columns x _rows, rows
+    // up from y0) was last wiped (on `time`'s clock; very old: never).
+    bool wiped_glass = false;
+    float front = 1.0f;
+    float x0{}, y0{}, x1{}, y1{};
+    std::array<float, rain_grid_columns * rain_grid_rows> wiped{};
+};
+
 struct ModelLighting {
     glm::vec4 sun_diffuse{1.0f};
     glm::vec4 sun_ambient{0.5f, 0.5f, 0.5f, 1.0f};
@@ -153,6 +198,11 @@ struct ModelLighting {
     std::vector<ModelPortal> portals;
     // The cab or salon he is in.
     std::optional<ModelRoom> room;
+    // Raindrops on its glass (with `room`).
+    std::optional<ModelRainGlass> rain;
+    // How much of the snow the models' snow maps paint lies now (0: none,
+    // summer; 1: all of it).
+    float snow_cover = 0.0f;
 };
 
 // RTS sun direction from the environment's azimuth and elevation in degrees.
@@ -293,6 +343,8 @@ public:
     [[nodiscard]] const std::vector<std::string>& texture_key() const noexcept;
     // ESD_Light_Sources of the shape (scenery lamps), in its space.
     [[nodiscard]] const std::vector<formats::ShapeLight>& lights() const noexcept;
+    // Its lamps changed in place (the inspector's, live; till it is loaded anew).
+    void set_lights(std::vector<formats::ShapeLight> lights);
     // Its primitive states, in the shape's order (the inspector).
     [[nodiscard]] const std::vector<ModelPrimitive>& primitives() const noexcept;
     // Its distance levels (m), nearest first; empty for one level.

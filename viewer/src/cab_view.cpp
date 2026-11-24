@@ -124,6 +124,17 @@ CabCollision CabCollision::build(const formats::ShapeModel& model) {
     return out;
 }
 
+void CabCollision::node_points(const std::int32_t node, std::vector<glm::vec3>& out, const std::size_t step) const {
+    std::size_t k = 0;
+    for (const auto& t : triangles_) {
+        if (t.node != node) continue;
+        if (k++ % (std::max)(step, std::size_t{1}) != 0) continue;
+        out.push_back(t.a);
+        out.push_back(t.b);
+        out.push_back(t.c);
+    }
+}
+
 void CabCollision::node_bounds(const std::size_t nodes, std::vector<glm::vec3>& lower, std::vector<glm::vec3>& upper) const {
     lower.assign(nodes, glm::vec3{1e9f});
     upper.assign(nodes, glm::vec3{-1e9f});
@@ -337,15 +348,17 @@ std::unique_ptr<CabView> CabView::create(const core::Vfs& vfs, const formats::Wa
     }
     view->doors_.resize(view->cab_.doors.size());
     view->windows_.resize(view->cab_.windows.size());
+    view->size_state();
     // Opened: open from the start (RTS 0x51CD88 sets State and SetState).
+    // The view's own state, the car's when bound to a car seen first.
     for (std::size_t i = 0; i < view->doors_.size(); ++i) {
         const auto root = view->door_root(i);
-        view->doors_[i].target = view->cab_.doors[root].opened;
-        view->doors_[i].open = view->doors_[i].target ? 1.0f : 0.0f;
+        view->own_.doors[i].target = view->cab_.doors[root].opened;
+        view->own_.doors[i].open = view->own_.doors[i].target ? 1.0f : 0.0f;
     }
     for (std::size_t i = 0; i < view->windows_.size(); ++i) {
-        view->windows_[i].target = view->cab_.windows[i].opened;
-        view->windows_[i].open = view->windows_[i].target ? 1.0f : 0.0f;
+        view->own_.windows[i].target = view->cab_.windows[i].opened;
+        view->own_.windows[i].open = view->own_.windows[i].target ? 1.0f : 0.0f;
     }
     view->acoustics_ = audio::InteriorAcoustics(view->cab_);
     // The cab shape's surfaces and nodes for the engineer on foot, read
@@ -372,6 +385,33 @@ std::unique_ptr<CabView> CabView::create(const core::Vfs& vfs, const formats::Wa
     return view;
 }
 
+void CabView::size_state() {
+    state_->doors.resize(cab_.doors.size());
+    state_->windows.resize(cab_.windows.size());
+    state_->blink_clock.resize(cab_.displays.size(), 0.0f);
+    if (state_->animations.size() < free_anims_.size()) state_->animations.resize(free_anims_.size());
+}
+
+void CabView::bind_state(simulation::CarCab& state) {
+    if (&state == state_) return;
+    if (!state.made) {
+        // The car seen for the first time: as this view starts it (the
+        // .sd's starting states).
+        state = *state_;
+        state.made = true;
+    }
+    state_ = &state;
+    size_state();
+    follow_doors();
+    rebuild_skip();
+}
+
+void CabView::unbind_state() {
+    if (state_ == &own_) return;
+    own_ = *state_;
+    state_ = &own_;
+}
+
 void CabView::bind(const formats::ShapeModel& rig) {
     std::map<std::string, std::int32_t> nodes;
     for (std::size_t i = 0; i < rig.matrices.size(); ++i) nodes.emplace(lower(rig.matrices[i].name), static_cast<std::int32_t>(i));
@@ -396,7 +436,8 @@ void CabView::bind(const formats::ShapeModel& rig) {
         for (const auto& name : d.state_nodes) list.push_back(find(name).node);
         state_nodes_.push_back(std::move(list));
     }
-    blink_clock_.assign(cab_.displays.size(), 0.0f);
+    // The car's blinking goes on from where it is (a view drawn anew).
+    state_->blink_clock.resize(cab_.displays.size(), 0.0f);
     signal_lights_.clear();
     for (const auto& light : cab_.signalization.lights) signal_lights_.push_back(find(light).node);
     lamp_nodes_.clear();
@@ -405,13 +446,67 @@ void CabView::bind(const formats::ShapeModel& rig) {
 }
 
 void CabView::step_displays(const float elapsed) {
-    blink_clock_.resize(cab_.displays.size(), 0.0f);
+    size_state();
     for (std::size_t i = 0; i < cab_.displays.size(); ++i) {
         const float blink = cab_.displays[i].blink;
         if (blink <= 0.0f) continue;
-        auto& clock = blink_clock_[i];
+        auto& clock = state_->blink_clock[i];
         clock += elapsed;
         if (clock > blink * 2.0f) clock = std::fmod(clock, blink * 2.0f);
+    }
+    for (std::size_t k = 0; k < free_anims_.size(); ++k) {
+        const auto& def = free_anims_[k];
+        auto& a = state_->animations[k];
+        const bool running = k < free_anim_running_.size() && free_anim_running_[k] != 0;
+        if (!def.continuous) {
+            // Not CONTINUOUS (the ЭП20's mirrors: the DLL keeps it running
+            // while they are out): to the last key frame while running, back
+            // to the first when not. Until 2026-11-22 it went round and
+            // round and stood wherever the DLL stopped it.
+            const float step = elapsed / def.time;
+            a.phase = running ? (std::min)(a.phase + step, 1.0f) : (std::max)(a.phase - step, 0.0f);
+            a.moving = running ? a.phase < 1.0f : a.phase > 0.0f;
+            continue;
+        }
+        if (!def.loop) {
+            // CONTINUOUS without LOOP goes to its last key frame and back
+            // (ts.h's FreeAnimation: bit 2 LOOP, byte 1's "goes down"). The
+            // ЭП1М-500's new cab keys its wipers one way only: going round
+            // they jumped back to the left (testers, 2026-11-22). Keys made
+            // there and back (the old cab's, the ЭД4М's) look the same either
+            // way. Stopped, RETURNS goes on to frame 0, else it stands.
+            if (!running && (!a.moving || !def.returns)) {
+                a.moving = false;
+                continue;
+            }
+            a.moving = true;
+            const float step = elapsed / def.time;
+            a.phase += a.down ? -step : step;
+            if (a.phase >= 1.0f) {
+                a.phase = 2.0f - a.phase;
+                a.down = true;
+            }
+            if (a.phase <= 0.0f) {
+                a.phase = 0.0f;
+                a.down = false;
+                if (!running) a.moving = false; // back at frame 0
+            }
+            continue;
+        }
+        if (!running && (!a.moving || !def.returns)) {
+            a.moving = false; // stopped where it is
+            continue;
+        }
+        a.moving = true;
+        a.phase += elapsed / def.time;
+        if (a.phase >= 1.0f) {
+            if (running) {
+                a.phase = std::fmod(a.phase, 1.0f);
+            } else {
+                a.phase = 0.0f; // the round finished: it stands
+                a.moving = false;
+            }
+        }
     }
 }
 
@@ -420,6 +515,24 @@ void CabView::poll() {
     if (loading_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
     geometry_ = loading_.get();
     if (!geometry_) return;
+    free_anims_.clear();
+    for (const auto& animation : cab_.animations) {
+        FreeAnim a;
+        a.time = animation.anim_time > 0.0f ? animation.anim_time : 1.0f;
+        a.returns = lower(animation.flags).find("returns") != std::string::npos;
+        a.continuous = lower(animation.flags).find("continuous") != std::string::npos;
+        a.loop = lower(animation.flags).find("loop") != std::string::npos;
+        for (const auto& name : animation.nodes) {
+            const auto it = geometry_->nodes.find(lower(name));
+            if (it == geometry_->nodes.end()) continue; // a misspelt one (the ВЛ80Т's WIRER2) moves nothing, as in RTS
+            const float last = geometry_->last_frames[static_cast<std::size_t>(it->second)];
+            if (last <= 0.0f) continue;
+            a.nodes.push_back(it->second);
+            a.last.push_back(last);
+        }
+        free_anims_.push_back(std::move(a));
+    }
+    size_state(); // the car's animations as many as the cab's
     for (std::size_t i = 0; i < cab_.doors.size() && i < doors_.size(); ++i) {
         auto& door = doors_[i];
         const auto it = geometry_->nodes.find(lower(cab_.doors[i].name));
@@ -526,26 +639,26 @@ std::optional<std::size_t> CabView::find_window(const std::string_view name) con
 
 bool CabView::window_open(const std::size_t window) const noexcept {
     // A window without a node of its own is an opening.
-    return window < windows_.size() && (windows_[window].node < 0 || windows_[window].open >= 0.95f);
+    return window < windows_.size() && (windows_[window].node < 0 || window_state(window).open >= 0.95f);
 }
 
 float CabView::sound_transmission(const int from, const int to) const {
     // A door or window with a node passes sound as far as the node has
     // opened; one without passes it by its state (RTS 0x5143DC: the node's
     // position, else the activator's State).
-    const auto fractions = [](const std::vector<Door>& list) {
+    const auto fractions = [](const std::vector<Door>& list, const std::vector<simulation::CabOpening>& states) {
         std::vector<float> out(list.size());
-        for (std::size_t i = 0; i < list.size(); ++i)
-            out[i] = list[i].node >= 0 ? list[i].open : (list[i].target ? 1.0f : 0.0f);
+        for (std::size_t i = 0; i < list.size() && i < states.size(); ++i)
+            out[i] = list[i].node >= 0 ? states[i].open : (states[i].target ? 1.0f : 0.0f);
         return out;
     };
-    return acoustics_.transmission(from, to, fractions(doors_), fractions(windows_));
+    return acoustics_.transmission(from, to, fractions(doors_, state_->doors), fractions(windows_, state_->windows));
 }
 
 void CabView::toggle_window(const std::size_t window) {
     if (window >= windows_.size()) return;
-    windows_[window].target = !windows_[window].target;
-    if (window < cab_.windows.size()) sound(cab_.windows[window].sms_triggers, windows_[window].target);
+    window_state(window).target = !window_state(window).target;
+    if (window < cab_.windows.size()) sound(cab_.windows[window].sms_triggers, window_state(window).target);
 }
 
 std::optional<CabView::Picked> CabView::pick(const glm::vec3& origin, const glm::vec3& direction, const float reach) const {
@@ -696,57 +809,12 @@ std::optional<CabView::DoorPicked> CabView::pick_door(const glm::vec3& origin, c
     if (const auto& rig = geometry_->rig) {
         for (std::size_t k = 0; k < doors_.size(); ++k) {
             const auto& door = doors_[k];
-            if (door.node < 0 || door.last_frame <= 0.0f || door.open < 0.6f) continue; // the ones skip_ leaves out
+            const float open = door_state(k).open;
+            if (door.node < 0 || door.last_frame <= 0.0f || open < 0.6f) continue; // the ones skip_ leaves out
             const float limit = best ? best->distance : rest ? rest->distance : reach;
-            if (const auto hit = geometry_->collision.ray_posed(*rig, door.node, door.open * door.last_frame, door.nodes, origin, direction, limit))
+            if (const auto hit = geometry_->collision.ray_posed(*rig, door.node, open * door.last_frame, door.nodes, origin, direction, limit))
                 best = DoorPicked{k, hit->distance};
         }
-    }
-    return best;
-}
-
-namespace {
-
-// Möller-Trumbore: where the ray (origin, direction) meets the triangle, as
-// its distance along the ray; nothing if it misses or is parallel.
-[[nodiscard]] std::optional<float> ray_triangle(const glm::vec3& origin, const glm::vec3& direction, const glm::vec3& a,
-                                               const glm::vec3& b, const glm::vec3& c) {
-    const glm::vec3 ab = b - a, ac = c - a;
-    const glm::vec3 p = glm::cross(direction, ac);
-    const float det = glm::dot(ab, p);
-    if (std::abs(det) < 1e-9f) return std::nullopt;
-    const float inv = 1.0f / det;
-    const glm::vec3 s = origin - a;
-    const float u = glm::dot(s, p) * inv;
-    if (u < 0.0f || u > 1.0f) return std::nullopt;
-    const glm::vec3 q = glm::cross(s, ab);
-    const float v = glm::dot(direction, q) * inv;
-    if (v < 0.0f || u + v > 1.0f) return std::nullopt;
-    const float t = glm::dot(ac, q) * inv;
-    if (t <= 0.0f) return std::nullopt;
-    return t;
-}
-
-} // namespace
-
-std::optional<CabView::ScreenPicked> CabView::pick_screen(const glm::vec3& origin, const glm::vec3& direction,
-                                                          const float reach) const {
-    const float length = glm::length(direction);
-    if (length < 1e-6f) return std::nullopt;
-    const glm::vec3 along = direction / length;
-    std::optional<ScreenPicked> best;
-    for (std::size_t i = 0; i < cab_.displays.size(); ++i) {
-        const auto& display = cab_.displays[i];
-        if (display.type != formats::CabDisplayType::screen || !display.screen.present) continue;
-        const ScreenPlane plane{glm::vec3{display.screen.top_left[0], display.screen.top_left[1], display.screen.top_left[2]},
-                                glm::vec3{display.screen.top_right[0], display.screen.top_right[1], display.screen.top_right[2]},
-                                glm::vec3{display.screen.bottom_right[0], display.screen.bottom_right[1], display.screen.bottom_right[2]}};
-        // The .sd gives three corners; the fourth completes the quad.
-        const glm::vec3 bottom_left = plane.top_left + plane.bottom_right - plane.top_right;
-        std::optional<float> hit = ray_triangle(origin, along, plane.top_left, plane.top_right, plane.bottom_right);
-        if (!hit) hit = ray_triangle(origin, along, plane.top_left, plane.bottom_right, bottom_left);
-        if (!hit || *hit > reach || (best && *hit >= best->distance)) continue;
-        best = ScreenPicked{i, plane, *hit};
     }
     return best;
 }
@@ -767,14 +835,15 @@ std::string CabView::door_pick_report(const glm::vec3& eye) const {
         }
         if (a.x > b.x) continue;
         glm::vec3 centre = (a + b) * 0.5f;
-        if (geometry_->rig && door.last_frame > 0.0f && door.open > 0.0f)
-            centre = glm::vec3{posed_correction(*geometry_->rig, door.node, door.open * door.last_frame) * glm::vec4{centre, 1.0f}};
+        const float open = door_state(k).open;
+        if (geometry_->rig && door.last_frame > 0.0f && open > 0.0f)
+            centre = glm::vec3{posed_correction(*geometry_->rig, door.node, open * door.last_frame) * glm::vec4{centre, 1.0f}};
         const glm::vec3 to = centre - eye;
         const float d = glm::length(to);
         if (d < 1e-3f) continue;
         const auto picked = pick_door(eye, to / d, d + 0.5f);
         char line[256];
-        std::snprintf(line, sizeof line, "door %s (open %.2f, %.2f m): %s%s%s\n", cab_.doors[k].name.c_str(), door.open, d,
+        std::snprintf(line, sizeof line, "door %s (open %.2f, %.2f m): %s%s%s\n", cab_.doors[k].name.c_str(), open, d,
                       picked ? "picked " : "nothing", picked ? cab_.doors[picked->door].name.c_str() : "",
                       picked ? (" at " + std::to_string(picked->distance).substr(0, 4) + " m").c_str() : "");
         report += line;
@@ -809,13 +878,13 @@ float CabView::switch_frames_per_state(const std::size_t index) const noexcept {
 bool CabView::door_open(const std::size_t door) const noexcept {
     if (door >= doors_.size()) return false;
     // Not read yet (the cab of a car he only stands at): as it was left.
-    if (!geometry_) return doors_[door].target;
+    if (!geometry_) return door_state(door).target;
     // A door without a node of its own (DUMMY) is a doorway that is always open.
-    return doors_[door].node < 0 || doors_[door].open >= 0.6f;
+    return doors_[door].node < 0 || door_state(door).open >= 0.6f;
 }
 
 bool CabView::door_moving(const std::size_t door) const noexcept {
-    return door < doors_.size() && doors_[door].open != (doors_[door].target ? 1.0f : 0.0f);
+    return door < doors_.size() && door_state(door).open != (door_state(door).target ? 1.0f : 0.0f);
 }
 
 std::size_t CabView::door_root(std::size_t door) const noexcept {
@@ -831,16 +900,16 @@ std::size_t CabView::door_root(std::size_t door) const noexcept {
 void CabView::toggle_door(std::size_t door) {
     if (door >= doors_.size()) return;
     door = door_root(door);
-    doors_[door].target = !doors_[door].target;
-    if (door < cab_.doors.size()) sound(cab_.doors[door].sms_triggers, doors_[door].target);
+    door_state(door).target = !door_state(door).target;
+    if (door < cab_.doors.size()) sound(cab_.doors[door].sms_triggers, door_state(door).target);
 }
 
 void CabView::open_door(std::size_t door) {
     if (door >= doors_.size()) return;
     door = door_root(door);
-    if (!doors_[door].target && door < cab_.doors.size()) sound(cab_.doors[door].sms_triggers, true);
-    doors_[door].target = true;
-    doors_[door].open = 1.0f;
+    if (!door_state(door).target && door < cab_.doors.size()) sound(cab_.doors[door].sms_triggers, true);
+    door_state(door).target = true;
+    door_state(door).open = 1.0f;
     follow_doors();
     rebuild_skip();
 }
@@ -850,14 +919,13 @@ void CabView::follow_doors() {
     for (std::size_t i = 0; i < doors_.size(); ++i) {
         const auto root = door_root(i);
         if (root == i || root >= doors_.size()) continue;
-        doors_[i].target = doors_[root].target;
-        doors_[i].open = doors_[root].open;
+        door_state(i) = door_state(root);
     }
 }
 
 void CabView::step_doors(const float elapsed) {
     for (std::size_t i = 0; i < windows_.size(); ++i) {
-        auto& window = windows_[i];
+        auto& window = window_state(i);
         const float goal = window.target ? 1.0f : 0.0f;
         const float time = i < cab_.windows.size() && cab_.windows[i].anim_time > 0.05f ? cab_.windows[i].anim_time : 1.0f;
         window.open = goal > window.open ? std::min(goal, window.open + elapsed / time) : std::max(goal, window.open - elapsed / time);
@@ -865,7 +933,7 @@ void CabView::step_doors(const float elapsed) {
     bool changed = false;
     for (std::size_t i = 0; i < doors_.size(); ++i) {
         if (door_root(i) != i) continue; // moves with its parent
-        auto& door = doors_[i];
+        auto& door = door_state(i);
         const float goal = door.target ? 1.0f : 0.0f;
         if (door.open == goal) continue;
         const float time = i < cab_.doors.size() && cab_.doors[i].anim_time > 0.05f ? cab_.doors[i].anim_time : 1.0f;
@@ -880,8 +948,9 @@ void CabView::step_doors(const float elapsed) {
 void CabView::rebuild_skip() {
     if (!geometry_) return;
     skip_.assign(geometry_->hierarchy.size(), 0);
-    for (const auto& door : doors_) {
-        if (door.node < 0 || door.open < 0.6f) continue;
+    for (std::size_t k = 0; k < doors_.size(); ++k) {
+        const auto& door = doors_[k];
+        if (door.node < 0 || door_state(k).open < 0.6f) continue;
         for (const auto n : door.nodes)
             if (n >= 0 && static_cast<std::size_t>(n) < skip_.size()) skip_[static_cast<std::size_t>(n)] = 1;
     }
@@ -973,10 +1042,11 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             if (named("DTM")) value = air->pipe;
             else if (named("DTC1") || named("DTC2")) value = air->cylinder;
             else if (named("DGR")) value = air->main_reservoir;
+            else if (named("DURA") && air->equalising >= 0.0f) value = air->equalising;
         }
         // RTS 0x525DB0: with a blink the display is hidden for the second
         // half of each 2 x blink period.
-        const bool blinked_off = d.blink > 0.0f && i < blink_clock_.size() && blink_clock_[i] > d.blink;
+        const bool blinked_off = d.blink > 0.0f && i < state_->blink_clock.size() && state_->blink_clock[i] > d.blink;
         if (d.type == formats::CabDisplayType::display && i < state_nodes_.size()) {
             // StateNodes: node j shows for bit j of the State, or with
             // DISPLAY_SEQUENCE for the State j + 1; all hidden while blinked off.
@@ -1023,11 +1093,21 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             out.push_back({.matrix = lamp_nodes_[k], .hidden = true});
         }
     }
-    for (const auto* list : {&doors_, &windows_}) {
-        for (const auto& door : *list) {
+    for (const auto& [list, states] : {std::pair{&doors_, &state_->doors}, std::pair{&windows_, &state_->windows}}) {
+        for (std::size_t k = 0; k < list->size() && k < states->size(); ++k) {
+            const auto& door = (*list)[k];
             if (door.node < 0 || door.last_frame <= 0.0f) continue;
-            out.push_back({.matrix = door.node, .frame = door.open * door.last_frame});
+            out.push_back({.matrix = door.node, .frame = (*states)[k].open * door.last_frame});
         }
+    }
+    // The DLL's FreeAnimations (the wipers): running as its flag says.
+    free_anim_running_.assign(free_anims_.size(), 0);
+    for (std::size_t k = 0; k < free_anims_.size(); ++k) {
+        if (state && k < state->cab_anims.size()) free_anim_running_[k] = (state->cab_anims[k].flags & 1u) ? 1 : 0;
+        const auto& a = free_anims_[k];
+        const float phase = k < state_->animations.size() ? state_->animations[k].phase : 0.0f;
+        if (phase <= 0.0f) continue; // at frame 0: as the shape stands
+        for (std::size_t n = 0; n < a.nodes.size(); ++n) out.push_back({.matrix = a.nodes[n], .frame = phase * a.last[n]});
     }
     // The locomotive signal lights (RTS 0x525DB0): the aspect is
     // Cabin::Signal.Aspect[0]; the engine's ALSNOn 0 puts every light out,
@@ -1061,6 +1141,70 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             }
         }
     }
+}
+
+void CabView::wiper_points(std::vector<glm::vec3>& out) const {
+    if (!geometry_ || !geometry_->rig) return;
+    const auto& rig = *geometry_->rig;
+    const auto count = static_cast<std::int32_t>(rig.matrices.size());
+    const auto parent_of = [&](const std::int32_t n) {
+        return n >= 0 && static_cast<std::size_t>(n) < rig.hierarchy.size() ? rig.hierarchy[static_cast<std::size_t>(n)] : -1;
+    };
+    std::vector<glm::vec3> rest;
+    for (std::size_t k = 0; k < free_anims_.size() && k < state_->animations.size(); ++k) {
+        const auto& a = free_anims_[k];
+        const auto& at = state_->animations[k];
+        if (!at.moving) continue; // a blade at rest wipes nothing
+        // Every node the animation moves: its nodes and all below them (a
+        // blade is often a child of the arm the keys turn), each by the
+        // corrections of its animated ancestors, outermost last.
+        for (std::int32_t node = 0; node < count; ++node) {
+            glm::mat4 pose{1.0f};
+            bool moved = false;
+            std::int32_t guard = 0;
+            for (std::int32_t up = node; up >= 0 && up < count && guard <= count; up = parent_of(up), ++guard) {
+                for (std::size_t n = 0; n < a.nodes.size(); ++n) {
+                    if (a.nodes[n] != up) continue;
+                    pose = CabCollision::pose_of(rig, up, at.phase * (n < a.last.size() ? a.last[n] : 0.0f)) * pose;
+                    moved = true;
+                }
+            }
+            if (!moved) continue;
+            rest.clear();
+            geometry_->collision.node_points(node, rest, 1);
+            // Whole triangles, at most some 150 a node.
+            const std::size_t triangles = rest.size() / 3;
+            if (triangles == 0) continue;
+            const std::size_t step = (std::max)(std::size_t{1}, triangles / 150);
+            for (std::size_t t = 0; t < triangles; t += step)
+                for (std::size_t k = 0; k < 3; ++k) out.push_back(glm::vec3{pose * glm::vec4{rest[t * 3 + k], 1.0f}});
+        }
+    }
+}
+
+std::optional<CabView::PickedScreen> CabView::pick_screen(const glm::vec3& eye, const glm::vec3& along, const float max_distance) const {
+    std::optional<PickedScreen> best;
+    const float length = glm::length(along);
+    if (length < 1e-6f) return best;
+    const glm::vec3 dir = along / length;
+    for (const auto& plane : screen_planes_) {
+        const glm::vec3 across = plane.top_right - plane.top_left;
+        const glm::vec3 down = plane.bottom_right - plane.top_right;
+        const glm::vec3 normal = glm::cross(across, down);
+        const float denominator = glm::dot(dir, normal);
+        if (std::abs(denominator) < 1e-8f) continue;
+        const float t = glm::dot(plane.top_left - eye, normal) / denominator;
+        if (t <= 0.0f || t > max_distance) continue;
+        const glm::vec3 hit = eye + dir * t;
+        const float across_sq = glm::dot(across, across);
+        const float down_sq = glm::dot(down, down);
+        if (across_sq < 1e-8f || down_sq < 1e-8f) continue;
+        const float u = glm::dot(hit - plane.top_left, across) / across_sq;
+        const float v = glm::dot(hit - plane.top_right, down) / down_sq;
+        if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) continue;
+        if (!best || t < best->distance) best = PickedScreen{.plane = plane, .distance = t};
+    }
+    return best;
 }
 
 } // namespace openrts::viewer

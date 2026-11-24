@@ -86,6 +86,24 @@ As RTS (`0x503CE4`, `0x5B6030`; details in `docs/train-systems.md` and
   electrification layer. RTS's client only reports it (package `0x4649`);
   the voltage does not sag with it, and `PowerDecline` is not used.
 
+## Arcs at the pantographs (openRTS)
+
+Beyond RTS (2026-11-24, testers): a jagged, flickering blue-white thread
+of light from the wire down to the pantograph's head, a new shape every
+frame (drawn as lightning's channels, with their halo and bloom), drawn out
+as the head drops away, blown back on the run; a soft glow and a light round
+it; a snap as it strikes and, while it burns, a hissing buzz (pulsing at
+100 Hz on an AC line) cut off with it (`viewer/src/pantograph_arcs.cpp`).
+- When the head touches the wire (risen) and when it leaves it (going
+  down), on a live line, in any season. A dead line: none.
+- In winter (the season, or snow falling: ice on the wire), now and then
+  while running, about one a second at 60 km/h, two at 120; only at the
+  train's first raised pantograph the way it runs (the one behind runs on
+  a wire cleaned of it).
+- Where: over the PANTOGRAPH node along the car, 6.25 m over the rails.
+- The sounds: a mod's SOUND/OPENRTS/PANTOGRAPH/arc_snap.wav and
+  arc_buzz.wav (looped), else ones made by openRTS.
+
 ## Not done
 
 - Drawing the wires from the catenary types (RTS draws them itself).

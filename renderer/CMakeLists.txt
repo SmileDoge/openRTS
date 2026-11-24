@@ -5,6 +5,7 @@ add_library(openrts_renderer STATIC
     src/occlusion_probe.cpp
     src/wide_lines.cpp
     src/glow_sprites.cpp
+    src/weather_particles.cpp
     src/screen_quads.cpp
     src/tone_map.cpp
     src/auto_exposure.cpp
@@ -32,8 +33,23 @@ add_library(openrts_renderer STATIC
     src/sky_renderer.cpp
     src/sky_light.cpp
     src/native_sky.cpp
-    src/terrain_renderer.cpp)
+    src/terrain_renderer.cpp
+    src/shader_code.cpp)
 openrts_configure_target(openrts_renderer)
+
+# The WGSL under shaders/ built into the program (src/shader_code.hpp):
+# remade when a file there changes, or one comes or goes (CONFIGURE_DEPENDS).
+file(GLOB_RECURSE OPENRTS_SHADER_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.wgsl")
+set(OPENRTS_SHADER_INC "${CMAKE_CURRENT_BINARY_DIR}/generated/shader_sources.inc")
+add_custom_command(
+    OUTPUT "${OPENRTS_SHADER_INC}"
+    COMMAND "${CMAKE_COMMAND}" "-DSHADER_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/shaders" "-DOUTPUT=${OPENRTS_SHADER_INC}"
+            -P "${PROJECT_SOURCE_DIR}/cmake/embed_shaders.cmake"
+    DEPENDS ${OPENRTS_SHADER_FILES} "${PROJECT_SOURCE_DIR}/cmake/embed_shaders.cmake"
+    COMMENT "Building the renderer's shaders in"
+    VERBATIM)
+target_sources(openrts_renderer PRIVATE "${OPENRTS_SHADER_INC}")
+target_include_directories(openrts_renderer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 # Public renderer headers expose formats types (ShapeModel, RoutePosition).
 target_link_libraries(openrts_renderer PUBLIC openrts_core openrts_formats glm::glm)
 target_link_libraries(openrts_renderer PUBLIC openrts_assets)
@@ -75,6 +91,12 @@ function(openrts_copy_wgpu_runtime target)
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:openrts_wgpu_native>" "$<TARGET_FILE_DIR:${target}>")
+        # DXC beside it when given (renderer/src/wgpu_context.cpp takes it).
+        if(OPENRTS_DXC_ROOT AND EXISTS "${OPENRTS_DXC_ROOT}/bin/x64/dxcompiler.dll")
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${OPENRTS_DXC_ROOT}/bin/x64/dxcompiler.dll" "${OPENRTS_DXC_ROOT}/bin/x64/dxil.dll" "$<TARGET_FILE_DIR:${target}>")
+        endif()
     endif()
 endfunction()
 

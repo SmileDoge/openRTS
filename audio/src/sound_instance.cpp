@@ -69,7 +69,10 @@ struct SoundInstance::Stream {
     std::vector<std::size_t> sequence; // next file of sequential selections, per trigger
     Voice loop;
     std::vector<Voice> one_shots;
-    float volume = 1.0f; // SetStreamVolume
+    // The stream's volume (RTS stream state +36): its Volume at the start,
+    // replaced by SetStreamVolume and by a random trigger's Volume_Min_Max
+    // (0x4A8284, 0x4A7C64), times the curve (0x4A78A0).
+    float volume = 1.0f;
     // The trigger whose StartLoop / StartLoopRelease is this stream's loop
     // (RTS: the stream state's current trigger and its flag bit 0), and,
     // after a deactivation, the frame to resume the loop at.
@@ -161,7 +164,17 @@ void SoundInstance::stop(VoiceSink& sink) {
         if (stream.loop.id && stream.current && sink.playing(stream.loop.id) && stream.loop.clip &&
             stream.loop.clip->frames > 0) {
             const auto played = static_cast<std::uint64_t>(stream.loop.age * static_cast<float>(stream.loop.clip->sample_rate));
-            stream.resume_frame = (stream.loop.start_frame + played) % stream.loop.clip->frames;
+            const auto& clip = *stream.loop.clip;
+            const std::uint64_t at = stream.loop.start_frame + played;
+            // A StartLoopRelease past its start goes round its loop region,
+            // not the whole file: taken round the file it came back in its
+            // start part, which played again when the group came on (the
+            // ChS7's fans starting anew on coming back into the cab from
+            // the outside view, testers 2026-11-23).
+            if (stream.loop.region && clip.has_loop() && at >= clip.loop_end)
+                stream.resume_frame = clip.loop_start + (at - clip.loop_start) % (clip.loop_end - clip.loop_start);
+            else
+                stream.resume_frame = at % clip.frames;
         } else {
             stream.current.reset();
         }
@@ -206,7 +219,7 @@ void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
     for (auto& stream : streams_) {
         std::fill(stream.enabled.begin(), stream.enabled.end(), true);
         stream.running = true;
-        stream.volume = 1.0f;
+        stream.volume = stream.definition->volume;
         const auto& triggers = stream.definition->triggers;
         for (std::size_t i = 0; i < triggers.size(); ++i) {
             std::uniform_real_distribution<float> pick(triggers[i].minimum, (std::max)(triggers[i].minimum, triggers[i].maximum));
@@ -597,7 +610,12 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
             return;
         }
         activate(inputs, sink);
-    } else if (camera_deactivates || (distances && distance > deactivate_beyond)) {
+    // openRTS: an active group whose deactivation distance is not beyond
+    // its activation one goes off a little past it (5 %, at least 2 m). The ЭР9П's motor cars (50 / 50 m) stood
+    // at the edge: their TED came and went every few frames as the camera
+    // swayed (testers 2026-11-24). RTS tests the same distance every frame
+    // (0x44AB7C) without a margin.
+    } else if (camera_deactivates || (distances && distance > deactivate_beyond + (deactivate_beyond <= activate_within ? (std::max)(2.0f, 0.05f * deactivate_beyond) : 0.0f))) {
         if (!trace_.empty()) {
             char text[96];
             std::snprintf(text, sizeof text, "group off (%s, distance %.1f m)", camera_deactivates ? "camera" : "distance", distance);
@@ -677,8 +695,19 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
                 // the camera appears next to starts at once. Other variables
                 // start from their current value (no spurious one-shots).
                 const bool from_outside = !has_previous_ && trigger.variable == SoundVariable::distance;
+                // Speed the same way from standing: a group that comes on with
+                // the train already running (the engineer into the cab on the
+                // move, the second section's cab) starts the loops its
+                // Speed_Inc_Past triggers would have started, not its
+                // one-shots (testers 2026-11-23: the ChS7's 3СЛ-2М, Speed_Inc_Past
+                // 1.38 StartLoop, stayed silent on the move).
+                const bool from_standing = !has_previous_ && trigger.variable == SoundVariable::speed && trigger.increase &&
+                                           std::none_of(trigger.actions.begin(), trigger.actions.end(), [](const formats::SoundAction& a) {
+                                               return a.kind == SoundActionKind::play_one_shot;
+                                           });
                 const auto previous = from_outside ? (trigger.increase ? -std::numeric_limits<float>::infinity()
                                                                        : std::numeric_limits<float>::infinity())
+                    : from_standing ? 0.0f
                     : has_previous_ ? previous_[index]
                                     : current;
                 const bool crossed = trigger.increase ? previous < trigger.threshold && current >= trigger.threshold
@@ -693,7 +722,8 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
                 stream.countdown[i] = (std::max)(pick(random_), 0.05f);
                 std::uniform_real_distribution<float> volume(trigger.volume_minimum,
                                                              (std::max)(trigger.volume_minimum, trigger.volume_maximum));
-                fire(stream, i, volume(random_), inputs, sink);
+                stream.volume = volume(random_);
+                fire(stream, i, 1.0f, inputs, sink);
                 break;
             }
             }
@@ -709,7 +739,7 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
             return curve.control == SoundVariable::unknown ? 0.0f
                                                            : inputs.variables[static_cast<std::size_t>(curve.control)];
         };
-        float volume = group_->volume * definition.volume * stream.volume * inputs.gain;
+        float volume = group_->volume * stream.volume * inputs.gain;
         if (definition.volume_curve) volume *= evaluate_curve(*definition.volume_curve, curve_input(*definition.volume_curve));
         // The head out of a window silences the streams not allowed there.
         if (inputs.window && !definition.allow_on_window_camera) volume = 0.0f;

@@ -14,10 +14,14 @@ add_library(openrts_viewer_core STATIC
     src/thunder_view.cpp
     src/weather_cycle.cpp
     src/train_view.cpp
+    src/train_extra_sounds.cpp
+    src/pantograph_arcs.cpp
+    src/speed_post_view.cpp
     src/signal_view.cpp
     src/cargo_system.cpp
     src/track_control.cpp
     src/inspector.cpp
+    src/inspector_lamps.cpp
     src/mod_files.cpp
     src/tape_view.cpp
     src/profile_strip.cpp
@@ -37,6 +41,7 @@ add_library(openrts_viewer_core STATIC
     src/activity_view.cpp
     src/graphics_settings.cpp
     src/graphics_presets_ui.cpp
+    src/brake_settings_ui.cpp
     src/controls_help.cpp
     src/window_mode.cpp
     src/discord_status.cpp

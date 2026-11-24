@@ -37,6 +37,9 @@ struct CabBrakeNumbers {
     float slow_service{};     // VЭ (Va): the УР down while the handle rests there
     float service{};          // V: the same
     float emergency_ur{};     // VI: the УР out
+    // The 334 (the ЭР2's and ЭР9's valve, BR_334ID): in train and charge
+    // the УР goes to the charging pressure at this, up or down.
+    float valve334_rate{};
     // The independent brake: its III .. VI, atm (at most the main reservoir).
     std::array<float, 4> independent_steps{};
     float independent_release{}; // II: its target down, atm/s
@@ -87,15 +90,27 @@ struct CabBrakeControls {
     // The driver's valve's position (its handle, its КПТ, or the train's
     // DLL taking it as IV); none: no valve in this cab.
     std::optional<ValvePosition> valve = ValvePosition::running;
+    // The 334's state in its place (BR_334ID, the ЭР2's and ЭР9's valve):
+    // 0 emergency, 1 braking (with the ЭПТ on: the ЭПТ alone, the pipe held),
+    // 2 lap (ЭПТ hold), 3 train with the ЭПТ held, 4 and 5 train and charge.
+    std::optional<int> valve334;
     // The handle rests in its position (not passing through): VЭ and V lower
     // the УР only then.
     bool valve_resting = true;
+    // The position is the КПТ's (the ЭП2Д's controller moved last): the
+    // 395's own air sounds stay silent, as Brakes.dll's (the DLL sounds the
+    // КПТ itself: the ЭП2Д's kptR1 / kptR2; testers heard both at I).
+    bool by_controller = false;
     // The charging pressure named (BR_ZARPRESS, the reducer's label), atm.
     float charging = 5.0f;
     // The valve off the pipe: the 367 out of its working state, the
     // combined valve in double traction, the separating cock shut. Its УР
     // stays as it was.
     bool cut_off = false;
+    // The 367 out of its working state also cuts the valve off its feed (the
+    // main reservoir's line): its УР may fall (V, VI) but nothing raises it
+    // (testers 2026-11-23: the ВЛ10's УР charged in I / II, the 367 shut).
+    bool unfed = false;
     // The pipe opened at the engine: the combined valve in emergency, ЭТ, a
     // stop valve, the ЭПК tripped.
     bool emergency = false;
@@ -153,6 +168,7 @@ struct CabBrakeState {
     float last_pipe = -1.0f;
     bool started = false;
     std::uint32_t sounds{}; // the air sounds playing, a bit each (docs/reverse/brakes-dll.md §10)
+    float pipe_rise{};      // the pipe's rise at the engine, atm/s, smoothed over about a second
 };
 
 struct CabBrakeOutput {

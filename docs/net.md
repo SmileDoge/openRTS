@@ -116,8 +116,11 @@ the nick, then "Connect". `--spawn cab` (the tab's "Start at: In the cab")
 seats the player at the desk when the dispatcher assigns the train;
 without it the camera follows the train from above.
 
-- **The route is the server's.** The login reply names it (in lower case;
-  the folder's own spelling is taken from the installation), with its
+- **The route is the server's.** The login reply names it by its `.trk`'s
+  RouteID in lower case, as `rts_server.exe` does: the folder of that name
+  (its own spelling taken from the installation), else the folder whose
+  RouteID it is (since 2026-11-23: a route folder "Suojarvi V2" has the
+  RouteID `suojarvi`, and was not found), with its
   season and weather. `--route` is not needed; one that names another
   route is overridden, `--season` / `--weather` win over the server's. A
   route the installation does not have stops the game before the wait.

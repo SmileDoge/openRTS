@@ -781,9 +781,15 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
             ImGui::TextDisabled("%s", tr("a driver and a route: in the console's window"));
             break;
         }
-        if (ImGui::MenuItem(tr("Drive it (keyboard)"), nullptr, it->role == TrainView::Role::driven)) message_ = trains.set_role(id, TrainView::Role::driven);
-        if (ImGui::MenuItem(tr("Test driver follows its path"), nullptr, it->role == TrainView::Role::ai)) message_ = trains.set_role(id, TrainView::Role::ai);
-        if (ImGui::MenuItem(tr("Standing"), nullptr, it->role == TrainView::Role::standing)) message_ = trains.set_role(id, TrainView::Role::standing);
+        if (ImGui::MenuItem(tr("Move into this train"), nullptr, it->role == TrainView::Role::driven)) message_ = trains.set_role(id, TrainView::Role::driven);
+        // RTS's Cast to PLAYER / STATIC / TRAFFIC.
+        if (ImGui::MenuItem(tr("Player's: stands, its systems working"), nullptr, it->role == TrainView::Role::standing && it->live))
+            message_ = trains.set_live(id, true);
+        if (ImGui::MenuItem(tr("Static: stands, everything still"), nullptr, it->role == TrainView::Role::standing && !it->live)) {
+            message_ = trains.set_role(id, TrainView::Role::standing);
+            if (message_.empty()) message_ = trains.set_live(id, false);
+        }
+        if (ImGui::MenuItem(tr("Traffic: goes by its path"), nullptr, it->role == TrainView::Role::ai)) message_ = trains.set_role(id, TrainView::Role::ai);
         if (ImGui::MenuItem(tr("Move it (on the map)"))) start_moving(trains, id);
         chocks_menu(trains, id);
         ImGui::Separator();
@@ -1344,11 +1350,24 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
             trains.clear_path(selected->id);
             editing_ = false;
         }
-        if (ImGui::Button(tr("Drive"))) message_ = trains.set_role(selected->id, TrainView::Role::driven);
-        ImGui::SameLine();
-        if (ImGui::Button(tr("Test driver"))) message_ = trains.set_role(selected->id, TrainView::Role::ai);
-        ImGui::SameLine();
-        if (ImGui::Button(tr("Stand"))) message_ = trains.set_role(selected->id, TrainView::Role::standing);
+        // Not for the train driven already; the label says the player moves
+        // over (testers 2026-11-22: "Drive" pressed by chance, the cab dead).
+        if (selected->role != TrainView::Role::driven && ImGui::Button(tr("Move into this train")))
+            message_ = trains.set_role(selected->id, TrainView::Role::driven);
+        if (selected->role != TrainView::Role::driven) {
+            // RTS's Cast to PLAYER / STATIC / TRAFFIC: what the train is now.
+            int cast = selected->role == TrainView::Role::ai ? 2 : selected->live ? 0 : 1;
+            const char* casts[] = {tr("player's: its systems working"), tr("static: everything still"), tr("traffic: goes by its path")};
+            ImGui::SetNextItemWidth(260.0f);
+            if (ImGui::Combo(tr("Kind##cast"), &cast, casts, 3)) {
+                if (cast == 0) message_ = trains.set_live(selected->id, true);
+                if (cast == 1) {
+                    message_ = trains.set_role(selected->id, TrainView::Role::standing);
+                    if (message_.empty()) message_ = trains.set_live(selected->id, false);
+                }
+                if (cast == 2) message_ = trains.set_role(selected->id, TrainView::Role::ai);
+            }
+        }
         if (editing_) {
             ImGui::TextWrapped(tr("Editing: right-click the track for start, waiting, reverse and end points; a junction to switch it "
                                "on the path; a point to remove it."));

@@ -1,3 +1,5 @@
+#include <chrono>
+#include <ctime>
 #include <cctype>
 #include <openrts/trainplugin/legacy_consist.hpp>
 
@@ -17,6 +19,7 @@
 #include <openrts/formats/sound.hpp>
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/driver_valve.hpp>
+#include <openrts/simulation/electrification.hpp>
 #include <openrts/simulation/klub_screen.hpp>
 #include <openrts/simulation/speed_limits.hpp>
 #include <openrts/formats/shape_binary.hpp>
@@ -139,6 +142,22 @@ struct LegacyConsist::RecorderCar {
     std::uint32_t last_var4 = 0;        // as the step before left them (read first)
     float last_ep = 0.0f;
     std::uint32_t random = 1;           // the needle's error: an LCG as the C library's rand
+    // The cab objects it set, as last set: Brakes.dll sets the needle once
+    // a second and the cab keeps it (RTS); the host's displays here are the
+    // DLLs' own, 0 for the needle with Brakes.dll's recorder off, so every
+    // step shows what was last set (testers: the ВЛ80т's and ЭР2Т's needle
+    // at 0 but for a flick each second).
+    std::map<std::int32_t, float> held_values;
+    std::map<std::int32_t, std::uint32_t> held_states;
+    std::map<std::int32_t, float> held_blinks;            // the КПД-3's lamps' blink
+    std::map<std::int32_t, std::uint16_t> held_textures;  // its light's texture change
+    std::map<std::pair<std::int32_t, std::uint32_t>, simulation::RecorderOutput::ScreenPart> held_parts; // its screens' parts
+    // Brakes.dll not loaded: its ALSN delay (ALSN_DELAY) is openRTS's
+    // (docs/reverse/brakes-dll.md §11, "_Run before the КЛУБ"): a new aspect
+    // taken once it has stood that long; Б after КЖ shown as К.
+    float alsn_delay = 0.0f;
+    std::uint32_t accepted_aspect = 8, previous_aspect = 8;
+    float delay_timer = 0.0f;
 };
 
 namespace {
@@ -284,7 +303,7 @@ void add_shortcuts(const core::Vfs& vfs, const core::VirtualPath& cabin, const f
     }
 }
 
-class LegacyController final : public simulation::LocomotiveController {
+class LegacyController final : public simulation::CarModule {
 public:
     LegacyController(std::weak_ptr<const LegacyConsist::Outputs> outputs, std::size_t car, std::shared_ptr<const DllAirSetting> air,
                      BrakeCabControls cab, BrakesParameters brakes = {}, int brakes_library = -1, std::uint32_t wagons = 0)
@@ -298,7 +317,7 @@ public:
         }
         const auto& out = outputs->cars[car_];
         apply_engine_output(out.engine, demands);
-        const auto mode = air_ ? air_->mode : DllAir::rts;
+        const auto mode = air_mode();
         if (mode == DllAir::rts) {
             valve_started_ = false;
             brakes_started_ = false;
@@ -309,7 +328,37 @@ public:
         // volume never drains, their compressors may never run, and they
         // take their own air from it), so openRTS runs the compressors, by
         // the .eng's governor; started cold, not before the train has power.
-        demands.main_reservoir_rate = outputs->cold ? 0.0f : simulation::compressor_rate(compressor_, inputs);
+        // A DLL with a governor of its own says so by the sound codes 12 /
+        // 13 (MSTS's compressor on / off): from its 12 openRTS's compressor
+        // runs on to its 13, past the .eng's cut-out (the ВЛ10's DLL: 12 at
+        // 7.5 atm, 13 above the .eng's 8.7, where its KT-6 sounded for good;
+        // testers 2026-11-22). At most 1 atm over the .eng's cut-out and 10
+        // atm (a 12 of another meaning: the ЧС2's hiss, the ТЭМ7's ПК-35).
+        for (const auto* codes : {&out.sound_ext, &out.sound_cab})
+            for (const auto code : *codes) {
+                if (code == 12) dll_compressor_ = true;
+                if (code == 13) dll_compressor_ = false;
+            }
+        // An electric engine's compressor motor runs on the line: under a
+        // line it does not work on (its WorksOnLineVoltages; testers
+        // 2026-11-23: the ВЛ10, DC, charged its main reservoir under 25 kV
+        // AC) it stands.
+        const auto* engine_definition = inputs.definition && inputs.definition->engine ? &*inputs.definition->engine : nullptr;
+        const bool wrong_line = engine_definition && engine_definition->kind == formats::EngineKind::electric && inputs.line_voltage > 0.0f &&
+                                !simulation::Electrification::works_on(*engine_definition, {inputs.line_voltage, inputs.line_frequency});
+        if (outputs->cold || wrong_line) {
+            demands.main_reservoir_rate = 0.0f;
+            if (wrong_line) compressor_ = false;
+        } else if (dll_compressor_ &&
+                   inputs.main_reservoir < (std::min)(10.0f, simulation::compressor_range(inputs.definition && inputs.definition->engine
+                                                                                               ? &*inputs.definition->engine
+                                                                                               : nullptr)
+                                                                     .off + 1.0f)) {
+            compressor_ = true;
+            demands.main_reservoir_rate = simulation::compressor_delivery(inputs);
+        } else {
+            demands.main_reservoir_rate = simulation::compressor_rate(compressor_, inputs);
+        }
         // The realistic air works the pipe. The DLL's TrainPipeRate counts
         // only as a direct vent (its VI, the ЭПК, a stop valve): faster than
         // 0.6 atm/s and faster than its own valve would vent, which follows
@@ -408,7 +457,12 @@ public:
                 .ep_on = (out.engine.systems & 2u) != 0,
                 .slow_service = true,
             };
-            const auto valve_out = simulation::step_valve_395(state_, position, in, static_cast<float>(dt));
+            const float ur_before = state_.equalising;
+            auto valve_out = simulation::step_valve_395(state_, position, in, static_cast<float>(dt));
+            // The 367 shut cuts the valve off its feed too (the main
+            // reservoir's line): nothing raises its УР (testers 2026-11-23:
+            // the ВЛ10's УР charged in I / II, the 367 shut).
+            if (controls_.blocked) valve_out.equalising = state_.equalising = (std::min)(state_.equalising, ur_before);
             // The combined valve: double traction cuts the valve off the pipe
             // (its УР goes on), emergency vents the pipe. The 367 out of its
             // operating state cuts it off too.
@@ -438,6 +492,16 @@ public:
             if (connected) demands.equalising = out.engine.equalising;
             demands.equalising_kept = out.engine.equalising;
         }
+    }
+    [[nodiscard]] std::string_view name() const override { return "dll"; }
+    // The air this car's brakes run on: RTS's where its Brakes.dll has a
+    // device openRTS does not know: that device stays Brakes.dll's and works
+    // RTS's air only. On the realistic air Brakes.dll's 334 let the ЭР9П's
+    // pipe leak away (testers 2026-11-24); openRTS's 334 since.
+    [[nodiscard]] DllAir air_mode() const noexcept {
+        if (!air_) return DllAir::rts;
+        if (brakes_.present && !brakes_.unknown.empty()) return DllAir::rts;
+        return air_->mode;
     }
     // A saved game: openRTS's valve over the DLL (its УР, its ЭПТ demand),
     // the compressor's governor and the DLL УР last seen. The DLL's own
@@ -553,6 +617,7 @@ private:
     bool valve_started_ = false;
     std::size_t last_cab_ = 0; // the working cab at the last step
     bool compressor_ = false;
+    bool dll_compressor_ = false; // its DLL's compressor sound on (12, not yet 13)
     float last_dll_ur_{};      // the DLL's УР at the last step
     bool dll_ur_known_ = false;
     BrakesParameters brakes_;      // its Brakes.dll's (own_brakes)
@@ -727,17 +792,21 @@ TrackItemSpec item_spec(const formats::TrackItem& item, const float route_speed_
 // Every part of Brakes.dll this engine uses is openRTS's: its brakes
 // understood, a КЛУБ openRTS takes, no speed recorder (its ALSN delay and
 // the КПД-3, УКБМ, МУ blocks are Brakes.dll's).
-bool brakes_dll_all_ours(const formats::EngineDefinition& e) {
-    if (!brakes_parameters(e).understood()) return false;
-    const auto k = klub_parameters(e);
-    if (!k.present || k.setup_index < 0 || !(k.settings.setup & 2u)) return false;
-    const auto r = recorder_parameters(e);
-    return !r.present && !(r.settings.setup & 0x18u);
-}
+bool brakes_dll_all_ours(const formats::EngineDefinition& e) { return brakes_dll_kept_reason(e).empty(); }
 
 bool is_brakes_module(const std::string& module) {
     const auto m = core::fold_case(module);
     return m == "brakes.dll" || (m.size() > 11 && (m.ends_with("/brakes.dll") || m.ends_with("\\brakes.dll")));
+}
+
+// An AnimNode as RTS gives it to the DLL (dllhost::AnimSpec).
+dllhost::AnimSpec anim_spec(const formats::CabAnimation& a) {
+    std::string flags = a.flags;
+    for (auto& c : flags) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    std::uint32_t bits = 0;
+    if (flags.find("continuous") != std::string::npos) bits |= 2u;
+    if (flags.find("loop") != std::string::npos) bits |= 4u;
+    return {.key_frames = a.key_frames, .time = a.anim_time, .flags = bits};
 }
 
 BuiltCar build_spec(const core::Vfs& vfs, const std::filesystem::path& cache_root, const LegacyCar& car,
@@ -875,7 +944,10 @@ BuiltCar build_spec(const core::Vfs& vfs, const std::filesystem::path& cache_roo
                             c.tex_change_groups.push_back(change.values[1]);
                         }
                         c.display_count = cab.display_count;
-                        for (const auto& a : cab.animations) c.animations.push_back(u16(a.name));
+                        for (const auto& a : cab.animations) {
+                            c.animations.push_back(u16(a.name));
+                            c.animation_specs.push_back(anim_spec(a));
+                        }
                         out.cab = std::move(cab);
                     } else {
                         problems += "cab " + std::string(sd->str()) + ": " + cab.error + "\n";
@@ -905,7 +977,10 @@ BuiltCar build_spec(const core::Vfs& vfs, const std::filesystem::path& cache_roo
         if (const auto shape = car.file.parent().resolve(d.shape)) {
             if (const auto bytes = vfs.read(shape_description(vfs, *shape))) {
                 const auto ext = formats::parse_exterior_details(*bytes);
-                for (const auto& a : ext.animations) spec.animations.push_back(u16(a.name));
+                for (const auto& a : ext.animations) {
+                    spec.animations.push_back(u16(a.name));
+                    spec.animation_specs.push_back(anim_spec(a));
+                }
                 spec.doors = static_cast<std::uint32_t>(ext.doors.size());
                 for (const auto& door : ext.door_details) {
                     spec.door_times.push_back(door.anim_time);
@@ -1005,6 +1080,25 @@ std::vector<CarInput> LegacyConsist::inputs(const std::vector<const simulation::
         in.brake_force = c.brake_force;
         in.brake_cylinder = c.cylinder;
         in.independent = c.independent;
+        // openRTS's cab brake devices in place of Brakes.dll's: a multiple
+        // unit's car (its Brakes.dll in BR_MODE 1) has its ЭПТ pressure in
+        // its independent brake under RTS, its train brake's cylinder the
+        // air's alone; openRTS's ЭПТ fills that one cylinder. The train DLL
+        // is shown them as RTS has them: the ЭПТ's part as the independent
+        // brake, the rest as the cylinder. The ЭП2Д's parking brake (АСТ)
+        // goes on with the cylinder at the auxiliary reservoir (a full
+        // service) and off with the independent over 3.5 atm and the
+        // cylinder under it (a full service with the ЭПТ); it never let off
+        // (testers).
+        if (air_ && air_->own_brakes && c.ep >= 0.0f && c.definition && c.definition->engine) {
+            const void* key = &*c.definition->engine;
+            auto found = multiple_unit_.find(key);
+            if (found == multiple_unit_.end()) found = multiple_unit_.emplace(key, brakes_parameters(*c.definition->engine).multiple_unit).first;
+            if (found->second) {
+                in.independent = (std::max)(in.independent, c.ep);
+                in.brake_cylinder = (std::max)(c.cylinder - c.ep, 0.0f);
+            }
+        }
         in.auxiliary = c.auxiliary;
         in.control = c.control;
         in.train_pipe = c.pipe;
@@ -1304,8 +1398,10 @@ bool LegacyConsist::reconsist(const core::Vfs& vfs, std::vector<std::vector<Lega
     std::vector<std::vector<std::int16_t>> aux(cars.size());
     std::vector<bool> kept(cars_.size(), false);
     request.trains.resize(trains.size());
-    for (std::size_t t = 0; t < trains.size(); ++t)
+    for (std::size_t t = 0; t < trains.size(); ++t) {
         request.trains[t].type = static_cast<std::uint8_t>(t < train_types_.size() ? train_types_[t] : t == 0 ? 1u : 3u); // the player's, LOOSE
+        request.trains[t].start_state = t < train_starts_.size() ? train_starts_[t] : std::int16_t{-1};
+    }
     for (std::size_t i = 0; i < cars.size(); ++i) {
         const auto t = static_cast<std::size_t>(std::upper_bound(first.begin(), first.end(), i) - first.begin()) - 1;
         ReconsistCar entry;
@@ -1475,8 +1571,13 @@ CabBrakes BrakeCabControls::read(const formats::EngineDefinition::BrakesLibrary&
     if (valve_state >= 0) now.raw = valve_state;
     if (controller_state >= 0) now.controller_raw = controller_state;
     int known = -1;
-    if (controller_moved) known = position_of(controller, controller_state);
-    else if (valve_moved) known = position_of(valve, valve_state);
+    if (controller_moved) {
+        known = position_of(controller, controller_state);
+        now.by_controller = true;
+    } else if (valve_moved) {
+        known = position_of(valve, valve_state);
+        now.by_controller = false;
+    }
     else if (last.position < 0) known = valve_state >= 0 ? position_of(valve, valve_state) : controller_state >= 0 ? position_of(controller, controller_state) : -1;
     if (known >= 0) now.position = known;
     if (const int s = state(ids.reducer); s >= 0 && static_cast<std::size_t>(s) < reducer.size() && reducer[static_cast<std::size_t>(s)] > 0.0f) {
@@ -1503,9 +1604,9 @@ std::string LegacyConsist::error() const { return host_ ? host_->error() : std::
 
 std::string LegacyConsist::take_messages() { return std::exchange(messages_, {}); }
 
-std::unique_ptr<simulation::LocomotiveController> LegacyConsist::controller(std::size_t car) const { return controller(0, car); }
+std::unique_ptr<simulation::CarModule> LegacyConsist::controller(std::size_t car) const { return controller(0, car); }
 
-std::unique_ptr<simulation::LocomotiveController> LegacyConsist::controller(std::size_t train, std::size_t car) const {
+std::unique_ptr<simulation::CarModule> LegacyConsist::controller(std::size_t train, std::size_t car) const {
     const auto at = flat(train, car);
     // The cab's Brakes.dll controls (the 395, the reducer, the combined valve)
     // and what their states are.
@@ -1589,7 +1690,7 @@ std::vector<std::int8_t> valve_states(const formats::CabSwitch& control) {
     return states;
 }
 
-std::unique_ptr<simulation::LocomotiveController> make_legacy_controller(std::weak_ptr<const LegacyConsist::Outputs> outputs,
+std::unique_ptr<simulation::CarModule> make_legacy_controller(std::weak_ptr<const LegacyConsist::Outputs> outputs,
                                                                          const std::size_t car,
                                                                          std::shared_ptr<const DllAirSetting> air,
                                                                          BrakeCabControls cab, BrakesParameters brakes,
@@ -1732,10 +1833,12 @@ LegacyConsist::KlubCar* LegacyConsist::klub_car(const std::size_t i) {
     auto found = klub_.find(key);
     if (found == klub_.end()) {
         // A КЛУБ of Brakes.dll that openRTS's takes: PB_SETUP 2, in each
-        // of its cabs (KLUB_*<n>).
+        // of its cabs (KLUB_*<n>); or САУТ or ТСКБМ alone (PB_SETUP 1, the
+        // ВЛ85's; 4, the 2ТЭ116's: its step runs each part by its own bit,
+        // as Brakes.dll's _Run).
         std::unique_ptr<KlubCar> made;
         auto parameters = klub_parameters(*definition->engine);
-        if (parameters.present && (parameters.settings.setup & 2) && parameters.setup_index >= 0) {
+        if (parameters.present && (parameters.settings.setup & 7) && parameters.setup_index >= 0) {
             made = std::make_unique<KlubCar>();
             made->parameters = std::move(parameters);
         }
@@ -2262,9 +2365,12 @@ LegacyConsist::RecorderCar* LegacyConsist::recorder_car(const std::size_t i) {
     if (found == recorder_.end()) {
         std::unique_ptr<RecorderCar> made;
         auto parameters = recorder_parameters(*definition->engine);
-        if (parameters.own && parameters.speed1_index >= 0) {
+        if (parameters.own && (parameters.speed1_index >= 0 || parameters.kpd_index >= 0 ||
+                               (parameters.settings.mu && parameters.setup_index >= 0))) {
             made = std::make_unique<RecorderCar>();
             made->parameters = std::move(parameters);
+            made->alsn_delay = klub_parameters(*definition->engine).settings.alsn_delay;
+            made->delay_timer = made->alsn_delay; // _Init: the first change taken a step on
         }
         found = recorder_.emplace(key, std::move(made)).first;
     }
@@ -2282,9 +2388,14 @@ void LegacyConsist::recorder_before(StepRequest& request) {
         const bool on = want && library >= 0 && i >= first && i < end;
         const auto index = static_cast<std::uint32_t>(i);
         const auto lib = static_cast<std::uint16_t>(library);
-        const auto speed1 = static_cast<std::uint16_t>(car->parameters.speed1_index);
+        // Its recorder's gate in Brakes.dll: SL_SPEED1 (the needle) or
+        // SL_KPDSPD1 (the КПД-3).
+        // The МУ's: SL_SETUP without 0x10.
+        const bool kpd = car->parameters.settings.kpd, mu = car->parameters.settings.mu;
+        const auto speed1 = static_cast<std::uint16_t>(mu ? car->parameters.setup_index : kpd ? car->parameters.kpd_index : car->parameters.speed1_index);
+        const float given = mu ? static_cast<float>(car->parameters.settings.setup) : kpd ? car->parameters.kpd_value : car->parameters.speed1;
         if (!on) {
-            if (car->on && library >= 0) request.aux_parameters.push_back({index, lib, speed1, car->parameters.speed1}); // Brakes.dll's back
+            if (car->on && library >= 0) request.aux_parameters.push_back({index, lib, speed1, given}); // Brakes.dll's back
             car->on = false;
             car->started = false;
             continue;
@@ -2292,7 +2403,7 @@ void LegacyConsist::recorder_before(StepRequest& request) {
         car->on = true;
         // Brakes.dll without its recorder (SL_SPEED1 −1: its part of Run
         // skipped); sent every step.
-        request.aux_parameters.push_back({index, lib, speed1, -1.0f});
+        request.aux_parameters.push_back({index, lib, speed1, mu ? static_cast<float>(car->parameters.settings.setup & ~0x10u) : -1.0f});
         request.want_aux_vars = 1;
         if (!car->started) continue;
         const auto& s = car->state;
@@ -2352,6 +2463,8 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             // Brakes.dll's Init's: its random odometer (it ran on this step).
             car.started = true;
             car.state = {};
+            car.held_values.clear();
+            car.held_states.clear();
             car.state.distance = static_cast<float>(var_at(224, 0.0f) - std::abs(static_cast<double>(speed)) * request.dt);
             car.last_var4 = var_bits(4);
             car.last_ep = var_at(40, 0.0f);
@@ -2378,6 +2491,17 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             ci.zavod_moved = moved(c.zavod);
             ci.epk_key_moved = moved(c.epk_key);
             ci.epk_key_to = state_in(out.switches, c.epk_key) != 0;
+            // The КПД-3's switches and keys.
+            ci.kpd_power = on(c.kpd_power);
+            ci.kpd_light = on(c.kpd_light);
+            ci.ukbm_power = on(c.ukbm_power);
+            // The МУ: a power switch not given counts on (Brakes.dll reads -1).
+            ci.mu_power = c.mu_power1 < 0 || on(c.mu_power1) || c.mu_power2 < 0 || on(c.mu_power2);
+            for (std::size_t b = 0; b < 7; ++b) ci.mu_held[b] = c.mu_keys[b] >= 0 && on(c.mu_keys[b]);
+            ci.mu_fast = c.mu_fast >= 0 && on(c.mu_fast);
+            ci.mu_cassette = on(c.mu_cassette);
+            for (std::size_t b = 0; b < c.kpd_keys.size(); ++b)
+                if (moved(c.kpd_keys[b]) && state_in(out.switches, c.kpd_keys[b]) != 0) ci.kpd_pressed |= static_cast<std::uint8_t>(1u << b);
             cabs.push_back(ci);
         }
         // The needle's error: Brakes.dll's (rand / 4096 − 6) × 0.2778 each step.
@@ -2392,6 +2516,23 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
         ri.reverser = out.engine.reverse;
         ri.traction = out.engine.throttle != 0;
         ri.aspect = var_bits(72); // the cab's after Brakes.dll's ALSN delay
+        if (i < stubbed_.size() && stubbed_[i]) {
+            // No Brakes.dll: the cab's aspect (Cabin::Signal.Aspect[0], RTS's
+            // for the car's cab) through openRTS's ALSN delay.
+            std::uint32_t aspect = out.cab_aspect;
+            if (aspect == car.accepted_aspect) {
+                car.delay_timer = 0.0f;
+            } else if (car.alsn_delay >= car.delay_timer) {
+                car.delay_timer += request.dt;
+                aspect = car.accepted_aspect;
+            } else {
+                car.accepted_aspect = aspect;
+                car.delay_timer = 0.0f;
+            }
+            if (aspect == 2 && car.previous_aspect == 1) aspect = 0;
+            else car.previous_aspect = aspect;
+            ri.aspect = aspect;
+        }
         ri.powered = (var_bits(32) & 4u) != 0;
         ri.tskbm_on = (car.last_var4 & 8u) != 0;
         ri.bypass = (car.last_var4 & 0x200u) != 0;
@@ -2399,17 +2540,71 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
         ri.day_time = request.day_time;
         ri.random = static_cast<float>(static_cast<double>(r / 4096 - 6) * 0.2777777777777777709);
         ri.cabs = cabs;
+        ri.acceleration = flipped ? -input.acceleration : input.acceleration;
+        ri.tape_recording = request.tape_car == static_cast<std::int32_t>(i);
+        ri.milepost = out.engine.milepost;
+        {
+            const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            std::tm local{};
+            localtime_s(&local, &now);
+            ri.date_year = local.tm_year + 1900;
+            ri.date_month = local.tm_mon + 1;
+            ri.date_day = local.tm_mday;
+            ri.date_weekday = local.tm_wday;
+        }
         simulation::step_recorder(car.state, p.settings, ri, car.out);
         simulation::recorder_switched(car.state, p.settings, ri, car.out);
         // Brakes.dll's odometer goes on in its Run all the same: the same.
         car.last_var4 = var_bits(4);
         car.last_ep = var_at(40, 0.0f);
         car.switches = out.switches;
-        // Its cab objects.
-        for (const auto& [id, v] : car.out.values)
+        // Its cab objects, as last set.
+        for (const auto& [id, v] : car.out.values) car.held_values[id] = v;
+        for (const auto& [id, v] : car.out.states) car.held_states[id] = v;
+        for (const auto& [id, v] : car.held_values)
             if (id >= 0 && static_cast<std::size_t>(id) < out.displays.size()) out.displays[static_cast<std::size_t>(id)].value = v;
-        for (const auto& [id, v] : car.out.states)
+        for (const auto& [id, v] : car.held_states)
             if (id >= 0 && static_cast<std::size_t>(id) < out.displays.size()) out.displays[static_cast<std::size_t>(id)].state = v;
+        // The КПД-3's: its lamps' blink, its light's texture, its screens'
+        // parts (as last set: the cab keeps them).
+        for (const auto& [id, period] : car.out.blinks) car.held_blinks[id] = period;
+        for (const auto& [id, v] : car.out.textures) car.held_textures[id] = v;
+        for (const auto& part : car.out.screen_parts) {
+            auto& kept = car.held_parts[{part.screen, part.part}];
+            if (part.text_set) {
+                kept.text = part.text;
+                kept.text_set = true;
+            }
+            if (part.state_set) {
+                kept.state = part.state;
+                kept.state_set = true;
+            }
+            if (part.blink_set) {
+                kept.blink = part.blink;
+                kept.blink_set = true;
+            }
+        }
+        for (const auto& [id, period] : car.held_blinks) {
+            if (id < 0 || static_cast<std::size_t>(id) >= out.displays.size()) continue;
+            out.displays[static_cast<std::size_t>(id)].fade[1] = 0.0f;
+            out.displays[static_cast<std::size_t>(id)].fade[2] = period;
+        }
+        for (const auto& [id, v] : car.held_textures)
+            if (id >= 0 && static_cast<std::size_t>(id) < out.tex_changes.size()) out.tex_changes[static_cast<std::size_t>(id)] = v;
+        for (const auto& [where, part] : car.held_parts) {
+            for (auto& screen : out.screens) {
+                if (static_cast<std::int32_t>(screen.display) != where.first) continue;
+                const auto k = static_cast<std::size_t>(where.second);
+                if (k < screen.objects.size()) {
+                    if (part.state_set) screen.objects[k].state = part.state;
+                    if (part.blink_set) {
+                        screen.objects[k].fade[1] = 0.0f;
+                        screen.objects[k].fade[2] = part.blink;
+                    }
+                }
+                if (part.text_set && k < screen.texts.size()) screen.texts[k] = part.text;
+            }
+        }
         if (car.out.cab_aspect >= 0) out.cab_aspect = static_cast<std::uint32_t>(car.out.cab_aspect);
         // Its sounds on Brakes.sms in place of Brakes.dll's (its Switched's
         // too: they go on Brakes.dll's state as openRTS's put it).
@@ -2434,6 +2629,31 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
 }
 
 // --- Brakes.dll not loaded (docs/brakes-dll-replacement.md "The rest", 7) ---
+
+std::string brakes_dll_kept_reason(const formats::EngineDefinition& e) {
+    const auto b = brakes_parameters(e);
+    if (!b.present) return "no Brakes.dll";
+    if (!b.understood()) return b.unknown;
+    const auto k = klub_parameters(e);
+    // A car with no vigilance of Brakes.dll's at all (no PB_SETUP, no РБ or
+    // ЭПК key: the ЭР9's and ЭР2's cars between the head cars, their brakes
+    // only) needs nothing more of it (testers 2026-11-24: one such car kept
+    // Brakes.dll loaded for the whole train).
+    const bool vigilance = k.setup_index >= 0 || std::any_of(k.cabs.begin(), k.cabs.end(), [](const KlubCabParameters& c) {
+        return c.rb >= 0 || c.rbs >= 0 || c.epk_key >= 0;
+    });
+    const auto r = recorder_parameters(e);
+    // A cab without the КЛУБ: its vigilance is the speed recorder's
+    // (openRTS's, with the ALSN delay; the КПД-3's too; 2026-11-24).
+    const bool klub = k.present && k.setup_index >= 0 && (k.settings.setup & 2u);
+    const std::uint32_t setup = k.setup_index >= 0 ? k.settings.setup : 0u; // 7 when not given
+    // САУТ (PB_SETUP 1) and ТСКБМ (4) are openRTS's in its КЛУБ's step
+    // without the КЛУБ too.
+    (void)setup;
+    const bool by_recorder = r.present && r.own;
+    if (vigilance && !klub && !by_recorder) return "no КЛУБ";
+    return {};
+}
 
 void LegacyConsist::set_without_brakes_dll(const bool on) noexcept { without_brakes_dll_choice = on; }
 

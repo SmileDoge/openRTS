@@ -5,7 +5,16 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <string>
 #include <thread>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace openrts::renderer {
 namespace {
@@ -56,6 +65,22 @@ template <typename Request>
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return request.complete;
+}
+
+// The DXC compiler beside the program (dxcompiler.dll), UTF-8; empty: none.
+std::string dxc_beside_program() {
+#ifdef _WIN32
+    wchar_t buffer[MAX_PATH * 2]{};
+    const DWORD length = GetModuleFileNameW(nullptr, buffer, static_cast<DWORD>(std::size(buffer)));
+    if (length == 0) return {};
+    const auto path = std::filesystem::path(std::wstring(buffer, length)).parent_path() / L"dxcompiler.dll";
+    std::error_code error;
+    if (!std::filesystem::exists(path, error) || !std::filesystem::exists(path.parent_path() / L"dxil.dll", error)) return {};
+    const auto text = path.u8string();
+    return std::string(text.begin(), text.end());
+#else
+    return {};
+#endif
 }
 
 WGPUInstanceBackend instance_backends(const GraphicsBackend backend) {
@@ -154,6 +179,21 @@ WgpuDeviceContextResult create_wgpu_device(const GraphicsBackend backend) {
         WGPUInstanceExtras extras{};
         extras.chain.sType = static_cast<WGPUSType>(WGPUSType_InstanceExtras);
         extras.backends = instance_backends(single);
+        // Direct3D 12's shaders through DXC when its dxcompiler.dll (with
+        // dxil.dll) lies beside the program: FXC, the default, took some 20 s
+        // for the models' shaders on a fast CPU and minutes on slower ones
+        // (the window "not responding" at "starting the graphics"); DXC a
+        // fraction of it.
+        const std::string dxc = dxc_beside_program();
+        if (single == GraphicsBackend::d3d12 && !dxc.empty()) {
+            extras.dx12ShaderCompiler = WGPUDx12Compiler_Dxc;
+            extras.dxcPath = {.data = dxc.c_str(), .length = dxc.size()};
+            extras.dxcMaxShaderModel = WGPUDxcMaxShaderModel_V6_5;
+        }
+        if (single == GraphicsBackend::d3d12) {
+            std::fprintf(stdout, "graphics: Direct3D 12's shaders by %s%c", dxc.empty() ? "FXC (no dxcompiler.dll beside the program: slow)" : "DXC", 10);
+            std::fflush(stdout);
+        }
         const WGPUInstanceDescriptor instance_descriptor{.nextInChain = &extras.chain};
         context.instance_ = wgpuCreateInstance(&instance_descriptor);
         if (!context.instance_) return {.error = "wgpuCreateInstance returned null."};

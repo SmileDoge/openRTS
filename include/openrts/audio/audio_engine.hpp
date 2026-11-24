@@ -41,6 +41,12 @@ inline constexpr float positional_reference_distance = 15.0f;
 // sound; fully to one side the other side at 1 - pan_depth.
 inline constexpr float pan_depth = 0.7f;
 
+// The Doppler factor on a sound's pitch for the speed (m/s) its distance to
+// the listener grows at (negative: it comes closer): c / (c + v), the speed
+// held within +-90 m/s.
+inline constexpr float speed_of_sound = 343.0f;
+[[nodiscard]] float doppler_pitch(float receding_speed) noexcept;
+
 class AudioEngine final : public VoiceSink {
 public:
     explicit AudioEngine(const AudioEngineOptions& options = {});
@@ -64,6 +70,15 @@ public:
     [[nodiscard]] bool paused() const noexcept;
     // Releases finished voices; call once per frame.
     void update();
+    // openRTS (beyond RTS, the "Doppler effect" sound setting): a voice
+    // placed in space comes higher while its distance to the listener
+    // shrinks, lower while it grows (doppler_pitch).
+    void set_doppler(bool on) noexcept { doppler_ = on; }
+    [[nodiscard]] bool doppler() const noexcept { return doppler_; }
+    // openRTS (the "Echo" sound setting): how much the voices placed in
+    // space reverberate, 0 none .. 1 deep in a tunnel (EchoNode); eased.
+    void set_echo(float amount) noexcept;
+    [[nodiscard]] float echo() const noexcept;
     void seek(VoiceId voice, std::uint64_t frame) override;
     [[nodiscard]] std::optional<std::uint64_t> cursor(VoiceId voice) const override;
     [[nodiscard]] std::size_t active_voices() const noexcept;
@@ -86,6 +101,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     bool paused_ = false;
+    bool doppler_ = false;
     float volume_ = 1.0f;
     float background_gain_ = 1.0f;
 };

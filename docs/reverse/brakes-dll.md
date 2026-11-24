@@ -471,7 +471,12 @@ Instead of RTS's triple valve (AuxilaryRate 0, EngineFlags 1):
 | 136 / 137 | the pipe gauge over the pipe |
 | 134 / 135 | the ЭПТ |
 
-Matches the golden runs' sequences.
+Matches the golden runs' sequences. The valve's (124 .. 133) are the 395's
+only: with the ЭП2Д's КПТ moved last Brakes.dll posts none of them (the
+harness: at I only the gauge's 136 / 137), and the train's DLL sounds the
+КПТ itself (its cab SMS's 25 / 26, `kptR1` / `kptR2`). openRTS's devices
+the same since 2026-11-22 (`CabBrakeControls::by_controller`; testers had
+both at I).
 
 ## 11. The КЛУБ-У (step 3.1, 2026-11-19)
 

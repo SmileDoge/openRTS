@@ -6,6 +6,8 @@
 #include <string_view>
 #include <vector>
 
+#include <openrts/formats/shape_description.hpp>
+
 namespace openrts::formats {
 
 struct ShapeModel;
@@ -22,6 +24,11 @@ struct ShapeModel;
 // texture's image (a check: a shape replaced since no longer matches) and
 // what to change: LightMaterial, MSTS's light material (-5 normal, -6 / -7
 // shiny, -8 FullBright, -9 circumference, -11 half bright, -12 dark shade).
+// NightTextures ( 0 ): the whole shape keeps its day textures at night (its
+// TEXTURES\NIGHT ones have the lamps' light painted in: it looked lit up at
+// night, testers), whatever the setting "Night textures of the models".
+// LightSources ( n LightSource ( ... ) ... ): the shape's lamps in place of
+// its .sd's ESD_LightSources, in the same syntax (the inspector's lamps).
 struct ShapeOverride {
     struct PrimState {
         std::uint32_t index{};
@@ -29,8 +36,10 @@ struct ShapeOverride {
         std::optional<std::int32_t> light_material;
     };
     std::vector<PrimState> prim_states;
+    std::optional<bool> night_textures; // false: the day's textures at night too
+    std::optional<std::vector<ShapeLight>> lights; // its lamps in place of the .sd's
 
-    [[nodiscard]] bool empty() const noexcept { return prim_states.empty(); }
+    [[nodiscard]] bool empty() const noexcept { return prim_states.empty() && !night_textures && !lights; }
     [[nodiscard]] const PrimState* find(std::uint32_t index) const noexcept;
     // Sets, or with no change left removes, primitive state `index`'s entry.
     void set_light_material(std::uint32_t index, std::string image, std::optional<std::int32_t> light_material);

@@ -20,6 +20,8 @@ add_library(openrts_simulation STATIC
     src/track_profile.cpp
     src/track_traveller.cpp
     src/train.cpp
+    src/car_registry.cpp
+    src/car_components.cpp
     src/realistic_air.cpp
     src/signals.cpp
     src/alsn.cpp

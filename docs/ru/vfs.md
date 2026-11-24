@@ -54,7 +54,9 @@
 ## Свои паки openRTS (2026-11-16)
 
 То, что openRTS приносит сам (гром, `openrts-thunder.zip`; правила
-подвижного состава, `openrts-stock.zip`, `docs/ru/scripting.md`), лежит в `PACKS`
+подвижного состава, `openrts-stock.zip`, `docs/ru/scripting.md`; маски снега
+для кузовов ЧС7 и ВЛ10, `openrts-snow.zip`, в `MATERIALS`,
+`docs/ru/pbr-materials.md`, с разрешения их автора), лежит в `PACKS`
 рядом с программой (`openrts_game.exe`, `openrts_viewer.exe`;
 `core::own_packs_directory()`), его ZIP подключаются раньше всех слоёв
 установки, как базовые паки (слой 0 выше): паки и папки установки и моды

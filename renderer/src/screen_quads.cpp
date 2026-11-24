@@ -10,176 +10,10 @@
 
 #include <glm/common.hpp>
 #include <glm/geometric.hpp>
+#include "shader_code.hpp"
 
 namespace openrts::renderer {
 namespace {
-
-// Straight onto the panel, as RTS draws them (and the supersampled path off).
-constexpr const char* screen_shader = R"(
-struct Frame {
-    view_projection: mat4x4<f32>,
-    eye: vec4<f32>,
-};
-@group(0) @binding(0) var<uniform> frame: Frame;
-@group(0) @binding(1) var screen_texture: texture_2d<f32>;
-@group(0) @binding(2) var screen_sampler: sampler;
-
-struct VertexOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) colour: vec4<f32>,
-    @location(1) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) colour: vec4<f32>) -> VertexOut {
-    let to_eye = frame.eye.xyz - position;
-    let length_to_eye = max(length(to_eye), 0.001);
-    let lifted = position + to_eye / length_to_eye * 0.001;
-    var out: VertexOut;
-    out.position = frame.view_projection * vec4<f32>(lifted, 1.0);
-    out.colour = colour;
-    out.uv = uv;
-    return out;
-}
-
-// Half a mip level sharper than the plain choice: a screen's small print
-// is read from the seat (testers, 2026-11-12: the ЭП20's БЛОК was blurry).
-// eye.w 1: the frame is linear (frame_encoding()): RTS's display colours decoded.
-fn encoded(c: vec3<f32>) -> vec3<f32> {
-    return select(c, pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2)), frame.eye.w > 0.5);
-}
-
-@fragment
-fn fs_blend(input: VertexOut) -> @location(0) vec4<f32> {
-    let texel = textureSampleBias(screen_texture, screen_sampler, input.uv, -0.5) * input.colour;
-    return vec4<f32>(encoded(texel.rgb), texel.a);
-}
-
-@fragment
-fn fs_opaque(input: VertexOut) -> @location(0) vec4<f32> {
-    let texel = textureSampleBias(screen_texture, screen_sampler, input.uv, -0.5) * input.colour;
-    return vec4<f32>(encoded(texel.rgb), 1.0);
-}
-)";
-
-// A screen's objects into its own image (RGBA8UnormSrgb: the blending and
-// the filtering in linear light), colour premultiplied by alpha.
-constexpr const char* content_shader = R"(
-struct Surface {
-    area: vec4<f32>, // the part of the screen the image covers: x0 y0 x1 y1 in its 0..1
-};
-@group(0) @binding(0) var<uniform> surface: Surface;
-@group(1) @binding(0) var source: texture_2d<f32>;
-@group(1) @binding(1) var source_sampler: sampler;
-
-struct VertexOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) colour: vec4<f32>,
-    @location(1) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_content(@location(1) uv: vec2<f32>, @location(2) colour: vec4<f32>, @location(3) local: vec2<f32>) -> VertexOut {
-    let t = (local - surface.area.xy) / (surface.area.zw - surface.area.xy);
-    var out: VertexOut;
-    out.position = vec4<f32>(t.x * 2.0 - 1.0, 1.0 - t.y * 2.0, 0.0, 1.0);
-    out.colour = colour;
-    out.uv = uv;
-    return out;
-}
-
-// The display's encoding to linear light (sRGB), as the image stores it.
-fn to_linear(c: vec3<f32>) -> vec3<f32> {
-    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
-}
-
-// The texture premultiplied in linear light (add_texture's premultiplied);
-// the tint is display-encoded, as RTS's vertex colour.
-@fragment
-fn fs_content_blend(input: VertexOut) -> @location(0) vec4<f32> {
-    let texel = textureSample(source, source_sampler, input.uv);
-    let tint = to_linear(input.colour.rgb);
-    return vec4<f32>(texel.rgb * tint * input.colour.a, texel.a * input.colour.a);
-}
-
-// Opaque shaders (Tex): the plain texture's colour, alpha left out.
-@fragment
-fn fs_content_opaque(input: VertexOut) -> @location(0) vec4<f32> {
-    let texel = textureSample(source, source_sampler, input.uv);
-    return vec4<f32>(to_linear(texel.rgb * input.colour.rgb), 1.0);
-}
-)";
-
-// A mip level from the one above: the bilinear tap in the middle of each
-// 2 x 2 block is their average, in linear light (an sRGB image).
-constexpr const char* down_shader = R"(
-@group(0) @binding(0) var above: texture_2d<f32>;
-@group(0) @binding(1) var above_sampler: sampler;
-
-struct VertexOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_full(@builtin(vertex_index) index: u32) -> VertexOut {
-    let p = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u)) * 2.0 - 1.0;
-    var out: VertexOut;
-    out.position = vec4<f32>(p, 0.0, 1.0);
-    out.uv = vec2<f32>(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5);
-    return out;
-}
-
-@fragment
-fn fs_down(input: VertexOut) -> @location(0) vec4<f32> {
-    return textureSampleLevel(above, above_sampler, input.uv, 0.0);
-}
-)";
-
-// A screen's image on the panel: linear premultiplied back to the display's
-// encoding, blended as RTS blends (straight alpha, display values).
-constexpr const char* composite_shader = R"(
-struct Frame {
-    view_projection: mat4x4<f32>,
-    eye: vec4<f32>,
-};
-@group(0) @binding(0) var<uniform> frame: Frame;
-@group(1) @binding(0) var image: texture_2d<f32>;
-@group(1) @binding(1) var image_sampler: sampler;
-
-struct VertexOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn vs_composite(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>) -> VertexOut {
-    let to_eye = frame.eye.xyz - position;
-    let length_to_eye = max(length(to_eye), 0.001);
-    let lifted = position + to_eye / length_to_eye * 0.001;
-    var out: VertexOut;
-    out.position = frame.view_projection * vec4<f32>(lifted, 1.0);
-    out.uv = uv;
-    return out;
-}
-
-fn to_display(c: vec3<f32>) -> vec3<f32> {
-    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
-}
-
-// Half a mip level sharper, as the straight path.
-@fragment
-fn fs_composite(input: VertexOut) -> @location(0) vec4<f32> {
-    let texel = textureSampleBias(image, image_sampler, input.uv, -0.5);
-    let straight = min(texel.rgb / max(texel.a, 0.00001), vec3<f32>(1.0));
-    var display = to_display(straight);
-    // A linear frame (eye.w 1): as the gamma 2.2 frame would show it, decoded.
-    if (frame.eye.w > 0.5) {
-        display = pow(display, vec3<f32>(2.2));
-    }
-    return vec4<f32>(display, texel.a);
-}
-)";
 
 constexpr WGPUTextureFormat image_format = WGPUTextureFormat_RGBA8UnormSrgb;
 // A screen's image: about this many pixels a metre of the screen, within the
@@ -574,7 +408,7 @@ ScreenQuadRenderer::ScreenQuadRenderer(const WGPUDevice device, const WGPUTextur
     sampler.lodMaxClamp = 0.0f;
     impl.down_sampler = wgpuDeviceCreateSampler(device, &sampler);
 
-    const auto shader = shader_module(device, screen_shader);
+    const auto shader = shader_module(device, detail::shader_code("screens/screen"));
     const WGPUPipelineLayoutDescriptor pipeline_layout_descriptor{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl.layout};
     const auto pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &pipeline_layout_descriptor);
     impl.blend = impl.make_pipeline(shader, pipeline_layout, target_format, true);
@@ -616,7 +450,7 @@ ScreenQuadRenderer::ScreenQuadRenderer(const WGPUDevice device, const WGPUTextur
         impl.frame_group = wgpuDeviceCreateBindGroup(device, &frame_group);
     }
     {
-        const auto content = shader_module(device, content_shader);
+        const auto content = shader_module(device, detail::shader_code("screens/content"));
         const std::array<WGPUBindGroupLayout, 2> layouts{impl.area_layout, impl.texture_layout};
         const WGPUPipelineLayoutDescriptor descriptor{.bindGroupLayoutCount = layouts.size(), .bindGroupLayouts = layouts.data()};
         const auto content_layout = wgpuDeviceCreatePipelineLayout(device, &descriptor);
@@ -626,7 +460,7 @@ ScreenQuadRenderer::ScreenQuadRenderer(const WGPUDevice device, const WGPUTextur
         wgpuShaderModuleRelease(content);
     }
     {
-        const auto down = shader_module(device, down_shader);
+        const auto down = shader_module(device, detail::shader_code("screens/down"));
         const WGPUPipelineLayoutDescriptor descriptor{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl.texture_layout};
         const auto down_layout = wgpuDeviceCreatePipelineLayout(device, &descriptor);
         const WGPUColorTargetState target{.format = image_format, .writeMask = WGPUColorWriteMask_All};
@@ -643,7 +477,7 @@ ScreenQuadRenderer::ScreenQuadRenderer(const WGPUDevice device, const WGPUTextur
         wgpuShaderModuleRelease(down);
     }
     {
-        const auto composite = shader_module(device, composite_shader);
+        const auto composite = shader_module(device, detail::shader_code("screens/composite"));
         const std::array<WGPUBindGroupLayout, 2> layouts{impl.frame_layout, impl.texture_layout};
         const WGPUPipelineLayoutDescriptor descriptor{.bindGroupLayoutCount = layouts.size(), .bindGroupLayouts = layouts.data()};
         const auto composite_layout = wgpuDeviceCreatePipelineLayout(device, &descriptor);

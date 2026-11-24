@@ -100,6 +100,14 @@ Without `--no-window` (or `--run`) the server opens its window, as
     everyone, drop the player.
   - "Журнал": the server's log and a line for the console's commands
     (`help`), the same as at the console.
+- **The Time and weather tab** (2026-11-23): the time with a slider (set when
+  let go), the clock's speed (pause, x1, x60, x600, x3600), the season,
+  the weather, the dynamic weather with its climate and pace (by the
+  season or the sliders, how long a weather lasts and turns, another
+  one): as the game's panel has them, for everyone. openRTS players' own
+  controls are then greyed out with "В сетевой игре время, его скорость,
+  сезон и погоду задаёт сервер" (until then a time set there went back
+  at the next sync, testers).
 - **The bar on top:** the route and port, the server's time and setting
   it, pause, taking new players, how many play, stopping the server.
   Under it what was last done, for 5 s (an error 10 s).
@@ -124,6 +132,8 @@ before step 7, TRAFFIC).
 | `say <nick\|*> <text>` | a message (`0x4611`) |
 | `pause`, `resume` | `0x4616`; nothing goes out while paused, as RTS |
 | `time [HH:MM[:SS]]` | shown or set (`0x460D` to everyone) |
+| `speed [1\|60\|600\|3600]` | how fast the clock runs (1 to 3600): the server's time and its dynamic weather run so; `0x45EF` `openrts_clock` to openRTS players and consoles, who run their clocks alike, and the time again to everyone (RTS's players see it jump at each sync) |
+| `season [spring\|summer\|autumn\|winter]` | the season: `0x45EF` to openRTS players and consoles at once; RTS's players take it when they log in again (the login's season) |
 | `route <train> <signal> [signal...]` | a train's route, as the console's assembly: from the train's front (or its rear, running rear first) to the signal named so in the route database (its "литера"), through the others in turn, the shortest way; of several signals with one name the nearest along the way. Every junction on it is set, facing and trailing, and held: players cannot throw it until the train's rear has passed it (and 30 m). Its manual signals facing the train open ("Signals" below). A TDB item number works too |
 | `route <train> cancel` | the route's junctions freed (they stay as they are), the signals it opened closed |
 | `heads` | every signal head as the players get it: TDB item, aspect, draw state, mode (to compare with `openrts-net-dump --heads`) |

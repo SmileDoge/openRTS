@@ -175,3 +175,43 @@ CPU work is the frame without `wait` and the FPS limit's sleep (with the
 limit, the frame itself is 33.3 ms). Single frames of 27-42 ms (a load)
 are in both. What is left of a step: the host's own 0.25 ms and 0.7 ms of
 waking it and switching back.
+
+## Without Tracy: the frame log and the GPU's clocks
+
+`--frame-log <file.csv>` (the viewer): a line a frame, its time since the
+start, the frame in ms, every stage's ms (the names above), the GPU's frame
+when it was read that frame (else blank), the lamps, the lamp shadows and
+the model instances. For stutters: which frames are long and which stage
+took it.
+
+**GPU times need the GPU awake.** With `--fps-limit 30` the video card
+idles between frames and drops its clocks: the same frame's GPU passes
+measured 4 to 8 ms run to run (the night's main pass 6.6 ms "against" 2.6
+by day, 2026-11-23, was that). For GPU times: `--fps-limit 0 --no-vsync
+--fps-background` (the last: no 30 fps cap when the window is not in
+front), several runs, the median. Shader variants without a build:
+`--shader-dir` (docs/shaders.md).
+
+### The night (2026-11-23)
+
+Testers' reports of 2026-11-16 (a night scenario on ultra with many
+trains, 70 to 20 fps; the new renderer at about 20). RTX 4070 Ti SUPER,
+1280 x 720, uncapped, medians of three:
+
+| | ms |
+|---|---|
+| Krasnodar-1 from the ChS2's cab at night: the main pass | 1.47 |
+| the same without the clustered lamps | 0.85 |
+| the lamps' shape alone (no shadow, no PBR) | 1.33 |
+| reading the lamps' records alone | 0.99 |
+| the whole frame by day / at night (Krasnodar-1, outside) | 2.78 / 2.71 |
+| lamp shadows 0 / 8 (5 lamps within reach), the frame | 2.63 / 2.65; their GPU pass 0.15 |
+| "Кубанский выльник" at 23:00, 33 trains: the frame, median / P95 | 2.25 / 2.61 |
+
+The night costs no more than the day here; video memory 1.6 GB either
+way (night textures +24 MB). The frames over 8 ms (14 in 50 s) are outside
+the measured stages (the frame's presentation), not the night's. The
+clusters' cone test (2026-11-17, after the reports) took the headlights'
+100 m out of the clusters near a train, which was the night's main pass
+then. Next: the testers' numbers on the current version (the panel's
+stages and GPU passes at the drop, or a frame log).

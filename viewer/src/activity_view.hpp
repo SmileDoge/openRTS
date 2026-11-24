@@ -140,7 +140,11 @@ public:
     void update(float elapsed, double time_of_day, ActivityWorld& world);
     void toggle_journal() noexcept { journal_open_ = !journal_open_; }
     // F8: the scenario's menu (SetMainMenu's) open or shut.
-    void toggle_menu() noexcept { menu_open_ = !menu_open_; }
+    // ShowActivityMenu's menu is shown once: F8 opens the main one again.
+    void toggle_menu() noexcept {
+        menu_open_ = !menu_open_;
+        shown_menu_ = -1;
+    }
     // An item of a menu picked: its OnMenuSelect events run at the next update.
     void choose(std::int32_t menu, std::int32_t item);
     // A modal message is open: the game waits for it.
@@ -235,6 +239,7 @@ private:
     std::vector<ActivityUncoupling> uncouplings_; // this update's (UncoupleCars)
     ActivityTrainId player_{};               // the player's train
     std::int32_t main_menu_ = -1;
+    std::int32_t shown_menu_ = -1; // ShowActivityMenu's, open now (-1: the main one)
     std::vector<std::pair<std::int32_t, std::int32_t>> choices_;      // menu items picked, for the next update
     std::vector<std::pair<std::int32_t, std::string>> closed_;       // messages closed (MsgID, button)
     Outcome outcome_ = Outcome::running;

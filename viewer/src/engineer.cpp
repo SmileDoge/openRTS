@@ -5,7 +5,6 @@
 #include <array>
 #include <cctype>
 #include <cmath>
-#include <cstdlib>
 #include <string>
 
 #include <glm/geometric.hpp>
@@ -33,13 +32,15 @@ std::string lower(std::string s) {
     return s;
 }
 
-bool is_exterior(const formats::CabDoor& door) {
-    return lower(door.from) == "exterior" || lower(door.to) == "exterior";
-}
-
 // A door to the car coupled at that end (WAGON_FRONT / WAGON_BACK).
 bool is_passage(const formats::CabDoor& door) {
     return lower(door.from).rfind("wagon", 0) == 0 || lower(door.to).rfind("wagon", 0) == 0;
+}
+
+// A door out to the ground. The ChS7's and 2M62's end doors say
+// Connects ( EXTERIOR WAGON_BACK ): a way to the next section, not out.
+bool is_exterior(const formats::CabDoor& door) {
+    return !is_passage(door) && (lower(door.from) == "exterior" || lower(door.to) == "exterior");
 }
 
 // A door out onto the car's own outside (EXT_WAG: the ChME3's cab doors to
@@ -86,8 +87,11 @@ float distance_xz(const glm::vec3& a, const glm::vec3& b) {
     return std::hypot(a.x - b.x, a.z - b.z);
 }
 
+bool doorway_in_reach(const CabView& cab, const glm::vec3& feet, const formats::CabDoor& door);
+
 // The open outer door whose face a step out reaches: from `feet` by `going`
-// (cab coordinates) his front comes to the door's plane, inside its width.
+// (cab coordinates) his front comes to the door's plane, inside its width,
+// with nothing of the cab between him and it (doorway_in_reach).
 std::optional<std::size_t> doorway_reached(const CabView& cab, const glm::vec3& feet, const glm::vec3& going) {
     const glm::vec2 g{going.x, going.z};
     if (glm::length(g) < 1e-6f) return std::nullopt;
@@ -106,6 +110,7 @@ std::optional<std::size_t> doorway_reached(const CabView& cab, const glm::vec3& 
         float half = 0.45f; // a door with only a point: about a doorway
         if (has_plane(d)) half = std::abs(glm::dot(glm::vec2{d.plane.a[0] - d.plane.b[0], d.plane.a[2] - d.plane.b[2]}, across)) * 0.5f;
         if (std::abs(glm::dot(from_mid, across)) > half + 0.1f) continue;
+        if (!doorway_in_reach(cab, feet, d)) continue;
         return i;
     }
     return std::nullopt;
@@ -189,6 +194,32 @@ std::optional<glm::vec3> nearest_plane_point(const CabView& cab, const float x, 
     for (std::size_t i = 0; i < sd.doors.size(); ++i)
         if (has_plane(sd.doors[i]) && cab.door_open(i)) consider(sd.doors[i].plane);
     return best;
+}
+
+// Nothing of the cab between `feet` and the doorway of `door` (testers
+// 2026-11-24: the ВЛ10's open outer door let him out through the cab's wall
+// from the room behind it): with the cab's surfaces, none crossed at his
+// waist and head on the way to it (the door's own leaf is left out, as
+// walking leaves it); without them, a floor all the way (a plane or an open
+// door's plane: the rooms' floors are apart where a wall stands).
+bool doorway_in_reach(const CabView& cab, const glm::vec3& feet, const formats::CabDoor& door) {
+    glm::vec3 to = door_point(door);
+    to.y = feet.y;
+    if (const auto* surfaces = cab.collision(); surfaces && !surfaces->empty()) {
+        for (const float h : {0.95f, 1.45f}) {
+            const glm::vec3 lift{0.0f, h, 0.0f};
+            if (surfaces->crosses(feet + lift, to + lift, cab.skip())) return false;
+        }
+        return true;
+    }
+    if (!walks_on_planes(cab)) return true;
+    const float length = distance_xz(feet, to);
+    const int steps = (std::max)(1, static_cast<int>(std::ceil(length / 0.1f)));
+    for (int k = 0; k <= steps; ++k) {
+        const glm::vec3 p = feet + (to - feet) * (static_cast<float>(k) / static_cast<float>(steps));
+        if (footing(cab, p.x, p.z, feet.y + 0.6f).kind == Footing::Kind::none) return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -503,7 +534,7 @@ std::optional<std::size_t> Engineer::open_door_near(const CabView& cab, const bo
         if (!has_point(doors[i]) || !cab.door_open(i)) continue;
         if (exterior ? !is_exterior(doors[i]) : !is_passage(doors[i])) continue;
         const float d = distance_xz(feet_, door_point(doors[i]));
-        if (d <= nearest) {
+        if (d <= nearest && doorway_in_reach(cab, feet_, doors[i])) {
             nearest = d;
             best = i;
         }
@@ -1200,7 +1231,10 @@ void Engineer::end_passage(const CarOutside* car, const Outdoors& outdoors) {
     if (mode_ != Mode::on_car || !car || !car->details) return;
     if (word == "exterior") {
         get_off_car(*car, feet_); // RTS -1: on the ground
-    } else if (word == "interior") {
+    } else if (word == "interior" || word == "interiorpass") {
+        // INTERIOR (RTS -3) the cab, INTERIORPASS (-7) a passenger car's
+        // salon: either is the car's room (the coaches' doors say the
+        // second, UZ_4-CAPITALS; he stayed on the steps, testers).
         event_ = {.kind = Event::Kind::into_cab, .door = door, .at = feet_}; // RTS -3: the cab
     } else if (word == "wagon_front" || word == "wagon_back") {
         event_ = {.kind = Event::Kind::next_car, .side = word == "wagon_front" ? 1 : -1, .at = feet_};
@@ -1247,7 +1281,7 @@ void Engineer::walk_on_car(const CarOutside& car, const glm::vec3& step, const O
         }
     } else if (last_.kind == OutsideFooting::Kind::door && last_.index < d.door_details.size()) {
         const auto& door = d.door_details[last_.index];
-        if (door.to == "interior" && car.cab_holds && car.cab_holds(to)) {
+        if ((door.to == "interior" || door.to == "interiorpass") && car.cab_holds && car.cab_holds(to)) {
             // Into the cab along the door's way (RTS 0x4310B0).
             passage_.start(door.trajectory.empty() ? std::vector<formats::TrajectoryPoint>{{{to.x, to.y, to.z}, 0}} : door.trajectory,
                            feet_, false);

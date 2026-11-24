@@ -12,7 +12,8 @@
 //   1    switch 38 2          # CanSwitch + move cab switch ID 38 to state 2
 //   2    switch B_S 1         # by .sd name
 //   3    switch B_S 0
-//   0    voltage 3000         # line voltage at the pantographs (V [Hz], DC without Hz)
+//   0    voltage 3000         # line voltage at the pantographs (V [Hz], DC without Hz),
+//                             # the DLLs' and the cars'
 //   30   expect force > 10000 # fails the run when false (force, throttle,
 //                             # reverse, panto, main_switch, speed (km/h),
 //                             # pipe, mr, ur, alive)
@@ -263,6 +264,43 @@ void write_screen_images(const core::Vfs& vfs, const trainplugin::LegacyCar& car
 
 } // namespace
 
+// --brakes-survey: every TRAINSET .eng with Brakes.dll, and why "without
+// Brakes.dll" keeps it loaded (trainplugin::brakes_dll_kept_reason): by
+// family (the folder without its number), the .eng counted per reason.
+int brakes_survey(const core::Vfs& vfs) {
+    std::map<std::string, std::map<std::string, int>> families;
+    std::map<std::string, int> totals;
+    const auto top = core::VirtualPath::parse("TRAINS/TRAINSET");
+    if (!top) return 1;
+    for (const auto& folder : vfs.list(*top)) {
+        if (!folder.directory) continue;
+        const auto folder_name = std::string(folder.path.filename());
+        for (const auto& entry : vfs.list(folder.path)) {
+            const auto name = std::string(entry.path.filename());
+            if (entry.directory || name.size() < 5 || core::fold_case(name.substr(name.size() - 4)) != ".eng") continue;
+            const auto wagon = formats::load_wagon(vfs, folder_name, name.substr(0, name.size() - 4), true, simulation::StockRules::of(vfs));
+            if (!wagon.ok() || !wagon.engine) continue;
+            auto reason = trainplugin::brakes_dll_kept_reason(*wagon.engine);
+            if (reason == "no Brakes.dll") continue;
+            if (reason.empty()) reason = "openRTS's (not loaded)";
+            auto family = folder_name;
+            while (!family.empty() && (std::isdigit(static_cast<unsigned char>(family.back())) || family.back() == '-' || family.back() == '_'))
+                family.pop_back();
+            ++families[family][reason];
+            ++totals[reason];
+        }
+    }
+    for (const auto& [family, reasons] : families) {
+        std::printf("%-28s", family.c_str());
+        for (const auto& [reason, count] : reasons) std::printf("  %s: %d", reason.c_str(), count);
+        std::printf("\n");
+    }
+    std::printf("\ntotal:");
+    for (const auto& [reason, count] : totals) std::printf("  %s: %d", reason.c_str(), count);
+    std::printf("\n");
+    return 0;
+}
+
 int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std::vector<std::string>& args) {
     if (args.empty()) {
         std::fprintf(stderr, "--dll <TRAINSET folder> <eng|wag>[!] ... [--script <file>] [--seconds <s>] [--start cold|on|running] [--rails dry|wet|snow|ice|leaves] [--cars [--light-defs]] [--triggers] [--body]\n");
@@ -275,6 +313,8 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     double seconds = 30.0;
     bool per_car = false;
     bool show_triggers = false; // --triggers: every SMS trigger a DLL posts
+    bool show_anims = false;    // --anims: every change of a FreeAnimation the DLL leaves
+    std::map<std::pair<std::size_t, std::size_t>, std::string> anims_seen; // (car, cab anims first, k) -> last line
     // --body: each car's body motion (simulation/body_motion.hpp), the most
     // of each second: its acceleration, the sway, bounce and surge (cm),
     // roll, pitch and yaw (mrad).
@@ -328,6 +368,8 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             per_car = true;
         } else if (args[i] == "--triggers") {
             show_triggers = true;
+        } else if (args[i] == "--anims") {
+            show_anims = true;
         } else if (args[i] == "--body") {
             show_body = true;
         } else if (args[i] == "--screens") {
@@ -405,7 +447,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             std::fprintf(stderr, "%s/%s: %s\n", entry.folder.c_str(), name.c_str(), def->error.c_str());
             return 2;
         }
-        setups.push_back({def.get(), flipped, 0.0f});
+        setups.push_back({.definition = def.get(), .flipped = flipped, .handbrake = 0.0f});
         const auto n = static_cast<std::uint32_t>(legacy.size() + 1);
         legacy.push_back({def.get(), path, n, n}); // uid, key
         stock.push_back(std::move(def));
@@ -432,7 +474,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     std::size_t player = SIZE_MAX;
     for (std::size_t i = 0; i < legacy.size(); ++i) {
         if (consist->has_dll(i)) {
-            train.set_controller(i, consist->controller(i));
+            train.set_module(i, consist->controller(i));
             if (player == SIZE_MAX) player = i;
         }
     }
@@ -1062,9 +1104,9 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         if (cut_train) parts.push_back(cut_cars);
         const bool ok = consist->reconsist(vfs, parts, host_trains());
         for (std::size_t i = 0; i < legacy.size(); ++i)
-            if (consist->has_dll(i)) train.set_controller(i, consist->controller(i));
+            if (consist->has_dll(i)) train.set_module(i, consist->controller(i));
         for (std::size_t i = 0; cut_train && i < cut_cars.size(); ++i)
-            if (consist->has_dll(1, i)) cut_train->set_controller(i, consist->controller(1, i));
+            if (consist->has_dll(1, i)) cut_train->set_module(i, consist->controller(1, i));
         player = consist->player();
         cab = consist->cab(player);
         std::printf("%6.1f %s: %zu cars, %s, the player in car %zu\n", time, what, legacy.size(),
@@ -1123,6 +1165,22 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     const auto& sw = out->switches[id];
                     std::printf("%6.1f switch %zu: state %u, set %u, fixed %u, frame %.2f, flags 0x%X\n", time, id,
                                 sw.state, sw.set_state, sw.fixed_state, sw.current_frame, sw.flags);
+                }
+            } else if (c.verb == "sounds") {
+                // sounds: the SMSObject Var1..8 the DLL set (exterior, cab)
+                // and the triggers it posted this step.
+                // sounds [car]: that car's (default: the player's).
+                const std::size_t sound_car = c.args.empty() ? player : static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
+                if (const auto* out = consist->output(sound_car)) {
+                    std::printf("%6.1f sounds car %zu ext vars", time, sound_car);
+                    for (const auto v : out->sms_ext) std::printf(" %.3g", v);
+                    std::printf(" | cab vars");
+                    for (const auto v : out->sms_cab) std::printf(" %.3g", v);
+                    std::printf(" | ext triggers");
+                    for (const auto t : out->sound_ext) std::printf(" %u", static_cast<unsigned>(t));
+                    std::printf(" | cab triggers");
+                    for (const auto t : out->sound_cab) std::printf(" %u", static_cast<unsigned>(t));
+                    std::printf("\n");
                 }
             } else if (c.verb == "display" && !c.args.empty()) {
                 // display <id> ...: the cab displays' Value and State the DLL set
@@ -1206,6 +1264,12 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 // line_aspect <name> <aspect>: the signal cleared or put back
                 for (auto& s : line_signals)
                     if (s.name == c.args[0]) s.aspect = static_cast<std::uint32_t>(std::atoi(c.args[1].c_str()));
+            } else if (c.verb == "milepost" && !c.args.empty()) {
+                // milepost <km> [falling]: Engine::CurrentMilepost from now on
+                // (the game's, by the km posts, simulation/milepost.hpp)
+                world.milepost.known = true;
+                world.milepost.base = static_cast<float>(std::atof(c.args[0].c_str()));
+                world.milepost.decreasing = c.args.size() > 1 && c.args[1] == "falling";
             } else if (c.verb == "line_post" && c.args.size() >= 2) {
                 // line_post <metres> <km/h>: a speed post on the line
                 line = true;
@@ -1222,9 +1286,25 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 // klub openrts | brakes: switch the КЛУБ on the way, as the
                 // Train window's setting does (needs the realistic air)
                 consist->set_own_klub(c.args[0] == "openrts");
+            } else if (c.verb == "handbrake" && c.args.size() >= 2) {
+                // handbrake <car> <percent>: that car's handbrake (the car menu's)
+                const auto car = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
+                if (car < train.cars().size()) train.set_handbrake(car, static_cast<float>(std::atof(c.args[1].c_str())) / 100.0f);
+            } else if (c.verb == "handbrakes") {
+                // handbrakes: every car's handbrake and cylinder
+                std::printf("%6.1f handbrakes:", time);
+                for (std::size_t k = 0; k < train.cars().size(); ++k)
+                    std::printf(" %zu=%.0f%%/TC %.2f/IND %.2f/ZR %.2f/EP %.2f", k, 100.0f * train.cars()[k].handbrake, train.cars()[k].cylinder,
+                                train.cars()[k].independent, train.cars()[k].auxiliary, train.cars()[k].ep);
+                if (const auto* out = consist->output(player); out && out->has_engine) std::printf(" systems %u", static_cast<unsigned>(out->engine.systems));
+                std::printf("\n");
             } else if (c.verb == "voltage" && !c.args.empty()) {
                 world.line_voltage = static_cast<float>(std::atof(c.args[0].c_str()));
                 world.line_frequency = c.args.size() > 1 ? static_cast<float>(std::atof(c.args[1].c_str())) : 0.0f;
+                // The cars' line too, as the viewer's electrification gives
+                // the engines it (EngineInputs::line_voltage: the compressor
+                // stands under a line its engine does not work on).
+                for (std::size_t k = 0; k < train.cars().size(); ++k) train.set_line_supply(k, world.line_voltage, world.line_frequency);
             } else if (c.verb == "cut" && !c.args.empty() && !cut_train) {
                 // cut <index>: uncouple behind car index - 1 (the car menu's way: cocks closed)
                 const auto index = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
@@ -1338,6 +1418,22 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     print("cab", out->sound_cab);
                     for (std::size_t k = 0; k < out->aux_sound.size(); ++k)
                         print("aux " + std::to_string(k), out->aux_sound[k].triggers);
+                }
+                if (show_anims) {
+                    const auto print = [&](const char* where, const std::vector<dllhost::AnimState>& list, const std::size_t base) {
+                        for (std::size_t k = 0; k < list.size(); ++k) {
+                            const auto& a = list[k];
+                            char line[160];
+                            std::snprintf(line, sizeof line, "flags 0x%x to %u speed %.3f q %.3f max %.3f", a.flags, a.animate_to, a.speed, a.speed_q,
+                                          a.max_speed);
+                            auto& last = anims_seen[{i, base + k}];
+                            if (last == line) continue;
+                            last = line;
+                            std::printf("%6.1f car %zu %s anim %zu: %s\n", time, i, where, k, line);
+                        }
+                    };
+                    print("shape", out->anims, 0);
+                    print("cab", out->cab_anims, 1000);
                 }
                 if (show_triggers) {
                     for (const auto& m : out->messages)
@@ -1507,7 +1603,12 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                     for (std::size_t i = 0; i < legacy.size(); ++i) {
                         const auto* o = consist->output(i);
                         const auto& cs = train.cars()[i];
-                        if (!o || !o->has_engine) continue;
+                        if (!o || !o->has_engine) {
+                            // A wagon: its air and the ЭПТ it is given.
+                            std::printf("         car %zu: pipe %.2f, aux %.2f, cylinder %.2f, EP %.2f\n", i, cs.pipe, cs.auxiliary,
+                                        cs.cylinder, cs.ep);
+                            continue;
+                        }
                         std::printf("         car %zu: F %.1f kN, notch %u, rev %d, panto %u, BV %u, car force %.1f kN, flags 0x%X, "
                                     "pipe rate %.3f, systems %u, pipe %.2f, aux %.2f, cylinder %.2f, independent %.2f (wants %.2f), "
                                     "EP %.2f (asks %.2f), UR %.2f, brake %.1f kN (DLL %.1f), ALSNOn %d, cab aspect %u, MR %.2f (rate %.3f), engine flags 0x%X\n",

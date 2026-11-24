@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <vector>
 
 #include "rts_text.hpp"
@@ -265,6 +266,10 @@ LightDefinition read_light(std::string_view text, TextRange light) {
         if (start >= 0.0f && length > 0.0f) d.attenuation = {kind, start, length};
     }
     if (auto e = values(text, "spotexponent", light); e.found()) d.spot_exponent = static_cast<float>(e.atof()) * 128.0f;
+    d.candela = static_cast<float>(values(text, "ortscandela", light).atof());
+    d.lumens = static_cast<float>(values(text, "ortslumens", light).atof());
+    d.kelvin = static_cast<float>(values(text, "ortskelvin", light).atof());
+    if (auto n = values(text, "ortsname", light); n.found()) d.name = n.token();
     return d;
 }
 
@@ -857,7 +862,92 @@ std::string set_override_line(const std::string_view text, const std::string_vie
     return out;
 }
 
+// `text` without its Lights ( ... ) and RTSLights ( ... ) blocks, however
+// many lines each takes.
+std::string without_light_blocks(const std::string_view text) {
+    std::string out;
+    int depth = 0;
+    bool inside = false;
+    std::size_t from = 0;
+    while (from < text.size()) {
+        auto to = text.find('\n', from);
+        if (to == std::string_view::npos) to = text.size();
+        const auto line = text.substr(from, to - from + (to < text.size() ? 1 : 0));
+        from = to + 1;
+        std::string bare;
+        for (const char c : line)
+            if (!std::isspace(static_cast<unsigned char>(c))) bare.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        if (!inside && (bare.starts_with("lights(") || bare.starts_with("rtslights("))) {
+            inside = true;
+            depth = 0;
+        }
+        if (!inside) {
+            out += line;
+            continue;
+        }
+        bool quoted = false;
+        for (const char c : line) {
+            if (c == '"') quoted = !quoted;
+            if (quoted) continue;
+            if (c == '(') ++depth;
+            if (c == ')') --depth;
+        }
+        if (depth <= 0) inside = false;
+    }
+    return out;
+}
+
 } // namespace
+
+std::string write_lights(const std::vector<LightDefinition>& lights) {
+    char buffer[160];
+    const auto numbers = [&](const char* name, std::initializer_list<float> values) {
+        std::string out = std::string(" ") + name + " (";
+        for (const float v : values) {
+            std::snprintf(buffer, sizeof buffer, " %.6g", static_cast<double>(v));
+            out += buffer;
+        }
+        return out + " )";
+    };
+    std::string out = "\tLights ( " + std::to_string(lights.size()) + "\r\n";
+    for (std::size_t i = 0; i < lights.size(); ++i) {
+        const auto& l = lights[i];
+        if (l.states.empty()) continue;
+        std::snprintf(buffer, sizeof buffer, "\t\tLight ( LightID ( %zu ) Type ( %u )", i, static_cast<unsigned>(l.type));
+        out += buffer;
+        std::snprintf(buffer, sizeof buffer,
+                      " Conditions ( Headlight ( %u ) Control ( %u ) Service ( %u ) Unit ( %u ) TimeOfDay ( %u ) Weather ( %u ) )",
+                      static_cast<unsigned>(l.headlight), static_cast<unsigned>(l.control), static_cast<unsigned>(l.service),
+                      static_cast<unsigned>(l.unit), static_cast<unsigned>(l.time_of_day), static_cast<unsigned>(l.weather));
+        out += buffer;
+        out += numbers("FadeIn", {l.fade_in}) + numbers("FadeOut", {l.fade_out}) + numbers("Cycle", {l.cycle});
+        if (!l.texture.empty()) out += " LightTexture ( \"" + l.texture + "\" )";
+        out += " States ( " + std::to_string(l.states.size());
+        for (const auto& s : l.states) {
+            std::snprintf(buffer, sizeof buffer, " State ( LightColour ( %08x )", s.colour);
+            out += buffer;
+            out += numbers("Duration", {s.duration}) + numbers("Position", {s.position[0], s.position[1], s.position[2]})
+                 + numbers("Azimuth", {s.azimuth[0], s.azimuth[1], s.azimuth[2]})
+                 + numbers("Elevation", {s.elevation[0], s.elevation[1], s.elevation[2]}) + numbers("Transition", {s.transition})
+                 + numbers("Radius", {s.radius}) + numbers("Angle", {s.angle}) + numbers("SourceRadius", {s.source_radius}) + " )";
+        }
+        out += " )";
+        out += numbers("Attenuation", {l.attenuation[1], l.attenuation[2], l.attenuation[0]});
+        out += numbers("SpotExponent", {l.spot_exponent / 128.0f});
+        if (l.candela > 0.0f) out += numbers("ORTSCandela", {l.candela});
+        if (l.lumens > 0.0f) out += numbers("ORTSLumens", {l.lumens});
+        if (l.kelvin > 0.0f) out += numbers("ORTSKelvin", {l.kelvin});
+        if (!l.name.empty()) out += " ORTSName ( \"" + l.name + "\" )";
+        out += " )\r\n";
+    }
+    // Every light is in Lights: the file's own RTSLights would add theirs again.
+    return out + "\t)\r\n\tRTSLights ( 0 )";
+}
+
+std::string set_override_lights(const std::string_view text, const std::optional<std::vector<LightDefinition>>& lights) {
+    const auto rest = without_light_blocks(text);
+    return set_override_line(rest, "\x01", lights ? write_lights(*lights) : std::string{});
+}
 
 std::string set_override_distributor(const std::string_view text, const BrakeDistributor distributor) {
     if (distributor == BrakeDistributor::inferred) return set_override_line(text, "ortsbrakedistributor", {});

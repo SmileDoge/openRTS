@@ -162,19 +162,6 @@ The RTS rules from the notes:
 - curve resistance `7/R · m`;
 - grade `-sin(pitch) · m · 10`.
 
-Two more models are the Train window's settings:
-- `ResistanceModel::ptr` replaces the car's `Friction` with the ПТР's basic
-  resistance, `w0 = b0 + (b1 + b2 V + b3 V^2) / q` kgf per tonne, `V` in km/h
-  and `q` the tonnes on an axle (`b0 = 0.7`, `b1 = 8`, `b2 = 0.08`,
-  `b3 = 0.002`), the force `m w0 g / 1000`;
-- `TrainSettings::axle_dynamics` gives every wheelset its own turning
-  (`CarState::axle_omega`, `J = 100 kg·m²` in ten sub-steps a step): the rail
-  returns the grip the creep allows, `mu / (1 + tanh |slip|)`, and what is left
-  of the demand spins the wheelset up. The pull is the sum of the rail's
-  forces, so a demand past the adhesion becomes a growing slip and a force near
-  half the grip instead of the 25 % cut. A coasting wheelset is back at the
-  rail's speed in 0.25 s.
-
 ### Couplers
 
 The RTS solver:
@@ -295,12 +282,16 @@ RTS's menu at a coupling or a bogie (`docs/reverse/car-menu.md`), in
 
 #### Realistic pneumatics (openRTS path)
 
-**Implemented (2026-11-01)** in `simulation/src/realistic_air.cpp`. Since
-2026-11-15 it is the only brake model: RTS's triple-valve path
-(`docs/reverse/brakes.md`) is gone, the Train window has no model switch, and
-`openrts-train-check --brake ... --realistic` keeps the flag for older
-scripts only. A train with a legacy DLL can still let the DLL work its own
-pipe and valves ("Trains with DLLs" below). What is
+**Implemented (2026-11-01)** as `BrakeModel::realistic`
+(`simulation/src/realistic_air.cpp`, the Train window's "Realistic air"
+checkbox, `openrts-train-check --brake ... --realistic`, `--realistic-air` at
+the start). Off by default;
+the RTS model (`docs/reverse/brakes.md`) stays as it is and is the only path
+with Legacy on (the server fixes the choice, like the coupler sub-steps). A
+train with a legacy DLL keeps the RTS model
+(`CarModule::rts_brakes`): its valve is tuned to RTS's triple
+valve; since 2026-11-13 the Train window's "Trains with DLLs" can give it
+the realistic air too ("Realistic air with DLL locomotives" below). What is
 built, against the proposal below:
 - **Pipe** (2026-11-17): per-car volumes (0.8 l per metre, a 32 mm bore),
   between two cars' centres a line with the air's inertia and the pipe's
@@ -669,10 +660,22 @@ built, against the proposal below:
 - **Choosing a car's distributor** (2026-11-16). RTS and MSTS content says
   nothing of it: a multiple unit's cars are `Type ( Engine )` like a
   locomotive's, the trailer cars often `.eng` too, and freight locomotives
-  (2ТЭ10, ВЛ10к, 2ЭС4к) carry the EP flag. A player chooses it in the car
-  menu at a bogie, with the realistic air: "Distributor: 292, by the car's
-  type (switch to EVR 305-000, kept in a mod)", stepping 483 → 292 →
-  305-000 → 305-001 → 483. The choice is the car's type's (its `.wag` /
+  (2ТЭ10, ВЛ10к, 2ЭС4к) carry the EP flag. openRTS's stock rules give
+  freight locomotives (ВЛ10, ВЛ80, ВЛ85, 2ЭС4к, 2ТЭ10, М62, ТЭМ2, ЧМЭ3, ...
+  by the folder's or file's name; not the 2ТЭ10УТ, the ВЛ60ПК) the 483
+  (testers 2026-11-20: "so it should have been from the start";
+  `packs/stock/freight_locomotives.luau`, `docs/scripting.md`); their EP
+  flag stays: the locomotive feeds the train's ЭПТ line and its 395
+  works it, its own cylinder answers the pipe through the 483 (an ЭВР 305
+  sits on a 292). A player chooses it in the car menu at a bogie, with the
+  realistic air, three lines since 2026-11-20 (the player's wish):
+  "Distributor: 483, freight, by the car's type (switch to 292, passenger,
+  kept in a mod)"; with a 292 "EP brake: none / EVR 305-000 / EVR 305-001
+  (multiple units)" stepping round; on a locomotive "418 sensor (openRTS
+  brakes): fitted, as the 483 gives (take it off, kept in a mod)" (with a
+  292 none; `ORTSBrakeSensor418 ( 0 | 1 )` in the companion; the 418 in
+  docs/brakes-dll-replacement.md). Back from 483 the car gets its type's
+  292 or 305 again. The choice is the car's type's (its `.wag` /
   `.eng`; "by the car's type" is the file's or the stock rules', the ЭД4М's
   305-001): every car of that type changes at once, and it is written to the
   edits mod (`MODS_OPENRTS/openrts_edits`, the inspector's; openrts.ini's
@@ -695,6 +698,13 @@ built, against the proposal below:
   (20 l/(s·atm), 50 l·atm/s feed, 20 vent), fed from the main reservoir;
   VI vents at 50 l/(s·atm). The keyboard controller drops RTS's forced
   overcharge in II and its stabiliser removes an overcharge at 0.12 atm/min.
+  In I the main reservoir also feeds the pipe straight through the wide
+  channel, past the relay (80 l/(s·atm), at most 80 l·atm/s, till the two
+  stand equal), and the relay lets nothing out: the pipe at the engine runs
+  ahead of the УР, the faster the shorter the train (testers 2026-11-19: on
+  the ЭП1 and the ЭД4М it rose with the УР; v0.28.1's 600 / 500 made it
+  leap to the main reservoir even with 60 cars). Every valve: the keyboard's,
+  openRTS's valve for a DLL and openRTS's cab brakes.
 - **Main reservoir:** the real volume (`AirBrakesMainResVolume` in litres
   when above 100, else cubic feet: the install has 1 .. 84 ft³ and 175 ..
   2020 l; at a border of 50 the ВЛ80Т's 66 ft³ read as 66 l and its
@@ -745,10 +755,28 @@ the pipe in III as in IV, so no leak showed there.
 
 #### Realistic air with DLL locomotives
 
+openRTS (2026-11-22, `viewer::apply_settings_defaults`): once per player, on
+the first run of this version, the brakes are set to the "realistic
+(openRTS)" preset with openRTS's brakes and КЛУБ and without Brakes.dll
+where all of it is openRTS's, over what was remembered (the
+`defaults_openrts_brakes` mark); later choices are kept.
+
+The brakes' settings are one section in the start menu's Settings page and
+the game's Train window (`viewer/src/brake_settings_ui.hpp`, 2026-11-22):
+the preset on top ("openRTS", "as in RTS", "my own") with a line of what it
+gives, and in the game a line of what the driven train has now (whose
+brakes and КЛУБ, whether Brakes.dll is loaded and why it stays,
+`trainplugin::brakes_dll_kept_reason`). Under "Details" the settings one
+by one, each shown only where it works (those of openRTS's air hidden
+without it); "Brakes.dll not loaded" says it takes effect from the next
+train, the rest at once. Any change by hand makes the preset "my own",
+remembered as `brakes_custom` (twelve figures).
+
 **openRTS's cab brakes over Brakes.dll** (2026-11-18, experimental; the
 Train window's "Brakes: Brakes.dll / openRTS" and "Brake numbers: as
 Brakes.dll / openRTS (from the books)", remembered as `own_brakes` and
-`brake_numbers`, Brakes.dll and "as Brakes.dll" by default; with the
+`brake_numbers`, openRTS and "as Brakes.dll" by default (before
+2026-11-22 Brakes.dll); with the
 realistic air and "Trains with DLLs" not as RTS;
 `trainplugin::DllAirSetting::own_brakes`,
 docs/brakes-dll-replacement.md). openRTS's devices
@@ -760,7 +788,14 @@ of MaDaDev's Brakes.dll:
 - the cab's Brakes.dll gauges and lamps (`BR_MAN*`, `BR_LAMP*`,
   `BR_VOLT`, `BR_AMP`) show theirs;
 - Brakes.dll's other cars of a multiple unit (`BR_MODE` 1) brake by the
-  ЭПТ's line, not by their own independent brake.
+  ЭПТ's line, not by their own independent brake;
+- a locomotive's other sections (next to the driven car, the cars its DLL
+  took: `LocoFlags` 0x10 without 1) take the driven cab's 254, its
+  independent brake and its I (the engine's own train brake let off),
+  through the sections' lines (2026-11-21, the testers: on the ВЛ10У the
+  254 braked and released the first section only, the second braked by
+  its distributor alone). Checked on the stand, ВЛ10-127: both sections'
+  independent brake alike through VI, II and the buffer.
 
 Brakes.dll goes on running for the КЛУБ, the ЭПК, its springs and sounds:
 its ЭПК's trip (`var + 8` `0x01000000`, protocol 16's `AuxExchange::flags`)
@@ -774,8 +809,8 @@ does not know (a 334, a custom 292, the ЭП2Д's ППТ, `BR_KID`, the ВЛ82м
 them in the harness.
 
 **openRTS's КЛУБ-У over Brakes.dll** (2026-11-19, experimental; the Train
-window's "КЛУБ: Brakes.dll / openRTS", remembered as `own_klub`, Brakes.dll
-by default; with the realistic air and "Trains with DLLs" not as RTS;
+window's "КЛУБ: Brakes.dll / openRTS", remembered as `own_klub`, openRTS
+by default (before 2026-11-22 Brakes.dll); with the realistic air and "Trains with DLLs" not as RTS;
 `LegacyConsist::set_own_klub`, docs/brakes-dll-replacement.md step 3).
 openRTS's КЛУБ (`simulation/klub.hpp`, `klub_screen.hpp`) does what
 Brakes.dll's does, step for step (docs/reverse/brakes-dll.md §11):
@@ -806,14 +841,20 @@ against Brakes.dll's step by step.
 **The cab's air gauges** (2026-11-17; "Cab gauges show openRTS's air", on
 by default, remembered as `gauges_openrts_air`; the Train window and the
 launcher's Brakes): with the realistic air the needles MaDaDev's cabs name
-`DTM` (the brake pipe), `DTC1` / `DTC2` (the brake cylinders) and `DGR`
-(the main reservoir; 36 cabs of the 2026-11 install) take the car's
-pressures from the model, as F5 shows them, instead of the DLL's display
+`DTM` (the brake pipe), `DTC1` / `DTC2` (the brake cylinders: the higher of
+the train brake's and the independent brake's, as Brakes.dll shows them;
+until 2026-11-19 the train brake's alone, the needle at 0 with only the
+254 applied), `DGR` (the main reservoir; 36 cabs of the 2026-11
+install) and, since 2026-11-20, `DURA` (the equalising reservoir: the УР
+the driver's valve holds, openRTS's over Brakes.dll or the DLL's taken, as
+F5 and the tape have it; 66 of the 72 cabs with a `DTM`; the testers: it
+stayed the DLL's and went apart from the pipe) take the car's pressures
+from the model, as F5 shows them, instead of the DLL's display
 values: its needles lagged (a cylinder long released still falling) and
 ran ahead (the pipe leaping at position I) of the model's air (testers).
-The DLL's logic is not touched, only what those needles show; the `DURA`
-(УР) and every other gauge stay the DLL's. Off, or with RTS's air: the
-DLL's needles, as in RTS.
+The DLL's logic is not touched, only what those needles show; every other
+gauge stays the DLL's. Off, or with RTS's air: the DLL's needles, as in
+RTS.
 
 (2026-11-13; the Train window's "Trains with DLLs", remembered as
 `dll_air`; works with the realistic air on, never with Legacy;
@@ -915,7 +956,11 @@ The other two choices take the air after the valve from the model:
   governor; after a cold start not before the train has power): the DLLs keep
   RTS's main reservoir (its huge volume never drains; the ЭД9М's DLLs never
   run a compressor and take their own air from it), and their
-  MainResRate is not taken. An engine releasing its own brake (EngineFlags
+  MainResRate is not taken. A DLL with a governor of its own tells it by
+  the sound codes 12 / 13 (MSTS's compressor on / off): from its 12 the
+  compressor runs on to its 13 past the .eng's cut-out, at most 1 atm over
+  it and 10 atm (2026-11-22: the ВЛ10's DLL posts 12 at 7.5 and 13 at 9.0
+  atm; by the .eng's 8.7 its КТ-6 sounded for good). An engine releasing its own brake (EngineFlags
   1, the 254 in I) vents its cylinder as in the RTS model, and, as RTS
   (`0x5031D8`), the bit is cleared once the cylinder is empty (bit 2 with
   the independent brake's): the ВЛ80Т's master sets its second section's
@@ -1156,7 +1201,7 @@ The controller (keyboard now, DLL later) only sets the `Engine` demands:
 ### Locomotive controller interface
 
 - **Interface:** a locomotive gets its forces and brake demands from a
-  `LocomotiveController`. Inputs and outputs are as in `docs/train-dll.md`:
+  `CarModule`. Inputs and outputs are as in `docs/train-dll.md`:
   - inputs: speed, pressures, line voltage, flags;
   - outputs: traction force, dynamic brake, brake pipe rate, main reservoir
     rate, independent brake, sanding.

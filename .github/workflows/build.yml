@@ -21,6 +21,8 @@ jobs:
     runs-on: windows-latest
     env:
       WGPU_VERSION: v27.0.4.0
+      DXC_VERSION: v1.9.2609
+      DXC_ZIP: dxc_2026_09_29.zip
       # The compiler's cache in GitHub's cache (sccache): a build compiles
       # only what changed since a cached one.
       SCCACHE_GHA_ENABLED: "true"
@@ -41,6 +43,24 @@ jobs:
           $url = "https://github.com/gfx-rs/wgpu-native/releases/download/$env:WGPU_VERSION/wgpu-windows-x86_64-msvc-release.zip"
           Invoke-WebRequest $url -OutFile wgpu.zip
           Expand-Archive wgpu.zip -DestinationPath wgpu-native
+
+      # Microsoft's DirectX Shader Compiler (its distributable dxcompiler.dll
+      # and dxil.dll): Direct3D 12's shaders in seconds instead of FXC's
+      # minutes on slower machines (docs/shaders.md).
+      - name: Cache DXC
+        id: dxc-cache
+        uses: actions/cache@v4
+        with:
+          path: dxc
+          key: dxc-${{ env.DXC_VERSION }}-${{ env.DXC_ZIP }}
+
+      - name: Download DXC
+        if: steps.dxc-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/microsoft/DirectXShaderCompiler/releases/download/$env:DXC_VERSION/$env:DXC_ZIP"
+          Invoke-WebRequest $url -OutFile dxc.zip
+          Expand-Archive dxc.zip -DestinationPath dxc
 
       # Ninja (Multi-Config: the programs stay in their Release folders) in
       # the MSVC environment: the Visual Studio generator cannot call a
@@ -64,7 +84,7 @@ jobs:
           if ($env:GITHUB_REF -like 'refs/tags/v*') { $label = '' }
           elseif ($env:GITHUB_REF -eq 'refs/heads/master' -and $env:GITHUB_EVENT_NAME -eq 'push') { $label = "nightly $commit" }
           else { $label = "ci $commit" }
-          cmake -S . -B build -G "Ninja Multi-Config" -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DOPENRTS_ENABLE_WGPU=ON "-DOPENRTS_WGPU_ROOT=$env:GITHUB_WORKSPACE/wgpu-native" "-DOPENRTS_BUILD_LABEL=$label"
+          cmake -S . -B build -G "Ninja Multi-Config" -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DOPENRTS_ENABLE_WGPU=ON "-DOPENRTS_WGPU_ROOT=$env:GITHUB_WORKSPACE/wgpu-native" "-DOPENRTS_DXC_ROOT=$env:GITHUB_WORKSPACE/dxc" "-DOPENRTS_BUILD_LABEL=$label"
 
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -81,7 +101,7 @@ jobs:
         run: |
           $out = "openRTS-windows-x64"
           New-Item -ItemType Directory -Force "$out/tools" | Out-Null
-          Copy-Item build/game/Release/openrts_game.exe, build/game/Release/openrts-updater.exe, build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll, build/viewer/Release/openrts-dllhost32.exe, build/server/Release/openrts-server.exe $out
+          Copy-Item build/game/Release/openrts_game.exe, build/game/Release/openrts-updater.exe, build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll, build/viewer/Release/dxcompiler.dll, build/viewer/Release/dxil.dll, build/viewer/Release/openrts-dllhost32.exe, build/server/Release/openrts-server.exe $out
           Get-ChildItem build/tools -Recurse -Filter *.exe | Where-Object { $_.DirectoryName -like '*\Release' } |
               ForEach-Object { Copy-Item $_.FullName "$out/tools" }
           # Luau samples (the ВР 292) and how to script, for the brake stand.
@@ -93,10 +113,14 @@ jobs:
           Copy-Item sdk/materials/* "$out/sdk/materials" -Recurse
           Copy-Item docs/ru/pbr-materials.md "$out/sdk/materials"
           Copy-Item docs/pbr-materials.md "$out/sdk/materials/pbr-materials_en.md"
-          Copy-Item README.md, README_EN.md, INSTALL.md, INSTALL_EN.md, LICENSE $out
+          Copy-Item README.md, README_EN.md, INSTALL.md, INSTALL_EN.md, LICENSE, LICENSE-EXCEPTIONS.md $out
+          # DXC's terms beside its two DLLs.
+          New-Item -ItemType Directory -Force "$out/licenses/dxc" | Out-Null
+          Copy-Item dxc/LICENSE-MS.txt, dxc/LICENSE-LLVM.txt, dxc/LICENCE-MIT.txt "$out/licenses/dxc"
           # openRTS's own packs (the thunder) and their authors.
           Copy-Item build/game/Release/PACKS "$out/PACKS" -Recurse
           Copy-Item packs/thunder/CREDITS.txt "$out/PACKS/openrts-thunder-CREDITS.txt"
+          Copy-Item packs/snow/CREDITS.txt "$out/PACKS/openrts-snow-CREDITS.txt"
           # What people miss first: the VC++ runtime and the RTS installation.
           @(
             'openRTS - перед запуском / before you start',

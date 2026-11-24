@@ -193,7 +193,11 @@ strength (0..1). The scene makes of it:
   their sound, the rails by the weather. That switch is a step, as RTS's
   is when a scenario changes the weather; the rest comes gradually;
 - the clouds' cover of openRTS's sky (the player's own cover, «Облачность
-  по погоде» off, still wins);
+  по погоде» off, still wins), closed ahead of what falls (`sky_cover`): a
+  change blends the clouds and the rain at one pace, so by the cover alone
+  the rain would begin under some 40 % of clouds; the sky is most of the
+  way grey (75 %) when it begins and all of it (rain 90 %, snow 85 %, a
+  thunderstorm 97 %) at 12 % of the precipitation;
 - the drops: 0.3 + 1.4 x the precipitation times RTS's density (a light
   rain 0.4, a downpour 1.7, a thunderstorm's as before), its sound 0.3 ..
   1.1 as loud;
@@ -247,3 +251,120 @@ change by hand comes, holds and goes back). In the game
 logged every game hour; Kuban, 30 game hours): clouds 12..97 %, rains of
 1700..3300 drops, a thunderstorm of 0.91, the environment switched between
 clear and rain again and again.
+
+## Raindrops on the cab's glass (openRTS, 2026-11-22)
+
+While it rains (not the snow) and the engineer is in a cab or salon, its
+glass gathers drops (the panel's World tab: "Raindrops on the cab's glass",
+on by default).
+
+- **Which glass.** The blended surfaces of the room he is in
+  (`ModelLighting::room`, the cab shape's box) near its walls and facing
+  out: the windscreen and the side windows; the gauges' glass inside, and
+  roof lights, stay dry (`rain_on_glass` in the models' shaders).
+- **Which glass, more.** Only large primitives (their box's middle extent
+  at least 25 cm): a gauge's glass and its needle stay dry even close to
+  the windscreen. Nor labels laid over a desk (a translucent primitive of
+  lettering on an opaque surface, the VL82m's desk: testers): at the
+  model's load (`mark_labels`) from up to 32 points of each large
+  translucent primitive a segment 3 cm each way along its normal; most of
+  them meeting the model's opaque triangles, it lies on a surface and
+  takes no drops. A window has nothing behind it but its frame at its
+  edges.
+- **The drops.** In four layers of cells (0.9–3.7 cm, turned against each
+  other: no grid), the small ones the most, as many as the time since it
+  was wiped and the rain's amount give: in a rain standing most of the
+  glass is taken in half a minute, in a downpour in some fifteen seconds;
+  more on the windscreen at speed, fewer on the side windows. Each a lens:
+  as bright as what lies behind, its lower part lighter (the sky seen
+  upside down, the fog's colour), its upper darker (the ground), a dark rim
+  with a thin light line at its bottom, and the sky's highlight on its
+  dome; there is no copy of the frame to refract, so that is the look of
+  it, not the view bent. Over a thin uneven film of water that hazes the
+  view. On the move they run up the windscreen
+  and back along the side windows, drawn out the faster; standing they
+  slide down. How far they have run is integrated each frame, so a change
+  of speed carries them on from where they are.
+- **Snow.** While it snows the glass gathers flakes instead: they stick
+  where they hit and stay, fine flakes and clumps with ragged edges; on the
+  move the windscreen takes them faster, the side windows slower. The
+  wipers clear them the same way. Three layers (cells of 9, 16 and 38 mm,
+  turned against each other), each flake anywhere in the middle 0.6 of its
+  cell, the density patchy by a smooth noise of some 11 and 4 cm (0.35 ..
+  1.45 of it): no rows to be seen (until 2026-11-23 two layers on one
+  lattice, flakes in neat rows, testers). On the move it is pushed up the
+  windscreen and back along the side windows, the clumps the most, drawn
+  out into streaks (1 + up to 1.5 by the speed); standing it stays where
+  it stuck. Its run is TrainView's, only while the train moves, a third of
+  the water's pace (`snow_cover.yzw` of the frame). At night it stays a
+  light grey (at least 0.22 of the sky's light), not black.
+- **The wipers.** The cab's running FreeAnimations (the wipers the DLL
+  starts, `CabView::wiper_points`, the animated nodes and all below them):
+  their triangles where they are each frame, and the strips their edges
+  swept since the last, are marked wiped in a 128 x 64 grid over the room's
+  wall they are on (`TrainView::rain_glass`); there the drops start again
+  from none, gathering slower the more there are. A blade at rest wipes
+  nothing, and what it wiped stays wiped while it rests (a DLL's wipers
+  running with pauses).
+- **Cut, not taken whole.** A point's wipe is the newest of its four
+  nearest cells that holds at least half their weight there
+  (`rain_wipe_at`): between a wiped cell and one not, a smooth line half
+  way. A cell of drops is drawn anew by the wipe at its middle, and each
+  pixel of a drop is gone where the glass was wiped after that: a blade
+  that touches a drop with its edge takes that part only, the rest stays
+  cut along the blade's way (until the blade passes its middle). Behind a
+  blade a thin streak of water, gone in a second.
+
+## openRTS's rain and snow (2026-11-22)
+
+RTS draws a few thousand flat sprites of its environment's texture. openRTS
+(the World tab: "Rain and snow: openRTS's", on by default; off: RTS's
+sprites) draws its own (`renderer::WeatherParticleRenderer`):
+
+- **Made on the GPU.** 60 000 rain drops or 40 000 flakes at RTS's density
+  (twice in a thunderstorm), each made in the vertex shader from its index
+  and the clock in a box around the eye that wraps as it moves: the CPU
+  keeps none, the field never ends.
+- **Rain.** Thin streaks along each drop's speed against the camera's (a
+  1/40 s exposure, at most 3 m): straight down standing, slanting into
+  the train and longer as it runs. A streak far off thinner than a pixel
+  stays one pixel, its light shrinking with it.
+- **Snow.** Soft round flakes falling 0.7–1.4 m/s, each tumbling on its
+  own, carried by the environment's lowest wind layer; on the move drawn
+  out into streaks along their speed against the camera (a 1/60 s
+  exposure, at most 0.8 m): at speed they fly at the eye.
+- **The lamps' beams.** The nearest four cones (headlights, searchlights,
+  a mast's floodlight; `extra_light_cone`, reach at least 5 m) whose beam
+  reaches the box light the drops and flakes inside them in their colour,
+  brightest near the lamp, softly to the cone's edge and its reach
+  (`PrecipitationView::set_lamps`): a snowfall white in the headlights at
+  night. Since 2026-11-24 (testers: the flakes under a platform's lamp
+  stayed dark) the lamps shining every way (spheres: platforms' lamps, a
+  pantograph's arc) light them too, within their radius (at most 40 m),
+  brighter towards the lamp; eight lamps and beams at most, the nearest.
+- Both lit by the scene's light, fading in near the eye and out at the
+  box's edge, hidden by the cab's walls and a tunnel's roof (depth-tested);
+  none fall inside the cab the eye is in. They stay in the world when the
+  scene's origin moves.
+- **Strength.** "Rain and snow strength": as the weather, drizzle, rain, a
+  downpour, the player's own (0.1–3) or a blizzard (3: snow's flakes
+  40 000 × the strength, past 2 thickening by 1 + 1.5 × the excess, so
+  300 000; some 0.1 ms of the GPU on an RTX 4070 Ti SUPER); it sets the particles, the drops on
+  the glass and the fog. With the dynamic weather it is how hard its rain
+  falls, not that it falls: the rain still comes and goes by the weather,
+  grown to the strength from its first drops (a quarter of the
+  precipitation).
+- **Fog.** "Fog in rain and snow" (on by default): while it falls the fog
+  ends nearer, 3500 m (snow 2200 m) over 1 + 1.5 × the strength + 25 ×
+  its excess over 2 squared: a blizzard's some 70 m, the land beyond white
+  by day; at night its fog no darker than a dim grey (0.09).
+- **The air in the lamps' beams** (2026-11-24; the experimental path with
+  the HDR frame). While it snows or rains, the same four cones that light
+  the flakes light the air between them: the light shafts' pass
+  (`LightShaftFrame::beams`) marches each pixel's view ray from the eye to
+  what the frame shows (24 steps, closer near the eye), the air as thick as
+  the fog the precipitation makes (snow 3 / its fog's distance per metre,
+  rain 1 /), dimmed by the air between. At night a blizzard shows as a
+  bright haze in the headlights, the land past it gone; before, only the
+  flakes shone and the air between them stayed black. The pass runs for it
+  with the sun's shafts off too (the sun's part then left out).

@@ -16,6 +16,7 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/body_motion.hpp>
+#include <openrts/simulation/car_registry.hpp>
 #include <openrts/simulation/cab_brakes.hpp>
 #include <openrts/simulation/derailment.hpp>
 #include <openrts/simulation/distributor.hpp>
@@ -82,6 +83,9 @@ struct TrainSettings {
 
 struct CarSetup {
     const formats::WagonDefinition* definition = nullptr;
+    // The car's identity in its world (car_registry.hpp); none: a car only
+    // simulated (a test run), not one of the world's.
+    CarId id{};
     bool flipped = false;
     float handbrake{}; // 0..1 (consist HandbrakePercent / 100)
     // The front and rear bogie's brake shoes (the consist's ORTSBrakeShoes);
@@ -163,15 +167,26 @@ struct EngineInputs {
     float line_frequency{};
 };
 
-// Source of a locomotive's demands: the built-in keyboard controller now;
-// legacy DLLs and openRTS plugins later (docs/train-dll.md).
-class LocomotiveController {
+// One of a car's systems (cars as entities, step 4, docs/car-architecture.md):
+// what drives an engine. The keyboard driver, a legacy DLL (its adapter), an
+// openRTS plugin; later the replaceable train systems. A step it reads its
+// car's signals (EngineInputs) and sets the car's demands (EngineDemands);
+// the train's physics, air and couplers do the rest.
+class CarModule {
 public:
-    virtual ~LocomotiveController() = default;
+    virtual ~CarModule() = default;
+    // Its kind ("keyboard", "dll", "plugin"): a saved block is its name's.
+    [[nodiscard]] virtual std::string_view name() const = 0;
+    // Its saved block's layout; a block of another version is not read.
+    [[nodiscard]] virtual int version() const { return 1; }
+    // Whether it reads a block `saved` wrote (the same version by default;
+    // a newer module may read its older blocks).
+    [[nodiscard]] virtual bool reads(const int saved) const { return saved == version(); }
     virtual void step(double dt, const EngineInputs& inputs, EngineDemands& demands) = 0;
     // A saved game (Train::save_state): what the controller keeps between
     // steps (its handles, its valve, its compressor's governor), under keys
-    // starting with `prefix`. Nothing by default.
+    // starting with `prefix`. Nothing by default. A DLL's own state is the
+    // DLL host's (LegacyConsist::save_state), not this.
     virtual void save(StateWriter& /*out*/, std::string_view /*prefix*/) const {}
     virtual void restore(const StateReader& /*in*/, std::string_view /*prefix*/) {}
 };
@@ -214,6 +229,8 @@ struct DriverHandles {
 // on below 7.5 atm, off above 9; with the realistic air a КТ-6's 0.088
 // m³·atm/s into the real reservoir volume. The rate for MainResRate, atm/s.
 [[nodiscard]] float compressor_rate(bool& running, const EngineInputs& inputs);
+// The same compressor's delivery while it runs, whoever governs it, atm/s.
+[[nodiscard]] float compressor_delivery(const EngineInputs& inputs);
 // The compressor governor of an engine, atm: {cut-in, cut-out}. The .eng's
 // AirBrakesCompressorRestartPressure and AirBrakesMainMaxAirPressure (a
 // ЭД4М's real one is 6.5-8.0, a locomotive's 7.5-9.0), else 7.5 / 9.0.
@@ -223,11 +240,12 @@ struct CompressorRange {
 };
 [[nodiscard]] CompressorRange compressor_range(const formats::EngineDefinition* engine) noexcept;
 
-class KeyboardController final : public LocomotiveController {
+class KeyboardController final : public CarModule {
 public:
     using BrakeHandle = DriverHandles::BrakeHandle;
 
     KeyboardController(std::shared_ptr<DriverHandles> handles, bool master);
+    [[nodiscard]] std::string_view name() const override { return "keyboard"; }
     void step(double dt, const EngineInputs& inputs, EngineDemands& demands) override;
     void save(StateWriter& out, std::string_view prefix) const override;
     void restore(const StateReader& in, std::string_view prefix) override;
@@ -338,6 +356,9 @@ struct CarState {
     const formats::WagonDefinition* definition = nullptr;
     float cargo_mass{};   // kg (RTS industries), on top of the definition's
     std::string cargo_id; // the catalog ID; empty: the car carries nothing
+    // Its identity (CarSetup::id): moves with the car through couplings,
+    // cuts and turns, as the car's state does.
+    CarId id{};
     bool flipped = false;
     // The brake shoes of its front and rear bogie (its own ends): their
     // friction under the realistic air (brake_shoes.hpp).
@@ -593,11 +614,12 @@ public:
     void stop_slide(std::size_t index);
     [[nodiscard]] bool placed() const noexcept { return network_ != nullptr; }
 
-    // Controllers drive engines; cars without one get no demands.
-    void set_controller(std::size_t car, std::unique_ptr<LocomotiveController> controller);
+    // Modules drive engines; cars without one get no demands. They move
+    // with their cars (a cut, a coupling, a train turned).
+    void set_module(std::size_t car, std::unique_ptr<CarModule> module);
     // Bogie distances from the car centre, along the train (front, rear).
     void set_bogies(std::size_t car, float ahead, float behind);
-    [[nodiscard]] LocomotiveController* controller(std::size_t car);
+    [[nodiscard]] CarModule* module(std::size_t car);
 
     // One step of train_step seconds; nothing while asleep.
     void step();
@@ -632,6 +654,11 @@ public:
     // RTS cargo: car `car` carries `mass_kg` of `id` (its catalog entry);
     // the physics adds it to the car's own mass. Zero clears the load.
     void set_cargo(std::size_t car, float mass_kg, std::string id);
+    // The train's cars by identity, front to rear: the ordered list the
+    // train refers to its cars by (CarState::id, as cars()).
+    [[nodiscard]] std::vector<CarId> car_ids() const;
+    // Where the car of `id` is in this train; none: not in it.
+    [[nodiscard]] std::optional<std::size_t> index_of(CarId id) const noexcept;
     // The force each joint passes after the last step (tension +; joint j is
     // behind car j). On the move it is what the cars behind it need (Newton:
     // each one's m·a less its own forces, its brake and resistance against

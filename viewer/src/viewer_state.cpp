@@ -9,6 +9,7 @@
 #include <iostream>
 #include <map>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -105,6 +106,67 @@ std::optional<std::string> remembered(const std::string_view key) {
 void remember(const std::string_view key, const std::string_view value) {
     auto values = read_state();
     values[std::string(key)] = std::string(value);
+    std::ofstream output(state_file(), std::ios::binary | std::ios::trunc);
+    for (const auto& [name, text] : values) output << name << '=' << text << '\n';
+}
+
+namespace {
+int capture_panel_tab = -1;
+} // namespace
+
+void set_capture_panel(const int tab) noexcept { capture_panel_tab = tab; }
+
+namespace {
+std::optional<bool> developer_mode_value;
+} // namespace
+
+bool developer_mode() {
+    if (!developer_mode_value) developer_mode_value = remembered("developer_mode").value_or("0") == "1";
+    return *developer_mode_value;
+}
+
+void set_developer_mode(const bool on, const bool keep) {
+    developer_mode_value = on;
+    if (keep) remember("developer_mode", on ? "1" : "0");
+}
+int capture_panel() noexcept { return capture_panel_tab; }
+
+namespace {
+std::optional<SoundExtras> sound_extras_value;
+constexpr std::pair<const char*, bool SoundExtras::*> sound_extra_keys[] = {
+    {"sound_rain_inside", &SoundExtras::rain_inside}, {"sound_doppler", &SoundExtras::doppler},
+    {"sound_echo", &SoundExtras::echo},               {"sound_brake_squeal", &SoundExtras::brake_squeal},
+};
+} // namespace
+
+const SoundExtras& sound_extras() {
+    if (!sound_extras_value) {
+        SoundExtras extras;
+        for (const auto& [key, member] : sound_extra_keys) extras.*member = remembered(key).value_or("1") != "0";
+        sound_extras_value = extras;
+    }
+    return *sound_extras_value;
+}
+
+void set_sound_extras(const SoundExtras& extras) {
+    const SoundExtras before = sound_extras();
+    sound_extras_value = extras;
+    for (const auto& [key, member] : sound_extra_keys)
+        if (before.*member != extras.*member) remember(key, extras.*member ? "1" : "0");
+}
+
+void apply_settings_defaults() {
+    constexpr std::string_view mark = "defaults_openrts_brakes";
+    auto values = read_state();
+    if (values[std::string(mark)] == "1") return;
+    // The Train window's "realistic (openRTS)" preset and openRTS's devices.
+    const std::pair<const char*, const char*> settings[] = {
+        {"realistic_air", "1"}, {"dll_air", "2"},     {"gauges_openrts_air", "1"}, {"rails", "1"},
+        {"limit_brake_force", "1"}, {"distributor_stability", "1"}, {"brake_condition", "6"}, {"brake_pressing", "100"},
+        {"own_brakes", "1"},    {"own_klub", "1"},    {"no_brakes_dll", "1"},
+    };
+    for (const auto& [key, value] : settings) values[key] = value;
+    values[std::string(mark)] = "1";
     std::ofstream output(state_file(), std::ios::binary | std::ios::trunc);
     for (const auto& [name, text] : values) output << name << '=' << text << '\n';
 }

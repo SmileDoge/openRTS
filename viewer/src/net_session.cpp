@@ -64,12 +64,40 @@ namespace {
 
 constexpr std::uint16_t P(const net::Package package) noexcept { return net::id(package); }
 
+// The keys a record's cars were given (none: never placed here).
+std::vector<std::uint32_t> record_keys(const net::SnapshotTrain& train) {
+    std::vector<std::uint32_t> keys;
+    for (const auto& car : train.cars)
+        if (car.key != 0) keys.push_back(car.key);
+    return keys;
+}
+
+} // namespace
+
+std::set<std::uint32_t> NetSession::record_keys_but(const net::SnapshotTrain& record) const {
+    std::set<std::uint32_t> keys;
+    const auto add = [&](const net::SnapshotTrain& other) {
+        if (&other == &record) return;
+        for (const auto& car : other.cars)
+            if (car.key != 0) keys.insert(car.key);
+    };
+    for (const auto& [_, own] : owned_) add(own.record);
+    for (const auto& [_, remote] : remotes_) add(remote.record);
+    return keys;
+}
+
+namespace {
+
 // The record's cars get their keys here once (TrainView::PlacedTrain::keys):
-// a car keeps its key, and its DLL, through couplings and cuts.
-TrainView::PlacedTrain placed_train(net::SnapshotTrain& train, const simulation::TrackLocation& front) {
+// a car keeps its key, and its DLL, through couplings and cuts. The key is
+// the car of its server uid in the view's world (car_for_server_uid): a
+// client that connects again finds the cars it already has.
+TrainView::PlacedTrain placed_train(net::SnapshotTrain& train, const simulation::TrackLocation& front, TrainView& trains,
+                                    std::set<std::uint32_t> taken) {
     TrainView::PlacedTrain p;
     for (auto& car : train.cars) {
-        if (car.key == 0) car.key = TrainView::new_car_key();
+        if (car.key == 0) car.key = trains.car_for_server_uid(car.uid, taken);
+        taken.insert(car.key);
         p.keys.push_back(car.key);
     }
     p.name = net::train_name(train);
@@ -307,7 +335,7 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
             // Its DLLs start as the server keeps the train: "Холодный" cold,
             // "Включен" on, "Движется" running.
             trains.set_start_state(train.state == 0 ? 0 : train.state == 1 ? 1 : -1);
-            if (const auto error = trains.place_driven(placed_train(o.record, *front)); !error.empty()) {
+            if (const auto error = trains.place_driven(placed_train(o.record, *front, trains, record_keys_but(o.record))); !error.empty()) {
                 std::cout << "net: our train " << train.id << ": " << error << std::endl;
                 continue;
             }
@@ -461,7 +489,7 @@ void NetSession::position(Remote& remote, const net::TrainPos& pos, simulation::
     remote.record.pos = pos;
     if (remote.train == 0) {
         std::string error;
-        remote.train = trains.add_remote(placed_train(remote.record, *front), &error);
+        remote.train = trains.add_remote(placed_train(remote.record, *front, trains, record_keys_but(remote.record)), &error);
         if (remote.train == 0) {
             std::cout << "net: train " << remote.record.id << " (" << net::train_name(remote.record)
                       << ") does not fit: " << error << std::endl;
@@ -571,7 +599,11 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
                 take_off(remove->train, mine->second, trains);
                 std::cout << "net: our train " << remove->train
                           << (remove->remove ? " deleted" : " taken off the track: kept to be put back") << std::endl;
-                if (remove->remove) owned_.erase(mine);
+                if (remove->remove) {
+                    // Deleted on the server: its cars are gone for good.
+                    trains.release_cars(record_keys(mine->second.record));
+                    owned_.erase(mine);
+                }
                 return;
             }
             const auto it = remotes_.find(remove->train);
@@ -581,7 +613,10 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
             it->second.motion = {};
             std::cout << "net: train " << remove->train << (remove->remove ? " deleted" : " taken off the track")
                       << std::endl;
-            if (remove->remove) remotes_.erase(it);
+            if (remove->remove) {
+                trains.release_cars(record_keys(it->second.record));
+                remotes_.erase(it);
+            }
         }
         return;
     case P(net::Package::train_info):
@@ -742,6 +777,12 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         if (const auto text = net::decode_message(body)) {
             std::cout << "net: message: " << net::to_utf8(*text) << std::endl;
             console_log_.push_back(net::to_utf8(*text));
+        }
+        return;
+    case P(net::Package::openrts_clock):
+        if (const auto c = net::decode_openrts_clock(body)) {
+            server_clock_ = *c;
+            std::cout << "net: the server's clock x" << c->speed << ", season " << static_cast<int>(c->season) << std::endl;
         }
         return;
     case P(net::Package::openrts_weather):
@@ -1396,7 +1437,7 @@ bool NetSession::place_owned(const std::uint32_t id, Owned& own, simulation::Tra
         return false;
     }
     std::string error;
-    own.train = trains.add_local(placed_train(own.record, *front), &error);
+    own.train = trains.add_local(placed_train(own.record, *front, trains, record_keys_but(own.record)), &error);
     if (own.train == 0) {
         std::cout << "net: our train " << id << " does not fit: " << error << std::endl;
         return false;

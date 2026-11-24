@@ -304,6 +304,16 @@ public:
     // error, or empty); a file put back over this game (the same route and
     // scenario); the names there. Empty folder: this scene has no saves.
     [[nodiscard]] virtual std::filesystem::path saves_folder() const { return {}; }
+    // A network game: no pause of one's own (the others run on; the
+    // server's pause is everyone's).
+    [[nodiscard]] virtual bool networked() const { return false; }
+    // A network game's clock pace and season as the server runs them (pace
+    // 1 and no season from a server that does not say).
+    struct ServerClock {
+        float speed = 1.0f;
+        std::optional<int> season;
+    };
+    [[nodiscard]] virtual std::optional<ServerClock> server_clock() const { return std::nullopt; }
     [[nodiscard]] virtual std::vector<std::string> saved_games() const { return {}; }
     [[nodiscard]] virtual std::string save_game(const std::string& /*name*/) { return "nothing to save"; }
     [[nodiscard]] virtual std::string load_game(const std::filesystem::path& /*file*/) { return "nothing to load into"; }
@@ -334,9 +344,6 @@ public:
     // On foot with something for Enter where he stands (key_layout.hpp,
     // offers_enter): E does it, else E opens the car menu.
     [[nodiscard]] virtual bool engineer_action_at_hand() const { return false; }
-    // A network game: no pause of one's own (the others run on; the
-    // server's pause is everyone's).
-    [[nodiscard]] virtual bool networked() const { return false; }
     // Car `car` of the driven train, shape space to world (--capture-camera).
     [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
     // The engineer into the driven train's cab (--capture-cab).
@@ -364,6 +371,9 @@ public:
     virtual void report_hand_switch() const {}
     // --capture-passage: the engineer at the passage door of car `index`.
     virtual void stand_at_passage(std::size_t) {}
+    // How closed in the listener is, for the sounds' echo (openRTS, the
+    // "Echo" sound setting): 0 in the open .. 1 deep in a tunnel.
+    [[nodiscard]] virtual float echo_amount() const { return 0.0f; }
     [[nodiscard]] virtual std::string car_menu_report() const { return {}; }
     // --capture-ok: the scenario's open message closed (its OK).
     virtual void close_activity_message() {}
@@ -382,6 +392,8 @@ public:
     // The room the engineer is in (the cab's or salon's box), for the light
     // shafts' dust (renderer/light_shafts.hpp).
     [[nodiscard]] virtual std::optional<renderer::LightShaftRoom> light_shaft_room() const { return std::nullopt; }
+    // The lamps' beams in the falling snow or rain this frame (none: clear).
+    [[nodiscard]] virtual renderer::LightShaftBeams light_shaft_beams() const { return {}; }
     // In flight: the sphere the lamps' shadows cover, where the camera looks
     // (nullopt: the shadow focus, or around the view).
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> lamp_shadow_focus(const ViewerCamera&) const { return std::nullopt; }

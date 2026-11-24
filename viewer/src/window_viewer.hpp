@@ -188,6 +188,9 @@ struct WindowOptions {
     // window's tape is printed.
     bool capture_tape = false;
     bool capture_profile = false; // the profile strip (Ctrl+F4) on at 0.2 of capture_at
+    // --frame-log <file>: a CSV line a frame (its time, the CPU stages, the
+    // GPU's frame when measured, the lamps), for finding stutters.
+    std::string frame_log;
     bool capture_ui = false;      // the panels in the capture too (they are left out otherwise)
     // --capture-boarding: at 0.4 of capture_at the boarding key (Ctrl+Num7)
     // at a scenario's stop; the timetable is printed when the capture ends.

@@ -3,15 +3,22 @@
 #include <openrts/core/profile.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <map>
 #include <unordered_map>
 
 #include <glm/geometric.hpp>
 
+#include "echo_node.hpp"
 #include "miniaudio_config.hpp"
 
 namespace openrts::audio {
+
+float doppler_pitch(const float receding_speed) noexcept {
+    const float v = std::clamp(receding_speed, -90.0f, 90.0f);
+    return speed_of_sound / (speed_of_sound + v);
+}
 
 struct AudioEngine::Impl {
     struct Voice {
@@ -21,6 +28,11 @@ struct AudioEngine::Impl {
         bool loops = false; // looping, not released
         bool held = false;  // stopped while silent (set)
         VoiceSpace space = VoiceSpace::flat;
+        // Doppler: the distance last set, when (the engine's clock), and the
+        // speed it changes at, smoothed.
+        float distance = -1.0f;
+        double distance_time = 0.0;
+        float receding = 0.0f;
     };
     // The listener in miniaudio's axes (X mirrored), and its right.
     glm::vec3 listener{0.0f};
@@ -28,6 +40,11 @@ struct AudioEngine::Impl {
 
     ma_engine engine{};
     bool initialized = false;
+    // The outside voices (placed in space) through a group, then the echo
+    // (openRTS) to the output.
+    ma_sound_group outside{};
+    EchoNode echo;
+    bool outside_ready = false;
     std::string error;
     std::uint32_t max_voices = 1024;
     std::uint32_t max_held_voices = 8192;
@@ -89,12 +106,25 @@ AudioEngine::AudioEngine(const AudioEngineOptions& options) : impl_(std::make_un
     }
     impl_->initialized = true;
     ma_engine_listener_set_world_up(&impl_->engine, 0, 0.0f, 1.0f, 0.0f);
+    auto* graph = ma_engine_get_node_graph(&impl_->engine);
+    auto* endpoint = ma_engine_get_endpoint(&impl_->engine);
+    const auto channels = ma_engine_get_channels(&impl_->engine);
+    if (ma_sound_group_init(&impl_->engine, 0, nullptr, &impl_->outside) == MA_SUCCESS) {
+        ma_sound_group_set_spatialization_enabled(&impl_->outside, MA_FALSE); // a group at the origin: no pan, no falloff
+        if (impl_->echo.init(graph, endpoint, channels, ma_engine_get_sample_rate(&impl_->engine))) {
+            ma_node_attach_output_bus(&impl_->outside, 0, impl_->echo.node(), 0);
+            impl_->outside_ready = true;
+        } else {
+            ma_sound_group_uninit(&impl_->outside);
+        }
+    }
 }
 
 AudioEngine::~AudioEngine() {
     if (!impl_->initialized) return;
     for (auto& [_, voice] : impl_->voices) impl_->destroy(*voice);
     impl_->voices.clear();
+    if (impl_->outside_ready) ma_sound_group_uninit(&impl_->outside);
     ma_engine_uninit(&impl_->engine);
 }
 
@@ -138,6 +168,14 @@ void AudioEngine::set_background_gain(const float gain) {
     if (gain == background_gain_) return;
     background_gain_ = gain;
     if (ok()) ma_engine_set_volume(&impl_->engine, volume_ * background_gain_);
+}
+
+void AudioEngine::set_echo(const float amount) noexcept {
+    impl_->echo.set_amount(amount);
+}
+
+float AudioEngine::echo() const noexcept {
+    return impl_->echo.amount();
 }
 
 std::uint64_t AudioEngine::played_frames() const noexcept {
@@ -185,7 +223,8 @@ VoiceId AudioEngine::play(std::shared_ptr<const AudioClip> clip, const VoicePlay
     if (playback == VoicePlayback::loop_region && data.has_loop()) {
         ma_data_source_set_loop_point_in_pcm_frames(&voice->buffer, data.loop_start, data.loop_end);
     }
-    if (ma_sound_init_from_data_source(&impl_->engine, &voice->buffer, 0, nullptr, &voice->sound) != MA_SUCCESS) {
+    ma_sound_group* group = space != VoiceSpace::flat && impl_->outside_ready ? &impl_->outside : nullptr;
+    if (ma_sound_init_from_data_source(&impl_->engine, &voice->buffer, 0, group, &voice->sound) != MA_SUCCESS) {
         ma_audio_buffer_uninit(&voice->buffer);
         return 0;
     }
@@ -243,9 +282,30 @@ void AudioEngine::set(const VoiceId id, const float volume, const float pitch, c
     // up.
     float gain = volume >= 1.0f ? 1.0f : volume > 0.0f ? std::pow(volume, 1.5f) : 0.0f;
     float pan = 0.0f;
+    float doppler = 1.0f;
     if (voice.space != VoiceSpace::flat) {
         const glm::vec3 away = glm::vec3{-position.x, position.y, position.z} - impl_->listener;
         const float distance = glm::length(away);
+        // How fast the distance changes, from one set to the next by the
+        // wall clock (a frame's step is noisy: smoothed over about 0.15 s).
+        // A jump (a camera put elsewhere, a voice started far away) starts
+        // over.
+        const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        const double dt = now - voice.distance_time;
+        if (voice.distance >= 0.0f && dt > 1e-4 && dt < 0.5) {
+            const float speed = static_cast<float>((distance - voice.distance) / dt);
+            if (std::abs(speed) > 150.0f) {
+                voice.receding = 0.0f;
+            } else {
+                const float k = static_cast<float>(std::min(1.0, dt / 0.15));
+                voice.receding += (speed - voice.receding) * k;
+            }
+        } else {
+            voice.receding = 0.0f;
+        }
+        voice.distance = distance;
+        voice.distance_time = now;
+        if (doppler_) doppler = doppler_pitch(voice.receding);
         if (distance > 1e-3f) pan = std::clamp(glm::dot(away / distance, impl_->right) * pan_depth, -1.0f, 1.0f);
         // Positional voices fall off as reference / distance beyond it.
         if (voice.space == VoiceSpace::positional && distance > positional_reference_distance) {
@@ -254,7 +314,7 @@ void AudioEngine::set(const VoiceId id, const float volume, const float pitch, c
     }
     ma_sound_set_volume(&sound, gain);
     ma_sound_set_pan(&sound, pan);
-    ma_sound_set_pitch(&sound, pitch);
+    ma_sound_set_pitch(&sound, pitch * doppler);
 }
 
 void AudioEngine::seek(const VoiceId id, const std::uint64_t frame) {

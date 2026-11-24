@@ -17,6 +17,7 @@ without touching the content (PBR stage 4, 2026-11-17).
 | File | For | Format |
 |---|---|---|
 | `body.material.json5` beside `body.ace` | every model drawing that texture | `openrts-material/1` |
+| `MATERIALS/body.material.json5`, `MATERIALS/<train>/body.material.json5` | every `body.ace` wherever it lies; below a folder, only in the train folders whose name holds it (`#`: any characters) | `openrts-material/1` |
 | `loco.s.material.json5` beside `loco.s` | some parts of that shape | `openrts-shape-material/1` |
 
 A texture's file comes first (one texture is often drawn by dozens of
@@ -27,6 +28,27 @@ texture shared with the body). For a night or season texture
 variant's own (`NIGHT/body.material.json5`) over it.
 
 A mod puts them at the same path: `MODS_OPENRTS/<mod>/TRAINS/TRAINSET/LOCO/body.material.json5`.
+
+**The MATERIALS folder** (2026-11-23, testers: snow masks without
+touching the trains). A folder `MATERIALS` in the installation's root (or
+a mod's) holds materials found by the texture's name, wherever the
+texture lies: one file dresses every train drawing it (there are 18 ChS7
+folders, each with its own `zdsLoco_chs7-6A.ace`).
+
+- A file right in `MATERIALS` applies to every texture of its name.
+- A file in a folder below applies only to textures whose train folder
+  (the one in `TRAINS/TRAINSET`, else the texture's own) holds that
+  folder's name, ignoring case: `MATERIALS/chs7/` for `mdd_CHS7-016` ..
+  `mdd_CHS7-318`, `MATERIALS/mdd_vl10-/` for the VL10s but not the VL10u's
+  (`mdd_vl10u-…`). With `#` the name is a pattern of the whole folder name,
+  `#` any run of characters (`MATERIALS/mdd_CHS7-2#/`; Windows keeps `*` and
+  `?` out of a folder's name). A common name (`kuz1.ace`) belongs in such a
+  folder, not right in `MATERIALS`.
+- Deeper folders are only for order; the top one decides.
+- Maps in the file are found beside it, as anywhere.
+- Layered as a texture's file: the general ones, then the folders', then
+  the one beside the texture, each over the one before.
+- The folder is listed again when the VFS changes (hot reload).
 
 ## How a part's material is made
 
@@ -89,6 +111,7 @@ map with no factor anywhere takes 1; without a map nothing glows.
 | `height` | a file | relief: white its top, black `height_scale` under it (below) |
 | `height_scale` | 0..0.1 | the relief's depth, metres (0.01 default) |
 | `height_reference` | 0..1 | the map's level the model's surface lies at (1 default: white) |
+| `snow` | a file | snow lying on the model: its colour (gamma 2.2), alpha where it lies (below) |
 | `alpha_mode`, `alpha_cutoff`, `double_sided`, `wet` | | read, not applied yet (a warning says so) |
 
 Files are relative to the material file's folder (no absolute paths, no
@@ -150,6 +173,24 @@ What is brighter than it stands out, what is darker sinks.
 - A height map is the heights themselves: flat areas one grey, a rib a
   bright band as wide as the rib. An image of the details' outlines (an
   edge or curvature bake) lifts only the outlines and shows little.
+
+### Snow maps (2026-11-23)
+
+A map of the snow on the model, painted over its own texture's unwrap:
+the snow's colour, and in alpha where it lies (255 the thickest, 0 none).
+It is all a material needs; nothing else (no ORM) has to come with it:
+
+```json5
+// kuz1a.ace -> kuz1a.material.json5: every model drawing kuz1a.ace
+{ format: "openrts-material/1", snow: "kuz1a_snow.png" }
+```
+
+Since the unwrap is each model's own, a map goes with the texture (or a
+shape's entries, below), not with a kind of train. How much of it shows
+(`ModelLighting::snow_cover`, 0..1) is the scene's: none in summer, 0.8 in
+winter from the start, all of it after some 4 minutes of a snowfall,
+gone in some 10 minutes after one outside winter. It grows from the
+thickest snow (the alpha's highest) out. Off with "Rain and snow".
 
 ## The shape's file
 

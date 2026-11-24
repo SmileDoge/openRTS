@@ -161,7 +161,7 @@ bool draw_own_graphics_presets(OwnPresetsUi& ui, GraphicsSettings& settings, con
         }
     }
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", tr("To share: \"Copy the code\" and send it in a message (Discord, a forum); the other player copies the message and presses \"Paste a preset from the clipboard\". A preset is also a file in the presets folder, to be sent as a file. A preset holds every graphics setting here; anti-aliasing and HDR from it take effect from the next start."));
+    ImGui::TextWrapped("%s", tr("To share: \"Copy the code\" and send it in a message (Discord, a forum); the other player copies the message and presses \"Paste a preset from the clipboard\". A preset is also a file in the presets folder, to be sent as a file. A preset holds every graphics setting here; anti-aliasing and HDR from it after a restart."));
     ImGui::PopStyleColor();
     ImGui::PopID();
     return changed;

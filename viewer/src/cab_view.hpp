@@ -30,6 +30,7 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/dllhost/protocol.hpp>
 #include <openrts/formats/cab_description.hpp>
+#include <openrts/simulation/car_components.hpp>
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/renderer/model_renderer.hpp>
@@ -75,6 +76,9 @@ public:
                                                const glm::vec3& direction, float reach) const;
     // The box around each node's own surfaces, by matrix index (lower > upper: none).
     void node_bounds(std::size_t nodes, std::vector<glm::vec3>& lower, std::vector<glm::vec3>& upper) const;
+    // The corners of node `node`'s own surfaces (rest pose), every `step`-th
+    // triangle's, appended to `out`.
+    void node_points(std::int32_t node, std::vector<glm::vec3>& out, std::size_t step = 1) const;
 
 private:
     struct Triangle {
@@ -145,14 +149,19 @@ public:
         std::optional<std::uint32_t> live_switch;
     };
     // The realistic air's pressures (atm) for the gauges MaDaDev's cabs name
-    // DTM (the brake pipe), DTC1 and DTC2 (the brake cylinders) and DGR (the
-    // main reservoir): with them those needles show the model's air, not
-    // what the DLL draws of its own (its needles lag and run ahead of F5's
-    // air; testers 2026-11-17). Other gauges stay the DLL's.
+    // DTM (the brake pipe), DTC1 and DTC2 (the brake cylinders: the higher of
+    // the train brake's and the independent brake's), DGR (the main
+    // reservoir) and DURA (the equalising reservoir, the УР the driver's
+    // valve holds, openRTS's or the DLL's taken; testers 2026-11-20: it
+    // was the DLL's own and went apart from the others): with them those
+    // needles show the model's air, not what the DLL draws of its own (its
+    // needles lag and run ahead of F5's air; testers 2026-11-17). Other
+    // gauges stay the DLL's.
     struct AirGauges {
         float pipe = 0.0f;
         float cylinder = 0.0f;
         float main_reservoir = 0.0f;
+        float equalising = -1.0f; // < 0: no valve of the model here (the DLL's needle)
     };
     void adjustments(const dllhost::CarOutput* state, std::vector<renderer::NodeAdjustment>& out,
                      std::uint32_t aspect = 0, const Blend* blend = nullptr, const AirGauges* air = nullptr) const;
@@ -167,18 +176,38 @@ public:
         if (!screens_) return;
         // A screen display blinks too (DisplayFade, RTS 0x525DB0).
         std::vector<bool> off(cab_.displays.size(), false);
-        for (std::size_t i = 0; i < off.size() && i < blink_clock_.size(); ++i)
-            off[i] = cab_.displays[i].blink > 0.0f && blink_clock_[i] > cab_.displays[i].blink;
+        const auto& clock = state_->blink_clock;
+        for (std::size_t i = 0; i < off.size() && i < clock.size(); ++i)
+            off[i] = cab_.displays[i].blink > 0.0f && clock[i] > cab_.displays[i].blink;
+        if (!planes) planes = &screen_planes_;
         screens_->build(state, elapsed, out, &off, planes);
     }
     // The SCREEN labels the last screens() call laid out (CabScreens::labels_seen); null: no screens.
     [[nodiscard]] const CabScreens* screen_layout() const noexcept { return screens_.get(); }
+    // A screen under the ray `eye` along `along` (cab shape coordinates), no
+    // further than `max_distance` m: its plane (the wheel takes the eye up
+    // close, cab_screen_focus).
+    struct PickedScreen {
+        ScreenPlane plane;
+        float distance = 0.0f;
+    };
+    [[nodiscard]] std::optional<PickedScreen> pick_screen(const glm::vec3& eye, const glm::vec3& along, float max_distance) const;
     [[nodiscard]] std::size_t switches_bound() const noexcept { return switch_nodes_; }
     // The frames of switch `index`'s node a position takes, as RTS counts
     // them for dragging (0x51C1C8): the node has the shape's frame rate x
     // AnimTime x (positions - 1) frames (the positions if that is 0), its
     // keys spread over them. 0: no animated node.
     [[nodiscard]] float switch_frames_per_state(std::size_t index) const noexcept;
+
+    // Cars as entities, step 3 (docs/car-architecture.md): the cab's state
+    // (its doors and windows, the displays' blinking, the FreeAnimations) is
+    // the car's (simulation::CarCab). bind_state: this view draws and works
+    // the car's; a car seen for the first time takes the .sd's starting
+    // states. Unbound (a view of no car of the world: a test, a preview) it
+    // keeps its own. unbind_state: the car is gone, the view keeps a copy.
+    void bind_state(simulation::CarCab& state);
+    void unbind_state();
+    [[nodiscard]] bool bound_to(const simulation::CarCab* state) const noexcept { return state_ == state; }
 
     // The engineer on foot: the surfaces once they are read (null before),
     // the doors, and where a control is (its .sd Position, else its node).
@@ -201,12 +230,12 @@ public:
     // before the shape's nodes are read: as it was left).
     [[nodiscard]] float door_openness(std::size_t door) const noexcept {
         if (door >= doors_.size()) return 0.0f;
-        if (!geometry_) return doors_[door].target ? 1.0f : 0.0f;
-        return doors_[door].node < 0 ? 1.0f : doors_[door].open;
+        if (!geometry_) return door_state(door).target ? 1.0f : 0.0f;
+        return doors_[door].node < 0 ? 1.0f : door_state(door).open;
     }
     // Where it is going: open or shut.
     [[nodiscard]] bool door_wanted(std::size_t door) const noexcept {
-        return door < doors_.size() && doors_[door_root(door)].target;
+        return door < doors_.size() && door_state(door_root(door)).target;
     }
     // The door a door follows through ParentObject (itself when it follows
     // none): working a following one works that one.
@@ -215,7 +244,7 @@ public:
     // Sends a door open or shut (it moves over its AnimTime): the train's
     // passenger doors (InteriorDoors with a GlobalID).
     void set_door(std::size_t door, bool open) {
-        if (door < doors_.size()) doors_[door_root(door)].target = open;
+        if (door < doors_.size()) door_state(door_root(door)).target = open;
     }
     void open_door(std::size_t door);
     void step_doors(float elapsed);
@@ -250,16 +279,6 @@ public:
         float distance{};
     };
     [[nodiscard]] std::optional<Picked> pick(const glm::vec3& origin, const glm::vec3& direction, float reach) const;
-    // The SCREEN display (КЛУБ, САПВЭ ...) whose glass the ray meets first,
-    // within `reach`: its quad is not a surface of the shape, so pick() does
-    // not see it. The wheel on it takes the eye up close (cab_screen_focus).
-    struct ScreenPicked {
-        std::size_t display{}; // in description().displays
-        ScreenPlane plane{};   // as the .sd places it, cab shape coordinates
-        float distance{};
-    };
-    [[nodiscard]] std::optional<ScreenPicked> pick_screen(const glm::vec3& origin, const glm::vec3& direction,
-                                                          float reach) const;
     // The door (a node of its own) the ray meets before any other surface,
     // within `reach`, as it is drawn now (openRTS: a click opens or shuts
     // it; RTS works doors with Enter only).
@@ -287,13 +306,19 @@ private:
         // Matrices, hierarchy and animations, to pose the controls' nodes for picking.
         std::shared_ptr<const formats::ShapeModel> rig;
     };
+    // How a door or window is drawn (its state: door_state / window_state).
     struct Door {
         std::int32_t node = -1;
         float last_frame{};
-        float open{};      // 0 closed .. 1 open
-        bool target = false;
         std::vector<std::int32_t> nodes; // the door's node and its children
     };
+    // The state this view draws: the car's (bind_state), else its own.
+    simulation::CarCab own_;
+    simulation::CarCab* state_ = &own_;
+    // Sized as the .sd's lists (bind_state, create, poll).
+    void size_state();
+    [[nodiscard]] simulation::CabOpening& door_state(std::size_t door) const noexcept { return state_->doors[door]; }
+    [[nodiscard]] simulation::CabOpening& window_state(std::size_t window) const noexcept { return state_->windows[window]; }
     void rebuild_skip();
     void build_owners();
     // Doors that follow another (ParentObject) take its state.
@@ -337,7 +362,31 @@ private:
     std::vector<glm::vec3> switch_lower_, switch_upper_;
     std::unique_ptr<CabScreens> screens_;
     std::vector<std::vector<std::int32_t>> state_nodes_; // a DISPLAY's StateNodes, by display
-    std::vector<float> blink_clock_;                     // by display (RTS display +72)
+public:
+    // The wipers running (the FreeAnimations' surfaces) where they are drawn
+    // now, in shape coordinates: some of their corners (the raindrops'
+    // wiping; a blade at rest on the glass wipes nothing): their triangles'
+    // corners, three a triangle, in the same order from frame to frame.
+    void wiper_points(std::vector<glm::vec3>& out) const;
+
+private:
+    // The .sd's AnimNodes a DLL runs (FreeAnimation: the wipers): while its
+    // flag 0 is set they go round their key frames, AnimTime a round; let
+    // go, a RETURNS one finishes the round back to frame 0, another stops
+    // where it is (a pneumatic wiper with its cock shut: the ВЛ80Т's, the
+    // ЧС7's; testers 2026-11-21: the wipers sounded and stood still).
+    // Its state (phase, way, moving): the car's CarCab::animations, by position.
+    struct FreeAnim {
+        std::vector<std::int32_t> nodes;
+        std::vector<float> last; // each node's last key frame
+        float time = 1.0f;
+        bool returns = false;
+        bool continuous = false; // CONTINUOUS: rounds while running; else to its end and back
+        bool loop = false;       // LOOP: a CONTINUOUS one starts again at frame 0; else it goes back (ts.h's "goes down")
+    };
+    std::vector<FreeAnim> free_anims_;
+    mutable std::vector<std::uint8_t> free_anim_running_; // as the DLL left them (adjustments)
+    mutable std::vector<ScreenPlane> screen_planes_;     // the last screens(), for pick_screen
 };
 
 } // namespace openrts::viewer
