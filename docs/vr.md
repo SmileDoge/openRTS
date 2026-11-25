@@ -45,6 +45,17 @@ panels. The game's head nods and tilts are off in VR (they make sick); the
 car's own sway stays. Insert, the keypad's `.` or the left controller's menu button (a thumbstick's click): the view centred again on the seat (the
 headset's button centres the runtime's space, not the cab's seat).
 
+## In the release builds (2026-11-25)
+
+openRTS's wgpu-native fork lives at github.com/SmileDoge/wgpu-native
+(branch `openrts`: the official v27.0.4.0 and the import patch); its own
+GitHub Actions build and release the Windows x86_64 package (tag
+`v27.0.4.0-openrts.1`). openRTS's CI takes that release instead of the
+official one, so every build (nightly and versions) has VR and DLSS
+(docs/experimental-effects.md); the OpenXR loader and Streamline's DLLs
+come in the archive. A local build: `-DOPENRTS_WGPU_ROOT=<the fork's
+package>`, no separate build folder needed.
+
 ## Next
 
 1. The wait gone: Vulkan and D3D11 in step on the GPU (a keyed mutex or a

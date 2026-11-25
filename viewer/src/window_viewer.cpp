@@ -16,6 +16,8 @@
 #include <openrts/renderer/webgpu_texture.hpp>
 #include <openrts/renderer/screen_quads.hpp>
 #include <openrts/renderer/auto_exposure.hpp>
+#include <openrts/renderer/motion_vectors.hpp>
+#include "dlss_upscaler.hpp"
 #include <openrts/renderer/temporal_aa.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/bloom.hpp>
@@ -728,6 +730,8 @@ struct PanelState {
     int texture_size = 0;      // renderer::texture_size_limit: 0 as the files, 1 1024, 2 512, 3 256
     bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
     int taa_view = 0;                    // the temporal AA's preview (TemporalAAFrame::view), not kept
+    bool dlaa = false;                   // NVIDIA DLSS at the frame's size instead of the temporal AA (dlss_upscaler.hpp)
+    std::string dlss_error;              // why DLSS is not available (empty: it is, or not tried)
     float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
     bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
     float cloud_cover = 42.0f;       // %
@@ -1617,6 +1621,13 @@ public:
                                        tr("TAA shows: the history let go (white)")};
                 ImGui::SetNextItemWidth(420.0f);
                 ImGui::Combo("##taa_view", &panel.taa_view, views, 5);
+                ImGui::Unindent();
+            }
+            if (ImGui::Checkbox(tr("DLAA: NVIDIA DLSS at full resolution instead of TAA (RTX video cards, Vulkan; HDR)"), &panel.dlaa))
+                remember("effect_dlaa", panel.dlaa ? "1" : "0");
+            if (panel.dlaa && !panel.dlss_error.empty()) {
+                ImGui::Indent();
+                ImGui::TextWrapped(tr("DLSS is not available: %s"), panel.dlss_error.c_str());
                 ImGui::Unindent();
             }
             if (ImGui::Checkbox(tr("Bloom: light spreads round lamps, signals and the sun (HDR)"), &panel.effects.bloom))
@@ -3137,6 +3148,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     std::cout << "graphics: the models' shaders ready in " << seconds_since(shaders_started) << " s" << std::endl;
     std::unique_ptr<renderer::ToneMapper> tone;
     std::unique_ptr<renderer::TemporalAA> temporal_aa;
+    std::unique_ptr<renderer::MotionVectors> motion_vectors; // the jitter and the screen's motion (TAA, the upscalers)
+    std::unique_ptr<DlssUpscaler> dlss;                    // made when DLAA is first chosen
     std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
     bool auto_exposure_was_on = false;
     if (renderer::scene_hdr()) tone = std::make_unique<renderer::ToneMapper>(device, surface.format());
@@ -3371,6 +3384,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (const auto at = list.find("taa-view"); at != std::string::npos && at + 8 < list.size())
             panel.taa_view = std::clamp(list[at + 8] - '0', 0, 4);
     }
+    panel.dlaa = remembered("effect_dlaa").value_or("0") == "1";
+    if (options.effects) panel.dlaa = options.effects->find("dlaa") != std::string::npos;
     // The field of view: the panel's, else RTS's (config.ini FOV, vertical, degrees).
     // Num* brings back RTS's (else the default).
     float base_fov = default_fov_degrees;
@@ -3899,14 +3914,31 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // The temporal AA (the experimental path's HDR frame, not in VR):
         // the frame drawn a sub-pixel apart each time.
         const glm::mat4 steady_projection = projection_matrix;
-        const bool taa_frame = hdr && !vr_frame && panel.effects.temporal_aa
-                               && renderer.shading_path() == renderer::ShadingPath::experimental;
-        if (taa_frame) {
+        const bool experimental_frame = hdr && !vr_frame && renderer.shading_path() == renderer::ShadingPath::experimental;
+        // DLAA (NVIDIA's DLSS at the frame's size) in place of the temporal AA when it works.
+        if (experimental_frame && panel.dlaa && !dlss) {
+            dlss = std::make_unique<DlssUpscaler>(device, context.context.adapter());
+            panel.dlss_error = dlss->available() ? std::string() : dlss->error();
+            std::cout << "DLSS: " << (dlss->available() ? std::string("available") : dlss->error()) << std::endl;
+        }
+        const bool dlaa_frame = experimental_frame && panel.dlaa && dlss && dlss->available();
+        const bool taa_frame = experimental_frame && panel.effects.temporal_aa && !dlaa_frame;
+        const glm::vec2 frame_jitter = motion_vectors ? motion_vectors->jitter() : glm::vec2{0.0f};
+        if (taa_frame || dlaa_frame) {
             if (!temporal_aa) temporal_aa = std::make_unique<renderer::TemporalAA>(device);
-            if (temporal_aa->ready())
-                projection_matrix = temporal_aa->jittered(projection_matrix, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
-        } else if (temporal_aa) {
-            temporal_aa->reset();
+            if (!motion_vectors) motion_vectors = std::make_unique<renderer::MotionVectors>(device);
+            if (temporal_aa->ready() && motion_vectors->ready())
+                projection_matrix =
+                    motion_vectors->jittered(projection_matrix, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+        } else {
+            if (temporal_aa) temporal_aa->reset();
+            if (motion_vectors) motion_vectors->reset();
+        }
+        // Without MSAA the alpha test's edge by noise, which the temporal AA
+        // blends into a soft edge (alpha to coverage under MSAA).
+        {
+            static std::uint32_t stochastic_frame = 0;
+            renderer.set_stochastic_alpha((taa_frame || dlaa_frame) && renderer::render_sample_count() <= 1, ++stochastic_frame);
         }
         FrameView frame{
             .eye = view_eye,
@@ -3926,12 +3958,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // The lamps' beams in snow or rain go through the light shafts'
         // pass (its depth pre-pass wanted too), the sun's shafts or not.
         const auto beams = scene.light_shaft_beams();
-        if (beams.any()) {
+        {
             auto settings = panel.effects;
-            settings.light_shafts = true;
+            if (beams.any()) settings.light_shafts = true;
+            // DLAA reads the camera's depth and the trains' as the TAA does.
+            if (dlaa_frame) settings.temporal_aa = true;
             effects.set_settings(settings);
-        } else {
-            effects.set_settings(panel.effects);
         }
         effects.begin_frame({.view = frame.view,
                              .projection = frame.projection,
@@ -4108,15 +4140,60 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             auto_exposure_was_on = exposure_state != nullptr;
             // The temporal AA over the resolved frame, before the tone curve.
             WGPUTextureView toned = hdr_view;
-            if (taa_frame && temporal_aa && temporal_aa->ready()) {
-                toned = temporal_aa->resolve(encoder, hdr_view, effects.camera_depth(), effects.moving_depth(),
-                                             {.view_projection = frame.projection * frame.view,
-                                              .steady_view_projection = steady_projection * frame.view,
-                                              .eye = frame.eye,
-                                              .train = scene.player_train_place(),
-                                              .width = static_cast<std::uint32_t>(width),
+            if (taa_frame && temporal_aa && temporal_aa->ready() && motion_vectors && motion_vectors->ready()) {
+                // The screen's motion since the last frame, then the blend.
+                const auto motion = motion_vectors->compute(encoder, effects.camera_depth(), effects.moving_depth(),
+                                                            {.view_projection = frame.projection * frame.view,
+                                                             .steady_view_projection = steady_projection * frame.view,
+                                                             .eye = frame.eye,
+                                                             .train = scene.player_train_place(),
+                                                             .width = static_cast<std::uint32_t>(width),
+                                                             .height = static_cast<std::uint32_t>(height)});
+                toned = temporal_aa->resolve(encoder, hdr_view, effects.camera_depth(), motion,
+                                             {.width = static_cast<std::uint32_t>(width),
                                               .height = static_cast<std::uint32_t>(height),
                                               .view = panel.taa_view});
+            }
+            // DLAA: the frame's inputs to the shared textures, the GPU done
+            // with them, DLSS on its D3D11 device, then the tone curve from
+            // its output in a new encoder.
+            if (dlaa_frame && motion_vectors && motion_vectors->ready() && surface.hdr_texture()) {
+                const bool reset = !motion_vectors->has_last();
+                const auto last = motion_vectors->last_view_projection();
+                const auto motion = motion_vectors->compute(encoder, effects.camera_depth(), effects.moving_depth(),
+                                                            {.view_projection = frame.projection * frame.view,
+                                                             .steady_view_projection = steady_projection * frame.view,
+                                                             .eye = frame.eye,
+                                                             .train = scene.player_train_place(),
+                                                             .width = static_cast<std::uint32_t>(width),
+                                                             .height = static_cast<std::uint32_t>(height)});
+                if (motion && dlss->record_inputs(encoder, surface.hdr_texture(), motion_vectors->texture(), effects.camera_depth(),
+                                                  static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height))) {
+                    const auto inputs = wgpuCommandEncoderFinish(encoder, nullptr);
+                    auto early = parallel ? effects.finish_parallel(recording_pool) : std::vector<WGPUCommandBuffer>{};
+                    early.push_back(inputs);
+                    const auto queue = wgpuDeviceGetQueue(device);
+                    const WGPUSubmissionIndex index = wgpuQueueSubmitForIndex(queue, early.size(), early.data());
+                    for (const auto buffer : early) wgpuCommandBufferRelease(buffer);
+                    wgpuQueueRelease(queue);
+                    wgpuDevicePoll(device, true, &index);
+                    parallel = false;
+                    wgpuCommandEncoderRelease(encoder);
+                    encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+                    if (const auto output = dlss->evaluate({.width = static_cast<std::uint32_t>(width),
+                                                            .height = static_cast<std::uint32_t>(height),
+                                                            .projection = steady_projection,
+                                                            .view = frame.view,
+                                                            .previous_view_projection = last,
+                                                            .jitter = frame_jitter,
+                                                            .eye = frame.eye,
+                                                            .near_plane = near_plane_of(camera),
+                                                            .far_plane = camera.far_plane(),
+                                                            .vertical_fov = frame.vertical_fov,
+                                                            .aspect = frame.aspect,
+                                                            .reset = reset}))
+                        toned = output;
+                }
             }
             tone->render(encoder, toned, frame_view, settings, bloom_view, shafts_view, exposure_state);
 #ifdef OPENRTS_HAS_IMGUI

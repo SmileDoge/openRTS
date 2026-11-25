@@ -457,6 +457,11 @@ public:
     // Instances submitted from here on are trains (true) or not (the
     // default): the temporal AA takes their points as riding with the camera.
     void set_train(bool train) noexcept;
+    // Without MSAA under a temporal AA or an upscaler: an alpha test's edge
+    // by noise that changes every frame (`frame`), which those blend into a
+    // soft edge as alpha to coverage gives under MSAA; off: the test at its
+    // cut (RTS's).
+    void set_stochastic_alpha(bool on, std::uint32_t frame) noexcept;
     // After prepare(): a hash of this frame's moving instances (set_moving):
     // their models, distance levels, places and node poses, to a millimetre
     // and a ten-thousandth. The same as last frame: nothing moving moved

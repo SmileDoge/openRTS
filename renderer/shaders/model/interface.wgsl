@@ -21,6 +21,7 @@ struct Frame {
     rain_front: vec4<f32>,  // x the front's sign, y 1 a grid
     rain_side: vec4<f32>,   // xy the side drops' run (m, z y), zw their way now
     snow_cover: vec4<f32>,  // x how much of the snow maps' snow lies (0..1)
+    temporal: vec4<f32>,    // x 1: an alpha test's edge by noise; y the frame's number
     rain_wiped: array<vec4<f32>, 2048>, // each cell's last wipe (128 x 64, four a vec4)
 };
 
@@ -370,6 +371,15 @@ override blended: bool = false;
 // Alpha Test"): the edge spread over one pixel (`width`: fwidth of the
 // alpha) and the alpha raised in the far mips (`mip`) so foliage and fences
 // do not thin out with distance. Zero coverage drops the fragment.
+// An alpha test's edge by noise (ModelRenderer::set_stochastic_alpha): the
+// texel kept as often as its coverage says, the noise (interleaved gradient
+// noise) moved every frame; the temporal AA or the upscaler averages it.
+fn stochastic_keep(coverage: f32, pixel: vec2<f32>) -> bool {
+    let p = pixel + vec2<f32>(5.588238 * frame.temporal.y);
+    let noise = fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
+    return coverage > noise;
+}
+
 fn coverage_alpha(alpha: f32, cutoff: f32, width: f32, mip: f32) -> f32 {
     let kept = alpha * (1.0 + max(mip, 0.0) * 0.25);
     return clamp((kept - cutoff) / max(width, 0.0001) + 0.5, 0.0, 1.0);

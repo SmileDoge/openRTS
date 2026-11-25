@@ -68,6 +68,28 @@ target_sources(openrts_viewer_core PRIVATE src/vr_session.cpp)
 if(OPENRTS_HAS_XR)
     target_link_libraries(openrts_viewer_core PUBLIC openrts_openxr_loader d3d11 dxgi)
 endif()
+# NVIDIA DLSS through Streamline (viewer/src/dlss_upscaler.cpp): with
+# openRTS's wgpu-native (its D3D11 shared textures) and the Streamline SDK
+# (OPENRTS_STREAMLINE_ROOT: its release unpacked; LICENSE-EXCEPTIONS.md).
+target_sources(openrts_viewer_core PRIVATE src/dlss_upscaler.cpp)
+set(OPENRTS_STREAMLINE_ROOT "" CACHE PATH "The NVIDIA Streamline SDK (DLSS), unpacked")
+set(OPENRTS_HAS_DLSS OFF CACHE INTERNAL "")
+if(OPENRTS_HAS_XR AND OPENRTS_STREAMLINE_ROOT AND EXISTS "${OPENRTS_STREAMLINE_ROOT}/include/sl.h")
+    set(OPENRTS_HAS_DLSS ON CACHE INTERNAL "")
+    target_compile_definitions(openrts_viewer_core PUBLIC OPENRTS_HAS_DLSS=1)
+    target_include_directories(openrts_viewer_core PRIVATE "${OPENRTS_STREAMLINE_ROOT}/include")
+    target_link_libraries(openrts_viewer_core PUBLIC d3d11 dxgi wintrust crypt32)
+endif()
+message(STATUS "openRTS DLSS (Streamline): ${OPENRTS_HAS_DLSS}")
+# Streamline's DLLs beside an executable (loaded at run time, if there).
+function(openrts_copy_streamline target)
+    if(OPENRTS_HAS_DLSS)
+        foreach(dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OPENRTS_STREAMLINE_ROOT}/bin/x64/${dll}" "$<TARGET_FILE_DIR:${target}>")
+        endforeach()
+    endif()
+endfunction()
 
 add_executable(openrts_viewer src/main.cpp src/crash_report.cpp)
 openrts_configure_target(openrts_viewer)
@@ -84,4 +106,5 @@ if(MSVC)
 endif()
 
 openrts_copy_wgpu_runtime(openrts_viewer)
+openrts_copy_streamline(openrts_viewer)
 openrts_copy_dllhost(openrts_viewer)

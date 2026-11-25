@@ -18,26 +18,9 @@ namespace {
 }
 
 struct ParamsUniform {
-    glm::mat4 inverse_view_projection;
-    glm::mat4 previous_view_projection;
-    glm::mat4 steady_view_projection;
-    float eye_shift[4];
     float size[4];
     float view[4];
 };
-
-// The Halton sequence's `index`th number in `base` (0..1).
-[[nodiscard]] float halton(std::uint32_t index, const std::uint32_t base) {
-    float result = 0.0f, fraction = 1.0f;
-    while (index > 0) {
-        fraction /= static_cast<float>(base);
-        result += fraction * static_cast<float>(index % base);
-        index /= base;
-    }
-    return result;
-}
-
-constexpr std::uint32_t jitter_count = 8;
 
 } // namespace
 
@@ -55,10 +38,6 @@ struct TemporalAA::Impl {
     std::uint32_t width = 0, height = 0;
     std::uint32_t written = 0; // the one written last
     bool valid = false;        // the last written holds a frame to take
-    glm::mat4 previous_view_projection{1.0f};
-    glm::vec3 previous_eye{0.0f};
-    std::optional<glm::vec3> previous_train;
-    std::uint32_t frame = 0;
 
     void release_history() {
         for (auto& view : views) {
@@ -117,11 +96,12 @@ TemporalAA::TemporalAA(const WGPUDevice device) : impl_(std::make_unique<Impl>()
     entries[1] = {.binding = 1, .visibility = WGPUShaderStage_Fragment};
     entries[1].texture.sampleType = WGPUTextureSampleType_Float;
     entries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
-    for (std::uint32_t i : {2u, 3u}) {
-        entries[i] = {.binding = i, .visibility = WGPUShaderStage_Fragment};
-        entries[i].texture.sampleType = WGPUTextureSampleType_Depth;
-        entries[i].texture.viewDimension = WGPUTextureViewDimension_2D;
-    }
+    entries[2] = {.binding = 2, .visibility = WGPUShaderStage_Fragment};
+    entries[2].texture.sampleType = WGPUTextureSampleType_Depth;
+    entries[2].texture.viewDimension = WGPUTextureViewDimension_2D;
+    entries[3] = {.binding = 3, .visibility = WGPUShaderStage_Fragment};
+    entries[3].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
+    entries[3].texture.viewDimension = WGPUTextureViewDimension_2D;
     entries[4] = {.binding = 4, .visibility = WGPUShaderStage_Fragment};
     entries[4].sampler.type = WGPUSamplerBindingType_Filtering;
     entries[5] = {.binding = 5, .visibility = WGPUShaderStage_Fragment};
@@ -175,51 +155,21 @@ void TemporalAA::reset() noexcept {
     impl_->valid = false;
 }
 
-glm::vec2 TemporalAA::jitter() const noexcept {
-    const auto index = impl_->frame % jitter_count + 1;
-    return {halton(index, 2) - 0.5f, halton(index, 3) - 0.5f};
-}
-
-glm::mat4 TemporalAA::jittered(const glm::mat4& projection, const std::uint32_t width, const std::uint32_t height) const noexcept {
-    if (width == 0 || height == 0) return projection;
-    const auto j = jitter();
-    glm::mat4 out = projection;
-    // A shift of the clip space's x, y by w times the offset (in NDC).
-    out[2][0] += j.x * 2.0f / static_cast<float>(width) * (projection[2][3] != 0.0f ? -projection[2][3] : 1.0f);
-    out[2][1] += j.y * 2.0f / static_cast<float>(height) * (projection[2][3] != 0.0f ? -projection[2][3] : 1.0f);
-    return out;
-}
-
 WGPUTextureView TemporalAA::resolve(const WGPUCommandEncoder encoder, const WGPUTextureView scene, const WGPUTextureView depth,
-                                    const WGPUTextureView moving_depth, const TemporalAAFrame& frame) {
+                                    const WGPUTextureView motion, const TemporalAAFrame& frame) {
     auto& impl = *impl_;
-    ++impl.frame;
-    if (!ready() || !scene || !depth || frame.width == 0 || frame.height == 0) {
+    if (!ready() || !scene || !depth || !motion || frame.width == 0 || frame.height == 0) {
         impl.valid = false;
         return scene;
     }
     impl.ensure(frame.width, frame.height);
     if (!impl.views[0] || !impl.views[1] || !impl.shown_view) return scene;
-    // A jump of the camera (a cut, the origin moved): no history.
-    // A jump of the camera (a cut, the origin moved): no history. The
-    // trains' pixels move with the player's train (its own move; nothing
-    // when the camera goes round a standing train).
-    if (glm::length(frame.eye - impl.previous_eye) > 50.0f) impl.valid = false;
-    glm::vec3 shift{0.0f};
-    if (frame.train && impl.previous_train) {
-        shift = *frame.train - *impl.previous_train;
-        if (glm::length(shift) > 50.0f) shift = glm::vec3{0.0f};
-    }
     const auto read = impl.written;
     const auto write = 1u - impl.written;
     ParamsUniform params{
-        .inverse_view_projection = glm::inverse(frame.view_projection),
-        .previous_view_projection = impl.previous_view_projection,
-        .steady_view_projection = frame.steady_view_projection,
-        .eye_shift = {shift.x, shift.y, shift.z, impl.valid ? 1.0f : 0.0f},
         .size = {static_cast<float>(frame.width), static_cast<float>(frame.height), 1.0f / static_cast<float>(frame.width),
                  1.0f / static_cast<float>(frame.height)},
-        .view = {static_cast<float>(frame.view), 0.0f, 0.0f, 0.0f},
+        .view = {static_cast<float>(frame.view), impl.valid ? 1.0f : 0.0f, 0.0f, 0.0f},
     };
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
         wgpuQueueWriteBuffer(queue, impl.params, 0, &params, sizeof(params));
@@ -229,8 +179,7 @@ WGPUTextureView TemporalAA::resolve(const WGPUCommandEncoder encoder, const WGPU
     entries[0] = {.binding = 0, .textureView = scene};
     entries[1] = {.binding = 1, .textureView = impl.views[read]};
     entries[2] = {.binding = 2, .textureView = depth};
-    // Without the moving models' depth: none moving (a depth of 0 there).
-    entries[3] = {.binding = 3, .textureView = moving_depth ? moving_depth : depth};
+    entries[3] = {.binding = 3, .textureView = motion};
     entries[4] = {.binding = 4, .sampler = impl.sampler};
     entries[5] = {.binding = 5, .buffer = impl.params, .size = sizeof(ParamsUniform)};
     const WGPUBindGroupDescriptor group_descriptor{.layout = impl.layout, .entryCount = entries.size(), .entries = entries.data()};
@@ -253,9 +202,6 @@ WGPUTextureView TemporalAA::resolve(const WGPUCommandEncoder encoder, const WGPU
     wgpuBindGroupRelease(group);
     impl.written = write;
     impl.valid = true;
-    impl.previous_view_projection = frame.steady_view_projection;
-    impl.previous_eye = frame.eye;
-    impl.previous_train = frame.train;
     return frame.view != 0 ? impl.shown_view : impl.views[write];
 }
 

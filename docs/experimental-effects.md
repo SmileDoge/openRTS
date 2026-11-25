@@ -1104,6 +1104,40 @@ by default. The experimental path's HDR frame, not in VR.
 - Motion vectors of every model (their last frame's matrices) are not made
   yet: the base for DLSS / FSR later.
 
+### Motion vectors and the alpha by noise (2026-11-25)
+
+- The screen's motion is a pass of its own (renderer/motion_vectors.hpp):
+  an rgba16f texture, xy the motion to where the pixel was (texture
+  coordinates), z 1 a train's, w 1 where there is a last frame. The
+  temporal AA and DLSS read it; the jitter lives there too.
+- Without MSAA (1x) under TAA or DLAA an alpha test's edge is drawn by
+  noise moved every frame (ModelRenderer::set_stochastic_alpha), which
+  they blend into a soft edge as alpha to coverage gives under MSAA.
+  MSAA 2x and up keep alpha to coverage; 1x without them the test at its
+  cut, as before.
+
+### DLAA: NVIDIA DLSS at full resolution (2026-11-25)
+
+Graphics panel, "DLAA" (`--effects ...,dlaa`): DLSS at the frame's own
+size instead of the temporal AA. An RTX video card, wgpu on Vulkan,
+openRTS's wgpu-native (build-vr) and the Streamline SDK's DLLs beside the
+game (LICENSE-EXCEPTIONS.md); without them the panel says why and TAA stays.
+
+- Build: `-DOPENRTS_STREAMLINE_ROOT=<the Streamline SDK release unpacked>`
+  on the build with openRTS's wgpu-native; the four DLLs are copied beside
+  the executables. sl.interposer.dll is checked for NVIDIA's signature,
+  loaded at run time; no updates over the network.
+- The frame's HDR, the motion and the depth (as R32_FLOAT) are copied into
+  textures shared with a D3D11 device of its own (as VR's), the GPU waited
+  for, DLSS run there (Streamline, manual hooking, the engine "custom" with
+  openRTS's project id), waited for, its output tone mapped. A hidden 1 x 1
+  swapchain presents once a frame for Streamline's bookkeeping.
+- Matrices without the jitter, the jitter apart (OPENRTS_DLSS_JITTER_FLIP
+  turns its sign if the picture shimmers); depth reversed, motion in
+  texture coordinates; DLSS's own auto exposure.
+- Not yet: the upscaling (a lower internal resolution), the direct DX12
+  path (no copies, no wait on the CPU).
+
 ### Trains' textures without DXT1's blocks (BC7, 2026-11-16)
 
 - **What was seen.** Close to a dark body or in a cab, squares in the

@@ -146,6 +146,10 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             if (color.w <= 0.0) {
                 discard;
             }
+        } else if (frame.temporal.x > 0.5) {
+            if (!stochastic_keep(coverage_alpha(color.w, 0.3, alpha_width, alpha_mip), input.clip.xy)) {
+                discard;
+            }
         } else if (!(color.w > 0.3)) {
             discard;
         }

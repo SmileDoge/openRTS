@@ -8,7 +8,11 @@ openRTS's own build of wgpu-native (VR, docs/vr.md: the game's `--vr` and
   wgpu-hal's Vulkan `texture_from_d3d11_shared_handle`) and
   `WGPUNativeFeature_VulkanExternalMemoryWin32` to ask the device for it.
 
-Building it (Windows, Rust; libclang from Visual Studio's LLVM component):
+Published as github.com/SmileDoge/wgpu-native (branch `openrts`, the patch
+as a commit); its GitHub Actions build the release openRTS's CI downloads
+(tag `v27.0.4.0-openrts.1`, `wgpu-windows-x86_64-msvc-release.zip`).
+
+Building it yourself (Windows, Rust; libclang from Visual Studio's LLVM component):
 
     git clone --depth 1 --branch v27.0.4.0 --recurse-submodules https://github.com/gfx-rs/wgpu-native.git
     cd wgpu-native

@@ -2,12 +2,8 @@
 // with the history where its point was last frame, clipped to the colours
 // round the pixel.
 struct Params {
-    inverse_view_projection: mat4x4<f32>, // this frame's clip (jittered) -> route space
-    previous_view_projection: mat4x4<f32>, // the last frame's (steady) route space -> clip
-    steady_view_projection: mat4x4<f32>,   // this frame's without the jitter
-    eye_shift: vec4<f32>,                  // xyz: the player's train's move since; w: 1 a history to take
-    size: vec4<f32>,                       // width, height, 1 / width, 1 / height
-    view: vec4<f32>,                       // x: what to show (TemporalAAView), 0 the result
+    size: vec4<f32>, // width, height, 1 / width, 1 / height
+    view: vec4<f32>, // x: what to show (TemporalAAFrame::view), 0 the result; y: 1 a history to take
 };
 
 // The views for looking into it (TemporalAAView).
@@ -33,7 +29,9 @@ fn shown(mode: f32, motion_pixels: vec2<f32>, is_moving: bool, depth: f32, raw: 
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var history: texture_2d<f32>;
 @group(0) @binding(2) var depth: texture_depth_2d;
-@group(0) @binding(3) var moving: texture_depth_2d;
+// The motion of every pixel (renderer/motion_vectors.hpp): xy to where it
+// was, z 1 a train's, w 1 where there is a last frame.
+@group(0) @binding(3) var motion_vectors: texture_2d<f32>;
 @group(0) @binding(4) var linear_sampler: sampler;
 @group(0) @binding(5) var<uniform> params: Params;
 
@@ -164,30 +162,17 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> Out {
             }
         }
     }
-    if (params.eye_shift.w < 0.5) {
+    if (params.view.y < 0.5) {
         return both(vec4<f32>(unsqueeze(current), 1.0));
     }
-    // Where the point was: from this frame's depth back to route space (in
-    // homogeneous form: the sky at infinity too), through the last frame's
-    // view. A moving model's point moved with the camera's place.
-    let uv = (vec2<f32>(at) + 0.5) * params.size.zw;
-    let clip = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, nearest, 1.0);
-    var place = params.inverse_view_projection * clip;
-    let moving_depth = textureLoad(moving, at, 0);
-    let is_moving = moving_depth > 0.0 && moving_depth >= nearest * 0.9999;
-    if (is_moving) {
-        place = vec4<f32>(place.xyz - params.eye_shift.xyz * place.w, place.w);
-    }
-    // The point's place now and then, both without the jitter: the motion
-    // the history follows (the jitter's own shift left out).
-    let before = params.previous_view_projection * place;
-    let now = params.steady_view_projection * (params.inverse_view_projection * clip);
-    if (before.w <= 1e-6 || now.w <= 1e-6) {
+    // Where the point was: the motion of the nearest point round the pixel
+    // (an edge moves as its front).
+    let vector = textureLoad(motion_vectors, at, 0);
+    if (vector.w < 0.5) {
         return both(vec4<f32>(unsqueeze(current), 1.0));
     }
-    let before_ndc = before.xy / before.w;
-    let now_ndc = now.xy / now.w;
-    let motion = vec2<f32>(before_ndc.x - now_ndc.x, now_ndc.y - before_ndc.y) * 0.5;
+    let motion = vector.xy;
+    let is_moving = vector.z > 0.5;
     let previous_uv = (position.xy * params.size.zw) + motion;
     if (any(previous_uv < vec2<f32>(0.0)) || any(previous_uv > vec2<f32>(1.0))) {
         return both(vec4<f32>(unsqueeze(current), 1.0));

@@ -178,6 +178,8 @@ struct FrameUniform {
     float rain_front[4];
     float rain_side[4]; // xy the side drops' run (m), zw their way now
     float snow_cover[4]; // x how much of the snow maps' snow lies (0..1); y the snow's run up the front glass, zw along the side windows (m)
+    // x 1: an alpha test's edge by noise (set_stochastic_alpha); y the frame's number for the noise.
+    float temporal[4];
     float rain_wiped[rain_grid_columns * rain_grid_rows];
 };
 // WebGPU's least maxUniformBufferBindingSize.
@@ -1282,6 +1284,8 @@ struct ModelRenderer::Impl {
     static constexpr std::uint32_t depth_slots = ModelRenderer::depth_slots;
     bool submit_moving = false; // set_moving
     bool submit_train = false;  // set_train
+    bool stochastic_alpha = false; // set_stochastic_alpha
+    std::uint32_t stochastic_frame = 0;
     std::uint64_t moving_signature = 0;
     std::uint64_t moving_signature_outside = 0; // without the cab (RTS pass 3)
     static constexpr std::uint64_t depth_stride = 256;
@@ -2542,6 +2546,12 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) 
     impl_->queue.back().train = impl_->submit_train;
 }
 
+void ModelRenderer::set_stochastic_alpha(const bool on, const std::uint32_t frame) noexcept {
+    if (!impl_) return;
+    impl_->stochastic_alpha = on;
+    impl_->stochastic_frame = frame;
+}
+
 void ModelRenderer::set_train(const bool train) noexcept {
     if (impl_) impl_->submit_train = train;
 }
@@ -3114,7 +3124,9 @@ void ModelRenderer::prepare() {
     if (!impl_->frame_binding) return;
     impl_->uploaded = true;
 
-    const auto lighting = frame_uniform(impl_->frame.lighting, impl_->frame.view_projection, impl_->frame.camera_position);
+    auto lighting = frame_uniform(impl_->frame.lighting, impl_->frame.view_projection, impl_->frame.camera_position);
+    lighting.temporal[0] = impl_->stochastic_alpha ? 1.0f : 0.0f;
+    lighting.temporal[1] = static_cast<float>(impl_->stochastic_frame % 1024u);
     const auto queue = wgpuDeviceGetQueue(impl_->device);
     wgpuQueueWriteBuffer(queue, impl_->frame_buffer, 0, &lighting, sizeof(lighting));
     if (!instances.empty()) wgpuQueueWriteBuffer(queue, impl_->instance_buffer, 0, instances.data(), instances.size() * sizeof(GpuInstance));
