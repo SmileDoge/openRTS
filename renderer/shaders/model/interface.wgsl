@@ -8,7 +8,7 @@ struct Frame {
     fog_distance: vec4<f32>,
     view_projection: mat4x4<f32>,
     eye: vec4<f32>,
-    shading: vec4<f32>, // x: the experimental path's night ambient factor, y: FullBright lit, z: 1 the frame is linear, w: 1 PBR
+    shading: vec4<f32>, // x: the experimental path's night ambient factor, y: unused, z: 1 the frame is linear, w: 1 PBR
     fog_sun: vec4<f32>,             // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     fog_ring: array<vec4<f32>, 12>, // the horizon's colour at each fog_ring_angle (fog_ring.hpp)
     portals: array<mat4x4<f32>, 2>, // centre, (across, half), (up, half), eye

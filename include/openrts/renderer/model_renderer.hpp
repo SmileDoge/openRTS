@@ -338,9 +338,7 @@ public:
     // images came from (alternative_texture_folders).
     [[nodiscard]] std::uint32_t alternative_texture() const noexcept;
     [[nodiscard]] const std::vector<std::string>& texture_folders() const noexcept;
-    // Whether some image is drawn only on FullBright surfaces, and the
-    // texture_variant_key this generation was loaded with.
-    [[nodiscard]] bool fullbright_images() const noexcept;
+    // The texture_variant_key this generation was loaded with.
     [[nodiscard]] const std::vector<std::string>& texture_key() const noexcept;
     // ESD_Light_Sources of the shape (scenery lamps), in its space.
     [[nodiscard]] const std::vector<formats::ShapeLight>& lights() const noexcept;

@@ -100,7 +100,6 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"light_range", text(s.light_range)},
         {"headlight_reach", text(s.headlight_reach)},
         {"night_ambient", text(s.night_ambient)},
-        {"light_fullbright", text(s.light_fullbright)},
         {"lamp_own_model", text(s.lamp_own_model)},
         {"native_sky", text(s.native_sky)},
         {"cloud_cover_weather", text(s.cloud_cover_weather)},
@@ -176,7 +175,6 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     s.light_range = number(value_of, "light_range", s.light_range, 0.0f, 3000.0f);
     s.headlight_reach = number(value_of, "headlight_reach", s.headlight_reach, 1.0f, 5.0f);
     s.night_ambient = number(value_of, "night_ambient", s.night_ambient, 0.5f, 8.0f);
-    s.light_fullbright = flag_one(value_of, "light_fullbright", s.light_fullbright);
     s.lamp_own_model = flag_not_zero(value_of, "lamp_own_model", s.lamp_own_model);
     s.native_sky = flag_not_zero(value_of, "native_sky", s.native_sky);
     s.cloud_cover_weather = flag_not_zero(value_of, "cloud_cover_weather", s.cloud_cover_weather);

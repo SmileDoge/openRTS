@@ -1014,8 +1014,7 @@ public:
         // (TEXTURES\NIGHT, \WINTER, ...): RTS reloads them when night falls.
         const renderer::TextureVariant variant{.night = sky_state_ && sky_state_->night && renderer::night_textures(),
                                                .season = clock.season,
-                                               .weather = clock.weather,
-                                               .fullbright_lit = experimental_ && renderer::light_fullbright()};
+                                               .weather = clock.weather};
         library_->set_texture_variant(variant);
         streamer_->set_texture_variant(variant);
         // The textures' size limit changed: every loaded model again, its

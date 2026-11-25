@@ -207,9 +207,9 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 
     let shader = draw.named_shader;
     let material = draw.light_material;
-    // FullBright is unlit unless the panel lights it (frame.shading.y, light_fullbright()).
-    // A night texture (-16) is self-lit whatever the panel says.
-    let unlit = shader == 1 || shader == 3 || shader == 6 || (material == -8 && frame.shading.y < 0.5) || material == -16;
+    // FullBright is unlit (the inspector makes one ordinary per shape), and
+    // so is a night texture (-16).
+    let unlit = shader == 1 || shader == 3 || shader == 6 || material == -8 || material == -16;
     let base = to_linear(texel.xyz) * draw.base_color.xyz;
     var colour = base;
     if (effects.views.x > 0.5 && effects.views.x < 1.5) {

@@ -785,7 +785,6 @@ struct PanelState {
     float night_ambient = 1.0f;  // sky light at night, a factor (experimental renderer)
     float light_range = 0.0f;    // lamps lit within this distance, m; 0: RTS's MaxLightDistance (experimental renderer)
     float headlight_reach = 1.0f; // the trains' headlights reach this many times the .eng's (experimental renderer)
-    bool light_fullbright = false; // FullBright surfaces lit as ordinary ones (experimental renderer)
     bool lamp_own_model = true;    // a scenery lamp throws no shadow of its own model (experimental)
     double loaded_at = -1.0;       // ImGui time the loading screen went (its fade); -1 while it shows
     // Forests keep their trees off tracks and roads (openRTS; RTS plants them
@@ -845,7 +844,6 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.light_range = g.light_range;
     panel.headlight_reach = g.headlight_reach;
     panel.night_ambient = g.night_ambient;
-    panel.light_fullbright = g.light_fullbright;
     panel.lamp_own_model = g.lamp_own_model;
     panel.native_sky = g.native_sky;
     panel.cloud_cover_weather = g.cloud_cover_weather;
@@ -880,7 +878,6 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.light_range = panel.light_range;
     g.headlight_reach = panel.headlight_reach;
     g.night_ambient = panel.night_ambient;
-    g.light_fullbright = panel.light_fullbright;
     g.lamp_own_model = panel.lamp_own_model;
     g.native_sky = panel.native_sky;
     g.cloud_cover_weather = panel.cloud_cover_weather;
@@ -1755,12 +1752,8 @@ public:
             if (slider_with_input(tr("Light in the cab by day"), &panel.effects.indoor_light, 0.0f, 1.0f, "%.2f", "%.2f"))
                 remember("indoor_light", std::to_string(panel.effects.indoor_light));
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("The sun through the windows and the sky's light thrown about the cab or salon you are in, which the shadows alone leave dark. 0: none."));
-            if (ImGui::Checkbox(tr("Light FullBright as ordinary surfaces"), &panel.light_fullbright))
-                remember("light_fullbright", panel.light_fullbright ? "1" : "0");
             if (ImGui::Checkbox(tr("A lamp throws no shadow of its own model"), &panel.lamp_own_model))
                 remember("lamp_own_model", panel.lamp_own_model ? "1" : "0");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("MSTS FullBright surfaces (platforms, signs) take sun, sky and lamps; their darkened night textures are left out."));
             ImGui::EndDisabled();
         }
 
@@ -3649,7 +3642,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::night_ambient_scale() = panel.night_ambient;
         renderer::light_range() = panel.light_range;
         renderer::headlight_reach() = panel.headlight_reach;
-        renderer::light_fullbright() = panel.light_fullbright;
         renderer::night_textures() = panel.night_textures;
         renderer::smooth_train_textures() = panel.smooth_train_textures;
         renderer::texture_compression() = static_cast<renderer::TextureCompression>(std::clamp(panel.compress_textures, 0, 2));

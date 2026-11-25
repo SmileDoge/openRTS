@@ -35,10 +35,6 @@ struct TextureVariant {
     bool night = false;
     rts::Season season = rts::Season::summer;
     rts::Weather weather = rts::Weather::clear;
-    // FullBright surfaces lit as ordinary ones (light_fullbright(), the
-    // experimental path): an image drawn only on them keeps its day texture
-    // at night (its NIGHT one is darkened for being unlit).
-    bool fullbright_lit = false;
     bool operator==(const TextureVariant&) const = default;
 };
 
@@ -49,9 +45,8 @@ struct TextureVariant {
 // other non-zero value SNOW. SNOW: in winter, or when it snows outside
 // summer. An image missing there is taken from the folder itself (openRTS).
 [[nodiscard]] std::vector<std::string> alternative_texture_folders(std::uint32_t flags, const TextureVariant& variant);
-// What a model's textures depend on in this world: its folders, and whether
-// its FullBright-only images keep their day textures at night.
-[[nodiscard]] std::vector<std::string> texture_variant_key(std::uint32_t flags, bool fullbright_images, const TextureVariant& variant);
+// What a model's textures depend on in this world: its folders.
+[[nodiscard]] std::vector<std::string> texture_variant_key(std::uint32_t flags, const TextureVariant& variant);
 
 // A map of openRTS's materials (PBR stage 4, docs/pbr-materials.md) as the
 // GPU takes it: RGBA8 with its mip levels. ORM is always occlusion,
@@ -83,7 +78,6 @@ struct StreamedModelAsset {
     // they gave for the variant it was loaded with, and its light sources.
     std::uint32_t alternative_texture{};
     std::vector<std::string> texture_folders;
-    bool fullbright_images = false;       // some image is drawn only on FullBright surfaces
     std::vector<std::string> texture_key; // texture_variant_key it was loaded with
     std::vector<formats::ShapeLight> lights;
     // The light material each primitive state has in the shape itself,

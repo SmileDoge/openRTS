@@ -88,9 +88,11 @@ The chosen car's lights or the chosen object's lamps, changed live
 ## FullBright made ordinary, per shape
 
 MSTS's FullBright surfaces (light material -8) take neither the sun nor the
-lamps. The panel's "Light FullBright as ordinary surfaces" lights all of
-them; a platform drawn FullBright is better lit as an ordinary surface, a
-sign or a lamp's glass is not. In the inspector a FullBright material has a
+lamps. A platform drawn FullBright is better lit as an ordinary surface, a
+sign, a lamp's glass or a gauge's backlight is not, so this is chosen per
+shape (the panel's "Light FullBright as ordinary surfaces" for all of them,
+which put out the cabs' backlights at night, is gone since v0.45.1). In the
+inspector a FullBright material has a
 "Lit as ordinary" tick: the change shows at once (the shape is reloaded),
 "Save to the mod" keeps it.
 

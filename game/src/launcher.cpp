@@ -1995,9 +1995,6 @@ void Launcher::State::draw_graphics(const float height) {
             group_row(tr("Light in the cab by day"), Load::none, Load::negligible);
             viewer::slider_with_input("##indoor_light", &e.indoor_light, 0.0f, 1.0f, "%.2f", "%.2f");
             row_note(tr("The sun through the windows and the sky's light thrown about the cab or salon you are in, which the shadows alone leave dark. 0: none."));
-            group_row(tr("Light FullBright as ordinary surfaces"), Load::none, Load::none);
-            ImGui::Checkbox("##fullbright", &g.light_fullbright);
-            row_note(tr("MSTS FullBright surfaces (platforms, signs) take sun, sky and lamps; their darkened night textures are left out."));
             group_row(tr("A lamp throws no shadow of its own model"), Load::negligible, Load::none);
             ImGui::Checkbox("##lamp_own_model", &g.lamp_own_model);
             ImGui::EndTable();

@@ -222,7 +222,7 @@ void ModelLibrary::set_texture_variant(const TextureVariant& variant) {
     const auto before = impl.variant_reloads.size();
     for (const auto& [_, model] : impl.models) {
         if (model.alternative_texture() == 0) continue;
-        if (texture_variant_key(model.alternative_texture(), model.fullbright_images(), variant) != model.texture_key()) {
+        if (texture_variant_key(model.alternative_texture(), variant) != model.texture_key()) {
             impl.variant_reloads.push_back(model.source());
         }
     }
@@ -276,7 +276,7 @@ void ModelLibrary::update(const std::size_t uploads) {
             if (impl.models.contains(key) || impl.making_keys.contains(key)) continue;
             // Loaded under another night / season: shown now, reloaded for this one.
             if (asset.alternative_texture != 0
-                && texture_variant_key(asset.alternative_texture, asset.fullbright_images, impl.variant) != asset.texture_key) {
+                && texture_variant_key(asset.alternative_texture, impl.variant) != asset.texture_key) {
                 impl.variant_reloads.push_back(asset.source_path);
             }
             Making each{.key = key, .source = asset.source_path, .dependencies = asset.dependency_keys()};
@@ -295,7 +295,7 @@ void ModelLibrary::update(const std::size_t uploads) {
         if (impl.models.contains(key)) continue;
         // Loaded under another night / season: shown now, reloaded for this one.
         if (asset.alternative_texture != 0
-            && texture_variant_key(asset.alternative_texture, asset.fullbright_images, impl.variant) != asset.texture_key) {
+            && texture_variant_key(asset.alternative_texture, impl.variant) != asset.texture_key) {
             impl.variant_reloads.push_back(asset.source_path);
         }
         if (auto model = impl.renderer.create_model(std::move(asset))) {

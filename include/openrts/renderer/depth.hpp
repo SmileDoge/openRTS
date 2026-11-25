@@ -124,14 +124,6 @@ inline float& headlight_reach() {
     return factor;
 }
 
-// The experimental path lights FullBright surfaces (MSTS light material -8)
-// as ordinary ones: sun, sky and lamps (their night textures are then left
-// out, TextureVariant::fullbright_lit). Read each frame.
-inline bool& light_fullbright() {
-    static bool on = false;
-    return on;
-}
-
 // The models' night textures (TEXTURES\NIGHT) at night, as RTS; off: the
 // day's at night too, lit as the rest (the NIGHT ones have the lamps'
 // light painted in, which the lamps then light again). Read each frame.

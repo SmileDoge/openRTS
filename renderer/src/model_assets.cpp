@@ -72,7 +72,7 @@ namespace {
     result.model = std::move(transfer.model);
     result.alternative_texture = 1;
     result.texture_folders = alternative_texture_folders(result.alternative_texture, variant);
-    result.texture_key = texture_variant_key(result.alternative_texture, false, variant);
+    result.texture_key = texture_variant_key(result.alternative_texture, variant);
     std::vector<core::VirtualPath> candidates;
     if (transfer.texture_folder) {
         if (auto file = transfer.texture_folder->resolve(transfer.texture)) candidates.push_back(std::move(*file));
@@ -95,7 +95,7 @@ namespace {
     result.model = std::move(forest.model);
     result.alternative_texture = 252;
     result.texture_folders = alternative_texture_folders(result.alternative_texture, variant);
-    result.texture_key = texture_variant_key(result.alternative_texture, false, variant);
+    result.texture_key = texture_variant_key(result.alternative_texture, variant);
     std::vector<core::VirtualPath> candidates;
     if (forest.route_textures) {
         if (auto file = forest.route_textures->resolve(forest.texture)) candidates.push_back(std::move(*file));
@@ -186,10 +186,8 @@ std::vector<std::string> alternative_texture_folders(const std::uint32_t flags, 
     }
 }
 
-std::vector<std::string> texture_variant_key(const std::uint32_t flags, const bool fullbright_images, const TextureVariant& variant) {
-    auto key = alternative_texture_folders(flags, variant);
-    if (variant.fullbright_lit && fullbright_images && std::find(key.begin(), key.end(), "NIGHT") != key.end()) key.emplace_back("fullbright-day");
-    return key;
+std::vector<std::string> texture_variant_key(const std::uint32_t flags, const TextureVariant& variant) {
+    return alternative_texture_folders(flags, variant);
 }
 
 std::vector<core::VirtualPath> shape_texture_candidates(const core::VirtualPath& shape,
@@ -267,28 +265,13 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
     }
     result.original_light = formats::apply_shape_override(result.model, own);
 
-    // Images drawn only on FullBright surfaces (light material -8).
-    std::vector<int> fullbright_use(result.model.images.size(), 0); // 1 FullBright only, 2 also other
-    for (const auto& draw : result.model.draws) {
-        if (draw.primitive_state_index >= result.model.primitive_states.size()) continue;
-        const auto& state = result.model.primitive_states[draw.primitive_state_index];
-        if (state.texture_count == 0 || state.texture_index >= result.model.textures.size()) continue;
-        const auto image = result.model.textures[state.texture_index].image_index;
-        if (image >= fullbright_use.size()) continue;
-        const bool fullbright = state.vertex_state_index >= 0
-            && static_cast<std::size_t>(state.vertex_state_index) < result.model.vertex_states.size()
-            && result.model.vertex_states[state.vertex_state_index].light_material_index == -8;
-        fullbright_use[image] = fullbright ? (fullbright_use[image] == 2 ? 2 : 1) : 2;
-    }
-    result.fullbright_images = std::find(fullbright_use.begin(), fullbright_use.end(), 1) != fullbright_use.end();
-    result.texture_key = texture_variant_key(result.alternative_texture, result.fullbright_images, variant);
+    result.texture_key = texture_variant_key(result.alternative_texture, variant);
 
     result.textures.reserve(result.model.images.size());
     for (std::size_t index = 0; index < result.model.images.size(); ++index) {
         const auto& image = result.model.images[index];
         const auto name = image.generic_string();
-        auto folders = result.texture_folders;
-        if (variant.fullbright_lit && fullbright_use[index] == 1) std::erase(folders, std::string("NIGHT"));
+        const auto& folders = result.texture_folders;
         if (repaint.ok()) {
             // A replaced image: its new file beside the repaint, then beside
             // the shape; the others as the shape has them.

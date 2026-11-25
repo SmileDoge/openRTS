@@ -71,8 +71,8 @@ struct GpuVertex {
 // shape matrix (rest pose) and material. One 256-byte slot per primitive in
 // the model's material buffer.
 // The light material of a draw RTS draws unlit at night (its shape has the
-// night bit, rts1.exe 0x4B042C): unlit in both paths, whatever
-// light_fullbright() says (it is not an MSTS index).
+// night bit, rts1.exe 0x4B042C): unlit in both paths (it is not an MSTS
+// index).
 constexpr std::int32_t night_texture_material = -16;
 
 struct MaterialUniform {
@@ -161,7 +161,7 @@ struct FrameUniform {
     float fog_distance[4]; // x: start, y: end (<= 0 disables), z: interior lamps
     glm::mat4 view_projection;
     float eye[4]; // camera position (experimental path: view vector)
-    float shading[4]; // x: night_ambient_scale(), y: light_fullbright(), z: 1 the frame is linear (frame_encoding()), w: 1 PBR (frame_pbr())
+    float shading[4]; // x: night_ambient_scale(), y: unused, z: 1 the frame is linear (frame_encoding()), w: 1 PBR (frame_pbr())
     float fog_sun[4];            // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     float fog_ring[FogRing::count][4]; // the horizon's colour at each fog_ring_angle (display)
     // ModelPortal: centre, (across, half), (up, half), (eye) as columns.
@@ -270,7 +270,6 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
     result.fog_distance[1] = lighting.fog_end;
     result.fog_distance[3] = physical_light_falloff() ? 1.0f : 0.0f;
     result.shading[0] = night_ambient_scale();
-    result.shading[1] = light_fullbright() ? 1.0f : 0.0f;
     result.shading[2] = frame_linear() ? 1.0f : 0.0f;
     result.shading[3] = frame_pbr() ? 1.0f : 0.0f;
     fill_fog_ring(result, lighting.fog_ring, eye);
@@ -1040,13 +1039,10 @@ struct RenderModel::Impl {
     std::vector<std::string> dependencies;
     std::uint32_t alternative_texture{};
     std::vector<std::string> texture_folders;
-    bool fullbright_images = false;
     std::vector<std::string> texture_key;
     // At night a shape with the night bit (ESD_Alternative_Texture 0x100) is
-    // drawn unlit, all of it (rts1.exe 0x4B042C); FullBright draws keep their
-    // material when they are lit as ordinary ones (fullbright-day).
+    // drawn unlit, all of it (rts1.exe 0x4B042C).
     bool night_unlit = false;
-    bool fullbright_day = false;
     std::vector<formats::ShapeLight> lights;
     std::vector<ModelPrimitive> primitives;
     std::vector<std::string> material_messages; // what was wrong with its material files
@@ -1120,7 +1116,6 @@ const formats::ShapeModel* RenderModel::rig() const noexcept {
 
 std::uint32_t RenderModel::alternative_texture() const noexcept { return impl_ ? impl_->alternative_texture : 0u; }
 
-bool RenderModel::fullbright_images() const noexcept { return impl_ && impl_->fullbright_images; }
 
 const std::vector<ModelPrimitive>& RenderModel::primitives() const noexcept {
     static const std::vector<ModelPrimitive> none;
@@ -2032,9 +2027,7 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
         const auto& draw = gpu.draws[i];
         // At night a shape with the night bit is drawn unlit (RTS 0x4B042C:
         // NamedShader 3): the Rostov backdrop's lit city, lit windows.
-        const auto uniform = material_uniform(draw, gpu.night_unlit && !(gpu.fullbright_day && draw.material.light_material == -8)
-                                                        ? night_texture_material
-                                                        : draw.material.light_material);
+        const auto uniform = material_uniform(draw, gpu.night_unlit ? night_texture_material : draw.material.light_material);
         std::memcpy(materials.data() + i * material_stride, &uniform, sizeof(uniform));
     }
     gpu.slot_count = static_cast<std::uint32_t>(gpu.draws.size());
@@ -2236,7 +2229,6 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     gpu->source = asset.source_path;
     gpu->alternative_texture = asset.alternative_texture;
     gpu->texture_folders = asset.texture_folders;
-    gpu->fullbright_images = asset.fullbright_images;
     gpu->texture_key = asset.texture_key;
     gpu->lights = asset.lights;
     gpu->dependencies = asset.dependency_keys();
@@ -2326,7 +2318,6 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
         return std::find(list.begin(), list.end(), item) != list.end();
     };
     gpu->night_unlit = (asset.alternative_texture & 0x100u) != 0 && has(asset.texture_folders, "NIGHT");
-    gpu->fullbright_day = has(asset.texture_key, "fullbright-day");
 
     impl_->create_draws(*gpu, asset);
     if (gpu->draws.empty()) return result;
