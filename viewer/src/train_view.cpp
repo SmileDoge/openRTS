@@ -2013,6 +2013,22 @@ const dllhost::CarOutput* TrainView::cab_state(const std::size_t car) const {
                                          *asked->cab_brakes, patched_output_.displays);
             return &patched_output_;
         }
+        // A cab whose devices do not work (another section's, not driven:
+        // LocoFlags without 1) still shows its car's air, as Brakes.dll's
+        // gauges do there (the pipe, the main reservoir, the cylinder; its
+        // УР 0). Before 2026-11-26 they all stood at 0 (testers: "ВЛ10 при
+        // смене кабины у второй кабины воздух по нулям", "ГР все по 0").
+        if (definition && definition->engine && legacy_->own_brakes() && (out->loco_flags & 1u) == 0) {
+            const auto& parameters = brakes_parameters_of(*definition->engine);
+            const auto& state = units_.front().train->cars()[car];
+            simulation::CabBrakeOutput air;
+            air.gauge_pipe = state.pipe;
+            air.gauge_main_reservoir = state.main_reservoir;
+            air.gauge_cylinder = (std::max)(state.cylinder, state.independent);
+            patched_output_ = *out;
+            trainplugin::show_cab_brakes(parameters, SIZE_MAX, air, patched_output_.displays);
+            return &patched_output_;
+        }
     }
     // openRTS's valve over Brakes.dll: its УР gauge (BR_MANU1) shows the
     // valve's УР, not the one the DLL keeps for itself.
@@ -6440,6 +6456,47 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     }
     const SceneInput& input = car_menu_ ? menu_input : given_input;
     frame_elapsed_ = elapsed;
+    // OPENRTS_CHANGE_CAB=<car>:<seconds> (automated runs): the driven train's
+    // cab changed to that car (1..) at that time, as walking there does;
+    // every 5 s each engine's main reservoir and the player's gauges.
+    if (static const char* hook = std::getenv("OPENRTS_CHANGE_CAB"); hook && !units_.empty() && units_.front().train) {
+        static double clock = 0.0, logged = 0.0;
+        static bool changed = false;
+        clock += elapsed;
+        const auto colon = std::string_view(hook).find(':');
+        const auto target = static_cast<std::size_t>(std::atoi(hook)) - 1;
+        const double at = colon == std::string_view::npos ? 30.0 : std::atof(hook + colon + 1);
+        if (!changed && clock >= at) {
+            changed = true;
+            std::cout << "change cab hook: to car " << target + 1 << std::endl;
+            change_cab(target);
+        }
+        if (clock - logged >= 5.0) {
+            logged = clock;
+            std::cout << "change cab hook " << static_cast<int>(clock) << " s:";
+            const auto& cars = units_.front().train->cars();
+            for (std::size_t i = 0; i < cars.size(); ++i)
+                if (cars[i].definition && cars[i].definition->engine) std::cout << " car " << i + 1 << " MR " << cars[i].main_reservoir << " TM " << cars[i].pipe;
+            if (legacy_) {
+                std::cout << "; player " << legacy_->player() + 1;
+                if (const auto* out = legacy_->output(legacy_->player())) {
+                    std::cout << " flags " << out->loco_flags << " gauges";
+                    for (const std::size_t id : {20u, 21u, 22u, 23u})
+                        if (id < out->displays.size()) std::cout << ' ' << id << '=' << out->displays[id].value;
+                }
+                for (std::size_t i = 0; i < cars.size(); ++i)
+                    if (const auto* o = legacy_->output(i)) std::cout << " | car " << i + 1 << " flags " << o->loco_flags;
+                if (const auto* shown = cab_state(legacy_->player())) {
+                    std::cout << "; shown";
+                    for (const std::size_t id : {20u, 21u, 22u, 23u})
+                        if (id < shown->displays.size()) std::cout << ' ' << id << '=' << shown->displays[id].value;
+                    if (const auto* asked = units_.front().train->demands_of(legacy_->player()))
+                        std::cout << " cab_brakes " << (asked->cab_brakes ? 1 : 0);
+                }
+            }
+            std::cout << std::endl;
+        }
+    }
     load_brake_choices();
     if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
     if (legacy_) legacy_->set_own_brakes(own_brakes_ == 1, brake_numbers_ == 1);

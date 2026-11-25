@@ -91,7 +91,9 @@ the place stepped to (`0x434C58`, the cab's frame):
 - of the planes holding it, the highest under his feet + 0.4 `Height`
   (any way down); then an open door's plane (+44) above that one; then a
   ledge (`+104` count, `+200`, 24 bytes) within 0.3 m (four cabs have
-  them; not in openRTS).
+  them: the ЧС2's engine room is walked by its two `InteriorLedges` alone,
+  no plane there; openRTS since 2026-11-26, along the ledge when a step
+  leaves its 0.3 m).
 
 Then (`sub_4322F0`, the cab's branch): held, he goes there at its height.
 Not held, from a plane he is brought into that plane's rectangle (`0x4350E0`:
@@ -237,7 +239,7 @@ Since 2026-11-14, a cab's door from the ground and back as RTS does it
   2ES4K in and out with the content.
 
 Not done: the speeds to get on and off (`MaxSpeedToGetOn` /
-`MaxSpeedToGetOff`), the track's bed, a cab's ledges and a car's own boxes
+`MaxSpeedToGetOff`), the track's bed and a car's own boxes
 (kind 9, 17), the salon's side (−7), and over to the next car's cab from
 its outside. The eye is `Height` above his feet everywhere but in a cab
 without planes (0.85 `Height`); before 2026-11-11 also outside (0.27 m

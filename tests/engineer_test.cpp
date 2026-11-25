@@ -935,5 +935,47 @@ int main(int argc, char** argv) {
     }
 
     std::printf("%s\n", failures ? "FAILED" : "passed");
+    // The ЧС2 (request 2026-11-26-3, "невозможно пройти по кузову"): its engine
+    // room has no InteriorPlane, only two InteriorLedges along its sides
+    // (cabals.sd, x ±1.22, z 6.70 .. -6.70); RTS walks them within 0.3 m
+    // (0x434C58). From the first cab through DOORCAB1, along the right ledge,
+    // through DOORCAB4 into the second cab.
+    if (const auto chs2 = formats::load_wagon(vfs, "tsrLoco_CHS2-010", "tsrLoco_chs2-010", true); chs2.ok()) {
+        if (auto cab2 = viewer::CabView::create(vfs, chs2, formats::wagon_path("tsrLoco_CHS2-010", "tsrLoco_chs2-010", true))) {
+            check(cab2->description().ledges.size() == 2, "ЧС2: two InteriorLedges in the engine room");
+            std::size_t first = SIZE_MAX, second = SIZE_MAX;
+            for (std::size_t i = 0; i < cab2->description().doors.size(); ++i) {
+                if (cab2->description().doors[i].name == "DOORCAB1") first = i;
+                if (cab2->description().doors[i].name == "DOORCAB4") second = i;
+            }
+            check(first != SIZE_MAX && second != SIZE_MAX, "ЧС2: DOORCAB1 and DOORCAB4");
+            if (first != SIZE_MAX && second != SIZE_MAX) {
+                if (!cab2->door_open(first)) cab2->toggle_door(first);
+                if (!cab2->door_open(second)) cab2->toggle_door(second);
+                for (int i = 0; i < 120; ++i) cab2->step_doors(1.0f / 60.0f);
+                Engineer man;
+                man.configure("engineer.Height = 1.81\r\nengineer.Height1 = 0.81\r\n");
+                man.enter_cab(*cab2, first, {1.2f, 1.2f, 7.3f});
+                viewer::ViewerCamera eye_cam;
+                eye_cam.fly = true;
+                eye_cam.yaw = 0.0f; // -Z
+                const viewer::Outdoors none{.floor = [](const glm::vec3&) -> std::optional<float> { return -0.3f; },
+                                            .blocked = [](const glm::vec3&, const glm::vec3&) { return false; }};
+                float lowest = 10.0f;
+                for (int i = 0; i < 60 * 12; ++i) {
+                    man.update(*cab2, {.forward = true}, glm::mat4{1.0f}, none, 1.0f / 60.0f, eye_cam);
+                    (void)man.take_event();
+                    lowest = (std::min)(lowest, man.feet().y);
+                }
+                std::printf("  ЧС2 through the engine room  feet (%.2f %.2f %.2f)\n", man.feet().x, man.feet().y, man.feet().z);
+                check(man.feet().z < -7.1f && std::abs(man.feet().y - 1.2f) < 0.01f && lowest > 1.19f,
+                      "ЧС2: along the ledge through the engine room into the second cab");
+            }
+        } else {
+            check(false, "ЧС2: its cab");
+        }
+    } else {
+        std::printf("no tsrLoco_CHS2-010 here: its engine room not checked\n");
+    }
     return failures ? 1 : 0;
 }
