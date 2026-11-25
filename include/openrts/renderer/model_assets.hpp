@@ -162,6 +162,17 @@ struct MaterialTangents {
 // for normal maps. Nothing when no file says anything.
 void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, TextureDecodeCache* cache = nullptr);
 
+// A ground texture's material (TERRTEX, docs/pbr-materials.md): the files
+// by its name in MATERIALS, beside it in TERRTEX, then beside its season's
+// variant, over the ground's own (Lambert, terrain_surface_material). Its
+// normal and ORM maps as the GPU takes them (null: none, or they failed).
+struct TerrainMaterialAsset {
+    formats::Material material;
+    bool found = false; // a material file was read
+    std::shared_ptr<const formats::AceDecodeResult> normal, orm;
+};
+[[nodiscard]] TerrainMaterialAsset load_terrain_material(const core::Vfs& vfs, const core::VirtualPath& texture);
+
 // Worker-thread job: parses the shape and decodes every texture it uses.
 // `shape` may be an RTS .repaint: the Shape and ShapeDescription it names,
 // with its TextureReplace images; the model keeps the repaint's path.

@@ -10216,7 +10216,7 @@ void TrainView::apply_default_systems(const SceneInput& input) {
 // 0x4FFDF8), fading and cycling their States (0x4FF9B8). Type 0 glows as
 // its LightTexture, flat, facing where the light points (seen from the
 // front only); types 1..4 light the scene through the shape shaders (RTS
-// lights.glsl), the nearest nine.
+// lights.glsl), the nearest 64 (RTS: nine).
 void TrainView::update_neighbour_rooms(const float elapsed, const glm::vec3& eye) {
     neighbour_rooms_now_.clear();
     neighbour_room_keys_.clear();
@@ -10630,7 +10630,11 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
         for (std::size_t k = 0; k < arc_lights.size(); ++k) beams.push_back({arc_lights[k], arc_distances[k]});
     }
     std::sort(beams.begin(), beams.end(), [](const Beam& x, const Beam& y) { return x.distance < y.distance; });
-    for (std::size_t k = 0; k < beams.size() && k < 9; ++k) light_beams_.push_back(beams[k].light);
+    // RTS's shaders take the nearest nine; openRTS's clustered lights take
+    // many more (testers: a standing train's wagons' lamps went out), the
+    // per-object rings keep their own capacity.
+    constexpr std::size_t beam_limit = 64;
+    for (std::size_t k = 0; k < beams.size() && k < beam_limit; ++k) light_beams_.push_back(beams[k].light);
 }
 
 // openRTS's pantograph arcs (pantograph_arcs.hpp). Each pantograph's head

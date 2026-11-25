@@ -1106,6 +1106,7 @@ std::vector<CarInput> LegacyConsist::inputs(const std::vector<const simulation::
         in.charging_pipe = c.charging_pipe;
         in.handbrake = c.handbrake;
         in.main_reservoir = c.main_reservoir;
+        in.sand_left = c.sand_left;
         in.wheelslip = c.wheelslip;
         // openRTS's 395 over Brakes.dll (own_valve; its demands of the last
         // step): the DLL's own valve gets its УР, which it keeps in

@@ -303,10 +303,30 @@ your own elsewhere is never changed (the mod's copy wins over it).
   message counts them).
 - Hot reload: the material files and maps are the model's dependencies.
 
+## The ground (TERRTEX, 2026-11-25)
+
+A ground texture takes a material file as a model's texture does, by its
+name: `ROUTES/<route>/TERRTEX/grass.material.json5` beside `grass.ace`,
+over it the season's (`TERRTEX/SNOW/grass.material.json5` when the snow's
+texture is drawn), under them `MATERIALS/grass.material.json5`.
+
+- Read: `normal` (`normal_y`, `normal_strength`), the ORM maps (`orm` and
+  its `layout`, or `ao_map`, `roughness_map`, `metallic_map`; occlusion by
+  `ao_strength`), `roughness`, `metallic`, `reflectance`, `specular`.
+- The maps lie over the ground texture as it does (the same coordinates;
+  the microtexture is not under them).
+- The ground's own is Lambert alone (no reflection). A file that does not
+  give `specular` makes it 1: the surface reflects as its roughness says.
+- Drawn by openRTS's lighting (the experimental path); RTS's lighting draws
+  the ground as before. The normal map's frame comes from the screen (the
+  terrain has no tangents).
+- Not read for the ground: `base_color`, `emissive`, `height`, `snow`.
+- Read once, when the texture is first drawn (no hot reload).
+
 ## Not yet
 
 - `alpha_mode`, `alpha_cutoff`, `double_sided` (the pipelines are RTS's).
 - Wetness (`wet`): the rain's darkening and gloss.
 - DDS maps (an ACE of openRTS's block formats is read, `docs/reverse/ace.md`).
-- Materials of the ground (terrain), and of transfers and forests.
+- Materials of transfers and forests; the ground's height and snow maps.
 - glTF back into a shape (export only).

@@ -662,4 +662,48 @@ void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, Textu
     tell(messages);
 }
 
+TerrainMaterialAsset load_terrain_material(const core::Vfs& vfs, const core::VirtualPath& texture) {
+    TerrainMaterialAsset out;
+    std::vector<std::string> messages;
+    const auto name = formats::texture_material_name(texture.filename());
+    // The texture's own folder, and TERRTEX when it is a season's folder in it.
+    std::vector<core::VirtualPath> files = named_materials(vfs, name, std::string());
+    const auto folder = texture.parent();
+    if (core::fold_case(folder.filename()) != "terrtex" && core::fold_case(folder.parent().filename()) == "terrtex")
+        if (auto file = folder.parent().resolve(name)) files.push_back(*file);
+    if (auto file = folder.resolve(name)) files.push_back(*file);
+    std::vector<formats::MaterialPatch> patches;
+    for (const auto& file : files) {
+        if (auto patch = read_texture_material(vfs, file, messages)) patches.push_back(std::move(*patch));
+    }
+    formats::Material ground;
+    ground.roughness = terrain_surface_material.roughness;
+    ground.metallic = terrain_surface_material.metallic;
+    ground.reflectance = terrain_surface_material.reflectance;
+    ground.specular = terrain_surface_material.specular;
+    out.material = formats::resolve_material(ground, patches);
+    out.found = !patches.empty();
+    // The ground's own is Lambert alone (specular 0); a file that does not
+    // say otherwise wants its surface to reflect as its numbers make it.
+    if (out.found && std::none_of(patches.begin(), patches.end(), [](const auto& p) { return p.specular.has_value(); }))
+        out.material.specular = 1.0f;
+    if (out.found) {
+        const auto& m = out.material;
+        const auto map = [&](const MaterialMapKind kind) -> std::shared_ptr<const formats::AceDecodeResult> {
+            std::string note;
+            auto image = build_map(vfs, kind, m, note);
+            if (!note.empty()) messages.push_back(note);
+            if (!image->ok()) {
+                messages.push_back(image->error);
+                return nullptr;
+            }
+            return image;
+        };
+        if (m.normal) out.normal = map(MaterialMapKind::normal);
+        if (m.packed_maps()) out.orm = map(MaterialMapKind::orm);
+    }
+    tell(messages);
+    return out;
+}
+
 } // namespace openrts::renderer

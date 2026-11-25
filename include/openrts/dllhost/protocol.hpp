@@ -407,6 +407,10 @@ struct CarInput {
     float brake_force{}, brake_cylinder{}, independent{}, auxiliary{}, control{};
     float train_pipe{}, charging_pipe{}, handbrake{};
     float main_reservoir{};       // locomotives
+    // Locomotive::SandLeft (s of sand; RTS starts it at MaxSandingTime):
+    // the DLLs read it (the ЭС4К's sanding and horn at an emergency need
+    // more than 1 s left).
+    float sand_left = -1.0f;
     float line_voltage{}, line_frequency{}; // electric
     float line_current{};         // electric: Locomotive::LineCurrent (RTS 0x503CE4, before Run)
     std::uint8_t line_burnt{};    // electric: the pantograph burnt the wire (LocoFlags 0x200)
