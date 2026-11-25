@@ -56,6 +56,7 @@
 #include "track_view.hpp"
 #include "exit_codes.hpp"
 #include "players_panel.hpp"
+#include "cargo_view.hpp"
 #include "crossing_view.hpp"
 #include "speed_post_view.hpp"
 #include "particle_effects.hpp"
@@ -488,6 +489,9 @@ public:
         camera.fly = true;
         if (track_) {
             train_ = std::make_unique<TrainView>(content_.vfs(), route_, origin_, track_->network());
+            // Cargo before any train: the cars' loading comes from its catalogue.
+            cargo_ = std::make_unique<CargoView>(content_.vfs(), route_);
+            train_->set_cargo_catalog(&cargo_->catalog());
             train_->set_rts_config(content_.rts_config());
             train_->set_install_root(content_.root());
             // A shape the route places too stays while the route keeps it.
@@ -727,6 +731,7 @@ public:
         if (world_sounds_ && audio_) world_sounds_->stop(*audio_);
         if (train_ && audio_) train_->stop_sound(*audio_);
         if (crossings_ && audio_) crossings_->stop_sound(*audio_);
+        if (cargo_ && audio_) cargo_->stop_sound(*audio_);
         weather_stop(weather_out_);
         weather_stop(weather_in_);
         if (thunder_ && audio_) thunder_->stop(*audio_);
@@ -737,6 +742,7 @@ public:
             signals_->set_player({});
         }
         train_.reset();
+        cargo_.reset();
         world_sounds_.reset();
         audio_ = nullptr;
         signals_.reset();
@@ -872,7 +878,17 @@ public:
             if (input.car_menu) {
                 // Aimed with the cursor when it is over the scene, else the screen's middle.
                 const glm::vec2 aim = input.pointer ? glm::vec2{input.pointer_x, input.pointer_y} : glm::vec2{0.0f};
-                train_->car_menu_key(last_eye_, last_view_projection_, aim);
+                // A pickup or a car's menu, whichever shows nearer the aim
+                // (RTS 0x415A34 picks over both; off the cab only).
+                const auto pickup = cargo_ && !train_->car_menu_open() && !train_->viewing_inside()
+                                        ? cargo_->pick(last_eye_, last_view_projection_, aim)
+                                        : std::nullopt;
+                const auto car = pickup ? train_->car_menu_score(last_eye_, last_view_projection_, aim) : std::nullopt;
+                if (pickup && (!car || *pickup < *car)) {
+                    cargo_->use(input.car_menu_unload, *train_);
+                } else {
+                    train_->car_menu_key(last_eye_, last_view_projection_, aim);
+                }
             }
         }
         if (train_) {
@@ -1074,6 +1090,7 @@ public:
             crossings_->update(clock.elapsed, streamer_->visible_instances(), trains, camera.eye(), audio_, outside_gain);
         }
         if (roads_ && effects_.traffic) roads_->update(clock.elapsed, streamer_->visible_instances(), crossings_.get(), *library_);
+        if (cargo_ && train_) cargo_->update(clock.elapsed, streamer_->visible_instances(), *library_, *train_, camera.eye(), audio_, outside_gain);
         if (precipitation_ || smoke_) {
             // The light on a surface facing up, as RTS's prec / smoke shaders take it.
             const auto& lighting = environment().lighting;
@@ -1354,6 +1371,10 @@ public:
                 renderer.set_moving(true);
                 renderer.submit(*model, instance.transform, *gates);
                 renderer.set_moving(false);
+            } else if (const auto crane = cargo_ ? cargo_->adjustments(instance, *library_) : std::nullopt) {
+                renderer.set_moving(true);
+                renderer.submit(*model, instance.transform, *crane);
+                renderer.set_moving(false);
             } else if (const auto hidden = signals_ ? signals_->hidden_parts(instance, *library_)
                                                     : std::vector<renderer::NodeAdjustment>{};
                        !hidden.empty()) {
@@ -1374,6 +1395,7 @@ public:
                             .shadow_range = frame.shadow_range});
             renderer.set_train(false);
         }
+        if (cargo_) cargo_->submit(renderer, *library_);
         if (roads_ && effects_.traffic) roads_->submit(renderer, *library_, culling_ ? &frustum : nullptr, frame.eye, culling_ ? draw_distance : 0.0f);
         renderer.set_moving(false);
         if (signals_) signals_->collect_lights(streamer_->visible_instances(), *library_, frame.eye, draw_distance, frame.view_zoom);
@@ -2326,6 +2348,7 @@ public:
             tape_view_.draw(train_ && train_->tape_rolling() ? train_->tape_path() : none, content_.root());
         }
         if (train_) train_->draw_hud();
+        if (cargo_ && train_) cargo_->draw_ui(*train_);
         if (activity_) activity_->draw();
         if (developer_mode()) content_.draw_overlay(library_.get()); // the content: VFS, hot reload
 #endif
@@ -3317,6 +3340,7 @@ private:
     std::unique_ptr<SignalView> signals_;
     bool snapshot_signals_ = false; // the snapshot's aspects wait for the signals to load
     std::unique_ptr<CrossingView> crossings_;
+    std::unique_ptr<CargoView> cargo_; // pickups and the cars' cargo (docs/cargo.md)
     std::unique_ptr<SpeedPostView> posts_;                        // the speed posts' numbers
     std::unique_ptr<renderer::ScreenQuadRenderer> post_digits_;
     std::unordered_map<std::string, std::uint32_t> post_textures_; // ACE path key -> texture (0: failed)

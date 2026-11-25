@@ -152,6 +152,28 @@ struct OpenrtsCarAction {
 };
 [[nodiscard]] Bytes encode_openrts_car_action(const OpenrtsCarAction& action);
 [[nodiscard]] std::optional<OpenrtsCarAction> decode_openrts_car_action(ByteView body);
+// 0x461C car_cargo with openRTS's own body (2026-11-26): the server reads
+// its first two fields (u32 train, u32 car), keeps the last of each car and
+// gives them to those who join (snapshot.hpp); then u8 'o', u8 version 1,
+// u32 n and n loads: u16 cargo (formats::CargoKind's code), text_u16
+// object id, i32 area, f32 volume m³, f32 mass kg, i32 count, f32 x 3 its
+// place, f32 x 3 its size (simulation::CarLoad). All the car's loads: they
+// replace what it had.
+struct OpenrtsCarCargo {
+    std::uint32_t train{}, car{};
+    struct Load {
+        std::uint16_t cargo{};
+        std::string object;
+        std::int32_t area{};
+        float volume{}, mass{};
+        std::int32_t count = 1;
+        std::array<float, 3> position{}, extent{};
+    };
+    std::vector<Load> loads;
+};
+[[nodiscard]] Bytes encode_openrts_car_cargo(const OpenrtsCarCargo& cargo);
+// nullopt: not openRTS's (RTS's own body) or broken.
+[[nodiscard]] std::optional<OpenrtsCarCargo> decode_openrts_car_cargo(ByteView body);
 [[nodiscard]] std::optional<TrainStatePart> decode_train_state(ByteView body);
 // 0x4617 car_light, as rts1.exe sends it: the receiver takes the radius,
 // colour and position too (0x4C3DE0).

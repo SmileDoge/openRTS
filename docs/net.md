@@ -487,6 +487,19 @@ Between openRTS's server and openRTS players; `rts1.exe` and
   `OPENRTS_MP_TAKE_HELPERS` takes every helper, `OPENRTS_MP_HELP_SWITCH=
   <id>:<state>` works that switch once the cab is here.
 
+## Cargo (openRTS's body of `0x461C`, 2026-11-26)
+
+A car loaded at a pickup (`cargo.md`) sends `0x461C car_cargo`, as RTS
+does, with openRTS's body (`net::OpenrtsCarCargo`): `u32` the server's
+train, `u32` the car (the server reads these two, keeps each car's last
+and gives them to those who join with the snapshot), `u8 'o'`, `u8` 1,
+`u32 n` and n loads: `u16` the cargo kind's code, `text_u16` the cargo
+object's id, `i32` area, `f32` volume m³, `f32` mass kg, `i32` count,
+three `f32` its place and three its size. All the car's loads, replacing
+what it had; at most twice a second per car while one pours. A body that
+is not openRTS's (RTS's own) is left alone. A train placed later (another
+player's not yet on the screen) gets the bodies kept with its record.
+
 ## Tests
 
 - `openrts.net`: fields and strings both ways, nested packages, broken

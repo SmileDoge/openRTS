@@ -20,6 +20,7 @@ add_library(openrts_renderer STATIC
     src/model_assets.cpp
     src/model_materials.cpp
     src/transfer_shape.cpp
+    src/cargo_shape.cpp
     src/forest_shape.cpp
     src/forest_clearance.cpp
     src/scene_effects.cpp

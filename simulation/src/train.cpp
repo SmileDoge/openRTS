@@ -488,6 +488,10 @@ Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
             // Charged to the governor's cut-out (a cold start empties it).
             car.main_reservoir = compressor_range(&*setup.definition->engine).off;
             car.sand_left = setup.definition->engine->max_sanding_time;
+            if (setup.definition->engine->kind == formats::EngineKind::diesel) {
+                const float tank = setup.definition->engine->max_diesel_level;
+                car.fuel_left = tank > 0.0f ? tank : 5000.0f;
+            }
         }
         cars_.push_back(car);
     }
@@ -629,6 +633,27 @@ void Train::set_handbrake(const std::size_t car, const float value) {
     if (car >= cars_.size()) return;
     cars_[car].handbrake = std::clamp(value, 0.0f, 1.0f);
     asleep_ = false;
+}
+
+float Train::add_fuel(const std::size_t car, const float litres) {
+    if (car >= cars_.size() || cars_[car].fuel_left < 0.0f || litres <= 0.0f) return 0.0f;
+    auto& c = cars_[car];
+    const float tank = c.definition && c.definition->engine && c.definition->engine->max_diesel_level > 0.0f
+                           ? c.definition->engine->max_diesel_level
+                           : 5000.0f;
+    const float added = std::clamp(tank - c.fuel_left, 0.0f, litres);
+    c.fuel_left += added;
+    return added;
+}
+
+float Train::add_sand(const std::size_t car, const float seconds) {
+    if (car >= cars_.size() || seconds <= 0.0f) return 0.0f;
+    auto& c = cars_[car];
+    // Unlimited sand (no MaxSandingTime) takes none.
+    if (!c.definition || !c.definition->engine || c.definition->engine->max_sanding_time <= 0.0f || c.sand_left < 0.0f) return 0.0f;
+    const float added = std::clamp(c.definition->engine->max_sanding_time - c.sand_left, 0.0f, seconds);
+    c.sand_left += added;
+    return added;
 }
 
 void Train::scatter_ep_fill(const std::uint32_t seed) {
@@ -1192,6 +1217,7 @@ void Train::save_state(StateWriter& out) const {
         out.put(p + "shoes", c.shoe_state[0].wet, c.shoe_state[0].heat, c.shoe_state[0].wear, c.shoe_state[0].burning,
                 c.shoe_state[1].wet, c.shoe_state[1].heat, c.shoe_state[1].wear, c.shoe_state[1].burning, c.slid);
         out.put(p + "sand", c.sand_left, c.sand_travel);
+        out.put(p + "fuel", c.fuel_left);
         out.put(p + "wear", c.wear.pipe_leak, c.wear.reservoir_leak, c.wear.cylinder_leak, c.wear.pace, c.wear.sensitivity, c.wear.rigging);
     }
     impl.air.save(out);
@@ -1235,6 +1261,7 @@ void Train::restore_state(const StateReader& in) {
         in.get(p + "shoes", c.shoe_state[0].wet, c.shoe_state[0].heat, c.shoe_state[0].wear, c.shoe_state[0].burning,
                c.shoe_state[1].wet, c.shoe_state[1].heat, c.shoe_state[1].wear, c.shoe_state[1].burning, c.slid);
         in.get(p + "sand", c.sand_left, c.sand_travel);
+        in.get(p + "fuel", c.fuel_left);
         in.get(p + "wear", c.wear.pipe_leak, c.wear.reservoir_leak, c.wear.cylinder_leak, c.wear.pace, c.wear.sensitivity, c.wear.rigging);
         c.acceleration = 0.0f;
         c.body[0] = c.body[1] = c.body[2] = 0.0f;
@@ -1385,6 +1412,9 @@ void Train::step() {
         // Sanding (RTS 0x424488): the sand runs out over MaxSandingTime; the
         // sanded rail lasts the engine's length of travel after it stops.
         // Adhesion x the .eng's sanding factor (Adheasion's third value).
+        // A diesel burns its fuel as its DLL says (RTS 0x424488: FuelAmount
+        // -= FuelConsuming * dt).
+        if (car.fuel_left > 0.0f && demands.fuel_rate > 0.0f) car.fuel_left = (std::max)(car.fuel_left - demands.fuel_rate * dt, 0.0f);
         if (demands.sanding && car.sand_left != 0.0f) {
             if (car.sand_left > 0.0f) car.sand_left = (std::max)(car.sand_left - dt, 0.0f);
             car.sanding = true;

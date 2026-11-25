@@ -516,6 +516,7 @@ void read_exhausts(std::string_view text, TextRange block, EngineDefinition& eng
     engine.max_current = static_cast<float>(values(text, "maxcurrent").atof());
     engine.sanding_speed = static_cast<float>(values(text, "sanding").quantity());
     if (auto sand = values(text, "maxsandingtime"); sand.found()) engine.max_sanding_time = static_cast<float>(sand.atof());
+    if (auto fuel = values(text, "maxdiesellevel"); fuel.found()) engine.max_diesel_level = static_cast<float>(fuel.atof());
     engine.main_reservoir_volume = static_cast<float>(values(text, "airbrakesmainresvolume").atof());
     engine.main_reservoir_max = pressure_atm(values(text, "airbrakesmainmaxairpressure").token());
     engine.compressor_restart = pressure_atm(values(text, "airbrakescompressorrestartpressure").token());

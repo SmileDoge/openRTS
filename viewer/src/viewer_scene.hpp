@@ -111,7 +111,8 @@ struct SceneInput {
     bool toggle_follow = false;  // V
     bool toggle_track = false;   // T
     bool toggle_labels = false;  // L: junction and signal labels
-    bool car_menu = false;       // Num3 / `: the car menu at a coupling or bogie (edge)
+    bool car_menu = false;       // Num3 / `: the car menu at a coupling or bogie, or a pickup (edge)
+    bool car_menu_unload = false; // with Ctrl (Alt+` in openRTS's keys): a pickup's unloading (RTS Ctrl+Num3)
     bool walk_collision = false; // Num/ / Shift+=: on foot, collide with the world's objects or not (edge)
     bool flashlight = false;     // Num2 / Shift+`: RTS's flashlight on or off (edge)
     bool clock = false;          // Num4 / Shift+-: the world's time on the screen or not (edge; the viewer's)

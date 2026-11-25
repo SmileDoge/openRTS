@@ -118,8 +118,9 @@ openRTS: `viewer/src/crossing_view.cpp`.
 
 ## Pickups
 
-`Pickup` objects are drawn as their shape at rest. Their animation
-(`PickupAnimData`, filling a tender) is not done.
+`Pickup` objects are drawn as their shape at rest. They load cars as RTS
+does, as do objects whose `.sd` has `ESD_Pickup_Object` (`cargo.md`).
+Their animation (`PickupAnimData`, filling a tender) is not done.
 
 ## Road traffic
 

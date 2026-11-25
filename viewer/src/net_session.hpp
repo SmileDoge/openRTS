@@ -252,6 +252,11 @@ private:
     std::map<std::size_t, const void*> cab_doors_view_; // the cab's view last seen per car
     void send_states(TrainView& trains, double t);
     void put_back_state(std::uint32_t id, TrainView& trains);
+    // A car's cargo from the network (0x461C, openRTS's body): on its train
+    // here, else kept with the train's record till it is placed.
+    void apply_cargo(net::ByteView body, TrainView& trains);
+    // The cargo the server kept for a train (its snapshot record), on it.
+    void apply_record_cargo(const std::vector<net::Bytes>& bodies, TrainView& trains);
     // The folder of an own train's states kept here: by its name and cars.
     [[nodiscard]] std::filesystem::path kept_states_folder(const Owned& own, const TrainView& trains) const;
     void keep_state(const Owned& own, const TrainView& trains, const std::string& text, double t, bool dated);

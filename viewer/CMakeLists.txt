@@ -9,6 +9,7 @@ add_library(openrts_viewer_core STATIC
     src/players_panel.cpp
     src/track_view.cpp
     src/crossing_view.cpp
+    src/cargo_view.cpp
     src/road_traffic.cpp
     src/particle_effects.cpp
     src/thunder_view.cpp

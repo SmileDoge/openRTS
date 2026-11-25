@@ -29,6 +29,7 @@
 | [net.md](net.md) | сетевая игра на сервере RTS: протокол, снимок мира, свои и чужие поезда, сцепка, звук, электроснабжение, `openrts-net-dump` |
 | [server.md](server.md) | сервер openRTS (Legacy): запуск, команды диспетчера, что он решает и пересылает |
 | [world-objects.md](world-objects.md) | леса, переезды, автомобили, вода, осадки и дым |
+| [cargo.md](cargo.md) | грузы и погрузка: пункты погрузки, Num3, окно крана, свои грузы openRTS |
 | [weather.md](weather.md) | погода и гроза: молнии, их свет на облаках и сцене, канал, сеть |
 | [experimental-effects.md](experimental-effects.md) | новый рендер: что делает и сколько стоит |
 | [pbr-materials.md](pbr-materials.md) | материалы openRTS (PBR): файлы JSON5, карты, выгрузка модели в glTF, инспектор |
@@ -53,6 +54,7 @@
 | [brakes.md](reverse/brakes.md) | тормоза в RTS |
 | [air-brakes-real.md](reverse/air-brakes-real.md) | настоящие пневматические тормоза 1520 мм (не RTS) |
 | [car-menu.md](reverse/car-menu.md) | меню вагона (Num3) |
+| [cargo.md](reverse/cargo.md) | грузы, пункты погрузки и погрузка: форматы, что есть на маршрутах, план |
 | [cab-screens.md](reverse/cab-screens.md) | экраны кабины (дисплеи SCREEN) и другие дисплеи |
 | [signals.md](reverse/signals.md) | `sigcfg.dat`, `sigscr.dat` и машина сигналов |
 | [track.md](reverse/track.md) | путевая сеть в RTS |

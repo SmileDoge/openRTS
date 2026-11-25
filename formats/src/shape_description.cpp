@@ -8,6 +8,7 @@
 #include <iterator>
 #include <utility>
 
+#include "cargo_internal.hpp"
 #include "shape_lights.hpp"
 #include "text_tree.hpp"
 
@@ -159,6 +160,7 @@ void read_extensions(const std::string_view text, ShapeDescription& description)
         box(*bounding, 0);
     }
     if (const auto* lights = find_node(root, "esd_lightsources")) description.lights = detail::read_light_sources(*lights);
+    if (const auto* pickup = find_node(root, "esd_pickup_object")) description.pickup = detail::read_pickup_description(*pickup);
 }
 
 } // namespace

@@ -80,6 +80,7 @@ struct StreamedModelAsset {
     std::vector<std::string> texture_folders;
     std::vector<std::string> texture_key; // texture_variant_key it was loaded with
     std::vector<formats::ShapeLight> lights;
+    std::optional<formats::PickupDescription> pickup; // the .sd's ESD_Pickup_Object
     // The light material each primitive state has in the shape itself,
     // before its `<shape>.openrts` (the inspector's override) changed some.
     std::vector<std::int32_t> original_light;

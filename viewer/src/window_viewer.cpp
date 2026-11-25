@@ -2486,6 +2486,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     // Num3, Num2 and Ctrl+Num5).
     const bool grave = !rts_keys && pressed(GLFW_KEY_GRAVE_ACCENT, input.kp3_down);
     const bool kp3 = rts_keys ? pressed(GLFW_KEY_KP_3, input.kp3_down) : grave && !shift && !ctrl;
+    // Ctrl+Num3 (Alt+`): a pickup's unloading (rts1.exe 0x4121BC).
+    const bool unload_key = rts_keys ? kp3 && ctrl : grave && alt && !shift && !ctrl;
     const bool kp2 = rts_keys ? pressed(GLFW_KEY_KP_2, input.kp2_down) : grave && shift && !ctrl;
     const bool kp5 = rts_keys && pressed(GLFW_KEY_KP_5, input.kp5_down);
     const bool tape = rts_keys ? kp5 && ctrl : grave && ctrl;
@@ -2520,7 +2522,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const auto engineer = [&](SceneInput& in) {
         in.cab_window = kp0;
         in.head_out = kp1;
-        in.car_menu = kp3 || (use && !shift && !input.action_at_hand);
+        in.car_menu = kp3 || unload_key || (use && !shift && !input.action_at_hand);
+        in.car_menu_unload = unload_key;
         in.flashlight = kp2;
         in.clock = kp4;
         in.tape = tape;

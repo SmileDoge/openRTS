@@ -604,7 +604,27 @@ void content(const std::filesystem::path& root) {
 
 } // namespace
 
+void car_cargo_round_trip() {
+    OpenrtsCarCargo cargo{.train = 7, .car = 3};
+    cargo.loads.push_back({.cargo = 10, .area = 1, .volume = 30.5f, .mass = 45750.0f});
+    cargo.loads.push_back({.cargo = 304, .object = "Container1_1", .area = 0, .volume = 88.0f, .mass = 5000.0f, .count = 2,
+                           .position = {0.0f, 1.3f, 6.2f}, .extent = {2.6f, 2.8f, 12.1f}});
+    const auto body = encode_openrts_car_cargo(cargo);
+    WireReader head(body);
+    check(head.u32() == 7 && head.u32() == 3, "car_cargo: the server's train and car first");
+    const auto back = decode_openrts_car_cargo(body);
+    check(back && back->loads.size() == 2 && back->loads[1].object == "Container1_1" && back->loads[1].count == 2
+              && std::abs(back->loads[1].position[2] - 6.2f) < 1e-4f && std::abs(back->loads[0].volume - 30.5f) < 1e-4f,
+          "car_cargo: openRTS's loads back");
+    WireWriter rts;
+    rts.u32(7);
+    rts.u32(3);
+    rts.u16(4);
+    check(!decode_openrts_car_cargo(rts.take()), "car_cargo: RTS's own body is not openRTS's");
+}
+
 int main(const int argc, char** argv) {
+    car_cargo_round_trip();
     if (argc > 1) {
         content(std::filesystem::path(argv[1]));
     } else {

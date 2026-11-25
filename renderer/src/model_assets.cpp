@@ -7,6 +7,7 @@
 #include <openrts/formats/cab_description.hpp>
 #include <openrts/formats/shape_file.hpp>
 
+#include "cargo_shape.hpp"
 #include "forest_shape.hpp"
 #include "transfer_shape.hpp"
 
@@ -78,6 +79,25 @@ namespace {
         if (auto file = transfer.texture_folder->resolve(transfer.texture)) candidates.push_back(std::move(*file));
     }
     result.textures.push_back(resolve_texture(vfs, transfer.texture, std::move(candidates), result.texture_folders, cache));
+    return result;
+}
+
+// openRTS's cargo pile or stream (cargo_shape.hpp), loaded as a shape; its
+// texture from the folder it names.
+[[nodiscard]] StreamedModelAsset load_cargo_asset(const core::Vfs& vfs, const core::VirtualPath& path, TextureDecodeCache* cache,
+                                                  const TextureVariant& variant) {
+    StreamedModelAsset result{.source_path = path};
+    auto cargo = build_cargo_shape(path);
+    if (!cargo.error.empty()) {
+        result.error = cargo.error;
+        return result;
+    }
+    result.model = std::move(cargo.model);
+    result.texture_folders = alternative_texture_folders(0, variant);
+    result.texture_key = texture_variant_key(0, variant);
+    std::vector<core::VirtualPath> candidates;
+    if (cargo.texture) candidates.push_back(*cargo.texture);
+    result.textures.push_back(resolve_texture(vfs, result.model.images.front().generic_string(), std::move(candidates), {}, cache));
     return result;
 }
 
@@ -212,6 +232,7 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
                                     const TextureVariant& variant) {
     if (shape.extension() == ".transfer") return load_transfer_asset(vfs, shape, cache, variant);
     if (shape.extension() == ".forest") return load_forest_asset(vfs, shape, cache, variant);
+    if (shape.extension() == ".cargopile" || shape.extension() == ".cargostream") return load_cargo_asset(vfs, shape, cache, variant);
     StreamedModelAsset result{.source_path = shape};
     // An RTS .repaint (TSR's ChS2 and others: the .rtseng's WagonShape, a
     // cab's Cabin): Repaint ( Shape ( "x.s" ) ShapeDescription ( "x.sd" )
@@ -241,6 +262,7 @@ StreamedModelAsset load_model_asset(const core::Vfs& vfs,
     if (const auto description = formats::load_shape_description(vfs, description_file); description.ok()) {
         result.alternative_texture = description.value->alternative_texture;
         result.lights = description.value->lights;
+        result.pickup = description.value->pickup;
     }
     // openRTS's own changes to it (the inspector's, from a mod): NightTextures
     // ( 0 ) drops the night from its alternative textures (256 none, 257 the

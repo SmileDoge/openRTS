@@ -214,6 +214,16 @@ openrts_configure_target(openrts_world_parse_test)
 target_link_libraries(openrts_world_parse_test PRIVATE openrts_formats)
 add_test(NAME openrts.world_parse COMMAND openrts_world_parse_test)
 
+add_executable(openrts_cargo_test cargo_test.cpp)
+openrts_configure_target(openrts_cargo_test)
+target_link_libraries(openrts_cargo_test PRIVATE openrts_formats)
+add_test(NAME openrts.cargo COMMAND openrts_cargo_test)
+
+add_executable(openrts_cargo_sim_test cargo_sim_test.cpp)
+openrts_configure_target(openrts_cargo_sim_test)
+target_link_libraries(openrts_cargo_sim_test PRIVATE openrts_simulation openrts_formats)
+add_test(NAME openrts.cargo_sim COMMAND openrts_cargo_sim_test)
+
 # RTS scenarios (.act): header, services, trains, events; Kuban's with the content.
 add_executable(openrts_activity_test activity_test.cpp)
 openrts_configure_target(openrts_activity_test)

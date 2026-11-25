@@ -1044,6 +1044,7 @@ struct RenderModel::Impl {
     // drawn unlit, all of it (rts1.exe 0x4B042C).
     bool night_unlit = false;
     std::vector<formats::ShapeLight> lights;
+    std::optional<formats::PickupDescription> pickup;
     std::vector<ModelPrimitive> primitives;
     std::vector<std::string> material_messages; // what was wrong with its material files
     // Matrices, hierarchy and animations, kept when the shape is animated so
@@ -1145,6 +1146,11 @@ const std::vector<std::string>& RenderModel::texture_folders() const noexcept {
 const std::vector<formats::ShapeLight>& RenderModel::lights() const noexcept {
     static const std::vector<formats::ShapeLight> none;
     return impl_ ? impl_->lights : none;
+}
+
+const std::optional<formats::PickupDescription>& RenderModel::pickup() const noexcept {
+    static const std::optional<formats::PickupDescription> none;
+    return impl_ ? impl_->pickup : none;
 }
 
 void RenderModel::set_lights(std::vector<formats::ShapeLight> lights) {
@@ -2231,6 +2237,7 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     gpu->texture_folders = asset.texture_folders;
     gpu->texture_key = asset.texture_key;
     gpu->lights = asset.lights;
+    gpu->pickup = asset.pickup;
     gpu->dependencies = asset.dependency_keys();
     gpu->material_messages = asset.material_messages;
     gpu->primitives.reserve(model.primitive_states.size());

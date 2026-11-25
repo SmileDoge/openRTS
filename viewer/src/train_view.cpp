@@ -1,5 +1,6 @@
 #ifdef OPENRTS_HAS_WGPU
 #include "train_view.hpp"
+#include "cargo_view.hpp"
 
 #include <openrts/net/placement.hpp>
 #include <openrts/core/profile.hpp>
@@ -210,6 +211,11 @@ struct TrainView::Car {
     std::vector<formats::ConsistFreight> freight;
     std::vector<core::VirtualPath> freight_shapes; // resolved, empty when missing
     bool freight_requested = false; // its FreightAnim shapes asked for (TrainView::freight_loading_)
+    // Cargo loaded at pickups (cargo_view.hpp): its loading (RTSCargo.dat's
+    // WagonType), its mass without it, the models its loads were drawn with.
+    std::optional<simulation::CarCargo> cargo;
+    float base_mass{};
+    mutable std::vector<core::VirtualPath> cargo_paths;
     // A scenario's car: the service and train it started in (its ID with its uid).
     std::optional<std::pair<std::uint32_t, std::uint32_t>> activity_origin;
     // The scenario's sounds on it (StaticObjects SOUND): SendSoundTrigger's codes.
@@ -749,6 +755,7 @@ void TrainView::let_go_far_shapes(renderer::ModelLibrary& library) {
         for (const auto& car : unit.cars) {
             needed.insert(car.shape.key());
             for (const auto& path : car.freight_shapes) needed.insert(path.key());
+            for (const auto& path : car.cargo_paths) needed.insert(path.key());
         }
     }
     std::size_t dropped = 0;
@@ -784,6 +791,7 @@ std::unordered_set<std::string> TrainView::shapes_in_use() const {
         for (const auto& car : unit.cars) {
             if (!car.shape.empty()) used.insert(car.shape.key());
             for (const auto& path : car.freight_shapes) used.insert(path.key());
+            for (const auto& path : car.cargo_paths) used.insert(path.key());
         }
     }
     for (const auto& [_, cab] : board_cabs_)
@@ -1010,6 +1018,12 @@ std::string TrainView::make_unit_from(std::string name, const std::vector<format
         car.flipped = entry.flipped;
         car.cold = entry.cold;
         car.freight = entry.freight;
+        // Its loading (RTSCargo.dat's WagonType for its file), its mass empty.
+        car.base_mass = wagon->mass;
+        if (cargo_catalog_) {
+            if (const auto* loading = cargo_catalog_->descriptions.find(entry.name + (entry.engine ? ".eng" : ".wag")))
+                car.cargo.emplace(loading, std::array<float, 3>{wagon->width, wagon->height, wagon->length});
+        }
         for (const auto& f : entry.freight) {
             // FreightAnimShape: in the car's folder, else TRAINS\OBJECTS, else GLOBAL\SHAPES.
             core::VirtualPath found;
@@ -1259,6 +1273,12 @@ void TrainView::request_models(renderer::ModelLibrary& library) {
                 ++on_the_way;
             }
         }
+    }
+    // The cargo loaded at pickups: its piles and objects (cargo_view.hpp).
+    for (const auto& path : std::exchange(cargo_wanted_, {})) {
+        if (library.find(path) || !shapes_asked_.insert(path.key()).second) continue;
+        train_shapes_.emplace(path.key(), path);
+        freight_loading_.push_back(std::async(std::launch::async, [vfs = vfs_, path] { return renderer::load_model_asset(*vfs, path, {}); }));
     }
     for (auto it = freight_loading_.begin(); it != freight_loading_.end();) {
         if (!it->valid() || it->wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
@@ -3295,6 +3315,18 @@ std::string TrainView::save_game() const {
             if (k < states.size()) out << formats::brake_shoe_name(states[k].shoes[0]) << ',' << formats::brake_shoe_name(states[k].shoes[1]);
             out << '\t' << car.key << '\n';
         }
+        // Cargo loaded at pickups: car, kind, area, volume, mass, count,
+        // place and size, then the object's id (cargo_view.hpp).
+        for (std::size_t k = 0; k < unit.cars.size(); ++k) {
+            const auto& car = unit.cars[k];
+            if (!car.cargo) continue;
+            for (const auto& load : car.cargo->loads()) {
+                out << "cargo=" << k << ' ' << load.cargo << ' ' << load.area << ' ' << load.volume << ' ' << load.mass << ' ' << load.count;
+                for (const float v : load.position) out << ' ' << v;
+                for (const float v : load.extent) out << ' ' << v;
+                out << ' ' << load.object << '\n';
+            }
+        }
         if (unit.activity_id) out << "service=" << unit.activity_id->first << ' ' << unit.activity_id->second << '\n';
         out << "traffic=" << (unit.scenario_traffic ? 1 : 0) << ' ' << (unit.remove_at_end ? 1 : 0) << ' ' << (unit.force_removal ? 1 : 0)
             << ' ' << (unit.remove_time ? std::to_string(*unit.remove_time) : std::string("-")) << ' ' << unit.wait_here << ' '
@@ -3430,6 +3462,15 @@ std::string TrainView::load_game(const std::string& text) {
             train.cars.push_back(std::move(entry));
             train.keys.push_back(car_key);
             if (train.keys.size() == 1) extra.first_key = car_key;
+        } else if (key == "cargo") {
+            std::istringstream fields(value);
+            std::size_t car{};
+            simulation::CarLoad load;
+            if (fields >> car >> load.cargo >> load.area >> load.volume >> load.mass >> load.count >> load.position[0] >> load.position[1]
+                >> load.position[2] >> load.extent[0] >> load.extent[1] >> load.extent[2]) {
+                std::getline(fields >> std::ws, load.object);
+                extra.cargo.emplace_back(car, std::move(load));
+            }
         } else if (key == "service") {
             std::istringstream fields(value);
             std::uint32_t service{}, number{};
@@ -3453,7 +3494,7 @@ std::string TrainView::load_game(const std::string& text) {
         }
     }
     std::erase_if(trains, [](const PlacedTrain& t) { return t.cars.empty(); });
-    std::erase_if(extras, [](const SavedTrain& e) { return e.first_key == 0 && e.state.empty(); });
+    std::erase_if(extras, [](const SavedTrain& e) { return e.first_key == 0 && e.state.empty() && e.cargo.empty(); });
     if (trains.empty()) return tr("the save has no trains");
     // The saved keys come back as this world's ids: the same when the world
     // has never given them out (a game loaded at the start), else new ones,
@@ -4023,6 +4064,15 @@ void TrainView::apply_saved_game() {
             dispatcher_->restore_progress(id, saved.leg, saved.mark);
         }
         if (!saved.state.empty()) unit.train->restore_state(simulation::StateReader(saved.state));
+        // Its cargo back, and the cars' masses with it.
+        std::map<std::size_t, std::vector<simulation::CarLoad>> loads;
+        for (const auto& [car, load] : saved.cargo) loads[car].push_back(load);
+        for (auto& [car, list] : loads) {
+            if (car >= unit.cars.size() || !unit.cars[car].cargo) continue;
+            unit.cars[car].cargo->restore(std::move(list));
+            const auto u = static_cast<std::size_t>(&unit - units_.data());
+            cargo_changed(u, car);
+        }
         unit.settle();
     }
     pending_game_.clear();
@@ -8286,6 +8336,22 @@ void TrainView::car_menu_key(const glm::vec3& eye, const glm::mat4& view_project
     // RTS picks only off the cab (rts1.exe 0x415A34: no current locomotive,
     // or the engineer on foot).
     if (viewing_inside() || !placed()) return;
+    const auto best = pick_car_menu(eye, view_projection, aim);
+    if (best && !car_menu_items(best->first).empty()) {
+        car_menu_ = best->first;
+        last_car_menu_ = best->first;
+    }
+}
+
+std::optional<float> TrainView::car_menu_score(const glm::vec3& eye, const glm::mat4& view_projection, const glm::vec2 aim) const {
+    if (car_menu_ || viewing_inside() || !placed()) return std::nullopt;
+    const auto best = pick_car_menu(eye, view_projection, aim);
+    if (!best || car_menu_items(best->first).empty()) return std::nullopt;
+    return best->second;
+}
+
+std::optional<std::pair<TrainView::CarMenu, float>> TrainView::pick_car_menu(const glm::vec3& eye, const glm::mat4& view_projection,
+                                                                             const glm::vec2 aim) const {
     // On the screen: how far from the aim it shows (clip x / y), else none.
     const auto off_aim = [&](const glm::vec3& p) -> std::optional<float> {
         const glm::vec4 clip = view_projection * glm::vec4{p, 1.0f};
@@ -8342,10 +8408,84 @@ void TrainView::car_menu_key(const glm::vec3& eye, const glm::mat4& view_project
             }
         }
     }
-    if (best && !car_menu_items(*best).empty()) {
-        car_menu_ = best;
-        last_car_menu_ = best;
+    if (!best) return std::nullopt;
+    return std::pair{*best, best_score};
+}
+
+std::vector<TrainView::CargoCar> TrainView::cargo_cars(const glm::vec3& near, const float range) {
+    std::vector<CargoCar> out;
+    for (std::size_t u = 0; u < units_.size(); ++u) {
+        auto& unit = units_[u];
+        if (!unit.train || unit.current.empty()) continue;
+        const auto& states = unit.train->cars();
+        for (std::size_t i = 0; i < unit.cars.size() && i < states.size() && i < unit.current.size(); ++i) {
+            auto& car = unit.cars[i];
+            const bool engine = car.definition && car.definition->engine.has_value();
+            if ((!car.cargo && !engine) || !car.definition) continue;
+            const float length = car.definition->length > 1.0f ? car.definition->length : 20.0f;
+            const auto body = body_pose(unit, i, false);
+            if (!body || glm::distance(glm::vec3{body->transform[3]}, near) > range + length) continue;
+            char label[160];
+            std::snprintf(label, sizeof label, "%zu. %s", i + 1, car.file.c_str());
+            out.push_back({.unit = u,
+                           .car = i,
+                           .transform = body->transform,
+                           .speed = std::abs(states[i].velocity),
+                           .length = length,
+                           .cargo = car.cargo ? &*car.cargo : nullptr,
+                           .label = label,
+                           .train = unit.train.get(),
+                           .engine = engine,
+                           .diesel = engine && car.definition->engine->kind == formats::EngineKind::diesel});
+        }
     }
+    return out;
+}
+
+simulation::CarCargo* TrainView::car_cargo(const std::size_t unit, const std::size_t car) {
+    if (unit >= units_.size() || car >= units_[unit].cars.size()) return nullptr;
+    auto& c = units_[unit].cars[car];
+    return c.cargo ? &*c.cargo : nullptr;
+}
+
+void TrainView::cargo_changed(const std::size_t unit, const std::size_t car) {
+    if (unit >= units_.size() || car >= units_[unit].cars.size()) return;
+    auto& c = units_[unit].cars[car];
+    if (!c.cargo || !c.definition) return;
+    // The car's own definition (TrainView::stock_ owns it, made for it alone
+    // in make_unit_from): the physics reads its mass each step.
+    const_cast<formats::WagonDefinition*>(c.definition)->mass = c.base_mass + c.cargo->load_mass();
+    if (units_[unit].train) cargo_dirty_.insert({units_[unit].train->id(), car});
+}
+
+std::optional<glm::mat4> TrainView::car_body(const std::size_t unit, const std::size_t car) const {
+    if (unit >= units_.size() || car >= units_[unit].cars.size()) return std::nullopt;
+    const auto body = body_pose(units_[unit], car, false);
+    if (!body) return std::nullopt;
+    return body->transform;
+}
+
+std::vector<TrainView::CargoChange> TrainView::take_cargo_changes(const double now) {
+    std::vector<CargoChange> out;
+    if (cargo_dirty_.empty() || (cargo_sent_at_ >= 0.0 && now - cargo_sent_at_ < 0.5)) return out;
+    cargo_sent_at_ = now;
+    for (const auto& [train, car] : std::exchange(cargo_dirty_, {})) {
+        const auto* unit = find_unit(train);
+        if (!unit || car >= unit->cars.size() || !unit->cars[car].cargo) continue;
+        auto loads = unit->cars[car].cargo->loads();
+        for (auto& load : loads) load.arriving = 0, load.lift = 0.0f;
+        out.push_back({train, car, std::move(loads)});
+    }
+    return out;
+}
+
+void TrainView::apply_remote_cargo(const std::uint64_t train, const std::size_t car, std::vector<simulation::CarLoad> loads) {
+    auto* unit = find_unit(train);
+    if (!unit || car >= unit->cars.size()) return;
+    auto& c = unit->cars[car];
+    if (!c.cargo || !c.definition) return;
+    c.cargo->restore(std::move(loads));
+    const_cast<formats::WagonDefinition*>(c.definition)->mass = c.base_mass + c.cargo->load_mass();
 }
 
 std::string TrainView::car_menu_report() const {
@@ -8669,7 +8809,9 @@ std::vector<TrainView::CarMenuItem> TrainView::car_menu_items(const CarMenu& men
         // RTS: a freight car with cargo (FreightAnim with a mass or a cargo type).
         if (menu.car < unit->cars.size() && car.definition->kind == formats::WagonKind::freight) {
             const auto& freight = unit->cars[menu.car].freight;
-            if (std::any_of(freight.begin(), freight.end(), [](const formats::ConsistFreight& f) { return f.mass > 0.0f || !f.cargo_type.empty(); }))
+            const auto& loaded = unit->cars[menu.car].cargo;
+            if (std::any_of(freight.begin(), freight.end(), [](const formats::ConsistFreight& f) { return f.mass > 0.0f || !f.cargo_type.empty(); })
+                || (loaded && !loaded->empty()))
                 items.push_back({8, "Cargo information"});
         }
         return items;
@@ -9007,6 +9149,21 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
                 const std::string what = f.cargo_type.empty() ? tr("cargo") : f.cargo_type;
                 text += "\n" + (f.volume > 0.0f ? trf("%s: %.1f t, %.1f m3", what.c_str(), f.mass * 0.001f, f.volume)
                                                  : trf("%s: %.1f t", what.c_str(), f.mass * 0.001f));
+            }
+            // And what pickups loaded (cargo_view.hpp).
+            if (c.cargo && cargo_catalog_) {
+                for (const auto& load : c.cargo->loads()) {
+                    std::string what;
+                    if (!load.object.empty()) {
+                        const auto* object = cargo_catalog_->object(load.object);
+                        what = object ? object->name : load.object;
+                        if (load.count > 1) what += " x" + std::to_string(load.count);
+                    } else if (const auto* kind = cargo_catalog_->kinds.find(load.cargo)) {
+                        what = cargo_catalog_->name(*kind);
+                    }
+                    text += "\n" + (load.object.empty() ? trf("%s: %.1f t, %.1f m3", what.c_str(), load.mass * 0.001f, load.volume)
+                                                         : trf("%s: %.1f t", what.c_str(), load.mass * 0.001f));
+                }
             }
             text += "\n" + trf("Total: %.1f t", c.definition->mass * 0.001f);
             cargo_text_ = std::move(text);
@@ -11972,6 +12129,8 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
             const auto turn = glm::rotate(glm::mat4{1.0f}, delta, glm::vec3{0.0f, 1.0f, 0.0f});
             adjustments.push_back({.matrix = matrix, .local = moved && k < car.bogie_rest.size() ? on_rails(car.bogie_rest[k]) * turn : turn});
         }
+        // Its hatches opened, its body tipped (LoadingAnimation, cargo_view.hpp).
+        if (car.cargo && car.cargo->opening > 0.0f) cargo_node_adjustments(*car.cargo, *model, adjustments);
         renderer.submit(*model, transform, adjustments);
         // openRTS: the next car's salon or cab seen through the open passage
         // door of the car he is in (update_neighbour_rooms): only through the
@@ -12004,6 +12163,18 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
             if (!freight) continue;
             const auto& p = car.freight[k].position;
             renderer.submit(*freight, transform * glm::translate(glm::mat4{1.0f}, glm::vec3{p[0], p[1], p[2]}));
+        }
+        // Cargo loaded at pickups: its piles and objects (cargo_view.hpp).
+        car.cargo_paths.clear();
+        if (car.cargo && !car.cargo->empty() && cargo_catalog_) {
+            for (const auto& draw : cargo_draws(*cargo_catalog_, *car.cargo)) {
+                car.cargo_paths.push_back(draw.path);
+                if (auto* piece = library.find(draw.path)) {
+                    renderer.submit(*piece, transform * draw.local);
+                } else {
+                    cargo_wanted_.push_back(draw.path);
+                }
+            }
         }
     }
     }

@@ -106,6 +106,18 @@ void read_static_field(Tokenizer& tokens,
                 (equals_ignore_case(field, "Width") ? object.transfer_width : object.transfer_height) = static_cast<float>(*parsed);
             }
         }
+    } else if (object.kind == WorldObjectKind::pickup
+               && (equals_ignore_case(field, "PickupType") || equals_ignore_case(field, "SpeedRange") || equals_ignore_case(field, "PickupCapacity"))) {
+        std::array<float, 2> pair{};
+        for (auto& value : pair) {
+            if (const auto token = tokens.next()) value = static_cast<float>(parse_double(*token).value_or(0.0));
+        }
+        if (equals_ignore_case(field, "PickupType")) {
+            object.pickup_type = static_cast<std::uint16_t>((std::max)(0.0f, pair[0]));
+            object.pickup_type_value = pair[1];
+        } else {
+            (equals_ignore_case(field, "SpeedRange") ? object.pickup_speed_range : object.pickup_capacity) = pair;
+        }
     } else if (equals_ignore_case(field, "TrItemId")) {
         // ( database item ): 0 the track database, else the road one.
         const auto database = tokens.next();

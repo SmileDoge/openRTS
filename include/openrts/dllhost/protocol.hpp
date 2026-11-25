@@ -23,7 +23,7 @@
 namespace openrts::dllhost {
 
 inline constexpr std::uint32_t protocol_magic = 0x484C444Fu; // "ODLH"
-inline constexpr std::uint32_t protocol_version = 17;
+inline constexpr std::uint32_t protocol_version = 18;
 inline constexpr std::uint32_t shared_size = 8u << 20;
 inline constexpr std::uint32_t payload_offset = 4096;
 inline constexpr std::uint32_t payload_capacity = shared_size - payload_offset;
@@ -411,6 +411,9 @@ struct CarInput {
     // the DLLs read it (the ЭС4К's sanding and horn at an emergency need
     // more than 1 s left).
     float sand_left = -1.0f;
+    // DieselLocomotive::FuelAmount (l): the car's fuel (CarState::fuel_left;
+    // RTS keeps it in the car, +504); < 0 left as the host has it.
+    float fuel_left = -1.0f;
     float line_voltage{}, line_frequency{}; // electric
     float line_current{};         // electric: Locomotive::LineCurrent (RTS 0x503CE4, before Run)
     std::uint8_t line_burnt{};    // electric: the pantograph burnt the wire (LocoFlags 0x200)

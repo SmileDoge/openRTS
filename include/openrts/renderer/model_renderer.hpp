@@ -342,6 +342,8 @@ public:
     [[nodiscard]] const std::vector<std::string>& texture_key() const noexcept;
     // ESD_Light_Sources of the shape (scenery lamps), in its space.
     [[nodiscard]] const std::vector<formats::ShapeLight>& lights() const noexcept;
+    // Its .sd's ESD_Pickup_Object: the shape is a pickup (docs/reverse/cargo.md).
+    [[nodiscard]] const std::optional<formats::PickupDescription>& pickup() const noexcept;
     // Its lamps changed in place (the inspector's, live; till it is loaded anew).
     void set_lights(std::vector<formats::ShapeLight> lights);
     // Its primitive states, in the shape's order (the inspector).

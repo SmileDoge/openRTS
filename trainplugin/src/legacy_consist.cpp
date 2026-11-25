@@ -648,6 +648,8 @@ void apply_engine_output(const EngineOutput& out, simulation::EngineDemands& dem
     demands.engine_forces = out.engine_forces;
     // RTS 0x503CE4: the line current comes from ElectricEngine::PowerConsuming.
     demands.power = out.power_consuming;
+    // RTS 0x424488: a diesel's FuelAmount -= FuelConsuming * dt.
+    demands.fuel_rate = out.fuel_consuming > 0.0f ? out.fuel_consuming : 0.0f;
 }
 
 namespace {
@@ -1107,6 +1109,7 @@ std::vector<CarInput> LegacyConsist::inputs(const std::vector<const simulation::
         in.handbrake = c.handbrake;
         in.main_reservoir = c.main_reservoir;
         in.sand_left = c.sand_left;
+        in.fuel_left = c.fuel_left;
         in.wheelslip = c.wheelslip;
         // openRTS's 395 over Brakes.dll (own_valve; its demands of the last
         // step): the DLL's own valve gets its УР, which it keeps in
