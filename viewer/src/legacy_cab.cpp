@@ -334,6 +334,22 @@ void LegacyCab::step(const simulation::Train& train, std::vector<std::vector<std
                 for (auto& each : triggers) each.push_back(m.id);
         }
     }
+    // The DLL's side of the story while a locomotive does not pull: its
+    // traction controller's answers, twice a second (testers, 2026-11-26).
+    {
+        static std::uint64_t steps = 0;
+        if (++steps % 40 == 1) {
+            if (const auto* first = consist_->output(0)) {
+                char text[256];
+                std::snprintf(text, sizeof text,
+                              "step: throttle %u, reverse %d, force %.0f N, panto %u, main switch %u, diesel %u, speed %.2f m/s",
+                              first->engine.throttle, first->engine.reverse, static_cast<double>(first->engine.force),
+                              static_cast<unsigned>(first->engine.panto), static_cast<unsigned>(first->engine.main_switch),
+                              static_cast<unsigned>(first->engine.diesel_on), static_cast<double>(train.speed()));
+                cab_log(text);
+            }
+        }
+    }
     log(consist_->take_messages());
 }
 
