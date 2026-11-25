@@ -16,6 +16,7 @@
 #include <openrts/renderer/webgpu_texture.hpp>
 #include <openrts/renderer/screen_quads.hpp>
 #include <openrts/renderer/auto_exposure.hpp>
+#include <openrts/renderer/temporal_aa.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/bloom.hpp>
 #include <openrts/renderer/light_shafts.hpp>
@@ -726,6 +727,7 @@ struct PanelState {
     int compress_textures = 2; // renderer/bc7.hpp: 0 not, 1 in memory, 2 kept on disk
     int texture_size = 0;      // renderer::texture_size_limit: 0 as the files, 1 1024, 2 512, 3 256
     bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
+    int taa_view = 0;                    // the temporal AA's preview (TemporalAAFrame::view), not kept
     float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
     bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
     float cloud_cover = 42.0f;       // %
@@ -1605,6 +1607,18 @@ public:
             }
             if (ImGui::Checkbox(tr("Aerial perspective"), &panel.effects.aerial_perspective))
                 remember("effect_aerial", panel.effects.aerial_perspective ? "1" : "0");
+            if (ImGui::Checkbox(tr("Temporal anti-aliasing (TAA): smooth edges, wires and foliage from frame to frame, over the MSAA (HDR)"),
+                                &panel.effects.temporal_aa))
+                remember("effect_taa", panel.effects.temporal_aa ? "1" : "0");
+            if (panel.effects.temporal_aa) {
+                ImGui::Indent();
+                const char* views[] = {tr("TAA shows: the result"), tr("TAA shows: the motion (red, green), the trains (blue)"),
+                                       tr("TAA shows: the depth it reads (trains blue)"), tr("TAA shows: the history alone"),
+                                       tr("TAA shows: the history let go (white)")};
+                ImGui::SetNextItemWidth(420.0f);
+                ImGui::Combo("##taa_view", &panel.taa_view, views, 5);
+                ImGui::Unindent();
+            }
             if (ImGui::Checkbox(tr("Bloom: light spreads round lamps, signals and the sun (HDR)"), &panel.effects.bloom))
                 remember("effect_bloom", panel.effects.bloom ? "1" : "0");
             if (panel.effects.bloom) {
@@ -2306,7 +2320,7 @@ struct FovKeys {
     return false;
 }
 
-// Polled keyboard handling: F toggles fly/orbit on key press, WASD/QE move.
+// Polled keyboard handling: WASD/QE move the free camera.
 // The keyboard is ImGui's while one of its text boxes takes it (the console's
 // message, a filter): the keys polled here stay out of the game then, as the
 // key callback's do (on_key).
@@ -2323,18 +2337,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const auto down = [window, typing](const int key) { return !typing && glfwGetKey(window, key) == GLFW_PRESS; };
     auto& camera = *input.camera;
 
-    // F is a cab key when the cab has the keyboard; Ctrl+F is the scene's
-    // (SceneInput::free_camera).
-    const bool ctrl = down(GLFW_KEY_LEFT_CONTROL) || down(GLFW_KEY_RIGHT_CONTROL);
-    const bool toggle = down(GLFW_KEY_F) && !ctrl && !input.keyboard_captured;
-    if (toggle && !input.toggle_key_down) {
-        camera.toggle_fly();
-        if (!camera.fly) {
-            input.fly_looking = false;
-            update_cursor_capture(window, input); // held still in the lock
-        }
-    }
-    input.toggle_key_down = toggle;
+    // F alone no longer turns the free camera into the orbit (2026-11-25:
+    // not wanted any more); Ctrl+F is the scene's (SceneInput::free_camera).
     if (input.keyboard_captured) return; // the cab has the letter keys
     if (input.on_foot && wasd_walking()) return; // W A S D walk the engineer
 
@@ -3132,6 +3136,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     renderer::ModelRenderer renderer(device, surface.scene_format());
     std::cout << "graphics: the models' shaders ready in " << seconds_since(shaders_started) << " s" << std::endl;
     std::unique_ptr<renderer::ToneMapper> tone;
+    std::unique_ptr<renderer::TemporalAA> temporal_aa;
     std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
     bool auto_exposure_was_on = false;
     if (renderer::scene_hdr()) tone = std::make_unique<renderer::ToneMapper>(device, surface.format());
@@ -3362,6 +3367,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         panel.effects.aerial_perspective = has("aerial");
         panel.effects.show_occlusion = has("show-ao");
         panel.effects.light_shafts = has("shafts");
+        panel.effects.temporal_aa = has("taa");
+        if (const auto at = list.find("taa-view"); at != std::string::npos && at + 8 < list.size())
+            panel.taa_view = std::clamp(list[at + 8] - '0', 0, 4);
     }
     // The field of view: the panel's, else RTS's (config.ini FOV, vertical, degrees).
     // Num* brings back RTS's (else the default).
@@ -3888,10 +3896,23 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
 #endif
         hdr = tone && hdr_view;
+        // The temporal AA (the experimental path's HDR frame, not in VR):
+        // the frame drawn a sub-pixel apart each time.
+        const glm::mat4 steady_projection = projection_matrix;
+        const bool taa_frame = hdr && !vr_frame && panel.effects.temporal_aa
+                               && renderer.shading_path() == renderer::ShadingPath::experimental;
+        if (taa_frame) {
+            if (!temporal_aa) temporal_aa = std::make_unique<renderer::TemporalAA>(device);
+            if (temporal_aa->ready())
+                projection_matrix = temporal_aa->jittered(projection_matrix, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+        } else if (temporal_aa) {
+            temporal_aa->reset();
+        }
         FrameView frame{
             .eye = view_eye,
             .view = view_matrix,
             .projection = projection_matrix,
+            .steady_projection = steady_projection,
             .vertical_fov = vertical_fov,
             .view_zoom = camera.view_zoom,
             .aspect = aspect,
@@ -3956,7 +3977,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                                                   const glm::mat4& view_projection, const renderer::DepthPassKind kind,
                                                                   const renderer::DepthCasters casters) {
             // The terrain stays where it is.
-            if (casters != renderer::DepthCasters::moving) scene.draw_depth(depth_pass, slot, view_projection, kind);
+            if (casters == renderer::DepthCasters::all || casters == renderer::DepthCasters::still)
+                scene.draw_depth(depth_pass, slot, view_projection, kind);
             renderer.render_depth(depth_pass, slot, view_projection, kind,
                                   renderer::lamp_skips_own_model() ? effects.depth_slot_owner(slot) : 0u, casters);
         };
@@ -4084,7 +4106,19 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 }
             }
             auto_exposure_was_on = exposure_state != nullptr;
-            tone->render(encoder, hdr_view, frame_view, settings, bloom_view, shafts_view, exposure_state);
+            // The temporal AA over the resolved frame, before the tone curve.
+            WGPUTextureView toned = hdr_view;
+            if (taa_frame && temporal_aa && temporal_aa->ready()) {
+                toned = temporal_aa->resolve(encoder, hdr_view, effects.camera_depth(), effects.moving_depth(),
+                                             {.view_projection = frame.projection * frame.view,
+                                              .steady_view_projection = steady_projection * frame.view,
+                                              .eye = frame.eye,
+                                              .train = scene.player_train_place(),
+                                              .width = static_cast<std::uint32_t>(width),
+                                              .height = static_cast<std::uint32_t>(height),
+                                              .view = panel.taa_view});
+            }
+            tone->render(encoder, toned, frame_view, settings, bloom_view, shafts_view, exposure_state);
 #ifdef OPENRTS_HAS_IMGUI
             if (!vr_frame) {
             const WGPURenderPassColorAttachment ui_colour{

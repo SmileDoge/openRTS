@@ -1070,6 +1070,40 @@ the cab's frame and the clouds stand in the air as beams of sunlight:
   over 0.05 (the sky's third 0.043); in the cab a mean of 0.006 to 0.013,
   at most 0.10 to 0.20. The march 0.08 to 0.1 ms.
 
+### Temporal anti-aliasing (TAA, 2026-11-25)
+
+Graphics panel, "Temporal anti-aliasing (TAA)"; `--effects ...,taa`. Off
+by default. The experimental path's HDR frame, not in VR.
+
+- Over the MSAA, not instead of it: alpha to coverage (foliage, fences)
+  stays as it is; TAA smooths the resolved frame. With TAA a weak video
+  card may take MSAA 2x or 1x.
+- Each frame is drawn a sub-pixel apart (Halton 2 / 3, 8 frames) and
+  blended with the frames before (a tenth of the new one), found where
+  they were: the point from the camera's depth pre-pass (drawn for TAA too)
+  through the last frame's view, both without the jitter.
+- The trains (ModelRenderer::set_train; not switch blades or crossing
+  gates) get a depth of their own, in a depth slot of their own; their
+  points are taken as moving by the player's train's move (in the cab as
+  the eye; round a standing train with F3, not at all). Another train
+  passing is not followed; there, as everywhere, the history is clipped
+  to the colours round the pixel (YCoCg, towards the box's centre), with
+  more of the new frame.
+- The new frame's share: 5 % where the history and the frame agree (still
+  things stay still, thin wires do not flicker), up to 15 % where they
+  differ, more on fast motion and on trains.
+- Labels on the screen and the mouse's picking take the projection without
+  the jitter.
+- "TAA shows" (the panel): the result, the motion, the depth it reads,
+  the history alone, the history let go; never written into the history.
+- The history is read by Catmull-Rom (it does not soften frame by frame).
+  A jump of the camera over 50 m drops it.
+- Cost: one full-screen pass (9 reads and the history) and the moving
+  models' depth, some 0.2..0.5 ms on a GTX 10xx at 1080p; the depth
+  pre-pass is shared with GTAO and the bloom.
+- Motion vectors of every model (their last frame's matrices) are not made
+  yet: the base for DLSS / FSR later.
+
 ### Trains' textures without DXT1's blocks (BC7, 2026-11-16)
 
 - **What was seen.** Close to a dark body or in a cab, squares in the

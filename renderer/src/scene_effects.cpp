@@ -387,6 +387,8 @@ struct SceneEffects::Impl {
     Texture lamp_shadow;     // a layer a lamp throwing shadows (or a 1 x 1 stand-in)
     std::array<WGPUTextureView, max_lamp_shadows> lamp_layers{};
     Texture depth;           // the camera's pre-pass
+    Texture moving_depth;    // the moving models' alone (temporal_aa)
+    bool moving_wanted = false;
     // Its view depth (prefilter_wgsl): the frame's size and three smaller
     // levels; `view` all of them, `view_levels` each.
     static constexpr std::uint32_t view_depth_levels = 4;
@@ -496,7 +498,10 @@ struct SceneEffects::Impl {
     static constexpr std::uint32_t still_slot = lamp_slot + max_lamp_shadows;
     static constexpr std::uint32_t still_pieces = 8; // a cascade's pieces a frame at most
     static constexpr std::uint32_t check_slot = still_slot + max_cascades * still_pieces;
-    static_assert(check_slot + max_cascades == ModelRenderer::depth_slots, "the renderers' depth slots");
+    // The trains' depth for the temporal AA: the last slot (a slot keeps one
+    // list of instances a frame; another pass's would be lost).
+    static constexpr std::uint32_t moving_slot = check_slot + max_cascades;
+    static_assert(moving_slot + 1 == ModelRenderer::depth_slots, "the renderers' depth slots");
     struct StillCache {
         bool valid = false;
         std::uint64_t generation = 0;
@@ -639,6 +644,7 @@ struct SceneEffects::Impl {
         }
         lamp_shadow.release();
         depth.release();
+        moving_depth.release();
         release_view_depth();
         ao_raw.release();
         ao.release();
@@ -783,6 +789,7 @@ struct SceneEffects::Impl {
         if (!wanted) {
             if (ao.texture && !ao_is_real) return;
             depth.release();
+            moving_depth.release();
             release_view_depth();
             ao_raw.release();
             ao.release();
@@ -803,10 +810,13 @@ struct SceneEffects::Impl {
         }
         if (ao_is_real && ao.width == width && ao.height == height && ao_half == half) return;
         depth.release();
+        moving_depth.release();
         ao_raw.release();
         ao.release();
         depth = make_texture(device, depth_format, WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding, width, height, 1,
                              WGPUTextureViewDimension_2D);
+        moving_depth = make_texture(device, depth_format, WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding, width,
+                                    height, 1, WGPUTextureViewDimension_2D);
         make_view_depth(width, height);
         const auto usage = WGPUTextureUsage_StorageBinding | WGPUTextureUsage_TextureBinding;
         ao_half = half;
@@ -1222,7 +1232,7 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     impl.ensure_shadow(active && s.shadows);
     impl.ensure_still(active && s.shadows && s.cache_far_cascades);
     impl.ensure_lamp_shadow(active && s.lamp_shadows > 0);
-    impl.ensure_ao(active && (s.ambient_occlusion || s.bloom || s.light_shafts), (std::max)(view.width, 1u), (std::max)(view.height, 1u),
+    impl.ensure_ao(active && (s.ambient_occlusion || s.bloom || s.light_shafts || s.temporal_aa), (std::max)(view.width, 1u), (std::max)(view.height, 1u),
                    s.occlusion_low);
     impl.ensure_groups();
 
@@ -1300,7 +1310,9 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     }
     frame.flags[0] = active && s.clustered_lights ? 1u : 0u;
     frame.flags[1] = active && s.ambient_occlusion && impl.ao_is_real ? (s.show_occlusion ? 2u : 1u) : 0u;
-    impl.camera_depth_wanted = active && (s.ambient_occlusion || s.bloom || s.light_shafts) && impl.ao_is_real && impl.depth.view;
+    impl.camera_depth_wanted =
+        active && (s.ambient_occlusion || s.bloom || s.light_shafts || s.temporal_aa) && impl.ao_is_real && impl.depth.view;
+    impl.moving_wanted = impl.camera_depth_wanted && s.temporal_aa && impl.moving_depth.view;
     frame.flags[2] = active && s.aerial_perspective ? 1u : 0u;
     frame.flags[3] = impl.light_count;
     impl.lamp_shadows_wanted = active && s.lamp_shadows > 0 && !impl.packed_lights.empty() && impl.lamp_layers[0];
@@ -1868,6 +1880,24 @@ void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const D
         if (draw) draw(pass, max_cascades, view.projection * view.view, DepthPassKind::camera, DepthCasters::all);
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
+        // The moving models alone (the trains), for the temporal AA's motion.
+        if (moving_wanted) {
+            const WGPURenderPassDepthStencilAttachment moving_attachment{
+                .view = moving_depth.view,
+                .depthLoadOp = WGPULoadOp_Clear,
+                .depthStoreOp = WGPUStoreOp_Store,
+                .depthClearValue = depth_clear_value,
+                .depthReadOnly = false,
+                .stencilLoadOp = WGPULoadOp_Undefined,
+                .stencilStoreOp = WGPUStoreOp_Undefined,
+                .stencilReadOnly = true,
+            };
+            const WGPURenderPassDescriptor moving_descriptor{.depthStencilAttachment = &moving_attachment};
+            const auto moving = wgpuCommandEncoderBeginRenderPass(encoder, &moving_descriptor);
+            if (draw) draw(moving, moving_slot, view.projection * view.view, DepthPassKind::camera, DepthCasters::trains);
+            wgpuRenderPassEncoderEnd(moving);
+            wgpuRenderPassEncoderRelease(moving);
+        }
 
         // The occlusion at ao_raw's size (half the frame's at low), the blur
         // at the frame's: a compute pass each, so each has its GPU time.
@@ -2019,6 +2049,10 @@ float SceneEffects::shadow_range() const noexcept {
 
 WGPUTextureView SceneEffects::camera_depth() const noexcept {
     return impl_->camera_depth_wanted ? impl_->depth.view : nullptr;
+}
+
+WGPUTextureView SceneEffects::moving_depth() const noexcept {
+    return impl_->moving_wanted ? impl_->moving_depth.view : nullptr;
 }
 
 bool SceneEffects::wants_depth() const noexcept {

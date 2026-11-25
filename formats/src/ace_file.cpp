@@ -11,6 +11,36 @@
 namespace openrts::formats {
 namespace {
 
+// The see-through texels next to seen ones take their colour (openRTS,
+// 2026-11-25): the filtering between them then does not bring in a colour
+// no one sees (a fence's white planks got a red rim, the red under alpha 0).
+void bleed_into_transparent(const std::uint32_t width, const std::uint32_t height, std::vector<std::uint8_t>& pixels) {
+    if (width == 0 || height == 0 || pixels.size() != static_cast<std::size_t>(width) * height * 4) return;
+    bool any = false;
+    for (std::size_t i = 3; i < pixels.size() && !any; i += 4) any = pixels[i] == 0;
+    if (!any) return;
+    const auto source = pixels;
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            auto* texel = &pixels[(static_cast<std::size_t>(y) * width + x) * 4];
+            if (texel[3] != 0) continue;
+            unsigned sum[3] = {0, 0, 0}, count = 0;
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const auto nx = static_cast<std::int64_t>(x) + dx, ny = static_cast<std::int64_t>(y) + dy;
+                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+                    const auto* n = &source[(static_cast<std::size_t>(ny) * width + static_cast<std::size_t>(nx)) * 4];
+                    if (n[3] == 0) continue;
+                    for (int c = 0; c < 3; ++c) sum[c] += n[c];
+                    ++count;
+                }
+            }
+            if (count == 0) continue;
+            for (int c = 0; c < 3; ++c) texel[c] = static_cast<std::uint8_t>((sum[c] + count / 2) / count);
+        }
+    }
+}
+
 [[nodiscard]] bool starts_with(const std::string_view value, const std::string_view prefix) {
     return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
 }
@@ -227,7 +257,10 @@ void decode_dxt1_block(const std::string_view block, const bool punch_through, s
             image.bc1 = std::move(bc1);
         }
     }
-    if (!image.mips_from_file) image.mips = build_rgba_mipmaps(image.width, image.height, image.pixels);
+    if (!image.mips_from_file) {
+        bleed_into_transparent(image.width, image.height, image.pixels);
+        image.mips = build_rgba_mipmaps(image.width, image.height, image.pixels);
+    }
     return {.image = std::move(image)};
 }
 
@@ -480,6 +513,7 @@ AceDecodeResult decode_structured_ace_rgba(const std::string_view bytes) {
         image.mips.assign(std::make_move_iterator(decoded.begin() + 1), std::make_move_iterator(decoded.end()));
         image.mips_from_file = true;
     } else {
+        bleed_into_transparent(image.width, image.height, image.pixels);
         image.mips = build_rgba_mipmaps(image.width, image.height, image.pixels);
     }
     return {.image = std::move(image)};
@@ -501,18 +535,38 @@ std::vector<std::vector<std::uint8_t>> build_rgba_mipmaps(const std::uint32_t wi
         };
         for (std::uint32_t y = 0; y < next_h; ++y) {
             for (std::uint32_t x = 0; x < next_w; ++x) {
-                for (int c = 0; c < 4; ++c) {
-                    unsigned value = 0;
-                    if (w > 1 && h > 1) {
-                        value = (at(2 * x, 2 * y, c) + at(2 * x + 1, 2 * y, c) + at(2 * x, 2 * y + 1, c)
-                                 + at(2 * x + 1, 2 * y + 1, c) + 2) / 4;
-                    } else if (w > 1) {
-                        value = (at(2 * x, 0, c) + at(2 * x + 1, 0, c) + 1) / 2;
-                    } else {
-                        value = (at(0, 2 * y, c) + at(0, 2 * y + 1, c) + 1) / 2;
-                    }
-                    level[(static_cast<std::size_t>(y) * next_w + x) * 4 + c] = static_cast<std::uint8_t>(value);
+                // The texels this one is made of.
+                std::uint32_t xs[4], ys[4];
+                int count = 0;
+                if (w > 1 && h > 1) {
+                    const std::uint32_t px[4] = {2 * x, 2 * x + 1, 2 * x, 2 * x + 1}, py[4] = {2 * y, 2 * y, 2 * y + 1, 2 * y + 1};
+                    for (int k = 0; k < 4; ++k) xs[k] = px[k], ys[k] = py[k];
+                    count = 4;
+                } else if (w > 1) {
+                    xs[0] = 2 * x, ys[0] = 0, xs[1] = 2 * x + 1, ys[1] = 0;
+                    count = 2;
+                } else {
+                    xs[0] = 0, ys[0] = 2 * y, xs[1] = 0, ys[1] = 2 * y + 1;
+                    count = 2;
                 }
+                // The colour weighted by the alpha (openRTS, 2026-11-25): a
+                // see-through texel's colour (a fence's red under alpha 0)
+                // is not seen, so it does not tint the smaller levels.
+                unsigned alpha = 0, weight = 0, rgb[3] = {0, 0, 0}, plain[3] = {0, 0, 0};
+                for (int k = 0; k < count; ++k) {
+                    const auto a = at(xs[k], ys[k], 3);
+                    alpha += a;
+                    weight += a;
+                    for (int c = 0; c < 3; ++c) {
+                        rgb[c] += at(xs[k], ys[k], c) * a;
+                        plain[c] += at(xs[k], ys[k], c);
+                    }
+                }
+                auto* out = &level[(static_cast<std::size_t>(y) * next_w + x) * 4];
+                for (int c = 0; c < 3; ++c)
+                    out[c] = static_cast<std::uint8_t>(weight > 0 ? (rgb[c] + weight / 2) / weight
+                                                                  : (plain[c] + static_cast<unsigned>(count) / 2) / static_cast<unsigned>(count));
+                out[3] = static_cast<std::uint8_t>((alpha + static_cast<unsigned>(count) / 2) / static_cast<unsigned>(count));
             }
         }
         mips.push_back(std::move(level));

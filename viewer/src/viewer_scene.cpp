@@ -1283,7 +1283,7 @@ public:
         // The terrain is drawn before (draw_background): it takes the path from the next frame.
         if (terrain_) terrain_->set_shading_path(renderer.shading_path());
         experimental_ = renderer.shading_path() == renderer::ShadingPath::experimental;
-        last_view_projection_ = frame.projection * frame.view;
+        last_view_projection_ = frame.steady_projection.value_or(frame.projection) * frame.view;
         last_eye_ = frame.eye;
         last_viewport_height_ = frame.viewport_height;
         last_vertical_fov_ = frame.vertical_fov;
@@ -1369,9 +1369,11 @@ public:
         // Trains and road traffic move (the sun's shadow cache).
         renderer.set_moving(true);
         if (train_) {
+            renderer.set_train(true);
             train_->submit(renderer, *library_,
                            {.frustum = culling_ ? &frustum : nullptr, .eye = frame.eye, .draw_distance = culling_ ? draw_distance : 0.0f,
                             .shadow_range = frame.shadow_range});
+            renderer.set_train(false);
         }
         if (roads_ && effects_.traffic) roads_->submit(renderer, *library_, culling_ ? &frustum : nullptr, frame.eye, culling_ ? draw_distance : 0.0f);
         renderer.set_moving(false);
@@ -2111,6 +2113,11 @@ public:
     [[nodiscard]] std::string inspector_report() const override { return inspector_.report(inspector_world()); }
     [[nodiscard]] std::string tape_report() const override { return tape_view_.report(); }
     [[nodiscard]] std::string timetable_report() const override { return train_ ? train_->timetable_report() : std::string(); }
+    [[nodiscard]] std::optional<glm::vec3> player_train_place() const override {
+        if (!train_ || !train_->loaded()) return std::nullopt;
+        return train_->head_position();
+    }
+
     [[nodiscard]] std::optional<renderer::ShadowFocus> shadow_focus() const override {
         return train_ ? train_->cab_shadow_focus() : std::nullopt;
     }

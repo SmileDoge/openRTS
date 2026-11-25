@@ -1182,6 +1182,7 @@ struct ModelRenderer::Impl {
         std::uint32_t owner = 0; // set_owner
         std::int32_t portal = 0; // set_portal
         bool moving = false;     // set_moving
+        bool train = false;      // set_train
         // First of this instance's animated local matrices in
         // `frame_locals`, or -1 for the model's rest pose; how many.
         std::ptrdiff_t matrices = -1;
@@ -1254,6 +1255,7 @@ struct ModelRenderer::Impl {
         bool alpha_test = false;
         bool shadow_only = false; // a caster out of view: shadow passes only
         bool moving = false;      // its instances move (set_moving)
+        bool train = false;       // they are trains' (set_train)
         // Its instances: depth_instances[first, first + count), culled per
         // depth pass (render_depth).
         std::uint32_t first = 0;
@@ -1279,6 +1281,7 @@ struct ModelRenderer::Impl {
     // Depth-only passes: a view-projection per slot (dynamic offset).
     static constexpr std::uint32_t depth_slots = ModelRenderer::depth_slots;
     bool submit_moving = false; // set_moving
+    bool submit_train = false;  // set_train
     std::uint64_t moving_signature = 0;
     std::uint64_t moving_signature_outside = 0; // without the cab (RTS pass 3)
     static constexpr std::uint64_t depth_stride = 256;
@@ -2536,6 +2539,11 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) 
     }
     impl_->queue.push_back({.model = model.impl_.get(), .transform = transform, .level = level});
     impl_->queue.back().moving = impl_->submit_moving;
+    impl_->queue.back().train = impl_->submit_train;
+}
+
+void ModelRenderer::set_train(const bool train) noexcept {
+    if (impl_) impl_->submit_train = train;
 }
 
 void ModelRenderer::set_room(const std::optional<ModelRoom>& room) noexcept {
@@ -2759,7 +2767,7 @@ void ModelRenderer::prepare() {
                 // By primitive, binding, alpha test and whether only the shadows take it.
                 const auto fresh = static_cast<std::uint32_t>(batches.size());
                 const auto group = scratch.table.find_or_add(
-                    &draw, binding, (alpha_test ? 1u : 0u) | (queued.shadow_only ? 2u : 0u) | (queued.moving ? 4u : 0u), fresh);
+                    &draw, binding, (alpha_test ? 1u : 0u) | (queued.shadow_only ? 2u : 0u) | (queued.moving ? 4u : 0u) | (queued.train ? 8u : 0u), fresh);
                 if (group == fresh) {
                     Impl::DepthBatch head;
                     head.draw = &draw;
@@ -2768,6 +2776,7 @@ void ModelRenderer::prepare() {
                     head.alpha_test = alpha_test;
                     head.shadow_only = queued.shadow_only;
                     head.moving = queued.moving;
+                    head.train = queued.train;
                     batches.push_back(head);
                 }
                 ++batches[group].count;
@@ -3270,7 +3279,9 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
     ids.reserve(impl.depth_id_total);
     for (const auto& batch : impl.depth_batches) {
         if (batch.shadow_only && !shadow) continue;
-        if ((casters == DepthCasters::still && batch.moving) || (casters == DepthCasters::moving && !batch.moving)) continue;
+        if ((casters == DepthCasters::still && batch.moving) || (casters == DepthCasters::moving && !batch.moving)
+            || (casters == DepthCasters::trains && !batch.train))
+            continue;
         // The camera's pass: the instances without a portal, then those with one.
         for (int with_portal = 0; with_portal < (shadow ? 1 : 2); ++with_portal) {
             const auto first = ids.size();

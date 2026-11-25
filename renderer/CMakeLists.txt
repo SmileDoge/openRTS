@@ -8,6 +8,7 @@ add_library(openrts_renderer STATIC
     src/weather_particles.cpp
     src/screen_quads.cpp
     src/tone_map.cpp
+    src/temporal_aa.cpp
     src/auto_exposure.cpp
     src/bc7.cpp
     src/bloom.cpp

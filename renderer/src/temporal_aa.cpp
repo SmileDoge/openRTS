@@ -1,0 +1,263 @@
+#include <openrts/renderer/temporal_aa.hpp>
+
+#ifdef OPENRTS_HAS_WGPU
+#include <array>
+#include <cmath>
+#include <optional>
+
+#include <glm/geometric.hpp>
+#include <glm/matrix.hpp>
+#include <openrts/renderer/depth.hpp>
+#include "shader_code.hpp"
+
+namespace openrts::renderer {
+namespace {
+
+[[nodiscard]] WGPUStringView wgsl_name(const char* name) {
+    return {.data = name, .length = WGPU_STRLEN};
+}
+
+struct ParamsUniform {
+    glm::mat4 inverse_view_projection;
+    glm::mat4 previous_view_projection;
+    glm::mat4 steady_view_projection;
+    float eye_shift[4];
+    float size[4];
+    float view[4];
+};
+
+// The Halton sequence's `index`th number in `base` (0..1).
+[[nodiscard]] float halton(std::uint32_t index, const std::uint32_t base) {
+    float result = 0.0f, fraction = 1.0f;
+    while (index > 0) {
+        fraction /= static_cast<float>(base);
+        result += fraction * static_cast<float>(index % base);
+        index /= base;
+    }
+    return result;
+}
+
+constexpr std::uint32_t jitter_count = 8;
+
+} // namespace
+
+struct TemporalAA::Impl {
+    WGPUDevice device = nullptr;
+    WGPUBindGroupLayout layout = nullptr;
+    WGPURenderPipeline pipeline = nullptr;
+    WGPUBuffer params = nullptr;
+    WGPUSampler sampler = nullptr;
+    // The history: the frame before (read) and this one (written), turn about.
+    std::array<WGPUTexture, 2> textures{};
+    std::array<WGPUTextureView, 2> views{};
+    WGPUTexture shown = nullptr; // the panel's view into it (TemporalAAFrame::view)
+    WGPUTextureView shown_view = nullptr;
+    std::uint32_t width = 0, height = 0;
+    std::uint32_t written = 0; // the one written last
+    bool valid = false;        // the last written holds a frame to take
+    glm::mat4 previous_view_projection{1.0f};
+    glm::vec3 previous_eye{0.0f};
+    std::optional<glm::vec3> previous_train;
+    std::uint32_t frame = 0;
+
+    void release_history() {
+        for (auto& view : views) {
+            if (view) wgpuTextureViewRelease(view);
+            view = nullptr;
+        }
+        for (auto& texture : textures) {
+            if (texture) wgpuTextureRelease(texture);
+            texture = nullptr;
+        }
+        if (shown_view) wgpuTextureViewRelease(shown_view);
+        if (shown) wgpuTextureRelease(shown);
+        shown_view = nullptr;
+        shown = nullptr;
+        width = height = 0;
+        valid = false;
+    }
+
+    void ensure(const std::uint32_t w, const std::uint32_t h) {
+        if (w == width && h == height && views[0] && views[1]) return;
+        release_history();
+        for (std::size_t i = 0; i < 3; ++i) {
+            const WGPUTextureDescriptor descriptor{
+                .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
+                .dimension = WGPUTextureDimension_2D,
+                .size = {.width = w, .height = h, .depthOrArrayLayers = 1},
+                .format = hdr_format,
+                .mipLevelCount = 1,
+                .sampleCount = 1,
+            };
+            auto& texture = i < 2 ? textures[i] : shown;
+            auto& view = i < 2 ? views[i] : shown_view;
+            texture = wgpuDeviceCreateTexture(device, &descriptor);
+            if (texture) view = wgpuTextureCreateView(texture, nullptr);
+        }
+        width = w;
+        height = h;
+    }
+
+    ~Impl() {
+        release_history();
+        if (sampler) wgpuSamplerRelease(sampler);
+        if (params) wgpuBufferRelease(params);
+        if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        if (layout) wgpuBindGroupLayoutRelease(layout);
+    }
+};
+
+TemporalAA::TemporalAA(const WGPUDevice device) : impl_(std::make_unique<Impl>()) {
+    auto& impl = *impl_;
+    impl.device = device;
+    std::array<WGPUBindGroupLayoutEntry, 6> entries{};
+    entries[0] = {.binding = 0, .visibility = WGPUShaderStage_Fragment};
+    entries[0].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
+    entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
+    entries[1] = {.binding = 1, .visibility = WGPUShaderStage_Fragment};
+    entries[1].texture.sampleType = WGPUTextureSampleType_Float;
+    entries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
+    for (std::uint32_t i : {2u, 3u}) {
+        entries[i] = {.binding = i, .visibility = WGPUShaderStage_Fragment};
+        entries[i].texture.sampleType = WGPUTextureSampleType_Depth;
+        entries[i].texture.viewDimension = WGPUTextureViewDimension_2D;
+    }
+    entries[4] = {.binding = 4, .visibility = WGPUShaderStage_Fragment};
+    entries[4].sampler.type = WGPUSamplerBindingType_Filtering;
+    entries[5] = {.binding = 5, .visibility = WGPUShaderStage_Fragment};
+    entries[5].buffer.type = WGPUBufferBindingType_Uniform;
+    entries[5].buffer.minBindingSize = sizeof(ParamsUniform);
+    const WGPUBindGroupLayoutDescriptor layout_descriptor{.entryCount = entries.size(), .entries = entries.data()};
+    impl.layout = wgpuDeviceCreateBindGroupLayout(device, &layout_descriptor);
+
+    WGPUSamplerDescriptor sampler{};
+    sampler.addressModeU = WGPUAddressMode_ClampToEdge;
+    sampler.addressModeV = WGPUAddressMode_ClampToEdge;
+    sampler.addressModeW = WGPUAddressMode_ClampToEdge;
+    sampler.magFilter = WGPUFilterMode_Linear;
+    sampler.minFilter = WGPUFilterMode_Linear;
+    sampler.mipmapFilter = WGPUMipmapFilterMode_Nearest;
+    sampler.lodMaxClamp = 1.0f;
+    sampler.maxAnisotropy = 1;
+    impl.sampler = wgpuDeviceCreateSampler(device, &sampler);
+    const WGPUBufferDescriptor buffer{.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, .size = sizeof(ParamsUniform)};
+    impl.params = wgpuDeviceCreateBuffer(device, &buffer);
+
+    const WGPUShaderSourceWGSL source{.chain = {.sType = WGPUSType_ShaderSourceWGSL},
+                                      .code = wgsl_name(detail::shader_code("post/temporal_aa"))};
+    const WGPUShaderModuleDescriptor shader_descriptor{.nextInChain = &source.chain};
+    const auto shader = wgpuDeviceCreateShaderModule(device, &shader_descriptor);
+    const WGPUPipelineLayoutDescriptor pipeline_layout_descriptor{.bindGroupLayoutCount = 1, .bindGroupLayouts = &impl.layout};
+    const auto pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &pipeline_layout_descriptor);
+    const std::array<WGPUColorTargetState, 2> targets{WGPUColorTargetState{.format = hdr_format, .writeMask = WGPUColorWriteMask_All},
+                                                      WGPUColorTargetState{.format = hdr_format, .writeMask = WGPUColorWriteMask_All}};
+    const WGPUFragmentState fragment{
+        .module = shader, .entryPoint = wgsl_name("fs_main"), .targetCount = targets.size(), .targets = targets.data()};
+    const WGPURenderPipelineDescriptor descriptor{
+        .layout = pipeline_layout,
+        .vertex = {.module = shader, .entryPoint = wgsl_name("vs_main")},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+        .multisample = {.count = 1, .mask = ~0u},
+        .fragment = &fragment,
+    };
+    impl.pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
+    wgpuPipelineLayoutRelease(pipeline_layout);
+    wgpuShaderModuleRelease(shader);
+}
+
+TemporalAA::~TemporalAA() = default;
+
+bool TemporalAA::ready() const noexcept {
+    return impl_->pipeline && impl_->layout && impl_->params && impl_->sampler;
+}
+
+void TemporalAA::reset() noexcept {
+    impl_->valid = false;
+}
+
+glm::vec2 TemporalAA::jitter() const noexcept {
+    const auto index = impl_->frame % jitter_count + 1;
+    return {halton(index, 2) - 0.5f, halton(index, 3) - 0.5f};
+}
+
+glm::mat4 TemporalAA::jittered(const glm::mat4& projection, const std::uint32_t width, const std::uint32_t height) const noexcept {
+    if (width == 0 || height == 0) return projection;
+    const auto j = jitter();
+    glm::mat4 out = projection;
+    // A shift of the clip space's x, y by w times the offset (in NDC).
+    out[2][0] += j.x * 2.0f / static_cast<float>(width) * (projection[2][3] != 0.0f ? -projection[2][3] : 1.0f);
+    out[2][1] += j.y * 2.0f / static_cast<float>(height) * (projection[2][3] != 0.0f ? -projection[2][3] : 1.0f);
+    return out;
+}
+
+WGPUTextureView TemporalAA::resolve(const WGPUCommandEncoder encoder, const WGPUTextureView scene, const WGPUTextureView depth,
+                                    const WGPUTextureView moving_depth, const TemporalAAFrame& frame) {
+    auto& impl = *impl_;
+    ++impl.frame;
+    if (!ready() || !scene || !depth || frame.width == 0 || frame.height == 0) {
+        impl.valid = false;
+        return scene;
+    }
+    impl.ensure(frame.width, frame.height);
+    if (!impl.views[0] || !impl.views[1] || !impl.shown_view) return scene;
+    // A jump of the camera (a cut, the origin moved): no history.
+    // A jump of the camera (a cut, the origin moved): no history. The
+    // trains' pixels move with the player's train (its own move; nothing
+    // when the camera goes round a standing train).
+    if (glm::length(frame.eye - impl.previous_eye) > 50.0f) impl.valid = false;
+    glm::vec3 shift{0.0f};
+    if (frame.train && impl.previous_train) {
+        shift = *frame.train - *impl.previous_train;
+        if (glm::length(shift) > 50.0f) shift = glm::vec3{0.0f};
+    }
+    const auto read = impl.written;
+    const auto write = 1u - impl.written;
+    ParamsUniform params{
+        .inverse_view_projection = glm::inverse(frame.view_projection),
+        .previous_view_projection = impl.previous_view_projection,
+        .steady_view_projection = frame.steady_view_projection,
+        .eye_shift = {shift.x, shift.y, shift.z, impl.valid ? 1.0f : 0.0f},
+        .size = {static_cast<float>(frame.width), static_cast<float>(frame.height), 1.0f / static_cast<float>(frame.width),
+                 1.0f / static_cast<float>(frame.height)},
+        .view = {static_cast<float>(frame.view), 0.0f, 0.0f, 0.0f},
+    };
+    if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
+        wgpuQueueWriteBuffer(queue, impl.params, 0, &params, sizeof(params));
+        wgpuQueueRelease(queue);
+    }
+    std::array<WGPUBindGroupEntry, 6> entries{};
+    entries[0] = {.binding = 0, .textureView = scene};
+    entries[1] = {.binding = 1, .textureView = impl.views[read]};
+    entries[2] = {.binding = 2, .textureView = depth};
+    // Without the moving models' depth: none moving (a depth of 0 there).
+    entries[3] = {.binding = 3, .textureView = moving_depth ? moving_depth : depth};
+    entries[4] = {.binding = 4, .sampler = impl.sampler};
+    entries[5] = {.binding = 5, .buffer = impl.params, .size = sizeof(ParamsUniform)};
+    const WGPUBindGroupDescriptor group_descriptor{.layout = impl.layout, .entryCount = entries.size(), .entries = entries.data()};
+    const auto group = wgpuDeviceCreateBindGroup(impl.device, &group_descriptor);
+    std::array<WGPURenderPassColorAttachment, 2> colours{};
+    for (std::size_t i = 0; i < 2; ++i) {
+        colours[i] = {.view = i == 0 ? impl.views[write] : impl.shown_view,
+                      .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+                      .loadOp = WGPULoadOp_Clear,
+                      .storeOp = WGPUStoreOp_Store,
+                      .clearValue = {0.0, 0.0, 0.0, 1.0}};
+    }
+    const WGPURenderPassDescriptor pass_descriptor{.colorAttachmentCount = colours.size(), .colorAttachments = colours.data()};
+    const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+    wgpuRenderPassEncoderSetPipeline(pass, impl.pipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, group, 0, nullptr);
+    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+    wgpuBindGroupRelease(group);
+    impl.written = write;
+    impl.valid = true;
+    impl.previous_view_projection = frame.steady_view_projection;
+    impl.previous_eye = frame.eye;
+    impl.previous_train = frame.train;
+    return frame.view != 0 ? impl.shown_view : impl.views[write];
+}
+
+} // namespace openrts::renderer
+#endif

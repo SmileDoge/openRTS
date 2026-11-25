@@ -35,6 +35,9 @@ struct FrameView {
     glm::vec3 eye{};
     glm::mat4 view{1.0f};
     glm::mat4 projection{1.0f};
+    // The projection without the temporal AA's jitter (labels on the screen,
+    // the mouse's picking); none: `projection` has none.
+    std::optional<glm::mat4> steady_projection;
     float vertical_fov = 0.0f;
     float view_zoom = 1.0f; // ViewerCamera::view_zoom (Ctrl and the wheel)
     float aspect = 1.0f;
@@ -379,6 +382,9 @@ public:
     // What the shadows look at most closely this frame (after submit): the
     // cab the engineer is in.
     [[nodiscard]] virtual std::optional<renderer::ShadowFocus> shadow_focus() const { return std::nullopt; }
+    // The player's train's place this frame (route space; the temporal AA's
+    // trains move by it), none without one.
+    [[nodiscard]] virtual std::optional<glm::vec3> player_train_place() const { return std::nullopt; }
     // The room the engineer is in (the cab's or salon's box), for the light
     // shafts' dust (renderer/light_shafts.hpp).
     [[nodiscard]] virtual std::optional<renderer::LightShaftRoom> light_shaft_room() const { return std::nullopt; }

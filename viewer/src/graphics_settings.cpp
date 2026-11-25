@@ -77,6 +77,7 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"bloom_strength", text(e.bloom_strength)},
         {"bloom_textures", text(e.bloom_textures)},
         {"effect_shafts", text(e.light_shafts)},
+        {"effect_taa", text(e.temporal_aa)},
         {"shafts_strength", text(e.light_shafts_strength)},
         {"shadow_distance", text(e.shadow_distance)},
         {"shadow_quality", text(e.shadow_map_size)},
@@ -147,6 +148,7 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     e.bloom_strength = number(value_of, "bloom_strength", e.bloom_strength, 0.0f, 3.0f);
     e.bloom_textures = flag_not_zero(value_of, "bloom_textures", e.bloom_textures);
     e.light_shafts = flag_one(value_of, "effect_shafts", e.light_shafts);
+    e.temporal_aa = flag_one(value_of, "effect_taa", e.temporal_aa);
     e.light_shafts_strength = number(value_of, "shafts_strength", e.light_shafts_strength, 0.0f, 4.0f);
     e.aerial_perspective = flag_one(value_of, "effect_aerial", e.aerial_perspective);
     e.shadow_distance = number(value_of, "shadow_distance", e.shadow_distance, 100.0f, 1000.0f);

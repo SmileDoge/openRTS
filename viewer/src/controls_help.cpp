@@ -56,7 +56,6 @@ void draw_controls_help() {
         row("W A S D", "move the free camera");
         row("Q / E", "down / up");
         row("Shift", "faster");
-        row("F", "free / orbit camera");
         row("Ctrl+F", "from the cab (or on foot) to the free camera; again: back into the cab (without one, or the dispatcher: on foot where the camera is)");
         row("V", "the camera follows the train");
         row("T", "track diagram (yellow lines) on / off");

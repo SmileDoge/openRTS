@@ -223,8 +223,9 @@ enum class DepthPassKind { shadow, camera };
 // Which casters a depth pass draws: all, those that stay where they are (the
 // world's objects, the terrain), or those that move (ModelRenderer::set_moving:
 // trains, road traffic, crossing gates, switch blades). The sun's shadow cache
-// keeps the still ones' depth between frames (SceneEffects).
-enum class DepthCasters : std::uint8_t { all, still, moving };
+// keeps the still ones' depth between frames (SceneEffects). `trains`: the
+// trains alone (set_train; the temporal AA's moving models).
+enum class DepthCasters : std::uint8_t { all, still, moving, trains };
 
 struct ModelFrameContext {
     glm::mat4 view_projection{1.0f};
@@ -453,6 +454,9 @@ public:
     // default): trains, road traffic, crossing gates, switch blades. The
     // sun's shadow cache redraws only those every frame.
     void set_moving(bool moving) noexcept;
+    // Instances submitted from here on are trains (true) or not (the
+    // default): the temporal AA takes their points as riding with the camera.
+    void set_train(bool train) noexcept;
     // After prepare(): a hash of this frame's moving instances (set_moving):
     // their models, distance levels, places and node poses, to a millimetre
     // and a ten-thousandth. The same as last frame: nothing moving moved
@@ -481,7 +485,7 @@ public:
                       std::uint32_t skip_owner = 0, DepthCasters casters = DepthCasters::all);
     // Depth slots: the cascades, the camera, the focus, 8 lamps, the shadow
     // cache's pieces (8 a cascade) and its check (a cascade each).
-    static constexpr std::uint32_t depth_slots = 50;
+    static constexpr std::uint32_t depth_slots = 51;
     // An instance out of view that casts a shadow into it: shadow passes only.
     void submit_shadow_caster(RenderModel& model, const ModelTransform& transform);
     // Group 2 of the experimental path (SceneEffects::bind_group); nullptr: a
