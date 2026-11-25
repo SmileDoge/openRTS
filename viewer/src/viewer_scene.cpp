@@ -1193,7 +1193,15 @@ public:
             // Raindrops on its glass while it rains, snowflakes while it snows.
             if (lighting.room && effects_.rain_glass && effects_.precipitation && precipitation_ && precipitation_->drops() > 0) {
                 const float amount = weather_precipitation() * 0.6f;
-                lighting.rain = train_->rain_glass(amount, rain_clock_, rain_since_);
+                // Once a frame: environment() is asked several times a
+                // frame, and the wipers' sweep is costly (testers: 10 FPS).
+                if (!rain_cached_ || rain_cached_clock_ != rain_clock_ || rain_cached_amount_ != amount) {
+                    rain_cached_value_ = train_->rain_glass(amount, rain_clock_, rain_since_);
+                    rain_cached_clock_ = rain_clock_;
+                    rain_cached_amount_ = amount;
+                    rain_cached_ = true;
+                }
+                lighting.rain = rain_cached_value_;
                 if (lighting.rain) lighting.rain->snow = precipitation_->snow();
             }
         }
@@ -3345,6 +3353,10 @@ private:
         return precipitation_amount(dynamic_weather_ ? 0.3f + 1.4f * weather_cycle().shown.precipitation : storm_ ? 1.7f : 1.0f);
     }
     float rain_clock_ = 0.0f, rain_since_ = 0.0f; // s
+    // The cab glass's rain of this frame (environment()).
+    mutable bool rain_cached_ = false;
+    mutable float rain_cached_clock_ = 0.0f, rain_cached_amount_ = 0.0f;
+    mutable std::optional<renderer::ModelRainGlass> rain_cached_value_;
     float snow_cover_ = 0.0f; // the snow on the models (0..1)
     bool snow_cover_started_ = false, snow_cover_winter_ = false;
     bool was_raining_ = false;
