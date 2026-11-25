@@ -4,13 +4,19 @@
 #include <cstdint>
 #include <memory>
 
+#include <glm/vec2.hpp>
+
 #include <webgpu/webgpu.h>
 
 namespace openrts::renderer {
 
 // The frame as the temporal AA takes it.
 struct TemporalAAFrame {
-    std::uint32_t width = 0, height = 0;
+    std::uint32_t width = 0, height = 0; // the output's (the history's)
+    // The scene's (its depth's and motion's), smaller when upscaling (TAAU;
+    // 0: the output's), and this frame's jitter in its pixels.
+    std::uint32_t input_width = 0, input_height = 0;
+    glm::vec2 jitter{0.0f};
     // What to show (the panel's preview): 0 the result, 1 the motion (and
     // the trains), 2 the depth it reads, 3 the history alone, 4 how much of
     // the history the clip let go.

@@ -83,12 +83,14 @@
 namespace openrts::viewer {
 namespace {
 
-// The scene's depth and MSAA colour at a size of their own (DLSS's internal
-// size; the frame itself is DLSS's shared texture), made again when it changes.
+// The scene's depth and MSAA colour at a size of their own (an upscaler's
+// internal size), and its HDR frame when asked (TAAU; DLSS draws into its
+// shared texture), made again when the size changes.
 struct SceneTargets {
-    WGPUTexture depth = nullptr, msaa = nullptr;
-    WGPUTextureView depth_view = nullptr, msaa_view = nullptr;
+    WGPUTexture depth = nullptr, msaa = nullptr, colour = nullptr;
+    WGPUTextureView depth_view = nullptr, msaa_view = nullptr, colour_view = nullptr;
     std::uint32_t width = 0, height = 0, samples = 0;
+    bool with_colour = false;
 
     SceneTargets() = default;
     SceneTargets(const SceneTargets&) = delete;
@@ -98,16 +100,33 @@ struct SceneTargets {
     void release() {
         if (depth_view) wgpuTextureViewRelease(depth_view);
         if (msaa_view) wgpuTextureViewRelease(msaa_view);
+        if (colour_view) wgpuTextureViewRelease(colour_view);
         if (depth) wgpuTextureRelease(depth);
         if (msaa) wgpuTextureRelease(msaa);
-        depth_view = msaa_view = nullptr;
-        depth = msaa = nullptr;
+        if (colour) wgpuTextureRelease(colour);
+        depth_view = msaa_view = colour_view = nullptr;
+        depth = msaa = colour = nullptr;
         width = height = samples = 0;
+        with_colour = false;
     }
 
-    bool ensure(const WGPUDevice device, const std::uint32_t w, const std::uint32_t h, const std::uint32_t sample_count) {
-        if (w == width && h == height && sample_count == samples && depth_view) return true;
+    bool ensure(const WGPUDevice device, const std::uint32_t w, const std::uint32_t h, const std::uint32_t sample_count,
+                const bool colour_too = false) {
+        if (w == width && h == height && sample_count == samples && colour_too == with_colour && depth_view) return true;
         release();
+        if (colour_too) {
+            const WGPUTextureDescriptor colour_descriptor{
+                .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
+                .dimension = WGPUTextureDimension_2D,
+                .size = {w, h, 1},
+                .format = renderer::hdr_format,
+                .mipLevelCount = 1,
+                .sampleCount = 1,
+            };
+            colour = wgpuDeviceCreateTexture(device, &colour_descriptor);
+            if (colour) colour_view = wgpuTextureCreateView(colour, nullptr);
+            with_colour = true;
+        }
         const WGPUTextureDescriptor depth_descriptor{
             .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
             .dimension = WGPUTextureDimension_2D,
@@ -133,7 +152,7 @@ struct SceneTargets {
         width = w;
         height = h;
         samples = sample_count;
-        return depth_view && (sample_count <= 1 || msaa_view);
+        return depth_view && (sample_count <= 1 || msaa_view) && (!colour_too || colour_view);
     }
 };
 
@@ -784,6 +803,7 @@ struct PanelState {
     int texture_size = 0;      // renderer::texture_size_limit: 0 as the files, 1 1024, 2 512, 3 256
     bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
     int taa_view = 0;                    // the temporal AA's preview (TemporalAAFrame::view), not kept
+    int taa_scale = 0;                   // TAAU: the scene drawn at taau_scales[] of the window's size, upscaled by the TAA
     int dlss_mode = 0;                   // DlssMode: NVIDIA DLSS (DLAA or upscaling) instead of the temporal AA (dlss_upscaler.hpp)
     std::string dlss_error;              // why DLSS is not available (empty: it is, or not tried)
     float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
@@ -1675,6 +1695,11 @@ public:
                                        tr("TAA shows: the history let go (white)")};
                 ImGui::SetNextItemWidth(420.0f);
                 ImGui::Combo("##taa_view", &panel.taa_view, views, 5);
+                const char* scales[] = {tr("Render resolution: 100 % (no upscaling)"), tr("Render resolution: 77 % (TAAU)"),
+                                        tr("Render resolution: 67 % (TAAU)"), tr("Render resolution: 58 % (TAAU)"),
+                                        tr("Render resolution: 50 % (TAAU)")};
+                ImGui::SetNextItemWidth(420.0f);
+                if (ImGui::Combo("##taa_scale", &panel.taa_scale, scales, 5)) remember("effect_taa_scale", std::to_string(panel.taa_scale));
                 ImGui::Unindent();
             }
             {
@@ -3211,6 +3236,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     std::unique_ptr<renderer::MotionVectors> motion_vectors; // the jitter and the screen's motion (TAA, the upscalers)
     std::unique_ptr<DlssUpscaler> dlss;                    // made when DLSS is first chosen
     SceneTargets dlss_targets;                             // the depth and MSAA at DLSS's internal size
+    SceneTargets taau_targets;                             // the frame, depth and MSAA at TAAU's internal size
     std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
     bool auto_exposure_was_on = false;
     if (renderer::scene_hdr()) tone = std::make_unique<renderer::ToneMapper>(device, surface.format());
@@ -3442,9 +3468,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         panel.effects.show_occlusion = has("show-ao");
         panel.effects.light_shafts = has("shafts");
         panel.effects.temporal_aa = has("taa");
+        if (const auto at = list.find("taau"); at != std::string::npos && at + 4 < list.size() && list[at + 4] >= '0' && list[at + 4] <= '4')
+            panel.taa_scale = list[at + 4] - '0';
         if (const auto at = list.find("taa-view"); at != std::string::npos && at + 8 < list.size())
             panel.taa_view = std::clamp(list[at + 8] - '0', 0, 4);
     }
+    if (const auto scale = remembered("effect_taa_scale"); scale && !options.effects) panel.taa_scale = std::clamp(std::atoi(scale->c_str()), 0, 4);
     // DLSS's mode (effect_dlaa "1": DLAA, as v0.43 kept it).
     if (const auto mode = remembered("effect_dlss")) {
         panel.dlss_mode = std::clamp(std::atoi(mode->c_str()), 0, 5);
@@ -4013,12 +4042,27 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
         }
         const bool taa_frame = experimental_frame && panel.effects.temporal_aa && !dlss_frame;
+        // TAAU: the scene at a part of the window's size in a frame of its
+        // own, the TAA upscaling it into its history at the window's.
+        if (taa_frame && panel.taa_scale > 0) {
+            static constexpr float taau_scales[] = {1.0f, 0.77f, 0.67f, 0.58f, 0.5f};
+            const float scale = taau_scales[std::clamp(panel.taa_scale, 0, 4)];
+            const auto w = static_cast<std::uint32_t>((std::max)(1.0f, std::round(static_cast<float>(width) * scale)));
+            const auto h = static_cast<std::uint32_t>((std::max)(1.0f, std::round(static_cast<float>(height) * scale)));
+            if (taau_targets.ensure(device, w, h, renderer::render_sample_count(), true)) {
+                width = static_cast<int>(w);
+                height = static_cast<int>(h);
+                hdr_view = taau_targets.colour_view;
+                depth_view = taau_targets.depth_view;
+                msaa_view = taau_targets.msaa_view;
+            }
+        }
         const glm::vec2 frame_jitter = motion_vectors ? motion_vectors->jitter() : glm::vec2{0.0f};
         if (taa_frame || dlss_frame) {
             if (!temporal_aa) temporal_aa = std::make_unique<renderer::TemporalAA>(device);
             if (!motion_vectors) motion_vectors = std::make_unique<renderer::MotionVectors>(device);
             // The jitter's phases: 8, times the upscaling ratio squared (DLSS's guide).
-            const float ratio = dlss_frame ? static_cast<float>(output_width) / static_cast<float>((std::max)(width, 1)) : 1.0f;
+            const float ratio = static_cast<float>(output_width) / static_cast<float>((std::max)(width, 1));
             motion_vectors->set_jitter_phases(static_cast<std::uint32_t>(std::ceil(8.0f * ratio * ratio)));
             if (temporal_aa->ready() && motion_vectors->ready())
                 projection_matrix =
@@ -4033,7 +4077,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             static std::uint32_t stochastic_frame = 0;
             renderer.set_stochastic_alpha((taa_frame || dlss_frame) && renderer::render_sample_count() <= 1, ++stochastic_frame);
             // Upscaling: the textures' detail as at the window's size.
-            renderer.set_texture_lod_bias(dlss_frame && width < output_width
+            renderer.set_texture_lod_bias(width < output_width
                                               ? std::log2(static_cast<float>(width) / static_cast<float>(output_width))
                                               : 0.0f);
         }
@@ -4247,8 +4291,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                                              .width = static_cast<std::uint32_t>(width),
                                                              .height = static_cast<std::uint32_t>(height)});
                 toned = temporal_aa->resolve(encoder, hdr_view, effects.camera_depth(), motion,
-                                             {.width = static_cast<std::uint32_t>(width),
-                                              .height = static_cast<std::uint32_t>(height),
+                                             {.width = static_cast<std::uint32_t>(output_width),
+                                              .height = static_cast<std::uint32_t>(output_height),
+                                              .input_width = static_cast<std::uint32_t>(width),
+                                              .input_height = static_cast<std::uint32_t>(height),
+                                              .jitter = frame_jitter,
                                               .view = panel.taa_view});
             }
             // DLSS: the motion into its shared texture and the depth into

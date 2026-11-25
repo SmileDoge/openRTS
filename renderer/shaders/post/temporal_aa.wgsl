@@ -2,8 +2,10 @@
 // with the history where its point was last frame, clipped to the colours
 // round the pixel.
 struct Params {
-    size: vec4<f32>, // width, height, 1 / width, 1 / height
-    view: vec4<f32>, // x: what to show (TemporalAAFrame::view), 0 the result; y: 1 a history to take
+    size: vec4<f32>,   // the output's (the history's): width, height, 1 / width, 1 / height
+    view: vec4<f32>,   // x: what to show (TemporalAAFrame::view), 0 the result; y: 1 a history to take
+    input: vec4<f32>,  // the scene's (the depth's, the motion's) size, as `size`; smaller: upscaling (TAAU)
+    jitter: vec4<f32>, // xy: this frame's jitter (MotionVectors::jitter, the scene's pixels)
 };
 
 // The views for looking into it (TemporalAAView).
@@ -90,14 +92,15 @@ fn sane(c: vec3<f32>) -> vec3<f32> {
 }
 
 fn load_scene(p: vec2<i32>) -> vec3<f32> {
-    let size = vec2<i32>(params.size.xy);
+    let size = vec2<i32>(params.input.xy);
     return sane(textureLoad(scene, clamp(p, vec2<i32>(0), size - 1), 0).rgb);
 }
 
-// The history at `uv` by Catmull-Rom (five bilinear taps): sharper than
-// bilinear, which would soften it a little more every frame.
-fn history_at(uv: vec2<f32>) -> vec3<f32> {
-    let position = uv * params.size.xy;
+// `image` at `uv` by Catmull-Rom (five bilinear taps; `size` its width,
+// height, 1 / width, 1 / height): sharper than bilinear, which would soften
+// the history a little more every frame and the upscaled scene at once.
+fn catmull_rom(image: texture_2d<f32>, uv: vec2<f32>, size: vec4<f32>) -> vec3<f32> {
+    let position = uv * size.xy;
     let centre = floor(position - 0.5) + 0.5;
     let f = position - centre;
     let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
@@ -106,7 +109,7 @@ fn history_at(uv: vec2<f32>) -> vec3<f32> {
     let w3 = f * f * (-0.5 + 0.5 * f);
     let w12 = w1 + w2;
     let offset12 = w2 / w12;
-    let texel = params.size.zw;
+    let texel = size.zw;
     let p0 = (centre - 1.0) * texel;
     let p3 = (centre + 2.0) * texel;
     let p12 = (centre + offset12) * texel;
@@ -117,10 +120,14 @@ fn history_at(uv: vec2<f32>) -> vec3<f32> {
                                       vec3<f32>(p12.x, p3.y, w12.x * w3.y));
     for (var i = 0; i < 5; i = i + 1) {
         let c = corners[i];
-        sum = sum + textureSampleLevel(history, linear_sampler, c.xy, 0.0).rgb * c.z;
+        sum = sum + textureSampleLevel(image, linear_sampler, c.xy, 0.0).rgb * c.z;
         weight = weight + c.z;
     }
     return sane(sum / max(weight, 1e-4));
+}
+
+fn history_at(uv: vec2<f32>) -> vec3<f32> {
+    return catmull_rom(history, uv, params.size);
 }
 
 // The result (the history of the next frame) and what the panel shows
@@ -136,9 +143,22 @@ fn both(result: vec4<f32>) -> Out {
 
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> Out {
-    let p = vec2<i32>(position.xy);
-    let size = vec2<i32>(params.size.xy);
-    let current = squeeze(load_scene(p));
+    // Upscaling (TAAU): the output's pixel read from the smaller scene where
+    // it lies without the jitter (the jitter moved the picture by (-x, +y)
+    // of the scene's pixels), filtered; its neighbours, depth and motion are
+    // the scene's pixels round it. The same size: the pixel itself.
+    let upscaling = params.input.x < params.size.x - 0.5;
+    let uv = position.xy * params.size.zw;
+    let sample_at = uv * params.input.xy + vec2<f32>(-params.jitter.x, params.jitter.y);
+    let size = vec2<i32>(params.input.xy);
+    var p = vec2<i32>(position.xy);
+    var current = vec3<f32>(0.0);
+    if (upscaling) {
+        p = clamp(vec2<i32>(floor(sample_at)), vec2<i32>(0), size - 1);
+        current = squeeze(catmull_rom(scene, sample_at * params.input.zw, params.input));
+    } else {
+        current = squeeze(load_scene(p));
+    }
     // The neighbours' colours (their mean and spread) and the nearest point
     // round the pixel (an edge's motion is its front's).
     var m1 = vec3<f32>(0.0);
@@ -197,6 +217,12 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> Out {
     weight = mix(weight, 0.25, clamp(pixels / 24.0, 0.0, 1.0));
     if (is_moving) {
         weight = max(weight, 0.15);
+    }
+    // Upscaling: fewer of the scene's samples a pixel, so less of each, the
+    // less the farther it lies from the pixel's centre.
+    if (upscaling) {
+        let off = abs(fract(sample_at) - vec2<f32>(0.5));
+        weight = weight * (params.input.x * params.size.z) * mix(1.0, 0.5, clamp(length(off) * 2.0, 0.0, 1.0));
     }
     if (params.view.x > 0.5) {
         return Out(vec4<f32>(sane(unsqueeze(mix(past, current, weight))), 1.0),

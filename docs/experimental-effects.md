@@ -1154,7 +1154,15 @@ game (LICENSE-EXCEPTIONS.md); without them the panel says why and TAA stays.
   D3D11). 1280 x 720, RTX 4070 Ti SUPER: DX12 TAA 2.55 ms, DLAA 2.92,
   Quality 2.87, Performance 2.93 (there bound by the CPU); Vulkan TAA 2.43,
   DLAA 3.04 (4.95 with the CPU waiting), Quality 2.78.
-- Not yet: TAAU (our own upscaling for the other video cards).
+- TAAU (2026-11-25, any video card): under TAA, "Render resolution" 100 /
+  77 / 67 / 58 / 50 % (`--effects ...,taa,taauN`). The scene in a frame
+  of its own at that size (its depth and MSAA too), the TAA's history at
+  the window's: each output pixel reads the scene where it lies without
+  the jitter (Catmull-Rom), its neighbours, depth and motion from the
+  scene's pixels round it, the new frame's share smaller the fewer and
+  farther the samples. Jitter phases and the textures' LOD bias as for
+  DLSS. 1280 x 720, MSAA 4x, RTX 4070 Ti SUPER, GPU: 100 % 1.98 ms, 67 %
+  1.55, 50 % 1.37; 67 % looks close to the full size, 50 % softer.
 
 ### Trains' textures without DXT1's blocks (BC7, 2026-11-16)
 

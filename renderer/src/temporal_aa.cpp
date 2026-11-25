@@ -20,6 +20,8 @@ namespace {
 struct ParamsUniform {
     float size[4];
     float view[4];
+    float input[4];
+    float jitter[4];
 };
 
 } // namespace
@@ -91,7 +93,7 @@ TemporalAA::TemporalAA(const WGPUDevice device) : impl_(std::make_unique<Impl>()
     impl.device = device;
     std::array<WGPUBindGroupLayoutEntry, 6> entries{};
     entries[0] = {.binding = 0, .visibility = WGPUShaderStage_Fragment};
-    entries[0].texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
+    entries[0].texture.sampleType = WGPUTextureSampleType_Float; // filtered when upscaling
     entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
     entries[1] = {.binding = 1, .visibility = WGPUShaderStage_Fragment};
     entries[1].texture.sampleType = WGPUTextureSampleType_Float;
@@ -163,6 +165,8 @@ WGPUTextureView TemporalAA::resolve(const WGPUCommandEncoder encoder, const WGPU
         return scene;
     }
     impl.ensure(frame.width, frame.height);
+    const auto input_width = frame.input_width ? frame.input_width : frame.width;
+    const auto input_height = frame.input_height ? frame.input_height : frame.height;
     if (!impl.views[0] || !impl.views[1] || !impl.shown_view) return scene;
     const auto read = impl.written;
     const auto write = 1u - impl.written;
@@ -170,6 +174,9 @@ WGPUTextureView TemporalAA::resolve(const WGPUCommandEncoder encoder, const WGPU
         .size = {static_cast<float>(frame.width), static_cast<float>(frame.height), 1.0f / static_cast<float>(frame.width),
                  1.0f / static_cast<float>(frame.height)},
         .view = {static_cast<float>(frame.view), impl.valid ? 1.0f : 0.0f, 0.0f, 0.0f},
+        .input = {static_cast<float>(input_width), static_cast<float>(input_height), 1.0f / static_cast<float>(input_width),
+                  1.0f / static_cast<float>(input_height)},
+        .jitter = {frame.jitter.x, frame.jitter.y, 0.0f, 0.0f},
     };
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
         wgpuQueueWriteBuffer(queue, impl.params, 0, &params, sizeof(params));
