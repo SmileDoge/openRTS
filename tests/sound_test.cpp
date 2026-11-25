@@ -512,6 +512,48 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCa
     check(sink.seeks.contains(hum) && sink.seeks[hum] >= 30 && sink.seeks[hum] <= 50, "the hum resumes where it was");
 }
 
+// A DLL posting its pairs' codes every step while the exterior group is
+// off (the engineer in the cab): the fan turned off and on there sounds
+// outside when he steps out (testers 2026-11-25, the ВЛ60ПК: the repeats
+// filled the 96-code queue and pushed the fan's On out of it).
+void test_pairs_queued_in_cab() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCam ( ) )
+    DiscreteTriggerPairs ( 2 Pair ( On ( 1 200 ) Off ( 1 201 ) ) Pair ( On ( 1 214 ) Off ( 1 215 ) ) )
+    Streams ( 2
+    Stream ( Triggers ( 2 Discrete_Trigger ( 200 StartLoop ( 1 File ( "fan.wav" -1 ) ) ) Discrete_Trigger ( 201 ReleaseLoopRelease ( ) ) ) )
+    Stream ( Triggers ( 2 Discrete_Trigger ( 214 StartLoop ( 1 File ( "phase.wav" -1 ) ) ) Discrete_Trigger ( 215 ReleaseLoopRelease ( ) ) ) ) ) ) )"));
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips;
+    for (const char* name : {"fan.wav", "phase.wav"}) clips[name] = test_clip(1000);
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string& name) { return clips.at(name); }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::external;
+    inputs[SoundVariable::distance] = 0;
+    std::vector<std::uint32_t> step{200, 214};
+    inputs.discrete = std::span(step);
+    sound.update(0.01f, inputs, sink);
+    inputs.camera = audio::SoundCamera::cab;
+    sound.update(0.01f, inputs, sink);
+    check(!sound.active(), "in the cab: the exterior group is off");
+    // The fan off for a while, then on; the phase splitter's On every step.
+    step = {201, 214};
+    inputs.discrete = std::span(step);
+    for (int i = 0; i < 100; ++i) sound.update(0.01f, inputs, sink);
+    step = {200, 214};
+    inputs.discrete = std::span(step);
+    for (int i = 0; i < 100; ++i) sound.update(0.01f, inputs, sink);
+    inputs.camera = audio::SoundCamera::external;
+    step = {};
+    inputs.discrete = {};
+    sound.update(0.01f, inputs, sink);
+    bool fan = false;
+    for (const auto& [id, voice] : sink.voices)
+        if (voice.clip == clips["fan.wav"] && sink.playing(id)) fan = true;
+    check(fan, "outside again: the fan turned on in the cab sounds");
+}
+
 // A StartLoopRelease's loop (its file's start, then its loop region round
 // and round) taken off with the group and back: it goes on inside its
 // region, the start not played again (testers 2026-11-23: the ChS7's fans
@@ -1362,6 +1404,7 @@ int main(int argc, char** argv) {
     test_one_shot_fade();
     test_day_night();
     test_cab_round_trip();
+    test_pairs_queued_in_cab();
     test_region_round_trip();
     test_speed_on_the_move();
     test_set_stream_volume_replaces();

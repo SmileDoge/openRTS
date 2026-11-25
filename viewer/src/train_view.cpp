@@ -3004,6 +3004,52 @@ void TrainView::collect_exhausts(std::vector<ExhaustSource>& out) const {
     }
 }
 
+void TrainView::collect_snow_dust(std::vector<ExhaustSource>& out, const float cover, const int level, const glm::vec3& eye) const {
+    if (cover < 0.05f || level <= 0) return;
+    const float reach = level >= 2 ? 350.0f : 150.0f;
+    for (const auto& unit : units_) {
+        if (!unit.train || unit.current.empty()) continue;
+        const auto& states = unit.train->cars();
+        for (std::size_t i = 0; i < unit.cars.size() && i < states.size() && i < unit.current.size(); ++i) {
+            const auto& state = states[i];
+            const float speed = std::fabs(state.velocity);
+            // From some 10 km/h, fully from some 70.
+            if (speed < 3.0f || !state.definition) continue;
+            const auto body = body_pose(unit, i, false);
+            if (!body) continue;
+            const glm::vec3 middle{body->transform[3]};
+            if (glm::length(middle - eye) > reach + state.definition->length) continue;
+            const glm::vec3 along = glm::normalize(glm::vec3{body->transform[2]});
+            const glm::vec3 velocity = along * (state.velocity * (state.flipped ? -1.0f : 1.0f));
+            const float strength = std::clamp((speed - 3.0f) / 17.0f, 0.0f, 1.0f) * std::clamp(cover, 0.0f, 1.0f);
+            for (std::size_t b = 0; b < 2; ++b) {
+                const float z = (b == 0 ? 1.0f : -1.0f) * 0.3f * state.definition->length;
+                ExhaustSource source;
+                source.key = (static_cast<std::uint64_t>(unit.train->id()) << 32) | (static_cast<std::uint64_t>(i) << 8) | (0xE0u + b);
+                source.position = glm::vec3{body->transform * glm::vec4{0.0f, 0.3f, z, 1.0f}};
+                // Up and a little back: the snow left behind the bogie.
+                const glm::vec3 back = speed > 0.0f ? -glm::normalize(velocity) : glm::vec3{0.0f};
+                source.direction = (glm::vec3{0.0f, 1.0f, 0.0f} + back * 0.5f) * 0.12f;
+                // Picked up by the car's wind, then left behind: a trail.
+                source.velocity = velocity * 0.35f;
+                source.acceleration = 0.0f;
+                // Short white puffs (the round glow, not RTS's dark smoke):
+                // some 1.5 s, growing to a couple of metres.
+                source.nozzle = 0.5f;
+                source.rate = (level >= 2 ? 4.0f : 2.0f) * (0.3f + 0.7f * strength);
+                source.magnitude = 1.0f + 1.0f * strength;
+                source.dispersion = 0.8f;
+                source.mass = 5.0f;
+                const auto alpha = static_cast<std::uint32_t>(std::clamp(25.0f + 70.0f * strength, 0.0f, 255.0f));
+                source.colour = (alpha << 24) | 0x00FFFFFFu;
+                source.brightness = 1.6f;
+                source.life = 1.0f + 0.8f * strength;
+                out.push_back(std::move(source));
+            }
+        }
+    }
+}
+
 void TrainView::apply_brake_settings(const BrakeSettings& s) {
     realistic_air_ = s.realistic;
     realistic_air_loaded_ = true;
@@ -11090,7 +11136,10 @@ void TrainView::update_sound(const float elapsed, const ViewerCamera& camera, au
             for (const auto& candidate : candidates) {
                 if (!vfs_->exists(candidate)) continue;
                 auto script = std::make_shared<formats::SoundScript>(formats::load_sound_script(*vfs_, candidate));
-                if (!script->ok()) break;
+                if (!script->ok()) {
+                    std::cout << "sound script " << candidate.str() << ": " << script->error << std::endl;
+                    break;
+                }
                 car.script = script;
                 car.script_path = candidate;
                 break;

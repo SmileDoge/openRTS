@@ -235,7 +235,10 @@ void SmokeView::update(const float elapsed, const std::vector<ExhaustSource>& so
         emitter.direction = source.direction;
         emitter.velocity = source.velocity;
         emitter.nozzle_size = (std::max)(source.nozzle, 0.01f);
-        if (emitter.texture == 0) emitter.texture = texture(source.texture);
+        emitter.brightness = source.brightness;
+        emitter.life = source.life;
+        if (!emitter.textured && !source.texture.empty()) emitter.texture = texture(source.texture);
+        emitter.textured = true;
         const float rate = source.rate;
         const float magnitude = source.magnitude;
         const float spread = magnitude * source.dispersion;
@@ -304,12 +307,21 @@ void SmokeView::update(const float elapsed, const std::vector<ExhaustSource>& so
                 if (particle.head_start > 0.0f) dt = particle.head_start;
             }
             particle.size += particle.growth * dt;
-            if (particle.size <= particle.growth || particle.growth <= 0.0f) {
+            particle.age += dt;
+            if (emitter.life > 0.0f) {
+                // A short puff: thickest at a fifth of its life, gone at its end.
+                const float t = particle.age / emitter.life;
+                particle.alpha = t >= 1.0f ? 0.0f : (t < 0.2f ? t / 0.2f : 1.0f - (t - 0.2f) / 0.8f);
+                if (t >= 1.0f) {
+                    p = emitter.particles.erase(p);
+                    continue;
+                }
+            } else if (particle.size <= particle.growth || particle.growth <= 0.0f) {
                 particle.alpha = 0.7f * particle.growth / particle.size;
             } else {
                 particle.alpha = (1.0f - particle.size / particle.growth) / (particle.dispersion + 9.0f) + 0.7f;
             }
-            if (particle.alpha < 0.01f) {
+            if (emitter.life <= 0.0f && particle.alpha < 0.01f) {
                 p = emitter.particles.erase(p);
                 continue;
             }
@@ -318,14 +330,14 @@ void SmokeView::update(const float elapsed, const std::vector<ExhaustSource>& so
             glm::vec3 step = particle.push * dt + particle.drift * dt + glm::vec3{0.0f, particle.lift * dt, 0.0f};
             for (const auto& layer : wind_) {
                 if (layer.max_height <= particle.position.y) continue;
-                const float k = (1.0f - particle.position.y / layer.max_height) * dt * 0.1f / particle.alpha;
+                const float k = (1.0f - particle.position.y / layer.max_height) * dt * 0.1f / (std::max)(particle.alpha, emitter.life > 0.0f ? 0.3f : 0.01f);
                 step += glm::vec3{layer.direction[0], layer.direction[1], layer.direction[2]} * k;
             }
             particle.position += step;
             renderer::GlowSprite sprite;
             sprite.position = particle.position;
             sprite.radius = particle.scale * particle.size * emitter.nozzle_size;
-            sprite.colour = pack_abgr(glm::vec4{glm::vec3{particle.colour} * glm::vec3{light}, std::clamp(particle.colour.a * particle.alpha, 0.0f, 1.0f)});
+            sprite.colour = pack_abgr(glm::vec4{glm::vec3{particle.colour} * glm::vec3{light} * emitter.brightness, std::clamp(particle.colour.a * particle.alpha, 0.0f, 1.0f)});
             sprite.texture = emitter.texture;
             sprites.push_back(sprite);
             ++p;

@@ -1264,6 +1264,7 @@ bool enter_new_train(LegacyConsist& consist, const std::size_t car, simulation::
 }
 
 bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>& trains, const LegacyWorld& world) {
+    for (const auto& [car, id] : std::exchange(start_switches_, {})) (void)operate(car, id, 1);
     if (!host_ || !host_->alive()) {
         outputs_->valid = false;
         return false;
@@ -2467,6 +2468,18 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             car.held_values.clear();
             car.held_states.clear();
             car.state.distance = static_cast<float>(var_at(224, 0.0f) - std::abs(static_cast<double>(speed)) * request.dt);
+            // Started on or on the move (a pantograph up, a diesel running):
+            // the КПД-3 and the УКБМ powered as Brakes.dll left them (testers
+            // 2026-11-25: the ВЛ60ПК's КПД-3 dark, no vigilance, until its
+            // switch was turned).
+            if (has_power(outputs_->cars)) {
+                for (const auto& c : p.settings.cabs) {
+                    for (const auto id : {c.kpd_power, c.ukbm_power}) {
+                        if (id >= 0 && static_cast<std::size_t>(id) < out.switches.size() && out.switches[static_cast<std::size_t>(id)].state == 0)
+                            start_switches_.emplace_back(i, static_cast<std::uint32_t>(id));
+                    }
+                }
+            }
             car.last_var4 = var_bits(4);
             car.last_ep = var_at(40, 0.0f);
             car.switches = out.switches;

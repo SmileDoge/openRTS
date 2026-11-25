@@ -261,6 +261,10 @@ public:
     void set_shape_keeper(std::function<bool(const std::string&)> keeper) { shape_keeper_ = std::move(keeper); }
     // Every diesel exhaust of every train this frame (SmokeView).
     void collect_exhausts(std::vector<ExhaustSource>& out) const;
+    // The lying snow blown up from under the bogies of running cars
+    // (openRTS): `cover` the snow lying (0..1), `level` 1 little, 2 normal;
+    // cars beyond `reach` metres from `eye` none (the frame rate).
+    void collect_snow_dust(std::vector<ExhaustSource>& out, float cover, int level, const glm::vec3& eye) const;
     // A traveller at the end of the train that leads (by the motion, else
     // the reverser), facing away from the train.
     [[nodiscard]] std::optional<simulation::TrackTraveller> ahead() const;

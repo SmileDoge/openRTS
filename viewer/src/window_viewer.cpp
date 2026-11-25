@@ -4201,6 +4201,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                     std::cout << "cab switch " << id << ": asked " << asked << ", State " << where->first << ", SetState " << where->second << std::endl;
                 }
             }
+            if (sound) std::cout << "sound: " << sound->active_voices() << " voices, " << sound->audible_voices() << " heard" << std::endl;
             const auto model_stats = renderer.stats();
             std::cout << "models: " << model_stats.instances << " instances, " << model_stats.draw_calls << " draw calls" << std::endl;
             if (const auto world = scene.world_report(); !world.empty()) std::cout << "world: " << world << std::endl;

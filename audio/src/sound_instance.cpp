@@ -262,11 +262,14 @@ void SoundInstance::catch_up(const SoundInputs& inputs, VoiceSink& sink) {
     if (incoming.empty() && posted_.empty()) return;
     if (!trace_.empty()) note(SIZE_MAX, std::to_string(incoming.size()) + " codes queued while off: their states only");
     catching_up_ = true;
-    // PostTrigger codes they make follow, a few rounds at most.
+    // PostTrigger codes they make follow, a few rounds at most. The queued
+    // ones went through the pairs already (update_streams).
     for (int round = 0; round < 8 && (!incoming.empty() || !posted_.empty()); ++round) {
-        incoming.insert(incoming.end(), posted_.begin(), posted_.end());
+        auto codes = round == 0 ? std::move(incoming) : std::vector<std::uint32_t>{};
+        incoming.clear();
+        const auto posted = pass_pairs(posted_);
         posted_.clear();
-        const auto codes = pass_pairs(incoming);
+        codes.insert(codes.end(), posted.begin(), posted.end());
         passed_.insert(passed_.end(), codes.begin(), codes.end());
         run_codes(codes, inputs, sink);
         incoming.clear();
@@ -310,13 +313,15 @@ std::vector<std::uint32_t> SoundInstance::pass_pairs(const std::vector<std::uint
 
 void SoundInstance::run_codes(const std::vector<std::uint32_t>& codes, const SoundInputs& inputs, VoiceSink& sink) {
     if (codes.empty()) return;
-    for (auto& stream : streams_) {
-        if (!stream.running) continue;
-        const auto& triggers = stream.definition->triggers;
-        for (std::size_t i = 0; i < triggers.size(); ++i) {
-            if (!stream.enabled[i] || triggers[i].kind != SoundTriggerKind::discrete) continue;
-            for (const auto code : codes) {
-                if (code == triggers[i].code) fire(stream, i, 1.0f, inputs, sink);
+    // In the codes' order (RTS runs its queue so): a fan's Off then On left
+    // it off when its Off trigger came after its On in the stream.
+    for (const auto code : codes) {
+        for (auto& stream : streams_) {
+            if (!stream.running) continue;
+            const auto& triggers = stream.definition->triggers;
+            for (std::size_t i = 0; i < triggers.size(); ++i) {
+                if (stream.enabled[i] && triggers[i].kind == SoundTriggerKind::discrete && code == triggers[i].code)
+                    fire(stream, i, 1.0f, inputs, sink);
             }
         }
     }
@@ -602,10 +607,17 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
         // updates, restarting its loops. RTS's runtime test is not traced;
         // its sounds do not stutter there (PROBABLE).
         if (!camera || (distances && (distance > activate_within || distance > deactivate_beyond))) {
-            // Codes wait in the queue (RTS: 96 entries) for the next activation.
-            queued_.insert(queued_.end(), inputs.discrete.begin(), inputs.discrete.end());
-            queued_.insert(queued_.end(), posted_.begin(), posted_.end());
+            // Codes wait in the queue (RTS: 96 entries) for the next
+            // activation, through the trigger pairs first: a DLL posting its
+            // pairs' On codes every step (the ВЛ60ПК's fans, 200..211) filled
+            // the queue with repeats in seconds, and a fan started in the cab
+            // was gone from it when the engineer stepped out (testers
+            // 2026-11-25: no fans outside after turning them off and on).
+            std::vector<std::uint32_t> incoming(inputs.discrete.begin(), inputs.discrete.end());
+            incoming.insert(incoming.end(), posted_.begin(), posted_.end());
             posted_.clear();
+            const auto kept = pass_pairs(incoming);
+            queued_.insert(queued_.end(), kept.begin(), kept.end());
             if (queued_.size() > 96) queued_.erase(queued_.begin(), queued_.end() - 96);
             return;
         }

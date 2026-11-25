@@ -1384,7 +1384,13 @@ struct ModelRenderer::Impl {
             .emissive = {draw.emissive.x, draw.emissive.y, draw.emissive.z, draw.emissive.w},
             .maps = {draw.maps.x, draw.maps.y, draw.maps.z, draw.maps.w},
             .height = {draw.height.x, draw.height.y, draw.height.z, draw.height.w},
-            .extent = {draw.extent, draw.snow_view ? 1.0f : 0.0f, draw.label ? 1.0f : 0.0f, 0.0f},
+            // w 1: blended (BlendATexDiff without its alpha test): the depth
+            // passes cut it out at a nearly opaque alpha (depth.wgsl).
+            .extent = {draw.extent, draw.snow_view ? 1.0f : 0.0f, draw.label ? 1.0f : 0.0f,
+                       (draw.material.shader == rts::NamedShader::blend_a_tex || draw.material.shader == rts::NamedShader::blend_a_tex_diff)
+                               && !draw.material.alpha_test_mode
+                           ? 1.0f
+                           : 0.0f},
         };
     }
 
@@ -2742,8 +2748,13 @@ void ModelRenderer::prepare() {
                 if (impl_->hides(queued, draw)) continue;
                 const auto& material = draw.material;
                 const bool blend_shader = material.shader == rts::NamedShader::blend_a_tex || material.shader == rts::NamedShader::blend_a_tex_diff;
-                if ((blend_shader && !material.alpha_test_mode) || !material.depth_write) continue;
-                const bool alpha_test = blend_shader && material.alpha_test_mode;
+                if (!material.depth_write) continue;
+                // A blended primitive too, cut out where it is nearly opaque: a
+                // body drawn blended (the ВЛ60ПК's) hid what was behind it from
+                // the light shafts, the occlusion and the shadows (testers
+                // 2026-11-25: the footbridge's shafts showed on its side);
+                // glass stays out by its alpha.
+                const bool alpha_test = blend_shader;
                 const auto binding = draw.binding;
                 // By primitive, binding, alpha test and whether only the shadows take it.
                 const auto fresh = static_cast<std::uint32_t>(batches.size());

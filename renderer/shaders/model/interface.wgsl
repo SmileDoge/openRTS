@@ -394,7 +394,10 @@ fn with_snow(texel: vec4<f32>, uv: vec2<f32>, uv_dx: vec2<f32>, uv_dy: vec2<f32>
     let snow = textureSampleGrad(snow_texture, source_sampler, uv, uv_dx, uv_dy);
     let cover = select(0.0, frame.snow_cover.x, draw.extent.y > 0.5);
     // The cover grows from where the snow is thickest (its alpha highest).
-    let lies = clamp((snow.w - (1.0 - cover)) / max(cover, 0.001), 0.0, 1.0) * select(0.0, 1.0, cover > 0.0);
+    // Not on what shows through (glass, a fake shadow under a car: the
+    // ВЛ60ПК's SDW plane turned a white veil over its body).
+    let solid = smoothstep(0.85, 0.98, texel.w);
+    let lies = clamp((snow.w - (1.0 - cover)) / max(cover, 0.001), 0.0, 1.0) * select(0.0, 1.0, cover > 0.0) * solid;
     return vec4<f32>(mix(texel.xyz, snow.xyz, lies), texel.w);
 }
 @group(1) @binding(0) var<uniform> frame: Frame;
