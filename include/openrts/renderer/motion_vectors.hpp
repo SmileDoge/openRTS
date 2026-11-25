@@ -44,12 +44,16 @@ public:
     void reset() noexcept;
     // This frame's jitter in pixels (-0.5..0.5).
     [[nodiscard]] glm::vec2 jitter() const noexcept;
+    // The jitter's phases before it repeats (8; an upscaler wants 8 times its
+    // ratio squared).
+    void set_jitter_phases(std::uint32_t phases) noexcept;
     // Adds the jitter to a projection for a frame `width` x `height`.
     [[nodiscard]] glm::mat4 jittered(const glm::mat4& projection, std::uint32_t width, std::uint32_t height) const noexcept;
     // Draws this frame's motion and moves to the next jitter; null without
-    // the depth.
+    // the depth. `target`: an rgba16f texture of the frame's size to draw
+    // into instead of its own (an upscaler's shared one).
     [[nodiscard]] WGPUTextureView compute(WGPUCommandEncoder encoder, WGPUTextureView depth, WGPUTextureView moving_depth,
-                                          const MotionFrame& frame);
+                                          const MotionFrame& frame, WGPUTextureView target = nullptr);
     // Before compute(): the last frame's view-projection without the jitter,
     // and whether there is a last frame (none after reset() or a jump).
     [[nodiscard]] glm::mat4 last_view_projection() const noexcept;

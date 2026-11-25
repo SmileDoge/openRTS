@@ -21,7 +21,7 @@ struct Frame {
     rain_front: vec4<f32>,  // x the front's sign, y 1 a grid
     rain_side: vec4<f32>,   // xy the side drops' run (m, z y), zw their way now
     snow_cover: vec4<f32>,  // x how much of the snow maps' snow lies (0..1)
-    temporal: vec4<f32>,    // x 1: an alpha test's edge by noise; y the frame's number
+    temporal: vec4<f32>,    // x 1: an alpha test's edge by noise; y the frame's number; z the textures' LOD bias (an upscaler's)
     rain_wiped: array<vec4<f32>, 2048>, // each cell's last wipe (128 x 64, four a vec4)
 };
 

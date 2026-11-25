@@ -5,12 +5,13 @@ openRTS's own build of wgpu-native (VR, docs/vr.md: the game's `--vr` and
 
 - `0001-d3d11-shared-texture-import.patch`: `wgpuDeviceImportD3D11SharedTexture`
   (a wgpu texture over a D3D11 texture shared by an NT handle, through
-  wgpu-hal's Vulkan `texture_from_d3d11_shared_handle`) and
+  wgpu-hal's Vulkan `texture_from_d3d11_shared_handle`; on D3D12 the handle
+  opened by `ID3D12Device::OpenSharedHandle`, taken by `texture_from_raw`) and
   `WGPUNativeFeature_VulkanExternalMemoryWin32` to ask the device for it.
 
 Published as github.com/SmileDoge/wgpu-native (branch `openrts`, the patch
 as a commit); its GitHub Actions build the release openRTS's CI downloads
-(tag `v27.0.4.0-openrts.1`, `wgpu-windows-x86_64-msvc-release.zip`).
+(tag `v27.0.4.0-openrts.4`, `wgpu-windows-x86_64-msvc-release.zip`).
 
 Building it yourself (Windows, Rust; libclang from Visual Studio's LLVM component):
 

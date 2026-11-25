@@ -50,7 +50,7 @@ headset's button centres the runtime's space, not the cab's seat).
 openRTS's wgpu-native fork lives at github.com/SmileDoge/wgpu-native
 (branch `openrts`: the official v27.0.4.0 and the import patch); its own
 GitHub Actions build and release the Windows x86_64 package (tag
-`v27.0.4.0-openrts.1`). openRTS's CI takes that release instead of the
+`v27.0.4.0-openrts.4`). openRTS's CI takes that release instead of the
 official one, so every build (nightly and versions) has VR and DLSS
 (docs/experimental-effects.md); the OpenXR loader and Streamline's DLLs
 come in the archive. A local build: `-DOPENRTS_WGPU_ROOT=<the fork's

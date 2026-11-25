@@ -152,6 +152,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
     draw = draws[input.draw_slot];
+    // An upscaler's texture LOD bias (ModelRenderer::set_texture_lod_bias).
+    draw.lod_bias = draw.lod_bias + frame.temporal.z;
     let uv_in = keep_inside(input.uv);
     // The texture as RTS reads it (its LOD bias); the material's maps with
     // these gradients (in any branch).

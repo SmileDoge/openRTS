@@ -51,7 +51,7 @@ wgpu-native; включается Vulkan): каждый глаз рисует р
 Своя wgpu-native лежит на github.com/SmileDoge/wgpu-native (ветка
 `openrts`: официальная v27.0.4.0 и патч импорта); её собственный GitHub
 Actions собирает и выкладывает пакет для Windows x86_64 (тег
-`v27.0.4.0-openrts.1`). CI openRTS берёт этот выпуск вместо официального,
+`v27.0.4.0-openrts.4`). CI openRTS берёт этот выпуск вместо официального,
 поэтому в каждой сборке (ночной и версиях) есть VR и DLSS
 (docs/ru/experimental-effects.md); загрузчик OpenXR и DLL Streamline идут
 в архиве. Локально: `-DOPENRTS_WGPU_ROOT=<пакет своей wgpu-native>`,

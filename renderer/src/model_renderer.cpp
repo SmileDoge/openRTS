@@ -1285,6 +1285,7 @@ struct ModelRenderer::Impl {
     bool submit_moving = false; // set_moving
     bool submit_train = false;  // set_train
     bool stochastic_alpha = false; // set_stochastic_alpha
+    float texture_lod_bias = 0.0f;  // set_texture_lod_bias
     std::uint32_t stochastic_frame = 0;
     std::uint64_t moving_signature = 0;
     std::uint64_t moving_signature_outside = 0; // without the cab (RTS pass 3)
@@ -2552,6 +2553,10 @@ void ModelRenderer::set_stochastic_alpha(const bool on, const std::uint32_t fram
     impl_->stochastic_frame = frame;
 }
 
+void ModelRenderer::set_texture_lod_bias(const float bias) noexcept {
+    if (impl_) impl_->texture_lod_bias = bias;
+}
+
 void ModelRenderer::set_train(const bool train) noexcept {
     if (impl_) impl_->submit_train = train;
 }
@@ -3127,6 +3132,7 @@ void ModelRenderer::prepare() {
     auto lighting = frame_uniform(impl_->frame.lighting, impl_->frame.view_projection, impl_->frame.camera_position);
     lighting.temporal[0] = impl_->stochastic_alpha ? 1.0f : 0.0f;
     lighting.temporal[1] = static_cast<float>(impl_->stochastic_frame % 1024u);
+    lighting.temporal[2] = impl_->texture_lod_bias;
     const auto queue = wgpuDeviceGetQueue(impl_->device);
     wgpuQueueWriteBuffer(queue, impl_->frame_buffer, 0, &lighting, sizeof(lighting));
     if (!instances.empty()) wgpuQueueWriteBuffer(queue, impl_->instance_buffer, 0, instances.data(), instances.size() * sizeof(GpuInstance));

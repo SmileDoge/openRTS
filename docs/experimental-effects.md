@@ -1116,27 +1116,45 @@ by default. The experimental path's HDR frame, not in VR.
   MSAA 2x and up keep alpha to coverage; 1x without them the test at its
   cut, as before.
 
-### DLAA: NVIDIA DLSS at full resolution (2026-11-25)
+### NVIDIA DLSS: DLAA and upscaling (2026-11-25)
 
-Graphics panel, "DLAA" (`--effects ...,dlaa`): DLSS at the frame's own
-size instead of the temporal AA. An RTX video card, wgpu on Vulkan,
-openRTS's wgpu-native (build-vr) and the Streamline SDK's DLLs beside the
+Graphics panel, "NVIDIA DLSS" (`--effects ...,dlaa` or `dlss1`..`dlss5`):
+off, DLAA (the frame's own size), Quality (67 % a side), Balanced (58 %),
+Performance (50 %), Ultra Performance (33 %), instead of the temporal AA.
+An RTX video card, wgpu on Vulkan or Direct3D 12, openRTS's wgpu-native
+(v27.0.4.0-openrts.4 or later) and the Streamline SDK's DLLs beside the
 game (LICENSE-EXCEPTIONS.md); without them the panel says why and TAA stays.
 
 - Build: `-DOPENRTS_STREAMLINE_ROOT=<the Streamline SDK release unpacked>`
   on the build with openRTS's wgpu-native; the four DLLs are copied beside
   the executables. sl.interposer.dll is checked for NVIDIA's signature,
   loaded at run time; no updates over the network.
-- The frame's HDR, the motion and the depth (as R32_FLOAT) are copied into
-  textures shared with a D3D11 device of its own (as VR's), the GPU waited
-  for, DLSS run there (Streamline, manual hooking, the engine "custom" with
-  openRTS's project id), waited for, its output tone mapped. A hidden 1 x 1
-  swapchain presents once a frame for Streamline's bookkeeping.
-- Matrices without the jitter, the jitter apart (OPENRTS_DLSS_JITTER_FLIP
-  turns its sign if the picture shimmers); depth reversed, motion in
-  texture coordinates; DLSS's own auto exposure.
-- Not yet: the upscaling (a lower internal resolution), the direct DX12
-  path (no copies, no wait on the CPU).
+- The scene is drawn at DLSS's internal size (slDLSSGetOptimalSettings;
+  DLAA the window's): its own depth and MSAA targets, the HDR frame
+  resolved straight into a texture shared with a D3D11 device of its own
+  (as VR's), MotionVectors drawn straight into another, the depth turned
+  into R32_FLOAT (D3D11 reads no wgpu depth); no other copies. Every pass
+  before DLSS (shadows, GTAO, bloom, shafts, auto exposure) at the
+  internal size; the tone curve, the panels and the captures at the
+  window's (the bloom and the shafts are read by the screen's fraction).
+- DLSS on the D3D11 device (Streamline, manual hooking, the engine
+  "custom" with openRTS's project id); a hidden 1 x 1 swapchain presents
+  once a frame for Streamline's bookkeeping.
+- Matrices without the jitter, the jitter apart: the picture's shift in
+  the motion vectors' axes (x right, y down; OPENRTS_DLSS_JITTER_FLIP the
+  opposite, to check); its phases 8 times the ratio squared (DLSS's guide);
+  depth reversed, motion in texture coordinates; DLSS's own auto exposure.
+- Upscaling: every model texture's LOD bias log2(internal / window)
+  (ModelRenderer::set_texture_lod_bias), as sharp as at the window's size.
+  The ground's textures keep theirs (their sampler's anisotropy).
+- In step: one fence shared by wgpu's queue and D3D11 (the fork's
+  wgpuQueueSignal/WaitSharedFence: D3D12's fence, or on Vulkan a timeline
+  semaphore importing it through VK_KHR_external_semaphore_win32); nobody
+  waits on the CPU (without the extension the CPU waits for wgpu, then for
+  D3D11). 1280 x 720, RTX 4070 Ti SUPER: DX12 TAA 2.55 ms, DLAA 2.92,
+  Quality 2.87, Performance 2.93 (there bound by the CPU); Vulkan TAA 2.43,
+  DLAA 3.04 (4.95 with the CPU waiting), Quality 2.78.
+- Not yet: TAAU (our own upscaling for the other video cards).
 
 ### Trains' textures without DXT1's blocks (BC7, 2026-11-16)
 

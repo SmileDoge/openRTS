@@ -1,6 +1,7 @@
 #include <openrts/renderer/motion_vectors.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <optional>
@@ -35,7 +36,6 @@ struct ParamsUniform {
     return result;
 }
 
-constexpr std::uint32_t jitter_count = 8;
 constexpr WGPUTextureFormat motion_format = WGPUTextureFormat_RGBA16Float;
 
 } // namespace
@@ -53,6 +53,7 @@ struct MotionVectors::Impl {
     glm::vec3 previous_eye{0.0f};
     std::optional<glm::vec3> previous_train;
     std::uint32_t frame = 0;
+    std::uint32_t phases = 8;
 
     void release_texture() {
         if (view) wgpuTextureViewRelease(view);
@@ -137,8 +138,12 @@ void MotionVectors::reset() noexcept {
 }
 
 glm::vec2 MotionVectors::jitter() const noexcept {
-    const auto index = impl_->frame % jitter_count + 1;
+    const auto index = impl_->frame % (std::max)(impl_->phases, 1u) + 1;
     return {halton(index, 2) - 0.5f, halton(index, 3) - 0.5f};
+}
+
+void MotionVectors::set_jitter_phases(const std::uint32_t phases) noexcept {
+    impl_->phases = (std::max)(phases, 1u);
 }
 
 glm::mat4 MotionVectors::jittered(const glm::mat4& projection, const std::uint32_t width, const std::uint32_t height) const noexcept {
@@ -168,7 +173,7 @@ WGPUTexture MotionVectors::texture() const noexcept {
 }
 
 WGPUTextureView MotionVectors::compute(const WGPUCommandEncoder encoder, const WGPUTextureView depth, const WGPUTextureView moving_depth,
-                                       const MotionFrame& frame) {
+                                       const MotionFrame& frame, const WGPUTextureView target) {
     auto& impl = *impl_;
     ++impl.frame;
     if (!ready() || !depth || frame.width == 0 || frame.height == 0) {
@@ -207,7 +212,7 @@ WGPUTextureView MotionVectors::compute(const WGPUCommandEncoder encoder, const W
     const WGPUBindGroupDescriptor group_descriptor{.layout = impl.layout, .entryCount = entries.size(), .entries = entries.data()};
     const auto group = wgpuDeviceCreateBindGroup(impl.device, &group_descriptor);
     const WGPURenderPassColorAttachment colour{
-        .view = impl.view,
+        .view = target ? target : impl.view,
         .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
         .loadOp = WGPULoadOp_Clear,
         .storeOp = WGPUStoreOp_Store,
@@ -225,7 +230,7 @@ WGPUTextureView MotionVectors::compute(const WGPUCommandEncoder encoder, const W
     impl.previous_view_projection = frame.steady_view_projection;
     impl.previous_eye = frame.eye;
     impl.previous_train = frame.train;
-    return impl.view;
+    return target ? target : impl.view;
 }
 
 } // namespace openrts::renderer

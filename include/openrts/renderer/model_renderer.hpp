@@ -462,6 +462,10 @@ public:
     // soft edge as alpha to coverage gives under MSAA; off: the test at its
     // cut (RTS's).
     void set_stochastic_alpha(bool on, std::uint32_t frame) noexcept;
+    // Added to every texture's LOD bias this frame: an upscaler drawing at a
+    // smaller size than the window's wants log2(that size / the window's)
+    // (DLSS's guide), the textures as sharp as at the window's size.
+    void set_texture_lod_bias(float bias) noexcept;
     // After prepare(): a hash of this frame's moving instances (set_moving):
     // their models, distance levels, places and node poses, to a millimetre
     // and a ten-thousandth. The same as last frame: nothing moving moved

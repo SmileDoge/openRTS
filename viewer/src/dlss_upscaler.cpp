@@ -5,7 +5,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <d3d11.h>
+#include <d3d11_4.h>
 #include <dxgi1_2.h>
 
 #include <array>
@@ -84,6 +84,9 @@ struct DlssUpscaler::Impl {
     PFun_slGetFeatureFunction* sl_feature_function = nullptr;
     PFun_slFreeResources* sl_free = nullptr;
     PFun_slDLSSSetOptions* sl_dlss_options = nullptr;
+    PFun_slDLSSGetOptimalSettings* sl_dlss_optimal = nullptr;
+    DlssMode mode = DlssMode::off;
+    std::uint32_t output_width = 0, output_height = 0;
     PFun_slUpgradeInterface* sl_upgrade = nullptr;
     // Streamline's frame bookkeeping runs at a swapchain's Present (its
     // presentCommon()); the frame goes to the screen through wgpu, so a
@@ -94,6 +97,14 @@ struct DlssUpscaler::Impl {
     ID3D11Device* d3d = nullptr;
     ID3D11DeviceContext* context = nullptr;
     ID3D11Query* done = nullptr;
+    // One fence shared by wgpu's queue and D3D11 (D3D12's, or a Vulkan
+    // timeline semaphore over it), its values in turn (wgpu's frame done,
+    // then DLSS done): nobody waits on the CPU.
+    ID3D11DeviceContext4* context4 = nullptr;
+    ID3D11Fence* fence = nullptr;
+    HANDLE fence_handle = nullptr;
+    void* fence12 = nullptr; // wgpuDeviceOpenSharedFence's
+    std::uint64_t fence_value = 0;
     Shared colour, motion, depth, output;
     std::uint32_t width = 0, height = 0;
     std::uint32_t frame = 0;
@@ -106,6 +117,10 @@ struct DlssUpscaler::Impl {
         if (initialised && sl_shutdown) sl_shutdown();
         if (swapchain) swapchain->Release();
         if (window) DestroyWindow(window);
+        if (fence12) wgpuDeviceReleaseSharedFence(fence12);
+        if (fence_handle) CloseHandle(fence_handle);
+        if (fence) fence->Release();
+        if (context4) context4->Release();
         if (done) done->Release();
         if (context) context->Release();
         if (d3d) d3d->Release();
@@ -117,6 +132,7 @@ struct DlssUpscaler::Impl {
     void release_textures() {
         for (auto* s : {&colour, &motion, &depth, &output}) s->release();
         width = height = 0;
+        output_width = output_height = 0;
     }
 
     template <typename T> bool find(T*& fn, const char* name) {
@@ -155,15 +171,16 @@ struct DlssUpscaler::Impl {
         };
         if (s.handle) s.texture = wgpuDeviceImportD3D11SharedTexture(device, s.handle, &descriptor);
         if (!s.texture) {
-            error = std::string("wgpu could not take the shared texture for ") + what + " (wgpu on Vulkan, openRTS's wgpu-native?)";
+            error = std::string("wgpu could not take the shared texture for ") + what + " (openRTS's wgpu-native v27.0.4.0-openrts.4 or later?)";
             return false;
         }
         s.view = wgpuTextureCreateView(s.texture, nullptr);
         return true;
     }
 
-    bool ensure(const std::uint32_t w, const std::uint32_t h) {
-        if (w == width && h == height && output.view) return true;
+    // The inputs at the internal size `w` x `h`, the output at `ow` x `oh`.
+    bool ensure(const std::uint32_t w, const std::uint32_t h, const std::uint32_t ow, const std::uint32_t oh) {
+        if (w == width && h == height && ow == output_width && oh == output_height && output.view) return true;
         release_textures();
         const auto hdr = DXGI_FORMAT_R16G16B16A16_FLOAT;
         const bool made =
@@ -174,7 +191,7 @@ struct DlssUpscaler::Impl {
             && make_shared(depth, DXGI_FORMAT_R32_FLOAT, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET, WGPUTextureFormat_R32Float,
                            WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment, w, h, "the depth")
             && make_shared(output, hdr, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET,
-                           WGPUTextureFormat_RGBA16Float, WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment, w, h,
+                           WGPUTextureFormat_RGBA16Float, WGPUTextureUsage_TextureBinding | WGPUTextureUsage_RenderAttachment, ow, oh,
                            "the output");
         if (!made) {
             std::cout << "DLSS: " << error << std::endl;
@@ -183,6 +200,8 @@ struct DlssUpscaler::Impl {
         }
         width = w;
         height = h;
+        output_width = ow;
+        output_height = oh;
         return true;
     }
 
@@ -216,7 +235,7 @@ struct DlssUpscaler::Impl {
 DlssUpscaler::DlssUpscaler(const WGPUDevice device, const WGPUAdapter adapter) : impl_(std::make_unique<Impl>()) {
     auto& s = *impl_;
     s.device = device;
-    // wgpu's video card: NVIDIA's, on Vulkan (the shared textures' import).
+    // wgpu's video card: NVIDIA's, on Vulkan or D3D12 (the shared textures' import).
     WGPUAdapterInfo info{};
     if (adapter) wgpuAdapterGetInfo(adapter, &info);
     const auto vendor = info.vendorID;
@@ -227,8 +246,8 @@ DlssUpscaler::DlssUpscaler(const WGPUDevice device, const WGPUAdapter adapter) :
         s.error = "not an NVIDIA video card";
         return;
     }
-    if (backend != WGPUBackendType_Vulkan) {
-        s.error = "wgpu on Vulkan only (the graphics API in the launcher)";
+    if (backend != WGPUBackendType_Vulkan && backend != WGPUBackendType_D3D12) {
+        s.error = "wgpu on Vulkan or Direct3D 12 only (the graphics API in the launcher)";
         return;
     }
     // Streamline beside the game, NVIDIA's signature checked.
@@ -327,6 +346,9 @@ DlssUpscaler::DlssUpscaler(const WGPUDevice device, const WGPUAdapter adapter) :
         return;
     }
     s.sl_dlss_options = reinterpret_cast<PFun_slDLSSSetOptions*>(options);
+    void* optimal = nullptr;
+    if (s.sl_feature_function(sl::kFeatureDLSS, "slDLSSGetOptimalSettings", optimal) == sl::Result::eOk)
+        s.sl_dlss_optimal = reinterpret_cast<PFun_slDLSSGetOptimalSettings*>(optimal);
     {
         const HINSTANCE instance = GetModuleHandleW(nullptr);
         WNDCLASSW window_class{};
@@ -360,6 +382,18 @@ DlssUpscaler::DlssUpscaler(const WGPUDevice device, const WGPUAdapter adapter) :
     const D3D11_QUERY_DESC query{D3D11_QUERY_EVENT, 0};
     s.d3d->CreateQuery(&query, &s.done);
     s.make_depth_pipeline();
+    // The shared fence (wgpu's queue and D3D11 in step on the GPU).
+    {
+        ID3D11Device5* device5 = nullptr;
+        if (SUCCEEDED(s.d3d->QueryInterface(__uuidof(ID3D11Device5), reinterpret_cast<void**>(&device5)))
+            && SUCCEEDED(s.context->QueryInterface(__uuidof(ID3D11DeviceContext4), reinterpret_cast<void**>(&s.context4)))
+            && SUCCEEDED(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, __uuidof(ID3D11Fence), reinterpret_cast<void**>(&s.fence)))
+            && SUCCEEDED(s.fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &s.fence_handle))) {
+            s.fence12 = wgpuDeviceOpenSharedFence(device, s.fence_handle);
+        }
+        if (device5) device5->Release();
+        std::cout << "DLSS: " << (s.fence12 ? "in step with wgpu on the GPU (a shared fence)" : "no shared fence: the CPU waits") << std::endl;
+    }
     s.available = s.done && s.depth_pipeline;
     if (!s.available) s.error = "the D3D11 query or the depth copy could not be made";
 }
@@ -374,18 +408,60 @@ const std::string& DlssUpscaler::error() const noexcept {
     return impl_->error;
 }
 
-bool DlssUpscaler::record_inputs(const WGPUCommandEncoder encoder, const WGPUTexture scene, const WGPUTexture motion,
-                                 const WGPUTextureView depth, const std::uint32_t width, const std::uint32_t height) {
+namespace {
+
+[[nodiscard]] sl::DLSSMode sl_mode(const DlssMode mode) {
+    switch (mode) {
+    case DlssMode::dlaa: return sl::DLSSMode::eDLAA;
+    case DlssMode::quality: return sl::DLSSMode::eMaxQuality;
+    case DlssMode::balanced: return sl::DLSSMode::eBalanced;
+    case DlssMode::performance: return sl::DLSSMode::eMaxPerformance;
+    case DlssMode::ultra_performance: return sl::DLSSMode::eUltraPerformance;
+    default: return sl::DLSSMode::eOff;
+    }
+}
+
+} // namespace
+
+bool DlssUpscaler::prepare(const DlssMode mode, const std::uint32_t output_width, const std::uint32_t output_height) {
     auto& s = *impl_;
-    if (!s.available || !scene || !motion || !depth || width == 0 || height == 0) return false;
-    if (!s.ensure(width, height)) return false;
-    const WGPUExtent3D size{width, height, 1};
-    const WGPUTexelCopyTextureInfo from_scene{.texture = scene};
-    const WGPUTexelCopyTextureInfo to_colour{.texture = s.colour.texture};
-    wgpuCommandEncoderCopyTextureToTexture(encoder, &from_scene, &to_colour, &size);
-    const WGPUTexelCopyTextureInfo from_motion{.texture = motion};
-    const WGPUTexelCopyTextureInfo to_motion{.texture = s.motion.texture};
-    wgpuCommandEncoderCopyTextureToTexture(encoder, &from_motion, &to_motion, &size);
+    if (!s.available || mode == DlssMode::off || output_width == 0 || output_height == 0) return false;
+    // The internal size: DLSS's optimal one for the mode (DLAA: the output's).
+    std::uint32_t w = output_width, h = output_height;
+    if (mode != DlssMode::dlaa && s.sl_dlss_optimal) {
+        sl::DLSSOptions options{};
+        options.mode = sl_mode(mode);
+        options.outputWidth = output_width;
+        options.outputHeight = output_height;
+        sl::DLSSOptimalSettings settings{};
+        if (s.sl_dlss_optimal(options, settings) == sl::Result::eOk && settings.optimalRenderWidth > 0 && settings.optimalRenderHeight > 0) {
+            w = settings.optimalRenderWidth;
+            h = settings.optimalRenderHeight;
+        }
+    }
+    s.mode = mode;
+    return s.ensure(w, h, output_width, output_height);
+}
+
+std::uint32_t DlssUpscaler::render_width() const noexcept {
+    return impl_->width;
+}
+
+std::uint32_t DlssUpscaler::render_height() const noexcept {
+    return impl_->height;
+}
+
+WGPUTextureView DlssUpscaler::colour_view() const noexcept {
+    return impl_->colour.view;
+}
+
+WGPUTextureView DlssUpscaler::motion_view() const noexcept {
+    return impl_->motion.view;
+}
+
+bool DlssUpscaler::record_inputs(const WGPUCommandEncoder encoder, const WGPUTextureView depth) {
+    auto& s = *impl_;
+    if (!s.available || !depth || !s.depth.view) return false;
     // The depth into a colour texture D3D11 can read (R32_FLOAT).
     const WGPUBindGroupEntry entry{.binding = 0, .textureView = depth};
     const WGPUBindGroupDescriptor group_descriptor{.layout = s.depth_layout, .entryCount = 1, .entries = &entry};
@@ -403,18 +479,36 @@ bool DlssUpscaler::record_inputs(const WGPUCommandEncoder encoder, const WGPUTex
     return true;
 }
 
-WGPUTextureView DlssUpscaler::evaluate(const DlssFrame& frame) {
+bool DlssUpscaler::gpu_sync() const noexcept {
+    return impl_->fence12 != nullptr;
+}
+
+WGPUTextureView DlssUpscaler::evaluate(const DlssFrame& frame, const WGPUQueue queue, const std::uint64_t index) {
     auto& s = *impl_;
-    if (!s.available || !s.output.view || frame.width != s.width || frame.height != s.height) return nullptr;
+    if (!s.available || !s.output.view || s.mode == DlssMode::off) return nullptr;
+    // The inputs written: D3D12 signals the fence after them and D3D11 waits
+    // for it on the GPU; else the CPU waits for wgpu.
+    bool in_step = false;
+    std::uint64_t inputs_done = 0;
+    if (s.fence12 && queue) {
+        inputs_done = ++s.fence_value;
+        in_step = wgpuQueueSignalSharedFence(queue, s.fence12, inputs_done) != 0;
+    }
+    if (in_step) {
+        s.context4->Wait(s.fence, inputs_done);
+    } else {
+        const WGPUSubmissionIndex submitted = index;
+        wgpuDevicePoll(s.device, true, &submitted);
+    }
     const sl::ViewportHandle viewport(0);
     sl::FrameToken* token = nullptr;
-    const std::uint32_t index = ++s.frame;
-    if (s.sl_frame_token(token, &index) != sl::Result::eOk || !token) return nullptr;
+    const std::uint32_t frame_index = ++s.frame;
+    if (s.sl_frame_token(token, &frame_index) != sl::Result::eOk || !token) return nullptr;
 
     sl::DLSSOptions options{};
-    options.mode = sl::DLSSMode::eDLAA;
-    options.outputWidth = frame.width;
-    options.outputHeight = frame.height;
+    options.mode = sl_mode(s.mode);
+    options.outputWidth = s.output_width;
+    options.outputHeight = s.output_height;
     options.colorBuffersHDR = sl::Boolean::eTrue;
     options.useAutoExposure = sl::Boolean::eTrue;
     s.sl_dlss_options(viewport, options);
@@ -433,9 +527,11 @@ WGPUTextureView DlssUpscaler::evaluate(const DlssFrame& frame) {
     constants.clipToLensClip = matrix(glm::mat4{1.0f});
     constants.clipToPrevClip = matrix(frame.previous_view_projection * glm::inverse(now));
     constants.prevClipToClip = matrix(now * glm::inverse(frame.previous_view_projection));
-    // MotionVectors' jitter moved the picture by (-x, +y) pixels.
+    // MotionVectors' jitter moved the picture by (-x, +y) pixels; DLSS takes
+    // that shift of the picture, in the motion vectors' axes (x right, y
+    // down; its guide, 3.7.3). OPENRTS_DLSS_JITTER_FLIP: the opposite, to check.
     static const bool flip = GetEnvironmentVariableW(L"OPENRTS_DLSS_JITTER_FLIP", nullptr, 0) > 0;
-    constants.jitterOffset = flip ? sl::float2(-frame.jitter.x, frame.jitter.y) : sl::float2(frame.jitter.x, -frame.jitter.y);
+    constants.jitterOffset = flip ? sl::float2(frame.jitter.x, -frame.jitter.y) : sl::float2(-frame.jitter.x, frame.jitter.y);
     // MotionVectors' motion is in texture coordinates already (0..1 across).
     constants.mvecScale = sl::float2(1.0f, 1.0f);
     constants.cameraPinholeOffset = sl::float2(0.0f, 0.0f);
@@ -462,12 +558,13 @@ WGPUTextureView DlssUpscaler::evaluate(const DlssFrame& frame) {
     sl::Resource motion{sl::ResourceType::eTex2d, s.motion.d3d, nullptr, nullptr};
     sl::Resource depth{sl::ResourceType::eTex2d, s.depth.d3d, nullptr, nullptr};
     sl::Resource output{sl::ResourceType::eTex2d, s.output.d3d, nullptr, nullptr};
-    const sl::Extent extent{0, 0, frame.width, frame.height};
+    const sl::Extent extent{0, 0, s.width, s.height};
+    const sl::Extent output_extent{0, 0, s.output_width, s.output_height};
     const sl::ResourceTag tags[] = {
         sl::ResourceTag(&colour, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilPresent, &extent),
         sl::ResourceTag(&motion, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &extent),
         sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &extent),
-        sl::ResourceTag(&output, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilPresent, &extent),
+        sl::ResourceTag(&output, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilPresent, &output_extent),
     };
     if (const auto result = s.sl_set_tags(*token, viewport, tags, 4, reinterpret_cast<sl::CommandBuffer*>(s.context));
         result != sl::Result::eOk) {
@@ -480,10 +577,18 @@ WGPUTextureView DlssUpscaler::evaluate(const DlssFrame& frame) {
         std::cout << "DLSS: slEvaluateFeature failed (" << static_cast<int>(result) << ")" << std::endl;
         return nullptr;
     }
-    // Done on the GPU before wgpu reads the output.
-    s.context->End(s.done);
-    s.context->Flush();
-    while (s.context->GetData(s.done, nullptr, 0, 0) == S_FALSE) std::this_thread::yield();
+    // Done on the GPU before wgpu reads the output: wgpu's queue waits for
+    // the fence on the GPU, or the CPU waits for D3D11.
+    if (in_step) {
+        const auto dlss_done = ++s.fence_value;
+        s.context4->Signal(s.fence, dlss_done);
+        s.context->Flush();
+        wgpuQueueWaitSharedFence(queue, s.fence12, dlss_done);
+    } else {
+        s.context->End(s.done);
+        s.context->Flush();
+        while (s.context->GetData(s.done, nullptr, 0, 0) == S_FALSE) std::this_thread::yield();
+    }
     // The frame's end for Streamline.
     if (s.swapchain) s.swapchain->Present(0, 0);
     return s.output.view;
@@ -503,11 +608,29 @@ bool DlssUpscaler::available() const noexcept {
 const std::string& DlssUpscaler::error() const noexcept {
     return impl_->error;
 }
-bool DlssUpscaler::record_inputs(WGPUCommandEncoder, WGPUTexture, WGPUTexture, WGPUTextureView, std::uint32_t, std::uint32_t) {
+bool DlssUpscaler::prepare(DlssMode, std::uint32_t, std::uint32_t) {
     return false;
 }
-WGPUTextureView DlssUpscaler::evaluate(const DlssFrame&) {
+std::uint32_t DlssUpscaler::render_width() const noexcept {
+    return 0;
+}
+std::uint32_t DlssUpscaler::render_height() const noexcept {
+    return 0;
+}
+WGPUTextureView DlssUpscaler::colour_view() const noexcept {
     return nullptr;
+}
+WGPUTextureView DlssUpscaler::motion_view() const noexcept {
+    return nullptr;
+}
+bool DlssUpscaler::record_inputs(WGPUCommandEncoder, WGPUTextureView) {
+    return false;
+}
+WGPUTextureView DlssUpscaler::evaluate(const DlssFrame&, WGPUQueue, std::uint64_t) {
+    return nullptr;
+}
+bool DlssUpscaler::gpu_sync() const noexcept {
+    return false;
 }
 
 #endif

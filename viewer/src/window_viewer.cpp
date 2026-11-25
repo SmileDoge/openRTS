@@ -83,6 +83,60 @@
 namespace openrts::viewer {
 namespace {
 
+// The scene's depth and MSAA colour at a size of their own (DLSS's internal
+// size; the frame itself is DLSS's shared texture), made again when it changes.
+struct SceneTargets {
+    WGPUTexture depth = nullptr, msaa = nullptr;
+    WGPUTextureView depth_view = nullptr, msaa_view = nullptr;
+    std::uint32_t width = 0, height = 0, samples = 0;
+
+    SceneTargets() = default;
+    SceneTargets(const SceneTargets&) = delete;
+    SceneTargets& operator=(const SceneTargets&) = delete;
+    ~SceneTargets() { release(); }
+
+    void release() {
+        if (depth_view) wgpuTextureViewRelease(depth_view);
+        if (msaa_view) wgpuTextureViewRelease(msaa_view);
+        if (depth) wgpuTextureRelease(depth);
+        if (msaa) wgpuTextureRelease(msaa);
+        depth_view = msaa_view = nullptr;
+        depth = msaa = nullptr;
+        width = height = samples = 0;
+    }
+
+    bool ensure(const WGPUDevice device, const std::uint32_t w, const std::uint32_t h, const std::uint32_t sample_count) {
+        if (w == width && h == height && sample_count == samples && depth_view) return true;
+        release();
+        const WGPUTextureDescriptor depth_descriptor{
+            .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {w, h, 1},
+            .format = renderer::depth_format,
+            .mipLevelCount = 1,
+            .sampleCount = sample_count,
+        };
+        depth = wgpuDeviceCreateTexture(device, &depth_descriptor);
+        if (depth) depth_view = wgpuTextureCreateView(depth, nullptr);
+        if (sample_count > 1) {
+            const WGPUTextureDescriptor msaa_descriptor{
+                .usage = WGPUTextureUsage_RenderAttachment,
+                .dimension = WGPUTextureDimension_2D,
+                .size = {w, h, 1},
+                .format = renderer::hdr_format,
+                .mipLevelCount = 1,
+                .sampleCount = sample_count,
+            };
+            msaa = wgpuDeviceCreateTexture(device, &msaa_descriptor);
+            if (msaa) msaa_view = wgpuTextureCreateView(msaa, nullptr);
+        }
+        width = w;
+        height = h;
+        samples = sample_count;
+        return depth_view && (sample_count <= 1 || msaa_view);
+    }
+};
+
 constexpr int initial_width = 1280;
 constexpr int initial_height = 720;
 #ifdef OPENRTS_HAS_IMGUI
@@ -730,7 +784,7 @@ struct PanelState {
     int texture_size = 0;      // renderer::texture_size_limit: 0 as the files, 1 1024, 2 512, 3 256
     bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
     int taa_view = 0;                    // the temporal AA's preview (TemporalAAFrame::view), not kept
-    bool dlaa = false;                   // NVIDIA DLSS at the frame's size instead of the temporal AA (dlss_upscaler.hpp)
+    int dlss_mode = 0;                   // DlssMode: NVIDIA DLSS (DLAA or upscaling) instead of the temporal AA (dlss_upscaler.hpp)
     std::string dlss_error;              // why DLSS is not available (empty: it is, or not tried)
     float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
     bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
@@ -1623,9 +1677,15 @@ public:
                 ImGui::Combo("##taa_view", &panel.taa_view, views, 5);
                 ImGui::Unindent();
             }
-            if (ImGui::Checkbox(tr("DLAA: NVIDIA DLSS at full resolution instead of TAA (RTX video cards, Vulkan; HDR)"), &panel.dlaa))
-                remember("effect_dlaa", panel.dlaa ? "1" : "0");
-            if (panel.dlaa && !panel.dlss_error.empty()) {
+            {
+                const char* modes[] = {tr("NVIDIA DLSS: off"), tr("NVIDIA DLSS: DLAA (full resolution)"),
+                                       tr("NVIDIA DLSS: Quality (67 %)"), tr("NVIDIA DLSS: Balanced (58 %)"),
+                                       tr("NVIDIA DLSS: Performance (50 %)"), tr("NVIDIA DLSS: Ultra Performance (33 %)")};
+                ImGui::SetNextItemWidth(320.0f);
+                if (ImGui::Combo(tr("instead of TAA (RTX video cards; HDR)"), &panel.dlss_mode, modes, 6))
+                    remember("effect_dlss", std::to_string(panel.dlss_mode));
+            }
+            if (panel.dlss_mode != 0 && !panel.dlss_error.empty()) {
                 ImGui::Indent();
                 ImGui::TextWrapped(tr("DLSS is not available: %s"), panel.dlss_error.c_str());
                 ImGui::Unindent();
@@ -3149,7 +3209,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     std::unique_ptr<renderer::ToneMapper> tone;
     std::unique_ptr<renderer::TemporalAA> temporal_aa;
     std::unique_ptr<renderer::MotionVectors> motion_vectors; // the jitter and the screen's motion (TAA, the upscalers)
-    std::unique_ptr<DlssUpscaler> dlss;                    // made when DLAA is first chosen
+    std::unique_ptr<DlssUpscaler> dlss;                    // made when DLSS is first chosen
+    SceneTargets dlss_targets;                             // the depth and MSAA at DLSS's internal size
     std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
     bool auto_exposure_was_on = false;
     if (renderer::scene_hdr()) tone = std::make_unique<renderer::ToneMapper>(device, surface.format());
@@ -3384,8 +3445,19 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (const auto at = list.find("taa-view"); at != std::string::npos && at + 8 < list.size())
             panel.taa_view = std::clamp(list[at + 8] - '0', 0, 4);
     }
-    panel.dlaa = remembered("effect_dlaa").value_or("0") == "1";
-    if (options.effects) panel.dlaa = options.effects->find("dlaa") != std::string::npos;
+    // DLSS's mode (effect_dlaa "1": DLAA, as v0.43 kept it).
+    if (const auto mode = remembered("effect_dlss")) {
+        panel.dlss_mode = std::clamp(std::atoi(mode->c_str()), 0, 5);
+    } else if (remembered("effect_dlaa").value_or("0") == "1") {
+        panel.dlss_mode = 1;
+    }
+    if (options.effects) {
+        // --effects ...,dlaa or dlss1..dlss5 (DlssMode).
+        const auto& list = *options.effects;
+        panel.dlss_mode = list.find("dlaa") != std::string::npos ? 1 : 0;
+        if (const auto at = list.find("dlss"); at != std::string::npos && at + 4 < list.size() && list[at + 4] >= '0' && list[at + 4] <= '5')
+            panel.dlss_mode = list[at + 4] - '0';
+    }
     // The field of view: the panel's, else RTS's (config.ini FOV, vertical, degrees).
     // Num* brings back RTS's (else the default).
     float base_fov = default_fov_degrees;
@@ -3915,18 +3987,39 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // the frame drawn a sub-pixel apart each time.
         const glm::mat4 steady_projection = projection_matrix;
         const bool experimental_frame = hdr && !vr_frame && renderer.shading_path() == renderer::ShadingPath::experimental;
-        // DLAA (NVIDIA's DLSS at the frame's size) in place of the temporal AA when it works.
-        if (experimental_frame && panel.dlaa && !dlss) {
+        // NVIDIA DLSS (DLAA, or upscaling from a smaller internal size) in
+        // place of the temporal AA when it works: the scene drawn at its
+        // size straight into the textures DLSS shares (the frame, the
+        // motion), its output at the window's.
+        if (experimental_frame && panel.dlss_mode != 0 && !dlss) {
             dlss = std::make_unique<DlssUpscaler>(device, context.context.adapter());
             panel.dlss_error = dlss->available() ? std::string() : dlss->error();
             std::cout << "DLSS: " << (dlss->available() ? std::string("available") : dlss->error()) << std::endl;
         }
-        const bool dlaa_frame = experimental_frame && panel.dlaa && dlss && dlss->available();
-        const bool taa_frame = experimental_frame && panel.effects.temporal_aa && !dlaa_frame;
+        const int output_width = width, output_height = height;
+        bool dlss_frame = experimental_frame && panel.dlss_mode != 0 && dlss && dlss->available()
+                          && dlss->prepare(static_cast<DlssMode>(panel.dlss_mode), static_cast<std::uint32_t>(width),
+                                           static_cast<std::uint32_t>(height));
+        if (dlss_frame) {
+            const auto w = dlss->render_width(), h = dlss->render_height();
+            if (dlss_targets.ensure(device, w, h, renderer::render_sample_count())) {
+                width = static_cast<int>(w);
+                height = static_cast<int>(h);
+                hdr_view = dlss->colour_view();
+                depth_view = dlss_targets.depth_view;
+                msaa_view = dlss_targets.msaa_view;
+            } else {
+                dlss_frame = false;
+            }
+        }
+        const bool taa_frame = experimental_frame && panel.effects.temporal_aa && !dlss_frame;
         const glm::vec2 frame_jitter = motion_vectors ? motion_vectors->jitter() : glm::vec2{0.0f};
-        if (taa_frame || dlaa_frame) {
+        if (taa_frame || dlss_frame) {
             if (!temporal_aa) temporal_aa = std::make_unique<renderer::TemporalAA>(device);
             if (!motion_vectors) motion_vectors = std::make_unique<renderer::MotionVectors>(device);
+            // The jitter's phases: 8, times the upscaling ratio squared (DLSS's guide).
+            const float ratio = dlss_frame ? static_cast<float>(output_width) / static_cast<float>((std::max)(width, 1)) : 1.0f;
+            motion_vectors->set_jitter_phases(static_cast<std::uint32_t>(std::ceil(8.0f * ratio * ratio)));
             if (temporal_aa->ready() && motion_vectors->ready())
                 projection_matrix =
                     motion_vectors->jittered(projection_matrix, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
@@ -3938,7 +4031,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // blends into a soft edge (alpha to coverage under MSAA).
         {
             static std::uint32_t stochastic_frame = 0;
-            renderer.set_stochastic_alpha((taa_frame || dlaa_frame) && renderer::render_sample_count() <= 1, ++stochastic_frame);
+            renderer.set_stochastic_alpha((taa_frame || dlss_frame) && renderer::render_sample_count() <= 1, ++stochastic_frame);
+            // Upscaling: the textures' detail as at the window's size.
+            renderer.set_texture_lod_bias(dlss_frame && width < output_width
+                                              ? std::log2(static_cast<float>(width) / static_cast<float>(output_width))
+                                              : 0.0f);
         }
         FrameView frame{
             .eye = view_eye,
@@ -3962,7 +4059,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             auto settings = panel.effects;
             if (beams.any()) settings.light_shafts = true;
             // DLAA reads the camera's depth and the trains' as the TAA does.
-            if (dlaa_frame) settings.temporal_aa = true;
+            if (dlss_frame) settings.temporal_aa = true;
             effects.set_settings(settings);
         }
         effects.begin_frame({.view = frame.view,
@@ -4154,10 +4251,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                               .height = static_cast<std::uint32_t>(height),
                                               .view = panel.taa_view});
             }
-            // DLAA: the frame's inputs to the shared textures, the GPU done
-            // with them, DLSS on its D3D11 device, then the tone curve from
-            // its output in a new encoder.
-            if (dlaa_frame && motion_vectors && motion_vectors->ready() && surface.hdr_texture()) {
+            // DLSS: the motion into its shared texture and the depth into
+            // its own (the frame is drawn there already), the submission,
+            // DLSS on its D3D11 device in step with it, then the tone curve
+            // from its output (the window's size) in a new encoder.
+            if (dlss_frame && motion_vectors && motion_vectors->ready()) {
                 const bool reset = !motion_vectors->has_last();
                 const auto last = motion_vectors->last_view_projection();
                 const auto motion = motion_vectors->compute(encoder, effects.camera_depth(), effects.moving_depth(),
@@ -4166,23 +4264,20 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                                              .eye = frame.eye,
                                                              .train = scene.player_train_place(),
                                                              .width = static_cast<std::uint32_t>(width),
-                                                             .height = static_cast<std::uint32_t>(height)});
-                if (motion && dlss->record_inputs(encoder, surface.hdr_texture(), motion_vectors->texture(), effects.camera_depth(),
-                                                  static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height))) {
+                                                             .height = static_cast<std::uint32_t>(height)},
+                                                            dlss->motion_view());
+                if (motion && dlss->record_inputs(encoder, effects.camera_depth())) {
                     const auto inputs = wgpuCommandEncoderFinish(encoder, nullptr);
                     auto early = parallel ? effects.finish_parallel(recording_pool) : std::vector<WGPUCommandBuffer>{};
                     early.push_back(inputs);
                     const auto queue = wgpuDeviceGetQueue(device);
                     const WGPUSubmissionIndex index = wgpuQueueSubmitForIndex(queue, early.size(), early.data());
                     for (const auto buffer : early) wgpuCommandBufferRelease(buffer);
-                    wgpuQueueRelease(queue);
-                    wgpuDevicePoll(device, true, &index);
                     parallel = false;
                     wgpuCommandEncoderRelease(encoder);
                     encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
-                    if (const auto output = dlss->evaluate({.width = static_cast<std::uint32_t>(width),
-                                                            .height = static_cast<std::uint32_t>(height),
-                                                            .projection = steady_projection,
+                    // DLSS in step with this submission (on the GPU on D3D12).
+                    const auto output = dlss->evaluate({.projection = steady_projection,
                                                             .view = frame.view,
                                                             .previous_view_projection = last,
                                                             .jitter = frame_jitter,
@@ -4191,11 +4286,16 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                                             .far_plane = camera.far_plane(),
                                                             .vertical_fov = frame.vertical_fov,
                                                             .aspect = frame.aspect,
-                                                            .reset = reset}))
-                        toned = output;
+                                                            .reset = reset},
+                                                       queue, index);
+                    wgpuQueueRelease(queue);
+                    if (output) toned = output;
                 }
             }
             tone->render(encoder, toned, frame_view, settings, bloom_view, shafts_view, exposure_state);
+            // The window's size again for the panels and the captures.
+            width = output_width;
+            height = output_height;
 #ifdef OPENRTS_HAS_IMGUI
             if (!vr_frame) {
             const WGPURenderPassColorAttachment ui_colour{
