@@ -181,6 +181,8 @@ public:
             off[i] = cab_.displays[i].blink > 0.0f && clock[i] > cab_.displays[i].blink;
         if (!planes) planes = &screen_planes_;
         screens_->build(state, elapsed, out, &off, planes);
+        // The wheel's pick_screen reads these: a caller's list is kept here too.
+        if (planes != &screen_planes_) screen_planes_ = *planes;
     }
     // The SCREEN labels the last screens() call laid out (CabScreens::labels_seen); null: no screens.
     [[nodiscard]] const CabScreens* screen_layout() const noexcept { return screens_.get(); }
