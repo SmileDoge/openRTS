@@ -253,6 +253,19 @@ After the frame:
   the closing speed is below the coupling `Velocity` (`+36` of the
   coupling block); then they only push (`0x4FB8CC`: the overlap split by
   the trains' masses).
+  - The gap counted is the trains' gap less each end's slack: `r0 / 2`
+    (`+0x1C`), the whole `r0` of a rigid end. So the ends meet at a coupled
+    joint's spacing at rest. The `Velocity` checked is that of the moving
+    train's end.
+  - Coupling: both trains are first moved to the touch (`0x4F5B34`, by the
+    part of the step before it). `0x469ED8` then gets the centre distance of
+    the joint's cars: half of each length plus the gap left, which is the
+    slack. The joint starts at gap 0, not pressed.
+  - Pushing (`0x4FB8CC`) moves the trains by their shares of the overlap
+    (`0x4FBC2C`, on through the trains beyond, `0x4FBCA8`). The cars'
+    speeds stay as they were. An engine pushing on couples as soon as it
+    closes at `Velocity`.
+  - CONFIRMED (decompiled 2026-11-26).
 - **Coupler break** (player train only, unless switched off in the config):
   - the stored coupler force is compared with the weaker end's `Break`
     value — tension or compression by the force sign, and tension for

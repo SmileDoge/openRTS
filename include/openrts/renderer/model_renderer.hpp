@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -400,6 +401,11 @@ public:
     [[nodiscard]] std::shared_ptr<const void> replace_texture(const core::VirtualPath& path,
                                                               const formats::AceRgbaImage& image);
     void forget_texture(const core::VirtualPath& path);
+    // The material maps (docs/pbr-materials.md) made from any of these files
+    // (VirtualPath::key()) forgotten: the models made from now on upload
+    // them again. Until 2026-11-26 a reloaded model took the old map from
+    // the cache, so a material's PNG changed showed nothing (testers).
+    void forget_material_maps(const std::unordered_set<std::string>& files);
     // Every texture forgotten: the models made from now on upload their own
     // (texture_size_limit() changed; those loaded keep theirs till reloaded).
     void forget_textures();

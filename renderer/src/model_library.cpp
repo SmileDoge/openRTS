@@ -130,6 +130,8 @@ struct ModelLibrary::Impl {
     void apply(ReloadBatch batch) {
         statistics.reloading = false;
         statistics.errors.clear();
+        // The material maps made from changed files: uploaded again.
+        renderer.forget_material_maps(batch.changed_keys);
 
         std::vector<std::shared_ptr<const void>> pinned; // new textures until models hold them
         std::unordered_set<std::string> uploaded;

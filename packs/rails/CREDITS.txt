@@ -1,0 +1,20 @@
+openRTS rails (the openrts-rails pack) / рельсы openRTS (пак openrts-rails)
+
+PBR materials for the track: the rails, the sleepers and their fastenings
+(rels_1.ace) and the ballast (shpal_2.ace), for every route drawing them
+(docs/pbr-materials.md, the MATERIALS folder). PBR-материалы пути: рельсы,
+шпалы и скрепления (rels_1.ace) и балласт (shpal_2.ace) на всех маршрутах,
+где они есть (docs/ru/pbr-materials.md, папка MATERIALS).
+
+Author / автор: SmileDoge (the openRTS author / автор openRTS).
+
+Maps 2048 x 2048, compressed to openRTS ACE (openrts-ace to-ace): colour
+and ORM BC7, normals BC5, heights BC4. Карты 2048 x 2048, сжатые в ACE
+openRTS: цвет и ORM в BC7, нормали в BC5, высоты в BC4.
+
+Only with the experimental renderer and PBR on; a season's own texture
+(WINTER, SNOW...) keeps its snow. Только в экспериментальном рендере с PBR;
+сезонные текстуры (зима, снег...) остаются со своим снегом.
+
+Another pack, a mod or a MATERIALS folder in the installation replaces
+them: openRTS's own packs are below everything (docs/vfs.md).

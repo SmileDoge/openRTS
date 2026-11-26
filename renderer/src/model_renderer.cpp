@@ -2353,6 +2353,17 @@ void ModelRenderer::forget_texture(const core::VirtualPath& path) {
     impl_->texture_cache.erase(path.key());
 }
 
+void ModelRenderer::forget_material_maps(const std::unordered_set<std::string>& files) {
+    if (!impl_ || files.empty()) return;
+    const std::lock_guard lock(impl_->shared_mutex);
+    // A map's key (model_materials.cpp's map_key): "material <kind> ..." with
+    // the keys of the files it is made of.
+    std::erase_if(impl_->texture_cache, [&](const auto& entry) {
+        if (!entry.first.starts_with("material ")) return false;
+        return std::any_of(files.begin(), files.end(), [&](const std::string& file) { return entry.first.find(file) != std::string::npos; });
+    });
+}
+
 void ModelRenderer::replace(RenderModel& slot, RenderModel&& next) {
     retire(std::move(slot));
     slot = std::move(next);

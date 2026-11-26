@@ -241,7 +241,10 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>, bent: vec3<f32>, orm: 
                 let lit = light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
                 lamps = lamps + lit;
                 if (pbr) {
-                    lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(scene_lights[index], input.world), lit, reflects);
+                    let way = pbr_lamp_way(scene_lights[index], input.world);
+                    let rts_shape = !physical && scene_lights[index].ambient.w <= 0.5;
+                    lamps_out = lamps_out
+                        + pbr_lit_share(surface, way, lit, pbr_lamp_share(scene_lights[index], n, way, rts_shape), reflects);
                 }
             }
         }
@@ -254,7 +257,9 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>, bent: vec3<f32>, orm: 
                 let lit = light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
                 lamps = lamps + lit;
                 if (pbr) {
-                    lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(ring_light, input.world), lit, reflects);
+                    let way = pbr_lamp_way(ring_light, input.world);
+                    let rts_shape = !physical && ring_light.ambient.w <= 0.5;
+                    lamps_out = lamps_out + pbr_lit_share(surface, way, lit, pbr_lamp_share(ring_light, n, way, rts_shape), reflects);
                 }
             }
         }

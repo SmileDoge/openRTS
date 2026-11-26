@@ -362,7 +362,10 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                     let lit = light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
                     lamps = lamps + lit;
                     if (pbr) {
-                        lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(scene_lights[index], input.world), lit, reflects);
+                        let way = pbr_lamp_way(scene_lights[index], input.world);
+                        let rts_shape = !physical && scene_lights[index].ambient.w <= 0.5;
+                        lamps_out = lamps_out
+                            + pbr_lit_share(surface, way, lit, pbr_lamp_share(scene_lights[index], n, way, rts_shape), reflects);
                     }
                 }
             }
@@ -376,7 +379,9 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                     let lit = light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
                     lamps = lamps + lit;
                     if (pbr) {
-                        lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(ring_light, input.world), lit, reflects);
+                        let way = pbr_lamp_way(ring_light, input.world);
+                        let rts_shape = !physical && ring_light.ambient.w <= 0.5;
+                        lamps_out = lamps_out + pbr_lit_share(surface, way, lit, pbr_lamp_share(ring_light, n, way, rts_shape), reflects);
                     }
                 }
             }
@@ -398,7 +403,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                 let lit = to_linear(frame.interior[i].diffuse.xyz * factor);
                 cab_lamps = cab_lamps + lit;
                 if (pbr) {
-                    cab_out = cab_out + pbr_lit(surface, pbr_lamp_way(frame.interior[i], input.world), lit, reflects);
+                    let way = pbr_lamp_way(frame.interior[i], input.world);
+                    cab_out = cab_out + pbr_lit_share(surface, way, lit, pbr_lamp_share(frame.interior[i], n, way, true), reflects);
                 }
             }
         }

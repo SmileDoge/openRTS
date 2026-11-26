@@ -1,0 +1,16 @@
+{
+    format: "openrts-material/1",
+    base_color: "SHPAL_2_baseColor.ace",
+
+    orm: "SHPAL_2_orm.ace",
+
+    normal: "SHPAL_2_n.ace",
+    normal_y: "up",
+
+    roughness: 1,
+    metallic: 1,
+
+    height: "SHPAL_2_h.ace",
+    height_scale: 0.02,
+    height_reference: 0.5,
+}

@@ -1045,6 +1045,52 @@ void test_contacts(const Stock& stock) {
               "an open coupler does not couple");
         check(ahead.cars().size() == 4 && behind.cars().size() == 4 && ahead.speed() > 0.3, "the trains push each other");
     }
+    // Couplers that lock at 0.1 m/s (the ЧС7's, the passenger cars'). A
+    // touch below it only pushes the overlap apart and the speeds stay
+    // (RTS 0x4FB8CC), so the engine pushing on couples once it closes at
+    // 0.1 m/s; the joint starts at its slack, not pressed by r0 (testers,
+    // 2026-11-26: a gentle touch never coupled, a harder one jerked hard).
+    {
+        auto text = wagon_text;
+        const std::string r0 = "r0 ( 0.1m 0.1m ) )";
+        text.replace(text.find(r0), r0.size(), r0 + " Velocity ( 0.1m/s )");
+        const auto locking = formats::parse_wagon(text);
+        check(locking.ok() && near(locking.couplings[0].velocity, 0.1, 1e-6), "the coupling Velocity read");
+        std::vector<simulation::CarSetup> cars(4, simulation::CarSetup{.definition = &locking});
+        auto network = simulation::straight_test_track(3000.0);
+        simulation::Train ahead(cars);
+        simulation::Train behind(std::vector<simulation::CarSetup>(2, simulation::CarSetup{.definition = &locking}));
+        check(ahead.place(*network, 1, 1500.0, true), "locking: ahead placed");
+        check(behind.place(*network, 1, ahead.rear_end()->offset() - 0.5, true), "locking: behind placed");
+        std::array<simulation::Train*, 2> trains{&ahead, &behind};
+        bool touched = false;
+        simulation::Train* coupled = nullptr;
+        double closing_at = 0.0;
+        for (int i = 0; i < 400 && !coupled; ++i) {
+            for (const auto& r : simulation::resolve_contacts(trains)) {
+                touched = true;
+                if (r.outcome == simulation::ContactOutcome::coupled) {
+                    coupled = r.survivor;
+                    closing_at = behind.cars().front().velocity;
+                }
+            }
+            if (coupled) break;
+            // 0.05 m/s till the touch, then 20 kN pushing on.
+            if (!touched) behind.add_velocity(0.05f - behind.cars().front().velocity);
+            else behind.add_velocity(static_cast<float>(20000.0 / behind.mass() * simulation::train_step));
+            ahead.step();
+            behind.step();
+        }
+        check(touched && coupled != nullptr, "a gentle touch, pushed on, couples");
+        check(closing_at >= 0.1 && closing_at < 0.2, "it couples at the coupling Velocity");
+        if (coupled) {
+            const auto& c = coupled->cars();
+            const auto joint = 3;
+            const double gap = c[joint].offset - c[joint + 1].offset - (c[joint].definition->length + c[joint + 1].definition->length) * 0.5 -
+                0.1;
+            check(gap > -0.02, "the joint starts at its slack, gap " + std::to_string(gap));
+        }
+    }
 }
 
 // Cars as entities, step 1 (docs/car-architecture.md): a train refers to its

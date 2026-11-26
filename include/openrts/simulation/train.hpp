@@ -726,12 +726,18 @@ struct ContactResult {
     bool absorbed_ahead = false; // coupled: its cars went in front
     bool absorbed_turned = false; // coupled: its car order was reversed
     double force{};              // N, the impact measure RTS compares
+    // buffers: couplers that could lock, met slower than this (their
+    // coupling Velocity, m/s); 0 for other buffers.
+    float lock_speed{};
 };
 
 // Finds trains whose ends will meet within the next step and resolves each
 // meeting once: couples them when both couplers are automatic and not left
-// open and the impact is at most both cars' DerailBufferForce (the earlier
-// train in `trains` survives), otherwise exchanges momentum inelastically.
+// open, they close at the couplers' Velocity and the impact is at most both
+// cars' DerailBufferForce (the earlier train in `trains` survives); such
+// couplers met slower only push the overlap apart (the speeds stay, RTS),
+// others exchange momentum inelastically. The ends meet at the couplers'
+// slack (r0 / 2 of each end, r0 of a rigid one).
 // `passive` (by train, optional): trains another program moves (the
 // network's remote trains); two of them never meet here.
 std::vector<ContactResult> resolve_contacts(std::span<Train* const> trains, std::span<const std::uint8_t> passive = {});

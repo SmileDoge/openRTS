@@ -159,6 +159,7 @@ jobs:
           Copy-Item build/game/Release/PACKS "$out/PACKS" -Recurse
           Copy-Item packs/thunder/CREDITS.txt "$out/PACKS/openrts-thunder-CREDITS.txt"
           Copy-Item packs/snow/CREDITS.txt "$out/PACKS/openrts-snow-CREDITS.txt"
+          Copy-Item packs/rails/CREDITS.txt "$out/PACKS/openrts-rails-CREDITS.txt"
           # What people miss first: the VC++ runtime and the RTS installation.
           @(
             'openRTS - перед запуском / before you start',

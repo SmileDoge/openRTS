@@ -2500,9 +2500,12 @@ void TrainView::step_trains() {
     }
     for (const auto& result : simulation::resolve_contacts(trains, remote)) {
         if (result.outcome != simulation::ContactOutcome::coupled) {
-            message_ = result.outcome == simulation::ContactOutcome::collision
-                ? "collision: " + std::to_string(static_cast<int>(result.force / 1000.0)) + " kN, over DerailBufferForce"
-                : "buffers: the couplers are open or not automatic";
+            if (result.outcome == simulation::ContactOutcome::collision)
+                message_ = trf("collision: %d kN, over DerailBufferForce", static_cast<int>(result.force / 1000.0));
+            else if (result.lock_speed > 0.0f)
+                message_ = trf("buffers: too slow for the couplers to lock (under %.2f km/h)", static_cast<double>(result.lock_speed) * 3.6);
+            else
+                message_ = tr("buffers: the couplers are open or not automatic");
             continue;
         }
         const auto survivor = merge_units(result.survivor, result.absorbed, result.absorbed_ahead, result.absorbed_turned);
