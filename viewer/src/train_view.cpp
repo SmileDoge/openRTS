@@ -1709,12 +1709,12 @@ void TrainView::load_brake_choices() {
     }
     if (!own_brakes_loaded_) {
         own_brakes_loaded_ = true;
-        own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("0").c_str()), 0, 1);
+        own_brakes_ = std::clamp(std::atoi(remembered("own_brakes").value_or("1").c_str()), 0, 1);
         brake_numbers_ = std::clamp(std::atoi(remembered("brake_numbers").value_or("0").c_str()), 0, 1);
-        own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("0").c_str()), 0, 1);
+        own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("1").c_str()), 0, 1);
         klub_map_ = remembered("klub_map").value_or("1") != "0";
         klub_objects_ = remembered("klub_objects").value_or("0") == "1";
-        no_brakes_dll_ = remembered("no_brakes_dll").value_or("0") == "1";
+        no_brakes_dll_ = remembered("no_brakes_dll").value_or("1") == "1";
     }
     trainplugin::LegacyConsist::set_without_brakes_dll(no_brakes_dll_ && realistic_air_ && dll_air_ != 0 && own_klub_ == 1 && own_brakes_ == 1);
 }
