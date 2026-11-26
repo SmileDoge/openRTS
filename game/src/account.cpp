@@ -338,6 +338,7 @@ bool load_account(std::string& token, AccountUser& user) {
         else if (key == "username") user.username = value;
         else if (key == "email") user.email = value;
         else if (key == "role") user.role = value;
+        else if (key == "position") user.position = value;
     }
     return !token.empty();
 }
@@ -352,6 +353,7 @@ void save_account(const std::string& token, const AccountUser& user) {
     file << "username=" << user.username << '\n';
     file << "email=" << user.email << '\n';
     file << "role=" << user.role << '\n';
+    file << "position=" << user.position << '\n';
 }
 
 void clear_account() {
@@ -402,6 +404,7 @@ AccountResult account_login(const std::string& email, const std::string& passwor
         result.user.username = json_value(response.body, "username");
         result.user.email = json_value(response.body, "email");
         result.user.role = json_value(response.body, "role");
+        result.user.position = json_value(response.body, "position");
         result.ok = !result.token.empty();
         if (!result.ok) result.error = "Сайт не выдал ключ входа.";
     } else {
@@ -420,6 +423,7 @@ AccountResult account_validate(const std::string& token) {
         result.user.username = json_value(response.body, "username");
         result.user.email = json_value(response.body, "email");
         result.user.role = json_value(response.body, "role");
+        result.user.position = json_value(response.body, "position");
     } else {
         result.error = error_of(response);
         if (response.status == 401 || response.status == 403) result.error = "Вход больше не действует. Войдите снова.";

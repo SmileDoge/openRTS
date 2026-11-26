@@ -25,6 +25,8 @@ struct AccountUser {
     std::string username;
     std::string email;
     std::string role;
+    // The site's human-readable "Должность" (lk.html), e.g. "Участник проекта".
+    std::string position;
 };
 
 struct AccountResult {
