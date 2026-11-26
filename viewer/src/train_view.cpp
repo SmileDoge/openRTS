@@ -6462,6 +6462,14 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     // OPENRTS_CHANGE_CAB=<car>:<seconds> (automated runs): the driven train's
     // cab changed to that car (1..) at that time, as walking there does;
     // every 5 s each engine's main reservoir and the player's gauges.
+    // OPENRTS_DRIVE=<m/s> (automated runs): the player's train held at that speed.
+    if (static const char* drive = std::getenv("OPENRTS_DRIVE"); drive && !units_.empty() && units_.front().train) {
+        auto& tr = *units_.front().train;
+        const float want = static_cast<float>(std::atof(drive));
+        const float v = tr.cars().front().velocity;
+        tr.set_kinematic(true);
+        tr.set_drive_acceleration(v < want ? 0.5f : 0.0f);
+    }
     if (static const char* hook = std::getenv("OPENRTS_CHANGE_CAB"); hook && !units_.empty() && units_.front().train) {
         static double clock = 0.0, logged = 0.0;
         static bool changed = false;
@@ -6772,6 +6780,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     } else if (legacy_) {
         if (keys_live) {
             for (const auto& key : keys) legacy_->key(key, key_eye);
+            legacy_->return_released();
         } else if (keys_were_live_) {
             legacy_->release_keys();
         }
@@ -10305,6 +10314,15 @@ void TrainView::feed_world(const Unit& unit) {
     }
     for (const auto& p : signals_->positions(train, false)) (p.distance > passing ? world.alsn_behind : rear_passing).push_back(to_input(p));
     world.alsn_passing.insert(world.alsn_passing.end(), rear_passing.begin(), rear_passing.end());
+    // OPENRTS_ALSN_TRACE=1 (automated runs): what ALSN gets each step.
+    if (static const bool trace = std::getenv("OPENRTS_ALSN_TRACE") != nullptr; trace) {
+        std::cout << "alsn trace: v " << train.speed() << " ahead";
+        for (std::size_t k = 0; k < world.alsn_ahead.size() && k < 2; ++k)
+            std::cout << " [" << world.alsn_ahead[k].distance << " f" << world.alsn_ahead[k].flags << " a" << world.alsn_ahead[k].aspect[0] << "]";
+        std::cout << " passing";
+        for (const auto& s : world.alsn_passing) std::cout << " [" << s.distance << " f" << s.flags << " a" << s.aspect[0] << "]";
+        std::cout << std::endl;
+    }
     const auto next = signals_->ahead(train);
     if (!next.valid) return;
     dllhost::SignalInput s;

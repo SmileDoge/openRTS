@@ -454,8 +454,21 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
             Stream::Voice* voice = stream.loop.id ? &stream.loop : nullptr;
             for (auto& v : stream.one_shots)
                 if (!voice && sink.playing(v.id)) voice = &v;
-            if (!voice || !sink.playing(voice->id)) {
+            if (!voice) {
                 if (!trace_.empty()) note(here, "release: nothing plays");
+                break;
+            }
+            if (!sink.playing(voice->id)) {
+                // A loop not heard now (still starting, or its voice taken
+                // for a while) is let go all the same: left, it played on
+                // till its key was pressed again (testers 2026-11-26: the
+                // whistle and the horn pressed together stuck on).
+                stream.current.reset();
+                if (voice == &stream.loop && stream.loop.id) {
+                    sink.stop(stream.loop.id);
+                    stream.loop = {};
+                }
+                if (!trace_.empty()) note(here, "release: nothing heard, the loop stopped");
                 break;
             }
             stream.current.reset();

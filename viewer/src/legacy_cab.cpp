@@ -523,6 +523,30 @@ void LegacyCab::release_keys() {
     take_log();
 }
 
+void LegacyCab::return_released() {
+    if (returning_.empty()) return;
+    if (!working()) {
+        returning_.clear();
+        return;
+    }
+    const auto* out = out_of(player());
+    if (!out) return;
+    for (auto it = returning_.begin(); it != returning_.end();) {
+        const auto id = *it;
+        if (id >= out->switches.size() || key_held(id, 0)) {
+            it = returning_.erase(it);
+            continue;
+        }
+        const auto& sw = out->switches[id];
+        if (sw.set_state == sw.fixed_state) {
+            it = returning_.erase(it);
+            continue;
+        }
+        operate(id, sw.fixed_state);
+        ++it;
+    }
+}
+
 bool key_reaches(const formats::CabSwitch& control, const std::optional<glm::vec3>& eye) {
     if (!eye || (control.flags & formats::cab_check_distance) == 0 || control.radius <= 0.0f) return true;
     const glm::vec3 at{control.position[0], control.position[1], control.position[2]};
@@ -556,7 +580,10 @@ void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) 
         if (!event.down) {
             // RTS 0x414340: a NONFIXED switch returns to its FixedState when
             // its key is let go (RTS steps there one position per key delay).
-            if (non_fixed && sw.set_state != sw.fixed_state) operate(b.id, sw.fixed_state);
+            if (non_fixed && sw.set_state != sw.fixed_state) {
+                operate(b.id, sw.fixed_state);
+                returning_.insert(b.id);
+            }
             continue;
         }
         if (non_fixed && b.direction == 0) {

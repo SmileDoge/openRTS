@@ -38,6 +38,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <set>
 #include <vector>
 
 #include <glm/ext/matrix_clip_space.hpp>
@@ -2151,6 +2152,7 @@ struct CameraInput {
     bool scene_takes_scroll = false;
     std::array<bool, 14> train_keys_down{};
     std::vector<KeyEvent> key_events; // since the last scene_input()
+    std::set<int> keys_held;          // pressed by the events, not yet released by them
     bool keyboard_captured = false;   // the scene takes the keyboard (cab keys)
     bool on_foot = false;             // the engineer stands or walks (not in a chair): W A S D walk
     bool action_at_hand = false;      // on foot, something for Enter where he stands (E does it, key_layout.hpp)
@@ -2449,6 +2451,22 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
 [[nodiscard]] SceneInput scene_input(GLFWwindow* window, CameraInput& input) {
     const bool typing = imgui_has_keyboard();
     const auto down = [window, typing](const int key) { return !typing && glfwGetKey(window, key) == GLFW_PRESS; };
+    // A key the events left down that is up now (its release lost: taken by
+    // a window, or two keys at once on some keyboards) is let go, as RTS
+    // reads the keys' state each frame: a whistle and a horn pressed
+    // together stuck on (testers 2026-11-26).
+    for (const auto& e : input.key_events) {
+        if (e.down) input.keys_held.insert(e.key);
+        else input.keys_held.erase(e.key);
+    }
+    for (auto it = input.keys_held.begin(); it != input.keys_held.end();) {
+        if (glfwGetKey(window, *it) == GLFW_RELEASE) {
+            input.key_events.push_back({.key = *it, .down = false});
+            it = input.keys_held.erase(it);
+        } else {
+            ++it;
+        }
+    }
     const auto pressed = [&](const int key, bool& was_down) {
         const bool now = down(key);
         const bool edge = now && !was_down;
