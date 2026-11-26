@@ -121,6 +121,14 @@ struct RecorderState {
     bool whistle_flag = false; // + 8 0x10000000
     bool epk_bit = false;      // + 32 bit 1
     bool alsn_on = false;      // Engine +106
+    // openRTS: s after the ALSN came on during which an aspect is taken as
+    // it is, not as a worse one (the first after the start: hot, the КЖ till
+    // the ALSN's delay passed read as a fall from none, a request РБ could
+    // not answer, the ЭПК vented 7 s on; testers 2026-11-26, the ВЛ85).
+    // Only the first time after the train appeared: the key turned on later
+    // (standing at a КЖ) asks as Brakes.dll's does.
+    float start_grace{};
+    bool ever_on = false;
     // The КПД-3's (mode 1): + 164 its page and flags (1 lit by its key, 2
     // the acceleration, 4 the clock, 8 the test "1000", 0x20 the menu, 0x40
     // / 0x80 the date, number 1, number 2), + 168 .. + 180 day, month and the

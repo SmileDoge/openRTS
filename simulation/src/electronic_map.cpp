@@ -762,6 +762,18 @@ EkTarget ElectronicMap::update(EkState& state, const TrackNetwork& network, cons
             leave(state.leaving.empty() ? state.done_at : state.leaving);
         }
     }
+    // Past another track's signal of a station with the entered track, that
+    // track's signal still ahead abreast: the ЭК keeps it, by its coordinate
+    // (testers 2026-11-26: Новокузнецк-Пасс., 6 entered, the train on 10:
+    // past Ч10, Ч6 some 300 m on, the КЛУБ took the next signal as it lay).
+    if (number > 2 && !state.leaving.empty() && !state.leaving_own && state.inside.empty() && state.done_at != state.leaving
+        && station_numbers_.contains({state.leaving, number})) {
+        const auto beside = abreast(network, node, offset, forward, state.leaving, number);
+        if (beside.has_target && !beside.passed) {
+            state.inside = state.leaving;
+            state.leaving.clear();
+        }
+    }
     // The entered track abreast behind: the first block signal along the
     // train's way.
     const auto to_first_block = [&]() {

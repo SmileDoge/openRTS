@@ -2551,7 +2551,13 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             else car.previous_aspect = aspect;
             ri.aspect = aspect;
         }
-        ri.powered = (var_bits(32) & 4u) != 0;
+        // Its safety devices' power: Brakes.dll's bit, which openRTS's КЛУБ
+        // writes for a car with a КЛУБ; a car without one (the ВЛ85's АЛСН,
+        // SL_SETUP 1: no KLUB_PIT, Brakes.dll's power list empty) is
+        // powered. Until 2026-11-26 the bit stayed 0 there, the ЭПК key on
+        // read "the ALSN not powered": the whistle at once and the trip 7 s
+        // on, at every hot start (testers).
+        ri.powered = (var_bits(32) & 4u) != 0 || klub_car(i) == nullptr;
         ri.tskbm_on = (car.last_var4 & 8u) != 0;
         ri.bypass = (car.last_var4 & 0x200u) != 0;
         ri.ep_pressure = car.last_ep;
@@ -2571,6 +2577,20 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             ri.date_weekday = local.tm_wday;
         }
         simulation::step_recorder(car.state, p.settings, ri, car.out);
+        if (static const bool trace = std::getenv("OPENRTS_RECORDER_TRACE") != nullptr; trace) {
+            static double clock = 0.0;
+            clock += request.dt;
+            static double next = 0.0;
+            if (clock >= next) {
+                next = clock + 1.0;
+                bool key = false;
+                for (const auto& c : ri.cabs) key = key || c.epk_key;
+                std::fprintf(stdout, "recorder trace %.1f car %zu: powered %d key %d alsn_on %d periodic %.2f whistle %.2f flags 0x%X aspect %u setup %u\n", clock, i,
+                             ri.powered ? 1 : 0, key ? 1 : 0, car.state.alsn_on ? 1 : 0, car.state.periodic, car.state.whistle, car.state.flags, ri.aspect,
+                             p.settings.setup, p.settings.klub_setup, ri.saut_powered ? 1 : 0);
+                std::fflush(stdout);
+            }
+        }
         simulation::recorder_switched(car.state, p.settings, ri, car.out);
         // Brakes.dll's odometer goes on in its Run all the same: the same.
         car.last_var4 = var_bits(4);
