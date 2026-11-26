@@ -611,8 +611,6 @@ void GameShell::draw_loading_overlay() const {
                                   {panel_max.x - radius, panel_min.y + 54.0f * scale}, IM_COL32(255, 255, 255, 16),
                                   IM_COL32(255, 255, 255, 16), IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0));
     draw->AddRect(panel_min, panel_max, IM_COL32(255, 255, 255, 84), radius, 0, 1.0f * scale);
-    draw->AddLine({panel_min.x + radius, panel_min.y + 1.0f * scale},
-                  {panel_max.x - radius, panel_min.y + 1.0f * scale}, IM_COL32(255, 255, 255, 120), 1.0f * scale);
     // The mockup's inner separator and its progress track.
     draw->AddLine({panel_min.x + 33.0f * scale, panel_min.y + 116.0f * scale},
                   {panel_max.x - 33.0f * scale, panel_min.y + 116.0f * scale}, IM_COL32(255, 255, 255, 40), 1.0f);
