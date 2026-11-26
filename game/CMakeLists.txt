@@ -4,6 +4,7 @@ if(TARGET openrts_viewer_core)
     add_executable(openrts_game
         src/main.cpp
         src/launcher.cpp
+        src/account.cpp
         src/shell.cpp
         src/menu/ui_image.cpp
         src/menu/ui_sound.cpp)
@@ -12,8 +13,9 @@ if(TARGET openrts_viewer_core)
     openrts_embed_dllhost(openrts_game)
     target_link_libraries(openrts_game PRIVATE openrts_viewer_core winmm)
     if(WIN32)
-        # WIC decodes the menu's pictures; ShellExecute opens its links.
-        target_link_libraries(openrts_game PRIVATE windowscodecs ole32 shell32)
+        # WIC decodes the menu's pictures; ShellExecute opens its links;
+        # WinHTTP signs in on the site, BCrypt hashes the hardware id.
+        target_link_libraries(openrts_game PRIVATE windowscodecs ole32 shell32 winhttp bcrypt iphlpapi)
     endif()
     openrts_copy_wgpu_runtime(openrts_game)
     openrts_copy_streamline(openrts_game)

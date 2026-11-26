@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <future>
+#include <thread>
 #include <optional>
 #include <set>
 #include <string>
@@ -50,6 +52,7 @@
 #include <openrts/renderer/bc7.hpp>
 
 #include "exit_codes.hpp"
+#include "account.hpp"
 #include "menu/ui_image.hpp"
 #include "viewer_state.hpp"
 #include "window_mode.hpp"
@@ -469,7 +472,7 @@ void soon_badge(ImDrawList* draw, const ImVec2 at, const float scale, const floa
 // The header of an inner page: back, its name and line, the same clock and
 // account as the home page.
 void page_heading(ImDrawList* draw, const Rect content, const char* name, const char* line, const float scale, const std::string& clock,
-                  const std::string& date, const bool guest, float& account_hover, bool& back, bool& account_clicked) {
+                  const std::string& date, const std::string& player, float& account_hover, bool& back, bool& account_clicked) {
     const auto back_box = Rect{{content.min.x, content.min.y}, {content.min.x + 42.0f * scale, content.min.y + 42.0f * scale}};
     ImGui::SetCursorScreenPos(back_box.min);
     back = ImGui::InvisibleButton("##back", {back_box.width(), back_box.height()});
@@ -486,19 +489,20 @@ void page_heading(ImDrawList* draw, const Rect content, const char* name, const 
     draw->AddLine({content.max.x - 304.0f * scale, avatar_centre.y - 26.0f * scale},
                   {content.max.x - 304.0f * scale, avatar_centre.y + 26.0f * scale}, rgb(255, 255, 255, 40), 1.0f);
     draw->AddCircleFilled(avatar_centre, 22.0f * scale, rgb(42, 46, 55), 40);
-    label_centered(draw, ui::heading_font(), 18.0f * scale, avatar_centre, white, guest ? "Г" : "D");
-    const auto name_size = label_size(ui::button_font(), 13.0f * scale, guest ? "Гость" : "Игрок");
-    const auto level_size = label_size(ui::small_font(), 11.0f * scale, guest ? "Уровень 0" : "Уровень 1");
+    label_centered(draw, ui::heading_font(), 18.0f * scale, avatar_centre, white, player.empty() ? "Г" : "D");
+    const auto player_name = player.empty() ? std::string("Гость") : player;
+    const auto player_level = player.empty() ? std::string("Уровень 0") : std::string("Аккаунт");
+    const auto name_size = label_size(ui::button_font(), 13.0f * scale, player_name);
+    const auto level_size = label_size(ui::small_font(), 11.0f * scale, player_level);
     const auto name_block = name_size.y + 3.0f * scale + level_size.y;
     const auto name_top = avatar_centre.y - name_block * 0.5f;
-    label(draw, ui::button_font(), 13.0f * scale, {content.max.x - 240.0f * scale, name_top}, white,
-          guest ? "Гость" : "Игрок");
+    label(draw, ui::button_font(), 13.0f * scale, {content.max.x - 240.0f * scale, name_top}, white, player_name);
     label(draw, ui::small_font(), 11.0f * scale, {content.max.x - 240.0f * scale, name_top + name_size.y + 3.0f * scale}, dim,
-          guest ? "Уровень 0" : "Уровень 1");
+          player_level);
     const auto button = Rect{{content.max.x - 132.0f * scale, avatar_centre.y - 22.0f * scale},
                              {content.max.x, avatar_centre.y + 22.0f * scale}};
     (void)back_box;
-    account_clicked = header_button(draw, "##account", button, guest ? "Войти" : "Выход", scale, account_hover);
+    account_clicked = header_button(draw, "##account", button, player.empty() ? "Войти" : "Выход", scale, account_hover);
 }
 
 #endif
@@ -519,6 +523,21 @@ struct Launcher::State {
     std::string session_note;
     float card_hover[8]{};
     float account_hover = 0.0f;
+    // The site's account (account.hpp): the form's fields, the token and the
+    // last known user, and the worker that talks to dark-team.ru.
+    std::array<char, 128> account_email{};
+    std::array<char, 128> account_password{};
+    std::string account_token;
+    std::string account_name;
+    std::string account_email_text;
+    std::string account_role;
+    std::string account_error;
+    bool account_busy = false;
+    bool account_banned = false;
+    std::string account_ban_reason;
+    std::future<AccountResult> account_task;
+    std::future<std::pair<bool, std::string>> ban_task;
+    HardwareInfo hardware;
     float start_hover = 0.0f;
     std::unique_ptr<menu::ImageCache> images;
     std::string image_dir;
@@ -1185,7 +1204,87 @@ struct Launcher::State {
 #endif
     }
 
+    void start_account_login() {
+        if (account_busy) return;
+        const std::string email = account_email.data();
+        const std::string password = account_password.data();
+        if (email.empty() || password.empty()) {
+            account_error = "Введите email и пароль.";
+            return;
+        }
+        account_error.clear();
+        account_busy = true;
+        HardwareInfo info = hardware;
+        account_task = std::async(std::launch::async, [email, password, info] {
+            auto result = account_login(email, password, info.hwid);
+            if (result.ok) account_report_hwid(result.token, info);
+            return result;
+        });
+    }
+
+    void start_account_validate() {
+        if (account_busy || account_token.empty()) return;
+        account_busy = true;
+        const std::string token = account_token;
+        account_task = std::async(std::launch::async, [token] { return account_validate(token); });
+    }
+
+    void start_ban_check() {
+        if (hardware.hwid.empty()) return;
+        const std::string hwid = hardware.hwid;
+        ban_task = std::async(std::launch::async, [hwid] {
+            std::string reason;
+            const bool banned = account_hwid_banned(hwid, reason);
+            return std::make_pair(banned, reason);
+        });
+    }
+
+    void poll_account() {
+        if (ban_task.valid() && ban_task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+            auto [banned, reason] = ban_task.get();
+            account_banned = banned;
+            account_ban_reason = std::move(reason);
+        }
+        if (!account_task.valid()) return;
+        if (account_task.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) return;
+        auto result = account_task.get();
+        account_busy = false;
+        if (result.ok) {
+            account_token = result.token;
+            std::fill(account_password.begin(), account_password.end(), '\0');
+            if (!result.user.username.empty()) account_name = result.user.username;
+            if (!result.user.email.empty()) account_email_text = result.user.email;
+            if (!result.user.role.empty()) account_role = result.user.role;
+            account_error.clear();
+            save_account(account_token, AccountUser{account_name, account_email_text, account_role});
+        } else {
+            account_error = result.error;
+            // A refused or expired token is gone; a network failure keeps the
+            // last known account so the game stays playable offline.
+            if (result.status == 401 || result.status == 403) {
+                account_token.clear();
+                account_name.clear();
+                account_email_text.clear();
+                account_role.clear();
+                clear_account();
+            }
+        }
+    }
+
+    void account_logout_clicked() {
+        if (account_busy) return;
+        const std::string token = account_token;
+        account_token.clear();
+        account_name.clear();
+        account_email_text.clear();
+        account_role.clear();
+        account_error.clear();
+        clear_account();
+        if (!token.empty()) std::thread([token] { account_logout(token); }).detach();
+    }
+
     void poll() {
+        poll_account();
         if (const auto now = std::chrono::steady_clock::now(); now >= next_situation_scan) {
             next_situation_scan = now + std::chrono::milliseconds(1500);
             refresh_situations();
@@ -1229,6 +1328,7 @@ struct Launcher::State {
     void draw_solo();
     void draw_settings_page();
     void draw_account();
+    void draw_ban();
     void draw_soon();
     void draw_footer(ImDrawList* draw, float scale, ImVec2 display);
     void draw_tabs();
@@ -1314,18 +1414,20 @@ void Launcher::State::draw_home() {
     draw->AddLine({top_right - 304.0f * scale, avatar_centre.y - 26.0f * scale},
                   {top_right - 304.0f * scale, avatar_centre.y + 26.0f * scale}, rgb(255, 255, 255, 38), 1.0f);
     draw->AddCircleFilled(avatar_centre, 22.0f * scale, rgb(42, 46, 55), 44);
-    label_centered(draw, ui::heading_font(), 18.0f * scale, avatar_centre, white, "Г");
+    label_centered(draw, ui::heading_font(), 18.0f * scale, avatar_centre, white, account_name.empty() ? "Г" : "D");
 
-    const auto name_size = label_size(ui::button_font(), 14.0f * scale, "Гость");
-    const auto level_size = label_size(ui::small_font(), 11.0f * scale, "Уровень 0");
+    const auto player_name = account_name.empty() ? std::string("Гость") : account_name;
+    const auto player_level = account_name.empty() ? std::string("Уровень 0") : std::string("Аккаунт");
+    const auto name_size = label_size(ui::button_font(), 14.0f * scale, player_name);
+    const auto level_size = label_size(ui::small_font(), 11.0f * scale, player_level);
     const auto name_block = name_size.y + 3.0f * scale + level_size.y;
     const auto name_top = avatar_centre.y - name_block * 0.5f;
-    label(draw, ui::button_font(), 14.0f * scale, {top_right - 240.0f * scale, name_top}, white, "Гость");
+    label(draw, ui::button_font(), 14.0f * scale, {top_right - 240.0f * scale, name_top}, white, player_name);
     label(draw, ui::small_font(), 11.0f * scale, {top_right - 240.0f * scale, name_top + name_size.y + 3.0f * scale}, dim,
-          "Уровень 0");
+          player_level);
     const auto account = Rect{{top_right - 132.0f * scale, avatar_centre.y - 22.0f * scale},
                               {top_right, avatar_centre.y + 22.0f * scale}};
-    if (header_button(draw, "##account", account, "Войти", scale, account_hover)) page = Page::account;
+    if (header_button(draw, "##account", account, account_name.empty() ? "Войти" : "Выход", scale, account_hover)) page = Page::account;
 
     const auto content = Rect{{margin, 156.0f * scale}, {display.x - margin, display.y - 88.0f * scale}};
     const auto gap = 24.0f * scale;
@@ -1415,7 +1517,7 @@ void Launcher::State::draw_solo() {
     const auto [clock, date] = header_clock();
     const Rect header{{margin, 26.0f * scale}, {display.x - margin, 94.0f * scale}};
     bool back = false, account_clicked = false;
-    page_heading(draw, header, "Машинист", "Маршрут, локомотив, состав и условия поездки", scale, clock, date, true, account_hover, back,
+    page_heading(draw, header, "Машинист", "Маршрут, локомотив, состав и условия поездки", scale, clock, date, account_name, account_hover, back,
                  account_clicked);
     if (back) page = Page::home;
     if (account_clicked) page = Page::account;
@@ -1463,7 +1565,7 @@ void Launcher::State::draw_settings_page() {
     const auto [clock, date] = header_clock();
     const Rect header{{margin, 26.0f * scale}, {display.x - margin, 94.0f * scale}};
     bool back = false, account_clicked = false;
-    page_heading(draw, header, "Настройки", "Игра, графика и управление", scale, clock, date, true, account_hover, back, account_clicked);
+    page_heading(draw, header, "Настройки", "Игра, графика и управление", scale, clock, date, account_name, account_hover, back, account_clicked);
     if (back) {
         if (embedded_settings) embedded_back = true;
         else page = Page::home;
@@ -1523,23 +1625,124 @@ void Launcher::State::draw_account() {
     const auto [clock, date] = header_clock();
     const Rect header{{margin, 26.0f * scale}, {display.x - margin, 94.0f * scale}};
     bool back = false, account_clicked = false;
-    page_heading(draw, header, "Профиль", "Личный кабинет", scale, clock, date, true, account_hover, back, account_clicked);
+    page_heading(draw, header, "Профиль", account_name.empty() ? "Вход в аккаунт dark-team.ru" : "Аккаунт dark-team.ru", scale, clock,
+                 date, account_name, account_hover, back, account_clicked);
     if (back) page = Page::home;
 
+    const bool logged = !account_name.empty() && !account_token.empty();
     const auto width = 560.0f * scale;
-    const auto height = 300.0f * scale;
+    const auto height = (logged ? 372.0f : 470.0f) * scale;
     const Rect box{{(display.x - width) * 0.5f, (display.y - height) * 0.5f}, {(display.x + width) * 0.5f, (display.y + height) * 0.5f}};
     draw->AddRectFilled(box.min, box.max, card_fill, 24.0f * scale);
     draw->AddRect(box.min, box.max, card_line, 24.0f * scale);
-    draw->AddCircleFilled({box.centre().x, box.min.y + 76.0f * scale}, 36.0f * scale, rgb(42, 46, 55), 48);
-    label_centered(draw, ui::heading_font(), 30.0f * scale, {box.centre().x, box.min.y + 76.0f * scale}, white, "Г");
-    const auto title = std::string("Вы вошли как гость");
-    const auto title_size = label_size(ui::heading_font(), 24.0f * scale, title);
-    label(draw, ui::heading_font(), 24.0f * scale, {box.centre().x - title_size.x * 0.5f, box.min.y + 128.0f * scale}, white, title);
-    const auto text = std::string("Вход в аккаунт появится в следующих обновлениях. Одиночная игра доступна без аккаунта.");
-    const auto text_size = label_size(ui::body_font(), 14.0f * scale, text);
-    label(draw, ui::body_font(), 14.0f * scale, {box.centre().x - text_size.x * 0.5f, box.min.y + 166.0f * scale}, grey, text);
-    soon_badge(draw, {box.centre().x - 36.0f * scale, box.min.y + 212.0f * scale}, scale, 1.0f);
+
+    const ImVec2 avatar{box.centre().x, box.min.y + 64.0f * scale};
+    draw->AddCircleFilled(avatar, 34.0f * scale, rgb(42, 46, 55), 48);
+    label_centered(draw, ui::heading_font(), 28.0f * scale, avatar, white, logged ? "D" : "Г");
+
+    ImGui::PushFont(ui::body_font());
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f * scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {14.0f * scale, 11.0f * scale});
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4{1.0f, 1.0f, 1.0f, 0.06f});
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4{1.0f, 1.0f, 1.0f, 0.10f});
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4{1.0f, 1.0f, 1.0f, 0.14f});
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.97f, 0.97f, 0.98f, 1.0f});
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, ImVec4{0.55f, 0.57f, 0.61f, 1.0f});
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4{1.0f, 1.0f, 1.0f, 0.14f});
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{1.0f, 1.0f, 1.0f, 0.12f});
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{1.0f, 1.0f, 1.0f, 0.20f});
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{1.0f, 1.0f, 1.0f, 0.26f});
+
+    const auto left = box.min.x + 40.0f * scale;
+    const auto field_width = box.width() - 80.0f * scale;
+    const auto error_colour = ImVec4{0.95f, 0.42f, 0.42f, 1.0f};
+
+    if (logged) {
+        const auto title_size = label_size(ui::heading_font(), 24.0f * scale, account_name);
+        label(draw, ui::heading_font(), 24.0f * scale, {box.centre().x - title_size.x * 0.5f, box.min.y + 110.0f * scale}, white,
+              account_name);
+        const auto email = account_email_text.empty() ? std::string("Аккаунт dark-team.ru") : account_email_text;
+        const auto email_size = label_size(ui::body_font(), 14.0f * scale, email);
+        label(draw, ui::body_font(), 14.0f * scale, {box.centre().x - email_size.x * 0.5f, box.min.y + 144.0f * scale}, grey, email);
+        const auto role = account_role.empty() ? std::string("Игрок") : account_role;
+        const auto role_size = label_size(ui::small_font(), 12.0f * scale, role);
+        label(draw, ui::small_font(), 12.0f * scale, {box.centre().x - role_size.x * 0.5f, box.min.y + 168.0f * scale}, dim, role);
+        const auto hwid_text = "HWID: " + hardware.hwid.substr(0, 12) + "…";
+        const auto hwid_size = label_size(ui::small_font(), 12.0f * scale, hwid_text);
+        label(draw, ui::small_font(), 12.0f * scale, {box.centre().x - hwid_size.x * 0.5f, box.min.y + 190.0f * scale}, dim,
+              hwid_text);
+
+        ImGui::SetCursorScreenPos({left, box.min.y + 224.0f * scale});
+        if (ImGui::Button("Профиль на сайте ↗", {field_width, 42.0f * scale})) open_link("https://dark-team.ru/lk");
+        ImGui::SetCursorScreenPos({left, box.min.y + 276.0f * scale});
+        if (ImGui::Button(account_busy ? "Выход..." : "Выйти из аккаунта", {field_width, 42.0f * scale}) && !account_busy)
+            account_logout_clicked();
+    } else {
+        label(draw, ui::heading_font(), 22.0f * scale, {left, box.min.y + 108.0f * scale}, white, "Вход в аккаунт");
+        label(draw, ui::body_font(), 13.0f * scale, {left, box.min.y + 140.0f * scale}, grey,
+              "Аккаунт dark-team.ru нужен для мультиплеера.");
+
+        ImGui::SetCursorScreenPos({left, box.min.y + 170.0f * scale});
+        ImGui::SetNextItemWidth(field_width);
+        ImGui::InputTextWithHint("##account_email", "Email или ник", account_email.data(), account_email.size());
+        ImGui::SetCursorScreenPos({left, box.min.y + 224.0f * scale});
+        ImGui::SetNextItemWidth(field_width);
+        const bool submit = ImGui::InputTextWithHint("##account_password", "Пароль", account_password.data(), account_password.size(),
+                                                     ImGuiInputTextFlags_Password | ImGuiInputTextFlags_EnterReturnsTrue);
+
+        ImGui::SetCursorScreenPos({left, box.min.y + 278.0f * scale});
+        ImGui::BeginDisabled(account_busy);
+        if (ImGui::Button(account_busy ? "Вход..." : "Войти", {field_width, 42.0f * scale})) start_account_login();
+        ImGui::EndDisabled();
+        if (submit) start_account_login();
+
+        ImGui::SetCursorScreenPos({left, box.min.y + 330.0f * scale});
+        if (ImGui::Button("Регистрация на сайте ↗", {field_width, 36.0f * scale})) open_link("https://dark-team.ru/register");
+
+        if (!account_error.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, error_colour);
+            ImGui::SetCursorScreenPos({left, box.min.y + 376.0f * scale});
+            ImGui::PushTextWrapPos(left + field_width);
+            ImGui::TextWrapped("%s", account_error.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::PopStyleColor();
+        }
+    }
+
+    ImGui::PopStyleColor(9);
+    ImGui::PopStyleVar(2);
+    ImGui::PopFont();
+}
+
+void Launcher::State::draw_ban() {
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto display = ImGui::GetIO().DisplaySize;
+    const auto scale = menu_scale();
+    draw->AddRectFilled({0, 0}, display, rgb(8, 9, 12, 255));
+    const auto width = 620.0f * scale;
+    const auto height = 300.0f * scale;
+    const Rect box{{(display.x - width) * 0.5f, (display.y - height) * 0.5f},
+                   {(display.x + width) * 0.5f, (display.y + height) * 0.5f}};
+    draw->AddRectFilled(box.min, box.max, card_fill, 24.0f * scale);
+    draw->AddRect(box.min, box.max, rgb(220, 70, 70, 160), 24.0f * scale, 0, 1.0f * scale);
+    const auto title = std::string("Доступ ограничен");
+    const auto title_size = label_size(ui::heading_font(), 28.0f * scale, title);
+    label(draw, ui::heading_font(), 28.0f * scale, {box.centre().x - title_size.x * 0.5f, box.min.y + 38.0f * scale}, white, title);
+    const auto subtitle = std::string("Этот компьютер заблокирован на dark-team.ru.");
+    const auto subtitle_size = label_size(ui::body_font(), 15.0f * scale, subtitle);
+    label(draw, ui::body_font(), 15.0f * scale, {box.centre().x - subtitle_size.x * 0.5f, box.min.y + 88.0f * scale}, grey,
+          subtitle);
+    const auto reason = account_ban_reason.empty() ? std::string("Причина не указана.") : account_ban_reason;
+    const auto reason_size = label_size(ui::body_font(), 15.0f * scale, reason);
+    label(draw, ui::body_font(), 15.0f * scale, {box.centre().x - reason_size.x * 0.5f, box.min.y + 124.0f * scale},
+          rgb(235, 110, 110, 255), reason);
+    const auto hwid = "HWID: " + hardware.hwid;
+    const auto hwid_size = label_size(ui::small_font(), 12.0f * scale, hwid);
+    label(draw, ui::small_font(), 12.0f * scale, {box.centre().x - hwid_size.x * 0.5f, box.min.y + 160.0f * scale}, dim, hwid);
+    ImGui::PushFont(ui::body_font());
+    ImGui::SetCursorScreenPos({box.centre().x - 110.0f * scale, box.min.y + 210.0f * scale});
+    if (ImGui::Button("Проверить снова", {220.0f * scale, 42.0f * scale})) start_ban_check();
+    ImGui::PopFont();
 }
 
 void Launcher::State::draw_soon() {
@@ -1557,7 +1760,7 @@ void Launcher::State::draw_soon() {
     const auto [clock, date] = header_clock();
     const Rect header{{margin, 26.0f * scale}, {display.x - margin, 94.0f * scale}};
     bool back = false, account_clicked = false;
-    page_heading(draw, header, names[std::clamp(soon_kind, 0, 2)], lines[std::clamp(soon_kind, 0, 2)], scale, clock, date, true,
+    page_heading(draw, header, names[std::clamp(soon_kind, 0, 2)], lines[std::clamp(soon_kind, 0, 2)], scale, clock, date, account_name,
                  account_hover, back, account_clicked);
     if (back) page = Page::home;
 
@@ -2585,6 +2788,17 @@ Launcher::Launcher(std::filesystem::path exe_dir) : state_(std::make_unique<Stat
     state_->exe_dir = std::move(exe_dir);
     state_->image_dir = utf8(state_->exe_dir / "menu");
     state_->load_settings();
+    // The site's account: the last token is checked on a worker, the hardware
+    // id is read once for the login and the staff's ban decisions.
+    state_->hardware = hardware_info();
+    state_->start_ban_check();
+    AccountUser cached;
+    if (load_account(state_->account_token, cached)) {
+        state_->account_name = cached.username;
+        state_->account_email_text = cached.email;
+        state_->account_role = cached.role;
+        state_->start_account_validate();
+    }
     state_->scan();
     // No RTS folder yet: the settings first, where it is given.
     if (!state_->vfs) {
@@ -2651,6 +2865,7 @@ void Launcher::show_tab(const std::string_view key) {
         state_->select_tab = true;
     }
     if (key == "single") state_->page = State::Page::solo;
+    else if (key == "account") state_->page = State::Page::account;
     else if (key == "settings") state_->page = State::Page::settings;
     else if (key == "graphics") {
         state_->page = State::Page::settings;
@@ -2723,6 +2938,14 @@ void Launcher::draw_overlay(const viewer::ViewerCamera&) const {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4{0.0f, 0.0f, 0.0f, 0.0f});
     ImGui::Begin("##launcher", nullptr, flags);
+
+    if (s.account_banned) {
+        s.draw_ban();
+        ImGui::End();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(2);
+        return;
+    }
 
     switch (s.page) {
     case State::Page::home: s.draw_home(); break;
