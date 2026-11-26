@@ -6780,7 +6780,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     } else if (legacy_) {
         if (keys_live) {
             for (const auto& key : keys) legacy_->key(key, key_eye);
-            legacy_->return_released();
+            legacy_->return_released(elapsed);
         } else if (keys_were_live_) {
             legacy_->release_keys();
         }

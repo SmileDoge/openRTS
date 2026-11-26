@@ -98,9 +98,13 @@ int probe(const std::filesystem::path& root, std::string spec) {
     }
     const simulation::ElectronicMap map(*network, database, signals);
     const auto number = static_cast<std::uint32_t>(std::stoul(part[3]));
+    const auto item_unit = formats::rts_signal_units(db, database);
     const auto label = [&](const std::uint32_t object) {
         const auto* track = map.track_of(object);
-        return std::to_string(object) + (track ? " (" + track->station + " " + track->name + ")" : std::string());
+        std::string name;
+        if (object < item_unit.size() && item_unit[object] >= 0 && static_cast<std::size_t>(item_unit[object]) < database.signal_units.size())
+            name = " " + database.signal_units[static_cast<std::size_t>(item_unit[object])].name;
+        return std::to_string(object) + name + (track ? " (" + track->station + " " + track->name + ")" : std::string());
     };
     if (part[2] == "?") {
         for (const auto& track : map.tracks())

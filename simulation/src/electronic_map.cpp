@@ -198,7 +198,15 @@ std::string ElectronicMap::track_park(const std::string_view name) {
 }
 
 bool ElectronicMap::in_park(const std::string& station, const std::string& park, const std::uint32_t number) const {
-    return park_numbers_.contains({station, park, number}) || (number <= 2 && park_numbers_.contains({station, std::string(), number}));
+    if (park_numbers_.contains({station, park, number})) return true;
+    if (!park_numbers_.contains({station, std::string(), number})) return false;
+    if (number <= 2) return true;
+    // The number only without a park's letter at the station (Околицы's 10
+    // of its freight park, the trains on 1А, 2А: testers 2026-11-26): from
+    // any park; with a lettered one of it too, that park's.
+    for (auto it = park_numbers_.lower_bound({station, std::string(), 0}); it != park_numbers_.end() && std::get<0>(*it) == station; ++it)
+        if (std::get<2>(*it) == number && !std::get<1>(*it).empty()) return false;
+    return true;
 }
 
 ElectronicMap::ElectronicMap(const TrackNetwork& network, const formats::RouteDatabase& database, std::vector<MapSignal> signals) {
